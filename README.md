@@ -1,0 +1,1 @@
+After every change run ./rebuild.sh
