@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Flowera Agent
+Comment=Flowera autonomous agent
+Exec=/opt/start_agent_terminal.sh
+Terminal=false
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
