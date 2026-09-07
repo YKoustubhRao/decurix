@@ -1,0 +1,915 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Linux Desktop Manager</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+                         Roboto, Helvetica, Arial, sans-serif;
+
+            background: #f5f7fb;
+            color: #17191c;
+        }
+
+        header {
+            background: white;
+            border-bottom: 1px solid #e5e7eb;
+
+            padding: 18px 30px;
+
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 21px;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 30px auto;
+            padding: 0 20px;
+        }
+
+        .create {
+            background: white;
+            border: 1px solid #e5e7eb;
+            border-radius: 12px;
+
+            padding: 20px;
+            margin-bottom: 25px;
+        }
+
+        .create-row {
+            display: flex;
+            gap: 10px;
+        }
+
+        input {
+            flex: 1;
+
+            padding: 12px 14px;
+
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+
+            font-size: 14px;
+        }
+
+        button {
+            border: 0;
+            border-radius: 8px;
+
+            padding: 10px 15px;
+
+            cursor: pointer;
+
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .primary {
+            background: #111827;
+            color: white;
+        }
+
+        .primary:hover {
+            background: #000;
+        }
+
+        .desktop-grid {
+            display: grid;
+
+            grid-template-columns:
+                repeat(auto-fill, minmax(320px, 1fr));
+
+            gap: 18px;
+        }
+
+        .card {
+            background: white;
+
+            border: 1px solid #e5e7eb;
+            border-radius: 12px;
+
+            padding: 20px;
+        }
+
+        .card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+
+            margin-bottom: 18px;
+        }
+
+        .name {
+            font-weight: 600;
+            font-size: 17px;
+        }
+
+        .status {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+
+            font-size: 12px;
+            font-weight: 600;
+
+            text-transform: uppercase;
+        }
+
+        .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+
+        .running {
+            color: #15803d;
+        }
+
+        .running .dot {
+            background: #22c55e;
+        }
+
+        .stopped {
+            color: #6b7280;
+        }
+
+        .stopped .dot {
+            background: #9ca3af;
+        }
+
+        .info {
+            display: grid;
+
+            grid-template-columns: 90px 1fr;
+
+            gap: 8px;
+
+            font-size: 13px;
+
+            margin-bottom: 20px;
+        }
+
+        .label {
+            color: #6b7280;
+        }
+
+        .value {
+            font-family: monospace;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .open {
+            background: #2563eb;
+            color: white;
+            flex: 1;
+        }
+
+        .open:hover {
+            background: #1d4ed8;
+        }
+
+        .secondary {
+            background: #f3f4f6;
+            color: #111827;
+        }
+
+        .secondary:hover {
+            background: #e5e7eb;
+        }
+
+        .danger {
+            background: #fee2e2;
+            color: #b91c1c;
+        }
+
+        .danger:hover {
+            background: #fecaca;
+        }
+
+        .empty {
+            text-align: center;
+
+            padding: 70px 20px;
+
+            color: #6b7280;
+        }
+
+        .loading {
+            opacity: 0.5;
+            pointer-events: none;
+        }
+
+        /* Helptext post-it notes */
+
+        #helpNotes {
+            position: fixed;
+
+            right: 24px;
+            bottom: 24px;
+
+            width: 340px;
+
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+
+            z-index: 1000;
+
+            pointer-events: none;
+        }
+
+        .help-note {
+            pointer-events: auto;
+
+            background: #fff8a6;
+
+            border: 1px solid #eadf73;
+            border-radius: 10px;
+
+            padding: 16px;
+
+            box-shadow:
+                0 8px 25px rgba(0, 0, 0, 0.15);
+
+            animation: noteIn 0.2s ease-out;
+        }
+
+        @keyframes noteIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .help-note-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+
+            margin-bottom: 10px;
+        }
+
+        .help-note-title {
+            font-size: 13px;
+            font-weight: 700;
+
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+
+            padding-right: 10px;
+        }
+
+        .help-note-close {
+            width: 26px;
+            height: 26px;
+
+            padding: 0;
+
+            display: flex;
+            align-items: center;
+            justify-content: center;
+
+            background: transparent;
+
+            color: #555;
+
+            font-size: 20px;
+            line-height: 1;
+        }
+
+        .help-note-close:hover {
+            background: rgba(0, 0, 0, 0.08);
+        }
+
+        .help-note-content {
+            white-space: pre-wrap;
+            word-break: break-word;
+
+            font-size: 14px;
+            line-height: 1.5;
+
+            color: #292929;
+        }
+
+        .help-note-time {
+            margin-top: 10px;
+
+            font-size: 11px;
+
+            color: #777;
+        }
+
+        @media (max-width: 600px) {
+
+            header {
+                padding: 15px 18px;
+            }
+
+            header h1 {
+                font-size: 18px;
+            }
+
+            .header-actions {
+                gap: 6px;
+            }
+
+            .header-actions button {
+                padding: 9px 10px;
+            }
+
+            .container {
+                margin-top: 20px;
+                padding: 0 14px;
+            }
+
+            .create-row {
+                flex-direction: column;
+            }
+
+            #helpNotes {
+                left: 14px;
+                right: 14px;
+                bottom: 14px;
+                width: auto;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+<header>
+
+    <h1>Linux Desktop Manager</h1>
+
+    <div class="header-actions">
+
+        <button
+            class="secondary"
+            onclick="window.location.href='/dashboard'">
+            Dashboard
+        </button>
+
+        <button
+            class="secondary"
+            onclick="window.location.href='/messages'">
+            Messages
+        </button>
+
+        <button
+            class="primary"
+            onclick="createDesktop()">
+            + Create Desktop
+        </button>
+
+    </div>
+
+</header>
+
+<div class="container">
+
+    <div class="create">
+
+        <div class="create-row">
+
+            <input
+                id="desktopName"
+                placeholder="Desktop name, e.g. browser-1"
+                autocomplete="off"
+            >
+
+            <button
+                class="primary"
+                onclick="createDesktop()">
+                Create
+            </button>
+
+        </div>
+
+    </div>
+
+    <div id="desktopGrid"
+         class="desktop-grid">
+
+        {{if .Desktops}}
+
+            {{range .Desktops}}
+
+            <div class="card">
+
+                <div class="card-header">
+
+                    <div class="name">
+                        {{.Name}}
+                    </div>
+
+                    <div class="status {{.Status}}">
+
+                        <span class="dot"></span>
+
+                        {{.Status}}
+
+                    </div>
+
+                </div>
+
+                <div class="info">
+
+                    <div class="label">
+                        Port
+                    </div>
+
+                    <div class="value">
+                        {{.Port}}
+                    </div>
+
+                    <div class="label">
+                        URL
+                    </div>
+
+                    <div class="value">
+                        {{.URL}}
+                    </div>
+
+                    <div class="label">
+                        Volume
+                    </div>
+
+                    <div class="value">
+                        {{.Volume}}
+                    </div>
+
+                </div>
+
+                <div class="actions">
+
+                    {{if eq .Status "running"}}
+
+                    <button
+                        class="open"
+                        onclick="openDesktop('{{.URL}}')">
+                        Open Desktop
+                    </button>
+
+                    <button
+                        class="secondary"
+                        onclick="restartDesktop('{{.ID}}')">
+                        Restart
+                    </button>
+
+                    <button
+                        class="secondary"
+                        onclick="stopDesktop('{{.ID}}')">
+                        Stop
+                    </button>
+
+                    {{else}}
+
+                    <button
+                        class="open"
+                        onclick="startDesktop('{{.ID}}')">
+                        Start
+                    </button>
+
+                    {{end}}
+
+                    <button
+                        class="danger"
+                        onclick="deleteDesktop('{{.ID}}')">
+                        Delete
+                    </button>
+
+                </div>
+
+            </div>
+
+            {{end}}
+
+        {{else}}
+
+            <div class="empty">
+
+                <h2>No desktops yet</h2>
+
+                <p>
+                    Create your first Linux desktop above.
+                </p>
+
+            </div>
+
+        {{end}}
+
+    </div>
+
+</div>
+
+<!-- Helptext post-it notes -->
+
+<div id="helpNotes"></div>
+
+<script>
+
+async function createDesktop() {
+
+    const input =
+        document.getElementById("desktopName");
+
+    let name =
+        input.value.trim();
+
+    if (!name) {
+
+        name =
+            "desktop-" +
+            Date.now();
+    }
+
+    document.body.classList.add("loading");
+
+    try {
+
+        const form =
+            new URLSearchParams();
+
+        form.append("name", name);
+
+        const response =
+            await fetch(
+                "/api/desktops/create",
+                {
+                    method: "POST",
+
+                    headers: {
+                        "Content-Type":
+                            "application/x-www-form-urlencoded"
+                    },
+
+                    body: form
+                }
+            );
+
+        const data =
+            await response.json();
+
+        if (!response.ok) {
+
+            throw new Error(
+                data.error ||
+                "Failed to create desktop"
+            );
+        }
+
+        location.reload();
+
+    } catch (error) {
+
+        alert(error.message);
+
+        document.body.classList.remove("loading");
+    }
+}
+
+
+async function startDesktop(id) {
+
+    await action(
+        "/api/desktops/start",
+        id
+    );
+}
+
+
+async function stopDesktop(id) {
+
+    await action(
+        "/api/desktops/stop",
+        id
+    );
+}
+
+
+async function restartDesktop(id) {
+
+    await action(
+        "/api/desktops/restart",
+        id
+    );
+}
+
+
+async function deleteDesktop(id) {
+
+    if (!confirm(
+        "Delete this desktop and its persistent home directory?"
+    )) {
+
+        return;
+    }
+
+    await action(
+        "/api/desktops/delete",
+        id
+    );
+}
+
+
+async function action(url, id) {
+
+    document.body.classList.add("loading");
+
+    try {
+
+        const form =
+            new URLSearchParams();
+
+        form.append("id", id);
+
+        const response =
+            await fetch(
+                url,
+                {
+                    method: "POST",
+
+                    headers: {
+                        "Content-Type":
+                            "application/x-www-form-urlencoded"
+                    },
+
+                    body: form
+                }
+            );
+
+        const data =
+            await response.json();
+
+        if (!response.ok) {
+
+            throw new Error(
+                data.error ||
+                "Request failed"
+            );
+        }
+
+        location.reload();
+
+    } catch (error) {
+
+        alert(error.message);
+
+        document.body.classList.remove("loading");
+    }
+}
+
+
+function openDesktop(url) {
+
+    window.open(
+        url,
+        "_blank"
+    );
+}
+
+
+/* =========================================================
+   HELP TEXT / POST-IT NOTES
+   ========================================================= */
+
+async function loadHelpNotes() {
+
+    try {
+
+        const response =
+            await fetch(
+                "/api/helpnotes",
+                {
+                    cache: "no-store"
+                }
+            );
+
+        if (!response.ok) {
+            return;
+        }
+
+        const notes =
+            await response.json();
+
+        renderHelpNotes(
+            Array.isArray(notes)
+                ? notes
+                : []
+        );
+
+    } catch (error) {
+
+        console.error(
+            "Failed to load help notes:",
+            error
+        );
+    }
+}
+
+
+function renderHelpNotes(notes) {
+
+    const container =
+        document.getElementById("helpNotes");
+
+    container.innerHTML = "";
+
+    notes.forEach(note => {
+
+        const noteElement =
+            document.createElement("div");
+
+        noteElement.className =
+            "help-note";
+
+        const header =
+            document.createElement("div");
+
+        header.className =
+            "help-note-header";
+
+        const title =
+            document.createElement("div");
+
+        title.className =
+            "help-note-title";
+
+        title.textContent =
+            note.filename || "Help";
+
+        const close =
+            document.createElement("button");
+
+        close.className =
+            "help-note-close";
+
+        close.innerHTML =
+            "&times;";
+
+        close.title =
+            "Close";
+
+        close.onclick =
+            () => closeHelpNote(note.id);
+
+        header.appendChild(title);
+        header.appendChild(close);
+
+        const content =
+            document.createElement("div");
+
+        content.className =
+            "help-note-content";
+
+        content.textContent =
+            note.content || "";
+
+        noteElement.appendChild(header);
+        noteElement.appendChild(content);
+
+        if (note.created_at) {
+
+            const time =
+                document.createElement("div");
+
+            time.className =
+                "help-note-time";
+
+            const date =
+                new Date(note.created_at);
+
+            if (!isNaN(date.getTime())) {
+
+                time.textContent =
+                    date.toLocaleString();
+            }
+
+            noteElement.appendChild(time);
+        }
+
+        container.appendChild(
+            noteElement
+        );
+    });
+}
+
+
+async function closeHelpNote(id) {
+
+    try {
+
+        const form =
+            new URLSearchParams();
+
+        form.append(
+            "id",
+            id
+        );
+
+        const response =
+            await fetch(
+                "/api/helpnotes/close",
+                {
+                    method: "POST",
+
+                    headers: {
+                        "Content-Type":
+                            "application/x-www-form-urlencoded"
+                    },
+
+                    body: form
+                }
+            );
+
+        if (!response.ok) {
+
+            const data =
+                await response.json()
+                    .catch(() => ({}));
+
+            throw new Error(
+                data.error ||
+                "Failed to close note"
+            );
+        }
+
+        loadHelpNotes();
+
+    } catch (error) {
+
+        console.error(
+            "Failed to close help note:",
+            error
+        );
+    }
+}
+
+
+/*
+ * Poll the control plane every second.
+ *
+ * When a VM creates a file inside:
+ *
+ *     /home/headless/helptext/
+ *
+ * the VM sends it to:
+ *
+ *     /api/helptext
+ *
+ * The control plane stores it and this page
+ * displays it as a post-it note.
+ */
+
+loadHelpNotes();
+
+setInterval(
+    loadHelpNotes,
+    1000
+);
+
+</script>
+
+</body>
+</html>

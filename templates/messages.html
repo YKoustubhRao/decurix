@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Send to Desktop</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+                         Roboto, Helvetica, Arial, sans-serif;
+
+            background: #f5f7fb;
+            color: #17191c;
+        }
+
+        header {
+            background: white;
+            border-bottom: 1px solid #e5e7eb;
+
+            padding: 18px 30px;
+
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 21px;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 30px auto;
+            padding: 0 20px;
+        }
+
+        .card {
+            background: white;
+            border: 1px solid #e5e7eb;
+            border-radius: 12px;
+            padding: 25px;
+        }
+
+        label {
+            display: block;
+
+            margin-bottom: 8px;
+
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        select,
+        textarea {
+            width: 100%;
+
+            padding: 12px 14px;
+
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+
+            font-size: 14px;
+
+            margin-bottom: 20px;
+
+            background: white;
+            color: #17191c;
+        }
+
+        textarea {
+            min-height: 350px;
+            resize: vertical;
+
+            font-family: monospace;
+            line-height: 1.5;
+        }
+
+        button {
+            border: 0;
+            border-radius: 8px;
+
+            padding: 11px 18px;
+
+            cursor: pointer;
+
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .primary {
+            background: #111827;
+            color: white;
+        }
+
+        .primary:hover {
+            background: #000;
+        }
+
+        .back {
+            background: #f3f4f6;
+            color: #111827;
+        }
+
+        .back:hover {
+            background: #e5e7eb;
+        }
+
+        .success {
+            margin-top: 15px;
+
+            color: #15803d;
+
+            display: none;
+        }
+
+        .error {
+            margin-top: 15px;
+
+            color: #b91c1c;
+
+            display: none;
+        }
+
+        .hint {
+            margin-top: -10px;
+            margin-bottom: 20px;
+
+            color: #6b7280;
+
+            font-size: 12px;
+        }
+
+        @media (max-width: 600px) {
+
+            header {
+                padding: 15px 18px;
+            }
+
+            header h1 {
+                font-size: 18px;
+            }
+
+            .container {
+                margin-top: 20px;
+                padding: 0 14px;
+            }
+
+            .card {
+                padding: 20px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+<header>
+
+    <h1>Send Text to Desktop</h1>
+
+    <button
+        class="back"
+        onclick="location.href='/'">
+        ← Desktop Manager
+    </button>
+
+</header>
+
+<div class="container">
+
+    <div class="card">
+
+        <label for="desktop">
+            Desktop
+        </label>
+
+        <select id="desktop">
+
+            {{range .Desktops}}
+
+            <option value="{{.ID}}">
+                {{.Name}} — {{.Status}}
+            </option>
+
+            {{end}}
+
+        </select>
+
+        <div class="hint">
+            The message will be saved automatically in the VM as
+            <strong>DDMMYYYYHHMMSS.txt</strong>.
+        </div>
+
+        <label for="content">
+            Content
+        </label>
+
+        <textarea
+            id="content"
+            placeholder="Write something to send to the VM..."
+        ></textarea>
+
+        <button
+            id="sendButton"
+            class="primary"
+            onclick="sendMessage()">
+            Send to VM
+        </button>
+
+        <div
+            id="success"
+            class="success">
+            Message sent successfully.
+        </div>
+
+        <div
+            id="error"
+            class="error">
+        </div>
+
+    </div>
+
+</div>
+
+<script>
+
+async function sendMessage() {
+
+    const desktop =
+        document.getElementById("desktop").value;
+
+    const content =
+        document.getElementById("content").value;
+
+    const success =
+        document.getElementById("success");
+
+    const error =
+        document.getElementById("error");
+
+    const sendButton =
+        document.getElementById("sendButton");
+
+    success.style.display = "none";
+    error.style.display = "none";
+
+    if (!desktop) {
+
+        error.innerText =
+            "Select a desktop.";
+
+        error.style.display =
+            "block";
+
+        return;
+    }
+
+    if (!content.trim()) {
+
+        error.innerText =
+            "Enter some text.";
+
+        error.style.display =
+            "block";
+
+        return;
+    }
+
+    const form =
+        new URLSearchParams();
+
+    form.append(
+        "id",
+        desktop
+    );
+
+    form.append(
+        "content",
+        content
+    );
+
+    sendButton.disabled = true;
+
+    sendButton.innerText =
+        "Sending...";
+
+    try {
+
+        const response =
+            await fetch(
+                "/api/desktops/send",
+                {
+                    method: "POST",
+
+                    headers: {
+                        "Content-Type":
+                            "application/x-www-form-urlencoded"
+                    },
+
+                    body: form
+                }
+            );
+
+        const data =
+            await response.json();
+
+        if (!response.ok) {
+
+            throw new Error(
+                data.error ||
+                "Failed to send message"
+            );
+        }
+
+        success.innerText =
+            "Message sent successfully.";
+
+        success.style.display =
+            "block";
+
+        /*
+         * Clear the textarea after
+         * successful delivery.
+         */
+        document.getElementById(
+            "content"
+        ).value = "";
+
+    } catch (e) {
+
+        error.innerText =
+            e.message;
+
+        error.style.display =
+            "block";
+
+    } finally {
+
+        sendButton.disabled =
+            false;
+
+        sendButton.innerText =
+            "Send to VM";
+    }
+}
+
+</script>
+
+</body>
+
+</html>

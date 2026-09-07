@@ -1,0 +1,11 @@
+FROM accetto/ubuntu-vnc-xfce-chromium-g3:latest
+
+USER root
+
+COPY vm_server.py /opt/vm_server.py
+
+RUN chmod +x /opt/vm_server.py
+
+USER headless
+
+ENTRYPOINT ["/bin/bash", "-c", "python3 /opt/vm_server.py & exec /usr/bin/tini -- /dockerstartup/startup.sh"]
