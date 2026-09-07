@@ -34,6 +34,14 @@ const (
 	maxDesktopPort   = 65000
 
 	agentPortOffset = 10000
+
+	ollamaContainerName = "flowera-ollama"
+	ollamaImage         = "ollama/ollama:latest"
+	ollamaPort          = "11434/tcp"
+	ollamaModel         = "qwen3:0.6b"
+
+	floweraNetwork = "flowera-network"
+	ollamaVolume   = "flowera_ollama"
 )
 
 type Desktop struct {
@@ -99,6 +107,14 @@ func main() {
 	// Pull the desktop image if it isn't already present.
 	if err := manager.ensureImage(ctx); err != nil {
 		log.Printf("warning: could not ensure image: %v", err)
+	}
+
+	if err := manager.ensureFloweraNetwork(ctx); err != nil {
+		log.Fatal(err)
+	}
+
+	if err := manager.ensureOllama(ctx); err != nil {
+		log.Printf("warning: Ollama unavailable: %v", err)
 	}
 
 	templatePath := filepath.Join("templates", "index.html")
@@ -371,9 +387,17 @@ func (m *Manager) createDesktop(
 	env := []string{
 		"VNC_PW=" + defaultPassword,
 		"VNC_RESOLUTION=1280x720",
-		"DESKTOP_ID=" + strings.ToLower(strings.ReplaceAll(name, " ", "-")),
+
+		"DESKTOP_ID=" + strings.ToLower(
+			strings.ReplaceAll(name, " ", "-"),
+		),
+
 		"DESKTOP_NAME=" + name,
+
 		"CONTROL_PLANE_URL=http://host.docker.internal:8080",
+
+		"OLLAMA_URL=http://flowera-ollama:11434",
+		"OLLAMA_MODEL=" + ollamaModel,
 	}
 
 	hostPort := strconv.Itoa(port)
@@ -422,7 +446,11 @@ func (m *Manager) createDesktop(
 		},
 	}
 
-	networkingConfig := (*network.NetworkingConfig)(nil)
+	networkingConfig := &network.NetworkingConfig{
+		EndpointsConfig: map[string]*network.EndpointSettings{
+			floweraNetwork: {},
+		},
+	}
 
 	resp, err := m.client.ContainerCreate(
 		ctx,
@@ -898,86 +926,83 @@ func sendMessageHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *Manager) sendMessage(
-    ctx context.Context,
-    id string,
-    content string,
+	ctx context.Context,
+	id string,
+	content string,
 ) error {
 
-    desktopID := sanitizeName(id)
+	desktopID := sanitizeName(id)
+	name := "desktop_" + desktopID
 
-    name := "desktop_" + desktopID
+	// Verify that the desktop container exists.
+	inspect, err := m.client.ContainerInspect(
+		ctx,
+		name,
+	)
+	if err != nil {
+		return fmt.Errorf("find desktop: %w", err)
+	}
 
-    inspect, err := m.client.ContainerInspect(
-        ctx,
-        name,
-    )
-    if err != nil {
-        return fmt.Errorf("find desktop: %w", err)
-    }
+	// Make sure the desktop is running.
+	if inspect.State == nil || !inspect.State.Running {
+		return fmt.Errorf("desktop %s is not running", desktopID)
+	}
 
-    agentPort := 16080
+	payload := map[string]string{
+		"content": content,
+	}
 
-    for _, binding := range inspect.NetworkSettings.Ports["8081/tcp"] {
-        if binding.HostPort != "" {
-            p, err := strconv.Atoi(binding.HostPort)
-            if err == nil {
-                agentPort = p
-                break
-            }
-        }
-    }
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("encode message: %w", err)
+	}
 
-    payload := map[string]string{
-        "content": content,
-    }
+	// Communicate directly over the Docker network.
+	// vm_server.py listens on port 8081 inside the desktop container.
+	url := fmt.Sprintf(
+		"http://%s:8081/message",
+		name,
+	)
 
-    body, err := json.Marshal(payload)
-    if err != nil {
-        return err
-    }
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		url,
+		strings.NewReader(string(body)),
+	)
+	if err != nil {
+		return fmt.Errorf("create message request: %w", err)
+	}
 
-    url := fmt.Sprintf(
-        "http://host.docker.internal:%d/message",
-        agentPort,
-    )
+	req.Header.Set(
+		"Content-Type",
+		"application/json",
+	)
 
-    req, err := http.NewRequestWithContext(
-        ctx,
-        http.MethodPost,
-        url,
-        strings.NewReader(string(body)),
-    )
-    if err != nil {
-        return err
-    }
+	httpClient := &http.Client{
+		Timeout: 10 * time.Second,
+	}
 
-    req.Header.Set(
-        "Content-Type",
-        "application/json",
-    )
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf(
+			"send message to desktop %s: %w",
+			desktopID,
+			err,
+		)
+	}
 
-    client := &http.Client{
-        Timeout: 10 * time.Second,
-    }
+	defer resp.Body.Close()
 
-    resp, err := client.Do(req)
-    if err != nil {
-        return fmt.Errorf(
-            "send message to desktop: %w",
-            err,
-        )
-    }
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf(
+			"desktop %s returned HTTP %d",
+			desktopID,
+			resp.StatusCode,
+		)
+	}
 
-    defer resp.Body.Close()
-
-    if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-        return fmt.Errorf(
-            "desktop returned HTTP %d",
-            resp.StatusCode,
-        )
-    }
-
-    return nil
+	return nil
 }
 
 func helpTextHandler(w http.ResponseWriter, r *http.Request) {
@@ -1088,4 +1113,413 @@ func dashboardPostsHandler(w http.ResponseWriter, r *http.Request) {
         )
         return
     }
+}
+
+
+func (m *Manager) ensureFloweraNetwork(ctx context.Context) error {
+	_, err := m.client.NetworkInspect(
+		ctx,
+		floweraNetwork,
+		network.InspectOptions{},
+	)
+
+	if err == nil {
+		return nil
+	}
+
+	log.Printf("Creating Docker network %s...", floweraNetwork)
+
+	_, err = m.client.NetworkCreate(
+		ctx,
+		floweraNetwork,
+		network.CreateOptions{
+			Driver: "bridge",
+			Labels: map[string]string{
+				"flowera": "true",
+			},
+		},
+	)
+
+	if err != nil {
+		return fmt.Errorf(
+			"create Flowera network: %w",
+			err,
+		)
+	}
+
+	return nil
+}
+
+func (m *Manager) ensureOllama(ctx context.Context) error {
+	// ------------------------------------------------------------
+	// Make sure Ollama image exists
+	// ------------------------------------------------------------
+
+	_, _, err := m.client.ImageInspectWithRaw(
+		ctx,
+		ollamaImage,
+	)
+
+	if err != nil {
+		log.Printf("Pulling %s...", ollamaImage)
+
+		reader, err := m.client.ImagePull(
+			ctx,
+			ollamaImage,
+			image.PullOptions{},
+		)
+
+		if err != nil {
+			return fmt.Errorf(
+				"pull Ollama image: %w",
+				err,
+			)
+		}
+
+		defer reader.Close()
+
+		buf := make([]byte, 4096)
+
+		for {
+			_, err := reader.Read(buf)
+
+			if err != nil {
+				break
+			}
+		}
+	}
+
+	// ------------------------------------------------------------
+	// Create persistent volume
+	// ------------------------------------------------------------
+
+	_, err = m.client.VolumeCreate(
+		ctx,
+		volume.CreateOptions{
+			Name: ollamaVolume,
+		},
+	)
+
+	if err != nil {
+		// Volume may already exist.
+		log.Printf(
+			"Ollama volume already exists or could not be created: %v",
+			err,
+		)
+	}
+
+	// ------------------------------------------------------------
+	// Check whether container already exists
+	// ------------------------------------------------------------
+
+	inspect, err := m.client.ContainerInspect(
+		ctx,
+		ollamaContainerName,
+	)
+
+	if err == nil {
+
+		// Container exists.
+
+		if inspect.State != nil &&
+			inspect.State.Running {
+
+			log.Println("Ollama container already running.")
+
+		} else {
+
+			log.Println("Starting existing Ollama container...")
+
+			if err := m.client.ContainerStart(
+				ctx,
+				ollamaContainerName,
+				container.StartOptions{},
+			); err != nil {
+
+				return fmt.Errorf(
+					"start Ollama: %w",
+					err,
+				)
+			}
+		}
+
+	} else {
+
+		// --------------------------------------------------------
+		// Create Ollama container
+		// --------------------------------------------------------
+
+		log.Println("Creating Ollama container...")
+
+		config := &container.Config{
+			Image: ollamaImage,
+
+			Env: []string{
+				"OLLAMA_HOST=0.0.0.0:11434",
+			},
+
+			Labels: map[string]string{
+				"flowera":       "true",
+				"flowera-ollama": "true",
+			},
+		}
+
+		hostConfig := &container.HostConfig{
+			Binds: []string{
+				ollamaVolume + ":/root/.ollama",
+			},
+
+			RestartPolicy: container.RestartPolicy{
+				Name: "unless-stopped",
+			},
+		}
+
+		networkingConfig := &network.NetworkingConfig{
+			EndpointsConfig: map[string]*network.EndpointSettings{
+				floweraNetwork: {},
+			},
+		}
+
+		resp, err := m.client.ContainerCreate(
+			ctx,
+			config,
+			hostConfig,
+			networkingConfig,
+			nil,
+			ollamaContainerName,
+		)
+
+		if err != nil {
+			return fmt.Errorf(
+				"create Ollama container: %w",
+				err,
+			)
+		}
+
+		if err := m.client.ContainerStart(
+			ctx,
+			resp.ID,
+			container.StartOptions{},
+		); err != nil {
+
+			return fmt.Errorf(
+				"start Ollama container: %w",
+				err,
+			)
+		}
+	}
+
+	// ------------------------------------------------------------
+	// Wait for Ollama API
+	// ------------------------------------------------------------
+
+	log.Println("Waiting for Ollama...")
+
+	if err := waitForOllama(ctx); err != nil {
+		return err
+	}
+
+	// ------------------------------------------------------------
+	// Pull model
+	// ------------------------------------------------------------
+
+	log.Printf(
+		"Ensuring Ollama model %s...",
+		ollamaModel,
+	)
+
+	if err := m.ensureOllamaModel(ctx); err != nil {
+		return err
+	}
+
+	log.Println("Ollama ready.")
+
+	return nil
+}
+
+func waitForOllama(ctx context.Context) error {
+	deadline := time.Now().Add(2 * time.Minute)
+
+	for time.Now().Before(deadline) {
+
+		req, err := http.NewRequestWithContext(
+			ctx,
+			http.MethodGet,
+			"http://host.docker.internal:11434/api/tags",
+			nil,
+		)
+
+		if err == nil {
+
+			client := &http.Client{
+				Timeout: 3 * time.Second,
+			}
+
+			resp, err := client.Do(req)
+
+			if err == nil {
+
+				resp.Body.Close()
+
+				if resp.StatusCode >= 200 &&
+					resp.StatusCode < 300 {
+
+					return nil
+				}
+			}
+		}
+
+		time.Sleep(2 * time.Second)
+	}
+
+	return fmt.Errorf(
+		"timeout waiting for Ollama",
+	)
+}
+
+func (m *Manager) ensureOllamaModel(ctx context.Context) error {
+	// Try `ollama show MODEL`.
+	// Exit code 0 means the model already exists.
+	checkExec, err := m.client.ContainerExecCreate(
+		ctx,
+		ollamaContainerName,
+		container.ExecOptions{
+			Cmd: []string{
+				"ollama",
+				"show",
+				ollamaModel,
+			},
+			AttachStdout: true,
+			AttachStderr: true,
+		},
+	)
+
+	if err != nil {
+		return fmt.Errorf(
+			"create Ollama model check: %w",
+			err,
+		)
+	}
+
+	if err := m.client.ContainerExecStart(
+		ctx,
+		checkExec.ID,
+		container.ExecStartOptions{},
+	); err != nil {
+		return fmt.Errorf(
+			"start Ollama model check: %w",
+			err,
+		)
+	}
+
+	for {
+		result, err := m.client.ContainerExecInspect(
+			ctx,
+			checkExec.ID,
+		)
+
+		if err != nil {
+			return fmt.Errorf(
+				"inspect Ollama model check: %w",
+				err,
+			)
+		}
+
+		if !result.Running {
+			if result.ExitCode == 0 {
+				log.Printf(
+					"Ollama model %s already exists.",
+					ollamaModel,
+				)
+
+				return nil
+			}
+
+			break
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+
+	// Model doesn't exist. Pull it.
+	log.Printf(
+		"Pulling Ollama model %s...",
+		ollamaModel,
+	)
+
+	pullExec, err := m.client.ContainerExecCreate(
+		ctx,
+		ollamaContainerName,
+		container.ExecOptions{
+			Cmd: []string{
+				"ollama",
+				"pull",
+				ollamaModel,
+			},
+			AttachStdout: true,
+			AttachStderr: true,
+		},
+	)
+
+	if err != nil {
+		return fmt.Errorf(
+			"create Ollama pull: %w",
+			err,
+		)
+	}
+
+	if err := m.client.ContainerExecStart(
+		ctx,
+		pullExec.ID,
+		container.ExecStartOptions{},
+	); err != nil {
+		return fmt.Errorf(
+			"start Ollama pull: %w",
+			err,
+		)
+	}
+
+	for {
+		result, err := m.client.ContainerExecInspect(
+			ctx,
+			pullExec.ID,
+		)
+
+		if err != nil {
+			return fmt.Errorf(
+				"inspect Ollama pull: %w",
+				err,
+			)
+		}
+
+		if !result.Running {
+			if result.ExitCode != 0 {
+				return fmt.Errorf(
+					"Ollama pull failed with exit code %d",
+					result.ExitCode,
+				)
+			}
+
+			break
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+
+		case <-time.After(1 * time.Second):
+		}
+	}
+
+	log.Printf(
+		"Ollama model %s ready.",
+		ollamaModel,
+	)
+
+	return nil
 }

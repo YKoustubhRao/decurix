@@ -3,9 +3,18 @@ FROM accetto/ubuntu-vnc-xfce-chromium-g3:latest
 USER root
 
 COPY vm_server.py /opt/vm_server.py
+COPY start_agent_terminal.sh /opt/start_agent_terminal.sh
 
-RUN chmod +x /opt/vm_server.py
+RUN chmod +x /opt/vm_server.py /opt/start_agent_terminal.sh
+
+RUN mkdir -p /home/headless/.config/autostart \
+    && chown -R headless:headless /home/headless/.config
+
+COPY flowera-agent.desktop /home/headless/.config/autostart/flowera-agent.desktop
+
+RUN chmod 644 /home/headless/.config/autostart/flowera-agent.desktop \
+    && chown headless:headless /home/headless/.config/autostart/flowera-agent.desktop
 
 USER headless
 
-ENTRYPOINT ["/bin/bash", "-c", "python3 /opt/vm_server.py & exec /usr/bin/tini -- /dockerstartup/startup.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/dockerstartup/startup.sh"]

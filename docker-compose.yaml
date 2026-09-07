@@ -16,4 +16,11 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+    networks:
+      - flowera-network
+
     restart: unless-stopped
+
+networks:
+  flowera-network:
+    name: flowera-network
