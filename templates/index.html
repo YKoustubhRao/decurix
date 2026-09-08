@@ -1,9 +1,11 @@
 <!DOCTYPE html>
+
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Flowera Desktops</title>
+
 <style>
 *{box-sizing:border-box}
 :root{
@@ -13,169 +15,1057 @@
   --shadow:0 1px 2px rgba(16,24,40,.04),0 8px 30px rgba(16,24,40,.05);
   --radius:16px
 }
-body{margin:0;background:var(--bg);color:var(--text);font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
-button,input{font:inherit}
+
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--text);
+  font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif
+}
+
+button,input,select{font:inherit}
 button{border:0;cursor:pointer}
 button:disabled{opacity:.55;cursor:not-allowed}
-header{height:68px;background:rgba(255,255,255,.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 32px;position:sticky;top:0;z-index:20}
-.brand{display:flex;align-items:center;gap:11px;font-weight:700;font-size:16px}
-.logo{width:30px;height:30px;border-radius:9px;background:#17191c;color:white;display:grid;place-items:center;font-size:15px}
-nav{display:flex;align-items:center;gap:4px;margin-left:auto;margin-right:18px}
-nav a{padding:8px 11px;border-radius:8px;color:var(--muted);text-decoration:none;font-weight:500}
-nav a:hover,nav a.active{background:#f0f1f4;color:var(--text)}
-.container{max-width:1160px;margin:0 auto;padding:42px 24px 70px}
-.hero{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;margin-bottom:28px}
-.eyebrow{font-size:12px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
-h1{font-size:30px;letter-spacing:-.035em;margin:0 0 7px}
-.subtitle{margin:0;color:var(--muted);font-size:14px}
-.create{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:6px;display:flex;box-shadow:var(--shadow);width:min(720px,100%)}
-.create input{border:0;outline:0;flex:1;padding:12px 13px;background:transparent;color:var(--text);min-width:0}
-.create input::placeholder{color:#9aa0aa}
-.primary{background:var(--accent);color:#fff;border-radius:11px;padding:11px 16px;font-weight:600;transition:.16s}
-.primary:hover{background:var(--accent-hover);transform:translateY(-1px)}
-.section-head{display:flex;justify-content:space-between;align-items:center;margin:0 0 13px}
-.section-title{font-size:13px;font-weight:700}
-.count{font-size:12px;color:var(--muted)}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:15px}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:19px;box-shadow:0 1px 2px rgba(16,24,40,.02);transition:.18s}
-.card:hover{box-shadow:var(--shadow);transform:translateY(-2px)}
-.card-top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:18px}
-.name{font-weight:700;font-size:16px;letter-spacing:-.01em}
-.status{display:inline-flex;align-items:center;gap:6px;padding:5px 8px;border-radius:999px;font-size:11px;font-weight:700;text-transform:capitalize}
-.status.running{color:var(--green);background:var(--green-bg)}
-.status.stopped{color:var(--muted);background:#f1f2f4}
-.dot{width:6px;height:6px;border-radius:50%;background:currentColor}
-.info{border-top:1px solid var(--border);border-bottom:1px solid var(--border);padding:13px 0;margin-bottom:15px;display:grid;grid-template-columns:58px 1fr;gap:9px 12px}
-.label{color:var(--muted);font-size:12px}
-.value{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.actions{display:flex;gap:7px}
-.action{padding:9px 12px;border-radius:9px;background:#f2f3f5;color:#24272c;font-weight:600}
-.action:hover{background:#e9eaed}
-.open{flex:1;background:#17191c;color:#fff}
-.open:hover{background:#000}
-.danger{color:var(--red);background:var(--red-bg)}
-.empty{background:var(--surface);border:1px dashed #d8dbe1;border-radius:var(--radius);padding:70px 20px;text-align:center}
-.empty-icon{width:44px;height:44px;margin:0 auto 15px;border-radius:13px;background:#f0efff;color:var(--accent);display:grid;place-items:center;font-size:20px}
-.empty h2{margin:0 0 6px;font-size:17px}.empty p{margin:0;color:var(--muted)}
-.loading:after{content:"";position:fixed;inset:0;background:rgba(255,255,255,.35);z-index:100}
-#helpNotes{position:fixed;right:22px;bottom:22px;width:350px;display:flex;flex-direction:column;gap:10px;z-index:50;pointer-events:none}
-.help-note{pointer-events:auto;background:#fff;border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:13px;padding:14px 15px;box-shadow:0 12px 35px rgba(16,24,40,.13);animation:in .2s ease-out}
-@keyframes in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
-.help-note-header{display:flex;justify-content:space-between;gap:10px;margin-bottom:8px}
-.help-note-title{font-weight:700;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.help-note-close{background:transparent;color:#858a93;width:24px;height:24px;border-radius:7px;font-size:18px}
-.help-note-close:hover{background:#f1f2f4}
-.help-note-content{font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
-.help-note-time{font-size:10px;color:#9aa0aa;margin-top:8px}
-@media(max-width:720px){header{padding:0 17px}.brand span{display:none}nav{margin-right:0}nav a{font-size:12px;padding:7px 8px}.container{padding:28px 15px 50px}.hero{display:block}.create{margin-top:20px;width:100%}.grid{grid-template-columns:1fr}#helpNotes{left:14px;right:14px;width:auto}}
+
+header{
+  height:68px;
+  background:rgba(255,255,255,.92);
+  backdrop-filter:blur(12px);
+  border-bottom:1px solid var(--border);
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:0 32px;
+  position:sticky;
+  top:0;
+  z-index:20
+}
+
+.brand{
+  display:flex;
+  align-items:center;
+  gap:11px;
+  font-weight:700;
+  font-size:16px
+}
+
+.logo{
+  width:30px;
+  height:30px;
+  border-radius:9px;
+  background:#17191c;
+  color:white;
+  display:grid;
+  place-items:center;
+  font-size:15px
+}
+
+nav{
+  display:flex;
+  align-items:center;
+  gap:4px;
+  margin-left:auto;
+  margin-right:18px
+}
+
+nav a{
+  padding:8px 11px;
+  border-radius:8px;
+  color:var(--muted);
+  text-decoration:none;
+  font-weight:500
+}
+
+nav a:hover,
+nav a.active{
+  background:#f0f1f4;
+  color:var(--text)
+}
+
+.container{
+  max-width:1160px;
+  margin:0 auto;
+  padding:42px 24px 70px
+}
+
+.hero{
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-end;
+  gap:24px;
+  margin-bottom:28px
+}
+
+.eyebrow{
+  font-size:12px;
+  font-weight:700;
+  color:var(--accent);
+  text-transform:uppercase;
+  letter-spacing:.08em;
+  margin-bottom:8px
+}
+
+h1{
+  font-size:30px;
+  letter-spacing:-.035em;
+  margin:0 0 7px
+}
+
+.subtitle{
+  margin:0;
+  color:var(--muted);
+  font-size:14px
+}
+
+/* CREATE */
+
+.create{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  padding:6px;
+  display:flex;
+  align-items:center;
+  box-shadow:var(--shadow);
+  width:min(900px,100%);
+  gap:2px
+}
+
+.create input{
+  border:0;
+  outline:0;
+  flex:1;
+  padding:12px 13px;
+  background:transparent;
+  color:var(--text);
+  min-width:180px
+}
+
+.create input::placeholder{
+  color:#9aa0aa
+}
+
+.create select{
+  border:0;
+  outline:0;
+  background:transparent;
+  padding:11px 10px;
+  color:var(--text);
+  font-weight:500;
+  cursor:pointer;
+  border-radius:9px
+}
+
+.create select:hover{
+  background:#f5f5f7
+}
+
+.profile-select{
+  min-width:125px
+}
+
+.cpu-select{
+  min-width:92px
+}
+
+.memory-select{
+  min-width:92px
+}
+
+.primary{
+  background:var(--accent);
+  color:#fff;
+  border-radius:11px;
+  padding:11px 16px;
+  font-weight:600;
+  transition:.16s;
+  white-space:nowrap
+}
+
+.primary:hover{
+  background:var(--accent-hover);
+  transform:translateY(-1px)
+}
+
+/* SECTIONS */
+
+.section-head{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  margin:0 0 13px
+}
+
+.section-title{
+  font-size:13px;
+  font-weight:700
+}
+
+.count{
+  font-size:12px;
+  color:var(--muted)
+}
+
+.grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(330px,1fr));
+  gap:15px
+}
+
+/* CARD */
+
+.card{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  padding:19px;
+  box-shadow:0 1px 2px rgba(16,24,40,.02);
+  transition:.18s
+}
+
+.card:hover{
+  box-shadow:var(--shadow);
+  transform:translateY(-2px)
+}
+
+.card-top{
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-start;
+  margin-bottom:18px;
+  gap:12px
+}
+
+.name{
+  font-weight:700;
+  font-size:16px;
+  letter-spacing:-.01em;
+  overflow:hidden;
+  text-overflow:ellipsis
+}
+
+.card-meta{
+  display:flex;
+  align-items:center;
+  gap:7px;
+  flex-wrap:wrap;
+  justify-content:flex-end
+}
+
+.profile{
+  display:inline-flex;
+  align-items:center;
+  padding:5px 8px;
+  border-radius:999px;
+  background:#f0efff;
+  color:var(--accent);
+  font-size:11px;
+  font-weight:700;
+  text-transform:capitalize
+}
+
+.status{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:5px 8px;
+  border-radius:999px;
+  font-size:11px;
+  font-weight:700;
+  text-transform:capitalize
+}
+
+.status.running{
+  color:var(--green);
+  background:var(--green-bg)
+}
+
+.status.stopped{
+  color:var(--muted);
+  background:#f1f2f4
+}
+
+.dot{
+  width:6px;
+  height:6px;
+  border-radius:50%;
+  background:currentColor
+}
+
+.info{
+  border-top:1px solid var(--border);
+  border-bottom:1px solid var(--border);
+  padding:13px 0;
+  margin-bottom:15px;
+  display:grid;
+  grid-template-columns:58px 1fr;
+  gap:9px 12px
+}
+
+.label{
+  color:var(--muted);
+  font-size:12px
+}
+
+.value{
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:12px;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis
+}
+
+.actions{
+  display:flex;
+  gap:7px
+}
+
+.action{
+  padding:9px 12px;
+  border-radius:9px;
+  background:#f2f3f5;
+  color:#24272c;
+  font-weight:600
+}
+
+.action:hover{
+  background:#e9eaed
+}
+
+.open{
+  flex:1;
+  background:#17191c;
+  color:#fff
+}
+
+.open:hover{
+  background:#000
+}
+
+.danger{
+  color:var(--red);
+  background:var(--red-bg)
+}
+
+/* EMPTY */
+
+.empty{
+  background:var(--surface);
+  border:1px dashed #d8dbe1;
+  border-radius:var(--radius);
+  padding:70px 20px;
+  text-align:center
+}
+
+.empty-icon{
+  width:44px;
+  height:44px;
+  margin:0 auto 15px;
+  border-radius:13px;
+  background:#f0efff;
+  color:var(--accent);
+  display:grid;
+  place-items:center;
+  font-size:20px
+}
+
+.empty h2{
+  margin:0 0 6px;
+  font-size:17px
+}
+
+.empty p{
+  margin:0;
+  color:var(--muted)
+}
+
+/* LOADING */
+
+.loading:after{
+  content:"";
+  position:fixed;
+  inset:0;
+  background:rgba(255,255,255,.35);
+  z-index:100
+}
+
+/* HELP NOTES */
+
+#helpNotes{
+  position:fixed;
+  right:22px;
+  bottom:22px;
+  width:350px;
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+  z-index:50;
+  pointer-events:none
+}
+
+.help-note{
+  pointer-events:auto;
+  background:#fff;
+  border:1px solid var(--border);
+  border-left:3px solid var(--accent);
+  border-radius:13px;
+  padding:14px 15px;
+  box-shadow:0 12px 35px rgba(16,24,40,.13);
+  animation:in .2s ease-out
+}
+
+@keyframes in{
+  from{opacity:0;transform:translateY(8px)}
+  to{opacity:1;transform:none}
+}
+
+.help-note-header{
+  display:flex;
+  justify-content:space-between;
+  gap:10px;
+  margin-bottom:8px
+}
+
+.help-note-title{
+  font-weight:700;
+  font-size:12px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap
+}
+
+.help-note-close{
+  background:transparent;
+  color:#858a93;
+  width:24px;
+  height:24px;
+  border-radius:7px;
+  font-size:18px
+}
+
+.help-note-close:hover{
+  background:#f1f2f4
+}
+
+.help-note-content{
+  font-size:13px;
+  line-height:1.5;
+  white-space:pre-wrap;
+  word-break:break-word
+}
+
+.help-note-time{
+  font-size:10px;
+  color:#9aa0aa;
+  margin-top:8px
+}
+
+/* MOBILE */
+
+@media(max-width:900px){
+  .create{
+    flex-wrap:wrap
+  }
+
+  .create input{
+    min-width:100%;
+    flex-basis:100%
+  }
+
+  .create select{
+    flex:1
+  }
+
+  .primary{
+    flex:1
+  }
+}
+
+@media(max-width:720px){
+  header{
+    padding:0 17px
+  }
+
+  .brand span{
+    display:none
+  }
+
+  nav{
+    margin-right:0
+  }
+
+  nav a{
+    font-size:12px;
+    padding:7px 8px
+  }
+
+  .container{
+    padding:28px 15px 50px
+  }
+
+  .hero{
+    display:block
+  }
+
+  .create{
+    margin-top:20px;
+    width:100%
+  }
+
+  .grid{
+    grid-template-columns:1fr
+  }
+
+  .card-top{
+    display:block
+  }
+
+  .card-meta{
+    justify-content:flex-start;
+    margin-top:10px
+  }
+
+  #helpNotes{
+    left:14px;
+    right:14px;
+    width:auto
+  }
+}
 </style>
+
 </head>
+
 <body>
+
 <header>
-  <div class="brand"><div class="logo">✿</div><span>Flowera Workspaces</span></div>
+  <div class="brand">
+    <div class="logo">✿</div>
+    <span>Flowera Workspaces</span>
+  </div>
+
   <nav>
     <a class="active" href="/">Desktops</a>
     <a href="/dashboard">Help</a>
     <a href="/messages">Messages</a>
   </nav>
 </header>
+
 <main class="container">
+
   <div class="hero">
-    <div><div class="eyebrow">Workspace</div><h1>Your Flowera desktops</h1><p class="subtitle">Create, launch and manage your Flowera environments.</p></div>
-    <div class="create">
-      <input id="desktopName" placeholder="Name a new desktop…" autocomplete="off"
-            onkeydown="if(event.key==='Enter')createDesktop()">
 
-      <select id="desktopCPUs" style="border:0;outline:0;background:transparent;padding:0 10px;color:var(--text);font-weight:500;">
-        <option value="1">1 CPU</option>
-        <option value="2" selected>2 CPUs</option>
-        <option value="4">4 CPUs</option>
-        <option value="8">8 CPUs</option>
-      </select>
 
-      <select id="desktopMemory" style="border:0;outline:0;background:transparent;padding:0 10px;color:var(--text);font-weight:500;">
-        <option value="2048">2 GB</option>
-        <option value="4096" selected>4 GB</option>
-        <option value="8192">8 GB</option>
-        <option value="16384">16 GB</option>
-      </select>
+<div>
+  <div class="eyebrow">Workspace</div>
+  <h1>Your Flowera desktops</h1>
+  <p class="subtitle">
+    Create, launch and manage your Flowera environments.
+  </p>
+</div>
 
-      <button class="primary" onclick="createDesktop()">Create desktop</button>
+<div class="create">
+
+  <input
+    id="desktopName"
+    placeholder="Name a new desktop…"
+    autocomplete="off"
+    onkeydown="if(event.key==='Enter')createDesktop()"
+  >
+
+  <!-- PROFILE -->
+
+  <select id="desktopProfile" class="profile-select">
+    <option value="basic" selected>Basic</option>
+    <option value="developer">Developer</option>
+    <option value="ai">AI Developer</option>
+  </select>
+
+  <!-- CPU -->
+
+  <select id="desktopCPUs" class="cpu-select">
+    <option value="1" selected>1 CPU</option>
+    <option value="2">2 CPUs</option>
+    <option value="4">4 CPUs</option>
+    <option value="8">8 CPUs</option>
+  </select>
+
+  <!-- MEMORY -->
+
+  <select id="desktopMemory" class="memory-select">
+    <option value="2048" selected>2 GB</option>
+    <option value="4096">4 GB</option>
+    <option value="8192">8 GB</option>
+    <option value="16384">16 GB</option>
+  </select>
+
+  <button class="primary" onclick="createDesktop()">
+    Create desktop
+  </button>
+
+</div>
+
+
+  </div>
+
+  <div class="section-head">
+    <div class="section-title">All desktops</div>
+    <div class="count">
+      {{if .Desktops}}
+        {{len .Desktops}} active environments
+      {{else}}
+        No environments
+      {{end}}
     </div>
   </div>
-  <div class="section-head"><div class="section-title">All desktops</div><div class="count">{{if .Desktops}}{{len .Desktops}} active environments{{else}}No environments{{end}}</div></div>
+
   <div id="desktopGrid" class="grid">
-  {{if .Desktops}}{{range .Desktops}}
-    <article class="card">
-      <div class="card-top"><div class="name">{{.Name}}</div><div class="status {{.Status}}"><span class="dot"></span>{{.Status}}</div></div>
-      <div class="info">
-        <div class="label">URL</div><div class="value" title="{{.URL}}">{{.URL}}</div>
-        <div class="label">Volume</div><div class="value" title="{{.Volume}}">{{.Volume}}</div>
+
+{{if .Desktops}}
+
+
+{{range .Desktops}}
+
+<article class="card">
+
+  <div class="card-top">
+
+    <div class="name">
+      {{.Name}}
+    </div>
+
+    <div class="card-meta">
+
+      {{if .Profile}}
+      <div class="profile">
+        {{if eq .Profile "ai"}}
+          AI Developer
+        {{else if eq .Profile "developer"}}
+          Developer
+        {{else}}
+          Basic
+        {{end}}
       </div>
-      <div class="actions">
-      {{if eq .Status "running"}}
-        <button class="action open" onclick="openDesktop('{{.URL}}')">Open desktop ↗</button>
-        <button class="action" onclick="restartDesktop('{{.ID}}')">Restart</button>
-        <button class="action" onclick="stopDesktop('{{.ID}}')">Stop</button>
-      {{else}}
-        <button class="action open" onclick="startDesktop('{{.ID}}')">Start desktop</button>
       {{end}}
-        <button class="action danger" onclick="deleteDesktop('{{.ID}}')">Delete</button>
+
+      <div class="status {{.Status}}">
+        <span class="dot"></span>
+        {{.Status}}
       </div>
-    </article>
-  {{end}}{{else}}
-    <div class="empty"><div class="empty-icon">+</div><h2>No desktops yet</h2><p>Create your first Flowera desktop above to get started.</p></div>
-  {{end}}
+
+    </div>
+
   </div>
+
+  <div class="info">
+    <div class="label">Profile</div>
+    <div class="value">
+      {{if eq .Profile "ai"}}
+        AI Developer
+      {{else if eq .Profile "developer"}}
+        Developer
+      {{else}}
+        Basic
+      {{end}}
+    </div>
+
+    <div class="label">CPU</div>
+    <div class="value">
+      {{.CPUs}} cores
+    </div>
+
+    <div class="label">Memory</div>
+    <div class="value">
+      {{.MemoryMB}} MB
+    </div>
+
+    <div class="label">URL</div>
+    <div class="value" title="{{.URL}}">
+      {{.URL}}
+    </div>
+
+  </div>
+
+  <div class="actions">
+
+    {{if eq .Status "running"}}
+
+      <button
+        class="action open"
+        onclick="openDesktop('{{.URL}}')"
+      >
+        Open desktop ↗
+      </button>
+
+      <button
+        class="action"
+        onclick="restartDesktop('{{.ID}}')"
+      >
+        Restart
+      </button>
+
+      <button
+        class="action"
+        onclick="stopDesktop('{{.ID}}')"
+      >
+        Stop
+      </button>
+
+    {{else}}
+
+      <button
+        class="action open"
+        onclick="startDesktop('{{.ID}}')"
+      >
+        Start desktop
+      </button>
+
+    {{end}}
+
+    <button
+      class="action danger"
+      onclick="deleteDesktop('{{.ID}}')"
+    >
+      Delete
+    </button>
+
+  </div>
+
+</article>
+
+{{end}}
+
+
+{{else}}
+
+
+<div class="empty">
+  <div class="empty-icon">+</div>
+  <h2>No desktops yet</h2>
+  <p>
+    Create your first Flowera desktop above to get started.
+  </p>
+</div>
+
+
+{{end}}
+
+  </div>
+
 </main>
+
 <div id="helpNotes"></div>
+
 <script>
+
 async function createDesktop(){
+
   const input = document.getElementById("desktopName");
+  const profile = document.getElementById("desktopProfile").value;
   const cpus = document.getElementById("desktopCPUs").value;
   const memoryMB = document.getElementById("desktopMemory").value;
 
   let name = input.value.trim();
-  if (!name) name = "desktop-" + Date.now();
+
+  if(!name){
+    name = "desktop-" + Date.now();
+  }
 
   document.body.classList.add("loading");
 
-  try {
+  try{
+
     const form = new URLSearchParams();
+
     form.append("name", name);
+    form.append("profile", profile);
     form.append("cpus", cpus);
     form.append("memory_mb", memoryMB);
 
     const r = await fetch("/api/desktops/create", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded"
+      method:"POST",
+      headers:{
+        "Content-Type":"application/x-www-form-urlencoded"
       },
-      body: form
+      body:form
     });
 
     const d = await r.json();
 
-    if (!r.ok) {
-      throw new Error(d.error || "Failed to create desktop");
+    if(!r.ok){
+      throw new Error(
+        d.error || "Failed to create desktop"
+      );
     }
 
     location.reload();
-  } catch(e) {
+
+  }catch(e){
+
     document.body.classList.remove("loading");
+
     alert(e.message);
+
   }
+
 }
-async function startDesktop(id){await action("/api/desktops/start",id)}
-async function stopDesktop(id){await action("/api/desktops/stop",id)}
-async function restartDesktop(id){await action("/api/desktops/restart",id)}
-async function deleteDesktop(id){if(!confirm("Delete this desktop and its persistent home directory?"))return;await action("/api/desktops/delete",id)}
-async function action(url,id){document.body.classList.add("loading");try{const f=new URLSearchParams();f.append("id",id);const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:f});const d=await r.json();if(!r.ok)throw new Error(d.error||"Request failed");location.reload()}catch(e){document.body.classList.remove("loading");alert(e.message)}}
-function openDesktop(url){window.open(url,"_blank")}
-async function loadHelpNotes(){try{const r=await fetch("/api/helpnotes",{cache:"no-store"});if(!r.ok)return;const n=await r.json();renderHelpNotes(Array.isArray(n)?n:[])}catch(e){console.error("Failed to load help notes:",e)}}
-function renderHelpNotes(notes){const c=document.getElementById("helpNotes");c.innerHTML="";notes.forEach(note=>{const el=document.createElement("div");el.className="help-note";const h=document.createElement("div");h.className="help-note-header";const t=document.createElement("div");t.className="help-note-title";t.textContent=note.filename||"Help request";const x=document.createElement("button");x.className="help-note-close";x.innerHTML="&times;";x.onclick=()=>closeHelpNote(note.id);h.append(t,x);el.appendChild(h);const body=document.createElement("div");body.className="help-note-content";body.textContent=note.content||"";el.appendChild(body);if(note.created_at){const tm=document.createElement("div");tm.className="help-note-time";const d=new Date(note.created_at);if(!isNaN(d.getTime()))tm.textContent=d.toLocaleString();el.appendChild(tm)}c.appendChild(el)})}
-async function closeHelpNote(id){try{const f=new URLSearchParams();f.append("id",id);const r=await fetch("/api/helpnotes/close",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:f});if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d.error||"Failed to close note")}loadHelpNotes()}catch(e){console.error(e)}}
-loadHelpNotes();setInterval(loadHelpNotes,1000);
+
+
+async function startDesktop(id){
+  await action("/api/desktops/start",id);
+}
+
+
+async function stopDesktop(id){
+  await action("/api/desktops/stop",id);
+}
+
+
+async function restartDesktop(id){
+  await action("/api/desktops/restart",id);
+}
+
+
+async function deleteDesktop(id){
+
+  if(
+    !confirm(
+      "Delete this desktop and its persistent home directory?"
+    )
+  ){
+    return;
+  }
+
+  await action(
+    "/api/desktops/delete",
+    id
+  );
+}
+
+
+async function action(url,id){
+
+  document.body.classList.add("loading");
+
+  try{
+
+    const f = new URLSearchParams();
+
+    f.append("id",id);
+
+    const r = await fetch(url,{
+      method:"POST",
+      headers:{
+        "Content-Type":
+          "application/x-www-form-urlencoded"
+      },
+      body:f
+    });
+
+    const d = await r.json();
+
+    if(!r.ok){
+      throw new Error(
+        d.error || "Request failed"
+      );
+    }
+
+    location.reload();
+
+  }catch(e){
+
+    document.body.classList.remove("loading");
+
+    alert(e.message);
+
+  }
+
+}
+
+
+function openDesktop(url){
+  window.open(url,"_blank");
+}
+
+
+async function loadHelpNotes(){
+
+  try{
+
+    const r = await fetch(
+      "/api/helpnotes",
+      {
+        cache:"no-store"
+      }
+    );
+
+    if(!r.ok){
+      return;
+    }
+
+    const n = await r.json();
+
+    renderHelpNotes(
+      Array.isArray(n) ? n : []
+    );
+
+  }catch(e){
+
+    console.error(
+      "Failed to load help notes:",
+      e
+    );
+
+  }
+
+}
+
+
+function renderHelpNotes(notes){
+
+  const c =
+    document.getElementById("helpNotes");
+
+  c.innerHTML = "";
+
+  notes.forEach(note=>{
+
+    const el =
+      document.createElement("div");
+
+    el.className = "help-note";
+
+
+    const h =
+      document.createElement("div");
+
+    h.className =
+      "help-note-header";
+
+
+    const t =
+      document.createElement("div");
+
+    t.className =
+      "help-note-title";
+
+    t.textContent =
+      note.filename || "Help request";
+
+
+    const x =
+      document.createElement("button");
+
+    x.className =
+      "help-note-close";
+
+    x.innerHTML =
+      "&times;";
+
+    x.onclick =
+      ()=>closeHelpNote(note.id);
+
+
+    h.append(t,x);
+
+    el.appendChild(h);
+
+
+    const body =
+      document.createElement("div");
+
+    body.className =
+      "help-note-content";
+
+    body.textContent =
+      note.content || "";
+
+    el.appendChild(body);
+
+
+    if(note.created_at){
+
+      const tm =
+        document.createElement("div");
+
+      tm.className =
+        "help-note-time";
+
+      const d =
+        new Date(note.created_at);
+
+      if(!isNaN(d.getTime())){
+
+        tm.textContent =
+          d.toLocaleString();
+
+      }
+
+      el.appendChild(tm);
+
+    }
+
+
+    c.appendChild(el);
+
+  });
+
+}
+
+
+async function closeHelpNote(id){
+
+  try{
+
+    const f =
+      new URLSearchParams();
+
+    f.append("id",id);
+
+    const r =
+      await fetch(
+        "/api/helpnotes/close",
+        {
+          method:"POST",
+          headers:{
+            "Content-Type":
+              "application/x-www-form-urlencoded"
+          },
+          body:f
+        }
+      );
+
+    if(!r.ok){
+
+      const d =
+        await r.json()
+          .catch(()=>({}));
+
+      throw new Error(
+        d.error ||
+        "Failed to close note"
+      );
+
+    }
+
+    loadHelpNotes();
+
+  }catch(e){
+
+    console.error(e);
+
+  }
+
+}
+
+
+loadHelpNotes();
+
+setInterval(
+  loadHelpNotes,
+  1000
+);
+
 </script>
+
 </body>
 </html>
