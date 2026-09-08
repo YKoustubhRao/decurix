@@ -609,6 +609,8 @@ func (m *Manager) listDesktops(
 		}
 
 		volumeName := ""
+		var cpus int64
+		var memoryMB int64
 
 		inspect, err := m.client.ContainerInspect(
 			ctx,
@@ -620,6 +622,16 @@ func (m *Manager) listDesktops(
 				if mount.Destination == "/home/headless" {
 					volumeName = mount.Name
 					break
+				}
+			}
+
+			if inspect.HostConfig != nil {
+				if inspect.HostConfig.NanoCPUs > 0 {
+					cpus = inspect.HostConfig.NanoCPUs / 1_000_000_000
+				}
+
+				if inspect.HostConfig.Memory > 0 {
+					memoryMB = inspect.HostConfig.Memory / (1024 * 1024)
 				}
 			}
 		}
@@ -666,6 +678,8 @@ func (m *Manager) listDesktops(
 				Status:      status,
 				URL:         url,
 				CreatedAt:   createdAt,
+				CPUs:        cpus,
+				MemoryMB:    memoryMB,
 			},
 		)
 	}
