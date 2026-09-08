@@ -28,8 +28,11 @@ import (
 
 const (
 	listenAddr    = ":8080"
-	imageName     = "flowera-desktop:latest"
 	containerPort = "6901/tcp"
+
+	desktopImageBasic     = "flowera-desktop:basic"
+	desktopImageDeveloper = "flowera-desktop:developer"
+	desktopImageAI        = "flowera-desktop:ai"
 
 
 	ollamaContainerName = "flowera-ollama"
@@ -44,6 +47,7 @@ const (
 type Desktop struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
+	Profile     string `json:"profile"`
 	ContainerID string `json:"container_id"`
 	Volume      string `json:"volume"`
 	Status      string `json:"status"`
@@ -104,7 +108,7 @@ func main() {
 	}
 
 	// Pull the desktop image if it isn't already present.
-	if err := manager.ensureImage(ctx); err != nil {
+	if err := manager.ensureImages(ctx); err != nil {
 		log.Printf("warning: could not ensure image: %v", err)
 	}
 
@@ -194,8 +198,26 @@ func createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	name := strings.TrimSpace(r.FormValue("name"))
+	profile := strings.TrimSpace(r.FormValue("profile"))
+
 	cpus := int64(2)
 	memoryMB := int64(4096)
+
+	if profile == "" {
+		profile = "basic"
+	}
+
+	switch profile {
+	case "basic", "developer", "ai":
+		// valid
+	default:
+		http.Error(
+			w,
+			"invalid profile: must be basic, developer, or ai",
+			http.StatusBadRequest,
+		)
+		return
+	}
 
 	if v := r.FormValue("cpus"); v != "" {
 		if parsed, err := strconv.ParseInt(v, 10, 64); err == nil && parsed > 0 {
@@ -216,6 +238,7 @@ func createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	desktop, err := manager.createDesktop(
 		r.Context(),
 		name,
+		profile,
 		cpus,
 		memoryMB,
 	)
@@ -323,37 +346,52 @@ func deleteDesktopHandler(w http.ResponseWriter, r *http.Request) {
 // Docker
 // ------------------------------------------------------------
 
-func (m *Manager) ensureImage(ctx context.Context) error {
-	_, _, err := m.client.ImageInspectWithRaw(ctx, imageName)
-
-	if err == nil {
-		return nil
+func (m *Manager) ensureImages(ctx context.Context) error {
+	images := []string{
+		desktopImageBasic,
+		desktopImageDeveloper,
+		desktopImageAI,
 	}
 
-	log.Printf("Pulling %s...", imageName)
+	for _, imageName := range images {
+		_, _, err := m.client.ImageInspectWithRaw(
+			ctx,
+			imageName,
+		)
 
-	reader, err := m.client.ImagePull(
-		ctx,
-		imageName,
-		image.PullOptions{},
-	)
-	if err != nil {
-		return err
-	}
-
-	defer reader.Close()
-
-	// Consume the pull output.
-	buf := make([]byte, 4096)
-
-	for {
-		_, err := reader.Read(buf)
-		if err != nil {
-			break
+		if err == nil {
+			log.Printf("Image %s already exists.", imageName)
+			continue
 		}
-	}
 
-	log.Println("Image ready.")
+		log.Printf("Pulling %s...", imageName)
+
+		reader, err := m.client.ImagePull(
+			ctx,
+			imageName,
+			image.PullOptions{},
+		)
+		if err != nil {
+			return fmt.Errorf(
+				"pull %s: %w",
+				imageName,
+				err,
+			)
+		}
+
+		buf := make([]byte, 4096)
+
+		for {
+			_, err := reader.Read(buf)
+			if err != nil {
+				break
+			}
+		}
+
+		reader.Close()
+
+		log.Printf("Image %s ready.", imageName)
+	}
 
 	return nil
 }
@@ -361,12 +399,32 @@ func (m *Manager) ensureImage(ctx context.Context) error {
 func (m *Manager) createDesktop(
 	ctx context.Context,
 	name string,
+	profile string,
 	cpus int64,
 	memoryMB int64,
 ) (*Desktop, error) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	var imageName string
+
+	switch profile {
+	case "basic":
+		imageName = desktopImageBasic
+
+	case "developer":
+		imageName = desktopImageDeveloper
+
+	case "ai":
+		imageName = desktopImageAI
+
+	default:
+		return nil, fmt.Errorf(
+			"invalid desktop profile: %s",
+			profile,
+		)
+	}
 
 	volumeName := fmt.Sprintf(
 		"desktop_%s_home",
@@ -421,6 +479,7 @@ func (m *Manager) createDesktop(
 
 		Labels: map[string]string{
 			"desktop-manager": "true",
+			"desktop-profile": profile,
 		},
 	}
 
@@ -500,6 +559,7 @@ func (m *Manager) createDesktop(
 	return &Desktop{
 		ID:          sanitizeName(name),
 		Name:        name,
+		Profile:     profile,
 		ContainerID: resp.ID,
 		Volume:      volumeName,
 		Status:      "running",
@@ -549,6 +609,8 @@ func (m *Manager) listDesktops(
 		}
 
 		volumeName := ""
+		var cpus int64
+		var memoryMB int64
 
 		inspect, err := m.client.ContainerInspect(
 			ctx,
@@ -562,6 +624,22 @@ func (m *Manager) listDesktops(
 					break
 				}
 			}
+
+			if inspect.HostConfig != nil {
+				if inspect.HostConfig.NanoCPUs > 0 {
+					cpus = inspect.HostConfig.NanoCPUs / 1_000_000_000
+				}
+
+				if inspect.HostConfig.Memory > 0 {
+					memoryMB = inspect.HostConfig.Memory / (1024 * 1024)
+				}
+			}
+		}
+
+		profile := c.Labels["desktop-profile"]
+
+		if profile == "" {
+			profile = "basic"
 		}
 
 		status := "stopped"
@@ -594,11 +672,14 @@ func (m *Manager) listDesktops(
 			Desktop{
 				ID:          id,
 				Name:        id,
+				Profile:     profile,
 				ContainerID: c.ID,
 				Volume:      volumeName,
 				Status:      status,
 				URL:         url,
 				CreatedAt:   createdAt,
+				CPUs:        cpus,
+				MemoryMB:    memoryMB,
 			},
 		)
 	}
