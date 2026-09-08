@@ -9,11 +9,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 	"sort"
+	"net/url"
+	"net/http/httputil"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
@@ -21,7 +22,6 @@ import (
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
-	"github.com/docker/go-connections/nat"
 	"github.com/joho/godotenv"
 )
 
@@ -30,10 +30,6 @@ const (
 	imageName     = "flowera-desktop:latest"
 	containerPort = "6901/tcp"
 
-	firstDesktopPort = 6080
-	maxDesktopPort   = 65000
-
-	agentPortOffset = 10000
 
 	ollamaContainerName = "flowera-ollama"
 	ollamaImage         = "ollama/ollama:latest"
@@ -49,7 +45,6 @@ type Desktop struct {
 	Name        string `json:"name"`
 	ContainerID string `json:"container_id"`
 	Volume      string `json:"volume"`
-	Port        int    `json:"port"`
 	Status      string `json:"status"`
 	URL         string `json:"url"`
 	CreatedAt   string `json:"created_at"`
@@ -124,6 +119,7 @@ func main() {
 	)
 
 	http.HandleFunc("/", dashboardHandler)
+	http.HandleFunc("/desktop/", desktopProxyHandler)
 	http.HandleFunc("/api/desktops", desktopsAPIHandler)
 	http.HandleFunc("/api/desktops/create", createDesktopHandler)
 	http.HandleFunc("/api/desktops/start", startDesktopHandler)
@@ -350,19 +346,13 @@ func (m *Manager) createDesktop(
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Find an available host port.
-	port, err := m.findFreePort(ctx)
-	if err != nil {
-		return nil, err
-	}
-
 	volumeName := fmt.Sprintf(
 		"desktop_%s_home",
 		sanitizeName(name),
 	)
 
 	// Create persistent home volume.
-	_, err = m.client.VolumeCreate(
+	_, err := m.client.VolumeCreate(
 		ctx,
 		volume.CreateOptions{
 			Name: volumeName,
@@ -400,8 +390,6 @@ func (m *Manager) createDesktop(
 		"OLLAMA_MODEL=" + ollamaModel,
 	}
 
-	hostPort := strconv.Itoa(port)
-	agentHostPort := strconv.Itoa(port + agentPortOffset)
 
 	config := &container.Config{
 		Image: imageName,
@@ -416,22 +404,6 @@ func (m *Manager) createDesktop(
 
 	hostConfig := &container.HostConfig{
 		ShmSize: 512 * 1024 * 1024,
-
-		PortBindings: nat.PortMap{
-			nat.Port(containerPort): []nat.PortBinding{
-				{
-					HostIP:   "0.0.0.0",
-					HostPort: hostPort,
-				},
-			},
-
-			nat.Port("8081/tcp"): []nat.PortBinding{
-				{
-					HostIP:   "0.0.0.0",
-					HostPort: agentHostPort,
-				},
-			},
-		},
 
 		Binds: []string{
 			volumeName + ":/home/headless",
@@ -504,12 +476,11 @@ func (m *Manager) createDesktop(
 		Name:        name,
 		ContainerID: resp.ID,
 		Volume:      volumeName,
-		Port:        port,
 		Status:      "running",
 		URL: fmt.Sprintf(
-			"http://%s:%d/vnc.html",
+			"http://%s:8080/desktop/%s/vnc.html",
 			getServerHost(),
-			port,
+			sanitizeName(name),
 		),
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}, nil
@@ -549,18 +520,6 @@ func (m *Manager) listDesktops(
 			)
 		}
 
-		port := 0
-
-		for _, p := range c.Ports {
-			if p.PrivatePort == 6901 &&
-				p.Type == "tcp" &&
-				p.PublicPort > 0 {
-
-				port = int(p.PublicPort)
-				break
-			}
-		}
-
 		volumeName := ""
 
 		inspect, err := m.client.ContainerInspect(
@@ -596,15 +555,11 @@ func (m *Manager) listDesktops(
 			).Format(time.RFC3339)
 		}
 
-		url := ""
-
-		if port > 0 {
-			url = fmt.Sprintf(
-				"http://%s:%d/vnc.html",
-				getServerHost(),
-				port,
-			)
-		}
+		url := fmt.Sprintf(
+			"http://%s:8080/desktop/%s/vnc.html",
+			getServerHost(),
+			id,
+		)
 
 		result = append(
 			result,
@@ -613,7 +568,6 @@ func (m *Manager) listDesktops(
 				Name:        id,
 				ContainerID: c.ID,
 				Volume:      volumeName,
-				Port:        port,
 				Status:      status,
 				URL:         url,
 				CreatedAt:   createdAt,
@@ -738,46 +692,7 @@ func (m *Manager) deleteDesktop(
 	return nil
 }
 
-// ------------------------------------------------------------
-// Port allocation
-// ------------------------------------------------------------
 
-func (m *Manager) findFreePort(
-	ctx context.Context,
-) (int, error) {
-
-	containers, err := m.client.ContainerList(
-		ctx,
-		container.ListOptions{
-			All: true,
-		},
-	)
-	if err != nil {
-		return 0, err
-	}
-
-	used := make(map[int]bool)
-
-	for _, c := range containers {
-		for _, p := range c.Ports {
-			if p.Type == "tcp" &&
-				p.PublicPort > 0 {
-
-				used[int(p.PublicPort)] = true
-			}
-		}
-	}
-
-	for port := firstDesktopPort; port <= maxDesktopPort; port++ {
-		if !used[port] {
-			return port, nil
-		}
-	}
-
-	return 0, fmt.Errorf(
-		"no free desktop ports",
-	)
-}
 
 // ------------------------------------------------------------
 // Helpers
@@ -1522,4 +1437,110 @@ func (m *Manager) ensureOllamaModel(ctx context.Context) error {
 	)
 
 	return nil
+}
+
+func desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
+	parts := strings.SplitN(
+		strings.TrimPrefix(r.URL.Path, "/desktop/"),
+		"/",
+		2,
+	)
+
+	if len(parts) == 0 || parts[0] == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	desktopID := sanitizeName(parts[0])
+	name := "desktop_" + desktopID
+
+	inspect, err := manager.client.ContainerInspect(
+		r.Context(),
+		name,
+	)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	if inspect.State == nil || !inspect.State.Running {
+		http.Error(
+			w,
+			"desktop is not running",
+			http.StatusServiceUnavailable,
+		)
+		return
+	}
+
+	networkInfo, ok := inspect.NetworkSettings.Networks[floweraNetwork]
+	if !ok || networkInfo == nil {
+		http.Error(
+			w,
+			"desktop is not connected to Flowera network",
+			http.StatusServiceUnavailable,
+		)
+		return
+	}
+
+	ip := networkInfo.IPAddress
+
+	if ip == "" {
+		http.Error(
+			w,
+			"desktop has no network IP",
+			http.StatusServiceUnavailable,
+		)
+		return
+	}
+
+	target := fmt.Sprintf(
+		"http://%s:%s",
+		ip,
+		strings.TrimSuffix(containerPort, "/tcp"),
+	)
+
+	proxyURL, err := url.Parse(target)
+	if err != nil {
+		http.Error(
+			w,
+			err.Error(),
+			http.StatusInternalServerError,
+		)
+		return
+	}
+
+	reverseProxy := httputil.NewSingleHostReverseProxy(proxyURL)
+
+	// Remove /desktop/<id> from the URL.
+	prefix := "/desktop/" + desktopID
+
+	r.URL.Path = strings.TrimPrefix(
+		r.URL.Path,
+		prefix,
+	)
+
+	if r.URL.Path == "" || r.URL.Path == "/" {
+		r.URL.Path = "/vnc.html"
+	}
+
+	// Preserve query parameters.
+	reverseProxy.ErrorHandler = func(
+		rw http.ResponseWriter,
+		req *http.Request,
+		err error,
+	) {
+		log.Printf(
+			"desktop proxy error for %s: %v",
+			desktopID,
+			err,
+		)
+
+		http.Error(
+			rw,
+			"desktop unavailable",
+			http.StatusBadGateway,
+		)
+	}
+
+	reverseProxy.ServeHTTP(w, r)
 }
