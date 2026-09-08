@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"strconv"
 	"sync"
 	"time"
 	"sort"
@@ -48,6 +49,9 @@ type Desktop struct {
 	Status      string `json:"status"`
 	URL         string `json:"url"`
 	CreatedAt   string `json:"created_at"`
+
+	CPUs        int64 `json:"cpus"`
+	MemoryMB    int64 `json:"memory_mb"`
 }
 
 type HelpNote struct {
@@ -190,6 +194,20 @@ func createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	name := strings.TrimSpace(r.FormValue("name"))
+	cpus := int64(2)
+	memoryMB := int64(4096)
+
+	if v := r.FormValue("cpus"); v != "" {
+		if parsed, err := strconv.ParseInt(v, 10, 64); err == nil && parsed > 0 {
+			cpus = parsed
+		}
+	}
+
+	if v := r.FormValue("memory_mb"); v != "" {
+		if parsed, err := strconv.ParseInt(v, 10, 64); err == nil && parsed > 0 {
+			memoryMB = parsed
+		}
+	}
 
 	if name == "" {
 		name = fmt.Sprintf("desktop-%d", time.Now().Unix())
@@ -198,6 +216,8 @@ func createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	desktop, err := manager.createDesktop(
 		r.Context(),
 		name,
+		cpus,
+		memoryMB,
 	)
 	if err != nil {
 		jsonError(w, err)
@@ -341,6 +361,8 @@ func (m *Manager) ensureImage(ctx context.Context) error {
 func (m *Manager) createDesktop(
 	ctx context.Context,
 	name string,
+	cpus int64,
+	memoryMB int64,
 ) (*Desktop, error) {
 
 	m.mu.Lock()
@@ -405,6 +427,10 @@ func (m *Manager) createDesktop(
 	hostConfig := &container.HostConfig{
 		ShmSize: 512 * 1024 * 1024,
 
+		Resources: container.Resources{
+			NanoCPUs: cpus * 1_000_000_000,
+			Memory:   memoryMB * 1024 * 1024,
+		},
 		Binds: []string{
 			volumeName + ":/home/headless",
 		},
@@ -477,6 +503,8 @@ func (m *Manager) createDesktop(
 		ContainerID: resp.ID,
 		Volume:      volumeName,
 		Status:      "running",
+		CPUs:        cpus,
+		MemoryMB:    memoryMB,
 		URL: fmt.Sprintf(
 			"http://%s:8080/desktop/%s/vnc.html",
 			getServerHost(),
