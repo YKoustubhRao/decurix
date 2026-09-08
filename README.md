@@ -11,3 +11,4 @@
 5. Documentation reader and internal searchable index over the document corpus
 6. Make the UI much better
 7. Have a desktop app
+8. Update this README.md as well
