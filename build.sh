@@ -10,7 +10,6 @@ echo ""
 echo "=== Building Basic desktop image ==="
 
 docker build \
-    --no-cache \
     -f DesktopDockerfile.basic \
     -t flowera-desktop:basic \
     .
@@ -19,7 +18,6 @@ echo ""
 echo "=== Building Developer desktop image ==="
 
 docker build \
-    --no-cache \
     -f DesktopDockerfile.developer \
     -t flowera-desktop:developer \
     .
@@ -28,7 +26,6 @@ echo ""
 echo "=== Building AI Developer desktop image ==="
 
 docker build \
-    --no-cache \
     -f DesktopDockerfile.ai \
     -t flowera-desktop:ai \
     .
@@ -67,18 +64,23 @@ docker compose up --build -d
 echo ""
 echo "=== Waiting for dashboard ==="
 
-sleep 3
+echo "=== Waiting for dashboard ==="
 
-echo ""
-echo "=== Checking Flowera dashboard ==="
+for i in {1..60}; do
+    if curl -fsS http://127.0.0.1:8080/ >/dev/null 2>&1; then
+        echo "Flowera dashboard is running."
+        break
+    fi
 
-if ! curl -fsS http://127.0.0.1:8080/ >/dev/null; then
+    echo "Waiting for Flowera... ($i/60)"
+    sleep 2
+done
+
+if ! curl -fsS http://127.0.0.1:8080/ >/dev/null 2>&1; then
     echo "ERROR: Flowera dashboard is not responding on port 8080."
     docker compose logs --tail=100
     exit 1
 fi
-
-echo "Flowera dashboard is running."
 
 echo ""
 echo "========================================"

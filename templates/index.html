@@ -575,16 +575,16 @@ h1{
   <!-- PROFILE -->
 
   <select id="desktopProfile" class="profile-select">
-    <option value="basic">Basic</option>
-    <option value="developer" selected>Developer</option>
+    <option value="basic" selected>Basic</option>
+    <option value="developer">Developer</option>
     <option value="ai">AI Developer</option>
   </select>
 
   <!-- CPU -->
 
   <select id="desktopCPUs" class="cpu-select">
-    <option value="1">1 CPU</option>
-    <option value="2" selected>2 CPUs</option>
+    <option value="1" selected>1 CPU</option>
+    <option value="2">2 CPUs</option>
     <option value="4">4 CPUs</option>
     <option value="8">8 CPUs</option>
   </select>
@@ -592,8 +592,8 @@ h1{
   <!-- MEMORY -->
 
   <select id="desktopMemory" class="memory-select">
-    <option value="2048">2 GB</option>
-    <option value="4096" selected>4 GB</option>
+    <option value="2048" selected>2 GB</option>
+    <option value="4096">4 GB</option>
     <option value="8192">8 GB</option>
     <option value="16384">16 GB</option>
   </select>
@@ -657,15 +657,30 @@ h1{
   </div>
 
   <div class="info">
+    <div class="label">Profile</div>
+    <div class="value">
+      {{if eq .Profile "ai"}}
+        AI Developer
+      {{else if eq .Profile "developer"}}
+        Developer
+      {{else}}
+        Basic
+      {{end}}
+    </div>
+
+    <div class="label">CPU</div>
+    <div class="value">
+      {{.CPUs}} cores
+    </div>
+
+    <div class="label">Memory</div>
+    <div class="value">
+      {{.MemoryMB}} MB
+    </div>
 
     <div class="label">URL</div>
     <div class="value" title="{{.URL}}">
       {{.URL}}
-    </div>
-
-    <div class="label">Volume</div>
-    <div class="value" title="{{.Volume}}">
-      {{.Volume}}
     </div>
 
   </div>
