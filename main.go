@@ -1,22 +1,22 @@
 package main
 
 import (
-	"regexp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"html/template"
 	"log"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
+	"regexp"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
-	"sort"
-	"net/url"
-	"net/http/httputil"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
@@ -34,7 +34,6 @@ const (
 	desktopImageBasic     = "flowera-desktop:basic"
 	desktopImageDeveloper = "flowera-desktop:developer"
 	desktopImageAI        = "flowera-desktop:ai"
-
 
 	ollamaContainerName = "flowera-ollama"
 	ollamaImage         = "ollama/ollama:latest"
@@ -56,33 +55,46 @@ type Desktop struct {
 	URL         string `json:"url"`
 	CreatedAt   string `json:"created_at"`
 
-	CPUs        int64 `json:"cpus"`
-	MemoryMB    int64 `json:"memory_mb"`
+	CPUs     int64 `json:"cpus"`
+	MemoryMB int64 `json:"memory_mb"`
 }
 
 // HelpNote is a support note submitted from inside a running desktop, tied to a specific desktop and VM.
 type HelpNote struct {
-	ID          string    `json:"id"`
-	DesktopID   string    `json:"desktop_id"`
-	VMName      string    `json:"vm_name"`
-	Filename    string    `json:"filename"`
-	Content     string    `json:"content"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID        string    `json:"id"`
+	DesktopID string    `json:"desktop_id"`
+	VMName    string    `json:"vm_name"`
+	Filename  string    `json:"filename"`
+	Content   string    `json:"content"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
-// Manager owns the Docker client and the in-memory set of help notes, guarded by a mutex for concurrent access.
+// WorkerMemoryEntry stores a reusable workflow or decision learned while a desktop worker was operating.
+type WorkerMemoryEntry struct {
+	ID        string    `json:"id"`
+	DesktopID string    `json:"desktop_id"`
+	Title     string    `json:"title"`
+	Summary   string    `json:"summary"`
+	Category  string    `json:"category"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// Manager owns the Docker client and the in-memory set of help notes and worker memories, guarded by a mutex for concurrent access.
 type Manager struct {
 	client *client.Client
 
 	mu sync.Mutex
 
-	helpNotes map[string]HelpNote
+	helpNotes    map[string]HelpNote
+	workerMemory map[string][]WorkerMemoryEntry
 }
 
-// PageData is the template data passed to the dashboard page: the current desktops and the request host.
+// PageData is the template data passed to the dashboard page: the current desktops, the worker memory, and the request host.
 type PageData struct {
-	Desktops []Desktop
-	Host     string
+	Desktops        []Desktop
+	WorkerMemory    []WorkerMemoryEntry
+	MemoryByDesktop map[string][]WorkerMemoryEntry
+	Host            string
 }
 
 var (
@@ -92,73 +104,75 @@ var (
 
 // main loads configuration, sets up the Docker client, ensures required images/networks exist, registers HTTP routes, and starts the server.
 func main() {
-    if err := godotenv.Load(); err != nil {
-        log.Println("No .env file found; using environment variables")
-    }
+	if err := godotenv.Load(); err != nil {
+		log.Println("No .env file found; using environment variables")
+	}
 
-    ctx := context.Background()
+	ctx := context.Background()
 
-    cli, err := client.NewClientWithOpts(
-        client.FromEnv,
-        client.WithAPIVersionNegotiation(),
-    )
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer cli.Close()
+	cli, err := client.NewClientWithOpts(
+		client.FromEnv,
+		client.WithAPIVersionNegotiation(),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cli.Close()
 
-    manager = &Manager{
-        client:    cli,
-        helpNotes: make(map[string]HelpNote),
-    }
+	manager = &Manager{
+		client:       cli,
+		helpNotes:    make(map[string]HelpNote),
+		workerMemory: make(map[string][]WorkerMemoryEntry),
+	}
 
-    // Desktop images should already exist because build.sh builds them.
-    // Keep this non-blocking as a safety check.
-    if err := manager.ensureImages(ctx); err != nil {
-        log.Printf("warning: could not ensure desktop images: %v", err)
-    }
+	// Desktop images should already exist because build.sh builds them.
+	// Keep this non-blocking as a safety check.
+	if err := manager.ensureImages(ctx); err != nil {
+		log.Printf("warning: could not ensure desktop images: %v", err)
+	}
 
-    if err := manager.ensureFloweraNetwork(ctx); err != nil {
-        log.Fatal(err)
-    }
+	if err := manager.ensureFloweraNetwork(ctx); err != nil {
+		log.Fatal(err)
+	}
 
-    templatePath := filepath.Join("templates", "index.html")
+	templatePath := filepath.Join("templates", "index.html")
 
-    tmpl = template.Must(
-        template.ParseFiles(templatePath),
-    )
+	tmpl = template.Must(
+		template.ParseFiles(templatePath),
+	)
 
-    http.HandleFunc("/", dashboardHandler)
-    http.HandleFunc("/desktop/", desktopProxyHandler)
-    http.HandleFunc("/api/desktops", desktopsAPIHandler)
-    http.HandleFunc("/api/desktops/create", createDesktopHandler)
-    http.HandleFunc("/api/desktops/start", startDesktopHandler)
-    http.HandleFunc("/api/desktops/stop", stopDesktopHandler)
-    http.HandleFunc("/api/desktops/restart", restartDesktopHandler)
-    http.HandleFunc("/api/desktops/delete", deleteDesktopHandler)
-    http.HandleFunc("/messages", messagesDashboardHandler)
-    http.HandleFunc("/api/desktops/send", sendMessageHandler)
-    http.HandleFunc("/api/helptext", helpTextHandler)
-    http.HandleFunc("/api/helpnotes", helpNotesHandler)
-    http.HandleFunc("/api/helpnotes/close", closeHelpNoteHandler)
-    http.HandleFunc("/dashboard", dashboardPostsHandler)
+	http.HandleFunc("/", dashboardHandler)
+	http.HandleFunc("/desktop/", desktopProxyHandler)
+	http.HandleFunc("/api/desktops", desktopsAPIHandler)
+	http.HandleFunc("/api/desktops/create", createDesktopHandler)
+	http.HandleFunc("/api/desktops/start", startDesktopHandler)
+	http.HandleFunc("/api/desktops/stop", stopDesktopHandler)
+	http.HandleFunc("/api/desktops/restart", restartDesktopHandler)
+	http.HandleFunc("/api/desktops/delete", deleteDesktopHandler)
+	http.HandleFunc("/messages", messagesDashboardHandler)
+	http.HandleFunc("/api/desktops/send", sendMessageHandler)
+	http.HandleFunc("/api/desktops/memory", desktopMemoryHandler)
+	http.HandleFunc("/api/helptext", helpTextHandler)
+	http.HandleFunc("/api/helpnotes", helpNotesHandler)
+	http.HandleFunc("/api/helpnotes/close", closeHelpNoteHandler)
+	http.HandleFunc("/dashboard", dashboardPostsHandler)
 
-    // IMPORTANT:
-    // Ollama initialization must not block the HTTP server.
-    go func() {
-        if err := manager.ensureOllama(context.Background()); err != nil {
-            log.Printf("warning: Ollama initialization failed: %v", err)
-            return
-        }
+	// IMPORTANT:
+	// Ollama initialization must not block the HTTP server.
+	go func() {
+		if err := manager.ensureOllama(context.Background()); err != nil {
+			log.Printf("warning: Ollama initialization failed: %v", err)
+			return
+		}
 
-        log.Println("Ollama ready.")
-    }()
+		log.Println("Ollama ready.")
+	}()
 
-    log.Printf("Desktop manager listening on %s", listenAddr)
+	log.Printf("Desktop manager listening on %s", listenAddr)
 
-    if err := http.ListenAndServe(listenAddr, nil); err != nil {
-        log.Fatal(err)
-    }
+	if err := http.ListenAndServe(listenAddr, nil); err != nil {
+		log.Fatal(err)
+	}
 }
 
 // ------------------------------------------------------------
@@ -179,10 +193,17 @@ func dashboardHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	host := getHost(r)
+	memories := manager.listMemories("")
+	memoryByDesktop := map[string][]WorkerMemoryEntry{}
+	for _, memory := range memories {
+		memoryByDesktop[memory.DesktopID] = append(memoryByDesktop[memory.DesktopID], memory)
+	}
 
 	data := PageData{
-		Desktops: desktops,
-		Host:     host,
+		Desktops:        desktops,
+		WorkerMemory:    memories,
+		MemoryByDesktop: memoryByDesktop,
+		Host:            host,
 	}
 
 	if err := tmpl.ExecuteTemplate(w, "index.html", data); err != nil {
@@ -599,8 +620,8 @@ func buildDesktopEnv(name string) []string {
 // buildContainerConfigs builds the Docker container, host, and network configuration for a desktop from its resolved image, resources, and profile.
 func buildContainerConfigs(imageName, containerName, profile string, cpus, memoryMB int64, env []string, volumeName string) (*container.Config, *container.HostConfig, *network.NetworkingConfig) {
 	config := &container.Config{
-		Image: imageName,
-		Env:   env,
+		Image:    imageName,
+		Env:      env,
 		Hostname: containerName,
 		Labels: map[string]string{
 			"desktop-manager": "true",
@@ -872,8 +893,6 @@ func (m *Manager) deleteDesktop(
 	return nil
 }
 
-
-
 // ------------------------------------------------------------
 // Helpers
 // ------------------------------------------------------------
@@ -963,74 +982,74 @@ func jsonError(w http.ResponseWriter, err error) {
 
 // messagesDashboardHandler renders the messages dashboard page for sending messages to desktops.
 func messagesDashboardHandler(w http.ResponseWriter, r *http.Request) {
-    if r.URL.Path != "/messages" {
-        http.NotFound(w, r)
-        return
-    }
+	if r.URL.Path != "/messages" {
+		http.NotFound(w, r)
+		return
+	}
 
-    desktops, err := manager.listDesktops(r.Context())
-    if err != nil {
-        http.Error(w, err.Error(), http.StatusInternalServerError)
-        return
-    }
+	desktops, err := manager.listDesktops(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
-    data := PageData{
-        Desktops: desktops,
-        Host:     getHost(r),
-    }
+	data := PageData{
+		Desktops: desktops,
+		Host:     getHost(r),
+	}
 
-    messageTmpl := template.Must(
-        template.ParseFiles(
-            filepath.Join("templates", "messages.html"),
-        ),
-    )
+	messageTmpl := template.Must(
+		template.ParseFiles(
+			filepath.Join("templates", "messages.html"),
+		),
+	)
 
-    if err := messageTmpl.ExecuteTemplate(
-        w,
-        "messages.html",
-        data,
-    ); err != nil {
-        http.Error(w, err.Error(), http.StatusInternalServerError)
-    }
+	if err := messageTmpl.ExecuteTemplate(
+		w,
+		"messages.html",
+		data,
+	); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
 
 // sendMessageHandler validates and forwards a message-send request to a specific desktop.
 func sendMessageHandler(w http.ResponseWriter, r *http.Request) {
-    if r.Method != http.MethodPost {
-        http.Error(w, "POST required", http.StatusMethodNotAllowed)
-        return
-    }
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
 
-    desktopID := strings.TrimSpace(r.FormValue("id"))
-    content := r.FormValue("content")
+	desktopID := strings.TrimSpace(r.FormValue("id"))
+	content := r.FormValue("content")
 
-    if desktopID == "" {
-        http.Error(w, "missing desktop id", http.StatusBadRequest)
-        return
-    }
+	if desktopID == "" {
+		http.Error(w, "missing desktop id", http.StatusBadRequest)
+		return
+	}
 
-    if content == "" {
-        http.Error(w, "empty message", http.StatusBadRequest)
-        return
-    }
+	if content == "" {
+		http.Error(w, "empty message", http.StatusBadRequest)
+		return
+	}
 
-    if len(content) > 8192 {
-        http.Error(w, "message too long", http.StatusBadRequest)
-        return
-    }
+	if len(content) > 8192 {
+		http.Error(w, "message too long", http.StatusBadRequest)
+		return
+	}
 
-    if err := manager.sendMessage(
-        r.Context(),
-        desktopID,
-        content,
-    ); err != nil {
-        jsonError(w, err)
-        return
-    }
+	if err := manager.sendMessage(
+		r.Context(),
+		desktopID,
+		content,
+	); err != nil {
+		jsonError(w, err)
+		return
+	}
 
-    jsonResponse(w, map[string]string{
-        "status": "sent",
-    })
+	jsonResponse(w, map[string]string{
+		"status": "sent",
+	})
 }
 
 // sendMessage posts a JSON message to a running desktop's internal message endpoint.
@@ -1195,49 +1214,207 @@ func closeHelpNoteHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// dashboardPostsHandler renders the help-notes dashboard, most recent first.
-func dashboardPostsHandler(w http.ResponseWriter, r *http.Request) {
-    if r.URL.Path != "/dashboard" {
-        http.NotFound(w, r)
-        return
-    }
+// Worker memory storage helpers.
+func (m *Manager) recordMemory(desktopID, title, summary, category string) (WorkerMemoryEntry, error) {
+	if strings.TrimSpace(desktopID) == "" {
+		return WorkerMemoryEntry{}, fmt.Errorf("desktop_id is required")
+	}
 
-    manager.mu.Lock()
+	title = strings.TrimSpace(title)
+	summary = strings.TrimSpace(summary)
+	category = strings.TrimSpace(category)
 
-    notes := make([]HelpNote, 0, len(manager.helpNotes))
+	if title == "" {
+		return WorkerMemoryEntry{}, fmt.Errorf("title is required")
+	}
 
-    for _, note := range manager.helpNotes {
-        notes = append(notes, note)
-    }
+	if summary == "" {
+		return WorkerMemoryEntry{}, fmt.Errorf("summary is required")
+	}
 
-    manager.mu.Unlock()
+	if category == "" {
+		category = "workflow"
+	}
 
-    sort.Slice(notes, func(i, j int) bool {
-        return notes[i].CreatedAt.After(notes[j].CreatedAt)
-    })
+	entry := WorkerMemoryEntry{
+		ID:        fmt.Sprintf("memory-%d", time.Now().UnixNano()),
+		DesktopID: strings.TrimSpace(desktopID),
+		Title:     title,
+		Summary:   summary,
+		Category:  category,
+		CreatedAt: time.Now().UTC(),
+	}
 
-    data := struct {
-        Notes []HelpNote
-    }{
-        Notes: notes,
-    }
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-    dashboardTmpl := template.Must(
-        template.ParseFiles(
-            filepath.Join("templates", "dashboard.html"),
-        ),
-    )
+	if m.workerMemory == nil {
+		m.workerMemory = make(map[string][]WorkerMemoryEntry)
+	}
 
-    if err := dashboardTmpl.Execute(w, data); err != nil {
-        http.Error(
-            w,
-            err.Error(),
-            http.StatusInternalServerError,
-        )
-        return
-    }
+	m.workerMemory[entry.DesktopID] = append(m.workerMemory[entry.DesktopID], entry)
+
+	if m.client != nil {
+		if err := m.persistMemoryToDesktop(entry); err != nil {
+			return WorkerMemoryEntry{}, fmt.Errorf("persist memory: %w", err)
+		}
+	}
+
+	return entry, nil
 }
 
+func (m *Manager) persistMemoryToDesktop(entry WorkerMemoryEntry) error {
+	containerName := "desktop_" + sanitizeName(entry.DesktopID)
+	filename := time.Now().Format("20060102150405") + ".txt"
+	memoryDir := "/home/headless/memory"
+	delimiter := fmt.Sprintf("FLOWERA_MEMORY_%d", time.Now().UnixNano())
+
+	cmd := fmt.Sprintf(`mkdir -p %s && cat <<'%s' > %s/%s
+Title: %s
+Category: %s
+DesktopID: %s
+CreatedAt: %s
+
+%s
+%s`,
+		memoryDir,
+		delimiter,
+		memoryDir,
+		filename,
+		strings.ReplaceAll(entry.Title, "\n", " "),
+		strings.ReplaceAll(entry.Category, "\n", " "),
+		strings.ReplaceAll(entry.DesktopID, "\n", " "),
+		entry.CreatedAt.Format(time.RFC3339),
+		strings.TrimSpace(entry.Summary),
+		delimiter,
+	)
+
+	execConfig := container.ExecOptions{
+		Cmd:          []string{"bash", "-lc", cmd},
+		AttachStdout: true,
+		AttachStderr: true,
+	}
+
+	execID, err := m.client.ContainerExecCreate(context.Background(), containerName, execConfig)
+	if err != nil {
+		return fmt.Errorf("create memory write exec for %s: %w", containerName, err)
+	}
+
+	if err := m.client.ContainerExecStart(context.Background(), execID.ID, container.ExecStartOptions{}); err != nil {
+		return fmt.Errorf("start memory write exec for %s: %w", containerName, err)
+	}
+
+	inspect, err := m.client.ContainerExecInspect(context.Background(), execID.ID)
+	if err != nil {
+		return fmt.Errorf("inspect memory write exec for %s: %w", containerName, err)
+	}
+	if inspect.ExitCode != 0 {
+		return fmt.Errorf("memory write exec for %s exited %d", containerName, inspect.ExitCode)
+	}
+
+	return nil
+}
+
+func (m *Manager) listMemories(desktopID string) []WorkerMemoryEntry {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.workerMemory == nil {
+		return nil
+	}
+
+	entries := make([]WorkerMemoryEntry, 0)
+	for _, memoryEntries := range m.workerMemory {
+		entries = append(entries, memoryEntries...)
+	}
+
+	if desktopID != "" {
+		entries = nil
+		for _, memoryEntry := range m.workerMemory[desktopID] {
+			entries = append(entries, memoryEntry)
+		}
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].CreatedAt.After(entries[j].CreatedAt)
+	})
+
+	return entries
+}
+
+// desktopMemoryHandler stores a new worker memory entry or returns all remembered workflows.
+func desktopMemoryHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		jsonResponse(w, manager.listMemories(""))
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	desktopID := strings.TrimSpace(r.FormValue("desktop_id"))
+	title := strings.TrimSpace(r.FormValue("title"))
+	summary := strings.TrimSpace(r.FormValue("summary"))
+	category := strings.TrimSpace(r.FormValue("category"))
+
+	entry, err := manager.recordMemory(desktopID, title, summary, category)
+	if err != nil {
+		jsonError(w, err)
+		return
+	}
+
+	jsonResponse(w, entry)
+}
+
+// dashboardPostsHandler renders the help-notes dashboard, most recent first.
+func dashboardPostsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/dashboard" {
+		http.NotFound(w, r)
+		return
+	}
+
+	manager.mu.Lock()
+
+	notes := make([]HelpNote, 0, len(manager.helpNotes))
+
+	for _, note := range manager.helpNotes {
+		notes = append(notes, note)
+	}
+
+	manager.mu.Unlock()
+
+	sort.Slice(notes, func(i, j int) bool {
+		return notes[i].CreatedAt.After(notes[j].CreatedAt)
+	})
+
+	data := struct {
+		Notes []HelpNote
+	}{
+		Notes: notes,
+	}
+
+	dashboardTmpl := template.Must(
+		template.ParseFiles(
+			filepath.Join("templates", "dashboard.html"),
+		),
+	)
+
+	if err := dashboardTmpl.Execute(w, data); err != nil {
+		http.Error(
+			w,
+			err.Error(),
+			http.StatusInternalServerError,
+		)
+		return
+	}
+}
 
 // ensureFloweraNetwork creates the shared Docker network used by desktops if it does not already exist.
 func (m *Manager) ensureFloweraNetwork(ctx context.Context) error {
@@ -1384,7 +1561,7 @@ func (m *Manager) ensureOllama(ctx context.Context) error {
 			},
 
 			Labels: map[string]string{
-				"flowera":       "true",
+				"flowera":        "true",
 				"flowera-ollama": "true",
 			},
 		}
@@ -1464,46 +1641,46 @@ func (m *Manager) ensureOllama(ctx context.Context) error {
 
 // waitForOllama polls the Ollama API until it responds successfully, the context is cancelled, or a two-minute deadline elapses.
 func waitForOllama(ctx context.Context) error {
-    deadline := time.Now().Add(2 * time.Minute)
+	deadline := time.Now().Add(2 * time.Minute)
 
-    for time.Now().Before(deadline) {
+	for time.Now().Before(deadline) {
 
-        req, err := http.NewRequestWithContext(
-            ctx,
-            http.MethodGet,
-            "http://flowera-ollama:11434/api/tags",
-            nil,
-        )
+		req, err := http.NewRequestWithContext(
+			ctx,
+			http.MethodGet,
+			"http://flowera-ollama:11434/api/tags",
+			nil,
+		)
 
-        if err == nil {
+		if err == nil {
 
-            client := &http.Client{
-                Timeout: 3 * time.Second,
-            }
+			client := &http.Client{
+				Timeout: 3 * time.Second,
+			}
 
-            resp, err := client.Do(req)
+			resp, err := client.Do(req)
 
-            if err == nil {
+			if err == nil {
 
-                resp.Body.Close()
+				resp.Body.Close()
 
-                if resp.StatusCode >= 200 &&
-                    resp.StatusCode < 300 {
+				if resp.StatusCode >= 200 &&
+					resp.StatusCode < 300 {
 
-                    return nil
-                }
-            }
-        }
+					return nil
+				}
+			}
+		}
 
-        select {
-        case <-ctx.Done():
-            return ctx.Err()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
 
-        case <-time.After(2 * time.Second):
-        }
-    }
+		case <-time.After(2 * time.Second):
+		}
+	}
 
-    return fmt.Errorf("timeout waiting for Ollama")
+	return fmt.Errorf("timeout waiting for Ollama")
 }
 
 // ensureOllamaModel pulls the configured Ollama model into the shared Ollama container if it is not already present.

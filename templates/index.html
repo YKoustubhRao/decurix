@@ -9,29 +9,46 @@
 <style>
 *{box-sizing:border-box}
 :root{
-  --bg:#f6f7f9;--surface:#fff;--surface-2:#f9fafb;--border:#e7e9ed;
-  --text:#17191c;--muted:#6b7280;--accent:#635bff;--accent-hover:#5148e5;
-  --green:#16803c;--green-bg:#eaf8ef;--red:#b42318;--red-bg:#fff0ee;
-  --shadow:0 1px 2px rgba(16,24,40,.04),0 8px 30px rgba(16,24,40,.05);
-  --radius:16px
+  --bg:#070b15;
+  --bg-2:#0f172a;
+  --surface:rgba(15,23,42,.82);
+  --surface-strong:#111b2e;
+  --surface-soft:rgba(17,27,46,.72);
+  --border:rgba(148,163,184,.18);
+  --text:#e6edf9;
+  --muted:#9aa8bd;
+  --accent:#7c6cff;
+  --accent-2:#3dd9ff;
+  --accent-soft:rgba(124,108,255,.15);
+  --green:#31d0aa;
+  --green-bg:rgba(49,208,170,.12);
+  --red:#ff6b7d;
+  --red-bg:rgba(255,107,125,.12);
+  --shadow:0 20px 50px rgba(13,17,30,.55);
+  --radius:22px
 }
+
+html{scroll-behavior:smooth}
 
 body{
   margin:0;
-  background:var(--bg);
+  background:
+    radial-gradient(circle at top left, rgba(124,108,255,.22), transparent 28%),
+    radial-gradient(circle at top right, rgba(61,217,255,.14), transparent 26%),
+    linear-gradient(135deg, #070b15 0%, #0b1220 40%, #0f172a 100%);
   color:var(--text);
   font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif
 }
 
-button,input,select{font:inherit}
+button,input,select,textarea{font:inherit}
 button{border:0;cursor:pointer}
 button:disabled{opacity:.55;cursor:not-allowed}
 
 header{
-  height:68px;
-  background:rgba(255,255,255,.92);
-  backdrop-filter:blur(12px);
-  border-bottom:1px solid var(--border);
+  height:74px;
+  background:rgba(8,12,20,.7);
+  backdrop-filter:blur(18px);
+  border-bottom:1px solid rgba(148,163,184,.14);
   display:flex;
   align-items:center;
   justify-content:space-between;
@@ -44,48 +61,50 @@ header{
 .brand{
   display:flex;
   align-items:center;
-  gap:11px;
-  font-weight:700;
-  font-size:16px
+  gap:12px;
+  font-weight:800;
+  font-size:16px;
+  color:var(--text)
 }
 
 .logo{
-  width:30px;
-  height:30px;
-  border-radius:9px;
-  background:#17191c;
-  color:white;
+  width:32px;
+  height:32px;
+  border-radius:12px;
+  background:linear-gradient(135deg, var(--accent), var(--accent-2));
+  color:#fff;
   display:grid;
   place-items:center;
-  font-size:15px
+  font-size:15px;
+  box-shadow:0 14px 30px rgba(124,108,255,.35)
 }
 
 nav{
   display:flex;
   align-items:center;
-  gap:4px;
+  gap:8px;
   margin-left:auto;
   margin-right:18px
 }
 
 nav a{
-  padding:8px 11px;
-  border-radius:8px;
+  padding:8px 12px;
+  border-radius:10px;
   color:var(--muted);
   text-decoration:none;
-  font-weight:500
+  font-weight:600
 }
 
 nav a:hover,
 nav a.active{
-  background:#f0f1f4;
-  color:var(--text)
+  background:rgba(124,108,255,.12);
+  color:#e8e3ff
 }
 
 .container{
-  max-width:1160px;
+  max-width:1200px;
   margin:0 auto;
-  padding:42px 24px 70px
+  padding:38px 24px 70px
 }
 
 .hero{
@@ -93,112 +112,126 @@ nav a.active{
   justify-content:space-between;
   align-items:flex-end;
   gap:24px;
-  margin-bottom:28px
+  margin-bottom:30px;
+  padding:6px 0 10px
 }
 
 .eyebrow{
   font-size:12px;
-  font-weight:700;
-  color:var(--accent);
+  font-weight:800;
+  color:#b9b5ff;
   text-transform:uppercase;
-  letter-spacing:.08em;
-  margin-bottom:8px
+  letter-spacing:.12em;
+  margin-bottom:10px
 }
 
 h1{
-  font-size:30px;
-  letter-spacing:-.035em;
-  margin:0 0 7px
+  font-size:36px;
+  letter-spacing:-.04em;
+  margin:0 0 8px;
+  line-height:1.1;
+  text-shadow:0 0 24px rgba(124,108,255,.28)
 }
 
 .subtitle{
   margin:0;
   color:var(--muted);
-  font-size:14px
+  font-size:15px
 }
 
-/* CREATE */
-
 .create{
-  background:var(--surface);
-  border:1px solid var(--border);
-  border-radius:var(--radius);
-  padding:6px;
+  background:linear-gradient(165deg, rgba(17,27,46,.94), rgba(15,23,42,.9));
+  border:1px solid rgba(124,108,255,.24);
+  border-radius:20px;
+  padding:8px;
   display:flex;
   align-items:center;
   box-shadow:var(--shadow);
-  width:min(900px,100%);
-  gap:2px
+  width:min(980px,100%);
+  gap:8px
 }
 
-.create input{
-  border:0;
-  outline:0;
-  flex:1;
-  padding:12px 13px;
-  background:transparent;
+.create input,
+.create select,
+.memory-dropdown input,
+.memory-dropdown select,
+.memory-dropdown textarea,
+.mini-memory-form input,
+.mini-memory-form select,
+.mini-memory-form textarea{
+  width:100%;
+  border:1px solid rgba(148,163,184,.22);
+  border-radius:12px;
+  background:rgba(12,18,29,.9);
   color:var(--text);
-  min-width:180px
+  padding:10px 12px;
+  font:inherit;
+  transition:border-color .15s ease, box-shadow .15s ease, transform .15s ease
 }
 
-.create input::placeholder{
-  color:#9aa0aa
+.create input:focus,
+.create select:focus,
+.memory-dropdown input:focus,
+.memory-dropdown select:focus,
+.memory-dropdown textarea:focus,
+.mini-memory-form input:focus,
+.mini-memory-form select:focus,
+.mini-memory-form textarea:focus{
+  outline:none;
+  border-color:rgba(124,108,255,.8);
+  box-shadow:0 0 0 4px rgba(124,108,255,.12)
+}
+
+.create input::placeholder,
+.memory-dropdown input::placeholder,
+.mini-memory-form input::placeholder,
+.memory-dropdown textarea::placeholder,
+.mini-memory-form textarea::placeholder{
+  color:#8ea0bc
 }
 
 .create select{
-  border:0;
-  outline:0;
-  background:transparent;
-  padding:11px 10px;
+  background:rgba(12,18,29,.9);
+  padding:11px 12px;
   color:var(--text);
-  font-weight:500;
+  font-weight:600;
   cursor:pointer;
-  border-radius:9px
+  border-radius:12px
 }
 
-.create select:hover{
-  background:#f5f5f7
-}
-
-.profile-select{
-  min-width:125px
-}
-
-.cpu-select{
-  min-width:92px
-}
-
-.memory-select{
-  min-width:92px
-}
+.profile-select{min-width:125px}
+.cpu-select{min-width:92px}
+.memory-select{min-width:92px}
 
 .primary{
-  background:var(--accent);
+  background:linear-gradient(135deg, var(--accent), #9a7dff);
   color:#fff;
-  border-radius:11px;
+  border-radius:12px;
   padding:11px 16px;
-  font-weight:600;
-  transition:.16s;
-  white-space:nowrap
+  font-weight:800;
+  transition:transform .15s ease, box-shadow .15s ease;
+  white-space:nowrap;
+  box-shadow:0 14px 28px rgba(124,108,255,.28)
 }
 
 .primary:hover{
-  background:var(--accent-hover);
+  background:linear-gradient(135deg, #6a5ff4, #8e7dff);
   transform:translateY(-1px)
 }
-
-/* SECTIONS */
 
 .section-head{
   display:flex;
   justify-content:space-between;
   align-items:center;
-  margin:0 0 13px
+  margin:0 0 14px
 }
 
 .section-title{
   font-size:13px;
-  font-weight:700
+  font-weight:800;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+  color:#cdd8ee
 }
 
 .count{
@@ -209,23 +242,31 @@ h1{
 .grid{
   display:grid;
   grid-template-columns:repeat(auto-fill,minmax(330px,1fr));
-  gap:15px
+  gap:18px
 }
 
-/* CARD */
-
 .card{
-  background:var(--surface);
-  border:1px solid var(--border);
-  border-radius:var(--radius);
-  padding:19px;
-  box-shadow:0 1px 2px rgba(16,24,40,.02);
-  transition:.18s
+  background:linear-gradient(180deg, rgba(15,23,42,.92), rgba(13,20,34,.92));
+  border:1px solid rgba(148,163,184,.16);
+  border-radius:22px;
+  padding:18px 18px 16px;
+  box-shadow:var(--shadow);
+  position:relative;
+  overflow:hidden;
+  transition:transform .18s ease, border-color .18s ease
+}
+
+.card:before{
+  content:"";
+  position:absolute;
+  inset:0 0 auto 0;
+  height:2px;
+  background:linear-gradient(90deg, var(--accent), var(--accent-2), transparent)
 }
 
 .card:hover{
-  box-shadow:var(--shadow);
-  transform:translateY(-2px)
+  transform:translateY(-2px);
+  border-color:rgba(124,108,255,.32)
 }
 
 .card-top{
@@ -237,11 +278,12 @@ h1{
 }
 
 .name{
-  font-weight:700;
-  font-size:16px;
-  letter-spacing:-.01em;
+  font-weight:800;
+  font-size:17px;
+  letter-spacing:-.02em;
   overflow:hidden;
-  text-overflow:ellipsis
+  text-overflow:ellipsis;
+  color:#f1f5ff
 }
 
 .card-meta{
@@ -255,10 +297,10 @@ h1{
 .profile{
   display:inline-flex;
   align-items:center;
-  padding:5px 8px;
+  padding:5px 9px;
   border-radius:999px;
-  background:#f0efff;
-  color:var(--accent);
+  background:rgba(124,108,255,.12);
+  color:#cabdff;
   font-size:11px;
   font-weight:700;
   text-transform:capitalize
@@ -268,7 +310,7 @@ h1{
   display:inline-flex;
   align-items:center;
   gap:6px;
-  padding:5px 8px;
+  padding:5px 9px;
   border-radius:999px;
   font-size:11px;
   font-weight:700;
@@ -276,13 +318,13 @@ h1{
 }
 
 .status.running{
-  color:var(--green);
+  color:#8cf3d1;
   background:var(--green-bg)
 }
 
 .status.stopped{
-  color:var(--muted);
-  background:#f1f2f4
+  color:#d5deef;
+  background:rgba(148,163,184,.12)
 }
 
 .dot{
@@ -293,13 +335,13 @@ h1{
 }
 
 .info{
-  border-top:1px solid var(--border);
-  border-bottom:1px solid var(--border);
-  padding:13px 0;
+  border-top:1px solid rgba(148,163,184,.18);
+  border-bottom:1px solid rgba(148,163,184,.18);
+  padding:14px 0;
   margin-bottom:15px;
   display:grid;
-  grid-template-columns:58px 1fr;
-  gap:9px 12px
+  grid-template-columns:60px 1fr;
+  gap:10px 12px
 }
 
 .label{
@@ -310,60 +352,167 @@ h1{
 .value{
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
   font-size:12px;
+  color:#dfeaff;
   white-space:nowrap;
   overflow:hidden;
   text-overflow:ellipsis
 }
 
+.vm-memory{
+  margin-bottom:16px;
+  padding:12px 12px 0;
+  border:1px solid rgba(148,163,184,.14);
+  border-radius:16px;
+  background:rgba(11,17,28,.82)
+}
+
+.memory-dropdown summary{
+  list-style:none;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  cursor:pointer;
+  color:#dfeaff;
+  font-weight:700;
+  padding:2px 2px 12px
+}
+
+.memory-dropdown summary::-webkit-details-marker{display:none}
+
+.memory-count{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-width:24px;
+  height:24px;
+  border-radius:999px;
+  background:rgba(124,108,255,.16);
+  color:#d9d3ff;
+  font-size:11px;
+  font-weight:800
+}
+
+.memory-stack{
+  display:grid;
+  gap:10px;
+  margin-bottom:12px
+}
+
+.memory-item{
+  background:rgba(15,23,42,.82);
+  border:1px solid rgba(148,163,184,.12);
+  border-radius:12px;
+  padding:10px 11px
+}
+
+.memory-tag{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  font-size:10px;
+  font-weight:800;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+  color:#bfc7ff;
+  margin-bottom:7px
+}
+
+.memory-title{
+  font-weight:700;
+  color:#f4f8ff;
+  margin-bottom:5px
+}
+
+.memory-summary{
+  color:#d1d9ea;
+  line-height:1.55;
+  font-size:13px
+}
+
+.memory-empty{
+  color:var(--muted);
+  font-size:13px;
+  padding:6px 0 12px
+}
+
+.mini-memory-form{
+  display:grid;
+  gap:8px;
+  padding:0 0 10px
+}
+
+.mini-memory-form input,
+.mini-memory-form select,
+.mini-memory-form textarea{
+  font-size:13px
+}
+
+.mini-memory-form textarea{
+  min-height:62px;
+  resize:vertical
+}
+
+.mini-save{
+  justify-self:flex-end;
+  padding:8px 12px;
+  border-radius:10px;
+  background:linear-gradient(135deg, var(--accent), #8c7bff);
+  color:white;
+  font-weight:700
+}
+
 .actions{
   display:flex;
-  gap:7px
+  gap:7px;
+  flex-wrap:wrap
 }
 
 .action{
   padding:9px 12px;
-  border-radius:9px;
-  background:#f2f3f5;
-  color:#24272c;
-  font-weight:600
+  border-radius:10px;
+  background:rgba(148,163,184,.09);
+  color:#edf3ff;
+  font-weight:600;
+  transition:background .15s ease, transform .15s ease
 }
 
 .action:hover{
-  background:#e9eaed
+  background:rgba(148,163,184,.16);
+  transform:translateY(-1px)
 }
 
 .open{
   flex:1;
-  background:#17191c;
+  min-width:120px;
+  background:linear-gradient(135deg, #111827, #1f2937);
   color:#fff
 }
 
 .open:hover{
-  background:#000
+  background:linear-gradient(135deg, #0f172a, #334155)
 }
 
 .danger{
-  color:var(--red);
-  background:var(--red-bg)
+  color:#ffd7dc;
+  background:rgba(255,107,125,.12)
 }
 
-/* EMPTY */
-
 .empty{
-  background:var(--surface);
-  border:1px dashed #d8dbe1;
-  border-radius:var(--radius);
-  padding:70px 20px;
-  text-align:center
+  background:linear-gradient(180deg, rgba(15,23,42,.9), rgba(11,17,28,.9));
+  border:1px dashed rgba(148,163,184,.26);
+  border-radius:22px;
+  padding:72px 20px;
+  text-align:center;
+  box-shadow:var(--shadow)
 }
 
 .empty-icon{
-  width:44px;
-  height:44px;
-  margin:0 auto 15px;
-  border-radius:13px;
-  background:#f0efff;
-  color:var(--accent);
+  width:46px;
+  height:46px;
+  margin:0 auto 16px;
+  border-radius:14px;
+  background:rgba(124,108,255,.12);
+  color:#d3cbff;
   display:grid;
   place-items:center;
   font-size:20px
@@ -371,7 +520,8 @@ h1{
 
 .empty h2{
   margin:0 0 6px;
-  font-size:17px
+  font-size:18px;
+  color:#f5f7ff
 }
 
 .empty p{
@@ -379,17 +529,13 @@ h1{
   color:var(--muted)
 }
 
-/* LOADING */
-
 .loading:after{
   content:"";
   position:fixed;
   inset:0;
-  background:rgba(255,255,255,.35);
+  background:rgba(9,12,18,.28);
   z-index:100
 }
-
-/* HELP NOTES */
 
 #helpNotes{
   position:fixed;
@@ -405,131 +551,43 @@ h1{
 
 .help-note{
   pointer-events:auto;
-  background:#fff;
+  background:rgba(15,23,42,.92);
   border:1px solid var(--border);
   border-left:3px solid var(--accent);
-  border-radius:13px;
+  border-radius:16px;
   padding:14px 15px;
-  box-shadow:0 12px 35px rgba(16,24,40,.13);
+  box-shadow:var(--shadow);
   animation:in .2s ease-out
 }
 
-@keyframes in{
-  from{opacity:0;transform:translateY(8px)}
-  to{opacity:1;transform:none}
-}
+@keyframes in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 
-.help-note-header{
-  display:flex;
-  justify-content:space-between;
-  gap:10px;
-  margin-bottom:8px
-}
-
-.help-note-title{
-  font-weight:700;
-  font-size:12px;
-  overflow:hidden;
-  text-overflow:ellipsis;
-  white-space:nowrap
-}
-
-.help-note-close{
-  background:transparent;
-  color:#858a93;
-  width:24px;
-  height:24px;
-  border-radius:7px;
-  font-size:18px
-}
-
-.help-note-close:hover{
-  background:#f1f2f4
-}
-
-.help-note-content{
-  font-size:13px;
-  line-height:1.5;
-  white-space:pre-wrap;
-  word-break:break-word
-}
-
-.help-note-time{
-  font-size:10px;
-  color:#9aa0aa;
-  margin-top:8px
-}
-
-/* MOBILE */
+.help-note-header{display:flex;justify-content:space-between;gap:10px;margin-bottom:8px}
+.help-note-title{font-weight:700;font-size:12px;color:#edf3ff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.help-note-close{background:transparent;color:#9aa8bd;width:24px;height:24px;border-radius:7px;font-size:18px}
+.help-note-close:hover{background:rgba(148,163,184,.12)}
+.help-note-content{font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word;color:#d7e3f7}
+.help-note-time{font-size:10px;color:#91a5c8;margin-top:8px}
 
 @media(max-width:900px){
-  .create{
-    flex-wrap:wrap
-  }
-
-  .create input{
-    min-width:100%;
-    flex-basis:100%
-  }
-
-  .create select{
-    flex:1
-  }
-
-  .primary{
-    flex:1
-  }
+  .create{flex-wrap:wrap}
+  .create input{min-width:100%;flex-basis:100%}
+  .create select{flex:1}
+  .primary{flex:1}
 }
 
 @media(max-width:720px){
-  header{
-    padding:0 17px
-  }
-
-  .brand span{
-    display:none
-  }
-
-  nav{
-    margin-right:0
-  }
-
-  nav a{
-    font-size:12px;
-    padding:7px 8px
-  }
-
-  .container{
-    padding:28px 15px 50px
-  }
-
-  .hero{
-    display:block
-  }
-
-  .create{
-    margin-top:20px;
-    width:100%
-  }
-
-  .grid{
-    grid-template-columns:1fr
-  }
-
-  .card-top{
-    display:block
-  }
-
-  .card-meta{
-    justify-content:flex-start;
-    margin-top:10px
-  }
-
-  #helpNotes{
-    left:14px;
-    right:14px;
-    width:auto
-  }
+  header{padding:0 17px}
+  .brand span{display:none}
+  nav{margin-right:0}
+  nav a{font-size:12px;padding:7px 8px}
+  .container{padding:28px 15px 50px}
+  .hero{display:block}
+  .create{margin-top:20px;width:100%}
+  .grid{grid-template-columns:1fr}
+  .card-top{display:block}
+  .card-meta{justify-content:flex-start;margin-top:10px}
+  #helpNotes{left:14px;right:14px;width:auto}
 }
 </style>
 
@@ -567,7 +625,7 @@ h1{
 
   <input
     id="desktopName"
-    placeholder="Name a new desktop…"
+    placeholder="Name a new desktop"
     autocomplete="off"
     onkeydown="if(event.key==='Enter')createDesktop()"
   >
@@ -683,6 +741,42 @@ h1{
       {{.URL}}
     </div>
 
+  </div>
+
+  <div class="vm-memory">
+    <details class="memory-dropdown" {{if index $.MemoryByDesktop .ID}}open{{end}}>
+      <summary>
+        <span>Learned memory</span>
+        <span class="memory-count">{{if index $.MemoryByDesktop .ID}}{{len (index $.MemoryByDesktop .ID)}}{{else}}0{{end}}</span>
+      </summary>
+
+      <div class="memory-stack">
+        {{if index $.MemoryByDesktop .ID}}
+          {{range index $.MemoryByDesktop .ID}}
+          <div class="memory-item">
+            <div class="memory-tag">{{.Category}}</div>
+            <div class="memory-title">{{.Title}}</div>
+            <div class="memory-summary">{{.Summary}}</div>
+          </div>
+          {{end}}
+        {{else}}
+          <div class="memory-empty">No saved rules yet.</div>
+        {{end}}
+      </div>
+
+      <form class="mini-memory-form" data-desktop-id="{{.ID}}">
+        <input type="hidden" name="desktop_id" value="{{.ID}}">
+        <input type="text" name="title" placeholder="Rule or workflow" required>
+        <select name="category">
+          <option value="workflow">Workflow</option>
+          <option value="decision">Decision</option>
+          <option value="exception">Exception</option>
+          <option value="review">Review</option>
+        </select>
+        <textarea name="summary" placeholder="What should the worker remember next time?" required></textarea>
+        <button type="submit" class="mini-save">Save</button>
+      </form>
+    </details>
   </div>
 
   <div class="actions">
@@ -1064,6 +1158,31 @@ setInterval(
   loadHelpNotes,
   1000
 );
+
+  document.querySelectorAll(".mini-memory-form").forEach((form) => {
+    form.addEventListener("submit", async function (event) {
+      event.preventDefault();
+      const formData = new FormData(form);
+      const payload = new URLSearchParams(formData);
+
+      const response = await fetch("/api/desktops/memory", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        },
+        body: payload,
+      });
+
+      if (!response.ok) {
+        const body = await response.text();
+        alert(body || "Failed to save worker memory");
+        return;
+      }
+
+      form.reset();
+      window.location.reload();
+    });
+  });
 
 </script>
 
