@@ -1,6 +1,7 @@
 package main
 
 import (
+	"regexp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -233,6 +234,32 @@ func createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 
 	if name == "" {
 		name = fmt.Sprintf("desktop-%d", time.Now().Unix())
+	}
+
+	validNameRe := regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+	if !validNameRe.MatchString(name) {
+		http.Error(w, "invalid name: only alphanumeric, hyphens, underscores, and dots allowed", http.StatusBadRequest)
+		return
+	}
+
+	if cpus <= 0 {
+		http.Error(w, "cpus must be positive", http.StatusBadRequest)
+		return
+	}
+
+	if cpus > 64 {
+		http.Error(w, "cpus must not exceed 64", http.StatusBadRequest)
+		return
+	}
+
+	if memoryMB <= 0 {
+		http.Error(w, "memory_mb must be positive", http.StatusBadRequest)
+		return
+	}
+
+	if memoryMB > 65536 {
+		http.Error(w, "memory_mb must not exceed 65536", http.StatusBadRequest)
+		return
 	}
 
 	desktop, err := manager.createDesktop(
