@@ -16,9 +16,10 @@
  */
 
 const codeProject = require("./code-project");
+const fileWrite = require("./file-write");
 const general = require("./general");
 
-const SKILLS = [codeProject, general];
+const SKILLS = [codeProject, fileWrite, general];
 
 function pickSkill(subtask) {
   return SKILLS.find((s) => s.matches(subtask)) || general;

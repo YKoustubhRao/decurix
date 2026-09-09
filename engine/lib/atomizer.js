@@ -83,6 +83,41 @@ function isCodeProjectTask(taskDescription) {
   return wantsCode && wantsRepo;
 }
 
+/** A request to save/store generated content to a real file (a poem, a
+ * letter, a script, anything) has the same "don't fragment, one call
+ * needs the full picture" shape as isCodeProjectTask, for a different
+ * reason: fragmenting it into "write the content" then "save it" as two
+ * isolated judgment steps sends the save step to skills/general.js, which
+ * has no file-system access at all - it just answers in text, and the
+ * model, having nothing telling it otherwise, confidently CLAIMS the file
+ * was saved ("This has been saved to /usr/poem.txt.") when nothing on
+ * disk was ever touched. Caught live this way. Routes the whole request
+ * to skills/file-write.js as one atomic step instead - exported so that
+ * skill's own `matches()` shares this exact signal. Excludes
+ * isCodeProjectTask's territory (code+repo requests keep going to
+ * code-project.js, which has its own, more specific file-organization
+ * logic for a whole project rather than one file). */
+function isFileWriteTask(taskDescription) {
+  if (isCodeProjectTask(taskDescription)) return false;
+  const t = taskDescription.toLowerCase();
+  // A real path (/foo/bar.txt), OR a bare filename typed informally
+  // ("save it to fib.py" - no leading slash at all) - caught live: the
+  // bare-filename case fell through to skills/general.js because this
+  // originally only matched an actual slash-containing path.
+  const hasPathOrFileWord =
+    /\/[\w.\-/]+\.\w+/.test(taskDescription) ||
+    /\b[a-zA-Z_][\w-]*\.[a-zA-Z]{1,5}\b/.test(taskDescription) ||
+    /\bfiles?\b/.test(t);
+  // "it"/"this"/"that" catches "write a haiku... and save it to X" - the
+  // content-type noun list alone missed "haiku" (and would keep missing
+  // whatever noun isn't thought of next) and let the request fall through
+  // to normal fragmented planning, which is exactly the failure this
+  // whole function exists to prevent - caught live on that exact phrase.
+  const wantsSave =
+    /\b(save|store|write|put|create)\b[\s\S]*\b(file|document|note|poem|letter|essay|story|script|report|text|it|this|that)\b/.test(t);
+  return hasPathOrFileWord && wantsSave;
+}
+
 /** Plans one task into a numbered list of steps via the planner model.
  * `context` is filename -> real content, fed in verbatim so planning is
  * grounded in ground truth rather than invented specifics - the single
@@ -135,6 +170,10 @@ async function atomize(taskDescription, { depth = 0, context = {}, budget = { ca
     onLog?.(`atomizer: task looks like a code+repo project - skipping planning, one atomic step for skills/code-project.js.`);
     return [taskDescription];
   }
+  if (depth === 0 && isFileWriteTask(taskDescription)) {
+    onLog?.(`atomizer: task looks like "save this to a file" - skipping planning, one atomic step for skills/file-write.js.`);
+    return [taskDescription];
+  }
   if (depth === 0 && isStructuralTask(taskDescription)) {
     onLog?.(`atomizer: task looks structural (creates/splits/refactors code) - treating as one atomic step verbatim.`);
     return [taskDescription];
@@ -177,6 +216,7 @@ async function atomize(taskDescription, { depth = 0, context = {}, budget = { ca
  * changes behavior today. */
 function classifyStep(step) {
   if (isCodeProjectTask(step)) return "project";
+  if (isFileWriteTask(step)) return "file-write";
   const mechanicalPatterns = [
     /^git /i,
     /^gh /i,
@@ -196,4 +236,4 @@ function classifyStep(step) {
   return mechanicalPatterns.some((p) => p.test(step)) ? "mechanical" : "judgment";
 }
 
-module.exports = { isAtomic, isStructuralTask, isCodeProjectTask, looksLikeSingleDirectAnswer, planTask, atomize, classifyStep };
+module.exports = { isAtomic, isStructuralTask, isCodeProjectTask, isFileWriteTask, looksLikeSingleDirectAnswer, planTask, atomize, classifyStep };

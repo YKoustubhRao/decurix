@@ -424,6 +424,14 @@ func (m *Manager) createDesktop(
 		// no longer uses directly now that it submits tasks to the engine
 		// instead of calling Ollama itself.
 		"OLLAMA_HOST=" + engineOllamaHost,
+
+		// Where skills/code-project.js and skills/file-write.js write
+		// generated output. Explicit rather than relying on the engine's
+		// own default (a path under /opt, root-owned in this image - the
+		// non-root headless user can't create anything there): under
+		// /home/headless it's on the desktop's own persistent volume, so
+		// generated files/projects survive a container restart.
+		"WORKSPACE_DIR=/home/headless/workspace",
 	}
 
 

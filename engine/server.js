@@ -61,7 +61,15 @@ async function composeFinalAnswer(job) {
     { role: "user", content: `Original request: ${job.prompt}\n\n${parts}` },
   ];
   const result = await ollama.chat(MODELS.judgment, messages, { timeoutMs: 180000 });
-  return result.text;
+
+  // The compose prompt explicitly tells the model to paraphrase freely
+  // ("do not mention subtasks or the process"), which can lose an exact
+  // fact we already know for certain - a real file path a skill actually
+  // wrote to. Appended deterministically so it's never at the mercy of
+  // how the compose step chose to phrase things.
+  const realPaths = job.results.map((r) => r.meta?.path || r.meta?.repoDir).filter(Boolean);
+  if (realPaths.length === 0) return result.text;
+  return result.text + "\n\n" + realPaths.map((p) => `Saved to: ${p}`).join("\n");
 }
 
 async function runJob(job) {
