@@ -1,6 +1,8 @@
 services:
   desktop-manager:
-    build: .
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
 
     container_name: flowera
 

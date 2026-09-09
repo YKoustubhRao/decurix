@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
+<title>Messages · Flowera</title>
+
+{{template "theme"}}
+
+<style>
+.compose{display:grid;gap:18px;padding:20px}
+
+.dest{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:end}
+.dest .field{min-width:0}
+
+.msg-box{position:relative}
+.msg-box .textarea{min-height:260px;padding-bottom:30px;font-family:var(--sans);font-size:13.5px}
+
+.counter{
+  position:absolute;
+  right:11px;
+  bottom:9px;
+  font-family:var(--mono);
+  font-size:11px;
+  color:var(--text-3);
+  pointer-events:none
+}
+
+.compose-foot{
+  display:flex;
+  align-items:center;
+  gap:12px;
+  padding:13px 20px;
+  border-top:1px solid var(--line);
+  background:var(--surface-2);
+  border-radius:0 0 var(--r-xl) var(--r-xl)
+}
+.compose-foot .hint{flex:1}
+.compose-foot kbd{
+  font-family:var(--mono);
+  font-size:10.5px;
+  padding:1px 5px;
+  border:1px solid var(--line-2);
+  border-bottom-width:2px;
+  border-radius:4px;
+  background:var(--surface);
+  color:var(--text-2)
+}
+
+.sent{display:flex;align-items:center;gap:6px;color:var(--live);font-size:12.5px;font-weight:550}
+
+.dest-status{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  height:36px;
+  padding:0 11px;
+  border:1px solid var(--line);
+  border-radius:var(--r-md);
+  background:var(--surface-2);
+  font-size:12.5px;
+  font-weight:550;
+  color:var(--text-2);
+  white-space:nowrap;
+  text-transform:capitalize
+}
+.dest-status[data-state="running"]{color:var(--live);background:var(--live-soft);border-color:transparent}
+
+@media (max-width:720px){
+  .dest{grid-template-columns:1fr}
+  .compose-foot{flex-direction:column-reverse;align-items:stretch}
+  .compose-foot .btn{width:100%;justify-content:center}
+}
+</style>
+</head>
+
+<body data-tunnel="{{.TunnelURL}}">
+
+{{template "sprite"}}
+
+<div id="progress"></div>
+<div id="toasts"></div>
+
+{{template "topbar" "messages"}}
+
+<main class="wrap wrap-narrow">
+
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">Direct</div>
+      <h1>Send a message</h1>
+      <p class="page-sub">Drops a task file into a desktop's inbox. Its agent picks it up on the next poll.</p>
+    </div>
+  </div>
+
+{{if .Desktops}}
+  <form class="panel" id="composeForm">
+    <div class="compose">
+
+      <div class="dest">
+        <div class="field">
+          <label for="desktop">Destination</label>
+          <select class="select" id="desktop" name="id">
+            {{range .Desktops}}
+            <option value="{{.ID}}" data-state="{{.Status}}">{{.Name}}</option>
+            {{end}}
+          </select>
+        </div>
+
+        <span class="dest-status" id="destStatus"><span class="dot"></span><span id="destStatusText">—</span></span>
+      </div>
+
+      <div class="field">
+        <label for="content">Message</label>
+        <div class="msg-box">
+          <textarea class="textarea" id="content" name="content" placeholder="Describe the task…" required></textarea>
+          <span class="counter" id="counter">0</span>
+        </div>
+        <div class="hint">Saved inside the desktop as <span class="mono">DDMMYYYYHHMMSS.txt</span>.</div>
+      </div>
+
+    </div>
+
+    <div class="compose-foot">
+      <div class="hint" id="footHint"><kbd class="mod-key">Ctrl</kbd>+<kbd>Enter</kbd> to send</div>
+      <button type="submit" class="btn btn-primary" id="sendButton">
+        <svg width="15" height="15"><use href="#i-send"/></svg>
+        Send to desktop
+      </button>
+    </div>
+  </form>
+{{else}}
+  <div class="empty">
+    <div class="empty-mark"><svg width="19" height="19"><use href="#i-monitor"/></svg></div>
+    <h2>No desktops to message</h2>
+    <p>Create a desktop first, then send it work from here.</p>
+    <a class="btn btn-primary" href="/" style="margin-top:13px">
+      <svg width="15" height="15"><use href="#i-plus"/></svg>
+      Go to desktops
+    </a>
+  </div>
+{{end}}
+
+</main>
+
+{{template "chrome-js"}}
+
+<script>
+(function(){
+  "use strict";
+
+  var form = document.getElementById("composeForm");
+  if(!form){ return; }
+
+  var toast = Flowera.toast, post = Flowera.post;
+
+  var select = document.getElementById("desktop");
+  var content = document.getElementById("content");
+  var counter = document.getElementById("counter");
+  var sendButton = document.getElementById("sendButton");
+
+  /* ---------------- destination status ---------------- */
+
+  function syncStatus(){
+    var option = select.options[select.selectedIndex];
+    var state = option ? option.dataset.state : "";
+
+    var pill = document.getElementById("destStatus");
+    pill.dataset.state = state;
+    document.getElementById("destStatusText").textContent = state || "—";
+  }
+
+  select.addEventListener("change", syncStatus);
+  syncStatus();
+
+  /* ---------------- character count ---------------- */
+
+  content.addEventListener("input", function(){
+    counter.textContent = String(content.value.length);
+  });
+
+  content.addEventListener("keydown", function(event){
+    if((event.metaKey || event.ctrlKey) && event.key === "Enter"){
+      event.preventDefault();
+      form.requestSubmit();
+    }
+  });
+
+  /* ---------------- send ---------------- */
+
+  form.addEventListener("submit", async function(event){
+    event.preventDefault();
+
+    var text = content.value.trim();
+
+    if(!text){
+      content.focus();
+      return toast("Write a message first.", "error");
+    }
+
+    sendButton.disabled = true;
+    Flowera.busy(true);
+
+    try{
+      await post("/api/desktops/send", {id: select.value, content: text});
+
+      content.value = "";
+      counter.textContent = "0";
+      content.focus();
+      markSent();
+    }catch(e){
+      toast(e.message, "error");
+    }finally{
+      Flowera.busy(false);
+      sendButton.disabled = false;
+    }
+  });
+
+  /* Swap the keyboard hint for a confirmation, then put the hint back. */
+  function markSent(){
+    var hint = document.getElementById("footHint");
+    var original = hint.innerHTML;
+
+    hint.className = "sent";
+    hint.innerHTML = '<svg width="14" height="14"><use href="#i-check"/></svg>Delivered to the desktop';
+
+    setTimeout(function(){
+      hint.className = "hint";
+      hint.innerHTML = original;
+    }, 3200);
+  }
+})();
+</script>
+
+</body>
+</html>
