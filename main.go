@@ -940,6 +940,7 @@ func jsonResponse(w http.ResponseWriter, v interface{}) {
 
 // jsonError writes an error to the response writer as a JSON-formatted HTTP 500 response.
 func jsonError(w http.ResponseWriter, err error) {
+	log.Println("jsonError:", err)
 	w.Header().Set(
 		"Content-Type",
 		"application/json",
@@ -949,7 +950,7 @@ func jsonError(w http.ResponseWriter, err error) {
 
 	_ = json.NewEncoder(w).Encode(
 		map[string]string{
-			"error": err.Error(),
+			"error": "internal server error",
 		},
 	)
 }
