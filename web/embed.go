@@ -10,3 +10,10 @@ import "embed"
 //
 //go:embed templates/*.html
 var TemplatesFS embed.FS
+
+// FaviconSVG holds the Flowera brand mark served as the site favicon. It is
+// embedded rather than read from disk for the same reason the templates are:
+// the compiled binary is the whole product.
+//
+//go:embed favicon.svg
+var FaviconSVG []byte
