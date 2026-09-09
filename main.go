@@ -468,6 +468,7 @@ func (m *Manager) createDesktop(
 	config, hostConfig, networkingConfig := buildContainerConfigs(
 		imageName,
 		containerName,
+		profile,
 		cpus,
 		memoryMB,
 		env,
@@ -573,14 +574,14 @@ func buildDesktopEnv(name string) []string {
 	}
 }
 
-func buildContainerConfigs(imageName, containerName string, cpus, memoryMB int64, env []string, volumeName string) (*container.Config, *container.HostConfig, *network.NetworkingConfig) {
+func buildContainerConfigs(imageName, containerName, profile string, cpus, memoryMB int64, env []string, volumeName string) (*container.Config, *container.HostConfig, *network.NetworkingConfig) {
 	config := &container.Config{
 		Image: imageName,
 		Env:   env,
 		Hostname: containerName,
 		Labels: map[string]string{
 			"desktop-manager": "true",
-			"desktop-profile": "default",
+			"desktop-profile": profile,
 		},
 	}
 
