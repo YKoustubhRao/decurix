@@ -434,23 +434,9 @@ func (m *Manager) createDesktop(
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	var imageName string
-
-	switch profile {
-	case "basic":
-		imageName = desktopImageBasic
-
-	case "developer":
-		imageName = desktopImageDeveloper
-
-	case "ai":
-		imageName = desktopImageAI
-
-	default:
-		return nil, fmt.Errorf(
-			"invalid desktop profile: %s",
-			profile,
-		)
+	imageName, err := resolveDesktopImage(profile)
+	if err != nil {
+		return nil, err
 	}
 
 	volumeName := fmt.Sprintf(
@@ -459,7 +445,7 @@ func (m *Manager) createDesktop(
 	)
 
 	// Create persistent home volume.
-	_, err := m.client.VolumeCreate(
+	_, err = m.client.VolumeCreate(
 		ctx,
 		volume.CreateOptions{
 			Name: volumeName,
@@ -477,64 +463,16 @@ func (m *Manager) createDesktop(
 		sanitizeName(name),
 	)
 
-	defaultPassword := os.Getenv("DEFAULT_PASSWORD")
-	if defaultPassword == "" {
-		defaultPassword = "admin"
-	}
-	env := []string{
-		"VNC_PW=" + defaultPassword,
-		"VNC_RESOLUTION=1280x720",
+	env := buildDesktopEnv(name)
 
-		"DESKTOP_ID=" + strings.ToLower(
-			strings.ReplaceAll(name, " ", "-"),
-		),
-
-		"DESKTOP_NAME=" + name,
-
-		"CONTROL_PLANE_URL=http://host.docker.internal:8080",
-
-		"OLLAMA_URL=http://flowera-ollama:11434",
-		"OLLAMA_MODEL=" + ollamaModel,
-	}
-
-
-	config := &container.Config{
-		Image: imageName,
-		Env:   env,
-
-		Hostname: containerName,
-
-		Labels: map[string]string{
-			"desktop-manager": "true",
-			"desktop-profile": profile,
-		},
-	}
-
-	hostConfig := &container.HostConfig{
-		ShmSize: 512 * 1024 * 1024,
-
-		Resources: container.Resources{
-			NanoCPUs: cpus * 1_000_000_000,
-			Memory:   memoryMB * 1024 * 1024,
-		},
-		Binds: []string{
-			volumeName + ":/home/headless",
-		},
-
-		RestartPolicy: container.RestartPolicy{
-			Name: "unless-stopped",
-		},
-
-		ExtraHosts: []string{
-			"host.docker.internal:host-gateway",
-		},
-	}
-
-	networkingConfig := &network.NetworkingConfig{
-		EndpointsConfig: map[string]*network.EndpointSettings{
-			floweraNetwork: {},
-		},
-	}
+	config, hostConfig, networkingConfig := buildContainerConfigs(
+		imageName,
+		containerName,
+		cpus,
+		memoryMB,
+		env,
+		volumeName,
+	)
 
 	resp, err := m.client.ContainerCreate(
 		ctx,
@@ -599,6 +537,77 @@ func (m *Manager) createDesktop(
 		),
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}, nil
+}
+
+func resolveDesktopImage(profile string) (string, error) {
+	switch profile {
+	case "basic":
+		return desktopImageBasic, nil
+	case "developer":
+		return desktopImageDeveloper, nil
+	case "ai":
+		return desktopImageAI, nil
+	default:
+		return "", fmt.Errorf(
+			"invalid desktop profile: %s",
+			profile,
+		)
+	}
+}
+
+func buildDesktopEnv(name string) []string {
+	defaultPassword := os.Getenv("DEFAULT_PASSWORD")
+	if defaultPassword == "" {
+		defaultPassword = "admin"
+	}
+	return []string{
+		"VNC_PW=" + defaultPassword,
+		"VNC_RESOLUTION=1280x720",
+		"DESKTOP_ID=" + strings.ToLower(
+			strings.ReplaceAll(name, " ", "-"),
+		),
+		"DESKTOP_NAME=" + name,
+		"CONTROL_PLANE_URL=http://host.docker.internal:8080",
+		"OLLAMA_URL=http://flowera-ollama:11434",
+		"OLLAMA_MODEL=" + ollamaModel,
+	}
+}
+
+func buildContainerConfigs(imageName, containerName string, cpus, memoryMB int64, env []string, volumeName string) (*container.Config, *container.HostConfig, *network.NetworkingConfig) {
+	config := &container.Config{
+		Image: imageName,
+		Env:   env,
+		Hostname: containerName,
+		Labels: map[string]string{
+			"desktop-manager": "true",
+			"desktop-profile": "default",
+		},
+	}
+
+	hostConfig := &container.HostConfig{
+		ShmSize: 512 * 1024 * 1024,
+		Resources: container.Resources{
+			NanoCPUs: cpus * 1_000_000_000,
+			Memory:   memoryMB * 1024 * 1024,
+		},
+		Binds: []string{
+			volumeName + ":/home/headless",
+		},
+		RestartPolicy: container.RestartPolicy{
+			Name: "unless-stopped",
+		},
+		ExtraHosts: []string{
+			"host.docker.internal:host-gateway",
+		},
+	}
+
+	networkingConfig := &network.NetworkingConfig{
+		EndpointsConfig: map[string]*network.EndpointSettings{
+			floweraNetwork: {},
+		},
+	}
+
+	return config, hostConfig, networkingConfig
 }
 
 func (m *Manager) listDesktops(
