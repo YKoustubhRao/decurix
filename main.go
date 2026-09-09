@@ -1420,7 +1420,11 @@ func waitForOllama(ctx context.Context) error {
 			}
 		}
 
-		time.Sleep(2 * time.Second)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
 	}
 
 	return fmt.Errorf(
