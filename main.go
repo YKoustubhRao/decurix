@@ -1127,6 +1127,16 @@ func helpTextHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.DesktopID == "" {
+		http.Error(w, "desktop_id is required", http.StatusBadRequest)
+		return
+	}
+
+	if len(req.Content) > 16384 {
+		http.Error(w, "content exceeds maximum size of 16384 bytes", http.StatusBadRequest)
+		return
+	}
+
 	note := HelpNote{
 		ID:        fmt.Sprintf("%d", time.Now().UnixNano()),
 		DesktopID: req.DesktopID,
