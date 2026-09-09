@@ -1,6 +1,7 @@
 package main
 
 import (
+	"regexp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -44,6 +45,7 @@ const (
 	ollamaVolume   = "flowera_ollama"
 )
 
+// Desktop represents a managed desktop container: its identity, profile, backing Docker resources, status, and resource allocation.
 type Desktop struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
@@ -58,6 +60,7 @@ type Desktop struct {
 	MemoryMB    int64 `json:"memory_mb"`
 }
 
+// HelpNote is a support note submitted from inside a running desktop, tied to a specific desktop and VM.
 type HelpNote struct {
 	ID          string    `json:"id"`
 	DesktopID   string    `json:"desktop_id"`
@@ -67,6 +70,7 @@ type HelpNote struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+// Manager owns the Docker client and the in-memory set of help notes, guarded by a mutex for concurrent access.
 type Manager struct {
 	client *client.Client
 
@@ -75,6 +79,7 @@ type Manager struct {
 	helpNotes map[string]HelpNote
 }
 
+// PageData is the template data passed to the dashboard page: the current desktops and the request host.
 type PageData struct {
 	Desktops []Desktop
 	Host     string
@@ -85,74 +90,82 @@ var (
 	tmpl    *template.Template
 )
 
+// main loads configuration, sets up the Docker client, ensures required images/networks exist, registers HTTP routes, and starts the server.
 func main() {
-	if err := godotenv.Load(); err != nil {
-		log.Println("No .env file found; using environment variables")
-		os.Exit(1)
-	}
+    if err := godotenv.Load(); err != nil {
+        log.Println("No .env file found; using environment variables")
+    }
 
-	ctx := context.Background()
+    ctx := context.Background()
 
-	cli, err := client.NewClientWithOpts(
-		client.FromEnv,
-		client.WithAPIVersionNegotiation(),
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer cli.Close()
+    cli, err := client.NewClientWithOpts(
+        client.FromEnv,
+        client.WithAPIVersionNegotiation(),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer cli.Close()
 
-	manager = &Manager{
-		client: cli,
-		helpNotes: make(map[string]HelpNote),
-	}
+    manager = &Manager{
+        client:    cli,
+        helpNotes: make(map[string]HelpNote),
+    }
 
-	// Pull the desktop image if it isn't already present.
-	if err := manager.ensureImages(ctx); err != nil {
-		log.Printf("warning: could not ensure image: %v", err)
-	}
+    // Desktop images should already exist because build.sh builds them.
+    // Keep this non-blocking as a safety check.
+    if err := manager.ensureImages(ctx); err != nil {
+        log.Printf("warning: could not ensure desktop images: %v", err)
+    }
 
-	if err := manager.ensureFloweraNetwork(ctx); err != nil {
-		log.Fatal(err)
-	}
+    if err := manager.ensureFloweraNetwork(ctx); err != nil {
+        log.Fatal(err)
+    }
 
-	if err := manager.ensureOllama(ctx); err != nil {
-		log.Printf("warning: Ollama unavailable: %v", err)
-	}
+    templatePath := filepath.Join("templates", "index.html")
 
-	templatePath := filepath.Join("templates", "index.html")
+    tmpl = template.Must(
+        template.ParseFiles(templatePath),
+    )
 
-	tmpl = template.Must(
-		template.ParseFiles(templatePath),
-	)
+    http.HandleFunc("/", dashboardHandler)
+    http.HandleFunc("/desktop/", desktopProxyHandler)
+    http.HandleFunc("/api/desktops", desktopsAPIHandler)
+    http.HandleFunc("/api/desktops/create", createDesktopHandler)
+    http.HandleFunc("/api/desktops/start", startDesktopHandler)
+    http.HandleFunc("/api/desktops/stop", stopDesktopHandler)
+    http.HandleFunc("/api/desktops/restart", restartDesktopHandler)
+    http.HandleFunc("/api/desktops/delete", deleteDesktopHandler)
+    http.HandleFunc("/messages", messagesDashboardHandler)
+    http.HandleFunc("/api/desktops/send", sendMessageHandler)
+    http.HandleFunc("/api/helptext", helpTextHandler)
+    http.HandleFunc("/api/helpnotes", helpNotesHandler)
+    http.HandleFunc("/api/helpnotes/close", closeHelpNoteHandler)
+    http.HandleFunc("/dashboard", dashboardPostsHandler)
 
-	http.HandleFunc("/", dashboardHandler)
-	http.HandleFunc("/desktop/", desktopProxyHandler)
-	http.HandleFunc("/api/desktops", desktopsAPIHandler)
-	http.HandleFunc("/api/desktops/create", createDesktopHandler)
-	http.HandleFunc("/api/desktops/start", startDesktopHandler)
-	http.HandleFunc("/api/desktops/stop", stopDesktopHandler)
-	http.HandleFunc("/api/desktops/restart", restartDesktopHandler)
-	http.HandleFunc("/api/desktops/delete", deleteDesktopHandler)
-	http.HandleFunc("/messages", messagesDashboardHandler)
-	http.HandleFunc("/api/desktops/send", sendMessageHandler)
-	http.HandleFunc("/api/helptext", helpTextHandler)
-	http.HandleFunc("/api/helpnotes", helpNotesHandler)
-	http.HandleFunc("/api/helpnotes/close", closeHelpNoteHandler)
-	http.HandleFunc("/dashboard", dashboardPostsHandler)
+    // IMPORTANT:
+    // Ollama initialization must not block the HTTP server.
+    go func() {
+        if err := manager.ensureOllama(context.Background()); err != nil {
+            log.Printf("warning: Ollama initialization failed: %v", err)
+            return
+        }
 
+        log.Println("Ollama ready.")
+    }()
 
-	log.Printf("Desktop manager listening on %s", listenAddr)
+    log.Printf("Desktop manager listening on %s", listenAddr)
 
-	if err := http.ListenAndServe(listenAddr, nil); err != nil {
-		log.Fatal(err)
-	}
+    if err := http.ListenAndServe(listenAddr, nil); err != nil {
+        log.Fatal(err)
+    }
 }
 
 // ------------------------------------------------------------
 // Dashboard
 // ------------------------------------------------------------
 
+// dashboardHandler renders the root dashboard page listing all desktops.
 func dashboardHandler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
@@ -181,6 +194,7 @@ func dashboardHandler(w http.ResponseWriter, r *http.Request) {
 // API
 // ------------------------------------------------------------
 
+// desktopsAPIHandler returns the current list of desktops as JSON.
 func desktopsAPIHandler(w http.ResponseWriter, r *http.Request) {
 	desktops, err := manager.listDesktops(r.Context())
 	if err != nil {
@@ -191,6 +205,7 @@ func desktopsAPIHandler(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, desktops)
 }
 
+// createDesktopHandler validates a desktop-creation request (name, profile, cpus, memory) and creates the desktop.
 func createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
@@ -235,6 +250,32 @@ func createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		name = fmt.Sprintf("desktop-%d", time.Now().Unix())
 	}
 
+	validNameRe := regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+	if !validNameRe.MatchString(name) {
+		http.Error(w, "invalid name: only alphanumeric, hyphens, underscores, and dots allowed", http.StatusBadRequest)
+		return
+	}
+
+	if cpus <= 0 {
+		http.Error(w, "cpus must be positive", http.StatusBadRequest)
+		return
+	}
+
+	if cpus > 64 {
+		http.Error(w, "cpus must not exceed 64", http.StatusBadRequest)
+		return
+	}
+
+	if memoryMB <= 0 {
+		http.Error(w, "memory_mb must be positive", http.StatusBadRequest)
+		return
+	}
+
+	if memoryMB > 65536 {
+		http.Error(w, "memory_mb must not exceed 65536", http.StatusBadRequest)
+		return
+	}
+
 	desktop, err := manager.createDesktop(
 		r.Context(),
 		name,
@@ -250,6 +291,7 @@ func createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, desktop)
 }
 
+// startDesktopHandler starts an existing desktop by ID.
 func startDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
@@ -273,6 +315,7 @@ func startDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// stopDesktopHandler stops a running desktop by ID.
 func stopDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
@@ -296,6 +339,7 @@ func stopDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// restartDesktopHandler restarts a desktop by ID.
 func restartDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
@@ -319,6 +363,7 @@ func restartDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// deleteDesktopHandler deletes a desktop and its persistent storage by ID.
 func deleteDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
@@ -346,6 +391,7 @@ func deleteDesktopHandler(w http.ResponseWriter, r *http.Request) {
 // Docker
 // ------------------------------------------------------------
 
+// ensureImages pulls any required desktop Docker images that are not already present locally.
 func (m *Manager) ensureImages(ctx context.Context) error {
 	images := []string{
 		desktopImageBasic,
@@ -396,6 +442,7 @@ func (m *Manager) ensureImages(ctx context.Context) error {
 	return nil
 }
 
+// createDesktop provisions a new desktop container (volume, env, container config) for the given profile and starts it, rolling back on failure.
 func (m *Manager) createDesktop(
 	ctx context.Context,
 	name string,
@@ -407,23 +454,9 @@ func (m *Manager) createDesktop(
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	var imageName string
-
-	switch profile {
-	case "basic":
-		imageName = desktopImageBasic
-
-	case "developer":
-		imageName = desktopImageDeveloper
-
-	case "ai":
-		imageName = desktopImageAI
-
-	default:
-		return nil, fmt.Errorf(
-			"invalid desktop profile: %s",
-			profile,
-		)
+	imageName, err := resolveDesktopImage(profile)
+	if err != nil {
+		return nil, err
 	}
 
 	volumeName := fmt.Sprintf(
@@ -432,7 +465,7 @@ func (m *Manager) createDesktop(
 	)
 
 	// Create persistent home volume.
-	_, err := m.client.VolumeCreate(
+	_, err = m.client.VolumeCreate(
 		ctx,
 		volume.CreateOptions{
 			Name: volumeName,
@@ -450,64 +483,17 @@ func (m *Manager) createDesktop(
 		sanitizeName(name),
 	)
 
-	defaultPassword := os.Getenv("DEFAULT_PASSWORD")
-	if defaultPassword == "" {
-		defaultPassword = "admin"
-	}
-	env := []string{
-		"VNC_PW=" + defaultPassword,
-		"VNC_RESOLUTION=1280x720",
+	env := buildDesktopEnv(name)
 
-		"DESKTOP_ID=" + strings.ToLower(
-			strings.ReplaceAll(name, " ", "-"),
-		),
-
-		"DESKTOP_NAME=" + name,
-
-		"CONTROL_PLANE_URL=http://host.docker.internal:8080",
-
-		"OLLAMA_URL=http://flowera-ollama:11434",
-		"OLLAMA_MODEL=" + ollamaModel,
-	}
-
-
-	config := &container.Config{
-		Image: imageName,
-		Env:   env,
-
-		Hostname: containerName,
-
-		Labels: map[string]string{
-			"desktop-manager": "true",
-			"desktop-profile": profile,
-		},
-	}
-
-	hostConfig := &container.HostConfig{
-		ShmSize: 512 * 1024 * 1024,
-
-		Resources: container.Resources{
-			NanoCPUs: cpus * 1_000_000_000,
-			Memory:   memoryMB * 1024 * 1024,
-		},
-		Binds: []string{
-			volumeName + ":/home/headless",
-		},
-
-		RestartPolicy: container.RestartPolicy{
-			Name: "unless-stopped",
-		},
-
-		ExtraHosts: []string{
-			"host.docker.internal:host-gateway",
-		},
-	}
-
-	networkingConfig := &network.NetworkingConfig{
-		EndpointsConfig: map[string]*network.EndpointSettings{
-			floweraNetwork: {},
-		},
-	}
+	config, hostConfig, networkingConfig := buildContainerConfigs(
+		imageName,
+		containerName,
+		profile,
+		cpus,
+		memoryMB,
+		env,
+		volumeName,
+	)
 
 	resp, err := m.client.ContainerCreate(
 		ctx,
@@ -574,6 +560,81 @@ func (m *Manager) createDesktop(
 	}, nil
 }
 
+// resolveDesktopImage maps a desktop profile (basic/developer/ai) to its corresponding Docker image, or returns an error for an unknown profile.
+func resolveDesktopImage(profile string) (string, error) {
+	switch profile {
+	case "basic":
+		return desktopImageBasic, nil
+	case "developer":
+		return desktopImageDeveloper, nil
+	case "ai":
+		return desktopImageAI, nil
+	default:
+		return "", fmt.Errorf(
+			"invalid desktop profile: %s",
+			profile,
+		)
+	}
+}
+
+// buildDesktopEnv builds the container environment variables (VNC, desktop identity, control-plane/Ollama URLs) for a desktop by name.
+func buildDesktopEnv(name string) []string {
+	defaultPassword := os.Getenv("DEFAULT_PASSWORD")
+	if defaultPassword == "" {
+		defaultPassword = "admin"
+	}
+	return []string{
+		"VNC_PW=" + defaultPassword,
+		"VNC_RESOLUTION=1280x720",
+		"DESKTOP_ID=" + strings.ToLower(
+			strings.ReplaceAll(name, " ", "-"),
+		),
+		"DESKTOP_NAME=" + name,
+		"CONTROL_PLANE_URL=http://host.docker.internal:8080",
+		"OLLAMA_URL=http://flowera-ollama:11434",
+		"OLLAMA_MODEL=" + ollamaModel,
+	}
+}
+
+// buildContainerConfigs builds the Docker container, host, and network configuration for a desktop from its resolved image, resources, and profile.
+func buildContainerConfigs(imageName, containerName, profile string, cpus, memoryMB int64, env []string, volumeName string) (*container.Config, *container.HostConfig, *network.NetworkingConfig) {
+	config := &container.Config{
+		Image: imageName,
+		Env:   env,
+		Hostname: containerName,
+		Labels: map[string]string{
+			"desktop-manager": "true",
+			"desktop-profile": profile,
+		},
+	}
+
+	hostConfig := &container.HostConfig{
+		ShmSize: 512 * 1024 * 1024,
+		Resources: container.Resources{
+			NanoCPUs: cpus * 1_000_000_000,
+			Memory:   memoryMB * 1024 * 1024,
+		},
+		Binds: []string{
+			volumeName + ":/home/headless",
+		},
+		RestartPolicy: container.RestartPolicy{
+			Name: "unless-stopped",
+		},
+		ExtraHosts: []string{
+			"host.docker.internal:host-gateway",
+		},
+	}
+
+	networkingConfig := &network.NetworkingConfig{
+		EndpointsConfig: map[string]*network.EndpointSettings{
+			floweraNetwork: {},
+		},
+	}
+
+	return config, hostConfig, networkingConfig
+}
+
+// listDesktops returns all desktop containers managed by this instance, read from their Docker labels and inspect data.
 func (m *Manager) listDesktops(
 	ctx context.Context,
 ) ([]Desktop, error) {
@@ -687,6 +748,7 @@ func (m *Manager) listDesktops(
 	return result, nil
 }
 
+// startDesktop starts the Docker container backing the given desktop ID.
 func (m *Manager) startDesktop(
 	ctx context.Context,
 	id string,
@@ -701,6 +763,7 @@ func (m *Manager) startDesktop(
 	)
 }
 
+// stopDesktop stops the Docker container backing the given desktop ID.
 func (m *Manager) stopDesktop(
 	ctx context.Context,
 	id string,
@@ -708,7 +771,13 @@ func (m *Manager) stopDesktop(
 
 	name := "desktop_" + sanitizeName(id)
 
+	timeoutEnv := os.Getenv("DESKTOP_STOP_TIMEOUT_SECONDS")
 	timeout := 10
+	if timeoutEnv != "" {
+		if parsedTimeout, err := strconv.Atoi(timeoutEnv); err == nil && parsedTimeout > 0 {
+			timeout = parsedTimeout
+		}
+	}
 
 	return m.client.ContainerStop(
 		ctx,
@@ -719,6 +788,7 @@ func (m *Manager) stopDesktop(
 	)
 }
 
+// restartDesktop stops and restarts the Docker container backing the given desktop ID.
 func (m *Manager) restartDesktop(
 	ctx context.Context,
 	id string,
@@ -745,6 +815,7 @@ func (m *Manager) restartDesktop(
 	)
 }
 
+// deleteDesktop removes the Docker container and persistent volume backing the given desktop ID.
 func (m *Manager) deleteDesktop(
 	ctx context.Context,
 	id string,
@@ -807,6 +878,7 @@ func (m *Manager) deleteDesktop(
 // Helpers
 // ------------------------------------------------------------
 
+// sanitizeName normalizes a string into a safe lowercase container/volume name fragment.
 func sanitizeName(s string) string {
 	s = strings.ToLower(s)
 
@@ -830,6 +902,7 @@ func sanitizeName(s string) string {
 	)
 }
 
+// getServerHost returns the configured external host for this server, defaulting to localhost.
 func getServerHost() string {
 	host := os.Getenv("DESKTOP_HOST")
 
@@ -840,6 +913,7 @@ func getServerHost() string {
 	return "localhost"
 }
 
+// getHost derives the externally-reachable host from an incoming request, substituting the configured desktop host for localhost.
 func getHost(r *http.Request) string {
 	host := r.Host
 
@@ -860,6 +934,7 @@ func getHost(r *http.Request) string {
 	return host
 }
 
+// jsonResponse writes a value to the response writer as JSON.
 func jsonResponse(w http.ResponseWriter, v interface{}) {
 	w.Header().Set(
 		"Content-Type",
@@ -869,7 +944,9 @@ func jsonResponse(w http.ResponseWriter, v interface{}) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// jsonError writes an error to the response writer as a JSON-formatted HTTP 500 response.
 func jsonError(w http.ResponseWriter, err error) {
+	log.Println("jsonError:", err)
 	w.Header().Set(
 		"Content-Type",
 		"application/json",
@@ -879,11 +956,12 @@ func jsonError(w http.ResponseWriter, err error) {
 
 	_ = json.NewEncoder(w).Encode(
 		map[string]string{
-			"error": err.Error(),
+			"error": "internal server error",
 		},
 	)
 }
 
+// messagesDashboardHandler renders the messages dashboard page for sending messages to desktops.
 func messagesDashboardHandler(w http.ResponseWriter, r *http.Request) {
     if r.URL.Path != "/messages" {
         http.NotFound(w, r)
@@ -916,6 +994,7 @@ func messagesDashboardHandler(w http.ResponseWriter, r *http.Request) {
     }
 }
 
+// sendMessageHandler validates and forwards a message-send request to a specific desktop.
 func sendMessageHandler(w http.ResponseWriter, r *http.Request) {
     if r.Method != http.MethodPost {
         http.Error(w, "POST required", http.StatusMethodNotAllowed)
@@ -935,6 +1014,11 @@ func sendMessageHandler(w http.ResponseWriter, r *http.Request) {
         return
     }
 
+    if len(content) > 8192 {
+        http.Error(w, "message too long", http.StatusBadRequest)
+        return
+    }
+
     if err := manager.sendMessage(
         r.Context(),
         desktopID,
@@ -949,6 +1033,7 @@ func sendMessageHandler(w http.ResponseWriter, r *http.Request) {
     })
 }
 
+// sendMessage posts a JSON message to a running desktop's internal message endpoint.
 func (m *Manager) sendMessage(
 	ctx context.Context,
 	id string,
@@ -1029,6 +1114,7 @@ func (m *Manager) sendMessage(
 	return nil
 }
 
+// helpTextHandler records a help note submitted from inside a desktop.
 func helpTextHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1044,6 +1130,16 @@ func helpTextHandler(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if req.DesktopID == "" {
+		http.Error(w, "desktop_id is required", http.StatusBadRequest)
+		return
+	}
+
+	if len(req.Content) > 16384 {
+		http.Error(w, "content exceeds maximum size of 16384 bytes", http.StatusBadRequest)
 		return
 	}
 
@@ -1067,6 +1163,7 @@ func helpTextHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// helpNotesHandler returns all recorded help notes as JSON.
 func helpNotesHandler(w http.ResponseWriter, r *http.Request) {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
@@ -1080,6 +1177,7 @@ func helpNotesHandler(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, notes)
 }
 
+// closeHelpNoteHandler deletes a help note by ID.
 func closeHelpNoteHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
@@ -1097,6 +1195,7 @@ func closeHelpNoteHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// dashboardPostsHandler renders the help-notes dashboard, most recent first.
 func dashboardPostsHandler(w http.ResponseWriter, r *http.Request) {
     if r.URL.Path != "/dashboard" {
         http.NotFound(w, r)
@@ -1140,6 +1239,7 @@ func dashboardPostsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 
+// ensureFloweraNetwork creates the shared Docker network used by desktops if it does not already exist.
 func (m *Manager) ensureFloweraNetwork(ctx context.Context) error {
 	_, err := m.client.NetworkInspect(
 		ctx,
@@ -1174,6 +1274,7 @@ func (m *Manager) ensureFloweraNetwork(ctx context.Context) error {
 	return nil
 }
 
+// ensureOllama provisions and starts the shared Ollama container and waits for it to become ready.
 func (m *Manager) ensureOllama(ctx context.Context) error {
 	// ------------------------------------------------------------
 	// Make sure Ollama image exists
@@ -1361,46 +1462,51 @@ func (m *Manager) ensureOllama(ctx context.Context) error {
 	return nil
 }
 
+// waitForOllama polls the Ollama API until it responds successfully, the context is cancelled, or a two-minute deadline elapses.
 func waitForOllama(ctx context.Context) error {
-	deadline := time.Now().Add(2 * time.Minute)
+    deadline := time.Now().Add(2 * time.Minute)
 
-	for time.Now().Before(deadline) {
+    for time.Now().Before(deadline) {
 
-		req, err := http.NewRequestWithContext(
-			ctx,
-			http.MethodGet,
-			"http://host.docker.internal:11434/api/tags",
-			nil,
-		)
+        req, err := http.NewRequestWithContext(
+            ctx,
+            http.MethodGet,
+            "http://flowera-ollama:11434/api/tags",
+            nil,
+        )
 
-		if err == nil {
+        if err == nil {
 
-			client := &http.Client{
-				Timeout: 3 * time.Second,
-			}
+            client := &http.Client{
+                Timeout: 3 * time.Second,
+            }
 
-			resp, err := client.Do(req)
+            resp, err := client.Do(req)
 
-			if err == nil {
+            if err == nil {
 
-				resp.Body.Close()
+                resp.Body.Close()
 
-				if resp.StatusCode >= 200 &&
-					resp.StatusCode < 300 {
+                if resp.StatusCode >= 200 &&
+                    resp.StatusCode < 300 {
 
-					return nil
-				}
-			}
-		}
+                    return nil
+                }
+            }
+        }
 
-		time.Sleep(2 * time.Second)
-	}
+        select {
+        case <-ctx.Done():
+            return ctx.Err()
 
-	return fmt.Errorf(
-		"timeout waiting for Ollama",
-	)
+        case <-time.After(2 * time.Second):
+        }
+    }
+
+    return fmt.Errorf("timeout waiting for Ollama")
 }
 
+// ensureOllamaModel pulls the configured Ollama model into the shared Ollama container if it is not already present.
 func (m *Manager) ensureOllamaModel(ctx context.Context) error {
 	// Try `ollama show MODEL`.
 	// Exit code 0 means the model already exists.
@@ -1548,6 +1654,7 @@ func (m *Manager) ensureOllamaModel(ctx context.Context) error {
 	return nil
 }
 
+// desktopProxyHandler reverse-proxies HTTP requests to the desktop container's internal address.
 func desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 	parts := strings.SplitN(
 		strings.TrimPrefix(r.URL.Path, "/desktop/"),
