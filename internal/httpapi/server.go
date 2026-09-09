@@ -52,4 +52,5 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/helpnotes/close", s.closeHelpNoteHandler)
 	mux.HandleFunc("/dashboard", s.dashboardPostsHandler)
 	mux.HandleFunc("/api/tunnel", s.tunnelHandler)
+	mux.HandleFunc("/favicon.svg", s.faviconHandler)
 }

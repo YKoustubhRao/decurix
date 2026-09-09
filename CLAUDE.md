@@ -31,8 +31,12 @@ internal/httpapi   — the only package touching net/http; all HTTP handlers,
                       composes desktop+helpnotes+memory+tunnel+webui
 internal/webui     — html/template rendering (PageData, dashboard/messages pages);
                       parses out of web.TemplatesFS, never off disk
-web/embed.go       — //go:embed templates/*.html → web.TemplatesFS; what makes the
-                      compiled binary standalone (package web has no internal deps)
+web/embed.go       — //go:embed templates/*.html → web.TemplatesFS and favicon.svg →
+                      web.FaviconSVG; what makes the compiled binary standalone
+                      (package web has no internal deps)
+web/favicon.svg    — the brand mark (theme.html's #i-blossom on a filled tile), served
+                      at /favicon.svg by httpapi.faviconHandler and linked from the
+                      shared "theme" head partial, so it shows in the browser tab
 web/templates/     — theme.html (shared design tokens + icon sprite + top bar +
                       chrome JS, pulled in by every page via {{template "theme"}} /
                       "sprite" / "topbar" / "chrome-js"; parsed alongside each page

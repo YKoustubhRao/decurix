@@ -82,3 +82,7 @@ func (rd *Renderer) RenderHelpNotesDashboard(w io.Writer, data HelpNotesPageData
 
 	return tmpl.ExecuteTemplate(w, "dashboard.html", data)
 }
+
+// FaviconSVG is the Flowera brand mark, served as the control plane's favicon.
+// It is re-exported here so httpapi keeps reaching web assets through webui.
+var FaviconSVG = web.FaviconSVG
