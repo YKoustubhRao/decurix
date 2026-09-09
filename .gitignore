@@ -1,2 +1,3 @@
 .env
 .soul-docs/
+__pycache__

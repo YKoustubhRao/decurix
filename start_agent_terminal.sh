@@ -17,10 +17,6 @@ fi
 echo "DISPLAY=$DISPLAY" >> "$LOG"
 echo "USER=$(whoami)" >> "$LOG"
 
-xfce4-terminal \
-    --display="$DISPLAY" \
-    --title="Flowera Agent" \
-    --geometry=120x35 \
-    --hold \
-    -e "python3 /opt/vm_server.py" \
-    >> "$LOG" 2>&1
+setsid python3 /opt/vm_server.py >> "$LOG" 2>&1 < /dev/null &
+
+echo "[$(date)] vm_server.py started as background daemon (pid $!)" >> "$LOG"

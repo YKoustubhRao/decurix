@@ -42,11 +42,13 @@ COMMAND_DIR = Path("/home/headless/command")
 HELPTEXT_DIR = Path("/home/headless/helptext")
 FINAL_DIR = Path("/home/headless/final")
 WORK_DIR = Path("/home/headless/work")
+MEMORY_DIR = Path("/home/headless/memory")
 
 COMMAND_DIR.mkdir(parents=True, exist_ok=True)
 HELPTEXT_DIR.mkdir(parents=True, exist_ok=True)
 FINAL_DIR.mkdir(parents=True, exist_ok=True)
 WORK_DIR.mkdir(parents=True, exist_ok=True)
+MEMORY_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ============================================================
@@ -575,6 +577,33 @@ The project was deleted successfully.
 """
 
 
+def get_memory_context():
+    """
+    Load all persisted worker memory files so the agent can reason
+    with its learned workflows continuously.
+    """
+    entries = []
+
+    for path in sorted(MEMORY_DIR.glob("*.txt"), key=lambda p: p.name):
+        try:
+            content = path.read_text(encoding="utf-8").strip()
+        except Exception as exc:
+            log(f"Could not read memory file {path}: {exc}")
+            continue
+
+        if not content:
+            continue
+
+        entries.append(
+            f"Memory file: {path.name}\n\n{content}"
+        )
+
+    if not entries:
+        return ""
+
+    return "\n\n---\n\n".join(entries)
+
+
 def ask_agent(task, history):
     messages = [
         {
@@ -582,6 +611,18 @@ def ask_agent(task, history):
             "content": SYSTEM_PROMPT,
         }
     ]
+
+    memory_context = get_memory_context()
+    if memory_context:
+        messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "Persistent worker memory for this desktop:\n\n"
+                    f"{memory_context}"
+                ),
+            }
+        )
 
     messages.extend(history)
 
@@ -874,6 +915,19 @@ def continue_after_help(help_response):
         }
     ]
 
+    memory_context = get_memory_context()
+    memory_messages = []
+    if memory_context:
+        memory_messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "Persistent worker memory for this desktop:\n\n"
+                    f"{memory_context}"
+                ),
+            }
+        )
+
     max_steps = 50
 
     for step in range(max_steps):
@@ -885,6 +939,7 @@ def continue_after_help(help_response):
                         "role": "system",
                         "content": SYSTEM_PROMPT,
                     },
+                    *memory_messages,
                     {
                         "role": "user",
                         "content": (
