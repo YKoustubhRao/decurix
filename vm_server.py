@@ -6,8 +6,6 @@ import time
 import urllib.request
 import urllib.error
 import socket
-import subprocess
-import shlex
 import uuid
 from pathlib import Path
 
@@ -28,14 +26,16 @@ CONTROL_PLANE_URL = os.environ.get(
     "http://host.docker.internal:8080"
 )
 
-OLLAMA_URL = os.environ.get(
-    "OLLAMA_URL",
-    "http://flowera-ollama:11434"
-)
-
-OLLAMA_MODEL = os.environ.get(
-    "OLLAMA_MODEL",
-    "qwen3:0.6b"
+# The Flowera engine (atomizer + scheduler + skills) runs inside this same
+# container, started by start_agent_terminal.sh before this script's
+# terminal opens - see /opt/flowera-engine. This replaces the old direct
+# Ollama COMMAND/DONE/HELP loop that used to live in this file: the engine
+# owns talking to a model now (it reaches the real Ollama server via its
+# own OLLAMA_HOST env var, set on the container by the control plane), this
+# script's job is only to submit tasks to it and relay its progress back.
+ENGINE_URL = os.environ.get(
+    "ENGINE_URL",
+    "http://127.0.0.1:4478"
 )
 
 COMMAND_DIR = Path("/home/headless/command")
@@ -120,7 +120,7 @@ def save_message(message):
 
 def send_helptext(filename, content):
     """
-    Send a help request to the Flowera control plane.
+    Send a message to the Flowera control plane.
 
     The existing Go control plane receives:
         POST /api/helptext
@@ -130,6 +130,11 @@ def send_helptext(filename, content):
         vm_name
         filename
         content
+
+    Despite the name (kept for compatibility with the existing control
+    plane route and /dashboard view), this is the general message-relay
+    path used for the atomized plan, the final result, AND genuine help
+    requests - the control plane just displays whatever content arrives.
     """
 
     payload = {
@@ -166,13 +171,17 @@ def send_helptext(filename, content):
             return True
 
     except Exception as exc:
-        log(f"Failed to send help request: {exc}")
+        log(f"Failed to send message to control plane: {exc}")
         return False
 
 
 def ask_for_help(problem):
     """
-    Ask the human/control plane for help.
+    Report a problem to the human via the control plane. Unlike the old
+    COMMAND/DONE/HELP loop this replaced, this is fire-and-report, not a
+    blocking wait for a human reply - the engine has no notion of a
+    mid-task human handoff, so perform_task always clears current_task
+    afterward and the desktop is ready for the next task immediately.
     """
 
     global waiting_for_help
@@ -180,11 +189,10 @@ def ask_for_help(problem):
 
     help_id = uuid.uuid4().hex
 
-    # ddmmyyyyhhmmss.txt
-    filename = time.strftime("%d%m%Y%H%M%S") + ".txt"
+    filename = time.strftime("%d%m%Y%H%M%S") + "_help.txt"
 
     content = f"""
-FLOWERA HELP REQUEST
+FLOWERA TASK PROBLEM
 
 Desktop:
 {DESKTOP_NAME}
@@ -200,10 +208,6 @@ Problem:
 
 Help ID:
 {help_id}
-
-The agent is currently blocked.
-
-Please send instructions through the Flowera control plane.
 """.strip()
 
     path = HELPTEXT_DIR / filename
@@ -216,9 +220,9 @@ Please send instructions through the Flowera control plane.
     last_help_id = help_id
 
     log("========================================")
-    log("AGENT NEEDS HELP")
+    log("TASK PROBLEM")
     log(content)
-    log(f"Help request written to: {path}")
+    log(f"Written to: {path}")
     log("========================================")
 
     sent = send_helptext(
@@ -227,7 +231,7 @@ Please send instructions through the Flowera control plane.
     )
 
     if sent:
-        log("Help request sent to control plane.")
+        log("Problem report sent to control plane.")
     else:
         log("WARNING: could not contact control plane.")
 
@@ -235,22 +239,81 @@ Please send instructions through the Flowera control plane.
 
     return help_id
 
+
 # ============================================================
-# Final task message
+# Atomized plan + final task messages
 # ============================================================
+
+def send_plan_message(task, plan):
+    """
+    Sent once the engine's atomizer finishes decomposing the task - the
+    "Atomised tasks when atomiser completes" message.
+    """
+
+    filename = time.strftime("%d%m%Y%H%M%S") + "_plan.txt"
+
+    if plan:
+        plan_lines = "\n".join(
+            f"{i + 1}. [{step.get('type', '?')}] {step.get('step', '')}"
+            for i, step in enumerate(plan)
+        )
+    else:
+        plan_lines = "(single atomic step - no further breakdown)"
+
+    content = f"""
+FLOWERA ATOMIZED PLAN
+
+Desktop:
+{DESKTOP_NAME}
+
+Desktop ID:
+{DESKTOP_ID}
+
+Task:
+{task}
+
+Plan:
+{plan_lines}
+
+Planned at:
+{timestamp()}
+""".strip()
+
+    path = HELPTEXT_DIR / filename
+
+    path.write_text(
+        content,
+        encoding="utf-8"
+    )
+
+    log("========================================")
+    log("ATOMIZED PLAN")
+    log(content)
+    log(f"Written to: {path}")
+    log("========================================")
+
+    sent = send_helptext(
+        filename,
+        content,
+    )
+
+    if sent:
+        log("Atomized plan sent to control plane.")
+    else:
+        log("WARNING: could not send atomized plan to control plane.")
+
 
 def write_final_message(message):
     """
-    Write the final result into helptext/ so the existing
-    helptext watcher sends it to the Flowera control plane.
+    Send the "actual end result when the job completes" message - the
+    engine's real composed final answer, not a locally-generated summary.
     """
 
     global current_task
     global current_task_file
     global waiting_for_help
 
-    # ddmmyyyyhhmmss.txt
-    filename = time.strftime("%d%m%Y%H%M%S") + ".txt"
+    filename = time.strftime("%d%m%Y%H%M%S") + "_final.txt"
 
     final_message = f"""
 FLOWERA TASK COMPLETED
@@ -303,64 +366,16 @@ Completed at:
 
 
 # ============================================================
-# Ollama
+# Flowera engine
 # ============================================================
 
-def ollama_request(messages):
+def wait_for_engine():
     """
-    Call the local Ollama server.
-    """
-
-    payload = {
-        "model": OLLAMA_MODEL,
-        "messages": messages,
-        "stream": False,
-    }
-
-    body = json.dumps(payload).encode("utf-8")
-
-    url = OLLAMA_URL.rstrip("/") + "/api/chat"
-
-    request = urllib.request.Request(
-        url,
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-
-    try:
-        with urllib.request.urlopen(
-            request,
-            timeout=300,
-        ) as response:
-
-            raw = response.read()
-
-            result = json.loads(
-                raw.decode("utf-8")
-            )
-
-            return result["message"]["content"]
-
-    except urllib.error.URLError as exc:
-        raise RuntimeError(
-            f"Could not reach Ollama at {OLLAMA_URL}: {exc}"
-        )
-
-    except Exception as exc:
-        raise RuntimeError(
-            f"Ollama request failed: {exc}"
-        )
-
-
-def wait_for_ollama():
-    """
-    Wait until Ollama becomes available.
+    Wait until the Flowera engine (node server.js, started by
+    start_agent_terminal.sh) is up and can reach Ollama.
     """
 
-    url = OLLAMA_URL.rstrip("/") + "/api/tags"
+    url = ENGINE_URL.rstrip("/") + "/api/health"
 
     while True:
 
@@ -377,287 +392,133 @@ def wait_for_ollama():
 
                 if response.status == 200:
                     log(
-                        f"Ollama available: "
-                        f"{OLLAMA_URL}"
+                        f"Flowera engine available: "
+                        f"{ENGINE_URL}"
                     )
                     return
 
         except Exception:
             pass
 
-        log("Waiting for Ollama...")
+        log("Waiting for Flowera engine...")
 
         time.sleep(2)
 
 
-# ============================================================
-# Command execution
-# ============================================================
-
-def run_command(command, timeout=120):
+def submit_to_engine(task):
     """
-    Execute a shell command inside the desktop container.
-
-    Commands run as the headless user.
+    POST /api/chat - starts an engine job, returns its id.
     """
 
-    log(f"Executing command: {command}")
+    payload = json.dumps({"prompt": task}).encode("utf-8")
 
-    try:
-        process = subprocess.run(
-            command,
-            shell=True,
-            cwd=str(WORK_DIR),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-
-        output = ""
-
-        if process.stdout:
-            output += process.stdout
-
-        if process.stderr:
-            output += "\n" + process.stderr
-
-        output = output.strip()
-
-        log(
-            f"Command exit code: "
-            f"{process.returncode}"
-        )
-
-        if output:
-            log(output[-4000:])
-
-        return {
-            "success": process.returncode == 0,
-            "exit_code": process.returncode,
-            "output": output,
-        }
-
-    except subprocess.TimeoutExpired:
-        return {
-            "success": False,
-            "exit_code": -1,
-            "output": (
-                "Command timed out after "
-                f"{timeout} seconds."
-            ),
-        }
-
-    except Exception as exc:
-        return {
-            "success": False,
-            "exit_code": -1,
-            "output": str(exc),
-        }
-
-
-# ============================================================
-# Agent reasoning
-# ============================================================
-
-SYSTEM_PROMPT = """
-You are the autonomous agent running inside a Flowera desktop VM.
-
-You receive a task from a human.
-
-Your job is to actually perform the task.
-
-You have access to a Flowera shell.
-
-IMPORTANT OUTPUT RULE:
-
-Every response MUST begin with exactly ONE of:
-
-COMMAND:
-DONE:
-HELP:
-
-Do not write anything before the control signal.
-
-Valid response formats:
-
-COMMAND:
-<one shell command>
-
-DONE:
-<short final answer>
-
-HELP:
-<specific blocking problem>
-
-Rules:
-
-1. Use COMMAND when you need to perform an action on the Flowera desktop.
-
-2. After a COMMAND is executed, you will receive its output.
-
-3. If the command fails, reason about the failure and try to fix it.
-
-4. Do not repeatedly execute the same failed command.
-
-5. Use HELP ONLY when you are genuinely blocked and cannot
-continue without information or action from the human/control plane.
-
-6. A normal question, greeting, conversation, explanation, or
-identity question is NOT a HELP situation.
-
-7. If the human asks something like:
-   "hello"
-   "who are you?"
-   "what can you do?"
-   "how are you?"
-   answer using DONE.
-
-8. HELP must ONLY be used when you need something from the human
-to continue the task.
-
-9. Examples of valid HELP situations:
-   - You need the user to choose between two files.
-   - You need a password or confirmation.
-   - A required resource is unavailable.
-   - You cannot determine what the user wants and cannot safely
-     proceed.
-   - An external system requires human intervention.
-
-10. When the task is complete, use DONE.
-
-11. Do not claim a task is complete unless it actually is.
-
-12. Prefer small, verifiable commands.
-
-13. Never invent command output.
-
-14. Never use HELP merely to ask a conversational question.
-
-15. Never use HELP merely because the task is a question.
-
-16. Never output both DONE and HELP.
-
-17. The control signal must be the FIRST thing in your response.
-
-Examples:
-
-Human:
-hello, who are you?
-
-Correct:
-DONE:
-I am a virtual machine assistant running inside your Flowera desktop VM.
-
-Human:
-List the files in /tmp.
-
-Correct:
-COMMAND:
-ls -la /tmp
-
-Human:
-Delete the project.
-
-If you need clarification about which project:
-HELP:
-Which project directory should I delete?
-
-Human:
-Delete /home/headless/work/project.
-
-Correct:
-COMMAND:
-rm -rf /home/headless/work/project
-
-After verifying deletion:
-DONE:
-The project was deleted successfully.
-"""
-
-
-def ask_agent(task, history):
-    messages = [
-        {
-            "role": "system",
-            "content": SYSTEM_PROMPT,
-        }
-    ]
-
-    messages.extend(history)
-
-    messages.append(
-        {
-            "role": "user",
-            "content": task,
-        }
+    request = urllib.request.Request(
+        ENGINE_URL.rstrip("/") + "/api/chat",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+        },
+        method="POST",
     )
 
-    return ollama_request(messages)
+    with urllib.request.urlopen(
+        request,
+        timeout=15,
+    ) as response:
+
+        result = json.loads(
+            response.read().decode("utf-8")
+        )
+
+    if "id" not in result:
+        raise RuntimeError(
+            f"engine did not return a job id: {result}"
+        )
+
+    return result["id"]
 
 
-# ============================================================
-# Agent parser
-# ============================================================
-
-def parse_agent_response(response):
+def stream_engine_job(job_id):
     """
-    Parse the agent's control signal.
-
-    The model is instructed to put COMMAND, DONE, or HELP
-    first, but small models sometimes add text before it.
-    We therefore search for the control signal rather than
-    requiring it to be the first characters.
+    Reads the engine's SSE stream (GET /api/jobs/:id/stream) line by line
+    and yields each event as a dict. A "backlog" event (sent on connect,
+    or on a reconnect mid-job) wraps a full list of prior events plus the
+    job's current status - unwrapped here so the caller only ever deals
+    with plain event dicts, live or replayed.
     """
 
-    response = response.strip()
+    url = ENGINE_URL.rstrip("/") + f"/api/jobs/{job_id}/stream"
 
-    # Prefer the first control signal that appears.
-    command_pos = response.find("COMMAND:")
-    done_pos = response.find("DONE:")
-    help_pos = response.find("HELP:")
+    request = urllib.request.Request(
+        url,
+        method="GET",
+    )
 
-    positions = [
-        (pos, "command")
-        for pos in [command_pos]
-        if pos != -1
-    ] + [
-        (pos, "done")
-        for pos in [done_pos]
-        if pos != -1
-    ] + [
-        (pos, "help")
-        for pos in [help_pos]
-        if pos != -1
-    ]
+    with urllib.request.urlopen(
+        request,
+        timeout=600,
+    ) as response:
 
-    if not positions:
-        return ("invalid", response)
+        for raw_line in response:
 
-    # Use whichever control signal appears first.
-    _, action = min(positions, key=lambda x: x[0])
+            line = raw_line.decode(
+                "utf-8",
+                errors="replace",
+            ).rstrip("\n")
 
-    if action == "command":
-        value = response[
-            command_pos + len("COMMAND:"):
-        ].strip()
+            if not line.startswith("data: "):
+                continue
 
-        return ("command", value)
+            payload = line[len("data: "):]
 
-    if action == "done":
-        value = response[
-            done_pos + len("DONE:"):
-        ].strip()
+            try:
+                event = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
 
-        return ("done", value)
+            if event.get("type") == "backlog":
 
-    if action == "help":
-        value = response[
-            help_pos + len("HELP:"):
-        ].strip()
+                for sub_event in event.get("events", []):
+                    yield sub_event
 
-        return ("help", value)
+                if event.get("status") != "running":
+                    yield {
+                        "type": "status",
+                        "status": event.get("status"),
+                    }
 
-    return ("invalid", response)
+                continue
+
+            yield event
+
+
+def _handle_engine_event(task, event):
+    """
+    Applies one engine event. Returns True if this was a terminal event
+    (the caller should stop reading the stream).
+    """
+
+    event_type = event.get("type")
+
+    if event_type == "plan":
+        send_plan_message(task, event.get("plan", []))
+        return False
+
+    if event_type == "final":
+        write_final_message(
+            event.get("finalAnswer") or "(engine returned no final answer)"
+        )
+        return True
+
+    if event_type == "status" and event.get("status") == "error":
+        ask_for_help(
+            "The Flowera engine reported an error while running this "
+            "task - check the engine's own log (/tmp/flowera-engine.log) "
+            "for detail."
+        )
+        return True
+
+    return False
 
 
 # ============================================================
@@ -674,309 +535,37 @@ def perform_task(task, task_file):
     waiting_for_help = False
 
     log("========================================")
-    log("STARTING TASK")
+    log("STARTING TASK (Flowera engine)")
     log(task)
     log("========================================")
 
-    history = []
+    try:
+        job_id = submit_to_engine(task)
+        log(f"Engine job id: {job_id}")
 
-    # Limit the number of autonomous steps.
-    #
-    # This prevents an agent from looping forever.
-    max_steps = 50
+        finished = False
 
-    for step in range(max_steps):
+        for event in stream_engine_job(job_id):
+            if _handle_engine_event(task, event):
+                finished = True
+                break
 
-        log(
-            f"Agent step "
-            f"{step + 1}/{max_steps}"
-        )
-
-        try:
-            response = ask_agent(
-                task,
-                history,
-            )
-
-        except Exception as exc:
-
-            help_id = ask_for_help(
-                f"""
-Ollama/agent execution failed.
-
-Error:
-{exc}
-""".strip()
-            )
-
-            # Wait until a human response arrives.
-            return
-
-        log("Agent response:")
-        log(response)
-
-        action, value = parse_agent_response(
-            response
-        )
-
-        if action == "done":
-
-            write_final_message(value)
-
-            return
-
-        if action == "help":
-
-            ask_for_help(value)
-
-            return
-
-        if action == "command":
-
-            command = value
-
-            if not command:
-                ask_for_help(
-                    "The agent generated an empty COMMAND."
-                )
-                return
-
-            result = run_command(
-                command
-            )
-
-            history.append(
-                {
-                    "role": "assistant",
-                    "content": response,
-                }
-            )
-
-            history.append(
-                {
-                    "role": "user",
-                    "content": (
-                        "Command execution result:\n\n"
-                        f"exit_code: "
-                        f"{result['exit_code']}\n\n"
-                        f"output:\n"
-                        f"{result['output']}"
-                    ),
-                }
-            )
-
-            continue
-
-        if action == "invalid":
-
-            history.append(
-                {
-                    "role": "assistant",
-                    "content": response,
-                }
-            )
-
-            history.append(
-                {
-                    "role": "user",
-                    "content": """
-Your response did not follow the required format.
-
-Respond with exactly one of:
-
-COMMAND:
-<shell command>
-
-DONE:
-<final result>
-
-HELP:
-<specific blocking issue>
-""".strip(),
-                }
-            )
-
-            continue
-
-    # Agent exhausted its step limit.
-    ask_for_help(
-        f"""
-The agent reached its maximum number of
-autonomous steps ({max_steps}) without completing
-the task.
-
-It may be stuck in a loop.
-
-Please inspect the task and provide guidance.
-""".strip()
-    )
-
-
-# ============================================================
-# Help response detection
-# ============================================================
-
-def is_help_response(filename, content):
-    """
-    A message received while waiting for help is treated
-    as the human's response to the current blocked task.
-    """
-
-    if not waiting_for_help:
-        return False
-
-    lower_name = filename.lower()
-
-    # Ignore our own generated result/help files.
-    if lower_name.startswith("help_"):
-        return False
-
-    if lower_name.startswith("result_"):
-        return False
-
-    return True
-
-
-def continue_after_help(help_response):
-    """
-    Continue the current task after a human provides help.
-    """
-
-    global waiting_for_help
-
-    if not current_task:
-        log(
-            "Received help response but no "
-            "active task exists."
-        )
-        return
-
-    task = current_task
-
-    waiting_for_help = False
-
-    log("========================================")
-    log("RECEIVED HUMAN HELP")
-    log(help_response)
-    log("========================================")
-
-    # Continue the same task with the human's
-    # response appended as context.
-    #
-    # We run this in the same task thread.
-    history = [
-        {
-            "role": "user",
-            "content": (
-                "The human has provided help:\n\n"
-                + help_response
-            ),
-        }
-    ]
-
-    max_steps = 50
-
-    for step in range(max_steps):
-
-        try:
-            response = ollama_request(
-                [
-                    {
-                        "role": "system",
-                        "content": SYSTEM_PROMPT,
-                    },
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Original task:\n\n"
-                            f"{task}\n\n"
-                            f"Human help:\n\n"
-                            f"{help_response}\n\n"
-                            f"Continue the task."
-                        ),
-                    },
-                    *history,
-                ]
-            )
-
-        except Exception as exc:
-
+        if not finished:
             ask_for_help(
-                f"""
-The agent tried to continue after human help,
-but Ollama failed again.
-
-Error:
-{exc}
-""".strip()
+                "The Flowera engine's event stream ended without ever "
+                "reporting a final result."
             )
 
-            return
+    except Exception as exc:
+        ask_for_help(f"Could not run this task via the Flowera engine: {exc}")
 
-        log("Agent response:")
-        log(response)
-
-        action, value = parse_agent_response(
-            response
-        )
-
-        if action == "done":
-
-            write_final_message(value)
-            return
-
-        if action == "help":
-
-            ask_for_help(value)
-            return
-
-        if action == "command":
-
-            result = run_command(value)
-
-            history.append(
-                {
-                    "role": "assistant",
-                    "content": response,
-                }
-            )
-
-            history.append(
-                {
-                    "role": "user",
-                    "content": (
-                        "Command execution result:\n\n"
-                        f"exit_code: "
-                        f"{result['exit_code']}\n\n"
-                        f"output:\n"
-                        f"{result['output']}"
-                    ),
-                }
-            )
-
-            continue
-
-        history.append(
-            {
-                "role": "assistant",
-                "content": response,
-            }
-        )
-
-        history.append(
-            {
-                "role": "user",
-                "content": """
-Invalid response.
-
-Use COMMAND, DONE, or HELP.
-""".strip(),
-            }
-        )
-
-    ask_for_help(
-        "The agent exhausted its steps after receiving human help."
-    )
+    finally:
+        # No mid-task human handoff exists for engine-run tasks (unlike
+        # the old COMMAND/DONE/HELP loop's blocking HELP) - always leave
+        # the desktop ready to accept the next task rather than getting
+        # stuck waiting for a reply nothing will ever send.
+        current_task = None
+        current_task_file = None
 
 
 # ============================================================
@@ -1037,20 +626,6 @@ def command_watcher():
                 processed_commands.add(
                     path.name
                 )
-
-                # If the agent is waiting for human help,
-                # this new command is the help response.
-                if waiting_for_help:
-
-                    thread = threading.Thread(
-                        target=continue_after_help,
-                        args=(content,),
-                        daemon=True,
-                    )
-
-                    thread.start()
-
-                    continue
 
                 # Do not start another task while one
                 # is already running.
@@ -1271,23 +846,24 @@ def main():
     )
 
     log(
-        f"Ollama: "
-        f"{OLLAMA_URL}"
+        f"Engine: "
+        f"{ENGINE_URL}"
     )
 
-    log(
-        f"Model: "
-        f"{OLLAMA_MODEL}"
-    )
-
-    # Wait until the shared Ollama instance is alive.
-    wait_for_ollama()
+    # Wait until the Flowera engine (and, transitively, Ollama) is alive.
+    wait_for_engine()
 
     # Start command watcher.
     threading.Thread(
         target=command_watcher,
         daemon=True,
     ).start()
+
+    # helptext_watcher is intentionally NOT started here (kept defunct, as
+    # in the original file): send_plan_message / write_final_message /
+    # ask_for_help already call send_helptext() inline at write time.
+    # Starting the watcher too would have it notice the same files a
+    # second time and send every message twice.
 
     server = HTTPServer(
         ("0.0.0.0", 8081),

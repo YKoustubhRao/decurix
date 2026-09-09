@@ -36,6 +36,22 @@ const (
 	ollamaPort          = "11434/tcp"
 	ollamaModel         = "qwen3:0.6b"
 
+	// The Flowera engine (baked into flowera-desktop:latest, see
+	// DesktopDockerfile + engine/) talks to the real host Ollama server
+	// directly - not the flowera-ollama container above, which still
+	// exists for other tooling but runs a much smaller model (0.6b) than
+	// the engine is tuned for (devstral-small-2:24b / qwen3:14b, see
+	// engine/lib/models.js). host.docker.internal is reachable from every
+	// desktop container already (see the ExtraHosts host-gateway entry in
+	// createDesktop below) - the host's Ollama just needs to be listening
+	// on something other than 127.0.0.1-only for that to actually reach it
+	// (OLLAMA_HOST=0.0.0.0:11434 on the host). This is only the DEFAULT -
+	// overridable per-deployment via the ENGINE_OLLAMA_HOST env var (see
+	// createDesktop below) so a teammate testing this MR doesn't need
+	// their own local Ollama + pulled models: pointing ENGINE_OLLAMA_HOST
+	// at a shared/tunneled Ollama server in .env is enough, no rebuild.
+	engineOllamaHostDefault = "http://host.docker.internal:11434"
+
 	floweraNetwork = "flowera-network"
 	ollamaVolume   = "flowera_ollama"
 )
@@ -108,9 +124,17 @@ func main() {
 		log.Fatal(err)
 	}
 
-	if err := manager.ensureOllama(ctx); err != nil {
-		log.Printf("warning: Ollama unavailable: %v", err)
-	}
+	// Non-blocking: a slow/cold ollama/ollama image pull could otherwise
+	// hold the dashboard (and every other API route) unreachable for
+	// minutes on first startup, even though a failure here was already
+	// treated as non-fatal - the desktop containers the Flowera engine
+	// actually talks to (via OLLAMA_HOST=host.docker.internal, see
+	// engineOllamaHost above) don't depend on flowera-ollama at all.
+	go func() {
+		if err := manager.ensureOllama(context.Background()); err != nil {
+			log.Printf("warning: Ollama unavailable: %v", err)
+		}
+	}()
 
 	templatePath := filepath.Join("templates", "index.html")
 
@@ -374,6 +398,12 @@ func (m *Manager) createDesktop(
 	if defaultPassword == "" {
 		defaultPassword = "admin"
 	}
+
+	engineOllamaHost := os.Getenv("ENGINE_OLLAMA_HOST")
+	if engineOllamaHost == "" {
+		engineOllamaHost = engineOllamaHostDefault
+	}
+
 	env := []string{
 		"VNC_PW=" + defaultPassword,
 		"VNC_RESOLUTION=1280x720",
@@ -388,6 +418,12 @@ func (m *Manager) createDesktop(
 
 		"OLLAMA_URL=http://flowera-ollama:11434",
 		"OLLAMA_MODEL=" + ollamaModel,
+
+		// Read by the Flowera engine's lib/ollama.js (OLLAMA_HOST) -
+		// separate from OLLAMA_URL/OLLAMA_MODEL above, which vm_server.py
+		// no longer uses directly now that it submits tasks to the engine
+		// instead of calling Ollama itself.
+		"OLLAMA_HOST=" + engineOllamaHost,
 	}
 
 

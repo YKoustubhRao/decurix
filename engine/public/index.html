@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Agent</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #161922; --panel2: #1d212c; --border: #2a2f3b;
+    --text: #e4e7ee; --text-dim: #8b90a0; --accent: #5b8cff;
+    --ok: #33c17a; --bad: #ef5a6f; --warn: #e0a72f; --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, Segoe UI, Arial, sans-serif; font-size: 14px; display: flex; flex-direction: column; height: 100vh; }
+  header { display: flex; align-items: center; gap: 14px; padding: 10px 18px; border-bottom: 1px solid var(--border); background: var(--panel); flex-shrink: 0; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header .note { color: var(--text-dim); font-size: 12px; }
+  .health { margin-left: auto; font-size: 12px; display: flex; gap: 10px; align-items: center; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; background: #555; }
+  .dot.up { background: var(--ok); } .dot.down { background: var(--bad); }
+  .chat { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; max-width: 820px; width: 100%; margin: 0 auto; }
+  .msg { max-width: 100%; }
+  .msg.user .bubble { background: var(--accent); color: white; border-radius: 12px 12px 2px 12px; padding: 10px 14px; display: inline-block; max-width: 80%; }
+  .msg.user { text-align: right; }
+  .msg.assistant .bubble { background: var(--panel2); border: 1px solid var(--border); border-radius: 12px 12px 12px 2px; padding: 12px 16px; display: inline-block; max-width: 100%; white-space: pre-wrap; }
+  .msg.assistant { text-align: left; }
+  .steps-toggle { margin-top: 6px; font-size: 12px; color: var(--text-dim); cursor: pointer; user-select: none; }
+  .steps-toggle:hover { color: var(--accent); }
+  .steps-panel { margin-top: 8px; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: #0a0c10; display: none; }
+  .steps-panel.open { display: block; }
+  .steps-panel h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-dim); margin: 10px 0 6px; }
+  .steps-panel h4:first-child { margin-top: 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--text-dim); font-weight: 600; font-size: 10px; text-transform: uppercase; }
+  .badge { display: inline-block; padding: 1px 7px; border-radius: 9px; font-size: 10px; font-weight: 700; text-transform: uppercase; }
+  .badge.mechanical { background: #26314d; color: var(--accent); }
+  .badge.judgment { background: #3a2f18; color: var(--warn); }
+  .badge.done { background: #163527; color: var(--ok); }
+  .badge.error { background: #3a1e24; color: var(--bad); }
+  .badge.running { background: #26314d; color: var(--accent); }
+  pre.log { font-family: var(--mono); font-size: 11px; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow-y: auto; margin: 0; color: var(--text-dim); }
+  .status-line { font-size: 12px; color: var(--text-dim); margin-top: 6px; }
+  .composer { border-top: 1px solid var(--border); background: var(--panel); padding: 14px 20px; flex-shrink: 0; }
+  .composer form { max-width: 820px; margin: 0 auto; display: flex; gap: 10px; }
+  .composer textarea { flex: 1; background: var(--panel2); border: 1px solid var(--border); color: var(--text); padding: 10px 12px; border-radius: 8px; font-family: inherit; font-size: 14px; resize: none; }
+  .composer button { background: var(--accent); color: white; border: none; padding: 0 20px; border-radius: 8px; font-weight: 600; cursor: pointer; }
+  .composer button:disabled { opacity: .5; cursor: default; }
+  .empty { color: var(--text-dim); text-align: center; margin-top: 60px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Agent</h1>
+  <span class="note">atomizer &rarr; scheduler &rarr; skills, direct to Ollama</span>
+  <div class="health" id="health"><span class="dot" id="dot-ollama"></span><span id="ollama-label">checking...</span></div>
+</header>
+<div class="chat" id="chat"><div class="empty">Ask it anything. It'll break the request into steps, route each one to a model, and answer.</div></div>
+<div class="composer">
+  <form id="form">
+    <textarea id="prompt" rows="1" placeholder="Message the agent..."></textarea>
+    <button id="sendBtn">Send</button>
+  </form>
+</div>
+
+<script>
+const $ = (s, r) => (r || document).querySelector(s);
+const chatEl = $('#chat');
+let empty = true;
+
+async function loadHealth() {
+  const h = await fetch('/api/health').then(r => r.json()).catch(() => ({ ollama: false, models: [] }));
+  $('#dot-ollama').className = 'dot ' + (h.ollama ? 'up' : 'down');
+  $('#ollama-label').textContent = h.ollama ? `Ollama (${h.models.length} model${h.models.length === 1 ? '' : 's'})` : 'Ollama unreachable';
+}
+loadHealth();
+setInterval(loadHealth, 15000);
+
+function clearEmpty() {
+  if (empty) { chatEl.innerHTML = ''; empty = false; }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+}
+
+function addUserMessage(text) {
+  clearEmpty();
+  const div = document.createElement('div');
+  div.className = 'msg user';
+  div.innerHTML = '<div class="bubble">' + escapeHtml(text) + '</div>';
+  chatEl.appendChild(div);
+  chatEl.scrollTop = chatEl.scrollHeight;
+}
+
+function addAssistantPlaceholder() {
+  clearEmpty();
+  const div = document.createElement('div');
+  div.className = 'msg assistant';
+  div.innerHTML =
+    '<div class="bubble" data-role="bubble">Thinking...</div>' +
+    '<div class="steps-toggle" data-role="toggle">Show steps &#9656;</div>' +
+    '<div class="steps-panel" data-role="panel"></div>';
+  chatEl.appendChild(div);
+  chatEl.scrollTop = chatEl.scrollHeight;
+  const toggle = div.querySelector('[data-role="toggle"]');
+  const panel = div.querySelector('[data-role="panel"]');
+  toggle.onclick = () => {
+    panel.classList.toggle('open');
+    toggle.innerHTML = (panel.classList.contains('open') ? 'Hide steps &#9662;' : 'Show steps &#9656;');
+  };
+  return div;
+}
+
+function renderPanel(panel, state) {
+  let html = '';
+  if (state.plan) {
+    html += '<h4>Plan (' + state.plan.length + ' step' + (state.plan.length === 1 ? '' : 's') + ')</h4><table><thead><tr><th>#</th><th>Step</th><th>Type</th></tr></thead><tbody>';
+    state.plan.forEach((s, i) => {
+      html += '<tr><td>' + (i + 1) + '</td><td>' + escapeHtml(s.step) + '</td><td><span class="badge ' + s.type + '">' + s.type + '</span></td></tr>';
+    });
+    html += '</tbody></table>';
+  }
+  if (state.results.length) {
+    html += '<h4>Subtask results</h4><table><thead><tr><th>#</th><th>Skill</th><th>Model</th><th>Status</th><th>Output</th></tr></thead><tbody>';
+    state.results.forEach((r, i) => {
+      const out = r.output ? escapeHtml(r.output).slice(0, 300) : escapeHtml(r.error || '');
+      html += '<tr><td>' + (i + 1) + '</td><td>' + r.skill + '</td><td>' + r.model + '</td><td><span class="badge ' + r.status + '">' + r.status + '</span></td><td>' + out + '</td></tr>';
+    });
+    html += '</tbody></table>';
+  }
+  html += '<h4>Live log</h4><pre class="log">' + escapeHtml(state.log.join('\n')) + '</pre>';
+  panel.innerHTML = html;
+}
+
+function runJob(id, msgDiv) {
+  const bubble = msgDiv.querySelector('[data-role="bubble"]');
+  const panel = msgDiv.querySelector('[data-role="panel"]');
+  const state = { plan: null, results: [], log: [] };
+
+  const es = new EventSource('/api/jobs/' + id + '/stream');
+  es.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === 'backlog') {
+      // backlog is always the FULL history so far, not a delta - reset
+      // before replaying so a reconnect (EventSource auto-retries on any
+      // dropped connection while the job is still "running") can't
+      // duplicate every log line and result it already applied.
+      state.plan = null; state.results = []; state.log = [];
+      for (const e of msg.events) applyEvent(e);
+      renderPanel(panel, state);
+      chatEl.scrollTop = chatEl.scrollHeight;
+      if (msg.status !== 'running') { es.close(); setSending(false); }
+      return;
+    }
+    applyEvent(msg);
+    renderPanel(panel, state);
+    chatEl.scrollTop = chatEl.scrollHeight;
+    if (msg.type === 'status' && msg.status !== 'running') { es.close(); setSending(false); }
+  };
+  es.onerror = () => { /* connection ended after job finished - expected */ };
+
+  function applyEvent(e) {
+    if (e.type === 'log') state.log.push(e.line);
+    else if (e.type === 'plan') state.plan = e.plan;
+    else if (e.type === 'result') state.results.push(e.result);
+    else if (e.type === 'final') bubble.textContent = e.finalAnswer;
+    else if (e.type === 'status' && e.status === 'error' && bubble.textContent === 'Thinking...') bubble.textContent = '(failed - see steps/log)';
+  }
+}
+
+function setSending(v) {
+  $('#sendBtn').disabled = v;
+  $('#prompt').disabled = v;
+}
+
+$('#form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const ta = $('#prompt');
+  const text = ta.value.trim();
+  if (!text) return;
+  setSending(true);
+  addUserMessage(text);
+  ta.value = '';
+  const msgDiv = addAssistantPlaceholder();
+  try {
+    const created = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: text }) }).then(r => r.json());
+    if (created.error) {
+      msgDiv.querySelector('[data-role="bubble"]').textContent = 'Error: ' + created.error;
+      setSending(false);
+      return;
+    }
+    runJob(created.id, msgDiv);
+  } catch (e) {
+    msgDiv.querySelector('[data-role="bubble"]').textContent = 'Error: ' + e.message;
+    setSending(false);
+  }
+});
+
+$('#prompt').addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter' && !ev.shiftKey) {
+    ev.preventDefault();
+    $('#form').requestSubmit();
+  }
+});
+</script>
+</body>
+</html>

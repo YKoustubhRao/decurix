@@ -2,10 +2,24 @@ FROM accetto/ubuntu-vnc-xfce-chromium-g3:latest
 
 USER root
 
+# Node.js for the Flowera engine (atomizer + scheduler + skills), plus
+# git/build-essential so skills/code-project.js's real compile gate works
+# inside the VM too, not just on the host.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl gnupg git build-essential \
+    && curl -fsSL https://deb.nodesource.com/setup_24.x -o /tmp/nodesource_setup.sh \
+    && bash /tmp/nodesource_setup.sh \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/* /tmp/nodesource_setup.sh \
+    && node --version && g++ --version
+
 COPY vm_server.py /opt/vm_server.py
 COPY start_agent_terminal.sh /opt/start_agent_terminal.sh
+COPY agent-entrypoint.sh /opt/agent-entrypoint.sh
+COPY engine /opt/flowera-engine
 
-RUN chmod +x /opt/vm_server.py /opt/start_agent_terminal.sh
+RUN chmod +x /opt/vm_server.py /opt/start_agent_terminal.sh /opt/agent-entrypoint.sh \
+    && chown -R headless:headless /opt/flowera-engine
 
 RUN mkdir -p /home/headless/.config/autostart \
     && chown -R headless:headless /home/headless/.config
@@ -17,4 +31,4 @@ RUN chmod 644 /home/headless/.config/autostart/flowera-agent.desktop \
 
 USER headless
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/dockerstartup/startup.sh"]
+ENTRYPOINT ["/opt/agent-entrypoint.sh"]
