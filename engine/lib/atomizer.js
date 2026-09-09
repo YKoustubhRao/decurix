@@ -62,10 +62,41 @@ function isStructuralTask(taskDescription) {
 function looksLikeSingleDirectAnswer(taskDescription) {
   const t = taskDescription.trim();
   if (t.length > 400) return false; // let longer/richer requests still go through real planning
-  const multiPartSignals = /\band\b[\s\S]*\b(also|then)\b|^\s*\d+[.)]\s|\bfirst\b[\s\S]*\bsecond\b|;/i;
-  if (multiPartSignals.test(t)) return false;
-  const directShapes = /^(what|why|how|when|where|who|explain|describe|write\s+a\s+(short|one-paragraph|brief)|summarize|summarise|define|list|give)\b/i;
-  return directShapes.test(t);
+  // A 100-task eval across domains (see engine/eval/) found both directions
+  // of this heuristic too narrow: "and give/note/compare/explain ..." is a
+  // real second ask that "and also/then" alone didn't catch (5 genuinely
+  // multi-part "explain X, and Y" requests got wrongly collapsed to one
+  // step), and a bare "," + "then" (no "and") was never checked at all.
+  const multiPartSignals =
+    /\band\b[\s\S]*\b(also|then|give|provide|show|compare|list|include|note|discuss|analyze|evaluate|summarize|identify|calculate|describe|explain|write)\b/i.test(
+      t
+    ) ||
+    /,\s*then\b/i.test(t) ||
+    /^\s*\d+[.)]\s/.test(t) ||
+    /\bfirst\b[\s\S]*\bsecond\b/i.test(t) ||
+    /;/.test(t);
+  if (multiPartSignals) return false;
+  // Same eval: "write a haiku/limerick/sonnet/rap verse/..." only matched
+  // when the noun happened to be "short"/"one-paragraph"/"brief" - every
+  // other single-shot creative request (6 of 10 tested) fell through to
+  // real planning and got fragmented up to 9 steps for a two-line poem.
+  // "solve"/yes-no question starters ("Are you...", "Solve the equation
+  // ...") had the same gap - caught the same way, on real prompts.
+  const directShapes =
+    /^(what|why|how|when|where|who|which|is|are|do|does|can|could|would|should|will|explain|describe|solve|summarize|summarise|define|list|give)\b/i;
+  if (directShapes.test(t)) return true;
+  // A first attempt at the "write/compose/create a <anything>" case above
+  // matched ANY noun, not just short creative content - "create a study
+  // plan for learning DS&A over 8 weeks" matched exactly like "write a
+  // poem" does, and got wrongly collapsed to one step even though a
+  // multi-week study plan is genuinely multi-part (caught on the very
+  // next eval run after that fix went in). An explicit list of short-form
+  // content types, not "any noun after a/an", avoids catching planning
+  // artifacts (plan/itinerary/routine/roadmap/...) that only happen to
+  // share the same "write/create a ___" grammar.
+  const singleContentNoun =
+    /\b(write|compose|create)\s+(a|an)\s+(?:[\w-]+\s+){0,3}(poem|haiku|limerick|sonnet|verse|rap|song|story|letter|message|note|joke|quote|essay|review|caption|tagline|greeting|toast|speech|bio|summary|paragraph|sentence|description)\b/i;
+  return singleContentNoun.test(t);
 }
 
 /** A request to build actual code artifacts (files, a compiled binary, a
@@ -78,8 +109,24 @@ function looksLikeSingleDirectAnswer(taskDescription) {
  * own `matches()` uses the exact same signal, not a re-derived copy of it. */
 function isCodeProjectTask(taskDescription) {
   const t = taskDescription.toLowerCase();
-  const wantsCode = /\b(implement|write|create|build)\b[\s\S]*\b(code|library|libraries|class|program|algorithm|tree|struct|function)\b/.test(t);
-  const wantsRepo = /\b(repo|repository|branch|github|commit|push|readme|codeindex|code index)\b/.test(t);
+  // The noun list kept missing real data-structure names as they came up
+  // in testing (a "trie", a "bloom filter", an "LRU cache" all failed to
+  // match "tree|struct|..." even with an explicit repo ask right next to
+  // them) - added generic terms ("implementation", "cache", "structure")
+  // rather than trying to enumerate every possible data structure name.
+  const wantsCode =
+    /\b(implement|write|create|build)\b[\s\S]*\b(code|library|libraries|class|program|algorithm|tree|struct|structure|function|cache|filter|implementation)\b/.test(
+      t
+    );
+  // "readme" dropped from this list as a precaution, not something the
+  // eval actually caught failing: broadening wantsCode's noun list above
+  // means a request like "write a class and add a README" would now
+  // match wantsCode too, and "readme" alone (no repo/branch/github/commit
+  // anywhere) is common in plain file-save requests - too easy a
+  // collision to leave in once wantsCode got broader. "codeindex"/"code
+  // index" kept since that phrase alone is specific enough not to collide
+  // with an ordinary filename.
+  const wantsRepo = /\b(repo|repository|branch|github|commit|push|codeindex|code index)\b/.test(t);
   return wantsCode && wantsRepo;
 }
 
@@ -134,6 +181,8 @@ async function planTask(taskDescription, context = {}, onLog) {
 
 If the task is a single, self-contained request that a competent person would just answer directly in one response - a question, a short explanation, a paragraph, a summary, a simple factual lookup - output exactly ONE step that restates the task verbatim. Only produce multiple steps when the task genuinely has multiple independent parts or a real sequential dependency (e.g. research something, then use that to build something else; do X in several distinct languages/files; a multi-part question with several distinct sub-questions). Do not invent structure (like a separate "identify the variable" or "conclude with a summary" step) for a request that's naturally answered in one pass - that wastes calls without improving the answer.
 
+When a task DOES genuinely need multiple steps (a multi-day plan, a project with several phases, a comparison with several aspects), use as FEW steps as the real structure requires - one step per day, per phase, or per aspect is normally enough. Do not split a single day/phase/aspect into separate sub-steps (e.g. a travel day into separate morning/afternoon/evening steps, or one comparison aspect into separate "describe A" and "describe B" steps) - a 3-day trip plan should usually be about 3 steps, not 10+, and each step should be substantial enough to answer in one real response, not a granular fragment of one.
+
 Task: ${taskDescription}${contextBlock}`;
 
   onLog?.(`atomizer: planning via ${MODELS.planner}...`);
@@ -175,7 +224,7 @@ async function atomize(taskDescription, { depth = 0, context = {}, budget = { ca
     return [taskDescription];
   }
   if (depth === 0 && isStructuralTask(taskDescription)) {
-    onLog?.(`atomizer: task looks structural (creates/splits/refactors code) - treating as one atomic step verbatim.`);
+    onLog?.(`atomizer: task looks structural (creates/splits/refactors code) - skipping planning, one atomic step.`);
     return [taskDescription];
   }
   if (depth === 0 && looksLikeSingleDirectAnswer(taskDescription)) {
