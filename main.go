@@ -92,67 +92,73 @@ var (
 
 // main loads configuration, sets up the Docker client, ensures required images/networks exist, registers HTTP routes, and starts the server.
 func main() {
-	if err := godotenv.Load(); err != nil {
-		log.Println("No .env file found; using environment variables")
-		os.Exit(1)
-	}
+    if err := godotenv.Load(); err != nil {
+        log.Println("No .env file found; using environment variables")
+    }
 
-	ctx := context.Background()
+    ctx := context.Background()
 
-	cli, err := client.NewClientWithOpts(
-		client.FromEnv,
-		client.WithAPIVersionNegotiation(),
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer cli.Close()
+    cli, err := client.NewClientWithOpts(
+        client.FromEnv,
+        client.WithAPIVersionNegotiation(),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer cli.Close()
 
-	manager = &Manager{
-		client: cli,
-		helpNotes: make(map[string]HelpNote),
-	}
+    manager = &Manager{
+        client:    cli,
+        helpNotes: make(map[string]HelpNote),
+    }
 
-	// Pull the desktop image if it isn't already present.
-	if err := manager.ensureImages(ctx); err != nil {
-		log.Printf("warning: could not ensure image: %v", err)
-	}
+    // Desktop images should already exist because build.sh builds them.
+    // Keep this non-blocking as a safety check.
+    if err := manager.ensureImages(ctx); err != nil {
+        log.Printf("warning: could not ensure desktop images: %v", err)
+    }
 
-	if err := manager.ensureFloweraNetwork(ctx); err != nil {
-		log.Fatal(err)
-	}
+    if err := manager.ensureFloweraNetwork(ctx); err != nil {
+        log.Fatal(err)
+    }
 
-	if err := manager.ensureOllama(ctx); err != nil {
-		log.Printf("warning: Ollama unavailable: %v", err)
-	}
+    templatePath := filepath.Join("templates", "index.html")
 
-	templatePath := filepath.Join("templates", "index.html")
+    tmpl = template.Must(
+        template.ParseFiles(templatePath),
+    )
 
-	tmpl = template.Must(
-		template.ParseFiles(templatePath),
-	)
+    http.HandleFunc("/", dashboardHandler)
+    http.HandleFunc("/desktop/", desktopProxyHandler)
+    http.HandleFunc("/api/desktops", desktopsAPIHandler)
+    http.HandleFunc("/api/desktops/create", createDesktopHandler)
+    http.HandleFunc("/api/desktops/start", startDesktopHandler)
+    http.HandleFunc("/api/desktops/stop", stopDesktopHandler)
+    http.HandleFunc("/api/desktops/restart", restartDesktopHandler)
+    http.HandleFunc("/api/desktops/delete", deleteDesktopHandler)
+    http.HandleFunc("/messages", messagesDashboardHandler)
+    http.HandleFunc("/api/desktops/send", sendMessageHandler)
+    http.HandleFunc("/api/helptext", helpTextHandler)
+    http.HandleFunc("/api/helpnotes", helpNotesHandler)
+    http.HandleFunc("/api/helpnotes/close", closeHelpNoteHandler)
+    http.HandleFunc("/dashboard", dashboardPostsHandler)
 
-	http.HandleFunc("/", dashboardHandler)
-	http.HandleFunc("/desktop/", desktopProxyHandler)
-	http.HandleFunc("/api/desktops", desktopsAPIHandler)
-	http.HandleFunc("/api/desktops/create", createDesktopHandler)
-	http.HandleFunc("/api/desktops/start", startDesktopHandler)
-	http.HandleFunc("/api/desktops/stop", stopDesktopHandler)
-	http.HandleFunc("/api/desktops/restart", restartDesktopHandler)
-	http.HandleFunc("/api/desktops/delete", deleteDesktopHandler)
-	http.HandleFunc("/messages", messagesDashboardHandler)
-	http.HandleFunc("/api/desktops/send", sendMessageHandler)
-	http.HandleFunc("/api/helptext", helpTextHandler)
-	http.HandleFunc("/api/helpnotes", helpNotesHandler)
-	http.HandleFunc("/api/helpnotes/close", closeHelpNoteHandler)
-	http.HandleFunc("/dashboard", dashboardPostsHandler)
+    // IMPORTANT:
+    // Ollama initialization must not block the HTTP server.
+    go func() {
+        if err := manager.ensureOllama(context.Background()); err != nil {
+            log.Printf("warning: Ollama initialization failed: %v", err)
+            return
+        }
 
+        log.Println("Ollama ready.")
+    }()
 
-	log.Printf("Desktop manager listening on %s", listenAddr)
+    log.Printf("Desktop manager listening on %s", listenAddr)
 
-	if err := http.ListenAndServe(listenAddr, nil); err != nil {
-		log.Fatal(err)
-	}
+    if err := http.ListenAndServe(listenAddr, nil); err != nil {
+        log.Fatal(err)
+    }
 }
 
 // ------------------------------------------------------------
@@ -1458,47 +1464,46 @@ func (m *Manager) ensureOllama(ctx context.Context) error {
 
 // waitForOllama polls the Ollama API until it responds successfully, the context is cancelled, or a two-minute deadline elapses.
 func waitForOllama(ctx context.Context) error {
-	deadline := time.Now().Add(2 * time.Minute)
+    deadline := time.Now().Add(2 * time.Minute)
 
-	for time.Now().Before(deadline) {
+    for time.Now().Before(deadline) {
 
-		req, err := http.NewRequestWithContext(
-			ctx,
-			http.MethodGet,
-			"http://host.docker.internal:11434/api/tags",
-			nil,
-		)
+        req, err := http.NewRequestWithContext(
+            ctx,
+            http.MethodGet,
+            "http://flowera-ollama:11434/api/tags",
+            nil,
+        )
 
-		if err == nil {
+        if err == nil {
 
-			client := &http.Client{
-				Timeout: 3 * time.Second,
-			}
+            client := &http.Client{
+                Timeout: 3 * time.Second,
+            }
 
-			resp, err := client.Do(req)
+            resp, err := client.Do(req)
 
-			if err == nil {
+            if err == nil {
 
-				resp.Body.Close()
+                resp.Body.Close()
 
-				if resp.StatusCode >= 200 &&
-					resp.StatusCode < 300 {
+                if resp.StatusCode >= 200 &&
+                    resp.StatusCode < 300 {
 
-					return nil
-				}
-			}
-		}
+                    return nil
+                }
+            }
+        }
 
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(2 * time.Second):
-		}
-	}
+        select {
+        case <-ctx.Done():
+            return ctx.Err()
 
-	return fmt.Errorf(
-		"timeout waiting for Ollama",
-	)
+        case <-time.After(2 * time.Second):
+        }
+    }
+
+    return fmt.Errorf("timeout waiting for Ollama")
 }
 
 // ensureOllamaModel pulls the configured Ollama model into the shared Ollama container if it is not already present.

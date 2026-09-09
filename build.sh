@@ -64,8 +64,6 @@ docker compose up --build -d
 echo ""
 echo "=== Waiting for dashboard ==="
 
-echo "=== Waiting for dashboard ==="
-
 for i in {1..60}; do
     if curl -fsS http://127.0.0.1:8080/ >/dev/null 2>&1; then
         echo "Flowera dashboard is running."
