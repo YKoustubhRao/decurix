@@ -1,53 +1,109 @@
 # Code Map
 
-Algorithmically extracted (ctags) - every entry below is a real definition at the exact file/line shown, with a per-definition LLM summary grounded only in that definition's own code. Regenerated automatically from `.soul-docs/` after every edit - see `update-file-docs.js`.
+Manually regenerated after the `cmd/`+`internal/` reorg (the `update-file-docs.js`/`.soul-docs` pipeline that normally produces this file automatically isn't part of this checkout). Every entry below is a real definition at the exact file/line shown.
 
 ## Structs
 
 | Name | File:Line | Summary |
 |---|---|---|
-| `Desktop` | `main.go:49-61` | The `Desktop` struct represents a desktop resource with properties such as ID, name, profile, container ID, volume, status, URL, creation time, CPU count, and memory in megabytes. It is designed to hold metadata and resource usage details for a desktop environment. |
-| `HelpNote` | `main.go:64-71` | The `HelpNote` struct represents a data structure that stores information related to help notes, including an ID, desktop ID, virtual machine name, filename, content, and a timestamp for when the note was created. It is designed to be serialized into JSON format. |
-| `Manager` | `main.go:74-80` | The `Manager` struct is responsible for managing a collection of help notes, using a mutex (`mu`) to ensure thread safety when accessing or modifying the `helpNotes` map, which stores help notes associated with specific keys. It also holds a client object for interacting with some external service or system. |
-| `PageData` | `main.go:83-86` | The `PageData` struct holds a collection of `Desktop` objects and a `Host` string, likely representing data related to desktop environments or configurations associated with a specific host. |
+| `Desktop` | `internal/desktop/types.go:4-17` | Represents a managed desktop container: its identity, profile, harness (`ollama`/`claude`), backing Docker resources, status, and resource allocation. Serialized to JSON for the API and templates. |
+| `Manager` (desktop) | `internal/desktop/manager.go:22-26` | Owns the Docker client and the desktop containers it manages; the mutex guards create/delete against concurrent access. |
+| `Manager` (ollama) | `internal/ollama/ollama.go:29-32` | Owns the Docker client and network name used to create/find the single shared Ollama container. |
+| `HelpNote` | `internal/helpnotes/store.go:11-18` | A support note submitted from inside a running desktop, tied to a specific desktop and VM. |
+| `Store` (helpnotes) | `internal/helpnotes/store.go:21-24` | Mutex-guarded in-memory map of `HelpNote` by ID. |
+| `WorkerMemoryEntry` | `internal/memory/store.go:14-21` | A reusable workflow or decision learned while a desktop worker was operating. |
+| `Store` (memory) | `internal/memory/store.go:24-27` | Mutex-guarded in-memory map of `[]WorkerMemoryEntry` keyed by desktop ID. |
+| `Server` | `internal/httpapi/server.go:17-22` | Composes `desktop.Manager`, `helpnotes.Store`, `memory.Store`, and `webui.Renderer` to serve the control-plane HTTP API and dashboard. |
+| `PageData` | `internal/webui/render.go:17-22` | Template data for the index/messages pages: the current desktops, the worker memory, and the request host. |
+| `HelpNotesPageData` | `internal/webui/render.go:25-27` | Template data for the `/dashboard` help-notes page. |
+| `Renderer` | `internal/webui/render.go:30-32` | Loads and executes the web UI's HTML templates (`index.html` parsed once at startup; `messages.html`/`dashboard.html` re-parsed per request). |
 
 ## Funcs
 
+### `cmd/flowera`
+
 | Name | File:Line | Summary |
 |---|---|---|
-| `main` | `main.go:94-156` | The `main` function initializes a server by loading environment variables, setting up a Docker client, ensuring necessary Docker images and networks are present, parsing an HTML template, registering HTTP handlers for various endpoints, and starting the server to listen on a specified address. |
-| `dashboardHandler` | `main.go:163-185` | The `dashboardHandler` function handles HTTP requests to the root path ("/") by rendering a dashboard page. It retrieves a list of desktops using `manager.listDesktops`, constructs a `PageData` struct with the retrieved data and the host information, and then executes the "index.html" template to render the dashboard. |
-| `desktopsAPIHandler` | `main.go:192-200` | The `desktopsAPIHandler` function handles an HTTP request by retrieving a list of desktops using the `manager.listDesktops` method and returning the result as a JSON response. If an error occurs during the retrieval, it sends a JSON error response. |
-| `createDesktopHandler` | `main.go:203-286` | The function `createDesktopHandler` handles HTTP POST requests to create a desktop resource. It validates and processes form data for the desktop's name, profile, CPU count, and memory, and then calls `manager.createDesktop` to create the desktop with the specified parameters. |
-| `startDesktopHandler` | `main.go:289-310` | The `startDesktopHandler` function handles HTTP POST requests to start a desktop session by retrieving an `id` from the request form, validating it, and then calling the `startDesktop` method of the `manager` object with the provided `id`. If successful, it returns a JSON response indicating that the desktop session has been started. |
-| `stopDesktopHandler` | `main.go:313-334` | The function `stopDesktopHandler` handles HTTP POST requests to stop a desktop session identified by an `id` parameter. It checks if the request method is POST, validates the presence of the `id`, and calls `manager.stopDesktop` to stop the desktop session, returning a JSON response with the status "stopped" upon success. |
-| `restartDesktopHandler` | `main.go:337-358` | The `restartDesktopHandler` function handles HTTP POST requests to restart a desktop session, identified by an `id` parameter provided in the request. If the request method is not POST or the `id` is missing, it returns an appropriate error. Otherwise, it calls the `restartDesktop` method of the `manager` object with the provided `id` and returns a JSON response indicating the desktop was restarted. |
-| `deleteDesktopHandler` | `main.go:361-382` | The `deleteDesktopHandler` function handles HTTP POST requests to delete a desktop entry by its ID. It checks if the request method is POST, retrieves the ID from the request form, and calls the `deleteDesktop` method on a `manager` object to perform the deletion, returning a JSON response indicating success or an error if something goes wrong. |
-| `ensureImages` | `main.go:389-437` | The `ensureImages` function checks if specific Docker images exist on the system. If they do not exist, it pulls them from a registry and logs the process. |
-| `createDesktop` | `main.go:440-555` | The `createDesktop` function creates a desktop environment by setting up a persistent home volume, building container configurations, creating and starting a container, and returning a `Desktop` object with details about the created desktop. |
-| `resolveDesktopImage` | `main.go:558-572` | The `resolveDesktopImage` function takes a `profile` string as input and returns a corresponding desktop image identifier based on the profile. If the profile is "basic", "developer", or "ai", it returns the respective image identifier (`desktopImageBasic`, `desktopImageDeveloper`, or `desktopImageAI`). If the profile is not recognized, it returns an error indicating that the profile is invalid. |
-| `buildDesktopEnv` | `main.go:575-591` | The `buildDesktopEnv` function generates a list of environment variables for setting up a desktop environment, including a default password, resolution, desktop ID, name, and URLs for control plane and OLLAMA services. It uses the provided `name` to construct the desktop ID and name, and defaults to "admin" if no password is specified. |
-| `buildContainerConfigs` | `main.go:594-629` | The function `buildContainerConfigs` creates and returns configuration objects for a Docker container, specifying the image, environment variables, resource limits (CPU and memory), volume mounts, and network settings. |
-| `listDesktops` | `main.go:632-743` | The `listDesktops` function retrieves a list of desktop containers managed by the `Manager` struct, filtering them by a label (`desktop-manager=true`), and returns detailed information about each desktop, such as its ID, name, profile, status, and resource allocation. |
-| `startDesktop` | `main.go:746-758` | The `startDesktop` function creates a container with a name based on the provided `id` and starts it using the `ContainerStart` method. |
-| `stopDesktop` | `main.go:761-777` | The `stopDesktop` function stops a Docker container named `"desktop_" + sanitizeName(id)` with a timeout of 10 seconds using the provided client. |
-| `restartDesktop` | `main.go:780-804` | This function restarts a Docker container named "desktop_$id" by first stopping it (if it's running) and then starting it again. |
-| `deleteDesktop` | `main.go:807-861` | The `deleteDesktop` function deletes a Docker container named `desktop_<id>` and removes its associated persistent storage volume if it exists. It locks a mutex to ensure thread safety during the operation. |
-| `sanitizeName` | `main.go:870-891` | The `sanitizeName` function converts a string to lowercase and replaces any character that is not a lowercase letter, digit, hyphen, or underscore with a hyphen, then trims any leading or trailing hyphens or underscores. |
-| `getServerHost` | `main.go:894-902` | The `getServerHost` function retrieves the value of the environment variable `DESKTOP_HOST` and returns it if it is non-empty; otherwise, it returns the string `"localhost"`. |
-| `getHost` | `main.go:905-923` | The `getHost` function extracts the host from an HTTP request, removes any port information if present, and replaces `"localhost"` or `"127.0.0.1"` with the value of the `"DESKTOP_HOST"` environment variable, if it exists. Otherwise, it returns the original host. |
-| `jsonResponse` | `main.go:926-933` | The `jsonResponse` function sets the `Content-Type` header of an HTTP response to `application/json` and then encodes the provided interface value `v` into a JSON format, writing it to the response writer `w`. |
-| `jsonError` | `main.go:936-949` | The `jsonError` function writes an HTTP 500 Internal Server Error response with a JSON body containing an error message derived from the provided `err` parameter. It sets the `Content-Type` header to `application/json` and encodes the error message into the response. |
-| `messagesDashboardHandler` | `main.go:952-982` | This function, `messagesDashboardHandler`, handles HTTP requests to the "/messages" endpoint by rendering a dashboard page that displays information about desktops, using a Go HTML template located in the "templates/messages.html" file. It retrieves a list of desktops from a manager and passes this data along with the host information to the template for rendering. |
-| `sendMessageHandler` | `main.go:985-1016` | The `sendMessageHandler` function handles HTTP POST requests to send a message to a desktop with a specified ID. It validates the request method, extracts the desktop ID and content from the request form, checks for required fields, and calls the `manager.sendMessage` method to send the message. If any step fails, it returns an appropriate HTTP error. |
-| `sendMessage` | `main.go:1019-1097` | The `sendMessage` function sends a JSON-encoded message to a running Docker container (specifically a desktop container) via an HTTP POST request to the `/message` endpoint on port 8081. It verifies that the container exists and is running before sending the message. |
-| `helpTextHandler` | `main.go:1100-1136` | The function `helpTextHandler` handles HTTP POST requests to receive and store help notes, which include information such as desktop ID, VM name, filename, and content. It generates a unique ID for each note, stores it in a manager with a lock to ensure thread safety, and responds with a JSON status indicating the note was received. |
-| `helpNotesHandler` | `main.go:1139-1150` | The `helpNotesHandler` function retrieves all help notes stored in `manager.helpNotes`, locks the manager to prevent concurrent modifications, and returns them as a JSON response to the client. |
-| `closeHelpNoteHandler` | `main.go:1153-1168` | The `closeHelpNoteHandler` function handles HTTP POST requests to close a help note by deleting it from the `manager.helpNotes` map using the `id` parameter from the request form. It returns a JSON response indicating the help note was closed. |
-| `dashboardPostsHandler` | `main.go:1171-1211` | The `dashboardPostsHandler` function handles HTTP requests to the `/dashboard` endpoint by rendering a dashboard page that displays a list of help notes sorted by their creation date in descending order. It locks a mutex to safely read help notes from a manager, prepares the data for rendering, and executes a Go template to generate the HTML response. |
-| `ensureFloweraNetwork` | `main.go:1215-1247` | The function `ensureFloweraNetwork` checks if a Docker network named `floweraNetwork` exists. If it does not exist, it creates the network with the `bridge` driver and adds a label `"flowera": "true"` to it. |
-| `ensureOllama` | `main.go:1250-1435` | The `ensureOllama` function ensures that the Ollama image is pulled, a persistent volume is created, and the Ollama container is either started if it already exists or created and started if it does not. It also waits for the Ollama API to be ready and ensures that a specific Ollama model is pulled. |
-| `waitForOllama` | `main.go:1438-1480` | The `waitForOllama` function repeatedly sends HTTP GET requests to `http://host.docker.internal:11434/api/tags` until it receives a successful response (status code 200-299) or until a timeout of 2 minutes occurs. It checks for a successful response in a loop, with a 2-second delay between attempts, and returns an error if the timeout is reached. |
-| `ensureOllamaModel` | `main.go:1483-1628` | The function `ensureOllamaModel` checks if a specified Ollama model exists in a container by executing the `ollama show MODEL` command. If the model does not exist, it pulls the model using the `ollama pull MODEL` command, ensuring the model is available in the container. |
-| `desktopProxyHandler` | `main.go:1631-1735` | The `desktopProxyHandler` function acts as a reverse proxy for a desktop application running in a Docker container. It retrieves the container's network information, checks if it is running and connected to the Flowera network, and then forwards incoming HTTP requests to the appropriate internal IP address and port. |
+| `main` | `cmd/flowera/main.go:22-71` | Loads `.env`, builds the Docker client, constructs `desktop.Manager`/`ollama.Manager`/`httpapi.Server`, ensures desktop images/network exist, registers HTTP routes, kicks off Ollama readiness in the background, and starts `http.ListenAndServe(:8080)`. |
 
+### `internal/desktop`
+
+| Name | File:Line | Summary |
+|---|---|---|
+| `NewManager` | `internal/desktop/manager.go:29-31` | Creates a `Manager` backed by the given Docker client. |
+| `Create` | `internal/desktop/manager.go:34-152` | Provisions a new desktop container (volume, env, container config) for the given profile and harness and starts it, rolling back on failure. |
+| `List` | `internal/desktop/manager.go:155-273` | Returns all desktop containers managed by this instance, read from their Docker labels (`desktop-profile`, `desktop-harness`, defaulting to `ollama` when absent) and inspect data. |
+| `Start` | `internal/desktop/manager.go:276-288` | Starts the Docker container backing the given desktop ID. |
+| `Stop` | `internal/desktop/manager.go:291-313` | Stops the Docker container backing the given desktop ID, honoring `DESKTOP_STOP_TIMEOUT_SECONDS`. |
+| `Restart` | `internal/desktop/manager.go:316-340` | Stops and restarts the Docker container backing the given desktop ID. |
+| `Delete` | `internal/desktop/manager.go:343-397` | Removes the Docker container and persistent volume backing the given desktop ID. |
+| `SendMessage` | `internal/desktop/manager.go:400-478` | Posts a JSON message to a running desktop's internal `:8081/message` endpoint, verifying the container exists and is running first. |
+| `PersistMemoryFile` | `internal/desktop/manager.go:481-527` | Docker-execs a heredoc write of pre-formatted memory content into a desktop container's `/home/headless/memory` directory. |
+| `ProxyTarget` | `internal/desktop/proxy.go:23-58` | Resolves the internal VNC address for a desktop ID, returning sentinel errors (`ErrNotFound`/`ErrNotRunning`/`ErrNoNetwork`/`ErrNoAddress`) so `httpapi` can reproduce the original 404/503 messages without this package touching `net/http`. |
+| `EnsureImages` | `internal/desktop/docker.go:30-79` | Pulls any required desktop Docker images that are not already present locally. |
+| `EnsureNetwork` | `internal/desktop/docker.go:81-114` | Creates the shared `flowera-network` Docker network if it does not already exist. |
+| `resolveDesktopImage` | `internal/desktop/docker.go:116-131` | Maps a desktop profile (basic/developer/ai) to its corresponding Docker image. |
+| `buildDesktopEnv` | `internal/desktop/docker.go:137-161` | Builds the container environment variables (VNC, desktop identity, control-plane/Ollama URLs, `AGENT_HARNESS`, and `ANTHROPIC_API_KEY` when set) for a desktop by name and harness. |
+| `buildContainerConfigs` | `internal/desktop/docker.go:164-200` | Builds the Docker container, host, and network configuration for a desktop from its resolved image, resources, profile, and harness (labels both `desktop-profile` and `desktop-harness`). |
+| `sanitizeName` | `internal/desktop/docker.go:190-212` | Normalizes a string into a safe lowercase container/volume name fragment. |
+| `ServerHost` | `internal/desktop/docker.go:214-221` | Returns the configured external host (`DESKTOP_HOST`), defaulting to `localhost`. |
+
+### `internal/ollama`
+
+| Name | File:Line | Summary |
+|---|---|---|
+| `NewManager` | `internal/ollama/ollama.go:36-38` | Creates a `Manager` backed by the given Docker client and network name. |
+| `EnsureReady` | `internal/ollama/ollama.go:42-228` | Ensures the Ollama image is pulled, a persistent volume exists, the container is created/started, the API becomes reachable, and the configured model (`Model`) is pulled. |
+| `waitForOllama` | `internal/ollama/ollama.go:230-272` | Polls the Ollama API until it responds successfully or a two-minute deadline elapses. |
+| `ensureModel` | `internal/ollama/ollama.go:274-` | Checks whether the configured model exists in the container (`ollama show`) and pulls it (`ollama pull`) if not. |
+
+### `internal/helpnotes`
+
+| Name | File:Line | Summary |
+|---|---|---|
+| `NewStore` | `internal/helpnotes/store.go:27-31` | Creates an empty help-notes `Store`. |
+| `Add` | `internal/helpnotes/store.go:34-39` | Records a help note. |
+| `List` | `internal/helpnotes/store.go:42-53` | Returns all recorded help notes, in no particular order. |
+| `Close` | `internal/helpnotes/store.go:56-61` | Deletes a help note by ID (no-op if absent). |
+
+### `internal/memory`
+
+| Name | File:Line | Summary |
+|---|---|---|
+| `NewStore` | `internal/memory/store.go:30-34` | Creates an empty memory `Store`. |
+| `Record` | `internal/memory/store.go:39-77` | Validates and stores a new worker memory entry; does not touch Docker (see `desktop.PersistMemoryFile`, composed by `httpapi.desktopMemoryHandler`). |
+| `List` | `internal/memory/store.go:79-101` | Returns worker memory entries (optionally filtered by desktop ID), most recent first. |
+| `FormatForDesktopFile` | `internal/memory/store.go:103-122` | Renders a memory entry as the flat text file persisted into a desktop's memory directory, and returns the filename to use. |
+
+### `internal/httpapi`
+
+| Name | File:Line | Summary |
+|---|---|---|
+| `NewServer` | `internal/httpapi/server.go:25-33` | Creates a `Server` from its component stores/managers. |
+| `RegisterRoutes` | `internal/httpapi/server.go:35-51` | Registers every HTTP route the control plane serves (unchanged from the original single-file route table). |
+| `dashboardHandler` | `internal/httpapi/desktops.go:16-46` | Renders the root dashboard page listing all desktops and worker memory. |
+| `desktopsAPIHandler` | `internal/httpapi/desktops.go:48-57` | Returns the current list of desktops as JSON. |
+| `createDesktopHandler` | `internal/httpapi/desktops.go:60-170` | Validates a desktop-creation request (name, profile, harness, cpus, memory) — rejecting `harness=claude` with `profile=basic` — and creates the desktop. |
+| `startDesktopHandler` | `internal/httpapi/desktops.go:173-194` | Starts an existing desktop by ID. |
+| `stopDesktopHandler` | `internal/httpapi/desktops.go:197-218` | Stops a running desktop by ID. |
+| `restartDesktopHandler` | `internal/httpapi/desktops.go:221-242` | Restarts a desktop by ID. |
+| `deleteDesktopHandler` | `internal/httpapi/desktops.go:245-266` | Deletes a desktop and its persistent storage by ID. |
+| `desktopProxyHandler` | `internal/httpapi/proxy.go:14-99` | Reverse-proxies HTTP requests to a desktop container's internal VNC address, mapping `desktop.ProxyTarget`'s sentinel errors to the original 404/503 responses. |
+| `messagesDashboardHandler` | `internal/httpapi/messages.go:11-32` | Renders the messages dashboard page for sending messages to desktops. |
+| `sendMessageHandler` | `internal/httpapi/messages.go:34-` | Validates and forwards a message-send request to a specific desktop. |
+| `helpTextHandler` | `internal/httpapi/helpnotes.go:15-60` | Records a help note submitted from inside a desktop. |
+| `helpNotesHandler` | `internal/httpapi/helpnotes.go:62-65` | Returns all recorded help notes as JSON. |
+| `closeHelpNoteHandler` | `internal/httpapi/helpnotes.go:67-81` | Deletes a help note by ID. |
+| `dashboardPostsHandler` | `internal/httpapi/helpnotes.go:83-` | Renders the help-notes dashboard, most recent first. |
+| `desktopMemoryHandler` | `internal/httpapi/memory.go:12-` | Stores a new worker memory entry (via `memory.Store.Record` + `desktop.PersistMemoryFile`) or returns all remembered workflows. |
+| `jsonResponse` / `jsonError` | `internal/httpapi/json.go:10-` / `:20-` | Write a value as JSON / write a generic 500 JSON error (never leaks `err.Error()` to the client; logs it server-side). |
+| `getHost` | `internal/httpapi/host.go:10-` | Derives the externally-reachable host from an incoming request, substituting `DESKTOP_HOST` for `localhost`. |
+
+### `internal/webui`
+
+| Name | File:Line | Summary |
+|---|---|---|
+| `NewRenderer` | `internal/webui/render.go:35-41` | Parses `index.html` once at startup. |
+| `RenderIndex` | `internal/webui/render.go:44-46` | Renders the root dashboard page. |
+| `RenderMessages` | `internal/webui/render.go:50-56` | Renders the messages page (re-parses `messages.html` per call). |
+| `RenderHelpNotesDashboard` | `internal/webui/render.go:60-66` | Renders the help-notes dashboard (re-parses `dashboard.html` per call). |

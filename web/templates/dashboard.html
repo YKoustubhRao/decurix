@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
+<title>Help · Flowera</title>
+
+{{template "theme"}}
+
+<style>
+.feed{display:grid;gap:14px}
+
+.req{
+  background:var(--surface);
+  border:1px solid var(--line);
+  border-radius:var(--r-xl);
+  box-shadow:var(--shadow-1);
+  overflow:hidden;
+  transition:border-color .14s ease,box-shadow .14s ease
+}
+.req:hover{border-color:var(--line-2);box-shadow:var(--shadow-2)}
+.req.resolving{opacity:.4;transition:opacity .18s ease}
+
+.req-head{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:13px 14px;
+  border-bottom:1px solid var(--line)
+}
+
+.req-mark{
+  width:28px;height:28px;
+  display:grid;place-items:center;
+  border-radius:8px;
+  background:var(--accent-soft);
+  color:var(--accent);
+  flex:none
+}
+
+.req-vm{font-size:14px;font-weight:600;letter-spacing:-.01em}
+
+.req-meta{
+  display:flex;
+  align-items:center;
+  gap:7px;
+  margin-top:2px;
+  font-size:11.5px;
+  color:var(--text-3)
+}
+.req-meta .mono{font-size:11.5px}
+.req-meta .sep{width:3px;height:3px;border-radius:50%;background:currentColor;flex:none}
+
+.req-head .btn{margin-left:auto}
+
+.req-body{
+  margin:14px;
+  padding:13px 14px;
+  background:var(--surface-2);
+  border:1px solid var(--line);
+  border-radius:var(--r-lg);
+  font-family:var(--mono);
+  font-size:12.5px;
+  line-height:1.65;
+  color:var(--text);
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+  max-height:340px;
+  overflow-y:auto
+}
+
+.reply{padding:0 14px 14px;display:grid;gap:9px}
+
+.reply textarea{
+  min-height:42px;
+  max-height:220px;
+  font-family:var(--sans);
+  font-size:13.5px;
+  line-height:1.5;
+  resize:none;
+  overflow-y:auto
+}
+
+.reply-foot{display:flex;align-items:center;gap:10px}
+.reply-foot .hint{flex:1}
+.reply-foot kbd{
+  font-family:var(--mono);
+  font-size:10.5px;
+  padding:1px 5px;
+  border:1px solid var(--line-2);
+  border-bottom-width:2px;
+  border-radius:4px;
+  background:var(--surface-2);
+  color:var(--text-2)
+}
+
+.sent{display:flex;align-items:center;gap:6px;color:var(--live);font-size:12.5px;font-weight:550}
+
+@media (max-width:720px){
+  .req-head{flex-wrap:wrap}
+  .req-head .btn{margin-left:0;width:100%}
+  .reply-foot{flex-direction:column-reverse;align-items:stretch}
+  .reply-foot .btn{width:100%}
+}
+</style>
+</head>
+
+<body>
+
+{{template "sprite"}}
+
+<div id="progress"></div>
+<div id="toasts"></div>
+
+{{template "topbar" "help"}}
+
+<main class="wrap wrap-narrow">
+
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">Inbox</div>
+      <h1>Help requests</h1>
+      <p class="page-sub">Your agents stop and ask here before anything they can't undo.</p>
+    </div>
+  </div>
+
+  <div class="feed" id="feed">
+{{if .Notes}}
+{{range .Notes}}
+    <article class="req" id="req-{{.ID}}">
+
+      <div class="req-head">
+        <span class="req-mark"><svg width="15" height="15"><use href="#i-inbox"/></svg></span>
+
+        <div style="min-width:0">
+          <div class="req-vm trunc">{{.VMName}}</div>
+          <div class="req-meta">
+            <span class="mono trunc">{{.Filename}}</span>
+            <span class="sep"></span>
+            <time data-created="{{.CreatedAt.Format "2006-01-02T15:04:05Z07:00"}}">{{.CreatedAt.Format "02 Jan, 15:04"}}</time>
+          </div>
+        </div>
+
+        <button class="btn btn-quiet btn-sm" data-resolve="{{.ID}}">
+          <svg width="14" height="14"><use href="#i-check"/></svg>
+          Resolve
+        </button>
+      </div>
+
+      <div class="req-body">{{.Content}}</div>
+
+      <form class="reply" data-reply data-note="{{.ID}}" data-desktop="{{.DesktopID}}">
+        <textarea class="textarea" placeholder="Reply to this desktop…" rows="1" required></textarea>
+
+        <div class="reply-foot">
+          <div class="hint"><kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line</div>
+          <button type="submit" class="btn btn-primary btn-sm">
+            <svg width="14" height="14"><use href="#i-send"/></svg>
+            Send reply
+          </button>
+        </div>
+      </form>
+
+    </article>
+{{end}}
+{{else}}
+    <div class="empty">
+      <div class="empty-mark" style="background:var(--live-soft);color:var(--live)">
+        <svg width="19" height="19"><use href="#i-check"/></svg>
+      </div>
+      <h2>Nothing waiting on you</h2>
+      <p>When an agent needs approval or gets stuck, the request lands here.</p>
+    </div>
+{{end}}
+  </div>
+
+</main>
+
+{{template "chrome-js"}}
+
+<script>
+(function(){
+  "use strict";
+
+  var toast = Flowera.toast, post = Flowera.post;
+
+  /* ---------------- relative timestamps ---------------- */
+
+  document.querySelectorAll("[data-created]").forEach(function(el){
+    var date = new Date(el.dataset.created);
+    if(isNaN(date.getTime())){ return; }
+
+    var seconds = Math.round((Date.now() - date.getTime()) / 1000);
+
+    if(seconds < 60){ el.textContent = "just now"; }
+    else if(seconds < 3600){ el.textContent = Math.floor(seconds / 60) + "m ago"; }
+    else if(seconds < 86400){ el.textContent = Math.floor(seconds / 3600) + "h ago"; }
+    else if(seconds < 604800){ el.textContent = Math.floor(seconds / 86400) + "d ago"; }
+
+    el.title = date.toLocaleString();
+  });
+
+  /* ---------------- auto-growing reply boxes ---------------- */
+
+  function grow(textarea){
+    textarea.style.height = "auto";
+    textarea.style.height = Math.min(textarea.scrollHeight, 220) + "px";
+  }
+
+  document.querySelectorAll(".reply textarea").forEach(function(textarea){
+    grow(textarea);
+
+    textarea.addEventListener("input", function(){ grow(textarea); });
+
+    textarea.addEventListener("keydown", function(event){
+      if(event.key === "Enter" && !event.shiftKey){
+        event.preventDefault();
+        textarea.form.requestSubmit();
+      }
+    });
+  });
+
+  /* ---------------- send a reply ---------------- */
+
+  document.querySelectorAll("[data-reply]").forEach(function(form){
+    form.addEventListener("submit", async function(event){
+      event.preventDefault();
+
+      var textarea = form.querySelector("textarea");
+      var submit = form.querySelector("button[type=submit]");
+      var content = textarea.value.trim();
+
+      if(!form.dataset.desktop){
+        return toast("This request isn't linked to a desktop.", "error");
+      }
+
+      if(!content){
+        return toast("Write a reply first.", "error");
+      }
+
+      submit.disabled = true;
+      Flowera.busy(true);
+
+      try{
+        await post("/api/desktops/send", {id: form.dataset.desktop, content: content});
+
+        textarea.value = "";
+        grow(textarea);
+        markSent(form);
+      }catch(e){
+        toast(e.message, "error");
+      }finally{
+        Flowera.busy(false);
+        submit.disabled = false;
+      }
+    });
+  });
+
+  /* Swap the keyboard hint for a confirmation, then put the hint back. */
+  function markSent(form){
+    var hint = form.querySelector(".hint");
+    var original = hint.innerHTML;
+
+    hint.className = "sent";
+    hint.innerHTML = '<svg width="14" height="14"><use href="#i-check"/></svg>Delivered to the desktop';
+
+    setTimeout(function(){
+      hint.className = "hint";
+      hint.innerHTML = original;
+    }, 3200);
+  }
+
+  /* ---------------- resolve ---------------- */
+
+  document.querySelectorAll("[data-resolve]").forEach(function(button){
+    button.addEventListener("click", async function(){
+      var id = button.dataset.resolve;
+      var card = document.getElementById("req-" + id);
+
+      button.disabled = true;
+
+      try{
+        await post("/api/helpnotes/close", {id: id});
+
+        card.classList.add("resolving");
+
+        setTimeout(function(){
+          card.remove();
+
+          if(!document.querySelector(".req")){ location.reload(); }
+        }, 180);
+      }catch(e){
+        button.disabled = false;
+        toast(e.message, "error");
+      }
+    });
+  });
+})();
+</script>
+
+</body>
+</html>
