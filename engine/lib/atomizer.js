@@ -16,6 +16,16 @@ const { MODELS } = require("./models");
 const MAX_ATOMIZE_DEPTH = 3;
 const MAX_PLAN_CALLS = 20;
 
+// Shared noun lists - a round-2 eval (100 harder/adversarial tasks, see
+// engine/eval/) found this same enumeration problem independently in three
+// different places (isCodeProjectTask, the file-write bypass, and a
+// missing "just implement this one thing" bypass) because each one had
+// its own copy that had each individually gone stale. One shared list per
+// category now - still an enumeration (English has no fixed vocabulary
+// for this), but at least fixed once instead of three times.
+const CODE_NOUNS = "code|library|libraries|class|program|algorithm|tree|struct|structure|function|cache|filter|implementation|files?|api|stack|queue|method|script|module|component|query|heap|graph|matrix";
+const CONTENT_NOUNS = "poem|haiku|limerick|sonnet|verse|rap|song|story|letter|message|note|joke|quote|essay|review|caption|tagline|greeting|toast|speech|bio|summary|paragraph|sentence|description";
+
 /** A step is atomic if it has exactly one command/action reference and no
  * sequencing language. A fenced code block is a literal, already-concrete
  * answer - not a further-decomposable instruction (recursing into it burned
@@ -62,13 +72,36 @@ function isStructuralTask(taskDescription) {
 function looksLikeSingleDirectAnswer(taskDescription) {
   const t = taskDescription.trim();
   if (t.length > 400) return false; // let longer/richer requests still go through real planning
-  // A 100-task eval across domains (see engine/eval/) found both directions
-  // of this heuristic too narrow: "and give/note/compare/explain ..." is a
-  // real second ask that "and also/then" alone didn't catch (5 genuinely
-  // multi-part "explain X, and Y" requests got wrongly collapsed to one
-  // step), and a bare "," + "then" (no "and") was never checked at all.
+
+  // Round-2 eval finding: a request this short essentially cannot contain
+  // a genuine second ask - "fix this", "repo pls", "make it better" kept
+  // getting fragmented into 5-7 steps by real planning with nothing to
+  // actually decompose. No prompt in either eval round that's genuinely
+  // multi-part is anywhere close to this short, so this is a safe,
+  // unconditional shortcut, not just a default.
+  if (t.split(/\s+/).filter(Boolean).length <= 4) return true;
+
+  // Same eval: "Do the following: 1) ..., 2) ..." matched the yes/no-question
+  // "do" starter below (added for "Do you know...") even though this "do"
+  // is an imperative introducing a real multi-part list, not a question -
+  // checked before the "and X" signals since this one doesn't use "and" at
+  // all. Also found: "and give/note/compare/create/format/translate ..."
+  // is a real second ask that "and also/then" alone didn't catch (multiple
+  // genuinely multi-part "explain X, and Y" requests wrongly collapsed to
+  // one step), and a bare "," + "then" (no "and") was never checked either.
+  // NOT fixed: "and how/why" (e.g. "explain X, and how does Y work") -
+  // deliberately left alone because "what is the time complexity of binary
+  // search, and why?" is a validated single-step case in production, and
+  // there's no cheap signal that tells the two apart. "include" was tried
+  // and removed: "...and include brief comments explaining the eviction
+  // logic" is a minor ancillary detail on ONE deliverable (a class), not a
+  // second one, and treating it as multi-part sent a single "implement
+  // this class" request back into 17-step fragmentation - the opposite of
+  // what this whole function exists to prevent. No evidence any tested
+  // case actually needed "include" to be caught as multi-part.
   const multiPartSignals =
-    /\band\b[\s\S]*\b(also|then|give|provide|show|compare|list|include|note|discuss|analyze|evaluate|summarize|identify|calculate|describe|explain|write)\b/i.test(
+    /^do(es)?\s+the\s+following\b/i.test(t) ||
+    /\band\b[\s\S]*\b(also|then|give|provide|show|compare|list|note|discuss|analyze|evaluate|summarize|identify|calculate|describe|explain|write|create|format|translate|verify)\b/i.test(
       t
     ) ||
     /,\s*then\b/i.test(t) ||
@@ -76,6 +109,7 @@ function looksLikeSingleDirectAnswer(taskDescription) {
     /\bfirst\b[\s\S]*\bsecond\b/i.test(t) ||
     /;/.test(t);
   if (multiPartSignals) return false;
+
   // Same eval: "write a haiku/limerick/sonnet/rap verse/..." only matched
   // when the noun happened to be "short"/"one-paragraph"/"brief" - every
   // other single-shot creative request (6 of 10 tested) fell through to
@@ -85,6 +119,7 @@ function looksLikeSingleDirectAnswer(taskDescription) {
   const directShapes =
     /^(what|why|how|when|where|who|which|is|are|do|does|can|could|would|should|will|explain|describe|solve|summarize|summarise|define|list|give)\b/i;
   if (directShapes.test(t)) return true;
+
   // A first attempt at the "write/compose/create a <anything>" case above
   // matched ANY noun, not just short creative content - "create a study
   // plan for learning DS&A over 8 weeks" matched exactly like "write a
@@ -93,9 +128,18 @@ function looksLikeSingleDirectAnswer(taskDescription) {
   // next eval run after that fix went in). An explicit list of short-form
   // content types, not "any noun after a/an", avoids catching planning
   // artifacts (plan/itinerary/routine/roadmap/...) that only happen to
-  // share the same "write/create a ___" grammar.
-  const singleContentNoun =
-    /\b(write|compose|create)\s+(a|an)\s+(?:[\w-]+\s+){0,3}(poem|haiku|limerick|sonnet|verse|rap|song|story|letter|message|note|joke|quote|essay|review|caption|tagline|greeting|toast|speech|bio|summary|paragraph|sentence|description)\b/i;
+  // share the same "write/create a ___" grammar. Round 2 extended this to
+  // plain technical asks too ("implement/design a function/class/cache/
+  // ...") with no repo or file-save signal at all (those are already
+  // claimed by isCodeProjectTask/isFileWriteTask before this ever runs) -
+  // "Implement a thread-safe LRU cache in Java..." had NO bypass at all
+  // and fragmented into 27 steps for what should be one class.
+  // "one" alongside "a/an": "just write ONE function that adds two
+  // numbers" - a real phrasing variant of the same "a function" shape.
+  const singleContentNoun = new RegExp(
+    `\\b(write|compose|create|implement|build|design)\\s+(a|an|one)\\s+(?:[\\w-]+\\s+){0,4}(${CONTENT_NOUNS}|${CODE_NOUNS})\\b`,
+    "i"
+  );
   return singleContentNoun.test(t);
 }
 
@@ -112,12 +156,15 @@ function isCodeProjectTask(taskDescription) {
   // The noun list kept missing real data-structure names as they came up
   // in testing (a "trie", a "bloom filter", an "LRU cache" all failed to
   // match "tree|struct|..." even with an explicit repo ask right next to
-  // them) - added generic terms ("implementation", "cache", "structure")
-  // rather than trying to enumerate every possible data structure name.
-  const wantsCode =
-    /\b(implement|write|create|build)\b[\s\S]*\b(code|library|libraries|class|program|algorithm|tree|struct|structure|function|cache|filter|implementation)\b/.test(
-      t
-    );
+  // them; round 2 found "files"/"API"/"stack"/"queue" missing too, e.g.
+  // "create two Python FILES ... push both to a new repo" never matched
+  // at all) - moved to the shared CODE_NOUNS list (see its own comment)
+  // rather than maintaining a second copy that drifts out of sync.
+  // Verb form matters too: "creat(?:e|ing)" rather than bare "create",
+  // because "saving each in its own file" and "writes its own docs" use
+  // participle/third-person forms that a bare `\bcreate\b` word-boundary
+  // match silently never matches - caught live on both verbs in round 2.
+  const wantsCode = new RegExp(`\\b(implement|writ(?:e|es|ing)|creat(?:e|es|ing)|build)\\b[\\s\\S]*\\b(${CODE_NOUNS})\\b`).test(t);
   // "readme" dropped from this list as a precaution, not something the
   // eval actually caught failing: broadening wantsCode's noun list above
   // means a request like "write a class and add a README" would now
@@ -160,8 +207,26 @@ function isFileWriteTask(taskDescription) {
   // whatever noun isn't thought of next) and let the request fall through
   // to normal fragmented planning, which is exactly the failure this
   // whole function exists to prevent - caught live on that exact phrase.
-  const wantsSave =
-    /\b(save|store|write|put|create)\b[\s\S]*\b(file|document|note|poem|letter|essay|story|script|report|text|it|this|that)\b/.test(t);
+  //
+  // The verb list itself had the same "keeps missing the next one" problem
+  // one level up: round 2 tested 10 real-sounding synonyms for "save this
+  // somewhere" (dump/export/persist/output/log/place/stash/produce/
+  // compile/tuck) and 7 of 10 fell straight through to skills/general.js -
+  // the exact original failure this file exists to prevent, just with a
+  // different verb tripping it. Broadened the verb list rather than the
+  // noun list this time; also fixed the same "-e/-ing/-ed" word-boundary
+  // gap as isCodeProjectTask's wantsCode ("saving each in its own file"
+  // didn't match a bare `\bsave\b`).
+  const saveVerbs =
+    "sav(?:e|es|ed|ing)|stor(?:e|es|ed|ing)|writ(?:e|es|ing)|put|creat(?:e|es|ed|ing)|mak(?:e|es|ing)|draft(?:s|ed|ing)?|compos(?:e|es|ed|ing)|jot(?:s|ted|ting)?|produc(?:e|es|ed|ing)|generat(?:e|es|ed|ing)|output(?:s|ted|ting)?|export(?:s|ed|ing)?|dump(?:s|ed|ing)?|log(?:s|ged|ging)?|stash(?:es|ed|ing)?|drop(?:s|ped|ping)?|squirrel(?:s|ed|ing)?|tuck(?:s|ed|ing)?|plac(?:e|es|ed|ing)|persist(?:s|ed|ing)?|compil(?:e|es|ed|ing)";
+  // "them" added alongside "it/this/that": "log THEM to notes.md" uses the
+  // plural pronoun because its antecedent ("some meeting notes") is
+  // plural - missed live, same for "tuck THEM into tests.py". Object
+  // nouns made plural-tolerant ("note" alone doesn't match "notes") for
+  // the same reason.
+  const wantsSave = new RegExp(
+    `\\b(${saveVerbs})\\b[\\s\\S]*\\b(files?|documents?|notes?|poems?|letters?|essays?|stor(?:y|ies)|scripts?|reports?|text|it|this|that|them)\\b`
+  ).test(t);
   return hasPathOrFileWord && wantsSave;
 }
 
