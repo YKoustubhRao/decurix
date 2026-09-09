@@ -765,7 +765,13 @@ func (m *Manager) stopDesktop(
 
 	name := "desktop_" + sanitizeName(id)
 
+	timeoutEnv := os.Getenv("DESKTOP_STOP_TIMEOUT_SECONDS")
 	timeout := 10
+	if timeoutEnv != "" {
+		if parsedTimeout, err := strconv.Atoi(timeoutEnv); err == nil && parsedTimeout > 0 {
+			timeout = parsedTimeout
+		}
+	}
 
 	return m.client.ContainerStop(
 		ctx,
