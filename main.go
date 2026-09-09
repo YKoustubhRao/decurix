@@ -1001,7 +1001,7 @@ func sendMessageHandler(w http.ResponseWriter, r *http.Request) {
         return
     }
 
-    if len(content) > 1000 {
+    if len(content) > 8192 {
         http.Error(w, "message too long", http.StatusBadRequest)
         return
     }
