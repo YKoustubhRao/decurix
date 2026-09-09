@@ -1,0 +1,844 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
+<title>Desktops · Flowera</title>
+
+{{template "theme"}}
+
+<style>
+/* ---------- desktop grid ---------- */
+
+.grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(340px,1fr));
+  gap:16px;
+  align-items:start
+}
+
+.dcard{
+  display:flex;
+  flex-direction:column;
+  background:var(--surface);
+  border:1px solid var(--line);
+  border-radius:var(--r-xl);
+  box-shadow:var(--shadow-1);
+  overflow:hidden;
+  transition:border-color .14s ease,box-shadow .14s ease
+}
+.dcard:hover{border-color:var(--line-2);box-shadow:var(--shadow-2)}
+
+.dcard-head{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:12px;
+  padding:15px 15px 12px
+}
+
+.dcard-name{
+  font-size:15.5px;
+  font-weight:600;
+  letter-spacing:-.012em;
+  margin-bottom:7px
+}
+
+.dcard-tags{display:flex;flex-wrap:wrap;gap:5px}
+
+.specs{
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:1px;
+  margin:0;
+  padding:0;
+  background:var(--line);
+  border-block:1px solid var(--line)
+}
+.specs > div{padding:9px 15px;background:var(--surface);min-width:0}
+.specs dt{font-size:11px;color:var(--text-3);margin-bottom:2px}
+.specs dd{margin:0;font-size:12.5px;color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.url-row{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  padding:9px 9px 9px 15px;
+  border-bottom:1px solid var(--line);
+  color:var(--text-3)
+}
+.url-row .mono{flex:1;font-size:11.5px}
+.copy-btn{width:27px;height:27px;border-radius:var(--r-sm)}
+.copy-btn.done{color:var(--live)}
+
+/* ---------- learned memory ---------- */
+
+.mem{border-bottom:1px solid var(--line)}
+
+.mem-summary{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:11px 15px;
+  list-style:none;
+  cursor:pointer;
+  font-size:12.5px;
+  font-weight:550;
+  color:var(--text-2)
+}
+.mem-summary::-webkit-details-marker{display:none}
+.mem-summary:hover{color:var(--text);background:var(--surface-2)}
+
+.mem-chevron{transition:transform .15s ease;color:var(--text-3)}
+.mem[open] > .mem-summary .mem-chevron{transform:rotate(180deg)}
+
+.mem-count{
+  margin-left:auto;
+  min-width:19px;
+  padding:0 6px;
+  border-radius:999px;
+  background:var(--surface-2);
+  color:var(--text-2);
+  font-size:11px;
+  font-weight:600;
+  text-align:center;
+  line-height:19px
+}
+.mem[open] > .mem-summary .mem-count{background:var(--surface-3)}
+.mem-count.filled{background:var(--accent-soft);color:var(--accent)}
+
+.mem-body{padding:0 15px 13px}
+
+.mem-list{display:grid;gap:7px;margin:0 0 10px;padding:0;list-style:none}
+
+.mem-item{
+  padding:9px 11px;
+  background:var(--surface-2);
+  border-radius:var(--r-md);
+  border-left:2px solid var(--accent)
+}
+.mem-cat{
+  font-size:10px;
+  font-weight:700;
+  letter-spacing:.085em;
+  text-transform:uppercase;
+  color:var(--text-3)
+}
+.mem-title{font-weight:600;font-size:13px;margin:2px 0 3px}
+.mem-summary-text{font-size:12.5px;color:var(--text-2);line-height:1.5}
+
+.mem-none{
+  padding:11px 0 12px;
+  font-size:12.5px;
+  color:var(--text-3)
+}
+
+.mem-add{border-top:1px dashed var(--line-2);padding-top:10px}
+.mem-add > summary{
+  list-style:none;
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  cursor:pointer;
+  font-size:12.5px;
+  font-weight:550;
+  color:var(--accent)
+}
+.mem-add > summary::-webkit-details-marker{display:none}
+.mem-add[open] > summary{margin-bottom:10px}
+
+.mem-form{display:grid;gap:8px}
+.mem-form .input,.mem-form .select,.mem-form .textarea{font-size:12.5px;padding:7px 10px}
+.mem-form .select{background-position:calc(100% - 15px) 14px,calc(100% - 11px) 14px}
+.mem-form .textarea{min-height:58px}
+.mem-form .btn{justify-self:end}
+
+/* ---------- card actions ---------- */
+
+.dcard-actions{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  padding:11px 12px;
+  background:var(--surface-2)
+}
+.dcard-actions .spacer{flex:1}
+.action-icon{width:31px;height:31px;padding:0}
+
+/* ---------- create dialog ---------- */
+
+.create-grid{display:grid;gap:15px}
+.claude-hint{display:none}
+.claude-hint.on{display:block}
+
+/* ---------- help rail ---------- */
+
+.rail{
+  position:fixed;
+  right:18px;
+  bottom:18px;
+  z-index:45;
+  width:335px;
+  max-height:min(70vh,620px);
+  display:none;
+  flex-direction:column;
+  background:var(--surface);
+  border:1px solid var(--line-2);
+  border-radius:var(--r-xl);
+  box-shadow:var(--shadow-3);
+  overflow:hidden
+}
+.rail.on{display:flex}
+
+.rail-head{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:11px 13px;
+  border-bottom:1px solid var(--line);
+  background:var(--surface-2)
+}
+.rail-head .eyebrow{color:var(--text-2)}
+.rail-head a{margin-left:auto;font-size:12px;font-weight:550}
+
+.rail-list{overflow-y:auto;padding:10px;display:grid;gap:9px}
+
+.note{
+  padding:11px 12px;
+  background:var(--surface);
+  border:1px solid var(--line);
+  border-left:2px solid var(--accent);
+  border-radius:var(--r-md);
+  animation:note-in .2s ease-out
+}
+@keyframes note-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+.note-head{display:flex;align-items:baseline;gap:8px;margin-bottom:6px}
+.note-vm{font-size:12.5px;font-weight:600;min-width:0}
+.note-time{margin-left:auto;font-size:11px;color:var(--text-3);white-space:nowrap}
+.note-body{
+  font-size:12.5px;
+  line-height:1.5;
+  color:var(--text-2);
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+  max-height:150px;
+  overflow-y:auto
+}
+.note-actions{display:flex;gap:6px;margin-top:9px}
+
+@media (max-width:720px){
+  .grid{grid-template-columns:1fr}
+  .rail{left:12px;right:12px;bottom:12px;width:auto;max-height:56vh}
+  .specs{grid-template-columns:repeat(2,1fr)}
+  .specs > div:last-child{grid-column:span 2}
+}
+</style>
+</head>
+
+<body data-tunnel="{{.TunnelURL}}" data-help-poll="own">
+
+{{template "sprite"}}
+
+<div id="progress"></div>
+<div id="toasts"></div>
+
+{{template "topbar" "desktops"}}
+
+<main class="wrap">
+
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">Workspace</div>
+      <h1>Desktops</h1>
+      <p class="page-sub">Disposable XFCE environments, each driven by its own agent.</p>
+    </div>
+
+    <button class="btn btn-primary" id="newDesktopBtn">
+      <svg width="15" height="15"><use href="#i-plus"/></svg>
+      New desktop
+    </button>
+  </div>
+
+  <div class="rule">
+    <span class="eyebrow">All desktops{{if .Desktops}} · {{len .Desktops}}{{end}}</span>
+  </div>
+
+  <div class="grid">
+{{if .Desktops}}
+{{range .Desktops}}
+    <article class="dcard">
+
+      <div class="dcard-head">
+        <div style="min-width:0">
+          <h2 class="dcard-name trunc" title="{{.Name}}">{{.Name}}</h2>
+          <div class="dcard-tags">
+            <span class="chip">
+              {{if eq .Profile "ai"}}AI Developer{{else if eq .Profile "developer"}}Developer{{else}}Basic{{end}}
+            </span>
+            <span class="chip">
+              {{if eq .Harness "claude"}}Claude Code{{else}}Ollama{{end}}
+            </span>
+          </div>
+        </div>
+
+        <span class="status {{.Status}}"><span class="dot"></span>{{.Status}}</span>
+      </div>
+
+      <dl class="specs">
+        <div>
+          <dt>CPU</dt>
+          <dd>{{.CPUs}} {{if eq .CPUs 1}}core{{else}}cores{{end}}</dd>
+        </div>
+        <div>
+          <dt>Memory</dt>
+          <dd data-mb="{{.MemoryMB}}">{{.MemoryMB}} MB</dd>
+        </div>
+        <div>
+          <dt>Created</dt>
+          <dd data-created="{{.CreatedAt}}">{{if .CreatedAt}}{{.CreatedAt}}{{else}}—{{end}}</dd>
+        </div>
+      </dl>
+
+      <div class="url-row">
+        <svg width="14" height="14"><use href="#i-monitor"/></svg>
+        <span class="mono trunc" title="{{.URL}}">{{.URL}}</span>
+        <button class="icon-btn copy-btn" data-copy="{{.URL}}" aria-label="Copy desktop URL">
+          <svg width="14" height="14"><use href="#i-copy"/></svg>
+        </button>
+      </div>
+
+      <details class="mem"{{if index $.MemoryByDesktop .ID}} open{{end}}>
+        <summary class="mem-summary">
+          <svg class="mem-chevron" width="15" height="15"><use href="#i-chevron"/></svg>
+          Learned memory
+          <span class="mem-count{{if index $.MemoryByDesktop .ID}} filled{{end}}">{{if index $.MemoryByDesktop .ID}}{{len (index $.MemoryByDesktop .ID)}}{{else}}0{{end}}</span>
+        </summary>
+
+        <div class="mem-body">
+          {{if index $.MemoryByDesktop .ID}}
+          <ul class="mem-list">
+            {{range index $.MemoryByDesktop .ID}}
+            <li class="mem-item">
+              <div class="mem-cat">{{.Category}}</div>
+              <div class="mem-title">{{.Title}}</div>
+              <div class="mem-summary-text">{{.Summary}}</div>
+            </li>
+            {{end}}
+          </ul>
+          {{else}}
+          <div class="mem-none">Nothing saved yet. Rules you add here are read by the agent before every task.</div>
+          {{end}}
+
+          <details class="mem-add">
+            <summary>
+              <svg width="13" height="13"><use href="#i-plus"/></svg>
+              Add a rule
+            </summary>
+
+            <form class="mem-form" data-memory-form>
+              <input type="hidden" name="desktop_id" value="{{.ID}}">
+              <input class="input" type="text" name="title" placeholder="Rule or workflow" required>
+              <select class="select" name="category">
+                <option value="workflow">Workflow</option>
+                <option value="decision">Decision</option>
+                <option value="exception">Exception</option>
+                <option value="review">Review</option>
+              </select>
+              <textarea class="textarea" name="summary" placeholder="What should the agent remember next time?" required></textarea>
+              <button type="submit" class="btn btn-primary btn-sm">Save rule</button>
+            </form>
+          </details>
+        </div>
+      </details>
+
+      <div class="dcard-actions">
+        {{if eq .Status "running"}}
+        <button class="btn btn-primary btn-sm" data-open="{{.URL}}">
+          <svg width="14" height="14"><use href="#i-external"/></svg>
+          Open
+        </button>
+        <button class="btn btn-default btn-sm action-icon" data-act="restart" data-id="{{.ID}}" title="Restart" aria-label="Restart desktop">
+          <svg width="14" height="14"><use href="#i-restart"/></svg>
+        </button>
+        <button class="btn btn-default btn-sm action-icon" data-act="stop" data-id="{{.ID}}" title="Stop" aria-label="Stop desktop">
+          <svg width="14" height="14"><use href="#i-stop"/></svg>
+        </button>
+        {{else}}
+        <button class="btn btn-primary btn-sm" data-act="start" data-id="{{.ID}}">
+          <svg width="14" height="14"><use href="#i-play"/></svg>
+          Start
+        </button>
+        {{end}}
+
+        <span class="spacer"></span>
+
+        <button class="btn btn-danger btn-sm action-icon" data-act="delete" data-id="{{.ID}}" data-name="{{.Name}}" title="Delete" aria-label="Delete desktop">
+          <svg width="15" height="15"><use href="#i-trash"/></svg>
+        </button>
+      </div>
+
+    </article>
+{{end}}
+{{else}}
+    <div class="empty" style="grid-column:1/-1">
+      <div class="empty-mark"><svg width="19" height="19"><use href="#i-monitor"/></svg></div>
+      <h2>No desktops yet</h2>
+      <p>Spin up your first environment with <strong>New desktop</strong> and hand it to an agent.</p>
+    </div>
+{{end}}
+  </div>
+
+</main>
+
+
+<aside class="rail" id="helpRail" aria-live="polite">
+  <div class="rail-head">
+    <svg width="15" height="15" style="color:var(--accent)"><use href="#i-inbox"/></svg>
+    <span class="eyebrow">Needs you · <span id="railCount">0</span></span>
+    <a href="/dashboard">Reply →</a>
+  </div>
+  <div class="rail-list" id="railList"></div>
+</aside>
+
+
+<dialog id="createDialog">
+  <form method="dialog" id="createForm">
+    <div class="dialog-head">
+      <div>
+        <h2>New desktop</h2>
+        <p>A fresh container with a persistent home directory.</p>
+      </div>
+      <button type="button" class="icon-btn" data-close-dialog aria-label="Close">
+        <svg width="16" height="16"><use href="#i-x"/></svg>
+      </button>
+    </div>
+
+    <div class="dialog-body create-grid">
+      <div class="field">
+        <label for="dName">Name</label>
+        <input class="input" type="text" id="dName" name="name" placeholder="research-box" autocomplete="off">
+        <div class="hint">Lowercase letters, numbers and dashes. Leave empty for a generated name.</div>
+      </div>
+
+      <div class="field">
+        <span class="field-label">Profile</span>
+        <div class="segmented" role="radiogroup" aria-label="Profile">
+          <label class="seg"><input type="radio" name="profile" value="basic" checked><span>Basic</span></label>
+          <label class="seg"><input type="radio" name="profile" value="developer"><span>Developer</span></label>
+          <label class="seg"><input type="radio" name="profile" value="ai"><span>AI Developer</span></label>
+        </div>
+        <div class="hint">Basic is a plain VNC desktop. Developer adds git, Node, Go, Rust and LibreOffice. AI Developer adds Codex on top.</div>
+      </div>
+
+      <div class="field">
+        <span class="field-label">Agent harness</span>
+        <div class="segmented" role="radiogroup" aria-label="Agent harness">
+          <label class="seg"><input type="radio" name="harness" value="ollama" checked><span>Ollama</span></label>
+          <label class="seg"><input type="radio" name="harness" value="claude" id="harnessClaude"><span>Claude Code</span></label>
+        </div>
+        <div class="hint claude-hint" id="claudeHint">Claude Code needs the Developer or AI Developer profile — the <code class="mono">claude</code> binary isn't in the Basic image.</div>
+      </div>
+
+      <div class="field">
+        <span class="field-label">CPU</span>
+        <div class="segmented" role="radiogroup" aria-label="CPU cores">
+          <label class="seg"><input type="radio" name="cpus" value="1" checked><span>1</span></label>
+          <label class="seg"><input type="radio" name="cpus" value="2"><span>2</span></label>
+          <label class="seg"><input type="radio" name="cpus" value="4"><span>4</span></label>
+          <label class="seg"><input type="radio" name="cpus" value="8"><span>8</span></label>
+        </div>
+      </div>
+
+      <div class="field">
+        <span class="field-label">Memory</span>
+        <div class="segmented" role="radiogroup" aria-label="Memory">
+          <label class="seg"><input type="radio" name="memory_mb" value="2048" checked><span>2 GB</span></label>
+          <label class="seg"><input type="radio" name="memory_mb" value="4096"><span>4 GB</span></label>
+          <label class="seg"><input type="radio" name="memory_mb" value="8192"><span>8 GB</span></label>
+          <label class="seg"><input type="radio" name="memory_mb" value="16384"><span>16 GB</span></label>
+        </div>
+      </div>
+    </div>
+
+    <div class="dialog-foot">
+      <button type="button" class="btn btn-quiet" data-close-dialog>Cancel</button>
+      <button type="submit" class="btn btn-primary" id="createSubmit">Create desktop</button>
+    </div>
+  </form>
+</dialog>
+
+
+<dialog id="confirmDialog">
+  <div class="dialog-head">
+    <div>
+      <h2 id="confirmTitle">Are you sure?</h2>
+      <p id="confirmBody"></p>
+    </div>
+  </div>
+  <div class="dialog-foot">
+    <button type="button" class="btn btn-quiet" id="confirmCancel">Cancel</button>
+    <button type="button" class="btn btn-primary" id="confirmOk">Confirm</button>
+  </div>
+</dialog>
+
+
+{{template "chrome-js"}}
+
+<script>
+(function(){
+  "use strict";
+
+  var toast = Flowera.toast, busy = Flowera.busy, post = Flowera.post;
+
+  /* ---------------- formatting ---------------- */
+
+  document.querySelectorAll("[data-mb]").forEach(function(el){
+    var mb = parseInt(el.dataset.mb, 10);
+    if(mb && mb % 1024 === 0){ el.textContent = (mb / 1024) + " GB"; }
+  });
+
+  document.querySelectorAll("[data-created]").forEach(function(el){
+    var raw = el.dataset.created;
+    if(!raw){ return; }
+
+    var date = new Date(raw);
+    if(isNaN(date.getTime())){ return; }
+
+    el.textContent = relative(date);
+    el.title = date.toLocaleString();
+  });
+
+  function relative(date){
+    var seconds = Math.round((Date.now() - date.getTime()) / 1000);
+
+    if(seconds < 60){ return "just now"; }
+    if(seconds < 3600){ return Math.floor(seconds / 60) + "m ago"; }
+    if(seconds < 86400){ return Math.floor(seconds / 3600) + "h ago"; }
+    if(seconds < 604800){ return Math.floor(seconds / 86400) + "d ago"; }
+
+    return date.toLocaleDateString(undefined, {day: "numeric", month: "short"});
+  }
+
+  /* ---------------- confirm dialog ---------------- */
+
+  var confirmDialog = document.getElementById("confirmDialog");
+  var confirmResolve = null;
+
+  function askConfirm(title, body, label, danger){
+    document.getElementById("confirmTitle").textContent = title;
+    document.getElementById("confirmBody").textContent = body;
+
+    var ok = document.getElementById("confirmOk");
+    ok.textContent = label;
+    ok.className = "btn " + (danger ? "btn-danger" : "btn-primary");
+
+    confirmDialog.showModal();
+
+    return new Promise(function(resolve){ confirmResolve = resolve; });
+  }
+
+  function settleConfirm(value){
+    if(confirmDialog.open){ confirmDialog.close(); }
+
+    if(confirmResolve){
+      confirmResolve(value);
+      confirmResolve = null;
+    }
+  }
+
+  document.getElementById("confirmOk").addEventListener("click", function(){ settleConfirm(true); });
+  document.getElementById("confirmCancel").addEventListener("click", function(){ settleConfirm(false); });
+  confirmDialog.addEventListener("close", function(){ settleConfirm(false); });
+
+  /* ---------------- create ---------------- */
+
+  var createDialog = document.getElementById("createDialog");
+  var createForm = document.getElementById("createForm");
+
+  function openCreate(){
+    createDialog.showModal();
+    document.getElementById("dName").focus();
+  }
+
+  document.getElementById("newDesktopBtn").addEventListener("click", openCreate);
+
+  document.querySelectorAll("[data-close-dialog]").forEach(function(button){
+    button.addEventListener("click", function(){ createDialog.close(); });
+  });
+
+  /* The claude harness needs the developer or ai profile - it is the only
+     one with the claude binary installed. */
+  function syncHarness(){
+    var profile = createForm.querySelector("input[name=profile]:checked").value;
+    var claude = document.getElementById("harnessClaude");
+    var blocked = profile === "basic";
+
+    claude.disabled = blocked;
+    document.getElementById("claudeHint").classList.toggle("on", blocked);
+
+    if(blocked && claude.checked){
+      createForm.querySelector("input[name=harness][value=ollama]").checked = true;
+    }
+  }
+
+  createForm.querySelectorAll("input[name=profile]").forEach(function(input){
+    input.addEventListener("change", syncHarness);
+  });
+
+  syncHarness();
+
+  createForm.addEventListener("submit", async function(event){
+    event.preventDefault();
+
+    var data = new FormData(createForm);
+    var name = (data.get("name") || "").trim();
+
+    var submit = document.getElementById("createSubmit");
+    submit.disabled = true;
+    submit.textContent = "Creating…";
+    busy(true);
+
+    try{
+      await post("/api/desktops/create", {
+        name: name || ("desktop-" + Date.now()),
+        profile: data.get("profile"),
+        harness: data.get("harness"),
+        cpus: data.get("cpus"),
+        memory_mb: data.get("memory_mb")
+      });
+
+      location.reload();
+    }catch(e){
+      busy(false);
+      submit.disabled = false;
+      submit.textContent = "Create desktop";
+      toast(e.message, "error");
+    }
+  });
+
+  /* ---------------- lifecycle actions ---------------- */
+
+  var ACTIONS = {
+    start:   {url: "/api/desktops/start",   pending: "Starting…"},
+    stop:    {url: "/api/desktops/stop",    pending: "Stopping…"},
+    restart: {url: "/api/desktops/restart", pending: "Restarting…"},
+    delete:  {url: "/api/desktops/delete",  pending: "Deleting…"}
+  };
+
+  document.addEventListener("click", async function(event){
+    var button = event.target.closest("[data-act]");
+    if(!button){ return; }
+
+    var action = ACTIONS[button.dataset.act];
+    if(!action){ return; }
+
+    if(button.dataset.act === "delete"){
+      var confirmed = await askConfirm(
+        "Delete " + button.dataset.name + "?",
+        "The container and its persistent home directory are removed. This cannot be undone.",
+        "Delete desktop",
+        true
+      );
+
+      if(!confirmed){ return; }
+    }
+
+    var card = button.closest(".dcard");
+    if(card){
+      card.querySelectorAll("button").forEach(function(b){ b.disabled = true; });
+    }
+
+    busy(true);
+
+    try{
+      await post(action.url, {id: button.dataset.id});
+      location.reload();
+    }catch(e){
+      busy(false);
+
+      if(card){
+        card.querySelectorAll("button").forEach(function(b){ b.disabled = false; });
+      }
+
+      toast(e.message, "error");
+    }
+  });
+
+  document.querySelectorAll("[data-open]").forEach(function(button){
+    button.addEventListener("click", function(){
+      window.open(button.dataset.open, "_blank", "noopener");
+    });
+  });
+
+  /* ---------------- copy URL ---------------- */
+
+  document.querySelectorAll("[data-copy]").forEach(function(button){
+    button.addEventListener("click", async function(){
+      try{
+        await navigator.clipboard.writeText(button.dataset.copy);
+
+        button.classList.add("done");
+        button.querySelector("use").setAttribute("href", "#i-check");
+
+        setTimeout(function(){
+          button.classList.remove("done");
+          button.querySelector("use").setAttribute("href", "#i-copy");
+        }, 1400);
+      }catch(e){
+        toast("Couldn't copy to the clipboard.", "error");
+      }
+    });
+  });
+
+  /* ---------------- learned memory ---------------- */
+
+  document.querySelectorAll("[data-memory-form]").forEach(function(form){
+    form.addEventListener("submit", async function(event){
+      event.preventDefault();
+
+      var submit = form.querySelector("button[type=submit]");
+      submit.disabled = true;
+      submit.textContent = "Saving…";
+
+      try{
+        var fields = {};
+        new FormData(form).forEach(function(value, key){ fields[key] = value; });
+
+        await post("/api/desktops/memory", fields);
+        location.reload();
+      }catch(e){
+        submit.disabled = false;
+        submit.textContent = "Save rule";
+        toast(e.message, "error");
+      }
+    });
+  });
+
+  /* ---------------- help requests rail ----------------
+     Rendered by diffing against what is already on screen: a blind
+     innerHTML rewrite every poll would restart the animation and drop
+     the user's scroll position mid-read. */
+
+  var rail = document.getElementById("helpRail");
+  var railList = document.getElementById("railList");
+  var railCount = document.getElementById("railCount");
+  var shown = new Map();
+
+  function noteElement(note){
+    var el = document.createElement("article");
+    el.className = "note";
+
+    var head = document.createElement("div");
+    head.className = "note-head";
+
+    var vm = document.createElement("div");
+    vm.className = "note-vm trunc";
+    vm.textContent = note.vm_name || note.filename || "Desktop";
+
+    var time = document.createElement("div");
+    time.className = "note-time";
+
+    var date = new Date(note.created_at);
+    time.textContent = isNaN(date.getTime()) ? "" : relative(date);
+
+    head.append(vm, time);
+
+    var body = document.createElement("div");
+    body.className = "note-body";
+    body.textContent = note.content || "";
+
+    var actions = document.createElement("div");
+    actions.className = "note-actions";
+
+    var reply = document.createElement("a");
+    reply.className = "btn btn-default btn-sm";
+    reply.href = "/dashboard";
+    reply.textContent = "Reply";
+
+    var resolve = document.createElement("button");
+    resolve.className = "btn btn-quiet btn-sm";
+    resolve.textContent = "Resolve";
+    resolve.addEventListener("click", function(){ resolveNote(note.id); });
+
+    actions.append(reply, resolve);
+    el.append(head, body, actions);
+
+    return el;
+  }
+
+  function renderNotes(notes){
+    var seen = new Set();
+
+    notes.forEach(function(note){
+      seen.add(note.id);
+
+      var existing = shown.get(note.id);
+
+      if(existing && existing.content === note.content){
+        return;
+      }
+
+      var el = noteElement(note);
+
+      if(existing){
+        existing.el.replaceWith(el);
+      }else{
+        railList.appendChild(el);
+      }
+
+      shown.set(note.id, {el: el, content: note.content});
+    });
+
+    shown.forEach(function(entry, id){
+      if(!seen.has(id)){
+        entry.el.remove();
+        shown.delete(id);
+      }
+    });
+
+    railCount.textContent = String(notes.length);
+    rail.classList.toggle("on", notes.length > 0);
+    Flowera.setHelpBadge(notes.length);
+  }
+
+  async function loadNotes(){
+    try{
+      var response = await fetch("/api/helpnotes", {cache: "no-store"});
+      if(!response.ok){ return; }
+
+      var notes = await response.json();
+      renderNotes(Array.isArray(notes) ? notes : []);
+    }catch(e){ /* keep the current rail contents */ }
+  }
+
+  async function resolveNote(id){
+    try{
+      await post("/api/helpnotes/close", {id: id});
+      loadNotes();
+    }catch(e){
+      toast(e.message, "error");
+    }
+  }
+
+  loadNotes();
+  setInterval(loadNotes, 2500);
+
+  /* ---------------- shortcuts ---------------- */
+
+  document.addEventListener("keydown", function(event){
+    if(event.key !== "n" || event.metaKey || event.ctrlKey || event.altKey){ return; }
+
+    var tag = (event.target.tagName || "").toLowerCase();
+    if(tag === "input" || tag === "textarea" || tag === "select"){ return; }
+    if(createDialog.open || confirmDialog.open){ return; }
+
+    event.preventDefault();
+    openCreate();
+  });
+})();
+</script>
+
+</body>
+</html>
