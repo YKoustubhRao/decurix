@@ -13,8 +13,8 @@
 
 .grid{
   display:grid;
-  grid-template-columns:repeat(auto-fill,minmax(340px,1fr));
-  gap:16px;
+  grid-template-columns:repeat(auto-fill,minmax(300px,360px));
+  gap:14px;
   align-items:start
 }
 
@@ -25,17 +25,55 @@
   border:1px solid var(--line);
   border-radius:var(--r-xl);
   box-shadow:var(--shadow-1);
-  overflow:hidden;
+  overflow:visible;
   transition:border-color .14s ease,box-shadow .14s ease
 }
 .dcard:hover{border-color:var(--line-2);box-shadow:var(--shadow-2)}
 
+/* ---------- desktop preview ---------- */
+
+.dcard-preview{
+  position:relative;
+  width:100%;
+  aspect-ratio:16/9;
+  overflow:hidden;
+  background:#111;
+  border-bottom:1px solid var(--line);
+  border-radius:var(--r-xl) var(--r-xl) 0 0;
+}
+
+.dcard-preview iframe{
+  position:absolute;
+  left:50%;
+  top:50%;
+  width:1280px;
+  height:720px;
+  border:0;
+  transform:translate(-50%,-50%) scale(1);
+  transform-origin:center center;
+  background:#111;
+}
+
+.dcard-preview-placeholder{
+  position:absolute;
+  inset:0;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  color:var(--text-3);
+  font-size:12px;
+  background:var(--surface-2);
+}
+
+/* ---------- card header ---------- */
+
 .dcard-head{
+  position:relative;
   display:flex;
   align-items:flex-start;
   justify-content:space-between;
   gap:12px;
-  padding:15px 15px 12px
+  padding:13px 48px 12px 15px;
 }
 
 .dcard-name{
@@ -47,30 +85,197 @@
 
 .dcard-tags{display:flex;flex-wrap:wrap;gap:5px}
 
-.specs{
-  display:grid;
-  grid-template-columns:repeat(3,1fr);
-  gap:1px;
-  margin:0;
-  padding:0;
-  background:var(--line);
-  border-block:1px solid var(--line)
-}
-.specs > div{padding:9px 15px;background:var(--surface);min-width:0}
-.specs dt{font-size:11px;color:var(--text-3);margin-bottom:2px}
-.specs dd{margin:0;font-size:12.5px;color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* ---------- compact desktop info ---------- */
 
-.url-row{
+/* ---------- desktop info button ---------- */
+
+.dcard-info{
+  position:absolute;
+  top:8px;
+  right:8px;
+  z-index:40;
+}
+
+.dcard-info > summary{
   display:flex;
   align-items:center;
-  gap:6px;
-  padding:9px 9px 9px 15px;
-  border-bottom:1px solid var(--line);
-  color:var(--text-3)
+  justify-content:center;
+  width:32px;
+  height:32px;
+  padding:0;
+  cursor:pointer;
+  list-style:none;
+
+  color:var(--text-2);
+  background:color-mix(in srgb,var(--surface) 94%,transparent);
+  border:1px solid var(--line-2);
+  border-radius:50%;
+  box-shadow:0 2px 8px rgba(0,0,0,.12);
+  backdrop-filter:blur(8px);
+
+  font-size:14px;
+  font-weight:700;
+  line-height:1;
+  transition:background .14s ease,border-color .14s ease,color .14s ease,transform .14s ease;
 }
-.url-row .mono{flex:1;font-size:11.5px}
-.copy-btn{width:27px;height:27px;border-radius:var(--r-sm)}
+
+.dcard-info > summary::-webkit-details-marker{
+  display:none;
+}
+
+.dcard-info > summary::before{
+  content:"i";
+  display:block;
+  font-family:Arial,sans-serif;
+  font-style:normal;
+  font-weight:700;
+  line-height:1;
+}
+
+.dcard-info > summary:hover,
+.dcard-info[open] > summary{
+  color:var(--text);
+  background:var(--surface);
+  border-color:var(--line-2);
+}
+
+.dcard-info[open] > summary{
+  transform:scale(1.03);
+}
+
+.dcard-info-icon{
+  display:none;
+}
+
+.dcard-info-body{
+  position:absolute;
+  top:40px;
+  right:0;
+  z-index:50;
+  width:320px;
+  max-width:calc(100vw - 28px);
+  box-sizing:border-box;
+  padding:14px;
+  background:var(--surface);
+  border:1px solid var(--line-2);
+  border-radius:var(--r-lg);
+  box-shadow:0 14px 34px rgba(0,0,0,.18);
+  animation:info-pop-in .14s ease-out;
+}
+
+@keyframes info-pop-in{
+  from{opacity:0;transform:translateY(-4px) scale(.985)}
+  to{opacity:1;transform:none}
+}
+
+.dcard-info-body::before{
+  content:"";
+  position:absolute;
+  top:-6px;
+  right:10px;
+  width:10px;
+  height:10px;
+  background:var(--surface);
+  border-left:1px solid var(--line-2);
+  border-top:1px solid var(--line-2);
+  transform:rotate(45deg);
+}
+
+.dcard-info-title{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  margin-bottom:12px;
+  font-size:12px;
+  font-weight:650;
+  color:var(--text);
+}
+
+.dcard-info-title .status{
+  margin-left:auto;
+  font-size:10.5px;
+}
+
+.dcard-info-body .specs{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:7px;
+  margin:0;
+}
+
+.dcard-info-body .specs > div{
+  min-width:0;
+  padding:9px 10px;
+  background:var(--surface-2);
+  border:1px solid var(--line);
+  border-radius:var(--r-md);
+}
+
+.dcard-info-body .specs dt{
+  margin:0 0 4px;
+  font-size:9.5px;
+  line-height:1.2;
+  font-weight:650;
+  letter-spacing:.07em;
+  text-transform:uppercase;
+  color:var(--text-3);
+}
+
+.dcard-info-body .specs dd{
+  margin:0;
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  font-size:12px;
+  line-height:1.35;
+  font-weight:600;
+  color:var(--text);
+}
+
+.dcard-url{
+  display:flex;
+  align-items:center;
+  gap:7px;
+  min-width:0;
+  margin-top:9px;
+  padding:8px 9px;
+  background:var(--surface-2);
+  border:1px solid var(--line);
+  border-radius:var(--r-md);
+  color:var(--text-3);
+}
+
+.dcard-url .mono{
+  flex:1;
+  min-width:0;
+  font-size:10.5px;
+  line-height:1.35;
+}
+
+.copy-btn{
+  flex:0 0 auto;
+  width:28px;
+  height:28px;
+  border-radius:var(--r-sm);
+}
+
 .copy-btn.done{color:var(--live)}
+
+@media (max-width:720px){
+  .dcard-info-body{
+    right:-4px;
+    width:300px;
+  }
+
+  .dcard-info-body .specs{
+    grid-template-columns:repeat(2,minmax(0,1fr));
+  }
+
+  .dcard-info-body .specs > div:last-child{
+    grid-column:span 2;
+  }
+}
 
 /* ---------- learned memory ---------- */
 
@@ -231,8 +436,8 @@
 @media (max-width:720px){
   .grid{grid-template-columns:1fr}
   .rail{left:12px;right:12px;bottom:12px;width:auto;max-height:56vh}
-  .specs{grid-template-columns:repeat(2,1fr)}
-  .specs > div:last-child{grid-column:span 2}
+  .dcard-info .specs{grid-template-columns:repeat(2,1fr)}
+  .dcard-info .specs > div:last-child{grid-column:span 2}
 }
 </style>
 </head>
@@ -252,7 +457,7 @@
     <div>
       <div class="eyebrow">Workspace</div>
       <h1>Desktops</h1>
-      <p class="page-sub">Disposable XFCE environments, each driven by its own agent.</p>
+      <p class="page-sub">Agents that learn, adapt, and improve - with desktops of their own.</p>
     </div>
 
     <button class="btn btn-primary" id="newDesktopBtn">
@@ -269,44 +474,77 @@
 {{if .Desktops}}
 {{range .Desktops}}
     <article class="dcard">
+      <div class="dcard-preview">
+        {{if eq .Status "running"}}
+          <iframe
+            src="{{.URL}}"
+            title="{{.Name}} desktop preview"
+            loading="lazy"
+            tabindex="-1">
+          </iframe>
+        {{else}}
+          <div class="dcard-preview-placeholder">
+            Desktop is {{.Status}}
+          </div>
+        {{end}}
+      </div>
 
       <div class="dcard-head">
         <div style="min-width:0">
           <h2 class="dcard-name trunc" title="{{.Name}}">{{.Name}}</h2>
+
           <div class="dcard-tags">
             <span class="chip">
               {{if eq .Profile "ai"}}AI Developer{{else if eq .Profile "developer"}}Developer{{else}}Basic{{end}}
             </span>
+
             <span class="chip">
               {{if eq .Harness "claude"}}Claude Code{{else}}Ollama{{end}}
             </span>
           </div>
         </div>
 
-        <span class="status {{.Status}}"><span class="dot"></span>{{.Status}}</span>
-      </div>
+        <span class="status {{.Status}}">
+          <span class="dot"></span>{{.Status}}
+        </span>
+      <details class="dcard-info">
+        <summary title="Desktop info" aria-label="Desktop info">
+          <svg class="dcard-info-icon">
+            <use href="#i-info"/>
+          </svg>
+        </summary>
 
-      <dl class="specs">
-        <div>
-          <dt>CPU</dt>
-          <dd>{{.CPUs}} {{if eq .CPUs 1}}core{{else}}cores{{end}}</dd>
-        </div>
-        <div>
-          <dt>Memory</dt>
-          <dd data-mb="{{.MemoryMB}}">{{.MemoryMB}} MB</dd>
-        </div>
-        <div>
-          <dt>Created</dt>
-          <dd data-created="{{.CreatedAt}}">{{if .CreatedAt}}{{.CreatedAt}}{{else}}—{{end}}</dd>
-        </div>
-      </dl>
+        <div class="dcard-info-body">
+          <div class="dcard-info-title">
+            <span>Desktop details</span>
+            <span class="status {{.Status}}">
+              <span class="dot"></span>{{.Status}}
+            </span>
+          </div>
+          <dl class="specs">
+            <div>
+              <dt>CPU</dt>
+              <dd>{{.CPUs}} {{if eq .CPUs 1}}core{{else}}cores{{end}}</dd>
+            </div>
+            <div>
+              <dt>Memory</dt>
+              <dd data-mb="{{.MemoryMB}}">{{.MemoryMB}} MB</dd>
+            </div>
+            <div>
+              <dt>Created</dt>
+              <dd data-created="{{.CreatedAt}}">{{if .CreatedAt}}{{.CreatedAt}}{{else}}—{{end}}</dd>
+            </div>
+          </dl>
 
-      <div class="url-row">
-        <svg width="14" height="14"><use href="#i-monitor"/></svg>
-        <span class="mono trunc" title="{{.URL}}">{{.URL}}</span>
-        <button class="icon-btn copy-btn" data-copy="{{.URL}}" aria-label="Copy desktop URL">
-          <svg width="14" height="14"><use href="#i-copy"/></svg>
-        </button>
+          <div class="dcard-url">
+            <svg width="13" height="13"><use href="#i-monitor"/></svg>
+            <span class="mono trunc" title="{{.URL}}">{{.URL}}</span>
+            <button class="icon-btn copy-btn" data-copy="{{.URL}}" aria-label="Copy desktop URL">
+              <svg width="13" height="13"><use href="#i-copy"/></svg>
+            </button>
+          </div>
+        </div>
+      </details>
       </div>
 
       <details class="mem"{{if index $.MemoryByDesktop .ID}} open{{end}}>
@@ -490,6 +728,26 @@
 (function(){
   "use strict";
 
+  /* ---------------- desktop preview scaling ---------------- */
+
+  function fitDesktopPreviews(){
+    document.querySelectorAll(".dcard-preview").forEach(function(preview){
+      var iframe = preview.querySelector("iframe");
+      if(!iframe){ return; }
+
+      var width = preview.clientWidth;
+      var height = preview.clientHeight;
+
+      var scale = Math.min(width / 1280, height / 720);
+
+      iframe.style.transform =
+        "translate(-50%, -50%) scale(" + scale + ")";
+    });
+  }
+
+  fitDesktopPreviews();
+  window.addEventListener("resize", fitDesktopPreviews);
+
   var toast = Flowera.toast, busy = Flowera.busy, post = Flowera.post;
 
   /* ---------------- formatting ---------------- */
@@ -669,6 +927,62 @@
   document.querySelectorAll("[data-open]").forEach(function(button){
     button.addEventListener("click", function(){
       window.open(button.dataset.open, "_blank", "noopener");
+    });
+  });
+
+  /* ---------------- desktop info popovers ----------------
+   Hover the info button/card to keep it open.
+   Moving completely away from both closes it automatically. */
+  document.querySelectorAll(".dcard-info").forEach(function(info){
+    var closeTimer = null;
+
+    function cancelClose(){
+      if(closeTimer){
+        clearTimeout(closeTimer);
+        closeTimer = null;
+      }
+    }
+
+    function scheduleClose(){
+      cancelClose();
+
+      closeTimer = setTimeout(function(){
+        if(!info.matches(":hover") && !info.querySelector(":focus")){
+          info.removeAttribute("open");
+        }
+      }, 150);
+    }
+
+    info.addEventListener("mouseenter", function(){
+      cancelClose();
+      info.setAttribute("open", "");
+    });
+
+    info.addEventListener("mouseleave", function(){
+      scheduleClose();
+    });
+
+    info.addEventListener("focusin", function(){
+      cancelClose();
+      info.setAttribute("open", "");
+    });
+
+    info.addEventListener("focusout", function(){
+      if(!info.matches(":hover")){
+        scheduleClose();
+      }
+    });
+
+    info.querySelector("summary").addEventListener("click", function(event){
+      event.preventDefault();
+
+      cancelClose();
+
+      if(info.hasAttribute("open")){
+        info.removeAttribute("open");
+      }else{
+        info.setAttribute("open", "");
+      }
     });
   });
 
