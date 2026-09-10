@@ -46,10 +46,10 @@
   position:absolute;
   left:50%;
   top:50%;
-  width:153.846%;
-  height:153.846%;
+  width:1280px;
+  height:720px;
   border:0;
-  transform:translate(-50%,-50%) scale(.65);
+  transform:translate(-50%,-50%) scale(1);
   transform-origin:center center;
   background:#111;
 }
@@ -727,6 +727,26 @@
 <script>
 (function(){
   "use strict";
+
+  /* ---------------- desktop preview scaling ---------------- */
+
+  function fitDesktopPreviews(){
+    document.querySelectorAll(".dcard-preview").forEach(function(preview){
+      var iframe = preview.querySelector("iframe");
+      if(!iframe){ return; }
+
+      var width = preview.clientWidth;
+      var height = preview.clientHeight;
+
+      var scale = Math.min(width / 1280, height / 720);
+
+      iframe.style.transform =
+        "translate(-50%, -50%) scale(" + scale + ")";
+    });
+  }
+
+  fitDesktopPreviews();
+  window.addEventListener("resize", fitDesktopPreviews);
 
   var toast = Flowera.toast, busy = Flowera.busy, post = Flowera.post;
 
