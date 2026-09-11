@@ -44,6 +44,13 @@ type HelpNotesPageData struct {
 	Notes []helpnotes.HelpNote
 }
 
+// DesktopViewPageData is the template data for a single desktop's detail
+// page: its Desktop/Agent tab switcher and split view.
+type DesktopViewPageData struct {
+	Desktop desktop.Desktop
+	Host    string
+}
+
 // Renderer loads and executes the web UI's HTML templates.
 type Renderer struct {
 	indexTmpl *template.Template
@@ -81,6 +88,17 @@ func (rd *Renderer) RenderHelpNotesDashboard(w io.Writer, data HelpNotesPageData
 	)
 
 	return tmpl.ExecuteTemplate(w, "dashboard.html", data)
+}
+
+// RenderDesktopView renders a single desktop's detail page (Desktop/Agent
+// tabs, split view). The template is re-parsed on every call, matching the
+// other secondary pages' behavior.
+func (rd *Renderer) RenderDesktopView(w io.Writer, data DesktopViewPageData) error {
+	tmpl := template.Must(
+		template.ParseFS(web.TemplatesFS, templatePaths("desktop.html")...),
+	)
+
+	return tmpl.ExecuteTemplate(w, "desktop.html", data)
 }
 
 // FaviconSVG is the Flowera brand mark, served as the control plane's favicon.

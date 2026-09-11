@@ -37,7 +37,9 @@ func NewServer(desktops *desktop.Manager, helpNotes *helpnotes.Store, memoryStor
 // RegisterRoutes registers every HTTP route the control plane serves.
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/", s.dashboardHandler)
+	mux.HandleFunc("/view/", s.desktopViewHandler)
 	mux.HandleFunc("/desktop/", s.desktopProxyHandler)
+	mux.HandleFunc("/agent/", s.agentProxyHandler)
 	mux.HandleFunc("/api/desktops", s.desktopsAPIHandler)
 	mux.HandleFunc("/api/desktops/create", s.createDesktopHandler)
 	mux.HandleFunc("/api/desktops/start", s.startDesktopHandler)
