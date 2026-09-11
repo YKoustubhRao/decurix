@@ -85,6 +85,13 @@ func TestClassifyCodingTasks(t *testing.T) {
 		"refactor the payment module",
 		"add unit tests for the cache layer",
 		"write me some code to parse ISO timestamps",
+		// The exact stack this harness is meant to handle day to day.
+		"build a dash app for exploring a csv",
+		"create a gradio UI for a text classifier",
+		"write a websocket server in go",
+		"build a graphql api over sqlite",
+		"set up a celery worker with redis",
+		"create a sqlalchemy model layer for users and orders",
 	} {
 		if got := Classify(step); got != "coding" {
 			t.Errorf("Classify(%q) = %q, want coding", step, got)
