@@ -3,6 +3,7 @@ package coding
 import (
 	"context"
 	"fmt"
+	"path"
 	"regexp"
 	"strings"
 
@@ -138,6 +139,17 @@ var knownFixes = []knownFix{
 		fix: func(m []string, d *Design, env *EnvFacts, tc *Toolchain) []string {
 			mod := firstNonEmpty(m[1:])
 			if mod == "" {
+				return nil
+			}
+			// Never reach for a package registry to satisfy one of the
+			// project's OWN modules. Found live: a build's first file
+			// imported two sibling modules that were files 2 and 3 of the
+			// same design, and the missing-module rule happily proposed
+			// installing "lru_cache_ttl.threading_utils" from PyPI. At best
+			// that fails; at worst it installs a real, unrelated package
+			// that happens to squat the name. This is a code/ordering
+			// problem, and saying so sends the loop somewhere useful.
+			if isProjectInternalModule(mod, d) {
 				return nil
 			}
 			pkg := pypiPackageFor(topLevelModule(mod))
@@ -617,6 +629,36 @@ func firstNonEmpty(ss []string) string {
 		}
 	}
 	return ""
+}
+
+// isProjectInternalModule reports whether a "missing module" is really one
+// of this project's own files, rather than a third-party dependency. A
+// relative import always is; so is anything whose path matches a file the
+// design itself declares.
+func isProjectInternalModule(mod string, d *Design) bool {
+	if strings.HasPrefix(mod, ".") {
+		return true
+	}
+	if d == nil {
+		return false
+	}
+	// "pkg.sub.mod" -> "pkg/sub/mod", the shape it would have on disk.
+	asPath := strings.ReplaceAll(mod, ".", "/")
+	top := topLevelModule(mod)
+
+	for _, f := range d.Files {
+		withoutExt := strings.TrimSuffix(f.Path, path.Ext(f.Path))
+		if withoutExt == asPath || strings.HasSuffix(withoutExt, "/"+asPath) {
+			return true
+		}
+		// The project's own top-level package directory counts too - a
+		// build's package dir is named after the project, and that name is
+		// exactly what would get installed from a registry by mistake.
+		if first, _, ok := strings.Cut(f.Path, "/"); ok && first == top {
+			return true
+		}
+	}
+	return false
 }
 
 func topLevelModule(mod string) string {

@@ -601,3 +601,106 @@ func TestOllamaReportsTruncationHonestly(t *testing.T) {
 		t.Error("llm.Result must carry a Truncated flag for providers to report a cut-off response")
 	}
 }
+
+// Found live: the first file of an LRU-cache build imported two sibling
+// modules that were files 2 and 3 of the SAME design. Its unit test died
+// on ModuleNotFoundError for code the build was about to write, and the
+// missing-module rule then proposed installing the project's own module
+// from PyPI - which at best fails and at worst installs a real, unrelated
+// package squatting that name.
+func TestDiagnoseNeverInstallsTheProjectsOwnModules(t *testing.T) {
+	h, _ := newTestHarness(t, &scriptedProvider{})
+	design := &Design{
+		ProjectName: "lru-cache-ttl",
+		Files: []FileSpec{
+			{Path: "lru_cache_ttl/cache.py"},
+			{Path: "lru_cache_ttl/threading_utils.py"},
+		},
+	}
+
+	for _, mod := range []string{
+		"lru_cache_ttl.threading_utils", // a real sibling module
+		"lru_cache_ttl",                 // the project's own package
+		".timer",                        // a relative import
+	} {
+		failure := `ModuleNotFoundError: No module named '` + mod + `'`
+		diag := h.Diagnose(context.Background(), failure, design,
+			&EnvFacts{VenvPython: ".venv/bin/python"}, Toolchains["python"])
+
+		for _, cmd := range diag.FixCommands {
+			if strings.Contains(cmd, "install") {
+				t.Errorf("%s: proposed %q - the project's own module must never be fetched from a registry", mod, cmd)
+			}
+		}
+		if diag.Kind == DiagEnvironment {
+			t.Errorf("%s: Kind = environment, want it treated as a code/ordering problem", mod)
+		}
+	}
+
+	// A genuine third-party import must still be installed - the guard
+	// above must not make the rule useless.
+	diag := h.Diagnose(context.Background(), `ModuleNotFoundError: No module named 'requests'`,
+		design, &EnvFacts{VenvPython: ".venv/bin/python"}, Toolchains["python"])
+	if diag.Kind != DiagEnvironment || len(diag.FixCommands) == 0 {
+		t.Errorf("a real third-party module must still be installed, got %+v", diag)
+	}
+}
+
+// Every source file must exist before ANY of them is tested, because a
+// file legitimately imports its siblings. This pins the two-pass order.
+func TestHarnessWritesEveryFileBeforeTestingAnyOfThem(t *testing.T) {
+	if _, err := os.Stat("/usr/bin/python3"); err != nil {
+		t.Skip("no python3 on this machine - this test runs a real build")
+	}
+
+	design := `{"project_name":"two","language":"python","kind":"library","dir":"two","summary":"x",
+	  "dependencies":[],"files":[
+	    {"path":"two/helper.py","purpose":"helper",
+	     "symbols":[{"name":"double","signature":"def double(n)","purpose":"doubles"}]},
+	    {"path":"two/main.py","purpose":"uses the helper","imports":["two/helper.py"],
+	     "symbols":[{"name":"quadruple","signature":"def quadruple(n)","purpose":"doubles twice"}]}]}`
+
+	helper := "def double(n):\n    return n * 2\n"
+	// main.py imports its sibling - the exact shape that broke live.
+	main := "from two.helper import double\n\n\ndef quadruple(n):\n    return double(double(n))\n"
+	helperTest := "from two.helper import double\n\n\ndef test_double():\n    assert double(3) == 6\n"
+	mainTest := "from two.main import quadruple\n\n\ndef test_quadruple():\n    assert quadruple(2) == 8\n"
+	integration := "from two.main import quadruple\n\n\ndef test_e2e():\n    assert quadruple(1) == 4\n"
+
+	provider := &scriptedProvider{responses: []string{design, helper, main, helperTest, mainTest, integration}}
+
+	var logs []string
+	h, root := newTestHarness(t, provider)
+	h.OnLog = func(l string) { logs = append(logs, l) }
+
+	report, err := h.Run(context.Background(), "build two files where one imports the other", "")
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	// Both sources must be on disk before the first test file appears.
+	firstTestIdx, lastWriteIdx := -1, -1
+	for i, l := range logs {
+		if strings.HasPrefix(l, "coding: ✓ wrote ") {
+			lastWriteIdx = i
+		}
+		if strings.HasPrefix(l, "coding-progress: testing ") && firstTestIdx == -1 {
+			firstTestIdx = i
+		}
+	}
+	if firstTestIdx == -1 || lastWriteIdx == -1 {
+		t.Fatalf("expected both write and test phases in the logs, got write=%d test=%d", lastWriteIdx, firstTestIdx)
+	}
+	if lastWriteIdx > firstTestIdx {
+		t.Error("a file was tested before every source file had been written - that is the bug this pins")
+	}
+
+	for _, rel := range []string{"two/two/helper.py", "two/two/main.py"} {
+		if _, err := os.Stat(filepath.Join(root, rel)); err != nil {
+			t.Errorf("%s was not really written: %v", rel, err)
+		}
+	}
+	if !report.TestsPassed {
+		t.Errorf("TestsPassed = false, want a passing suite. Output:\n%s", report.TestOutput)
+	}
+}
