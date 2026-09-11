@@ -56,10 +56,29 @@ func (c *CodingSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	// against it" actually produce code that uses the current API.
 	report, err := h.Run(rc.Ctx, subtask.Step, c.knownContext(rc))
 	if err != nil {
+		// A build that cannot even be designed has not failed at anything
+		// the recovery machinery can help with - there is no code yet to
+		// fix and no environment to repair. Marking it fatal stops the
+		// scheduler from spending a full reason-and-decompose cycle (two
+		// more model calls, against the same model that just failed) on a
+		// problem whose real answer is "this model is not usable".
+		//
+		// Found live routing builds to gemma4:26b: every call died with
+		// "llama-server process has terminated ... CUDA error: shared
+		// object initialization failed" because that Ollama build cannot
+		// run the Gemma4 architecture at all. The harness correctly
+		// refused to claim success, but then re-ran the whole thing
+		// through recovery and failed identically, minutes later.
 		return Result{
 			Subtask: subtask, SkillName: c.Name(),
 			Output:   "The build could not be started: " + err.Error(),
-			Verified: false, Meta: map[string]any{"error": err.Error()},
+			Verified: false,
+			Meta: map[string]any{
+				"error":            err.Error(),
+				"fatal":            true,
+				"needsUserInput":   true,
+				"failureReasoning": "The coding model could not be used at all (" + err.Error() + "). Nothing about the request is wrong - check that the configured CODING_MODEL is installed and can actually load on the server.",
+			},
 		}, nil
 	}
 

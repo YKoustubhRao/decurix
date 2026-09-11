@@ -578,7 +578,7 @@ func (h *Harness) runIntegrationPhase(ctx context.Context, r *Runner, d *Design,
 		return
 	}
 
-	h.logf("coding: ===== every file is written - now testing the whole thing together =====")
+	h.logf("coding: ===== every file passes its own tests - now testing the whole thing together =====")
 
 	if testPath := h.writeIntegrationTest(ctx, r, d, tc, built); testPath != "" {
 		h.logf("coding: wrote a real end-to-end integration test -> %s", testPath)

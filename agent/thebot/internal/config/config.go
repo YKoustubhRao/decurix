@@ -27,6 +27,20 @@ type Config struct {
 	OllamaHost string // only required if Provider=ollama, or as an embeddings fallback for Provider=anthropic
 	ChatModel  string // Ollama model name, only used if Provider=ollama
 
+	// CodingModel routes the coding harness (internal/coding) to its own
+	// model, leaving conversation, planning and failure-reasoning on
+	// ChatModel. Empty means "use ChatModel", so nothing changes unless a
+	// deployment configures it.
+	//
+	// The two workloads genuinely want different things. A build sends the
+	// longest prompts the agent ever produces - the whole architecture,
+	// every file written so far, the last compiler error - and asks for a
+	// COMPLETE source file back, so it wants the largest context window
+	// available. Chat wants a good conversationalist and short answers. On
+	// a single GPU only one large model stays resident, so splitting the
+	// roles is also what decides which model is loaded when.
+	CodingModel string
+
 	AnthropicAPIKey string
 	AnthropicModel  string
 
@@ -63,6 +77,10 @@ func Load() Config {
 		// through every test. Keep this and VMDockerfile's CHAT_MODEL in
 		// sync - they silently diverged once already.
 		ChatModel: getenv("CHAT_MODEL", "qwen2.5-coder:14b"),
+		// No default: unset means "use CHAT_MODEL for coding too", which is
+		// the right behaviour for a single-model deployment. Naming a model
+		// here is an explicit choice to run two.
+		CodingModel: getenv("CODING_MODEL", ""),
 
 		AnthropicAPIKey: getenv("ANTHROPIC_API_KEY", ""),
 		AnthropicModel:  getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5"),
