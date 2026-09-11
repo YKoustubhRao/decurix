@@ -27,6 +27,11 @@ const (
 	// Agent harnesses: which reasoning engine drives a desktop's tasks.
 	HarnessOllama = "ollama"
 	HarnessClaude = "claude"
+	// HarnessTheBot runs the same OLLAMA_URL/OLLAMA_MODEL every desktop
+	// already gets (see buildDesktopEnv) through TheBot's own atomizer/
+	// scheduler/skills loop instead of the hand-rolled Ollama loop -
+	// needs no new env var of its own for the Ollama case.
+	HarnessTheBot = "thebot"
 )
 
 // EnsureImages reports whether every desktop image is present locally. It

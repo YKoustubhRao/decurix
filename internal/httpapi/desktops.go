@@ -92,12 +92,12 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch harness {
-	case desktop.HarnessOllama, desktop.HarnessClaude:
+	case desktop.HarnessOllama, desktop.HarnessClaude, desktop.HarnessTheBot:
 		// valid
 	default:
 		http.Error(
 			w,
-			"invalid harness: must be ollama or claude",
+			"invalid harness: must be ollama, claude, or thebot",
 			http.StatusBadRequest,
 		)
 		return

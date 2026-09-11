@@ -34,6 +34,15 @@ AGENT_HARNESS = os.environ.get(
     "ollama"
 ).strip().lower()
 
+# TheBot harness only: the soul binary (agent/soul, started as a
+# background daemon by start_agent_terminal.sh when AGENT_HARNESS=thebot)
+# listens on this port inside the container - not exposed outside it, same
+# as vm_server.py's own :8081.
+THEBOT_URL = os.environ.get(
+    "THEBOT_URL",
+    "http://127.0.0.1:4900"
+)
+
 COMMAND_DIR = Path("/home/headless/command")
 HELPTEXT_DIR = Path("/home/headless/helptext")
 FINAL_DIR = Path("/home/headless/final")

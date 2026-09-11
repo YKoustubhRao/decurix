@@ -1,0 +1,14 @@
+# Real bug found integrating TheBot's harness on a Windows checkout:
+# core.autocrlf=true (no .gitattributes to override it) silently converts
+# every shell script to CRLF on checkout, which breaks its #!/bin/bash
+# shebang inside the container ("cannot execute: required file not
+# found") - a working script becomes non-executable purely from being
+# checked out on Windows, with no error until a container actually tries
+# to run it. Locks line endings to LF for anything with a shebang or that
+# ships inside a Linux container image, regardless of the cloning
+# machine's OS or local git config.
+*.sh text eol=lf
+*.py text eol=lf
+*.go text eol=lf
+Dockerfile text eol=lf
+*.Dockerfile text eol=lf
