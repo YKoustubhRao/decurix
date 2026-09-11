@@ -34,7 +34,6 @@ func (s *Server) desktopViewHandler(w http.ResponseWriter, r *http.Request) {
 
 		data := webui.DesktopViewPageData{
 			Desktop: d,
-			Host:    getHost(r),
 		}
 
 		if err := s.Web.RenderDesktopView(w, data); err != nil {

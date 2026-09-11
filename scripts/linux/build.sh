@@ -70,7 +70,7 @@ echo ""
 # Start Cloudflare tunnel, echoing its logs while watching for the
 # trycloudflare.com URL so it can be reported to the control plane for
 # display in the dashboard's Mobile dropdown.
-cloudflared tunnel --url http://127.0.0.1:8080 2>&1 | while IFS= read -r line; do
+cloudflared tunnel --protocol http2 --url http://127.0.0.1:8080 2>&1 | while IFS= read -r line; do
     echo "$line"
 
     url=$(echo "$line" | grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' || true)

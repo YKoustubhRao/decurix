@@ -142,12 +142,8 @@ func (m *Manager) Create(
 		Status:      "running",
 		CPUs:        cpus,
 		MemoryMB:    memoryMB,
-		URL: fmt.Sprintf(
-			"http://%s:8080/desktop/%s/vnc.html",
-			ServerHost(),
-			sanitizeName(name),
-		),
-		CreatedAt: time.Now().Format(time.RFC3339),
+		URL:         desktopURL(sanitizeName(name)),
+		CreatedAt:   time.Now().Format(time.RFC3339),
 	}, nil
 }
 
@@ -245,12 +241,6 @@ func (m *Manager) List(
 			).Format(time.RFC3339)
 		}
 
-		url := fmt.Sprintf(
-			"http://%s:8080/desktop/%s/vnc.html",
-			ServerHost(),
-			id,
-		)
-
 		result = append(
 			result,
 			Desktop{
@@ -261,7 +251,7 @@ func (m *Manager) List(
 				ContainerID: c.ID,
 				Volume:      volumeName,
 				Status:      status,
-				URL:         url,
+				URL:         desktopURL(id),
 				CreatedAt:   createdAt,
 				CPUs:        cpus,
 				MemoryMB:    memoryMB,

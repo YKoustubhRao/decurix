@@ -260,7 +260,6 @@ Set these in your own `.env` (copied from `.env.example`) — the control plane 
 |---|---|---|---|
 | `DEFAULT_PASSWORD` | No | `admin` | VNC login password baked into every new desktop. |
 | `ANTHROPIC_API_KEY` | Only to use the **Claude harness** | *(unset)* | Passed through into a desktop's container so the `claude` CLI can authenticate — this is literally all that's needed, no login/OAuth step. Only desktops created with the "Claude Code" harness use it. |
-| `DESKTOP_HOST` | No | `localhost` | Public hostname used to build each desktop's VNC URL — set this to your Cloudflare tunnel domain (or similar) when exposing Flowera publicly. **Note:** `docker-compose.yaml` also sets `DESKTOP_HOST=localhost` directly as a container environment variable, which takes precedence over `.env` under `docker compose` (env-file values never override a variable that's already set) — to change it there, edit `docker-compose.yaml`'s `environment:` block instead of `.env`. |
 | `DESKTOP_STOP_TIMEOUT_SECONDS` | No | `10` | Seconds to wait for a desktop container to stop gracefully before force-killing it. |
 
 Every other setting (which Ollama model, the agent harness, the control-plane URL a desktop calls home to, etc.) is wired up automatically per-desktop when you create it — see [`CLAUDE.md`](CLAUDE.md) if you're modifying that wiring.

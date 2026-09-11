@@ -22,7 +22,6 @@ func (s *Server) messagesDashboardHandler(w http.ResponseWriter, r *http.Request
 
 	data := webui.PageData{
 		Desktops: desktops,
-		Host:     getHost(r),
 	}
 
 	if err := s.Web.RenderMessages(w, data); err != nil {
