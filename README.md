@@ -133,14 +133,18 @@ Flowera has two moving pieces: a Go **control plane** (the dashboard + Docker or
 
 ### The scripts
 
-Everything scripted lives under [`scripts/`](scripts/), split by who runs it. `linux/` and `windows/` hold the same three scripts in each platform's dialect; `release/` is the cross-compiler and runs from either.
+Everything scripted lives under [`scripts/`](scripts/), split by who runs it. `linux/` and `windows/` hold the same scripts in each platform's dialect; `release/` is the cross-compiler and runs from either; `testing/` holds a small stdlib-only stub shared by both platforms' `test-vm` script.
 
 | | Linux / macOS | Windows (PowerShell) | What it does |
 |---|---|---|---|
+| **One-shot** | `scripts/linux/quickstart.sh` | `scripts\windows\quickstart.ps1` | Fresh machine to running dashboard in one command: host setup (if Docker's missing) then Everything, below. |
 | **Host setup** | `scripts/linux/setup.sh` | `scripts\windows\setup.ps1` | One-time: Docker, `cloudflared`, QEMU. Needs root/admin. |
 | **Desktop images** | `scripts/linux/build-images.sh` | `scripts\windows\build-images.ps1` | Builds `flowera-desktop:{basic,developer,ai}`. |
 | **Everything** | `scripts/linux/build.sh` | `scripts\windows\build.ps1` | Images, then restart the control plane and open a tunnel. |
+| **Standalone VM test** | `scripts/linux/test-vm.sh` | `scripts\windows\test-vm.ps1` | One throwaway desktop container + a dummy control-plane stub, no full Flowera stack needed. See below. |
 | **Release** | `scripts/release/release.sh` | `scripts\release\release.ps1` | Cross-compiles the downloadable executables into `dist/`. |
+
+Starting from nothing? `./scripts/linux/quickstart.sh` (or `.\scripts\windows\quickstart.ps1`) is the one-shot version of steps 1-4 below — it installs Docker/`cloudflared`/QEMU if they're missing, builds every image, and starts the dashboard with a tunnel.
 
 Every script figures out the repo root on its own, so it doesn't matter where you run it from.
 
@@ -187,6 +191,17 @@ Open **http://localhost:8080** — that's the dashboard. Create a desktop from t
 ```
 
 This runs the `build-images` script for all three desktop images, tears down any old `desktop_*` containers/volumes, starts the control plane, waits for the dashboard to respond, and — if `cloudflared` is installed — opens a public tunnel to it at the end. If you don't have `cloudflared` installed, the script errors out on that last step, but the dashboard is already up on `:8080` by then regardless; install `cloudflared` (via `scripts/linux/setup.sh`) or ignore that final error if you only want local access.
+
+### Testing one desktop image standalone
+
+Iterating on `agent/` or a `docker/desktop.*.Dockerfile` doesn't need the whole control plane running. `test-vm` starts one throwaway desktop container plus a stdlib-only dummy control plane (`scripts/testing/dummy_control_plane.py`) that just prints whatever the agent sends it — no `docker compose`, no dashboard, no touching any desktop you already have running:
+
+```bash
+./scripts/linux/test-vm.sh --profile basic --harness thebot --task "say hi"   # Linux/macOS
+.\scripts\windows\test-vm.ps1 -DesktopProfile basic -Harness thebot -Task "say hi"   # Windows
+```
+
+VNC comes up at `http://localhost:16901/vnc.html` and, for the `thebot` harness, its agent chat UI directly at `http://localhost:14900/` — both published straight to the host, bypassing the control plane's proxy entirely. Watch the agent's help/completion callbacks with `docker logs -f flowera-dummy-cp`. Tear down with `./scripts/linux/test-vm.sh --down` (or the Windows equivalent) once you're done; it only ever removes containers this script created.
 
 ### 5. Or: run a prebuilt executable (no Go, no repo)
 

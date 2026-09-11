@@ -1,0 +1,199 @@
+package llm
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+)
+
+type OllamaProvider struct {
+	Host   string
+	Client *http.Client
+	// EmbedModel is used whenever Embed() is called with an empty model
+	// string - lets callers (rag.go, feedback.go) stay provider-agnostic
+	// rather than hardcoding "nomic-embed-text" themselves, which would be
+	// wrong for any other Embedder implementation (see OpenAIProvider).
+	EmbedModel string
+}
+
+func NewOllama(host string) *OllamaProvider {
+	return &OllamaProvider{Host: host, Client: &http.Client{}, EmbedModel: "nomic-embed-text"}
+}
+
+func (o *OllamaProvider) Name() string { return "ollama" }
+
+type ollamaMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type ollamaChatRequest struct {
+	Model    string          `json:"model"`
+	Messages []ollamaMessage `json:"messages"`
+	Stream   bool            `json:"stream"`
+	Options  map[string]any  `json:"options,omitempty"`
+}
+
+type ollamaChatResponse struct {
+	Message struct {
+		Content string `json:"content"`
+	} `json:"message"`
+	PromptEvalCount int    `json:"prompt_eval_count"`
+	EvalCount       int    `json:"eval_count"`
+	TotalDuration   int64  `json:"total_duration"`
+	Error           string `json:"error"`
+	// Done marks the final chunk of a stream, which is the only one
+	// carrying the real token counters and the stop reason.
+	Done bool `json:"done"`
+	// DoneReason is how Ollama says WHY it stopped. "length" means it hit
+	// the token ceiling and the content is cut off mid-sentence - the
+	// response is still a clean HTTP 200, so without reading this there is
+	// no way to tell a truncated file from a model that writes bad code.
+	DoneReason string `json:"done_reason"`
+}
+
+// Chat makes a real, blocking call to Ollama's /api/chat. num_ctx is
+// forced explicitly - Ollama defaults to 4096 and silently truncates
+// context otherwise, a real failure mode discovered building the Node
+// prototype this is replacing.
+func (o *OllamaProvider) Chat(ctx context.Context, model string, messages []Message, opts Options) (Result, error) {
+	timeout := 120 * time.Second
+	if opts.TimeoutMs > 0 {
+		timeout = time.Duration(opts.TimeoutMs) * time.Millisecond
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	msgs := make([]ollamaMessage, len(messages))
+	for i, m := range messages {
+		msgs[i] = ollamaMessage{Role: m.Role, Content: m.Content}
+	}
+
+	// 8192 stays the default for ordinary calls; a caller that genuinely
+	// needs more (code generation - see Options.NumCtx) asks for it
+	// explicitly rather than every chat turn paying for a huge window.
+	numCtx := 8192
+	if opts.NumCtx > 0 {
+		numCtx = opts.NumCtx
+	}
+	ollamaOpts := map[string]any{"num_ctx": numCtx}
+	if opts.Temperature > 0 {
+		ollamaOpts["temperature"] = opts.Temperature
+	}
+	if opts.MaxTokens > 0 {
+		ollamaOpts["num_predict"] = opts.MaxTokens
+	}
+	// Streaming, always - even though every caller here wants one complete
+	// answer and nothing renders tokens as they arrive.
+	//
+	// The reason is the network in between, not the API. A non-streaming
+	// call holds the connection open with ZERO bytes sent until the whole
+	// answer is ready, and any proxy on the path reads that silence as a
+	// dead origin. Found live: a real 24B model generating a real source
+	// file through a Cloudflare tunnel took several minutes, and the tunnel
+	// killed it at 100 seconds with HTTP 524 every single time - the model
+	// was working fine, nothing ever got to see it. Streaming keeps real
+	// bytes flowing the whole time, so an idle timeout never fires, and the
+	// accumulated result is identical.
+	reqBody := ollamaChatRequest{
+		Model:    model,
+		Messages: msgs,
+		Stream:   true,
+		Options:  ollamaOpts,
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return Result{}, fmt.Errorf("ollama: marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.Host+"/api/chat", bytes.NewReader(body))
+	if err != nil {
+		return Result{}, fmt.Errorf("ollama: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := o.Client.Do(req)
+	if err != nil {
+		return Result{}, fmt.Errorf("ollama: request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		return Result{}, fmt.Errorf("ollama returned HTTP %d: %s", resp.StatusCode, string(respBytes))
+	}
+
+	return readOllamaStream(resp.Body)
+}
+
+// readOllamaStream accumulates Ollama's newline-delimited JSON stream into
+// one complete result. Each line is a chunk carrying the next fragment of
+// content; the final one carries done=true plus the real counters.
+func readOllamaStream(r io.Reader) (Result, error) {
+	var text strings.Builder
+	var final ollamaChatResponse
+
+	scanner := bufio.NewScanner(r)
+	// A single chunk is tiny, but the default 64KB token limit is not worth
+	// betting a whole build on - a long line here would silently truncate
+	// the answer, which is the exact class of invisible failure this
+	// package has already been bitten by once.
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var chunk ollamaChatResponse
+		if err := json.Unmarshal(line, &chunk); err != nil {
+			return Result{}, fmt.Errorf("ollama: parse stream chunk: %w (chunk: %s)", err, truncateForError(string(line)))
+		}
+		if chunk.Error != "" {
+			return Result{}, fmt.Errorf("ollama error: %s", chunk.Error)
+		}
+		text.WriteString(chunk.Message.Content)
+		if chunk.Done {
+			final = chunk
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return Result{}, fmt.Errorf("ollama: read stream: %w", err)
+	}
+
+	return Result{
+		Text:           text.String(),
+		PromptTokens:   final.PromptEvalCount,
+		ResponseTokens: final.EvalCount,
+		DurationMs:     final.TotalDuration / 1_000_000,
+		Truncated:      final.DoneReason == "length",
+	}, nil
+}
+
+func truncateForError(s string) string {
+	if len(s) <= 300 {
+		return s
+	}
+	return s[:300] + "..."
+}
+
+func (o *OllamaProvider) IsReachable(ctx context.Context) bool {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, o.Host+"/api/tags", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := o.Client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
