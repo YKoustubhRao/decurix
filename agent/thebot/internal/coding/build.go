@@ -169,6 +169,7 @@ RULES:
 - NEVER leave a TODO, a placeholder, an ellipsis, a "implement this later", or a stub that raises NotImplementedError. Every function you write must really work.
 - The file must be COMPLETE and valid on its own - all imports present, nothing referenced that doesn't exist.
 - Match the declared signatures EXACTLY. Other files are generated against them and will really call them.
+- Define ONLY what is listed above for THIS file. Everything else in the architecture belongs to another file that really exists (or is about to) - import it or call it, never re-implement it. Defining someone else's function is not a duplicate, it is a compile error: found live on a Go build where main.go helpfully defined ReadCSV as well, and the package stopped compiling with "ReadCSV redeclared in this block".
 - Use ONLY the standard library and these declared dependencies: %s
 - Do not write tests in this file. Tests are written separately.
 
