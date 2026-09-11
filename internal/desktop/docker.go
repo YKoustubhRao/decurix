@@ -111,6 +111,25 @@ func buildDesktopEnv(name, harness string) []string {
 		defaultPassword = "admin"
 	}
 
+	// Real bug found testing this live: OLLAMA_URL was hardcoded to the
+	// bundled flowera-ollama container - a stub with a single 0.6b model,
+	// never a real one - unlike DEFAULT_PASSWORD/ANTHROPIC_API_KEY just
+	// below, which already read from the control plane's own environment.
+	// Every desktop it created was structurally unable to reach a real
+	// Ollama server regardless of what the harness itself wanted.
+	// Same fallback pattern now: override via the control plane's own
+	// OLLAMA_URL/OLLAMA_MODEL env (e.g. a Cloudflare-tunneled real
+	// server) when set, otherwise keep the existing bundled-stub default
+	// so nothing breaks for a deployment that hasn't configured this.
+	ollamaURL := os.Getenv("OLLAMA_URL")
+	if ollamaURL == "" {
+		ollamaURL = "http://flowera-ollama:11434"
+	}
+	ollamaModel := os.Getenv("OLLAMA_MODEL")
+	if ollamaModel == "" {
+		ollamaModel = ollama.Model
+	}
+
 	env := []string{
 		"VNC_PW=" + defaultPassword,
 		"VNC_RESOLUTION=1280x720",
@@ -119,8 +138,8 @@ func buildDesktopEnv(name, harness string) []string {
 		),
 		"DESKTOP_NAME=" + name,
 		"CONTROL_PLANE_URL=http://host.docker.internal:8080",
-		"OLLAMA_URL=http://flowera-ollama:11434",
-		"OLLAMA_MODEL=" + ollama.Model,
+		"OLLAMA_URL=" + ollamaURL,
+		"OLLAMA_MODEL=" + ollamaModel,
 		"AGENT_HARNESS=" + harness,
 	}
 
