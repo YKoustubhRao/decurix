@@ -24,9 +24,19 @@ func TestOllamaChatParsesRealResponse(t *testing.T) {
 		if opts["num_ctx"] != float64(8192) {
 			t.Errorf("num_ctx was not forced to 8192, got %v", opts["num_ctx"])
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"message":           map[string]any{"content": "real reply text"},
+		if body["stream"] != true {
+			t.Errorf("stream = %v, want true - a non-streaming call sends zero bytes until the whole answer is ready, and any proxy in between reads that silence as a dead origin (found live: a Cloudflare tunnel killed every real code-generation call at 100s with HTTP 524)", body["stream"])
+		}
+		// Ollama's real streaming shape: newline-delimited JSON, one chunk
+		// per fragment, counters only on the final done chunk.
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		enc := json.NewEncoder(w)
+		_ = enc.Encode(map[string]any{"message": map[string]any{"content": "real reply "}, "done": false})
+		_ = enc.Encode(map[string]any{"message": map[string]any{"content": "text"}, "done": false})
+		_ = enc.Encode(map[string]any{
+			"message":           map[string]any{"content": ""},
+			"done":              true,
+			"done_reason":       "stop",
 			"prompt_eval_count": 12,
 			"eval_count":        34,
 			"total_duration":    5_000_000, // 5ms in ns
@@ -40,7 +50,10 @@ func TestOllamaChatParsesRealResponse(t *testing.T) {
 		t.Fatalf("Chat() error = %v", err)
 	}
 	if result.Text != "real reply text" {
-		t.Errorf("Text = %q, want %q", result.Text, "real reply text")
+		t.Errorf("Text = %q, want %q - every streamed fragment must be accumulated", result.Text, "real reply text")
+	}
+	if result.Truncated {
+		t.Error("Truncated = true for a normal stop, want false")
 	}
 	if result.PromptTokens != 12 || result.ResponseTokens != 34 {
 		t.Errorf("token counts = (%d,%d), want (12,34)", result.PromptTokens, result.ResponseTokens)
@@ -168,4 +181,58 @@ func TestOllamaChatAgainstRealServer(t *testing.T) {
 		t.Error("real Ollama call returned empty text")
 	}
 	t.Logf("real Ollama response: %q (prompt=%d response=%d tokens, %dms)", result.Text, result.PromptTokens, result.ResponseTokens, result.DurationMs)
+}
+
+// A response cut off by the token ceiling arrives as a clean HTTP 200 with
+// a body that looks like any other answer - the ONLY signal is
+// done_reason. Without surfacing it, a truncated source file is
+// indistinguishable from badly written code, and the coding harness spends
+// its whole budget "fixing" a file that was never finished.
+func TestOllamaChatReportsTruncation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		enc := json.NewEncoder(w)
+		_ = enc.Encode(map[string]any{"message": map[string]any{"content": "def add(a, b):\n    result = a +"}, "done": false})
+		_ = enc.Encode(map[string]any{
+			"message": map[string]any{"content": ""}, "done": true, "done_reason": "length",
+		})
+	}))
+	defer srv.Close()
+
+	result, err := NewOllama(srv.URL).Chat(context.Background(), "m", []Message{{Role: "user", Content: "hi"}}, Options{})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if !result.Truncated {
+		t.Error("Truncated = false for done_reason=length, want true - this is the only way a cut-off file can be told apart from a wrong one")
+	}
+	if result.Text == "" {
+		t.Error("Text is empty, want the real partial content kept (it is still what the model produced)")
+	}
+}
+
+// Code generation needs a much bigger window than a chat turn, and a
+// caller asking for one must actually get it - the default 8192 shared
+// between a large prompt and a whole source file is what silently
+// truncated real files.
+func TestOllamaChatForwardsNumCtxAndMaxTokens(t *testing.T) {
+	var gotCtx, gotPredict any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		opts, _ := body["options"].(map[string]any)
+		gotCtx, gotPredict = opts["num_ctx"], opts["num_predict"]
+		_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]any{"content": "ok"}, "done": true})
+	}))
+	defer srv.Close()
+
+	if _, err := NewOllama(srv.URL).Chat(context.Background(), "m",
+		[]Message{{Role: "user", Content: "hi"}}, Options{NumCtx: 32768, MaxTokens: 8192}); err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if gotCtx != float64(32768) {
+		t.Errorf("num_ctx sent = %v, want 32768", gotCtx)
+	}
+	if gotPredict != float64(8192) {
+		t.Errorf("num_predict sent = %v, want 8192", gotPredict)
+	}
 }

@@ -554,6 +554,11 @@ func main() {
 
 	skills.Register(skills.NewFeedback())
 	skills.Register(skills.NewRAGQuery())
+	// coding is registered before file-write and terminal for the same
+	// reason its classifier is ordered ahead of theirs: a real "build me
+	// software" request must reach the harness that designs, tests and
+	// fixes it, not the one that saves a single unexecuted completion.
+	skills.Register(skills.NewCoding())
 	skills.Register(skills.NewDownload())
 	skills.Register(skills.NewTerminal())
 	skills.Register(skills.NewFileWrite())

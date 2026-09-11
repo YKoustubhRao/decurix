@@ -84,7 +84,11 @@ func (a *AnthropicProvider) Chat(ctx context.Context, model string, messages []M
 		msgs = append(msgs, anthropicMessage{Role: m.Role, Content: m.Content})
 	}
 
-	reqBody := anthropicRequest{Model: model, MaxTokens: 4096, System: system, Messages: msgs, Temperature: opts.Temperature}
+	maxTokens := 4096
+	if opts.MaxTokens > 0 {
+		maxTokens = opts.MaxTokens
+	}
+	reqBody := anthropicRequest{Model: model, MaxTokens: maxTokens, System: system, Messages: msgs, Temperature: opts.Temperature}
 	body, err := json.Marshal(reqBody)
 	if err != nil {
 		return Result{}, fmt.Errorf("anthropic: marshal request: %w", err)

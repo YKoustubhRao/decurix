@@ -78,7 +78,32 @@ func (s *Scheduler) Run(ctx context.Context, prompt string, sessionHistory []llm
 	// real steps directly beats re-deriving a plan (and re-researching
 	// whatever it took to get that plan right the first time) from
 	// scratch every single time the same class of problem comes up.
-	if matched := s.matchSkill(ctx, prompt, onLog); matched != nil {
+	//
+	// A CODING request is the one exception, and it is a hard one. Found
+	// live the first time the coding harness ran against a real VM:
+	// "Build a Python library that implements an LRU cache with a TTL..."
+	// matched an acquired skill whose trigger was "Can you create a flask
+	// server file in python..." - both are "python, make me something", so
+	// their embeddings sit close enough to clear the similarity threshold -
+	// and the whole build was replaced by that skill's single recorded
+	// step, `python3 -m venv /home/headless/ai/venv`. A real software
+	// project became one venv command, and the job reported "done".
+	//
+	// Reusing a whole-request recipe is simply the wrong granularity for
+	// building software: no two projects are the same project, and the
+	// steps that got one of them working are not the steps for the next.
+	// The learning that DOES transfer between builds - "this failure means
+	// PEP 668, create a venv and install into it by path" - is per-FAILURE,
+	// not per-request, and the harness already consults exactly that
+	// (internal/coding's Diagnose reads L1 mid-build with the real error
+	// text). So coding skips this layer entirely and keeps the one that
+	// works at the right granularity.
+	skipSkills := atomizer.Classify(prompt) == "coding"
+	if skipSkills {
+		onLog("skill library: skipping whole-request skill reuse for a coding task - the build harness consults memory per failure instead, which is the granularity that actually transfers")
+	}
+
+	if matched := s.matchSkillUnless(ctx, skipSkills, prompt, onLog); matched != nil {
 		job.UsedSkill = matched.Slug
 		for _, step := range matched.Steps {
 			job.Plan = append(job.Plan, skills.Subtask{Step: step, Type: atomizer.Classify(step)})
@@ -164,6 +189,12 @@ func (s *Scheduler) runSubtaskWithRecovery(ctx context.Context, subtask skills.S
 		PriorResults: priorResults, Provider: s.Provider, Model: model, Workspace: s.Workspace,
 		RAG: s.RAG, Feedback: s.Feedback, SessionHistory: sessionHistory, RecalledFacts: recalledFacts,
 		SelfStats: selfStats,
+		// Live memory handles, as opposed to the recalled snapshot above:
+		// the coding harness queries L1 mid-build with a real error message
+		// (which nothing could have recalled up front - the failure hadn't
+		// happened yet) and writes back what it genuinely had to research.
+		// Nil-safe on both sides.
+		L1: s.L1, SkillLib: s.SkillLib,
 	}
 
 	before := s.snapshotWorkspace(onLog)
@@ -355,6 +386,16 @@ func (s *Scheduler) ingestChangedFiles(ctx context.Context, before map[string]wo
 // happens. Logged explicitly either way, matching how L1 recall is
 // reported - "did it check" and "what came back" should never be a
 // silent implementation detail.
+// matchSkillUnless is matchSkill with a real, explicit opt-out, so the
+// caller's reason for skipping lives next to the decision rather than
+// being buried in a nil check here.
+func (s *Scheduler) matchSkillUnless(ctx context.Context, skip bool, prompt string, onLog func(string)) *memory.AcquiredSkill {
+	if skip {
+		return nil
+	}
+	return s.matchSkill(ctx, prompt, onLog)
+}
+
 func (s *Scheduler) matchSkill(ctx context.Context, prompt string, onLog func(string)) *memory.AcquiredSkill {
 	if s.SkillLib == nil {
 		return nil

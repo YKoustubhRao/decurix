@@ -54,14 +54,73 @@ func TestClassifyWebTasks(t *testing.T) {
 	}
 }
 
+// file-write keeps everything that is real CONTENT rather than real CODE -
+// notes, summaries, data. Code moved to the coding classifier below, which
+// actually builds and tests it instead of saving one unexecuted completion.
 func TestClassifyFileWriteTasks(t *testing.T) {
 	for _, step := range []string{
-		"write a segment tree implementation into segment_tree.py",
-		"create a python script named fib.py",
 		"save it to notes.txt",
+		"write a short summary of the findings to summary.md",
+		"write the results to results.csv",
 	} {
 		if got := Classify(step); got != "file-write" {
 			t.Errorf("Classify(%q) = %q, want file-write", step, got)
+		}
+	}
+}
+
+// Anything that is really SOFTWARE goes to the coding harness, including
+// the single-file cases file-write used to claim: a .py file full of code
+// that nothing ever ran is exactly the failure the harness exists to fix.
+func TestClassifyCodingTasks(t *testing.T) {
+	for _, step := range []string{
+		"write a segment tree implementation into segment_tree.py",
+		"create a python script named fib.py",
+		"build a REST API with FastAPI for managing tasks",
+		"build a streamlit dashboard showing sales data",
+		"implement quicksort in C++",
+		"write a Go CLI tool that counts lines in a file",
+		"create a docker-compose setup with postgres",
+		"fix the bug in the parser",
+		"refactor the payment module",
+		"add unit tests for the cache layer",
+		"write me some code to parse ISO timestamps",
+	} {
+		if got := Classify(step); got != "coding" {
+			t.Errorf("Classify(%q) = %q, want coding", step, got)
+		}
+	}
+}
+
+// The coding classifier must never hijack a QUESTION about software. A
+// full architect-scaffold-implement-test build is an absurd answer to
+// "explain how a segment tree works".
+func TestClassifyCodingDoesNotStealQuestions(t *testing.T) {
+	for _, step := range []string{
+		"explain how a segment tree works",
+		"what is the difference between a list and a tuple in python",
+		"how does the go scheduler work",
+		"compare fastapi and flask",
+		"tell me about rust's borrow checker",
+	} {
+		if got := Classify(step); got == "coding" {
+			t.Errorf("Classify(%q) = coding, want anything but coding - this is a question, not a build request", step)
+		}
+	}
+}
+
+// Real false positives this suite caught the moment the coding classifier
+// was added - both would have started a whole software build for work that
+// is explicitly one command or one environment chore.
+func TestClassifyCodingDoesNotStealCommandsOrEnvironmentWork(t *testing.T) {
+	for _, step := range []string{
+		"run the command: python3 setup.py build",
+		"create a virtual environment, then install the package into it",
+		"install the requests package",
+		"pip install fastapi",
+	} {
+		if got := Classify(step); got == "coding" {
+			t.Errorf("Classify(%q) = coding, want anything but coding - this is a command/environment step, not a build request", step)
 		}
 	}
 }
@@ -108,15 +167,20 @@ func TestLooksCompoundRecognisesConditionalFallbackPhrasing(t *testing.T) {
 // entire codebase back as a chat answer instead of ever touching disk -
 // exactly the "must not print the code back" failure this whole system
 // exists to prevent.
-func TestClassifyRoutesMultiFileBuildRequestsToFileWrite(t *testing.T) {
+// It now routes to the coding harness rather than file-write, which is a
+// strictly better answer to the same bug: the harness builds each
+// component as its own real file AND compiles and tests every one of them,
+// where file-write could only ever save whatever a model emitted in one
+// shot, unexecuted.
+func TestClassifyRoutesMultiFileBuildRequestsToTheCodingHarness(t *testing.T) {
 	for _, step := range []string{
 		"Build a C++ codebase using templates for a segment tree, FFT (fast fourier transform), and a Fenwick tree, each in their own file",
 		"implement a trie and an AVL tree, each in its own file",
 		"code a stack and a queue as separate files",
 		"write a linked list and a hash map, one file each",
 	} {
-		if got := Classify(step); got != "file-write" {
-			t.Errorf("Classify(%q) = %q, want file-write", step, got)
+		if got := Classify(step); got != "coding" {
+			t.Errorf("Classify(%q) = %q, want coding", step, got)
 		}
 	}
 }
@@ -268,23 +332,50 @@ func TestAtomizeCapsStepCount(t *testing.T) {
 // old cap of 5 silently dropped the last write-to-file step. The dropped
 // step's preceding search result still included example code in its own
 // prose, so that code ended up in chat instead of ever reaching a file.
+// Still a real risk, just on a non-coding request now that coding never
+// reaches the step planner at all (see the handover test below).
 func TestAtomizeCapAllowsEnoughStepsForSearchThenWritePerItem(t *testing.T) {
 	stub := &stubProvider{response: "STEPS:\n" +
 		"1. search the web for Edmonds' Blossom algorithm\n" +
-		"2. write the C++ implementation of Edmonds' Blossom algorithm to blossom.h\n" +
+		"2. write a summary of Edmonds' Blossom algorithm to blossom.md\n" +
 		"3. search the web for Li Chao tree\n" +
-		"4. write the C++ implementation of a Li Chao tree to li_chao_tree.h\n" +
+		"4. write a summary of the Li Chao tree to li_chao_tree.md\n" +
 		"5. search the web for centroid decomposition\n" +
-		"6. write the C++ implementation of centroid decomposition to centroid_decomposition.h"}
+		"6. write a summary of centroid decomposition to centroid_decomposition.md"}
 	plan := Atomize(context.Background(),
-		"write C++ implementations of Blossom's algorithm, a Li Chao tree, and centroid decomposition, each in its own file, searching the web first for any you don't know well",
+		"research Blossom's algorithm, a Li Chao tree, and centroid decomposition, and write a summary of each in separate files, searching the web first for any you don't know well",
 		stub, "m", nil)
 
 	if len(plan.Steps) != 6 {
 		t.Fatalf("got %d steps, want all 6 (search+write per item) preserved: %+v", len(plan.Steps), plan.Steps)
 	}
-	if !strings.Contains(plan.Steps[5], "centroid_decomposition.h") {
+	if !strings.Contains(plan.Steps[5], "centroid_decomposition.md") {
 		t.Errorf("last step = %q, want the final write-to-file step preserved, not dropped by the cap", plan.Steps[5])
+	}
+}
+
+// A coding request is handed to the harness WHOLE, however compound it
+// looks. Splitting it first actively breaks things: each fragment would
+// classify as "coding" on its own and spin up a separate architect-
+// scaffold-test build in a separate directory, none of them aware of the
+// others. The harness does its own, far better decomposition internally -
+// it orders files by their real dependencies and tests each one.
+func TestAtomizeHandsCodingRequestsToTheHarnessWhole(t *testing.T) {
+	// A stub that would happily split it, to prove the handover happens
+	// BEFORE any planning call rather than depending on what a model says.
+	stub := &stubProvider{response: "STEPS:\n1. write models.py\n2. write main.py\n3. write tests\n"}
+	prompt := "build a FastAPI service with a SQLite store, a REST layer and tests, each in its own file"
+
+	plan := Atomize(context.Background(), prompt, stub, "m", nil)
+
+	if len(plan.Steps) != 1 {
+		t.Fatalf("got %d steps, want exactly 1 (the whole request): %+v", len(plan.Steps), plan.Steps)
+	}
+	if plan.Steps[0] != prompt {
+		t.Errorf("step = %q, want the original request passed through untouched", plan.Steps[0])
+	}
+	if !plan.IsTask {
+		t.Error("IsTask = false, want true - a build request is real work")
 	}
 }
 

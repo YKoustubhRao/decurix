@@ -393,6 +393,59 @@ func TestSchedulerDoesNotUseAnUnrelatedSkill(t *testing.T) {
 	}
 }
 
+// The live bug this pins, found the first time the coding harness ran
+// against a real VM: "Build a Python library that implements an LRU cache
+// with a TTL..." matched a confirmed skill whose trigger was "Can you
+// create a flask server file in python..." - both are "python, make me
+// something", so their embeddings sit close enough to clear the
+// similarity threshold - and the ENTIRE build was replaced by that
+// skill's one recorded step, `python3 -m venv ...`. A real software
+// project became a single venv command, and the job reported "done".
+//
+// Whole-request recipe reuse is simply the wrong granularity for building
+// software: no two projects are the same project. What genuinely does
+// transfer between builds is per-FAILURE knowledge, which the harness
+// consults separately (internal/coding's Diagnose reads L1 with the real
+// error text, mid-build).
+func TestSchedulerNeverLetsAnAcquiredSkillHijackACodingRequest(t *testing.T) {
+	registerTerminalSkill()
+	embedder := realEmbedderForSkillTests(t)
+
+	sched := newTestScheduler(t, &mockProvider{})
+	lib, err := memory.NewSkillLibrary(sched.Workspace.Root(), embedder, "test-model")
+	if err != nil {
+		t.Fatalf("NewSkillLibrary() error = %v", err)
+	}
+	// The real trigger text of the skill that actually caused this.
+	proposed, err := lib.Propose(
+		"Can you create a flask server file in python. Additionally run it. Run the server on port 5050.",
+		[]string{"run the command: `echo skill-hijacked-the-build`"}, "decomposed-recovery")
+	if err != nil {
+		t.Fatalf("Propose() error = %v", err)
+	}
+	if _, err := lib.Confirm(context.Background(), proposed.Slug); err != nil {
+		t.Fatalf("Confirm() error = %v", err)
+	}
+	sched.SkillLib = lib
+
+	job, err := sched.Run(context.Background(),
+		"Build a Python library that implements an LRU cache with a TTL per entry, thread-safe, with get/put/delete/stats operations",
+		nil, func(string) {})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if job.UsedSkill != "" {
+		t.Errorf("job.UsedSkill = %q, want empty - a coding request must never be replaced by a whole-request recipe", job.UsedSkill)
+	}
+	if strings.Contains(job.FinalAnswer, "skill-hijacked-the-build") {
+		t.Error("the acquired skill's command ran instead of the build - the exact live bug this test exists for")
+	}
+	if len(job.Plan) != 1 || job.Plan[0].Type != "coding" {
+		t.Errorf("Plan = %+v, want exactly one coding step (the whole request, handed to the build harness)", job.Plan)
+	}
+}
+
 // The real point of DECOMPOSE + the skill library together: a genuine
 // fix, proven just now, gets proposed for future reuse - but only ever
 // as a real, pending proposal a human still has to confirm.

@@ -108,7 +108,145 @@ var (
 	// pages". Anything pointing at a site belongs to the web skill, which
 	// genuinely can fetch it.
 	siteRe = regexp.MustCompile(`(?i)https?://\S+|\bwww\.\S+|\b(go to|visit|navigate to|open|check|read)\b[\s\S]{0,40}?\b(website|web page|webpage|site|url|link)\b`)
+
+	// ------------------------------------------------------------ coding
+	//
+	// A request to WRITE CODE goes to the coding harness (internal/coding),
+	// not to file-write. Both end up producing files, but only one of them
+	// designs an architecture, scaffolds a real toolchain, writes tests,
+	// RUNS them, and fixes the code until they pass. Handing real code to
+	// file-write means shipping whatever a model emitted in one shot,
+	// unexecuted - which is exactly how "here is your segment tree" ends up
+	// being a file that doesn't compile.
+	//
+	// Four real shapes, kept separate so each can be tuned independently:
+	//  1. a build verb aimed at a software NOUN ("build a REST API"),
+	//  2. a build verb aimed at a language/framework or a real code file
+	//     extension ("write a Go program", "implement quicksort in C++"),
+	//  3. maintenance verbs on existing code ("fix the bug in", "refactor"),
+	//  4. phrasing that leaves no doubt at all ("write me some code").
+	codeNounPattern = `\b(app|application|program|script|package|library|module|` +
+		`api|rest api|endpoint|server|service|microservice|backend|frontend|` +
+		`cli|command[- ]line tool|tool|utility|dashboard|ui|website|web ?app|` +
+		`bot|scraper|crawler|pipeline|parser|compiler|interpreter|game|` +
+		`class|function|algorithm|implementation|data ?structure|codebase|` +
+		`project|repo|repository|schema|test suite)\b`
+
+	// "c++" and "c#" are deliberately OUTSIDE the \b(...)\b group: a
+	// trailing \b after "+" never matches, because "+" is a non-word
+	// character and so is whatever follows it (or end of string), so there
+	// is no word boundary there at all. `\bc\+\+\b` therefore silently
+	// fails to match "C++" - caught by this suite on "implement quicksort
+	// in C++", which classified as "general" and would have been answered
+	// in chat instead of built.
+	codeLangPattern = `\bc\+\+|\bc#|` +
+		`\b(python|go|golang|javascript|typescript|node(?:\.?js)?|` +
+		`cpp|rust|java|ruby|php|sql|bash script|shell script|` +
+		`fastapi|flask|django|streamlit|dash|react|vue|svelte|express|gin|echo|` +
+		`pandas|numpy|pytorch|tensorflow|sqlite|postgres(?:ql)?|mysql|mongodb|redis|` +
+		`docker|dockerfile|docker-compose|kubernetes)\b`
+
+	// The classic structures and algorithms people ask for by name. They
+	// are unambiguously code even when the sentence names no language and
+	// no file: "implement a trie and an AVL tree" is a build request in
+	// every context it ever occurs in.
+	codeThingPattern = `\b(linked ?list|hash ?(?:map|table|set)|binary (?:tree|search)|` +
+		`avl tree|red[- ]black tree|b-?tree|trie|heap|stack|queue|graph|` +
+		`segment tree|fenwick tree|suffix (?:tree|array)|bloom filter|lru cache|` +
+		`quick ?sort|merge ?sort|heap ?sort|bubble ?sort|insertion sort|` +
+		`dijkstra|a\*|bfs|dfs|knapsack|fibonacci|fft|matrix multiplication|` +
+		`regex engine|state machine|rate limiter|connection pool|event loop)\b`
+
+	codeExtPattern = `\.(?:py|go|js|jsx|mjs|ts|tsx|cpp|cc|cxx|hpp|rs|java|rb|php|cs|swift|kt|scala|sql)\b`
+
+	codeVerbPattern = `\b(build|implement|write|create|code|develop|make|program|generate|design|set ?up|scaffold|port|migrate)\b`
+
+	codingRe = regexp.MustCompile(`(?i)` +
+		codeVerbPattern + `[\s\S]{0,80}?` + codeNounPattern +
+		`|` + codeVerbPattern + `[\s\S]{0,80}?(?:` + codeLangPattern + `|` + codeExtPattern + `)` +
+		`|` + codeVerbPattern + `[\s\S]{0,80}?` + codeThingPattern +
+		// "implement" and "code (something)" are verbs that essentially
+		// only ever mean software - unlike write/create/make/build, which
+		// need a code-shaped object before they mean anything of the kind.
+		`|\b(implement|code up)\b` +
+		`|\b(fix|debug|refactor|optimi[sz]e|rewrite|extend)\b[\s\S]{0,60}?(?:` +
+		codeNounPattern + `|` + codeExtPattern + `|` + codeThingPattern + `|\bcode\b|\bbug\b)` +
+		`|\badd (?:a |some )?(?:unit |integration )?tests?\b` +
+		`|\bwrite (?:me )?(?:some |the )?code\b`)
+
+	// codingExcludeRe carves out requests that LOOK like code work but are
+	// genuinely questions ABOUT code, not projects to build. Without it,
+	// "explain how a segment tree works" would fire a whole
+	// architect-scaffold-implement-test build, which is an absurd answer to
+	// a question. Anchored at the start: these words only mean "this is a
+	// question" when they LEAD the request - "build a CLI that explains
+	// regexes" is still a real build.
+	codingExcludeRe = regexp.MustCompile(`(?i)^\s*(please\s+)?(` +
+		`explain|what(?:'s| is| are|'re)|how (?:do|does|can|would|should|did)|why\b|` +
+		`tell me about|describe|compare|teach me|` +
+		`show me an example|give me an example|when should i|which is better|` +
+		`can you explain|help me understand|summari[sz]e|review\b|read\b|` +
+		`who is|do you know` +
+		`)\b`)
 )
+
+// codingOpsRe excludes steps whose real job is running a command or
+// managing an environment, not building software. Both were live false
+// positives found by this project's own test suite the moment the coding
+// classifier was added:
+//
+//   - "run the command: python3 setup.py build" matched on build + .py,
+//     and would have started a whole architect-scaffold-test build for
+//     what is explicitly, unambiguously one shell command.
+//   - "create a virtual environment, then install the package into it" -
+//     a recovery step produced by the scheduler's own failure reasoning -
+//     matched on create + package. It is environment work; the coding
+//     harness would have tried to design a software project out of it.
+var codingOpsRe = regexp.MustCompile(`(?i)^\s*(run|execute)\b[\s\S]{0,25}\b(command|script|shell|terminal)\b` +
+	`|^\s*(create|make|set ?up|activate|delete|remove)\s+(a\s+|the\s+)?(new\s+)?(virtual\s?env|venv|virtual environment|environment|directory|folder)\b` +
+	`|^\s*(pip|uv|npm|yarn|apt|apt-get|brew|cargo|gem)\b[\s\S]{0,15}\b(install|add|get|remove)\b` +
+	`|^\s*install\b`)
+
+var (
+	// URLs are stripped before the coding patterns run. Real false
+	// positive: "write a note about https://golang.org/dl/ to
+	// go-version.md" classified as coding purely because the URL contains
+	// "golang" - the language name was never about the note's content.
+	codingURLRe = regexp.MustCompile(`https?://\S+|\bwww\.\S+`)
+
+	// Filenames whose extension is NOT a code extension are stripped too,
+	// for the second half of that same bug: "go-version.md" contains "go"
+	// followed by a hyphen, which is a real word boundary, so \bgo\b
+	// matched a MARKDOWN filename and made a note look like a Go project.
+	// Removing non-code filenames wholesale fixes the whole class of it
+	// (readme.md, notes.txt, data.csv) while leaving real code filenames
+	// (fib.py, main.go) in place for codeExtPattern to find.
+	// A lookahead would express this directly, but Go's RE2 has none.
+	anyFilenameRe = regexp.MustCompile(`\b[\w-]+\.[a-zA-Z0-9]{1,8}\b`)
+	codeExtOnlyRe = regexp.MustCompile(`(?i)` + codeExtPattern + `$`)
+)
+
+// stripNonCodeFilenames removes filenames that are not source files, so
+// their stems can't be mistaken for language names.
+func stripNonCodeFilenames(s string) string {
+	return anyFilenameRe.ReplaceAllStringFunc(s, func(name string) string {
+		if codeExtOnlyRe.MatchString(name) {
+			return name
+		}
+		return " "
+	})
+}
+
+// isCoding is the real gate for the coding harness: a genuine
+// build-me-software request, never a question about software and never a
+// single command or an environment chore.
+func isCoding(step string) bool {
+	if codingExcludeRe.MatchString(step) || codingOpsRe.MatchString(step) {
+		return false
+	}
+	cleaned := stripNonCodeFilenames(codingURLRe.ReplaceAllString(step, " "))
+	return codingRe.MatchString(cleaned)
+}
 
 func init() {
 	// Order matters (first match wins): the specific, unambiguous shapes
@@ -117,6 +255,15 @@ func init() {
 	// come before the general fallback.
 	Register("feedback", feedbackRe.MatchString)
 	Register("rag-query", ragQueryRe.MatchString)
+	// coding goes BEFORE download, terminal and file-write, all three of
+	// which would otherwise claim real coding requests and do something
+	// much weaker with them. "write a python script that downloads the CSV
+	// files" matches download (download + csv) and would have been handled
+	// as a fetch; "write a segment tree to segment_tree.py" matches
+	// file-write and would have been one unexecuted model completion saved
+	// to disk. Both are really "build me software", and only the coding
+	// harness actually builds, tests and fixes it.
+	Register("coding", isCoding)
 	Register("download", downloadRe.MatchString)
 	Register("terminal", terminalRe.MatchString)
 	Register("file-write", fileWriteRe.MatchString)
@@ -345,6 +492,24 @@ func parseSteps(text string, onLog func(string)) []string {
 // gets one real model call to decide task-vs-chat.
 func Atomize(ctx context.Context, prompt string, provider llm.Provider, model string, onLog func(string)) Plan {
 	matched := Classify(prompt)
+
+	// A coding request is NEVER split into steps here, however compound it
+	// looks. The coding harness does its own, far better decomposition
+	// internally - it designs a real architecture, orders the files by
+	// their real dependencies, and builds and tests each one - and it needs
+	// the whole request to do that.
+	//
+	// Splitting first actively breaks it: "build a FastAPI service with a
+	// SQLite store and tests" would become three steps, each classified
+	// "coding" on its own, each spinning up a SEPARATE architect-scaffold-
+	// test build in a SEPARATE directory, none of them aware of the others.
+	// One request, one project.
+	if matched == "coding" {
+		if onLog != nil {
+			onLog("atomizer: this is a coding task - handing the whole request to the coding harness, which does its own architecture and file breakdown")
+		}
+		return Plan{Steps: []string{prompt}, IsTask: true, Reason: "matched the coding classifier"}
+	}
 
 	// The single-step bypass only applies to a SINGLE clear action. Found
 	// live: "find out the newest Go version AND save a note to
