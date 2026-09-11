@@ -46,6 +46,9 @@ $DummyCP = "flowera-dummy-cp"
 # override with your own OLLAMA_URL/OLLAMA_MODEL env vars if needed.
 $OllamaUrl = if ($env:OLLAMA_URL) { $env:OLLAMA_URL } else { "https://art-sized-symposium-instructor.trycloudflare.com" }
 $OllamaModel = if ($env:OLLAMA_MODEL) { $env:OLLAMA_MODEL } else { "devstral-small-2:24b" }
+# Optional second model, used only for coding builds - TheBot routes
+# "coding" separately. Unset means the one model above does everything.
+$CodingModel = if ($env:CODING_MODEL) { $env:CODING_MODEL } else { "" }
 
 if ($Down) {
     Write-Host "=== Removing test desktop $DesktopContainer ==="
@@ -119,6 +122,7 @@ docker run -d `
     -e OLLAMA_URL=$OllamaUrl `
     -e OLLAMA_MODEL=$OllamaModel `
     -e AGENT_HARNESS=$Harness `
+    -e CODING_MODEL=$CodingModel `
     "flowera-desktop:$DesktopProfile" | Out-Null
 
 Write-Host ""

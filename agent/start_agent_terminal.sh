@@ -39,6 +39,12 @@ if [ "$AGENT_HARNESS" = "thebot" ] && [ -x /opt/soul ]; then
     # flowera has its own real Ollama available.
     export OLLAMA_HOST="${OLLAMA_URL:-https://art-sized-symposium-instructor.trycloudflare.com}"
     export CHAT_MODEL="${OLLAMA_MODEL:-devstral-small-2:24b}"
+    # Coding builds can run on their own model (see TheBot's internal/llm
+    # Models.ForTaskType): a build sends the longest prompts the agent ever
+    # produces and wants the largest context window, while chat wants a good
+    # conversationalist. Unset means "use CHAT_MODEL for coding too", so a
+    # single-model VM behaves exactly as before.
+    export CODING_MODEL="${CODING_MODEL:-}"
     export SOUL_PORT="4900"
     export DOCLING_SCRIPT="/opt/thebot-scripts/docling_convert.py"
     setsid /opt/soul >> /tmp/thebot-soul.log 2>&1 < /dev/null &

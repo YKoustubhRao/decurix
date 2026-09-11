@@ -40,6 +40,27 @@ COPY agent/flowera-agent.desktop /home/headless/.config/autostart/flowera-agent.
 RUN chmod 644 /home/headless/.config/autostart/flowera-agent.desktop \
     && chown headless:headless /home/headless/.config/autostart/flowera-agent.desktop
 
+# Restore the base image's own permissions on /etc/passwd and /etc/group.
+#
+# Real bug this fixes, found starting a fresh developer VM: the container
+# exited immediately with
+#   /dockerstartup/vnc_startup.rc: line 106: /dockerstartup/vnc.log: Permission denied
+#
+# The base image ships those files world-writable (666) on purpose. Its
+# own startup runs user_generator.rc, whose ENTIRE body is gated on
+# `if [[ -w /etc/passwd ]]` - and that body is what does
+# `sudo chown -R $UID /dockerstartup $HOME`, which is the only reason the
+# unprivileged headless user can write the VNC logs at all.
+#
+# Installing packages that create a system user (this image installs a
+# lot of them) rewrites /etc/passwd with the system default 644/664. The
+# generator then silently skips everything, /dockerstartup stays
+# root-owned, vncserver cannot open its log, and the container dies with
+# no VNC and no agent - looking like a broken image rather than a
+# permission bit. Restoring 666 here, after every install and before the
+# USER switch, puts the base image's mechanism back exactly as designed.
+RUN chmod 666 /etc/passwd /etc/group
+
 USER headless
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/dockerstartup/startup.sh"]

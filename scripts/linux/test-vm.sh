@@ -48,6 +48,12 @@ DUMMY_CP="flowera-dummy-cp"
 # override with your own OLLAMA_URL/OLLAMA_MODEL env vars if needed.
 OLLAMA_URL="${OLLAMA_URL:-https://art-sized-symposium-instructor.trycloudflare.com}"
 OLLAMA_MODEL="${OLLAMA_MODEL:-devstral-small-2:24b}"
+# Optional second model, used only for coding builds - TheBot routes
+# "coding" separately (see its internal/llm Models.ForTaskType), because a
+# build sends the longest prompts the agent ever produces and wants the
+# largest context window, while chat wants a good conversationalist. Unset
+# means the one model above does everything.
+CODING_MODEL="${CODING_MODEL:-}"
 
 if [ "$TEARDOWN" = true ]; then
     echo "=== Removing test desktop ${DESKTOP_CONTAINER} ==="
@@ -76,6 +82,7 @@ echo "========================================"
 echo " Flowera standalone VM test"
 echo "========================================"
 echo "profile=${PROFILE} harness=${HARNESS} name=${NAME}"
+echo "chat model=${OLLAMA_MODEL}${CODING_MODEL:+ | coding model=${CODING_MODEL}}"
 echo ""
 
 echo "=== Ensuring flowera-network ==="
@@ -125,6 +132,7 @@ docker run -d \
     -e OLLAMA_URL="$OLLAMA_URL" \
     -e OLLAMA_MODEL="$OLLAMA_MODEL" \
     -e AGENT_HARNESS="$HARNESS" \
+    -e CODING_MODEL="$CODING_MODEL" \
     "flowera-desktop:${PROFILE}" >/dev/null
 
 echo ""
