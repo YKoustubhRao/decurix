@@ -209,6 +209,18 @@ func (s *Scheduler) runSubtaskWithRecovery(ctx context.Context, subtask skills.S
 	if skill != nil {
 		skillName = skill.Name()
 	}
+
+	// Some failures are genuinely not recoverable by trying again, and a
+	// skill that knows that says so. Reasoning about an unusable model,
+	// then decomposing the request, then running it through the SAME
+	// unusable model is two extra model calls and several minutes spent
+	// reaching the identical conclusion.
+	if fatal, _ := result.Meta["fatal"].(bool); fatal {
+		onLog(fmt.Sprintf("subtask failed (%s) and reported it as unrecoverable - not retrying", skillName))
+		s.recordFailureFeedback(ctx, subtask.Step, result.Output, onLog)
+		return result
+	}
+
 	onLog(fmt.Sprintf("subtask failed (%s) - reasoning about why before giving up...", skillName))
 
 	pastFeedback := s.consultFeedback(ctx, subtask.Step, onLog)

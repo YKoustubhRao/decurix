@@ -139,7 +139,7 @@ func (h *Harness) Run(ctx context.Context, request, knownContext string) (*Build
 	knownContext = h.researchIfNeeded(runCtx, request, knownContext)
 
 	// ---------------------------------------------------------- architect
-	h.logf("coding: this is a coding task - designing the architecture before writing any code...")
+	h.logf("coding: this is a coding task - designing the architecture before writing any code (model: %s)...", h.Model)
 	design, err := Architect(runCtx, h.Provider, h.Model, request, knownContext, h.OnLog)
 	if err != nil {
 		return nil, fmt.Errorf("could not design the project: %w", err)
@@ -384,7 +384,7 @@ func (h *Harness) rememberBuild(ctx context.Context, request string, d *Design, 
 		fmt.Sprintf("build a %s %s in %s/ with: %s", d.Language, d.Kind, d.Dir, strings.Join(fileNames(d.Files), ", ")),
 	}
 	steps = append(steps, report.FixesApplied...)
-	steps = append(steps, fmt.Sprintf("run the full test suite and fix until it passes"))
+	steps = append(steps, "run the full test suite and fix until it passes")
 
 	proposed, err := h.SkillLib.Propose(request, steps, "coding-harness")
 	if err != nil {

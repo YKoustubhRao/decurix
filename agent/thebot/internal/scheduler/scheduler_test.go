@@ -529,3 +529,59 @@ func TestSchedulerHandlesLLMErrorGracefully(t *testing.T) {
 type errFakeUnreachable struct{}
 
 func (errFakeUnreachable) Error() string { return "simulated: LLM unreachable" }
+
+// fatalSkill reports a failure it knows retrying cannot fix - the shape a
+// skill uses when the tool it depends on is simply unusable.
+type fatalSkill struct{ runs int }
+
+func (f *fatalSkill) Name() string                  { return "fatal-test" }
+func (f *fatalSkill) Description() string           { return "always fails fatally" }
+func (f *fatalSkill) Matches(s skills.Subtask) bool { return s.Type == "fatal-test" }
+func (f *fatalSkill) Run(rc skills.RunContext, s skills.Subtask) (skills.Result, error) {
+	f.runs++
+	return skills.Result{
+		Subtask: s, SkillName: f.Name(),
+		Output:   "the model could not be used at all",
+		Verified: false,
+		Meta:     map[string]any{"fatal": true, "needsUserInput": true},
+	}, nil
+}
+
+// Found live routing builds to a model the server could not load at all:
+// every call died with "llama-server process has terminated ... CUDA
+// error". The harness honestly refused to claim success - and then the
+// scheduler reasoned about it and decomposed it, spending two more calls
+// against the SAME dead model to reach the identical conclusion minutes
+// later. Some failures genuinely cannot be retried into working.
+func TestSchedulerDoesNotRetryAFailureMarkedFatal(t *testing.T) {
+	fatal := &fatalSkill{}
+	// Registered through the real classifier chain, like every other
+	// fixture here, so Atomize resolves it deterministically and makes no
+	// model call of its own - otherwise this test's "zero model calls"
+	// assertion would really be measuring the atomizer.
+	atomizer.Register("fatal-test", func(step string) bool { return step == "fatal-fixture please" })
+	skills.Register(fatal)
+	registerTerminalSkill()
+
+	mock := &mockProvider{response: "DECISION: RETRY\nREASON: should never be asked\nRETRY_STEP: run the command: `echo should-not-run`"}
+	sched := newTestScheduler(t, mock)
+
+	callsBefore := mock.calls
+	job, err := sched.Run(context.Background(), "fatal-fixture please", nil, func(string) {})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if fatal.runs != 1 {
+		t.Errorf("the failing skill ran %d time(s), want exactly 1 - a fatal failure must not be retried", fatal.runs)
+	}
+	if got := mock.calls - callsBefore; got != 0 {
+		t.Errorf("made %d model call(s) recovering from a fatal failure, want 0", got)
+	}
+	if strings.Contains(job.FinalAnswer, "should-not-run") {
+		t.Error("the retry step ran anyway")
+	}
+	if job.Results[0].Meta["needsUserInput"] != true {
+		t.Error("Meta[needsUserInput] not preserved - the user has to be told this needs them")
+	}
+}

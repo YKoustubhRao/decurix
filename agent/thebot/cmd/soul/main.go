@@ -470,7 +470,7 @@ func buildProvider(cfg config.Config) (llm.Provider, llm.Models, llm.Embedder) {
 	switch cfg.Provider {
 	case "openai":
 		p := llm.NewOpenAI(cfg.OpenAIAPIKey, cfg.OpenAIEmbedModel)
-		return p, llm.DefaultModels(cfg.OpenAIModel), p // OpenAI does both chat and embed - one provider, no fallback needed
+		return p, llm.DefaultModels(cfg.OpenAIModel).WithCoding(cfg.CodingModel), p // OpenAI does both chat and embed - one provider, no fallback needed
 	case "anthropic":
 		chat := llm.NewAnthropic(cfg.AnthropicAPIKey, cfg.AnthropicModel)
 		var embedder llm.Embedder
@@ -486,11 +486,11 @@ func buildProvider(cfg config.Config) (llm.Provider, llm.Models, llm.Embedder) {
 				log.Printf("[soul] Ollama not reachable at %s - Data RAG and feedback are disabled for this run", cfg.OllamaHost)
 			}
 		}
-		return chat, llm.DefaultModels(cfg.AnthropicModel), embedder
+		return chat, llm.DefaultModels(cfg.AnthropicModel).WithCoding(cfg.CodingModel), embedder
 	default: // "ollama"
 		p := llm.NewOllama(cfg.OllamaHost)
 		p.EmbedModel = cfg.EmbedModel
-		return p, llm.DefaultModels(cfg.ChatModel), p
+		return p, llm.DefaultModels(cfg.ChatModel).WithCoding(cfg.CodingModel), p
 	}
 }
 
@@ -501,7 +501,6 @@ func main() {
 	}
 	log.Printf("[soul] workspace root: %s", cfg.WorkspaceRoot)
 	log.Printf("[soul] llm provider: %s", cfg.Provider)
-
 	ws, err := workspace.New(cfg.WorkspaceRoot)
 	if err != nil {
 		log.Fatalf("[soul] workspace init failed: %v", err)
@@ -513,6 +512,15 @@ func main() {
 	}
 
 	provider, models, embedder := buildProvider(cfg)
+
+	// Which model does which job, said out loud at startup. A hybrid setup
+	// that silently routes everything to one model looks exactly like a
+	// working one until the quality difference shows up in the output.
+	if models.Coding != "" && models.Coding != models.Default {
+		log.Printf("[soul] models: %s for chat/planning, %s for coding", models.Default, models.Coding)
+	} else {
+		log.Printf("[soul] models: %s for everything (set CODING_MODEL to route builds to a dedicated coder)", models.Default)
+	}
 
 	var dataRAG *rag.RAG
 	var fb *feedback.Store
