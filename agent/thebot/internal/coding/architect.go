@@ -74,10 +74,12 @@ func (f FileSpec) TestPath(tc *Toolchain) string {
 // real work or busywork. An empty __init__.py or a pure re-export module
 // has nothing to assert about; a test for it passes trivially and teaches
 // the loop nothing.
-func (f FileSpec) Testable() bool {
-	base := path.Base(f.Path)
-	if base == "__init__.py" || base == "__main__.py" || base == "index.js" {
-		return len(f.Symbols) > 0
+func (f FileSpec) Testable(tc *Toolchain) bool {
+	// Only real source files of this project's own language. A Dockerfile
+	// or a schema.sql is a genuine part of the project and genuinely has
+	// no unit test - writing a pytest file "for" it would assert nothing.
+	if tc != nil && !tc.IsSource(f.Path) {
+		return false
 	}
 	return len(f.Symbols) > 0
 }
@@ -102,6 +104,13 @@ Rules that matter:
 - Keep it to the smallest structure that genuinely does the job well - typically 2-6 files. Do not invent layers a real engineer wouldn't write for this request.
 - Do NOT list test files. The harness writes and runs tests for every file itself.
 - For a web-app/dashboard/api/service, "run_command" must be the real command that starts it.
+
+Things that decide whether this is testable at all - they matter as much as the structure:
+- SEPARATE LOGIC FROM I/O. Every piece of real behaviour must live in a plain function or class that can be called directly, with no server running, no browser, and no UI. A Streamlit/Dash/Flask/FastAPI file should be a thin layer that calls those functions. A dashboard whose logic only exists inside a page callback cannot be tested by anything, and this build tests everything it writes.
+- DATABASES: default to SQLite through the standard library for anything local - it needs no server, so the tests really run. Only choose Postgres/MySQL/Redis if the request explicitly asks for them, and even then put every query behind a repository/adapter file whose tests can point at a temporary local database. Never design tests that need a service someone has to start by hand.
+- EXTERNAL APIs: isolate every network call in its own client file, so the rest of the code can be tested without the network. The tests this harness writes are not allowed to make real network calls.
+- DOCKER: if the request asks for containers, list the real Dockerfile and/or docker-compose.yml as files, and still design the actual application code alongside them - a Dockerfile on its own builds nothing worth testing.
+- Prefer the standard library. Every dependency is one more thing that has to install successfully on a machine you cannot see before any of this runs.
 
 Respond with ONLY a JSON object, no prose, no markdown fence:
 {

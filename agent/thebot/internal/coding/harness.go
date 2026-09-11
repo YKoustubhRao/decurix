@@ -169,31 +169,57 @@ func (h *Harness) Run(ctx context.Context, request, knownContext string) (*Build
 	h.scaffold(runCtx, runner, design, tc, env, report)
 
 	// ------------------------------------------------------ file by file
+	//
+	// Two passes, deliberately. Pass one writes every source file (each
+	// checked that it really compiles); pass two tests them. They are
+	// separate because a file legitimately depends on its siblings: the
+	// first file of a real LRU-cache build imported two modules that were
+	// files 2 and 3 of the same design, so testing it immediately after
+	// writing it failed on ModuleNotFoundError for code the build was
+	// about to create - and the fix loop then went looking for the
+	// project's own module on PyPI. Nothing was wrong with that file; the
+	// project just didn't exist yet.
 	built := map[string]string{} // real path -> real content, for cross-file context
+	files := make([]BuiltFile, 0, len(design.Files))
+
 	for i, spec := range design.Files {
 		if !h.budgetLeft() {
 			report.Incomplete = true
-			report.Failures = append(report.Failures, fmt.Sprintf("ran out of budget before building %s", spec.Path))
+			report.Failures = append(report.Failures, fmt.Sprintf("ran out of budget before writing %s", spec.Path))
 			h.logf("coding: budget exhausted (%d attempts) - stopping before %s", h.attempts, spec.Path)
 			break
 		}
 
 		h.logf("coding-progress: file %d/%d - %s (%s)", i+1, len(design.Files), spec.Path, spec.Purpose)
-		bf := h.buildFile(runCtx, runner, design, tc, env, spec, built, report)
-		report.FilesWritten = append(report.FilesWritten, bf)
+		bf := h.writeSourceFile(runCtx, runner, design, tc, env, spec, built, report)
+		files = append(files, bf)
 
 		if content, err := os.ReadFile(filepath.Join(projectDir, spec.Path)); err == nil {
 			built[spec.Path] = string(content)
 		}
+		h.logf("coding: ✓ wrote %s (%d lines) - compiles", spec.Path, bf.Lines)
+	}
+
+	// ---------------------------------------------------- tests per file
+	h.logf("coding: ===== every file is written - now testing each one for real =====")
+	for i := range files {
+		if !h.budgetLeft() {
+			report.Incomplete = true
+			break
+		}
+		spec := design.Files[i]
+		h.logf("coding-progress: testing %d/%d - %s", i+1, len(files), spec.Path)
+		h.testSourceFile(runCtx, runner, design, tc, env, spec, built, report, &files[i])
 
 		status := "tests passing"
-		if bf.TestPath == "" {
+		if files[i].TestPath == "" {
 			status = "no separate unit test for this file"
-		} else if !bf.TestsPassed {
+		} else if !files[i].TestsPassed {
 			status = "TESTS STILL FAILING"
 		}
-		h.logf("coding: ✓ completed %s (%d lines, %s)", spec.Path, bf.Lines, status)
+		h.logf("coding: ✓ completed %s (%d lines, %s)", spec.Path, files[i].Lines, status)
 	}
+	report.FilesWritten = files
 
 	// --------------------------------------------------------- integration
 	h.runIntegrationPhase(runCtx, runner, design, tc, env, built, report)

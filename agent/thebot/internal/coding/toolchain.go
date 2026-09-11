@@ -530,3 +530,72 @@ func oneLine(s string) string {
 	s = strings.ReplaceAll(s, `"`, `'`)
 	return strings.TrimSpace(s)
 }
+
+// ------------------------------------------------- non-source files
+
+// IsSource reports whether a path is a real source file of THIS
+// toolchain's language - the only kind the language's own syntax check and
+// unit-test conventions apply to.
+//
+// A design legitimately includes files that are not source: a Dockerfile,
+// a docker-compose.yml, a schema.sql, a config. Running `python -m
+// py_compile` on a Dockerfile fails every time, forever, and writing a
+// pytest file "for" it is meaningless - so those get validated their own
+// way (SupportFileCheck) and are never unit-tested.
+func (t *Toolchain) IsSource(relPath string) bool {
+	ext := strings.ToLower(path.Ext(relPath))
+	switch t.Language {
+	case "python":
+		return ext == ".py"
+	case "go":
+		return ext == ".go"
+	case "node":
+		return ext == ".js" || ext == ".mjs" || ext == ".cjs" || ext == ".ts"
+	case "cpp":
+		switch ext {
+		case ".cpp", ".cc", ".cxx", ".h", ".hpp":
+			return true
+		}
+		return false
+	case "rust":
+		return ext == ".rs"
+	}
+	return ext == t.Ext
+}
+
+// SupportFileCheck returns a real validation command for a non-source file
+// the project genuinely ships, or "" when there is no honest way to check
+// it. Only checks that really validate something are here - a command that
+// always passes would be worse than none, since it would look like proof.
+func SupportFileCheck(relPath string, env *EnvFacts) string {
+	base := strings.ToLower(path.Base(relPath))
+	ext := strings.ToLower(path.Ext(relPath))
+
+	switch {
+	case base == "docker-compose.yml" || base == "docker-compose.yaml" || base == "compose.yml" || base == "compose.yaml":
+		if !env.HasDocker {
+			return ""
+		}
+		// Really parses and resolves the file (variables, anchors, the
+		// lot) without starting anything.
+		return fmt.Sprintf("docker compose -f %q config -q 2>&1", relPath)
+
+	case base == "dockerfile" || strings.HasSuffix(base, ".dockerfile"):
+		// There is no offline Dockerfile validator worth trusting, and a
+		// real `docker build` would pull base images and take minutes -
+		// too slow and too network-dependent to gate a build on.
+		return ""
+
+	case ext == ".json":
+		if env.PythonBin == "" {
+			return ""
+		}
+		return fmt.Sprintf("%s -c 'import json,sys; json.load(open(sys.argv[1]))' %q 2>&1", env.PythonBin, relPath)
+
+	case ext == ".sql":
+		// sqlite3 parses the real SQL without executing side effects
+		// against anything that matters (an in-memory database).
+		return fmt.Sprintf("sqlite3 :memory: < %q 2>&1", relPath)
+	}
+	return ""
+}

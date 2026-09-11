@@ -196,13 +196,22 @@ REQUIREMENTS:
 
 Respond with ONLY the raw file content. No markdown fence, no commentary.`
 
-// buildFile implements one real file and proves it works: write it, check
-// it compiles, write real tests for it, run them, and keep fixing until
-// they genuinely pass or this file's attempt budget is spent.
-func (h *Harness) buildFile(ctx context.Context, r *Runner, d *Design, tc *Toolchain, env *EnvFacts, spec FileSpec, built map[string]string, report *BuildReport) BuiltFile {
+// writeSourceFile implements ONE real source file and proves it at least
+// compiles, fixing it until it does or its attempt budget is spent.
+//
+// It deliberately stops there, without testing. Tests come in a second
+// pass over the whole project (see Harness.Run), because of a real failure
+// found live: the first file of an LRU-cache build imported two sibling
+// modules that the design had not written YET - they were files 2 and 3 -
+// so its unit test died on ModuleNotFoundError for code the build was
+// about to create, and the fix loop then tried to install the project's
+// own module from PyPI. Nothing is wrong with that file; it simply cannot
+// be tested until the project exists. Writing every file first and testing
+// afterwards removes the whole class of problem.
+func (h *Harness) writeSourceFile(ctx context.Context, r *Runner, d *Design, tc *Toolchain, env *EnvFacts, spec FileSpec, built map[string]string, report *BuildReport) BuiltFile {
 	bf := BuiltFile{Path: spec.Path}
 
-	// ---- 1. write the source, fixing until it at least compiles ----
+	// ---- write the source, fixing until it at least compiles ----
 	var lastFailure string
 	var diag Diagnosis
 	for attempt := 1; attempt <= h.MaxFileAttempts && h.budgetLeft(); attempt++ {
@@ -235,10 +244,24 @@ func (h *Harness) buildFile(ctx context.Context, r *Runner, d *Design, tc *Toolc
 		}
 
 		// The cheapest real check there is: does it even parse/compile?
-		if tc.SyntaxCheck == nil {
-			break
+		//
+		// Which check depends on what the file actually IS. A design
+		// legitimately includes a Dockerfile, a docker-compose.yml or a
+		// schema.sql alongside the code; running the language's own
+		// compiler on those fails every time, forever, for reasons that
+		// have nothing to do with their contents.
+		check := ""
+		if tc.IsSource(spec.Path) {
+			if tc.SyntaxCheck != nil {
+				check = tc.SyntaxCheck(d, env, spec.Path)
+			}
+		} else {
+			check = SupportFileCheck(spec.Path, env)
 		}
-		res := r.Run(ctx, tc.SyntaxCheck(d, env, spec.Path), quickTimeout)
+		if check == "" {
+			break // nothing honest to check - writing it is the whole job
+		}
+		res := r.Run(ctx, check, quickTimeout)
 		if res.OK {
 			if attempt > 1 {
 				h.logf("coding: %s compiles now (attempt %d)", spec.Path, attempt)
@@ -260,7 +283,7 @@ func (h *Harness) buildFile(ctx context.Context, r *Runner, d *Design, tc *Toolc
 				h.refreshEnv(r, env)
 				// The code may have been fine all along - re-check before
 				// spending an attempt rewriting something that now works.
-				if again := r.Run(ctx, tc.SyntaxCheck(d, env, spec.Path), quickTimeout); again.OK {
+				if again := r.Run(ctx, check, quickTimeout); again.OK {
 					break
 				}
 			}
@@ -268,21 +291,24 @@ func (h *Harness) buildFile(ctx context.Context, r *Runner, d *Design, tc *Toolc
 	}
 
 	built[spec.Path] = readFileOr(filepath.Join(r.Dir, filepath.FromSlash(spec.Path)), "")
+	return bf
+}
 
-	// ---- 2. real tests for this file, fixed until they really pass ----
-	if !spec.Testable() {
-		return bf
+// testSourceFile is the second pass: now that every file in the project
+// really exists, write real tests for this one and keep fixing until they
+// genuinely pass.
+func (h *Harness) testSourceFile(ctx context.Context, r *Runner, d *Design, tc *Toolchain, env *EnvFacts, spec FileSpec, built map[string]string, report *BuildReport, bf *BuiltFile) {
+	if !spec.Testable(tc) {
+		return
 	}
 	testPath := spec.TestPath(tc)
 	if testPath == "" {
 		// Rust and friends keep tests inside the source file - the full
 		// suite covers them; there is no separate file to write.
-		return bf
+		return
 	}
 	bf.TestPath = testPath
-
-	bf.TestsPassed = h.testFileUntilPassing(ctx, r, d, tc, env, spec, testPath, built, report, &bf)
-	return bf
+	bf.TestsPassed = h.testFileUntilPassing(ctx, r, d, tc, env, spec, testPath, built, report, bf)
 }
 
 // testFileUntilPassing writes real tests and then runs the real fix loop:
