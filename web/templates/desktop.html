@@ -113,6 +113,78 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
   padding:24px
 }
 
+.chat{
+  height:100%;
+  display:flex;
+  flex-direction:column;
+  background:var(--surface)
+}
+
+.chat-log{
+  flex:1;
+  min-height:0;
+  overflow-y:auto;
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+  padding:16px
+}
+.pane-label ~ .chat .chat-log{padding-top:44px}
+
+.chat-empty{
+  margin:auto;
+  text-align:center;
+  color:var(--text-3);
+  font-size:13px;
+  max-width:280px
+}
+
+.chat-msg{display:flex}
+.chat-msg.from-user{justify-content:flex-end}
+.chat-msg.from-agent{justify-content:flex-start}
+
+.chat-bubble{
+  max-width:min(78%,520px);
+  padding:9px 13px;
+  border-radius:var(--r-lg);
+  font-size:13.5px;
+  line-height:1.5;
+  white-space:pre-wrap;
+  overflow-wrap:anywhere
+}
+.chat-msg.from-user .chat-bubble{
+  background:var(--accent);
+  color:#fff;
+  border-bottom-right-radius:4px
+}
+.chat-msg.from-agent .chat-bubble{
+  background:var(--surface-2);
+  border:1px solid var(--line);
+  color:var(--text);
+  border-bottom-left-radius:4px
+}
+
+.chat-composer{
+  flex:none;
+  display:flex;
+  align-items:flex-end;
+  gap:10px;
+  padding:14px;
+  border-top:1px solid var(--line);
+  background:var(--surface)
+}
+.chat-composer .textarea{
+  min-height:76px;
+  max-height:280px;
+  resize:none;
+  overflow-y:auto;
+  font-family:var(--sans);
+  font-size:14.5px;
+  line-height:1.55;
+  padding:12px 14px
+}
+.chat-composer .btn{flex:none;height:36px;width:36px;padding:0;justify-content:center}
+
 @media (max-width:860px){
   .view-panes.split{grid-template-columns:1fr}
   .view-panes.split .pane{display:none}
@@ -152,6 +224,18 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
     </div>
   </div>
 
+{{define "chatBox"}}
+      <div class="chat" id="chat" data-desktop-id="{{.Desktop.ID}}">
+        <div class="chat-log" id="chatLog"></div>
+        <form class="chat-composer" id="chatForm">
+          <textarea class="textarea" id="chatInput" placeholder="Message this desktop's agent…" rows="1" required></textarea>
+          <button type="submit" class="btn btn-primary btn-sm" id="chatSend" aria-label="Send">
+            <svg width="15" height="15"><use href="#i-send"/></svg>
+          </button>
+        </form>
+      </div>
+{{end}}
+
 {{if ne .Desktop.Status "running"}}
   <div class="empty">
     <div class="empty-mark"><svg width="19" height="19"><use href="#i-monitor"/></svg></div>
@@ -159,42 +243,52 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
     <p>Start it from the desktops page to open its screen or talk to its agent.</p>
     <a class="btn btn-primary" href="/" style="margin-top:13px">Back to desktops</a>
   </div>
+{{else if eq .Desktop.Harness "thebot"}}
+
+  <div class="view-panes" id="panes">
+    <div class="pane active" id="paneAgent" data-pane="agent">
+      <iframe src="/agent/{{.Desktop.ID}}/" title="{{.Desktop.Name}} agent" loading="lazy"></iframe>
+    </div>
+  </div>
+
+{{else if eq .Desktop.Harness "ollama"}}
+
+  <div class="view-panes" id="panes">
+    <div class="pane active" id="paneAgent" data-pane="agent">
+      {{template "chatBox" .}}
+    </div>
+  </div>
+
 {{else}}
 
   <div class="view-toolbar">
     <div class="segmented" id="tabSwitch" role="tablist" style="width:max-content">
       <label class="seg">
-        <input type="radio" name="tab" value="desktop" checked>
+        <input type="radio" name="tab" value="agent" checked>
+        <span><svg width="14" height="14" style="margin-right:6px"><use href="#i-blossom"/></svg>Chat</span>
+      </label>
+      <label class="seg">
+        <input type="radio" name="tab" value="desktop">
         <span><svg width="14" height="14" style="margin-right:6px"><use href="#i-monitor"/></svg>Desktop</span>
       </label>
-{{if eq .Desktop.Harness "thebot"}}
-      <label class="seg">
-        <input type="radio" name="tab" value="agent">
-        <span><svg width="14" height="14" style="margin-right:6px"><use href="#i-blossom"/></svg>Agent</span>
-      </label>
-{{end}}
     </div>
 
-{{if eq .Desktop.Harness "thebot"}}
     <label class="split-toggle">
       <input type="checkbox" id="splitToggle">
       <span class="hint">Side by side</span>
     </label>
-{{end}}
   </div>
 
   <div class="view-panes" id="panes">
-    <div class="pane active" id="paneDesktop" data-pane="desktop">
+    <div class="pane" id="paneDesktop" data-pane="desktop">
       <span class="pane-label"><svg width="12" height="12"><use href="#i-monitor"/></svg>Desktop</span>
       <iframe src="/desktop/{{.Desktop.ID}}/?resize=remote&ui=touch" title="{{.Desktop.Name}} desktop" loading="lazy"></iframe>
     </div>
 
-{{if eq .Desktop.Harness "thebot"}}
-    <div class="pane" id="paneAgent" data-pane="agent">
-      <span class="pane-label"><svg width="12" height="12"><use href="#i-blossom"/></svg>Agent</span>
-      <iframe src="/agent/{{.Desktop.ID}}/" title="{{.Desktop.Name}} agent" loading="lazy"></iframe>
+    <div class="pane active" id="paneAgent" data-pane="agent">
+      <span class="pane-label"><svg width="12" height="12"><use href="#i-blossom"/></svg>Chat</span>
+      {{template "chatBox" .}}
     </div>
-{{end}}
   </div>
 
 {{end}}
@@ -212,6 +306,8 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
 
   var tabInputs = document.querySelectorAll('#tabSwitch input[name="tab"]');
   var splitToggle = document.getElementById("splitToggle");
+
+  if(!tabInputs.length){ return; }
 
   function applyTab(){
     var active = "desktop";
@@ -233,6 +329,155 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
   }
 
   applyTab();
+})();
+</script>
+
+<script>
+(function(){
+  "use strict";
+
+  var chat = document.getElementById("chat");
+  if(!chat){ return; }
+
+  var desktopId = chat.dataset.desktopId;
+  var log = document.getElementById("chatLog");
+  var form = document.getElementById("chatForm");
+  var input = document.getElementById("chatInput");
+  var sendButton = document.getElementById("chatSend");
+  var storageKey = "flowera-chat-" + desktopId;
+
+  var toast = Flowera.toast, post = Flowera.post;
+
+  var messages = loadMessages();
+  var seenNoteIds = {};
+
+  messages.forEach(function(message){
+    if(message.noteId){ seenNoteIds[message.noteId] = true; }
+  });
+
+  function loadMessages(){
+    try{
+      var raw = localStorage.getItem(storageKey);
+      return raw ? JSON.parse(raw) : [];
+    }catch(e){
+      return [];
+    }
+  }
+
+  function saveMessages(){
+    try{ localStorage.setItem(storageKey, JSON.stringify(messages)); }catch(e){}
+  }
+
+  function render(){
+    log.innerHTML = "";
+
+    if(!messages.length){
+      var empty = document.createElement("div");
+      empty.className = "chat-empty";
+      empty.textContent = "Send a message below to give this desktop's agent something to do.";
+      log.appendChild(empty);
+      return;
+    }
+
+    messages.forEach(function(message){
+      var row = document.createElement("div");
+      row.className = "chat-msg " + (message.role === "user" ? "from-user" : "from-agent");
+
+      var bubble = document.createElement("div");
+      bubble.className = "chat-bubble";
+      bubble.textContent = message.content;
+
+      row.appendChild(bubble);
+      log.appendChild(row);
+    });
+
+    log.scrollTop = log.scrollHeight;
+  }
+
+  /* ---------------- composer ---------------- */
+
+  function grow(){
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 280) + "px";
+  }
+
+  input.addEventListener("input", grow);
+
+  input.addEventListener("keydown", function(event){
+    if(event.key === "Enter" && !event.shiftKey){
+      event.preventDefault();
+      form.requestSubmit();
+    }
+  });
+
+  form.addEventListener("submit", async function(event){
+    event.preventDefault();
+
+    var text = input.value.trim();
+    if(!text){ return; }
+
+    messages.push({role: "user", content: text, at: Date.now()});
+    saveMessages();
+    render();
+
+    input.value = "";
+    grow();
+
+    sendButton.disabled = true;
+    Flowera.busy(true);
+
+    try{
+      await post("/api/desktops/send", {id: desktopId, content: text});
+    }catch(e){
+      toast(e.message, "error");
+    }finally{
+      Flowera.busy(false);
+      sendButton.disabled = false;
+    }
+  });
+
+  /* ---------------- pick up the agent's side of the conversation ---------------- */
+
+  async function poll(){
+    var response;
+
+    try{
+      response = await fetch("/api/helpnotes");
+    }catch(e){
+      return;
+    }
+
+    if(!response.ok){ return; }
+
+    var notes = await response.json().catch(function(){ return []; });
+    var mine = notes.filter(function(note){ return note.desktop_id === desktopId; });
+    var added = false;
+
+    mine.forEach(function(note){
+      if(seenNoteIds[note.id]){ return; }
+
+      seenNoteIds[note.id] = true;
+      added = true;
+
+      messages.push({
+        role: "agent",
+        content: note.content,
+        at: new Date(note.created_at).getTime() || Date.now(),
+        noteId: note.id
+      });
+    });
+
+    if(added){
+      messages.sort(function(a, b){ return a.at - b.at; });
+      saveMessages();
+      render();
+    }
+  }
+
+  render();
+  grow();
+  poll();
+  setInterval(poll, 4000);
 })();
 </script>
 
