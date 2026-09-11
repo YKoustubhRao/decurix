@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
+<title>{{.Desktop.Name}} · Flowera</title>
+
+{{template "theme"}}
+
+<style>
+.view-head{
+  display:flex;
+  align-items:center;
+  gap:14px;
+  margin-bottom:18px
+}
+
+.back-link{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  width:32px;height:32px;
+  border-radius:var(--r-md);
+  color:var(--text-2);
+  flex:none
+}
+.back-link:hover{background:var(--surface-2);color:var(--text)}
+.back-link svg{transform:rotate(90deg)}
+
+.view-title{display:flex;align-items:center;gap:10px;min-width:0}
+.view-title h1{font-size:19px}
+
+.view-toolbar{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:14px;
+  margin-bottom:14px;
+  flex-wrap:wrap
+}
+
+.split-toggle{display:flex;align-items:center;gap:8px}
+.split-toggle .hint{white-space:nowrap}
+
+.view-panes{
+  display:grid;
+  grid-template-columns:1fr;
+  gap:14px;
+  height:calc(100vh - 220px);
+  min-height:420px
+}
+.view-panes.split{grid-template-columns:1fr 1fr}
+
+.pane{
+  position:relative;
+  background:var(--surface);
+  border:1px solid var(--line);
+  border-radius:var(--r-xl);
+  box-shadow:var(--shadow-1);
+  overflow:hidden;
+  display:none
+}
+.pane.active{display:block}
+.view-panes.split .pane{display:block}
+
+.pane iframe{
+  width:100%;height:100%;
+  border:0;
+  background:var(--surface-2)
+}
+
+.pane-label{
+  position:absolute;
+  top:10px;left:10px;
+  z-index:2;
+  display:flex;
+  align-items:center;
+  gap:6px;
+  height:24px;
+  padding:0 9px;
+  border-radius:999px;
+  background:var(--surface);
+  border:1px solid var(--line);
+  box-shadow:var(--shadow-2);
+  font-size:11.5px;
+  font-weight:600;
+  color:var(--text-2)
+}
+
+.pane-empty{
+  height:100%;
+  display:grid;
+  place-items:center;
+  gap:6px;
+  text-align:center;
+  color:var(--text-3);
+  padding:24px
+}
+
+@media (max-width:860px){
+  .view-panes.split{grid-template-columns:1fr}
+  .view-panes.split .pane{display:none}
+  .view-panes.split .pane.active{display:block}
+}
+</style>
+</head>
+
+<body>
+
+{{template "sprite"}}
+
+<div id="progress"></div>
+<div id="toasts"></div>
+
+{{template "topbar" "desktops"}}
+
+<main class="wrap" style="max-width:1320px">
+
+  <div class="view-head">
+    <a class="back-link" href="/" aria-label="Back to desktops">
+      <svg width="18" height="18"><use href="#i-chevron"/></svg>
+    </a>
+
+    <div class="view-title">
+      <h1 class="trunc" title="{{.Desktop.Name}}">{{.Desktop.Name}}</h1>
+      <span class="status {{.Desktop.Status}}"><span class="dot"></span>{{.Desktop.Status}}</span>
+      <span class="chip">{{if eq .Desktop.Harness "claude"}}Claude Code{{else if eq .Desktop.Harness "thebot"}}TheBot{{else}}Ollama{{end}}</span>
+    </div>
+  </div>
+
+{{if ne .Desktop.Status "running"}}
+  <div class="empty">
+    <div class="empty-mark"><svg width="19" height="19"><use href="#i-monitor"/></svg></div>
+    <h2>Desktop is {{.Desktop.Status}}</h2>
+    <p>Start it from the desktops page to open its screen or talk to its agent.</p>
+    <a class="btn btn-primary" href="/" style="margin-top:13px">Back to desktops</a>
+  </div>
+{{else}}
+
+  <div class="view-toolbar">
+    <div class="segmented" id="tabSwitch" role="tablist" style="width:max-content">
+      <label class="seg">
+        <input type="radio" name="tab" value="desktop" checked>
+        <span><svg width="14" height="14" style="margin-right:6px"><use href="#i-monitor"/></svg>Desktop</span>
+      </label>
+{{if eq .Desktop.Harness "thebot"}}
+      <label class="seg">
+        <input type="radio" name="tab" value="agent">
+        <span><svg width="14" height="14" style="margin-right:6px"><use href="#i-blossom"/></svg>Agent</span>
+      </label>
+{{end}}
+    </div>
+
+{{if eq .Desktop.Harness "thebot"}}
+    <label class="split-toggle">
+      <input type="checkbox" id="splitToggle">
+      <span class="hint">Side by side</span>
+    </label>
+{{end}}
+  </div>
+
+  <div class="view-panes" id="panes">
+    <div class="pane active" id="paneDesktop" data-pane="desktop">
+      <span class="pane-label"><svg width="12" height="12"><use href="#i-monitor"/></svg>Desktop</span>
+      <iframe src="/desktop/{{.Desktop.ID}}/" title="{{.Desktop.Name}} desktop" loading="lazy"></iframe>
+    </div>
+
+{{if eq .Desktop.Harness "thebot"}}
+    <div class="pane" id="paneAgent" data-pane="agent">
+      <span class="pane-label"><svg width="12" height="12"><use href="#i-blossom"/></svg>Agent</span>
+      <iframe src="/agent/{{.Desktop.ID}}/" title="{{.Desktop.Name}} agent" loading="lazy"></iframe>
+    </div>
+{{end}}
+  </div>
+
+{{end}}
+
+</main>
+
+{{template "chrome-js"}}
+
+<script>
+(function(){
+  "use strict";
+
+  var panes = document.getElementById("panes");
+  if(!panes){ return; }
+
+  var tabInputs = document.querySelectorAll('#tabSwitch input[name="tab"]');
+  var splitToggle = document.getElementById("splitToggle");
+
+  function applyTab(){
+    var active = "desktop";
+    tabInputs.forEach(function(input){ if(input.checked){ active = input.value; } });
+
+    document.querySelectorAll(".pane").forEach(function(pane){
+      pane.classList.toggle("active", pane.dataset.pane === active);
+    });
+  }
+
+  tabInputs.forEach(function(input){
+    input.addEventListener("change", applyTab);
+  });
+
+  if(splitToggle){
+    splitToggle.addEventListener("change", function(){
+      panes.classList.toggle("split", splitToggle.checked);
+    });
+  }
+
+  applyTab();
+})();
+</script>
+
+</body>
+</html>

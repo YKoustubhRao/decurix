@@ -9,12 +9,17 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
-
-	"github.com/YKoustubhRao/flowera/internal/ollama"
 )
 
 const (
 	containerPort = "6901/tcp"
+
+	// agentPort is TheBot soul's own HTTP port (SOUL_PORT in
+	// start_agent_terminal.sh) - only listening inside desktops created
+	// with harness=thebot. Proxied separately from containerPort (VNC)
+	// via AgentProxyTarget/agentProxyHandler so the control plane's own
+	// UI can offer a real "talk to the agent" tab instead of only VNC.
+	agentPort = "4900/tcp"
 
 	desktopImageBasic     = "flowera-desktop:basic"
 	desktopImageDeveloper = "flowera-desktop:developer"
@@ -118,16 +123,20 @@ func buildDesktopEnv(name, harness string) []string {
 	// Every desktop it created was structurally unable to reach a real
 	// Ollama server regardless of what the harness itself wanted.
 	// Same fallback pattern now: override via the control plane's own
-	// OLLAMA_URL/OLLAMA_MODEL env (e.g. a Cloudflare-tunneled real
-	// server) when set, otherwise keep the existing bundled-stub default
-	// so nothing breaks for a deployment that hasn't configured this.
+	// OLLAMA_URL/OLLAMA_MODEL env when set. The default below is
+	// TEMPORARY: it points at the user's own Cloudflare-tunneled real
+	// Ollama server (see start_agent_terminal.sh's matching fallback) so
+	// every desktop gets a real model out of the box without extra
+	// per-deployment config, until Flowera has its own real Ollama
+	// server. Swap back to the bundled flowera-ollama stub, or drop the
+	// default entirely, once that's in place.
 	ollamaURL := os.Getenv("OLLAMA_URL")
 	if ollamaURL == "" {
-		ollamaURL = "http://flowera-ollama:11434"
+		ollamaURL = "https://art-sized-symposium-instructor.trycloudflare.com"
 	}
 	ollamaModel := os.Getenv("OLLAMA_MODEL")
 	if ollamaModel == "" {
-		ollamaModel = ollama.Model
+		ollamaModel = "qwen2.5-coder:14b"
 	}
 
 	env := []string{
