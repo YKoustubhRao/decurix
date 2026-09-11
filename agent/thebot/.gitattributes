@@ -1,0 +1,19 @@
+# Everything here is built and run on Linux (the VM image), so line
+# endings must stay LF in the repo regardless of the checkout platform.
+# Without this, a Windows checkout with core.autocrlf=true rewrites shell
+# scripts to CRLF and the shebang breaks inside the container with a
+# baffling "cannot execute: required file not found".
+* text=auto eol=lf
+
+*.sh text eol=lf
+*.go text eol=lf
+*.html text eol=lf
+*.md text eol=lf
+Dockerfile text eol=lf
+*Dockerfile text eol=lf
+
+# Never touch binaries.
+*.png binary
+*.jpg binary
+*.ico binary
+*.db binary

@@ -21,6 +21,21 @@ var (
 // a request to for the given desktop ID. It also returns the sanitized desktop
 // ID, since callers need it to strip the "/desktop/<id>" URL prefix.
 func (m *Manager) ProxyTarget(ctx context.Context, rawID string) (proxyURL *url.URL, sanitizedID string, err error) {
+	return m.resolveProxyTarget(ctx, rawID, containerPort)
+}
+
+// AgentProxyTarget resolves the internal address of TheBot soul's HTTP port
+// (agentPort) for the given desktop ID, the same way ProxyTarget resolves the
+// VNC port. Only desktops created with harness=thebot have anything
+// listening there.
+func (m *Manager) AgentProxyTarget(ctx context.Context, rawID string) (proxyURL *url.URL, sanitizedID string, err error) {
+	return m.resolveProxyTarget(ctx, rawID, agentPort)
+}
+
+// resolveProxyTarget looks up the running container for rawID and builds the
+// internal http://ip:port URL to reverse-proxy to, for whichever container
+// port the caller asks for (VNC vs. TheBot's own agent port).
+func (m *Manager) resolveProxyTarget(ctx context.Context, rawID, port string) (proxyURL *url.URL, sanitizedID string, err error) {
 	sanitizedID = sanitizeName(rawID)
 	name := "desktop_" + sanitizedID
 
@@ -46,7 +61,7 @@ func (m *Manager) ProxyTarget(ctx context.Context, rawID string) (proxyURL *url.
 	target := fmt.Sprintf(
 		"http://%s:%s",
 		ip,
-		strings.TrimSuffix(containerPort, "/tcp"),
+		strings.TrimSuffix(port, "/tcp"),
 	)
 
 	proxyURL, err = url.Parse(target)

@@ -9,12 +9,17 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
-
-	"github.com/YKoustubhRao/flowera/internal/ollama"
 )
 
 const (
 	containerPort = "6901/tcp"
+
+	// agentPort is TheBot soul's own HTTP port (SOUL_PORT in
+	// start_agent_terminal.sh) - only listening inside desktops created
+	// with harness=thebot. Proxied separately from containerPort (VNC)
+	// via AgentProxyTarget/agentProxyHandler so the control plane's own
+	// UI can offer a real "talk to the agent" tab instead of only VNC.
+	agentPort = "4900/tcp"
 
 	desktopImageBasic     = "flowera-desktop:basic"
 	desktopImageDeveloper = "flowera-desktop:developer"
@@ -27,6 +32,11 @@ const (
 	// Agent harnesses: which reasoning engine drives a desktop's tasks.
 	HarnessOllama = "ollama"
 	HarnessClaude = "claude"
+	// HarnessTheBot runs the same OLLAMA_URL/OLLAMA_MODEL every desktop
+	// already gets (see buildDesktopEnv) through TheBot's own atomizer/
+	// scheduler/skills loop instead of the hand-rolled Ollama loop -
+	// needs no new env var of its own for the Ollama case.
+	HarnessTheBot = "thebot"
 )
 
 // EnsureImages reports whether every desktop image is present locally. It
@@ -106,6 +116,32 @@ func buildDesktopEnv(name, harness string) []string {
 		defaultPassword = "admin"
 	}
 
+	// Real bug found testing this live: OLLAMA_URL was hardcoded to the
+	// bundled flowera-ollama container - a stub with a single 0.6b model,
+	// never a real one - unlike DEFAULT_PASSWORD/ANTHROPIC_API_KEY just
+	// below, which already read from the control plane's own environment.
+	// Every desktop it created was structurally unable to reach a real
+	// Ollama server regardless of what the harness itself wanted.
+	// Same fallback pattern now: override via the control plane's own
+	// OLLAMA_URL/OLLAMA_MODEL env when set. The default below is
+	// TEMPORARY: it points at the user's own Cloudflare-tunneled real
+	// Ollama server (see start_agent_terminal.sh's matching fallback) so
+	// every desktop gets a real model out of the box without extra
+	// per-deployment config, until Flowera has its own real Ollama
+	// server. Swap back to the bundled flowera-ollama stub, or drop the
+	// default entirely, once that's in place.
+	ollamaURL := os.Getenv("OLLAMA_URL")
+	if ollamaURL == "" {
+		ollamaURL = "https://art-sized-symposium-instructor.trycloudflare.com"
+	}
+	// Swapped from qwen2.5-coder:14b to devstral-small-2:24b per the user -
+	// "brain swap" test, gemma4:26b (also available on the tunnel) wasn't
+	// good enough. Still just a default: OLLAMA_MODEL above always wins.
+	ollamaModel := os.Getenv("OLLAMA_MODEL")
+	if ollamaModel == "" {
+		ollamaModel = "devstral-small-2:24b"
+	}
+
 	env := []string{
 		"VNC_PW=" + defaultPassword,
 		"VNC_RESOLUTION=1280x720",
@@ -114,8 +150,8 @@ func buildDesktopEnv(name, harness string) []string {
 		),
 		"DESKTOP_NAME=" + name,
 		"CONTROL_PLANE_URL=http://host.docker.internal:8080",
-		"OLLAMA_URL=http://flowera-ollama:11434",
-		"OLLAMA_MODEL=" + ollama.Model,
+		"OLLAMA_URL=" + ollamaURL,
+		"OLLAMA_MODEL=" + ollamaModel,
 		"AGENT_HARNESS=" + harness,
 	}
 
