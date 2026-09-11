@@ -47,7 +47,7 @@ DUMMY_CP="flowera-dummy-cp"
 # Same temporary default as internal/desktop/docker.go's buildDesktopEnv -
 # override with your own OLLAMA_URL/OLLAMA_MODEL env vars if needed.
 OLLAMA_URL="${OLLAMA_URL:-https://art-sized-symposium-instructor.trycloudflare.com}"
-OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5-coder:14b}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-devstral-small-2:24b}"
 
 if [ "$TEARDOWN" = true ]; then
     echo "=== Removing test desktop ${DESKTOP_CONTAINER} ==="

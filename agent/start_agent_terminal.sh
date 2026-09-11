@@ -38,7 +38,7 @@ if [ "$AGENT_HARNESS" = "thebot" ] && [ -x /opt/soul ]; then
     # for now (see the project notes); override OLLAMA_URL per-VM once
     # flowera has its own real Ollama available.
     export OLLAMA_HOST="${OLLAMA_URL:-https://art-sized-symposium-instructor.trycloudflare.com}"
-    export CHAT_MODEL="${OLLAMA_MODEL:-qwen2.5-coder:14b}"
+    export CHAT_MODEL="${OLLAMA_MODEL:-devstral-small-2:24b}"
     export SOUL_PORT="4900"
     export DOCLING_SCRIPT="/opt/thebot-scripts/docling_convert.py"
     setsid /opt/soul >> /tmp/thebot-soul.log 2>&1 < /dev/null &

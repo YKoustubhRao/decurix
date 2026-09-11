@@ -45,7 +45,7 @@ $DummyCP = "flowera-dummy-cp"
 # Same temporary default as internal/desktop/docker.go's buildDesktopEnv -
 # override with your own OLLAMA_URL/OLLAMA_MODEL env vars if needed.
 $OllamaUrl = if ($env:OLLAMA_URL) { $env:OLLAMA_URL } else { "https://art-sized-symposium-instructor.trycloudflare.com" }
-$OllamaModel = if ($env:OLLAMA_MODEL) { $env:OLLAMA_MODEL } else { "qwen2.5-coder:14b" }
+$OllamaModel = if ($env:OLLAMA_MODEL) { $env:OLLAMA_MODEL } else { "devstral-small-2:24b" }
 
 if ($Down) {
     Write-Host "=== Removing test desktop $DesktopContainer ==="
