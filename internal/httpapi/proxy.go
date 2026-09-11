@@ -82,7 +82,13 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Query parameters (e.g. desktop.html's resize=remote&ui=touch) are
 	// preserved automatically since only r.URL.Path was rewritten above.
-	reverseProxy.ModifyResponse = injectMobileEnhancements
+	reverseProxy.ModifyResponse = func(resp *http.Response) error {
+		if err := rewriteFloweraBranding(resp); err != nil {
+			return err
+		}
+
+		return injectMobileEnhancements(resp)
+	}
 	reverseProxy.ErrorHandler = func(
 		rw http.ResponseWriter,
 		req *http.Request,
@@ -102,6 +108,60 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reverseProxy.ServeHTTP(w, r)
+}
+
+// floweraBrandingRewrites are the literal noVNC markup fragments swapped for
+// Flowera's own branding by rewriteFloweraBranding, in order: the page
+// title, the small logo noVNC shows in its control-bar sidebar once
+// connected, and the large logo on its pre-connect screen (the first thing a
+// user actually sees when opening a desktop). Each replacement keeps the
+// original noVNC_logo class (other noVNC CSS, e.g. `.noVNC_logo + hr`,
+// selects on it) and overrides noVNC's own styling inline so it doesn't
+// depend on cascade order against noVNC's stylesheets. The icon is
+// /favicon.svg - the control plane's own root-relative brand mark, resolved
+// against the control plane's origin (not the desktop container's) since
+// this page is only ever reached through the /desktop/<id>/ proxy.
+var floweraBrandingRewrites = [][2][]byte{
+	{
+		[]byte(`<title>noVNC</title>`),
+		[]byte(`<title>Flowera</title>`),
+	},
+	{
+		[]byte(`<h1 class="noVNC_logo" translate="no"><span>no</span><br>VNC</h1>`),
+		[]byte(`<h1 class="noVNC_logo flowera-logo" translate="no" style="font-size:13px;line-height:1.2;display:flex;align-items:center;gap:8px;text-shadow:none;color:#f2f0ea;font-family:ui-sans-serif,system-ui,sans-serif"><img src="/favicon.svg" alt="" width="20" height="20" style="display:block;border-radius:4px"><span style="color:inherit;font-weight:700">Flowera</span></h1>`),
+	},
+	{
+		[]byte(`<p class="noVNC_logo" translate="no"><span>no</span>VNC</p>`),
+		[]byte(`<p class="noVNC_logo flowera-logo" translate="no" style="font-size:20px;line-height:1.2;display:flex;flex-direction:column;align-items:center;gap:10px;text-shadow:none;color:#f2f0ea;font-family:ui-sans-serif,system-ui,sans-serif"><img src="/favicon.svg" alt="" width="56" height="56" style="display:block;border-radius:12px"><span style="color:inherit;font-weight:700;letter-spacing:.02em">Flowera</span></p>`),
+	},
+}
+
+// rewriteFloweraBranding replaces noVNC's own "noVNC" branding in a desktop
+// screen's HTML with Flowera's, per floweraBrandingRewrites. Applied to every
+// load (unlike injectMobileEnhancements, it isn't gated on ?ui=touch) so a
+// user is never shown that a desktop's screen is noVNC/VNC under the hood -
+// the control plane presents it purely as "your desktop".
+func rewriteFloweraBranding(resp *http.Response) error {
+	if !strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
+		return nil
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if err != nil {
+		return err
+	}
+
+	for _, rewrite := range floweraBrandingRewrites {
+		body = bytes.Replace(body, rewrite[0], rewrite[1], 1)
+	}
+
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	resp.ContentLength = int64(len(body))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+
+	return nil
 }
 
 // injectMobileEnhancements rewrites the noVNC vnc.html response to splice

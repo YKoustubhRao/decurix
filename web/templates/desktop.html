@@ -43,8 +43,20 @@
 .split-toggle{display:flex;align-items:center;gap:8px}
 .split-toggle .hint{white-space:nowrap}
 
-body{display:flex;flex-direction:column;min-height:100dvh}
+body{
+  display:flex;
+  flex-direction:column;
+  min-height:100dvh;
+  background:
+    radial-gradient(900px 480px at 12% -8%, rgba(255,214,10,.30), transparent 62%),
+    radial-gradient(760px 560px at 105% 105%, rgba(255,120,20,.22), transparent 58%),
+    linear-gradient(150deg, #050302 0%, #330503 18%, #7a0f07 38%, #c21f0c 56%, #e85f0f 74%, #ffb703 90%, #ffe066 100%);
+}
 main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
+
+.view-title h1,
+.back-link{color:#fdf6ec}
+.back-link:hover{color:#fdf6ec}
 
 .view-panes{
   display:grid;
@@ -174,7 +186,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
   <div class="view-panes" id="panes">
     <div class="pane active" id="paneDesktop" data-pane="desktop">
       <span class="pane-label"><svg width="12" height="12"><use href="#i-monitor"/></svg>Desktop</span>
-      <iframe src="/desktop/{{.Desktop.ID}}/vnc.html?resize=remote&ui=touch" title="{{.Desktop.Name}} desktop" loading="lazy"></iframe>
+      <iframe src="/desktop/{{.Desktop.ID}}/?resize=remote&ui=touch" title="{{.Desktop.Name}} desktop" loading="lazy"></iframe>
     </div>
 
 {{if eq .Desktop.Harness "thebot"}}

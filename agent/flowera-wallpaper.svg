@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">
+  <!-- Default XFCE desktop wallpaper for Flowera desktops, replacing the
+       base image's stock xfce-shapes.svg. Same black/red/yellow gradient
+       and blossom mark as the control plane's own desktop-view page
+       (web/templates/desktop.html), so a desktop looks branded the moment
+       it's opened, not just around the noVNC chrome. -->
+  <defs>
+    <linearGradient id="base" x1="0" y1="0" x2="1280" y2="720" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#050302"/>
+      <stop offset="18%" stop-color="#330503"/>
+      <stop offset="38%" stop-color="#7a0f07"/>
+      <stop offset="56%" stop-color="#c21f0c"/>
+      <stop offset="74%" stop-color="#e85f0f"/>
+      <stop offset="90%" stop-color="#ffb703"/>
+      <stop offset="100%" stop-color="#ffe066"/>
+    </linearGradient>
+    <radialGradient id="glowYellow" cx="154" cy="-58" r="620" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#ffd60a" stop-opacity=".30"/>
+      <stop offset="100%" stop-color="#ffd60a" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowOrange" cx="1344" cy="756" r="520" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#ff7814" stop-opacity=".24"/>
+      <stop offset="100%" stop-color="#ff7814" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1280" height="720" fill="url(#base)"/>
+  <rect width="1280" height="720" fill="url(#glowYellow)"/>
+  <rect width="1280" height="720" fill="url(#glowOrange)"/>
+
+  <g transform="translate(970 470) scale(11.5)" fill="#ffffff" opacity=".07">
+    <g opacity=".78">
+      <circle cx="12" cy="7.25" r="2.85"/>
+      <circle cx="16.52" cy="10.53" r="2.85"/>
+      <circle cx="14.79" cy="15.84" r="2.85"/>
+      <circle cx="9.21" cy="15.84" r="2.85"/>
+      <circle cx="7.48" cy="10.53" r="2.85"/>
+    </g>
+    <circle cx="12" cy="12" r="2.2"/>
+  </g>
+</svg>
