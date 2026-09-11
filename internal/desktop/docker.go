@@ -134,9 +134,12 @@ func buildDesktopEnv(name, harness string) []string {
 	if ollamaURL == "" {
 		ollamaURL = "https://art-sized-symposium-instructor.trycloudflare.com"
 	}
+	// Swapped from qwen2.5-coder:14b to devstral-small-2:24b per the user -
+	// "brain swap" test, gemma4:26b (also available on the tunnel) wasn't
+	// good enough. Still just a default: OLLAMA_MODEL above always wins.
 	ollamaModel := os.Getenv("OLLAMA_MODEL")
 	if ollamaModel == "" {
-		ollamaModel = "qwen2.5-coder:14b"
+		ollamaModel = "devstral-small-2:24b"
 	}
 
 	env := []string{
