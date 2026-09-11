@@ -43,11 +43,14 @@
 .split-toggle{display:flex;align-items:center;gap:8px}
 .split-toggle .hint{white-space:nowrap}
 
+body{display:flex;flex-direction:column;min-height:100dvh}
+main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
+
 .view-panes{
   display:grid;
   grid-template-columns:1fr;
   gap:14px;
-  height:calc(100vh - 220px);
+  flex:1;
   min-height:420px
 }
 .view-panes.split{grid-template-columns:1fr 1fr}
@@ -102,6 +105,14 @@
   .view-panes.split{grid-template-columns:1fr}
   .view-panes.split .pane{display:none}
   .view-panes.split .pane.active{display:block}
+}
+
+@media (max-width:720px){
+  main.wrap{padding:10px 10px 10px}
+  .view-head{gap:10px;margin-bottom:10px}
+  .view-title h1{font-size:16px}
+  .view-toolbar{margin-bottom:10px}
+  .pane{border-radius:var(--r-lg)}
 }
 </style>
 </head>
@@ -163,7 +174,7 @@
   <div class="view-panes" id="panes">
     <div class="pane active" id="paneDesktop" data-pane="desktop">
       <span class="pane-label"><svg width="12" height="12"><use href="#i-monitor"/></svg>Desktop</span>
-      <iframe src="/desktop/{{.Desktop.ID}}/" title="{{.Desktop.Name}} desktop" loading="lazy"></iframe>
+      <iframe src="/desktop/{{.Desktop.ID}}/vnc.html?resize=remote&ui=touch" title="{{.Desktop.Name}} desktop" loading="lazy"></iframe>
     </div>
 
 {{if eq .Desktop.Harness "thebot"}}
