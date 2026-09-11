@@ -129,17 +129,29 @@ COPY --from=thebot-builder /soul /opt/soul
 # (PDF/DOCX/etc) fails per-file, honestly, without breaking anything
 # else; plain text/code and every other skill don't need Python at all.
 COPY agent/thebot/scripts /opt/thebot-scripts
+# Default desktop wallpaper, replacing the base image's stock XFCE one -
+# end users should see Flowera branding, not generic XFCE art, the moment
+# a desktop opens.
+COPY agent/flowera-wallpaper.svg /opt/flowera-wallpaper.svg
 
 RUN chmod +x /opt/vm_server.py /opt/start_agent_terminal.sh /opt/soul
 
 RUN mkdir -p /home/headless/.config/autostart \
+    /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml \
     && chown -R headless:headless /home/headless/.config \
     && chown headless:headless /home/headless
 
 COPY agent/flowera-agent.desktop /home/headless/.config/autostart/flowera-agent.desktop
+# Pre-seeds xfce4-desktop's xfconf channel so XFCE starts on the Flowera
+# wallpaper instead of generating its own default on first launch - see
+# agent/flowera-desktop-wallpaper.xml for the actual property values.
+COPY agent/flowera-desktop-wallpaper.xml /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml
 
 RUN chmod 644 /home/headless/.config/autostart/flowera-agent.desktop \
-    && chown headless:headless /home/headless/.config/autostart/flowera-agent.desktop
+    /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml \
+    && chown headless:headless \
+    /home/headless/.config/autostart/flowera-agent.desktop \
+    /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml
 
 # Restore the base image's own permissions on /etc/passwd and /etc/group.
 #

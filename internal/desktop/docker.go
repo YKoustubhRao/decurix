@@ -225,11 +225,13 @@ func sanitizeName(s string) string {
 	)
 }
 
-// desktopURL returns the root-relative noVNC URL for a desktop, served by the
-// control plane's /desktop/<id>/ reverse proxy. It is relative on purpose: the
-// browser resolves it against whatever origin the dashboard was opened on
-// (localhost, a LAN IP, the Cloudflare tunnel), so a phone is never sent to its
-// own localhost and an https page never embeds an http:// iframe.
+// desktopURL returns the root-relative URL for a desktop's screen, served by
+// the control plane's /desktop/<id>/ reverse proxy (which maps the bare path
+// to the underlying noVNC vnc.html internally - the filename never appears in
+// the URL a user sees). It is relative on purpose: the browser resolves it
+// against whatever origin the dashboard was opened on (localhost, a LAN IP,
+// the Cloudflare tunnel), so a phone is never sent to its own localhost and an
+// https page never embeds an http:// iframe.
 func desktopURL(id string) string {
-	return "/desktop/" + id + "/vnc.html"
+	return "/desktop/" + id + "/"
 }

@@ -181,7 +181,7 @@ Re-run whichever of these changed whenever you edit `agent/` or a `docker/deskto
 docker compose up --build -d
 ```
 
-Open **http://localhost:8080** — that's the dashboard. Create a desktop from there (pick a profile and a harness), and its live VNC session is reachable at `http://localhost:8080/desktop/<id>/vnc.html`.
+Open **http://localhost:8080** — that's the dashboard. Create a desktop from there (pick a profile and a harness), and its live desktop screen is reachable at `http://localhost:8080/desktop/<id>/`.
 
 ### 4. Or: do steps 2+3 in one go
 
