@@ -142,9 +142,10 @@ var (
 	codeLangPattern = `\bc\+\+|\bc#|` +
 		`\b(python|go|golang|javascript|typescript|node(?:\.?js)?|` +
 		`cpp|rust|java|ruby|php|sql|bash script|shell script|` +
-		`fastapi|flask|django|streamlit|dash|react|vue|svelte|express|gin|echo|` +
-		`pandas|numpy|pytorch|tensorflow|sqlite|postgres(?:ql)?|mysql|mongodb|redis|` +
-		`docker|dockerfile|docker-compose|kubernetes)\b`
+		`fastapi|flask|django|streamlit|dash|dask|gradio|react|vue|svelte|express|gin|echo|` +
+		`pandas|numpy|polars|pytorch|tensorflow|scikit-learn|sqlalchemy|pydantic|` +
+		`sqlite|postgres(?:ql)?|mysql|mongodb|redis|kafka|celery|` +
+		`docker|dockerfile|docker-compose|kubernetes|terraform|grpc|graphql|websockets?)\b`
 
 	// The classic structures and algorithms people ask for by name. They
 	// are unambiguously code even when the sentence names no language and
