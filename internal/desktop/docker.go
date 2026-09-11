@@ -225,13 +225,11 @@ func sanitizeName(s string) string {
 	)
 }
 
-// ServerHost returns the configured external host for this server, defaulting to localhost.
-func ServerHost() string {
-	host := os.Getenv("DESKTOP_HOST")
-
-	if host != "" {
-		return host
-	}
-
-	return "localhost"
+// desktopURL returns the root-relative noVNC URL for a desktop, served by the
+// control plane's /desktop/<id>/ reverse proxy. It is relative on purpose: the
+// browser resolves it against whatever origin the dashboard was opened on
+// (localhost, a LAN IP, the Cloudflare tunnel), so a phone is never sent to its
+// own localhost and an https page never embeds an http:// iframe.
+func desktopURL(id string) string {
+	return "/desktop/" + id + "/vnc.html"
 }

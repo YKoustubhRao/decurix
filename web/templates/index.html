@@ -991,12 +991,23 @@
     });
   });
 
-  /* ---------------- copy URL ---------------- */
+  /* ---------------- copy URL ----------------
+   Desktop URLs are root-relative so the preview and "open" button work from
+   any origin (localhost, LAN, the Cloudflare tunnel). Show and copy them
+   resolved against the origin this page was actually opened on. */
+
+  function absoluteURL(path){
+    return new URL(path, location.href).href;
+  }
+
+  document.querySelectorAll(".dcard-url .mono").forEach(function(el){
+    el.textContent = el.title = absoluteURL(el.textContent);
+  });
 
   document.querySelectorAll("[data-copy]").forEach(function(button){
     button.addEventListener("click", async function(){
       try{
-        await navigator.clipboard.writeText(button.dataset.copy);
+        await navigator.clipboard.writeText(absoluteURL(button.dataset.copy));
 
         button.classList.add("done");
         button.querySelector("use").setAttribute("href", "#i-check");

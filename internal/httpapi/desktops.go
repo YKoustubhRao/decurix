@@ -26,7 +26,6 @@ func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	host := getHost(r)
 	memories := s.Memory.List("")
 	memoryByDesktop := map[string][]memory.WorkerMemoryEntry{}
 	for _, entry := range memories {
@@ -37,7 +36,6 @@ func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 		Desktops:        desktops,
 		WorkerMemory:    memories,
 		MemoryByDesktop: memoryByDesktop,
-		Host:            host,
 		TunnelURL:       s.Tunnel.Get(),
 	}
 
