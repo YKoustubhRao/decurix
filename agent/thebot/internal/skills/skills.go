@@ -11,6 +11,7 @@ import (
 
 	"thebot/internal/feedback"
 	"thebot/internal/llm"
+	"thebot/internal/memory"
 	"thebot/internal/rag"
 	"thebot/internal/workspace"
 )
@@ -63,6 +64,20 @@ type RunContext struct {
 	// exact data is what the UI's own memory drawer displays. Only
 	// general.go threads it in today.
 	SelfStats string
+	// L1 and SkillLib are the memory tiers a skill can both READ and WRITE
+	// during its own run, as opposed to RecalledFacts above, which is a
+	// read-only snapshot the scheduler took once at the start of the job.
+	// The coding harness needs the live handles: diagnosing a build failure
+	// queries memory mid-run with the real error text (which nothing could
+	// have recalled up front, since the failure hadn't happened yet), and a
+	// genuinely new fix it researches gets written straight back. Optional
+	// and nil-safe like every other tier here.
+	L1       *memory.L1
+	SkillLib *memory.SkillLibrary
+	// OfflineMode turns off everything that reaches the network. Set by
+	// tests so the suite never depends on a search engine being up; left
+	// false in real runs, where research is the whole point.
+	OfflineMode bool
 }
 
 func (rc RunContext) Logf(prefix, format string, args ...any) {

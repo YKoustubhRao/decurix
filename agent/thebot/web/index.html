@@ -377,6 +377,8 @@
     if (line.startsWith('feedback:')) return 'feedback';
     if (line.startsWith('memory:') || line.startsWith('l1:')) return 'memory';
     if (line.startsWith('atomizer:')) return 'plan';
+    if (line.startsWith('coding-architecture:')) return 'plan';
+    if (line.startsWith('coding-learned:')) return 'memory';
     if (/FAILED|failed|could not|refused/i.test(line)) return 'fail';
     return '';
   }
@@ -392,6 +394,73 @@
     [/^skill library: reusing acquired skill "(.+?)" \(similarity ([\d.]+)\): (.+)$/, '\u{1F9F0}', (m) => `Reusing acquired skill "${m[1]}" (${Math.round(m[2]*100)}% match): ${m[3]}`],
     [/^skill library: proposed a new skill "(.+?)"/, '✨', (m) => `Learned something new - proposed skill "${m[1]}", awaiting your OK`],
     [/^skill library: could not propose/, '⚠', () => "Couldn't save what was learned this time"],
+    /* ---- coding harness (internal/coding) ----
+       The build lifecycle is the most verbose thing the agent does, and
+       the most worth watching: the architecture up front, then each file
+       as it is written, tested and fixed. Ordered before the generic
+       atomizer rules so "coding-*" prefixes never fall through to them. */
+    [/^atomizer: this is a coding task/, '\u{1F6E0}', () => 'Coding task - handing it to the build harness'],
+    [/^coding: this is a coding task - designing/, '\u{1F4D0}', () => 'Designing the architecture before writing any code'],
+    [/^coding: this request depends on current information - researching it first: (.+)$/, '\u{1F310}', (m) => `Researching first (needs current info): ${m[1]}`],
+    [/^coding: research done - (\d+) source/, '\u{1F310}', (m) => `Research done - ${m[1]} source(s) will ground the design`],
+    [/^coding-architecture: ===== ARCHITECTURE/, '\u{1F4D0}', () => 'Architecture and function design'],
+    [/^coding-architecture: ===== building/, '\u{1F528}', () => 'Design complete - building each file now'],
+    [/^coding-architecture: project: (.+)$/, '\u{1F4E6}', (m) => m[1]],
+    [/^coding-architecture: language: (.+)$/, '\u{1F4D0}', (m) => m[1]],
+    [/^coding-architecture: directory: (.+?) \(/, '\u{1F4C1}', (m) => `Building in ${m[1]}`],
+    [/^coding-architecture: dependencies: (.+)$/, '\u{1F4E6}', (m) => `Dependencies: ${m[1]}`],
+    [/^coding-architecture: (\d+) file\(s\) to build/, '\u{1F4C4}', (m) => `${m[1]} file(s) to build`],
+    [/^coding-architecture: run with: (.+)$/, '▶', (m) => `Run with: ${m[1]}`],
+    [/^coding-architecture: integration test must prove: (.+)$/, '\u{1F517}', (m) => `Integration test must prove: ${m[1]}`],
+    [/^coding-architecture:\s+(\d+\. .+)$/, '\u{1F4C4}', (m) => m[1]],
+    [/^coding-architecture:\s+- (.+)$/, '\u{0192}', (m) => m[1]],
+    [/^coding: toolchains actually available here: (.+)$/, '\u{1F527}', (m) => `Toolchains available: ${m[1]}`],
+    [/^coding: building in (.+)$/, '\u{1F4C1}', (m) => `Building in ${m[1]}`],
+    [/^coding: setting up a real (.+?) project \((.+?)\)/, '\u{1F527}', (m) => `Setting up a real ${m[1]} ${m[2]} project`],
+    [/^coding: project virtualenv is ready/, '\u{1F527}', () => 'Virtualenv ready - using it for every Python command'],
+    [/^coding-progress: file (\d+)\/(\d+) - (.+?) \((.+)\)$/, '\u{1F528}', (m) => `File ${m[1]}/${m[2]}: ${m[3]} - ${m[4]}`],
+    [/^coding: wrote real tests for (.+?) -> (.+)$/, '\u{1F9EA}', (m) => `Wrote real tests for ${m[1]}`],
+    [/^coding: ✓ (.+?) - tests pass$/, '✅', (m) => `Tests pass: ${m[1]}`],
+    [/^coding: ✓ completed (.+?) \((\d+) lines, (.+)\)$/, '✅', (m) => `Completed ${m[1]} (${m[2]} lines, ${m[3]})`],
+    [/^coding: (.+?) does not compile yet \(attempt (\d+)\/(\d+)\)/, '\u{1F527}', (m) => `${m[1]} doesn't compile yet - attempt ${m[2]}/${m[3]}`],
+    [/^coding: (.+?) compiles now \(attempt (\d+)\)/, '✅', (m) => `${m[1]} compiles now (attempt ${m[2]})`],
+    [/^coding: tests for (.+?) failing \(attempt (\d+)\/(\d+)\)/, '\u{1F50D}', (m) => `Tests failing for ${m[1]} - attempt ${m[2]}/${m[3]}, diagnosing`],
+    [/^coding-diagnosis: recognised this failure: (.+?) \(known:(.+?)\)$/, '\u{1F4A1}', (m) => `Recognised this failure: ${m[1]}`],
+    [/^coding-diagnosis: recalled a fix from memory: (.+)$/, '\u{1F9E0}', (m) => `Remembered a fix from before: ${m[1]}`],
+    [/^coding-diagnosis: this failure isn't recognised - searching the web for: (.+)$/, '\u{1F310}', (m) => `Never seen this failure - researching it: ${m[1]}`],
+    [/^coding-diagnosis: researched this failure on the web: (.+)$/, '\u{1F310}', (m) => `Worked it out from real sources: ${m[1]}`],
+    [/^coding-diagnosis: \[(.+?)\] (.+)$/, '\u{1F50D}', (m) => `${m[1] === 'environment' ? 'Environment problem' : 'Code problem'}: ${m[2]}`],
+    [/^coding-diagnosis: (.+)$/, '\u{1F50D}', (m) => m[1]],
+    [/^coding: applying a real fix: (.+)$/, '\u{1F527}', (m) => `Applying a real fix: ${m[1]}`],
+    [/^coding: that fix did not work/, '⚠', () => "That fix didn't work - trying something else"],
+    [/^coding: the TEST was wrong - rewrote (.+)$/, '\u{1F9EA}', (m) => `The test was wrong - rewrote ${m[1]}`],
+    [/^coding: the CODE was wrong - rewrote (.+)$/, '\u{1F528}', (m) => `The code was wrong - rewrote ${m[1]}`],
+    [/^coding: rewrote (.+?) to fix the suite$/, '\u{1F528}', (m) => `Rewrote ${m[1]} to fix the suite`],
+    [/^coding: ===== every file is written/, '\u{1F517}', () => 'Every file written - testing the whole thing together'],
+    [/^coding: wrote a real end-to-end integration test -> (.+)$/, '\u{1F517}', (m) => `Wrote an end-to-end integration test (${m[1]})`],
+    [/^coding: full suite failing \(attempt (\d+)\)/, '\u{1F50D}', (m) => `Full suite failing - attempt ${m[1]}, diagnosing`],
+    [/^coding: ✓ the FULL test suite passes \(attempt (\d+)\)/, '✅', (m) => `The full test suite passes (attempt ${m[1]})`],
+    [/^coding: ✓ the project builds/, '✅', () => 'The project builds'],
+    [/^coding: ✗ the project does not build/, '❌', () => 'The project does not build'],
+    [/^coding: smoke-checking that it really starts: (.+)$/, '▶', (m) => `Smoke-checking that it really starts: ${m[1]}`],
+    [/^coding: ✓ it starts and keeps running/, '✅', () => 'It starts and keeps running'],
+    [/^coding: ✓ it ran and exited cleanly/, '✅', () => 'It ran and exited cleanly'],
+    [/^coding: ✗ it failed to start/, '❌', () => 'It failed to start'],
+    [/^coding: ===== BUILD RESULT/, '\u{1F3C1}', () => 'Build result'],
+    [/^coding: (\d+) file\(s\) written in (.+)$/, '\u{1F4C1}', (m) => `${m[1]} file(s) written in ${m[2]}`],
+    [/^coding: ✓ the full test suite really passes/, '✅', () => 'The full test suite really passes'],
+    [/^coding: ✗ the full test suite does NOT pass/, '❌', () => 'The full test suite does NOT pass'],
+    [/^coding: environment fix applied during the build: (.+)$/, '\u{1F527}', (m) => `Had to fix the environment: ${m[1]}`],
+    [/^coding-learned: I have acquired a new skill: (.+)$/, '✨', (m) => `I have acquired a new skill: ${m[1]}`],
+    [/^coding-learned: remembered a new fix for next time - (.+)$/, '\u{1F9E0}', (m) => `Remembered for next time: ${m[1]}`],
+    [/^coding: proposed a new skill "(.+?)" from this build/, '✨', (m) => `Learned something from this build - proposed skill "${m[1]}", awaiting your OK`],
+    [/^coding: budget exhausted \((\d+) attempts\)/, '⏳', (m) => `Ran out of build budget after ${m[1]} attempts`],
+    [/^coding: ran out of its build budget \((\d+) attempts\)/, '⏳', (m) => `Ran out of build budget after ${m[1]} attempts`],
+    [/^coding-exec: TIMEOUT after (.+?): (.+)$/, '⏳', (m) => `Command timed out after ${m[1]}: ${m[2]}`],
+    [/^coding-exec: exit (\d+) \((.+?)\): (.+)$/, '\u{1F4BB}', (m) => `exit ${m[1]}: ${m[3]}`],
+    [/^coding-exec: ok \((.+?)\): (.+)$/, '\u{1F4BB}', (m) => m[2]],
+    [/^coding: (.+)$/, '\u{1F528}', (m) => m[1]],
+
     [/^atomizer: recognised this as a "(.+?)" task/, '\u{1F9ED}', (m) => `Recognised a ${m[1]} task`],
     [/^atomizer: recognised this as "(.+?)", but it asks for more than one thing/, '\u{1F9ED}', (m) => `Recognised ${m[1]} work, but it's more than one step - planning...`],
     [/^atomizer: no classifier claimed/, '\u{1F9ED}', () => 'Deciding: task or question?'],
