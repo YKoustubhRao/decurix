@@ -92,6 +92,6 @@ if (-not (Test-CommandAvailable "cloudflared")) {
 Write-Host ""
 
 # Start Cloudflare tunnel
-cloudflared tunnel --url http://127.0.0.1:8080
+cloudflared tunnel --protocol http2 --url http://127.0.0.1:8080
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 #endregion

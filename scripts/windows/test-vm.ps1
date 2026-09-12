@@ -42,10 +42,11 @@ Set-Location (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
 $DesktopContainer = "desktop_$Name"
 $DummyCP = "flowera-dummy-cp"
 
-# Same temporary default as internal/desktop/docker.go's buildDesktopEnv -
-# override with your own OLLAMA_URL/OLLAMA_MODEL env vars if needed.
-$OllamaUrl = if ($env:OLLAMA_URL) { $env:OLLAMA_URL } else { "https://art-sized-symposium-instructor.trycloudflare.com" }
-$OllamaModel = if ($env:OLLAMA_MODEL) { $env:OLLAMA_MODEL } else { "devstral-small-2:24b" }
+# Same default as internal/desktop/docker.go's buildDesktopEnv - the host
+# running the control plane, reached over the ExtraHosts entry every desktop
+# gets. Override with your own OLLAMA_URL/OLLAMA_MODEL env vars if needed.
+$OllamaUrl = if ($env:OLLAMA_URL) { $env:OLLAMA_URL } else { "http://host.docker.internal:11434" }
+$OllamaModel = if ($env:OLLAMA_MODEL) { $env:OLLAMA_MODEL } else { "qwen3:latest" }
 # Optional second model, used only for coding builds - TheBot routes
 # "coding" separately. Unset means the one model above does everything.
 $CodingModel = if ($env:CODING_MODEL) { $env:CODING_MODEL } else { "" }

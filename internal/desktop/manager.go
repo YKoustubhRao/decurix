@@ -23,6 +23,13 @@ type Manager struct {
 	client *client.Client
 
 	mu sync.Mutex
+
+	// shots caches the dashboard's desktop thumbnails, keyed by desktop ID.
+	// Guarded by shotMu, which covers the map alone - each entry carries its
+	// own lock for the capture itself (see screenshot.go), so one slow
+	// desktop never stalls another's thumbnail.
+	shotMu sync.Mutex
+	shots  map[string]*shotEntry
 }
 
 // NewManager creates a Manager backed by the given Docker client.
@@ -142,12 +149,8 @@ func (m *Manager) Create(
 		Status:      "running",
 		CPUs:        cpus,
 		MemoryMB:    memoryMB,
-		URL: fmt.Sprintf(
-			"http://%s:8080/desktop/%s/vnc.html",
-			ServerHost(),
-			sanitizeName(name),
-		),
-		CreatedAt: time.Now().Format(time.RFC3339),
+		URL:         desktopURL(sanitizeName(name)),
+		CreatedAt:   time.Now().Format(time.RFC3339),
 	}, nil
 }
 
@@ -245,12 +248,6 @@ func (m *Manager) List(
 			).Format(time.RFC3339)
 		}
 
-		url := fmt.Sprintf(
-			"http://%s:8080/desktop/%s/vnc.html",
-			ServerHost(),
-			id,
-		)
-
 		result = append(
 			result,
 			Desktop{
@@ -261,7 +258,7 @@ func (m *Manager) List(
 				ContainerID: c.ID,
 				Volume:      volumeName,
 				Status:      status,
-				URL:         url,
+				URL:         desktopURL(id),
 				CreatedAt:   createdAt,
 				CPUs:        cpus,
 				MemoryMB:    memoryMB,
@@ -412,12 +409,20 @@ func (m *Manager) SendMessage(
 		name,
 	)
 	if err != nil {
-		return fmt.Errorf("find desktop: %w", err)
+		return fmt.Errorf(
+			"find desktop %s: %w",
+			desktopID,
+			ErrNotFound,
+		)
 	}
 
 	// Make sure the desktop is running.
 	if inspect.State == nil || !inspect.State.Running {
-		return fmt.Errorf("desktop %s is not running", desktopID)
+		return fmt.Errorf(
+			"desktop %s: %w",
+			desktopID,
+			ErrNotRunning,
+		)
 	}
 
 	payload := map[string]string{
@@ -457,9 +462,14 @@ func (m *Manager) SendMessage(
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
+		// Nothing listening on :8081 inside a running container. Reported
+		// as ErrAgentUnreachable rather than a bare transport error so the
+		// caller can say so, instead of answering a human's chat message
+		// with an unexplained HTTP 500.
 		return fmt.Errorf(
-			"send message to desktop %s: %w",
+			"send message to desktop %s: %w: %v",
 			desktopID,
+			ErrAgentUnreachable,
 			err,
 		)
 	}

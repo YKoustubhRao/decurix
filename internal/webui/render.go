@@ -30,12 +30,11 @@ func templatePaths(page string) []string {
 	}
 }
 
-// PageData is the template data passed to the dashboard page: the current desktops, the worker memory, the request host, and the current cloud tunnel URL (if any).
+// PageData is the template data passed to the dashboard page: the current desktops, the worker memory, and the current cloud tunnel URL (if any).
 type PageData struct {
 	Desktops        []desktop.Desktop
 	WorkerMemory    []memory.WorkerMemoryEntry
 	MemoryByDesktop map[string][]memory.WorkerMemoryEntry
-	Host            string
 	TunnelURL       string
 }
 
@@ -48,7 +47,6 @@ type HelpNotesPageData struct {
 // page: its Desktop/Agent tab switcher and split view.
 type DesktopViewPageData struct {
 	Desktop desktop.Desktop
-	Host    string
 }
 
 // Renderer loads and executes the web UI's HTML templates.

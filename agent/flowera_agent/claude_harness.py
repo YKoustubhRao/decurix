@@ -1,8 +1,9 @@
 import json
 import os
 import subprocess
+import threading
 
-from flowera_agent import config, state
+from flowera_agent import config, progress, state
 from flowera_agent.logging_utils import log
 from flowera_agent.memory_context import get_memory_context
 from flowera_agent.messaging import ask_for_help, write_final_message
@@ -18,6 +19,13 @@ from flowera_agent.messaging import ask_for_help, write_final_message
 # one final JSON result. Exposes the same perform_task/
 # continue_after_help signatures as task_runner.py so harness.py can
 # dispatch to either one interchangeably.
+#
+# The CLI is run with --output-format stream-json rather than json, so
+# the turn is readable while it happens: Claude Code emits one JSON
+# object per line as it thinks and calls tools, and those become the
+# chat's live step view through progress.emit. The final "result" event
+# carries exactly the same fields the single-shot json format returned,
+# so everything downstream of _run_claude is unchanged.
 # ============================================================
 
 APPROVAL_MARKER = "NEEDS_APPROVAL:"
@@ -47,6 +55,19 @@ why. A human will review this on the Flowera dashboard and respond
 with approval or further instructions before you continue.
 """.strip()
 
+# Tool inputs are arbitrary JSON; these are the keys worth showing in a
+# one-line step, in the order that best identifies what the tool is doing
+# (a Bash command, the file being edited, the thing being searched for).
+TOOL_SUMMARY_KEYS = (
+    "command",
+    "file_path",
+    "path",
+    "pattern",
+    "url",
+    "description",
+    "prompt",
+)
+
 # This harness's own continuation state: the Claude Code session ID to
 # resume when a human response arrives. Not part of flowera_agent.state
 # because the Ollama harness has no equivalent concept (it keeps its
@@ -54,11 +75,66 @@ with approval or further instructions before you continue.
 _current_session_id = None
 
 
+def _first_line(text):
+    for line in text.strip().splitlines():
+        line = line.strip()
+
+        if line:
+            return line
+
+    return ""
+
+
+def _describe_tool(block):
+    """
+    Summarize one tool call as a single step line.
+    """
+
+    name = block.get("name") or "tool"
+    params = block.get("input") or {}
+
+    if isinstance(params, dict):
+        for key in TOOL_SUMMARY_KEYS:
+            value = params.get(key)
+
+            if isinstance(value, str) and value.strip():
+                return f"{name}: {_first_line(value)}"
+
+    return name
+
+
+def _emit_event(event):
+    """
+    Turn one stream-json event into the chat's live step view.
+
+    Only assistant turns say anything a human wants to watch; the rest of
+    the stream (init banners, tool results echoed back into the model) is
+    noise at this altitude and is deliberately dropped.
+    """
+
+    if event.get("type") != "assistant":
+        return
+
+    for block in (event.get("message") or {}).get("content") or []:
+        if not isinstance(block, dict):
+            continue
+
+        if block.get("type") == "text":
+            text = _first_line(block.get("text") or "")
+
+            if text:
+                progress.emit(text)
+
+        elif block.get("type") == "tool_use":
+            progress.emit(_describe_tool(block))
+
+
 def _run_claude(prompt, resume_session_id=None):
     """
     Run one non-interactive Claude Code turn and return (result, error).
 
-    `result` is the parsed --output-format json object on success.
+    `result` is the parsed final "result" event on success, which carries
+    the same fields --output-format json used to return in one shot.
     `error` is a human-readable string on failure. Exactly one of the
     two is non-None.
     """
@@ -67,7 +143,10 @@ def _run_claude(prompt, resume_session_id=None):
         "claude",
         "--bare",
         "-p", prompt,
-        "--output-format", "json",
+        # stream-json requires --verbose; without it the CLI refuses to
+        # stream in print mode and the loop below would see nothing.
+        "--output-format", "stream-json",
+        "--verbose",
         "--dangerously-skip-permissions",
         "--max-budget-usd", MAX_BUDGET_USD,
         "--append-system-prompt", SAFETY_SYSTEM_PROMPT,
@@ -86,31 +165,75 @@ def _run_claude(prompt, resume_session_id=None):
     log(f"Running Claude Code harness (resume={resume_session_id!r})")
 
     try:
-        process = subprocess.run(
+        process = subprocess.Popen(
             cmd,
             cwd=str(config.WORK_DIR),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=TASK_TIMEOUT_SECONDS,
+            bufsize=1,
         )
-    except subprocess.TimeoutExpired:
+    except OSError as exc:
+        return None, f"could not start claude: {exc}"
+
+    # stderr is drained on its own thread rather than read after the fact:
+    # a process that fills the stderr pipe buffer blocks forever while we
+    # are still reading stdout, which would hang the task rather than fail
+    # it. Same reason the timeout kills the process instead of waiting.
+    stderr_chunks = []
+
+    def drain_stderr():
+        for line in process.stderr:
+            stderr_chunks.append(line)
+
+    stderr_thread = threading.Thread(target=drain_stderr, daemon=True)
+    stderr_thread.start()
+
+    timed_out = threading.Event()
+
+    def kill_on_timeout():
+        timed_out.set()
+        process.kill()
+
+    watchdog = threading.Timer(TASK_TIMEOUT_SECONDS, kill_on_timeout)
+    watchdog.start()
+
+    result = None
+
+    try:
+        for line in process.stdout:
+            line = line.strip()
+
+            if not line:
+                continue
+
+            try:
+                event = json.loads(line)
+            except ValueError:
+                # A non-JSON line is not fatal - the CLI occasionally
+                # writes plain text around the stream. Keep reading.
+                continue
+
+            if event.get("type") == "result":
+                result = event
+                continue
+
+            _emit_event(event)
+    finally:
+        watchdog.cancel()
+        process.wait()
+        stderr_thread.join(timeout=5)
+
+    if timed_out.is_set():
         return None, (
             f"claude did not finish within {TASK_TIMEOUT_SECONDS} seconds"
         )
 
-    try:
-        result = json.loads(process.stdout)
-    except (ValueError, TypeError):
-        result = None
-
     if result is None:
-        error_text = (
-            process.stderr
-            or process.stdout
+        return None, (
+            "".join(stderr_chunks)
             or f"claude exited with code {process.returncode}"
         ).strip()
-
-        return None, error_text
 
     return result, None
 

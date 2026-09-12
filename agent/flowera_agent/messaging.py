@@ -41,7 +41,7 @@ def save_message(message):
 # Control plane communication
 # ============================================================
 
-def send_helptext(filename, content):
+def send_helptext(filename, content, kind="", message=""):
     """
     Send a help request to the Flowera control plane.
 
@@ -53,6 +53,15 @@ def send_helptext(filename, content):
         vm_name
         filename
         content
+        kind      - "help" or "final"
+        message   - just the agent's own words, no headings
+
+    `content` is the whole formatted note, which the dashboard's Help rail
+    still shows verbatim. `kind`/`message` are what the chat renders: the
+    control plane has no business re-parsing the note's headings to find the
+    one sentence a human wants to read, so the agent says which is which.
+    Both are optional - an older control plane ignores them, and a newer one
+    falls back to parsing `content` when they are absent.
     """
 
     payload = {
@@ -60,6 +69,8 @@ def send_helptext(filename, content):
         "vm_name": config.DESKTOP_NAME,
         "filename": filename,
         "content": content,
+        "kind": kind,
+        "message": message,
     }
 
     body = json.dumps(payload).encode("utf-8")
@@ -144,6 +155,8 @@ Please send instructions through the Flowera control plane.
     sent = send_helptext(
         filename,
         content,
+        kind="help",
+        message=problem,
     )
 
     if sent:
@@ -206,6 +219,8 @@ Completed at:
     sent = send_helptext(
         filename,
         final_message,
+        kind="final",
+        message=message,
     )
 
     if sent:

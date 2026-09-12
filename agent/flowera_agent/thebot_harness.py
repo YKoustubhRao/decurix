@@ -3,10 +3,11 @@ import time
 import urllib.error
 import urllib.request
 
-from flowera_agent import config, state
+from flowera_agent import config, progress, state
 from flowera_agent.logging_utils import log
 from flowera_agent.memory_context import get_memory_context
 from flowera_agent.messaging import ask_for_help, write_final_message
+from flowera_agent.readiness import wait_for_http_ok
 
 
 # ============================================================
@@ -16,10 +17,16 @@ from flowera_agent.messaging import ask_for_help, write_final_message
 # CLI-per-task model, TheBot's `soul` binary is a persistent HTTP server
 # (started once as a background daemon by start_agent_terminal.sh, not
 # shelled out to per task) with its own atomizer/scheduler/skills loop
-# inside it. This harness only ever submits a task over HTTP and polls
-# for the real job to finish - it does not reimplement any of TheBot's
+# inside it. This harness only ever submits a task over HTTP and follows
+# the real job to completion - it does not reimplement any of TheBot's
 # reasoning. Exposes the same perform_task/continue_after_help signatures
 # so harness.py can dispatch to it interchangeably with the other two.
+#
+# The job is followed over soul's own SSE stream rather than polled, so
+# every reasoning step it already emits (which its own UI used to be the
+# only way to see) reaches the Flowera chat live through progress.emit.
+# Polling remains as the fallback for a stream that drops before the job
+# reports a final event.
 # ============================================================
 
 APPROVAL_MARKER = "NEEDS_APPROVAL:"
@@ -56,10 +63,76 @@ def _get_json(url):
         return json.loads(response.read().decode("utf-8"))
 
 
+def _stream_job(base, job_id):
+    """
+    Follow one job over soul's SSE stream, reporting each log line as a
+    live step, and return the final job snapshot.
+
+    Returns None if the stream ended without ever delivering a final
+    event, which leaves the caller to fall back to polling rather than
+    treating a dropped connection as a failed task - the job itself keeps
+    running inside soul either way.
+    """
+
+    url = base + f"/api/jobs/{job_id}/stream"
+
+    request = urllib.request.Request(url, method="GET")
+
+    deadline = time.monotonic() + TASK_TIMEOUT_SECONDS
+
+    # The read timeout is the whole task budget on purpose: soul sends no
+    # keep-alive frames, so a genuinely long-running step looks exactly
+    # like an idle connection from here.
+    with urllib.request.urlopen(request, timeout=TASK_TIMEOUT_SECONDS) as response:
+        for raw in response:
+            if time.monotonic() > deadline:
+                return None
+
+            line = raw.decode("utf-8", "replace").strip()
+
+            if not line.startswith("data:"):
+                continue
+
+            try:
+                event = json.loads(line[len("data:"):].strip())
+            except ValueError:
+                continue
+
+            if event.get("type") == "log":
+                progress.emit(event.get("line") or "")
+
+            elif event.get("type") == "final":
+                return event.get("job") or {}
+
+    return None
+
+
+def _poll_job(base, job_id):
+    """
+    Wait for a job to finish by polling, for when the stream is unusable.
+    """
+
+    deadline = time.monotonic() + TASK_TIMEOUT_SECONDS
+
+    while time.monotonic() < deadline:
+        time.sleep(POLL_INTERVAL_SECONDS)
+
+        try:
+            job = _get_json(base + f"/api/jobs/{job_id}")
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            log(f"Could not poll TheBot job {job_id}: {exc}")
+            return None
+
+        if job.get("status") in ("done", "error"):
+            return job
+
+    return None
+
+
 def _run_thebot(prompt):
     """
-    Submit one real task to TheBot's /api/chat and poll the real job until
-    it finishes.
+    Submit one real task to TheBot's /api/chat and follow the real job
+    until it finishes.
 
     Returns (final_answer, meta, error). `error` is a human-readable
     string on failure; exactly one of (final_answer, error) is non-None.
@@ -76,24 +149,25 @@ def _run_thebot(prompt):
     if not job_id:
         return None, None, f"TheBot did not return a job id: {submitted}"
 
-    deadline = time.monotonic() + TASK_TIMEOUT_SECONDS
-    while time.monotonic() < deadline:
-        time.sleep(POLL_INTERVAL_SECONDS)
-        try:
-            job = _get_json(base + f"/api/jobs/{job_id}")
-        except (urllib.error.URLError, OSError, ValueError) as exc:
-            return None, None, f"could not poll TheBot job {job_id}: {exc}"
+    try:
+        job = _stream_job(base, job_id)
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        log(f"TheBot job stream for {job_id} failed, polling instead: {exc}")
+        job = None
 
-        status = job.get("status")
-        if status in ("done", "error"):
-            results = job.get("results") or []
-            meta = results[0].get("Meta") if results else None
-            return job.get("finalAnswer", ""), meta, None
+    if job is None:
+        job = _poll_job(base, job_id)
 
-    return None, None, (
-        f"TheBot job {job_id} did not finish within "
-        f"{TASK_TIMEOUT_SECONDS} seconds"
-    )
+    if job is None:
+        return None, None, (
+            f"TheBot job {job_id} did not finish within "
+            f"{TASK_TIMEOUT_SECONDS} seconds"
+        )
+
+    results = job.get("results") or []
+    meta = results[0].get("Meta") if results else None
+
+    return job.get("finalAnswer", ""), meta, None
 
 
 def _handle_result(final_answer, meta, error):
@@ -143,6 +217,29 @@ def _build_prompt(task):
 
     parts.append(task)
     return "\n\n---\n\n".join(parts)
+
+
+def wait_for_backend():
+    """
+    Wait for both halves of this harness's backend.
+
+    soul is a local daemon that takes a moment to bind :4900, and it
+    reasons with the same Ollama server every desktop is handed. Waiting
+    for both is what lets watchers.py queue an early message instead of
+    dispatching it into "could not reason about the failure ...
+    connection refused" and turning a backend that was still starting into
+    a help request for a human.
+    """
+
+    wait_for_http_ok(
+        config.OLLAMA_URL.rstrip("/") + "/api/tags",
+        f"Ollama at {config.OLLAMA_URL}",
+    )
+
+    wait_for_http_ok(
+        config.THEBOT_URL.rstrip("/") + "/api/health",
+        f"TheBot soul at {config.THEBOT_URL}",
+    )
 
 
 def perform_task(task, task_file):
