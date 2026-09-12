@@ -5,6 +5,27 @@ set -e
 # Every script runs from the repo root, two levels up from scripts/<group>/.
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
+# Ctrl+C lands here while the script is tailing the tunnel's logs, which run
+# forever until interrupted. Without this trap, "docker compose up -d" and
+# the desktop containers it depends on would keep running detached with no
+# tunnel pointed at them - a silent, orphaned Flowera. Tear the whole stack
+# down instead.
+cleanup() {
+    echo ""
+    echo "=== Interrupted: stopping Flowera and its containers ==="
+
+    docker compose down || true
+
+    docker ps -a \
+        --filter "name=desktop_" \
+        --format "{{.ID}}" \
+        | xargs -r docker rm -f
+
+    docker rm -f flowera-ollama >/dev/null 2>&1 || true
+}
+
+trap 'cleanup; exit 130' INT TERM
+
 ./scripts/linux/build-images.sh
 
 echo ""
