@@ -11,6 +11,37 @@ from flowera_agent.parser import parse_agent_response
 # Task execution
 # ============================================================
 
+# Caps how much of a single command's output is fed back into the model as
+# conversation history. Left unbounded, one verbose command (a build log, an
+# `apt`/`pip` install, `find /`) inflates the prompt for every remaining step
+# of the task, making each subsequent request slower and heavier - the model
+# still only needs enough of the output to reason about what happened.
+MAX_COMMAND_OUTPUT_CHARS = 4000
+
+
+def format_command_result(result):
+    """
+    Render a command's exit code and output as the history message the model
+    sees, truncating output so a single noisy command can't balloon the
+    prompt sent on every later step of the task.
+    """
+
+    output = result["output"] or ""
+
+    if len(output) > MAX_COMMAND_OUTPUT_CHARS:
+        omitted = len(output) - MAX_COMMAND_OUTPUT_CHARS
+        output = (
+            output[:MAX_COMMAND_OUTPUT_CHARS]
+            + f"\n... [{omitted} more characters truncated]"
+        )
+
+    return (
+        "Command execution result:\n\n"
+        f"exit_code: {result['exit_code']}\n\n"
+        f"output:\n{output}"
+    )
+
+
 def describe_result(result):
     """
     Summarize a command's outcome as one line for the chat's live step view.
@@ -121,13 +152,7 @@ Error:
             history.append(
                 {
                     "role": "user",
-                    "content": (
-                        "Command execution result:\n\n"
-                        f"exit_code: "
-                        f"{result['exit_code']}\n\n"
-                        f"output:\n"
-                        f"{result['output']}"
-                    ),
+                    "content": format_command_result(result),
                 }
             )
 
@@ -326,13 +351,7 @@ Error:
             history.append(
                 {
                     "role": "user",
-                    "content": (
-                        "Command execution result:\n\n"
-                        f"exit_code: "
-                        f"{result['exit_code']}\n\n"
-                        f"output:\n"
-                        f"{result['output']}"
-                    ),
+                    "content": format_command_result(result),
                 }
             )
 

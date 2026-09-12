@@ -21,6 +21,14 @@ def ollama_request(messages):
         "model": config.OLLAMA_MODEL,
         "messages": messages,
         "stream": False,
+        # Caps the KV-cache Ollama allocates for this model. Left unset,
+        # Ollama sizes it to the model's native context window (tens of
+        # thousands of tokens for Qwen3), which is memory this
+        # shell-command-reasoning loop never needs - format_command_result
+        # already keeps individual turns well under this.
+        "options": {
+            "num_ctx": 8192,
+        },
     }
 
     body = json.dumps(payload).encode("utf-8")
