@@ -42,17 +42,23 @@
   border-radius:var(--r-xl) var(--r-xl) 0 0;
 }
 
-.dcard-preview iframe{
+/* The live thumbnail served by /api/desktops/screenshot. It fades in once the
+   first frame lands, so a card never flashes a broken-image icon while a
+   desktop is still booting - the placeholder underneath shows through until
+   there is something real to show. */
+.dcard-shot{
   position:absolute;
-  left:50%;
-  top:50%;
-  width:1280px;
-  height:720px;
+  inset:0;
+  width:100%;
+  height:100%;
+  object-fit:cover;
+  display:block;
   border:0;
-  transform:translate(-50%,-50%) scale(1);
-  transform-origin:center center;
-  background:#111;
+  opacity:0;
+  transition:opacity .25s ease-out;
 }
+
+.dcard-shot.is-live{opacity:1}
 
 .dcard-preview-placeholder{
   position:absolute;
@@ -474,14 +480,18 @@
 {{if .Desktops}}
 {{range .Desktops}}
     <article class="dcard">
+      {{/* A thumbnail, not an embedded screen. This used to be an
+           <iframe src="/desktop/<id>/">, i.e. a whole noVNC client per card:
+           83 requests and a WebSocket each, against the one origin a browser
+           gives 6 HTTP/1.1 connections. Two desktops saturated that pool and
+           starved the VNC handshake of any screen actually opened for use.
+           See httpapi.desktopScreenshotHandler. */}}
       <div class="dcard-preview">
         {{if eq .Status "running"}}
-          <iframe
-            src="{{.URL}}"
-            title="{{.Name}} desktop preview"
-            loading="lazy"
-            tabindex="-1">
-          </iframe>
+          <img class="dcard-shot" data-shot="{{.ID}}" alt="{{.Name}} screen" decoding="async">
+          <div class="dcard-preview-placeholder" data-shot-placeholder>
+            Waiting for the screen…
+          </div>
         {{else}}
           <div class="dcard-preview-placeholder">
             Desktop is {{.Status}}
@@ -739,25 +749,66 @@
 (function(){
   "use strict";
 
-  /* ---------------- desktop preview scaling ---------------- */
+  /* ---------------- desktop thumbnails ----------------
+     One <img> per card, refreshed in a single sequential sweep: never more
+     than one thumbnail request in flight, whatever the desktop count. That
+     is the whole point of this replacing the old per-card noVNC iframe -
+     the dashboard must not compete with a real screen for the browser's six
+     connections to this origin. */
 
-  function fitDesktopPreviews(){
-    document.querySelectorAll(".dcard-preview").forEach(function(preview){
-      var iframe = preview.querySelector("iframe");
-      if(!iframe){ return; }
+  var SHOT_INTERVAL_MS = 5000;
 
-      var width = preview.clientWidth;
-      var height = preview.clientHeight;
+  function shotURL(img){
+    var width = Math.min(960, Math.max(120,
+      Math.round((img.clientWidth || 320) * (window.devicePixelRatio || 1))));
 
-      var scale = Math.min(width / 1280, height / 720);
+    return "/api/desktops/screenshot?id=" + encodeURIComponent(img.dataset.shot) +
+      "&w=" + width + "&t=" + Date.now();
+  }
 
-      iframe.style.transform =
-        "translate(-50%, -50%) scale(" + scale + ")";
+  function loadShot(img){
+    return new Promise(function(resolve){
+      var next = new Image();
+
+      next.onload = function(){
+        img.src = next.src;
+        img.classList.add("is-live");
+
+        var placeholder = img.parentNode.querySelector("[data-shot-placeholder]");
+        if(placeholder){ placeholder.style.display = "none"; }
+
+        resolve();
+      };
+
+      /* A desktop that is still booting has no screen to read yet. Leave the
+         placeholder showing and try again on the next sweep. */
+      next.onerror = function(){ resolve(); };
+
+      next.src = shotURL(img);
     });
   }
 
-  fitDesktopPreviews();
-  window.addEventListener("resize", fitDesktopPreviews);
+  async function sweepShots(){
+    var images = document.querySelectorAll("[data-shot]");
+
+    for(var i = 0; i < images.length; i++){
+      if(document.visibilityState !== "visible"){ return; }
+
+      await loadShot(images[i]);
+    }
+  }
+
+  async function shotLoop(){
+    for(;;){
+      if(document.visibilityState === "visible"){
+        await sweepShots();
+      }
+
+      await new Promise(function(r){ setTimeout(r, SHOT_INTERVAL_MS); });
+    }
+  }
+
+  if(document.querySelector("[data-shot]")){ shotLoop(); }
 
   var toast = Flowera.toast, busy = Flowera.busy, post = Flowera.post;
 

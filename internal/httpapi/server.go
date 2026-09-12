@@ -53,6 +53,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/messages", s.messagesDashboardHandler)
 	mux.HandleFunc("/api/desktops/send", s.sendMessageHandler)
 	mux.HandleFunc("/api/desktops/memory", s.desktopMemoryHandler)
+	mux.HandleFunc("/api/desktops/screenshot", s.desktopScreenshotHandler)
 	mux.HandleFunc("/api/desktops/chat", s.chatHandler)
 	mux.HandleFunc("/api/desktops/chat/stream", s.chatStreamHandler)
 	mux.HandleFunc("/api/desktops/chat/clear", s.clearChatHandler)

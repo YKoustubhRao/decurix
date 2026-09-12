@@ -23,6 +23,13 @@ type Manager struct {
 	client *client.Client
 
 	mu sync.Mutex
+
+	// shots caches the dashboard's desktop thumbnails, keyed by desktop ID.
+	// Guarded by shotMu, which covers the map alone - each entry carries its
+	// own lock for the capture itself (see screenshot.go), so one slow
+	// desktop never stalls another's thumbnail.
+	shotMu sync.Mutex
+	shots  map[string]*shotEntry
 }
 
 // NewManager creates a Manager backed by the given Docker client.
