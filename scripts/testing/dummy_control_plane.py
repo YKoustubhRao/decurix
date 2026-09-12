@@ -4,13 +4,17 @@ Dummy control plane: a stdlib-only stand-in for the real Flowera Go control
 plane, used only by scripts/*/test-vm.* to test one desktop image quickly
 without building/running the whole flowera stack.
 
-A desktop's agent (agent/flowera_agent/messaging.py) makes exactly one kind
-of outbound call to CONTROL_PLANE_URL: POST /api/helptext, sent both for a
-genuine help request and for the final "task completed" message (see
-ask_for_help/write_final_message). This server accepts that call, prints it
-to the console so you can watch a test desktop's agent work in real time,
-and answers every other path with a permissive 200 so nothing the agent does
-ever blocks on a missing endpoint.
+A desktop's agent makes two kinds of outbound call to CONTROL_PLANE_URL:
+
+  POST /api/helptext     (agent/flowera_agent/messaging.py) - sent both for a
+                         genuine help request and for the final "task
+                         completed" message (ask_for_help/write_final_message)
+  POST /api/agent/events (agent/flowera_agent/progress.py) - one line per step
+                         while a task runs, whichever harness is driving it
+
+This server accepts both, prints them to the console so you can watch a test
+desktop's agent work in real time, and answers every other path with a
+permissive 200 so nothing the agent does ever blocks on a missing endpoint.
 
 No task-delivery endpoint is needed here: test-vm.sh/.ps1 deliver the task
 the same way the real control plane does, by POSTing straight to the
@@ -46,6 +50,19 @@ class Handler(BaseHTTPRequestHandler):
             print("-" * 60, flush=True)
             print(data.get("content", raw.decode("utf-8", "replace")), flush=True)
             print("=" * 60, flush=True)
+
+            self._reply(200, {"status": "received"})
+            return
+
+        if self.path == "/api/agent/events":
+            try:
+                data = json.loads(raw.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                data = {}
+
+            # One line each, unboxed: these arrive steadily while a task runs,
+            # and the point of watching them is seeing the shape of the work.
+            print(f"  · [{data.get('vm_name', '?')}] {data.get('text', '')}", flush=True)
 
             self._reply(200, {"status": "received"})
             return

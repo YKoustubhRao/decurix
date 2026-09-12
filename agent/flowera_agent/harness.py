@@ -1,15 +1,45 @@
-from flowera_agent import config
+from flowera_agent import config, state
 
 # The only place that branches on which reasoning engine drives tasks.
-# Every branch exposes perform_task(task, task_file) and
-# continue_after_help(help_response) with identical signatures, so
-# watchers.py's command_watcher() doesn't need to know which is active.
+# Every branch exposes perform_task(task, task_file),
+# continue_after_help(help_response) and wait_for_backend() with identical
+# signatures, so watchers.py's command_watcher() and app.py's startup
+# don't need to know which is active.
 
 if config.AGENT_HARNESS == "claude":
     from flowera_agent.claude_harness import perform_task, continue_after_help
+
+    def _wait_for_backend():
+        """
+        No backend to wait for: the claude CLI is a local binary.
+        """
+        return
+
 elif config.AGENT_HARNESS == "thebot":
-    from flowera_agent.thebot_harness import perform_task, continue_after_help
+    from flowera_agent.thebot_harness import (
+        perform_task,
+        continue_after_help,
+        wait_for_backend as _wait_for_backend,
+    )
+
 else:
     from flowera_agent.task_runner import perform_task, continue_after_help
+    from flowera_agent.ollama_client import wait_for_ollama as _wait_for_backend
 
-__all__ = ["perform_task", "continue_after_help"]
+
+def wait_for_backend():
+    """
+    Block until this harness's reasoning backend is usable, then publish it.
+
+    Runs on a background thread (app.py) so it never gates the agent's own
+    :8081 listener. Setting the flag here rather than in each branch keeps
+    "what ready means" in the one file allowed to know which engine is
+    running, and gives watchers.py a single harness-agnostic thing to read.
+    """
+
+    _wait_for_backend()
+
+    state.backend_ready = True
+
+
+__all__ = ["perform_task", "continue_after_help", "wait_for_backend"]

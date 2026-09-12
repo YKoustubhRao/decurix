@@ -402,12 +402,20 @@ func (m *Manager) SendMessage(
 		name,
 	)
 	if err != nil {
-		return fmt.Errorf("find desktop: %w", err)
+		return fmt.Errorf(
+			"find desktop %s: %w",
+			desktopID,
+			ErrNotFound,
+		)
 	}
 
 	// Make sure the desktop is running.
 	if inspect.State == nil || !inspect.State.Running {
-		return fmt.Errorf("desktop %s is not running", desktopID)
+		return fmt.Errorf(
+			"desktop %s: %w",
+			desktopID,
+			ErrNotRunning,
+		)
 	}
 
 	payload := map[string]string{
@@ -447,9 +455,14 @@ func (m *Manager) SendMessage(
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
+		// Nothing listening on :8081 inside a running container. Reported
+		// as ErrAgentUnreachable rather than a bare transport error so the
+		// caller can say so, instead of answering a human's chat message
+		// with an unexplained HTTP 500.
 		return fmt.Errorf(
-			"send message to desktop %s: %w",
+			"send message to desktop %s: %w: %v",
 			desktopID,
+			ErrAgentUnreachable,
 			err,
 		)
 	}

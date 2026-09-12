@@ -80,8 +80,8 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 		r.URL.Path = "/vnc.html"
 	}
 
-	// Query parameters (e.g. desktop.html's resize=remote&ui=touch) are
-	// preserved automatically since only r.URL.Path was rewritten above.
+	// Query parameters (e.g. index.html's open-in-a-new-tab resize=remote&ui=touch)
+	// are preserved automatically since only r.URL.Path was rewritten above.
 	reverseProxy.ModifyResponse = func(resp *http.Response) error {
 		if err := rewriteFloweraBranding(resp); err != nil {
 			return err
@@ -166,12 +166,17 @@ func rewriteFloweraBranding(resp *http.Response) error {
 
 // injectMobileEnhancements rewrites the noVNC vnc.html response to splice
 // mobileViewerEnhancements in before </body>, but only for requests carrying
-// ?ui=touch - the marker web/templates/desktop.html puts on its full-size,
-// interactive desktop iframe so this never lands in index.html's small,
-// non-interactive dcard-preview thumbnail (same vnc.html, same query-free
-// URL otherwise). The injected script itself further gates on the browser
-// actually being touch-capable, so a mouse-and-keyboard visitor to the same
-// interactive iframe sees nothing extra either.
+// ?ui=touch - the marker index.html's "open the screen in a new tab" button
+// puts on the full-size, interactive screen URL, so this never lands in the
+// same page's small, non-interactive dcard-preview thumbnail (same vnc.html,
+// same query-free URL otherwise). The injected script itself further gates on
+// the browser actually being touch-capable, so a mouse-and-keyboard visitor
+// opening the same screen sees nothing extra either.
+//
+// That button is now the only thing emitting ?ui=touch: the per-desktop page
+// at /view/<id> is the chat alone and embeds no screen. Anything that opens a
+// desktop screen for real use needs to carry the marker, or these affordances
+// silently stop being injected.
 func injectMobileEnhancements(resp *http.Response) error {
 	if resp.Request.URL.Query().Get("ui") != "touch" {
 		return nil
@@ -226,11 +231,10 @@ func injectMobileEnhancements(resp *http.Response) error {
 //     simultaneous touch is intercepted (capture phase, so it never also
 //     reaches noVNC's gesture handler on the canvas).
 //
-// Paired with desktop.html's `resize=remote` on the same iframe, which asks
-// the desktop's Xvnc (TigerVNC, RandR-capable per `xrandr` inside the
-// container) to resize the X screen to fill the viewport, so the common
-// case needs no zooming or panning at all - this is purely for zooming in
-// on fine detail afterward.
+// Paired with `resize=remote` on the same URL, which asks the desktop's Xvnc
+// (TigerVNC, RandR-capable per `xrandr` inside the container) to resize the X
+// screen to fill the viewport, so the common case needs no zooming or panning
+// at all - this is purely for zooming in on fine detail afterward.
 const mobileViewerEnhancements = `
 <style>
 #noVNC_container{transform-origin:0 0}

@@ -1,11 +1,11 @@
 import json
-import time
 import urllib.error
 import urllib.request
 
 from flowera_agent import config
 from flowera_agent.logging_utils import log
 from flowera_agent.memory_context import get_memory_context
+from flowera_agent.readiness import wait_for_http_ok
 
 
 # ============================================================
@@ -64,36 +64,16 @@ def ollama_request(messages):
 def wait_for_ollama():
     """
     Wait until Ollama becomes available.
+
+    Runs on a background thread (see app.py and harness.wait_for_backend),
+    so it never gates the agent's own :8081 listener - it only decides when
+    queued work may start.
     """
 
-    url = config.OLLAMA_URL.rstrip("/") + "/api/tags"
-
-    while True:
-
-        try:
-            request = urllib.request.Request(
-                url,
-                method="GET",
-            )
-
-            with urllib.request.urlopen(
-                request,
-                timeout=5,
-            ) as response:
-
-                if response.status == 200:
-                    log(
-                        f"Ollama available: "
-                        f"{config.OLLAMA_URL}"
-                    )
-                    return
-
-        except Exception:
-            pass
-
-        log("Waiting for Ollama...")
-
-        time.sleep(2)
+    wait_for_http_ok(
+        config.OLLAMA_URL.rstrip("/") + "/api/tags",
+        f"Ollama at {config.OLLAMA_URL}",
+    )
 
 
 # ============================================================

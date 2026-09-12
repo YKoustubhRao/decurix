@@ -1,7 +1,7 @@
 import threading
 import time
 
-from flowera_agent import config, state
+from flowera_agent import config, progress, state
 from flowera_agent.harness import continue_after_help, perform_task
 from flowera_agent.logging_utils import log
 from flowera_agent.messaging import send_helptext
@@ -10,6 +10,48 @@ from flowera_agent.messaging import send_helptext
 # ============================================================
 # Command watcher
 # ============================================================
+
+# How often to say "still waiting" while messages sit queued behind a
+# backend that has not come up. The watcher polls every second; the chat
+# wants a heartbeat, not a step line per second.
+QUEUE_NOTICE_SECONDS = 30
+
+_last_queue_notice = None
+
+
+def _report_queued(name):
+    """
+    Say, at most every QUEUE_NOTICE_SECONDS, that messages are waiting for
+    the reasoning backend.
+
+    The human has already seen their message appear in the chat, which opens
+    a turn and starts the "Working..." card, so silence here would read as a
+    hang. This is the only thing that distinguishes "queued, will run" from
+    "stuck".
+    """
+
+    global _last_queue_notice
+
+    now = time.monotonic()
+
+    if (
+        _last_queue_notice is not None
+        and now - _last_queue_notice < QUEUE_NOTICE_SECONDS
+    ):
+        return
+
+    _last_queue_notice = now
+
+    log(
+        f"Reasoning backend not ready. "
+        f"Leaving {name} queued."
+    )
+
+    progress.emit(
+        "Waiting for the model backend to come up - "
+        "your message is queued and will run as soon as it is reachable."
+    )
+
 
 def command_watcher():
     """
@@ -60,6 +102,22 @@ def command_watcher():
                     )
                     continue
 
+                # The reasoning backend has not been reached yet - Ollama
+                # is still starting, or is briefly unreachable. Leave the
+                # file in the command directory and come back to it on a
+                # later pass, exactly as the "task already running" case
+                # below does.
+                #
+                # Not failing the task here is the whole point: a message
+                # that arrives a moment before the model is up used to be
+                # burned - dispatched, failed on the first request, and
+                # turned into a help request asking a human to do something
+                # about a backend that was about to come up on its own.
+                # Waiting costs nothing and needs no one.
+                if not state.backend_ready:
+                    _report_queued(path.name)
+                    continue
+
                 state.processed_commands.add(
                     path.name
                 )
@@ -80,19 +138,32 @@ def command_watcher():
 
                 # Do not start another task while one
                 # is already running.
-                if state.current_task is not None:
+                #
+                # The slot is claimed here, under the lock, rather than
+                # left to perform_task's own first statement: the watcher
+                # would otherwise start a thread and then test
+                # current_task again for the next file before that thread
+                # had run a single line, and dispatch a second task on top
+                # of the first. Nearly unreachable while messages only
+                # trickled in one at a time - routine now that a backlog
+                # can be released all at once when the backend comes up.
+                with state.state_lock:
 
-                    log(
-                        "Task already running. "
-                        f"Leaving {path.name} "
-                        "for later."
-                    )
+                    if state.current_task is not None:
 
-                    state.processed_commands.discard(
-                        path.name
-                    )
+                        log(
+                            "Task already running. "
+                            f"Leaving {path.name} "
+                            "for later."
+                        )
 
-                    continue
+                        state.processed_commands.discard(
+                            path.name
+                        )
+
+                        continue
+
+                    state.current_task = content
 
                 thread = threading.Thread(
                     target=perform_task,
