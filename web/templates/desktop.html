@@ -9,11 +9,24 @@
 {{template "theme"}}
 
 <style>
+/* ------------------------------------------------------------------ *
+ * One chat for every harness.
+ *
+ * Ollama, Claude Code and TheBot all reach this same page: the desktop's
+ * agent is addressed the same way (a message through the control plane)
+ * and reports back the same way (answers plus live steps), so nothing
+ * below branches on which engine is running.
+ *
+ * This page is only the chat. The desktop's own screen is a separate
+ * thing you open in its own tab, from the dashboard - it is not embedded
+ * here, so the conversation gets the whole window.
+ * ------------------------------------------------------------------ */
+
 .view-head{
   display:flex;
   align-items:center;
   gap:14px;
-  margin-bottom:18px
+  margin-bottom:16px
 }
 
 .back-link{
@@ -31,77 +44,357 @@
 .view-title{display:flex;align-items:center;gap:10px;min-width:0}
 .view-title h1{font-size:19px}
 
-.view-toolbar{
+.view-actions{margin-left:auto;flex:none}
+
+body{
   display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap:14px;
-  margin-bottom:14px;
-  flex-wrap:wrap
+  flex-direction:column;
+  min-height:100dvh;
+  background:
+    radial-gradient(900px 480px at 12% -8%, rgba(255,214,10,.30), transparent 62%),
+    radial-gradient(760px 560px at 105% 105%, rgba(255,120,20,.22), transparent 58%),
+    linear-gradient(150deg, #050302 0%, #330503 18%, #7a0f07 38%, #c21f0c 56%, #e85f0f 74%, #ffb703 90%, #ffe066 100%);
 }
+main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
 
-.split-toggle{display:flex;align-items:center;gap:8px}
-.split-toggle .hint{white-space:nowrap}
+.view-title h1,
+.back-link{color:#fdf6ec}
+.back-link:hover{color:#fdf6ec}
 
-.view-panes{
-  display:grid;
-  grid-template-columns:1fr;
-  gap:14px;
-  height:calc(100vh - 220px);
-  min-height:420px
-}
-.view-panes.split{grid-template-columns:1fr 1fr}
-
-.pane{
+/* The chat fills the page. It stays a positioned box so .chat can pin
+   itself to all four edges and lay its own scroller and composer out. */
+.chat-panel{
   position:relative;
+  flex:1;
+  min-height:520px;
   background:var(--surface);
   border:1px solid var(--line);
   border-radius:var(--r-xl);
   box-shadow:var(--shadow-1);
-  overflow:hidden;
-  display:none
-}
-.pane.active{display:block}
-.view-panes.split .pane{display:block}
-
-.pane iframe{
-  width:100%;height:100%;
-  border:0;
-  background:var(--surface-2)
+  overflow:hidden
 }
 
-.pane-label{
+.chat{
   position:absolute;
-  top:10px;left:10px;
-  z-index:2;
+  inset:0;
   display:flex;
+  flex-direction:column;
+  background:var(--surface)
+}
+
+.chat-log{
+  flex:1;
+  min-height:0;
+  overflow-y:auto;
+  padding:20px 0 8px;
+  scroll-behavior:smooth
+}
+.chat-inner{
+  max-width:720px;
+  margin:0 auto;
+  padding:0 20px;
+  display:flex;
+  flex-direction:column;
+  gap:18px
+}
+
+/* ---------- empty state ---------- */
+
+.chat-empty{
+  margin:auto;
+  padding:28px 20px;
+  display:flex;
+  flex-direction:column;
   align-items:center;
-  gap:6px;
-  height:24px;
-  padding:0 9px;
+  gap:9px;
+  text-align:center
+}
+.chat-empty-mark{
+  width:46px;height:46px;
+  display:grid;place-items:center;
+  border-radius:50%;
+  background:var(--accent-soft);
+  color:var(--accent);
+  margin-bottom:3px
+}
+.chat-empty h2{font-size:16px}
+.chat-empty p{color:var(--text-3);font-size:13px;max-width:38ch;line-height:1.6}
+
+.suggestions{
+  display:flex;
+  flex-wrap:wrap;
+  justify-content:center;
+  gap:7px;
+  margin-top:10px
+}
+.suggestion{
+  padding:7px 12px;
+  border:1px solid var(--line-2);
   border-radius:999px;
   background:var(--surface);
+  color:var(--text-2);
+  font-size:12.5px;
+  font-weight:500;
+  transition:background .12s ease,color .12s ease,border-color .12s ease
+}
+.suggestion:hover{background:var(--surface-2);color:var(--text);border-color:var(--line-2)}
+
+/* ---------- messages ---------- */
+
+.msg{display:flex;gap:11px;animation:msg-in .22s cubic-bezier(.2,.8,.2,1)}
+@keyframes msg-in{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
+
+.msg.from-user{flex-direction:row-reverse}
+
+.msg-avatar{
+  width:27px;height:27px;
+  flex:none;
+  margin-top:2px;
+  display:grid;place-items:center;
+  border-radius:50%;
+  font-size:11px;
+  font-weight:700
+}
+.msg.from-agent .msg-avatar{background:var(--accent-soft);color:var(--accent)}
+.msg.from-user .msg-avatar{background:var(--surface-3);color:var(--text-2)}
+
+.msg-body{min-width:0;max-width:min(80%,560px);display:flex;flex-direction:column;gap:7px}
+.msg.from-user .msg-body{align-items:flex-end}
+
+.bubble{
+  padding:10px 14px;
+  border-radius:var(--r-lg);
+  font-size:14px;
+  line-height:1.6;
+  overflow-wrap:anywhere
+}
+.msg.from-user .bubble{
+  background:var(--accent);
+  color:#fff;
+  border-bottom-right-radius:4px
+}
+.msg.from-agent .bubble{
+  background:var(--surface-2);
   border:1px solid var(--line);
-  box-shadow:var(--shadow-2);
-  font-size:11.5px;
-  font-weight:600;
+  color:var(--text);
+  border-bottom-left-radius:4px
+}
+
+.bubble p{margin:0;white-space:pre-wrap}
+.bubble p + p{margin-top:9px}
+
+.bubble code{
+  font-family:var(--mono);
+  font-size:12.5px;
+  padding:1px 5px;
+  border-radius:4px;
+  background:var(--surface-3);
+  overflow-wrap:anywhere
+}
+.msg.from-user .bubble code{background:rgba(255,255,255,.18)}
+
+.bubble pre{
+  margin:9px 0 0;
+  padding:11px 12px;
+  border-radius:var(--r-md);
+  background:var(--surface-3);
+  overflow-x:auto
+}
+.bubble pre:first-child{margin-top:0}
+.bubble pre code{padding:0;background:none;font-size:12px;line-height:1.6}
+.msg.from-user .bubble pre{background:rgba(0,0,0,.22)}
+
+/* An approval request is the one message that blocks the agent until a
+   human answers, so it never renders as an ordinary bubble. */
+.msg.is-approval .bubble,
+.msg.is-error .bubble{
+  background:var(--surface);
+  border-width:1px;
+  border-style:solid
+}
+.msg.is-approval .bubble{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.msg.is-error .bubble{border-color:var(--danger);background:var(--danger-soft)}
+
+.msg-flag{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  font-size:11px;
+  font-weight:700;
+  letter-spacing:.07em;
+  text-transform:uppercase
+}
+.msg.is-approval .msg-flag{color:var(--accent)}
+.msg.is-error .msg-flag{color:var(--danger)}
+
+.msg-time{font-size:11px;color:var(--text-3)}
+
+/* ---------- live activity + step lists ---------- */
+
+.steps{
+  border:1px solid var(--line);
+  border-radius:var(--r-md);
+  background:var(--surface-2);
+  overflow:hidden
+}
+.steps > summary{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:8px 11px;
+  cursor:pointer;
+  list-style:none;
+  font-size:12px;
+  font-weight:550;
+  color:var(--text-2)
+}
+.steps > summary::-webkit-details-marker{display:none}
+.steps > summary:hover{color:var(--text)}
+.steps-chevron{transition:transform .15s ease;color:var(--text-3)}
+.steps[open] > summary .steps-chevron{transform:rotate(180deg)}
+
+.steps-list{
+  max-height:260px;
+  overflow-y:auto;
+  border-top:1px solid var(--line);
+  padding:8px 11px;
+  display:flex;
+  flex-direction:column;
+  gap:4px
+}
+
+.step{
+  font-size:12px;
+  line-height:1.55;
+  color:var(--text-2);
+  overflow-wrap:anywhere;
+  animation:msg-in .18s ease-out
+}
+.step.is-command{font-family:var(--mono);font-size:11.5px;color:var(--text)}
+
+.working{
+  display:flex;
+  flex-direction:column;
+  gap:7px;
+  min-width:0;
+  max-width:min(80%,560px)
+}
+
+.working-head{
+  display:flex;
+  align-items:center;
+  gap:9px;
+  padding:10px 14px;
+  border:1px solid var(--line);
+  border-radius:var(--r-lg);
+  border-bottom-left-radius:4px;
+  background:var(--surface-2);
+  font-size:13.5px;
   color:var(--text-2)
 }
 
-.pane-empty{
-  height:100%;
-  display:grid;
-  place-items:center;
-  gap:6px;
-  text-align:center;
+.spinner{
+  width:13px;height:13px;
+  flex:none;
+  border-radius:50%;
+  border:2px solid var(--accent-soft);
+  border-top-color:var(--accent);
+  animation:spin .7s linear infinite
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+.working-elapsed{margin-left:auto;font-family:var(--mono);font-size:11.5px;color:var(--text-3)}
+
+.working-latest{
+  font-size:12px;
   color:var(--text-3);
-  padding:24px
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap
 }
 
-@media (max-width:860px){
-  .view-panes.split{grid-template-columns:1fr}
-  .view-panes.split .pane{display:none}
-  .view-panes.split .pane.active{display:block}
+/* ---------- composer ---------- */
+
+.chat-composer{
+  flex:none;
+  padding:12px 20px calc(16px + env(safe-area-inset-bottom,0px));
+  border-top:1px solid var(--line);
+  background:var(--surface)
+}
+
+.composer-inner{
+  max-width:720px;
+  margin:0 auto;
+  display:flex;
+  align-items:flex-end;
+  gap:9px;
+  padding:7px 7px 7px 15px;
+  background:var(--surface);
+  border:1px solid var(--line-2);
+  border-radius:var(--r-xl);
+  transition:border-color .14s ease,box-shadow .14s ease
+}
+.composer-inner:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--ring)}
+
+.composer-inner textarea{
+  flex:1;
+  min-width:0;
+  border:0;
+  outline:none;
+  resize:none;
+  background:transparent;
+  color:var(--text);
+  font-family:var(--sans);
+  font-size:14.5px;
+  line-height:1.55;
+  max-height:180px;
+  padding:8px 0
+}
+.composer-inner textarea::placeholder{color:var(--text-3)}
+
+.composer-send{
+  flex:none;
+  width:34px;height:34px;
+  display:grid;place-items:center;
+  border-radius:50%;
+  background:var(--btn);
+  color:var(--btn-text);
+  transition:background .12s ease,opacity .12s ease
+}
+.composer-send:hover:not(:disabled){background:var(--btn-hover)}
+.composer-send:disabled{opacity:.4}
+
+.composer-hint{
+  max-width:720px;
+  margin:8px auto 0;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  font-size:11.5px;
+  color:var(--text-3)
+}
+.composer-hint kbd{
+  font-family:var(--mono);
+  font-size:10.5px;
+  padding:1px 5px;
+  border:1px solid var(--line-2);
+  border-bottom-width:2px;
+  border-radius:4px;
+  background:var(--surface-2);
+  color:var(--text-2)
+}
+.composer-hint .offline{margin-left:auto;color:var(--danger);font-weight:550;display:none}
+.composer-hint .offline.on{display:block}
+
+@media (max-width:720px){
+  main.wrap{padding:10px 10px 10px}
+  .view-head{gap:10px;margin-bottom:10px}
+  .view-title h1{font-size:16px}
+  .chat-panel{border-radius:var(--r-lg)}
+  .chat-inner,.composer-hint{padding-left:14px;padding-right:14px}
+  .composer-inner{padding-left:14px;padding-right:7px}
+  .msg-body,.working{max-width:88%}
+  .chat-composer{padding-left:10px;padding-right:10px}
 }
 </style>
 </head>
@@ -115,7 +408,7 @@
 
 {{template "topbar" "desktops"}}
 
-<main class="wrap" style="max-width:1320px">
+<main class="wrap" style="max-width:1080px">
 
   <div class="view-head">
     <a class="back-link" href="/" aria-label="Back to desktops">
@@ -127,51 +420,53 @@
       <span class="status {{.Desktop.Status}}"><span class="dot"></span>{{.Desktop.Status}}</span>
       <span class="chip">{{if eq .Desktop.Harness "claude"}}Claude Code{{else if eq .Desktop.Harness "thebot"}}TheBot{{else}}Ollama{{end}}</span>
     </div>
+
+    {{if eq .Desktop.Status "running"}}
+    <div class="view-actions">
+      <button type="button" class="btn btn-default btn-sm" id="clearChat">
+        <svg width="14" height="14"><use href="#i-trash"/></svg>
+        Clear chat
+      </button>
+    </div>
+    {{end}}
   </div>
 
 {{if ne .Desktop.Status "running"}}
+
   <div class="empty">
     <div class="empty-mark"><svg width="19" height="19"><use href="#i-monitor"/></svg></div>
     <h2>Desktop is {{.Desktop.Status}}</h2>
-    <p>Start it from the desktops page to open its screen or talk to its agent.</p>
+    <p>Start it from the desktops page to talk to its agent.</p>
     <a class="btn btn-primary" href="/" style="margin-top:13px">Back to desktops</a>
   </div>
+
 {{else}}
 
-  <div class="view-toolbar">
-    <div class="segmented" id="tabSwitch" role="tablist" style="width:max-content">
-      <label class="seg">
-        <input type="radio" name="tab" value="desktop" checked>
-        <span><svg width="14" height="14" style="margin-right:6px"><use href="#i-monitor"/></svg>Desktop</span>
-      </label>
-{{if eq .Desktop.Harness "thebot"}}
-      <label class="seg">
-        <input type="radio" name="tab" value="agent">
-        <span><svg width="14" height="14" style="margin-right:6px"><use href="#i-blossom"/></svg>Agent</span>
-      </label>
-{{end}}
-    </div>
+  <div class="chat-panel">
+    <div class="chat" id="chat"
+         data-desktop-id="{{.Desktop.ID}}"
+         data-desktop-name="{{.Desktop.Name}}">
 
-{{if eq .Desktop.Harness "thebot"}}
-    <label class="split-toggle">
-      <input type="checkbox" id="splitToggle">
-      <span class="hint">Side by side</span>
-    </label>
-{{end}}
-  </div>
+      <div class="chat-log" id="chatLog">
+        <div class="chat-inner" id="chatInner"></div>
+      </div>
 
-  <div class="view-panes" id="panes">
-    <div class="pane active" id="paneDesktop" data-pane="desktop">
-      <span class="pane-label"><svg width="12" height="12"><use href="#i-monitor"/></svg>Desktop</span>
-      <iframe src="/desktop/{{.Desktop.ID}}/" title="{{.Desktop.Name}} desktop" loading="lazy"></iframe>
+      <form class="chat-composer" id="chatForm">
+        <div class="composer-inner">
+          <textarea id="chatInput"
+                    placeholder="Message {{.Desktop.Name}}…"
+                    rows="1"
+                    aria-label="Message this desktop's agent"></textarea>
+          <button type="submit" class="composer-send" id="chatSend" aria-label="Send">
+            <svg width="15" height="15"><use href="#i-send"/></svg>
+          </button>
+        </div>
+        <div class="composer-hint">
+          <span><kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line</span>
+          <span class="offline" id="chatOffline">Reconnecting…</span>
+        </div>
+      </form>
     </div>
-
-{{if eq .Desktop.Harness "thebot"}}
-    <div class="pane" id="paneAgent" data-pane="agent">
-      <span class="pane-label"><svg width="12" height="12"><use href="#i-blossom"/></svg>Agent</span>
-      <iframe src="/agent/{{.Desktop.ID}}/" title="{{.Desktop.Name}} agent" loading="lazy"></iframe>
-    </div>
-{{end}}
   </div>
 
 {{end}}
@@ -181,35 +476,531 @@
 {{template "chrome-js"}}
 
 <script>
+/* ------------------------------------------------------------------ *
+ * The chat.
+ *
+ * State lives on the control plane, not in this tab: the page renders
+ * whatever snapshot the server last sent, so the same conversation is
+ * there on a phone, after a refresh, and in a second window. The stream
+ * sends a whole snapshot per change rather than deltas, which makes a
+ * reconnect self-healing - there is no local transcript to reconcile.
+ * ------------------------------------------------------------------ */
 (function(){
   "use strict";
 
-  var panes = document.getElementById("panes");
-  if(!panes){ return; }
+  var chat = document.getElementById("chat");
+  if(!chat){ return; }
 
-  var tabInputs = document.querySelectorAll('#tabSwitch input[name="tab"]');
-  var splitToggle = document.getElementById("splitToggle");
+  var desktopId = chat.dataset.desktopId;
+  var desktopName = chat.dataset.desktopName;
 
-  function applyTab(){
-    var active = "desktop";
-    tabInputs.forEach(function(input){ if(input.checked){ active = input.value; } });
+  var log = document.getElementById("chatLog");
+  var inner = document.getElementById("chatInner");
+  var form = document.getElementById("chatForm");
+  var input = document.getElementById("chatInput");
+  var sendButton = document.getElementById("chatSend");
+  var offlineFlag = document.getElementById("chatOffline");
 
-    document.querySelectorAll(".pane").forEach(function(pane){
-      pane.classList.toggle("active", pane.dataset.pane === active);
+  var toast = Flowera.toast, post = Flowera.post;
+
+  var lastVersion = -1;
+  var elapsedTimer = null;
+
+  var SUGGESTIONS = [
+    "What can you do?",
+    "Summarise what's on this desktop",
+    "Create a folder called notes in ~/work",
+    "Check the disk space and report back"
+  ];
+
+  /* ---------------- helpers ---------------- */
+
+  function atBottom(){
+    return log.scrollHeight - log.scrollTop - log.clientHeight < 140;
+  }
+
+  function scrollToBottom(){
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function relativeTime(value){
+    var date = new Date(value);
+    if(isNaN(date.getTime())){ return ""; }
+
+    var seconds = Math.round((Date.now() - date.getTime()) / 1000);
+
+    if(seconds < 60){ return "just now"; }
+    if(seconds < 3600){ return Math.floor(seconds / 60) + "m ago"; }
+    if(seconds < 86400){ return Math.floor(seconds / 3600) + "h ago"; }
+
+    return date.toLocaleString();
+  }
+
+  function elapsedSince(value){
+    var started = new Date(value).getTime();
+    if(isNaN(started)){ return ""; }
+
+    var seconds = Math.max(0, Math.round((Date.now() - started) / 1000));
+    var minutes = Math.floor(seconds / 60);
+
+    return minutes + ":" + String(seconds % 60).padStart(2, "0");
+  }
+
+  function icon(id, size){
+    var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("width", size);
+    svg.setAttribute("height", size);
+
+    var use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+    use.setAttribute("href", id);
+    svg.appendChild(use);
+
+    return svg;
+  }
+
+  /* ---------------- message text ----------------
+     Fenced blocks and inline spans get real markup; everything else stays
+     literal text. Content is only ever written through textContent, so an
+     agent that echoes HTML back at us renders it, never executes it. */
+
+  function appendInline(parent, text){
+    text.split(/(`[^`\n]+`)/).forEach(function(part){
+      if(part.length > 2 && part.charAt(0) === "`" && part.charAt(part.length - 1) === "`"){
+        var code = document.createElement("code");
+        code.textContent = part.slice(1, -1);
+        parent.appendChild(code);
+      }else if(part){
+        parent.appendChild(document.createTextNode(part));
+      }
     });
   }
 
-  tabInputs.forEach(function(input){
-    input.addEventListener("change", applyTab);
+  function renderContent(container, text){
+    var segments = String(text).split(/```/);
+
+    segments.forEach(function(segment, index){
+      var fenced = index % 2 === 1;
+
+      if(fenced){
+        /* Drop a leading language tag ("```bash") - it names the block,
+           it isn't part of the code. */
+        var body = segment.replace(/^[^\n]*\n/, function(first){
+          return /^[a-zA-Z0-9_+-]*\s*$/.test(first.trim()) ? "" : first;
+        });
+
+        var pre = document.createElement("pre");
+        var code = document.createElement("code");
+        code.textContent = body.replace(/\n$/, "");
+        pre.appendChild(code);
+        container.appendChild(pre);
+
+        return;
+      }
+
+      if(!segment.trim()){ return; }
+
+      var paragraph = document.createElement("p");
+      appendInline(paragraph, segment.replace(/^\n+|\n+$/g, ""));
+      container.appendChild(paragraph);
+    });
+
+    if(!container.childNodes.length){
+      var fallback = document.createElement("p");
+      fallback.textContent = text;
+      container.appendChild(fallback);
+    }
+  }
+
+  /* ---------------- step lines ----------------
+     TheBot tags its log lines with the subsystem that produced them
+     ("skill:terminal -> ...", "coding-diagnosis: ..."). Useful to keep,
+     too noisy to show: the prefix is stripped for display and the raw
+     line stays on the title attribute. */
+
+  var STEP_PREFIXES = [
+    /^skill:terminal -> command \([^)]*\): /,
+    /^skill:[a-z-]+ -> /,
+    /^coding-[a-z]+: /,
+    /^coding: /,
+    /^atomizer: /,
+    /^scheduler: /,
+    /^skill library: /,
+    /^websearch: /,
+    /^feedback: /,
+    /^memory: /,
+    /^rag(?:-progress)?: /,
+    /^l1: /
+  ];
+
+  function prettyStep(text){
+    var pretty = text;
+
+    for(var i = 0; i < STEP_PREFIXES.length; i++){
+      if(STEP_PREFIXES[i].test(pretty)){
+        pretty = pretty.replace(STEP_PREFIXES[i], "");
+        break;
+      }
+    }
+
+    pretty = pretty.trim();
+
+    return pretty || text;
+  }
+
+  function stepElement(step){
+    var el = document.createElement("div");
+    var text = prettyStep(step.text);
+
+    el.className = "step" + (text.indexOf("$ ") === 0 ? " is-command" : "");
+    el.textContent = text;
+
+    if(text !== step.text){ el.title = step.text; }
+
+    return el;
+  }
+
+  function stepsBlock(steps, open){
+    var details = document.createElement("details");
+    details.className = "steps";
+    if(open){ details.open = true; }
+
+    var summary = document.createElement("summary");
+    summary.appendChild(icon("#i-chevron", 13)).classList.add("steps-chevron");
+
+    var label = document.createElement("span");
+    label.textContent = steps.length === 1 ? "1 step" : steps.length + " steps";
+    summary.appendChild(label);
+
+    var list = document.createElement("div");
+    list.className = "steps-list";
+    steps.forEach(function(step){ list.appendChild(stepElement(step)); });
+
+    details.append(summary, list);
+
+    return details;
+  }
+
+  /* ---------------- messages ---------------- */
+
+  var FLAGS = {
+    approval: {label: "Needs your approval", icon: "#i-alert"},
+    error: {label: "Failed", icon: "#i-alert"}
+  };
+
+  function messageElement(message){
+    var fromUser = message.role === "user";
+
+    var row = document.createElement("div");
+    row.className = "msg " + (fromUser ? "from-user" : "from-agent");
+
+    if(message.kind === "approval"){ row.classList.add("is-approval"); }
+    if(message.kind === "error"){ row.classList.add("is-error"); }
+
+    var avatar = document.createElement("div");
+    avatar.className = "msg-avatar";
+
+    if(fromUser){
+      avatar.textContent = "You".charAt(0);
+    }else{
+      avatar.appendChild(icon("#i-blossom", 15));
+    }
+
+    var body = document.createElement("div");
+    body.className = "msg-body";
+
+    if(message.steps && message.steps.length){
+      body.appendChild(stepsBlock(message.steps, false));
+    }
+
+    var bubble = document.createElement("div");
+    bubble.className = "bubble";
+
+    var flag = FLAGS[message.kind];
+    if(flag && !fromUser){
+      var flagEl = document.createElement("div");
+      flagEl.className = "msg-flag";
+      flagEl.appendChild(icon(flag.icon, 12));
+
+      var flagText = document.createElement("span");
+      flagText.textContent = flag.label;
+      flagEl.appendChild(flagText);
+
+      bubble.appendChild(flagEl);
+    }
+
+    renderContent(bubble, message.content);
+    body.appendChild(bubble);
+
+    var time = document.createElement("div");
+    time.className = "msg-time";
+    time.textContent = relativeTime(message.created_at);
+    body.appendChild(time);
+
+    row.append(avatar, body);
+
+    return row;
+  }
+
+  /* ---------------- the live turn ---------------- */
+
+  function workingElement(thread){
+    var row = document.createElement("div");
+    row.className = "msg from-agent";
+
+    var avatar = document.createElement("div");
+    avatar.className = "msg-avatar";
+    avatar.appendChild(icon("#i-blossom", 15));
+
+    var body = document.createElement("div");
+    body.className = "working";
+
+    var head = document.createElement("div");
+    head.className = "working-head";
+
+    var spinner = document.createElement("span");
+    spinner.className = "spinner";
+
+    var label = document.createElement("span");
+    label.textContent = "Working…";
+
+    var elapsed = document.createElement("span");
+    elapsed.className = "working-elapsed";
+    elapsed.dataset.startedAt = thread.started_at || "";
+    elapsed.textContent = elapsedSince(thread.started_at);
+
+    head.append(spinner, label, elapsed);
+    body.appendChild(head);
+
+    if(thread.steps.length){
+      body.appendChild(stepsBlock(thread.steps, true));
+    }else{
+      var waiting = document.createElement("div");
+      waiting.className = "working-latest";
+      waiting.textContent = "Thinking about where to start…";
+      body.appendChild(waiting);
+    }
+
+    row.append(avatar, body);
+
+    return row;
+  }
+
+  function tickElapsed(){
+    var el = inner.querySelector(".working-elapsed");
+    if(!el){ return; }
+
+    el.textContent = elapsedSince(el.dataset.startedAt);
+  }
+
+  /* ---------------- empty state ---------------- */
+
+  function emptyElement(){
+    var wrap = document.createElement("div");
+    wrap.className = "chat-empty";
+
+    var mark = document.createElement("div");
+    mark.className = "chat-empty-mark";
+    mark.appendChild(icon("#i-blossom", 22));
+
+    var heading = document.createElement("h2");
+    heading.textContent = "Ask " + desktopName + " to do something";
+
+    var blurb = document.createElement("p");
+    blurb.textContent =
+      "Its agent runs the task on this desktop and reports back here. " +
+      "It stops and asks before anything it can't undo.";
+
+    var suggestions = document.createElement("div");
+    suggestions.className = "suggestions";
+
+    SUGGESTIONS.forEach(function(text){
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "suggestion";
+      button.textContent = text;
+
+      button.addEventListener("click", function(){
+        input.value = text;
+        grow();
+        input.focus();
+      });
+
+      suggestions.appendChild(button);
+    });
+
+    wrap.append(mark, heading, blurb, suggestions);
+
+    return wrap;
+  }
+
+  /* ---------------- render ---------------- */
+
+  function render(thread){
+    var stick = atBottom();
+
+    inner.innerHTML = "";
+
+    if(!thread.messages.length && !thread.running){
+      inner.appendChild(emptyElement());
+      return;
+    }
+
+    thread.messages.forEach(function(message){
+      inner.appendChild(messageElement(message));
+    });
+
+    if(thread.running){
+      inner.appendChild(workingElement(thread));
+    }
+
+    if(stick){ scrollToBottom(); }
+  }
+
+  function apply(thread){
+    if(thread.version === lastVersion){ return; }
+
+    lastVersion = thread.version;
+
+    thread.messages = thread.messages || [];
+    thread.steps = thread.steps || [];
+
+    render(thread);
+
+    if(thread.running && !elapsedTimer){
+      elapsedTimer = setInterval(tickElapsed, 1000);
+    }else if(!thread.running && elapsedTimer){
+      clearInterval(elapsedTimer);
+      elapsedTimer = null;
+    }
+  }
+
+  /* ---------------- transport ----------------
+     The event stream is the live path; polling is what keeps the chat
+     working where it can't be held open. Failing over is silent apart
+     from the "Reconnecting…" flag, since the transcript itself is
+     identical either way. */
+
+  var pollTimer = null;
+
+  function setOffline(on){
+    offlineFlag.classList.toggle("on", on);
+  }
+
+  async function pollOnce(){
+    try{
+      var response = await fetch("/api/desktops/chat?id=" + encodeURIComponent(desktopId), {cache: "no-store"});
+      if(!response.ok){ return; }
+
+      apply(await response.json());
+      setOffline(false);
+    }catch(e){
+      setOffline(true);
+    }
+  }
+
+  function startPolling(){
+    if(pollTimer){ return; }
+
+    pollOnce();
+    pollTimer = setInterval(pollOnce, 2000);
+  }
+
+  function stopPolling(){
+    if(!pollTimer){ return; }
+
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+
+  function connect(){
+    if(typeof EventSource === "undefined"){
+      startPolling();
+      return;
+    }
+
+    var source = new EventSource("/api/desktops/chat/stream?id=" + encodeURIComponent(desktopId));
+
+    source.onmessage = function(event){
+      stopPolling();
+      setOffline(false);
+
+      try{
+        apply(JSON.parse(event.data));
+      }catch(e){ /* a malformed frame is not worth tearing the stream down for */ }
+    };
+
+    source.onerror = function(){
+      /* EventSource reconnects on its own; polling covers the gap and is
+         stopped again by the next frame that arrives. */
+      setOffline(true);
+      startPolling();
+    };
+  }
+
+  /* ---------------- composer ---------------- */
+
+  function grow(){
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 180) + "px";
+  }
+
+  input.addEventListener("input", grow);
+
+  input.addEventListener("keydown", function(event){
+    if(event.key === "Enter" && !event.shiftKey){
+      event.preventDefault();
+      form.requestSubmit();
+    }
   });
 
-  if(splitToggle){
-    splitToggle.addEventListener("change", function(){
-      panes.classList.toggle("split", splitToggle.checked);
+  form.addEventListener("submit", async function(event){
+    event.preventDefault();
+
+    var text = input.value.trim();
+    if(!text){ return; }
+
+    sendButton.disabled = true;
+
+    try{
+      await post("/api/desktops/send", {id: desktopId, content: text});
+
+      input.value = "";
+      grow();
+
+      /* The message itself arrives back through the stream, which is what
+         every other viewer of this desktop sees too. */
+      scrollToBottom();
+    }catch(e){
+      toast(e.message, "error");
+    }finally{
+      sendButton.disabled = false;
+      input.focus();
+    }
+  });
+
+  /* ---------------- clear ---------------- */
+
+  var clearButton = document.getElementById("clearChat");
+
+  if(clearButton){
+    clearButton.addEventListener("click", async function(){
+      clearButton.disabled = true;
+
+      try{
+        await post("/api/desktops/chat/clear", {id: desktopId});
+      }catch(e){
+        toast(e.message, "error");
+      }finally{
+        clearButton.disabled = false;
+      }
     });
   }
 
-  applyTab();
+  /* ---------------- boot ---------------- */
+
+  grow();
+  pollOnce();
+  connect();
 })();
 </script>
 

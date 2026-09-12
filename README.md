@@ -78,6 +78,7 @@ Flowera currently provides the foundation for:
 
 * Creating and managing AI workers
 * Giving each worker its own computer
+* Chatting with each worker — one conversation per worker, streamed live as it works
 * Teaching workers through real interaction
 * Assigning tasks to workers
 * Monitoring active workers
@@ -181,7 +182,9 @@ Re-run whichever of these changed whenever you edit `agent/` or a `docker/deskto
 docker compose up --build -d
 ```
 
-Open **http://localhost:8080** — that's the dashboard. Create a desktop from there (pick a profile and a harness), and its live VNC session is reachable at `http://localhost:8080/desktop/<id>/vnc.html`.
+Open **http://localhost:8080** — that's the dashboard. Create a desktop from there (pick a profile and a harness), and its live desktop screen is reachable at `http://localhost:8080/desktop/<id>/`.
+
+Hit **Chat** on a desktop to talk to its agent: one conversation per worker, with every step it takes streamed in as it works. The chat is the same whichever harness that worker runs, and it lives on the control plane rather than in one browser — so the same conversation is there after a refresh, and on your phone through the tunnel. The worker's screen is its own thing: open it in a new tab with the button next to **Chat**.
 
 ### 4. Or: do steps 2+3 in one go
 
@@ -201,7 +204,7 @@ Iterating on `agent/` or a `docker/desktop.*.Dockerfile` doesn't need the whole 
 .\scripts\windows\test-vm.ps1 -DesktopProfile basic -Harness thebot -Task "say hi"   # Windows
 ```
 
-VNC comes up at `http://localhost:16901/vnc.html` and, for the `thebot` harness, its agent chat UI directly at `http://localhost:14900/` — both published straight to the host, bypassing the control plane's proxy entirely. Watch the agent's help/completion callbacks with `docker logs -f flowera-dummy-cp`. Tear down with `./scripts/linux/test-vm.sh --down` (or the Windows equivalent) once you're done; it only ever removes containers this script created.
+VNC comes up at `http://localhost:16901/vnc.html` and, for the `thebot` harness, TheBot's own built-in UI directly at `http://localhost:14900/` — both published straight to the host, bypassing the control plane's proxy entirely. That UI is a debugging surface here, not the normal way to use a worker: it talks to TheBot's engine directly, so it skips the Flowera agent and with it worker memory and the approval path. The dashboard's **Chat** is the real path. Watch the agent's progress and help/completion callbacks with `docker logs -f flowera-dummy-cp`. Tear down with `./scripts/linux/test-vm.sh --down` (or the Windows equivalent) once you're done; it only ever removes containers this script created.
 
 ### 5. Or: run a prebuilt executable (no Go, no repo)
 
@@ -260,7 +263,6 @@ Set these in your own `.env` (copied from `.env.example`) — the control plane 
 |---|---|---|---|
 | `DEFAULT_PASSWORD` | No | `admin` | VNC login password baked into every new desktop. |
 | `ANTHROPIC_API_KEY` | Only to use the **Claude harness** | *(unset)* | Passed through into a desktop's container so the `claude` CLI can authenticate — this is literally all that's needed, no login/OAuth step. Only desktops created with the "Claude Code" harness use it. |
-| `DESKTOP_HOST` | No | `localhost` | Public hostname used to build each desktop's VNC URL — set this to your Cloudflare tunnel domain (or similar) when exposing Flowera publicly. **Note:** `docker-compose.yaml` also sets `DESKTOP_HOST=localhost` directly as a container environment variable, which takes precedence over `.env` under `docker compose` (env-file values never override a variable that's already set) — to change it there, edit `docker-compose.yaml`'s `environment:` block instead of `.env`. |
 | `DESKTOP_STOP_TIMEOUT_SECONDS` | No | `10` | Seconds to wait for a desktop container to stop gracefully before force-killing it. |
 
 Every other setting (which Ollama model, the agent harness, the control-plane URL a desktop calls home to, etc.) is wired up automatically per-desktop when you create it — see [`CLAUDE.md`](CLAUDE.md) if you're modifying that wiring.

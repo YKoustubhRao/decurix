@@ -12,6 +12,7 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/joho/godotenv"
 
+	"github.com/YKoustubhRao/flowera/internal/conversation"
 	"github.com/YKoustubhRao/flowera/internal/desktop"
 	"github.com/YKoustubhRao/flowera/internal/helpnotes"
 	"github.com/YKoustubhRao/flowera/internal/httpapi"
@@ -115,6 +116,7 @@ func main() {
 		desktops,
 		helpnotes.NewStore(),
 		memory.NewStore(),
+		conversation.NewStore(),
 		tunnel.NewStore(),
 		webui.NewRenderer(),
 	)

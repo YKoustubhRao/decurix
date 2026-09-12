@@ -33,12 +33,14 @@ if [ "$AGENT_HARNESS" = "thebot" ] && [ -x /opt/soul ]; then
     export WORKSPACE_ROOT="/home/headless/ai"
     mkdir -p "$WORKSPACE_ROOT"
     export LLM_PROVIDER="${LLM_PROVIDER:-ollama}"
-    # flowera-ollama is a stub with only a 0.6b model - real testing needs
-    # a real model. Defaults to the Cloudflare-tunneled real Ollama server
-    # for now (see the project notes); override OLLAMA_URL per-VM once
-    # flowera has its own real Ollama available.
-    export OLLAMA_HOST="${OLLAMA_URL:-https://art-sized-symposium-instructor.trycloudflare.com}"
-    export CHAT_MODEL="${OLLAMA_MODEL:-devstral-small-2:24b}"
+    # Mirrors buildDesktopEnv's defaults in internal/desktop/docker.go -
+    # the host running the control plane, reached over the ExtraHosts entry
+    # every desktop already gets. OLLAMA_URL is normally set on the
+    # container, so this fallback only applies to a desktop started without
+    # one; it replaced a hardcoded Cloudflare quick-tunnel URL that stopped
+    # resolving as soon as that tunnel was restarted.
+    export OLLAMA_HOST="${OLLAMA_URL:-http://host.docker.internal:11434}"
+    export CHAT_MODEL="${OLLAMA_MODEL:-qwen3:latest}"
     # Coding builds can run on their own model (see TheBot's internal/llm
     # Models.ForTaskType): a build sends the longest prompts the agent ever
     # produces and wants the largest context window, while chat wants a good

@@ -42,17 +42,23 @@
   border-radius:var(--r-xl) var(--r-xl) 0 0;
 }
 
-.dcard-preview iframe{
+/* The live thumbnail served by /api/desktops/screenshot. It fades in once the
+   first frame lands, so a card never flashes a broken-image icon while a
+   desktop is still booting - the placeholder underneath shows through until
+   there is something real to show. */
+.dcard-shot{
   position:absolute;
-  left:50%;
-  top:50%;
-  width:1280px;
-  height:720px;
+  inset:0;
+  width:100%;
+  height:100%;
+  object-fit:cover;
+  display:block;
   border:0;
-  transform:translate(-50%,-50%) scale(1);
-  transform-origin:center center;
-  background:#111;
+  opacity:0;
+  transition:opacity .25s ease-out;
 }
+
+.dcard-shot.is-live{opacity:1}
 
 .dcard-preview-placeholder{
   position:absolute;
@@ -474,14 +480,18 @@
 {{if .Desktops}}
 {{range .Desktops}}
     <article class="dcard">
+      {{/* A thumbnail, not an embedded screen. This used to be an
+           <iframe src="/desktop/<id>/">, i.e. a whole noVNC client per card:
+           83 requests and a WebSocket each, against the one origin a browser
+           gives 6 HTTP/1.1 connections. Two desktops saturated that pool and
+           starved the VNC handshake of any screen actually opened for use.
+           See httpapi.desktopScreenshotHandler. */}}
       <div class="dcard-preview">
         {{if eq .Status "running"}}
-          <iframe
-            src="{{.URL}}"
-            title="{{.Name}} desktop preview"
-            loading="lazy"
-            tabindex="-1">
-          </iframe>
+          <img class="dcard-shot" data-shot="{{.ID}}" alt="{{.Name}} screen" decoding="async">
+          <div class="dcard-preview-placeholder" data-shot-placeholder>
+            Waiting for the screen…
+          </div>
         {{else}}
           <div class="dcard-preview-placeholder">
             Desktop is {{.Status}}
@@ -595,9 +605,15 @@
         {{if eq .Status "running"}}
         <a class="btn btn-primary btn-sm" href="/view/{{.ID}}">
           <svg width="14" height="14"><use href="#i-blossom"/></svg>
-          {{if eq .Harness "thebot"}}Desktop &amp; agent{{else}}View{{end}}
+          Chat
         </a>
-        <button class="btn btn-default btn-sm action-icon" data-open="{{.URL}}" title="Open in a new tab" aria-label="Open desktop in a new tab">
+        {{/* resize=remote&ui=touch is what asks the desktop's Xvnc to fit the
+             viewport and splices the touch keyboard/pinch-zoom into noVNC (see
+             httpapi.injectMobileEnhancements). This button is the only place
+             that full-size screen is opened from, so the marker lives here -
+             deliberately not on the dcard-preview iframe above, which is a
+             small non-interactive thumbnail. */}}
+        <button class="btn btn-default btn-sm action-icon" data-open="{{.URL}}?resize=remote&ui=touch" title="Open the screen in a new tab" aria-label="Open the desktop screen in a new tab">
           <svg width="14" height="14"><use href="#i-external"/></svg>
         </button>
         <button class="btn btn-default btn-sm action-icon" data-act="restart" data-id="{{.ID}}" title="Restart" aria-label="Restart desktop">
@@ -670,7 +686,7 @@
           <label class="seg"><input type="radio" name="profile" value="developer"><span>Developer</span></label>
           <label class="seg"><input type="radio" name="profile" value="ai"><span>AI Developer</span></label>
         </div>
-        <div class="hint">Basic is a plain VNC desktop. Developer adds git, Node, Go, Rust and LibreOffice. AI Developer adds Codex on top.</div>
+        <div class="hint">Basic is a plain desktop with no extra tooling. Developer adds git, Node, Go, Rust and LibreOffice. AI Developer adds Codex on top.</div>
       </div>
 
       <div class="field">
@@ -733,25 +749,66 @@
 (function(){
   "use strict";
 
-  /* ---------------- desktop preview scaling ---------------- */
+  /* ---------------- desktop thumbnails ----------------
+     One <img> per card, refreshed in a single sequential sweep: never more
+     than one thumbnail request in flight, whatever the desktop count. That
+     is the whole point of this replacing the old per-card noVNC iframe -
+     the dashboard must not compete with a real screen for the browser's six
+     connections to this origin. */
 
-  function fitDesktopPreviews(){
-    document.querySelectorAll(".dcard-preview").forEach(function(preview){
-      var iframe = preview.querySelector("iframe");
-      if(!iframe){ return; }
+  var SHOT_INTERVAL_MS = 5000;
 
-      var width = preview.clientWidth;
-      var height = preview.clientHeight;
+  function shotURL(img){
+    var width = Math.min(960, Math.max(120,
+      Math.round((img.clientWidth || 320) * (window.devicePixelRatio || 1))));
 
-      var scale = Math.min(width / 1280, height / 720);
+    return "/api/desktops/screenshot?id=" + encodeURIComponent(img.dataset.shot) +
+      "&w=" + width + "&t=" + Date.now();
+  }
 
-      iframe.style.transform =
-        "translate(-50%, -50%) scale(" + scale + ")";
+  function loadShot(img){
+    return new Promise(function(resolve){
+      var next = new Image();
+
+      next.onload = function(){
+        img.src = next.src;
+        img.classList.add("is-live");
+
+        var placeholder = img.parentNode.querySelector("[data-shot-placeholder]");
+        if(placeholder){ placeholder.style.display = "none"; }
+
+        resolve();
+      };
+
+      /* A desktop that is still booting has no screen to read yet. Leave the
+         placeholder showing and try again on the next sweep. */
+      next.onerror = function(){ resolve(); };
+
+      next.src = shotURL(img);
     });
   }
 
-  fitDesktopPreviews();
-  window.addEventListener("resize", fitDesktopPreviews);
+  async function sweepShots(){
+    var images = document.querySelectorAll("[data-shot]");
+
+    for(var i = 0; i < images.length; i++){
+      if(document.visibilityState !== "visible"){ return; }
+
+      await loadShot(images[i]);
+    }
+  }
+
+  async function shotLoop(){
+    for(;;){
+      if(document.visibilityState === "visible"){
+        await sweepShots();
+      }
+
+      await new Promise(function(r){ setTimeout(r, SHOT_INTERVAL_MS); });
+    }
+  }
+
+  if(document.querySelector("[data-shot]")){ shotLoop(); }
 
   var toast = Flowera.toast, busy = Flowera.busy, post = Flowera.post;
 
@@ -991,12 +1048,23 @@
     });
   });
 
-  /* ---------------- copy URL ---------------- */
+  /* ---------------- copy URL ----------------
+   Desktop URLs are root-relative so the preview and "open" button work from
+   any origin (localhost, LAN, the Cloudflare tunnel). Show and copy them
+   resolved against the origin this page was actually opened on. */
+
+  function absoluteURL(path){
+    return new URL(path, location.href).href;
+  }
+
+  document.querySelectorAll(".dcard-url .mono").forEach(function(el){
+    el.textContent = el.title = absoluteURL(el.textContent);
+  });
 
   document.querySelectorAll("[data-copy]").forEach(function(button){
     button.addEventListener("click", async function(){
       try{
-        await navigator.clipboard.writeText(button.dataset.copy);
+        await navigator.clipboard.writeText(absoluteURL(button.dataset.copy));
 
         button.classList.add("done");
         button.querySelector("use").setAttribute("href", "#i-check");

@@ -19,16 +19,28 @@ func jsonResponse(w http.ResponseWriter, v interface{}) {
 // jsonError writes an error to the response writer as a JSON-formatted HTTP 500 response.
 func jsonError(w http.ResponseWriter, err error) {
 	log.Println("jsonError:", err)
+
+	jsonStatusError(
+		w,
+		http.StatusInternalServerError,
+		"internal server error",
+	)
+}
+
+// jsonStatusError writes a curated client-facing message with a specific
+// status. Like jsonError it never echoes err.Error() - the message is one
+// this package chose, not one an internal error handed it.
+func jsonStatusError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set(
 		"Content-Type",
 		"application/json",
 	)
 
-	w.WriteHeader(http.StatusInternalServerError)
+	w.WriteHeader(status)
 
 	_ = json.NewEncoder(w).Encode(
 		map[string]string{
-			"error": "internal server error",
+			"error": message,
 		},
 	)
 }
