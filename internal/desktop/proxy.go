@@ -15,6 +15,12 @@ var (
 	ErrNotRunning = errors.New("desktop is not running")
 	ErrNoNetwork  = errors.New("desktop is not connected to Flowera network")
 	ErrNoAddress  = errors.New("desktop has no network IP")
+
+	// ErrAgentUnreachable means the desktop container is up but nothing
+	// answered on the agent's port - the agent is still starting, has
+	// crashed, or never bound. Distinct from the errors above because the
+	// desktop itself is fine; only its agent is not listening yet.
+	ErrAgentUnreachable = errors.New("desktop agent is not responding")
 )
 
 // ProxyTarget resolves the internal VNC address (http://ip:port) to reverse-proxy

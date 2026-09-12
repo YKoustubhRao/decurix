@@ -1,10 +1,9 @@
 import threading
 from http.server import HTTPServer
 
-from flowera_agent import config
+from flowera_agent import config, harness
 from flowera_agent.http_api import Handler
 from flowera_agent.logging_utils import log
-from flowera_agent.ollama_client import wait_for_ollama
 from flowera_agent.watchers import command_watcher
 
 
@@ -32,6 +31,11 @@ def main():
     )
 
     log(
+        f"Harness: "
+        f"{config.AGENT_HARNESS}"
+    )
+
+    log(
         f"Ollama: "
         f"{config.OLLAMA_URL}"
     )
@@ -41,8 +45,24 @@ def main():
         f"{config.OLLAMA_MODEL}"
     )
 
-    # Wait until the shared Ollama instance is alive.
-    wait_for_ollama()
+    # Wait for the harness's reasoning backend in the background, never
+    # in front of the listener below.
+    #
+    # This used to be a blocking wait_for_ollama() call, which meant an
+    # unreachable Ollama (a dead tunnel, a stopped container) left :8081
+    # unbound forever. The control plane's SendMessage then got
+    # "connection refused" and every human message - from the chat, the
+    # messages page and a help reply alike - came back as HTTP 500, with
+    # the desktop itself looking perfectly healthy in the dashboard.
+    #
+    # The message channel is not the model's to gate: a task that arrives
+    # while the backend is down fails inside the harness, which reports it
+    # back through ask_for_help as a message in the chat - an answer the
+    # human can act on, instead of a 500.
+    threading.Thread(
+        target=harness.wait_for_backend,
+        daemon=True,
+    ).start()
 
     # Start command watcher.
     threading.Thread(

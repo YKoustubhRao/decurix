@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
+	"github.com/YKoustubhRao/flowera/internal/desktop"
 	"github.com/YKoustubhRao/flowera/internal/helpnotes"
 	"github.com/YKoustubhRao/flowera/internal/webui"
 )
@@ -23,6 +25,14 @@ func (s *Server) helpTextHandler(w http.ResponseWriter, r *http.Request) {
 		VMName    string `json:"vm_name"`
 		Filename  string `json:"filename"`
 		Content   string `json:"content"`
+
+		// Kind and Message are the chat's own view of this callback: what
+		// sort of message it is, and just the part a human wants to read,
+		// without the formatted note's headings. Sent by desktops built
+		// from a current image; absent from older ones, which the handler
+		// falls back to parsing out of Content.
+		Kind    string `json:"kind"`
+		Message string `json:"message"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -50,6 +60,27 @@ func (s *Server) helpTextHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.HelpNotes.Add(note)
+
+	// The same callback feeds two surfaces: the Help rail keeps the whole
+	// formatted note, while the chat shows only the agent's actual words.
+	chatText, notedKind := agentMessageFromNote(req.Content)
+
+	if trimmed := strings.TrimSpace(req.Message); trimmed != "" {
+		chatText = trimmed
+	}
+
+	chatKind := chatKindFor(req.Kind)
+	if chatKind == "" {
+		chatKind = notedKind
+	}
+
+	if chatText != "" {
+		s.Chat.AppendAgentMessage(
+			desktop.SanitizeID(req.DesktopID),
+			chatKind,
+			chatText,
+		)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 

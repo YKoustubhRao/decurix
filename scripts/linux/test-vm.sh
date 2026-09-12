@@ -44,10 +44,11 @@ done
 DESKTOP_CONTAINER="desktop_${NAME}"
 DUMMY_CP="flowera-dummy-cp"
 
-# Same temporary default as internal/desktop/docker.go's buildDesktopEnv -
-# override with your own OLLAMA_URL/OLLAMA_MODEL env vars if needed.
-OLLAMA_URL="${OLLAMA_URL:-https://art-sized-symposium-instructor.trycloudflare.com}"
-OLLAMA_MODEL="${OLLAMA_MODEL:-devstral-small-2:24b}"
+# Same default as internal/desktop/docker.go's buildDesktopEnv - the host
+# running the control plane, reached over the ExtraHosts entry every desktop
+# gets. Override with your own OLLAMA_URL/OLLAMA_MODEL env vars if needed.
+OLLAMA_URL="${OLLAMA_URL:-http://host.docker.internal:11434}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3:latest}"
 # Optional second model, used only for coding builds - TheBot routes
 # "coding" separately (see its internal/llm Models.ForTaskType), because a
 # build sends the longest prompts the agent ever produces and wants the

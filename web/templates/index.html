@@ -597,7 +597,13 @@
           <svg width="14" height="14"><use href="#i-blossom"/></svg>
           Chat
         </a>
-        <button class="btn btn-default btn-sm action-icon" data-open="{{.URL}}" title="Open in a new tab" aria-label="Open desktop in a new tab">
+        {{/* resize=remote&ui=touch is what asks the desktop's Xvnc to fit the
+             viewport and splices the touch keyboard/pinch-zoom into noVNC (see
+             httpapi.injectMobileEnhancements). This button is the only place
+             that full-size screen is opened from, so the marker lives here -
+             deliberately not on the dcard-preview iframe above, which is a
+             small non-interactive thumbnail. */}}
+        <button class="btn btn-default btn-sm action-icon" data-open="{{.URL}}?resize=remote&ui=touch" title="Open the screen in a new tab" aria-label="Open the desktop screen in a new tab">
           <svg width="14" height="14"><use href="#i-external"/></svg>
         </button>
         <button class="btn btn-default btn-sm action-icon" data-act="restart" data-id="{{.ID}}" title="Restart" aria-label="Restart desktop">

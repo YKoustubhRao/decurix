@@ -1,4 +1,4 @@
-from flowera_agent import state
+from flowera_agent import progress, state
 from flowera_agent.commands import run_command
 from flowera_agent.logging_utils import log
 from flowera_agent.memory_context import get_memory_context
@@ -10,6 +10,25 @@ from flowera_agent.parser import parse_agent_response
 # ============================================================
 # Task execution
 # ============================================================
+
+def describe_result(result):
+    """
+    Summarize a command's outcome as one line for the chat's live step view.
+
+    The full output still goes to the model and the agent log; this is only
+    the headline, since a step line sits inside a chat bubble.
+    """
+
+    lines = (result["output"] or "").strip().splitlines()
+    headline = lines[0].strip() if lines else ""
+
+    summary = f"exit {result['exit_code']}"
+
+    if headline:
+        summary += " · " + headline[:160]
+
+    return summary
+
 
 def perform_task(task, task_file):
     state.current_task = task
@@ -84,9 +103,13 @@ Error:
                 )
                 return
 
+            progress.emit(f"$ {command}")
+
             result = run_command(
                 command
             )
+
+            progress.emit(describe_result(result))
 
             history.append(
                 {
@@ -287,7 +310,11 @@ Error:
 
         if action == "command":
 
+            progress.emit(f"$ {value}")
+
             result = run_command(value)
+
+            progress.emit(describe_result(result))
 
             history.append(
                 {

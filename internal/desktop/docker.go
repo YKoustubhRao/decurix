@@ -116,38 +116,45 @@ func buildDesktopEnv(name, harness string) []string {
 		defaultPassword = "admin"
 	}
 
-	// Real bug found testing this live: OLLAMA_URL was hardcoded to the
-	// bundled flowera-ollama container - a stub with a single 0.6b model,
-	// never a real one - unlike DEFAULT_PASSWORD/ANTHROPIC_API_KEY just
-	// below, which already read from the control plane's own environment.
-	// Every desktop it created was structurally unable to reach a real
-	// Ollama server regardless of what the harness itself wanted.
-	// Same fallback pattern now: override via the control plane's own
-	// OLLAMA_URL/OLLAMA_MODEL env when set. The default below is
-	// TEMPORARY: it points at the user's own Cloudflare-tunneled real
-	// Ollama server (see start_agent_terminal.sh's matching fallback) so
-	// every desktop gets a real model out of the box without extra
-	// per-deployment config, until Flowera has its own real Ollama
-	// server. Swap back to the bundled flowera-ollama stub, or drop the
-	// default entirely, once that's in place.
+	// OLLAMA_URL/OLLAMA_MODEL follow the same pattern as DEFAULT_PASSWORD
+	// and ANTHROPIC_API_KEY below: the control plane's own environment wins,
+	// with a default that has to work on a machine nobody configured.
+	//
+	// The default used to be a hardcoded Cloudflare quick-tunnel URL
+	// pointing at a developer's own Ollama. Quick-tunnel hostnames are
+	// regenerated on every cloudflared restart, so that one stopped
+	// resolving and took every unconfigured desktop's reasoning with it -
+	// and, because the agent blocked on wait_for_ollama() before binding
+	// :8081, presented as an unexplained HTTP 500 on every chat message
+	// rather than as "the model is unreachable" (see app.py).
+	//
+	// host.docker.internal is the host running the control plane, already
+	// wired up as an ExtraHosts entry in buildContainerConfigs and already
+	// how a desktop reaches CONTROL_PLANE_URL. It points at whatever real
+	// Ollama the operator runs there, needs no tunnel, and cannot go stale.
+	// It does require that Ollama to listen on more than loopback
+	// (OLLAMA_HOST=0.0.0.0); when it doesn't, the failure now arrives as a
+	// message in the chat naming this URL.
 	ollamaURL := os.Getenv("OLLAMA_URL")
 	if ollamaURL == "" {
-		ollamaURL = "https://art-sized-symposium-instructor.trycloudflare.com"
+		ollamaURL = "http://host.docker.internal:11434"
 	}
-	// Swapped from qwen2.5-coder:14b to devstral-small-2:24b per the user -
-	// "brain swap" test, gemma4:26b (also available on the tunnel) wasn't
-	// good enough. Still just a default: OLLAMA_MODEL above always wins.
 	ollamaModel := os.Getenv("OLLAMA_MODEL")
 	if ollamaModel == "" {
-		ollamaModel = "devstral-small-2:24b"
+		ollamaModel = "qwen3:latest"
 	}
 
 	env := []string{
 		"VNC_PW=" + defaultPassword,
 		"VNC_RESOLUTION=1280x720",
-		"DESKTOP_ID=" + strings.ToLower(
-			strings.ReplaceAll(name, " ", "-"),
-		),
+		// sanitizeName, not an ad-hoc lowercase/space swap: this is the ID
+		// the agent reports itself as on every callback, and Desktop.ID is
+		// derived from the container name, which sanitizeName produces. The
+		// two spellings diverged for any name containing a character only
+		// sanitizeName rewrites (a dot, say: "my.box" stayed "my.box" here
+		// while the desktop was listed as "my-box"), so that desktop's help
+		// notes and chat messages matched no desktop the dashboard knew.
+		"DESKTOP_ID=" + sanitizeName(name),
 		"DESKTOP_NAME=" + name,
 		"CONTROL_PLANE_URL=http://host.docker.internal:8080",
 		"OLLAMA_URL=" + ollamaURL,
@@ -199,6 +206,13 @@ func buildContainerConfigs(imageName, containerName, profile, harness string, cp
 	}
 
 	return config, hostConfig, networkingConfig
+}
+
+// SanitizeID normalizes a caller-supplied desktop identifier the same way
+// container and volume names are normalized, so a key derived from it outside
+// this package (the chat store's, for one) always agrees with Desktop.ID.
+func SanitizeID(rawID string) string {
+	return sanitizeName(rawID)
 }
 
 // sanitizeName normalizes a string into a safe lowercase container/volume name fragment.

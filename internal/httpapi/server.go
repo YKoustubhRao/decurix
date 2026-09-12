@@ -6,6 +6,7 @@ package httpapi
 import (
 	"net/http"
 
+	"github.com/YKoustubhRao/flowera/internal/conversation"
 	"github.com/YKoustubhRao/flowera/internal/desktop"
 	"github.com/YKoustubhRao/flowera/internal/helpnotes"
 	"github.com/YKoustubhRao/flowera/internal/memory"
@@ -13,22 +14,25 @@ import (
 	"github.com/YKoustubhRao/flowera/internal/webui"
 )
 
-// Server wires the desktop manager, help-notes store, memory store, tunnel
-// store, and web UI renderer together to serve the Flowera control plane.
+// Server wires the desktop manager, help-notes store, memory store, chat
+// store, tunnel store, and web UI renderer together to serve the Flowera
+// control plane.
 type Server struct {
 	Desktops  *desktop.Manager
 	HelpNotes *helpnotes.Store
 	Memory    *memory.Store
+	Chat      *conversation.Store
 	Tunnel    *tunnel.Store
 	Web       *webui.Renderer
 }
 
 // NewServer creates a Server from its component stores/managers.
-func NewServer(desktops *desktop.Manager, helpNotes *helpnotes.Store, memoryStore *memory.Store, tunnelStore *tunnel.Store, web *webui.Renderer) *Server {
+func NewServer(desktops *desktop.Manager, helpNotes *helpnotes.Store, memoryStore *memory.Store, chat *conversation.Store, tunnelStore *tunnel.Store, web *webui.Renderer) *Server {
 	return &Server{
 		Desktops:  desktops,
 		HelpNotes: helpNotes,
 		Memory:    memoryStore,
+		Chat:      chat,
 		Tunnel:    tunnelStore,
 		Web:       web,
 	}
@@ -49,6 +53,10 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/messages", s.messagesDashboardHandler)
 	mux.HandleFunc("/api/desktops/send", s.sendMessageHandler)
 	mux.HandleFunc("/api/desktops/memory", s.desktopMemoryHandler)
+	mux.HandleFunc("/api/desktops/chat", s.chatHandler)
+	mux.HandleFunc("/api/desktops/chat/stream", s.chatStreamHandler)
+	mux.HandleFunc("/api/desktops/chat/clear", s.clearChatHandler)
+	mux.HandleFunc("/api/agent/events", s.agentEventHandler)
 	mux.HandleFunc("/api/helptext", s.helpTextHandler)
 	mux.HandleFunc("/api/helpnotes", s.helpNotesHandler)
 	mux.HandleFunc("/api/helpnotes/close", s.closeHelpNoteHandler)
