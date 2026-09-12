@@ -9,6 +9,8 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
+
+	"github.com/YKoustubhRao/flowera/internal/ollama"
 )
 
 const (
@@ -141,7 +143,7 @@ func buildDesktopEnv(name, harness string) []string {
 	}
 	ollamaModel := os.Getenv("OLLAMA_MODEL")
 	if ollamaModel == "" {
-		ollamaModel = "qwen3:latest"
+		ollamaModel = ollama.Model
 	}
 
 	env := []string{
