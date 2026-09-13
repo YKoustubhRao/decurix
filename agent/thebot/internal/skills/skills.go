@@ -12,6 +12,7 @@ import (
 	"thebot/internal/feedback"
 	"thebot/internal/llm"
 	"thebot/internal/memory"
+	"thebot/internal/prompt"
 	"thebot/internal/rag"
 	"thebot/internal/workspace"
 )
@@ -29,6 +30,11 @@ type Result struct {
 	Meta       map[string]any
 	Error      string
 	DurationMs int64
+	// Checkpoint is whatever a skill needs to carry on from exactly where
+	// it paused (the operator keeps its whole transcript and the command it
+	// was about to run). Never serialised: it can be large, and it only
+	// ever goes back to the skill that produced it.
+	Checkpoint any `json:"-"`
 }
 
 // RunContext is everything a skill needs to do real work - never more
@@ -78,11 +84,70 @@ type RunContext struct {
 	// tests so the suite never depends on a search engine being up; left
 	// false in real runs, where research is the whole point.
 	OfflineMode bool
+
+	// System is the job's shared system frame (internal/prompt), built once
+	// by the scheduler so every model call in the job opens with the same
+	// bytes and reuses Ollama's cached prompt prefix. Zero outside a
+	// scheduler (unit tests), in which case SystemMessage builds one from
+	// SelfStats and RecalledFacts.
+	System llm.Message
+	// WorkDir is where commands run and where a relative file path lands.
+	// The embedding host chooses it per request (a Flowera desktop's is
+	// /home/headless/work); empty means the workspace root.
+	WorkDir string
+	// Approved reports whether a human has already approved this exact
+	// action, so the safety gate lets it through. Nil approves nothing.
+	Approved func(action string) bool
+	// Resume is the Checkpoint this step returned when it paused, handed
+	// back when the job resumes; nil on a fresh run.
+	Resume any
+	// HumanReply is what the human said when resuming a paused step: an
+	// approval, an answer to a question, or a correction.
+	HumanReply string
 }
 
 func (rc RunContext) Logf(prefix, format string, args ...any) {
 	if rc.OnLog != nil {
 		rc.OnLog(fmt.Sprintf("skill:"+prefix+" -> "+format, args...))
+	}
+}
+
+// SystemMessage is the system frame every model call a skill makes should
+// open with. See RunContext.System.
+func (rc RunContext) SystemMessage() llm.Message {
+	if rc.System.Content != "" {
+		return rc.System
+	}
+	return prompt.Frame{Facts: rc.RecalledFacts, Stats: rc.SelfStats}.Message()
+}
+
+// Dir is where this step's commands run and relative paths resolve.
+func (rc RunContext) Dir() string {
+	if rc.WorkDir != "" {
+		return rc.WorkDir
+	}
+	if rc.Workspace != nil {
+		return rc.Workspace.Root()
+	}
+	return "."
+}
+
+// IsApproved reports whether the human already approved this action.
+func (rc RunContext) IsApproved(action string) bool {
+	return rc.Approved != nil && rc.Approved(strings.TrimSpace(action))
+}
+
+// NeedsApproval builds the result a skill returns when the safety gate
+// stops an action. The scheduler turns it into a paused job and, when the
+// human says yes, runs the step again with the action approved and the
+// checkpoint handed back through RunContext.Resume.
+func NeedsApproval(subtask Subtask, skill, action, reason string, checkpoint any) Result {
+	return Result{
+		Subtask: subtask, SkillName: skill,
+		Output:     fmt.Sprintf("Paused before `%s` - %s. Waiting for approval.", action, reason),
+		Verified:   false,
+		Meta:       map[string]any{"needsApproval": true, "action": action, "approvalReason": reason},
+		Checkpoint: checkpoint,
 	}
 }
 

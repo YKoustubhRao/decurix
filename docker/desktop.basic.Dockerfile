@@ -33,6 +33,12 @@ COPY agent/thebot/scripts /opt/thebot-scripts
 # end users should see Flowera branding, not generic XFCE art, the moment
 # a desktop opens.
 COPY agent/flowera-wallpaper.svg /opt/flowera-wallpaper.svg
+# Chromium's launch flags, without the base image's hardcoded --no-sandbox
+# (see agent/chromium-browser.init). Seeded into /home/headless for new
+# desktops, and kept in /opt for start_agent_terminal.sh to reinstall into
+# existing ones, whose home is a volume this layer never reaches.
+COPY agent/chromium-browser.init /opt/flowera-chromium.init
+COPY agent/chromium-browser.init /home/headless/.chromium-browser.init
 
 RUN chmod +x /opt/vm_server.py /opt/start_agent_terminal.sh /opt/soul
 
@@ -48,9 +54,11 @@ COPY agent/flowera-desktop-wallpaper.xml /home/headless/.config/xfce4/xfconf/xfc
 
 RUN chmod 644 /home/headless/.config/autostart/flowera-agent.desktop \
     /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml \
+    /home/headless/.chromium-browser.init /opt/flowera-chromium.init \
     && chown headless:headless \
     /home/headless/.config/autostart/flowera-agent.desktop \
-    /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml
+    /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml \
+    /home/headless/.chromium-browser.init
 
 # Restore the base image's own permissions on /etc/passwd and /etc/group.
 #

@@ -5,6 +5,7 @@ import threading
 
 from flowera_agent import config, progress, state
 from flowera_agent.logging_utils import log
+from flowera_agent.identity import get_identity_context
 from flowera_agent.memory_context import get_memory_context
 from flowera_agent.messaging import ask_for_help, write_final_message
 
@@ -150,6 +151,13 @@ def _run_claude(prompt, resume_session_id=None):
         "--dangerously-skip-permissions",
         "--max-budget-usd", MAX_BUDGET_USD,
         "--append-system-prompt", SAFETY_SYSTEM_PROMPT,
+        # Which desktop this is. Claude Code can of course run `hostname`
+        # to find out, but a question about the desktop it is already
+        # running on should not cost a tool call - and on the other two
+        # harnesses not knowing this turned into a help request that
+        # blocked the desktop outright. Same facts, same wording, all
+        # three harnesses.
+        "--append-system-prompt", get_identity_context("Claude Code"),
     ]
 
     memory_context = get_memory_context()

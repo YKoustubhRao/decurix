@@ -4,9 +4,14 @@ import urllib.error
 import urllib.request
 
 from flowera_agent import config, progress, state
+from flowera_agent.identity import get_identity_context
 from flowera_agent.logging_utils import log
 from flowera_agent.memory_context import get_memory_context
-from flowera_agent.messaging import ask_for_help, write_final_message
+from flowera_agent.messaging import (
+    ask_for_help,
+    backend_failure_note,
+    write_final_message,
+)
 from flowera_agent.readiness import wait_for_http_ok
 
 
@@ -17,31 +22,41 @@ from flowera_agent.readiness import wait_for_http_ok
 # CLI-per-task model, TheBot's `soul` binary is a persistent HTTP server
 # (started once as a background daemon by start_agent_terminal.sh, not
 # shelled out to per task) with its own atomizer/scheduler/skills loop
-# inside it. This harness only ever submits a task over HTTP and follows
+# inside it. This harness only ever submits a message over HTTP and follows
 # the real job to completion - it does not reimplement any of TheBot's
 # reasoning. Exposes the same perform_task/continue_after_help signatures
 # so harness.py can dispatch to it interchangeably with the other two.
 #
 # The job is followed over soul's own SSE stream rather than polled, so
-# every reasoning step it already emits (which its own UI used to be the
-# only way to see) reaches the Flowera chat live through progress.emit.
-# Polling remains as the fallback for a stream that drops before the job
-# reports a final event.
+# every reasoning step it emits reaches the Flowera chat live through
+# progress.emit. Polling remains the fallback for a stream that drops
+# before the job reports a final event.
+#
+# soul reports each job's outcome as a structured field - answered,
+# needs_approval, needs_input or failed - and keeps a paused job's
+# checkpoint per session. So a human's reply to a blocked desktop is just
+# the next message in the same session: soul resumes the paused job where
+# it stopped (running the approved command, or handing the operator the
+# answer it asked for) instead of starting the task over.
 # ============================================================
 
 APPROVAL_MARKER = "NEEDS_APPROVAL:"
 
 POLL_INTERVAL_SECONDS = 2
+
+# soul bounds a job at 25 minutes itself (THEBOT_JOB_TIMEOUT_SECONDS) and
+# reports what it finished when that runs out; this is only the backstop
+# for a soul that stopped responding altogether.
 TASK_TIMEOUT_SECONDS = 1800
 
 SAFETY_PREAMBLE = f"""
-IMPORTANT SAFETY RULE: before making or approving any payment, sending or
-approving any outgoing message on the human's behalf (WhatsApp, email,
-SMS, or any other platform), or taking any other action with real-world
-consequences you are not fully confident about - stop before doing it.
-Reply with a message that begins with exactly "{APPROVAL_MARKER}" followed
-by what you want to do and why; a human will review it on the Flowera
-dashboard.
+Approval rules for this desktop: before making or approving any payment,
+sending or approving any outgoing message on the human's behalf (WhatsApp,
+email, SMS, or any other platform), publishing anything, or taking any
+other action with real-world consequences you are not fully confident
+about - stop before doing it. Ask for approval with HELP, or begin your
+reply with exactly "{APPROVAL_MARKER}" followed by what you want to do and
+why; a human will review it on the Flowera dashboard.
 """.strip()
 
 
@@ -129,25 +144,80 @@ def _poll_job(base, job_id):
     return None
 
 
-def _run_thebot(prompt):
+def _cancel_job(base, job_id):
     """
-    Submit one real task to TheBot's /api/chat and follow the real job
-    until it finishes.
+    Stop a job this harness has given up waiting for, so it does not keep
+    running commands on the desktop after the human was told it failed.
+    """
 
-    Returns (final_answer, meta, error). `error` is a human-readable
-    string on failure; exactly one of (final_answer, error) is non-None.
+    try:
+        _post_json(base + f"/api/jobs/{job_id}/cancel", {})
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        log(f"Could not cancel TheBot job {job_id}: {exc}")
+
+
+def _build_context():
+    """
+    The standing context soul folds into every model call's system frame:
+    who this desktop is, its persistent worker memory, and the approval
+    rules it runs under.
+
+    Sent as its own field, never glued onto the task. It used to be glued
+    on - task first, then identity, memory and the safety rules - and soul
+    classified, planned and remembered that whole blob as the human's
+    request. "hello, whats your name?" took 148 seconds and came back as
+    "NEEDS_APPROVAL: Before sending any real-world consequences..." - an
+    answer to the safety rule, not to the question.
+    """
+
+    parts = [get_identity_context("TheBot (soul)")]
+
+    memory_context = get_memory_context()
+    if memory_context:
+        parts.append(
+            "Persistent worker memory for this desktop:\n\n" + memory_context
+        )
+
+    parts.append(SAFETY_PREAMBLE)
+
+    return "\n\n".join(parts)
+
+
+def _run_thebot(message, reply):
+    """
+    Submit one message to TheBot's /api/chat and follow the job until it
+    finishes.
+
+    `reply` says whether the message answers the job this desktop's
+    session has paused: True resumes it, False tells soul to drop it and
+    treat the message as a new request.
+
+    Returns (job, error): the final job snapshot, or a human-readable
+    error string when there is no job to report on.
     """
 
     base = config.THEBOT_URL.rstrip("/")
 
     try:
-        submitted = _post_json(base + "/api/chat", {"prompt": prompt})
+        submitted = _post_json(
+            base + "/api/chat",
+            {
+                "prompt": message,
+                "context": _build_context(),
+                "workdir": str(config.WORK_DIR),
+                # One session per desktop, for the whole life of the
+                # container: soul keeps the conversation's history and the
+                # paused job (if any) under it.
+                "sessionId": config.DESKTOP_ID or "flowera-desktop",
+                "reply": reply,
+            },
+        )
     except (urllib.error.URLError, OSError, ValueError) as exc:
-        return None, None, f"could not submit task to TheBot: {exc}"
+        return None, f"could not submit task to TheBot: {exc}"
 
     job_id = submitted.get("id")
     if not job_id:
-        return None, None, f"TheBot did not return a job id: {submitted}"
+        return None, f"TheBot did not return a job id: {submitted}"
 
     try:
         job = _stream_job(base, job_id)
@@ -159,64 +229,119 @@ def _run_thebot(prompt):
         job = _poll_job(base, job_id)
 
     if job is None:
-        return None, None, (
+        _cancel_job(base, job_id)
+        return None, (
             f"TheBot job {job_id} did not finish within "
             f"{TASK_TIMEOUT_SECONDS} seconds"
         )
 
-    results = job.get("results") or []
-    meta = results[0].get("Meta") if results else None
-
-    return job.get("finalAnswer", ""), meta, None
+    return job, None
 
 
-def _handle_result(final_answer, meta, error):
+# How soul words a failure that was really its Ollama backend giving up:
+# "could not reason about the failure (ollama: request failed: Post
+# ".../api/chat": context deadline exceeded) - stopping here". That is a
+# true sentence about a slow machine, and it reaches a human as the entire
+# explanation of why their desktop stopped.
+# soul says this, and only this, when its own reasoning call errored out -
+# reasonAboutFailure returns it exclusively on a non-nil error from the
+# provider, so the phrase alone is conclusive.
+_BACKEND_FAILURE_PHRASES = (
+    "could not reason about the failure",
+    "could not reason about the task",
+    "the reasoning model failed",
+)
+
+# Otherwise a provider error has to look like one: the provider named, and
+# a transport failure alongside it. Matching a bare "request failed" or
+# "connection refused" would relabel a task's own failed HTTP call - a web
+# fetch soul made on purpose - as the reasoning model being down, and send
+# the human a note about tuning OLLAMA_MODEL for something unrelated.
+_BACKEND_FAILURE_SHAPES = (
+    "deadline exceeded",
+    "request failed",
+    "connection refused",
+    "no such host",
+    "timed out",
+    "returned http",
+)
+
+
+def _looks_like_backend_failure(text):
+    lowered = (text or "").lower()
+
+    if any(phrase in lowered for phrase in _BACKEND_FAILURE_PHRASES):
+        return True
+
+    if "ollama" not in lowered:
+        return False
+
+    return any(shape in lowered for shape in _BACKEND_FAILURE_SHAPES)
+
+
+def _backend_note(reason):
+    return backend_failure_note(
+        f"TheBot's reasoning model ({config.OLLAMA_MODEL})",
+        config.OLLAMA_URL,
+        reason,
+    )
+
+
+def _escalate(reason):
+    """
+    Send one reason to the human, rewritten if it is really about the
+    backend rather than about the task.
+    """
+
+    if _looks_like_backend_failure(reason):
+        ask_for_help(_backend_note(reason))
+        return
+
+    ask_for_help(reason)
+
+
+def _handle_job(job, error):
     if error:
-        ask_for_help(
-            f"""
-TheBot harness failed to run the task.
-
-Error:
-{error}
-""".strip()
-        )
+        _escalate(error)
         return
 
-    # Two real, distinct paths to human escalation: TheBot's own
-    # structural self-help failure (Meta.needsUserInput, set by its
-    # failure-reasoning-then-negative-feedback loop when it genuinely
-    # can't proceed on its own - see TheBot's internal/scheduler), and
-    # the same NEEDS_APPROVAL text convention claude_harness.py uses for
-    # an intentional safety pause.
-    if meta and meta.get("needsUserInput"):
-        reason = (
-            meta.get("failureReasoning")
-            or final_answer
-            or "TheBot could not resolve this on its own."
-        )
-        ask_for_help(reason)
+    outcome = job.get("outcome") or ""
+    answer = (job.get("finalAnswer") or "").strip()
+    question = (job.get("question") or "").strip() or answer
+
+    if outcome == "needs_approval":
+        # soul's own safety gate stopped a consequential action, and holds
+        # the job paused. The human's reply comes back through
+        # continue_after_help and resumes it.
+        ask_for_help(question)
         return
 
-    text = (final_answer or "").strip()
-
-    if text.startswith(APPROVAL_MARKER):
-        ask_for_help(text[len(APPROVAL_MARKER):].strip())
+    if outcome == "needs_input":
+        _escalate(question)
         return
 
-    write_final_message(text or "(no result text)")
+    if outcome == "failed":
+        if _looks_like_backend_failure(answer):
+            ask_for_help(_backend_note(answer))
+            return
+        write_final_message(answer or "TheBot could not finish this.", kind="error")
+        return
 
+    # Answered - or a soul too old to report an outcome, whose only signal
+    # was a flag on its first result.
+    results = job.get("results") or []
+    meta = (results[0].get("Meta") if results else None) or {}
+    if not outcome and meta.get("needsUserInput"):
+        _escalate(meta.get("failureReasoning") or answer or "TheBot could not resolve this on its own.")
+        return
 
-def _build_prompt(task):
-    parts = [SAFETY_PREAMBLE]
+    # The model can still pause on its own, in words, with the marker the
+    # approval rules above ask for.
+    if answer.startswith(APPROVAL_MARKER):
+        ask_for_help(answer[len(APPROVAL_MARKER):].strip())
+        return
 
-    memory_context = get_memory_context()
-    if memory_context:
-        parts.append(
-            "Persistent worker memory for this desktop:\n\n" + memory_context
-        )
-
-    parts.append(task)
-    return "\n\n---\n\n".join(parts)
+    write_final_message(answer or "(no result text)")
 
 
 def wait_for_backend():
@@ -252,8 +377,10 @@ def perform_task(task, task_file):
     log(task)
     log("========================================")
 
-    final_answer, meta, error = _run_thebot(_build_prompt(task))
-    _handle_result(final_answer, meta, error)
+    # A new task, not a reply: if soul still holds a paused job for this
+    # desktop (the human moved on without answering it), it is dropped.
+    job, error = _run_thebot(task, reply=False)
+    _handle_job(job, error)
 
 
 def continue_after_help(help_response):
@@ -271,12 +398,9 @@ def continue_after_help(help_response):
     log(help_response)
     log("========================================")
 
-    # TheBot has no session-resume concept (unlike Claude Code's
-    # --resume) - the human's response is submitted as a fresh task,
-    # carrying the original task as context so it isn't lost.
-    prompt = (
-        f"Continuing task: {state.current_task}\n\n"
-        f"Human response: {help_response}"
-    )
-    final_answer, meta, error = _run_thebot(_build_prompt(prompt))
-    _handle_result(final_answer, meta, error)
+    # soul resumes the job it paused for this session, with the reply as
+    # the answer - approving the exact command it stopped before, or
+    # handing it to the operator that asked. No need to restate the task:
+    # the checkpoint still has it.
+    job, error = _run_thebot(help_response, reply=True)
+    _handle_job(job, error)

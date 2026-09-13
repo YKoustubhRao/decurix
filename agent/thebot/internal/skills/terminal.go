@@ -2,11 +2,14 @@ package skills
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"regexp"
 	"strings"
 	"time"
+
+	"thebot/internal/safety"
 )
 
 const terminalTimeout = 120 * time.Second
@@ -178,8 +181,16 @@ func (t *TerminalSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		}, nil
 	}
 
+	// The same gate the operator's loop goes through: a command written
+	// into the request (or by a planner) is exactly as consequential as
+	// one a model chose mid-loop.
+	if concern := safety.AssessCommand(command); concern != nil && !rc.IsApproved(command) {
+		rc.Logf("terminal", "approval needed before `%s` - %s", command, concern.Reason)
+		return NeedsApproval(subtask, t.Name(), command, concern.Reason, nil), nil
+	}
+
 	rc.Logf("terminal", "command (%s): %s", source, command)
-	cwd := rc.Workspace.Root()
+	cwd := rc.Dir()
 	rc.Logf("terminal", "cwd: %s", cwd)
 
 	ctx, cancel := context.WithTimeout(rc.Ctx, terminalTimeout)
@@ -224,6 +235,32 @@ func (t *TerminalSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		// cat's "No such file or directory". Empty stderr on a nonzero
 		// exit is the command's own complete, honest, self-describing
 		// result; real stderr is a real problem worth reasoning about.
+		// A command that was killed - the timeout, or the job being
+		// cancelled - also exits with empty stderr, but it did not "run
+		// fine and report a negative result". It did not finish. Exit code
+		// -1 is how a signal death shows up here.
+		if ctx.Err() != nil || (isExitErr && exitCode < 0) {
+			why := "it was killed before finishing"
+			switch {
+			case errors.Is(rc.Ctx.Err(), context.DeadlineExceeded):
+				why = "the job ran out of time"
+			case rc.Ctx.Err() != nil:
+				why = "the job was cancelled"
+			case errors.Is(ctx.Err(), context.DeadlineExceeded):
+				why = fmt.Sprintf("it was still running after %s and was killed", terminalTimeout)
+			}
+			rc.Logf("terminal", "did not finish - %s", why)
+			out := fmt.Sprintf("Command: %s\nWorking directory: %s\nDid not finish: %s", command, cwd, why)
+			if len(stdout) > 0 {
+				out += "\n\nStdout so far:\n" + string(stdout)
+			}
+			return Result{
+				Subtask: subtask, SkillName: t.Name(), Output: out, Verified: false,
+				Meta:       map[string]any{"command": command, "source": source, "exitCode": exitCode, "cwd": cwd, "error": why},
+				DurationMs: duration,
+			}, nil
+		}
+
 		if isExitErr && strings.TrimSpace(stderr) == "" {
 			rc.Logf("terminal", "exit code: %d (real result, not a failure)", exitCode)
 			out := fmt.Sprintf("Command: %s\nWorking directory: %s\nExit code: %d", command, cwd, exitCode)

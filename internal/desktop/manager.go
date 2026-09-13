@@ -90,6 +90,7 @@ func (m *Manager) Create(
 		memoryMB,
 		env,
 		volumeName,
+		m.desktopSecurityOpt(ctx),
 	)
 
 	resp, err := m.client.ContainerCreate(
