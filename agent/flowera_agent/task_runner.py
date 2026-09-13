@@ -268,16 +268,23 @@ def perform_task(task, task_file):
 
         except Exception as exc:
 
-            ask_for_help(
+            # The task is over, not paused. This used to be ask_for_help,
+            # which leaves the desktop waiting on a reply - but the note
+            # tells the human to send their message again, and there is
+            # nothing a reply could add to a model that never answered.
+            # Measured live: the human sent a new task instead, it was
+            # routed to continue_after_help as the "reply" to a greeting,
+            # and the finished note reported it under the greeting's Task.
+            write_final_message(
                 backend_failure_note(
                     "The reasoning model "
                     f"({config.OLLAMA_MODEL})",
                     config.OLLAMA_URL,
                     exc,
-                )
+                ),
+                kind="error",
             )
 
-            # Wait until a human response arrives.
             return
 
         log("Agent response:")

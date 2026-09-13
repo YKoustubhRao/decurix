@@ -1,12 +1,19 @@
-// Package ollama manages the single shared Ollama container that every
-// desktop's agent talks to for inference.
+// Package ollama warms the Ollama server every desktop's agent talks to for
+// inference, and manages the bundled flowera-ollama container used as a
+// fallback when no other server is reachable.
 package ollama
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net"
 	"net/http"
+	neturl "net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -51,7 +58,40 @@ const (
 	// learned still looks like it is working; it just never gets better,
 	// and repeats the same failure on the next task.
 	EmbedModel = "nomic-embed-text"
+
+	// BundledURL is where the flowera-ollama container answers from
+	// anything on flowera-network. scripts/linux/build.sh writes it into
+	// OLLAMA_URL only when no other Ollama is reachable from a container.
+	BundledURL = "http://flowera-ollama:11434"
+
+	// defaultURL is the Ollama on the host running the control plane, as a
+	// desktop container reaches it. See buildDesktopEnv in internal/desktop.
+	defaultURL = "http://host.docker.internal:11434"
+
+	// NumCtx is the context window every agent asks this model for:
+	// ollama_client.py's num_ctx and TheBot's llm.OllamaProvider default.
+	// Ollama loads a model for one context size, and a request for another
+	// makes it reload - which on a CPU-only host is minutes, not seconds.
+	NumCtx = 8192
 )
+
+// DesktopURL returns the Ollama URL every new desktop is given: OLLAMA_URL
+// from the control plane's environment, otherwise the host's own Ollama.
+func DesktopURL() string {
+	if u := strings.TrimRight(os.Getenv("OLLAMA_URL"), "/"); u != "" {
+		return u
+	}
+	return defaultURL
+}
+
+// DesktopModel returns the chat model every new desktop is given:
+// OLLAMA_MODEL from the control plane's environment, otherwise Model.
+func DesktopModel() string {
+	if m := os.Getenv("OLLAMA_MODEL"); m != "" {
+		return m
+	}
+	return Model
+}
 
 // Manager owns the lifecycle of the shared Ollama container.
 type Manager struct {
@@ -65,9 +105,29 @@ func NewManager(cli *client.Client, networkName string) *Manager {
 	return &Manager{client: cli, networkName: networkName}
 }
 
-// EnsureReady provisions and starts the shared Ollama container, waits for it
-// to become ready, and ensures the configured model is pulled.
+// EnsureReady warms the Ollama the desktops actually use. When that is the
+// bundled container, it also provisions and starts it and pulls its models.
 func (m *Manager) EnsureReady(ctx context.Context) error {
+	// The bundled container is only a fallback, and desktops reach
+	// whatever OLLAMA_URL names. This used to start the bundled container
+	// and preload the model into it regardless - measured on a 7.6 GB
+	// CPU-only host whose desktops all used the host's own Ollama: the
+	// preload took 2GB of RAM on a server nobody talked to, while the
+	// server they did talk to loaded cold, in 210 seconds, inside the first
+	// message's 300-second timeout. That message came back as a help
+	// request saying the model did not answer in time.
+	if url := DesktopURL(); url != BundledURL {
+		log.Printf(
+			"Desktops use the Ollama at %s - leaving the bundled %s container alone.",
+			url,
+			containerName,
+		)
+
+		m.preloadModel(ctx, dialableURL(ctx, url), DesktopModel())
+
+		return nil
+	}
+
 	// ------------------------------------------------------------
 	// Make sure Ollama image exists
 	// ------------------------------------------------------------
@@ -244,10 +304,10 @@ func (m *Manager) EnsureReady(ctx context.Context) error {
 	// what silently breaks when the second is missing.
 	log.Printf(
 		"Ensuring Ollama model %s...",
-		Model,
+		DesktopModel(),
 	)
 
-	if err := m.ensureModel(ctx, Model); err != nil {
+	if err := m.ensureModel(ctx, DesktopModel()); err != nil {
 		return err
 	}
 
@@ -277,32 +337,83 @@ func (m *Manager) EnsureReady(ctx context.Context) error {
 	// timeout that harness happens to use - which is exactly how "hello"
 	// to a freshly built desktop came back as a request for human help
 	// about a deadline being exceeded.
-	m.preloadModel(ctx)
+	m.preloadModel(ctx, BundledURL, DesktopModel())
 
 	log.Println("Ollama ready.")
 
 	return nil
 }
 
-// preloadModel asks Ollama to load the chat model into memory and hold it
-// there, so the first real request does not pay for it. Best-effort: a
-// failure here only costs the warm start it was trying to buy.
-func (m *Manager) preloadModel(ctx context.Context) {
-	log.Printf("Preloading Ollama model %s...", Model)
+// dialableURL rewrites a desktop-facing Ollama URL into one this process
+// can reach. host.docker.internal is how a container reaches the host; the
+// control plane under docker compose has the same entry, but the standalone
+// binary runs on the host itself, where that host is simply loopback.
+// Whether the name resolves proves nothing: on a WSL host it resolves to
+// the Windows side's address and the connection times out.
+func dialableURL(ctx context.Context, raw string) string {
+	u, err := neturl.Parse(raw)
+	if err != nil || u.Hostname() != "host.docker.internal" || answers(ctx, raw) {
+		return raw
+	}
+
+	if port := u.Port(); port != "" {
+		u.Host = net.JoinHostPort("127.0.0.1", port)
+	} else {
+		u.Host = "127.0.0.1"
+	}
+
+	return u.String()
+}
+
+// answers reports whether an Ollama API responds at baseURL within a few
+// seconds.
+func answers(ctx context.Context, baseURL string) bool {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/tags", nil)
+	if err != nil {
+		return false
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+
+	return resp.StatusCode >= 200 && resp.StatusCode < 300
+}
+
+// preloadModel asks the Ollama at baseURL to load model into memory and
+// hold it there, so the first real request does not pay for it.
+// Best-effort: a failure here only costs the warm start it was trying to
+// buy.
+func (m *Manager) preloadModel(ctx context.Context, baseURL, model string) {
+	log.Printf("Preloading Ollama model %s at %s...", model, baseURL)
 
 	// An empty prompt is Ollama's documented way to load a model without
-	// generating anything. keep_alive matches what the desktop agents
-	// send, so the resident copy this creates is the one they go on to
-	// use rather than a second load with different settings.
-	body := strings.NewReader(
-		`{"model":"` + Model + `","prompt":"","keep_alive":"30m"}`,
-	)
+	// generating anything. keep_alive and num_ctx match what the desktop
+	// agents send, so the resident copy this creates is the one they go on
+	// to use. Without num_ctx it loaded at Ollama's 4096 default, and the
+	// agents' first 8192 request threw it away and loaded the model again.
+	body, err := json.Marshal(map[string]any{
+		"model":      model,
+		"prompt":     "",
+		"keep_alive": "30m",
+		"options":    map[string]any{"num_ctx": NumCtx},
+	})
+
+	if err != nil {
+		log.Printf("Could not build Ollama preload request: %v", err)
+		return
+	}
 
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
-		"http://flowera-ollama:11434/api/generate",
-		body,
+		baseURL+"/api/generate",
+		bytes.NewReader(body),
 	)
 
 	if err != nil {
@@ -323,9 +434,22 @@ func (m *Manager) preloadModel(ctx context.Context) {
 		return
 	}
 
-	resp.Body.Close()
+	defer resp.Body.Close()
 
-	log.Printf("Ollama model %s is loaded and resident.", Model)
+	// A missing model is a clean HTTP 404, which this used to report as
+	// "loaded and resident".
+	if resp.StatusCode != http.StatusOK {
+		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		log.Printf(
+			"Ollama preload of %s failed (harmless, just slower): HTTP %d: %s",
+			model,
+			resp.StatusCode,
+			strings.TrimSpace(string(detail)),
+		)
+		return
+	}
+
+	log.Printf("Ollama model %s is loaded and resident.", model)
 }
 
 // waitForOllama polls the Ollama API until it responds successfully, the context is cancelled, or a two-minute deadline elapses.
@@ -337,7 +461,7 @@ func waitForOllama(ctx context.Context) error {
 		req, err := http.NewRequestWithContext(
 			ctx,
 			http.MethodGet,
-			"http://flowera-ollama:11434/api/tags",
+			BundledURL+"/api/tags",
 			nil,
 		)
 

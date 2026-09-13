@@ -38,10 +38,17 @@ func TestTriageRoutesRequestsByShape(t *testing.T) {
 		{"search the web for RTX 5080 laptops", RouteSkill},
 		{"write a segment tree into segment_tree.py", RouteSkill},
 		{"build a FastAPI service with a SQLite store and tests", RouteSkill},
+		// Two write verbs, one file: one job. Measured live as a plan whose
+		// first step went to the coding harness and timed out.
+		{"create a file koustubh.txt and write a poem inside it, after you are done give me the file location", RouteSkill},
+		{"write a haiku and save it to haiku.md", RouteSkill},
 
 		// Genuinely different jobs.
 		{"Find out what the newest Go version is and save a short note about it to go-version.md", RoutePlan},
 		{"search the web for Abhishek Gadia and download the raw html of the top 10 pages", RoutePlan},
+		// Write verbs stay separate jobs across two files, or a folder.
+		{"create a file a.txt and then write a summary of it to b.md", RoutePlan},
+		{"create a folder called notes and then write a poem to notes/poem.txt", RoutePlan},
 	}
 	for _, c := range cases {
 		if got := Triage(c.prompt); got.Kind != c.want {

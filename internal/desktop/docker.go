@@ -137,14 +137,11 @@ func buildDesktopEnv(name, harness string) []string {
 	// It does require that Ollama to listen on more than loopback
 	// (OLLAMA_HOST=0.0.0.0); when it doesn't, the failure now arrives as a
 	// message in the chat naming this URL.
-	ollamaURL := os.Getenv("OLLAMA_URL")
-	if ollamaURL == "" {
-		ollamaURL = "http://host.docker.internal:11434"
-	}
-	ollamaModel := os.Getenv("OLLAMA_MODEL")
-	if ollamaModel == "" {
-		ollamaModel = ollama.Model
-	}
+	//
+	// Both come from package ollama, which preloads the model on this same
+	// server at startup - the two must never disagree about which one it is.
+	ollamaURL := ollama.DesktopURL()
+	ollamaModel := ollama.DesktopModel()
 
 	env := []string{
 		"VNC_PW=" + defaultPassword,

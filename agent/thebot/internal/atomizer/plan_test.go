@@ -42,6 +42,25 @@ func TestParsePlanRoutesTagsToSkills(t *testing.T) {
 	}
 }
 
+// Measured live: the planner tagged a plain text file [code], and the coding
+// harness timed out designing an architecture for it.
+func TestParsePlanKeepsFilesWithNoCodeOutOfTheCodingHarness(t *testing.T) {
+	steps := parsePlan(`1. [code] Create a new file named koustubh.txt
+2. [code] a text file listing today's tasks
+3. [code] a Flask app that serves the weather
+4. [code] a python script that renames photos by date`, nil)
+
+	want := []string{"file-write", "operator", "coding", "coding"}
+	if len(steps) != len(want) {
+		t.Fatalf("got %d steps, want %d: %+v", len(steps), len(want), steps)
+	}
+	for i, w := range want {
+		if steps[i].Type != w {
+			t.Errorf("step %d %q = %s, want %s", i+1, steps[i].Text, steps[i].Type, w)
+		}
+	}
+}
+
 // A small model tags an English goal as [shell] often enough to matter.
 // Running "check how much disk space is free" in bash executes a sentence.
 func TestParsePlanTurnsProseShellStepsIntoGoals(t *testing.T) {

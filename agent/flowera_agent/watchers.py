@@ -18,6 +18,9 @@ QUEUE_NOTICE_SECONDS = 30
 
 _last_queue_notice = None
 
+# Command files already reported as waiting behind a running task.
+_deferred_logged = set()
+
 
 def _report_queued(name):
     """
@@ -151,11 +154,16 @@ def command_watcher():
 
                     if state.current_task is not None:
 
-                        log(
-                            "Task already running. "
-                            f"Leaving {path.name} "
-                            "for later."
-                        )
+                        # Once per file: the watcher passes every second,
+                        # and a queued message behind a five-minute model
+                        # call used to write three hundred of these lines.
+                        if path.name not in _deferred_logged:
+                            _deferred_logged.add(path.name)
+                            log(
+                                "Task already running. "
+                                f"Leaving {path.name} "
+                                "for later."
+                            )
 
                         state.processed_commands.discard(
                             path.name
