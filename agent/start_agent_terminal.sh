@@ -17,6 +17,44 @@ fi
 echo "DISPLAY=$DISPLAY" >> "$LOG"
 echo "USER=$(whoami)" >> "$LOG"
 
+# Chromium's launch flags live in $HOME, which is this desktop's persistent
+# volume - so an image rebuild alone never replaces the base image's copy
+# with its hardcoded --no-sandbox. Reinstall ours on every start.
+if [ -f /opt/flowera-chromium.init ]; then
+    cp /opt/flowera-chromium.init "$HOME/.chromium-browser.init" 2>> "$LOG" \
+        || echo "[$(date)] could not install Chromium launch flags" >> "$LOG"
+fi
+
+# Clear out core dumps a crashing Chromium already left behind, before core
+# dumps were switched off (see agent/chromium-browser.init). Only files that
+# are named core.<pid> AND are ELF core dumps - a file that merely shares
+# the name is left alone.
+python3 - "$HOME" "$HOME/Desktop" >> "$LOG" 2>&1 <<'PY'
+import os, re, sys
+
+removed = 0
+for folder in sys.argv[1:]:
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        continue
+    for name in names:
+        path = os.path.join(folder, name)
+        if not re.fullmatch(r"core\.\d+", name) or not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "rb") as f:
+                header = f.read(18)
+        except OSError:
+            continue
+        # ELF magic, then e_type == ET_CORE (4) at offset 16.
+        if len(header) == 18 and header[:4] == b"\x7fELF" and int.from_bytes(header[16:18], "little") == 4:
+            os.remove(path)
+            removed += 1
+if removed:
+    print(f"removed {removed} leftover core dump(s)")
+PY
+
 setsid python3 /opt/vm_server.py >> "$LOG" 2>&1 < /dev/null &
 
 echo "[$(date)] vm_server.py started as background daemon (pid $!)" >> "$LOG"
@@ -40,13 +78,19 @@ if [ "$AGENT_HARNESS" = "thebot" ] && [ -x /opt/soul ]; then
     # one; it replaced a hardcoded Cloudflare quick-tunnel URL that stopped
     # resolving as soon as that tunnel was restarted.
     export OLLAMA_HOST="${OLLAMA_URL:-http://host.docker.internal:11434}"
-    export CHAT_MODEL="${OLLAMA_MODEL:-qwen3:latest}"
+    export CHAT_MODEL="${OLLAMA_MODEL:-qwen2.5-coder:3b}"
     # Coding builds can run on their own model (see TheBot's internal/llm
     # Models.ForTaskType): a build sends the longest prompts the agent ever
     # produces and wants the largest context window, while chat wants a good
     # conversationalist. Unset means "use CHAT_MODEL for coding too", so a
     # single-model VM behaves exactly as before.
     export CODING_MODEL="${CODING_MODEL:-}"
+    # Web research reads its pages into one prompt, and prompt reading is
+    # what a CPU-only Ollama is slowest at (see TheBot's internal/skills/
+    # web.go). Two pages of 2500 characters keeps a research step to a
+    # couple of minutes on a laptop CPU; raise both on a GPU host.
+    export THEBOT_WEB_PAGES="${THEBOT_WEB_PAGES:-2}"
+    export THEBOT_WEB_PAGE_CHARS="${THEBOT_WEB_PAGE_CHARS:-2500}"
     export SOUL_PORT="4900"
     export DOCLING_SCRIPT="/opt/thebot-scripts/docling_convert.py"
     setsid /opt/soul >> /tmp/thebot-soul.log 2>&1 < /dev/null &

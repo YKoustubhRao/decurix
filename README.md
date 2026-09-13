@@ -130,6 +130,7 @@ Flowera has two moving pieces: a Go **control plane** (the dashboard + Docker or
 * Docker + Docker Compose
   * Linux: run `sudo ./scripts/linux/setup.sh` once if you don't already have Docker (also installs `cloudflared` and QEMU) — or just install Docker yourself.
   * macOS / Windows: Docker Desktop.
+* [Ollama](https://ollama.com/download), the local model server the workers think with. You can skip it and Flowera will run its own Ollama in a container, but a native install is faster, and it's the only way to use a GPU. See [Setting up Ollama](#-setting-up-ollama).
 * Optional: Go 1.26+, needed only to run the control plane directly with `go run` while developing it, or to build the standalone executables with `scripts/release/release.sh` (step 5).
 
 ### The scripts
@@ -149,15 +150,70 @@ Starting from nothing? `./scripts/linux/quickstart.sh` (or `.\scripts\windows\qu
 
 Every script figures out the repo root on its own, so it doesn't matter where you run it from.
 
+**On Windows:** run the `.ps1` scripts from an ordinary PowerShell window, not WSL. Only `setup.ps1` needs Administrator. Docker Desktop must be running first. Windows won't run downloaded scripts by default, so allow them for that window before the first one:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\windows\quickstart.ps1
+```
+
+`build.ps1` does everything `build.sh` does: builds the images, sets up Ollama, restarts the control plane and opens the tunnel.
+
 ### 1. Clone and configure
 
 ```bash
 git clone <this repo>
 cd flowera
-cp .env.example .env
+cp .env.example .env        # Windows: copy .env.example .env
 ```
 
-Open `.env` and fill in what you need — see [Environment variables](#-environment-variables) below. At minimum you can leave it as-is; every variable has a working default except `ANTHROPIC_API_KEY`, which you only need if you want to use the Claude harness (see below).
+(Skipping this is fine if you use `build.sh`/`build.ps1`, which create `.env` from `.env.example` when there isn't one.)
+
+Open `.env` and fill in what you need. See [Environment variables](#-environment-variables) below. You can leave it as it is: every variable has a working default except `ANTHROPIC_API_KEY`, which only the Claude harness needs (see below). The two you're most likely to change are `OLLAMA_URL` and `OLLAMA_MODEL`, which pick the model server and model every worker uses.
+
+### 🦙 Setting up Ollama
+
+Workers on the `ollama` and `thebot` harnesses reason with a model served by [Ollama](https://ollama.com). Two settings in `.env` pick which one:
+
+```bash
+OLLAMA_URL=http://host.docker.internal:11434   # the machine running Flowera, as a desktop container sees it
+OLLAMA_MODEL=qwen2.5-coder:3b                  # the chat model every new desktop uses
+```
+
+**1. Install Ollama and pull the models.**
+
+```bash
+ollama pull qwen2.5-coder:3b     # the chat model (~2 GB), whatever OLLAMA_MODEL names
+ollama pull nomic-embed-text     # embeddings, needed only by the thebot harness (~270 MB)
+```
+
+`qwen2.5-coder:3b` is the default because it's the smallest model we tested that reliably follows the agent's `COMMAND:` / `DONE:` / `HELP:` contract, and it runs on a CPU-only laptop. `qwen3:0.6b` was too weak, and `llama3.2` guessed at destructive commands where it should have asked for help. If you have a GPU, a bigger model such as `qwen2.5-coder:14b` works better. Pull it and set `OLLAMA_MODEL` to its name.
+
+`nomic-embed-text` is a separate model, not an alternative to the chat model. Without it, the `thebot` harness still answers but can't remember anything it learns.
+
+**2. Make Ollama reachable from containers.** Desktops are Docker containers, so they reach Ollama over the network, not on `127.0.0.1`:
+
+* **Linux (including Docker Engine inside WSL):** Ollama must listen on more than loopback. Set `OLLAMA_HOST=0.0.0.0` for its service (`sudo systemctl edit ollama`, add `Environment="OLLAMA_HOST=0.0.0.0"` under `[Service]`, then `sudo systemctl restart ollama`).
+* **macOS / Windows with Docker Desktop:** `host.docker.internal` already forwards to the host's localhost, so a default install usually works as-is. If it doesn't, set `OLLAMA_HOST=0.0.0.0` in your user environment variables and restart the Ollama app from the Start menu.
+
+Check it from a container:
+
+```bash
+docker run --rm --add-host host.docker.internal:host-gateway curlimages/curl -s http://host.docker.internal:11434/api/tags
+```
+
+This should print JSON listing the models you pulled.
+
+**Or let the build script handle it.** `./scripts/linux/build.sh` and `.\scripts\windows\build.ps1` do all of this, checking reachability from inside a container:
+
+1. Use `OLLAMA_URL` from `.env` if a container can reach it; otherwise try the host's Ollama.
+2. If Ollama is running on the host but only on loopback, make it listen on all interfaces. On Linux that means `OLLAMA_HOST=0.0.0.0` on its systemd service (with `sudo`). On Windows it means `OLLAMA_HOST` in your user environment, followed by a restart of the Ollama app.
+3. If no Ollama is reachable at all, point `OLLAMA_URL` at a bundled `flowera-ollama` container that the control plane starts and fills with models itself.
+4. Pull `OLLAMA_MODEL` and `nomic-embed-text` if they're missing, then write the result back into `.env` and print the URL and model the desktops will use.
+
+`OLLAMA_URL` can also point at an Ollama on another machine, e.g. `http://10.0.0.5:11434`. At startup the control plane loads `OLLAMA_MODEL` into memory on that server, so the first message doesn't wait for it.
+
+> **Changing the model only affects desktops created afterwards.** Each desktop gets `OLLAMA_URL`/`OLLAMA_MODEL` when it is created. After editing `.env`, restart the control plane (`docker compose up --build -d`, since `.env` is baked into its image) and create a new desktop.
 
 ### 2. Build the desktop images
 
@@ -193,7 +249,7 @@ Hit **Chat** on a desktop to talk to its agent: one conversation per worker, wit
 .\scripts\windows\build.ps1     # Windows (PowerShell)
 ```
 
-This runs the `build-images` script for all three desktop images, tears down any old `desktop_*` containers/volumes, starts the control plane, waits for the dashboard to respond, and — if `cloudflared` is installed — opens a public tunnel to it at the end. If you don't have `cloudflared` installed, the script errors out on that last step, but the dashboard is already up on `:8080` by then regardless; install `cloudflared` (via `scripts/linux/setup.sh`) or ignore that final error if you only want local access.
+This runs the `build-images` script for all three desktop images and [sets up Ollama](#-setting-up-ollama) (creating `.env` if needed). It then tears down any old `desktop_*` containers and volumes, starts the control plane and waits for the dashboard to respond. If `cloudflared` is installed, it opens a public tunnel at the end and shows the tunnel's URL in the dashboard's Mobile menu. Without `cloudflared` the script stops with an error at that last step, but the dashboard is already running on `:8080`. Install `cloudflared` (via `setup.sh` / `setup.ps1`), or ignore the error if you only want local access. Ctrl+C stops the tunnel and the whole Flowera stack with it.
 
 ### Testing one desktop image standalone
 
@@ -263,9 +319,11 @@ Set these in your own `.env` (copied from `.env.example`) — the control plane 
 |---|---|---|---|
 | `DEFAULT_PASSWORD` | No | `admin` | VNC login password baked into every new desktop. |
 | `ANTHROPIC_API_KEY` | Only to use the **Claude harness** | *(unset)* | Passed through into a desktop's container so the `claude` CLI can authenticate — this is literally all that's needed, no login/OAuth step. Only desktops created with the "Claude Code" harness use it. |
+| `OLLAMA_URL` | No | `http://host.docker.internal:11434` | The Ollama server every new desktop reasons with. The default is the host running Flowera. See [Setting up Ollama](#-setting-up-ollama). |
+| `OLLAMA_MODEL` | No | `qwen2.5-coder:3b` | The chat model every new desktop uses. It must already be pulled on `OLLAMA_URL`'s server (`build.sh` pulls it for you). |
 | `DESKTOP_STOP_TIMEOUT_SECONDS` | No | `10` | Seconds to wait for a desktop container to stop gracefully before force-killing it. |
 
-Every other setting (which Ollama model, the agent harness, the control-plane URL a desktop calls home to, etc.) is wired up automatically per-desktop when you create it — see [`CLAUDE.md`](CLAUDE.md) if you're modifying that wiring.
+Every other setting (the agent harness, the control-plane URL a desktop calls home to, etc.) is set up for each desktop when you create it. See [`CLAUDE.md`](CLAUDE.md) if you're changing that wiring.
 
 ---
 

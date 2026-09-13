@@ -209,3 +209,16 @@ func TestConsiderExchangeSkipsUnimportant(t *testing.T) {
 		t.Errorf("Count() = %d, want 0 - trivia should not be stored", n)
 	}
 }
+
+func TestLooksMemorable(t *testing.T) {
+	for _, p := range []string{"my name is Divyanshu", "remember that I deploy on Fridays", "I prefer tabs over spaces", "I'm a data engineer", "call me Kay"} {
+		if !LooksMemorable(p) {
+			t.Errorf("LooksMemorable(%q) = false", p)
+		}
+	}
+	for _, p := range []string{"check the disk space", "what is the current kernel version?", "hello, whats your name?", "delete my build folder"} {
+		if LooksMemorable(p) {
+			t.Errorf("LooksMemorable(%q) = true", p)
+		}
+	}
+}

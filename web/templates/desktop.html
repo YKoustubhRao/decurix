@@ -229,6 +229,25 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
 
 .msg-time{font-size:11px;color:var(--text-3)}
 
+/* A message this tab sent that the control plane's transcript does not show
+   yet. It is drawn the moment Send is pressed, rather than when the desktop
+   has accepted it and the stream has echoed it back. */
+.msg.is-pending .bubble{opacity:.7}
+.msg-status{display:flex;align-items:center;gap:10px;font-size:11px;color:var(--text-3)}
+.msg.is-failed .bubble{background:var(--danger-soft);color:var(--text);border:1px solid var(--danger)}
+.msg.is-failed .bubble code{background:var(--surface-3)}
+.msg.is-failed .msg-status{color:var(--danger)}
+.msg-status button{
+  font:inherit;
+  font-weight:600;
+  color:var(--accent);
+  background:none;
+  border:0;
+  padding:0;
+  cursor:pointer
+}
+.msg-status button:hover{text-decoration:underline}
+
 /* ---------- live activity + step lists ---------- */
 
 .steps{
@@ -498,13 +517,21 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
   var inner = document.getElementById("chatInner");
   var form = document.getElementById("chatForm");
   var input = document.getElementById("chatInput");
-  var sendButton = document.getElementById("chatSend");
   var offlineFlag = document.getElementById("chatOffline");
 
   var toast = Flowera.toast, post = Flowera.post;
 
   var lastVersion = -1;
+  var lastThread = {messages: [], steps: [], running: false};
   var elapsedTimer = null;
+
+  /* Messages sent from this tab that the server's transcript does not show
+     yet, oldest first: {key, content, createdAt, state, error, known}.
+     state is "sending", "delivered" or "failed"; known is the set of message
+     IDs the transcript already had at send time, so the server's copy of
+     this message is the first new user message with the same text. */
+  var pending = [];
+  var pendingSeq = 0;
 
   var SUGGESTIONS = [
     "What can you do?",
@@ -840,7 +867,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
 
     inner.innerHTML = "";
 
-    if(!thread.messages.length && !thread.running){
+    if(!thread.messages.length && !thread.running && !pending.length){
       inner.appendChild(emptyElement());
       return;
     }
@@ -853,7 +880,118 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
       inner.appendChild(workingElement(thread));
     }
 
+    pending.forEach(function(item){
+      inner.appendChild(pendingElement(item));
+    });
+
     if(stick){ scrollToBottom(); }
+  }
+
+  /* ---------------- sending ----------------
+     A sent message is on screen the moment Send is pressed. It used to wait
+     for the whole round trip - control plane, the desktop's agent, back into
+     the transcript, out through the stream - and where the stream was slow to
+     deliver, the human's own message only showed up alongside the agent's
+     reply to it. The server's transcript stays the source of truth: the local
+     copy is dropped as soon as a snapshot contains the real one. */
+
+  function pendingElement(item){
+    var row = messageElement({role: "user", kind: "message", content: item.content, created_at: item.createdAt});
+    row.classList.add(item.state === "failed" ? "is-failed" : "is-pending");
+
+    var status = document.createElement("div");
+    status.className = "msg-status";
+
+    if(item.state === "failed"){
+      var reason = document.createElement("span");
+      reason.textContent = "Not delivered" + (item.error ? " - " + item.error : "");
+
+      var retry = document.createElement("button");
+      retry.type = "button";
+      retry.textContent = "Retry";
+      retry.addEventListener("click", function(){ send(item.content, item); });
+
+      var edit = document.createElement("button");
+      edit.type = "button";
+      edit.textContent = "Edit";
+      edit.addEventListener("click", function(){
+        pending.splice(pending.indexOf(item), 1);
+        input.value = item.content;
+        grow();
+        render(lastThread);
+        input.focus();
+      });
+
+      status.append(reason, retry, edit);
+    }else{
+      status.textContent = item.state === "sending" ? "Sending…" : "Delivered";
+    }
+
+    row.querySelector(".msg-time").replaceWith(status);
+
+    return row;
+  }
+
+  function knownMessageIds(){
+    var known = {};
+    lastThread.messages.forEach(function(message){ known[message.id] = true; });
+    return known;
+  }
+
+  /* Drop every local copy whose real message has arrived. A copy still
+     "sending" counts too: the control plane records the message before it
+     answers the POST, so the stream can deliver it first. */
+  function reconcile(thread){
+    if(!pending.length){ return; }
+
+    var claimed = {};
+
+    pending = pending.filter(function(item){
+      if(item.state === "failed"){ return true; }
+
+      for(var i = 0; i < thread.messages.length; i++){
+        var message = thread.messages[i];
+
+        if(message.role === "user" && message.content === item.content && !item.known[message.id] && !claimed[message.id]){
+          claimed[message.id] = true;
+          return false;
+        }
+      }
+
+      return true;
+    });
+  }
+
+  function send(text, retrying){
+    var item = retrying || {key: ++pendingSeq, content: text, createdAt: new Date().toISOString()};
+
+    item.state = "sending";
+    item.error = "";
+    item.known = knownMessageIds();
+
+    if(!retrying){ pending.push(item); }
+
+    render(lastThread);
+    scrollToBottom();
+
+    post("/api/desktops/send", {id: desktopId, content: text}).then(function(){
+      if(pending.indexOf(item) === -1){ return; }
+
+      item.state = "delivered";
+      render(lastThread);
+
+      /* Delivered but not echoed back yet: if the stream still has not
+         brought it a moment from now, fetch the transcript directly rather
+         than trust a connection that may be buffering. */
+      setTimeout(function(){
+        if(pending.indexOf(item) !== -1){ pollOnce(); }
+      }, 1500);
+    }, function(e){
+      item.state = "failed";
+      item.error = e.message;
+      render(lastThread);
+      toast(e.message, "error");
+    });
   }
 
   function apply(thread){
@@ -864,6 +1002,8 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
     thread.messages = thread.messages || [];
     thread.steps = thread.steps || [];
 
+    lastThread = thread;
+    reconcile(thread);
     render(thread);
 
     if(thread.running && !elapsedTimer){
@@ -912,6 +1052,12 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
     pollTimer = null;
   }
 
+  /* How long an open stream may go without its first frame before it is
+     written off. The server sends a whole snapshot the instant a stream
+     connects, so silence past this is not a quiet chat - it is a proxy
+     holding the stream back. */
+  var FIRST_FRAME_MS = 4000;
+
   function connect(){
     if(typeof EventSource === "undefined"){
       startPolling();
@@ -919,8 +1065,29 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
     }
 
     var source = new EventSource("/api/desktops/chat/stream?id=" + encodeURIComponent(desktopId));
+    var gotFrame = false;
+
+    source.onopen = function(){
+      if(gotFrame){ return; }
+
+      /* A stream that connects and then delivers nothing. Measured through
+         the Cloudflare quick tunnel a phone uses to reach this page: the
+         response headers arrive, and not one byte of the body follows - not
+         the snapshot flushed on connect, not the message sent a second
+         later. The old page only fell back to polling on a stream *error*,
+         and a held stream never errors, so over the tunnel a sender's own
+         message showed up only when something finally pushed it through,
+         usually the agent's reply. Polling is the whole transport here. */
+      setTimeout(function(){
+        if(gotFrame || source.readyState === EventSource.CLOSED){ return; }
+
+        source.close();
+        startPolling();
+      }, FIRST_FRAME_MS);
+    };
 
     source.onmessage = function(event){
+      gotFrame = true;
       stopPolling();
       setOffline(false);
 
@@ -953,29 +1120,18 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
     }
   });
 
-  form.addEventListener("submit", async function(event){
+  form.addEventListener("submit", function(event){
     event.preventDefault();
 
     var text = input.value.trim();
     if(!text){ return; }
 
-    sendButton.disabled = true;
+    input.value = "";
+    grow();
 
-    try{
-      await post("/api/desktops/send", {id: desktopId, content: text});
+    send(text);
 
-      input.value = "";
-      grow();
-
-      /* The message itself arrives back through the stream, which is what
-         every other viewer of this desktop sees too. */
-      scrollToBottom();
-    }catch(e){
-      toast(e.message, "error");
-    }finally{
-      sendButton.disabled = false;
-      input.focus();
-    }
+    input.focus();
   });
 
   /* ---------------- clear ---------------- */
@@ -988,6 +1144,9 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
 
       try{
         await post("/api/desktops/chat/clear", {id: desktopId});
+        /* Unsent local copies belong to the transcript being cleared. */
+        pending = [];
+        render(lastThread);
       }catch(e){
         toast(e.message, "error");
       }finally{

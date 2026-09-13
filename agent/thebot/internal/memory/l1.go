@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -130,6 +131,23 @@ func (l *L1) ConsiderExchange(ctx context.Context, prompt, answer string, onLog 
 		return
 	}
 	log("stored: " + fact)
+}
+
+// memorableRe recognises a turn in which the human says something about
+// themselves or asks to be remembered - the only turns L1's judge can ever
+// answer "yes" for, by its own prompt's rules.
+var memorableRe = regexp.MustCompile(`(?i)\b(remember|don'?t forget|keep in mind|note that|from now on|going forward|call me|my name|who i am)\b` +
+	`|\bmy\s+(job|role|title|company|employer|team|boss|manager|email|phone|number|birthday|wife|husband|partner|girlfriend|boyfriend|kids?|children|son|daughter|dog|cat|favou?rite|preferences?|timezone|time zone|city|country|address|language|pronouns|project|startup|business)\b` +
+	`|\b(i am|i'm)\s+(a|an|the|from|based|working|called|named)\b` +
+	`|\bi\s+(work|live|prefer|like|love|hate|always|never|usually|use|want you to)\b`)
+
+// LooksMemorable reports whether a human's turn could carry a durable fact
+// about them. It gates ConsiderExchange, which costs a whole model call:
+// most turns ("check the disk space", "what's the kernel version?") could
+// never produce a memory, and judging them anyway spent that call - and
+// evicted the model's cached prompt - after every single task.
+func LooksMemorable(prompt string) bool {
+	return memorableRe.MatchString(prompt)
 }
 
 // looksExplicit reports whether the user actually asked for this to be

@@ -1,0 +1,314 @@
+package skills
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"thebot/internal/llm"
+)
+
+// scriptedChat answers each call with the next canned reply and records
+// what it was sent.
+type scriptedChat struct {
+	replies []string
+	calls   [][]llm.Message
+}
+
+func (s *scriptedChat) Name() string                         { return "scripted" }
+func (s *scriptedChat) IsReachable(ctx context.Context) bool { return true }
+func (s *scriptedChat) Chat(ctx context.Context, model string, messages []llm.Message, opts llm.Options) (llm.Result, error) {
+	s.calls = append(s.calls, append([]llm.Message(nil), messages...))
+	if len(s.calls) > len(s.replies) {
+		return llm.Result{Text: "DONE: out of script"}, nil
+	}
+	return llm.Result{Text: s.replies[len(s.calls)-1]}, nil
+}
+
+func operatorContext(t *testing.T, provider llm.Provider) RunContext {
+	t.Helper()
+	return RunContext{Ctx: context.Background(), Provider: provider, Model: "m", WorkDir: t.TempDir(), OnLog: func(string) {}}
+}
+
+func TestOperatorRunsCommandsAndAnswersFromWhatTheyPrinted(t *testing.T) {
+	chat := &scriptedChat{replies: []string{
+		"COMMAND:\nls | wc -l",
+		"DONE:\nThere are 3 files.",
+	}}
+	rc := operatorContext(t, chat)
+	for _, name := range []string{"a", "b", "c"} {
+		if err := os.WriteFile(filepath.Join(rc.WorkDir, name), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	res, err := NewOperator().Run(rc, Subtask{Step: "how many files are here?", Type: "operator"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Verified || res.Output != "There are 3 files." {
+		t.Fatalf("result = %+v", res)
+	}
+	// The command really ran, in the working directory, and its real
+	// output reached the model on the next turn.
+	last := chat.calls[1][len(chat.calls[1])-1].Content
+	if !strings.Contains(last, "exit_code: 0") || !strings.Contains(last, "3") {
+		t.Errorf("second turn was not shown the command's real output:\n%s", last)
+	}
+	// Append-only transcript: turn two starts with everything turn one sent.
+	for i, m := range chat.calls[0] {
+		if chat.calls[1][i] != m {
+			t.Fatalf("turn two rewrote message %d - the prompt cache would be lost", i)
+		}
+	}
+}
+
+// A model that writes COMMAND: and then predicts a DONE: must have only
+// the command run - the prediction is for output it has not seen.
+func TestOperatorIgnoresAPredictedAnswerAfterACommand(t *testing.T) {
+	chat := &scriptedChat{replies: []string{
+		"COMMAND:\necho real-output\nDONE:\n5.10.124 (guessed)",
+		"DONE:\nreal-output",
+	}}
+	res, _ := NewOperator().Run(operatorContext(t, chat), Subtask{Step: "print it", Type: "operator"})
+	if res.Output != "real-output" {
+		t.Errorf("Output = %q, want the answer given after seeing real output", res.Output)
+	}
+	if cmds, _ := res.Meta["commands"].([]string); len(cmds) != 1 || cmds[0] != "echo real-output" {
+		t.Errorf("commands = %v, want exactly the command without the predicted DONE folded in", res.Meta["commands"])
+	}
+	// The guess must never be shown back to the model, or it reports it.
+	for _, m := range chat.calls[1] {
+		if strings.Contains(m.Content, "guessed") {
+			t.Errorf("the predicted answer stayed in the transcript: %q", m.Content)
+		}
+	}
+}
+
+func TestOperatorPushesBackOnceOnHelpBeforeTrying(t *testing.T) {
+	chat := &scriptedChat{replies: []string{
+		"HELP:\nWhy do you want to know the desktop name?",
+		"DONE:\nThis desktop is called kilo.",
+	}}
+	res, _ := NewOperator().Run(operatorContext(t, chat), Subtask{Step: "whats your desktop name?", Type: "operator"})
+	if !res.Verified || res.Output != "This desktop is called kilo." {
+		t.Errorf("result = %+v, want the answer after one push back", res)
+	}
+}
+
+// Once pushed back, a second HELP is real - the agent must always be able
+// to escalate, and HELP is also how it asks for approval.
+func TestOperatorDeliversASecondHelpAndCanResumeWithTheReply(t *testing.T) {
+	chat := &scriptedChat{replies: []string{
+		"HELP:\nWhich project should I delete?",
+		"HELP:\nThere are two projects, alpha and beta. Which one?",
+		"COMMAND:\necho deleting beta",
+		"DONE:\nDeleted beta.",
+	}}
+	op := NewOperator()
+	rc := operatorContext(t, chat)
+
+	res, _ := op.Run(rc, Subtask{Step: "delete the project", Type: "operator"})
+	if res.Meta["needsUserInput"] != true || res.Checkpoint == nil {
+		t.Fatalf("result = %+v, want a question with a checkpoint", res)
+	}
+
+	rc.Resume = res.Checkpoint
+	rc.HumanReply = "beta"
+	res, _ = op.Run(rc, Subtask{Step: "delete the project", Type: "operator"})
+	if !res.Verified || res.Output != "Deleted beta." {
+		t.Fatalf("resumed result = %+v", res)
+	}
+	sawReply := false
+	for _, m := range chat.calls[2] {
+		if strings.Contains(m.Content, "The human replied: beta") {
+			sawReply = true
+		}
+	}
+	if !sawReply {
+		t.Error("the human's reply never reached the resumed transcript")
+	}
+}
+
+func TestOperatorEndsARepeatLoopWithTheRealOutput(t *testing.T) {
+	chat := &scriptedChat{replies: []string{
+		"COMMAND:\necho 6.6.87.2",
+		"COMMAND:\necho 6.6.87.2",
+		"COMMAND:\necho 6.6.87.2",
+	}}
+	res, _ := NewOperator().Run(operatorContext(t, chat), Subtask{Step: "kernel version?", Type: "operator"})
+	if !res.Verified || strings.TrimSpace(res.Output) != "6.6.87.2" {
+		t.Errorf("result = %+v, want the command's own output as the answer", res)
+	}
+	if len(chat.calls) != 3 {
+		t.Errorf("made %d model calls, want 3 (run, nudge, stop)", len(chat.calls))
+	}
+}
+
+func TestOperatorTakesAnUnmarkedReplyAsTheAnswerEventually(t *testing.T) {
+	chat := &scriptedChat{replies: []string{"241", "241", "241", "241"}}
+	res, _ := NewOperator().Run(operatorContext(t, chat), Subtask{Step: "how many files in /etc?", Type: "operator"})
+	if !res.Verified || res.Output != "241" {
+		t.Errorf("result = %+v, want the unmarked reply salvaged", res)
+	}
+	if !strings.Contains(chat.calls[1][len(chat.calls[1])-1].Content, `started with "241"`) {
+		t.Error("the format nudge did not quote the model's own reply back to it")
+	}
+}
+
+func TestOperatorPausesForApprovalAndResumes(t *testing.T) {
+	chat := &scriptedChat{replies: []string{
+		"COMMAND:\ngit push origin main",
+		"DONE:\nPushed.",
+	}}
+	op := NewOperator()
+	rc := operatorContext(t, chat)
+	// A fake git so the approved command has something harmless to run.
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\necho pushed-for-real\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	res, _ := op.Run(rc, Subtask{Step: "push my branch", Type: "operator"})
+	if res.Meta["needsApproval"] != true || res.Meta["action"] != "git push origin main" || res.Checkpoint == nil {
+		t.Fatalf("result = %+v, want a paused approval for the push", res)
+	}
+	if cmds, _ := res.Meta["commands"].([]string); len(cmds) != 0 {
+		t.Fatalf("commands = %v - the gated command ran before approval", cmds)
+	}
+
+	rc.Resume = res.Checkpoint
+	rc.HumanReply = "yes"
+	rc.Approved = func(action string) bool { return action == "git push origin main" }
+	res, _ = op.Run(rc, Subtask{Step: "push my branch", Type: "operator"})
+	if !res.Verified || res.Output != "Pushed." {
+		t.Fatalf("resumed result = %+v", res)
+	}
+	if !strings.Contains(chat.calls[1][len(chat.calls[1])-1].Content, "pushed-for-real") {
+		t.Error("the approved command did not actually run on resume")
+	}
+}
+
+func TestOperatorResumesWithoutTheCommandWhenNotApproved(t *testing.T) {
+	chat := &scriptedChat{replies: []string{
+		"COMMAND:\ngit push origin main",
+		"DONE:\nOK, I left it unpushed.",
+	}}
+	op := NewOperator()
+	rc := operatorContext(t, chat)
+	res, _ := op.Run(rc, Subtask{Step: "push my branch", Type: "operator"})
+
+	rc.Resume = res.Checkpoint
+	rc.HumanReply = "no, open a PR instead later"
+	res, _ = op.Run(rc, Subtask{Step: "push my branch", Type: "operator"})
+	if !res.Verified {
+		t.Fatalf("resumed result = %+v", res)
+	}
+	note := chat.calls[1][len(chat.calls[1])-1].Content
+	if !strings.Contains(note, "did not approve") || !strings.Contains(note, "open a PR instead later") {
+		t.Errorf("the refusal and the human's words did not reach the model:\n%s", note)
+	}
+}
+
+func TestParseControl(t *testing.T) {
+	cases := []struct{ in, action, value string }{
+		{"COMMAND:\nuname -r", "command", "uname -r"},
+		{"Sure. COMMAND: `df -h /`", "command", "df -h /"},
+		{"COMMAND:\n```bash\nls -la\n```", "command", "ls -la"},
+		{"**DONE:** 241", "done", "241"},
+		{"Help: which folder?", "help", "which folder?"},
+		{"DONE:\nIt needs help: nothing more.", "done", "It needs help: nothing more."},
+		{"just 241", "invalid", "just 241"},
+	}
+	for _, c := range cases {
+		action, value := parseControl(c.in)
+		if action != c.action || value != c.value {
+			t.Errorf("parseControl(%q) = (%q, %q), want (%q, %q)", c.in, action, value, c.action, c.value)
+		}
+	}
+}
+
+// A backgrounded server keeps the output pipe open; the command itself
+// returned at once and must be reported as such, not hang to the timeout.
+func TestRunShellDoesNotHangOnABackgroundedChild(t *testing.T) {
+	start := time.Now()
+	res := runShell(context.Background(), t.TempDir(), "sleep 30 & echo started", 20*time.Second)
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("runShell took %s for a command that returns immediately", elapsed)
+	}
+	if res.ExitCode != 0 || !strings.Contains(res.Output, "started") {
+		t.Errorf("result = %+v", res)
+	}
+}
+
+func TestRunShellKillsATimedOutCommand(t *testing.T) {
+	res := runShell(context.Background(), t.TempDir(), "echo before; sleep 30", 500*time.Millisecond)
+	if !res.TimedOut || res.ExitCode != 124 || !strings.Contains(res.Output, "before") {
+		t.Errorf("result = %+v, want a timed-out command with its partial output", res)
+	}
+}
+
+// Nothing may read a terminal: an installer's "continue? [Y/n]" must fail
+// fast on EOF instead of waiting forever.
+func TestRunShellGivesCommandsNoStdin(t *testing.T) {
+	res := runShell(context.Background(), t.TempDir(), "read -r answer; echo \"got=[$answer]\"", 5*time.Second)
+	if !strings.Contains(res.Output, "got=[]") {
+		t.Errorf("result = %+v, want read to see EOF", res)
+	}
+}
+
+func TestResolveWritePathUsesTheWorkingDirectory(t *testing.T) {
+	work := t.TempDir()
+	rc := RunContext{WorkDir: work}
+	got, err := resolveWritePath(rc, "notes/today.md")
+	if err != nil || got != filepath.Join(work, "notes", "today.md") {
+		t.Errorf("resolveWritePath = %q, %v", got, err)
+	}
+	if _, err := resolveWritePath(rc, "/etc/passwd"); err == nil {
+		t.Error("resolveWritePath allowed /etc/passwd")
+	}
+}
+
+// Measured live: a 3B model ran `ls -l /etc | wc -l`, saw exit 0 and "118",
+// and replied HELP "It seems there was an error. Please try running the
+// command again." One grounded push back gets the answer.
+func TestOperatorPushesBackOnHelpRightAfterASuccess(t *testing.T) {
+	chat := &scriptedChat{replies: []string{
+		"COMMAND:\necho 118",
+		"HELP:\nIt seems there was an error. Please try running the command again.",
+		"DONE:\nThere are 118 entries in /etc.",
+	}}
+	res, _ := NewOperator().Run(operatorContext(t, chat), Subtask{Step: "how many files are in /etc?", Type: "operator"})
+	if !res.Verified || res.Output != "There are 118 entries in /etc." {
+		t.Fatalf("result = %+v", res)
+	}
+	if !strings.Contains(chat.calls[2][len(chat.calls[2])-1].Content, "Nothing failed") {
+		t.Error("the push back did not tell the model its command succeeded")
+	}
+}
+
+// A HELP that asks for something only a person can give is delivered at
+// once, even straight after a success.
+func TestOperatorDeliversAGenuineHelpAfterASuccess(t *testing.T) {
+	chat := &scriptedChat{replies: []string{
+		"COMMAND:\nls ~/projects",
+		"HELP:\nThere are two projects, alpha and beta - which one should I delete?",
+	}}
+	res, _ := NewOperator().Run(operatorContext(t, chat), Subtask{Step: "delete the project", Type: "operator"})
+	if res.Meta["needsUserInput"] != true || len(chat.calls) != 2 {
+		t.Fatalf("result = %+v after %d calls, want the question delivered immediately", res, len(chat.calls))
+	}
+}
+
+// Measured: HELP: NEEDS_TOOLS reached a human as a whole help request.
+func TestOperatorNeverDeliversTheChatSignal(t *testing.T) {
+	chat := &scriptedChat{replies: []string{"HELP: NEEDS_TOOLS", "NEEDS_TOOLS", "DONE:\npong"}}
+	res, _ := NewOperator().Run(operatorContext(t, chat), Subtask{Step: "ping - just reply pong", Type: "operator"})
+	if !res.Verified || res.Output != "pong" {
+		t.Fatalf("result = %+v", res)
+	}
+}

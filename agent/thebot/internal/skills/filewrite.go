@@ -67,26 +67,33 @@ func planFile(rc RunContext, step string) (path, content string, err error) {
 	}
 
 	resp, callErr := rc.Provider.Chat(rc.Ctx, rc.Model,
-		[]llm.Message{{Role: "user", Content: prompt}},
-		llm.Options{TimeoutMs: 120000})
+		[]llm.Message{rc.SystemMessage(), {Role: "user", Content: prompt}},
+		llm.Options{TimeoutMs: 180000})
 	if callErr != nil {
 		return "", "", callErr
 	}
 
 	text := resp.Text
-	idx := strings.Index(text, "CONTENT:")
-	if idx == -1 {
-		return "", "", fmt.Errorf("model did not return the expected PATH/CONTENT format")
-	}
-
-	header := text[:idx]
-	content = strings.TrimLeft(text[idx+len("CONTENT:"):], "\r\n")
-
-	for _, line := range strings.Split(header, "\n") {
-		if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(line)), "PATH:") {
-			path = strings.TrimSpace(line[strings.Index(line, ":")+1:])
-			path = strings.Trim(path, "`\"' ")
+	if loc := contentMarkerRe.FindStringIndex(text); loc != nil {
+		content = strings.TrimLeft(text[loc[1]:], "\r\n")
+		if m := pathMarkerRe.FindStringSubmatch(text[:loc[0]]); m != nil {
+			path = strings.Trim(strings.TrimSpace(m[1]), "`\"'* ")
 		}
+	} else {
+		// No CONTENT: marker. When the step names its file, the reply is
+		// almost always the file itself with the format forgotten - measured
+		// on qwen2.5-coder:3b writing a note about a web search's findings,
+		// where the old parser failed the step and recovery then asked the
+		// human a question about "the expected PATH/CONTENT format". Save
+		// the reply, minus any PATH line and a leading "Here is..." line.
+		explicit := pathFromRequest(step)
+		body := strings.TrimSpace(pathMarkerLineRe.ReplaceAllString(text, ""))
+		body = strings.TrimSpace(leadInLineRe.ReplaceAllString(body, ""))
+		if explicit == "" || body == "" {
+			return "", "", fmt.Errorf("model did not return the expected PATH/CONTENT format")
+		}
+		rc.Logf("file-write", "the reply had no CONTENT: marker - saving the reply itself to %s", explicit)
+		path, content = explicit, body
 	}
 
 	// If the model wrapped the content in a fence despite being asked not
@@ -101,6 +108,13 @@ func planFile(rc RunContext, step string) (path, content string, err error) {
 	}
 	return path, content, nil
 }
+
+var (
+	contentMarkerRe  = regexp.MustCompile(`(?im)^[\s*_#>]*content[*_]*\s*:[*_]*[ \t]*`)
+	pathMarkerRe     = regexp.MustCompile(`(?im)^[\s*_#>]*path[*_]*\s*:[*_]*\s*(.+)$`)
+	pathMarkerLineRe = regexp.MustCompile(`(?im)^[\s*_#>]*path[*_]*\s*:.*$`)
+	leadInLineRe     = regexp.MustCompile(`(?i)^(sure[,.!]?\s*)?(here\s+is|here's|below\s+is)[^\n]*:\s*\n`)
+)
 
 // pathFromRequest pulls an explicit filename out of the request when the
 // user actually named one, so their choice wins over the model's guess.
@@ -134,11 +148,11 @@ func (f *FileWriteSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		path = explicit
 	}
 
-	abs, err := rc.Workspace.ResolveSafe(path)
+	abs, err := resolveWritePath(rc, path)
 	if err != nil {
 		return Result{
 			Subtask: subtask, SkillName: f.Name(),
-			Output:   "Refused to write outside the workspace: " + err.Error(),
+			Output:   "Refused to write there: " + err.Error(),
 			Verified: false, Meta: map[string]any{"error": err.Error()},
 		}, nil
 	}
@@ -164,6 +178,49 @@ func (f *FileWriteSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		Subtask: subtask, SkillName: f.Name(),
 		Output:   fmt.Sprintf("Wrote %s (%d lines, %d bytes).", abs, lines, info.Size()),
 		Verified: true,
-		Meta:     map[string]any{"path": abs, "relPath": path, "bytes": info.Size(), "lines": lines},
+		Meta:     map[string]any{"path": abs, "relPath": path, "bytes": info.Size(), "lines": lines, "userFacing": true},
 	}, nil
+}
+
+// resolveWritePath decides where a file actually lands.
+//
+// A relative path is relative to the step's working directory, which is
+// where the human expects it: a Flowera desktop asked to "create notes.txt
+// in the work directory" means /home/headless/work, not TheBot's own
+// workspace root, where every such file used to end up. An absolute path
+// (or ~/...) is honoured when it stays inside the workspace, the working
+// directory, the user's home, or the temp directory - the places this
+// agent's own shell user can reach anyway. Anything else is refused rather
+// than left to fail halfway on a permission error.
+func resolveWritePath(rc RunContext, path string) (string, error) {
+	home, _ := os.UserHomeDir()
+	p := strings.TrimSpace(path)
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		if home == "" {
+			return "", fmt.Errorf("no home directory to expand %q against", path)
+		}
+		p = filepath.Join(home, strings.TrimPrefix(p, "~"))
+	}
+	if !filepath.IsAbs(p) {
+		if rc.WorkDir == "" && rc.Workspace != nil {
+			return rc.Workspace.ResolveSafe(p)
+		}
+		p = filepath.Join(rc.Dir(), p)
+	}
+	p = filepath.Clean(p)
+
+	roots := []string{rc.WorkDir, home, os.TempDir()}
+	if rc.Workspace != nil {
+		roots = append(roots, rc.Workspace.Root())
+	}
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		root = filepath.Clean(root)
+		if p == root || strings.HasPrefix(p, root+string(filepath.Separator)) {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("%s is outside the working directory and the home directory", p)
 }

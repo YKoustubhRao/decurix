@@ -8,9 +8,19 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 )
+
+// defaultTimeoutFloor is the shortest any chat call may be given, no
+// matter what the call site asked for. Override with OLLAMA_TIMEOUT_MS.
+const defaultTimeoutFloor = 300 * time.Second
+
+// defaultKeepAlive is how long Ollama is asked to hold the model in
+// memory after answering. Override with OLLAMA_KEEP_ALIVE.
+const defaultKeepAlive = "30m"
 
 type OllamaProvider struct {
 	Host   string
@@ -20,10 +30,64 @@ type OllamaProvider struct {
 	// rather than hardcoding "nomic-embed-text" themselves, which would be
 	// wrong for any other Embedder implementation (see OpenAIProvider).
 	EmbedModel string
+
+	// TimeoutFloor raises any per-call timeout shorter than itself.
+	//
+	// Every Options.TimeoutMs in this repo - 60s to plan, 90s to answer,
+	// 120s to write a file - was picked against a GPU. The same code now
+	// runs against whatever Ollama the host happens to have, which is
+	// routinely CPU-only, and there the cost is not generation but
+	// reading the prompt: measured on an ordinary laptop, a 3B model
+	// evaluates ~14 tokens/sec, so a 600-token prompt spends ~45 seconds
+	// before producing a single token. Those budgets then expire in
+	// sequence - classify, plan, answer, reason about why answering
+	// failed - and what reaches the human is "could not reason about the
+	// failure (... context deadline exceeded) - stopping here" for
+	// asking the desktop its own name.
+	//
+	// A floor, never a replacement: a call site that asks for longer
+	// (a coding build asks for 240s) keeps exactly what it asked for.
+	TimeoutFloor time.Duration
+
+	// KeepAlive is how long Ollama holds this model in memory after
+	// answering. Its own default is 5 minutes, and evicting the model
+	// also throws away the evaluated prompt prefix cached alongside it,
+	// so a job that pauses to run a command comes back to a cold model.
+	// Measured on the same laptop: 31.8s to read the agent's system
+	// prompt cold, 0.6s with the model still resident.
+	KeepAlive string
 }
 
 func NewOllama(host string) *OllamaProvider {
-	return &OllamaProvider{Host: host, Client: &http.Client{}, EmbedModel: "nomic-embed-text"}
+	return &OllamaProvider{
+		Host:         host,
+		Client:       &http.Client{},
+		EmbedModel:   getenvDefault("EMBED_MODEL", "nomic-embed-text"),
+		TimeoutFloor: envDuration("OLLAMA_TIMEOUT_MS", defaultTimeoutFloor),
+		KeepAlive:    getenvDefault("OLLAMA_KEEP_ALIVE", defaultKeepAlive),
+	}
+}
+
+func getenvDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+// envDuration reads a millisecond count from the environment, ignoring
+// anything unparseable or non-positive rather than failing a build over a
+// typo in a deployment's env.
+func envDuration(key string, fallback time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	ms, err := strconv.Atoi(v)
+	if err != nil || ms <= 0 {
+		return fallback
+	}
+	return time.Duration(ms) * time.Millisecond
 }
 
 func (o *OllamaProvider) Name() string { return "ollama" }
@@ -34,10 +98,11 @@ type ollamaMessage struct {
 }
 
 type ollamaChatRequest struct {
-	Model    string          `json:"model"`
-	Messages []ollamaMessage `json:"messages"`
-	Stream   bool            `json:"stream"`
-	Options  map[string]any  `json:"options,omitempty"`
+	Model     string          `json:"model"`
+	Messages  []ollamaMessage `json:"messages"`
+	Stream    bool            `json:"stream"`
+	Options   map[string]any  `json:"options,omitempty"`
+	KeepAlive string          `json:"keep_alive,omitempty"`
 }
 
 type ollamaChatResponse struct {
@@ -66,6 +131,9 @@ func (o *OllamaProvider) Chat(ctx context.Context, model string, messages []Mess
 	timeout := 120 * time.Second
 	if opts.TimeoutMs > 0 {
 		timeout = time.Duration(opts.TimeoutMs) * time.Millisecond
+	}
+	if o.TimeoutFloor > timeout {
+		timeout = o.TimeoutFloor
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -102,10 +170,11 @@ func (o *OllamaProvider) Chat(ctx context.Context, model string, messages []Mess
 	// bytes flowing the whole time, so an idle timeout never fires, and the
 	// accumulated result is identical.
 	reqBody := ollamaChatRequest{
-		Model:    model,
-		Messages: msgs,
-		Stream:   true,
-		Options:  ollamaOpts,
+		Model:     model,
+		Messages:  msgs,
+		Stream:    true,
+		Options:   ollamaOpts,
+		KeepAlive: o.KeepAlive,
 	}
 	body, err := json.Marshal(reqBody)
 	if err != nil {

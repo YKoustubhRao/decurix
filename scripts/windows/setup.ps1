@@ -68,8 +68,8 @@ Write-Host "=== Configuring Docker for $REAL_USER ==="
 try {
     $user = Get-LocalUser -Name $REAL_USER -ErrorAction SilentlyContinue
     if ($user) {
-        Write-Host "Adding $REAL_USER to Docker Users group..."
-        Add-LocalGroupMember -Group "Docker Users" -Member $REAL_USER -ErrorAction Stop
+        Write-Host "Adding $REAL_USER to the docker-users group..."
+        Add-LocalGroupMember -Group "docker-users" -Member $REAL_USER -ErrorAction Stop
     } else {
         Write-Host "WARNING: Could not find user $REAL_USER"
     }
@@ -134,13 +134,13 @@ Write-Host "========================================"
 Write-Host ""
 
 Write-Host "IMPORTANT:"
-Write-Host "Docker group membership was updated for:"
+Write-Host "'docker-users' group membership was updated for:"
 Write-Host "  $REAL_USER"
 Write-Host ""
-Write-Host "Log out and back in, or run:"
-Write-Host "  newgrp docker"
-Write-Host ""
-Write-Host "Then run:"
+Write-Host "Sign out of Windows and back in (Docker Desktop may ask for a"
+Write-Host "restart), start Docker Desktop, and then in a NEW PowerShell"
+Write-Host "window - not this Administrator one - run:"
+Write-Host "  Set-ExecutionPolicy -Scope Process Bypass"
 Write-Host "  .\scripts\windows\build.ps1"
 Write-Host ""
 Write-Host "========================================"
