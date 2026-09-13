@@ -1,0 +1,29 @@
+# Flowera's Chromium launch flags. Sourced by the base image's own launcher
+# (/usr/bin/chromium-browser) every time the browser starts, from
+# ~/.chromium-browser.init - agent/start_agent_terminal.sh reinstalls it
+# there on every desktop start, because /home/headless is a persistent
+# volume and a copy baked into the image only ever reaches new desktops.
+#
+# The base image hardcodes --no-sandbox, which is what put the "You are
+# using an unsupported command-line flag: --no-sandbox" bar across the top
+# of every browser window. The sandbox was off because it could not work:
+# Docker's default seccomp profile forbids the namespace syscalls it is
+# built from. Desktops are now created with a profile that allows them
+# (internal/desktop/sandbox.go), so the flag is only added back when this
+# particular container really cannot create the namespaces - a desktop
+# created before that change, or a Docker daemon without seccomp - where
+# the browser would otherwise refuse to start at all.
+
+CHROMIUM_FLAGS="--disable-gpu --start-maximized"
+
+# The warning bar is left alone in that case: the browser really is
+# running unsandboxed there, and hiding that would be a lie.
+if ! unshare --user --map-root-user --pid --net --fork true >/dev/null 2>&1; then
+    CHROMIUM_FLAGS="--no-sandbox $CHROMIUM_FLAGS"
+fi
+
+# A crashing browser process must not leave a core dump behind. Launched
+# from the XFCE menu, Chromium's working directory is ~/Desktop, and a
+# crashing utility process there used to drop a ~50 MB core.<pid> onto the
+# desktop every fifteen seconds.
+ulimit -c 0 2>/dev/null

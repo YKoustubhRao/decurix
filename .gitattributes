@@ -12,3 +12,10 @@
 *.go text eol=lf
 Dockerfile text eol=lf
 *.Dockerfile text eol=lf
+# Also shipped into the desktop images, and just as broken by a CR:
+# chromium-browser.init is sourced by bash as the browser's launch flags, and
+# the autostart .desktop file's Exec= line would name "start_agent_terminal.sh\r".
+*.init text eol=lf
+*.desktop text eol=lf
+# Becomes .env, which docker/Dockerfile copies into the Linux control plane.
+.env.example text eol=lf

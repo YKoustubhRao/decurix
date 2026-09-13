@@ -9,6 +9,8 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
+
+	"github.com/YKoustubhRao/flowera/internal/ollama"
 )
 
 const (
@@ -135,14 +137,11 @@ func buildDesktopEnv(name, harness string) []string {
 	// It does require that Ollama to listen on more than loopback
 	// (OLLAMA_HOST=0.0.0.0); when it doesn't, the failure now arrives as a
 	// message in the chat naming this URL.
-	ollamaURL := os.Getenv("OLLAMA_URL")
-	if ollamaURL == "" {
-		ollamaURL = "http://host.docker.internal:11434"
-	}
-	ollamaModel := os.Getenv("OLLAMA_MODEL")
-	if ollamaModel == "" {
-		ollamaModel = "qwen3:latest"
-	}
+	//
+	// Both come from package ollama, which preloads the model on this same
+	// server at startup - the two must never disagree about which one it is.
+	ollamaURL := ollama.DesktopURL()
+	ollamaModel := ollama.DesktopModel()
 
 	env := []string{
 		"VNC_PW=" + defaultPassword,
@@ -169,8 +168,8 @@ func buildDesktopEnv(name, harness string) []string {
 	return env
 }
 
-// buildContainerConfigs builds the Docker container, host, and network configuration for a desktop from its resolved image, resources, profile, and harness.
-func buildContainerConfigs(imageName, containerName, profile, harness string, cpus, memoryMB int64, env []string, volumeName string) (*container.Config, *container.HostConfig, *network.NetworkingConfig) {
+// buildContainerConfigs builds the Docker container, host, and network configuration for a desktop from its resolved image, resources, profile, harness, and security options.
+func buildContainerConfigs(imageName, containerName, profile, harness string, cpus, memoryMB int64, env []string, volumeName string, securityOpt []string) (*container.Config, *container.HostConfig, *network.NetworkingConfig) {
 	config := &container.Config{
 		Image:    imageName,
 		Env:      env,
@@ -183,10 +182,12 @@ func buildContainerConfigs(imageName, containerName, profile, harness string, cp
 	}
 
 	hostConfig := &container.HostConfig{
-		ShmSize: 512 * 1024 * 1024,
+		ShmSize:     512 * 1024 * 1024,
+		SecurityOpt: securityOpt,
 		Resources: container.Resources{
 			NanoCPUs: cpus * 1_000_000_000,
 			Memory:   memoryMB * 1024 * 1024,
+			Ulimits:  desktopUlimits(),
 		},
 		Binds: []string{
 			volumeName + ":/home/headless",

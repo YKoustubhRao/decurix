@@ -112,19 +112,24 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 // floweraBrandingRewrites are the literal noVNC markup fragments swapped for
 // Flowera's own branding by rewriteFloweraBranding, in order: the page
-// title, the small logo noVNC shows in its control-bar sidebar once
-// connected, and the large logo on its pre-connect screen (the first thing a
-// user actually sees when opening a desktop). Each replacement keeps the
-// original noVNC_logo class (other noVNC CSS, e.g. `.noVNC_logo + hr`,
-// selects on it) and overrides noVNC's own styling inline so it doesn't
-// depend on cascade order against noVNC's stylesheets. The icon is
-// /favicon.svg - the control plane's own root-relative brand mark, resolved
-// against the control plane's origin (not the desktop container's) since
-// this page is only ever reached through the /desktop/<id>/ proxy.
+// title, the browser tab favicon, the small logo noVNC shows in its
+// control-bar sidebar once connected, and the large logo on its pre-connect
+// screen (the first thing a user actually sees when opening a desktop). Each
+// replacement keeps the original noVNC_logo class (other noVNC CSS, e.g.
+// `.noVNC_logo + hr`, selects on it) and overrides noVNC's own styling
+// inline so it doesn't depend on cascade order against noVNC's stylesheets.
+// The icon is /favicon.svg - the control plane's own root-relative brand
+// mark, resolved against the control plane's origin (not the desktop
+// container's) since this page is only ever reached through the
+// /desktop/<id>/ proxy.
 var floweraBrandingRewrites = [][2][]byte{
 	{
 		[]byte(`<title>noVNC</title>`),
 		[]byte(`<title>Flowera</title>`),
+	},
+	{
+		[]byte(`<link rel="icon" type="image/x-icon" href="app/images/icons/novnc.ico">`),
+		[]byte(`<link rel="icon" type="image/svg+xml" href="/favicon.svg">`),
 	},
 	{
 		[]byte(`<h1 class="noVNC_logo" translate="no"><span>no</span><br>VNC</h1>`),

@@ -26,7 +26,7 @@ OLLAMA_URL = os.environ.get(
 
 OLLAMA_MODEL = os.environ.get(
     "OLLAMA_MODEL",
-    "qwen3:0.6b"
+    "qwen2.5-coder:3b"
 )
 
 AGENT_HARNESS = os.environ.get(

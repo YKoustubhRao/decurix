@@ -283,7 +283,7 @@ func TestAtomizePlansRealMultiStepTask(t *testing.T) {
 	if len(plan.Steps) != 2 {
 		t.Fatalf("got %d steps, want 2: %+v", len(plan.Steps), plan.Steps)
 	}
-	if plan.Steps[0] != "search the web for X" || plan.Steps[1] != "write the summary into notes.md" {
+	if plan.Steps[0].Text != "search the web for X" || plan.Steps[1].Text != "write the summary into notes.md" {
 		t.Errorf("steps not parsed correctly: %+v", plan.Steps)
 	}
 }
@@ -295,28 +295,50 @@ func TestAtomizeTreatsPlainQuestionAsChat(t *testing.T) {
 	if plan.IsTask {
 		t.Errorf("IsTask = true for a plain question, want false")
 	}
-	if len(plan.Steps) != 1 || plan.Steps[0] != "who wrote the odyssey?" {
+	if len(plan.Steps) != 1 || plan.Steps[0].Text != "who wrote the odyssey?" {
 		t.Errorf("plan.Steps = %+v, want the original prompt as one step", plan.Steps)
 	}
 }
 
-// A planning failure must degrade to answering, never block the request.
+// A planning failure must never block the request or shrink it to chat:
+// Triage already established a compound request is real work, so it runs
+// whole, as one step, instead.
 func TestAtomizeFallsBackWhenPlanningFails(t *testing.T) {
 	stub := &stubProvider{err: errStub{}}
-	plan := Atomize(context.Background(), "some ambiguous thing", stub, "m", nil)
+	prompt := "research the history of the XFCE project and then write a summary to xfce.md"
+	plan := Atomize(context.Background(), prompt, stub, "m", nil)
 
-	if plan.IsTask {
-		t.Errorf("IsTask = true after a failed planning call, want false")
+	if !plan.IsTask {
+		t.Errorf("IsTask = false after a failed planning call for real work, want true")
 	}
-	if len(plan.Steps) != 1 {
-		t.Errorf("Steps = %+v, want the original prompt preserved", plan.Steps)
+	if len(plan.Steps) != 1 || plan.Steps[0].Text != prompt {
+		t.Errorf("Steps = %+v, want the original prompt preserved as one step", plan.Steps)
+	}
+}
+
+// An unclassified, non-compound prompt must not cost a model call at all.
+// This used to be a "TASK: yes/no" planning call for every such prompt,
+// and it was the 97 seconds "hello, whats your name?" spent before
+// anything answered it.
+func TestAtomizeNeverPlansASimpleRequest(t *testing.T) {
+	for _, prompt := range []string{
+		"hello, whats your name?",
+		"some ambiguous thing",
+		"what is the current kernel version?",
+		"check the disk space and report back",
+	} {
+		stub := &stubProvider{response: "1. [web] the weather in New York"}
+		Atomize(context.Background(), prompt, stub, "m", nil)
+		if stub.calls != 0 {
+			t.Errorf("Atomize(%q) made %d model call(s), want 0", prompt, stub.calls)
+		}
 	}
 }
 
 func TestAtomizeCapsStepCount(t *testing.T) {
 	stub := &stubProvider{response: "TASK: yes\nSTEPS:\n1. a\n2. b\n3. c\n4. d\n5. e\n6. f\n7. g\n8. h\n9. i\n10. j\n11. k\n12. l"}
 	var logs []string
-	plan := Atomize(context.Background(), "do a big thing", stub, "m", func(l string) { logs = append(logs, l) })
+	plan := Atomize(context.Background(), "research a dozen things and then write them all into files", stub, "m", func(l string) { logs = append(logs, l) })
 	if len(plan.Steps) != maxSteps {
 		t.Errorf("got %d steps, want capped at %d", len(plan.Steps), maxSteps)
 	}
@@ -356,8 +378,8 @@ func TestAtomizeCapAllowsEnoughStepsForSearchThenWritePerItem(t *testing.T) {
 	if len(plan.Steps) != 6 {
 		t.Fatalf("got %d steps, want all 6 (search+write per item) preserved: %+v", len(plan.Steps), plan.Steps)
 	}
-	if !strings.Contains(plan.Steps[5], "centroid_decomposition.md") {
-		t.Errorf("last step = %q, want the final write-to-file step preserved, not dropped by the cap", plan.Steps[5])
+	if !strings.Contains(plan.Steps[5].Text, "centroid_decomposition.md") {
+		t.Errorf("last step = %q, want the final write-to-file step preserved, not dropped by the cap", plan.Steps[5].Text)
 	}
 }
 
@@ -378,8 +400,8 @@ func TestAtomizeHandsCodingRequestsToTheHarnessWhole(t *testing.T) {
 	if len(plan.Steps) != 1 {
 		t.Fatalf("got %d steps, want exactly 1 (the whole request): %+v", len(plan.Steps), plan.Steps)
 	}
-	if plan.Steps[0] != prompt {
-		t.Errorf("step = %q, want the original request passed through untouched", plan.Steps[0])
+	if plan.Steps[0].Text != prompt {
+		t.Errorf("step = %q, want the original request passed through untouched", plan.Steps[0].Text)
 	}
 	if !plan.IsTask {
 		t.Error("IsTask = false, want true - a build request is real work")
@@ -502,13 +524,14 @@ func TestDropNoOpSteps(t *testing.T) {
 	}
 }
 
-// A plan made entirely of no-ops must degrade to answering, never run as
-// an empty task.
-func TestAtomizeAllNoOpStepsFallsBackToAnswering(t *testing.T) {
+// A plan made entirely of no-ops must never run as an empty task: the
+// request still runs, whole, as one step.
+func TestAtomizeAllNoOpStepsFallsBackToOneStep(t *testing.T) {
 	stub := &stubProvider{response: "TASK: yes\nSTEPS:\n1. Save the file.\n2. Done"}
-	plan := Atomize(context.Background(), "tidy things up please", stub, "m", nil)
-	if plan.IsTask {
-		t.Errorf("IsTask = true for a plan of pure no-ops, want false")
+	prompt := "research the XFCE panel and then write notes about it"
+	plan := Atomize(context.Background(), prompt, stub, "m", nil)
+	if len(plan.Steps) != 1 || plan.Steps[0].Text != prompt {
+		t.Errorf("Steps = %+v, want the whole request as one step", plan.Steps)
 	}
 }
 
@@ -547,7 +570,7 @@ func TestAtomizeNeverLetsModelOverrideAnAlreadyMatchedClassifier(t *testing.T) {
 	// No usable steps were parseable from the refusal-shaped response, so
 	// it must degrade to running the whole request as one atomic step -
 	// never to "this was just a question".
-	if len(plan.Steps) != 1 || plan.Steps[0] == "" {
+	if len(plan.Steps) != 1 || plan.Steps[0].Text == "" {
 		t.Errorf("plan.Steps = %+v, want the original request preserved as one atomic step", plan.Steps)
 	}
 }
@@ -577,8 +600,8 @@ func TestAtomizeStepsOnlyPromptNeverAsksTaskVsQuestion(t *testing.T) {
 // "TASK: no" the next time - a structured yes/no classification call has
 // no business running at creative-writing temperature.
 func TestAtomizeUsesLowTemperatureForPlanning(t *testing.T) {
-	stub := &stubProvider{response: "TASK: no"}
-	Atomize(context.Background(), "some ambiguous request", stub, "m", nil)
+	stub := &stubProvider{response: "1. [web] a\n2. [write] b to b.md (after 1)"}
+	Atomize(context.Background(), "research X and then write a summary to x.md", stub, "m", nil)
 
 	if stub.gotOpts.Temperature <= 0 || stub.gotOpts.Temperature > 0.3 {
 		t.Errorf("planning call Temperature = %v, want a low deterministic value (0 < t <= 0.3)", stub.gotOpts.Temperature)

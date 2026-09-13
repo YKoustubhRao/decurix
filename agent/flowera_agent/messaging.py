@@ -4,7 +4,7 @@ import urllib.error
 import urllib.request
 import uuid
 
-from flowera_agent import config, state
+from flowera_agent import config, progress, state
 from flowera_agent.logging_utils import log, timestamp
 
 
@@ -63,6 +63,10 @@ def send_helptext(filename, content, kind="", message=""):
     Both are optional - an older control plane ignores them, and a newer one
     falls back to parsing `content` when they are absent.
     """
+
+    # The chat closes a turn on this note; let the turn's last progress lines
+    # land first.
+    progress.flush()
 
     payload = {
         "desktop_id": config.DESKTOP_ID,
@@ -169,17 +173,97 @@ Please send instructions through the Flowera control plane.
     return help_id
 
 # ============================================================
+# Backend failures, in words a human can act on
+# ============================================================
+
+def backend_failure_note(what, url, error):
+    """
+    Turn a raw backend exception into a help request worth reading.
+
+    A help note is the one place a human actually looks when a desktop
+    stops, and it used to hand them the engine's own words verbatim:
+    `ollama: request failed: Post "http://host.docker.internal:11434
+    /api/chat": context deadline exceeded`. That sentence says a machine
+    was too slow, which is fixable in about ten seconds, but it reads
+    like the control plane is broken. Lead with what happened and what to
+    do about it; keep the original text underneath for whoever wants it.
+    """
+
+    text = str(error)
+    lowered = text.lower()
+
+    timed_out = (
+        "deadline exceeded" in lowered
+        or "timed out" in lowered
+        or "timeout" in lowered
+    )
+
+    unreachable = (
+        "connection refused" in lowered
+        or "could not reach" in lowered
+        or "no route to host" in lowered
+        or "name or service not known" in lowered
+        or "connection reset" in lowered
+    )
+
+    if timed_out:
+        cause = (
+            f"{what} at {url} accepted the request but did not finish "
+            "answering in time. That is nearly always a machine too slow "
+            "for the model it was given rather than a broken setup - and "
+            "the first request after a restart also pays to load the "
+            "model into memory before it reads a single word."
+        )
+        fix = (
+            "Send the message again now that the model is warm. If it "
+            "keeps timing out, point OLLAMA_MODEL at a smaller model in "
+            "the control plane's .env, or raise OLLAMA_TIMEOUT_SECONDS."
+        )
+
+    elif unreachable:
+        cause = f"{what} at {url} could not be reached at all."
+        fix = (
+            "Check that it is running, and that it listens on more than "
+            "loopback (OLLAMA_HOST=0.0.0.0) so a container can reach it. "
+            "Then send the message again."
+        )
+
+    elif "not found" in lowered and "model" in lowered:
+        cause = (
+            f"{what} at {url} is running, but does not have the model "
+            "this desktop was configured to use."
+        )
+        fix = (
+            "Pull that model on that server, or set OLLAMA_MODEL to one "
+            "it already has."
+        )
+
+    else:
+        cause = f"{what} at {url} failed."
+        fix = "Send the message again, or check that server's own logs."
+
+    return f"{cause}\n\n{fix}\n\nTechnical detail:\n{text}"
+
+
+# ============================================================
 # Final task message
 # ============================================================
 
-def write_final_message(message):
+def write_final_message(message, kind="final"):
     """
     Write the final result into helptext/ so the existing
     helptext watcher sends it to the Flowera control plane.
+
+    `kind` is "final" for a finished task and "error" for one that ran to
+    the end without managing it - the chat flags the latter as failed
+    rather than presenting it as an ordinary answer. Either way the task is
+    over and nothing is waiting on the human.
     """
 
     # ddmmyyyyhhmmss.txt
     filename = time.strftime("%d%m%Y%H%M%S") + ".txt"
+
+    status = "FAILED" if kind == "error" else "COMPLETED"
 
     final_message = f"""
 FLOWERA TASK COMPLETED
@@ -194,7 +278,7 @@ Task:
 {state.current_task or "unknown"}
 
 Status:
-COMPLETED
+{status}
 
 Final message:
 {message}
@@ -219,7 +303,7 @@ Completed at:
     sent = send_helptext(
         filename,
         final_message,
-        kind="final",
+        kind=kind,
         message=message,
     )
 

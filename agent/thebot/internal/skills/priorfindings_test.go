@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -251,5 +252,35 @@ func TestGeneralWithoutPriorResultsInjectsNothingExtra(t *testing.T) {
 		if strings.Contains(m.Content, "Earlier steps of this task") {
 			t.Error("injected a findings block when there were no prior results")
 		}
+	}
+}
+
+// Measured: a 3B model asked to write a note forgot the PATH/CONTENT
+// format, and the step failed with a note already written in its reply.
+func TestFileWriteSavesAReplyThatForgotTheFormat(t *testing.T) {
+	stub := &stubChatProvider{response: "Here is the note:\n# Go\n\nThe newest Go release is 1.27.1.\n"}
+	ws, err := workspace.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc := RunContext{Ctx: context.Background(), Provider: stub, Model: "m", Workspace: ws, OnLog: func(string) {}}
+
+	res, _ := NewFileWrite().Run(rc, Subtask{Step: "write a short note about the newest Go version to go-version.md", Type: "file-write"})
+	if !res.Verified {
+		t.Fatalf("result = %+v", res)
+	}
+	data, _ := os.ReadFile(res.Meta["path"].(string))
+	if string(data) != "# Go\n\nThe newest Go release is 1.27.1.\n" {
+		t.Errorf("file content = %q", data)
+	}
+}
+
+func TestFileWriteAcceptsDecoratedMarkers(t *testing.T) {
+	stub := &stubChatProvider{response: "**PATH:** notes/today.md\n**Content:**\nremember the milk\n"}
+	ws, _ := workspace.New(t.TempDir())
+	rc := RunContext{Ctx: context.Background(), Provider: stub, Model: "m", Workspace: ws, OnLog: func(string) {}}
+	res, _ := NewFileWrite().Run(rc, Subtask{Step: "write a reminder about milk", Type: "file-write"})
+	if !res.Verified || !strings.HasSuffix(res.Meta["path"].(string), "notes/today.md") {
+		t.Fatalf("result = %+v", res)
 	}
 }

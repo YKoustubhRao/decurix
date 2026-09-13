@@ -61,7 +61,12 @@ def _post(text):
 
 def _sender():
     while True:
-        _post(_pending.get())
+        item = _pending.get()
+
+        if isinstance(item, threading.Event):
+            item.set()
+        else:
+            _post(item)
 
 
 def _ensure_sender():
@@ -102,3 +107,28 @@ def emit(text):
         # The sender is behind. Losing a progress line is always better
         # than blocking the task that produced it.
         pass
+
+
+def flush(timeout=TIMEOUT_SECONDS):
+    """
+    Wait, at most `timeout` seconds, for every line emitted so far to be sent.
+
+    Called just before a turn's reply goes out, so the reply cannot overtake
+    the last lines of the work behind it - TheBot logs its final step in the
+    same instant it finishes. The task is already over by then, so this wait
+    slows nothing down, and it is bounded, so a stalled control plane still
+    gets the reply.
+    """
+
+    with _sender_lock:
+        if not _sender_started:
+            return
+
+    marker = threading.Event()
+
+    try:
+        _pending.put_nowait(marker)
+    except queue.Full:
+        return
+
+    marker.wait(timeout)
