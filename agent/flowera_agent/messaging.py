@@ -4,7 +4,7 @@ import urllib.error
 import urllib.request
 import uuid
 
-from flowera_agent import config, state
+from flowera_agent import config, progress, state
 from flowera_agent.logging_utils import log, timestamp
 
 
@@ -63,6 +63,10 @@ def send_helptext(filename, content, kind="", message=""):
     Both are optional - an older control plane ignores them, and a newer one
     falls back to parsing `content` when they are absent.
     """
+
+    # The chat closes a turn on this note; let the turn's last progress lines
+    # land first.
+    progress.flush()
 
     payload = {
         "desktop_id": config.DESKTOP_ID,

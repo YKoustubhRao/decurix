@@ -52,6 +52,31 @@ func TestStepWithoutUserMessageOpensTurn(t *testing.T) {
 	}
 }
 
+func TestLateStepJoinsTheTurnItTrails(t *testing.T) {
+	s := NewStore()
+
+	s.AppendUserMessage("desktop-1", "write a poem to koustubh.txt")
+	s.AppendStep("desktop-1", "skill:file-write -> planning the file to write...")
+	s.AppendAgentMessage("desktop-1", KindMessage, "Wrote /home/headless/work/koustubh.txt")
+
+	// The desktop's step queue delivers its last line just after the reply.
+	s.AppendStep("desktop-1", "skill:file-write -> wrote koustubh.txt - verified on disk")
+
+	thread := s.Snapshot("desktop-1")
+
+	if thread.Running {
+		t.Fatal("expected a step trailing a reply not to reopen the finished turn")
+	}
+
+	if len(thread.Steps) != 0 {
+		t.Fatalf("expected no live steps, got %d", len(thread.Steps))
+	}
+
+	if got := len(thread.Messages[1].Steps); got != 2 {
+		t.Fatalf("expected the late step on the agent message it trails, got %d steps", got)
+	}
+}
+
 func TestUnknownKindFallsBackToMessage(t *testing.T) {
 	s := NewStore()
 
