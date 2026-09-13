@@ -171,8 +171,8 @@ func buildDesktopEnv(name, harness string) []string {
 	return env
 }
 
-// buildContainerConfigs builds the Docker container, host, and network configuration for a desktop from its resolved image, resources, profile, and harness.
-func buildContainerConfigs(imageName, containerName, profile, harness string, cpus, memoryMB int64, env []string, volumeName string) (*container.Config, *container.HostConfig, *network.NetworkingConfig) {
+// buildContainerConfigs builds the Docker container, host, and network configuration for a desktop from its resolved image, resources, profile, harness, and security options.
+func buildContainerConfigs(imageName, containerName, profile, harness string, cpus, memoryMB int64, env []string, volumeName string, securityOpt []string) (*container.Config, *container.HostConfig, *network.NetworkingConfig) {
 	config := &container.Config{
 		Image:    imageName,
 		Env:      env,
@@ -185,10 +185,12 @@ func buildContainerConfigs(imageName, containerName, profile, harness string, cp
 	}
 
 	hostConfig := &container.HostConfig{
-		ShmSize: 512 * 1024 * 1024,
+		ShmSize:     512 * 1024 * 1024,
+		SecurityOpt: securityOpt,
 		Resources: container.Resources{
 			NanoCPUs: cpus * 1_000_000_000,
 			Memory:   memoryMB * 1024 * 1024,
+			Ulimits:  desktopUlimits(),
 		},
 		Binds: []string{
 			volumeName + ":/home/headless",

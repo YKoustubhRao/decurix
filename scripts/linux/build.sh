@@ -95,6 +95,41 @@ read_env_var() {
     grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- || true
 }
 
+# The chat model is not the only model. TheBot's harness embeds every
+# fact it learns, every document it indexes and every failure it records,
+# and Ollama refuses to embed with a chat model - so a server with only
+# qwen2.5-coder pulled answers questions perfectly while silently losing
+# everything it was supposed to remember, one
+# `model "nomic-embed-text" not found` at a time.
+#
+# The bundled container gets this from the control plane itself
+# (internal/ollama.EnsureReady pulls both). A host or remote server does
+# not, which is why it happens here too.
+EMBED_MODEL="nomic-embed-text"
+
+pull_ollama_model() {
+    docker run --rm \
+        --network flowera-network \
+        --add-host host.docker.internal:host-gateway \
+        --entrypoint python3 \
+        flowera-desktop:basic \
+        -c "
+import json, sys, urllib.request
+req = urllib.request.Request(
+    '${1%/}/api/pull',
+    data=json.dumps({'model': '$2', 'stream': False}).encode(),
+    headers={'Content-Type': 'application/json'},
+)
+try:
+    # No timeout: pulling a model is a download, and how long it takes is
+    # a property of the network, not of whether it is working.
+    urllib.request.urlopen(req)
+except Exception as exc:
+    print(exc, file=sys.stderr)
+    sys.exit(1)
+"
+}
+
 OLLAMA_URL_OK=""
 
 # Whatever is already in .env wins, as long as it actually works.
@@ -160,12 +195,14 @@ fi
 
 # Last resort: the container Flowera manages itself. Small model, but it
 # needs nothing from the host and always works, which beats handing every
-# desktop a URL that answers nowhere.
+# desktop a URL that answers nowhere. qwen2.5-coder:3b, not qwen3:0.6b -
+# the 0.6b model was too weak to reliably follow the agent's own
+# COMMAND/DONE/HELP contract (see internal/ollama.Model's comment).
 if [ -z "$OLLAMA_URL_OK" ]; then
     echo ""
     echo "Falling back to the bundled flowera-ollama container."
     OLLAMA_URL_OK="$BUNDLED_OLLAMA_URL"
-    set_env_var OLLAMA_MODEL "qwen3:0.6b"
+    set_env_var OLLAMA_MODEL "qwen2.5-coder:3b"
 fi
 
 set_env_var OLLAMA_URL "$OLLAMA_URL_OK"
@@ -188,6 +225,29 @@ if [ "$OLLAMA_URL_OK" != "$BUNDLED_OLLAMA_URL" ]; then
             set_env_var OLLAMA_MODEL "$FIRST_MODEL"
         else
             set_env_var OLLAMA_MODEL "$WANTED_MODEL"
+        fi
+    fi
+fi
+
+if [ "$OLLAMA_URL_OK" != "$BUNDLED_OLLAMA_URL" ]; then
+    if echo "$(list_ollama_models "$OLLAMA_URL_OK")" \
+        | grep -qE "^$EMBED_MODEL(:latest)?$"; then
+
+        echo "Embedding model $EMBED_MODEL is present."
+    else
+        echo ""
+        echo "Pulling the embedding model $EMBED_MODEL (~270MB, once)."
+
+        # Not fatal. A desktop on the ollama or claude harness never
+        # embeds anything, so a failed pull here must not stop the whole
+        # stack coming up - it only costs TheBot its memory.
+        if pull_ollama_model "$OLLAMA_URL_OK" "$EMBED_MODEL"; then
+            echo "Embedding model $EMBED_MODEL is ready."
+        else
+            echo "WARNING: could not pull $EMBED_MODEL."
+            echo "The thebot harness will answer, but will not be able to"
+            echo "remember anything it learns. The other harnesses are"
+            echo "unaffected."
         fi
     fi
 fi

@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -39,9 +41,18 @@ type jobRecord struct {
 	FinalAnswer   string
 	UsedSkill     string
 	ProposedSkill string
-	Log           []string
-	done          chan struct{}
-	subscribers   map[chan string]bool
+	// Outcome, Question, Route and Steps are the scheduler's structured
+	// account of the job - what a host needs to act on it without parsing
+	// FinalAnswer (see scheduler.Outcome).
+	Outcome     scheduler.Outcome
+	Question    string
+	Route       string
+	Steps       []scheduler.StepRecord
+	Resumed     bool
+	Log         []string
+	cancel      context.CancelFunc
+	done        chan struct{}
+	subscribers map[chan string]bool
 }
 
 func newJobRecord(id, prompt string) *jobRecord {
@@ -110,6 +121,8 @@ func (j *jobRecord) snapshot() map[string]any {
 		"id": j.ID, "prompt": j.Prompt, "status": j.Status,
 		"plan": j.Plan, "results": j.Results, "finalAnswer": j.FinalAnswer,
 		"usedSkill": j.UsedSkill, "proposedSkill": j.ProposedSkill,
+		"outcome": j.Outcome, "question": j.Question, "route": j.Route,
+		"steps": j.Steps, "resumed": j.Resumed,
 	}
 }
 
@@ -125,10 +138,44 @@ type server struct {
 
 	jobsMu sync.Mutex
 	jobs   map[string]*jobRecord
+
+	// paused holds each session's paused job, if it has one. A session has
+	// at most one: the next message in it either resumes that job or, when
+	// the host says it is not a reply, discards it.
+	pausedMu sync.Mutex
+	paused   map[string]*scheduler.Checkpoint
 }
 
+// pausedJobTTL is how long a paused job waits for its reply before the next
+// message in the session is treated as a new request.
+const pausedJobTTL = 24 * time.Hour
+
 func newServer(cfg config.Config, provider llm.Provider, ws *workspace.Workspace, sched *scheduler.Scheduler) *server {
-	return &server{cfg: cfg, provider: provider, ws: ws, sched: sched, sessions: session.NewStore(), jobs: map[string]*jobRecord{}}
+	return &server{cfg: cfg, provider: provider, ws: ws, sched: sched, sessions: session.NewStore(), jobs: map[string]*jobRecord{}, paused: map[string]*scheduler.Checkpoint{}}
+}
+
+// takePaused removes and returns a session's paused job, if it has a live one.
+func (s *server) takePaused(sessionID string) *scheduler.Checkpoint {
+	if sessionID == "" {
+		return nil
+	}
+	s.pausedMu.Lock()
+	defer s.pausedMu.Unlock()
+	cp := s.paused[sessionID]
+	delete(s.paused, sessionID)
+	if cp == nil || time.Since(cp.CreatedAt) > pausedJobTTL {
+		return nil
+	}
+	return cp
+}
+
+func (s *server) storePaused(sessionID string, cp *scheduler.Checkpoint) {
+	if sessionID == "" || cp == nil {
+		return
+	}
+	s.pausedMu.Lock()
+	s.paused[sessionID] = cp
+	s.pausedMu.Unlock()
 }
 
 func genID() string {
@@ -324,6 +371,15 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Prompt    string `json:"prompt"`
 		SessionID string `json:"sessionId"`
+		// Context is the host's standing context (who this machine is, its
+		// worker memory, the rules it runs under). It reaches every model
+		// call through the system frame and is never treated as the task.
+		Context string `json:"context"`
+		// WorkDir is where commands run and relative paths resolve.
+		WorkDir string `json:"workdir"`
+		// Reply says whether this message answers the session's paused
+		// job. Unset means "if there is one"; false discards it.
+		Reply *bool `json:"reply"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Prompt) == "" {
 		writeJSON(w, 400, map[string]any{"error": "prompt is required"})
@@ -336,17 +392,33 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	s.jobs[id] = job
 	s.jobsMu.Unlock()
 
-	// Real conversation history for this UI session, threaded into the
-	// job before it runs - the fix for "it has zero awareness": every
-	// prior turn in this session is actually handed to the model.
+	// Real conversation history for this session, threaded into the job
+	// before it runs - every prior turn is actually handed to the model.
 	history := s.sessions.History(body.SessionID)
 
+	req := scheduler.Request{Prompt: body.Prompt, Context: body.Context, WorkDir: body.WorkDir, History: history}
+	if paused := s.takePaused(body.SessionID); paused != nil {
+		if body.Reply == nil || *body.Reply {
+			req.Resume = paused
+			job.Resumed = true
+			job.appendLog(fmt.Sprintf("scheduler: this message answers the paused job %q", truncateLog(paused.Prompt, 80)))
+		} else {
+			job.appendLog(fmt.Sprintf("scheduler: dropping the paused job %q - this is a new request", truncateLog(paused.Prompt, 80)))
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	job.mu.Lock()
+	job.cancel = cancel
+	job.mu.Unlock()
+
 	go func() {
-		ctx := context.Background()
-		result, err := s.sched.Run(ctx, body.Prompt, history, job.appendLog)
+		defer cancel()
+		result, err := s.sched.Execute(ctx, req, job.appendLog)
 		job.mu.Lock()
 		if err != nil {
 			job.Status = "error"
+			job.Outcome = scheduler.OutcomeFailed
 			job.FinalAnswer = err.Error()
 		} else {
 			job.Status = result.Status
@@ -355,20 +427,34 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 			job.FinalAnswer = result.FinalAnswer
 			job.UsedSkill = result.UsedSkill
 			job.ProposedSkill = result.ProposedSkill
+			job.Outcome = result.Outcome
+			job.Question = result.Question
+			job.Route = string(result.Route)
+			job.Steps = result.Steps
+			if result.Prompt != "" {
+				job.Prompt = result.Prompt
+			}
 		}
 		finalAnswer := job.FinalAnswer
 		job.mu.Unlock()
 
-		// Record BOTH sides of the real exchange so the next message in
-		// this session sees it. Recorded after the job finishes so a
-		// half-finished turn never poisons the history.
+		if err == nil && result.Checkpoint != nil {
+			s.storePaused(body.SessionID, result.Checkpoint)
+		}
+
+		// Record BOTH sides of the exchange so the next message in this
+		// session sees it - the human's own words, not the host context.
 		s.sessions.Append(body.SessionID, llm.Message{Role: "user", Content: body.Prompt})
 		s.sessions.Append(body.SessionID, llm.Message{Role: "assistant", Content: finalAnswer})
 
-		// L1: judge whether this exchange contained something durably
-		// worth remembering, and store it if so - fire-and-forget, never
-		// blocking the answer the user is waiting on.
-		if s.sched.L1 != nil {
+		// L1: judge whether this exchange contained something durably worth
+		// remembering. The judgment is a whole model call, so it is only
+		// made when the human's words look like they carry something about
+		// themselves - on a CPU-only host, an unconditional judge after
+		// every "check the disk space" is a minute of the model's time the
+		// next request queues behind, and it evicts that request's cached
+		// prompt prefix on the way.
+		if s.sched.L1 != nil && memory.LooksMemorable(body.Prompt) {
 			go s.sched.L1.ConsiderExchange(context.Background(), body.Prompt, finalAnswer, job.appendLog)
 		}
 
@@ -376,6 +462,13 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	writeJSON(w, 200, map[string]any{"id": id})
+}
+
+func truncateLog(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
 
 func (s *server) handleJobs(w http.ResponseWriter, r *http.Request) {
@@ -393,6 +486,26 @@ func (s *server) handleJobs(w http.ResponseWriter, r *http.Request) {
 
 	if len(parts) == 2 && parts[1] == "stream" {
 		s.streamJob(w, r, job)
+		return
+	}
+
+	// POST /api/jobs/{id}/cancel stops a running job: its context is
+	// cancelled, which kills the command it is running and abandons the
+	// model call it is waiting on. The job still finishes normally, with
+	// what it got done.
+	if len(parts) == 2 && parts[1] == "cancel" {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		job.mu.Lock()
+		cancel := job.cancel
+		job.mu.Unlock()
+		if cancel != nil && !job.isDone() {
+			job.appendLog("scheduler: cancelled on request")
+			cancel()
+		}
+		writeJSON(w, 200, map[string]any{"id": job.ID, "cancelled": true})
 		return
 	}
 
@@ -466,6 +579,23 @@ func (s *server) mux() *http.ServeMux {
 // follows from it EXCEPT for Anthropic, which has no embeddings API at
 // all, so that case falls back to Ollama (if configured and actually
 // reachable) or disables RAG/feedback for this run rather than crashing.
+// modelConcurrency is how many chat calls may run at once. A local Ollama
+// answers one request per model at a time unless it was started with
+// OLLAMA_NUM_PARALLEL, so the default there is one; the hosted APIs take
+// several.
+func modelConcurrency(cfg config.Config) int {
+	if v, err := strconv.Atoi(os.Getenv("MODEL_CONCURRENCY")); err == nil && v > 0 {
+		return v
+	}
+	if cfg.Provider == "ollama" {
+		if v, err := strconv.Atoi(os.Getenv("OLLAMA_NUM_PARALLEL")); err == nil && v > 0 {
+			return v
+		}
+		return 1
+	}
+	return 4
+}
+
 func buildProvider(cfg config.Config) (llm.Provider, llm.Models, llm.Embedder) {
 	switch cfg.Provider {
 	case "openai":
@@ -511,7 +641,11 @@ func main() {
 		log.Fatalf("[soul] L2 memory init failed: %v", err)
 	}
 
-	provider, models, embedder := buildProvider(cfg)
+	rawProvider, models, embedder := buildProvider(cfg)
+	// Every chat call in the process - scheduler steps running side by
+	// side, L1's judge, the coding harness - shares one concurrency limit.
+	provider := llm.Limited(rawProvider, modelConcurrency(cfg))
+	log.Printf("[soul] model concurrency: %d", modelConcurrency(cfg))
 
 	// Which model does which job, said out loud at startup. A hybrid setup
 	// that silently routes everything to one model looks exactly like a
@@ -571,6 +705,11 @@ func main() {
 	skills.Register(skills.NewTerminal())
 	skills.Register(skills.NewFileWrite())
 	skills.Register(skills.NewWeb())
+	// The operator works a goal out on this machine command by command -
+	// the atomizer routes to it by task type "operator", never by a
+	// classifier, so its place in the order only has to be ahead of the
+	// fallback.
+	skills.Register(skills.NewOperator())
 	// general is the conversational catch-all - registered normally (it
 	// matches task type "general", which atomizer.Classify() only ever
 	// returns when nothing more specific already claimed the step) AND

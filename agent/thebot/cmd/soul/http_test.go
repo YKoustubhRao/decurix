@@ -517,3 +517,104 @@ func TestHandleSkillsNilSafeWithNoLibraryConfigured(t *testing.T) {
 		t.Errorf("body = %v, want real empty arrays even with no skill library configured", body)
 	}
 }
+
+func postChat(t *testing.T, s *server, body string) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.mux().ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("POST /api/chat status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var created map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	id, _ := created["id"].(string)
+	return id
+}
+
+func waitJob(t *testing.T, s *server, id string, within time.Duration) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		s.jobsMu.Lock()
+		job := s.jobs[id]
+		s.jobsMu.Unlock()
+		if job != nil && job.isDone() {
+			snap := job.snapshot()
+			raw, _ := json.Marshal(snap)
+			var out map[string]any
+			_ = json.Unmarshal(raw, &out)
+			return out
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("job %s did not finish within %s", id, within)
+	return nil
+}
+
+func fakeGit(t *testing.T) {
+	t.Helper()
+	bin := t.TempDir()
+	if err := os.WriteFile(bin+"/git", []byte("#!/bin/sh\necho pushed-for-real\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// The whole approval round trip over HTTP: the job pauses and says why,
+// and the human's "yes" in the same session carries on from the checkpoint
+// rather than starting the request again.
+func TestChatPausesForApprovalAndTheNextMessageInTheSessionResumesIt(t *testing.T) {
+	fakeGit(t)
+	s := newTestServer(t)
+
+	paused := waitJob(t, s, postChat(t, s, `{"prompt":"run this command: `+"`git push origin main`"+`","sessionId":"desk"}`), 5*time.Second)
+	if paused["outcome"] != "needs_approval" || !strings.Contains(paused["question"].(string), "git push origin main") {
+		t.Fatalf("first job = %v, want a paused approval naming the command", paused)
+	}
+
+	resumed := waitJob(t, s, postChat(t, s, `{"prompt":"yes","sessionId":"desk","reply":true}`), 5*time.Second)
+	if resumed["resumed"] != true || resumed["outcome"] != "answered" || !strings.Contains(resumed["finalAnswer"].(string), "pushed-for-real") {
+		t.Fatalf("second job = %v, want the approved command to have run", resumed)
+	}
+}
+
+func TestChatDropsAPausedJobWhenTheHostSaysItIsNotAReply(t *testing.T) {
+	fakeGit(t)
+	s := newTestServer(t)
+	waitJob(t, s, postChat(t, s, `{"prompt":"run this command: `+"`git push origin main`"+`","sessionId":"desk"}`), 5*time.Second)
+
+	next := waitJob(t, s, postChat(t, s, `{"prompt":"run this command: `+"`echo fresh-request`"+`","sessionId":"desk","reply":false}`), 5*time.Second)
+	if next["resumed"] == true || !strings.Contains(next["finalAnswer"].(string), "fresh-request") {
+		t.Fatalf("job = %v, want a fresh request, not a resume", next)
+	}
+}
+
+func TestCancelStopsARunningJob(t *testing.T) {
+	s := newTestServer(t)
+	id := postChat(t, s, `{"prompt":"run this command: `+"`sleep 30`"+`"}`)
+	time.Sleep(200 * time.Millisecond)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/jobs/"+id+"/cancel", nil)
+	rec := httptest.NewRecorder()
+	s.mux().ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("cancel status = %d", rec.Code)
+	}
+
+	job := waitJob(t, s, id, 5*time.Second)
+	if job["outcome"] != "failed" || !strings.Contains(job["finalAnswer"].(string), "cancelled") {
+		t.Errorf("job = %v, want a cancelled failure", job)
+	}
+}
+
+// The host's context must never be recorded as what the human said.
+func TestChatKeepsHostContextOutOfSessionHistory(t *testing.T) {
+	s := newTestServer(t)
+	waitJob(t, s, postChat(t, s, `{"prompt":"run this command: `+"`echo hi`"+`","sessionId":"desk","context":"IMPORTANT SAFETY RULE: ..."}`), 5*time.Second)
+	for _, m := range s.sessions.History("desk") {
+		if strings.Contains(m.Content, "SAFETY RULE") {
+			t.Errorf("session history recorded the host context: %+v", m)
+		}
+	}
+}

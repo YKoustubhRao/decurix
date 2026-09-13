@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,11 +33,26 @@ func (w *WebSkill) Description() string {
 
 func (w *WebSkill) Matches(subtask Subtask) bool { return subtask.Type == "web" }
 
-const (
-	deepReadCount    = 3
-	deepReadMaxChars = 6000
-	reportDir        = "web-reports"
+const reportDir = "web-reports"
+
+// The deep-read budget: how many of the top results are read in full, and
+// how much of each. Everything read goes into one synthesis prompt, and on
+// a CPU-only host reading that prompt IS the cost - three pages of 6000
+// characters is ~5500 tokens, which a 3B model on an ordinary laptop took
+// more than six minutes to get through before writing a word. A GPU reads
+// the same prompt in seconds, so the defaults stay generous here and a host
+// that knows it is CPU-bound turns them down (Flowera's start script does).
+var (
+	deepReadCount    = envPositive("THEBOT_WEB_PAGES", 3)
+	deepReadMaxChars = envPositive("THEBOT_WEB_PAGE_CHARS", 6000)
 )
+
+func envPositive(key string, fallback int) int {
+	if v, err := strconv.Atoi(os.Getenv(key)); err == nil && v > 0 {
+		return v
+	}
+	return fallback
+}
 
 var (
 	urlRe = regexp.MustCompile(`https?://[^\s)]+`)
@@ -90,7 +106,7 @@ func (w *WebSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		if i >= deepReadCount {
 			break
 		}
-		rc.Logf("web", "reading page %d/%d: %s", i+1, deepReadCount, r.URL)
+		rc.Logf("web", "reading page %d/%d: %s", i+1, min(deepReadCount, len(results)), r.URL)
 		text, err := websearch.FetchPageText(rc.Ctx, r.URL, deepReadMaxChars)
 		reads = append(reads, readPage{result: r, text: text, err: err})
 		if err != nil {
@@ -134,7 +150,7 @@ func (w *WebSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		subtask.Step, context.String())
 
 	rc.Logf("web", "synthesizing an answer from %d result(s) and %d deep-read page(s)", len(results), len(reads))
-	resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, []llm.Message{{Role: "user", Content: prompt}}, llm.Options{TimeoutMs: 120000})
+	resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, []llm.Message{rc.SystemMessage(), {Role: "user", Content: prompt}}, llm.Options{TimeoutMs: 180000})
 	if err != nil {
 		return Result{
 			Subtask: subtask, SkillName: w.Name(),
@@ -155,7 +171,7 @@ func (w *WebSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		sources = append(sources, r.URL)
 	}
 
-	out := resp.Text
+	out := stripControlMarker(resp.Text)
 	if reportPath != "" {
 		out += "\n\nSaved the full research report to: " + reportPath
 	}
@@ -163,7 +179,7 @@ func (w *WebSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	return Result{
 		Subtask: subtask, SkillName: w.Name(),
 		Output: out, Verified: true,
-		Meta: map[string]any{"query": query, "results": len(results), "sources": sources, "path": reportPath},
+		Meta: map[string]any{"query": query, "results": len(results), "sources": sources, "path": reportPath, "userFacing": true},
 	}, nil
 }
 
@@ -182,7 +198,7 @@ func (w *WebSkill) readPage(rc RunContext, subtask Subtask, target string) (Resu
 		"You already fetched this real page with your own tools, successfully - never say you can't access web "+
 			"pages, you just did. Answer using ONLY this real page content from %s.\n\nRequest: %s\n\nPage content:\n%s",
 		target, subtask.Step, text)
-	resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, []llm.Message{{Role: "user", Content: prompt}}, llm.Options{TimeoutMs: 120000})
+	resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, []llm.Message{rc.SystemMessage(), {Role: "user", Content: prompt}}, llm.Options{TimeoutMs: 180000})
 	if err != nil {
 		return Result{
 			Subtask: subtask, SkillName: w.Name(),
@@ -192,7 +208,7 @@ func (w *WebSkill) readPage(rc RunContext, subtask Subtask, target string) (Resu
 	}
 	return Result{
 		Subtask: subtask, SkillName: w.Name(),
-		Output: resp.Text, Verified: true, Meta: map[string]any{"url": target},
+		Output: stripControlMarker(resp.Text), Verified: true, Meta: map[string]any{"url": target, "userFacing": true},
 	}, nil
 }
 
@@ -228,4 +244,19 @@ func (w *WebSkill) saveReport(rc RunContext, query, request, answer string, resu
 	}
 	rc.Logf("web", "saved report: %s", abs)
 	return abs
+}
+
+// stripControlMarker removes an approval marker a research answer opened
+// with. Research runs nothing and needs no approval, but the host's approval
+// rules sit in the same system frame, and a 3B model opened a plain summary
+// of Go's release notes with "NEEDS_APPROVAL:" - which, reaching the host as
+// the job's answer, would page a human to approve a paragraph.
+func stripControlMarker(text string) string {
+	t := strings.TrimSpace(text)
+	for _, marker := range []string{"NEEDS_APPROVAL:", "HELP:", "DONE:"} {
+		if strings.HasPrefix(t, marker) {
+			return strings.TrimSpace(t[len(marker):])
+		}
+	}
+	return t
 }
