@@ -38,6 +38,14 @@ const (
 	maxSteps    = 400
 )
 
+// lateStepWindow is how long after an agent's reply a step is still taken as
+// part of the turn that reply closed. A desktop reports steps from a
+// background queue but its reply directly, so the last line of a turn can
+// land after the answer — measured on TheBot, under a millisecond after it.
+// Opening a new turn for that line left the chat showing "Working…" forever
+// over a finished task.
+const lateStepWindow = 10 * time.Second
+
 // Step is one line of live activity from the turn currently running: a shell
 // command the agent chose, a file it wrote, a page it read. Every harness
 // reports these through the same POST /api/agent/events endpoint, so the chat
@@ -203,7 +211,8 @@ func (s *Store) AppendAgentMessage(desktopID, kind, content string) Message {
 
 // AppendStep records one line of live activity for the running turn. A step
 // arriving while nothing is marked running still opens a turn, so work a
-// desktop started on its own is visible rather than silently dropped.
+// desktop started on its own is visible rather than silently dropped — unless
+// it trails a turn that only just closed, in which case it belongs to that one.
 func (s *Store) AppendStep(desktopID, text string) Step {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -214,6 +223,15 @@ func (s *Store) AppendStep(desktopID, text string) Step {
 		ID:        s.nextID(),
 		Text:      text,
 		CreatedAt: time.Now().UTC(),
+	}
+
+	if last := current.lastMessage(); !current.running && last != nil &&
+		last.Role == RoleAgent && step.CreatedAt.Sub(last.CreatedAt) < lateStepWindow {
+		last.Steps = appendCapped(last.Steps, step, maxSteps)
+
+		current.touch()
+
+		return step
 	}
 
 	if !current.running {
@@ -286,6 +304,16 @@ func (s *Store) Subscribe(desktopID string) (<-chan struct{}, func()) {
 
 		delete(current.subscribers, updates)
 	}
+}
+
+// lastMessage returns the thread's most recent message, or nil for an empty
+// thread. The caller must hold the lock.
+func (t *thread) lastMessage() *Message {
+	if len(t.messages) == 0 {
+		return nil
+	}
+
+	return &t.messages[len(t.messages)-1]
 }
 
 // appendCapped appends an item, dropping the oldest entries once the slice
