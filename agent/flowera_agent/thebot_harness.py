@@ -300,8 +300,25 @@ def _escalate(reason):
     ask_for_help(reason)
 
 
+def _fail_on_backend(reason):
+    """
+    End the task with a backend failure note, rather than pausing it.
+
+    A job that failed because the model did not answer is finished inside
+    soul - nothing is paused for a reply to resume - and the note itself
+    tells the human to send the message again. Asking for help instead left
+    the desktop waiting, so the human's next, unrelated message was taken
+    as the reply to the one that failed.
+    """
+
+    write_final_message(_backend_note(reason), kind="error")
+
+
 def _handle_job(job, error):
     if error:
+        if _looks_like_backend_failure(error):
+            _fail_on_backend(error)
+            return
         _escalate(error)
         return
 
@@ -322,7 +339,7 @@ def _handle_job(job, error):
 
     if outcome == "failed":
         if _looks_like_backend_failure(answer):
-            ask_for_help(_backend_note(answer))
+            _fail_on_backend(answer)
             return
         write_final_message(answer or "TheBot could not finish this.", kind="error")
         return

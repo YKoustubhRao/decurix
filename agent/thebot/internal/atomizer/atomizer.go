@@ -251,6 +251,18 @@ func isCoding(step string) bool {
 	return codingRe.MatchString(cleaned)
 }
 
+// describesSoftware reports whether a step the planner tagged [code] names
+// any software at all. A tagged step often has no verb ("a Flask app that
+// serves the weather"), so one is supplied - but only after the question
+// and chore exclusions have had their say on the step as written.
+func describesSoftware(step string) bool {
+	if codingExcludeRe.MatchString(step) || codingOpsRe.MatchString(step) {
+		return false
+	}
+	cleaned := stripNonCodeFilenames(codingURLRe.ReplaceAllString(step, " "))
+	return codingRe.MatchString(cleaned) || codingRe.MatchString("build "+cleaned)
+}
+
 func init() {
 	// Order matters (first match wins): the specific, unambiguous shapes
 	// go before broader ones. feedback/rag-query phrasing is distinctive
@@ -323,7 +335,25 @@ var (
 	// breakthrough) still ended with the code dumped into chat instead of
 	// a file.
 	joinerRe = regexp.MustCompile(`(?i)\b(and then|then|after that|and also|, then|and save|and write|and store|and put|and run|and download|and summari[sz]e|if you (don't|do not|aren't|are not) (know|sure|certain))\b`)
+
+	// writeVerbs all mean "put content in a file", and folderRe is the one
+	// thing that makes "create" mean something else.
+	writeVerbs = map[string]bool{"write": true, "create": true, "save": true, "generate": true}
+	folderRe   = regexp.MustCompile(`(?i)\b(folders?|director(y|ies))\b`)
 )
+
+// namesOneFile reports whether a prompt is about exactly one file and no
+// folder, which is when its write verbs are all the same job.
+func namesOneFile(prompt string) bool {
+	if folderRe.MatchString(prompt) {
+		return false
+	}
+	files := map[string]bool{}
+	for _, f := range anyFilenameRe.FindAllString(prompt, -1) {
+		files[strings.ToLower(f)] = true
+	}
+	return len(files) == 1
+}
 
 // looksCompound reports whether a prompt asks for more than one thing.
 // Two different action verbs joined by "and"/"then" is the real signal -
@@ -338,6 +368,12 @@ var (
 // single-atomic-step bypass would then hand the whole request to
 // file-write as ONE write, silently producing only one of the three
 // files the model happened to pick.
+//
+// Different write verbs about one file are also one action. Measured live:
+// "create a file koustubh.txt and write a poem inside it" counted create
+// and write as two jobs, spent two minutes planning on a CPU host, and the
+// planner tagged "create a new file named koustubh.txt" as [code] - a whole
+// build harness for an empty text file, which timed out.
 func looksCompound(prompt string) bool {
 	if multiFileRe.MatchString(prompt) {
 		return true
@@ -345,9 +381,14 @@ func looksCompound(prompt string) bool {
 	if !joinerRe.MatchString(prompt) {
 		return false
 	}
+	oneFile := namesOneFile(prompt)
 	seen := map[string]bool{}
 	for _, m := range actionVerbRe.FindAllString(prompt, -1) {
-		seen[strings.ToLower(m)] = true
+		verb := strings.ToLower(m)
+		if oneFile && writeVerbs[verb] {
+			verb = "write"
+		}
+		seen[verb] = true
 	}
 	return len(seen) >= 2
 }

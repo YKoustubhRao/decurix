@@ -328,6 +328,18 @@ func shapeStep(tool, body string) Step {
 		typ = "terminal"
 	}
 
+	// Nor is a file with no code in it. The same planner tagged "Create a
+	// new file named koustubh.txt" as [code], and the coding harness spent
+	// its whole timeout designing an architecture for a text file. A [code]
+	// step that names no software goes where its words send it.
+	if typ == "coding" && !describesSoftware(body) {
+		typ = Classify(body)
+		if typ == "general" {
+			// A tagged step is something to do, never a question for chat.
+			typ = "operator"
+		}
+	}
+
 	text := body
 	switch typ {
 	case "terminal":
