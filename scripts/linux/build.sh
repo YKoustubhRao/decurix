@@ -44,7 +44,16 @@ echo "=== Ensuring the desktops can reach Ollama ==="
 DEFAULT_OLLAMA_URL="http://host.docker.internal:11434"
 BUNDLED_OLLAMA_URL="http://flowera-ollama:11434"
 
-touch .env
+# A fresh clone has no .env at all, and "docker compose up --build" fails
+# without one. Start from the example so OLLAMA_MODEL and friends are there.
+if [ ! -f .env ]; then
+    if [ -f .env.example ]; then
+        echo "No .env yet - creating it from .env.example."
+        cp .env.example .env
+    else
+        touch .env
+    fi
+fi
 
 docker network inspect flowera-network >/dev/null 2>&1 \
     || docker network create flowera-network >/dev/null
@@ -208,22 +217,35 @@ fi
 set_env_var OLLAMA_URL "$OLLAMA_URL_OK"
 
 # A reachable server running a model nobody asked for fails exactly as
-# opaquely as an unreachable one, so pin OLLAMA_MODEL to something that
-# server actually has.
+# opaquely as an unreachable one, so make sure OLLAMA_MODEL is something
+# that server actually has. The model named in .env is a choice, so it is
+# pulled rather than swapped out; only if that pull fails does OLLAMA_MODEL
+# fall back to a model the server already has. The default matches
+# internal/ollama.Model, which is what the control plane gives desktops
+# when OLLAMA_MODEL is unset.
 if [ "$OLLAMA_URL_OK" != "$BUNDLED_OLLAMA_URL" ]; then
     WANTED_MODEL="$(read_env_var OLLAMA_MODEL)"
+    WANTED_MODEL="${WANTED_MODEL:-qwen2.5-coder:3b}"
     AVAILABLE_MODELS="$(list_ollama_models "$OLLAMA_URL_OK")"
 
-    if [ -n "$AVAILABLE_MODELS" ]; then
-        if [ -z "$WANTED_MODEL" ]; then
-            WANTED_MODEL="qwen3:latest"
-        fi
+    if echo "$AVAILABLE_MODELS" | grep -qE "^$WANTED_MODEL(:latest)?$"; then
+        echo "Chat model $WANTED_MODEL is present."
+        set_env_var OLLAMA_MODEL "$WANTED_MODEL"
+    else
+        echo ""
+        echo "Pulling the chat model $WANTED_MODEL (once; a 3B model is ~2GB)."
 
-        if ! echo "$AVAILABLE_MODELS" | grep -qx "$WANTED_MODEL"; then
+        if pull_ollama_model "$OLLAMA_URL_OK" "$WANTED_MODEL"; then
+            echo "Chat model $WANTED_MODEL is ready."
+            set_env_var OLLAMA_MODEL "$WANTED_MODEL"
+        elif [ -n "$AVAILABLE_MODELS" ]; then
             FIRST_MODEL="$(echo "$AVAILABLE_MODELS" | head -1)"
-            echo "Model $WANTED_MODEL is not on that server; using $FIRST_MODEL."
+            echo "WARNING: could not pull $WANTED_MODEL; using $FIRST_MODEL."
             set_env_var OLLAMA_MODEL "$FIRST_MODEL"
         else
+            echo "WARNING: could not pull $WANTED_MODEL, and that server has"
+            echo "no models at all. Desktops will not be able to reason until"
+            echo "you run: ollama pull $WANTED_MODEL"
             set_env_var OLLAMA_MODEL "$WANTED_MODEL"
         fi
     fi
