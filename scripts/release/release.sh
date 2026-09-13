@@ -148,6 +148,16 @@ Setup
      reads .env from the working directory, or from the folder the executable
      lives in. Plain environment variables work too.
 
+     Workers think with a model served by Ollama (https://ollama.com).
+     OLLAMA_URL picks the server (default: the Ollama on this machine) and
+     OLLAMA_MODEL the model (default: qwen2.5-coder:3b). Pull it first:
+
+         ollama pull qwen2.5-coder:3b
+         ollama pull nomic-embed-text   (only the thebot harness needs this)
+
+     On Linux, Ollama must listen on more than 127.0.0.1 for desktop
+     containers to reach it: set OLLAMA_HOST=0.0.0.0 on its service.
+
   3. Run:
 
          $run
