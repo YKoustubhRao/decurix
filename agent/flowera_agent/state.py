@@ -15,6 +15,10 @@ state_lock = threading.Lock()
 
 current_task = None
 current_task_file = None
+
+# The control plane's ID for the task running now (task_context.py), which
+# every progress line and reply carries back. "" when the message had none.
+current_task_id = ""
 waiting_for_help = False
 last_help_id = None
 

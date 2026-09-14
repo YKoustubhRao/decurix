@@ -117,10 +117,35 @@ ENV PATH="/home/headless/.cargo/bin:${PATH}"
 RUN npm install -g \
         @openai/codex
 
+# Computer use: what flowera_agent/computer needs to see and work the screen.
+# xdotool sends real input (XTEST); python3-xlib reads the framebuffer and the
+# window list; at-spi2-core, libatk-adaptor and the Atspi bindings expose GTK,
+# XFCE and LibreOffice widgets by role and name. ~3 MB in all. Chromium is read
+# over its DevTools port instead (agent/chromium-browser.init), which needs
+# nothing installed.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        xdotool \
+        python3-xlib \
+        python3-gi \
+        gir1.2-atspi-2.0 \
+        at-spi2-core \
+        libatk-adaptor && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# The base image sets NO_AT_BRIDGE=1, which stops every GTK app - the XFCE
+# panel, Thunar, mousepad, LibreOffice's GTK front end - from publishing its
+# widgets over AT-SPI at all. Without this the accessibility tree is empty.
+ENV NO_AT_BRIDGE=0
+
 # Flowera agent
 COPY agent/vm_server.py /opt/vm_server.py
 COPY agent/flowera_agent /opt/flowera_agent
 COPY agent/start_agent_terminal.sh /opt/start_agent_terminal.sh
+# The `gui` command: the screen as a shell command, for the engines that
+# work through shell commands (flowera_agent/computer/cli.py).
+COPY agent/gui /usr/local/bin/gui
 # TheBot harness's soul binary - built above from real source, started
 # conditionally by start_agent_terminal.sh only when AGENT_HARNESS=thebot.
 COPY --from=thebot-builder /soul /opt/soul
@@ -140,7 +165,7 @@ COPY agent/flowera-wallpaper.svg /opt/flowera-wallpaper.svg
 COPY agent/chromium-browser.init /opt/flowera-chromium.init
 COPY agent/chromium-browser.init /home/headless/.chromium-browser.init
 
-RUN chmod +x /opt/vm_server.py /opt/start_agent_terminal.sh /opt/soul
+RUN chmod +x /opt/vm_server.py /opt/start_agent_terminal.sh /opt/soul /usr/local/bin/gui
 
 RUN mkdir -p /home/headless/.config/autostart \
     /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml \

@@ -2,8 +2,10 @@ import json
 import os
 import subprocess
 import threading
+from pathlib import Path
 
-from flowera_agent import config, progress, state
+from flowera_agent import config, progress, state, usage
+from flowera_agent.computer import approval
 from flowera_agent.logging_utils import log
 from flowera_agent.identity import get_identity_context
 from flowera_agent.memory_context import get_memory_context
@@ -55,6 +57,35 @@ followed by a clear description of exactly what you want to do and
 why. A human will review this on the Flowera dashboard and respond
 with approval or further instructions before you continue.
 """.strip()
+
+SCREEN_SYSTEM_PROMPT = f"""
+This desktop has a graphical screen (XFCE, Chromium, LibreOffice). To work
+in a window, use the computer tools rather than shell tricks like xdotool:
+mcp__computer__observe (screenshot + elements with refs), mcp__computer__act
+(click/type/key/scroll/select on a ref; coordinates only when no element
+fits), mcp__computer__verify (confirm the result), mcp__computer__open
+(a URL, file or app). Act on refs from your latest observation, and verify
+before reporting that something on screen is done.
+
+You do not need to ask before clicking an on-screen control: the act tool
+itself stops before anything that sends, pays, buys or publishes. When it
+returns NEEDS_APPROVAL, stop and reply beginning with {APPROVAL_MARKER}
+describing that action; after approval, repeat the same action.
+""".strip()
+
+# The computer MCP server (flowera_agent/computer/mcp_server.py), run from
+# the directory this package lives in so `python3 -m` finds it whatever the
+# task's working directory is.
+MCP_CONFIG = json.dumps({
+    "mcpServers": {
+        "computer": {
+            "type": "stdio",
+            "command": "python3",
+            "args": ["-m", "flowera_agent.computer.mcp_server"],
+            "env": {"PYTHONPATH": str(Path(__file__).resolve().parent.parent)},
+        }
+    }
+})
 
 # Tool inputs are arbitrary JSON; these are the keys worth showing in a
 # one-line step, in the order that best identifies what the tool is doing
@@ -127,6 +158,11 @@ def _emit_event(event):
                 progress.emit(text)
 
         elif block.get("type") == "tool_use":
+            # The computer tools report themselves, with screenshots, from
+            # inside the action layer (computer/audit.py) - the same steps the
+            # other engines produce. A second line here would only repeat them.
+            if (block.get("name") or "").startswith("mcp__computer__"):
+                continue
             progress.emit(_describe_tool(block))
 
 
@@ -158,6 +194,12 @@ def _run_claude(prompt, resume_session_id=None):
         # blocked the desktop outright. Same facts, same wording, all
         # three harnesses.
         "--append-system-prompt", get_identity_context("Claude Code"),
+        # The screen, as tools - the same observe/act/verify layer the other
+        # two engines reach through the `gui` command, with screenshots,
+        # because Claude can read them. --bare still honours an explicit
+        # --mcp-config; it only skips MCP servers discovered from settings.
+        "--mcp-config", MCP_CONFIG,
+        "--append-system-prompt", SCREEN_SYSTEM_PROMPT,
     ]
 
     memory_context = get_memory_context()
@@ -224,7 +266,11 @@ def _run_claude(prompt, resume_session_id=None):
 
             if event.get("type") == "result":
                 result = event
+                _record_usage(event)
                 continue
+
+            if event.get("type") == "system" and event.get("subtype") == "init":
+                usage.set_model(event.get("model"))
 
             _emit_event(event)
     finally:
@@ -244,6 +290,33 @@ def _run_claude(prompt, resume_session_id=None):
         ).strip()
 
     return result, None
+
+
+def _record_usage(result):
+    """
+    Add one Claude Code run's spend to the task's totals. Each run - the
+    task, and every resume after a human's reply - is its own process, and
+    its result event's total_cost_usd is taken as that process's spend, so
+    the runs are summed. Assumed rather than verified on a live resume: if
+    a resumed run reports the session's running total, this double-counts.
+    """
+
+    tokens = result.get("usage") or {}
+
+    input_tokens = sum(
+        tokens.get(key) or 0
+        for key in (
+            "input_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+        )
+    )
+
+    usage.add(
+        input_tokens=input_tokens if tokens else None,
+        output_tokens=tokens.get("output_tokens"),
+        cost_usd=result.get("total_cost_usd"),
+    )
 
 
 def _handle_result(result):
@@ -268,7 +341,19 @@ def _handle_result(result):
     result_text = (result.get("result") or "").strip()
 
     if result_text.startswith(APPROVAL_MARKER):
-        ask_for_help(result_text[len(APPROVAL_MARKER):].strip())
+        ask_for_help(result_text[len(APPROVAL_MARKER):].strip(), kind="approval")
+        return
+
+    # The act tool stopped an on-screen action for approval, and the turn
+    # ended without saying so. Whatever Claude wrote instead, the task is
+    # paused on that action - a reply that skipped the pause must not reach
+    # the human as a finished answer.
+    blocked = approval.pending()
+    if blocked is not None:
+        note = approval.request_message(blocked)
+        if result_text:
+            note += f"\n\nThe agent's own last words:\n{result_text}"
+        ask_for_help(note, kind="approval")
         return
 
     write_final_message(result_text or "(no result text)")

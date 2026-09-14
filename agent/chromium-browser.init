@@ -14,7 +14,14 @@
 # created before that change, or a Docker daemon without seccomp - where
 # the browser would otherwise refuse to start at all.
 
-CHROMIUM_FLAGS="--disable-gpu --start-maximized"
+# --remote-debugging-port is how the agent's action layer reads and works
+# web pages (flowera_agent/computer/cdp.py): Chromium's own accessibility tree
+# and input events over DevTools. It binds 127.0.0.1 only, inside a container
+# that publishes no ports - but any process in this desktop can drive the
+# browser through it, the same trust the agent's shell already has.
+# --no-default-browser-check: the "not your default browser" bar is one more
+# thing between an agent and the page it was asked to use.
+CHROMIUM_FLAGS="--disable-gpu --start-maximized --remote-debugging-port=9222 --no-default-browser-check"
 
 # The warning bar is left alone in that case: the browser really is
 # running unsandboxed there, and hiding that would be a lie.

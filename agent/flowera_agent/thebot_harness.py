@@ -3,7 +3,7 @@ import time
 import urllib.error
 import urllib.request
 
-from flowera_agent import config, progress, state
+from flowera_agent import config, progress, state, usage
 from flowera_agent.identity import get_identity_context
 from flowera_agent.logging_utils import log
 from flowera_agent.memory_context import get_memory_context
@@ -330,7 +330,7 @@ def _handle_job(job, error):
         # soul's own safety gate stopped a consequential action, and holds
         # the job paused. The human's reply comes back through
         # continue_after_help and resumes it.
-        ask_for_help(question)
+        ask_for_help(question, kind="approval")
         return
 
     if outcome == "needs_input":
@@ -355,7 +355,7 @@ def _handle_job(job, error):
     # The model can still pause on its own, in words, with the marker the
     # approval rules above ask for.
     if answer.startswith(APPROVAL_MARKER):
-        ask_for_help(answer[len(APPROVAL_MARKER):].strip())
+        ask_for_help(answer[len(APPROVAL_MARKER):].strip(), kind="approval")
         return
 
     write_final_message(answer or "(no result text)")
@@ -393,6 +393,11 @@ def perform_task(task, task_file):
     log("STARTING TASK (TheBot harness)")
     log(task)
     log("========================================")
+
+    # soul reasons with the shared Ollama model, which costs nothing per
+    # call; it does not report token counts back, so those stay unknown.
+    usage.set_model(config.OLLAMA_MODEL)
+    usage.add(cost_usd=0)
 
     # A new task, not a reply: if soul still holds a paused job for this
     # desktop (the human moved on without answering it), it is dropped.

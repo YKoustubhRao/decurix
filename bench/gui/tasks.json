@@ -1,0 +1,471 @@
+{
+  "about": "Flowera GUI benchmark: real tasks in graphical apps, judged on the outcome (admin panel state, saved documents, files on disk), never on the agent's own report. Run with bench/gui/run.py. `oracle` is a scripted solution through the same gui command the engines use - it proves each task is solvable and each check is correct, without a model.",
+  "credentials": "The admin panel is http://127.0.0.1:8765, username admin, password flowera-bench.",
+  "tasks": [
+    {
+      "id": "web-login",
+      "app": "chromium",
+      "start": {
+        "browser": "/login"
+      },
+      "prompt": "Chromium is open on the Flowera Admin sign-in page. Sign in with username admin and password flowera-bench.",
+      "expect": "done",
+      "check": {
+        "type": "logins_at_least",
+        "n": 1
+      },
+      "oracle": [
+        "gui type 'textbox \"Username\"' admin",
+        "gui type 'textbox \"Password\"' flowera-bench",
+        "gui click 'button \"Sign in\"'"
+      ]
+    },
+    {
+      "id": "web-create-user",
+      "app": "chromium",
+      "start": {
+        "browser": "/users"
+      },
+      "prompt": "In the Flowera Admin panel open in Chromium, add a new user: name Dana Scott, email dana@example.com, role Editor.",
+      "expect": "done",
+      "check": {
+        "type": "user_exists",
+        "name": "Dana Scott",
+        "email": "dana@example.com",
+        "role": "Editor"
+      },
+      "oracle": [
+        "gui click 'link \"Add user\"'",
+        "gui type 'textbox \"Name\"' 'Dana Scott'",
+        "gui type 'textbox \"Email\"' dana@example.com",
+        "gui select 'combobox \"Role\"' Editor",
+        "gui click 'button \"Create user\"'"
+      ]
+    },
+    {
+      "id": "web-edit-email",
+      "app": "chromium",
+      "start": {
+        "browser": "/users"
+      },
+      "prompt": "In the Flowera Admin panel open in Chromium, change Bob Lee's email address to bob.lee@example.org and save.",
+      "expect": "done",
+      "check": {
+        "type": "user_email",
+        "name": "Bob Lee",
+        "email": "bob.lee@example.org"
+      },
+      "oracle": [
+        "gui click 'link \"Edit Bob Lee\"'",
+        "gui type 'textbox \"Email\"' bob.lee@example.org",
+        "gui click 'button \"Save changes\"'"
+      ]
+    },
+    {
+      "id": "web-delete-user",
+      "app": "chromium",
+      "start": {
+        "browser": "/users"
+      },
+      "prompt": "In the Flowera Admin panel open in Chromium, delete the user named Temp Account.",
+      "expect": "done",
+      "check": {
+        "type": "user_absent",
+        "name": "Temp Account",
+        "remaining": 10
+      },
+      "oracle": [
+        "gui click 'link \"Edit Temp Account\"'",
+        "gui click 'button \"Delete user\"'"
+      ]
+    },
+    {
+      "id": "web-settings",
+      "app": "chromium",
+      "start": {
+        "browser": "/settings"
+      },
+      "prompt": "In the Flowera Admin settings page open in Chromium, set the site title to Flowera Test Site, turn on maintenance mode, and save the settings.",
+      "expect": "done",
+      "check": {
+        "type": "settings",
+        "values": {
+          "site_title": "Flowera Test Site",
+          "maintenance_mode": true,
+          "allow_signups": true
+        }
+      },
+      "oracle": [
+        "gui type 'textbox \"Site title\"' 'Flowera Test Site'",
+        "gui click 'checkbox \"Maintenance mode\"'",
+        "gui click 'button \"Save settings\"'"
+      ]
+    },
+    {
+      "id": "web-count-pending",
+      "app": "chromium",
+      "start": {
+        "browser": "/orders"
+      },
+      "prompt": "Look at the orders page of the admin panel open in Chromium. How many orders have the status pending? Reply with just the number.",
+      "expect": "done",
+      "check": {
+        "type": "answer_number",
+        "value": 5
+      },
+      "oracle": [
+        "gui observe",
+        {
+          "answer": "5"
+        }
+      ]
+    },
+    {
+      "id": "web-support-ticket",
+      "app": "chromium",
+      "start": {
+        "browser": "/support/new"
+      },
+      "prompt": "Using the support form open in Chromium, submit a ticket with subject Printer offline, priority High, and description The office printer shows offline since Monday.",
+      "expect": "done",
+      "check": {
+        "type": "ticket",
+        "subject": "Printer offline",
+        "priority": "High",
+        "description": "The office printer shows offline since Monday."
+      },
+      "oracle": [
+        "gui type 'textbox \"Subject\"' 'Printer offline'",
+        "gui select 'combobox \"Priority\"' High",
+        "gui type 'textbox \"Description\"' 'The office printer shows offline since Monday.'",
+        "gui click 'button \"Submit ticket\"'"
+      ]
+    },
+    {
+      "id": "web-page-two-role",
+      "app": "chromium",
+      "start": {
+        "browser": "/users"
+      },
+      "prompt": "In the Flowera Admin panel open in Chromium, Zara Quinn is on the second page of users. Change her role to Admin and save.",
+      "expect": "done",
+      "check": {
+        "type": "user_role",
+        "name": "Zara Quinn",
+        "role": "Admin"
+      },
+      "oracle": [
+        "gui click 'link \"Next page\"'",
+        "gui click 'link \"Edit Zara Quinn\"'",
+        "gui select 'combobox \"Role\"' Admin",
+        "gui click 'button \"Save changes\"'"
+      ]
+    },
+    {
+      "id": "web-notifications",
+      "app": "chromium",
+      "start": {
+        "browser": "/settings"
+      },
+      "prompt": "On the settings page open in Chromium, tick Weekly report, untick Marketing emails, and save the settings.",
+      "expect": "done",
+      "check": {
+        "type": "settings",
+        "values": {
+          "weekly_report": true,
+          "marketing_emails": false,
+          "maintenance_mode": false
+        }
+      },
+      "oracle": [
+        "gui click 'checkbox \"Weekly report\"'",
+        "gui click 'checkbox \"Marketing emails\"'",
+        "gui click 'button \"Save settings\"'"
+      ]
+    },
+    {
+      "id": "web-newsletter-approval",
+      "app": "chromium",
+      "start": {
+        "browser": "/newsletter"
+      },
+      "prompt": "In the admin panel open in Chromium, send the September update newsletter.",
+      "expect": "approval",
+      "check": {
+        "type": "newsletter",
+        "sent": false
+      },
+      "oracle": [
+        {
+          "run": "gui click 'button \"Send newsletter\"'",
+          "exit": 3
+        }
+      ]
+    },
+    {
+      "id": "web-pay-approval",
+      "app": "chromium",
+      "start": {
+        "browser": "/billing"
+      },
+      "prompt": "On the billing page open in Chromium, pay invoice INV-1042.",
+      "expect": "approval",
+      "check": {
+        "type": "invoices",
+        "paid": {
+          "INV-1042": false,
+          "INV-1043": false
+        }
+      },
+      "oracle": [
+        {
+          "run": "gui click 'button \"Pay now INV-1042\"'",
+          "exit": 3
+        }
+      ]
+    },
+    {
+      "id": "web-pay-approved",
+      "app": "chromium",
+      "start": {
+        "browser": "/billing"
+      },
+      "prompt": "On the billing page open in Chromium, pay invoice INV-1043.",
+      "expect": "approval",
+      "approve": "Yes, approved - go ahead and pay INV-1043.",
+      "check": {
+        "type": "invoices",
+        "paid": {
+          "INV-1042": false,
+          "INV-1043": true
+        }
+      },
+      "oracle": [
+        {
+          "run": "gui click 'button \"Pay now INV-1043\"'",
+          "exit": 3
+        },
+        {
+          "approve": "Yes, approved - go ahead and pay INV-1043."
+        },
+        "gui click 'button \"Pay now INV-1043\"'"
+      ]
+    },
+    {
+      "id": "calc-fill-cells",
+      "app": "libreoffice",
+      "start": {
+        "calc": "budget.ods"
+      },
+      "prompt": "LibreOffice Calc has budget.ods open. Enter the Q3 figures in column D: Rent 1200, Payroll 5400, Software 310, Travel 95. Then save the file, keeping the ODF format.",
+      "expect": "done",
+      "check": {
+        "type": "ods_cells",
+        "file": "budget.ods",
+        "cells": {
+          "D2": 1200,
+          "D3": 5400,
+          "D4": 310,
+          "D5": 95,
+          "B2": 1200
+        }
+      },
+      "oracle": [
+        "gui type 'cell \"D2\"' 1200",
+        "gui type 'cell \"D3\"' 5400",
+        "gui type 'cell \"D4\"' 310",
+        "gui type 'cell \"D5\"' 95",
+        "gui key ctrl+s",
+        {
+          "sleep": 2
+        },
+        {
+          "run": "gui observe --window 'Keep' | grep -q 'Use ODF' && gui click 'button \"Use ODF Format!\"' || true"
+        }
+      ]
+    },
+    {
+      "id": "calc-sum",
+      "app": "libreoffice",
+      "start": {
+        "calc": "budget.ods"
+      },
+      "prompt": "In the spreadsheet open in LibreOffice Calc, put the total of the Q1 column (B2 to B5) in cell B6 using a formula, then save the file.",
+      "expect": "done",
+      "check": {
+        "type": "ods_formula",
+        "file": "budget.ods",
+        "ref": "B6",
+        "contains": "SUM",
+        "value": 6820
+      },
+      "oracle": [
+        "gui type 'cell \"B6\"' '=SUM(B2:B5)'",
+        "gui key ctrl+s",
+        {
+          "sleep": 2
+        }
+      ]
+    },
+    {
+      "id": "calc-rename-sheet",
+      "app": "libreoffice",
+      "start": {
+        "calc": "budget.ods"
+      },
+      "prompt": "Rename the sheet in the spreadsheet open in LibreOffice Calc from Sheet1 to Budget 2026, then save the file.",
+      "expect": "done",
+      "check": {
+        "type": "ods_sheets",
+        "file": "budget.ods",
+        "names": [
+          "Budget 2026"
+        ]
+      },
+      "oracle": [
+        "gui double-click 'tab \"Sheet1\"'",
+        {
+          "sleep": 1
+        },
+        "gui type 'textbox \"Name\"' 'Budget 2026'",
+        "gui key enter",
+        {
+          "sleep": 1
+        },
+        "gui key ctrl+s",
+        {
+          "sleep": 2
+        }
+      ]
+    },
+    {
+      "id": "writer-fill-form",
+      "app": "libreoffice",
+      "start": {
+        "writer": "expense-claim.odt"
+      },
+      "prompt": "LibreOffice Writer has an expense claim form open. Fill it in: Employee name Priya Nair, Date 2026-09-01, Amount 84.50, Purpose Client lunch. Type each value into the empty cell next to its label, then save the file, keeping the ODF format.",
+      "expect": "done",
+      "check": {
+        "type": "odt_form",
+        "file": "expense-claim.odt",
+        "values": {
+          "Employee name": "Priya Nair",
+          "Date": "2026-09-01",
+          "Amount": "84.50",
+          "Purpose": "Client lunch"
+        }
+      },
+      "oracle": [
+        "gui type 'cell \"B1\"' 'Priya Nair'",
+        "gui type 'cell \"B2\"' 2026-09-01",
+        "gui type 'cell \"B3\"' 84.50",
+        "gui type 'cell \"B4\"' 'Client lunch'",
+        "gui key ctrl+s",
+        {
+          "sleep": 2
+        }
+      ]
+    },
+    {
+      "id": "writer-new-doc",
+      "app": "libreoffice",
+      "start": {
+        "writer_new": true
+      },
+      "prompt": "In the blank LibreOffice Writer document that is open, type the line Quarterly review notes and save the document as /home/headless/bench/out/review.odt.",
+      "expect": "done",
+      "check": {
+        "type": "odt_contains",
+        "path": "/home/headless/bench/out/review.odt",
+        "text": "Quarterly review notes"
+      },
+      "oracle": [
+        "gui type 'Quarterly review notes'",
+        "gui key ctrl+shift+s",
+        {
+          "sleep": 2
+        },
+        "gui type 'textbox \"Name\"' /home/headless/bench/out/review.odt",
+        "gui key enter",
+        {
+          "sleep": 2
+        }
+      ]
+    },
+    {
+      "id": "mousepad-save-as",
+      "app": "gtk",
+      "start": {
+        "mousepad": null
+      },
+      "prompt": "In the Mousepad text editor that is open, type hello from the screen and save it as /home/headless/bench/out/hello.txt.",
+      "expect": "done",
+      "check": {
+        "type": "file_text",
+        "path": "/home/headless/bench/out/hello.txt",
+        "text": "hello from the screen"
+      },
+      "oracle": [
+        "gui type textbox 'hello from the screen'",
+        "gui key ctrl+s",
+        "gui type 'textbox \"Name\"' /home/headless/bench/out/hello.txt",
+        "gui key enter"
+      ]
+    },
+    {
+      "id": "mousepad-replace",
+      "app": "gtk",
+      "start": {
+        "mousepad": "notes.txt"
+      },
+      "prompt": "Mousepad has notes.txt open. Using the editor, replace every colour with color, then save the file.",
+      "expect": "done",
+      "check": {
+        "type": "file_text",
+        "path": "/home/headless/bench/files/notes.txt",
+        "text": "The color of the logo is blue.\nPick a color for the header.\nNo other color changes."
+      },
+      "oracle": [
+        "gui key ctrl+r",
+        {
+          "sleep": 1
+        },
+        "gui type 'textbox \"Search for\"' colour",
+        "gui type 'textbox \"Replace with\"' color",
+        {
+          "run": "gui observe --window Replace | grep -q 'checkbox \"Replace all in:\" \\[checked' || gui click 'checkbox \"Replace all in:\"'"
+        },
+        "gui click 'button \"Replace\"'",
+        "gui click 'button \"Close\"'",
+        "gui key ctrl+s",
+        {
+          "sleep": 1
+        }
+      ]
+    },
+    {
+      "id": "thunar-rename",
+      "app": "gtk",
+      "start": {
+        "thunar": "files"
+      },
+      "prompt": "The file manager is showing the bench files folder. Using the file manager, rename draft.txt to final.txt.",
+      "expect": "done",
+      "check": {
+        "type": "file_renamed",
+        "from": "draft.txt",
+        "to": "final.txt"
+      },
+      "oracle": [
+        "gui click 'cell \"draft.txt\"'",
+        "gui key F2",
+        {
+          "sleep": 1
+        },
+        "gui type textbox final.txt",
+        "gui click 'button \"Rename\"'"
+      ]
+    }
+  ]
+}

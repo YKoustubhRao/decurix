@@ -83,6 +83,11 @@ Flowera currently provides the foundation for:
 * Assigning tasks to workers
 * Monitoring active workers
 * Human approval and assistance when workers get stuck
+* Computer use: every worker can see and operate its desktop's apps — web pages, LibreOffice, file manager — through one shared action layer, with Send/Pay-style buttons stopped for your approval and every action recorded with before/after screenshots
+* A GUI benchmark (`bench/gui/`) measuring each engine's success rate on real graphical tasks
+* Task records: every message becomes a stored task (what was asked, each attempt's steps and screenshots, every help or approval request with your reply, how it ended, how long it took and what it cost), kept in an embedded SQLite database so a restart loses nothing
+* A one-tap **Correct / Wrong** on every answer in the chat, since "done" is only the agent's own claim
+* An autonomy dashboard (**Tasks** in the top bar): autonomy rate by engine, worker and task type, and the most common reasons people had to step in
 * Persistent worker environments
 * A central dashboard for managing everything
 
@@ -322,6 +327,8 @@ Set these in your own `.env` (copied from `.env.example`) — the control plane 
 | `OLLAMA_URL` | No | `http://host.docker.internal:11434` | The Ollama server every new desktop reasons with. The default is the host running Flowera. See [Setting up Ollama](#-setting-up-ollama). |
 | `OLLAMA_MODEL` | No | `qwen2.5-coder:3b` | The chat model every new desktop uses. It must already be pulled on `OLLAMA_URL`'s server (`build.sh` pulls it for you). |
 | `DESKTOP_STOP_TIMEOUT_SECONDS` | No | `10` | Seconds to wait for a desktop container to stop gracefully before force-killing it. |
+| `FLOWERA_DATA_DIR` | No | your user config dir + `/flowera` (`/data` in the Docker image) | Where `flowera.db` lives: task records, chats, help requests, worker memory and action screenshots. `docker compose` keeps it on the `flowera-data` volume. |
+| `FLOWERA_STEP_IMAGES_MB` | No | `1024` | Disk budget for the before/after screenshots of on-screen actions. The oldest are dropped first. A desktop keeps its full-size originals regardless. |
 
 Every other setting (the agent harness, the control-plane URL a desktop calls home to, etc.) is set up for each desktop when you create it. See [`CLAUDE.md`](CLAUDE.md) if you're changing that wiring.
 

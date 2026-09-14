@@ -1,18 +1,27 @@
-// Package conversation holds the in-memory chat transcript between a human and
-// each desktop's agent: the finished messages both sides exchanged, plus the
-// live step-by-step activity of whichever turn is running right now.
+// Package conversation holds the chat transcript between a human and each
+// desktop's agent: the finished messages both sides exchanged, plus the live
+// step-by-step activity of whichever turn is running right now.
 //
 // It is the control plane's own record, not the agent's. A desktop's agent
 // still keeps its own reasoning state inside the container (the Ollama loop's
 // history list, Claude Code's session, TheBot's L1/L2); this is what the chat
 // UI renders, shared by every browser pointed at the same control plane
 // instead of living in one tab's localStorage.
+//
+// Threads are served from memory - the chat's event stream re-reads a whole
+// snapshot on every change - and every change is written through to SQLite,
+// so a restarted control plane loads each thread back on first use.
 package conversation
 
 import (
+	"database/sql"
+	"encoding/json"
 	"fmt"
+	"log"
 	"sync"
 	"time"
+
+	"github.com/YKoustubhRao/flowera/internal/sqlitedb"
 )
 
 // Roles a message can come from.
@@ -30,9 +39,9 @@ const (
 )
 
 // maxMessages and maxSteps bound how much of one desktop's chat is retained.
-// The store is process-lifetime memory with no eviction of its own, so a
-// long-lived desktop chatting all day must not grow without limit; the oldest
-// entries are dropped once these are exceeded.
+// A long-lived desktop chatting all day must not grow its thread without
+// limit; the oldest entries are dropped once these are exceeded. The task
+// records (internal/tasks) are the durable history - the chat is the view.
 const (
 	maxMessages = 200
 	maxSteps    = 400
@@ -53,18 +62,45 @@ const lateStepWindow = 10 * time.Second
 type Step struct {
 	ID        string    `json:"id"`
 	Text      string    `json:"text"`
+	Action    *Action   `json:"action,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// Action is what makes a step part of the audit trail: one thing an agent did
+// on its desktop's screen, reported by the shared action layer inside the
+// desktop (flowera_agent/computer) whichever engine asked for it. Before and
+// After are URLs of the screenshots either side of it; a stopped action
+// (Outcome "needs_approval") has only a Before.
+type Action struct {
+	// RecordID is the desktop's own audit record for this action, which keeps
+	// the full-resolution frames on the desktop's volume.
+	RecordID string `json:"record_id,omitempty"`
+	Kind     string `json:"kind"`
+	Target   string `json:"target,omitempty"`
+	Backend  string `json:"backend,omitempty"`
+	Outcome  string `json:"outcome,omitempty"`
+	Change   string `json:"change,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+	Before   string `json:"before,omitempty"`
+	After    string `json:"after,omitempty"`
 }
 
 // Message is one finished turn in the transcript. An agent message carries the
 // Steps that produced it, so a completed turn can still be expanded to show
 // the work behind the answer.
 type Message struct {
-	ID        string    `json:"id"`
-	DesktopID string    `json:"desktop_id"`
-	Role      string    `json:"role"`
-	Kind      string    `json:"kind"`
-	Content   string    `json:"content"`
+	ID        string `json:"id"`
+	DesktopID string `json:"desktop_id"`
+	Role      string `json:"role"`
+	Kind      string `json:"kind"`
+	Content   string `json:"content"`
+
+	// TaskID links the message to its task record, and Verdict is the human's
+	// "correct"/"wrong" on that task's answer - shown on every device, which
+	// is why it travels with the transcript rather than living in one tab.
+	TaskID  string `json:"task_id,omitempty"`
+	Verdict string `json:"verdict,omitempty"`
+
 	Steps     []Step    `json:"steps,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -92,35 +128,68 @@ type thread struct {
 	subscribers map[chan struct{}]bool
 }
 
-// Store is an in-memory, mutex-guarded set of per-desktop chat threads.
+var schema = []string{
+	`CREATE TABLE chat_threads (
+		desktop_id TEXT PRIMARY KEY,
+		running    INTEGER NOT NULL,
+		started_ns INTEGER NOT NULL
+	)`,
+	`CREATE TABLE chat_messages (
+		id         TEXT PRIMARY KEY,
+		desktop_id TEXT NOT NULL,
+		role       TEXT NOT NULL,
+		kind       TEXT NOT NULL,
+		content    TEXT NOT NULL,
+		task_id    TEXT NOT NULL DEFAULT '',
+		verdict    TEXT NOT NULL DEFAULT '',
+		created_ns INTEGER NOT NULL
+	)`,
+	`CREATE INDEX chat_messages_desktop ON chat_messages (desktop_id)`,
+	// message_id '' is the turn still running.
+	`CREATE TABLE chat_steps (
+		id         TEXT PRIMARY KEY,
+		desktop_id TEXT NOT NULL,
+		message_id TEXT NOT NULL DEFAULT '',
+		text       TEXT NOT NULL,
+		action     TEXT NOT NULL DEFAULT '',
+		created_ns INTEGER NOT NULL
+	)`,
+	`CREATE INDEX chat_steps_desktop ON chat_steps (desktop_id, message_id)`,
+}
+
+// Store is a set of per-desktop chat threads, held in memory and written
+// through to SQLite.
 type Store struct {
 	mu      sync.Mutex
+	db      *sql.DB
 	threads map[string]*thread
 	seq     uint64
 }
 
-// NewStore creates an empty conversation Store.
-func NewStore() *Store {
-	return &Store{
-		threads: make(map[string]*thread),
+// NewStore opens the conversation Store on db, creating its tables if needed.
+func NewStore(db *sql.DB) (*Store, error) {
+	if err := sqlitedb.Migrate(db, "conversation", schema); err != nil {
+		return nil, err
 	}
+
+	return &Store{
+		db:      db,
+		threads: make(map[string]*thread),
+	}, nil
 }
 
-// threadFor returns the thread for a desktop, creating it on first use. The
-// caller must hold the lock.
+// threadFor returns the thread for a desktop, loading it from the database on
+// first use. The caller must hold the lock.
 func (s *Store) threadFor(desktopID string) *thread {
 	existing, ok := s.threads[desktopID]
 	if ok {
 		return existing
 	}
 
-	created := &thread{
-		subscribers: make(map[chan struct{}]bool),
-	}
+	loaded := s.load(desktopID)
+	s.threads[desktopID] = loaded
 
-	s.threads[desktopID] = created
-
-	return created
+	return loaded
 }
 
 // nextID returns a unique identifier for a message or step. The caller must
@@ -150,7 +219,7 @@ func (t *thread) touch() {
 // AppendUserMessage records something the human sent to a desktop and opens a
 // new turn: the agent is now considered busy, and the steps it reports from
 // here on belong to this turn.
-func (s *Store) AppendUserMessage(desktopID, content string) Message {
+func (s *Store) AppendUserMessage(desktopID, taskID, content string) Message {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -162,13 +231,28 @@ func (s *Store) AppendUserMessage(desktopID, content string) Message {
 		Role:      RoleUser,
 		Kind:      KindMessage,
 		Content:   content,
+		TaskID:    taskID,
 		CreatedAt: time.Now().UTC(),
 	}
 
-	current.messages = appendCapped(current.messages, message, maxMessages)
+	var dropped []Message
+
+	current.messages, dropped = appendCapped(current.messages, message, maxMessages)
 	current.steps = nil
 	current.running = true
 	current.startedAt = message.CreatedAt
+
+	s.persist(desktopID, current, func(tx *sql.Tx) error {
+		if err := insertMessage(tx, message); err != nil {
+			return err
+		}
+
+		if _, err := tx.Exec(`DELETE FROM chat_steps WHERE desktop_id = ? AND message_id = ''`, desktopID); err != nil {
+			return err
+		}
+
+		return deleteMessages(tx, dropped)
+	})
 
 	current.touch()
 
@@ -177,7 +261,7 @@ func (s *Store) AppendUserMessage(desktopID, content string) Message {
 
 // AppendAgentMessage records the agent's reply and closes the current turn,
 // attaching the steps it took along the way to the message itself.
-func (s *Store) AppendAgentMessage(desktopID, kind, content string) Message {
+func (s *Store) AppendAgentMessage(desktopID, taskID, kind, content string) Message {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -195,14 +279,32 @@ func (s *Store) AppendAgentMessage(desktopID, kind, content string) Message {
 		Role:      RoleAgent,
 		Kind:      kind,
 		Content:   content,
+		TaskID:    taskID,
 		Steps:     current.steps,
 		CreatedAt: time.Now().UTC(),
 	}
 
-	current.messages = appendCapped(current.messages, message, maxMessages)
+	var dropped []Message
+
+	current.messages, dropped = appendCapped(current.messages, message, maxMessages)
 	current.steps = nil
 	current.running = false
 	current.startedAt = time.Time{}
+
+	s.persist(desktopID, current, func(tx *sql.Tx) error {
+		if err := insertMessage(tx, message); err != nil {
+			return err
+		}
+
+		if _, err := tx.Exec(
+			`UPDATE chat_steps SET message_id = ? WHERE desktop_id = ? AND message_id = ''`,
+			message.ID, desktopID,
+		); err != nil {
+			return err
+		}
+
+		return deleteMessages(tx, dropped)
+	})
 
 	current.touch()
 
@@ -214,6 +316,17 @@ func (s *Store) AppendAgentMessage(desktopID, kind, content string) Message {
 // desktop started on its own is visible rather than silently dropped — unless
 // it trails a turn that only just closed, in which case it belongs to that one.
 func (s *Store) AppendStep(desktopID, text string) Step {
+	return s.appendStep(desktopID, text, nil)
+}
+
+// AppendActionStep records one on-screen action as a step of the running turn,
+// under the same rules as AppendStep.
+func (s *Store) AppendActionStep(desktopID, text string, action Action) Step {
+	return s.appendStep(desktopID, text, &action)
+}
+
+// appendStep is AppendStep and AppendActionStep's shared body.
+func (s *Store) appendStep(desktopID, text string, action *Action) Step {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -222,12 +335,23 @@ func (s *Store) AppendStep(desktopID, text string) Step {
 	step := Step{
 		ID:        s.nextID(),
 		Text:      text,
+		Action:    action,
 		CreatedAt: time.Now().UTC(),
 	}
 
+	var dropped []Step
+
 	if last := current.lastMessage(); !current.running && last != nil &&
 		last.Role == RoleAgent && step.CreatedAt.Sub(last.CreatedAt) < lateStepWindow {
-		last.Steps = appendCapped(last.Steps, step, maxSteps)
+		last.Steps, dropped = appendCapped(last.Steps, step, maxSteps)
+
+		s.persist(desktopID, current, func(tx *sql.Tx) error {
+			if err := insertStep(tx, desktopID, last.ID, step); err != nil {
+				return err
+			}
+
+			return deleteSteps(tx, dropped)
+		})
 
 		current.touch()
 
@@ -239,11 +363,48 @@ func (s *Store) AppendStep(desktopID, text string) Step {
 		current.startedAt = step.CreatedAt
 	}
 
-	current.steps = appendCapped(current.steps, step, maxSteps)
+	current.steps, dropped = appendCapped(current.steps, step, maxSteps)
+
+	s.persist(desktopID, current, func(tx *sql.Tx) error {
+		if err := insertStep(tx, desktopID, "", step); err != nil {
+			return err
+		}
+
+		return deleteSteps(tx, dropped)
+	})
 
 	current.touch()
 
 	return step
+}
+
+// SetVerdict records the human's verdict ("correct", "wrong", or "" to take
+// it back) on every agent message belonging to a task.
+func (s *Store) SetVerdict(desktopID, taskID, verdict string) {
+	if taskID == "" {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	current := s.threadFor(desktopID)
+
+	for i := range current.messages {
+		if current.messages[i].TaskID == taskID && current.messages[i].Role == RoleAgent {
+			current.messages[i].Verdict = verdict
+		}
+	}
+
+	s.persist(desktopID, current, func(tx *sql.Tx) error {
+		_, err := tx.Exec(
+			`UPDATE chat_messages SET verdict = ? WHERE desktop_id = ? AND task_id = ? AND role = ?`,
+			verdict, desktopID, taskID, RoleAgent,
+		)
+		return err
+	})
+
+	current.touch()
 }
 
 // Snapshot returns a copy of one desktop's thread, safe for a caller to hold
@@ -271,7 +432,7 @@ func (s *Store) Snapshot(desktopID string) Thread {
 }
 
 // Clear discards one desktop's transcript, including any turn it currently
-// believes is running.
+// believes is running. The task records behind it are kept.
 func (s *Store) Clear(desktopID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -282,6 +443,15 @@ func (s *Store) Clear(desktopID string) {
 	current.steps = nil
 	current.running = false
 	current.startedAt = time.Time{}
+
+	s.persist(desktopID, current, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`DELETE FROM chat_steps WHERE desktop_id = ?`, desktopID); err != nil {
+			return err
+		}
+
+		_, err := tx.Exec(`DELETE FROM chat_messages WHERE desktop_id = ?`, desktopID)
+		return err
+	})
 
 	current.touch()
 }
@@ -317,13 +487,213 @@ func (t *thread) lastMessage() *Message {
 }
 
 // appendCapped appends an item, dropping the oldest entries once the slice
-// would exceed max.
-func appendCapped[T any](items []T, item T, max int) []T {
+// would exceed max, and returns what it dropped.
+func appendCapped[T any](items []T, item T, max int) (kept []T, dropped []T) {
 	items = append(items, item)
 
 	if len(items) > max {
+		dropped = append(dropped, items[:len(items)-max]...)
 		items = items[len(items)-max:]
 	}
 
-	return items
+	return items, dropped
+}
+
+// ---------------------------------------------------------------------------
+// persistence
+// ---------------------------------------------------------------------------
+
+// persist runs one change's writes, plus the thread's running state, in a
+// single transaction. The caller must hold the lock, which keeps the database
+// in the same order as memory. A failed write is logged rather than returned:
+// the in-memory thread is still correct for everyone watching it, and a chat
+// must not stop working because the disk did.
+func (s *Store) persist(desktopID string, current *thread, write func(tx *sql.Tx) error) {
+	err := func() error {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return err
+		}
+
+		if err := write(tx); err != nil {
+			tx.Rollback()
+			return err
+		}
+
+		if _, err := tx.Exec(
+			`INSERT INTO chat_threads (desktop_id, running, started_ns) VALUES (?, ?, ?)
+			 ON CONFLICT(desktop_id) DO UPDATE SET running = excluded.running, started_ns = excluded.started_ns`,
+			desktopID, current.running, sqlitedb.ToNS(current.startedAt),
+		); err != nil {
+			tx.Rollback()
+			return err
+		}
+
+		return tx.Commit()
+	}()
+	if err != nil {
+		log.Printf("conversation: saving %s: %v", desktopID, err)
+	}
+}
+
+func insertMessage(tx *sql.Tx, message Message) error {
+	_, err := tx.Exec(
+		`INSERT INTO chat_messages (id, desktop_id, role, kind, content, task_id, verdict, created_ns)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		message.ID, message.DesktopID, message.Role, message.Kind, message.Content,
+		message.TaskID, message.Verdict, sqlitedb.ToNS(message.CreatedAt),
+	)
+	return err
+}
+
+func insertStep(tx *sql.Tx, desktopID, messageID string, step Step) error {
+	action := ""
+
+	if step.Action != nil {
+		encoded, err := json.Marshal(step.Action)
+		if err != nil {
+			return err
+		}
+		action = string(encoded)
+	}
+
+	_, err := tx.Exec(
+		`INSERT INTO chat_steps (id, desktop_id, message_id, text, action, created_ns)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		step.ID, desktopID, messageID, step.Text, action, sqlitedb.ToNS(step.CreatedAt),
+	)
+	return err
+}
+
+func deleteMessages(tx *sql.Tx, messages []Message) error {
+	for _, message := range messages {
+		if _, err := tx.Exec(`DELETE FROM chat_steps WHERE message_id = ?`, message.ID); err != nil {
+			return err
+		}
+
+		if _, err := tx.Exec(`DELETE FROM chat_messages WHERE id = ?`, message.ID); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func deleteSteps(tx *sql.Tx, steps []Step) error {
+	for _, step := range steps {
+		if _, err := tx.Exec(`DELETE FROM chat_steps WHERE id = ?`, step.ID); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// load reads one desktop's thread back from the database. Its version starts
+// at the current Unix microsecond rather than zero, so a browser still holding
+// a version number from before a restart cannot mistake a new snapshot for
+// one it already has - and stays below 2^53, the largest integer a browser's
+// JSON parser keeps exact. The caller must hold the lock.
+func (s *Store) load(desktopID string) *thread {
+	loaded := &thread{
+		version:     uint64(time.Now().UnixMicro()),
+		subscribers: make(map[chan struct{}]bool),
+	}
+
+	var running bool
+	var started int64
+
+	err := s.db.QueryRow(
+		`SELECT running, started_ns FROM chat_threads WHERE desktop_id = ?`, desktopID,
+	).Scan(&running, &started)
+	if err != nil && err != sql.ErrNoRows {
+		log.Printf("conversation: loading %s: %v", desktopID, err)
+		return loaded
+	}
+
+	loaded.running = running
+	loaded.startedAt = sqlitedb.FromNS(started)
+
+	messages, err := loadMessages(s.db, desktopID)
+	if err != nil {
+		log.Printf("conversation: loading %s: %v", desktopID, err)
+		return loaded
+	}
+
+	byID := make(map[string]int, len(messages))
+	for i, message := range messages {
+		byID[message.ID] = i
+	}
+
+	rows, err := s.db.Query(
+		`SELECT id, message_id, text, action, created_ns FROM chat_steps
+		 WHERE desktop_id = ? ORDER BY rowid`, desktopID,
+	)
+	if err != nil {
+		log.Printf("conversation: loading %s: %v", desktopID, err)
+		loaded.messages = messages
+		return loaded
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var step Step
+		var messageID, action string
+		var created int64
+
+		if err := rows.Scan(&step.ID, &messageID, &step.Text, &action, &created); err != nil {
+			log.Printf("conversation: loading %s: %v", desktopID, err)
+			continue
+		}
+
+		step.CreatedAt = sqlitedb.FromNS(created)
+
+		if action != "" {
+			var decoded Action
+			if json.Unmarshal([]byte(action), &decoded) == nil {
+				step.Action = &decoded
+			}
+		}
+
+		if messageID == "" {
+			loaded.steps = append(loaded.steps, step)
+			continue
+		}
+
+		if i, ok := byID[messageID]; ok {
+			messages[i].Steps = append(messages[i].Steps, step)
+		}
+	}
+
+	loaded.messages = messages
+
+	return loaded
+}
+
+func loadMessages(db *sql.DB, desktopID string) ([]Message, error) {
+	rows, err := db.Query(
+		`SELECT id, role, kind, content, task_id, verdict, created_ns FROM chat_messages
+		 WHERE desktop_id = ? ORDER BY rowid`, desktopID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var messages []Message
+
+	for rows.Next() {
+		message := Message{DesktopID: desktopID}
+		var created int64
+
+		if err := rows.Scan(&message.ID, &message.Role, &message.Kind, &message.Content,
+			&message.TaskID, &message.Verdict, &created); err != nil {
+			return nil, err
+		}
+
+		message.CreatedAt = sqlitedb.FromNS(created)
+		messages = append(messages, message)
+	}
+
+	return messages, rows.Err()
 }

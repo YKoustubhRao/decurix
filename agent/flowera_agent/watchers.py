@@ -1,7 +1,8 @@
 import threading
 import time
 
-from flowera_agent import config, progress, state
+from flowera_agent import config, progress, state, task_context, usage
+from flowera_agent.computer import approval
 from flowera_agent.harness import continue_after_help, perform_task
 from flowera_agent.logging_utils import log
 from flowera_agent.messaging import send_helptext
@@ -54,6 +55,29 @@ def _report_queued(name):
         "Waiting for the model backend to come up - "
         "your message is queued and will run as soon as it is reachable."
     )
+
+
+HANDLED_SUFFIX = ".done"
+
+
+def _mark_handled(path):
+    """
+    Rename a dispatched message file so no later pass - and no later life of
+    this process - picks it up again.
+
+    state.processed_commands is memory; the command directory is the desktop's
+    persistent volume. Every restart used to replay every message the desktop
+    had ever been sent: measured running the GUI benchmark, which restarts a
+    desktop between tasks, each new task queued behind replays of all the
+    earlier ones, and the answers came back about signing in to an admin panel
+    for a spreadsheet task. Renamed rather than deleted, so the history of what
+    the desktop was asked stays on disk.
+    """
+
+    try:
+        path.rename(path.with_name(path.name + HANDLED_SUFFIX))
+    except OSError as exc:
+        log(f"Could not mark {path.name} as handled: {exc}")
 
 
 def command_watcher():
@@ -129,6 +153,27 @@ def command_watcher():
                 # this new command is the help response.
                 if state.waiting_for_help:
 
+                    # A reply belongs to the paused task. A desktop whose
+                    # task started before the control plane sent IDs takes
+                    # the one its reply carries.
+                    if not state.current_task_id:
+                        task_context.start(task_context.task_id_from_filename(path.name))
+
+                    # If what it is waiting on is an on-screen action the
+                    # approval gate stopped, this reply is what settles it:
+                    # a yes becomes a one-shot grant for exactly that action,
+                    # anything else withdraws it. Done here, before the
+                    # harness sees the reply, so whichever engine repeats
+                    # the action finds the grant already in place.
+                    try:
+                        outcome = approval.resolve_reply(content)
+                        if outcome:
+                            log(f"On-screen approval {outcome} by the human's reply.")
+                    except OSError as exc:
+                        log(f"Could not settle the on-screen approval: {exc}")
+
+                    _mark_handled(path)
+
                     thread = threading.Thread(
                         target=continue_after_help,
                         args=(content,),
@@ -172,6 +217,20 @@ def command_watcher():
                         continue
 
                     state.current_task = content
+
+                # Reports from here on belong to this message's task record,
+                # and so does what the engine uses.
+                task_context.start(task_context.task_id_from_filename(path.name))
+                usage.reset()
+
+                _mark_handled(path)
+
+                # A new task: nothing an earlier one was approved for, or was
+                # stopped on, carries over into it.
+                try:
+                    approval.reset()
+                except OSError as exc:
+                    log(f"Could not clear on-screen approvals: {exc}")
 
                 thread = threading.Thread(
                     target=perform_task,

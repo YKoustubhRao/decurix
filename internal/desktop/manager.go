@@ -145,6 +145,7 @@ func (m *Manager) Create(
 		Name:        name,
 		Profile:     profile,
 		Harness:     harness,
+		Model:       envValue(env, "OLLAMA_MODEL"),
 		ContainerID: resp.ID,
 		Volume:      volumeName,
 		Status:      "running",
@@ -191,6 +192,7 @@ func (m *Manager) List(
 		}
 
 		volumeName := ""
+		model := ""
 		var cpus int64
 		var memoryMB int64
 
@@ -205,6 +207,10 @@ func (m *Manager) List(
 					volumeName = mount.Name
 					break
 				}
+			}
+
+			if inspect.Config != nil {
+				model = envValue(inspect.Config.Env, "OLLAMA_MODEL")
 			}
 
 			if inspect.HostConfig != nil {
@@ -256,6 +262,7 @@ func (m *Manager) List(
 				Name:        id,
 				Profile:     profile,
 				Harness:     harness,
+				Model:       model,
 				ContainerID: c.ID,
 				Volume:      volumeName,
 				Status:      status,
@@ -394,11 +401,65 @@ func (m *Manager) Delete(
 	return nil
 }
 
-// SendMessage posts a JSON message to a running desktop's internal message endpoint.
+// Get returns one desktop, as List would describe it, plus the chat model its
+// container was created with (Desktop.Model).
+func (m *Manager) Get(ctx context.Context, id string) (Desktop, error) {
+	desktopID := sanitizeName(id)
+
+	inspect, err := m.client.ContainerInspect(ctx, "desktop_"+desktopID)
+	if err != nil {
+		return Desktop{}, fmt.Errorf("find desktop %s: %w", desktopID, ErrNotFound)
+	}
+
+	found := Desktop{
+		ID:          desktopID,
+		Name:        desktopID,
+		Profile:     "basic",
+		Harness:     HarnessOllama,
+		ContainerID: inspect.ID,
+		Status:      "stopped",
+		URL:         desktopURL(desktopID),
+		CreatedAt:   inspect.Created,
+	}
+
+	if inspect.Config != nil {
+		if profile := inspect.Config.Labels["desktop-profile"]; profile != "" {
+			found.Profile = profile
+		}
+
+		if harness := inspect.Config.Labels["desktop-harness"]; harness != "" {
+			found.Harness = harness
+		}
+
+		found.Model = envValue(inspect.Config.Env, "OLLAMA_MODEL")
+	}
+
+	if inspect.State != nil && inspect.State.Running {
+		found.Status = "running"
+	}
+
+	return found, nil
+}
+
+// envValue returns one variable from a container's environment list.
+func envValue(env []string, name string) string {
+	for _, entry := range env {
+		if value, ok := strings.CutPrefix(entry, name+"="); ok {
+			return value
+		}
+	}
+
+	return ""
+}
+
+// SendMessage posts a JSON message to a running desktop's internal message
+// endpoint. taskID is the control plane's record the message belongs to; the
+// desktop echoes it back on every step and outcome it reports for that task.
 func (m *Manager) SendMessage(
 	ctx context.Context,
 	id string,
 	content string,
+	taskID string,
 ) error {
 
 	desktopID := sanitizeName(id)
@@ -428,6 +489,10 @@ func (m *Manager) SendMessage(
 
 	payload := map[string]string{
 		"content": content,
+	}
+
+	if taskID != "" {
+		payload["task_id"] = taskID
 	}
 
 	body, err := json.Marshal(payload)

@@ -613,6 +613,16 @@ body.busy{cursor:progress}
   .page-head{display:block}
   .menu-panel{width:min(300px,calc(100vw - 26px))}
 }
+
+/* Four sections and two icon buttons have to share a phone's width. */
+@media (max-width:440px){
+  .topbar{gap:4px;padding:0 10px}
+  .brand-mark{width:38px;height:38px}
+  .nav{gap:0}
+  .nav a{padding:0 6px;font-size:12.5px;gap:4px}
+  .topbar-right{gap:0}
+  .icon-btn{width:30px}
+}
 </style>
 {{end}}
 
@@ -882,6 +892,7 @@ body.busy{cursor:progress}
       Help <span class="nav-badge" id="navHelpBadge">0</span>
     </a>
     <a href="/messages"{{if eq . "messages"}} class="active" aria-current="page"{{end}}>Messages</a>
+    <a href="/tasks"{{if eq . "tasks"}} class="active" aria-current="page"{{end}}>Tasks</a>
   </nav>
 
   <div class="topbar-right">

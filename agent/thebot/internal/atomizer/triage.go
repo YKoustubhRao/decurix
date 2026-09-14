@@ -70,6 +70,25 @@ var (
 	researchRe = regexp.MustCompile(`(?i)\b(find\s+out|research|look\s+(up|into)|learn\s+about|newest|latest|current\s+(price|version\s+of\s+(?:go|python|node|rust|java))|news|search)\b`)
 )
 
+var (
+	// Something on the desktop's screen - a window, a page already open in
+	// the browser, a form, an office document - as opposed to the machine's
+	// files and processes or the web at large.
+	screenSurfaceRe = regexp.MustCompile(`(?i)\b(browser|chromium|web ?page|(the|this|that) page|admin panel|dashboard|libre ?office|writer|calc|spreadsheet|mousepad|text editor|file manager|thunar|on (the )?screen|gui|window|(the|this|that) form|dialog|button|dropdown|drop-down|check ?box|(the|a|new) tab)\b`)
+	// Doing something there. Both halves are required: "browser test message
+	// one" names a surface and asks for nothing, and stays conversation.
+	screenActionRe = regexp.MustCompile(`(?i)\b(click|double[- ]click|right[- ]click|tick|untick|fill\s+(in|out)|type|press|select|choose|pick|enter|add|edit|change|rename|delete|remove|submit|sign\s+in|log\s*in|save|set|make|turn\s+(on|off)|enable|disable|pay|send|publish|create|open|close|replace|put|scroll)\b`)
+)
+
+// wantsScreen reports whether a request is work in a graphical app. The web
+// skill would otherwise claim anything with a URL in it and fetch the page
+// itself - fine for reading the web, useless for signing in to an admin
+// panel and pressing its buttons, which only the operator's `gui` command
+// can do.
+func wantsScreen(prompt string) bool {
+	return screenSurfaceRe.MatchString(prompt) && screenActionRe.MatchString(prompt)
+}
+
 // greetingLeadRe strips the greeting off the front of a turn, so what
 // follows it can be judged on its own.
 var greetingLeadRe = regexp.MustCompile(`(?i)^\s*(hi+|hello+|hey+|yo|hiya|howdy|greetings|good\s+(morning|afternoon|evening|night)|thanks?|thank\s+you|thx|ok(ay)?)\b[\s,.!-]*(there\b[\s,.!-]*)?`)
@@ -108,6 +127,13 @@ func Triage(prompt string) Route {
 
 	if matched == "coding" {
 		return Route{Kind: RouteSkill, TaskType: matched, Reason: "a request to build software - the coding harness takes it whole"}
+	}
+
+	// Before the compound check: "fill in the name, then press Save" is one
+	// goal on one screen, worked through by one loop that sees each result -
+	// not a plan written before anything on the screen has been looked at.
+	if wantsScreen(p) && !researchRe.MatchString(p) {
+		return Route{Kind: RouteOperate, TaskType: matched, Reason: "work in an app on the screen - the operator drives it with the gui command"}
 	}
 
 	if looksCompound(p) {

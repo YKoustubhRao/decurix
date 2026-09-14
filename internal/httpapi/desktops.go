@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/YKoustubhRao/flowera/internal/desktop"
 	"github.com/YKoustubhRao/flowera/internal/memory"
+	"github.com/YKoustubhRao/flowera/internal/tasks"
 	"github.com/YKoustubhRao/flowera/internal/webui"
 )
 
@@ -165,6 +167,16 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := s.Tasks.UpsertWorker(tasks.Worker{
+		ID:      created.ID,
+		Name:    created.Name,
+		Engine:  created.Harness,
+		Profile: created.Profile,
+		Model:   created.Model,
+	}); err != nil {
+		log.Printf("createDesktop: %v", err)
+	}
+
 	jsonResponse(w, created)
 }
 
@@ -211,6 +223,8 @@ func (s *Server) stopDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.closeOpenTasks(id, "The desktop was stopped before this task finished.")
+
 	jsonResponse(w, map[string]string{
 		"status": "stopped",
 	})
@@ -234,6 +248,8 @@ func (s *Server) restartDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err)
 		return
 	}
+
+	s.closeOpenTasks(id, "The desktop was restarted before this task finished.")
 
 	jsonResponse(w, map[string]string{
 		"status": "restarted",
@@ -259,7 +275,23 @@ func (s *Server) deleteDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.closeOpenTasks(id, "The desktop was deleted before this task finished.")
+
+	// The worker's records outlive its container.
+	if err := s.Tasks.MarkWorkerDeleted(desktop.SanitizeID(id)); err != nil {
+		log.Printf("deleteDesktop: %v", err)
+	}
+
 	jsonResponse(w, map[string]string{
 		"status": "deleted",
 	})
+}
+
+// closeOpenTasks ends the task records a desktop's agent can no longer finish:
+// stopping, restarting or deleting a desktop throws away what its agent was
+// in the middle of, including a pause waiting on a human.
+func (s *Server) closeOpenTasks(id, why string) {
+	if err := s.Tasks.CloseOpen(desktop.SanitizeID(id), why); err != nil {
+		log.Printf("closing tasks for %s: %v", id, err)
+	}
 }

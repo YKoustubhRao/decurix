@@ -3,7 +3,7 @@ import os
 import urllib.error
 import urllib.request
 
-from flowera_agent import config
+from flowera_agent import config, usage
 from flowera_agent.identity import get_identity_context
 from flowera_agent.memory_context import get_memory_context
 from flowera_agent.readiness import wait_for_http_ok
@@ -88,6 +88,15 @@ def ollama_request(messages):
                 raw.decode("utf-8")
             )
 
+            # A local model: tokens are what the call used, and it costs
+            # nothing per call.
+            usage.set_model(config.OLLAMA_MODEL)
+            usage.add(
+                input_tokens=result.get("prompt_eval_count"),
+                output_tokens=result.get("eval_count"),
+                cost_usd=0,
+            )
+
             return result["message"]["content"]
 
     except urllib.error.URLError as exc:
@@ -165,6 +174,18 @@ outside this machine. Not knowing the answer yet is not being blocked -
 run a command and find out. A question is never a reason to ask for
 help, and never ask the human why they want something.
 
+THE SCREEN. This desktop also has windows: Chromium, LibreOffice, a text
+editor. Work in them with the gui command, one per COMMAND:
+gui observe             lists windows and elements, each with a ref like e12
+gui click e12           clicks it
+gui type e12 "text"     replaces a field's text
+gui key ctrl+s          presses keys (enter, tab, ctrl+a ...)
+gui select e12 "High"   picks a dropdown option
+gui open <url|file|app> opens it
+Observe first and use refs from the latest output, just the ref: gui click
+e12, not the whole line. Every gui action tells you what changed. A button that sends, pays or publishes pauses for
+approval on its own.
+
 ALWAYS use HELP, even when you could proceed on your own, before making
 or approving a payment, sending a message as the human (WhatsApp, email,
 SMS, or anything else), or any other action with real-world consequences
@@ -181,6 +202,10 @@ done and I'll do it.
 Human: what is in /tmp?
 COMMAND:
 ls -la /tmp
+
+Human: add a user named Kim in the admin panel open in the browser.
+COMMAND:
+gui observe
 
 Human: delete the project.
 HELP:
