@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from flowera_agent.computer import elements as el
+from flowera_agent.computer import privacy
 
 
 # ============================================================
@@ -170,13 +171,23 @@ class Decision:
         self.request = request
 
 
-def describe_action(kind, element, text=None, keys=None, point=None):
+def describe_action(kind, element, text=None, keys=None, point=None, withheld=None):
+    """
+    One line for an action. Typed text that privacy.py does not keep - it
+    went into a password field, or is itself a credential - is named as
+    withheld, never quoted: this line is the chat step, the task record and
+    the approval request alike. `withheld` is the reason, when the caller
+    already knows the text went into a secret field this cannot see.
+    """
+
     target = el.describe(element) if element else (f"the point {point[0]},{point[1]}" if point else "the screen")
     window = (element or {}).get("window_title")
     where = f' in "{window}"' if window else ""
 
     if kind == "type":
-        return f"type {el._quote(text or '', 60)} into {target}{where}"
+        if withheld is None:
+            _, withheld = privacy.withhold_text(element, text)
+        return f"type {privacy.shown_text(text, withheld)} into {target}{where}"
     if kind == "key":
         return f"press {' '.join(keys or [])} in {target}{where}"
     return f"{kind.replace('_', ' ')} {target}{where}"

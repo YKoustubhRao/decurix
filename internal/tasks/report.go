@@ -24,6 +24,10 @@ var engineLabels = map[string]string{
 	"ollama": "Ollama",
 	"claude": "Claude Code",
 	"thebot": "TheBot",
+	// A recording run again by the desktop itself, with no model at all.
+	"replay": "Replay (no model)",
+	// A person doing a task while the desktop recorded them.
+	"human": "Recorded by a person",
 }
 
 // EngineLabel is the human-readable name of an engine.
@@ -377,6 +381,11 @@ func (s *Store) Report(since time.Time) (Report, error) {
 	}
 
 	for _, summary := range summaries {
+		// A person did it while it was recorded: no engine was being autonomous.
+		if summary.Type == TypeDemonstration {
+			continue
+		}
+
 		engine := group(engines, summary.Engine, EngineLabel(summary.Engine))
 		worker := group(workers, summary.WorkerID, summary.WorkerName)
 		worker.Engine = summary.Engine

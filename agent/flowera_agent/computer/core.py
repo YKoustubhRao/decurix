@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 
 from flowera_agent import progress
-from flowera_agent.computer import approval, atspi, audit, cdp, screen, session, xinput
+from flowera_agent.computer import approval, atspi, audit, cdp, privacy, screen, session, volatility, xinput
 from flowera_agent.computer import elements as el
 from flowera_agent.computer.errors import ComputerError
 
@@ -54,10 +54,12 @@ def _save_state(observation, next_ref):
     tmp.replace(STATE_FILE)
 
 
-def observe():
+def observe(remember=True):
     """
     Look at the screen: a screenshot, the open windows, and every accessible
-    element in them. Saves the result as the reference for the next action.
+    element in them. Saves the result as the reference for the next action -
+    unless `remember` is False, for the demonstration recorder, which looks
+    at the screen without moving an engine's refs out from under it.
     """
 
     session.ensure()
@@ -113,7 +115,8 @@ def observe():
         "frame": frame,
     }
 
-    _save_state(observation, next_ref)
+    if remember:
+        _save_state(observation, next_ref)
 
     return observation
 
@@ -225,7 +228,7 @@ def _goto_sheet_cell(element):
     time.sleep(0.2)
 
 
-def _perform(kind, element, point, text, keys, direction, amount, option, append):
+def _perform(kind, element, point, text, keys, direction, amount, option, append, end=None):
     """Carry out one action; return which backend did it."""
 
     if element is not None and element.get("handle", {}).get("sheet_cell"):
@@ -338,13 +341,23 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
         atspi.select_option(element, option)
         return "atspi"
 
+    if kind == "drag":
+        start = point or (el.center(element) if element else None)
+        if start is None or not end:
+            raise ComputerError("drag needs where to start (an element or a point) and a point to drop it at")
+        if element is not None:
+            _focus_window(element)
+        xinput.drag(start[0], start[1], end[0], end[1])
+        return "xdotool"
+
     raise ComputerError(f"unknown action {kind!r}")
 
 
 def act(kind, ref=None, role=None, name=None, path=None, point=None,
-        text=None, keys=None, direction=None, amount=None, option=None, append=False):
+        text=None, keys=None, direction=None, amount=None, option=None, append=False, end=None):
     """
-    Do one thing on the screen and report what changed.
+    Do one thing on the screen and report what changed. `end` is the point a
+    drag drops at.
 
     Returns a dict: status ("done" | "needs_approval"), message (one
     paragraph for the engine), element, change, observation (the "after"
@@ -360,20 +373,38 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     elif point is not None:
         element = el.at_point(before["elements"], point[0], point[1])
 
-    keys =[k for k in (keys or []) if k and k.strip()]
+    keys = [k for k in (keys or []) if k and k.strip()]
     target = el.describe(element) if element else (f"{point[0]},{point[1]}" if point else "")
+
+    # Typing with no target goes to whatever has focus, and that field is the
+    # one whose secrecy decides whether the text may be kept.
+    field = element
+    if kind == "type" and field is None:
+        field = next((e for e in before["elements"] if "focused" in e.get("states", [])), None)
+    kept, withheld = privacy.withhold_text(field, text) if kind == "type" else (None, None)
+    described = approval.describe_action(kind, element, text, keys, point, withheld=withheld)
 
     entry = {
         "kind": kind,
         "target": target,
-        "element": _public(element),
+        "element": privacy.public_element(element),
         "point": list(point) if point else None,
-        "text": text,
+        "end": list(end) if end else None,
+        "text": kept,
+        "append": bool(append) if kind == "type" else None,
         "keys": keys,
         "option": option,
-        "window": before.get("active_title"),
-        "url": _context(before).get("url"),
+        "direction": (direction or "down") if kind == "scroll" else None,
+        "amount": amount if kind == "scroll" else None,
+        "window": privacy.kept_text(before.get("active_title")),
+        "url": privacy.reduce_url(_context(before).get("url")),
+        "screen": before.get("size"),
     }
+
+    if withheld:
+        entry["withheld"] = {"text": withheld}
+
+    masks = privacy.secret_boxes(before["elements"])
 
     decision = approval.check(kind, element, text=text, keys=keys, point=point, context=_context(before))
 
@@ -382,9 +413,9 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         entry.update({
             "outcome": "needs_approval",
             "reason": decision.reason,
-            "summary": f"{approval.describe_action(kind, element, text, keys, point)} - paused for approval: {decision.reason}",
+            "summary": f"{described} - paused for approval: {decision.reason}",
         })
-        audit.record(entry, before=before["frame"])
+        audit.record(entry, before=before["frame"], masks=masks)
         return {
             "status": "needs_approval",
             "message": "NEEDS_APPROVAL: " + message,
@@ -394,14 +425,14 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         }
 
     try:
-        backend = _perform(kind, element, point, text, keys, direction, amount, option, append)
+        backend = _perform(kind, element, point, text, keys, direction, amount, option, append, end)
     except ComputerError as exc:
         entry.update({
             "outcome": "failed",
             "reason": str(exc),
-            "summary": f"{approval.describe_action(kind, element, text, keys, point)} - failed: {exc}",
+            "summary": f"{described} - failed: {exc}",
         })
-        audit.record(entry, before=before["frame"])
+        audit.record(entry, before=before["frame"], masks=masks)
         raise
 
     settled = _wait_for_settle(before["frame"])
@@ -414,22 +445,24 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         "backend": backend,
         "approved": decision.approved,
         "change": change_text,
-        "summary": f"{approval.describe_action(kind, element, text, keys, point)}"
-                   + (" (approved)" if decision.approved else "")
-                   + f" - {change_text}",
+        "expect": expectations(change),
+        "summary": described + (" (approved)" if decision.approved else "") + f" - {change_text}",
     })
 
-    audit.record(entry, before=before["frame"], after=after["frame"] or settled)
+    audit.record(entry, before=before["frame"], after=after["frame"] or settled,
+                 masks=masks + privacy.secret_boxes(after["elements"]))
 
     verb = {
         "click": "Clicked", "double_click": "Double-clicked", "right_click": "Right-clicked",
         "type": "Typed into", "key": "Pressed keys on", "scroll": "Scrolled",
-        "select": "Selected in",
+        "select": "Selected in", "drag": "Dragged",
     }[kind]
 
     message = f"{verb} {target or 'the focused window'}"
     if kind == "type":
-        message = f"Typed {el._quote(text or '', 60)} into {target or 'the focused element'}"
+        message = f"Typed {privacy.shown_text(text, withheld)} into {target or 'the focused element'}"
+    elif kind == "drag":
+        message = f"Dragged {target} to {end[0]},{end[1]}"
     elif kind == "key":
         message = f"Pressed {' '.join(keys)}" + (f" on {target}" if target else "")
     elif kind == "select":
@@ -446,12 +479,6 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     }
 
 
-def _public(element):
-    if element is None:
-        return None
-    return {k: element.get(k) for k in ("ref", "role", "name", "value", "states", "box", "path", "source", "window_title")}
-
-
 # ============================================================
 # verify
 # ============================================================
@@ -462,8 +489,11 @@ def compare(before, after):
     old = {e["path"]: e for e in before["elements"]}
     new = {e["path"]: e for e in after["elements"]}
 
-    appeared = [e for p, e in new.items() if p not in old]
-    disappeared = [e for p, e in old.items() if p not in new]
+    # A clock is not something an action did: the panel's ticking over from
+    # 10:41 to 10:42 would otherwise be reported, and recorded as an expected
+    # result, under every action (volatility.py).
+    appeared = [e for p, e in new.items() if p not in old and not volatility.only_a_moment(e.get("name"))]
+    disappeared = [e for p, e in old.items() if p not in new and not volatility.only_a_moment(e.get("name"))]
     changed = []
 
     for p, e in new.items():
@@ -471,8 +501,9 @@ def compare(before, after):
         if prior is None:
             continue
         fields = []
-        if (prior.get("value") or "") != (e.get("value") or ""):
-            fields.append(("value", prior.get("value") or "", e.get("value") or ""))
+        old_value, new_value = prior.get("value") or "", e.get("value") or ""
+        if old_value != new_value and not (volatility.only_a_moment(old_value) and volatility.only_a_moment(new_value)):
+            fields.append(("value", old_value, new_value))
         before_states = set(prior.get("states", [])) - {"offscreen"}
         after_states = set(e.get("states", [])) - {"offscreen"}
         if before_states != after_states:
@@ -519,11 +550,13 @@ def summarize(change, limit=6):
         parts.append(f"active window is now {el._quote(change['active_after'] or '(none)', 60)}")
 
     if change.get("url_after") and change.get("url_before") != change.get("url_after"):
-        parts.append(f"page is now {change['url_after'][:100]}")
+        parts.append(f"page is now {(privacy.reduce_url(change['url_after']) or '')[:100]}")
 
     for element, fields in change["changed"][:limit]:
         for field, old, new in fields:
-            if field == "value":
+            if field == "value" and privacy.secret_field(element):
+                parts.append(f"{el.describe(element)} value changed")
+            elif field == "value":
                 parts.append(f"{el.describe(element)} value {el._quote(old, 40)} -> {el._quote(new, 40)}")
             else:
                 parts.append(f"{el.describe(element)} [{old}] -> [{new}]")
@@ -548,6 +581,52 @@ def summarize(change, limit=6):
         parts.append(("under 1%" if percent < 1 else f"{round(percent)}%") + " of the screen changed")
 
     return "; ".join(parts) if parts else "nothing visible changed"
+
+
+# Roles worth checking for on a replay, besides the ones that can be acted on.
+NOTABLE_ROLES = ("dialog", "alert", "status", "heading")
+
+
+def expectations(change, limit=8):
+    """
+    What an action left on the screen, as data rather than a sentence: the
+    recording keeps it with the action, and replay.py mines what to check
+    from it. Secret fields, and values past privacy.MAX_TEXT, are left out.
+    """
+
+    def brief(element):
+        return {
+            "role": element["role"],
+            "name": privacy.kept_text(element.get("name")),
+            "path": privacy.kept_text(element.get("path")),
+        }
+
+    def notable(elements):
+        return [
+            brief(e) for e in elements
+            if e.get("name") and not privacy.secret_field(e)
+            and (e["role"] in el.INTERACTIVE_ROLES or e["role"] in NOTABLE_ROLES)
+        ][:limit]
+
+    values = []
+    for element, fields in change["changed"]:
+        for field, _, new in fields:
+            if field == "value" and not privacy.secret_field(element) and privacy.kept_text(new) is not None:
+                values.append(dict(brief(element), value=new))
+
+    url_changed = change.get("url_after") and change.get("url_before") != change.get("url_after")
+    window_changed = change["active_before"] != change["active_after"]
+
+    return {
+        "url": privacy.reduce_url(change["url_after"]) if url_changed else None,
+        "active_window": privacy.kept_text(change["active_after"]) if window_changed else None,
+        "windows_opened": [privacy.kept_text(t) for t in change["windows_opened"][:limit]],
+        "windows_closed": [privacy.kept_text(t) for t in change["windows_closed"][:limit]],
+        "appeared": notable(change["appeared"]),
+        "disappeared": notable(change["disappeared"]),
+        "values": values[:limit],
+        "pixels": round(change["pixels"], 4) if change["pixels"] is not None else None,
+    }
 
 
 def verify(expect_text=None, role=None, name=None):
@@ -661,7 +740,12 @@ def open_target(target, new_tab=False):
 
     session.ensure()
     before = screen.grab()
-    entry = {"kind": "open", "target": (target or "").strip(), "new_tab": new_tab}
+    wanted = (target or "").strip()
+    entry = {
+        "kind": "open",
+        "target": privacy.reduce_url(wanted) if URL_RE.match(wanted) else privacy.kept_text(wanted),
+        "new_tab": new_tab,
+    }
 
     try:
         message = _open(target, new_tab)
@@ -670,8 +754,17 @@ def open_target(target, new_tab=False):
         audit.record(entry, before=before)
         raise
 
-    entry.update({"outcome": "done", "change": message, "summary": f"open {entry['target']} - {message}"})
-    audit.record(entry, before=before, after=screen.grab())
+    after = screen.grab()
+    active = next((w["title"] for w in screen.windows() if w["active"]), "")
+
+    entry.update({
+        "outcome": "done",
+        "change": message,
+        "summary": f"open {entry['target']} - {message}",
+        "screen": [after.width, after.height],
+        "expect": {"active_window": privacy.kept_text(active) or None},
+    })
+    audit.record(entry, before=before, after=after)
 
     return message
 

@@ -58,13 +58,15 @@ def task_id_from_filename(name):
     return match.group(1) if match else ""
 
 
-def start(task_id):
+def start(task_id, request=None):
     """
     Make task_id the task every report from here on belongs to.
 
     An empty ID (a message from a control plane too old to send one) clears
     it, so reports go out without one and the control plane attributes them
-    to whatever it knows this desktop is running.
+    to whatever it knows this desktop is running. `request` is what the task
+    asked for, kept beside the ID so a recording of the task can be titled
+    with it by whichever process records the task's first action.
     """
 
     task_id = task_id if valid(task_id) else ""
@@ -72,15 +74,33 @@ def start(task_id):
     with _lock:
         state.current_task_id = task_id
 
-        try:
-            tmp = CURRENT_FILE + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                f.write(task_id)
-            os.replace(tmp, CURRENT_FILE)
-        except OSError:
-            # Only the out-of-process reporters lose the ID, and the control
-            # plane still attributes their steps to the live task.
-            pass
+        writes = [(CURRENT_FILE, task_id)]
+        if request is not None:
+            writes.append((CURRENT_FILE + ".request", str(request)[:500]))
+
+        for path, value in writes:
+            try:
+                tmp = path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    f.write(value)
+                os.replace(tmp, path)
+            except OSError:
+                # Only the out-of-process reporters lose it, and the control
+                # plane still attributes their steps to the live task.
+                pass
+
+
+def current_request():
+    """What the current task asked for, as far as this process can tell, or ""."""
+
+    if state.current_task_id and state.current_task:
+        return str(state.current_task)[:500]
+
+    try:
+        with open(CURRENT_FILE + ".request", encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
 
 
 def current():

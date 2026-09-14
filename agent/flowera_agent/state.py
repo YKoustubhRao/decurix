@@ -29,4 +29,9 @@ last_help_id = None
 # reason to fail it.
 backend_ready = False
 
+# A replay (replay_task.py) paused for approval or for a step a person has to
+# do: what to resume, and from which step. While it is set, the reply the
+# watcher routes to a waiting agent goes to the replay rather than the engine.
+paused_replay = None
+
 processed_commands = set()

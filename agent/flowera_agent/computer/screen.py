@@ -80,6 +80,32 @@ class Frame:
     def digest(self):
         return hashlib.sha1(self.sample()).hexdigest()
 
+    def masked(self, boxes):
+        """
+        A copy with every [x, y, w, h] box painted over - how a secret field
+        leaves a saved frame (privacy.py). The live frame an engine reads is
+        never masked.
+        """
+
+        if not boxes:
+            return self
+
+        rgb = bytearray(self.rgb)
+        stride = self.width * 3
+
+        for box in boxes:
+            x, y, w, h = (int(v) for v in box)
+            left, top = max(0, x), max(0, y)
+            right, bottom = min(self.width, x + w), min(self.height, y + h)
+            if right <= left or bottom <= top:
+                continue
+            fill = bytes((right - left) * 3)
+            for row in range(top, bottom):
+                start = row * stride + left * 3
+                rgb[start:start + len(fill)] = fill
+
+        return Frame(self.width, self.height, rgb)
+
 
 def changed_fraction(before, after, tolerance=24):
     """
@@ -128,12 +154,15 @@ def _connect():
     return _display
 
 
-def grab():
-    """Capture the whole screen as a Frame."""
+def grab(display=None):
+    """
+    Capture the whole screen as a Frame. `display` is an Xlib connection of
+    the caller's own, for a thread that must not share this module's.
+    """
 
     from Xlib import X
 
-    d = _connect()
+    d = display or _connect()
     root = d.screen().root
 
     try:

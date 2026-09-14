@@ -454,6 +454,38 @@ func (s *Store) Plan(workerID, text string) (Route, error) {
 	return Route{Kind: RouteNew, TaskID: newID("t"), ExecutionID: newID("x")}, nil
 }
 
+// Busy says why a worker cannot take on something new right now - one of its
+// tasks is running, queued, or waiting on a human - or returns "" when it can.
+//
+// A replay is refused while any is. The desktop's watcher would take a replay
+// sent to a paused agent as the reply to its pause, and one queued behind a
+// running task would be swallowed as the reply if that task then paused
+// (absorbQueuedReply) - either way the records would describe a replay that
+// never ran.
+func (s *Store) Busy(workerID string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var status string
+
+	err := s.db.QueryRow(
+		`SELECT status FROM executions WHERE worker_id = ? AND status IN (?, ?, ?)
+		 ORDER BY CASE status WHEN ? THEN 0 ELSE 1 END, started_ns DESC LIMIT 1`,
+		workerID, StatusWaiting, StatusRunning, StatusQueued, StatusWaiting,
+	).Scan(&status)
+
+	switch {
+	case err == sql.ErrNoRows:
+		return "", nil
+	case err != nil:
+		return "", fmt.Errorf("tasks: checking worker: %w", err)
+	case status == StatusWaiting:
+		return "the agent is waiting for your reply to a task - answer it in the chat first", nil
+	default:
+		return "a task is still running on this desktop - wait for it to finish", nil
+	}
+}
+
 // NewRoute is the route for a message whose planning failed: a new task. A
 // message is still delivered when its record cannot be.
 func NewRoute() Route {
@@ -739,11 +771,12 @@ func (s *Store) AddStep(workerID, taskID string, step Step) (bool, error) {
 
 	// The agent worked the screen, which makes this on-screen work whatever
 	// the request's words suggested - except a payment or message, whose
-	// approvals are the point of that bucket.
+	// approvals are the point of that bucket, and a person's recorded
+	// demonstration, whose every step is on screen.
 	if step.Action != nil {
 		if _, err := tx.Exec(
-			`UPDATE tasks SET task_type = ? WHERE id = ? AND task_type != ?`,
-			TypeScreen, ref.taskID, TypeConsequential,
+			`UPDATE tasks SET task_type = ? WHERE id = ? AND task_type NOT IN (?, ?)`,
+			TypeScreen, ref.taskID, TypeConsequential, TypeDemonstration,
 		); err != nil {
 			return false, fmt.Errorf("tasks: recording step: %w", err)
 		}

@@ -275,12 +275,24 @@ def observe():
         page.close()
 
     bounds = {}
+    # What a field says about itself in its HTML - type="password",
+    # autocomplete="cc-number" - which the accessibility tree does not carry
+    # and privacy.py needs to keep a secret out of the recording.
+    declared = {}
+    strings = snapshot.get("strings", [])
     for document in snapshot.get("documents", [])[:1]:
         backend_ids = document.get("nodes", {}).get("backendNodeId", [])
         layout = document.get("layout", {})
         for node_index, rect in zip(layout.get("nodeIndex", []), layout.get("bounds", [])):
             if node_index < len(backend_ids):
                 bounds[backend_ids[node_index]] = rect
+        for node_index, attributes in enumerate(document.get("nodes", {}).get("attributes", [])):
+            pairs = {}
+            for name_index, value_index in zip(attributes[0::2], attributes[1::2]):
+                if 0 <= name_index < len(strings) and 0 <= value_index < len(strings):
+                    pairs[strings[name_index].lower()] = strings[value_index]
+            if node_index < len(backend_ids) and ("type" in pairs or "autocomplete" in pairs):
+                declared[backend_ids[node_index]] = pairs
 
     origin_x = metrics["sx"] + (metrics["ow"] - metrics["iw"])
     origin_y = metrics["sy"] + (metrics["oh"] - metrics["ih"])
@@ -427,6 +439,8 @@ def observe():
                         "backend_id": backend_id,
                         "target_id": page.target.get("id"),
                         "dom_role": lower,
+                        "input_type": declared.get(backend_id, {}).get("type", ""),
+                        "autocomplete": declared.get(backend_id, {}).get("autocomplete", ""),
                     },
                 })
 

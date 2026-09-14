@@ -12,6 +12,9 @@ import (
 	"github.com/YKoustubhRao/flowera/internal/webui"
 )
 
+// maxMessageBytes is the longest message a human can send a desktop.
+const maxMessageBytes = 8192
+
 // messagesDashboardHandler renders the messages dashboard page for sending messages to desktops.
 func (s *Server) messagesDashboardHandler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/messages" {
@@ -54,7 +57,7 @@ func (s *Server) sendMessageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(content) > 8192 {
+	if len(content) > maxMessageBytes {
 		http.Error(w, "message too long", http.StatusBadRequest)
 		return
 	}

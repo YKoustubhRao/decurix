@@ -55,6 +55,38 @@ if removed:
     print(f"removed {removed} leftover core dump(s)")
 PY
 
+# The agent's own directories live under ~/.flowera, so ~/work is the only
+# one it adds to the home a human browses. A volume from before that still
+# has them at the top level: move them in before anything that uses them
+# starts, so worker memory, the audit trail and TheBot's stores carry over.
+# Where both exist (the control plane saved a memory entry first), entries
+# move one at a time and nothing already there is overwritten. ~/ai is only
+# TheBot's on a TheBot desktop; anywhere else it could be a human's folder.
+legacy_dirs="command helptext final memory audit"
+[ "$AGENT_HARNESS" = "thebot" ] && legacy_dirs="$legacy_dirs ai"
+python3 - "$HOME" $legacy_dirs >> "$LOG" 2>&1 <<'PY'
+import os, sys
+
+home, names = sys.argv[1], sys.argv[2:]
+flowera = os.path.join(home, ".flowera")
+for name in names:
+    old, new = os.path.join(home, name), os.path.join(flowera, name)
+    if os.path.islink(old) or not os.path.isdir(old):
+        continue
+    try:
+        os.makedirs(flowera, exist_ok=True)
+        if not os.path.exists(new):
+            os.rename(old, new)
+        else:
+            for entry in os.listdir(old):
+                if not os.path.lexists(os.path.join(new, entry)):
+                    os.rename(os.path.join(old, entry), os.path.join(new, entry))
+            os.rmdir(old)
+        print(f"moved ~/{name} to ~/.flowera/{name}")
+    except OSError as e:
+        print(f"could not move ~/{name} to ~/.flowera/{name}: {e}")
+PY
+
 setsid python3 /opt/vm_server.py >> "$LOG" 2>&1 < /dev/null &
 
 echo "[$(date)] vm_server.py started as background daemon (pid $!)" >> "$LOG"
@@ -65,10 +97,10 @@ echo "[$(date)] vm_server.py started as background daemon (pid $!)" >> "$LOG"
 # task arrives. Harmless to skip entirely for the other two harnesses -
 # no point paying its startup cost when nothing will ever talk to it.
 if [ "$AGENT_HARNESS" = "thebot" ] && [ -x /opt/soul ]; then
-    # /home/headless/ai is TheBot's fixed default AI workdirectory - every
-    # agent run cds here and works here, regardless of which real folder
-    # a task happens to be scoped to; L1/L2/the Data RAG stay global.
-    export WORKSPACE_ROOT="/home/headless/ai"
+    # /home/headless/.flowera/ai is TheBot's fixed default AI workdirectory -
+    # every agent run cds here and works here, regardless of which real
+    # folder a task happens to be scoped to; L1/L2/the Data RAG stay global.
+    export WORKSPACE_ROOT="/home/headless/.flowera/ai"
     mkdir -p "$WORKSPACE_ROOT"
     export LLM_PROVIDER="${LLM_PROVIDER:-ollama}"
     # Mirrors buildDesktopEnv's defaults in internal/desktop/docker.go -

@@ -42,7 +42,7 @@ def save_message(message, task_id=""):
 # Control plane communication
 # ============================================================
 
-def send_helptext(filename, content, kind="", message=""):
+def send_helptext(filename, content, kind="", message="", engine=None):
     """
     Send a help request to the Flowera control plane.
 
@@ -81,8 +81,9 @@ def send_helptext(filename, content, kind="", message=""):
         "message": message,
         "task_id": task_context.current(),
         # Reporting which engine ran is not branching on it: every harness
-        # sends the same fields.
-        "engine": config.AGENT_HARNESS,
+        # sends the same fields. A replay (replay_task.py) ran no engine at
+        # all, and says so.
+        "engine": engine or config.AGENT_HARNESS,
     }
 
     payload.update(usage.snapshot())
@@ -118,7 +119,7 @@ def send_helptext(filename, content, kind="", message=""):
         return False
 
 
-def ask_for_help(problem, kind="help"):
+def ask_for_help(problem, kind="help", engine=None):
     """
     Ask the human/control plane for help.
 
@@ -177,6 +178,7 @@ Please send instructions through the Flowera control plane.
         content,
         kind=kind,
         message=problem,
+        engine=engine,
     )
 
     if sent:
@@ -265,7 +267,7 @@ def backend_failure_note(what, url, error):
 # Final task message
 # ============================================================
 
-def write_final_message(message, kind="final"):
+def write_final_message(message, kind="final", engine=None):
     """
     Write the final result into helptext/ so the existing
     helptext watcher sends it to the Flowera control plane.
@@ -321,6 +323,7 @@ Completed at:
         final_message,
         kind=kind,
         message=message,
+        engine=engine,
     )
 
     if sent:

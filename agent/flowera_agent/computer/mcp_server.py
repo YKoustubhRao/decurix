@@ -4,7 +4,7 @@ import sys
 import traceback
 
 from flowera_agent import logging_utils, progress
-from flowera_agent.computer import core
+from flowera_agent.computer import core, replay
 from flowera_agent.computer import elements as el
 from flowera_agent.computer.errors import ComputerError
 
@@ -52,14 +52,15 @@ TOOLS = [
             "x/y screen coordinates only when no element fits. Actions: click, double_click, "
             "right_click, type (replaces a field's text unless append is true; \\n is Enter), key "
             "(keys like [\"ctrl+s\"] or [\"Return\"]; sent to the target or the focused window), "
-            "scroll (direction up/down/left/right, amount), select (pick option in a dropdown). "
+            "scroll (direction up/down/left/right, amount), select (pick option in a dropdown), "
+            "drag (from the target, or x/y, to end_x/end_y). "
             "Controls that send, pay, buy or publish are stopped for human approval: the result "
             "then starts with NEEDS_APPROVAL and nothing happened."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["click", "double_click", "right_click", "type", "key", "scroll", "select"]},
+                "action": {"type": "string", "enum": ["click", "double_click", "right_click", "type", "key", "scroll", "select", "drag"]},
                 "ref": {"type": "string", "description": "Element ref from observe, e.g. e12."},
                 "role": {"type": "string"},
                 "name": {"type": "string"},
@@ -71,8 +72,47 @@ TOOLS = [
                 "direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
                 "amount": {"type": "integer"},
                 "option": {"type": "string", "description": "For select: the option's label."},
+                "end_x": {"type": "integer", "description": "For drag: where to drop."},
+                "end_y": {"type": "integer"},
             },
             "required": ["action"],
+        },
+    },
+    {
+        "name": "recordings",
+        "description": (
+            "Recordings of work done on this desktop's screen: demonstrations a person recorded to show how "
+            "something is done, and tasks agents finished. Without id, lists those matching query, best first. "
+            "With id, returns that recording's steps, its parameters (the text each field took) and what each "
+            "step should leave on the screen. When a demonstration matches your task, read it before working "
+            "the task out yourself."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "id": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "replay",
+        "description": (
+            "Run a recording again with no model. Each step's element is found again by its path or role and "
+            "name, and each step's expected result has to appear before the next step runs; it stops rather "
+            "than guess. The outcome is one of verified, completed_unverified, halted_before_effect, halted, "
+            "reconciliation_required (a consequential step ran but its result never appeared - do not repeat "
+            "it), needs_human, or NEEDS_APPROVAL. params overrides the typed text by parameter name; secret "
+            "parameters have to be given."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "params": {"type": "object", "additionalProperties": {"type": "string"}},
+                "from": {"type": "integer", "minimum": 1, "description": "Step to start at, to continue a paused run."},
+            },
+            "required": ["id"],
         },
     },
     {
@@ -134,6 +174,10 @@ def call_tool(name, arguments):
         if isinstance(keys, str):
             keys = [keys]
 
+        end = None
+        if arguments.get("end_x") is not None and arguments.get("end_y") is not None:
+            end = (int(arguments["end_x"]), int(arguments["end_y"]))
+
         result = core.act(
             arguments.get("action"),
             ref=arguments.get("ref"),
@@ -146,6 +190,7 @@ def call_tool(name, arguments):
             amount=arguments.get("amount"),
             option=arguments.get("option"),
             append=bool(arguments.get("append")),
+            end=end,
         )
 
         if result["status"] == "needs_approval":
@@ -173,6 +218,39 @@ def call_tool(name, arguments):
         observation = core.observe()
         tree = el.render(observation, budget=TREE_BUDGET, coords=True)
         return [_text(message + "\n\n" + tree), _image(observation["frame"])], False
+
+    if name in ("recordings", "replay") and arguments.get("id"):
+        try:
+            meta, program = replay.load_program(arguments["id"])
+        except (FileNotFoundError, ValueError):
+            return [_text(f"there is no recording {arguments['id']!r} on this desktop")], True
+
+        if name == "recordings":
+            return [_text(replay.render_text(meta, program, budget=TREE_BUDGET))], False
+
+        result = replay.run(program, params=arguments.get("params") or {}, start=arguments.get("from") or 1)
+        text = f"outcome: {result['outcome']}\n{result['message']}"
+
+        if result["outcome"] == replay.NEEDS_APPROVAL:
+            return [_text(
+                "NEEDS_APPROVAL: " + result["message"]
+                + "\n\nStop here. End your turn with a reply that begins NEEDS_APPROVAL: saying what the replay "
+                f"wants to do. When the human approves, call replay again with from={result['resume_from']}."
+            )], False
+
+        if result.get("resume_from") and result["outcome"] in (replay.HALTED, replay.NEEDS_HUMAN):
+            text += f"\n\nTo carry on from there later, call replay with from={result['resume_from']}."
+
+        return [_text(text)], result["outcome"] not in replay.SUCCESS
+
+    if name == "recordings":
+        found = replay.search(arguments.get("query") or "")
+        if not found:
+            return [_text("No recordings on this desktop match that.")], False
+        return [_text("\n".join(
+            f"{m['id']} {el._quote(m.get('title') or '(untitled)', 80)} - {m.get('kind')}, {m.get('event_count', 0)} actions"
+            for m in found
+        ))], False
 
     return [_text(f"unknown tool {name!r}")], True
 

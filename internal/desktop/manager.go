@@ -562,15 +562,22 @@ func (m *Manager) PersistMemoryFile(
 ) error {
 
 	containerName := "desktop_" + sanitizeName(desktopID)
-	memoryDir := "/home/headless/memory"
+	// A container keeps the image it was created from, so a desktop created
+	// before the agent's directories moved under ~/.flowera still runs an
+	// agent that reads ~/memory. Write there while it is the only memory
+	// directory the desktop has; a newer agent moves it in when it starts.
+	memoryDir := "/home/headless/.flowera/memory"
+	legacyMemoryDir := "/home/headless/memory"
 	delimiter := fmt.Sprintf("FLOWERA_MEMORY_%d", time.Now().UnixNano())
 
-	cmd := fmt.Sprintf(`mkdir -p %s && cat <<'%s' > %s/%s
+	cmd := fmt.Sprintf(`dir=%s; if [ -d %s ] && [ ! -d "$dir" ]; then dir=%s; fi
+mkdir -p "$dir" && cat <<'%s' > "$dir/%s"
 %s
 %s`,
 		memoryDir,
+		legacyMemoryDir,
+		legacyMemoryDir,
 		delimiter,
-		memoryDir,
 		filename,
 		strings.TrimSpace(fileContent),
 		delimiter,

@@ -116,7 +116,7 @@ def emit(text):
         pass
 
 
-def emit_action(text, action, before_png=None, after_png=None):
+def emit_action(text, action, before_png=None, after_png=None, task_id=None):
     """
     Report one on-screen action as a step, with its before and after
     screenshots, for the chat's audit trail.
@@ -125,6 +125,8 @@ def emit_action(text, action, before_png=None, after_png=None):
     heavy part of a step, so when the sender is already behind they are the
     first thing dropped - the step itself still arrives, and the full-size
     frames are on the desktop's own disk either way (computer/audit.py).
+    `task_id` names the task outright, for a reporter that knows it better
+    than the current-task file does (a demonstration recorded for a task).
     """
 
     if not text:
@@ -133,7 +135,7 @@ def emit_action(text, action, before_png=None, after_png=None):
     item = {
         "text": str(text).strip()[:MAX_TEXT],
         "action": action,
-        "task_id": task_context.current(),
+        "task_id": task_id if task_id is not None else task_context.current(),
     }
 
     if _pending.qsize() < MAX_PENDING // 4:

@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
+<title>Recordings · {{.Desktop.Name}} · Flowera</title>
+
+{{template "theme"}}
+
+<style>
+[hidden]{display:none!important}
+
+.back{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--text-2);margin-bottom:16px}
+.back svg{transform:rotate(90deg)}
+.back:hover{color:var(--text)}
+
+.page-head .page-sub{max-width:62ch}
+.head-actions{display:flex;gap:8px;flex-wrap:wrap}
+
+/* ---------- recorder ---------- */
+
+.recorder{padding:16px 18px;margin-bottom:22px}
+.recorder h2{font-size:15px;margin-bottom:3px}
+.recorder-idle{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,420px);gap:14px 22px;align-items:center}
+.recorder-form{display:flex;gap:8px}
+.recorder-form .input{min-width:0}
+.recorder-live{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.recorder-live strong{font-size:14px;overflow-wrap:anywhere}
+.rec-dot{width:11px;height:11px;border-radius:50%;background:var(--danger);flex:none;animation:pulse 1.6s ease-in-out infinite}
+.recorder-live.is-paused .rec-dot{background:var(--text-3);animation:none}
+.spacer{flex:1}
+
+/* ---------- layout ---------- */
+
+.layout{display:grid;grid-template-columns:minmax(260px,330px) minmax(0,1fr);gap:22px;align-items:start}
+
+.filters{display:flex;gap:4px;margin-bottom:10px;flex-wrap:wrap}
+.filters button[aria-pressed="true"]{background:var(--surface-2);color:var(--text);border-color:var(--line-2)}
+
+.list{display:grid;gap:6px}
+.item{
+  display:grid;gap:4px;width:100%;text-align:left;padding:11px 13px;
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);
+  color:var(--text);transition:border-color .12s ease,background .12s ease
+}
+.item:hover{border-color:var(--line-2)}
+.item[aria-current="true"]{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.item-title{font-size:13.5px;font-weight:600;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.item-meta{display:flex;flex-wrap:wrap;gap:4px 10px;font-size:11.5px;color:var(--text-3)}
+
+.kind{font-size:10.5px;font-weight:650;letter-spacing:.04em;text-transform:uppercase;color:var(--text-3)}
+.kind.demonstration{color:var(--accent)}
+.kind.live{color:var(--danger)}
+
+/* ---------- detail ---------- */
+
+.detail{overflow:hidden}
+.detail-head{padding:16px 18px;border-bottom:1px solid var(--line);display:grid;gap:10px}
+.detail-head h2{font-size:18px;line-height:1.35;overflow-wrap:anywhere}
+.detail-meta{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12.5px;color:var(--text-2)}
+.detail-actions{display:flex;gap:8px;flex-wrap:wrap}
+.detail-desc{font-size:13px;color:var(--text-2);white-space:pre-wrap;overflow-wrap:anywhere}
+
+.edit{display:grid;gap:8px}
+.edit .row{display:flex;gap:8px;justify-content:flex-end}
+
+.replay{padding:14px 18px;border-bottom:1px solid var(--line);background:var(--surface-2);display:grid;gap:12px}
+.replay-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px 14px}
+.replay .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.replay .row .hint{flex:1;min-width:200px}
+.from{width:90px}
+.secret-tag{font-weight:500;color:var(--accent)}
+
+.steps{padding:6px 18px 16px}
+.step{display:grid;grid-template-columns:52px minmax(0,1fr);gap:12px;padding:11px 0;border-bottom:1px dashed var(--line)}
+.step:last-child{border-bottom:0}
+.step-when{font-family:var(--mono);font-size:11px;color:var(--text-3);padding-top:2px;line-height:1.5}
+.step-head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.step-text{font-size:13px;overflow-wrap:anywhere}
+.actor{font-size:10.5px;font-weight:650;letter-spacing:.03em;text-transform:uppercase;color:var(--text-3)}
+.actor.human{color:var(--accent)}
+.outcome{font-size:10.5px;font-weight:650;letter-spacing:.03em;text-transform:uppercase}
+.outcome.failed{color:var(--danger)}
+.outcome.needs_approval{color:var(--accent)}
+.step-detail{font-size:12px;color:var(--text-3);margin-top:3px;overflow-wrap:anywhere}
+.step-detail b{color:var(--text-2);font-weight:600}
+.withheld{display:inline-flex;align-items:center;gap:5px;margin-top:5px;padding:2px 7px;border-radius:var(--r-sm);background:var(--accent-soft);color:var(--accent);font-size:11.5px}
+.shots{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
+.shot{display:flex;flex-direction:column;gap:3px;width:min(260px,calc(50% - 5px));font-size:11px;color:var(--text-3)}
+.shot img{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;border:1px solid var(--line);border-radius:7px;background:var(--surface-2)}
+.shot:hover img{border-color:var(--accent)}
+
+.placeholder{padding:48px 24px;text-align:center;color:var(--text-3);font-size:13px}
+
+@media (max-width:860px){
+  .layout{grid-template-columns:minmax(0,1fr)}
+  .recorder-idle{grid-template-columns:minmax(0,1fr)}
+}
+@media (max-width:520px){
+  .recorder-form{flex-direction:column}
+  .step{grid-template-columns:minmax(0,1fr);gap:3px}
+  .detail-head,.replay,.steps{padding-left:14px;padding-right:14px}
+}
+</style>
+</head>
+
+<body data-desktop="{{.Desktop.ID}}" data-session="{{.Session}}" data-screen="{{.Desktop.URL}}">
+
+{{template "sprite"}}
+
+<div id="progress"></div>
+<div id="toasts"></div>
+
+{{template "topbar" "desktops"}}
+
+<main class="wrap">
+
+  <a class="back" href="/"><svg width="14" height="14"><use href="#i-chevron"/></svg>Desktops</a>
+
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">Recordings</div>
+      <h1>{{.Desktop.Name}}</h1>
+      <p class="page-sub">What was done on this desktop's screen: demonstrations you record, and the tasks its agent worked. Each one can be replayed step by step with no model, or exported.</p>
+    </div>
+    {{if eq .Desktop.Status "running"}}
+    <div class="head-actions">
+      <button type="button" class="btn btn-default btn-sm" data-open-screen>
+        <svg width="14" height="14"><use href="#i-external"/></svg>Open the screen
+      </button>
+      <a class="btn btn-default btn-sm" href="/view/{{.Desktop.ID}}">
+        <svg width="14" height="14"><use href="#i-blossom"/></svg>Chat
+      </a>
+    </div>
+    {{end}}
+  </div>
+
+  {{if ne .Desktop.Status "running"}}
+  <div class="empty">
+    <div class="empty-mark"><svg width="18" height="18"><use href="#i-record"/></svg></div>
+    <h3>This desktop is stopped</h3>
+    <p>Its recordings are kept on the desktop itself. <strong>Start it</strong> from the dashboard to see them.</p>
+  </div>
+  {{else}}
+
+  <section class="panel recorder" aria-live="polite">
+    <div class="recorder-idle" id="recorderIdle">
+      <div>
+        <h2>Record a demonstration</h2>
+        <p class="hint">Start, then do the task on the desktop's screen. Every click, drag and keystroke is recorded with the element it touched, so it can be replayed. Password fields are never recorded; pause before any other private step.</p>
+      </div>
+      <form class="recorder-form" id="startForm">
+        <input class="input" name="title" maxlength="200" required placeholder="What will you show? e.g. Create an invoice" aria-label="What the demonstration shows">
+        <button type="submit" class="btn btn-primary">
+          <svg width="14" height="14"><use href="#i-record"/></svg>Start
+        </button>
+      </form>
+    </div>
+
+    <div class="recorder-live" id="recorderLive" hidden>
+      <span class="rec-dot" aria-hidden="true"></span>
+      <div>
+        <strong id="liveTitle"></strong>
+        <div class="hint" id="liveMeta"></div>
+      </div>
+      <span class="spacer"></span>
+      <button type="button" class="btn btn-default btn-sm" data-open-screen>
+        <svg width="14" height="14"><use href="#i-external"/></svg>Screen
+      </button>
+      <button type="button" class="btn btn-default btn-sm" id="pauseBtn">Pause for a private step</button>
+      <button type="button" class="btn btn-default btn-sm" id="resumeBtn" hidden>Resume</button>
+      <button type="button" class="btn btn-primary btn-sm" id="stopBtn">
+        <svg width="13" height="13"><use href="#i-stop"/></svg>Stop
+      </button>
+    </div>
+  </section>
+
+  <div class="layout">
+    <aside>
+      <div class="filters" role="group" aria-label="Show">
+        <button type="button" class="btn btn-quiet btn-sm" data-filter="all" aria-pressed="true">All</button>
+        <button type="button" class="btn btn-quiet btn-sm" data-filter="demonstration" aria-pressed="false">Demonstrations</button>
+        <button type="button" class="btn btn-quiet btn-sm" data-filter="task" aria-pressed="false">Tasks</button>
+      </div>
+      <div class="list" id="list"><div class="placeholder">Loading…</div></div>
+    </aside>
+
+    <section class="panel detail" id="detail">
+      <div class="placeholder">Choose a recording to see its steps.</div>
+    </section>
+  </div>
+  {{end}}
+
+</main>
+
+{{template "chrome-js"}}
+
+<script>
+(function(){
+  "use strict";
+
+  var list = document.getElementById("list");
+  if(!list){ return; }
+
+  var toast = Flowera.toast, post = Flowera.post;
+  var body = document.body;
+  var desktopID = body.dataset.desktop;
+  var detail = document.getElementById("detail");
+
+  var state = {recordings: [], demonstration: null, filter: "all", selected: body.dataset.session || "", loaded: null};
+
+  var KIND = {demonstration: "Demonstration", task: "Task", adhoc: "Run by hand"};
+  var ACTOR = {human: "Person", agent: "Agent"};
+
+  /* ---- helpers ---- */
+
+  function node(tag, className, text){
+    var el = document.createElement(tag);
+    if(className){ el.className = className; }
+    if(text !== undefined && text !== null){ el.textContent = text; }
+    return el;
+  }
+
+  function icon(name, size){
+    var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("width", size || 14);
+    svg.setAttribute("height", size || 14);
+    svg.setAttribute("aria-hidden", "true");
+    var use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+    use.setAttribute("href", "#i-" + name);
+    svg.appendChild(use);
+    return svg;
+  }
+
+  function button(label, className, iconName){
+    var b = node("button", "btn btn-sm " + className);
+    b.type = "button";
+    if(iconName){ b.appendChild(icon(iconName)); }
+    b.appendChild(document.createTextNode(label));
+    return b;
+  }
+
+  function query(params){
+    var q = new URLSearchParams(Object.assign({id: desktopID}, params));
+    return q.toString();
+  }
+
+  async function getJSON(url){
+    var response = await fetch(url, {headers: {"Accept": "application/json"}});
+    var data = await response.json().catch(function(){ return {}; });
+    if(!response.ok){ throw new Error(data.error || "Request failed"); }
+    return data;
+  }
+
+  function when(seconds){
+    if(!seconds){ return ""; }
+    return new Date(seconds * 1000).toLocaleString([], {dateStyle: "medium", timeStyle: "short"});
+  }
+
+  function clock(seconds){
+    seconds = Math.max(0, Math.round(seconds || 0));
+    var m = Math.floor(seconds / 60), s = seconds % 60;
+    return m + ":" + (s < 10 ? "0" : "") + s;
+  }
+
+  function frameURL(session, path){
+    return "/api/desktops/recordings/frame?" + query({session: session, frame: String(path).replace(/^frames\//, "")});
+  }
+
+  function openScreen(){
+    var url = body.dataset.screen;
+    if(url){ window.open(url + "?resize=remote&ui=touch", "_blank", "noopener"); }
+  }
+
+  document.querySelectorAll("[data-open-screen]").forEach(function(b){ b.addEventListener("click", openScreen); });
+
+  /* ---- the recorder ---- */
+
+  var idle = document.getElementById("recorderIdle");
+  var live = document.getElementById("recorderLive");
+
+  function showRecorder(demo){
+    state.demonstration = demo;
+    idle.hidden = !!demo;
+    live.hidden = !demo;
+    if(!demo){ return; }
+
+    live.classList.toggle("is-paused", !!demo.paused);
+    document.getElementById("liveTitle").textContent = demo.title || "Recording";
+    document.getElementById("liveMeta").textContent = demo.paused
+      ? "Paused for " + (demo.pause_reason || "a private step") + " - nothing is being recorded"
+      : "Recording · " + clock(Date.now() / 1000 - demo.started_at) + " · " + demo.events + (demo.events === 1 ? " action" : " actions");
+    document.getElementById("pauseBtn").hidden = !!demo.paused;
+    document.getElementById("resumeBtn").hidden = !demo.paused;
+  }
+
+  async function demonstration(action, fields){
+    Flowera.busy(true);
+    try{
+      var data = await post("/api/desktops/demonstration", Object.assign({id: desktopID, action: action}, fields || {}));
+      showRecorder(data.demonstration);
+      return data;
+    }finally{
+      Flowera.busy(false);
+    }
+  }
+
+  document.getElementById("startForm").addEventListener("submit", async function(e){
+    e.preventDefault();
+    var title = this.elements.title.value.trim();
+    try{
+      var data = await demonstration("start", {title: title});
+      this.reset();
+      toast("Recording. Do the task on the desktop's screen, then press Stop.");
+      state.selected = data.meta && data.meta.id || state.selected;
+      refresh();
+    }catch(err){ toast(err.message, "error"); }
+  });
+
+  document.getElementById("pauseBtn").addEventListener("click", async function(){
+    var reason = window.prompt("What is the private step? A replay will stop there and ask a person to do it.", "Signing in");
+    if(reason === null){ return; }
+    try{ await demonstration("pause", {reason: reason}); }catch(err){ toast(err.message, "error"); }
+  });
+
+  document.getElementById("resumeBtn").addEventListener("click", async function(){
+    try{ await demonstration("resume"); }catch(err){ toast(err.message, "error"); }
+  });
+
+  document.getElementById("stopBtn").addEventListener("click", async function(){
+    try{
+      var data = await demonstration("stop");
+      toast("Saved the demonstration.");
+      if(data.meta){ state.selected = data.meta.id; }
+      await refresh();
+      if(state.selected){ open(state.selected); }
+    }catch(err){ toast(err.message, "error"); }
+  });
+
+  /* ---- the list ---- */
+
+  document.querySelectorAll("[data-filter]").forEach(function(b){
+    b.addEventListener("click", function(){
+      state.filter = b.dataset.filter;
+      document.querySelectorAll("[data-filter]").forEach(function(o){ o.setAttribute("aria-pressed", o === b ? "true" : "false"); });
+      renderList();
+    });
+  });
+
+  function renderList(){
+    var shown = state.recordings.filter(function(r){
+      if(state.filter === "all"){ return true; }
+      if(state.filter === "task"){ return r.kind !== "demonstration"; }
+      return r.kind === state.filter;
+    });
+
+    list.replaceChildren();
+
+    if(!shown.length){
+      list.appendChild(node("div", "placeholder", state.recordings.length
+        ? "Nothing here under this filter."
+        : "No recordings yet. Record a demonstration above, or give the agent a task that uses the screen."));
+      return;
+    }
+
+    shown.forEach(function(r){
+      var item = node("button", "item");
+      item.type = "button";
+      item.setAttribute("aria-current", r.id === state.selected ? "true" : "false");
+
+      var recordingNow = state.demonstration && state.demonstration.session === r.id;
+      item.appendChild(node("span", "kind " + (recordingNow ? "live" : r.kind), recordingNow ? "Recording now" : (KIND[r.kind] || r.kind)));
+      item.appendChild(node("span", "item-title", r.title || (r.kind === "adhoc" ? "Actions run by hand" : "Untitled")));
+
+      var meta = node("span", "item-meta");
+      meta.appendChild(node("span", "", r.event_count + (r.event_count === 1 ? " action" : " actions")));
+      if(r.actors && r.actors.length){
+        meta.appendChild(node("span", "", r.actors.map(function(a){ return ACTOR[a] || a; }).join(" + ")));
+      }
+      meta.appendChild(node("span", "", when(r.started_at)));
+      if(r.status && r.status !== "complete" && r.status !== "recording"){
+        meta.appendChild(node("span", "", r.status));
+      }
+      item.appendChild(meta);
+
+      item.addEventListener("click", function(){ open(r.id); });
+      list.appendChild(item);
+    });
+  }
+
+  async function refresh(){
+    try{
+      var data = await getJSON("/api/desktops/recordings?" + query({}));
+      state.recordings = data.recordings || [];
+      showRecorder(data.demonstration);
+      renderList();
+    }catch(err){
+      list.replaceChildren(node("div", "placeholder", err.message));
+    }
+  }
+
+  /* ---- one recording ---- */
+
+  async function open(session){
+    state.selected = session;
+    renderList();
+
+    var url = new URL(location.href);
+    url.searchParams.set("session", session);
+    history.replaceState(null, "", url);
+
+    detail.replaceChildren(node("div", "placeholder", "Loading…"));
+
+    try{
+      var data = await getJSON("/api/desktops/recordings/get?" + query({session: session}));
+      if(state.selected !== session){ return; }
+      state.loaded = data;
+      renderDetail(data);
+      if(window.matchMedia("(max-width:860px)").matches){ detail.scrollIntoView({behavior: "smooth", block: "start"}); }
+    }catch(err){
+      detail.replaceChildren(node("div", "placeholder", err.message));
+    }
+  }
+
+  function renderDetail(data){
+    var meta = data.meta, program = data.program, events = data.events || [];
+    var recordingNow = data.demonstration && data.demonstration.session === meta.id;
+
+    detail.replaceChildren();
+
+    /* head */
+    var head = node("div", "detail-head");
+    head.appendChild(node("div", "kind " + meta.kind, KIND[meta.kind] || meta.kind));
+    var title = node("h2", "", meta.title || "Untitled");
+    head.appendChild(title);
+
+    var info = node("div", "detail-meta");
+    info.appendChild(node("span", "", when(meta.started_at)));
+    if(meta.ended_at){ info.appendChild(node("span", "", clock(meta.ended_at - meta.started_at) + " long")); }
+    info.appendChild(node("span", "", events.length + (events.length === 1 ? " action" : " actions") + " · " + program.steps.length + " replayable"));
+    if(meta.withheld_count){ info.appendChild(node("span", "", meta.withheld_count + " kept private")); }
+    if(meta.task_id){
+      var taskLink = node("a", "", "Task record");
+      taskLink.href = "/tasks/" + encodeURIComponent(meta.task_id);
+      info.appendChild(taskLink);
+    }
+    head.appendChild(info);
+
+    if(meta.description){ head.appendChild(node("p", "detail-desc", meta.description)); }
+
+    var actions = node("div", "detail-actions");
+    var replayBtn = button("Replay", "btn-primary", "play");
+    var editBtn = button("Rename", "btn-default");
+    var exportLink = node("a", "btn btn-sm btn-default");
+    exportLink.href = "/api/desktops/recordings/export?" + query({session: meta.id});
+    exportLink.setAttribute("download", meta.id + ".zip");
+    exportLink.appendChild(icon("download"));
+    exportLink.appendChild(document.createTextNode("Export"));
+    var deleteBtn = button("Delete", "btn-danger", "trash");
+
+    replayBtn.disabled = recordingNow || !program.steps.length;
+    deleteBtn.disabled = recordingNow;
+    actions.append(replayBtn, editBtn, exportLink, deleteBtn);
+    head.appendChild(actions);
+
+    /* rename */
+    var edit = node("form", "edit");
+    edit.hidden = true;
+    var titleInput = node("input", "input");
+    titleInput.maxLength = 200;
+    titleInput.value = meta.title || "";
+    titleInput.setAttribute("aria-label", "Title");
+    var descInput = node("textarea", "textarea");
+    descInput.maxLength = 2000;
+    descInput.rows = 2;
+    descInput.placeholder = "What it does, and when to use it. Agents searching for a demonstration read this.";
+    descInput.value = meta.description || "";
+    var editRow = node("div", "row");
+    var cancelEdit = button("Cancel", "btn-quiet");
+    var saveEdit = node("button", "btn btn-sm btn-primary", "Save");
+    saveEdit.type = "submit";
+    editRow.append(cancelEdit, saveEdit);
+    edit.append(titleInput, descInput, editRow);
+    head.appendChild(edit);
+
+    editBtn.addEventListener("click", function(){ edit.hidden = !edit.hidden; if(!edit.hidden){ titleInput.focus(); } });
+    cancelEdit.addEventListener("click", function(){ edit.hidden = true; });
+    edit.addEventListener("submit", async function(e){
+      e.preventDefault();
+      try{
+        await post("/api/desktops/recordings/update", {id: desktopID, session: meta.id, title: titleInput.value, description: descInput.value});
+        toast("Saved.");
+        await refresh();
+        open(meta.id);
+      }catch(err){ toast(err.message, "error"); }
+    });
+
+    deleteBtn.addEventListener("click", async function(){
+      if(!window.confirm("Delete this recording and all its screenshots from the desktop? This cannot be undone.")){ return; }
+      try{
+        await post("/api/desktops/recordings/delete", {id: desktopID, session: meta.id});
+        toast("Deleted.");
+        state.selected = "";
+        detail.replaceChildren(node("div", "placeholder", "Choose a recording to see its steps."));
+        refresh();
+      }catch(err){ toast(err.message, "error"); }
+    });
+
+    detail.appendChild(head);
+
+    /* replay form */
+    var form = node("form", "replay");
+    form.hidden = true;
+    form.appendChild(node("div", "eyebrow", "Replay with no model"));
+
+    var grid = node("div", "replay-grid");
+    var inputs = {};
+    program.params.forEach(function(p){
+      var field = node("div", "field");
+      var label = node("label", "", p.label + " ");
+      label.appendChild(node("span", p.secret ? "secret-tag" : "hint", p.secret ? "(not recorded - required)" : "{" + p.name + "}"));
+      var input = node("input", "input");
+      input.type = p.secret ? "password" : "text";
+      input.autocomplete = "off";
+      input.required = !!p.secret;
+      input.value = p.secret ? "" : (p.default || "");
+      input.id = "param-" + p.name;
+      label.htmlFor = input.id;
+      inputs[p.name] = input;
+      field.append(label, input);
+      grid.appendChild(field);
+    });
+    if(program.params.length){ form.appendChild(grid); }
+
+    var row = node("div", "row");
+    var fromField = node("label", "field-label", "Start at step ");
+    var from = node("input", "input from");
+    from.type = "number";
+    from.min = 1;
+    from.max = Math.max(1, program.steps.length);
+    from.value = 1;
+    fromField.appendChild(from);
+    row.appendChild(fromField);
+    row.appendChild(node("span", "hint",
+      "It runs as a task you can follow in the chat. Each step's target is found again on the screen and its result checked; it stops instead of guessing, and still asks before sending, paying or publishing."));
+    var run = node("button", "btn btn-primary btn-sm");
+    run.type = "submit";
+    run.appendChild(icon("play"));
+    run.appendChild(document.createTextNode("Run"));
+    row.appendChild(run);
+    form.appendChild(row);
+
+    replayBtn.addEventListener("click", function(){ form.hidden = !form.hidden; });
+
+    form.addEventListener("submit", async function(e){
+      e.preventDefault();
+      var params = {};
+      program.params.forEach(function(p){
+        var value = inputs[p.name].value;
+        if(p.secret || value !== (p.default || "")){ params[p.name] = value; }
+      });
+      run.disabled = true;
+      try{
+        await post("/api/desktops/recordings/replay", {id: desktopID, session: meta.id, from: from.value, params: JSON.stringify(params)});
+        program.params.forEach(function(p){ if(p.secret){ inputs[p.name].value = ""; } });
+        toast("Replay started. Follow it in the chat.");
+        form.hidden = true;
+      }catch(err){
+        toast(err.message, "error");
+      }finally{
+        run.disabled = false;
+      }
+    });
+
+    detail.appendChild(form);
+
+    /* steps */
+    var byEvent = {};
+    program.steps.forEach(function(s){ byEvent[s.event] = s; });
+
+    var steps = node("div", "steps");
+
+    if(!events.length){
+      steps.appendChild(node("div", "placeholder", recordingNow ? "Nothing recorded yet. Use the desktop's screen." : "This recording has no actions."));
+    }
+
+    events.forEach(function(ev){
+      var step = byEvent[ev.i];
+      var row = node("div", "step");
+
+      var whenCell = node("div", "step-when");
+      whenCell.appendChild(document.createTextNode(step ? "#" + step.n : "—"));
+      whenCell.appendChild(node("div", "", "+" + clock(ev.t)));
+      row.appendChild(whenCell);
+
+      var main = node("div", "");
+      var head = node("div", "step-head");
+      head.appendChild(node("span", "actor " + (ev.actor || "agent"), ACTOR[ev.actor] || ev.actor || "Agent"));
+      if(ev.outcome && ev.outcome !== "done"){
+        head.appendChild(node("span", "outcome " + ev.outcome, ev.outcome === "needs_approval" ? "Paused for approval" : ev.outcome));
+      }
+      // A summary is "<action> - <what changed>" (or "- failed: why"); what
+      // follows is shown on its own line, so only that known ending is cut.
+      var text = ev.summary || [ev.kind, ev.target].filter(Boolean).join(" ");
+      [ev.change, "paused for approval: " + ev.reason, "failed: " + ev.reason].forEach(function(ending){
+        if(ending && text.length > ending.length + 3 && text.slice(-(ending.length + 3)) === " - " + ending){
+          text = text.slice(0, -(ending.length + 3));
+        }
+      });
+      head.appendChild(node("span", "step-text", text));
+      main.appendChild(head);
+
+      if(ev.withheld && ev.withheld.text){
+        main.appendChild(node("div", "withheld", "Typed text not recorded: " + ev.withheld.text));
+      }
+      if(ev.change){ main.appendChild(node("div", "step-detail", ev.change)); }
+      if(ev.reason && ev.outcome !== "done"){ main.appendChild(node("div", "step-detail", ev.reason)); }
+      if(ev.element_missing){ main.appendChild(node("div", "step-detail", "Kept as a screen position: " + ev.element_missing)); }
+
+      var check = node("div", "step-detail");
+      if(step){
+        var b = node("b", "", "Replay: ");
+        check.appendChild(b);
+        var parts = [];
+        if(step.consequential){ parts.push("asks for approval first"); }
+        if(step.expect && step.expect.length){
+          parts.push("then waits for " + step.expect.map(describeCheck).join(", "));
+        }else if(step.kind !== "manual"){
+          parts.push("nothing to check afterwards");
+        }
+        check.appendChild(document.createTextNode(parts.join("; ") || step.summary));
+      }else if(ev.kind === "note"){
+        check.textContent = "A note, not an action - nothing to replay.";
+      }else{
+        check.textContent = "Not replayed: this action did not complete when it was recorded.";
+      }
+      main.appendChild(check);
+
+      if(ev.before || ev.after){
+        var shots = node("div", "shots");
+        [["before", "Before"], ["after", "After"]].forEach(function(pair){
+          if(!ev[pair[0]]){ return; }
+          var link = node("a", "shot");
+          link.href = frameURL(meta.id, ev[pair[0]]);
+          link.target = "_blank";
+          link.rel = "noopener";
+          var img = node("img");
+          img.loading = "lazy";
+          img.src = link.href;
+          img.alt = "Screen " + pair[0] + " the action";
+          link.append(img, node("span", "", pair[1]));
+          shots.appendChild(link);
+        });
+        main.appendChild(shots);
+      }
+
+      row.appendChild(main);
+      steps.appendChild(row);
+    });
+
+    detail.appendChild(steps);
+  }
+
+  function describeCheck(c){
+    if(c.type === "url"){ return "the page " + c.value; }
+    if(c.type === "window"){ return "a window “" + c.value + "”"; }
+    if(c.type === "active_window"){ return "“" + c.value + "” in front"; }
+    if(c.type === "value"){ return c.role + " “" + c.name + "” holding {" + c.param + "}"; }
+    return c.role + " “" + c.name + "”";
+  }
+
+  /* ---- keep up with a live recording ---- */
+
+  async function tick(){
+    await refresh();
+    var demo = state.demonstration;
+    if(demo && state.selected === demo.session && state.loaded && state.loaded.meta.event_count !== demo.events){
+      open(demo.session);
+    }
+    setTimeout(tick, demo ? 2500 : 15000);
+  }
+
+  tick().then(function(){
+    if(state.selected){ open(state.selected); }
+  });
+})();
+</script>
+
+</body>
+</html>

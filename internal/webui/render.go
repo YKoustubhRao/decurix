@@ -74,6 +74,14 @@ type TaskPageData struct {
 	Task tasks.Detail
 }
 
+// RecordingsPageData is the template data for one desktop's recordings page.
+// The recordings are not in it: the page reads them from the desktop, which
+// keeps them. Session is the recording to open first, if any.
+type RecordingsPageData struct {
+	Desktop desktop.Desktop
+	Session string
+}
+
 // taskFuncs are the formatting helpers the task pages need, which are about
 // presenting records rather than anything a page should compute itself.
 var taskFuncs = template.FuncMap{
@@ -188,6 +196,15 @@ func (rd *Renderer) RenderTask(w io.Writer, data TaskPageData) error {
 	)
 
 	return tmpl.ExecuteTemplate(w, "task.html", data)
+}
+
+// RenderRecordings renders one desktop's recordings page.
+func (rd *Renderer) RenderRecordings(w io.Writer, data RecordingsPageData) error {
+	tmpl := template.Must(
+		template.ParseFS(web.TemplatesFS, templatePaths("recordings.html")...),
+	)
+
+	return tmpl.ExecuteTemplate(w, "recordings.html", data)
 }
 
 // FaviconSVG is the Flowera brand mark, served as the control plane's favicon.

@@ -3,7 +3,7 @@ import os
 import sys
 
 from flowera_agent import logging_utils, progress
-from flowera_agent.computer import approval, core
+from flowera_agent.computer import approval, core, replay
 from flowera_agent.computer import elements as el
 from flowera_agent.computer.errors import ComputerError
 
@@ -41,7 +41,13 @@ USAGE = """gui - see and use this desktop's screen
   gui scroll [TARGET] down [N]   scroll up/down/left/right
   gui select TARGET "option"     choose an option in a dropdown
   gui open URL|FILE|APP          open a web page, a document, or an app
+  gui drag TARGET X,Y            drag an element (or a point) and drop it at X,Y
   gui verify [--text T]          look again: what changed, is T on screen?
+
+  gui recordings [WORDS]         recorded demonstrations and tasks, best match first
+  gui recording ID               one recording's steps and parameters
+  gui replay ID [--param NAME=VALUE]... [--from N]
+                                 run a recording again, with no model
 
 TARGET is a ref from observe (e12), a role and name ('button "Save"'),
 a name ("Save"), or screen coordinates (640,360) as a last resort.
@@ -209,7 +215,55 @@ def build_parser():
     verify.add_argument("--role")
     verify.add_argument("--name")
 
+    drag = sub.add_parser("drag", add_help=False)
+    drag.add_argument("words", nargs="+")
+    drag.add_argument("--role")
+    drag.add_argument("--name")
+
+    recordings = sub.add_parser("recordings", add_help=False)
+    recordings.add_argument("words", nargs="*")
+
+    shown = sub.add_parser("recording", add_help=False)
+    shown.add_argument("session")
+
+    replayer = sub.add_parser("replay", add_help=False)
+    replayer.add_argument("session")
+    replayer.add_argument("--param", action="append", default=[])
+    replayer.add_argument("--from", dest="start", type=int, default=1)
+
     return parser
+
+
+def _load_program(session_id):
+    try:
+        return replay.load_program(session_id)
+    except (FileNotFoundError, ValueError):
+        raise ComputerError(f"there is no recording {session_id!r} here. Run `gui recordings` to list them.")
+
+
+def _print_replay(result):
+    """Print how a replay ended, and exit with what `gui` exit codes mean."""
+
+    outcome = result["outcome"]
+    again = f"gui replay {result['session']} --from {result['resume_from']}"
+
+    if outcome == replay.NEEDS_APPROVAL:
+        print(f"{approval.MARKER} {result['message']}")
+        print(f"Once it is approved, continue with: {again}")
+        return EXIT_NEEDS_APPROVAL
+
+    print(f"{outcome}: {result['message']}")
+
+    if outcome == replay.NEEDS_HUMAN:
+        print(f"Ask the human to do that step, then continue with: {again}")
+    elif outcome == replay.HALTED and result.get("resume_from"):
+        print(f"To carry on after putting it right: {again}")
+
+    if outcome in replay.SUCCESS:
+        return EXIT_OK
+    if outcome == replay.RECONCILIATION_REQUIRED:
+        return EXIT_VERIFY_FAILED
+    return EXIT_ERROR
 
 
 def _print_act(result):
@@ -263,6 +317,33 @@ def run(argv):
         print(result["message"])
         return EXIT_VERIFY_FAILED if result["ok"] is False else EXIT_OK
 
+    if command == "recordings":
+        found = replay.search(" ".join(args.words))
+        if not found:
+            print("No recordings on this desktop" + (" match that." if args.words else " yet."))
+            return EXIT_OK
+        kinds = {"demonstration": "demonstration by a person", "task": "task", "adhoc": "hand-run actions"}
+        for meta in found:
+            print(f"{meta['id']} {el._quote(meta.get('title') or '(untitled)', 70)} - "
+                  f"{kinds.get(meta.get('kind'), meta.get('kind'))}, {meta.get('event_count', 0)} actions")
+        print("`gui recording ID` shows one's steps; `gui replay ID` runs it again with no model.")
+        return EXIT_OK
+
+    if command == "recording":
+        meta, program = _load_program(args.session)
+        print(replay.render_text(meta, program, budget=TEXT_BUDGET))
+        return EXIT_OK
+
+    if command == "replay":
+        params = {}
+        for item in args.param:
+            name, sep, value = item.partition("=")
+            if not sep or not name.strip():
+                raise ComputerError(f"--param takes NAME=VALUE, not {item!r}")
+            params[name.strip()] = _unescape(value)
+        _, program = _load_program(args.session)
+        return _print_replay(replay.run(program, params=params, start=args.start))
+
     if command in ("click", "double-click", "right-click"):
         words = _strip_descriptor(list(args.target))
         if words and not (_is_target(words[0]) or (len(words) == 2 and _is_role_word(words[0]))):
@@ -314,6 +395,16 @@ def run(argv):
         else:
             raise ComputerError('select needs a dropdown and an option: gui select e5 "High"')
         result = core.act("select", option=option, **target)
+
+    elif command == "drag":
+        words = list(args.words)
+        drop = el.parse_point(words.pop())
+        if drop is None:
+            raise ComputerError("drag needs where to drop it, last, as X,Y: gui drag e12 640,360")
+        target = _target(" ".join(words) if words else None, args)
+        if not target:
+            raise ComputerError("drag what? gui drag e12 640,360, or gui drag 100,200 640,360")
+        result = core.act("drag", end=drop, **target)
 
     else:
         print(USAGE)
