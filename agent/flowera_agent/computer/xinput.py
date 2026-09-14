@@ -133,6 +133,20 @@ def scroll(x, y, direction, amount=3):
     _run(["click", "--repeat", str(max(1, int(amount))), "--delay", "30", str(button)])
 
 
+def drag(x1, y1, x2, y2, button=1):
+    move(x1, y1)
+    _run(["mousedown", str(button)])
+
+    try:
+        # The pointer travels rather than jumps: a drop target that follows
+        # motion (a list being reordered, a slider) never sees a jump.
+        for step in (1, 2, 3, 4):
+            move(x1 + (x2 - x1) * step / 4, y1 + (y2 - y1) * step / 4)
+            time.sleep(0.05)
+    finally:
+        _run(["mouseup", str(button)])
+
+
 def activate(window_id):
     """Raise and focus a top-level window, waiting until it really has focus."""
 

@@ -1,7 +1,7 @@
 import threading
 import time
 
-from flowera_agent import config, progress, state, task_context, usage
+from flowera_agent import config, progress, record_task, replay_task, state, task_context, usage
 from flowera_agent.computer import approval
 from flowera_agent.harness import continue_after_help, perform_task
 from flowera_agent.logging_utils import log
@@ -55,6 +55,12 @@ def _report_queued(name):
         "Waiting for the model backend to come up - "
         "your message is queued and will run as soon as it is reachable."
     )
+
+
+def _needs_no_backend(content):
+    """Whether a message is handled without the reasoning backend ("/replay", "/record")."""
+
+    return bool(replay_task.parse(content)) or record_task.parse(content) is not None
 
 
 HANDLED_SUFFIX = ".done"
@@ -141,7 +147,9 @@ def command_watcher():
                 # turned into a help request asking a human to do something
                 # about a backend that was about to come up on its own.
                 # Waiting costs nothing and needs no one.
-                if not state.backend_ready:
+                # A recording or a replay uses no model, so neither waits for
+                # one - unless the agent is paused, when it is a reply.
+                if not state.backend_ready and (state.waiting_for_help or not _needs_no_backend(content)):
                     _report_queued(path.name)
                     continue
 
@@ -165,6 +173,7 @@ def command_watcher():
                     # anything else withdraws it. Done here, before the
                     # harness sees the reply, so whichever engine repeats
                     # the action finds the grant already in place.
+                    outcome = None
                     try:
                         outcome = approval.resolve_reply(content)
                         if outcome:
@@ -174,9 +183,16 @@ def command_watcher():
 
                     _mark_handled(path)
 
+                    # A paused replay takes its own reply; it is still a
+                    # reply either way, which is all tasks.Plan mirrors.
+                    if state.paused_replay is not None:
+                        target, args = replay_task.resume, (content, outcome)
+                    else:
+                        target, args = continue_after_help, (content,)
+
                     thread = threading.Thread(
-                        target=continue_after_help,
-                        args=(content,),
+                        target=target,
+                        args=args,
                         daemon=True,
                     )
 
@@ -220,7 +236,7 @@ def command_watcher():
 
                 # Reports from here on belong to this message's task record,
                 # and so does what the engine uses.
-                task_context.start(task_context.task_id_from_filename(path.name))
+                task_context.start(task_context.task_id_from_filename(path.name), request=content)
                 usage.reset()
 
                 _mark_handled(path)
@@ -232,8 +248,17 @@ def command_watcher():
                 except OSError as exc:
                     log(f"Could not clear on-screen approvals: {exc}")
 
+                # "/replay <recording>" runs a recording and "/record <task>"
+                # records a person doing it; neither goes to an engine.
+                if replay_task.parse(content):
+                    target = replay_task.perform
+                elif record_task.parse(content) is not None:
+                    target = record_task.perform
+                else:
+                    target = perform_task
+
                 thread = threading.Thread(
-                    target=perform_task,
+                    target=target,
                     args=(
                         content,
                         path,

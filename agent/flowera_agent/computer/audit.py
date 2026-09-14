@@ -1,10 +1,8 @@
-import json
-import os
 import time
 import uuid
-from pathlib import Path
 
 from flowera_agent import config, progress, task_context
+from flowera_agent.computer import recording
 from flowera_agent.logging_utils import log
 
 
@@ -14,76 +12,71 @@ from flowera_agent.logging_utils import log
 # Every on-screen action - done, failed, or stopped for approval - is kept
 # twice:
 #
-# - on the desktop's own disk, in full: one JSON line in
-#   ~/audit/actions.jsonl plus full-resolution before/after PNGs under
-#   ~/audit/frames/. /home/headless is the desktop's persistent volume, so
-#   this survives restarts and image rebuilds, and it is the record to mine
-#   later (what the screen looked like, what was done, what changed).
+# - in the desktop's recordings (recording.py), as one event of the session
+#   for the task it belongs to, with full-resolution before/after frames, the
+#   element it touched and what it changed. /home/headless is the desktop's
+#   persistent volume, so this survives restarts and image rebuilds; and it
+#   is the format a person's demonstration is recorded in, so a task an agent
+#   finished is read, exported and replayed exactly like one.
 # - in the chat, as a step of the running turn, with half-size screenshots,
 #   through progress.emit_action - the control plane's live record a human
 #   can expand under the answer.
+#
+# What reaches either copy has already been through privacy.py (core.act
+# builds the entry that way); the frames are masked here, over the boxes of
+# the secret fields the caller found on screen.
 #
 # Neither write may fail an action. The action has already happened by the
 # time it is recorded; losing its record is logged, never raised.
 # ============================================================
 
-AUDIT_DIR = Path(os.environ.get("FLOWERA_AUDIT_DIR") or (Path.home() / "audit"))
-
-# How many actions' frames to keep on disk. The JSON lines are kept whole;
-# at ~200 KB per full-size frame this is what bounds the disk.
-KEEP_ACTIONS = int(os.environ.get("FLOWERA_AUDIT_KEEP", "2000"))
-
 THUMBNAIL_SCALE = 2
 
-
-def _prune(frames):
-    try:
-        files = sorted(frames.glob("*.png"))
-    except OSError:
-        return
-
-    excess = len(files) - KEEP_ACTIONS * 2
-    for path in files[:max(0, excess)]:
-        try:
-            path.unlink()
-        except OSError:
-            pass
+# Set by replay.py around each step it runs, so that step's event says which
+# recording, and which step of it, the action came from.
+origin = None
 
 
-def record(entry, before=None, after=None):
+def record(entry, before=None, after=None, masks=()):
     """
-    Persist one action and report it as a chat step. `entry` is the action's
-    description; `before`/`after` are screen.Frame objects (either may be None).
-    Returns the record id.
+    Record one action and report it as a chat step. `entry` is the action's
+    description; `before`/`after` are screen.Frame objects (either may be
+    None); `masks` are the [x, y, w, h] boxes of secret fields, painted over
+    in both. Returns the record id.
     """
 
     record_id = time.strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
+    task_id = task_context.current()
 
     entry = dict(entry)
     entry["id"] = record_id
-    entry["time"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    entry.setdefault("actor", "agent")
     entry["desktop_id"] = config.DESKTOP_ID
-    entry["task_id"] = task_context.current()
-
-    before_small = after_small = None
+    entry["task_id"] = task_id
+    if origin:
+        entry["replay_of"] = dict(origin)
 
     try:
-        frames = AUDIT_DIR / "frames"
-        frames.mkdir(parents=True, exist_ok=True)
+        if masks:
+            before = before.masked(masks) if before is not None else None
+            after = after.masked(masks) if after is not None else None
+    except Exception as exc:
+        # Keeping them unmasked is not an option: drop the frames instead.
+        log(f"Could not mask the frames of {record_id}, dropping them: {exc}")
+        before = after = None
 
-        for label, frame in (("before", before), ("after", after)):
-            if frame is None:
-                continue
-            path = frames / f"{record_id}-{label}.png"
-            path.write_bytes(frame.png())
-            entry[f"{label}_frame"] = str(path)
+    session_id = recording.session_for_task(task_id)
+    event = entry
 
-        with open(AUDIT_DIR / "actions.jsonl", "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    try:
+        event = recording.append(
+            session_id, entry, before=before, after=after,
+            defaults={"task_id": task_id, "title": task_context.current_request()},
+        )
+    except (OSError, ValueError) as exc:
+        log(f"Could not write the recording of {record_id}: {exc}")
 
-        _prune(frames)
-    except OSError as exc:
-        log(f"Could not write the audit record for {record_id}: {exc}")
+    before_small = after_small = None
 
     try:
         before_small = before.png(THUMBNAIL_SCALE) if before is not None else None
@@ -101,6 +94,8 @@ def record(entry, before=None, after=None):
             "outcome": entry.get("outcome"),
             "change": entry.get("change"),
             "reason": entry.get("reason"),
+            "session": session_id,
+            "index": event.get("i"),
         },
         before_small,
         after_small,

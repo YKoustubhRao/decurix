@@ -18,6 +18,9 @@ func TestClassify(t *testing.T) {
 		"tidy up":                                          TypeOther,
 		"ping - just reply pong":                           TypeQuestion,
 		"click Send newsletter in the admin panel":         TypeConsequential,
+		"/record pay the invoice in the admin panel":       TypeDemonstration,
+		"/record":                                          TypeDemonstration,
+		"/recordings please":                               TypeOther,
 	}
 
 	for request, want := range cases {

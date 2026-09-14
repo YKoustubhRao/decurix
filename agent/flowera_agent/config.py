@@ -43,11 +43,16 @@ THEBOT_URL = os.environ.get(
     "http://127.0.0.1:4900"
 )
 
-COMMAND_DIR = Path("/home/headless/command")
-HELPTEXT_DIR = Path("/home/headless/helptext")
-FINAL_DIR = Path("/home/headless/final")
+# Everything the agent keeps for itself lives under one hidden directory, so
+# the home a human browses on the desktop holds only the work directory.
+# start_agent_terminal.sh moves these in from where older desktops kept them.
+FLOWERA_DIR = Path("/home/headless/.flowera")
+
+COMMAND_DIR = FLOWERA_DIR / "command"
+HELPTEXT_DIR = FLOWERA_DIR / "helptext"
+FINAL_DIR = FLOWERA_DIR / "final"
+MEMORY_DIR = FLOWERA_DIR / "memory"
 WORK_DIR = Path("/home/headless/work")
-MEMORY_DIR = Path("/home/headless/memory")
 
 COMMAND_DIR.mkdir(parents=True, exist_ok=True)
 HELPTEXT_DIR.mkdir(parents=True, exist_ok=True)

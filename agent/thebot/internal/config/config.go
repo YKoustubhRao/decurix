@@ -67,7 +67,7 @@ type Config struct {
 
 func Load() Config {
 	return Config{
-		WorkspaceRoot: getenv("WORKSPACE_ROOT", "/home/headless/ai"),
+		WorkspaceRoot: getenv("WORKSPACE_ROOT", "/home/headless/.flowera/ai"),
 
 		Provider:   getenv("LLM_PROVIDER", "ollama"),
 		OllamaHost: getenv("OLLAMA_HOST", "http://127.0.0.1:11434"),

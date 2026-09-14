@@ -20,6 +20,8 @@ internal/desktop   — owns the Docker client; desktop image build
                       (Create/Start/Stop/Restart/Delete/List), image/network
                       ensure, SendMessage (POST to a desktop's :8081),
                       ProxyTarget (resolves the VNC reverse-proxy address),
+                      AgentRequest (recordings.go: one call to a desktop's :8081 API,
+                      how recordings are read off the desktop rather than copied),
                       PersistMemoryFile (docker-exec write into a desktop),
                       Screenshot (screenshot.go: a minimal RFB client that reads
                       a desktop's framebuffer straight off Xvnc:5901 and returns
@@ -58,7 +60,12 @@ internal/tunnel    — in-memory store of the current Cloudflare quick tunnel UR
                       the dashboard's Mobile dropdown
 internal/httpapi   — the only package touching net/http; all HTTP handlers,
                       composes desktop+helpnotes+memory+conversation+stepimages+tasks+
-                      tunnel+webui
+                      tunnel+webui. recordings.go: the recordings page and the
+                      /api/desktops/recordings* + /api/desktops/demonstration proxy, replay
+                      as a task (Busy check, Plan/Commit, parameters never recorded), and the
+                      ticket API (/api/desktops/record opens one, /api/desktops/ticket* drives
+                      it - the GUI screen's own toolbar). proxy.go: desktopProxyHandler's
+                      injectTicketToolbar splices that toolbar into every load of the screen
 internal/webui     — html/template rendering (PageData, dashboard/messages/desktop-view
                       pages); parses out of web.TemplatesFS, never off disk.
                       render_test.go executes every page, so a broken template fails
@@ -76,8 +83,10 @@ web/templates/     — theme.html (shared design tokens + icon sprite + top bar 
                       messages.html, desktop.html (the per-desktop chat behind the
                       dashboard's Chat button — one chat for every harness, and
                       nothing else on the page; the screen opens in its own tab),
-                      tasks.html (the autonomy dashboard, /tasks) and task.html (one
+                      tasks.html (the autonomy dashboard, /tasks), task.html (one
                       task record with its steps, screenshots, interventions, verdict)
+                      and recordings.html (/recordings/<id>: record a demonstration,
+                      browse recordings step by step, replay, export)
 
 desktop container (flowera-desktop:{basic,developer,ai})
   ├─ base image: accetto/ubuntu-vnc-xfce-chromium-g3 (XFCE + VNC + Chromium)
@@ -86,8 +95,8 @@ desktop container (flowera-desktop:{basic,developer,ai})
   │    also reinstalls agent/chromium-browser.init as ~/.chromium-browser.init (the
   │    browser's launch flags) and clears core dumps Chromium left behind
   └─ flowera_agent/ (Python package, imported by vm_server.py; :8081 inside the container)
-        ├─ config.py       — env vars (incl. AGENT_HARNESS), /home/headless/{command,helptext,
-        │                     final,work,memory} dirs
+        ├─ config.py       — env vars (incl. AGENT_HARNESS), /home/headless/.flowera/
+        │                     {command,helptext,final,memory} dirs and /home/headless/work
         ├─ state.py        — shared mutable state (current_task, waiting_for_help, ...) as
         │                     plain module attributes; every other module does
         │                     `from flowera_agent import state` and reads/writes
@@ -96,7 +105,7 @@ desktop container (flowera-desktop:{basic,developer,ai})
         │                     user, work dir), as facts for the system prompt. Shared by all
         │                     three harnesses - without it "what's your desktop name?" was
         │                     unanswerable and came back as a help request
-        ├─ memory_context.py — get_memory_context: reads /home/headless/memory/*.txt; shared
+        ├─ memory_context.py — get_memory_context: reads ~/.flowera/memory/*.txt; shared
         │                     by all three harnesses below
         ├─ messaging.py    — save_message (intake), send_helptext/ask_for_help/write_final_message
         │                     and backend_failure_note (turns a raw engine error into a note
@@ -150,14 +159,31 @@ desktop container (flowera-desktop:{basic,developer,ai})
         │                     cdp.py (Chromium over DevTools, stdlib websocket), xinput.py
         │                     (xdotool), elements.py (one element shape, stable refs, the text
         │                     rendering), approval.py (the gate + pending/grant file store),
-        │                     audit.py (~/audit on disk + progress.emit_action), cli.py (the
-        │                     `gui` shell command, agent/gui -> /usr/local/bin/gui),
-        │                     mcp_server.py (the same as MCP tools for Claude Code)
+        │                     audit.py (every action into recordings + progress.emit_action),
+        │                     cli.py (the `gui` shell command, agent/gui -> /usr/local/bin/gui),
+        │                     mcp_server.py (the same as MCP tools for Claude Code), and the
+        │                     recordings (see "Recordings" below): recording.py (the store),
+        │                     privacy.py (what is never kept), volatility.py (text a replay
+        │                     must not check), processing.py (raw input -> actions),
+        │                     demonstration.py (a person's input over VNC, via XInput2),
+        │                     replay.py (compile + run a recording with no model)
+        ├─ record_task.py  — "/record <task>" opens a ticket: dispatched by the watcher instead
+        │                     of the harness, holds the task open (module-private state, the way
+        │                     replay_task.py holds its params) until end() finishes it, reports as
+        │                     engine "human". begin()/pause()/resume()/end() are called directly
+        │                     over HTTP by the GUI screen's own toolbar - not through the command
+        │                     file/watcher path, since they only ever act on the ticket already open
+        ├─ replay_task.py  — "/replay <recording>" as a task: dispatched by the watcher instead
+        │                     of the harness, reports through messaging as engine "replay",
+        │                     pauses/resumes on approval or a private step
         ├─ watchers.py     — command_watcher (polls COMMAND_DIR, dispatches through harness.py;
         │                     leaves a message queued in COMMAND_DIR while state.backend_ready
         │                     is False, rather than failing it)
-        ├─ http_api.py     — Handler(BaseHTTPRequestHandler), POST /message
-        └─ app.py          — main(): wait_for_ollama, start watcher thread, serve_forever
+        ├─ http_api.py     — Handler(BaseHTTPRequestHandler): POST /message, and the
+        │                     recordings/demonstration/replay API the control plane proxies
+        └─ app.py          — main(): wait for the backend, watcher thread, tidy recordings
+                              (import the old audit trail, close an interrupted demonstration),
+                              ThreadingHTTPServer.serve_forever
 ```
 
 Control plane → desktop communication happens over the Docker bridge network `flowera-network` (container name `desktop_<id>`, not published ports). Desktop → control plane communication uses `CONTROL_PLANE_URL` (`http://host.docker.internal:8080`).
@@ -180,7 +206,7 @@ Each desktop picks a harness at creation time (`Desktop.Harness`, `desktop-harne
 
 ### One chat, every harness
 
-`/view/<id>` (the dashboard's **Chat** button) renders `web/templates/desktop.html`, which is the chat and nothing else — no embedded screen, identical for all three harnesses. A desktop's screen is a separate thing, opened in its own tab from the dashboard's open-in-a-new-tab button (which is consequently the only emitter of `?ui=touch`; see the `injectMobileEnhancements` note below). Nothing in the chat page branches on which engine is running, because every harness is addressed and reports back the same way:
+`/view/<id>` (the dashboard's **Chat** button) renders `web/templates/desktop.html`, which is the chat and nothing else — no embedded screen, identical for all three harnesses. A desktop's screen is a separate thing, opened in its own tab from the dashboard's open-in-a-new-tab button (the only emitter of `?ui=touch`; see the `injectMobileEnhancements` note below - the ticket toolbar described next is unconditional, like the branding rewrite, since noVNC's page loads for no other reason). Nothing in the chat page branches on which engine is running, because every harness is addressed and reports back the same way:
 
 ```
 human types in the chat
@@ -233,7 +259,29 @@ How each engine reaches it:
 
 Approval travels the same way for all three: `approval.check` stops a click on a Send/Pay/Buy/Publish-like control (or Enter in a messaging page), records a *pending* approval and returns NEEDS_APPROVAL. The harness pauses deterministically — `task_runner.pause_for_screen_approval` on exit 3, `operator.screenApprovalReason` → `NeedsApproval` checkpoint, `claude_harness._handle_result` if a pending approval exists whatever Claude wrote. The human's reply reaches `watchers.command_watcher`, which calls `approval.resolve_reply` **before** the harness sees it: a yes (`is_approval`, the same regexes as soul's `safety.IsApproval`) becomes a one-shot grant fingerprinted to that action; anything else drops it. The repeated action consumes the grant. A new task calls `approval.reset()`.
 
-Every action — done, failed, or paused — is an audit record twice: `~/audit/actions.jsonl` plus full-size PNGs under `~/audit/frames/` on the desktop's persistent volume (capped at `FLOWERA_AUDIT_KEEP` actions, default 2000), and a chat step via `progress.emit_action` → `POST /api/agent/events` with `action` + half-size `before_png`/`after_png` → `conversation.AppendActionStep` + `stepimages.Store`. The chat renders those steps with Before/After thumbnails.
+Every action — done, failed, or paused — is recorded twice: as an event of the task's recording on the desktop's persistent volume (see "Recordings" below), and as a chat step via `progress.emit_action` → `POST /api/agent/events` with `action` + half-size `before_png`/`after_png` → `conversation.AppendActionStep` + `stepimages.Store`. The chat renders those steps with Before/After thumbnails. Both copies go through `privacy.py` first.
+
+### Recordings: demonstrations, the audit trail, and replay
+
+Built on OpenAdapt's design (openadapt-capture's recorder and secret exclusion, openadapt-flow's recording layout, volatility classifier, resolution ladder and run outcomes), on Flowera's own action layer. One format holds everything done on a desktop's screen, whoever did it:
+
+```
+~/.flowera/recordings/<session>/          task-<task id> | adhoc-YYYYMMDD | demo-<when>-<rand>
+  meta.json      kind, title, task_id, started/ended, screen, actors, counts, status (demos)
+  events.jsonl   one action per line: i, t (seconds on the session clock), actor (agent|human),
+                 kind, element (role/name/path, no backend handle), text or withheld{},
+                 before/after frame names, change (sentence) + expect (the same as data)
+  frames/        PNGs named by a hash of their pixels - an "after" that is the next "before"
+                 is stored once
+```
+
+- **Agent actions** get there through `audit.record` (from `core.act` / `open_target`), under the session of `task_context.current()`; the task's request titles it (`task_context.current_request`, beside the task ID file).
+- **A person's demonstration** is `demonstration.py`, a process of its own started by `POST /demonstration/start` on the agent: XInput2 raw events → `processing.merge` (openadapt-capture's click/double-click/drag/scroll/shortcut rules, plus one `type` per run of characters with BackSpace applied) → the element under each action from the last observation of a settled screen → `recording.append` with `actor: "human"`. **Pause** drops all input and frames for a private step (a sign-in) and records a `manual` step on resume, which a replay hands back to a person.
+- **Replay** is `replay.compile_program` + `replay.run`: typed text becomes parameters (secret ones have no default and must be given), each step's target is found again by path then role+name (never guessed: none or two halts), coordinates only for a step recorded without an element on the same screen size and window, and each step waits for what it left on screen when recorded (a URL shape with id-like segments as `*`, a window, a dialog/heading/alert, a field holding the typed text), with volatile text never checked. Outcomes, never a success it did not see: `verified`, `completed_unverified`, `halted_before_effect`, `halted`, `reconciliation_required` (a consequential step ran and its result never appeared — never retried), `needs_approval`, `needs_human`. Every replayed step goes through `core.act`, so the approval gate and the recording apply (`replay_of` on each event).
+- **A ticket: a person doing a task, recorded from the GUI screen itself.** The screen's own top-of-page toolbar (`proxy.go`'s `injectTicketToolbar`, spliced into every load of noVNC's `vnc.html` the way `rewriteFloweraBranding` is) is a `+` that opens a ticket and, once one is open, Record/Stop/Continue/Reason/End. `+` sends the typed task as `/record <task>` through `POST /api/desktops/record` — refused while the agent is busy, like a replay — and it is otherwise an ordinary message (Plan/Commit, in the transcript, doesn't wait for the backend, neither does `/replay`). The watcher dispatches it to `record_task.perform`, never the engine. **Opening a ticket does not itself start capturing** — Record does, so a person can create the ticket, walk over to the screen, open the app they'll use, and start only when actually ready. From there Stop is `demonstration.pause` (a private step, e.g. signing in) and Continue is `resume`; Reason (`record_task.note` → `demonstration.note`) appends a person's own written explanation of what they are doing to the recording at that exact moment — its own event kind, `note`, never compiled into a replay step (`replay.compile_program` skips it outright, not merely leaves it out of `REPLAYABLE`, so it can never reach a replay's "cannot note" halt) and, like a typed field, withheld rather than kept if the text itself looks like a credential; refused while already paused, since nothing has a timeline position to sit at then. **Writing a reason pauses the recording** — `demonstration.note` calls `pause()` itself once the note is written, reusing the note's own (privacy-safe) summary as the pause reason, so a person explaining "signing in now" and then actually signing in doesn't need to separately remember to pause first; the toolbar shows Continue right after, same as pressing Stop would. End (`record_task.end`) stops capturing if it had started and finishes the ticket's task, which is what makes the recording's export downloadable — the toolbar offers that link the moment End answers. Every one of Record/Stop/Continue/Reason/End is a direct call to `/api/desktops/ticket/action` (`ticketActionHandler`), not a command file: they only ever act on whatever ticket `record_task.py`'s own state already has open, so they don't go through the watcher. `GET /api/desktops/ticket` (`ticketStatusHandler`) is what the toolbar polls (every open tab, and any Record/Stop click, keep this and the recordings page's own view in sync) — deliberately separate from the recordings page's own ad-hoc "Record a demonstration" (`POST /demonstration/start`, no ticket, no task), so the two can never fight over the same session. Its task type is `demonstration` (`tasks.IsRecordCommand`), which an on-screen step never turns into `screen` and `tasks.Report` leaves out of autonomy — no engine attempted it.
+- It is reachable three ways: the recordings page's Replay button (control plane → `POST /recordings/<id>/replay` → a `/replay <id>` command file → `replay_task.perform`, a task with engine `replay`), typing `/replay <id>` into the chat, and by an engine: `gui recordings [words]` / `gui recording <id>` / `gui replay <id> [--param n=v] [--from N]`, or the MCP tools `recordings` / `replay`. `gui replay` exit codes follow the gui contract (3 on approval, 4 on reconciliation_required).
+- **Privacy is applied at the source** (`privacy.py`): a value typed into a password field (AT-SPI `password text`, `input[type=password]`, a secret `autocomplete`, a field labelled for a secret) or text shaped like a credential (API keys, tokens, private keys, Luhn-valid card numbers) is withheld with a reason, never rewritten; secret fields' boxes are painted over in saved frames; URLs lose userinfo and secret-named parameter values; a value over 512 characters is omitted, not cut. The engine is handed `[text withheld: password field]` too.
+- The control plane never copies recordings: `desktop.Manager.AgentRequest` proxies `/api/desktops/recordings*` and `/api/desktops/demonstration` to the desktop's `:8081` (the page is `/recordings/<id>`, linked from each dashboard card and from a task that acted on screen). Recordings of tasks and hand-run actions are pruned oldest first past `FLOWERA_RECORDINGS_MB` (default 1024); demonstrations are never pruned.
 
 The benchmark is `bench/gui/`: 20 tasks (12 in a web admin panel, 5 in LibreOffice, 3 in GTK apps, 3 of them approval checks), fixtures and outcome checks that run inside a desktop (`fixtures/bench.py`), and `run.py`, which drives each engine through the control plane's chat API on a fresh desktop and reports success rate per engine. `--engine oracle --container <desktop>` runs each task's scripted `gui` solution with no model — the proof that a task is solvable and its check is right. Results go to `bench/gui/results/` (gitignored).
 
@@ -251,7 +299,8 @@ go build ./... && go vet ./... && go test ./...   # compile, lint, unit tests
                                   #  internal/stepimages, internal/httpapi, internal/tasks,
                                   #  internal/sqlitedb)
 PYTHONPATH=agent python3 -m unittest discover -s agent/tests   # computer-use gate/refs/rendering,
-                                  # task IDs and usage totals
+                                  # task IDs and usage totals, recordings (input merging,
+                                  # privacy, volatility, the store, replay against a fake screen)
 python3 bench/gui/run.py --engine oracle --container desktop_<id>   # GUI benchmark, no model
 python3 bench/gui/run.py --engine ollama --engine thebot --engine claude  # per-engine success rate
 ```
@@ -297,6 +346,15 @@ See [README.md](README.md#-getting-started-running-it-locally) for full step-by-
 | `OLLAMA_TIMEOUT_MS` | TheBot's `llm.NewOllama` | `300000` | A *floor*, not a replacement: raises any per-call `Options.TimeoutMs` shorter than it, and leaves longer ones alone. TheBot's own budgets (60s to plan, 90s to answer) were chosen against a GPU and all expire in sequence on a CPU. |
 | `OLLAMA_KEEP_ALIVE` | `ollama_client.py`, TheBot's `llm.NewOllama` | `30m` | How long Ollama holds the model in memory. See the prompt-cache gotcha below — this is the single biggest lever on how fast a desktop feels. |
 | `EMBED_MODEL` | TheBot's `config.Load` / `llm.NewOllama` | `nomic-embed-text` | The embedding model, a separate dependency from the chat model. |
+
+**Recordings**, also read inside the container:
+
+| Var | Read in | Default | Purpose |
+|---|---|---|---|
+| `FLOWERA_RECORDINGS_DIR` | `computer/recording.py` | `~/.flowera/recordings` | Where recordings live. |
+| `FLOWERA_RECORDINGS_MB` | `computer/recording.py` | `1024` | Disk budget; task and hand-run recordings are pruned oldest first past it, demonstrations never. |
+| `FLOWERA_REPLAY_FIND_SECONDS` | `computer/replay.py` | `12` | How long a replay step looks for its target before halting. |
+| `FLOWERA_REPLAY_EXPECT_SECONDS` | `computer/replay.py` | `10` | How long a replay step waits for its expected result. |
 
 ## Conventions / gotchas
 
@@ -381,3 +439,14 @@ See [README.md](README.md#-getting-started-running-it-locally) for full step-by-
 - `bench.py` kills apps by **process name**, never `pkill -f <word>`: task ids like `mousepad-save-as` are in its own command line, and the first version killed itself.
 - **A dispatched message file is renamed to `*.txt.done`** (`watchers._mark_handled`). `state.processed_commands` is memory and `COMMAND_DIR` is the persistent volume, so every desktop restart used to replay every message the desktop had ever received — found by the GUI benchmark, which restarts a desktop between tasks: each task queued behind replays of all earlier ones, and a spreadsheet task was answered with questions about signing in to an admin panel. A message deferred behind a running task or a backend that is not up yet keeps its `.txt` name until it is actually dispatched.
 - `bench/gui/run.py` restarts a desktop after any task that did not end in a plain answer or error (`agent_is_idle`): a paused agent takes the next message as the *reply* to its help request. And an approval task only passes when the gate itself fired (a step with `outcome: needs_approval`), not when the agent merely asked for help for some other reason — which leaves the invoice unpaid too.
+- **A demonstration tells the person from the agent by input device, not by timing.** XInput2 raw events name their source device: a person using noVNC arrives as Xvnc's `TigerVNC pointer/keyboard`, every xdotool action as `Virtual core XTEST pointer/keyboard` (measured: devices 6/7 vs 4/5), and `demonstration.py` drops XTEST. The client must announce XInput **2.2** (`XIQueryVersion`) — only from 2.1 are raw events delivered while another client holds a grab, i.e. inside an open menu or a drag. python-xlib 0.33 parses XInput device events but not raw ones: the recorder registers a raw-event struct with `Display.ge_add_event_data` (a method of the high-level `Display`, not `display.display`) and matches `ge.GenericEventCode`, since `X.GenericEvent` does not exist there.
+- **Xvnc changes the keymap while someone types.** It maps the keysyms a VNC client sends onto keycodes on the fly and types a capital by toggling Caps Lock around it, announcing both with `MappingNotify`. The recorder refreshes its keymap on that event, names keys from its own `KEY_NAMES` table (python-xlib's `keysym_to_string` returns None for Shift_L, Caps_Lock and every other named key), and reads the Lock state back from the server whenever a key goes down with nothing held. Measured before each fix: "Human Co" recorded as four runs split by `keycode_66`, then as "hUMAN cO" when an earlier session had left Caps Lock on.
+- **A typing run keeps its field until something moves focus** (`demonstration._focus_after`), and text typed into a field that cannot be told is withheld whenever a secret field is on screen. Both close a leak found live: an unrecognised key split a password's typing in two, the second half had no element, and it was stored as plain text.
+- **A demonstration's "what changed" is discarded when the person's next input landed before the screen was read** (`change_missing`). Observing takes a second or two and people do not wait: a sign-in click's "Welcome back" was recorded as what the typing before it did, and a replay would have waited for it after the wrong step.
+- A replay is **refused (409) while the desktop has a task running, queued or waiting** (`tasks.Store.Busy`), rather than routed: sent to a paused agent the watcher takes it as the reply, and queued behind a running task it is absorbed as the reply if that task pauses. A replay's parameters travel only in the request body to the desktop and live in `replay_task`'s memory until it runs — the chat, the task record and the command file see `/replay <id> [from=N]`, never a value.
+- The agent's HTTP server is a `ThreadingHTTPServer`: exporting a recording streams a zip for as long as it takes, and a single-threaded server would hold every chat message behind it.
+- **Everything the agent keeps for itself lives under `~/.flowera`**: `config`'s command/helptext/final/memory dirs, the computer layer's `computer/` and `recordings/` (an `audit/` from before recordings is imported into them once at startup by `recording.import_legacy_audit`, with its typed secrets withheld), and TheBot's `WORKSPACE_ROOT` (`ai/`). `~/work` is the only directory it adds to the top of the home, because that is where tasks run and what a human browses. `start_agent_terminal.sh` moves an older volume's `~/command`, `~/helptext`, `~/final`, `~/memory`, `~/audit` (and `~/ai`, on a TheBot desktop only) into place before the agent or soul starts, never overwriting an entry already there. A container keeps the image it was created from, so a desktop created before the move still runs an agent that reads `~/memory` — which is why `desktop.Manager.PersistMemoryFile` writes there while it is that desktop's only memory directory.
+- **A ticket is opened the same way any message is, but Record/Stop/Continue/Reason/End are not command files.** `record_task.py` keeps the open ticket as its own module-private state (`_ticket`, the way `replay_task.py` keeps `_held`) rather than in `state.py`, because nothing outside the module reads it directly — the GUI toolbar's begin/pause/resume/end calls go straight into `record_task.begin()` etc. over HTTP, bypassing the command directory and the watcher entirely, since they only ever act on whatever ticket is already open. `tasks.Store.Busy` is still what keeps a second ticket (or a replay) from being opened while one is: `perform()` occupies the task slot for the ticket's entire lifetime, exactly like an agent's task would.
+- **`httpapi.callAgent`'s payload parameter is `any`, and a nil `map[string]string` boxed into it is not the untyped `nil` the function tests against** — Go's classic typed-nil-in-an-interface trap. `ticketActionHandler` hit this for `begin`/`resume`/`end` (no fields to send): a `var payload map[string]string` left nil and passed straight through would satisfy `payload != nil` anyway, and `json.Marshal` would send the literal `null` as the body — which the agent's `_body()` rejects (`json.loads("null")` isn't a dict) as 400 rather than sending no body. Pass the bare `nil` literal itself for a call with no fields, not a nil-valued typed variable.
+- **The ticket toolbar's own poll must not rebuild the panel when nothing changed.** It reads GET `/api/desktops/ticket` every 2.5s the way `desktop.html`'s chat polls the transcript, but unlike the chat's whole-snapshot renders, rebuilding this panel on every tick would wipe out a task name being typed into the `+` input mid-keystroke (new `<input>`, empty value) even though the ticket state hadn't actually changed. `refresh()` compares the fetched ticket against the last one (`JSON.stringify`) and skips the render entirely when they're equal; a create-ticket **failure** (busy desktop, dropped request) also preserves what was typed, via a `draftTask` variable read back into whatever `<input>` gets rebuilt next, so a rejected submission doesn't make someone retype it.
+- **End does not wait for `record_task.perform()`'s own thread to clear the ticket, so its HTTP response can still show the ticket "open" for an instant.** `end()` sets `demonstration.stop()` (if capturing had started) and signals `_ended`, then returns immediately — `perform()`'s background thread wakes and clears `_ticket` a moment later, off this request's critical path. Trusting that response's `ticket` field for the toolbar's post-End render would flash the ticket panel once more before the next poll corrected it; the toolbar's `act("end", ...)` special-cases the answer instead — captures `session_id` for the download link if the response carried one, sets its own `ticket = null` unconditionally, and renders the "recording saved" view right away.

@@ -18,9 +18,27 @@ const (
 	TypeSystem        = "system"
 	TypeQuestion      = "question"
 	TypeOther         = "other"
+
+	// TypeDemonstration is a task a person did while the desktop recorded
+	// them ("/record <task>"). No engine attempted it, so it is kept out of
+	// the autonomy report.
+	TypeDemonstration = "demonstration"
 )
 
+// RecordCommand starts a "/record <task>" message: the desktop records a
+// person doing the task instead of handing it to its engine.
+const RecordCommand = "/record"
+
+// IsRecordCommand says whether a request is a "/record" message.
+func IsRecordCommand(request string) bool {
+	text := strings.TrimSpace(request)
+	rest, ok := strings.CutPrefix(text, RecordCommand)
+
+	return ok && (rest == "" || rest[0] == ' ' || rest[0] == '\t' || rest[0] == '\n')
+}
+
 var typeLabels = map[string]string{
+	TypeDemonstration: "Recorded by a person",
 	TypeConsequential: "Payments & messages",
 	TypeScreen:        "On-screen work",
 	TypeWeb:           "Web research",
@@ -60,6 +78,10 @@ var questionStart = regexp.MustCompile(`^(what|whats|what's|how|who|why|when|whe
 
 // Classify returns the task type for a request.
 func Classify(request string) string {
+	if IsRecordCommand(request) {
+		return TypeDemonstration
+	}
+
 	text := strings.ToLower(strings.TrimSpace(request))
 
 	for _, rule := range typeRules {

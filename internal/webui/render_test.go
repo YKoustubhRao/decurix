@@ -157,4 +157,16 @@ func TestRenderEveryPage(t *testing.T) {
 			t.Fatalf("RenderDesktopView(%s): %v", d.Status, err)
 		}
 	}
+
+	// The recordings page, for a running desktop (recorder, list, detail) and
+	// a stopped one (only the "start it" state).
+	for _, d := range []desktop.Desktop{running, stopped} {
+		var out bytes.Buffer
+		if err := renderer.RenderRecordings(&out, RecordingsPageData{Desktop: d, Session: "demo-20260914T101500-abc123"}); err != nil {
+			t.Fatalf("RenderRecordings(%s): %v", d.Status, err)
+		}
+		if d.Status == "running" && !strings.Contains(out.String(), `data-session="demo-20260914T101500-abc123"`) {
+			t.Fatal("the recordings page lost the recording it was asked to open")
+		}
+	}
 }

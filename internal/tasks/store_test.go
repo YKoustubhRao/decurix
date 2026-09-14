@@ -444,6 +444,18 @@ func TestReportAnswersWhichEngineAndWhy(t *testing.T) {
 	outcome(t, s, "ollama-box", right.TaskID, Outcome{Kind: OutcomeDone, Message: "6.6.87.2"})
 	s.SetVerdict(right.TaskID, VerdictCorrect, "")
 
+	// A person recording themselves doing a task is not Ollama being autonomous,
+	// even with a screen step attributed to it.
+	demo := send(t, s, ollama, "/record fill in the invoice form")
+	if _, err := s.AddStep("ollama-box", demo.TaskID, Step{Text: "click Save", Action: &Action{Kind: "click"}}); err != nil {
+		t.Fatal(err)
+	}
+	outcome(t, s, "ollama-box", demo.TaskID, Outcome{Kind: OutcomeDone, Message: "Recorded 1 step", Engine: "human"})
+
+	if task, err := s.Get(demo.TaskID); err != nil || task.Type != TypeDemonstration {
+		t.Fatalf("recorded task type = %q, %v", task.Type, err)
+	}
+
 	report, err := s.Report(weekStart)
 	if err != nil {
 		t.Fatal(err)
