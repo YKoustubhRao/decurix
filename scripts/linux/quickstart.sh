@@ -3,13 +3,13 @@
 # One-shot: takes a fresh Linux checkout all the way to a running Flowera
 # dashboard. Chains the two steps README.md documents as separate manual
 # steps - scripts/linux/setup.sh (host dependencies, needs root, skipped if
-# Docker is already installed) and scripts/linux/build.sh (build every
-# image, start the control plane, wait for the dashboard, open a Cloudflare
-# tunnel) - into a single command for a first-time setup.
+# Docker is already installed) and scripts/linux/build.sh (build any missing
+# desktop images, start the control plane if it isn't already running, open
+# a Cloudflare tunnel) - into a single command for a first-time setup.
 #
-# Already have Docker? This just runs build.sh. Already have Flowera running
-# and want to rebuild without touching your desktops? Use build.sh directly -
-# see README.md's "Everything" row for exactly what it tears down and why.
+# Already have Docker? This just runs build.sh, same as opening the app on
+# any later run. Want a clean slate instead (fresh images, fresh desktops,
+# empty database)? Use scripts/linux/rebuild.sh directly.
 
 set -e
 

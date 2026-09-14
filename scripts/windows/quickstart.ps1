@@ -6,14 +6,13 @@
     Chains the two steps README.md documents as separate manual steps -
     scripts/windows/setup.ps1 (host dependencies, needs Administrator,
     skipped if Docker is already installed) and scripts/windows/build.ps1
-    (build every image, start the control plane, wait for the dashboard,
-    open a Cloudflare tunnel) - into a single command for a first-time
-    setup.
+    (build any missing desktop images, start the control plane if it isn't
+    already running, open a Cloudflare tunnel) - into a single command for a
+    first-time setup.
 
-    Already have Docker? This just runs build.ps1. Already have Flowera
-    running and want to rebuild without touching your desktops? Use
-    build.ps1 directly - see README.md's "Everything" row for exactly what
-    it tears down and why.
+    Already have Docker? This just runs build.ps1, same as opening the app
+    on any later run. Want a clean slate instead (fresh images, fresh
+    desktops, empty database)? Use scripts/windows/rebuild.ps1 directly.
 #>
 
 $ErrorActionPreference = "Stop"
