@@ -144,10 +144,11 @@ Everything scripted lives under [`scripts/`](scripts/), split by who runs it. `l
 
 | | Linux / macOS | Windows (PowerShell) | What it does |
 |---|---|---|---|
-| **One-shot** | `scripts/linux/quickstart.sh` | `scripts\windows\quickstart.ps1` | Fresh machine to running dashboard in one command: host setup (if Docker's missing) then Everything, below. |
+| **One-shot** | `scripts/linux/quickstart.sh` | `scripts\windows\quickstart.ps1` | Fresh machine to running dashboard in one command: host setup (if Docker's missing) then Start, below. |
 | **Host setup** | `scripts/linux/setup.sh` | `scripts\windows\setup.ps1` | One-time: Docker, `cloudflared`, QEMU. Needs root/admin. |
 | **Desktop images** | `scripts/linux/build-images.sh` | `scripts\windows\build-images.ps1` | Builds `flowera-desktop:{basic,developer,ai}`. |
-| **Everything** | `scripts/linux/build.sh` | `scripts\windows\build.ps1` | Images, then restart the control plane and open a tunnel. |
+| **Start** | `scripts/linux/build.sh` | `scripts\windows\build.ps1` | Like opening the app: builds only missing images, starts the control plane if it isn't already running, opens a tunnel. Leaves existing desktops and the database untouched. |
+| **Rebuild** | `scripts/linux/rebuild.sh` | `scripts\windows\rebuild.ps1` | Like reinstalling: rebuilds every image and the control plane (still cached, so it's fast), every `desktop_*` container/volume removed, and (after a confirmation prompt) the app database wiped. |
 | **Standalone VM test** | `scripts/linux/test-vm.sh` | `scripts\windows\test-vm.ps1` | One throwaway desktop container + a dummy control-plane stub, no full Flowera stack needed. See below. |
 | **Release** | `scripts/release/release.sh` | `scripts\release\release.ps1` | Cross-compiles the downloadable executables into `dist/`. |
 
@@ -162,7 +163,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\windows\quickstart.ps1
 ```
 
-`build.ps1` does everything `build.sh` does: builds the images, sets up Ollama, restarts the control plane and opens the tunnel.
+`build.ps1` does everything `build.sh` does: builds any missing images, sets up Ollama, starts the control plane if it isn't already running, and opens the tunnel. `rebuild.ps1` mirrors `rebuild.sh`.
 
 ### 1. Clone and configure
 
@@ -209,7 +210,7 @@ docker run --rm --add-host host.docker.internal:host-gateway curlimages/curl -s 
 
 This should print JSON listing the models you pulled.
 
-**Or let the build script handle it.** `./scripts/linux/build.sh` and `.\scripts\windows\build.ps1` do all of this, checking reachability from inside a container:
+**Or let the build/rebuild script handle it.** `./scripts/linux/build.sh`/`rebuild.sh` and `.\scripts\windows\build.ps1`/`rebuild.ps1` all do this, checking reachability from inside a container:
 
 1. Use `OLLAMA_URL` from `.env` if a container can reach it; otherwise try the host's Ollama.
 2. If Ollama is running on the host but only on loopback, make it listen on all interfaces. On Linux that means `OLLAMA_HOST=0.0.0.0` on its systemd service (with `sudo`). On Windows it means `OLLAMA_HOST` in your user environment, followed by a restart of the Ollama app.
@@ -254,7 +255,16 @@ Hit **Chat** on a desktop to talk to its agent: one conversation per worker, wit
 .\scripts\windows\build.ps1     # Windows (PowerShell)
 ```
 
-This runs the `build-images` script for all three desktop images and [sets up Ollama](#-setting-up-ollama) (creating `.env` if needed). It then tears down any old `desktop_*` containers and volumes, starts the control plane and waits for the dashboard to respond. If `cloudflared` is installed, it opens a public tunnel at the end and shows the tunnel's URL in the dashboard's Mobile menu. Without `cloudflared` the script stops with an error at that last step, but the dashboard is already running on `:8080`. Install `cloudflared` (via `setup.sh` / `setup.ps1`), or ignore the error if you only want local access. Ctrl+C stops the tunnel and the whole Flowera stack with it.
+This is the "open the app" script: it builds only whichever desktop images don't exist yet, [sets up Ollama](#-setting-up-ollama) (creating `.env` if needed), starts the control plane if it isn't already running, and waits for the dashboard to respond. It does **not** touch any existing `desktop_*` container/volume or the app database — running it again is like reopening an app, not reinstalling it. If `cloudflared` is installed, it opens a public tunnel at the end and shows the tunnel's URL in the dashboard's Mobile menu. Without `cloudflared` the script stops with an error at that last step, but the dashboard is already running on `:8080`. Install `cloudflared` (via `setup.sh` / `setup.ps1`), or ignore the error if you only want local access. Ctrl+C stops watching the tunnel; Flowera keeps running (`docker compose down` to stop it).
+
+Want a clean slate instead — fresh images, no leftover desktops, an empty dashboard?
+
+```bash
+./scripts/linux/rebuild.sh        # Linux/macOS
+.\scripts\windows\rebuild.ps1     # Windows (PowerShell)
+```
+
+This is the "reinstall" script. After a confirmation prompt (`-y`/`-Yes` to skip it), it removes every `desktop_*` container and volume, removes the bundled `flowera-ollama` container (its pulled-models volume is kept — no reason to redownload gigabytes of models), and **permanently deletes the `flowera-data` volume**, so all task history, chat transcripts, help notes and worker memory are gone. It also rebuilds every desktop image and the control plane image — so a change to `agent/` or a Dockerfile is picked up — but with Docker's normal build cache rather than `--no-cache`, so it's just as fast as `build.sh` when nothing actually changed. `.env` is left as it is. Ctrl+C during a rebuild tears the whole stack down rather than leaving it half old, half fresh.
 
 ### Testing one desktop image standalone
 
@@ -344,7 +354,7 @@ For developers interested in the current implementation, see:
 
 * [`CLAUDE.md`](CLAUDE.md) — architecture reference (packages, agent harnesses, conventions)
 * [`CODE_MAP.md`](CODE_MAP.md) — codebase reference
-* [`scripts/`](scripts/) — `linux/` and `windows/` hold the same three scripts per platform, `release/` builds the downloadable executables
+* [`scripts/`](scripts/) — `linux/` and `windows/` hold the same scripts per platform, `release/` builds the downloadable executables
 
 ---
 
