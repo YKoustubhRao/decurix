@@ -30,17 +30,35 @@ internal/desktop   — owns the Docker client; desktop image build
 internal/ollama    — DesktopURL/DesktopModel (the Ollama every desktop is given) and
                       preloading the model there at startup; also the lifecycle of the
                       bundled "flowera-ollama" container, used only when OLLAMA_URL names it
-internal/helpnotes — in-memory store of help requests submitted by agents
-internal/memory    — in-memory store of worker-memory entries
-internal/conversation — in-memory per-desktop chat transcript: the messages a human
-                      and a desktop's agent exchanged, plus the live steps of the
-                      turn running right now. The control plane's own record, which
-                      is what makes a desktop's chat the same on every device
+internal/sqlitedb  — opens the one embedded SQLite database (modernc.org/sqlite, pure Go,
+                      so releases stay CGO_ENABLED=0) at FLOWERA_DATA_DIR/flowera.db, and
+                      Migrate(db, component, steps): each store below owns its own tables
+                      and appends schema steps, never edits an applied one
+internal/helpnotes — help requests submitted by agents (SQLite)
+internal/memory    — worker-memory entries (SQLite)
+internal/conversation — per-desktop chat transcript: the messages a human and a
+                      desktop's agent exchanged (each tagged with its task ID and the
+                      human's verdict), plus the live steps of the turn running right
+                      now. Served from memory, written through to SQLite, loaded back
+                      per thread on first use. What makes a desktop's chat the same on
+                      every device
+internal/stepimages — byte-bounded SQLite store of the before/after screenshots attached
+                      to on-screen action steps (PNG in, JPEG out), served at
+                      /api/desktops/step-image; the desktop keeps the full-size originals
+internal/tasks     — the task records: Task → Execution → Steps → Interventions →
+                      Outcome, per Worker (a desktop ID, kept after its container is
+                      deleted). store.go routes a human message (Plan/Commit: new task,
+                      reply to an open intervention, or retry of a failed task), attributes
+                      steps and outcomes (by echoed task ID, else the worker's live
+                      execution), verdicts, CloseOpen on stop/restart/delete. classify.go:
+                      deterministic task type and intervention reason. report.go: autonomy
+                      by engine/worker/type and the reasons people stepped in
 internal/tunnel    — in-memory store of the current Cloudflare quick tunnel URL,
                       set by scripts/linux/build.sh via POST /api/tunnel, surfaced in
                       the dashboard's Mobile dropdown
 internal/httpapi   — the only package touching net/http; all HTTP handlers,
-                      composes desktop+helpnotes+memory+conversation+tunnel+webui
+                      composes desktop+helpnotes+memory+conversation+stepimages+tasks+
+                      tunnel+webui
 internal/webui     — html/template rendering (PageData, dashboard/messages/desktop-view
                       pages); parses out of web.TemplatesFS, never off disk.
                       render_test.go executes every page, so a broken template fails
@@ -57,7 +75,9 @@ web/templates/     — theme.html (shared design tokens + icon sprite + top bar 
                       by webui.templatePaths), dashboard.html, index.html,
                       messages.html, desktop.html (the per-desktop chat behind the
                       dashboard's Chat button — one chat for every harness, and
-                      nothing else on the page; the screen opens in its own tab)
+                      nothing else on the page; the screen opens in its own tab),
+                      tasks.html (the autonomy dashboard, /tasks) and task.html (one
+                      task record with its steps, screenshots, interventions, verdict)
 
 desktop container (flowera-desktop:{basic,developer,ai})
   ├─ base image: accetto/ubuntu-vnc-xfce-chromium-g3 (XFCE + VNC + Chromium)
@@ -86,6 +106,12 @@ desktop container (flowera-desktop:{basic,developer,ai})
         ├─ readiness.py    — wait_for_http_ok(url, label): the one "is it up yet" probe,
         │                     shared by every harness that has a backend to wait for. Never
         │                     raises and never gives up - "not up yet" is a state to sit in
+        ├─ task_context.py — the control plane's task ID for the message being worked on:
+        │                     carried in the command file's name (<stem>.t<16 hex>.txt), set
+        │                     by watchers.py, and written to /tmp/flowera-current-task so the
+        │                     `gui` command and the MCP server (other processes) report it too
+        ├─ usage.py        — per-task model/tokens/cost totals each harness adds to, sent by
+        │                     messaging.send_helptext with every reply
         ├─ progress.py     — emit(): POSTs one live activity line to the control plane's
         │                     /api/agent/events, on a single background sender thread with a
         │                     bounded queue. Best-effort and harness-agnostic: this is what
@@ -117,6 +143,16 @@ desktop container (flowera-desktop:{basic,developer,ai})
         │                     progress.emit; polling is the fallback), and maps the job's
         │                     structured `outcome` to write_final_message/ask_for_help. A
         │                     reply goes back with reply=true, which resumes the paused job
+        ├─ computer/       — computer use: the ONE action layer all three engines share to see
+        │                     and work the screen (see "Computer use" below). core.py has
+        │                     observe/act/verify/open; screen.py (python3-xlib: framebuffer ->
+        │                     PNG, window list), atspi.py (GTK/XFCE/LibreOffice widgets),
+        │                     cdp.py (Chromium over DevTools, stdlib websocket), xinput.py
+        │                     (xdotool), elements.py (one element shape, stable refs, the text
+        │                     rendering), approval.py (the gate + pending/grant file store),
+        │                     audit.py (~/audit on disk + progress.emit_action), cli.py (the
+        │                     `gui` shell command, agent/gui -> /usr/local/bin/gui),
+        │                     mcp_server.py (the same as MCP tools for Claude Code)
         ├─ watchers.py     — command_watcher (polls COMMAND_DIR, dispatches through harness.py;
         │                     leaves a message queued in COMMAND_DIR while state.backend_ready
         │                     is False, rather than failing it)
@@ -126,7 +162,7 @@ desktop container (flowera-desktop:{basic,developer,ai})
 
 Control plane → desktop communication happens over the Docker bridge network `flowera-network` (container name `desktop_<id>`, not published ports). Desktop → control plane communication uses `CONTROL_PLANE_URL` (`http://host.docker.internal:8080`).
 
-Go package dependency direction (no cycles): `httpapi` → `desktop`, `helpnotes`, `memory`, `conversation`, `tunnel`, `webui`; `webui` → `desktop`, `helpnotes`, `memory`, `web`; `desktop` → `ollama` (only for `ollama.DesktopURL`/`DesktopModel`, the Ollama a new desktop is given), `flowera` (the root package, for the embedded build context); `ollama`, `helpnotes`, `memory`, `conversation`, `tunnel`, `web`, `flowera` depend on nothing internal.
+Go package dependency direction (no cycles): `httpapi` → `desktop`, `helpnotes`, `memory`, `conversation`, `stepimages`, `tasks`, `tunnel`, `webui`; `webui` → `desktop`, `helpnotes`, `memory`, `tasks`, `web`; `desktop` → `ollama` (only for `ollama.DesktopURL`/`DesktopModel`, the Ollama a new desktop is given), `flowera` (the root package, for the embedded build context); `helpnotes`, `memory`, `conversation`, `stepimages`, `tasks` → `sqlitedb` only; `ollama`, `sqlitedb`, `tunnel`, `web`, `flowera` depend on nothing internal.
 
 Three desktop profiles share the same `agent/` contents but differ in installed tooling:
 - `docker/desktop.basic.Dockerfile` — VNC desktop only (no `claude` binary — Ollama harness only)
@@ -148,23 +184,58 @@ Each desktop picks a harness at creation time (`Desktop.Harness`, `desktop-harne
 
 ```
 human types in the chat
-  → POST /api/desktops/send        → desktop.Manager.SendMessage → the desktop's :8081
-                                     → COMMAND_DIR file → watchers.py → harness.py → engine
-  → conversation.AppendUserMessage (the control plane's own record)
+  → POST /api/desktops/send        → tasks.Plan (new task / reply / retry → a task ID)
+                                   → desktop.Manager.SendMessage(content, task_id) → :8081
+                                     → COMMAND_DIR/<stem>.t<id>.txt → watchers.py
+                                     → task_context.start(id) → harness.py → engine
+                                   → tasks.Commit + conversation.AppendUserMessage
 
 the agent works
-  → progress.emit(line) → POST /api/agent/events → conversation.AppendStep
-                                                 → live steps under a "Working…" card
+  → progress.emit(line) → POST /api/agent/events {task_id} → conversation.AppendStep
+                                                           → tasks.AddStep (the record)
 
 the agent finishes, or needs a human
-  → messaging.write_final_message / ask_for_help → POST /api/helptext
+  → messaging.write_final_message / ask_for_help(kind) → POST /api/helptext
+        {task_id, kind: final|error|help|approval, engine, model, tokens, cost_usd}
       → helpnotes.Add           (the Help rail keeps the whole formatted note)
+      → tasks.RecordOutcome     (done/error closes the execution; help/approval opens
+                                 an intervention the next human message replies to)
       → conversation.AppendAgentMessage (the chat shows only the agent's own words)
+
+the human judges the answer
+  → POST /api/tasks/verdict (chat's Correct/Wrong, or the task page) → tasks.SetVerdict
+                                                                    → conversation.SetVerdict
 ```
 
 The chat page holds no transcript of its own: it renders whatever snapshot the control plane last sent over `GET /api/desktops/chat/stream` (SSE, whole snapshots rather than deltas, so a reconnect is self-healing), falling back to polling `GET /api/desktops/chat`. That is what makes one desktop's conversation the same on a laptop, on a phone through the tunnel, and in a second window — and why a desktop's agent is genuinely *central* to it, rather than one chat box per browser.
 
 Replying to a blocked agent is just sending it another message: `watchers.command_watcher` routes any message arriving while `state.waiting_for_help` is set to `continue_after_help` instead of starting a new task. So the chat, the Help rail's reply box and the Messages page are three doors into one conversation.
+
+### Computer use: one action layer, every engine
+
+Every desktop can see and act on its own screen through `flowera_agent/computer`. The layer lives in the desktop, below the engines, so the approval gate and the audit trail cannot be skipped by any of them:
+
+```
+observe()  screenshot (python3-xlib) + windows + elements: AT-SPI for GTK/XFCE/LibreOffice,
+           the Chrome DevTools Protocol for Chromium (its AX tree + one DOMSnapshot for boxes)
+act()      observe -> resolve the target (ref | role+name | path | x,y) -> approval.check
+           -> do it (CDP input / AT-SPI action or caret / xdotool) -> wait for the screen to
+           settle -> observe -> compare -> audit.record
+verify()   observe again, compare with the last observation, optionally check text/element
+```
+
+How each engine reaches it:
+
+- **Claude** gets them as MCP tools (`mcp__computer__observe/act/verify/open`) via `claude_harness.MCP_CONFIG` (`--mcp-config` still works under `--bare`; verified: the stream's init event lists the server `connected` with all four tools). Every result carries the screenshot, because Claude can read one.
+- **Ollama** and **TheBot** use the `gui` shell command through their existing `COMMAND:` loops (no contract change) and read the element list **as text only**. A 3B model on a CPU cannot read pixels; `elements.render` is budgeted to `FLOWERA_GUI_TEXT_CHARS` (3500) because `task_runner` shows a model at most 4000 characters of any command's output. TheBot's `atomizer.Triage` routes screen work (`wantsScreen`: a surface *and* an action) to the operator, ahead of the web skill that would otherwise fetch any URL itself.
+
+`gui` exit codes are a contract harnesses read: 0 done, 1 could not, **3 NEEDS_APPROVAL (nothing happened)**, 4 verify failed.
+
+Approval travels the same way for all three: `approval.check` stops a click on a Send/Pay/Buy/Publish-like control (or Enter in a messaging page), records a *pending* approval and returns NEEDS_APPROVAL. The harness pauses deterministically — `task_runner.pause_for_screen_approval` on exit 3, `operator.screenApprovalReason` → `NeedsApproval` checkpoint, `claude_harness._handle_result` if a pending approval exists whatever Claude wrote. The human's reply reaches `watchers.command_watcher`, which calls `approval.resolve_reply` **before** the harness sees it: a yes (`is_approval`, the same regexes as soul's `safety.IsApproval`) becomes a one-shot grant fingerprinted to that action; anything else drops it. The repeated action consumes the grant. A new task calls `approval.reset()`.
+
+Every action — done, failed, or paused — is an audit record twice: `~/audit/actions.jsonl` plus full-size PNGs under `~/audit/frames/` on the desktop's persistent volume (capped at `FLOWERA_AUDIT_KEEP` actions, default 2000), and a chat step via `progress.emit_action` → `POST /api/agent/events` with `action` + half-size `before_png`/`after_png` → `conversation.AppendActionStep` + `stepimages.Store`. The chat renders those steps with Before/After thumbnails.
+
+The benchmark is `bench/gui/`: 20 tasks (12 in a web admin panel, 5 in LibreOffice, 3 in GTK apps, 3 of them approval checks), fixtures and outcome checks that run inside a desktop (`fixtures/bench.py`), and `run.py`, which drives each engine through the control plane's chat API on a fresh desktop and reports success rate per engine. `--engine oracle --container <desktop>` runs each task's scripted `gui` solution with no model — the proof that a task is solvable and its check is right. Results go to `bench/gui/results/` (gitignored).
 
 ## Running it
 
@@ -176,7 +247,13 @@ Replying to a blocked agent is just sending it another message: `watchers.comman
 ./scripts/release/release.sh     # cross-compiles standalone executables + archives into dist/
 docker compose up -d             # just the control plane (uses docker/Dockerfile, mounts /var/run/docker.sock)
 go build ./... && go vet ./... && go test ./...   # compile, lint, unit tests
-                                  # (internal/memory, internal/conversation, internal/webui)
+                                  # (internal/memory, internal/conversation, internal/webui,
+                                  #  internal/stepimages, internal/httpapi, internal/tasks,
+                                  #  internal/sqlitedb)
+PYTHONPATH=agent python3 -m unittest discover -s agent/tests   # computer-use gate/refs/rendering,
+                                  # task IDs and usage totals
+python3 bench/gui/run.py --engine oracle --container desktop_<id>   # GUI benchmark, no model
+python3 bench/gui/run.py --engine ollama --engine thebot --engine claude  # per-engine success rate
 ```
 
 `scripts/` is split by who runs it: `linux/` (`setup.sh`, `build-images.sh`, `build.sh`), `windows/` (the same three as `.ps1`), and `release/` (`release.sh` + `release.ps1`). Each `.sh` has a `.ps1` twin at the same position in the other directory — they are hand-maintained, not generated from each other, so a change to one needs the same change to the other. Every script resolves the repo root from its own location, never from `$PWD`.
@@ -185,7 +262,7 @@ go build ./... && go vet ./... && go test ./...   # compile, lint, unit tests
 
 `scripts/release/release.sh` / `release.ps1` cross-compile `cmd/flowera` for linux, windows and darwin × amd64/arm64 with `CGO_ENABLED=0 -trimpath -ldflags "-s -w -X main.version=<version>"`, writing to `dist/`: a bare binary per target, a per-target archive (`.zip` for windows, `.tar.gz` otherwise), and `SHA256SUMS`. Version defaults to `git describe --tags --always --dirty`, and `main.version` backs `flowera --version`.
 
-The binary is fully self-contained: static (`CGO_ENABLED=0`, no libc), web templates from `web/embed.go`, desktop build context from `embed.go`, and `.env` optional. So an archive carries **nothing the binary depends on** — only a generated `README.txt` and an `.env.example`. `stageBundle`/`Copy-Bundle` branch on `goos` purely to write that README with one OS's commands (`./flowera` vs `.\flowera.exe`).
+The binary is fully self-contained: static (`CGO_ENABLED=0`, no libc — which is why the SQLite driver is modernc.org/sqlite, not mattn/go-sqlite3), web templates from `web/embed.go`, desktop build context from `embed.go`, and `.env` optional. The one file it *writes* is `flowera.db` in `sqlitedb.DataDir()` (`FLOWERA_DATA_DIR`, else `os.UserConfigDir()/flowera`; the Docker image sets `/data`, which `docker-compose.yaml` mounts as the `flowera-data` volume). So an archive carries **nothing the binary depends on** — only a generated `README.txt` and an `.env.example`. `stageBundle`/`Copy-Bundle` branch on `goos` purely to write that README with one OS's commands (`./flowera` vs `.\flowera.exe`).
 
 Keep it that way: any new runtime file dependency must be `go:embed`ed, not added to the bundle. If you ever have to put a real dependency in the archive, the "single executable is the whole product" claim in README.md needs to change with it.
 
@@ -200,6 +277,8 @@ See [README.md](README.md#-getting-started-running-it-locally) for full step-by-
 | `OLLAMA_URL` | `ollama.DesktopURL` | `http://host.docker.internal:11434` | Passed into every new desktop by `buildDesktopEnv`, and the server `ollama.EnsureReady` preloads. `ollama.BundledURL` makes the control plane run and provision `flowera-ollama` itself. |
 | `OLLAMA_MODEL` | `ollama.DesktopModel` | `ollama.Model` (`qwen2.5-coder:3b`) | In `.env.example`. `scripts/linux/build.sh` pulls it when the server lacks it, and only falls back to a model the server already has if that pull fails. |
 | `DESKTOP_STOP_TIMEOUT_SECONDS` | `desktop.Manager.Stop` | `10` | Parsed with `strconv.Atoi`; invalid/`<=0` values are ignored. |
+| `FLOWERA_DATA_DIR` | `sqlitedb.DataDir` | `os.UserConfigDir()/flowera` (`/data` in `docker/Dockerfile`) | Where `flowera.db` lives. |
+| `FLOWERA_STEP_IMAGES_MB` | `cmd/flowera.stepImagesMaxBytes` | `1024` | Byte budget of `stepimages`; oldest screenshots evicted first. |
 
 **Set automatically per-desktop** (baked into the container's env by `buildDesktopEnv` at creation time — not something you set in `.env`, listed here for wiring reference): `VNC_PW`, `VNC_RESOLUTION` (hardcoded `1280x720`), `DESKTOP_ID` (`sanitizeName(name)` — must stay equal to `Desktop.ID`, see the gotcha below), `DESKTOP_NAME`, `CONTROL_PLANE_URL` (hardcoded `http://host.docker.internal:8080`), `OLLAMA_URL` and `OLLAMA_MODEL` (the control plane's own env when set, otherwise `http://host.docker.internal:11434` + `ollama.Model` (`qwen2.5-coder:3b`) — the Ollama on the host running the control plane, reached over the same `ExtraHosts` entry as `CONTROL_PLANE_URL`; that host's Ollama must listen on more than loopback, i.e. `OLLAMA_HOST=0.0.0.0`), `AGENT_HARNESS` (`ollama`/`claude`/`thebot`, from the harness chosen at creation).
 
@@ -234,7 +313,17 @@ See [README.md](README.md#-getting-started-running-it-locally) for full step-by-
 - `docker/Dockerfile`'s runtime stage only copies the binary and `.env` — the templates ride along inside the binary. It still needs a `.env` to exist at build time; `docker compose up` fails without one.
 - `desktop.sanitizeName` normalizes user-supplied desktop names into safe container/volume name fragments (lowercase, `[a-z0-9_-]` only) — every `desktop.Manager` method already routes IDs through it; don't bypass it when adding new Docker API calls.
 - `Desktop.URL` (`desktop.desktopURL`) is root-relative (`/desktop/<id>/`) on purpose, so the dashboard's preview iframe and "open" button resolve against whatever origin the page was loaded from — localhost, a LAN IP, or the Cloudflare tunnel. Don't rebuild it as an absolute `http://<host>:8080/...` URL: the old `DESKTOP_HOST`-based version pointed phones on the tunnel at their own localhost, and an `http://` iframe inside the tunnel's `https://` page is blocked as mixed content anyway. `index.html` resolves it to an absolute URL client-side only for display/copy. The trailing slash (no `vnc.html` in the visible URL — end users shouldn't need to know noVNC is involved) is rewritten to the underlying `vnc.html` internally by `httpapi.desktopProxyHandler`. noVNC (1.6) builds its WebSocket URL relative to the page too, so `/desktop/<id>/websockify` rides the same proxy.
-- `desktop.Manager`'s and `helpnotes.Store`'s/`memory.Store`'s mutexes each guard one struct's own state — hold the lock for the whole read-modify-write, not just parts of it.
+- `desktop.Manager`'s, `conversation.Store`'s, `stepimages.Store`'s and `tasks.Store`'s mutexes each guard one struct's own state — hold the lock for the whole read-modify-write, not just parts of it. `helpnotes`/`memory` have none: each of their operations is one SQL statement.
+- **The SQLite pool is one connection** (`sqlitedb.open`). It removes SQLITE_BUSY between writers, and it means **no query may run while a `*sql.Rows` is still open** — that deadlocks the pool, silently, in production and in tests alike. Every store reads rows to the end (and closes them) before its next statement; keep it that way.
+- A schema change is a **new step appended** to that component's `schema` slice, never an edit to an applied one: `sqlitedb.Migrate` records how many steps each component has run and only runs the rest.
+- **What the task records trust is the task ID the desktop echoes, then the worker's live execution.** `tasks.resolve` takes the reported ID only while that execution is live or ended within `lateWindow`; a stale ID (the task file still names a finished task) falls through to what is live, and a step with no live task is *dropped* rather than inventing a task — a `gui` command typed by hand is not something anyone asked for. A reported ID is checked with `tasks.ValidID` before use.
+- **`tasks.Plan` mirrors the desktop's watcher, and must keep doing so.** A message sent while an intervention is open is recorded as its reply, because `watchers.command_watcher` hands any message arriving while `waiting_for_help` to `continue_after_help`. The less obvious half is `absorbQueuedReply`: a message *held behind* a running task that then pauses is consumed by the watcher as the reply too, so the queued "task" is deleted and its text becomes the intervention's reply. Change the watcher's routing and the records will quietly describe something that did not happen.
+- Stopping, restarting or deleting a desktop calls `tasks.CloseOpen`: a running task becomes `abandoned`, one waiting on a human ends as `help`. Without it, the next message after a restart was routed as a reply to a pause the fresh agent had no memory of.
+- Resending a failed task's exact words within `retryWindow` is **another execution of the same task** (the failure note literally says "send the message again"), so a task needing a resend is never counted autonomous.
+- **Autonomy is defined once** (`tasks.AutonomyDefinition`, shown verbatim on the dashboard): only attempt ended done, no help or approval asked, not marked wrong. Approvals count as stepping in — they are the agent behaving, but a person was still paged — and the reasons table keeps them apart (`IsApprovalReason`). Task types and reasons are deterministic regexes with tests (`classify_test.go`); an on-screen action turns a task into `screen` work unless it is `consequential`.
+- Clearing a chat no longer deletes its screenshots: the task records still point at them. `stepimages` only forgets by its byte budget.
+- `ask_for_help(problem, kind="approval")` for a safety pause, plain `ask_for_help(problem)` for being stuck — every harness's approval path passes the kind (`task_runner.pause_for_screen_approval`, both `NEEDS_APPROVAL` branches, soul's `needs_approval`, a pending screen approval in `claude_harness`). The Ollama model's own `HELP:` can still be an approval; `tasks.InterventionReason` reads the words for that case.
+- Claude's `total_cost_usd` is summed across a task's runs (the task and each `--resume`), on the assumption that each result is that process's own spend. That is not verified against a live resumed run: searching the 2.1.266 CLI found no cost restore on a print-mode resume, but did not prove there is none. If resumed runs turn out to report session totals, `claude_harness._record_usage` double-counts the cost of a task that paused.
 - `httpapi.jsonError` intentionally does not leak `err.Error()` to the client (logs it server-side, returns a generic message) — preserve that when adding new handlers that call it.
 - `memory.WorkerMemoryEntry` records are kept even if `desktop.PersistMemoryFile` (the write into the desktop's container) fails afterward — that's intentional (matches the original single-file behavior), not a bug to "fix" by rolling back the in-memory record.
 - `harness.py` is the only file that should ever check `config.AGENT_HARNESS` — `task_runner.py`/`claude_harness.py`/`thebot_harness.py` and everything upstream of them (`watchers.py`, `messaging.py`, `memory_context.py`, `identity.py`, `progress.py`, `readiness.py`) must stay harness-agnostic, so adding a fourth harness only means adding one more branch in `harness.py`.
@@ -281,3 +370,14 @@ See [README.md](README.md#-getting-started-running-it-locally) for full step-by-
 - **The Cloudflare quick tunnel does not deliver the chat's event stream.** Measured through a `trycloudflare.com` tunnel: `/api/desktops/chat/stream` returns its headers and then *no body bytes at all* — not the snapshot the handler flushes on connect, not a message sent a second later — for as long as it was watched (40 s), while the same stream on localhost delivered the message in 70 ms. The chat used to fall back to polling only on a stream *error*, and a held stream never errors, so on a phone a sender's own message appeared only when the agent's reply finally pushed something through: the "my message only shows up with the response" bug. `connect()` now closes a stream that has not delivered its first frame within `FIRST_FRAME_MS` (4 s) and polls instead; over the tunnel a sent message shows in ~70 ms (locally rendered), the server's copy in ~2 s, and live steps from ~2 s. Anything else that relies on SSE through the tunnel needs the same fallback.
 - `NEEDS_TOOLS` is taught **only to the chat skill** (`prompt.ChatRule`, appended to the frame by `GeneralSkill`), never in the shared `Persona`: with it in the persona, the operator answered "ping - just reply pong" with `HELP: NEEDS_TOOLS`, which a human received as an entire help request. The operator also treats that marker as a malformed reply.
 - The XFCE desktop wallpaper is set by baking `agent/flowera-desktop-wallpaper.xml` (pointing at `agent/flowera-wallpaper.svg`, copied to `/opt/flowera-wallpaper.svg`) into `/home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml` at image build time, in all three desktop Dockerfiles — otherwise XFCE generates its own default (the base image's stock `xfce-shapes.svg`) the first time it starts with no config present. Since `/home/headless` is the container's persistent named volume, this file only seeds *new* desktops (an empty volume on first start); it has no effect on a desktop created before an image rebuild.
+- **The base image sets `NO_AT_BRIDGE=1`**, which silently turns off every GTK app's AT-SPI bridge: the accessibility tree was empty until the desktop Dockerfiles set `ENV NO_AT_BRIDGE=0` (and `computer.session.ACCESSIBLE_APP_ENV` sets it for anything the layer launches). Thunar's windows belong to the XFCE session's Thunar *daemon*, so on a desktop created before that ENV change they stay invisible until the daemon is restarted — which is why `bench.py` runs `thunar --quit` before a file-manager task. Like the seccomp profile, the ENV is fixed at container creation: an existing desktop needs recreating.
+- **LibreOffice misreports where it draws.** Under XFCE its AT-SPI extents for everything VCL paints (the document, table cells, toolbars) are 27 px above the real position — only its native GTK menu bar is right. So the layer never clicks LibreOffice content by coordinates: text goes into a Writer cell or paragraph through `Atspi.Text.set_caret_offset` (`atspi.place_caret`), and a Calc cell is reached by coordinate through the Name Box shortcut (Ctrl+Shift+F5, the reference, Enter — `core._goto_sheet_cell`), because LibreOffice 24.2 does not expose the Name Box over AT-SPI at all. A Calc sheet MANAGES_DESCENDANTS with 2^31 children and is never walked; its visible used range is read cell by cell through the Table interface (`atspi._sheet_cells`). Writer's document sets the same flag with a handful of children and *is* walked — the rule is the child count, not the flag.
+- **A ref means "the element at this path"**, not "the Nth element of this observation" (`elements.assign_refs`). Paths are rooted at the window title with a leading `*` stripped (an editor's unsaved-changes marker) for AT-SPI, and at the **site** (host:port), not the page title, for Chromium — so a navigation link keeps its ref on every page of a site. Renumbering per observation made "e12" point at something else after one row was inserted.
+- A GTK list/tree cell's AT-SPI action is `activate` — *open the file*, not select it — so `core._perform` clicks cells, list items and icons by position instead of invoking their action. Every other widget prefers its own action over a coordinate click.
+- **Chromium's DevTools port (9222, `agent/chromium-browser.init`) is how pages are read and worked**, bound to 127.0.0.1 inside a container with no published ports. It is also a way for any process in that desktop to drive the logged-in browser — the same trust the agent's unrestricted shell already has, not a new one. A Chromium started *without* the port (before this change, or by hand) cannot be read; `observe` says so in a note rather than returning an empty page. Chromium 112 accepts a DevTools websocket with no Origin header; Chrome 136+ refuses remote debugging on the default profile, so a base-image upgrade will need `--user-data-dir`.
+- `logging_utils.log` prints to stdout, which is the *output* for `gui` (an engine reads it as the result of its action) and the *protocol channel* for the MCP server. Both call `logging_utils.log_to_file` first (`/tmp/flowera-gui.log`, `/tmp/flowera-mcp.log`). A stray `print` in the computer package breaks Claude's tools.
+- The audit trail's `gui` process is short-lived, so `cli.main` calls `progress.flush()` in its `finally` — without it the action step (and its screenshots) die with the process before the background sender posts them. `progress.emit_action` drops the screenshots, never the step, when the queue is a quarter full.
+- The approval gate's patterns (`approval.CONSEQUENTIAL_CONTROL`) match a control's *label*, anchored at its start ("Send newsletter", "Pay now INV-1042"), and only for activating roles. They are deliberately narrow for the reason `internal/safety` gives. The gate guards against a model's mistakes, not a hostile model: an engine with a shell could write the grant file itself, exactly as it could run xdotool directly.
+- `bench.py` kills apps by **process name**, never `pkill -f <word>`: task ids like `mousepad-save-as` are in its own command line, and the first version killed itself.
+- **A dispatched message file is renamed to `*.txt.done`** (`watchers._mark_handled`). `state.processed_commands` is memory and `COMMAND_DIR` is the persistent volume, so every desktop restart used to replay every message the desktop had ever received — found by the GUI benchmark, which restarts a desktop between tasks: each task queued behind replays of all earlier ones, and a spreadsheet task was answered with questions about signing in to an admin panel. A message deferred behind a running task or a backend that is not up yet keeps its `.txt` name until it is actually dispatched.
+- `bench/gui/run.py` restarts a desktop after any task that did not end in a plain answer or error (`agent_is_idle`): a paused agent takes the next message as the *reply* to its help request. And an approval task only passes when the gate itself fired (a step with `outcome: needs_approval`), not when the agent merely asked for help for some other reason — which leaves the invoice unpaid too.

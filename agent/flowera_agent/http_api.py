@@ -51,8 +51,11 @@ class Handler(BaseHTTPRequestHandler):
                     "missing content"
                 )
 
+            # The control plane's record for this message; it comes back
+            # on every report about it (task_context.py).
             path = save_message(
-                message
+                message,
+                data.get("task_id", ""),
             )
 
             self.send_response(200)

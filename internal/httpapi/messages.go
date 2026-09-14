@@ -1,12 +1,14 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"log"
 	"net/http"
 	"strings"
 
 	"github.com/YKoustubhRao/flowera/internal/desktop"
+	"github.com/YKoustubhRao/flowera/internal/tasks"
 	"github.com/YKoustubhRao/flowera/internal/webui"
 )
 
@@ -57,24 +59,80 @@ func (s *Server) sendMessageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	id := desktop.SanitizeID(desktopID)
+	route := s.routeMessage(id, content)
+
 	if err := s.Desktops.SendMessage(
 		r.Context(),
 		desktopID,
 		content,
+		route.TaskID,
 	); err != nil {
 		sendMessageError(w, err)
 		return
 	}
 
-	// Recorded only once the desktop has actually accepted it, so the chat
-	// never shows a message that was never delivered. Every human-to-desktop
-	// path routes through here — the chat page, the messages page, and a
-	// reply to a help request — so all three show up in the transcript.
-	s.Chat.AppendUserMessage(desktop.SanitizeID(desktopID), content)
+	route = s.recordDelivered(r.Context(), id, content, route)
 
 	jsonResponse(w, map[string]string{
-		"status": "sent",
+		"status":  "sent",
+		"task_id": route.TaskID,
 	})
+}
+
+// routeMessage decides which task record a human message belongs to before it
+// is sent, because the desktop is told the task ID along with the message. A
+// records failure never stops a message: it is sent as a new task regardless.
+func (s *Server) routeMessage(desktopID, content string) tasks.Route {
+	route, err := s.Tasks.Plan(desktopID, content)
+	if err != nil {
+		log.Printf("sendMessage: %v", err)
+		return tasks.NewRoute()
+	}
+
+	return route
+}
+
+// recordDelivered records a message the desktop has accepted, in the task
+// records and in the chat, and returns the route it was recorded under.
+//
+// Recorded only once the desktop has actually accepted it, so the chat never
+// shows a message that was never delivered and no task exists for one. Every
+// human-to-desktop path routes through here — the chat page, the messages
+// page, and a reply to a help request — so all three show up in the
+// transcript and the records alike.
+func (s *Server) recordDelivered(ctx context.Context, desktopID, content string, route tasks.Route) tasks.Route {
+	committed, err := s.Tasks.Commit(route, s.workerFor(ctx, desktopID), content)
+	if err != nil {
+		log.Printf("sendMessage: %v", err)
+	} else {
+		route = committed
+	}
+
+	s.Chat.AppendUserMessage(desktopID, route.TaskID, content)
+
+	return route
+}
+
+// workerFor describes a desktop for its task records: what the records already
+// know, or failing that what its container says.
+func (s *Server) workerFor(ctx context.Context, desktopID string) tasks.Worker {
+	if known, ok := s.Tasks.Worker(desktopID); ok && known.Engine != "" && known.DeletedAt.IsZero() {
+		return known
+	}
+
+	worker := tasks.Worker{ID: desktopID, Name: desktopID}
+
+	if s.Desktops != nil {
+		if found, err := s.Desktops.Get(ctx, desktopID); err == nil {
+			worker.Name = found.Name
+			worker.Engine = found.Harness
+			worker.Profile = found.Profile
+			worker.Model = found.Model
+		}
+	}
+
+	return worker
 }
 
 // sendMessageError answers a failed send with the reason a human can act on,

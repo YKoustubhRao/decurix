@@ -55,7 +55,7 @@ body{
     radial-gradient(760px 560px at 105% 105%, rgba(255,120,20,.22), transparent 58%),
     linear-gradient(150deg, #050302 0%, #330503 18%, #7a0f07 38%, #c21f0c 56%, #e85f0f 74%, #ffb703 90%, #ffe066 100%);
 }
-main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
+main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;width:100%}
 
 .view-title h1,
 .back-link{color:#fdf6ec}
@@ -229,6 +229,31 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
 
 .msg-time{font-size:11px;color:var(--text-3)}
 
+/* The human's verdict on a finished answer. "Done" is the agent's own claim;
+   this is what the task record and the autonomy report trust. */
+.msg-foot{display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px}
+.verdict{display:inline-flex;align-items:center;gap:4px}
+.verdict-q{font-size:11px;color:var(--text-3);margin-right:2px}
+.verdict-btn{
+  display:inline-flex;
+  align-items:center;
+  gap:4px;
+  height:26px;
+  padding:0 9px;
+  border:1px solid var(--line);
+  border-radius:999px;
+  background:var(--surface);
+  color:var(--text-2);
+  font-size:11.5px;
+  font-weight:550;
+  transition:background .12s ease,border-color .12s ease,color .12s ease
+}
+.verdict-btn:hover:not(:disabled){border-color:var(--line-2);color:var(--text)}
+.verdict-btn.is-correct[aria-pressed="true"]{background:var(--live-soft);border-color:var(--live);color:var(--live)}
+.verdict-btn.is-wrong[aria-pressed="true"]{background:var(--danger-soft);border-color:var(--danger);color:var(--danger)}
+.verdict-link{font-size:11px;color:var(--text-3)}
+.verdict-link:hover{color:var(--accent)}
+
 /* A message this tab sent that the control plane's transcript does not show
    yet. It is drawn the moment Send is pressed, rather than when the desktop
    has accepted it and the stream has echoed it back. */
@@ -273,7 +298,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
 .steps[open] > summary .steps-chevron{transform:rotate(180deg)}
 
 .steps-list{
-  max-height:260px;
+  max-height:420px;
   overflow-y:auto;
   border-top:1px solid var(--line);
   padding:8px 11px;
@@ -290,6 +315,48 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
   animation:msg-in .18s ease-out
 }
 .step.is-command{font-family:var(--mono);font-size:11.5px;color:var(--text)}
+
+/* An on-screen action: the audit trail, with what the screen looked like
+   either side of it. */
+.step.is-action{
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  padding:7px 0 8px;
+  border-top:1px dashed var(--line)
+}
+.step.is-action:first-child{border-top:0;padding-top:0}
+.step-head{display:flex;align-items:baseline;gap:7px;min-width:0}
+.step-badge{
+  flex:none;
+  font-size:10.5px;
+  font-weight:650;
+  letter-spacing:.02em;
+  text-transform:uppercase;
+  color:var(--text-3)
+}
+.step.is-approval .step-badge{color:var(--accent)}
+.step.is-failed .step-badge{color:var(--danger)}
+.step-shots{display:flex;gap:8px;flex-wrap:wrap}
+.step-shot{
+  display:flex;
+  flex-direction:column;
+  gap:3px;
+  width:min(168px,calc(50% - 4px));
+  font-size:10.5px;
+  color:var(--text-3);
+  text-decoration:none
+}
+.step-shot img{
+  display:block;
+  width:100%;
+  aspect-ratio:16/9;
+  object-fit:cover;
+  border:1px solid var(--line);
+  border-radius:6px;
+  background:var(--surface)
+}
+.step-shot:hover img{border-color:var(--accent)}
 
 .working{
   display:flex;
@@ -409,6 +476,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
   main.wrap{padding:10px 10px 10px}
   .view-head{gap:10px;margin-bottom:10px}
   .view-title h1{font-size:16px}
+  .view-actions .btn-label{display:none}
   .chat-panel{border-radius:var(--r-lg)}
   .chat-inner,.composer-hint{padding-left:14px;padding-right:14px}
   .composer-inner{padding-left:14px;padding-right:7px}
@@ -442,9 +510,9 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
 
     {{if eq .Desktop.Status "running"}}
     <div class="view-actions">
-      <button type="button" class="btn btn-default btn-sm" id="clearChat">
+      <button type="button" class="btn btn-default btn-sm" id="clearChat" aria-label="Clear chat">
         <svg width="14" height="14"><use href="#i-trash"/></svg>
-        Clear chat
+        <span class="btn-label">Clear chat</span>
       </button>
     </div>
     {{end}}
@@ -674,7 +742,70 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
     return pretty || text;
   }
 
+  /* An action step's screenshots come from the control plane's own image
+     store; anything else in those fields is ignored rather than loaded. */
+  var STEP_IMAGE = /^\/api\/desktops\/step-image\?id=[0-9a-f]+$/;
+
+  var ACTION_BADGES = {
+    needs_approval: {label: "Paused for approval", cls: "is-approval"},
+    failed: {label: "Failed", cls: "is-failed"},
+    done: {label: "Screen", cls: ""}
+  };
+
+  function shotLink(url, label){
+    var link = document.createElement("a");
+    link.className = "step-shot";
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noopener";
+
+    var img = document.createElement("img");
+    img.src = url;
+    img.loading = "lazy";
+    img.alt = label + " screenshot";
+
+    var caption = document.createElement("span");
+    caption.textContent = label;
+
+    link.append(img, caption);
+
+    return link;
+  }
+
+  function actionStepElement(step){
+    var action = step.action;
+    var badge = ACTION_BADGES[action.outcome] || ACTION_BADGES.done;
+
+    var el = document.createElement("div");
+    el.className = "step is-action" + (badge.cls ? " " + badge.cls : "");
+
+    var head = document.createElement("div");
+    head.className = "step-head";
+
+    var label = document.createElement("span");
+    label.className = "step-badge";
+    label.textContent = badge.label;
+
+    var text = document.createElement("span");
+    text.textContent = step.text;
+
+    head.append(label, text);
+    el.appendChild(head);
+
+    var shots = document.createElement("div");
+    shots.className = "step-shots";
+
+    if(STEP_IMAGE.test(action.before || "")){ shots.appendChild(shotLink(action.before, "Before")); }
+    if(STEP_IMAGE.test(action.after || "")){ shots.appendChild(shotLink(action.after, "After")); }
+
+    if(shots.childNodes.length){ el.appendChild(shots); }
+
+    return el;
+  }
+
   function stepElement(step){
+    if(step.action){ return actionStepElement(step); }
+
     var el = document.createElement("div");
     var text = prettyStep(step.text);
 
@@ -714,7 +845,64 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
     error: {label: "Failed", icon: "#i-alert"}
   };
 
-  function messageElement(message){
+  /* ---------------- verdicts ---------------- */
+
+  /* Verdicts tapped in this tab that the transcript has not echoed yet, by
+     task ID, so a snapshot arriving mid-request does not flip the button back. */
+  var verdictOverrides = {};
+
+  function setVerdict(message, verdict){
+    var previous = message.verdict || "";
+
+    verdictOverrides[message.task_id] = verdict;
+    message.verdict = verdict;
+    render(lastThread);
+
+    post("/api/tasks/verdict", {task_id: message.task_id, verdict: verdict}).then(function(){
+      delete verdictOverrides[message.task_id];
+    }, function(e){
+      delete verdictOverrides[message.task_id];
+      message.verdict = previous;
+      render(lastThread);
+      toast(e.message, "error");
+    });
+  }
+
+  function verdictElement(message){
+    var wrap = document.createElement("div");
+    wrap.className = "verdict";
+
+    var question = document.createElement("span");
+    question.className = "verdict-q";
+    question.textContent = "Right?";
+    wrap.appendChild(question);
+
+    [["correct", "Correct", "#i-check", "is-correct"], ["wrong", "Wrong", "#i-x", "is-wrong"]].forEach(function(option){
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "verdict-btn " + option[3];
+      button.setAttribute("aria-pressed", message.verdict === option[0] ? "true" : "false");
+      button.appendChild(icon(option[2], 12));
+      button.appendChild(document.createTextNode(option[1]));
+
+      /* Tapping the verdict already given takes it back. */
+      button.addEventListener("click", function(){
+        setVerdict(message, message.verdict === option[0] ? "" : option[0]);
+      });
+
+      wrap.appendChild(button);
+    });
+
+    var link = document.createElement("a");
+    link.className = "verdict-link";
+    link.href = "/tasks/" + encodeURIComponent(message.task_id);
+    link.textContent = message.verdict === "wrong" ? "Add a note" : "Record";
+    wrap.appendChild(link);
+
+    return wrap;
+  }
+
+  function messageElement(message, withVerdict){
     var fromUser = message.role === "user";
 
     var row = document.createElement("div");
@@ -761,7 +949,15 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
     var time = document.createElement("div");
     time.className = "msg-time";
     time.textContent = relativeTime(message.created_at);
-    body.appendChild(time);
+
+    if(withVerdict){
+      var foot = document.createElement("div");
+      foot.className = "msg-foot";
+      foot.append(time, verdictElement(message));
+      body.appendChild(foot);
+    }else{
+      body.appendChild(time);
+    }
 
     row.append(avatar, body);
 
@@ -872,8 +1068,21 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
       return;
     }
 
+    /* One verdict per task, on its latest answer: a retried task answers
+       more than once, and a help request is not an answer at all. */
+    var answerFor = {};
     thread.messages.forEach(function(message){
-      inner.appendChild(messageElement(message));
+      if(message.role === "agent" && message.kind === "message" && message.task_id){
+        answerFor[message.task_id] = message.id;
+      }
+    });
+
+    thread.messages.forEach(function(message){
+      if(message.task_id && verdictOverrides.hasOwnProperty(message.task_id)){
+        message.verdict = verdictOverrides[message.task_id];
+      }
+
+      inner.appendChild(messageElement(message, answerFor[message.task_id] === message.id));
     });
 
     if(thread.running){

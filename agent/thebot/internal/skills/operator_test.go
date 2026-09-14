@@ -193,6 +193,55 @@ func TestOperatorPausesForApprovalAndResumes(t *testing.T) {
 	}
 }
 
+// "gui click e35" gives internal/safety nothing to match; only Flowera's
+// screen gate knows e35 is a Send button. Its exit code must pause the job
+// exactly like a gated shell command, and an approval must run it again.
+func TestOperatorPausesWhenTheScreenGateStopsAGuiAction(t *testing.T) {
+	chat := &scriptedChat{replies: []string{
+		"COMMAND:\ngui click e35",
+		"DONE:\nThe newsletter was sent.",
+	}}
+	op := NewOperator()
+	rc := operatorContext(t, chat)
+
+	// A fake gui: stopped until the grant file exists, as the real gate is
+	// until a human's approval turns into a grant.
+	bin := t.TempDir()
+	grant := filepath.Join(t.TempDir(), "granted")
+	script := "#!/bin/sh\nif [ -f " + grant + " ]; then echo 'Clicked button \"Send newsletter\" (e35).'; exit 0; fi\n" +
+		"echo 'NEEDS_APPROVAL: Approval needed before I click button \"Send newsletter\" (e35) in \"Newsletter\": it sends something on your behalf. Nothing was clicked or sent.'\nexit 3\n"
+	if err := os.WriteFile(filepath.Join(bin, "gui"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	res, _ := op.Run(rc, Subtask{Step: "send the newsletter", Type: "operator"})
+	if res.Meta["needsApproval"] != true || res.Meta["action"] != "gui click e35" || res.Checkpoint == nil {
+		t.Fatalf("result = %+v, want a paused approval for the click", res)
+	}
+	reason, _ := res.Meta["approvalReason"].(string)
+	if !strings.Contains(reason, `click button "Send newsletter"`) || strings.Contains(reason, "Nothing was") {
+		t.Errorf("approvalReason = %q, want the gate's description of the click, trimmed", reason)
+	}
+	if cmds, _ := res.Meta["commands"].([]string); len(cmds) != 0 {
+		t.Fatalf("commands = %v - a stopped action was recorded as run", cmds)
+	}
+
+	if err := os.WriteFile(grant, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rc.Resume = res.Checkpoint
+	rc.HumanReply = "yes"
+	rc.Approved = func(action string) bool { return action == "gui click e35" }
+	res, _ = op.Run(rc, Subtask{Step: "send the newsletter", Type: "operator"})
+	if !res.Verified || res.Output != "The newsletter was sent." {
+		t.Fatalf("resumed result = %+v", res)
+	}
+	if !strings.Contains(chat.calls[1][len(chat.calls[1])-1].Content, "Clicked button") {
+		t.Error("the approved click did not run on resume")
+	}
+}
+
 func TestOperatorResumesWithoutTheCommandWhenNotApproved(t *testing.T) {
 	chat := &scriptedChat{replies: []string{
 		"COMMAND:\ngit push origin main",

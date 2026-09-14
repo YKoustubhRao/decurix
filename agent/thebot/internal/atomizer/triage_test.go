@@ -33,6 +33,14 @@ func TestTriageRoutesRequestsByShape(t *testing.T) {
 		{"list the running processes using the most memory", RouteOperate},
 		{"create a folder called reports in ~/work and then move every csv from ~/Downloads into it", RouteOperate},
 
+		// On the screen: the operator, with the gui command - not the web
+		// skill fetching the URL, and not a plan written before looking.
+		{"In the Flowera Admin panel open in Chromium, add a new user: name Dana Scott, email dana@example.com, role Editor.", RouteOperate},
+		{"open http://127.0.0.1:8765/settings in the browser and turn on maintenance mode", RouteOperate},
+		{"LibreOffice Calc has budget.ods open. Enter the Q3 figures into column D, then save the file.", RouteOperate},
+		{"In the Mousepad text editor that is open, type 'hello' and save it as ~/out/hello.txt", RouteOperate},
+		{"click the Send newsletter button", RouteOperate},
+
 		// One classified skill.
 		{"run this command: `echo hi`", RouteSkill},
 		{"search the web for RTX 5080 laptops", RouteSkill},

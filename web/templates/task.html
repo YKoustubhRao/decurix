@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
+<title>Task · Flowera</title>
+
+{{template "theme"}}
+
+<style>
+.back{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--text-2);margin-bottom:16px}
+.back svg{transform:rotate(90deg)}
+.back:hover{color:var(--text)}
+
+.task-head h1{font-size:21px;line-height:1.35;overflow-wrap:anywhere;white-space:pre-wrap}
+.meta{display:flex;align-items:center;flex-wrap:wrap;gap:6px 14px;margin-top:10px;font-size:12.5px;color:var(--text-2)}
+.meta b{color:var(--text);font-weight:600}
+
+.tstatus{
+  display:inline-flex;align-items:center;gap:5px;height:21px;padding:0 8px;border-radius:999px;
+  font-size:11.5px;font-weight:600;white-space:nowrap;
+  background:var(--idle-soft);color:var(--text-2)
+}
+.tstatus.done{background:var(--live-soft);color:var(--live)}
+.tstatus.waiting,.tstatus.help{background:var(--accent-soft);color:var(--accent)}
+.tstatus.error,.tstatus.abandoned{background:var(--danger-soft);color:var(--danger)}
+
+/* ---------- verdict ---------- */
+
+.verdict-card{display:grid;gap:12px;padding:16px 18px;margin:22px 0 28px}
+.verdict-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.verdict-row .label{font-weight:600;margin-right:auto}
+.verdict-btn[aria-pressed="true"].is-correct{background:var(--live-soft);border-color:var(--live);color:var(--live)}
+.verdict-btn[aria-pressed="true"].is-wrong{background:var(--danger-soft);border-color:var(--danger);color:var(--danger)}
+.verdict-note{display:none;gap:8px}
+.verdict-note.on{display:grid}
+.verdict-note textarea{min-height:40px;font-family:var(--sans);font-size:13px;resize:vertical}
+.verdict-note .btn{justify-self:end}
+
+/* ---------- attempts ---------- */
+
+.attempt{margin-bottom:22px;overflow:hidden}
+.attempt-head{display:flex;align-items:center;flex-wrap:wrap;gap:6px 14px;padding:13px 18px;border-bottom:1px solid var(--line);background:var(--surface-2)}
+.attempt-head h2{font-size:14px;margin-right:4px}
+.attempt-head .meta{margin:0}
+
+.final{padding:14px 18px;border-bottom:1px solid var(--line)}
+.final .eyebrow{margin-bottom:6px}
+.final p{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13.5px}
+.final.is-error{background:var(--danger-soft)}
+
+.timeline{padding:6px 18px 14px}
+.event{display:grid;grid-template-columns:58px minmax(0,1fr);gap:12px;padding:8px 0;border-bottom:1px dashed var(--line)}
+.event:last-child{border-bottom:0}
+.event-time{font-family:var(--mono);font-size:11px;color:var(--text-3);padding-top:2px;white-space:nowrap}
+.event-text{font-size:12.5px;color:var(--text-2);overflow-wrap:anywhere;white-space:pre-wrap}
+.event-text.is-command{font-family:var(--mono);font-size:12px;color:var(--text)}
+
+.action-head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.action-badge{font-size:10.5px;font-weight:650;letter-spacing:.03em;text-transform:uppercase;color:var(--text-3)}
+.action-badge.needs_approval{color:var(--accent)}
+.action-badge.failed{color:var(--danger)}
+.action-detail{font-size:12px;color:var(--text-3);margin-top:3px}
+.shots{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
+.shot{display:flex;flex-direction:column;gap:3px;width:min(260px,calc(50% - 5px));font-size:11px;color:var(--text-3)}
+.shot img{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;border:1px solid var(--line);border-radius:7px;background:var(--surface-2)}
+.shot:hover img{border-color:var(--accent)}
+
+.intervention{border:1px solid var(--accent);border-radius:var(--r-lg);padding:11px 13px;background:var(--surface);box-shadow:0 0 0 3px var(--accent-soft)}
+.intervention.is-help{border-color:var(--line-2);box-shadow:none}
+.intervention-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px}
+.intervention-kind{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--accent)}
+.intervention.is-help .intervention-kind{color:var(--text-2)}
+.intervention p{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}
+.reply{margin-top:9px;padding-top:9px;border-top:1px solid var(--line);font-size:13px}
+.reply .eyebrow{margin-bottom:3px}
+.reply p{white-space:pre-wrap;overflow-wrap:anywhere}
+
+.none{padding:14px 0;color:var(--text-3);font-size:12.5px}
+
+@media (max-width:720px){
+  .event{grid-template-columns:minmax(0,1fr);gap:3px}
+  .attempt-head,.final{padding-left:14px;padding-right:14px}
+  .timeline{padding-left:14px;padding-right:14px}
+  .verdict-row .label{width:100%}
+}
+</style>
+</head>
+
+<body>
+
+{{template "sprite"}}
+
+<div id="progress"></div>
+<div id="toasts"></div>
+
+{{template "topbar" "tasks"}}
+
+{{$task := .Task}}
+
+<main class="wrap wrap-narrow">
+
+  <a class="back" href="/tasks"><svg width="14" height="14"><use href="#i-chevron"/></svg>All tasks</a>
+
+  <div class="task-head">
+    <div class="eyebrow">{{typeLabel $task.Type}}</div>
+    <h1>{{$task.Request}}</h1>
+
+    <div class="meta">
+      <span class="tstatus {{$task.Status}}">{{statusLabel $task.Status}}</span>
+      <span><b>{{$task.WorkerName}}</b>{{if not $task.Worker.DeletedAt.IsZero}} (deleted){{end}}</span>
+      <span>{{engineLabel $task.Engine}}</span>
+      <span><time data-created="{{iso $task.CreatedAt}}">{{clock $task.CreatedAt}}</time></span>
+      {{if $task.Worker.DeletedAt.IsZero}}<a href="/view/{{$task.WorkerID}}">Open chat</a>{{end}}
+    </div>
+  </div>
+
+  {{if or (eq $task.Status "done") $task.Verdict}}
+  <div class="panel verdict-card" id="verdict" data-task="{{$task.ID}}" data-verdict="{{$task.Verdict}}">
+    <div class="verdict-row">
+      <span class="label">Was the answer right?</span>
+      <button type="button" class="btn btn-default btn-sm verdict-btn is-correct" data-verdict-value="correct" aria-pressed="{{if eq $task.Verdict "correct"}}true{{else}}false{{end}}">
+        <svg width="14" height="14"><use href="#i-check"/></svg>Correct
+      </button>
+      <button type="button" class="btn btn-default btn-sm verdict-btn is-wrong" data-verdict-value="wrong" aria-pressed="{{if eq $task.Verdict "wrong"}}true{{else}}false{{end}}">
+        <svg width="14" height="14"><use href="#i-x"/></svg>Wrong
+      </button>
+    </div>
+
+    <div class="verdict-note{{if eq $task.Verdict "wrong"}} on{{end}}">
+      <textarea class="textarea" maxlength="2000" placeholder="What was wrong? This is optional, and it shows up in the report as an example.">{{$task.VerdictNote}}</textarea>
+      <button type="button" class="btn btn-primary btn-sm" data-save-note>Save note</button>
+    </div>
+
+    <p class="hint">"Done" only means the agent says it finished. Your verdict is what the autonomy report trusts.</p>
+  </div>
+  {{else}}
+  <div style="height:22px"></div>
+  {{end}}
+
+  {{range $task.Executions}}
+  <article class="panel attempt">
+    <div class="attempt-head">
+      <h2>{{if gt (len $task.Executions) 1}}Attempt {{.Attempt}}{{else}}What happened{{end}}</h2>
+      <div class="meta">
+        <span class="tstatus {{.Status}}">{{statusLabel .Status}}</span>
+        <span>{{engineLabel .Engine}}{{with .Model}} · {{.}}{{end}}</span>
+        <span>{{duration (.Duration now)}}</span>
+        {{if or .InputTokens .OutputTokens}}<span>{{deref .InputTokens}} in / {{deref .OutputTokens}} out tokens</span>{{end}}
+        <span>{{cost .CostUSD}}</span>
+      </div>
+    </div>
+
+    {{if .FinalMessage}}
+    <div class="final{{if or (eq .Status "error") (eq .Status "abandoned")}} is-error{{end}}">
+      <div class="eyebrow">{{if eq .Status "done"}}Answer{{else if eq .Status "error"}}Failed{{else}}Ended{{end}}</div>
+      <p>{{.FinalMessage}}</p>
+    </div>
+    {{end}}
+
+    <div class="timeline">
+      {{$started := .StartedAt}}
+      {{range .Timeline}}
+      <div class="event">
+        <div class="event-time">+{{duration (since $started .At)}}</div>
+
+        {{with .Step}}
+        {{if .Action}}
+        <div>
+          <div class="action-head">
+            <span class="action-badge {{.Action.Outcome}}">{{if eq .Action.Outcome "needs_approval"}}Paused for approval{{else if eq .Action.Outcome "failed"}}Failed{{else}}Screen{{end}}</span>
+            <span class="event-text">{{.Text}}</span>
+          </div>
+          {{/* The step's own line usually already says what changed; only add what it does not. */}}
+          {{$change := ""}}{{if and .Action.Change (not (contains .Text .Action.Change))}}{{$change = .Action.Change}}{{end}}
+          {{$reason := ""}}{{if and .Action.Reason (not (contains .Text .Action.Reason))}}{{$reason = .Action.Reason}}{{end}}
+          {{if or $change $reason}}<div class="action-detail">{{$change}}{{if and $change $reason}} · {{end}}{{$reason}}</div>{{end}}
+          {{if or .Action.Before .Action.After}}
+          <div class="shots">
+            {{with .Action.Before}}<a class="shot" href="{{.}}" target="_blank" rel="noopener"><img src="{{.}}" loading="lazy" alt="Screen before the action"><span>Before</span></a>{{end}}
+            {{with .Action.After}}<a class="shot" href="{{.}}" target="_blank" rel="noopener"><img src="{{.}}" loading="lazy" alt="Screen after the action"><span>After</span></a>{{end}}
+          </div>
+          {{end}}
+        </div>
+        {{else}}
+        <div class="event-text" data-step>{{.Text}}</div>
+        {{end}}
+        {{end}}
+
+        {{with .Intervention}}
+        <div class="intervention{{if not (isApproval .Reason)}} is-help{{end}}">
+          <div class="intervention-head">
+            <span class="intervention-kind">{{if isApproval .Reason}}Asked for approval{{else}}Asked for help{{end}}</span>
+            <span class="chip">{{reasonLabel .Reason}}</span>
+          </div>
+          <p>{{.Request}}</p>
+
+          <div class="reply">
+            {{if .Reply}}
+            <div class="eyebrow">You replied, after {{duration (since .RequestedAt .RepliedAt)}}</div>
+            <p>{{.Reply}}</p>
+            {{else}}
+            <div class="eyebrow">No reply yet</div>
+            {{end}}
+          </div>
+        </div>
+        {{end}}
+      </div>
+      {{else}}
+      <div class="none">No steps were reported for this attempt.</div>
+      {{end}}
+    </div>
+  </article>
+  {{end}}
+
+</main>
+
+{{template "chrome-js"}}
+
+<script>
+(function(){
+  "use strict";
+
+  var toast = Flowera.toast, post = Flowera.post;
+
+  document.querySelectorAll("[data-created]").forEach(function(el){
+    var date = new Date(el.dataset.created);
+    if(!isNaN(date.getTime())){ el.textContent = date.toLocaleString(); }
+  });
+
+  document.querySelectorAll("[data-step]").forEach(function(el){
+    if(el.textContent.indexOf("$ ") === 0){ el.classList.add("is-command"); }
+  });
+
+  var card = document.getElementById("verdict");
+  if(!card){ return; }
+
+  var note = card.querySelector(".verdict-note");
+  var noteText = note.querySelector("textarea");
+  var buttons = card.querySelectorAll("[data-verdict-value]");
+
+  function show(verdict){
+    card.dataset.verdict = verdict;
+
+    buttons.forEach(function(button){
+      button.setAttribute("aria-pressed", button.dataset.verdictValue === verdict ? "true" : "false");
+    });
+
+    note.classList.toggle("on", verdict === "wrong");
+  }
+
+  async function save(verdict, withNote){
+    try{
+      await post("/api/tasks/verdict", {task_id: card.dataset.task, verdict: verdict, note: withNote ? noteText.value : ""});
+      show(verdict);
+      return true;
+    }catch(e){
+      toast(e.message, "error");
+      return false;
+    }
+  }
+
+  buttons.forEach(function(button){
+    button.addEventListener("click", async function(){
+      /* Tapping the verdict already given takes it back. */
+      var verdict = card.dataset.verdict === button.dataset.verdictValue ? "" : button.dataset.verdictValue;
+
+      if(await save(verdict, verdict === "wrong") && verdict === "wrong"){ noteText.focus(); }
+    });
+  });
+
+  card.querySelector("[data-save-note]").addEventListener("click", async function(){
+    if(await save("wrong", true)){ toast("Note saved"); }
+  });
+})();
+</script>
+
+</body>
+</html>

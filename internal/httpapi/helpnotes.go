@@ -3,13 +3,16 @@ package httpapi
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/YKoustubhRao/flowera/internal/conversation"
 	"github.com/YKoustubhRao/flowera/internal/desktop"
 	"github.com/YKoustubhRao/flowera/internal/helpnotes"
+	"github.com/YKoustubhRao/flowera/internal/tasks"
 	"github.com/YKoustubhRao/flowera/internal/webui"
 )
 
@@ -33,6 +36,16 @@ func (s *Server) helpTextHandler(w http.ResponseWriter, r *http.Request) {
 		// falls back to parsing out of Content.
 		Kind    string `json:"kind"`
 		Message string `json:"message"`
+
+		// What the task records need from the end of a turn: which task it
+		// was, and what the desktop knows about the model and the spend so
+		// far. All optional, and absent from older images.
+		TaskID       string   `json:"task_id"`
+		Engine       string   `json:"engine"`
+		Model        string   `json:"model"`
+		CostUSD      *float64 `json:"cost_usd"`
+		InputTokens  *int64   `json:"input_tokens"`
+		OutputTokens *int64   `json:"output_tokens"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -74,9 +87,25 @@ func (s *Server) helpTextHandler(w http.ResponseWriter, r *http.Request) {
 		chatKind = notedKind
 	}
 
+	desktopID := desktop.SanitizeID(req.DesktopID)
+
+	taskID, err := s.Tasks.RecordOutcome(desktopID, reportedTaskID(req.TaskID), tasks.Outcome{
+		Kind:         outcomeKindFor(req.Kind, chatKind),
+		Message:      chatText,
+		Engine:       clip(req.Engine, 32),
+		Model:        clip(req.Model, 128),
+		CostUSD:      nonNegativeFloat(req.CostUSD),
+		InputTokens:  nonNegativeInt(req.InputTokens),
+		OutputTokens: nonNegativeInt(req.OutputTokens),
+	})
+	if err != nil {
+		log.Printf("helptext from %s: %v", desktopID, err)
+	}
+
 	if chatText != "" {
 		s.Chat.AppendAgentMessage(
-			desktop.SanitizeID(req.DesktopID),
+			desktopID,
+			taskID,
 			chatKind,
 			chatText,
 		)
@@ -87,6 +116,47 @@ func (s *Server) helpTextHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{
 		"status": "received",
 	})
+}
+
+// outcomeKindFor maps the kind a desktop reports on its callback to the task
+// records' outcome. An older image reports no kind, so the chat kind read off
+// its note decides - where an approval and a plain help request look alike.
+func outcomeKindFor(reported, chatKind string) string {
+	switch strings.ToLower(strings.TrimSpace(reported)) {
+	case "approval":
+		return tasks.OutcomeApproval
+	case "help":
+		return tasks.OutcomeHelp
+	case "error":
+		return tasks.OutcomeError
+	case "final", "message":
+		return tasks.OutcomeDone
+	}
+
+	switch chatKind {
+	case conversation.KindApproval:
+		return tasks.OutcomeHelp
+	case conversation.KindError:
+		return tasks.OutcomeError
+	default:
+		return tasks.OutcomeDone
+	}
+}
+
+func nonNegativeFloat(value *float64) *float64 {
+	if value == nil || *value < 0 {
+		return nil
+	}
+
+	return value
+}
+
+func nonNegativeInt(value *int64) *int64 {
+	if value == nil || *value < 0 {
+		return nil
+	}
+
+	return value
 }
 
 // helpNotesHandler returns all recorded help notes as JSON.

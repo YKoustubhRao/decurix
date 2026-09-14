@@ -1,5 +1,6 @@
 from flowera_agent import config, progress, state
 from flowera_agent.commands import run_command
+from flowera_agent.computer import approval
 from flowera_agent.logging_utils import log
 from flowera_agent.messaging import (
     ask_for_help,
@@ -220,10 +221,76 @@ def describe_result(result):
     return summary
 
 
+# The `gui` command the approval gate stopped, kept so that an approving
+# reply can run exactly that command again. Module-private for the same
+# reason claude_harness keeps its session id: continue_after_help starts a
+# fresh conversation, and this is the one thing from the old one it needs.
+_pending_gui_command = None
+
+
+def pause_for_screen_approval(command, result):
+    """
+    Pause the task if `command` was an on-screen action the approval gate
+    stopped. Returns True when it did.
+
+    Decided here, from the command's exit code, not left to the model: a 3B
+    model told NEEDS_APPROVAL is as likely to try the same click by
+    coordinates as to ask, and a pause that depends on the model noticing is
+    not a pause.
+    """
+
+    global _pending_gui_command
+
+    blocked = approval.blocked_command(result["exit_code"], result["output"])
+
+    if blocked is None:
+        return False
+
+    log("On-screen action stopped for approval - pausing the task.")
+
+    _pending_gui_command = command
+    ask_for_help(blocked, kind="approval")
+
+    return True
+
+
+def resume_approved_screen_action(history):
+    """
+    After a human replied to a screen approval: if they approved, run the
+    stopped command now and put its result in front of the model. Returns
+    (command, result), or (None, None) when there was nothing to run.
+    """
+
+    global _pending_gui_command
+
+    command = _pending_gui_command
+    _pending_gui_command = None
+
+    # watchers.command_watcher has already turned an approving reply into a
+    # grant; no grant means the human said no, which the model reads in the
+    # reply itself.
+    if not command or not approval.has_grant():
+        return None, None
+
+    log("Human approved the on-screen action - running it now.")
+
+    progress.emit(f"$ {command}")
+    result = run_command(command)
+    progress.emit(describe_result(result))
+
+    history.append({"role": "assistant", "content": f"COMMAND:\n{command}"})
+    history.append({"role": "user", "content": format_command_result(result)})
+
+    return command, result
+
+
 def perform_task(task, task_file):
+    global _pending_gui_command
+
     state.current_task = task
     state.current_task_file = task_file
     state.waiting_for_help = False
+    _pending_gui_command = None
 
     log("========================================")
     log("STARTING TASK")
@@ -415,6 +482,9 @@ It is not going to get past this on its own.
 
             progress.emit(describe_result(result))
 
+            if pause_for_screen_approval(command, result):
+                return
+
             history.append(
                 {
                     "role": "assistant",
@@ -555,6 +625,13 @@ def continue_after_help(help_response):
     last_result = None
     command_repeats = 0
 
+    # A reply that approved an on-screen action runs that action first -
+    # the model is not asked to find the same button again.
+    last_command, last_result = resume_approved_screen_action(history)
+
+    if last_result is not None and pause_for_screen_approval(last_command, last_result):
+        return
+
     max_steps = 50
 
     for step in range(max_steps):
@@ -675,6 +752,9 @@ $ {value}
             last_result = result
 
             progress.emit(describe_result(result))
+
+            if pause_for_screen_approval(value, result):
+                return
 
             history.append(
                 {

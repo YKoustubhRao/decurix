@@ -5,10 +5,13 @@ import (
 	"html/template"
 	"io"
 	"path"
+	"strings"
+	"time"
 
 	"github.com/YKoustubhRao/flowera/internal/desktop"
 	"github.com/YKoustubhRao/flowera/internal/helpnotes"
 	"github.com/YKoustubhRao/flowera/internal/memory"
+	"github.com/YKoustubhRao/flowera/internal/tasks"
 	"github.com/YKoustubhRao/flowera/web"
 )
 
@@ -47,6 +50,76 @@ type HelpNotesPageData struct {
 // page: its Desktop/Agent tab switcher and split view.
 type DesktopViewPageData struct {
 	Desktop desktop.Desktop
+}
+
+// WindowOption is one report period the task dashboard offers.
+type WindowOption struct {
+	Value  string
+	Label  string
+	Phrase string
+	Active bool
+}
+
+// TasksPageData is the template data for the task records dashboard.
+type TasksPageData struct {
+	Window  WindowOption
+	Windows []WindowOption
+	Report  tasks.Report
+	Tasks   []tasks.Summary
+	Filter  tasks.Filter
+}
+
+// TaskPageData is the template data for one task record.
+type TaskPageData struct {
+	Task tasks.Detail
+}
+
+// taskFuncs are the formatting helpers the task pages need, which are about
+// presenting records rather than anything a page should compute itself.
+var taskFuncs = template.FuncMap{
+	"engineLabel": tasks.EngineLabel,
+	"typeLabel":   tasks.TypeLabel,
+	"statusLabel": tasks.StatusLabel,
+	"contains":    strings.Contains,
+	"reasonLabel": tasks.ReasonLabel,
+	"duration":    tasks.FormatDuration,
+	"cost":        tasks.FormatCost,
+	"isApproval":  tasks.IsApprovalReason,
+	"since": func(from, to time.Time) time.Duration {
+		if from.IsZero() || to.IsZero() {
+			return 0
+		}
+		return to.Sub(from)
+	},
+	"iso": func(t time.Time) string {
+		if t.IsZero() {
+			return ""
+		}
+		return t.Format(time.RFC3339)
+	},
+	"clock": func(t time.Time) string {
+		if t.IsZero() {
+			return ""
+		}
+		return t.Format("02 Jan, 15:04")
+	},
+	"add": func(a, b int) int { return a + b },
+	"now": time.Now,
+	"percent": func(part, whole int) int {
+		if whole <= 0 {
+			return 0
+		}
+		return int(float64(part)*100/float64(whole) + 0.5)
+	},
+	"deref": func(value *int64) int64 {
+		if value == nil {
+			return 0
+		}
+		return *value
+	},
+	"live": func(status string) bool {
+		return status == tasks.StatusQueued || status == tasks.StatusRunning || status == tasks.StatusWaiting
+	},
 }
 
 // Renderer loads and executes the web UI's HTML templates.
@@ -97,6 +170,24 @@ func (rd *Renderer) RenderDesktopView(w io.Writer, data DesktopViewPageData) err
 	)
 
 	return tmpl.ExecuteTemplate(w, "desktop.html", data)
+}
+
+// RenderTasks renders the task records dashboard.
+func (rd *Renderer) RenderTasks(w io.Writer, data TasksPageData) error {
+	tmpl := template.Must(
+		template.New("tasks.html").Funcs(taskFuncs).ParseFS(web.TemplatesFS, templatePaths("tasks.html")...),
+	)
+
+	return tmpl.ExecuteTemplate(w, "tasks.html", data)
+}
+
+// RenderTask renders one task record.
+func (rd *Renderer) RenderTask(w io.Writer, data TaskPageData) error {
+	tmpl := template.Must(
+		template.New("task.html").Funcs(taskFuncs).ParseFS(web.TemplatesFS, templatePaths("task.html")...),
+	)
+
+	return tmpl.ExecuteTemplate(w, "task.html", data)
 }
 
 // FaviconSVG is the Flowera brand mark, served as the control plane's favicon.

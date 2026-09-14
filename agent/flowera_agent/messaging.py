@@ -4,7 +4,7 @@ import urllib.error
 import urllib.request
 import uuid
 
-from flowera_agent import config, progress, state
+from flowera_agent import config, progress, state, task_context, usage
 from flowera_agent.logging_utils import log, timestamp
 
 
@@ -12,16 +12,17 @@ from flowera_agent.logging_utils import log, timestamp
 # Existing message functionality
 # ============================================================
 
-def save_message(message):
+def save_message(message, task_id=""):
     """
-    Save an incoming message/task into command/.
+    Save an incoming message/task into command/, with the control plane's
+    task ID (if it sent one) in the file name for the watcher to pick up.
     """
 
-    filename = (
+    filename = task_context.command_filename(
         time.strftime("%Y%m%d_%H%M%S")
         + "_"
-        + uuid.uuid4().hex[:8]
-        + ".txt"
+        + uuid.uuid4().hex[:8],
+        task_id,
     )
 
     path = config.COMMAND_DIR / filename
@@ -53,8 +54,11 @@ def send_helptext(filename, content, kind="", message=""):
         vm_name
         filename
         content
-        kind      - "help" or "final"
+        kind      - "help", "approval", "final" or "error"
         message   - just the agent's own words, no headings
+        task_id   - the control plane's task this ends or pauses
+        engine, model, input_tokens, output_tokens, cost_usd
+                  - what the task records keep about the execution
 
     `content` is the whole formatted note, which the dashboard's Help rail
     still shows verbatim. `kind`/`message` are what the chat renders: the
@@ -75,7 +79,13 @@ def send_helptext(filename, content, kind="", message=""):
         "content": content,
         "kind": kind,
         "message": message,
+        "task_id": task_context.current(),
+        # Reporting which engine ran is not branching on it: every harness
+        # sends the same fields.
+        "engine": config.AGENT_HARNESS,
     }
+
+    payload.update(usage.snapshot())
 
     body = json.dumps(payload).encode("utf-8")
 
@@ -108,9 +118,15 @@ def send_helptext(filename, content, kind="", message=""):
         return False
 
 
-def ask_for_help(problem):
+def ask_for_help(problem, kind="help"):
     """
     Ask the human/control plane for help.
+
+    `kind` is "approval" when the agent stopped itself before something
+    consequential (a payment, an outgoing message, a gated on-screen
+    action) and "help" when it is stuck. Both pause the task the same way;
+    the task records count them separately, since one is the agent doing
+    its job and the other is the agent failing to.
     """
 
     help_id = uuid.uuid4().hex
@@ -159,7 +175,7 @@ Please send instructions through the Flowera control plane.
     sent = send_helptext(
         filename,
         content,
-        kind="help",
+        kind=kind,
         message=problem,
     )
 

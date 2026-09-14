@@ -3,18 +3,28 @@ package httpapi
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/YKoustubhRao/flowera/internal/conversation"
 	"github.com/YKoustubhRao/flowera/internal/desktop"
+	"github.com/YKoustubhRao/flowera/internal/tasks"
 )
 
 // maxStepTextBytes bounds one live activity line. Agents report real command
 // output, which can be enormous; the chat only ever shows a summary line, so
 // anything longer is truncated at the door rather than held in memory.
 const maxStepTextBytes = 2048
+
+// maxAgentEventBytes bounds one POST /api/agent/events body, screenshots
+// included.
+const maxAgentEventBytes = 16 << 20
+
+// stepImagePath is where an action step's screenshots are served from.
+const stepImagePath = "/api/desktops/step-image"
 
 // keepAliveInterval is how often an idle SSE stream emits a comment frame.
 // Without it an idle chat can be dropped by an intermediary (the Cloudflare
@@ -111,9 +121,9 @@ func (s *Server) chatStreamHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // clearChatHandler discards one desktop's transcript. It only clears the
-// control plane's record of the conversation — the agent's own memory inside
-// the container (worker memory files, and whatever its harness keeps) is
-// untouched.
+// control plane's view of the conversation — the task records behind it, and
+// the agent's own memory inside the container (worker memory files, and
+// whatever its harness keeps), are untouched.
 func (s *Server) clearChatHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
@@ -127,6 +137,8 @@ func (s *Server) clearChatHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Screenshots are left in place: the task records behind this chat still
+	// point at them as their audit trail.
 	s.Chat.Clear(desktop.SanitizeID(id))
 
 	jsonResponse(w, map[string]string{
@@ -150,15 +162,31 @@ func (s *Server) agentEventHandler(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		DesktopID string `json:"desktop_id"`
+		TaskID    string `json:"task_id"`
 		Text      string `json:"text"`
+		Action    *struct {
+			ID      string `json:"id"`
+			Kind    string `json:"kind"`
+			Target  string `json:"target"`
+			Backend string `json:"backend"`
+			Outcome string `json:"outcome"`
+			Change  string `json:"change"`
+			Reason  string `json:"reason"`
+		} `json:"action"`
+		BeforePNG []byte `json:"before_png"`
+		AfterPNG  []byte `json:"after_png"`
 	}
+
+	// Two half-size PNG screenshots, base64-encoded, fit comfortably; this is
+	// the ceiling on what one malformed or hostile event can make us read.
+	r.Body = http.MaxBytesReader(w, r.Body, maxAgentEventBytes)
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	desktopID := strings.TrimSpace(req.DesktopID)
+	desktopID := desktop.SanitizeID(strings.TrimSpace(req.DesktopID))
 	text := strings.TrimSpace(req.Text)
 
 	if desktopID != "" && text != "" {
@@ -166,12 +194,100 @@ func (s *Server) agentEventHandler(w http.ResponseWriter, r *http.Request) {
 			text = text[:maxStepTextBytes] + "…"
 		}
 
-		s.Chat.AppendStep(desktop.SanitizeID(desktopID), text)
+		step := tasks.Step{Text: text}
+
+		if req.Action == nil {
+			s.Chat.AppendStep(desktopID, text)
+		} else {
+			action := conversation.Action{
+				RecordID: clip(req.Action.ID, 64),
+				Kind:     clip(req.Action.Kind, 32),
+				Target:   clip(req.Action.Target, maxStepTextBytes),
+				Backend:  clip(req.Action.Backend, 32),
+				Outcome:  clip(req.Action.Outcome, 32),
+				Change:   clip(req.Action.Change, maxStepTextBytes),
+				Reason:   clip(req.Action.Reason, maxStepTextBytes),
+				Before:   s.stepImageURL(desktopID, req.BeforePNG),
+				After:    s.stepImageURL(desktopID, req.AfterPNG),
+			}
+
+			s.Chat.AppendActionStep(desktopID, text, action)
+
+			recorded := tasks.Action(action)
+			step.Action = &recorded
+		}
+
+		// The same step, as the task record's audit trail.
+		if _, err := s.Tasks.AddStep(desktopID, reportedTaskID(req.TaskID), step); err != nil {
+			log.Printf("agent event from %s: %v", desktopID, err)
+		}
 	}
 
 	jsonResponse(w, map[string]string{
 		"status": "received",
 	})
+}
+
+// stepImageURL stores one screenshot sent with an action step and returns the
+// URL the chat loads it from, or "" when there is none or it is unusable. An
+// action whose screenshot is dropped is still recorded - the step is the
+// record; the picture is evidence the desktop also keeps on its own disk.
+func (s *Server) stepImageURL(desktopID string, data []byte) string {
+	if len(data) == 0 || s.StepImages == nil {
+		return ""
+	}
+
+	id, err := s.StepImages.Put(desktopID, data)
+	if err != nil {
+		log.Printf("step screenshot from %s dropped: %v", desktopID, err)
+		return ""
+	}
+
+	return stepImagePath + "?id=" + id
+}
+
+// stepImageHandler serves one action step's screenshot. An image never
+// changes once stored (a new screenshot gets a new ID), so the browser may
+// keep it for good - which matters because the chat rebuilds its whole
+// transcript on every snapshot, and would otherwise re-fetch every picture.
+func (s *Server) stepImageHandler(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+
+	data, ok := s.StepImages.Get(id)
+	if id == "" || !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+
+	_, _ = w.Write(data)
+}
+
+// reportedTaskID is the task ID a desktop echoed back, or "" when it sent none
+// or something that is not one - in which case the records attribute the
+// report to whatever that desktop is running.
+func reportedTaskID(value string) string {
+	value = strings.TrimSpace(value)
+
+	if !tasks.ValidID(value) {
+		return ""
+	}
+
+	return value
+}
+
+// clip bounds one reported string field.
+func clip(value string, limit int) string {
+	value = strings.TrimSpace(value)
+
+	if len(value) > limit {
+		return value[:limit] + "…"
+	}
+
+	return value
 }
 
 // chatKindFor maps the kind an agent reports on its callback to the kind the

@@ -10,6 +10,7 @@ import (
 	"github.com/YKoustubhRao/flowera/internal/desktop"
 	"github.com/YKoustubhRao/flowera/internal/helpnotes"
 	"github.com/YKoustubhRao/flowera/internal/memory"
+	"github.com/YKoustubhRao/flowera/internal/tasks"
 )
 
 // Every page is parsed out of the embedded FS and executed here so a broken
@@ -92,6 +93,61 @@ func TestRenderEveryPage(t *testing.T) {
 
 	if err := renderer.RenderHelpNotesDashboard(io.Discard, notes); err != nil {
 		t.Fatalf("RenderHelpNotesDashboard: %v", err)
+	}
+
+	// The task pages, empty and full: the empty dashboard is a different
+	// branch, and a task with a screenshot step and an unanswered approval
+	// reaches every part of the record page.
+	now := time.Now().UTC()
+	cost := 0.12
+	tokens := int64(900)
+
+	if err := renderer.RenderTasks(io.Discard, TasksPageData{Window: WindowOption{Value: "7", Phrase: "this week"}}); err != nil {
+		t.Fatalf("RenderTasks (empty): %v", err)
+	}
+
+	group := tasks.Group{Key: "claude", Label: "Claude Code", Tasks: 2, Settled: 2, Autonomous: 1, Rate: .5, TopReason: tasks.ReasonApprovalPayment, Models: []string{"claude-opus-5"}, CostUSD: &cost}
+	summary := tasks.Summary{
+		Task:       tasks.Task{ID: "t0123456789abcdef", WorkerID: running.ID, WorkerName: running.Name, Engine: "claude", Request: "pay invoice", Type: tasks.TypeConsequential, Status: tasks.StatusWaiting, CreatedAt: now},
+		Executions: 2, ScreenActions: 1, SteppedIn: []string{tasks.ReasonApprovalPayment}, CostUSD: &cost,
+	}
+
+	full := TasksPageData{
+		Window:  WindowOption{Value: "7", Label: "7 days", Phrase: "this week", Active: true},
+		Windows: []WindowOption{{Value: "7", Label: "7 days", Active: true}, {Value: "all", Label: "All time"}},
+		Report: tasks.Report{
+			Definition: tasks.AutonomyDefinition,
+			Totals:     group, ByEngine: []tasks.Group{group}, ByWorker: []tasks.Group{group}, ByType: []tasks.Group{group},
+			Best: &group, StepIns: 1,
+			Reasons: []tasks.Reason{{Key: tasks.ReasonApprovalPayment, Label: "Approval before a payment", Approval: true, Count: 1, Share: 1,
+				ByEngine: []tasks.EngineCount{{Engine: "claude", Label: "Claude Code", Count: 1}},
+				Examples: []tasks.ReasonExample{{TaskID: summary.ID, Worker: running.Name, Request: "pay invoice", Words: "Approval needed"}}}},
+		},
+		Tasks:  []tasks.Summary{summary},
+		Filter: tasks.Filter{Engine: "claude"},
+	}
+
+	if err := renderer.RenderTasks(io.Discard, full); err != nil {
+		t.Fatalf("RenderTasks: %v", err)
+	}
+
+	detail := TaskPageData{Task: tasks.Detail{
+		Task:   summary.Task,
+		Worker: tasks.Worker{ID: running.ID, Name: running.Name, DeletedAt: now},
+		Executions: []tasks.Execution{
+			{ID: "x1", Attempt: 1, Engine: "claude", Status: tasks.StatusError, FinalMessage: "timed out", StartedAt: now, EndedAt: now.Add(time.Minute)},
+			{ID: "x2", Attempt: 2, Engine: "claude", Model: "claude-opus-5", Status: tasks.StatusWaiting, StartedAt: now, CostUSD: &cost, InputTokens: &tokens,
+				Steps: []tasks.Step{
+					{Text: "$ ls", CreatedAt: now},
+					{Text: "click Pay now", CreatedAt: now.Add(time.Second), Action: &tasks.Action{Kind: "click", Outcome: "needs_approval", Reason: "payment", Before: "/api/desktops/step-image?id=ab"}},
+				},
+				Interventions: []tasks.Intervention{{Kind: tasks.InterventionApproval, Reason: tasks.ReasonApprovalPayment, Request: "Approval needed", RequestedAt: now.Add(2 * time.Second)}},
+			},
+		},
+	}}
+
+	if err := renderer.RenderTask(io.Discard, detail); err != nil {
+		t.Fatalf("RenderTask: %v", err)
 	}
 
 	// Both branches of the desktop view: a running desktop renders the chat
