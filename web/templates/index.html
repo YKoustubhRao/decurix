@@ -1013,6 +1013,12 @@
   var claudeLoginSubmit = document.getElementById("claudeLoginSubmit");
   var claudeLoginId = null;
 
+  /* Set when "Create desktop" itself triggers the login dialog (claude
+     harness picked, nobody signed in yet) rather than the user clicking
+     "Log in to Claude" on their own - a successful sign-in then finishes
+     the create instead of just closing the dialog. */
+  var createPendingClaudeLogin = false;
+
   function showClaudeLoginError(message){
     claudeLoginError.textContent = message;
     claudeLoginError.classList.toggle("on", !!message);
@@ -1024,6 +1030,7 @@
   claudeLoginDialog.addEventListener("close", function(){
     var id = claudeLoginId;
     claudeLoginId = null;
+    createPendingClaudeLogin = false;
 
     if(id){
       post("/api/claude-auth/login/cancel", {login_id: id}).catch(function(){});
@@ -1076,10 +1083,16 @@
     try{
       var result = await post("/api/claude-auth/login/code", {login_id: claudeLoginId, code: code});
 
+      var resumeCreate = createPendingClaudeLogin;
+      createPendingClaudeLogin = false;
+
       claudeLoginId = null;
       claudeLoginDialog.close();
       toast("Signed in to Claude" + (result.email ? " as " + result.email : "") + ".");
+      claudeAuthLoggedIn = true;
       loadClaudeAuthStatus();
+
+      if(resumeCreate){ await performCreate(); }
     }catch(e){
       showClaudeLoginError(e.message);
       claudeLoginCode.value = "";
@@ -1090,9 +1103,10 @@
     }
   });
 
-  createForm.addEventListener("submit", async function(event){
-    event.preventDefault();
-
+  /* The actual POST /api/desktops/create - split out so a Claude sign-in
+     triggered by Create desktop (see the submit handler below) can finish
+     the create itself once the login succeeds. */
+  async function performCreate(){
     var data = new FormData(createForm);
     var name = (data.get("name") || "").trim();
 
@@ -1117,6 +1131,28 @@
       submit.textContent = "Create desktop";
       toast(e.message, "error");
     }
+  }
+
+  createForm.addEventListener("submit", async function(event){
+    event.preventDefault();
+
+    var harness = createForm.querySelector("input[name=harness]:checked").value;
+
+    /* Claude opted in with nobody signed in to the shared session: prompt
+       for login right here instead of creating a desktop that comes up
+       unauthenticated. Re-check status first rather than trusting the
+       cached flag - it was only as fresh as the dialog's last open. */
+    if(harness === "claude"){
+      await loadClaudeAuthStatus();
+
+      if(!claudeAuthLoggedIn){
+        createPendingClaudeLogin = true;
+        document.getElementById("claudeAuthBtn").click();
+        return;
+      }
+    }
+
+    await performCreate();
   });
 
   /* ---------------- lifecycle actions ---------------- */
