@@ -29,7 +29,7 @@ _LOOSE_MARKER_RE = re.compile(
 _ACTIONS = {
     "command": "command",
     "done": "done",
-    "help": "help",
+    "help": "query",
 }
 
 
@@ -60,7 +60,7 @@ def parse_agent_response(response):
     model that trails off after its real answer - repeating the marker,
     echoing the prompt's own example, or appending a stray DONE/HELP -
     would otherwise have all of that garbage folded into the extracted
-    command/message, which for a COMMAND gets executed as shell input.
+    command/answer, which for a COMMAND gets executed as shell input.
     Seen live on the model this ships with: "how much disk space is
     free?" answered with a correct `COMMAND: df -h ...` immediately
     followed by an invented `DONE: 10G Available` for output no command

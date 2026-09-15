@@ -140,14 +140,14 @@ type server struct {
 	jobs   map[string]*jobRecord
 
 	// paused holds each session's paused job, if it has one. A session has
-	// at most one: the next message in it either resumes that job or, when
+	// at most one: the next request in it either resumes that job or, when
 	// the host says it is not a reply, discards it.
 	pausedMu sync.Mutex
 	paused   map[string]*scheduler.Checkpoint
 }
 
 // pausedJobTTL is how long a paused job waits for its reply before the next
-// message in the session is treated as a new request.
+// request in the session is treated as a new request.
 const pausedJobTTL = 24 * time.Hour
 
 func newServer(cfg config.Config, provider llm.Provider, ws *workspace.Workspace, sched *scheduler.Scheduler) *server {
@@ -377,7 +377,7 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		Context string `json:"context"`
 		// WorkDir is where commands run and relative paths resolve.
 		WorkDir string `json:"workdir"`
-		// Reply says whether this message answers the session's paused
+		// Reply says whether this request answers the session's paused
 		// job. Unset means "if there is one"; false discards it.
 		Reply *bool `json:"reply"`
 	}
@@ -401,7 +401,7 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		if body.Reply == nil || *body.Reply {
 			req.Resume = paused
 			job.Resumed = true
-			job.appendLog(fmt.Sprintf("scheduler: this message answers the paused job %q", truncateLog(paused.Prompt, 80)))
+			job.appendLog(fmt.Sprintf("scheduler: this request answers the paused job %q", truncateLog(paused.Prompt, 80)))
 		} else {
 			job.appendLog(fmt.Sprintf("scheduler: dropping the paused job %q - this is a new request", truncateLog(paused.Prompt, 80)))
 		}
@@ -442,7 +442,7 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 			s.storePaused(body.SessionID, result.Checkpoint)
 		}
 
-		// Record BOTH sides of the exchange so the next message in this
+		// Record BOTH sides of the exchange so the next request in this
 		// session sees it - the human's own words, not the host context.
 		s.sessions.Append(body.SessionID, llm.Message{Role: "user", Content: body.Prompt})
 		s.sessions.Append(body.SessionID, llm.Message{Role: "assistant", Content: finalAnswer})

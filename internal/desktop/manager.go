@@ -474,10 +474,10 @@ func envValue(env []string, name string) string {
 	return ""
 }
 
-// SendMessage posts a JSON message to a running desktop's internal message
-// endpoint. taskID is the control plane's record the message belongs to; the
+// SendRequest posts a JSON request to a running desktop's internal request
+// endpoint. taskID is the control plane's record the request belongs to; the
 // desktop echoes it back on every step and outcome it reports for that task.
-func (m *Manager) SendMessage(
+func (m *Manager) SendRequest(
 	ctx context.Context,
 	id string,
 	content string,
@@ -519,13 +519,13 @@ func (m *Manager) SendMessage(
 
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("encode message: %w", err)
+		return fmt.Errorf("encode request: %w", err)
 	}
 
 	// Communicate directly over the Docker network.
 	// vm_server.py listens on port 8081 inside the desktop container.
 	url := fmt.Sprintf(
-		"http://%s:8081/message",
+		"http://%s:8081/request",
 		name,
 	)
 
@@ -536,7 +536,7 @@ func (m *Manager) SendMessage(
 		strings.NewReader(string(body)),
 	)
 	if err != nil {
-		return fmt.Errorf("create message request: %w", err)
+		return fmt.Errorf("create request: %w", err)
 	}
 
 	req.Header.Set(
@@ -552,10 +552,10 @@ func (m *Manager) SendMessage(
 	if err != nil {
 		// Nothing listening on :8081 inside a running container. Reported
 		// as ErrAgentUnreachable rather than a bare transport error so the
-		// caller can say so, instead of answering a human's chat message
+		// caller can say so, instead of answering a human's chat request
 		// with an unexplained HTTP 500.
 		return fmt.Errorf(
-			"send message to desktop %s: %w: %v",
+			"send request to desktop %s: %w: %v",
 			desktopID,
 			ErrAgentUnreachable,
 			err,

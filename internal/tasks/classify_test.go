@@ -39,17 +39,17 @@ func TestInterventionReason(t *testing.T) {
 		{InterventionApproval, "Approval needed before I delete the production database", ReasonApprovalOther},
 		{InterventionApproval, "Approval needed before I click button \"Delete account\": looks consequential. Nothing was clicked or sent. Reply yes to let me do it, or tell me what to do instead.", ReasonApprovalOther},
 		// The Ollama loop's HELP is also its safety brake.
-		{InterventionHelp, "Should I go ahead and send this email to the landlord?", ReasonApprovalMessage},
-		{InterventionHelp, "The reasoning model (qwen2.5-coder:3b) at http://host.docker.internal:11434 accepted the request but did not finish answering in time.", ReasonBackend},
-		{InterventionHelp, "I need the admin password to sign in.", ReasonCredentials},
+		{InterventionQuery, "Should I go ahead and send this email to the landlord?", ReasonApprovalMessage},
+		{InterventionQuery, "The reasoning model (qwen2.5-coder:3b) at http://host.docker.internal:11434 accepted the request but did not finish answering in time.", ReasonBackend},
+		{InterventionQuery, "I need the admin password to sign in.", ReasonCredentials},
 		// Seen live from qwen2.5-coder:3b on "pay the 400 dollar invoice".
-		{InterventionHelp, "You need to provide your payment method or secret to proceed.", ReasonCredentials},
-		{InterventionHelp, "mkdir: cannot create directory '/opt/x': Permission denied", ReasonPermission},
-		{InterventionHelp, "bash: rg: command not found", ReasonMissingTool},
-		{InterventionHelp, "gui: nothing on the screen matches button \"Sign in\".", ReasonScreen},
-		{InterventionHelp, "The agent ran its full budget of 50 steps without finishing the task", ReasonLoop},
-		{InterventionHelp, "Which spreadsheet do you mean?", ReasonClarification},
-		{InterventionHelp, "Something odd happened.", ReasonOtherHelp},
+		{InterventionQuery, "You need to provide your payment method or secret to proceed.", ReasonCredentials},
+		{InterventionQuery, "mkdir: cannot create directory '/opt/x': Permission denied", ReasonPermission},
+		{InterventionQuery, "bash: rg: command not found", ReasonMissingTool},
+		{InterventionQuery, "gui: nothing on the screen matches button \"Sign in\".", ReasonScreen},
+		{InterventionQuery, "The agent ran its full budget of 50 steps without finishing the task", ReasonLoop},
+		{InterventionQuery, "Which spreadsheet do you mean?", ReasonClarification},
+		{InterventionQuery, "Something odd happened.", ReasonOtherQuery},
 	}
 
 	for _, c := range cases {

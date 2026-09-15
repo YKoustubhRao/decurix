@@ -188,7 +188,7 @@ func (s *Server) demonstrationHandler(w http.ResponseWriter, r *http.Request) {
 // ticketActionHandler("begin") - so a person can create the ticket, then
 // start recording only once they are actually at the screen and ready.
 //
-// It is a chat message in every other respect - Plan, the desktop accepts it,
+// It is a chat request in every other respect - Plan, the desktop accepts it,
 // Commit, the chat shows it - so the ticket and the human's steps land in a
 // task of their own. Refused while the agent is busy, for the reason a replay
 // is: sent to a paused agent it would be taken as the reply.
@@ -205,8 +205,8 @@ func (s *Server) recordTaskHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	content := tasks.RecordCommand + " " + task
-	if len(content) > maxMessageBytes {
-		jsonStatusError(w, http.StatusBadRequest, "message too long")
+	if len(content) > maxRequestBytes {
+		jsonStatusError(w, http.StatusBadRequest, "request too long")
 		return
 	}
 
@@ -219,10 +219,10 @@ func (s *Server) recordTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	route := s.routeMessage(worker, content)
+	route := s.routeRequest(worker, content)
 
-	if err := s.Desktops.SendMessage(r.Context(), id, content, route.TaskID); err != nil {
-		sendMessageError(w, err)
+	if err := s.Desktops.SendRequest(r.Context(), id, content, route.TaskID); err != nil {
+		sendRequestError(w, err)
 		return
 	}
 
@@ -285,7 +285,7 @@ func (s *Server) ticketActionHandler(w http.ResponseWriter, r *http.Request) {
 
 // replayRecordingHandler runs a recording again on its desktop, as a task.
 //
-// It goes through the task records exactly like a chat message - Plan, the
+// It goes through the task records exactly like a chat request - Plan, the
 // desktop accepts it, Commit, and the chat shows it - so the replay's steps,
 // pauses and outcome land in a task like any other. What the chat and the
 // records see is replayContent: the recording and the step. The parameter
@@ -307,9 +307,9 @@ func (s *Server) replayRecordingHandler(w http.ResponseWriter, r *http.Request) 
 		from = n
 	}
 
-	params, message := parseReplayParams(r.FormValue("params"))
-	if message != "" {
-		jsonStatusError(w, http.StatusBadRequest, message)
+	params, errText := parseReplayParams(r.FormValue("params"))
+	if errText != "" {
+		jsonStatusError(w, http.StatusBadRequest, errText)
 		return
 	}
 
@@ -323,7 +323,7 @@ func (s *Server) replayRecordingHandler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	content := replayContent(session, from)
-	route := s.routeMessage(worker, content)
+	route := s.routeRequest(worker, content)
 
 	ctx, cancel := context.WithTimeout(r.Context(), recordingsRequestTimeout)
 	defer cancel()
@@ -351,7 +351,7 @@ func (s *Server) replayRecordingHandler(w http.ResponseWriter, r *http.Request) 
 	jsonResponse(w, map[string]string{"status": "sent", "task_id": route.TaskID, "content": content})
 }
 
-// replayContent is the message a replay is sent and recorded as. The desktop's
+// replayContent is the request a replay is sent and recorded as. The desktop's
 // watcher routes on it (replay_task.parse) and the chat shows it; it names the
 // recording and the step to start at, never a parameter's value.
 func replayContent(session string, from int) string {
@@ -362,7 +362,7 @@ func replayContent(session string, from int) string {
 }
 
 // parseReplayParams reads a replay's parameters, a JSON object of name to
-// text, and returns a message for the person when they are not usable.
+// text, and returns an explanation for the person when they are not usable.
 func parseReplayParams(raw string) (map[string]string, string) {
 	params := map[string]string{}
 
@@ -488,6 +488,6 @@ func recordingsError(w http.ResponseWriter, err error) {
 	case errors.Is(err, context.DeadlineExceeded):
 		jsonStatusError(w, http.StatusGatewayTimeout, "the desktop took too long to answer")
 	default:
-		sendMessageError(w, err)
+		sendRequestError(w, err)
 	}
 }

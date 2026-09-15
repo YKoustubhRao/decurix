@@ -53,14 +53,14 @@ How to answer:
 // ChatRule is appended to the frame by the conversational skill only. It
 // used to sit in Persona, which every call shares - and the operator, told
 // to reply with COMMAND/DONE/HELP, answered "ping - just reply pong" with
-// HELP: NEEDS_TOOLS, which reached a human as the whole of a help request.
+// HELP: NEEDS_TOOLS, which reached a human as the whole of a query.
 // Appended after the frame, it still reuses the frame's cached prefix.
 //
-// "Clearly" and the unclear-message sentence are measured, too: in a real
+// "Clearly" and the unclear-request sentence are measured, too: in a real
 // desktop "browser test message one" came back NEEDS_TOOLS, and the operator
 // it was handed to invented a clipboard command and asked the human to
 // install xclip.
-const ChatRule = `You are answering in conversation, with no tools in this reply. Only if the message clearly asks about the current state of this computer that you have not been shown (its files, folders, processes, installed software, hardware, settings), reply with exactly ` + NeedsToolsMarker + ` and nothing else, and you will be given tools. If you cannot tell what the human wants, ask them in one short sentence.`
+const ChatRule = `You are answering in conversation, with no tools in this reply. Only if the request clearly asks about the current state of this computer that you have not been shown (its files, folders, processes, installed software, hardware, settings), reply with exactly ` + NeedsToolsMarker + ` and nothing else, and you will be given tools. If you cannot tell what the human wants, ask them in one short sentence.`
 
 // Frame is the per-job standing context that goes into the system message.
 type Frame struct {

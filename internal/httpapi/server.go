@@ -1,6 +1,6 @@
 // Package httpapi implements the Flowera control-plane HTTP API and
 // dashboard: it is the only package that touches net/http request/response
-// objects, composing the desktop, helpnotes, memory, conversation,
+// objects, composing the desktop, querynotes, memory, conversation,
 // stepimages, tasks, tunnel, and webui packages.
 package httpapi
 
@@ -10,21 +10,21 @@ import (
 	"github.com/YKoustubhRao/flowera/internal/claudeauth"
 	"github.com/YKoustubhRao/flowera/internal/conversation"
 	"github.com/YKoustubhRao/flowera/internal/desktop"
-	"github.com/YKoustubhRao/flowera/internal/helpnotes"
 	"github.com/YKoustubhRao/flowera/internal/memory"
+	"github.com/YKoustubhRao/flowera/internal/querynotes"
 	"github.com/YKoustubhRao/flowera/internal/stepimages"
 	"github.com/YKoustubhRao/flowera/internal/tasks"
 	"github.com/YKoustubhRao/flowera/internal/tunnel"
 	"github.com/YKoustubhRao/flowera/internal/webui"
 )
 
-// Server wires the desktop manager, help-notes store, memory store, chat
+// Server wires the desktop manager, query-notes store, memory store, chat
 // store, action-step screenshot store, task records, tunnel store, shared
 // Claude session store, and web UI renderer together to serve the Flowera
 // control plane.
 type Server struct {
 	Desktops   *desktop.Manager
-	HelpNotes  *helpnotes.Store
+	QueryNotes *querynotes.Store
 	Memory     *memory.Store
 	Chat       *conversation.Store
 	StepImages *stepimages.Store
@@ -35,10 +35,10 @@ type Server struct {
 }
 
 // NewServer creates a Server from its component stores/managers.
-func NewServer(desktops *desktop.Manager, helpNotes *helpnotes.Store, memoryStore *memory.Store, chat *conversation.Store, stepImages *stepimages.Store, taskRecords *tasks.Store, tunnelStore *tunnel.Store, claudeAuth *claudeauth.Store, web *webui.Renderer) *Server {
+func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memoryStore *memory.Store, chat *conversation.Store, stepImages *stepimages.Store, taskRecords *tasks.Store, tunnelStore *tunnel.Store, claudeAuth *claudeauth.Store, web *webui.Renderer) *Server {
 	return &Server{
 		Desktops:   desktops,
-		HelpNotes:  helpNotes,
+		QueryNotes: queryNotes,
 		Memory:     memoryStore,
 		Chat:       chat,
 		StepImages: stepImages,
@@ -61,8 +61,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/desktops/stop", s.stopDesktopHandler)
 	mux.HandleFunc("/api/desktops/restart", s.restartDesktopHandler)
 	mux.HandleFunc("/api/desktops/delete", s.deleteDesktopHandler)
-	mux.HandleFunc("/messages", s.messagesDashboardHandler)
-	mux.HandleFunc("/api/desktops/send", s.sendMessageHandler)
+	mux.HandleFunc("/requests", s.requestsDashboardHandler)
+	mux.HandleFunc("/api/desktops/send", s.sendRequestHandler)
 	mux.HandleFunc("/api/desktops/memory", s.desktopMemoryHandler)
 	mux.HandleFunc("/api/desktops/screenshot", s.desktopScreenshotHandler)
 	mux.HandleFunc("/api/desktops/chat", s.chatHandler)
@@ -70,9 +70,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/desktops/chat/clear", s.clearChatHandler)
 	mux.HandleFunc(stepImagePath, s.stepImageHandler)
 	mux.HandleFunc("/api/agent/events", s.agentEventHandler)
-	mux.HandleFunc("/api/helptext", s.helpTextHandler)
-	mux.HandleFunc("/api/helpnotes", s.helpNotesHandler)
-	mux.HandleFunc("/api/helpnotes/close", s.closeHelpNoteHandler)
+	mux.HandleFunc("/api/querytext", s.queryTextHandler)
+	mux.HandleFunc("/api/querynotes", s.queryNotesHandler)
+	mux.HandleFunc("/api/querynotes/close", s.closeQueryNoteHandler)
 	mux.HandleFunc("/dashboard", s.dashboardPostsHandler)
 	mux.HandleFunc("/tasks", s.tasksPageHandler)
 	mux.HandleFunc("/tasks/", s.taskPageHandler)

@@ -25,8 +25,8 @@ def log_to_file(path):
     _log_path = path
 
 
-def log(message):
-    line = f"[{timestamp()}] {message}"
+def log(text):
+    line = f"[{timestamp()}] {text}"
 
     if _log_path is None:
         print(line, flush=True)

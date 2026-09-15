@@ -88,7 +88,7 @@ func TestOperatorIgnoresAPredictedAnswerAfterACommand(t *testing.T) {
 	}
 }
 
-func TestOperatorPushesBackOnceOnHelpBeforeTrying(t *testing.T) {
+func TestOperatorPushesBackOnceOnQueryBeforeTrying(t *testing.T) {
 	chat := &scriptedChat{replies: []string{
 		"HELP:\nWhy do you want to know the desktop name?",
 		"DONE:\nThis desktop is called kilo.",
@@ -101,7 +101,7 @@ func TestOperatorPushesBackOnceOnHelpBeforeTrying(t *testing.T) {
 
 // Once pushed back, a second HELP is real - the agent must always be able
 // to escalate, and HELP is also how it asks for approval.
-func TestOperatorDeliversASecondHelpAndCanResumeWithTheReply(t *testing.T) {
+func TestOperatorDeliversASecondQueryAndCanResumeWithTheReply(t *testing.T) {
 	chat := &scriptedChat{replies: []string{
 		"HELP:\nWhich project should I delete?",
 		"HELP:\nThere are two projects, alpha and beta. Which one?",
@@ -325,7 +325,7 @@ func TestResolveWritePathUsesTheWorkingDirectory(t *testing.T) {
 // Measured live: a 3B model ran `ls -l /etc | wc -l`, saw exit 0 and "118",
 // and replied HELP "It seems there was an error. Please try running the
 // command again." One grounded push back gets the answer.
-func TestOperatorPushesBackOnHelpRightAfterASuccess(t *testing.T) {
+func TestOperatorPushesBackOnQueryRightAfterASuccess(t *testing.T) {
 	chat := &scriptedChat{replies: []string{
 		"COMMAND:\necho 118",
 		"HELP:\nIt seems there was an error. Please try running the command again.",
@@ -342,7 +342,7 @@ func TestOperatorPushesBackOnHelpRightAfterASuccess(t *testing.T) {
 
 // A HELP that asks for something only a person can give is delivered at
 // once, even straight after a success.
-func TestOperatorDeliversAGenuineHelpAfterASuccess(t *testing.T) {
+func TestOperatorDeliversAGenuineQueryAfterASuccess(t *testing.T) {
 	chat := &scriptedChat{replies: []string{
 		"COMMAND:\nls ~/projects",
 		"HELP:\nThere are two projects, alpha and beta - which one should I delete?",
@@ -353,7 +353,7 @@ func TestOperatorDeliversAGenuineHelpAfterASuccess(t *testing.T) {
 	}
 }
 
-// Measured: HELP: NEEDS_TOOLS reached a human as a whole help request.
+// Measured: HELP: NEEDS_TOOLS reached a human as a whole query.
 func TestOperatorNeverDeliversTheChatSignal(t *testing.T) {
 	chat := &scriptedChat{replies: []string{"HELP: NEEDS_TOOLS", "NEEDS_TOOLS", "DONE:\npong"}}
 	res, _ := NewOperator().Run(operatorContext(t, chat), Subtask{Step: "ping - just reply pong", Type: "operator"})

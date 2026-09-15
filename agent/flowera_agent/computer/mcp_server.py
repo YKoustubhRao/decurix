@@ -195,7 +195,7 @@ def call_tool(name, arguments):
 
         if result["status"] == "needs_approval":
             return [_text(
-                result["message"]
+                result["text"]
                 + "\n\nStop here: do not try another way to do this. End your turn with a reply "
                 "that begins NEEDS_APPROVAL: followed by exactly what you want to do and why. "
                 "When the human approves, repeat this same action and it will go through."
@@ -203,7 +203,7 @@ def call_tool(name, arguments):
 
         observation = result["observation"]
         tree = el.render(observation, budget=TREE_BUDGET, coords=True)
-        return [_text(result["message"] + "\n\n" + tree), _image(observation["frame"])], False
+        return [_text(result["text"] + "\n\n" + tree), _image(observation["frame"])], False
 
     if name == "verify":
         result = core.verify(
@@ -211,13 +211,13 @@ def call_tool(name, arguments):
             role=arguments.get("role"),
             name=arguments.get("name"),
         )
-        return [_text(result["message"]), _image(result["observation"]["frame"])], result["ok"] is False
+        return [_text(result["text"]), _image(result["observation"]["frame"])], result["ok"] is False
 
     if name == "open":
-        message = core.open_target(arguments.get("target"), new_tab=bool(arguments.get("new_tab")))
+        summary = core.open_target(arguments.get("target"), new_tab=bool(arguments.get("new_tab")))
         observation = core.observe()
         tree = el.render(observation, budget=TREE_BUDGET, coords=True)
-        return [_text(message + "\n\n" + tree), _image(observation["frame"])], False
+        return [_text(summary + "\n\n" + tree), _image(observation["frame"])], False
 
     if name in ("recordings", "replay") and arguments.get("id"):
         try:
@@ -229,11 +229,11 @@ def call_tool(name, arguments):
             return [_text(replay.render_text(meta, program, budget=TREE_BUDGET))], False
 
         result = replay.run(program, params=arguments.get("params") or {}, start=arguments.get("from") or 1)
-        text = f"outcome: {result['outcome']}\n{result['message']}"
+        text = f"outcome: {result['outcome']}\n{result['text']}"
 
         if result["outcome"] == replay.NEEDS_APPROVAL:
             return [_text(
-                "NEEDS_APPROVAL: " + result["message"]
+                "NEEDS_APPROVAL: " + result["text"]
                 + "\n\nStop here. End your turn with a reply that begins NEEDS_APPROVAL: saying what the replay "
                 f"wants to do. When the human approves, call replay again with from={result['resume_from']}."
             )], False

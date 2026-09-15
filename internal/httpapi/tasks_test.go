@@ -26,7 +26,7 @@ func postForm(t *testing.T, handler http.HandlerFunc, path, body string) *httpte
 	return rec
 }
 
-// deliver is sendMessageHandler minus the Docker call: route, then record as
+// deliver is sendRequestHandler minus the Docker call: route, then record as
 // the desktop having accepted it.
 func deliver(t *testing.T, s *Server, desktopID, content string) tasks.Route {
 	t.Helper()
@@ -35,10 +35,10 @@ func deliver(t *testing.T, s *Server, desktopID, content string) tasks.Route {
 		t.Fatal(err)
 	}
 
-	return s.recordDelivered(context.Background(), desktopID, content, s.routeMessage(desktopID, content))
+	return s.recordDelivered(context.Background(), desktopID, content, s.routeRequest(desktopID, content))
 }
 
-// One task end to end as the control plane sees it - a chat message, the
+// One task end to end as the control plane sees it - a chat request, the
 // agent's steps (one of them on screen, with screenshots), an approval, the
 // human's reply, the answer, and a verdict - lands in the task records, the
 // chat shows the verdict, and the report and both pages render it.
@@ -54,18 +54,18 @@ func TestTaskRecordEndToEnd(t *testing.T) {
 		`{"desktop_id":"claude-box","task_id":"`+route.TaskID+`","text":"click button \"Pay now\" - stopped",
 		  "action":{"kind":"click","outcome":"needs_approval","target":"button \"Pay now\""},"before_png":"`+shot+`"}`)
 
-	postJSON(t, s.helpTextHandler, "/api/helptext",
-		`{"desktop_id":"claude-box","task_id":"`+route.TaskID+`","content":"FLOWERA HELP REQUEST","kind":"approval",
-		  "message":"Approval needed before I click button \"Pay now\": looks like a payment.","engine":"claude","model":"claude-opus-5","cost_usd":0.04}`)
+	postJSON(t, s.queryTextHandler, "/api/querytext",
+		`{"desktop_id":"claude-box","task_id":"`+route.TaskID+`","content":"FLOWERA QUERY REQUEST","kind":"approval",
+		  "reply":"Approval needed before I click button \"Pay now\": looks like a payment.","engine":"claude","model":"claude-opus-5","cost_usd":0.04}`)
 
 	reply := deliver(t, s, "claude-box", "yes")
 	if reply.Kind != tasks.RouteReply || reply.TaskID != route.TaskID {
 		t.Fatalf("the reply routed as %+v", reply)
 	}
 
-	postJSON(t, s.helpTextHandler, "/api/helptext",
+	postJSON(t, s.queryTextHandler, "/api/querytext",
 		`{"desktop_id":"claude-box","task_id":"`+route.TaskID+`","content":"FLOWERA TASK COMPLETED","kind":"final",
-		  "message":"Paid INV-1042.","cost_usd":0.09,"input_tokens":12000,"output_tokens":800}`)
+		  "reply":"Paid INV-1042.","cost_usd":0.09,"input_tokens":12000,"output_tokens":800}`)
 
 	rec := postForm(t, s.taskVerdictHandler, "/api/tasks/verdict", "task_id="+route.TaskID+"&verdict=correct")
 	if rec.Code != http.StatusOK {
@@ -91,11 +91,11 @@ func TestTaskRecordEndToEnd(t *testing.T) {
 		t.Fatalf("execution = %+v", execution)
 	}
 
-	// Every agent message of the task carries the verdict, on every device.
+	// Every agent entry of the task carries the verdict, on every device.
 	thread := readThread(t, s, "claude-box")
-	answer := thread.Messages[len(thread.Messages)-1]
+	answer := thread.Entries[len(thread.Entries)-1]
 
-	if answer.TaskID != route.TaskID || answer.Verdict != tasks.VerdictCorrect || answer.Kind != conversation.KindMessage {
+	if answer.TaskID != route.TaskID || answer.Verdict != tasks.VerdictCorrect || answer.Kind != conversation.KindEntry {
 		t.Fatalf("chat answer = %+v", answer)
 	}
 

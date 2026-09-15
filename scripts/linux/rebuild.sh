@@ -2,7 +2,7 @@
 #
 # Rebuilds Flowera from a clean slate: no leftover desktop_* containers or
 # volumes, and an EMPTY app database (flowera-data: task history, chat
-# transcripts, help notes, worker memory). Images are still rebuilt (so a
+# transcripts, query notes, worker memory). Images are still rebuilt (so a
 # change to agent/ or a Dockerfile is picked up), but with Docker's normal
 # build cache, not --no-cache - a rebuild should be thorough about clearing
 # out data, not slow. This is the "reinstall" script - for "just start what
@@ -42,7 +42,7 @@ echo "========================================"
 echo ""
 echo "This will permanently delete:"
 echo "  - every desktop_* container and volume"
-echo "  - the flowera-data volume: ALL task history, chats, help notes and"
+echo "  - the flowera-data volume: ALL task history, chats, query notes and"
 echo "    worker memory - this cannot be undone"
 echo ""
 echo "Kept as-is: .env, and the flowera_ollama volume (your pulled models)."

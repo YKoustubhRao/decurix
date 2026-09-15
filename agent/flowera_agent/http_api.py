@@ -8,7 +8,7 @@ from flowera_agent import record_task, replay_task
 from flowera_agent.computer import demonstration, recording, replay
 from flowera_agent.computer.errors import ComputerError
 from flowera_agent.logging_utils import log
-from flowera_agent.messaging import save_message
+from flowera_agent.messaging import save_request
 
 
 # ============================================================
@@ -16,11 +16,11 @@ from flowera_agent.messaging import save_message
 #
 # What the control plane reaches this desktop through, on :8081:
 #
-#   POST /message                        a human message (chat, help reply) -
+#   POST /request                        a human request (chat, query reply) -
 #                                        also how a ticket is opened: a
-#                                        "/record <task>" message is routed to
+#                                        "/record <task>" request is routed to
 #                                        record_task.py the same way any other
-#                                        message reaches its harness
+#                                        request reaches its harness
 #   GET  /recordings                     every recording's meta, and the
 #                                        demonstration being recorded
 #   GET  /recordings/<id>                one recording: meta, events, and the
@@ -47,7 +47,7 @@ from flowera_agent.messaging import save_message
 #                                        finish the ticket's task
 #
 # Served by a ThreadingHTTPServer (app.py): exporting a large recording must
-# not hold up the next chat message.
+# not hold up the next chat request.
 # ============================================================
 
 MAX_BODY = 1024 * 1024
@@ -92,8 +92,8 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _error(self, status, message):
-        self._json(status, {"status": "error", "error": message})
+    def _error(self, status, reason):
+        self._json(status, {"status": "error", "error": reason})
 
     def _guarded(self, route):
         """Run a route, turning what it raises into a status an HTTP client can act on."""
@@ -183,8 +183,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         parts = self._parts()
 
-        if parts == ["message"]:
-            return self._message()
+        if parts == ["request"]:
+            return self._request()
 
         def route():
             data = self._body()
@@ -260,14 +260,14 @@ class Handler(BaseHTTPRequestHandler):
         task_id = _text(data.get("task_id"), 64)
         content = f"/replay {session_id}" + (f" from={start}" if start > 1 else "")
 
-        # The message the watcher reads names only the recording: the values
+        # The request the watcher reads names only the recording: the values
         # stay in this process's memory until the replay takes them.
         replay_task.hold_params(task_id, params)
-        path = save_message(content, task_id)
+        path = save_request(content, task_id)
 
         return self._json(200, {"status": "received", "file": path.name, "content": content})
 
-    def _message(self):
+    def _request(self):
 
         try:
 
@@ -286,20 +286,20 @@ class Handler(BaseHTTPRequestHandler):
                 raw.decode("utf-8")
             )
 
-            message = data.get(
+            content = data.get(
                 "content",
                 "",
             )
 
-            if not message:
+            if not content:
                 raise ValueError(
                     "missing content"
                 )
 
-            # The control plane's record for this message; it comes back
+            # The control plane's record for this request; it comes back
             # on every report about it (task_context.py).
-            path = save_message(
-                message,
+            path = save_request(
+                content,
                 data.get("task_id", ""),
             )
 
@@ -308,7 +308,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
 
             log(
-                f"POST /message failed: "
+                f"POST /request failed: "
                 f"{exc}"
             )
 

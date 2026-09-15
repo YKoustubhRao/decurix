@@ -1,7 +1,7 @@
-// Package tasks turns chat messages into durable records: a Task (what a human
+// Package tasks turns chat requests into durable records: a Task (what a human
 // asked a worker for) has Executions (attempts at it), each with the Steps the
 // agent reported, the Interventions where it stopped for a human and the reply
-// it got, and an Outcome - done, help or error - with the time it took and
+// it got, and an Outcome - done, query or error - with the time it took and
 // what it cost. A human can then mark the answer correct or wrong, since "done"
 // on its own is only the agent's claim.
 //
@@ -26,7 +26,7 @@ import (
 )
 
 // Execution statuses. queued, running and waiting are live; the rest are how
-// an execution ended. "help" is an execution that ended while still waiting on
+// an execution ended. "query" is an execution that ended while still waiting on
 // a human - its desktop was stopped before anyone replied.
 const (
 	StatusQueued    = "queued"
@@ -34,13 +34,13 @@ const (
 	StatusWaiting   = "waiting"
 	StatusDone      = "done"
 	StatusError     = "error"
-	StatusHelp      = "help"
+	StatusQuery     = "query"
 	StatusAbandoned = "abandoned"
 )
 
 // Intervention kinds: the agent was stuck, or stopped to ask permission.
 const (
-	InterventionHelp     = "help"
+	InterventionQuery    = "query"
 	InterventionApproval = "approval"
 )
 
@@ -54,7 +54,7 @@ const (
 const (
 	OutcomeDone     = "done"
 	OutcomeError    = "error"
-	OutcomeHelp     = "help"
+	OutcomeQuery    = "query"
 	OutcomeApproval = "approval"
 )
 
@@ -65,7 +65,7 @@ const lateWindow = 10 * time.Second
 
 // retryWindow bounds how long after a failure resending the same words counts
 // as another attempt at the same task rather than a new one. A failure note
-// tells the human to "send the message again"; that is a retry.
+// tells the human to "send the request again"; that is a retry.
 const retryWindow = time.Hour
 
 // ErrNotFound is returned for a task that does not exist.
@@ -109,7 +109,7 @@ type Execution struct {
 	Engine        string         `json:"engine"`
 	Model         string         `json:"model"`
 	Status        string         `json:"status"`
-	FinalMessage  string         `json:"final_message"`
+	FinalReply    string         `json:"final_reply"`
 	StartedAt     time.Time      `json:"started_at"`
 	EndedAt       time.Time      `json:"ended_at"`
 	CostUSD       *float64       `json:"cost_usd"`
@@ -198,12 +198,12 @@ type Detail struct {
 	Executions []Execution `json:"executions"`
 }
 
-// Outcome is how a desktop reports the end of a turn: its answer, a request for
-// help or approval, or a failure, plus whatever it knows about the model and
-// what the task has cost so far. Nil or empty fields are left as they were.
+// Outcome is how a desktop reports the end of a turn: its answer, a query or
+// a request for approval, or a failure, plus whatever it knows about the model
+// and what the task has cost so far. Nil or empty fields are left as they were.
 type Outcome struct {
 	Kind         string
-	Message      string
+	Reply        string
 	Engine       string
 	Model        string
 	CostUSD      *float64
@@ -211,7 +211,7 @@ type Outcome struct {
 	OutputTokens *int64
 }
 
-// Route is where a human message goes: a new task, the reply to a task's open
+// Route is where a human request goes: a new task, the reply to a task's open
 // intervention, or another attempt at a task that just failed.
 type Route struct {
 	Kind           string `json:"kind"`
@@ -289,6 +289,9 @@ var schema = []string{
 		replied_ns   INTEGER NOT NULL DEFAULT 0
 	)`,
 	`CREATE INDEX interventions_execution ON interventions (execution_id)`,
+	// The steps above are applied on every existing installation and must
+	// never be edited - schema changes only ever append.
+	`ALTER TABLE executions RENAME COLUMN final_message TO final_reply`,
 }
 
 // Store is the SQLite-backed record of every worker's tasks.
@@ -296,7 +299,7 @@ type Store struct {
 	db *sql.DB
 
 	// mu serialises the store's read-decide-write sequences (routing a
-	// message, closing one execution and promoting the next), which each span
+	// request, closing one execution and promoting the next), which each span
 	// several statements.
 	mu sync.Mutex
 
@@ -402,16 +405,16 @@ func (s *Store) MarkWorkerDeleted(id string) error {
 }
 
 // ---------------------------------------------------------------------------
-// human messages
+// human requests
 // ---------------------------------------------------------------------------
 
-// Plan decides where a human message to a worker belongs, without recording
-// anything: the desktop has to be told the task ID before the message is known
-// to have been delivered, and a message that never arrives must not become a
+// Plan decides where a human request to a worker belongs, without recording
+// anything: the desktop has to be told the task ID before the request is known
+// to have been delivered, and a request that never arrives must not become a
 // task. Commit records it once delivery succeeded.
 //
 // The decision mirrors the desktop's own: its command watcher treats any
-// message that arrives while the agent waits on a human as the reply.
+// request that arrives while the agent waits on a human as the reply.
 func (s *Store) Plan(workerID, text string) (Route, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -431,7 +434,7 @@ func (s *Store) Plan(workerID, text string) (Route, error) {
 		route.Kind = RouteReply
 		return route, nil
 	case err != sql.ErrNoRows:
-		return Route{}, fmt.Errorf("tasks: routing message: %w", err)
+		return Route{}, fmt.Errorf("tasks: routing request: %w", err)
 	}
 
 	var taskID, request, status string
@@ -448,7 +451,7 @@ func (s *Store) Plan(workerID, text string) (Route, error) {
 	}
 
 	if err != nil && err != sql.ErrNoRows {
-		return Route{}, fmt.Errorf("tasks: routing message: %w", err)
+		return Route{}, fmt.Errorf("tasks: routing request: %w", err)
 	}
 
 	return Route{Kind: RouteNew, TaskID: newID("t"), ExecutionID: newID("x")}, nil
@@ -486,13 +489,13 @@ func (s *Store) Busy(workerID string) (string, error) {
 	}
 }
 
-// NewRoute is the route for a message whose planning failed: a new task. A
-// message is still delivered when its record cannot be.
+// NewRoute is the route for a request whose planning failed: a new task. A
+// request is still delivered when its record cannot be.
 func NewRoute() Route {
 	return Route{Kind: RouteNew, TaskID: newID("t"), ExecutionID: newID("x")}
 }
 
-// Commit records a delivered human message along the route Plan chose, and
+// Commit records a delivered human request along the route Plan chose, and
 // returns the route actually taken - which differs when the situation moved in
 // between (the intervention it replied to was closed, say).
 func (s *Store) Commit(route Route, worker Worker, text string) (Route, error) {
@@ -505,7 +508,7 @@ func (s *Store) Commit(route Route, worker Worker, text string) (Route, error) {
 
 	tx, err := s.db.Begin()
 	if err != nil {
-		return route, fmt.Errorf("tasks: recording message: %w", err)
+		return route, fmt.Errorf("tasks: recording request: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -562,7 +565,7 @@ func (s *Store) Commit(route Route, worker Worker, text string) (Route, error) {
 	}
 
 	if err := tx.Commit(); err != nil {
-		return route, fmt.Errorf("tasks: recording message: %w", err)
+		return route, fmt.Errorf("tasks: recording request: %w", err)
 	}
 
 	return route, nil
@@ -583,7 +586,7 @@ func (s *Store) insertTask(tx *sql.Tx, route Route, worker Worker, text string, 
 
 // insertExecution starts an attempt. It is queued, not running, when the
 // worker is already busy: its desktop runs one task at a time and holds the
-// message until the current one ends.
+// request until the current one ends.
 func (s *Store) insertExecution(tx *sql.Tx, route Route, attempt int, worker Worker, now time.Time) error {
 	status := StatusRunning
 
@@ -770,9 +773,10 @@ func (s *Store) AddStep(workerID, taskID string, step Step) (bool, error) {
 	}
 
 	// The agent worked the screen, which makes this on-screen work whatever
-	// the request's words suggested - except a payment or message, whose
-	// approvals are the point of that bucket, and a person's recorded
-	// demonstration, whose every step is on screen.
+	// the request's words suggested - except a payment or message (a real
+	// email/SMS/WhatsApp send), whose approvals are the point of that
+	// bucket, and a person's recorded demonstration, whose every step is on
+	// screen.
 	if step.Action != nil {
 		if _, err := tx.Exec(
 			`UPDATE tasks SET task_type = ? WHERE id = ? AND task_type NOT IN (?, ?)`,
@@ -833,15 +837,15 @@ func (s *Store) RecordOutcome(workerID, taskID string, outcome Outcome) (string,
 	}
 
 	switch outcome.Kind {
-	case OutcomeHelp, OutcomeApproval:
-		kind := InterventionHelp
+	case OutcomeQuery, OutcomeApproval:
+		kind := InterventionQuery
 		if outcome.Kind == OutcomeApproval {
 			kind = InterventionApproval
 		}
 
 		if _, err := tx.Exec(
 			`INSERT INTO interventions (id, execution_id, kind, reason, request, requested_ns) VALUES (?, ?, ?, ?, ?, ?)`,
-			newID("i"), ref.id, kind, InterventionReason(kind, outcome.Message), outcome.Message, sqlitedb.ToNS(now),
+			newID("i"), ref.id, kind, InterventionReason(kind, outcome.Reply), outcome.Reply, sqlitedb.ToNS(now),
 		); err != nil {
 			return "", fmt.Errorf("tasks: recording intervention: %w", err)
 		}
@@ -861,8 +865,8 @@ func (s *Store) RecordOutcome(workerID, taskID string, outcome Outcome) (string,
 		}
 
 		if _, err := tx.Exec(
-			`UPDATE executions SET status = ?, final_message = ?, ended_ns = ? WHERE id = ?`,
-			status, outcome.Message, sqlitedb.ToNS(now), ref.id,
+			`UPDATE executions SET status = ?, final_reply = ?, ended_ns = ? WHERE id = ?`,
+			status, outcome.Reply, sqlitedb.ToNS(now), ref.id,
 		); err != nil {
 			return "", fmt.Errorf("tasks: recording outcome: %w", err)
 		}
@@ -886,7 +890,7 @@ func (s *Store) RecordOutcome(workerID, taskID string, outcome Outcome) (string,
 }
 
 // promoteNext starts the worker's oldest queued execution, if it has one and
-// nothing else is live: the desktop picks up its next held message as soon as
+// nothing else is live: the desktop picks up its next held request as soon as
 // the current task ends.
 func promoteNext(tx *sql.Tx, workerID string, now time.Time) error {
 	var live int
@@ -914,9 +918,9 @@ func promoteNext(tx *sql.Tx, workerID string, now time.Time) error {
 	return promote(tx, &ref, now)
 }
 
-// absorbQueuedReply mirrors what the desktop does with a message that was
+// absorbQueuedReply mirrors what the desktop does with a request that was
 // held behind a task which then stopped to ask a human: its command watcher
-// hands that held message to the paused task as the reply. The records say
+// hands that held request to the paused task as the reply. The records say
 // the same - the queued "task" becomes the reply it really was.
 func absorbQueuedReply(tx *sql.Tx, workerID string, paused executionRef, now time.Time) error {
 	var queuedID, queuedTask, request string
@@ -1008,11 +1012,11 @@ func (s *Store) CloseOpen(workerID, why string) error {
 	for _, ref := range open {
 		status := StatusAbandoned
 		if ref.status == StatusWaiting {
-			status = StatusHelp
+			status = StatusQuery
 		}
 
 		if _, err := tx.Exec(
-			`UPDATE executions SET status = ?, ended_ns = ?, final_message = CASE WHEN final_message = '' THEN ? ELSE final_message END WHERE id = ?`,
+			`UPDATE executions SET status = ?, ended_ns = ?, final_reply = CASE WHEN final_reply = '' THEN ? ELSE final_reply END WHERE id = ?`,
 			status, now, why, ref.id,
 		); err != nil {
 			return err
@@ -1162,7 +1166,7 @@ func (s *Store) Get(taskID string) (Detail, error) {
 
 func (s *Store) loadExecutions(where string, args ...any) ([]Execution, error) {
 	rows, err := s.db.Query(
-		`SELECT e.id, e.task_id, e.attempt, e.worker_id, e.engine, e.model, e.status, e.final_message,
+		`SELECT e.id, e.task_id, e.attempt, e.worker_id, e.engine, e.model, e.status, e.final_reply,
 			e.started_ns, e.ended_ns, e.cost_usd, e.input_tokens, e.output_tokens
 		 FROM executions e JOIN tasks t ON t.id = e.task_id `+where+` ORDER BY e.task_id, e.attempt`, args...,
 	)
@@ -1180,7 +1184,7 @@ func (s *Store) loadExecutions(where string, args ...any) ([]Execution, error) {
 		var input, output sql.NullInt64
 
 		if err := rows.Scan(&execution.ID, &execution.TaskID, &execution.Attempt, &execution.WorkerID,
-			&execution.Engine, &execution.Model, &execution.Status, &execution.FinalMessage,
+			&execution.Engine, &execution.Model, &execution.Status, &execution.FinalReply,
 			&started, &ended, &cost, &input, &output); err != nil {
 			return nil, fmt.Errorf("tasks: reading executions: %w", err)
 		}

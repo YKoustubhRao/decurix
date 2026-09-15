@@ -326,7 +326,7 @@ class FakeScreen:
 
     def act(self, kind, **kwargs):
         if self.approval_on and kwargs.get("path") == self.approval_on:
-            return {"status": "needs_approval", "message": "NEEDS_APPROVAL: Approval needed before I click", "observation": None}
+            return {"status": "needs_approval", "text": "NEEDS_APPROVAL: Approval needed before I click", "observation": None}
         self.acted.append((kind, kwargs))
         if kind == "type":
             for element in self.elements:
@@ -335,7 +335,7 @@ class FakeScreen:
         for element in self.after.get("adds", []):
             if element not in self.elements:
                 self.elements.append(element)
-        return {"status": "done", "message": "ok", "observation": self.observation()}
+        return {"status": "done", "text": "ok", "observation": self.observation()}
 
 
 class Replay(unittest.TestCase):
@@ -395,7 +395,7 @@ class Replay(unittest.TestCase):
 
         result = self.run_with(fake, program, params={"customer_name": "Globex"})
 
-        self.assertEqual(result["outcome"], replay.VERIFIED, result["message"])
+        self.assertEqual(result["outcome"], replay.VERIFIED, result["text"])
         self.assertEqual(fake.acted[1][1]["text"], "Globex")
         self.assertEqual(program["steps"][1]["expect"],
                          [{"type": "value", "role": "textbox", "name": "Customer name", "param": "customer_name"}])
@@ -403,12 +403,12 @@ class Replay(unittest.TestCase):
     def test_a_field_that_did_not_take_the_text_halts(self):
         program = replay.compile_program(META, EVENTS[1:2])
         fake = FakeScreen([field("textbox", "Customer name")])
-        fake.act = lambda kind, **kwargs: {"status": "done", "message": "ok", "observation": fake.observation()}
+        fake.act = lambda kind, **kwargs: {"status": "done", "text": "ok", "observation": fake.observation()}
 
         result = self.run_with(fake, program)
 
         self.assertEqual((result["outcome"], result["resume_from"]), (replay.HALTED, 2))
-        self.assertIn("holding {customer_name}", result["message"])
+        self.assertIn("holding {customer_name}", result["text"])
 
     def test_a_missing_secret_halts_before_anything_happens(self):
         fake = FakeScreen([field("link", "Invoices")])
@@ -421,7 +421,7 @@ class Replay(unittest.TestCase):
     def test_a_target_that_is_not_there_halts_the_run(self):
         result = self.run_with(FakeScreen([]), replay.compile_program(META, EVENTS[:2]))
         self.assertEqual((result["outcome"], result["step"], result["resume_from"]), (replay.HALTED_BEFORE_EFFECT, 1, 1))
-        self.assertIn("is not on the screen", result["message"])
+        self.assertIn("is not on the screen", result["text"])
 
     def test_a_consequential_step_whose_result_never_appears_needs_reconciling(self):
         program = replay.compile_program(META, [EVENTS[4]])
@@ -429,7 +429,7 @@ class Replay(unittest.TestCase):
 
         self.assertEqual(result["outcome"], replay.RECONCILIATION_REQUIRED)
         self.assertIsNone(result["resume_from"])
-        self.assertIn("will not retry", result["message"])
+        self.assertIn("will not retry", result["text"])
 
     def test_an_approval_pause_resumes_at_the_same_step(self):
         pay = field("button", "Pay now")
@@ -437,13 +437,13 @@ class Replay(unittest.TestCase):
         result = self.run_with(FakeScreen([field("textbox", "Customer name"), pay], approval_on=pay["path"]), program)
 
         self.assertEqual((result["outcome"], result["resume_from"]), (replay.NEEDS_APPROVAL, 2))
-        self.assertFalse(result["message"].startswith("NEEDS_APPROVAL"))
+        self.assertFalse(result["text"].startswith("NEEDS_APPROVAL"))
 
     def test_an_action_a_replay_cannot_do_halts_rather_than_being_skipped(self):
         program = replay.compile_program(META, [EVENTS[5]])
         result = self.run_with(FakeScreen([]), program)
         self.assertEqual(result["outcome"], replay.HALTED_BEFORE_EFFECT)
-        self.assertIn("cannot middle click", result["message"])
+        self.assertIn("cannot middle click", result["text"])
 
     def test_render_text_ends_with_how_to_run_it(self):
         text = replay.render_text(META, replay.compile_program(META, EVENTS))
@@ -451,7 +451,7 @@ class Replay(unittest.TestCase):
         self.assertIn("[stops for approval]", text)
         self.assertTrue(text.endswith("[--from N]"))
 
-    def test_replay_messages_are_parsed(self):
+    def test_replay_requests_are_parsed(self):
         self.assertEqual(replay_task.parse("/replay demo-x from=3 customer=\"Acme Ltd\""),
                          ("demo-x", {"customer": "Acme Ltd"}, 3))
         self.assertIsNone(replay_task.parse("please replay demo-x"))
@@ -657,7 +657,7 @@ class RecordTask(unittest.TestCase):
         state.current_task, state.current_task_id = self.saved_state
         self.tmp.cleanup()
 
-    def test_record_messages_are_parsed(self):
+    def test_record_requests_are_parsed(self):
         self.assertEqual(record_task.parse("/record fill in the invoice form"), "fill in the invoice form")
         self.assertEqual(record_task.parse("  /record  "), "")
         self.assertIsNone(record_task.parse("/recordings"))
@@ -667,7 +667,7 @@ class RecordTask(unittest.TestCase):
         """
         Run perform() on a background thread, call drive() once the ticket
         appears, then join - the mocks stay active for the thread's whole
-        life, not just while drive() runs. Returns the finals write_final_message
+        life, not just while drive() runs. Returns the finals write_final_reply
         was called with.
         """
 
@@ -675,8 +675,8 @@ class RecordTask(unittest.TestCase):
 
         with mock.patch.object(record_task, "POLL_SECONDS", 0.02), \
                 mock.patch.object(record_task.progress, "emit"), \
-                mock.patch.object(record_task, "write_final_message",
-                                  lambda message, kind="final", engine=None: finals.append((message, kind, engine))):
+                mock.patch.object(record_task, "write_final_reply",
+                                  lambda reply, kind="final", engine=None: finals.append((reply, kind, engine))):
             thread = threading.Thread(target=record_task.perform, args=(content,))
             thread.start()
 
@@ -708,9 +708,9 @@ class RecordTask(unittest.TestCase):
         self.assertIsNone(record_task.status(), "the ticket outlived end()")
 
         self.assertEqual(len(finals), 1)
-        message, kind, engine = finals[0]
+        reply, kind, engine = finals[0]
         self.assertEqual((kind, engine), ("error", "human"))
-        self.assertIn("nothing was recorded", message)
+        self.assertIn("nothing was recorded", reply)
 
     def test_begin_pause_resume_and_end_report_the_recording(self):
         fake = FakeRecorder([{"kind": "click", "actor": "human"}, {"kind": "type", "actor": "human"}])
@@ -737,10 +737,10 @@ class RecordTask(unittest.TestCase):
         self.assertIsNone(record_task.status())
 
         self.assertEqual(len(finals), 1)
-        message, kind, engine = finals[0]
+        reply, kind, engine = finals[0]
         self.assertEqual((kind, engine), ("final", "human"))
-        self.assertIn("Recorded 2 steps", message)
-        self.assertIn(f"/replay {fake.session_id}", message)
+        self.assertIn("Recorded 2 steps", reply)
+        self.assertIn(f"/replay {fake.session_id}", reply)
 
     def test_note_is_added_at_this_moment_while_recording(self):
         # record_task.note()'s own gate is the same "has recording started"

@@ -133,8 +133,8 @@ def wait_for_ollama():
 #
 # The previous version of this prompt was 637 tokens and spent five
 # separate numbered rules (6, 7, 8, 14, 15) forbidding the same mistake -
-# asking a human for help instead of answering a question. It still made
-# it: "hello, whats your desktop name?" came back as a help request that
+# asking a human a query instead of answering a question. It still made
+# it: "hello, whats your desktop name?" came back as a query that
 # blocked the desktop. Repetition is not what makes a small model comply,
 # and on a CPU-only host every one of those tokens is re-read on every
 # step of every task. What actually fixed that case was giving the agent
@@ -220,7 +220,7 @@ def build_system_messages():
     The system half of every request: the output contract, who this
     desktop is, and anything in persistent worker memory.
 
-    Shared by perform_task and continue_after_help so both halves of a
+    Shared by perform_task and continue_after_query so both halves of a
     conversation are given the same standing context - and, just as
     importantly, so both send a byte-identical prefix. Ollama caches the
     evaluated prefix of a prompt, so a stable one is the difference

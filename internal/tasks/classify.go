@@ -25,11 +25,11 @@ const (
 	TypeDemonstration = "demonstration"
 )
 
-// RecordCommand starts a "/record <task>" message: the desktop records a
+// RecordCommand starts a "/record <task>" request: the desktop records a
 // person doing the task instead of handing it to its engine.
 const RecordCommand = "/record"
 
-// IsRecordCommand says whether a request is a "/record" message.
+// IsRecordCommand says whether a request opens with "/record".
 func IsRecordCommand(request string) bool {
 	text := strings.TrimSpace(request)
 	rest, ok := strings.CutPrefix(text, RecordCommand)
@@ -103,7 +103,7 @@ var statusLabels = map[string]string{
 	StatusWaiting:   "Waiting on you",
 	StatusDone:      "Done",
 	StatusError:     "Failed",
-	StatusHelp:      "Ended waiting",
+	StatusQuery:     "Ended waiting",
 	StatusAbandoned: "Stopped",
 }
 
@@ -129,7 +129,7 @@ const (
 	ReasonScreen          = "screen"
 	ReasonLoop            = "loop"
 	ReasonClarification   = "clarification"
-	ReasonOtherHelp       = "other_help"
+	ReasonOtherQuery      = "other_query"
 	ReasonFailed          = "failed"
 	ReasonStopped         = "stopped"
 	ReasonWrong           = "wrong"
@@ -146,7 +146,7 @@ var reasonLabels = map[string]string{
 	ReasonScreen:          "Could not find it on screen",
 	ReasonLoop:            "Got stuck repeating itself",
 	ReasonClarification:   "Asked what was meant",
-	ReasonOtherHelp:       "Asked for help (other)",
+	ReasonOtherQuery:      "Had an open query (other)",
 	ReasonFailed:          "Gave up with an error",
 	ReasonStopped:         "Desktop stopped mid-task",
 	ReasonWrong:           "Answer marked wrong",
@@ -183,13 +183,13 @@ var (
 )
 
 // approvalBoilerplate is the approval gate's fixed wording around every
-// request (computer/approval.py's request_message). "sent" and "reply" in it
+// request (computer/approval.py's request_text). "sent" and "reply" in it
 // say nothing about the action, and would file every on-screen approval under
 // sending a message.
 var approvalBoilerplate = regexp.MustCompile(`nothing was clicked or sent\.?|reply yes to let me do it[^.]*\.?`)
 
 // InterventionReason decides why an agent asked a human: kind is what the
-// agent reported ("approval" or "help"), text is its own words.
+// agent reported ("approval" or "query"), text is its own words.
 func InterventionReason(kind, text string) string {
 	lowered := approvalBoilerplate.ReplaceAllString(strings.ToLower(text), "")
 
@@ -197,8 +197,9 @@ func InterventionReason(kind, text string) string {
 		return ReasonBackend
 	}
 
-	// The Ollama loop's HELP doubles as its safety brake, so an approval can
-	// arrive reported as plain help; the words still say what it is.
+	// The Ollama loop's HELP marker doubles as its safety brake, so an
+	// approval can arrive reported as a plain query; the words still say
+	// what it is.
 	if kind == InterventionApproval || approvalIntentRe.MatchString(lowered) && (paymentRe.MatchString(lowered) || messageRe.MatchString(lowered)) {
 		switch {
 		case paymentRe.MatchString(lowered):
@@ -228,7 +229,7 @@ func InterventionReason(kind, text string) string {
 		return ReasonClarification
 	}
 
-	return ReasonOtherHelp
+	return ReasonOtherQuery
 }
 
 // ErrorReason decides why a task ended in an error.

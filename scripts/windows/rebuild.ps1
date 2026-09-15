@@ -4,7 +4,7 @@
 .DESCRIPTION
     The Windows twin of scripts/linux/rebuild.sh: no leftover desktop_*
     containers or volumes, and an EMPTY app database (flowera-data: task
-    history, chat transcripts, help notes, worker memory). Images are still
+    history, chat transcripts, query notes, worker memory). Images are still
     rebuilt (so a change to agent/ or a Dockerfile is picked up), but with
     Docker's normal build cache, not --no-cache - a rebuild should be
     thorough about clearing out data, not slow. This is the "reinstall"
@@ -96,7 +96,7 @@ Write-Host "========================================"
 Write-Host ""
 Write-Host "This will permanently delete:"
 Write-Host "  - every desktop_* container and volume"
-Write-Host "  - the flowera-data volume: ALL task history, chats, help notes and"
+Write-Host "  - the flowera-data volume: ALL task history, chats, query notes and"
 Write-Host "    worker memory - this cannot be undone"
 Write-Host ""
 Write-Host "Kept as-is: .env, and the flowera_ollama volume (your pulled models)."

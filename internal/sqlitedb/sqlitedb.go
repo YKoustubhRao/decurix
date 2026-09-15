@@ -3,7 +3,7 @@
 //
 // The driver is modernc.org/sqlite, a pure-Go translation of SQLite, so the
 // release builds stay CGO_ENABLED=0 static binaries for every target. Every
-// store that must survive a restart (conversation, helpnotes, memory,
+// store that must survive a restart (conversation, querynotes, memory,
 // stepimages, tasks) is handed the same *sql.DB and owns its own tables.
 package sqlitedb
 

@@ -36,7 +36,7 @@ func TestRecordingsRejectBadRequestsBeforeReachingADesktop(t *testing.T) {
 		{"params not an object", postForm(t, s.replayRecordingHandler, "/x", "id=box&session=demo-1&params=%5B1%5D"), http.StatusBadRequest},
 		{"bad param name", postForm(t, s.replayRecordingHandler, "/x", "id=box&session=demo-1&params=%7B%22..%2Fx%22%3A%22a%22%7D"), http.StatusBadRequest},
 		{"record with no task", postForm(t, s.recordTaskHandler, "/x", "id=box&task=++"), http.StatusBadRequest},
-		{"record too long", postForm(t, s.recordTaskHandler, "/x", "id=box&task="+strings.Repeat("x", maxMessageBytes)), http.StatusBadRequest},
+		{"record too long", postForm(t, s.recordTaskHandler, "/x", "id=box&task="+strings.Repeat("x", maxRequestBytes)), http.StatusBadRequest},
 		{"record by get", get(s.recordTaskHandler, "id=box&task=x"), http.StatusMethodNotAllowed},
 		{"demonstration status with no desktop", get(s.demonstrationHandler, ""), http.StatusBadRequest},
 		{"ticket status with no desktop", get(s.ticketStatusHandler, ""), http.StatusBadRequest},
@@ -85,7 +85,7 @@ func TestReplayIsRefusedWhileTheAgentIsBusy(t *testing.T) {
 	}
 }
 
-// The message a replay is recorded as names the recording and the step, and
+// The request a replay is recorded as names the recording and the step, and
 // never the values it was given.
 func TestReplayContentCarriesNoParameterValues(t *testing.T) {
 	if got := replayContent("demo-1", 1); got != "/replay demo-1" {
@@ -95,11 +95,11 @@ func TestReplayContentCarriesNoParameterValues(t *testing.T) {
 		t.Fatalf("replayContent = %q", got)
 	}
 
-	params, message := parseReplayParams(`{"password":"hunter2","customer_name":"Acme"}`)
-	if message != "" || params["password"] != "hunter2" {
-		t.Fatalf("parseReplayParams: %v %q", params, message)
+	params, errText := parseReplayParams(`{"password":"hunter2","customer_name":"Acme"}`)
+	if errText != "" || params["password"] != "hunter2" {
+		t.Fatalf("parseReplayParams: %v %q", params, errText)
 	}
-	if _, message := parseReplayParams(`{"a":"` + strings.Repeat("x", maxReplayParamBytes+1) + `"}`); message == "" {
+	if _, errText := parseReplayParams(`{"a":"` + strings.Repeat("x", maxReplayParamBytes+1) + `"}`); errText == "" {
 		t.Fatal("an oversized value was accepted")
 	}
 }

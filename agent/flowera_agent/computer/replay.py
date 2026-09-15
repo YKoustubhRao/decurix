@@ -531,7 +531,7 @@ def _await_checks(checks, observation, values):
 def run(program, params=None, start=1, report=None):
     """
     Run a program from step `start` and say how it ended: {"outcome",
-    "message", "step", "resume_from", "reason", "evidence", "done",
+    "text", "step", "resume_from", "reason", "evidence", "done",
     "verified", "unverified", "total", "missing", "session"}.
     """
 
@@ -560,7 +560,7 @@ def run(program, params=None, start=1, report=None):
             reason=reason, resume_from=resume_from, evidence=evidence,
             missing=[p["name"] for p in absent], session=program.get("session"),
         )
-        result["message"] = _message(program, result, step)
+        result["text"] = _summary_text(program, result, step)
         return result
 
     if not steps:
@@ -593,10 +593,10 @@ def run(program, params=None, start=1, report=None):
             audit.origin = None
 
         if result["status"] == "needs_approval":
-            message = result["message"]
-            if message.startswith(approval.MARKER):
-                message = message[len(approval.MARKER):].strip()
-            return finish(NEEDS_APPROVAL, step, reason=message, resume_from=step["n"])
+            text = result["text"]
+            if text.startswith(approval.MARKER):
+                text = text[len(approval.MARKER):].strip()
+            return finish(NEEDS_APPROVAL, step, reason=text, resume_from=step["n"])
 
         counts["done"] += 1
 
@@ -618,7 +618,7 @@ def run(program, params=None, start=1, report=None):
     return finish(VERIFIED if counts["unverified"] == 0 else COMPLETED_UNVERIFIED)
 
 
-def _message(program, result, step):
+def _summary_text(program, result, step):
     name = el._quote(program.get("title") or program.get("session") or "the recording", 80)
     total = result["total"]
     where = f"step {step['n']} of {total} ({step['summary']})" if step else "the first step"

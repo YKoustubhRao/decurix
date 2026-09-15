@@ -16,7 +16,7 @@ import (
 	"github.com/YKoustubhRao/flowera/internal/claudeauth"
 	"github.com/YKoustubhRao/flowera/internal/conversation"
 	"github.com/YKoustubhRao/flowera/internal/desktop"
-	"github.com/YKoustubhRao/flowera/internal/helpnotes"
+	"github.com/YKoustubhRao/flowera/internal/querynotes"
 	"github.com/YKoustubhRao/flowera/internal/httpapi"
 	"github.com/YKoustubhRao/flowera/internal/memory"
 	"github.com/YKoustubhRao/flowera/internal/ollama"
@@ -151,7 +151,7 @@ func main() {
 
 	server := httpapi.NewServer(
 		desktops,
-		must(helpnotes.NewStore(db)),
+		must(querynotes.NewStore(db)),
 		must(memory.NewStore(db)),
 		must(conversation.NewStore(db)),
 		must(stepimages.NewStore(db, stepImagesMaxBytes())),

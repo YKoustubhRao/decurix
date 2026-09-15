@@ -46,7 +46,7 @@ func openStoreAt(t *testing.T, c *clock, path string) *Store {
 	return store
 }
 
-// send is what httpapi.sendMessageHandler does: plan, deliver, commit.
+// send is what httpapi.sendRequestHandler does: plan, deliver, commit.
 func send(t *testing.T, s *Store, w Worker, text string) Route {
 	t.Helper()
 
@@ -105,7 +105,7 @@ func TestAWholeTaskIsRecorded(t *testing.T) {
 	c.advance(40 * time.Second)
 
 	if got := outcome(t, s, "box", route.TaskID, Outcome{
-		Kind: OutcomeDone, Message: "6.6.87.2", Engine: "ollama", Model: "qwen2.5-coder:3b",
+		Kind: OutcomeDone, Reply: "6.6.87.2", Engine: "ollama", Model: "qwen2.5-coder:3b",
 		CostUSD: ptrFloat(0), InputTokens: ptrInt(900), OutputTokens: ptrInt(40),
 	}); got != route.TaskID {
 		t.Fatalf("outcome attributed to %q, want %q", got, route.TaskID)
@@ -119,7 +119,7 @@ func TestAWholeTaskIsRecorded(t *testing.T) {
 
 	execution := detail.Executions[0]
 
-	if execution.FinalMessage != "6.6.87.2" || len(execution.Steps) != 1 || *execution.InputTokens != 900 {
+	if execution.FinalReply != "6.6.87.2" || len(execution.Steps) != 1 || *execution.InputTokens != 900 {
 		t.Fatalf("execution = %+v", execution)
 	}
 
@@ -136,7 +136,7 @@ func TestReplyResumesTheInterventionItAnswers(t *testing.T) {
 	box := worker("box", "claude")
 
 	route := send(t, s, box, "pay the 400 dollar invoice")
-	outcome(t, s, "box", route.TaskID, Outcome{Kind: OutcomeApproval, Message: "Approval needed before I click Pay now: $400 to ACME."})
+	outcome(t, s, "box", route.TaskID, Outcome{Kind: OutcomeApproval, Reply: "Approval needed before I click Pay now: $400 to ACME."})
 
 	c.advance(3 * time.Minute)
 
@@ -150,7 +150,7 @@ func TestReplyResumesTheInterventionItAnswers(t *testing.T) {
 		t.Fatalf("status after the reply = %s, want running", got)
 	}
 
-	outcome(t, s, "box", route.TaskID, Outcome{Kind: OutcomeDone, Message: "Paid."})
+	outcome(t, s, "box", route.TaskID, Outcome{Kind: OutcomeDone, Reply: "Paid."})
 
 	detail := get(t, s, route.TaskID)
 	interventions := detail.Executions[0].Interventions
@@ -168,7 +168,7 @@ func TestReplyResumesTheInterventionItAnswers(t *testing.T) {
 	}
 }
 
-// The failure note says "send the message again"; doing so is another
+// The failure note says "send the request again"; doing so is another
 // attempt at the same task, not a second task.
 func TestResendingAfterAnErrorIsARetry(t *testing.T) {
 	c := newClock()
@@ -176,7 +176,7 @@ func TestResendingAfterAnErrorIsARetry(t *testing.T) {
 	box := worker("box", "thebot")
 
 	first := send(t, s, box, "hello, whats your name?")
-	outcome(t, s, "box", first.TaskID, Outcome{Kind: OutcomeError, Message: "did not finish answering in time"})
+	outcome(t, s, "box", first.TaskID, Outcome{Kind: OutcomeError, Reply: "did not finish answering in time"})
 
 	retry := send(t, s, box, "Hello,  whats your name?")
 
@@ -184,7 +184,7 @@ func TestResendingAfterAnErrorIsARetry(t *testing.T) {
 		t.Fatalf("resend routed as %+v", retry)
 	}
 
-	outcome(t, s, "box", first.TaskID, Outcome{Kind: OutcomeDone, Message: "I'm box."})
+	outcome(t, s, "box", first.TaskID, Outcome{Kind: OutcomeDone, Reply: "I'm box."})
 
 	detail := get(t, s, first.TaskID)
 
@@ -212,7 +212,7 @@ func TestReportsWithoutATaskIDFallBackToTheLiveTask(t *testing.T) {
 		t.Fatal("step without a task id was dropped")
 	}
 
-	if got := outcome(t, s, "box", "", Outcome{Kind: OutcomeDone, Message: "Tidy."}); got != route.TaskID {
+	if got := outcome(t, s, "box", "", Outcome{Kind: OutcomeDone, Reply: "Tidy."}); got != route.TaskID {
 		t.Fatalf("outcome attributed to %q, want %q", got, route.TaskID)
 	}
 
@@ -233,9 +233,9 @@ func TestReportsWithoutATaskIDFallBackToTheLiveTask(t *testing.T) {
 	}
 }
 
-// A desktop runs one task at a time and holds the next message; the held one
+// A desktop runs one task at a time and holds the next request; the held one
 // starts, from its own start time, when the first ends.
-func TestAMessageSentWhileBusyIsQueued(t *testing.T) {
+func TestARequestSentWhileBusyIsQueued(t *testing.T) {
 	c := newClock()
 	s := openStore(t, c)
 	box := worker("box", "ollama")
@@ -249,10 +249,10 @@ func TestAMessageSentWhileBusyIsQueued(t *testing.T) {
 	}
 
 	c.advance(30 * time.Second)
-	outcome(t, s, "box", first.TaskID, Outcome{Kind: OutcomeDone, Message: "241"})
+	outcome(t, s, "box", first.TaskID, Outcome{Kind: OutcomeDone, Reply: "241"})
 
 	c.advance(10 * time.Second)
-	outcome(t, s, "box", second.TaskID, Outcome{Kind: OutcomeDone, Message: "box"})
+	outcome(t, s, "box", second.TaskID, Outcome{Kind: OutcomeDone, Reply: "box"})
 
 	execution := get(t, s, second.TaskID).Executions[0]
 
@@ -261,9 +261,9 @@ func TestAMessageSentWhileBusyIsQueued(t *testing.T) {
 	}
 }
 
-// What the desktop's command watcher really does with a message held behind a
+// What the desktop's command watcher really does with a request held behind a
 // task that then pauses: hands it to the paused task as the reply.
-func TestAHeldMessageBecomesTheReplyWhenTheTaskPauses(t *testing.T) {
+func TestAHeldRequestBecomesTheReplyWhenTheTaskPauses(t *testing.T) {
 	c := newClock()
 	s := openStore(t, c)
 	box := worker("box", "ollama")
@@ -271,10 +271,10 @@ func TestAHeldMessageBecomesTheReplyWhenTheTaskPauses(t *testing.T) {
 	first := send(t, s, box, "email my landlord")
 	held := send(t, s, box, "use the gmail account")
 
-	outcome(t, s, "box", first.TaskID, Outcome{Kind: OutcomeHelp, Message: "Should I send this email to the landlord?"})
+	outcome(t, s, "box", first.TaskID, Outcome{Kind: OutcomeQuery, Reply: "Should I send this email to the landlord?"})
 
 	if _, err := s.Get(held.TaskID); err != ErrNotFound {
-		t.Fatalf("the held message is still its own task (err=%v)", err)
+		t.Fatalf("the held request is still its own task (err=%v)", err)
 	}
 
 	detail := get(t, s, first.TaskID)
@@ -293,7 +293,7 @@ func TestStoppingADesktopClosesItsLiveTasks(t *testing.T) {
 
 	other := worker("other", "claude")
 	waiting := send(t, s, other, "buy a domain")
-	outcome(t, s, "other", waiting.TaskID, Outcome{Kind: OutcomeApproval, Message: "Approval needed before I buy example.com for $12"})
+	outcome(t, s, "other", waiting.TaskID, Outcome{Kind: OutcomeApproval, Reply: "Approval needed before I buy example.com for $12"})
 
 	if err := s.CloseOpen("box", "The desktop was restarted."); err != nil {
 		t.Fatal(err)
@@ -306,13 +306,13 @@ func TestStoppingADesktopClosesItsLiveTasks(t *testing.T) {
 		t.Fatalf("running task is %s, want abandoned", got)
 	}
 
-	if got := get(t, s, waiting.TaskID).Status; got != StatusHelp {
-		t.Fatalf("waiting task is %s, want help", got)
+	if got := get(t, s, waiting.TaskID).Status; got != StatusQuery {
+		t.Fatalf("waiting task is %s, want query", got)
 	}
 
-	// The paused agent is gone, so the next message starts over.
+	// The paused agent is gone, so the next request starts over.
 	if route := send(t, s, other, "yes"); route.Kind != RouteNew {
-		t.Fatalf("message after a stop routed as %s", route.Kind)
+		t.Fatalf("request after a stop routed as %s", route.Kind)
 	}
 }
 
@@ -325,7 +325,7 @@ func TestAnActionStepMakesItOnScreenWork(t *testing.T) {
 	payment := send(t, s, box, "pay invoice INV-1042")
 
 	s.AddStep("box", route.TaskID, Step{Text: "click link Add user", Action: &Action{Kind: "click", Outcome: "done", Before: "/b", After: "/a"}})
-	outcome(t, s, "box", route.TaskID, Outcome{Kind: OutcomeDone, Message: "Added."})
+	outcome(t, s, "box", route.TaskID, Outcome{Kind: OutcomeDone, Reply: "Added."})
 	s.AddStep("box", payment.TaskID, Step{Text: "click button Pay now", Action: &Action{Kind: "click", Outcome: "needs_approval"}})
 
 	if got := get(t, s, route.TaskID); got.Type != TypeScreen || got.Executions[0].Steps[0].Action.After != "/a" {
@@ -343,7 +343,7 @@ func TestVerdict(t *testing.T) {
 	box := worker("box", "ollama")
 
 	route := send(t, s, box, "how much disk is free?")
-	outcome(t, s, "box", route.TaskID, Outcome{Kind: OutcomeDone, Message: "1.6T available"})
+	outcome(t, s, "box", route.TaskID, Outcome{Kind: OutcomeDone, Reply: "1.6T available"})
 
 	task, err := s.SetVerdict(route.TaskID, VerdictWrong, "  df says 835G  ")
 	if err != nil || task.Verdict != VerdictWrong || task.VerdictNote != "df says 835G" {
@@ -377,7 +377,7 @@ func TestRecordsSurviveRestart(t *testing.T) {
 
 	route := send(t, s, box, "send the weekly newsletter")
 	s.AddStep("box", route.TaskID, Step{Text: "click Send", Action: &Action{Kind: "click", Outcome: "needs_approval", Before: "/b"}})
-	outcome(t, s, "box", route.TaskID, Outcome{Kind: OutcomeApproval, Message: "Approval needed before I click Send newsletter", CostUSD: ptrFloat(0.12)})
+	outcome(t, s, "box", route.TaskID, Outcome{Kind: OutcomeApproval, Reply: "Approval needed before I click Send newsletter", CostUSD: ptrFloat(0.12)})
 
 	s.db.Close()
 
@@ -387,7 +387,7 @@ func TestRecordsSurviveRestart(t *testing.T) {
 		t.Fatalf("after a restart the reply routed as %+v", reply)
 	}
 
-	outcome(t, reopened, "box", route.TaskID, Outcome{Kind: OutcomeDone, Message: "Sent.", CostUSD: ptrFloat(0.31)})
+	outcome(t, reopened, "box", route.TaskID, Outcome{Kind: OutcomeDone, Reply: "Sent.", CostUSD: ptrFloat(0.31)})
 	reopened.SetVerdict(route.TaskID, VerdictCorrect, "")
 
 	detail := get(t, reopened, route.TaskID)
@@ -410,7 +410,7 @@ func TestReportAnswersWhichEngineAndWhy(t *testing.T) {
 
 	// Last month: excluded from this week.
 	old := send(t, s, claude, "what is the hostname?")
-	outcome(t, s, "claude-box", old.TaskID, Outcome{Kind: OutcomeError, Message: "claude exited with code 1"})
+	outcome(t, s, "claude-box", old.TaskID, Outcome{Kind: OutcomeError, Reply: "claude exited with code 1"})
 
 	c.advance(30 * 24 * time.Hour)
 	weekStart := c.now().Add(-time.Minute)
@@ -419,29 +419,29 @@ func TestReportAnswersWhichEngineAndWhy(t *testing.T) {
 	for _, text := range []string{"what is the kernel version?", "list files in /work"} {
 		route := send(t, s, claude, text)
 		c.advance(20 * time.Second)
-		outcome(t, s, "claude-box", route.TaskID, Outcome{Kind: OutcomeDone, Message: "ok", CostUSD: ptrFloat(0.05)})
+		outcome(t, s, "claude-box", route.TaskID, Outcome{Kind: OutcomeDone, Reply: "ok", CostUSD: ptrFloat(0.05)})
 	}
 
 	paid := send(t, s, claude, "pay invoice INV-7")
-	outcome(t, s, "claude-box", paid.TaskID, Outcome{Kind: OutcomeApproval, Message: "Approval needed before I click Pay now: $40"})
+	outcome(t, s, "claude-box", paid.TaskID, Outcome{Kind: OutcomeApproval, Reply: "Approval needed before I click Pay now: $40"})
 	send(t, s, claude, "yes")
-	outcome(t, s, "claude-box", paid.TaskID, Outcome{Kind: OutcomeDone, Message: "Paid"})
+	outcome(t, s, "claude-box", paid.TaskID, Outcome{Kind: OutcomeDone, Reply: "Paid"})
 
 	// Ollama: one done but wrong, one stuck, one timed out, one right.
 	wrong := send(t, s, ollama, "how much disk is free?")
-	outcome(t, s, "ollama-box", wrong.TaskID, Outcome{Kind: OutcomeDone, Message: "1.6T"})
+	outcome(t, s, "ollama-box", wrong.TaskID, Outcome{Kind: OutcomeDone, Reply: "1.6T"})
 	s.SetVerdict(wrong.TaskID, VerdictWrong, "invented numbers")
 
 	stuck := send(t, s, ollama, "sign in to the admin panel")
-	outcome(t, s, "ollama-box", stuck.TaskID, Outcome{Kind: OutcomeHelp, Message: "I need the admin password to sign in."})
+	outcome(t, s, "ollama-box", stuck.TaskID, Outcome{Kind: OutcomeQuery, Reply: "I need the admin password to sign in."})
 	send(t, s, ollama, "it is in ~/secrets.txt")
-	outcome(t, s, "ollama-box", stuck.TaskID, Outcome{Kind: OutcomeDone, Message: "Signed in."})
+	outcome(t, s, "ollama-box", stuck.TaskID, Outcome{Kind: OutcomeDone, Reply: "Signed in."})
 
 	slow := send(t, s, ollama, "hello")
-	outcome(t, s, "ollama-box", slow.TaskID, Outcome{Kind: OutcomeError, Message: "Ollama accepted the request but did not finish answering in time. context deadline exceeded"})
+	outcome(t, s, "ollama-box", slow.TaskID, Outcome{Kind: OutcomeError, Reply: "Ollama accepted the request but did not finish answering in time. context deadline exceeded"})
 
 	right := send(t, s, ollama, "uname -r")
-	outcome(t, s, "ollama-box", right.TaskID, Outcome{Kind: OutcomeDone, Message: "6.6.87.2"})
+	outcome(t, s, "ollama-box", right.TaskID, Outcome{Kind: OutcomeDone, Reply: "6.6.87.2"})
 	s.SetVerdict(right.TaskID, VerdictCorrect, "")
 
 	// A person recording themselves doing a task is not Ollama being autonomous,
@@ -450,7 +450,7 @@ func TestReportAnswersWhichEngineAndWhy(t *testing.T) {
 	if _, err := s.AddStep("ollama-box", demo.TaskID, Step{Text: "click Save", Action: &Action{Kind: "click"}}); err != nil {
 		t.Fatal(err)
 	}
-	outcome(t, s, "ollama-box", demo.TaskID, Outcome{Kind: OutcomeDone, Message: "Recorded 1 step", Engine: "human"})
+	outcome(t, s, "ollama-box", demo.TaskID, Outcome{Kind: OutcomeDone, Reply: "Recorded 1 step", Engine: "human"})
 
 	if task, err := s.Get(demo.TaskID); err != nil || task.Type != TypeDemonstration {
 		t.Fatalf("recorded task type = %q, %v", task.Type, err)

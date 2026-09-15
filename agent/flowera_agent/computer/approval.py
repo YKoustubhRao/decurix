@@ -26,7 +26,7 @@ from flowera_agent.computer import privacy
 #   act() on a Send/Pay-like control
 #     -> check() finds no grant: records a *pending* approval, the action
 #        does not happen, and the engine is told NEEDS_APPROVAL
-#     -> the engine's harness turns that into ask_for_help (the chat's
+#     -> the engine's harness turns that into ask_for_query (the chat's
 #        "Needs your approval" card)
 #   the human replies
 #     -> watchers.command_watcher calls resolve_reply() before handing the
@@ -300,7 +300,7 @@ def blocked_command(exit_code, output):
     return None
 
 
-def request_message(request):
+def request_text(request):
     """The words an engine and a human see for a pending approval."""
 
     return (

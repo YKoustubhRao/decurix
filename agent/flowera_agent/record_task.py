@@ -5,7 +5,7 @@ from flowera_agent import progress, state, usage
 from flowera_agent.computer import demonstration, recording
 from flowera_agent.computer.errors import ComputerError
 from flowera_agent.logging_utils import log
-from flowera_agent.messaging import write_final_message
+from flowera_agent.messaging import write_final_reply
 
 
 # ============================================================
@@ -16,7 +16,7 @@ from flowera_agent.messaging import write_final_message
 # engine never sees it: the command watcher dispatches it here instead of the
 # harness, the way it dispatches "/replay" to replay_task.py. So it queues
 # behind a running task, carries its task ID, and while it is open every
-# other message waits behind it, just as it would behind an agent's task.
+# other request waits behind it, just as it would behind an agent's task.
 #
 # Opening a ticket does not itself start capturing - the toolbar's Record
 # does that (begin()), so a person can open a ticket, walk over to the
@@ -53,7 +53,7 @@ _ended = threading.Event()
 
 
 def parse(content):
-    """The task a "/record" message names ("" when it names none), or None for any other message."""
+    """The task a "/record" request names ("" when it names none), or None for any other request."""
 
     match = COMMAND_RE.match((content or "").strip())
     if not match:
@@ -166,13 +166,13 @@ def end():
 
 
 def perform(content, task_file=None):
-    """Open a ticket for a "/record" message's task, until end() finishes it."""
+    """Open a ticket for a "/record" request's task, until end() finishes it."""
 
     global _ticket
 
     state.current_task = content
     state.current_task_file = task_file
-    state.waiting_for_help = False
+    state.waiting_for_query = False
 
     # Known, not unknown: nobody read a prompt and nothing was spent.
     usage.add(input_tokens=0, output_tokens=0, cost_usd=0)
@@ -215,7 +215,7 @@ def _report(ticket):
     title = ticket["title"]
 
     if not session_id:
-        write_final_message(f"Ended the ticket for \"{title}\" - nothing was recorded.", kind="error", engine=ENGINE)
+        write_final_reply(f"Ended the ticket for \"{title}\" - nothing was recorded.", kind="error", engine=ENGINE)
         return
 
     try:
@@ -230,14 +230,14 @@ def _report(ticket):
     if meta.get("status") != "complete":
         reason = meta.get("reason") or "the recorder stopped before it finished"
         kept = f" The {steps} recorded before that are kept as {session_id}." if count else ""
-        write_final_message(f"The recording of \"{title}\" did not finish: {reason}.{kept}", kind="error", engine=ENGINE)
+        write_final_reply(f"The recording of \"{title}\" did not finish: {reason}.{kept}", kind="error", engine=ENGINE)
         return
 
     if not count:
-        write_final_message(
+        write_final_reply(
             f"The recording of \"{title}\" ended with nothing in it - no action on the screen was recorded.",
             kind="error", engine=ENGINE,
         )
         return
 
-    write_final_message(f"Recorded {steps} of \"{title}\" as {session_id}. {replay}", kind="final", engine=ENGINE)
+    write_final_reply(f"Recorded {steps} of \"{title}\" as {session_id}. {replay}", kind="final", engine=ENGINE)

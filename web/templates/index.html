@@ -388,8 +388,12 @@
 
 /* ---------- claude login dialog ---------- */
 
+.claude-login-url-row{display:flex;align-items:center;gap:8px}
+
 .claude-login-url{
   display:block;
+  flex:1;
+  min-width:0;
   padding:9px 11px;
   border:1px solid var(--line);
   border-radius:var(--r-md);
@@ -400,10 +404,11 @@
   text-decoration:none
 }
 .claude-login-url:hover{border-color:var(--line-2)}
+.copy-btn:disabled{opacity:.4;cursor:not-allowed}
 .claude-login-error{display:none;font-size:12.5px;color:var(--danger)}
 .claude-login-error.on{display:block}
 
-/* ---------- help rail ---------- */
+/* ---------- query rail ---------- */
 
 .rail{
   position:fixed;
@@ -468,7 +473,7 @@
 </style>
 </head>
 
-<body data-tunnel="{{.TunnelURL}}" data-help-poll="own">
+<body data-tunnel="{{.TunnelURL}}" data-query-poll="own">
 
 {{template "sprite"}}
 
@@ -674,7 +679,7 @@
 </main>
 
 
-<aside class="rail" id="helpRail" aria-live="polite">
+<aside class="rail" id="queryRail" aria-live="polite">
   <div class="rail-head">
     <svg width="15" height="15" style="color:var(--accent)"><use href="#i-inbox"/></svg>
     <span class="eyebrow">Needs you · <span id="railCount">0</span></span>
@@ -772,7 +777,12 @@
     <div class="dialog-body create-grid">
       <div class="field">
         <span class="field-label">1. Open the sign-in page</span>
-        <a class="claude-login-url mono" id="claudeLoginUrl" href="#" target="_blank" rel="noopener">Getting a sign-in link…</a>
+        <div class="claude-login-url-row">
+          <a class="claude-login-url mono" id="claudeLoginUrl" href="#" target="_blank" rel="noopener">Getting a sign-in link…</a>
+          <button type="button" class="icon-btn copy-btn" id="claudeLoginCopyBtn" data-copy="" disabled aria-label="Copy sign-in link">
+            <svg width="13" height="13"><use href="#i-copy"/></svg>
+          </button>
+        </div>
         <div class="hint">Opens in a new tab. Sign in, then copy the code it gives you back.</div>
       </div>
 
@@ -1008,6 +1018,7 @@
   var claudeLoginDialog = document.getElementById("claudeLoginDialog");
   var claudeLoginForm = document.getElementById("claudeLoginForm");
   var claudeLoginUrl = document.getElementById("claudeLoginUrl");
+  var claudeLoginCopyBtn = document.getElementById("claudeLoginCopyBtn");
   var claudeLoginCode = document.getElementById("claudeLoginCode");
   var claudeLoginError = document.getElementById("claudeLoginError");
   var claudeLoginSubmit = document.getElementById("claudeLoginSubmit");
@@ -1044,6 +1055,8 @@
     claudeLoginId = null;
     claudeLoginUrl.textContent = "Getting a sign-in link…";
     claudeLoginUrl.href = "#";
+    claudeLoginCopyBtn.disabled = true;
+    claudeLoginCopyBtn.dataset.copy = "";
     claudeLoginCode.value = "";
     showClaudeLoginError("");
     claudeLoginDialog.showModal();
@@ -1053,6 +1066,8 @@
       claudeLoginId = result.loginId;
       claudeLoginUrl.textContent = result.url;
       claudeLoginUrl.href = result.url;
+      claudeLoginCopyBtn.disabled = false;
+      claudeLoginCopyBtn.dataset.copy = result.url;
       claudeLoginCode.focus();
     }catch(e){
       showClaudeLoginError(e.message);
@@ -1320,12 +1335,12 @@
     });
   });
 
-  /* ---------------- help requests rail ----------------
+  /* ---------------- query rail ----------------
      Rendered by diffing against what is already on screen: a blind
      innerHTML rewrite every poll would restart the animation and drop
      the user's scroll position mid-read. */
 
-  var rail = document.getElementById("helpRail");
+  var rail = document.getElementById("queryRail");
   var railList = document.getElementById("railList");
   var railCount = document.getElementById("railCount");
   var shown = new Map();
@@ -1404,12 +1419,12 @@
 
     railCount.textContent = String(notes.length);
     rail.classList.toggle("on", notes.length > 0);
-    Flowera.setHelpBadge(notes.length);
+    Flowera.setQueryBadge(notes.length);
   }
 
   async function loadNotes(){
     try{
-      var response = await fetch("/api/helpnotes", {cache: "no-store"});
+      var response = await fetch("/api/querynotes", {cache: "no-store"});
       if(!response.ok){ return; }
 
       var notes = await response.json();
@@ -1419,7 +1434,7 @@
 
   async function resolveNote(id){
     try{
-      await post("/api/helpnotes/close", {id: id});
+      await post("/api/querynotes/close", {id: id});
       loadNotes();
     }catch(e){
       toast(e.message, "error");

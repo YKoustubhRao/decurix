@@ -73,7 +73,7 @@ type errStub struct{}
 func (errStub) Error() string { return "simulated LLM failure" }
 
 // TestGeneralRunThreadsSessionHistory is the direct regression test for
-// the real bug found live: a second message in the same session had zero
+// the real bug found live: a second request in the same session had zero
 // awareness of the first one. This asserts the actual messages sent to
 // the LLM include the prior turns, in order, ending with the new one -
 // not just that SOME response comes back.

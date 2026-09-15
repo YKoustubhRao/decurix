@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="color-scheme" content="light dark">
-<title>Messages · Flowera</title>
+<title>Requests · Flowera</title>
 
 {{template "theme"}}
 
@@ -82,14 +82,14 @@
 <div id="progress"></div>
 <div id="toasts"></div>
 
-{{template "topbar" "messages"}}
+{{template "topbar" "requests"}}
 
 <main class="wrap wrap-narrow">
 
   <div class="page-head">
     <div>
       <div class="eyebrow">Direct</div>
-      <h1>Send a message</h1>
+      <h1>Send a request</h1>
       <p class="page-sub">Drops a task file into a desktop's inbox. Its agent picks it up on the next poll.</p>
     </div>
   </div>
@@ -112,7 +112,7 @@
       </div>
 
       <div class="field">
-        <label for="content">Message</label>
+        <label for="content">Request</label>
         <div class="msg-box">
           <textarea class="textarea" id="content" name="content" placeholder="Describe the task…" required></textarea>
           <span class="counter" id="counter">0</span>
@@ -133,7 +133,7 @@
 {{else}}
   <div class="empty">
     <div class="empty-mark"><svg width="19" height="19"><use href="#i-monitor"/></svg></div>
-    <h2>No desktops to message</h2>
+    <h2>No desktops to send a request to</h2>
     <p>Create a desktop first, then send it work from here.</p>
     <a class="btn btn-primary" href="/" style="margin-top:13px">
       <svg width="15" height="15"><use href="#i-plus"/></svg>
@@ -196,7 +196,7 @@
 
     if(!text){
       content.focus();
-      return toast("Write a message first.", "error");
+      return toast("Write a request first.", "error");
     }
 
     sendButton.disabled = true;

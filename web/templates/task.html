@@ -23,7 +23,7 @@
   background:var(--idle-soft);color:var(--text-2)
 }
 .tstatus.done{background:var(--live-soft);color:var(--live)}
-.tstatus.waiting,.tstatus.help{background:var(--accent-soft);color:var(--accent)}
+.tstatus.waiting,.tstatus.query{background:var(--accent-soft);color:var(--accent)}
 .tstatus.error,.tstatus.abandoned{background:var(--danger-soft);color:var(--danger)}
 
 /* ---------- verdict ---------- */
@@ -68,10 +68,10 @@
 .shot:hover img{border-color:var(--accent)}
 
 .intervention{border:1px solid var(--accent);border-radius:var(--r-lg);padding:11px 13px;background:var(--surface);box-shadow:0 0 0 3px var(--accent-soft)}
-.intervention.is-help{border-color:var(--line-2);box-shadow:none}
+.intervention.is-query{border-color:var(--line-2);box-shadow:none}
 .intervention-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px}
 .intervention-kind{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--accent)}
-.intervention.is-help .intervention-kind{color:var(--text-2)}
+.intervention.is-query .intervention-kind{color:var(--text-2)}
 .intervention p{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}
 .reply{margin-top:9px;padding-top:9px;border-top:1px solid var(--line);font-size:13px}
 .reply .eyebrow{margin-bottom:3px}
@@ -155,10 +155,10 @@
       </div>
     </div>
 
-    {{if .FinalMessage}}
+    {{if .FinalReply}}
     <div class="final{{if or (eq .Status "error") (eq .Status "abandoned")}} is-error{{end}}">
       <div class="eyebrow">{{if eq .Status "done"}}Answer{{else if eq .Status "error"}}Failed{{else}}Ended{{end}}</div>
-      <p>{{.FinalMessage}}</p>
+      <p>{{.FinalReply}}</p>
     </div>
     {{end}}
 
@@ -192,9 +192,9 @@
         {{end}}
 
         {{with .Intervention}}
-        <div class="intervention{{if not (isApproval .Reason)}} is-help{{end}}">
+        <div class="intervention{{if not (isApproval .Reason)}} is-query{{end}}">
           <div class="intervention-head">
-            <span class="intervention-kind">{{if isApproval .Reason}}Asked for approval{{else}}Asked for help{{end}}</span>
+            <span class="intervention-kind">{{if isApproval .Reason}}Asked for approval{{else}}Had a query{{end}}</span>
             <span class="chip">{{reasonLabel .Reason}}</span>
           </div>
           <p>{{.Request}}</p>

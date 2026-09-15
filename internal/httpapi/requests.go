@@ -12,12 +12,12 @@ import (
 	"github.com/YKoustubhRao/flowera/internal/webui"
 )
 
-// maxMessageBytes is the longest message a human can send a desktop.
-const maxMessageBytes = 8192
+// maxRequestBytes is the longest request a human can send a desktop.
+const maxRequestBytes = 8192
 
-// messagesDashboardHandler renders the messages dashboard page for sending messages to desktops.
-func (s *Server) messagesDashboardHandler(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/messages" {
+// requestsDashboardHandler renders the requests dashboard page for sending requests to desktops.
+func (s *Server) requestsDashboardHandler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/requests" {
 		http.NotFound(w, r)
 		return
 	}
@@ -32,13 +32,13 @@ func (s *Server) messagesDashboardHandler(w http.ResponseWriter, r *http.Request
 		Desktops: desktops,
 	}
 
-	if err := s.Web.RenderMessages(w, data); err != nil {
+	if err := s.Web.RenderRequests(w, data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
 
-// sendMessageHandler validates and forwards a message-send request to a specific desktop.
-func (s *Server) sendMessageHandler(w http.ResponseWriter, r *http.Request) {
+// sendRequestHandler validates and forwards a request to a specific desktop.
+func (s *Server) sendRequestHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
@@ -53,25 +53,25 @@ func (s *Server) sendMessageHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if content == "" {
-		http.Error(w, "empty message", http.StatusBadRequest)
+		http.Error(w, "empty request", http.StatusBadRequest)
 		return
 	}
 
-	if len(content) > maxMessageBytes {
-		http.Error(w, "message too long", http.StatusBadRequest)
+	if len(content) > maxRequestBytes {
+		http.Error(w, "request too long", http.StatusBadRequest)
 		return
 	}
 
 	id := desktop.SanitizeID(desktopID)
-	route := s.routeMessage(id, content)
+	route := s.routeRequest(id, content)
 
-	if err := s.Desktops.SendMessage(
+	if err := s.Desktops.SendRequest(
 		r.Context(),
 		desktopID,
 		content,
 		route.TaskID,
 	); err != nil {
-		sendMessageError(w, err)
+		sendRequestError(w, err)
 		return
 	}
 
@@ -83,36 +83,36 @@ func (s *Server) sendMessageHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// routeMessage decides which task record a human message belongs to before it
-// is sent, because the desktop is told the task ID along with the message. A
-// records failure never stops a message: it is sent as a new task regardless.
-func (s *Server) routeMessage(desktopID, content string) tasks.Route {
+// routeRequest decides which task record a human request belongs to before it
+// is sent, because the desktop is told the task ID along with the request. A
+// records failure never stops a request: it is sent as a new task regardless.
+func (s *Server) routeRequest(desktopID, content string) tasks.Route {
 	route, err := s.Tasks.Plan(desktopID, content)
 	if err != nil {
-		log.Printf("sendMessage: %v", err)
+		log.Printf("sendRequest: %v", err)
 		return tasks.NewRoute()
 	}
 
 	return route
 }
 
-// recordDelivered records a message the desktop has accepted, in the task
+// recordDelivered records a request the desktop has accepted, in the task
 // records and in the chat, and returns the route it was recorded under.
 //
 // Recorded only once the desktop has actually accepted it, so the chat never
-// shows a message that was never delivered and no task exists for one. Every
-// human-to-desktop path routes through here — the chat page, the messages
-// page, and a reply to a help request — so all three show up in the
-// transcript and the records alike.
+// shows a request that was never delivered and no task exists for one. Every
+// human-to-desktop path routes through here — the chat page, the requests
+// page, and a reply to a query — so all three show up in the transcript and
+// the records alike.
 func (s *Server) recordDelivered(ctx context.Context, desktopID, content string, route tasks.Route) tasks.Route {
 	committed, err := s.Tasks.Commit(route, s.workerFor(ctx, desktopID), content)
 	if err != nil {
-		log.Printf("sendMessage: %v", err)
+		log.Printf("sendRequest: %v", err)
 	} else {
 		route = committed
 	}
 
-	s.Chat.AppendUserMessage(desktopID, route.TaskID, content)
+	s.Chat.AppendUserRequest(desktopID, route.TaskID, content)
 
 	return route
 }
@@ -138,11 +138,11 @@ func (s *Server) workerFor(ctx context.Context, desktopID string) tasks.Worker {
 	return worker
 }
 
-// sendMessageError answers a failed send with the reason a human can act on,
+// sendRequestError answers a failed send with the reason a human can act on,
 // rather than the blanket 500 every one of these used to get. A desktop whose
 // agent has not bound its port yet is the common case and is not an internal
 // error: it is a "not ready yet, try again" the chat can show as-is.
-func sendMessageError(w http.ResponseWriter, err error) {
+func sendRequestError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, desktop.ErrNotFound):
 		jsonStatusError(
@@ -170,5 +170,5 @@ func sendMessageError(w http.ResponseWriter, err error) {
 		return
 	}
 
-	log.Println("sendMessage:", err)
+	log.Println("sendRequest:", err)
 }

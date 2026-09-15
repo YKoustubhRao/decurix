@@ -127,7 +127,7 @@ func buildDesktopEnv(name, harness string) []string {
 	// regenerated on every cloudflared restart, so that one stopped
 	// resolving and took every unconfigured desktop's reasoning with it -
 	// and, because the agent blocked on wait_for_ollama() before binding
-	// :8081, presented as an unexplained HTTP 500 on every chat message
+	// :8081, presented as an unexplained HTTP 500 on every chat request
 	// rather than as "the model is unreachable" (see app.py).
 	//
 	// host.docker.internal is the host running the control plane, already
@@ -136,7 +136,7 @@ func buildDesktopEnv(name, harness string) []string {
 	// Ollama the operator runs there, needs no tunnel, and cannot go stale.
 	// It does require that Ollama to listen on more than loopback
 	// (OLLAMA_HOST=0.0.0.0); when it doesn't, the failure now arrives as a
-	// message in the chat naming this URL.
+	// reply in the chat naming this URL.
 	//
 	// Both come from package ollama, which preloads the model on this same
 	// server at startup - the two must never disagree about which one it is.
@@ -151,8 +151,8 @@ func buildDesktopEnv(name, harness string) []string {
 		// derived from the container name, which sanitizeName produces. The
 		// two spellings diverged for any name containing a character only
 		// sanitizeName rewrites (a dot, say: "my.box" stayed "my.box" here
-		// while the desktop was listed as "my-box"), so that desktop's help
-		// notes and chat messages matched no desktop the dashboard knew.
+		// while the desktop was listed as "my-box"), so that desktop's query
+		// notes and chat entries matched no desktop the dashboard knew.
 		"DESKTOP_ID=" + sanitizeName(name),
 		"DESKTOP_NAME=" + name,
 		"CONTROL_PLANE_URL=http://host.docker.internal:8080",

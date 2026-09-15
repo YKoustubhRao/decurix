@@ -162,7 +162,7 @@ class _Parser(argparse.ArgumentParser):
     Reports a malformed command as one line, not argparse's usage dump.
 
     Measured on qwen2.5-coder:3b: a rejected `gui click` printed the whole
-    usage text twice, and the model's next reply was a help request saying
+    usage text twice, and the model's next reply was a query saying
     the command "is not recognized" - it read the wall of text as the tool
     being broken, not as its own typo.
     """
@@ -248,11 +248,11 @@ def _print_replay(result):
     again = f"gui replay {result['session']} --from {result['resume_from']}"
 
     if outcome == replay.NEEDS_APPROVAL:
-        print(f"{approval.MARKER} {result['message']}")
+        print(f"{approval.MARKER} {result['text']}")
         print(f"Once it is approved, continue with: {again}")
         return EXIT_NEEDS_APPROVAL
 
-    print(f"{outcome}: {result['message']}")
+    print(f"{outcome}: {result['text']}")
 
     if outcome == replay.NEEDS_HUMAN:
         print(f"Ask the human to do that step, then continue with: {again}")
@@ -267,7 +267,7 @@ def _print_replay(result):
 
 
 def _print_act(result):
-    print(result["message"])
+    print(result["text"])
 
     change = result.get("change")
     observation = result.get("observation")
@@ -314,7 +314,7 @@ def run(argv):
 
     if command == "verify":
         result = core.verify(expect_text=args.text, role=args.role, name=args.name)
-        print(result["message"])
+        print(result["text"])
         return EXIT_VERIFY_FAILED if result["ok"] is False else EXIT_OK
 
     if command == "recordings":

@@ -49,13 +49,13 @@ THEBOT_URL = os.environ.get(
 FLOWERA_DIR = Path("/home/headless/.flowera")
 
 COMMAND_DIR = FLOWERA_DIR / "command"
-HELPTEXT_DIR = FLOWERA_DIR / "helptext"
+QUERYTEXT_DIR = FLOWERA_DIR / "querytext"
 FINAL_DIR = FLOWERA_DIR / "final"
 MEMORY_DIR = FLOWERA_DIR / "memory"
 WORK_DIR = Path("/home/headless/work")
 
 COMMAND_DIR.mkdir(parents=True, exist_ok=True)
-HELPTEXT_DIR.mkdir(parents=True, exist_ok=True)
+QUERYTEXT_DIR.mkdir(parents=True, exist_ok=True)
 FINAL_DIR.mkdir(parents=True, exist_ok=True)
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 MEMORY_DIR.mkdir(parents=True, exist_ok=True)

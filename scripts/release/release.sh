@@ -174,7 +174,7 @@ Notes
   * Flowera listens on port 8080 and talks to Docker through the local Docker
     socket / named pipe. On Linux the user must be able to reach
     /var/run/docker.sock (usually: be in the "docker" group).
-  * Task records, chats, help requests, worker memory and action screenshots
+  * Task records, chats, queries, worker memory and action screenshots
     are kept in flowera.db under $dataDir, so they survive a
     restart. Set FLOWERA_DATA_DIR to keep them somewhere else.
   * $run --version prints the build this bundle was cut from.

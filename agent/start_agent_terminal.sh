@@ -87,6 +87,29 @@ for name in names:
         print(f"could not move ~/{name} to ~/.flowera/{name}: {e}")
 PY
 
+# The help-notes directory was renamed to querytext when the "help"
+# terminology became "query" throughout the app. A volume that still has
+# the old name - including one that just landed there from the legacy move
+# above - gets it renamed in place, merged the same non-destructive way.
+python3 - "$HOME/.flowera" >> "$LOG" 2>&1 <<'PY'
+import os, sys
+
+flowera = sys.argv[1]
+old, new = os.path.join(flowera, "helptext"), os.path.join(flowera, "querytext")
+if os.path.isdir(old) and not os.path.islink(old):
+    try:
+        if not os.path.exists(new):
+            os.rename(old, new)
+        else:
+            for entry in os.listdir(old):
+                if not os.path.lexists(os.path.join(new, entry)):
+                    os.rename(os.path.join(old, entry), os.path.join(new, entry))
+            os.rmdir(old)
+        print("moved ~/.flowera/helptext to ~/.flowera/querytext")
+    except OSError as e:
+        print(f"could not move ~/.flowera/helptext to ~/.flowera/querytext: {e}")
+PY
+
 setsid python3 /opt/vm_server.py >> "$LOG" 2>&1 < /dev/null &
 
 echo "[$(date)] vm_server.py started as background daemon (pid $!)" >> "$LOG"

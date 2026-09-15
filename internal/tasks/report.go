@@ -14,11 +14,11 @@ import (
 //
 // A task counts towards a rate once it is settled: it has ended, or a human has
 // already had to step in. It is autonomous when its only attempt ended done,
-// nobody was asked for help or approval along the way, and no human marked the
-// answer wrong. An approval counts as stepping in: it is the agent doing the
-// right thing, but it is still a person being paged, and the reasons table
+// nobody had a query or asked for approval along the way, and no human marked
+// the answer wrong. An approval counts as stepping in: it is the agent doing
+// the right thing, but it is still a person being paged, and the reasons table
 // keeps approvals apart from being stuck.
-const AutonomyDefinition = "A task is autonomous when its only attempt ended done, it never asked a human for help or approval, and nobody marked the answer wrong. Tasks still running with no human involvement yet are not counted."
+const AutonomyDefinition = "A task is autonomous when its only attempt ended done, it never had a query or asked a human for approval, and nobody marked the answer wrong. Tasks still running with no human involvement yet are not counted."
 
 var engineLabels = map[string]string{
 	"ollama": "Ollama",
@@ -201,12 +201,12 @@ func (s *Store) summaries(since time.Time) ([]Summary, error) {
 		switch execution.Status {
 		case StatusError:
 			summary.Errors++
-			reason := ErrorReason(execution.FinalMessage)
+			reason := ErrorReason(execution.FinalReply)
 			summary.SteppedIn = append(summary.SteppedIn, reason)
-			summary.examples[reason] = execution.FinalMessage
+			summary.examples[reason] = execution.FinalReply
 		case StatusAbandoned:
 			summary.SteppedIn = append(summary.SteppedIn, ReasonStopped)
-			summary.examples[ReasonStopped] = execution.FinalMessage
+			summary.examples[ReasonStopped] = execution.FinalReply
 		}
 	}
 

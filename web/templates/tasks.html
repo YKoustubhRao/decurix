@@ -101,7 +101,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
   background:var(--idle-soft);color:var(--text-2)
 }
 .tstatus.done{background:var(--live-soft);color:var(--live)}
-.tstatus.waiting,.tstatus.help{background:var(--accent-soft);color:var(--accent)}
+.tstatus.waiting,.tstatus.query{background:var(--accent-soft);color:var(--accent)}
 .tstatus.error,.tstatus.abandoned{background:var(--danger-soft);color:var(--danger)}
 
 .verdict{font-size:12px;font-weight:600;white-space:nowrap;text-transform:capitalize}
@@ -165,7 +165,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
   <div class="empty">
     <div class="empty-mark"><svg width="19" height="19"><use href="#i-inbox"/></svg></div>
     <h2>No tasks {{$window.Phrase}}</h2>
-    <p>Send a desktop a message from its chat. It shows up here as a task record, along with its steps, any help it needed, and your verdict.</p>
+    <p>Send a desktop a request from its chat. It shows up here as a task record, along with its steps, any query it needed, and your verdict.</p>
   </div>
 {{else}}
 
@@ -218,10 +218,10 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
   <div class="stats">
     <div class="panel stat"><div class="eyebrow">Tasks</div><div class="stat-value">{{$report.Totals.Tasks}}</div><div class="stat-sub">{{$report.Totals.Settled}} counted</div></div>
     <div class="panel stat"><div class="eyebrow">Autonomous</div><div class="stat-value">{{$report.Totals.Autonomous}}</div><div class="stat-sub">no one stepped in</div></div>
-    <div class="panel stat"><div class="eyebrow">Help asked</div><div class="stat-value">{{$report.Totals.Interventions}}</div><div class="stat-sub">{{$report.Totals.Approvals}} were approvals</div></div>
+    <div class="panel stat"><div class="eyebrow">Queries asked</div><div class="stat-value">{{$report.Totals.Interventions}}</div><div class="stat-sub">{{$report.Totals.Approvals}} were approvals</div></div>
     <div class="panel stat"><div class="eyebrow">Failed</div><div class="stat-value">{{$report.Totals.Errors}}</div><div class="stat-sub">attempts ended in error</div></div>
     <div class="panel stat"><div class="eyebrow">Marked wrong</div><div class="stat-value">{{$report.Totals.Wrong}}</div><div class="stat-sub">of {{add $report.Totals.Correct $report.Totals.Wrong}} checked</div></div>
-    <div class="panel stat"><div class="eyebrow">Step-ins</div><div class="stat-value">{{$report.StepIns}}</div><div class="stat-sub">help, approvals, errors, stops, wrong answers</div></div>
+    <div class="panel stat"><div class="eyebrow">Step-ins</div><div class="stat-value">{{$report.StepIns}}</div><div class="stat-sub">queries, approvals, errors, stops, wrong answers</div></div>
   </div>
 
   <section>
@@ -234,7 +234,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
             <th>Engine</th>
             <th>Autonomy</th>
             <th class="num">Counted</th>
-            <th class="num">Help / approvals</th>
+            <th class="num">Queries / approvals</th>
             <th class="num">Failed</th>
             <th class="num">Correct / wrong</th>
             <th class="num">Median</th>
