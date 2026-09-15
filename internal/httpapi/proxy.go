@@ -170,6 +170,18 @@ func rewriteFloweraBranding(resp *http.Response) error {
 	resp.ContentLength = int64(len(body))
 	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
 
+	// The proxied container's own Content-Type carries no charset, and this
+	// handler (running first, unconditionally, on every html response) is
+	// where every other rewrite in the chain appends UTF-8 text (the ticket
+	// toolbar's own copy, e.g. its em dashes) very late in the body - well
+	// past a browser's ~1024-byte <meta charset> sniffing window. Without an
+	// explicit charset here a browser guesses one for the whole document
+	// before any of that text is even in it, and every non-ASCII byte we add
+	// later renders as mojibake. Declaring it once here, on the one response
+	// every rewrite shares, is what makes the rest of them safe to write
+	// UTF-8 at all.
+	resp.Header.Set("Content-Type", "text/html; charset=utf-8")
+
 	return nil
 }
 
@@ -210,13 +222,18 @@ func injectTicketToolbar(resp *http.Response, desktopID string) error {
 	return nil
 }
 
-// ticketToolbar is the GUI screen's own recording controls: a small tab at
-// the top of the page that drops down into a ticket's lifecycle - + opens a
-// ticket (POST /api/desktops/record, the same call the chat's "/record"
-// message goes through), Record starts capturing for it, Stop pauses (for a
-// private step such as signing in), Continue resumes, and End finishes it -
-// which is what makes its recording's export downloadable, offered right
-// there once it does.
+// ticketToolbar is the GUI screen's own recording controls - the only place
+// they live now; a dashboard card no longer has a Record button of its own
+// (index.html), since every desktop screen already carries this - a small
+// tab at the top of the page that drops down into a ticket's lifecycle - +
+// opens a ticket (POST /api/desktops/record, the same call the chat's
+// "/record" message goes through), Record starts capturing for it, Stop
+// pauses (for a private step such as signing in), Continue resumes, and End
+// finishes it - which is what makes its recording's export downloadable,
+// offered right there once it does. The tab is also a drag handle: pressing
+// and moving it repositions the whole toolbar anywhere on the screen (see
+// the pointer handlers below), since docked at top-center it can sit over
+// whatever the person actually needs to click on the desktop underneath.
 //
 // It talks to /api/desktops/ticket[...] - record_task.py's state machine,
 // proxied by ticketStatusHandler/ticketActionHandler - polling GET
@@ -241,6 +258,13 @@ const ticketToolbar = `
   color:#f2f0ea;
   -webkit-tap-highlight-color:transparent;
 }
+/* Once the tab has actually been dragged, position switches from the
+   centered/top-docked default (above) to an explicit pixel left/top set by
+   the drag handler - this just has to stop fighting that with its own
+   centering transform. */
+#flowera-ticket.flowera-pinned{
+  transform:none;
+}
 #flowera-ticket-tab{
   display:flex;
   align-items:center;
@@ -250,9 +274,11 @@ const ticketToolbar = `
   border-radius:0 0 10px 10px;
   background:rgba(24,22,20,.86);
   color:inherit;
-  cursor:pointer;
+  cursor:grab;
+  touch-action:none;
   box-shadow:0 2px 8px rgba(0,0,0,.3);
 }
+#flowera-ticket-tab:active{cursor:grabbing}
 #flowera-ticket-tab svg{transition:transform .15s ease;flex:none}
 #flowera-ticket.flowera-open #flowera-ticket-tab svg{transform:rotate(180deg)}
 #flowera-ticket-dot{
@@ -331,6 +357,15 @@ const ticketToolbar = `
 }
 #flowera-ticket-error{color:#f5a793;font-size:11.5px;margin-top:8px;display:none}
 #flowera-ticket-error.flowera-visible{display:block}
+
+#flowera-ticket-browse{
+  display:block;
+  margin-top:10px;
+  font-size:11.5px;
+  color:rgba(242,240,234,.6);
+  text-decoration:none;
+}
+#flowera-ticket-browse:hover{color:rgba(242,240,234,.9)}
 </style>
 <div id="flowera-ticket">
   <button type="button" id="flowera-ticket-tab" aria-label="Recording ticket">
@@ -361,6 +396,8 @@ var userToggled = false;  // once a person opens/closes the panel by hand, stop 
 var draftTask = "";       // the create-ticket input's text, kept across re-renders (see renderCreate)
 var reasonOpen = false;   // the Reason box is expanded
 var draftReason = "";     // its text, kept across re-renders the same way draftTask is
+var reasonAutoPaused = false; // opening the Reason box is what paused recording, so closing
+                               // it without submitting should undo that pause (see startReason)
 
 function api(path, fields){
   var body = new URLSearchParams({id: DESKTOP_ID});
@@ -391,6 +428,7 @@ function act(action, fields){
       // once more before the next poll corrects it. End always means ended.
       reasonOpen = false;
       draftReason = "";
+      reasonAutoPaused = false;
       if(data.ticket && data.ticket.session_id){ lastSession = data.ticket.session_id; }
       ticket = null;
       render();
@@ -410,7 +448,14 @@ function setTicket(next){
 
   // A ticket ending - however that happens, not just through this tab's own
   // End - leaves nothing for an open Reason box to attach to.
-  if(!next){ reasonOpen = false; draftReason = ""; }
+  if(!next){
+    reasonOpen = false; draftReason = ""; reasonAutoPaused = false;
+  }else if(reasonOpen && reasonAutoPaused && !next.paused){
+    // Resumed some other way - the plain Continue button, another tab -
+    // while a reason we paused for was still being written. The box no
+    // longer has a paused moment to sit in.
+    reasonOpen = false; draftReason = ""; reasonAutoPaused = false;
+  }
 
   ticket = next;
 
@@ -425,6 +470,65 @@ function setTicket(next){
 function open(state){
   root.classList.toggle("flowera-open", state);
 }
+
+// --- dragging: the tab doubles as a handle for the whole toolbar ----------
+// Starts out docked top-center (the CSS default); the first real drag - past
+// DRAG_THRESHOLD, so an ordinary tap-to-open still works - switches it to an
+// explicit pixel position it keeps from then on, clamped to stay on screen.
+var DRAG_THRESHOLD = 6;
+var drag = null;   // {pointerId, startX, startY, baseLeft, baseTop} while a drag is live
+var dragged = false; // true once this pointer gesture actually moved the toolbar -
+                      // read by the click handler so a real drag doesn't also toggle open/closed
+
+function clampToViewport(left, top){
+  var r = root.getBoundingClientRect();
+  var maxLeft = Math.max(0, window.innerWidth - r.width);
+  var maxTop = Math.max(0, window.innerHeight - r.height);
+  return {left: Math.min(Math.max(0, left), maxLeft), top: Math.min(Math.max(0, top), maxTop)};
+}
+
+function placeAt(left, top){
+  var pos = clampToViewport(left, top);
+  root.style.left = pos.left + "px";
+  root.style.top = pos.top + "px";
+}
+
+function pinToCurrentPosition(){
+  if(root.classList.contains("flowera-pinned")){ return; }
+  var r = root.getBoundingClientRect();
+  root.classList.add("flowera-pinned");
+  placeAt(r.left, r.top);
+}
+
+tab.addEventListener("pointerdown", function(e){
+  if(e.button !== undefined && e.button !== 0){ return; }
+  var r = root.getBoundingClientRect();
+  drag = {pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, baseLeft: r.left, baseTop: r.top};
+  dragged = false;
+  tab.setPointerCapture(e.pointerId);
+});
+
+tab.addEventListener("pointermove", function(e){
+  if(!drag || drag.pointerId !== e.pointerId){ return; }
+  var dx = e.clientX - drag.startX, dy = e.clientY - drag.startY;
+  if(!dragged && Math.hypot(dx, dy) < DRAG_THRESHOLD){ return; }
+  dragged = true;
+  pinToCurrentPosition();
+  placeAt(drag.baseLeft + dx, drag.baseTop + dy);
+});
+
+function endDrag(e){
+  if(!drag || (e.pointerId !== undefined && drag.pointerId !== e.pointerId)){ return; }
+  drag = null;
+}
+tab.addEventListener("pointerup", endDrag);
+tab.addEventListener("pointercancel", endDrag);
+
+window.addEventListener("resize", function(){
+  if(!root.classList.contains("flowera-pinned")){ return; }
+  var r = root.getBoundingClientRect();
+  placeAt(r.left, r.top);
+});
 
 function refresh(){
   fetch("/api/desktops/ticket?id=" + encodeURIComponent(DESKTOP_ID), {cache: "no-store"})
@@ -527,15 +631,45 @@ function renderTicket(){
     r.appendChild(button("▶ Continue", function(){ act("resume"); }, "flowera-primary"));
   }else{
     r.appendChild(button("■ Stop", function(){ act("pause", {reason: "paused from the screen toolbar"}); }));
-    // Only while actually capturing - a note has nowhere on the timeline to
-    // sit while armed-but-not-recording, or paused for a private step.
-    r.appendChild(button("Reason", function(){ reasonOpen = !reasonOpen; render(); }, reasonOpen ? "flowera-active" : ""));
+  }
+
+  // Reachable whether currently recording or already paused - writing a note
+  // works either way (demonstration.note()) - just not before recording has
+  // started, when there is no timeline yet for it to sit on.
+  if(ticket.session_id){
+    r.appendChild(button("Reason", startReason, reasonOpen ? "flowera-active" : ""));
   }
 
   r.appendChild(button("End", function(){ act("end"); }, "flowera-danger"));
   panel.appendChild(r);
 
-  if(reasonOpen && ticket.recording){ panel.appendChild(reasonBox()); }
+  if(reasonOpen){ panel.appendChild(reasonBox()); }
+}
+
+function startReason(){
+  if(reasonOpen){
+    // Closing without submitting: undo the pause only if opening the box is
+    // what caused it - a pause already in effect (the plain Stop button)
+    // stays exactly as the person left it.
+    reasonOpen = false;
+    draftReason = "";
+    if(reasonAutoPaused && ticket && ticket.paused){
+      reasonAutoPaused = false;
+      act("resume");
+    }else{
+      render();
+    }
+    return;
+  }
+
+  reasonOpen = true;
+
+  if(ticket && !ticket.paused){
+    reasonAutoPaused = true;
+    act("pause", {reason: "adding a reason"});
+  }else{
+    render();
+  }
 }
 
 function reasonBox(){
@@ -544,7 +678,7 @@ function reasonBox(){
 
   var hint = document.createElement("div");
   hint.className = "flowera-reason-hint";
-  hint.textContent = "Adding this pauses recording - press Continue after to keep going.";
+  hint.textContent = "Recording is paused while you write this - submitting continues it.";
   wrap.appendChild(hint);
 
   var textarea = document.createElement("textarea");
@@ -563,14 +697,23 @@ function reasonBox(){
     if(!text || busy){ return; }
     busy = true; error = ""; render();
 
+    // note() always ends paused - snapshot whether this Reason click is what
+    // paused it before the request clears that flag, since only then should
+    // submitting also continue: a pause already in effect (Stop) is left
+    // exactly as the person set it, in case what follows is why they set it.
+    var autoResume = reasonAutoPaused;
+
     api("/api/desktops/ticket/action", {action: "note", text: text}).then(function(data){
       draftReason = "";
       reasonOpen = false;
+      reasonAutoPaused = false;
       busy = false;
-      // The note pauses on its own (demonstration.note()), so this response
-      // already carries paused: true - nothing more to drive here than the
-      // usual render, which will show Continue.
-      setTicket(data.ticket || null);
+
+      if(autoResume){
+        act("resume");
+      }else{
+        setTicket(data.ticket || null);
+      }
     }, function(e){
       busy = false;
       error = e.message;
@@ -587,7 +730,7 @@ function reasonBox(){
   wrap.appendChild(textarea);
 
   var submitRow = row(false);
-  submitRow.appendChild(button("Add & pause", submit, "flowera-primary"));
+  submitRow.appendChild(button("Add & continue", submit, "flowera-primary"));
   wrap.appendChild(submitRow);
 
   if(!busy){ textarea.focus(); }
@@ -637,9 +780,21 @@ function render(){
   }
   err.textContent = error;
   err.classList.toggle("flowera-visible", !!error);
+
+  // Browsing/replaying/exporting past recordings used to be a second icon on
+  // the dashboard card; it lives only here now, so it needs to stay reachable
+  // from every state of this panel, not just when a ticket is open.
+  var browse = document.createElement("a");
+  browse.id = "flowera-ticket-browse";
+  browse.href = "/recordings/" + encodeURIComponent(DESKTOP_ID);
+  browse.textContent = "Browse recordings ↗";
+  panel.appendChild(browse);
 }
 
 tab.addEventListener("click", function(){
+  // A real drag already moved the toolbar - the pointerup that ends it also
+  // fires a click, which must not also toggle the panel open/closed.
+  if(dragged){ dragged = false; return; }
   userToggled = true;
   open(!root.classList.contains("flowera-open"));
 });
