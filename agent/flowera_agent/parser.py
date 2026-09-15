@@ -29,7 +29,7 @@ _LOOSE_MARKER_RE = re.compile(
 _ACTIONS = {
     "command": "command",
     "done": "done",
-    "help": "help",
+    "help": "query",
 }
 
 
@@ -51,6 +51,28 @@ def _matches(response):
     return list(_LOOSE_MARKER_RE.finditer(response))
 
 
+def clean_command(cmd):
+    """
+    Strip markdown code fences and backticks from a command string.
+
+    Small code-tuned models (e.g. qwen2.5-coder:3b) frequently wrap shell
+    commands in markdown code blocks (e.g. ```bash\nls -la\n```) or inline
+    backticks. Passing those unchanged to a shell results in immediate
+    syntax errors (e.g. "command not found: ```bash").
+    """
+    text = cmd.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    elif text.startswith("`") and text.endswith("`") and len(text) >= 2:
+        text = text[1:-1].strip()
+    return text
+
+
 def parse_agent_response(response):
     """
     Parse the agent's control signal.
@@ -60,7 +82,7 @@ def parse_agent_response(response):
     model that trails off after its real answer - repeating the marker,
     echoing the prompt's own example, or appending a stray DONE/HELP -
     would otherwise have all of that garbage folded into the extracted
-    command/message, which for a COMMAND gets executed as shell input.
+    command/answer, which for a COMMAND gets executed as shell input.
     Seen live on the model this ships with: "how much disk space is
     free?" answered with a correct `COMMAND: df -h ...` immediately
     followed by an invented `DONE: 10G Available` for output no command
@@ -79,5 +101,8 @@ def parse_agent_response(response):
 
     action = _ACTIONS[first.group(1).strip().lower()]
     value = response[first.end():end].strip()
+
+    if action == "command":
+        value = clean_command(value)
 
     return (action, value)

@@ -5,7 +5,7 @@
     flowera control plane.
 .DESCRIPTION
     Pairs with scripts/testing/dummy_control_plane.py, a stdlib-only stub
-    that accepts the desktop's help/completion callbacks and prints them
+    that accepts the desktop's query/completion callbacks and prints them
     live, so you can watch the agent work.
 .PARAMETER Profile
     basic, developer, or ai. Default: basic.
@@ -153,7 +153,7 @@ if ($Task) {
     Write-Host "=== Sending task ==="
     try {
         $body = @{ content = $Task } | ConvertTo-Json -Compress
-        Invoke-RestMethod -Uri "http://127.0.0.1:18081/message" -Method Post -ContentType "application/json" -Body $body | Out-Null
+        Invoke-RestMethod -Uri "http://127.0.0.1:18081/request" -Method Post -ContentType "application/json" -Body $body | Out-Null
         Write-Host "Sent."
     } catch {
         Write-Host "WARNING: could not deliver the task yet - the agent may still be starting. Retry with the same -Task once it's up."
@@ -168,7 +168,7 @@ Write-Host "VNC:                http://localhost:16901/vnc.html"
 if ($Harness -eq "thebot") {
 Write-Host "Agent chat UI:      http://localhost:14900/"
 }
-Write-Host "Send a task:        Invoke-RestMethod http://localhost:18081/message -Method Post -ContentType application/json -Body '{\"content\":\"...\"}'"
+Write-Host "Send a task:        Invoke-RestMethod http://localhost:18081/request -Method Post -ContentType application/json -Body '{\"content\":\"...\"}'"
 Write-Host "Watch callbacks:    docker logs -f $DummyCP"
 Write-Host "Watch agent logs:   docker exec $DesktopContainer tail -f /tmp/flowera-startup.log"
 Write-Host "Tear down:          .\scripts\windows\test-vm.ps1 -Name $Name -Down"

@@ -20,6 +20,12 @@ WORKDIR /app
 COPY --from=builder /app/flowera .
 COPY .env ./
 
+# The records database (flowera.db). docker-compose.yaml mounts a named volume
+# here; the VOLUME line keeps a plain `docker run` from writing it into the
+# container's own layer, where a rebuild would discard it.
+ENV FLOWERA_DATA_DIR=/data
+VOLUME /data
+
 EXPOSE 8080
 
 CMD ["./flowera"]

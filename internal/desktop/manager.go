@@ -30,6 +30,14 @@ type Manager struct {
 	// desktop never stalls another's thumbnail.
 	shotMu sync.Mutex
 	shots  map[string]*shotEntry
+
+	// claudeLogin is the one in-progress "claude auth login" attempt (see
+	// claudelogin.go) - there is one shared Claude session for the whole
+	// app, so only one login attempt is ever in flight. Guarded by
+	// claudeLoginMu, separate from mu since a login attempt has nothing to
+	// do with container CRUD.
+	claudeLoginMu sync.Mutex
+	claudeLogin   *claudeLoginSession
 }
 
 // NewManager creates a Manager backed by the given Docker client.
@@ -37,7 +45,11 @@ func NewManager(cli *client.Client) *Manager {
 	return &Manager{client: cli}
 }
 
-// Create provisions a new desktop container (volume, env, container config) for the given profile and starts it, rolling back on failure.
+// Create provisions a new desktop container (volume, env, container config)
+// for the given profile and starts it, rolling back on failure.
+// claudeCredentialsJSON seeds a claude-harness desktop with the shared
+// Claude session (see internal/claudeauth); pass "" for every other harness,
+// or when nobody has logged in yet.
 func (m *Manager) Create(
 	ctx context.Context,
 	name string,
@@ -45,6 +57,7 @@ func (m *Manager) Create(
 	harness string,
 	cpus int64,
 	memoryMB int64,
+	claudeCredentialsJSON string,
 ) (*Desktop, error) {
 
 	m.mu.Lock()
@@ -140,11 +153,21 @@ func (m *Manager) Create(
 		)
 	}
 
+	// Best-effort, like PersistMemoryFile: the desktop is still created and
+	// usable without it, just unauthenticated until someone logs in and a
+	// new desktop picks up the session, or this one is recreated.
+	if harness == HarnessClaude && claudeCredentialsJSON != "" {
+		if err := m.PersistClaudeCredentials(ctx, sanitizeName(name), claudeCredentialsJSON); err != nil {
+			log.Printf("seed claude credentials into %s: %v", containerName, err)
+		}
+	}
+
 	return &Desktop{
 		ID:          sanitizeName(name),
 		Name:        name,
 		Profile:     profile,
 		Harness:     harness,
+		Model:       envValue(env, "OLLAMA_MODEL"),
 		ContainerID: resp.ID,
 		Volume:      volumeName,
 		Status:      "running",
@@ -191,6 +214,7 @@ func (m *Manager) List(
 		}
 
 		volumeName := ""
+		model := ""
 		var cpus int64
 		var memoryMB int64
 
@@ -205,6 +229,10 @@ func (m *Manager) List(
 					volumeName = mount.Name
 					break
 				}
+			}
+
+			if inspect.Config != nil {
+				model = envValue(inspect.Config.Env, "OLLAMA_MODEL")
 			}
 
 			if inspect.HostConfig != nil {
@@ -256,6 +284,7 @@ func (m *Manager) List(
 				Name:        id,
 				Profile:     profile,
 				Harness:     harness,
+				Model:       model,
 				ContainerID: c.ID,
 				Volume:      volumeName,
 				Status:      status,
@@ -376,6 +405,10 @@ func (m *Manager) Delete(
 		return err
 	}
 
+	m.shotMu.Lock()
+	delete(m.shots, sanitizeName(id))
+	m.shotMu.Unlock()
+
 	// Delete persistent storage too.
 	if volumeName != "" {
 		if err := m.client.VolumeRemove(
@@ -394,11 +427,65 @@ func (m *Manager) Delete(
 	return nil
 }
 
-// SendMessage posts a JSON message to a running desktop's internal message endpoint.
-func (m *Manager) SendMessage(
+// Get returns one desktop, as List would describe it, plus the chat model its
+// container was created with (Desktop.Model).
+func (m *Manager) Get(ctx context.Context, id string) (Desktop, error) {
+	desktopID := sanitizeName(id)
+
+	inspect, err := m.client.ContainerInspect(ctx, "desktop_"+desktopID)
+	if err != nil {
+		return Desktop{}, fmt.Errorf("find desktop %s: %w", desktopID, ErrNotFound)
+	}
+
+	found := Desktop{
+		ID:          desktopID,
+		Name:        desktopID,
+		Profile:     "basic",
+		Harness:     HarnessOllama,
+		ContainerID: inspect.ID,
+		Status:      "stopped",
+		URL:         desktopURL(desktopID),
+		CreatedAt:   inspect.Created,
+	}
+
+	if inspect.Config != nil {
+		if profile := inspect.Config.Labels["desktop-profile"]; profile != "" {
+			found.Profile = profile
+		}
+
+		if harness := inspect.Config.Labels["desktop-harness"]; harness != "" {
+			found.Harness = harness
+		}
+
+		found.Model = envValue(inspect.Config.Env, "OLLAMA_MODEL")
+	}
+
+	if inspect.State != nil && inspect.State.Running {
+		found.Status = "running"
+	}
+
+	return found, nil
+}
+
+// envValue returns one variable from a container's environment list.
+func envValue(env []string, name string) string {
+	for _, entry := range env {
+		if value, ok := strings.CutPrefix(entry, name+"="); ok {
+			return value
+		}
+	}
+
+	return ""
+}
+
+// SendRequest posts a JSON request to a running desktop's internal request
+// endpoint. taskID is the control plane's record the request belongs to; the
+// desktop echoes it back on every step and outcome it reports for that task.
+func (m *Manager) SendRequest(
 	ctx context.Context,
 	id string,
 	content string,
+	taskID string,
 ) error {
 
 	desktopID := sanitizeName(id)
@@ -430,15 +517,19 @@ func (m *Manager) SendMessage(
 		"content": content,
 	}
 
+	if taskID != "" {
+		payload["task_id"] = taskID
+	}
+
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("encode message: %w", err)
+		return fmt.Errorf("encode request: %w", err)
 	}
 
 	// Communicate directly over the Docker network.
 	// vm_server.py listens on port 8081 inside the desktop container.
 	url := fmt.Sprintf(
-		"http://%s:8081/message",
+		"http://%s:8081/request",
 		name,
 	)
 
@@ -449,7 +540,7 @@ func (m *Manager) SendMessage(
 		strings.NewReader(string(body)),
 	)
 	if err != nil {
-		return fmt.Errorf("create message request: %w", err)
+		return fmt.Errorf("create request: %w", err)
 	}
 
 	req.Header.Set(
@@ -465,10 +556,10 @@ func (m *Manager) SendMessage(
 	if err != nil {
 		// Nothing listening on :8081 inside a running container. Reported
 		// as ErrAgentUnreachable rather than a bare transport error so the
-		// caller can say so, instead of answering a human's chat message
+		// caller can say so, instead of answering a human's chat request
 		// with an unexplained HTTP 500.
 		return fmt.Errorf(
-			"send message to desktop %s: %w: %v",
+			"send request to desktop %s: %w: %v",
 			desktopID,
 			ErrAgentUnreachable,
 			err,
@@ -497,15 +588,22 @@ func (m *Manager) PersistMemoryFile(
 ) error {
 
 	containerName := "desktop_" + sanitizeName(desktopID)
-	memoryDir := "/home/headless/memory"
+	// A container keeps the image it was created from, so a desktop created
+	// before the agent's directories moved under ~/.flowera still runs an
+	// agent that reads ~/memory. Write there while it is the only memory
+	// directory the desktop has; a newer agent moves it in when it starts.
+	memoryDir := "/home/headless/.flowera/memory"
+	legacyMemoryDir := "/home/headless/memory"
 	delimiter := fmt.Sprintf("FLOWERA_MEMORY_%d", time.Now().UnixNano())
 
-	cmd := fmt.Sprintf(`mkdir -p %s && cat <<'%s' > %s/%s
+	cmd := fmt.Sprintf(`dir=%s; if [ -d %s ] && [ ! -d "$dir" ]; then dir=%s; fi
+mkdir -p "$dir" && cat <<'%s' > "$dir/%s"
 %s
 %s`,
 		memoryDir,
+		legacyMemoryDir,
+		legacyMemoryDir,
 		delimiter,
-		memoryDir,
 		filename,
 		strings.TrimSpace(fileContent),
 		delimiter,
@@ -526,13 +624,26 @@ func (m *Manager) PersistMemoryFile(
 		return fmt.Errorf("start memory write exec for %s: %w", containerName, err)
 	}
 
-	inspect, err := m.client.ContainerExecInspect(ctx, execID.ID)
-	if err != nil {
-		return fmt.Errorf("inspect memory write exec for %s: %w", containerName, err)
-	}
-	if inspect.ExitCode != 0 {
-		return fmt.Errorf("memory write exec for %s exited %d", containerName, inspect.ExitCode)
-	}
+	return waitExec(ctx, m.client, execID.ID, fmt.Sprintf("memory write exec for %s", containerName))
+}
 
-	return nil
+// waitExec polls ContainerExecInspect until the exec process exits or ctx is cancelled.
+func waitExec(ctx context.Context, cli *client.Client, execID, desc string) error {
+	for {
+		inspect, err := cli.ContainerExecInspect(ctx, execID)
+		if err != nil {
+			return fmt.Errorf("inspect %s: %w", desc, err)
+		}
+		if !inspect.Running {
+			if inspect.ExitCode != 0 {
+				return fmt.Errorf("%s exited %d", desc, inspect.ExitCode)
+			}
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }

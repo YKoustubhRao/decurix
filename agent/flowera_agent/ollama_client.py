@@ -3,7 +3,7 @@ import os
 import urllib.error
 import urllib.request
 
-from flowera_agent import config
+from flowera_agent import config, usage
 from flowera_agent.identity import get_identity_context
 from flowera_agent.memory_context import get_memory_context
 from flowera_agent.readiness import wait_for_http_ok
@@ -88,6 +88,15 @@ def ollama_request(messages):
                 raw.decode("utf-8")
             )
 
+            # A local model: tokens are what the call used, and it costs
+            # nothing per call.
+            usage.set_model(config.OLLAMA_MODEL)
+            usage.add(
+                input_tokens=result.get("prompt_eval_count"),
+                output_tokens=result.get("eval_count"),
+                cost_usd=0,
+            )
+
             return result["message"]["content"]
 
     except urllib.error.URLError as exc:
@@ -124,8 +133,8 @@ def wait_for_ollama():
 #
 # The previous version of this prompt was 637 tokens and spent five
 # separate numbered rules (6, 7, 8, 14, 15) forbidding the same mistake -
-# asking a human for help instead of answering a question. It still made
-# it: "hello, whats your desktop name?" came back as a help request that
+# asking a human a query instead of answering a question. It still made
+# it: "hello, whats your desktop name?" came back as a query that
 # blocked the desktop. Repetition is not what makes a small model comply,
 # and on a CPU-only host every one of those tokens is re-read on every
 # step of every task. What actually fixed that case was giving the agent
@@ -157,13 +166,28 @@ report work you did not actually verify.
 COMMAND - you need to inspect or change something on this machine. One
 command per reply; you get its exit code and output back, then you reply
 again. If it fails, read the error and try a different approach. Never
-send a command that just failed.
+send a command that just failed. Write the command directly without
+markdown code blocks (```) or backticks.
 
 HELP - you are blocked and no command can unblock you: the human has to
 choose between real alternatives, supply a secret, or fix something
 outside this machine. Not knowing the answer yet is not being blocked -
 run a command and find out. A question is never a reason to ask for
 help, and never ask the human why they want something.
+
+THE SCREEN. This desktop also has windows: Chromium, LibreOffice, a text
+editor. Work in them with the gui command, one per COMMAND:
+gui observe             lists windows and elements, each with a ref like e12
+gui click e12           clicks it
+gui type e12 "text"     replaces a field's text
+gui key ctrl+s          presses keys (enter, tab, ctrl+a ...)
+gui select e12 "High"   picks a dropdown option
+gui open <url|file|app> opens it
+gui recordings <words>  finds a recorded demonstration of a task
+gui replay <id>         runs that recording again, step by step
+Observe first and use refs from the latest output, just the ref: gui click
+e12, not the whole line. Every gui action tells you what changed. A button that sends, pays or publishes pauses for
+approval on its own.
 
 ALWAYS use HELP, even when you could proceed on your own, before making
 or approving a payment, sending a message as the human (WhatsApp, email,
@@ -182,6 +206,10 @@ Human: what is in /tmp?
 COMMAND:
 ls -la /tmp
 
+Human: add a user named Kim in the admin panel open in the browser.
+COMMAND:
+gui observe
+
 Human: delete the project.
 HELP:
 There is more than one project directory here. Which should I delete?
@@ -193,7 +221,7 @@ def build_system_messages():
     The system half of every request: the output contract, who this
     desktop is, and anything in persistent worker memory.
 
-    Shared by perform_task and continue_after_help so both halves of a
+    Shared by perform_task and continue_after_query so both halves of a
     conversation are given the same standing context - and, just as
     importantly, so both send a byte-identical prefix. Ollama caches the
     evaluated prefix of a prompt, so a stable one is the difference
@@ -232,13 +260,13 @@ def build_system_messages():
 def ask_agent(task, history):
     messages = build_system_messages()
 
-    messages.extend(history)
-
     messages.append(
         {
             "role": "user",
             "content": task,
         }
     )
+
+    messages.extend(history)
 
     return ollama_request(messages)

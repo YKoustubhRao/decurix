@@ -13,7 +13,7 @@
  * One chat for every harness.
  *
  * Ollama, Claude Code and TheBot all reach this same page: the desktop's
- * agent is addressed the same way (a message through the control plane)
+ * agent is addressed the same way (a request through the control plane)
  * and reports back the same way (answers plus live steps), so nothing
  * below branches on which engine is running.
  *
@@ -55,7 +55,7 @@ body{
     radial-gradient(760px 560px at 105% 105%, rgba(255,120,20,.22), transparent 58%),
     linear-gradient(150deg, #050302 0%, #330503 18%, #7a0f07 38%, #c21f0c 56%, #e85f0f 74%, #ffb703 90%, #ffe066 100%);
 }
-main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
+main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;width:100%}
 
 .view-title h1,
 .back-link{color:#fdf6ec}
@@ -139,14 +139,14 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
 }
 .suggestion:hover{background:var(--surface-2);color:var(--text);border-color:var(--line-2)}
 
-/* ---------- messages ---------- */
+/* ---------- entries ---------- */
 
-.msg{display:flex;gap:11px;animation:msg-in .22s cubic-bezier(.2,.8,.2,1)}
-@keyframes msg-in{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
+.entry{display:flex;gap:11px;animation:entry-in .22s cubic-bezier(.2,.8,.2,1)}
+@keyframes entry-in{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
 
-.msg.from-user{flex-direction:row-reverse}
+.entry.from-user{flex-direction:row-reverse}
 
-.msg-avatar{
+.entry-avatar{
   width:27px;height:27px;
   flex:none;
   margin-top:2px;
@@ -155,11 +155,11 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
   font-size:11px;
   font-weight:700
 }
-.msg.from-agent .msg-avatar{background:var(--accent-soft);color:var(--accent)}
-.msg.from-user .msg-avatar{background:var(--surface-3);color:var(--text-2)}
+.entry.from-agent .entry-avatar{background:var(--accent-soft);color:var(--accent)}
+.entry.from-user .entry-avatar{background:var(--surface-3);color:var(--text-2)}
 
-.msg-body{min-width:0;max-width:min(80%,560px);display:flex;flex-direction:column;gap:7px}
-.msg.from-user .msg-body{align-items:flex-end}
+.entry-body{min-width:0;max-width:min(80%,560px);display:flex;flex-direction:column;gap:7px}
+.entry.from-user .entry-body{align-items:flex-end}
 
 .bubble{
   padding:10px 14px;
@@ -168,12 +168,12 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
   line-height:1.6;
   overflow-wrap:anywhere
 }
-.msg.from-user .bubble{
+.entry.from-user .bubble{
   background:var(--accent);
   color:#fff;
   border-bottom-right-radius:4px
 }
-.msg.from-agent .bubble{
+.entry.from-agent .bubble{
   background:var(--surface-2);
   border:1px solid var(--line);
   color:var(--text);
@@ -191,7 +191,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
   background:var(--surface-3);
   overflow-wrap:anywhere
 }
-.msg.from-user .bubble code{background:rgba(255,255,255,.18)}
+.entry.from-user .bubble code{background:rgba(255,255,255,.18)}
 
 .bubble pre{
   margin:9px 0 0;
@@ -202,20 +202,20 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
 }
 .bubble pre:first-child{margin-top:0}
 .bubble pre code{padding:0;background:none;font-size:12px;line-height:1.6}
-.msg.from-user .bubble pre{background:rgba(0,0,0,.22)}
+.entry.from-user .bubble pre{background:rgba(0,0,0,.22)}
 
-/* An approval request is the one message that blocks the agent until a
+/* An approval request is the one entry that blocks the agent until a
    human answers, so it never renders as an ordinary bubble. */
-.msg.is-approval .bubble,
-.msg.is-error .bubble{
+.entry.is-approval .bubble,
+.entry.is-error .bubble{
   background:var(--surface);
   border-width:1px;
   border-style:solid
 }
-.msg.is-approval .bubble{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
-.msg.is-error .bubble{border-color:var(--danger);background:var(--danger-soft)}
+.entry.is-approval .bubble{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.entry.is-error .bubble{border-color:var(--danger);background:var(--danger-soft)}
 
-.msg-flag{
+.entry-flag{
   display:inline-flex;
   align-items:center;
   gap:6px;
@@ -224,20 +224,45 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
   letter-spacing:.07em;
   text-transform:uppercase
 }
-.msg.is-approval .msg-flag{color:var(--accent)}
-.msg.is-error .msg-flag{color:var(--danger)}
+.entry.is-approval .entry-flag{color:var(--accent)}
+.entry.is-error .entry-flag{color:var(--danger)}
 
-.msg-time{font-size:11px;color:var(--text-3)}
+.entry-time{font-size:11px;color:var(--text-3)}
 
-/* A message this tab sent that the control plane's transcript does not show
+/* The human's verdict on a finished answer. "Done" is the agent's own claim;
+   this is what the task record and the autonomy report trust. */
+.entry-foot{display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px}
+.verdict{display:inline-flex;align-items:center;gap:4px}
+.verdict-q{font-size:11px;color:var(--text-3);margin-right:2px}
+.verdict-btn{
+  display:inline-flex;
+  align-items:center;
+  gap:4px;
+  height:26px;
+  padding:0 9px;
+  border:1px solid var(--line);
+  border-radius:999px;
+  background:var(--surface);
+  color:var(--text-2);
+  font-size:11.5px;
+  font-weight:550;
+  transition:background .12s ease,border-color .12s ease,color .12s ease
+}
+.verdict-btn:hover:not(:disabled){border-color:var(--line-2);color:var(--text)}
+.verdict-btn.is-correct[aria-pressed="true"]{background:var(--live-soft);border-color:var(--live);color:var(--live)}
+.verdict-btn.is-wrong[aria-pressed="true"]{background:var(--danger-soft);border-color:var(--danger);color:var(--danger)}
+.verdict-link{font-size:11px;color:var(--text-3)}
+.verdict-link:hover{color:var(--accent)}
+
+/* A request this tab sent that the control plane's transcript does not show
    yet. It is drawn the moment Send is pressed, rather than when the desktop
    has accepted it and the stream has echoed it back. */
-.msg.is-pending .bubble{opacity:.7}
-.msg-status{display:flex;align-items:center;gap:10px;font-size:11px;color:var(--text-3)}
-.msg.is-failed .bubble{background:var(--danger-soft);color:var(--text);border:1px solid var(--danger)}
-.msg.is-failed .bubble code{background:var(--surface-3)}
-.msg.is-failed .msg-status{color:var(--danger)}
-.msg-status button{
+.entry.is-pending .bubble{opacity:.7}
+.entry-status{display:flex;align-items:center;gap:10px;font-size:11px;color:var(--text-3)}
+.entry.is-failed .bubble{background:var(--danger-soft);color:var(--text);border:1px solid var(--danger)}
+.entry.is-failed .bubble code{background:var(--surface-3)}
+.entry.is-failed .entry-status{color:var(--danger)}
+.entry-status button{
   font:inherit;
   font-weight:600;
   color:var(--accent);
@@ -246,7 +271,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
   padding:0;
   cursor:pointer
 }
-.msg-status button:hover{text-decoration:underline}
+.entry-status button:hover{text-decoration:underline}
 
 /* ---------- live activity + step lists ---------- */
 
@@ -273,7 +298,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
 .steps[open] > summary .steps-chevron{transform:rotate(180deg)}
 
 .steps-list{
-  max-height:260px;
+  max-height:420px;
   overflow-y:auto;
   border-top:1px solid var(--line);
   padding:8px 11px;
@@ -287,9 +312,51 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
   line-height:1.55;
   color:var(--text-2);
   overflow-wrap:anywhere;
-  animation:msg-in .18s ease-out
+  animation:entry-in .18s ease-out
 }
 .step.is-command{font-family:var(--mono);font-size:11.5px;color:var(--text)}
+
+/* An on-screen action: the audit trail, with what the screen looked like
+   either side of it. */
+.step.is-action{
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  padding:7px 0 8px;
+  border-top:1px dashed var(--line)
+}
+.step.is-action:first-child{border-top:0;padding-top:0}
+.step-head{display:flex;align-items:baseline;gap:7px;min-width:0}
+.step-badge{
+  flex:none;
+  font-size:10.5px;
+  font-weight:650;
+  letter-spacing:.02em;
+  text-transform:uppercase;
+  color:var(--text-3)
+}
+.step.is-approval .step-badge{color:var(--accent)}
+.step.is-failed .step-badge{color:var(--danger)}
+.step-shots{display:flex;gap:8px;flex-wrap:wrap}
+.step-shot{
+  display:flex;
+  flex-direction:column;
+  gap:3px;
+  width:min(168px,calc(50% - 4px));
+  font-size:10.5px;
+  color:var(--text-3);
+  text-decoration:none
+}
+.step-shot img{
+  display:block;
+  width:100%;
+  aspect-ratio:16/9;
+  object-fit:cover;
+  border:1px solid var(--line);
+  border-radius:6px;
+  background:var(--surface)
+}
+.step-shot:hover img{border-color:var(--accent)}
 
 .working{
   display:flex;
@@ -409,10 +476,11 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
   main.wrap{padding:10px 10px 10px}
   .view-head{gap:10px;margin-bottom:10px}
   .view-title h1{font-size:16px}
+  .view-actions .btn-label{display:none}
   .chat-panel{border-radius:var(--r-lg)}
   .chat-inner,.composer-hint{padding-left:14px;padding-right:14px}
   .composer-inner{padding-left:14px;padding-right:7px}
-  .msg-body,.working{max-width:88%}
+  .entry-body,.working{max-width:88%}
   .chat-composer{padding-left:10px;padding-right:10px}
 }
 </style>
@@ -442,9 +510,9 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
 
     {{if eq .Desktop.Status "running"}}
     <div class="view-actions">
-      <button type="button" class="btn btn-default btn-sm" id="clearChat">
+      <button type="button" class="btn btn-default btn-sm" id="clearChat" aria-label="Clear chat">
         <svg width="14" height="14"><use href="#i-trash"/></svg>
-        Clear chat
+        <span class="btn-label">Clear chat</span>
       </button>
     </div>
     {{end}}
@@ -473,9 +541,9 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
       <form class="chat-composer" id="chatForm">
         <div class="composer-inner">
           <textarea id="chatInput"
-                    placeholder="Message {{.Desktop.Name}}…"
+                    placeholder="Ask {{.Desktop.Name}}…"
                     rows="1"
-                    aria-label="Message this desktop's agent"></textarea>
+                    aria-label="Send a request to this desktop's agent"></textarea>
           <button type="submit" class="composer-send" id="chatSend" aria-label="Send">
             <svg width="15" height="15"><use href="#i-send"/></svg>
           </button>
@@ -522,14 +590,14 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
   var toast = Flowera.toast, post = Flowera.post;
 
   var lastVersion = -1;
-  var lastThread = {messages: [], steps: [], running: false};
+  var lastThread = {entries: [], steps: [], running: false};
   var elapsedTimer = null;
 
-  /* Messages sent from this tab that the server's transcript does not show
+  /* Requests sent from this tab that the server's transcript does not show
      yet, oldest first: {key, content, createdAt, state, error, known}.
-     state is "sending", "delivered" or "failed"; known is the set of message
+     state is "sending", "delivered" or "failed"; known is the set of entry
      IDs the transcript already had at send time, so the server's copy of
-     this message is the first new user message with the same text. */
+     this request is the first new user entry with the same text. */
   var pending = [];
   var pendingSeq = 0;
 
@@ -585,7 +653,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
     return svg;
   }
 
-  /* ---------------- message text ----------------
+  /* ---------------- entry text ----------------
      Fenced blocks and inline spans get real markup; everything else stays
      literal text. Content is only ever written through textContent, so an
      agent that echoes HTML back at us renders it, never executes it. */
@@ -674,7 +742,70 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
     return pretty || text;
   }
 
+  /* An action step's screenshots come from the control plane's own image
+     store; anything else in those fields is ignored rather than loaded. */
+  var STEP_IMAGE = /^\/api\/desktops\/step-image\?id=[0-9a-f]+$/;
+
+  var ACTION_BADGES = {
+    needs_approval: {label: "Paused for approval", cls: "is-approval"},
+    failed: {label: "Failed", cls: "is-failed"},
+    done: {label: "Screen", cls: ""}
+  };
+
+  function shotLink(url, label){
+    var link = document.createElement("a");
+    link.className = "step-shot";
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noopener";
+
+    var img = document.createElement("img");
+    img.src = url;
+    img.loading = "lazy";
+    img.alt = label + " screenshot";
+
+    var caption = document.createElement("span");
+    caption.textContent = label;
+
+    link.append(img, caption);
+
+    return link;
+  }
+
+  function actionStepElement(step){
+    var action = step.action;
+    var badge = ACTION_BADGES[action.outcome] || ACTION_BADGES.done;
+
+    var el = document.createElement("div");
+    el.className = "step is-action" + (badge.cls ? " " + badge.cls : "");
+
+    var head = document.createElement("div");
+    head.className = "step-head";
+
+    var label = document.createElement("span");
+    label.className = "step-badge";
+    label.textContent = badge.label;
+
+    var text = document.createElement("span");
+    text.textContent = step.text;
+
+    head.append(label, text);
+    el.appendChild(head);
+
+    var shots = document.createElement("div");
+    shots.className = "step-shots";
+
+    if(STEP_IMAGE.test(action.before || "")){ shots.appendChild(shotLink(action.before, "Before")); }
+    if(STEP_IMAGE.test(action.after || "")){ shots.appendChild(shotLink(action.after, "After")); }
+
+    if(shots.childNodes.length){ el.appendChild(shots); }
+
+    return el;
+  }
+
   function stepElement(step){
+    if(step.action){ return actionStepElement(step); }
+
     var el = document.createElement("div");
     var text = prettyStep(step.text);
 
@@ -707,24 +838,81 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
     return details;
   }
 
-  /* ---------------- messages ---------------- */
+  /* ---------------- entries ---------------- */
 
   var FLAGS = {
     approval: {label: "Needs your approval", icon: "#i-alert"},
     error: {label: "Failed", icon: "#i-alert"}
   };
 
-  function messageElement(message){
-    var fromUser = message.role === "user";
+  /* ---------------- verdicts ---------------- */
+
+  /* Verdicts tapped in this tab that the transcript has not echoed yet, by
+     task ID, so a snapshot arriving mid-request does not flip the button back. */
+  var verdictOverrides = {};
+
+  function setVerdict(entry, verdict){
+    var previous = entry.verdict || "";
+
+    verdictOverrides[entry.task_id] = verdict;
+    entry.verdict = verdict;
+    render(lastThread);
+
+    post("/api/tasks/verdict", {task_id: entry.task_id, verdict: verdict}).then(function(){
+      delete verdictOverrides[entry.task_id];
+    }, function(e){
+      delete verdictOverrides[entry.task_id];
+      entry.verdict = previous;
+      render(lastThread);
+      toast(e.message, "error");
+    });
+  }
+
+  function verdictElement(entry){
+    var wrap = document.createElement("div");
+    wrap.className = "verdict";
+
+    var question = document.createElement("span");
+    question.className = "verdict-q";
+    question.textContent = "Right?";
+    wrap.appendChild(question);
+
+    [["correct", "Correct", "#i-check", "is-correct"], ["wrong", "Wrong", "#i-x", "is-wrong"]].forEach(function(option){
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "verdict-btn " + option[3];
+      button.setAttribute("aria-pressed", entry.verdict === option[0] ? "true" : "false");
+      button.appendChild(icon(option[2], 12));
+      button.appendChild(document.createTextNode(option[1]));
+
+      /* Tapping the verdict already given takes it back. */
+      button.addEventListener("click", function(){
+        setVerdict(entry, entry.verdict === option[0] ? "" : option[0]);
+      });
+
+      wrap.appendChild(button);
+    });
+
+    var link = document.createElement("a");
+    link.className = "verdict-link";
+    link.href = "/tasks/" + encodeURIComponent(entry.task_id);
+    link.textContent = entry.verdict === "wrong" ? "Add a note" : "Record";
+    wrap.appendChild(link);
+
+    return wrap;
+  }
+
+  function entryElement(entry, withVerdict){
+    var fromUser = entry.role === "user";
 
     var row = document.createElement("div");
-    row.className = "msg " + (fromUser ? "from-user" : "from-agent");
+    row.className = "entry " + (fromUser ? "from-user" : "from-agent");
 
-    if(message.kind === "approval"){ row.classList.add("is-approval"); }
-    if(message.kind === "error"){ row.classList.add("is-error"); }
+    if(entry.kind === "approval"){ row.classList.add("is-approval"); }
+    if(entry.kind === "error"){ row.classList.add("is-error"); }
 
     var avatar = document.createElement("div");
-    avatar.className = "msg-avatar";
+    avatar.className = "entry-avatar";
 
     if(fromUser){
       avatar.textContent = "You".charAt(0);
@@ -733,19 +921,19 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
     }
 
     var body = document.createElement("div");
-    body.className = "msg-body";
+    body.className = "entry-body";
 
-    if(message.steps && message.steps.length){
-      body.appendChild(stepsBlock(message.steps, false));
+    if(entry.steps && entry.steps.length){
+      body.appendChild(stepsBlock(entry.steps, false));
     }
 
     var bubble = document.createElement("div");
     bubble.className = "bubble";
 
-    var flag = FLAGS[message.kind];
+    var flag = FLAGS[entry.kind];
     if(flag && !fromUser){
       var flagEl = document.createElement("div");
-      flagEl.className = "msg-flag";
+      flagEl.className = "entry-flag";
       flagEl.appendChild(icon(flag.icon, 12));
 
       var flagText = document.createElement("span");
@@ -755,13 +943,21 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
       bubble.appendChild(flagEl);
     }
 
-    renderContent(bubble, message.content);
+    renderContent(bubble, entry.content);
     body.appendChild(bubble);
 
     var time = document.createElement("div");
-    time.className = "msg-time";
-    time.textContent = relativeTime(message.created_at);
-    body.appendChild(time);
+    time.className = "entry-time";
+    time.textContent = relativeTime(entry.created_at);
+
+    if(withVerdict){
+      var foot = document.createElement("div");
+      foot.className = "entry-foot";
+      foot.append(time, verdictElement(entry));
+      body.appendChild(foot);
+    }else{
+      body.appendChild(time);
+    }
 
     row.append(avatar, body);
 
@@ -772,10 +968,10 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
 
   function workingElement(thread){
     var row = document.createElement("div");
-    row.className = "msg from-agent";
+    row.className = "entry from-agent";
 
     var avatar = document.createElement("div");
-    avatar.className = "msg-avatar";
+    avatar.className = "entry-avatar";
     avatar.appendChild(icon("#i-blossom", 15));
 
     var body = document.createElement("div");
@@ -867,13 +1063,26 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
 
     inner.innerHTML = "";
 
-    if(!thread.messages.length && !thread.running && !pending.length){
+    if(!thread.entries.length && !thread.running && !pending.length){
       inner.appendChild(emptyElement());
       return;
     }
 
-    thread.messages.forEach(function(message){
-      inner.appendChild(messageElement(message));
+    /* One verdict per task, on its latest answer: a retried task answers
+       more than once, and a query is not an answer at all. */
+    var answerFor = {};
+    thread.entries.forEach(function(entry){
+      if(entry.role === "agent" && entry.kind === "entry" && entry.task_id){
+        answerFor[entry.task_id] = entry.id;
+      }
+    });
+
+    thread.entries.forEach(function(entry){
+      if(entry.task_id && verdictOverrides.hasOwnProperty(entry.task_id)){
+        entry.verdict = verdictOverrides[entry.task_id];
+      }
+
+      inner.appendChild(entryElement(entry, answerFor[entry.task_id] === entry.id));
     });
 
     if(thread.running){
@@ -888,19 +1097,19 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
   }
 
   /* ---------------- sending ----------------
-     A sent message is on screen the moment Send is pressed. It used to wait
+     A sent request is on screen the moment Send is pressed. It used to wait
      for the whole round trip - control plane, the desktop's agent, back into
      the transcript, out through the stream - and where the stream was slow to
-     deliver, the human's own message only showed up alongside the agent's
+     deliver, the human's own request only showed up alongside the agent's
      reply to it. The server's transcript stays the source of truth: the local
      copy is dropped as soon as a snapshot contains the real one. */
 
   function pendingElement(item){
-    var row = messageElement({role: "user", kind: "message", content: item.content, created_at: item.createdAt});
+    var row = entryElement({role: "user", kind: "entry", content: item.content, created_at: item.createdAt});
     row.classList.add(item.state === "failed" ? "is-failed" : "is-pending");
 
     var status = document.createElement("div");
-    status.className = "msg-status";
+    status.className = "entry-status";
 
     if(item.state === "failed"){
       var reason = document.createElement("span");
@@ -927,19 +1136,19 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
       status.textContent = item.state === "sending" ? "Sending…" : "Delivered";
     }
 
-    row.querySelector(".msg-time").replaceWith(status);
+    row.querySelector(".entry-time").replaceWith(status);
 
     return row;
   }
 
-  function knownMessageIds(){
+  function knownEntryIds(){
     var known = {};
-    lastThread.messages.forEach(function(message){ known[message.id] = true; });
+    lastThread.entries.forEach(function(entry){ known[entry.id] = true; });
     return known;
   }
 
-  /* Drop every local copy whose real message has arrived. A copy still
-     "sending" counts too: the control plane records the message before it
+  /* Drop every local copy whose real entry has arrived. A copy still
+     "sending" counts too: the control plane records the request before it
      answers the POST, so the stream can deliver it first. */
   function reconcile(thread){
     if(!pending.length){ return; }
@@ -949,11 +1158,11 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
     pending = pending.filter(function(item){
       if(item.state === "failed"){ return true; }
 
-      for(var i = 0; i < thread.messages.length; i++){
-        var message = thread.messages[i];
+      for(var i = 0; i < thread.entries.length; i++){
+        var entry = thread.entries[i];
 
-        if(message.role === "user" && message.content === item.content && !item.known[message.id] && !claimed[message.id]){
-          claimed[message.id] = true;
+        if(entry.role === "user" && entry.content === item.content && !item.known[entry.id] && !claimed[entry.id]){
+          claimed[entry.id] = true;
           return false;
         }
       }
@@ -967,7 +1176,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
 
     item.state = "sending";
     item.error = "";
-    item.known = knownMessageIds();
+    item.known = knownEntryIds();
 
     if(!retrying){ pending.push(item); }
 
@@ -999,7 +1208,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
 
     lastVersion = thread.version;
 
-    thread.messages = thread.messages || [];
+    thread.entries = thread.entries || [];
     thread.steps = thread.steps || [];
 
     lastThread = thread;
@@ -1073,10 +1282,10 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0}
       /* A stream that connects and then delivers nothing. Measured through
          the Cloudflare quick tunnel a phone uses to reach this page: the
          response headers arrive, and not one byte of the body follows - not
-         the snapshot flushed on connect, not the message sent a second
+         the snapshot flushed on connect, not the request sent a second
          later. The old page only fell back to polling on a stream *error*,
          and a held stream never errors, so over the tunnel a sender's own
-         message showed up only when something finally pushed it through,
+         request showed up only when something finally pushed it through,
          usually the agent's reply. Polling is the whole transport here. */
       setTimeout(function(){
         if(gotFrame || source.readyState === EventSource.CLOSED){ return; }

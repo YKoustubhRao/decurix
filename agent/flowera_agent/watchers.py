@@ -1,17 +1,18 @@
 import threading
 import time
 
-from flowera_agent import config, progress, state
-from flowera_agent.harness import continue_after_help, perform_task
+from flowera_agent import config, progress, record_task, replay_task, state, task_context, usage
+from flowera_agent.computer import approval
+from flowera_agent.harness import continue_after_query, perform_task
 from flowera_agent.logging_utils import log
-from flowera_agent.messaging import send_helptext
+from flowera_agent.messaging import send_query
 
 
 # ============================================================
 # Command watcher
 # ============================================================
 
-# How often to say "still waiting" while messages sit queued behind a
+# How often to say "still waiting" while requests sit queued behind a
 # backend that has not come up. The watcher polls every second; the chat
 # wants a heartbeat, not a step line per second.
 QUEUE_NOTICE_SECONDS = 30
@@ -24,10 +25,10 @@ _deferred_logged = set()
 
 def _report_queued(name):
     """
-    Say, at most every QUEUE_NOTICE_SECONDS, that messages are waiting for
+    Say, at most every QUEUE_NOTICE_SECONDS, that requests are waiting for
     the reasoning backend.
 
-    The human has already seen their message appear in the chat, which opens
+    The human has already seen their request appear in the chat, which opens
     a turn and starts the "Working..." card, so silence here would read as a
     hang. This is the only thing that distinguishes "queued, will run" from
     "stuck".
@@ -52,8 +53,37 @@ def _report_queued(name):
 
     progress.emit(
         "Waiting for the model backend to come up - "
-        "your message is queued and will run as soon as it is reachable."
+        "your request is queued and will run as soon as it is reachable."
     )
+
+
+def _needs_no_backend(content):
+    """Whether a request is handled without the reasoning backend ("/replay", "/record")."""
+
+    return bool(replay_task.parse(content)) or record_task.parse(content) is not None
+
+
+HANDLED_SUFFIX = ".done"
+
+
+def _mark_handled(path):
+    """
+    Rename a dispatched request file so no later pass - and no later life of
+    this process - picks it up again.
+
+    state.processed_commands is memory; the command directory is the desktop's
+    persistent volume. Every restart used to replay every request the desktop
+    had ever been sent: measured running the GUI benchmark, which restarts a
+    desktop between tasks, each new task queued behind replays of all the
+    earlier ones, and the answers came back about signing in to an admin panel
+    for a spreadsheet task. Renamed rather than deleted, so the history of what
+    the desktop was asked stays on disk.
+    """
+
+    try:
+        path.rename(path.with_name(path.name + HANDLED_SUFFIX))
+    except OSError as exc:
+        log(f"Could not mark {path.name} as handled: {exc}")
 
 
 def command_watcher():
@@ -111,13 +141,15 @@ def command_watcher():
                 # later pass, exactly as the "task already running" case
                 # below does.
                 #
-                # Not failing the task here is the whole point: a message
+                # Not failing the task here is the whole point: a request
                 # that arrives a moment before the model is up used to be
                 # burned - dispatched, failed on the first request, and
-                # turned into a help request asking a human to do something
+                # turned into a query asking a human to do something
                 # about a backend that was about to come up on its own.
                 # Waiting costs nothing and needs no one.
-                if not state.backend_ready:
+                # A recording or a replay uses no model, so neither waits for
+                # one - unless the agent is paused, when it is a reply.
+                if not state.backend_ready and (state.waiting_for_query or not _needs_no_backend(content)):
                     _report_queued(path.name)
                     continue
 
@@ -125,13 +157,42 @@ def command_watcher():
                     path.name
                 )
 
-                # If the agent is waiting for human help,
-                # this new command is the help response.
-                if state.waiting_for_help:
+                # If the agent is waiting on a query answer,
+                # this new command is the reply.
+                if state.waiting_for_query:
+
+                    # A reply belongs to the paused task. A desktop whose
+                    # task started before the control plane sent IDs takes
+                    # the one its reply carries.
+                    if not state.current_task_id:
+                        task_context.start(task_context.task_id_from_filename(path.name))
+
+                    # If what it is waiting on is an on-screen action the
+                    # approval gate stopped, this reply is what settles it:
+                    # a yes becomes a one-shot grant for exactly that action,
+                    # anything else withdraws it. Done here, before the
+                    # harness sees the reply, so whichever engine repeats
+                    # the action finds the grant already in place.
+                    outcome = None
+                    try:
+                        outcome = approval.resolve_reply(content)
+                        if outcome:
+                            log(f"On-screen approval {outcome} by the human's reply.")
+                    except OSError as exc:
+                        log(f"Could not settle the on-screen approval: {exc}")
+
+                    _mark_handled(path)
+
+                    # A paused replay takes its own reply; it is still a
+                    # reply either way, which is all tasks.Plan mirrors.
+                    if state.paused_replay is not None:
+                        target, args = replay_task.resume, (content, outcome)
+                    else:
+                        target, args = continue_after_query, (content,)
 
                     thread = threading.Thread(
-                        target=continue_after_help,
-                        args=(content,),
+                        target=target,
+                        args=args,
                         daemon=True,
                     )
 
@@ -147,7 +208,7 @@ def command_watcher():
                 # would otherwise start a thread and then test
                 # current_task again for the next file before that thread
                 # had run a single line, and dispatch a second task on top
-                # of the first. Nearly unreachable while messages only
+                # of the first. Nearly unreachable while requests only
                 # trickled in one at a time - routine now that a backlog
                 # can be released all at once when the backend comes up.
                 with state.state_lock:
@@ -155,7 +216,7 @@ def command_watcher():
                     if state.current_task is not None:
 
                         # Once per file: the watcher passes every second,
-                        # and a queued message behind a five-minute model
+                        # and a queued request behind a five-minute model
                         # call used to write three hundred of these lines.
                         if path.name not in _deferred_logged:
                             _deferred_logged.add(path.name)
@@ -173,8 +234,31 @@ def command_watcher():
 
                     state.current_task = content
 
+                # Reports from here on belong to this request's task record,
+                # and so does what the engine uses.
+                task_context.start(task_context.task_id_from_filename(path.name), request=content)
+                usage.reset()
+
+                _mark_handled(path)
+
+                # A new task: nothing an earlier one was approved for, or was
+                # stopped on, carries over into it.
+                try:
+                    approval.reset()
+                except OSError as exc:
+                    log(f"Could not clear on-screen approvals: {exc}")
+
+                # "/replay <recording>" runs a recording and "/record <task>"
+                # records a person doing it; neither goes to an engine.
+                if replay_task.parse(content):
+                    target = replay_task.perform
+                elif record_task.parse(content) is not None:
+                    target = record_task.perform
+                else:
+                    target = perform_task
+
                 thread = threading.Thread(
-                    target=perform_task,
+                    target=target,
                     args=(
                         content,
                         path,
@@ -193,21 +277,21 @@ def command_watcher():
 
 
 # ============================================================
-# Help text watcher (defunct, useful to have)
+# Query text watcher (defunct, useful to have)
 # ============================================================
 
-def helptext_watcher():
+def querytext_watcher():
     """
     Existing functionality:
-    watches helptext/ and sends newly-created or
+    watches querytext/ and sends newly-created or
     modified .txt files to the control plane.
 
-    This remains useful for agent-generated help requests.
+    This remains useful for agent-generated queries.
     """
 
     log(
-        f"Watching helptext directory: "
-        f"{config.HELPTEXT_DIR}"
+        f"Watching querytext directory: "
+        f"{config.QUERYTEXT_DIR}"
     )
 
     seen = {}
@@ -216,7 +300,7 @@ def helptext_watcher():
 
         try:
 
-            for path in config.HELPTEXT_DIR.glob("*.txt"):
+            for path in config.QUERYTEXT_DIR.glob("*.txt"):
 
                 try:
                     stat = path.stat()
@@ -241,19 +325,19 @@ def helptext_watcher():
 
                 except Exception as exc:
                     log(
-                        f"Could not read help file "
+                        f"Could not read query file "
                         f"{path}: {exc}"
                     )
                     continue
 
-                send_helptext(
+                send_query(
                     path.name,
                     content,
                 )
 
         except Exception as exc:
             log(
-                f"Helptext watcher error: "
+                f"Query text watcher error: "
                 f"{exc}"
             )
 

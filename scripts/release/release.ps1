@@ -88,9 +88,15 @@ function Copy-Bundle {
     if ($Goos -eq "windows") {
         $run = ".\flowera.exe"
         $copyEnv = "copy .env.example .env"
+        $dataDir = "%AppData%\flowera"
     } else {
         $run = "./flowera"
         $copyEnv = "cp .env.example .env"
+        $dataDir = "~/.config/flowera"
+    }
+
+    if ($Goos -eq "darwin") {
+        $dataDir = "~/Library/Application Support/flowera"
     }
 
     Copy-Item ".env.example" (Join-Path $Dest ".env.example")
@@ -122,10 +128,11 @@ Setup
 
          $copyEnv
 
-     Edit .env -- set DEFAULT_PASSWORD (the VNC password for new desktops)
-     and, if you want to use the Claude harness, ANTHROPIC_API_KEY. Flowera
-     reads .env from the working directory, or from the folder the executable
-     lives in. Plain environment variables work too.
+     Edit .env -- set DEFAULT_PASSWORD (the VNC password for new desktops).
+     Flowera reads .env from the working directory, or from the folder the
+     executable lives in. Plain environment variables work too. The Claude
+     harness needs no .env entry -- log in from the dashboard instead, next
+     to the "Claude Code" option when creating a desktop.
 
      Workers think with a model served by Ollama (https://ollama.com).
      OLLAMA_URL picks the server (default: the Ollama on this machine) and
@@ -148,6 +155,9 @@ Notes
   * Flowera listens on port 8080 and talks to Docker through the local Docker
     socket / named pipe. On Linux the user must be able to reach
     /var/run/docker.sock (usually: be in the "docker" group).
+  * Task records, chats, queries, worker memory and action screenshots
+    are kept in flowera.db under $dataDir, so they survive a
+    restart. Set FLOWERA_DATA_DIR to keep them somewhere else.
   * $run --version prints the build this bundle was cut from.
   * Full docs: https://github.com/YKoustubhRao/flowera
 "@

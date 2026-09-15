@@ -11,12 +11,12 @@ import (
 	"github.com/YKoustubhRao/flowera/internal/desktop"
 )
 
-// TestSendMessageError covers the mapping a human actually sees in the chat's
+// TestSendRequestError covers the mapping a human actually sees in the chat's
 // error toast. The case that matters is ErrAgentUnreachable: a desktop whose
-// agent has not bound :8081 yet used to answer every message with a blanket
+// agent has not bound :8081 yet used to answer every request with a blanket
 // HTTP 500 reading "internal server error", which said nothing about what was
 // wrong or whether retrying would help.
-func TestSendMessageError(t *testing.T) {
+func TestSendRequestError(t *testing.T) {
 	tests := []struct {
 		name       string
 		err        error
@@ -25,7 +25,7 @@ func TestSendMessageError(t *testing.T) {
 	}{
 		{
 			name:       "agent not listening yet",
-			err:        fmt.Errorf("send message to desktop box: %w: dial tcp: connection refused", desktop.ErrAgentUnreachable),
+			err:        fmt.Errorf("send request to desktop box: %w: dial tcp: connection refused", desktop.ErrAgentUnreachable),
 			wantStatus: http.StatusServiceUnavailable,
 			wantSubstr: "not ready yet",
 		},
@@ -43,7 +43,7 @@ func TestSendMessageError(t *testing.T) {
 		},
 		{
 			name:       "anything else stays a 500",
-			err:        fmt.Errorf("encode message: boom"),
+			err:        fmt.Errorf("encode request: boom"),
 			wantStatus: http.StatusInternalServerError,
 			wantSubstr: "internal server error",
 		},
@@ -53,7 +53,7 @@ func TestSendMessageError(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
 
-			sendMessageError(rec, tc.err)
+			sendRequestError(rec, tc.err)
 
 			if rec.Code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d", rec.Code, tc.wantStatus)
@@ -68,7 +68,7 @@ func TestSendMessageError(t *testing.T) {
 				t.Errorf("error = %q, want it to contain %q", body["error"], tc.wantSubstr)
 			}
 
-			// jsonError's rule, which the new curated messages must not
+			// jsonError's rule, which the new curated reasons must not
 			// quietly opt out of: the underlying error text never reaches
 			// the client.
 			if strings.Contains(body["error"], "dial tcp") || strings.Contains(body["error"], "boom") {

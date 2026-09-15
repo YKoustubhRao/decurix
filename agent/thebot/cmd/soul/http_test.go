@@ -564,7 +564,7 @@ func fakeGit(t *testing.T) {
 // The whole approval round trip over HTTP: the job pauses and says why,
 // and the human's "yes" in the same session carries on from the checkpoint
 // rather than starting the request again.
-func TestChatPausesForApprovalAndTheNextMessageInTheSessionResumesIt(t *testing.T) {
+func TestChatPausesForApprovalAndTheNextRequestInTheSessionResumesIt(t *testing.T) {
 	fakeGit(t)
 	s := newTestServer(t)
 

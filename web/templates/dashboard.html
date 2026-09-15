@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="color-scheme" content="light dark">
-<title>Help · Flowera</title>
+<title>Queries · Flowera</title>
 
 {{template "theme"}}
 
@@ -113,14 +113,14 @@
 <div id="progress"></div>
 <div id="toasts"></div>
 
-{{template "topbar" "help"}}
+{{template "topbar" "queries"}}
 
 <main class="wrap wrap-narrow">
 
   <div class="page-head">
     <div>
       <div class="eyebrow">Inbox</div>
-      <h1>Help requests</h1>
+      <h1>Queries</h1>
       <p class="page-sub">Your agents stop and ask here before anything they can't undo.</p>
     </div>
   </div>
@@ -281,7 +281,7 @@
       button.disabled = true;
 
       try{
-        await post("/api/helpnotes/close", {id: id});
+        await post("/api/querynotes/close", {id: id});
 
         card.classList.add("resolving");
 

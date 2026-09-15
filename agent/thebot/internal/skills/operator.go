@@ -85,10 +85,11 @@ HELP:
 - HELP only when no command can unblock you: the human has to choose, give you a secret, or do something outside this machine. Not knowing yet is not being blocked - run a command and find out.
 - Before a payment, sending a message as the human, publishing, or deleting something that cannot be recovered, reply HELP saying exactly what you would do.
 - Commands run in %s with no terminal attached: never open editors or pagers, and pass -y to installers.
+- For anything in a window (a web page in the browser, LibreOffice, a text editor) use the gui command: gui observe lists the screen's elements with refs like e12, then gui click e12, gui type e12 "text", gui key ctrl+s, gui select e12 "option", gui open <url|file|app>. Every gui action prints what changed. gui recordings <words> finds a recorded demonstration of a task, and gui replay <id> runs it again.
 %s
 Task: %s`
 
-// successHelpNudge answers a HELP that arrives straight after a command
+// successQueryNudge answers a HELP that arrives straight after a command
 // succeeded, with that command's output in front of the model again.
 //
 // Measured on qwen2.5-coder:3b through this loop: asked "how many files are
@@ -98,7 +99,7 @@ Task: %s`
 // answer - under HELP. Both paged a human about a task that was already
 // done. A HELP that neither follows a failure nor asks for anything a human
 // alone can give is a mislabelled answer far more often than a real block.
-const successHelpNudge = `Nothing failed: your last command finished with exit code 0 and printed:
+const successQueryNudge = `Nothing failed: your last command finished with exit code 0 and printed:
 
 %s
 
@@ -110,10 +111,10 @@ Only reply HELP again if the human really has to act - to choose between options
 // a person can give. Such a HELP is always delivered, never pushed back on.
 var humanOnlyRe = regexp.MustCompile(`(?i)\b(approv|permission|consent|confirm|authori[sz]|password|passphrase|token|api[ -]?key|credential|secret|log ?in|sign ?in|2fa|otp|which\s+(one|of)|choose|pick|prefer|decide|should\s+i|do\s+you\s+want|payment|pay\b|purchase|send(ing)?\s+(an?\s+)?(e-?mail|message|sms)|publish|push)`)
 
-// prematureHelpNudge answers a HELP sent before any command ran. Its last
+// prematureQueryNudge answers a HELP sent before any command ran. Its last
 // paragraph matters: HELP is also the approval brake, and this must never
 // talk the model out of asking permission.
-const prematureHelpNudge = `You asked for help before running a single command, so nothing has been tried yet.
+const prematureQueryNudge = `You asked for help before running a single command, so nothing has been tried yet.
 
 If you can already answer - including from the facts you were given - answer now with DONE.
 If you could find out by running something, run it with COMMAND.
@@ -212,7 +213,13 @@ func (o *OperatorSkill) commandTimeout() time.Duration {
 func (o *OperatorSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	st, resumed := rc.Resume.(*operatorState)
 	if resumed && st != nil {
-		st = o.resume(rc, subtask, st)
+		var blocked string
+		st, blocked = o.resume(rc, subtask, st)
+		if blocked != "" {
+			res := NeedsApproval(subtask, o.Name(), st.Pending, blocked, st)
+			res.Meta["commands"] = st.Commands
+			return res, nil
+		}
 	} else {
 		st = o.start(rc, subtask)
 	}
@@ -232,38 +239,85 @@ func (o *OperatorSkill) start(rc RunContext, subtask Subtask) *operatorState {
 
 // resume continues a paused transcript with the human's reply: an approved
 // command runs now, anything else is handed to the model as their answer.
-func (o *OperatorSkill) resume(rc RunContext, subtask Subtask, st *operatorState) *operatorState {
+// A non-empty reason back means the approved command was stopped again on
+// screen, and st.Pending holds it.
+func (o *OperatorSkill) resume(rc RunContext, subtask Subtask, st *operatorState) (*operatorState, string) {
 	reply := strings.TrimSpace(rc.HumanReply)
 	if st.Pending != "" {
 		pending := st.Pending
 		st.Pending = ""
 		if rc.IsApproved(pending) {
 			rc.Logf("operator", "approved - running it now")
-			o.execute(rc, st, pending)
-			return st
+			if blocked := o.execute(rc, st, pending); blocked != "" {
+				st.Pending = pending
+				return st, blocked
+			}
+			return st, ""
 		}
 		note := fmt.Sprintf("The human did not approve running:\n$ %s", pending)
 		if reply != "" {
 			note += "\n\nTheir reply: " + reply
 		}
 		st.Messages = append(st.Messages, llm.Message{Role: "user", Content: note + "\n\nContinue the task without running that command."})
-		return st
+		return st, ""
 	}
 	if reply != "" {
 		st.Messages = append(st.Messages, llm.Message{Role: "user", Content: "The human replied: " + reply + "\n\nContinue the task."})
 	}
-	return st
+	return st, ""
 }
 
-func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string) {
+// execute runs one command and records it in the transcript. It returns a
+// non-empty reason, and records nothing, when the command was an on-screen
+// action that Flowera's approval gate stopped - the caller pauses for
+// approval exactly as it does for a command internal/safety stops.
+func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string) string {
 	rc.Logf("operator", "$ %s", command)
 	res := runShell(rc.Ctx, rc.Dir(), command, o.commandTimeout())
+	if reason := screenApprovalReason(res); reason != "" {
+		rc.Logf("operator", "approval needed on screen - %s", reason)
+		return reason
+	}
 	rc.Logf("operator", "%s", headline(res))
 	st.CommandsRun++
 	st.Commands = append(st.Commands, command)
 	st.LastCommand = command
 	st.LastResult = &res
 	st.Messages = append(st.Messages, llm.Message{Role: "user", Content: formatCommandResult(res)})
+	return ""
+}
+
+// guiApprovalExit and guiApprovalMarker are how Flowera's `gui` command says
+// its approval gate stopped an on-screen action and nothing happened
+// (flowera_agent/computer/approval.py). internal/safety cannot see this one
+// coming: "gui click e35" says nothing about what e35 is. Only the gate,
+// which resolves e35 to a "Send newsletter" button, knows - so the operator
+// takes the command's own word for it.
+const (
+	guiApprovalExit   = 3
+	guiApprovalMarker = "NEEDS_APPROVAL:"
+)
+
+// screenApprovalReason finds the gate's marker on any line of the output, not
+// only the first: a small model chains several gui commands into one, and
+// the shell's exit code is then the last command's, not the stopped one's.
+func screenApprovalReason(r shellResult) string {
+	for _, raw := range strings.Split(r.Output, "\n") {
+		line := strings.TrimSpace(raw)
+		if !strings.HasPrefix(line, guiApprovalMarker) {
+			continue
+		}
+		line = strings.TrimSpace(strings.TrimPrefix(line, guiApprovalMarker))
+		if r.ExitCode != guiApprovalExit && !strings.HasPrefix(line, "Approval needed before I ") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "Approval needed before I ")
+		if i := strings.Index(line, ". Nothing was"); i >= 0 {
+			line = line[:i]
+		}
+		return "on screen it would " + line
+	}
+	return ""
 }
 
 func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) (Result, error) {
@@ -314,18 +368,18 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 		case "help":
 			if st.CommandsRun == 0 && !st.Nudged {
 				st.Nudged = true
-				rc.Logf("operator", "asked for help before trying anything - pushing back once")
-				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: prematureHelpNudge})
+				rc.Logf("operator", "had a query before trying anything - pushing back once")
+				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: prematureQueryNudge})
 				continue
 			}
 			if st.LastResult != nil && st.LastResult.ExitCode == 0 && !st.SuccessNudged && !humanOnlyRe.MatchString(value) {
 				st.SuccessNudged = true
-				rc.Logf("operator", "asked for help right after a command succeeded - showing it the output again")
+				rc.Logf("operator", "had a query right after a command succeeded - showing it the output again")
 				out := strings.TrimSpace(st.LastResult.Output)
 				if out == "" {
 					out = "(no output)"
 				}
-				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: fmt.Sprintf(successHelpNudge, truncateText(out, maxCommandOutputChars))})
+				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: fmt.Sprintf(successQueryNudge, truncateText(out, maxCommandOutputChars))})
 				continue
 			}
 			st.Messages = append(st.Messages, reply)
@@ -381,7 +435,12 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				res.Meta["commands"] = st.Commands
 				return res, nil
 			}
-			o.execute(rc, st, value)
+			if blocked := o.execute(rc, st, value); blocked != "" {
+				st.Pending = value
+				res := NeedsApproval(subtask, o.Name(), value, blocked, st)
+				res.Meta["commands"] = st.Commands
+				return res, nil
+			}
 
 		default:
 			invalid++

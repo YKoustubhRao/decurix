@@ -88,7 +88,7 @@ func TestOperatorIgnoresAPredictedAnswerAfterACommand(t *testing.T) {
 	}
 }
 
-func TestOperatorPushesBackOnceOnHelpBeforeTrying(t *testing.T) {
+func TestOperatorPushesBackOnceOnQueryBeforeTrying(t *testing.T) {
 	chat := &scriptedChat{replies: []string{
 		"HELP:\nWhy do you want to know the desktop name?",
 		"DONE:\nThis desktop is called kilo.",
@@ -101,7 +101,7 @@ func TestOperatorPushesBackOnceOnHelpBeforeTrying(t *testing.T) {
 
 // Once pushed back, a second HELP is real - the agent must always be able
 // to escalate, and HELP is also how it asks for approval.
-func TestOperatorDeliversASecondHelpAndCanResumeWithTheReply(t *testing.T) {
+func TestOperatorDeliversASecondQueryAndCanResumeWithTheReply(t *testing.T) {
 	chat := &scriptedChat{replies: []string{
 		"HELP:\nWhich project should I delete?",
 		"HELP:\nThere are two projects, alpha and beta. Which one?",
@@ -193,6 +193,55 @@ func TestOperatorPausesForApprovalAndResumes(t *testing.T) {
 	}
 }
 
+// "gui click e35" gives internal/safety nothing to match; only Flowera's
+// screen gate knows e35 is a Send button. Its exit code must pause the job
+// exactly like a gated shell command, and an approval must run it again.
+func TestOperatorPausesWhenTheScreenGateStopsAGuiAction(t *testing.T) {
+	chat := &scriptedChat{replies: []string{
+		"COMMAND:\ngui click e35",
+		"DONE:\nThe newsletter was sent.",
+	}}
+	op := NewOperator()
+	rc := operatorContext(t, chat)
+
+	// A fake gui: stopped until the grant file exists, as the real gate is
+	// until a human's approval turns into a grant.
+	bin := t.TempDir()
+	grant := filepath.Join(t.TempDir(), "granted")
+	script := "#!/bin/sh\nif [ -f " + grant + " ]; then echo 'Clicked button \"Send newsletter\" (e35).'; exit 0; fi\n" +
+		"echo 'NEEDS_APPROVAL: Approval needed before I click button \"Send newsletter\" (e35) in \"Newsletter\": it sends something on your behalf. Nothing was clicked or sent.'\nexit 3\n"
+	if err := os.WriteFile(filepath.Join(bin, "gui"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	res, _ := op.Run(rc, Subtask{Step: "send the newsletter", Type: "operator"})
+	if res.Meta["needsApproval"] != true || res.Meta["action"] != "gui click e35" || res.Checkpoint == nil {
+		t.Fatalf("result = %+v, want a paused approval for the click", res)
+	}
+	reason, _ := res.Meta["approvalReason"].(string)
+	if !strings.Contains(reason, `click button "Send newsletter"`) || strings.Contains(reason, "Nothing was") {
+		t.Errorf("approvalReason = %q, want the gate's description of the click, trimmed", reason)
+	}
+	if cmds, _ := res.Meta["commands"].([]string); len(cmds) != 0 {
+		t.Fatalf("commands = %v - a stopped action was recorded as run", cmds)
+	}
+
+	if err := os.WriteFile(grant, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rc.Resume = res.Checkpoint
+	rc.HumanReply = "yes"
+	rc.Approved = func(action string) bool { return action == "gui click e35" }
+	res, _ = op.Run(rc, Subtask{Step: "send the newsletter", Type: "operator"})
+	if !res.Verified || res.Output != "The newsletter was sent." {
+		t.Fatalf("resumed result = %+v", res)
+	}
+	if !strings.Contains(chat.calls[1][len(chat.calls[1])-1].Content, "Clicked button") {
+		t.Error("the approved click did not run on resume")
+	}
+}
+
 func TestOperatorResumesWithoutTheCommandWhenNotApproved(t *testing.T) {
 	chat := &scriptedChat{replies: []string{
 		"COMMAND:\ngit push origin main",
@@ -276,7 +325,7 @@ func TestResolveWritePathUsesTheWorkingDirectory(t *testing.T) {
 // Measured live: a 3B model ran `ls -l /etc | wc -l`, saw exit 0 and "118",
 // and replied HELP "It seems there was an error. Please try running the
 // command again." One grounded push back gets the answer.
-func TestOperatorPushesBackOnHelpRightAfterASuccess(t *testing.T) {
+func TestOperatorPushesBackOnQueryRightAfterASuccess(t *testing.T) {
 	chat := &scriptedChat{replies: []string{
 		"COMMAND:\necho 118",
 		"HELP:\nIt seems there was an error. Please try running the command again.",
@@ -293,7 +342,7 @@ func TestOperatorPushesBackOnHelpRightAfterASuccess(t *testing.T) {
 
 // A HELP that asks for something only a person can give is delivered at
 // once, even straight after a success.
-func TestOperatorDeliversAGenuineHelpAfterASuccess(t *testing.T) {
+func TestOperatorDeliversAGenuineQueryAfterASuccess(t *testing.T) {
 	chat := &scriptedChat{replies: []string{
 		"COMMAND:\nls ~/projects",
 		"HELP:\nThere are two projects, alpha and beta - which one should I delete?",
@@ -304,7 +353,7 @@ func TestOperatorDeliversAGenuineHelpAfterASuccess(t *testing.T) {
 	}
 }
 
-// Measured: HELP: NEEDS_TOOLS reached a human as a whole help request.
+// Measured: HELP: NEEDS_TOOLS reached a human as a whole query.
 func TestOperatorNeverDeliversTheChatSignal(t *testing.T) {
 	chat := &scriptedChat{replies: []string{"HELP: NEEDS_TOOLS", "NEEDS_TOOLS", "DONE:\npong"}}
 	res, _ := NewOperator().Run(operatorContext(t, chat), Subtask{Step: "ping - just reply pong", Type: "operator"})

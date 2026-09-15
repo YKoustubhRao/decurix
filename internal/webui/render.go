@@ -1,14 +1,17 @@
-// Package webui renders the HTML dashboard/messages pages.
+// Package webui renders the HTML dashboard/requests pages.
 package webui
 
 import (
 	"html/template"
 	"io"
 	"path"
+	"strings"
+	"time"
 
 	"github.com/YKoustubhRao/flowera/internal/desktop"
-	"github.com/YKoustubhRao/flowera/internal/helpnotes"
 	"github.com/YKoustubhRao/flowera/internal/memory"
+	"github.com/YKoustubhRao/flowera/internal/querynotes"
+	"github.com/YKoustubhRao/flowera/internal/tasks"
 	"github.com/YKoustubhRao/flowera/web"
 )
 
@@ -38,9 +41,9 @@ type PageData struct {
 	TunnelURL       string
 }
 
-// HelpNotesPageData is the template data for the help-notes dashboard.
-type HelpNotesPageData struct {
-	Notes []helpnotes.HelpNote
+// QueryNotesPageData is the template data for the query-notes dashboard.
+type QueryNotesPageData struct {
+	Notes []querynotes.QueryNote
 }
 
 // DesktopViewPageData is the template data for a single desktop's detail
@@ -49,16 +52,118 @@ type DesktopViewPageData struct {
 	Desktop desktop.Desktop
 }
 
-// Renderer loads and executes the web UI's HTML templates.
-type Renderer struct {
-	indexTmpl *template.Template
+// WindowOption is one report period the task dashboard offers.
+type WindowOption struct {
+	Value  string
+	Label  string
+	Phrase string
+	Active bool
 }
 
-// NewRenderer parses the templates that are safe to parse once at startup.
+// TasksPageData is the template data for the task records dashboard.
+type TasksPageData struct {
+	Window  WindowOption
+	Windows []WindowOption
+	Report  tasks.Report
+	Tasks   []tasks.Summary
+	Filter  tasks.Filter
+}
+
+// TaskPageData is the template data for one task record.
+type TaskPageData struct {
+	Task tasks.Detail
+}
+
+// RecordingsPageData is the template data for one desktop's recordings page.
+// The recordings are not in it: the page reads them from the desktop, which
+// keeps them. Session is the recording to open first, if any.
+type RecordingsPageData struct {
+	Desktop desktop.Desktop
+	Session string
+}
+
+// taskFuncs are the formatting helpers the task pages need, which are about
+// presenting records rather than anything a page should compute itself.
+var taskFuncs = template.FuncMap{
+	"engineLabel": tasks.EngineLabel,
+	"typeLabel":   tasks.TypeLabel,
+	"statusLabel": tasks.StatusLabel,
+	"contains":    strings.Contains,
+	"reasonLabel": tasks.ReasonLabel,
+	"duration":    tasks.FormatDuration,
+	"cost":        tasks.FormatCost,
+	"isApproval":  tasks.IsApprovalReason,
+	"since": func(from, to time.Time) time.Duration {
+		if from.IsZero() || to.IsZero() {
+			return 0
+		}
+		return to.Sub(from)
+	},
+	"iso": func(t time.Time) string {
+		if t.IsZero() {
+			return ""
+		}
+		return t.Format(time.RFC3339)
+	},
+	"clock": func(t time.Time) string {
+		if t.IsZero() {
+			return ""
+		}
+		return t.Format("02 Jan, 15:04")
+	},
+	"add": func(a, b int) int { return a + b },
+	"now": time.Now,
+	"percent": func(part, whole int) int {
+		if whole <= 0 {
+			return 0
+		}
+		return int(float64(part)*100/float64(whole) + 0.5)
+	},
+	"deref": func(value *int64) int64 {
+		if value == nil {
+			return 0
+		}
+		return *value
+	},
+	"live": func(status string) bool {
+		return status == tasks.StatusQueued || status == tasks.StatusRunning || status == tasks.StatusWaiting
+	},
+}
+
+// Renderer loads and executes the web UI's HTML templates.
+type Renderer struct {
+	indexTmpl      *template.Template
+	requestsTmpl   *template.Template
+	dashboardTmpl  *template.Template
+	desktopTmpl    *template.Template
+	tasksTmpl      *template.Template
+	taskTmpl       *template.Template
+	recordingsTmpl *template.Template
+}
+
+// NewRenderer parses all templates once at startup.
 func NewRenderer() *Renderer {
 	return &Renderer{
 		indexTmpl: template.Must(
 			template.ParseFS(web.TemplatesFS, templatePaths("index.html")...),
+		),
+		requestsTmpl: template.Must(
+			template.ParseFS(web.TemplatesFS, templatePaths("requests.html")...),
+		),
+		dashboardTmpl: template.Must(
+			template.ParseFS(web.TemplatesFS, templatePaths("dashboard.html")...),
+		),
+		desktopTmpl: template.Must(
+			template.ParseFS(web.TemplatesFS, templatePaths("desktop.html")...),
+		),
+		tasksTmpl: template.Must(
+			template.New("tasks.html").Funcs(taskFuncs).ParseFS(web.TemplatesFS, templatePaths("tasks.html")...),
+		),
+		taskTmpl: template.Must(
+			template.New("task.html").Funcs(taskFuncs).ParseFS(web.TemplatesFS, templatePaths("task.html")...),
+		),
+		recordingsTmpl: template.Must(
+			template.ParseFS(web.TemplatesFS, templatePaths("recordings.html")...),
 		),
 	}
 }
@@ -68,35 +173,35 @@ func (rd *Renderer) RenderIndex(w io.Writer, data PageData) error {
 	return rd.indexTmpl.ExecuteTemplate(w, "index.html", data)
 }
 
-// RenderMessages renders the messages page. The template is re-parsed on
-// every call, matching the original handler's behavior.
-func (rd *Renderer) RenderMessages(w io.Writer, data PageData) error {
-	tmpl := template.Must(
-		template.ParseFS(web.TemplatesFS, templatePaths("messages.html")...),
-	)
-
-	return tmpl.ExecuteTemplate(w, "messages.html", data)
+// RenderRequests renders the requests page.
+func (rd *Renderer) RenderRequests(w io.Writer, data PageData) error {
+	return rd.requestsTmpl.ExecuteTemplate(w, "requests.html", data)
 }
 
-// RenderHelpNotesDashboard renders the help-notes dashboard. The template is
-// re-parsed on every call, matching the original handler's behavior.
-func (rd *Renderer) RenderHelpNotesDashboard(w io.Writer, data HelpNotesPageData) error {
-	tmpl := template.Must(
-		template.ParseFS(web.TemplatesFS, templatePaths("dashboard.html")...),
-	)
-
-	return tmpl.ExecuteTemplate(w, "dashboard.html", data)
+// RenderQueryNotesDashboard renders the query-notes dashboard.
+func (rd *Renderer) RenderQueryNotesDashboard(w io.Writer, data QueryNotesPageData) error {
+	return rd.dashboardTmpl.ExecuteTemplate(w, "dashboard.html", data)
 }
 
 // RenderDesktopView renders a single desktop's detail page (Desktop/Agent
-// tabs, split view). The template is re-parsed on every call, matching the
-// other secondary pages' behavior.
+// tabs, split view).
 func (rd *Renderer) RenderDesktopView(w io.Writer, data DesktopViewPageData) error {
-	tmpl := template.Must(
-		template.ParseFS(web.TemplatesFS, templatePaths("desktop.html")...),
-	)
+	return rd.desktopTmpl.ExecuteTemplate(w, "desktop.html", data)
+}
 
-	return tmpl.ExecuteTemplate(w, "desktop.html", data)
+// RenderTasks renders the task records dashboard.
+func (rd *Renderer) RenderTasks(w io.Writer, data TasksPageData) error {
+	return rd.tasksTmpl.ExecuteTemplate(w, "tasks.html", data)
+}
+
+// RenderTask renders one task record.
+func (rd *Renderer) RenderTask(w io.Writer, data TaskPageData) error {
+	return rd.taskTmpl.ExecuteTemplate(w, "task.html", data)
+}
+
+// RenderRecordings renders one desktop's recordings page.
+func (rd *Renderer) RenderRecordings(w io.Writer, data RecordingsPageData) error {
+	return rd.recordingsTmpl.ExecuteTemplate(w, "recordings.html", data)
 }
 
 // FaviconSVG is the Flowera brand mark, served as the control plane's favicon.

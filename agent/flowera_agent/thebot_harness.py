@@ -3,14 +3,14 @@ import time
 import urllib.error
 import urllib.request
 
-from flowera_agent import config, progress, state
+from flowera_agent import config, progress, state, usage
 from flowera_agent.identity import get_identity_context
 from flowera_agent.logging_utils import log
 from flowera_agent.memory_context import get_memory_context
 from flowera_agent.messaging import (
-    ask_for_help,
+    ask_for_query,
     backend_failure_note,
-    write_final_message,
+    write_final_reply,
 )
 from flowera_agent.readiness import wait_for_http_ok
 
@@ -22,9 +22,9 @@ from flowera_agent.readiness import wait_for_http_ok
 # CLI-per-task model, TheBot's `soul` binary is a persistent HTTP server
 # (started once as a background daemon by start_agent_terminal.sh, not
 # shelled out to per task) with its own atomizer/scheduler/skills loop
-# inside it. This harness only ever submits a message over HTTP and follows
+# inside it. This harness only ever submits a request over HTTP and follows
 # the real job to completion - it does not reimplement any of TheBot's
-# reasoning. Exposes the same perform_task/continue_after_help signatures
+# reasoning. Exposes the same perform_task/continue_after_query signatures
 # so harness.py can dispatch to it interchangeably with the other two.
 #
 # The job is followed over soul's own SSE stream rather than polled, so
@@ -35,7 +35,7 @@ from flowera_agent.readiness import wait_for_http_ok
 # soul reports each job's outcome as a structured field - answered,
 # needs_approval, needs_input or failed - and keeps a paused job's
 # checkpoint per session. So a human's reply to a blocked desktop is just
-# the next message in the same session: soul resumes the paused job where
+# the next request in the same session: soul resumes the paused job where
 # it stopped (running the approved command, or handing the operator the
 # answer it asked for) instead of starting the task over.
 # ============================================================
@@ -183,14 +183,14 @@ def _build_context():
     return "\n\n".join(parts)
 
 
-def _run_thebot(message, reply):
+def _run_thebot(request, reply):
     """
-    Submit one message to TheBot's /api/chat and follow the job until it
+    Submit one request to TheBot's /api/chat and follow the job until it
     finishes.
 
-    `reply` says whether the message answers the job this desktop's
+    `reply` says whether the request answers the job this desktop's
     session has paused: True resumes it, False tells soul to drop it and
-    treat the message as a new request.
+    treat this as a new request.
 
     Returns (job, error): the final job snapshot, or a human-readable
     error string when there is no job to report on.
@@ -202,7 +202,7 @@ def _run_thebot(message, reply):
         submitted = _post_json(
             base + "/api/chat",
             {
-                "prompt": message,
+                "prompt": request,
                 "context": _build_context(),
                 "workdir": str(config.WORK_DIR),
                 # One session per desktop, for the whole life of the
@@ -294,10 +294,10 @@ def _escalate(reason):
     """
 
     if _looks_like_backend_failure(reason):
-        ask_for_help(_backend_note(reason))
+        ask_for_query(_backend_note(reason))
         return
 
-    ask_for_help(reason)
+    ask_for_query(reason)
 
 
 def _fail_on_backend(reason):
@@ -306,12 +306,12 @@ def _fail_on_backend(reason):
 
     A job that failed because the model did not answer is finished inside
     soul - nothing is paused for a reply to resume - and the note itself
-    tells the human to send the message again. Asking for help instead left
-    the desktop waiting, so the human's next, unrelated message was taken
+    tells the human to send the request again. Raising a query instead left
+    the desktop waiting, so the human's next, unrelated request was taken
     as the reply to the one that failed.
     """
 
-    write_final_message(_backend_note(reason), kind="error")
+    write_final_reply(_backend_note(reason), kind="error")
 
 
 def _handle_job(job, error):
@@ -329,8 +329,8 @@ def _handle_job(job, error):
     if outcome == "needs_approval":
         # soul's own safety gate stopped a consequential action, and holds
         # the job paused. The human's reply comes back through
-        # continue_after_help and resumes it.
-        ask_for_help(question)
+        # continue_after_query and resumes it.
+        ask_for_query(question, kind="approval")
         return
 
     if outcome == "needs_input":
@@ -341,7 +341,7 @@ def _handle_job(job, error):
         if _looks_like_backend_failure(answer):
             _fail_on_backend(answer)
             return
-        write_final_message(answer or "TheBot could not finish this.", kind="error")
+        write_final_reply(answer or "TheBot could not finish this.", kind="error")
         return
 
     # Answered - or a soul too old to report an outcome, whose only signal
@@ -355,10 +355,10 @@ def _handle_job(job, error):
     # The model can still pause on its own, in words, with the marker the
     # approval rules above ask for.
     if answer.startswith(APPROVAL_MARKER):
-        ask_for_help(answer[len(APPROVAL_MARKER):].strip())
+        ask_for_query(answer[len(APPROVAL_MARKER):].strip(), kind="approval")
         return
 
-    write_final_message(answer or "(no result text)")
+    write_final_reply(answer or "(no result text)")
 
 
 def wait_for_backend():
@@ -367,10 +367,10 @@ def wait_for_backend():
 
     soul is a local daemon that takes a moment to bind :4900, and it
     reasons with the same Ollama server every desktop is handed. Waiting
-    for both is what lets watchers.py queue an early message instead of
+    for both is what lets watchers.py queue an early request instead of
     dispatching it into "could not reason about the failure ...
     connection refused" and turning a backend that was still starting into
-    a help request for a human.
+    a query for a human.
     """
 
     wait_for_http_ok(
@@ -387,12 +387,17 @@ def wait_for_backend():
 def perform_task(task, task_file):
     state.current_task = task
     state.current_task_file = task_file
-    state.waiting_for_help = False
+    state.waiting_for_query = False
 
     log("========================================")
     log("STARTING TASK (TheBot harness)")
     log(task)
     log("========================================")
+
+    # soul reasons with the shared Ollama model, which costs nothing per
+    # call; it does not report token counts back, so those stay unknown.
+    usage.set_model(config.OLLAMA_MODEL)
+    usage.add(cost_usd=0)
 
     # A new task, not a reply: if soul still holds a paused job for this
     # desktop (the human moved on without answering it), it is dropped.
@@ -400,24 +405,24 @@ def perform_task(task, task_file):
     _handle_job(job, error)
 
 
-def continue_after_help(help_response):
+def continue_after_query(query_response):
     if not state.current_task:
         log(
-            "Received help response but no "
+            "Received a reply to a query but no "
             "active task exists."
         )
         return
 
-    state.waiting_for_help = False
+    state.waiting_for_query = False
 
     log("========================================")
-    log("RECEIVED HUMAN HELP (TheBot harness)")
-    log(help_response)
+    log("RECEIVED HUMAN REPLY TO QUERY (TheBot harness)")
+    log(query_response)
     log("========================================")
 
     # soul resumes the job it paused for this session, with the reply as
     # the answer - approving the exact command it stopped before, or
     # handing it to the operator that asked. No need to restate the task:
     # the checkpoint still has it.
-    job, error = _run_thebot(help_response, reply=True)
+    job, error = _run_thebot(query_response, reply=True)
     _handle_job(job, error)

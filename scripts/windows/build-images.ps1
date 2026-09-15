@@ -2,10 +2,18 @@
 .SYNOPSIS
     Builds the three Flowera desktop images (basic / developer / ai).
 .DESCRIPTION
-    Called by scripts/windows/build.ps1. This is the repo-checkout path; a
-    downloaded release executable does not need it, because it embeds the same
-    build context and builds the images itself via `flowera --build-images`.
+    Called by scripts/windows/build.ps1 and scripts/windows/rebuild.ps1. This
+    is the repo-checkout path; a downloaded release executable does not need
+    it, because it embeds the same build context and builds the images
+    itself via `flowera --build-images`.
+.PARAMETER OnlyMissing
+    Skip an image whose tag already exists (build.ps1's "just open the app" -
+    don't pay for a rebuild nobody asked for).
 #>
+
+param(
+    [switch]$OnlyMissing
+)
 
 # Find the repo root by walking up from this script until the desktop
 # Dockerfiles come into view, so it runs correctly from any directory.
@@ -27,21 +35,33 @@ Write-Host " Building Flowera desktop images"
 Write-Host "========================================"
 Write-Host ""
 
-Write-Host "=== Building Basic desktop image ==="
-docker build -f docker/desktop.basic.Dockerfile -t flowera-desktop:basic .
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+function Test-ImageExists {
+    param([string]$Tag)
+    docker image inspect $Tag *>$null
+    return ($LASTEXITCODE -eq 0)
+}
 
-Write-Host ""
-Write-Host "=== Building Developer desktop image ==="
-docker build -f docker/desktop.developer.Dockerfile -t flowera-desktop:developer .
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+function Build-DesktopImage {
+    param([string]$Tag, [string]$Dockerfile, [string]$Label)
 
-Write-Host ""
-Write-Host "=== Building AI Developer desktop image ==="
-docker build -f docker/desktop.ai.Dockerfile -t flowera-desktop:ai .
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    if ($OnlyMissing -and (Test-ImageExists $Tag)) {
+        Write-Host "=== $Label desktop image already exists, skipping ($Tag) ==="
+        Write-Host ""
+        return
+    }
 
-Write-Host ""
+    Write-Host "=== Building $Label desktop image ==="
+
+    docker build -f $Dockerfile -t $Tag .
+
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    Write-Host ""
+}
+
+Build-DesktopImage -Tag "flowera-desktop:basic" -Dockerfile "docker/desktop.basic.Dockerfile" -Label "Basic"
+Build-DesktopImage -Tag "flowera-desktop:developer" -Dockerfile "docker/desktop.developer.Dockerfile" -Label "Developer"
+Build-DesktopImage -Tag "flowera-desktop:ai" -Dockerfile "docker/desktop.ai.Dockerfile" -Label "AI Developer"
+
 Write-Host "=== Desktop images built ==="
 docker images "flowera-desktop"
 Write-Host ""
