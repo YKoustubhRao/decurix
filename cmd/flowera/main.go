@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/docker/docker/client"
 	"github.com/joho/godotenv"
@@ -16,10 +17,12 @@ import (
 	"github.com/YKoustubhRao/flowera/internal/claudeauth"
 	"github.com/YKoustubhRao/flowera/internal/conversation"
 	"github.com/YKoustubhRao/flowera/internal/desktop"
-	"github.com/YKoustubhRao/flowera/internal/querynotes"
 	"github.com/YKoustubhRao/flowera/internal/httpapi"
+	"github.com/YKoustubhRao/flowera/internal/idlepause"
+	"github.com/YKoustubhRao/flowera/internal/lanaccess"
 	"github.com/YKoustubhRao/flowera/internal/memory"
 	"github.com/YKoustubhRao/flowera/internal/ollama"
+	"github.com/YKoustubhRao/flowera/internal/querynotes"
 	"github.com/YKoustubhRao/flowera/internal/sqlitedb"
 	"github.com/YKoustubhRao/flowera/internal/stepimages"
 	"github.com/YKoustubhRao/flowera/internal/tasks"
@@ -27,7 +30,23 @@ import (
 	"github.com/YKoustubhRao/flowera/internal/webui"
 )
 
-const listenAddr = ":8080"
+const (
+	// listenAddr is the primary listener: unauthenticated, same as always.
+	// Desktop agents call back into it (CONTROL_PLANE_URL) and a human at the
+	// control plane's own machine uses it directly - see internal/lanaccess's
+	// package doc for why it stays exactly as it was.
+	listenAddr = ":8080"
+
+	// defaultLANAddr is the second listener, gated by internal/lanaccess -
+	// the one a Cloudflare tunnel or a direct LAN address should point at.
+	// Overridable with FLOWERA_LAN_PORT.
+	defaultLANAddr = ":8090"
+
+	// defaultIdleStopMinutes is internal/idlepause's threshold when
+	// FLOWERA_IDLE_STOP_MINUTES is unset - idle-pause is on by default.
+	// FLOWERA_IDLE_STOP_MINUTES=0 opts out.
+	defaultIdleStopMinutes = 5
+)
 
 // version is stamped at build time by scripts/release/release.sh via
 // -ldflags "-X main.version=...". It stays "dev" for plain `go build`/`go run`.
@@ -86,16 +105,66 @@ func stepImagesMaxBytes() int {
 	return megabytes << 20
 }
 
+// lanListenAddr reads FLOWERA_LAN_PORT, the port internal/lanaccess's gated
+// listener binds; unset or invalid means defaultLANAddr.
+func lanListenAddr() string {
+	port := os.Getenv("FLOWERA_LAN_PORT")
+	if port == "" {
+		return defaultLANAddr
+	}
+
+	if _, err := strconv.Atoi(port); err != nil {
+		log.Printf("warning: FLOWERA_LAN_PORT=%q is not a number; using %s", port, defaultLANAddr)
+		return defaultLANAddr
+	}
+
+	return ":" + port
+}
+
+// idleStopThreshold reads FLOWERA_IDLE_STOP_MINUTES, in minutes.
+// internal/idlepause is on by default: unset or invalid means
+// defaultIdleStopMinutes, not disabled. FLOWERA_IDLE_STOP_MINUTES=0 (or any
+// non-positive value) is the explicit opt-out - Checker.Run treats a
+// non-positive Threshold as "do nothing" rather than this function needing
+// its own enabled/disabled flag.
+func idleStopThreshold() time.Duration {
+	raw := os.Getenv("FLOWERA_IDLE_STOP_MINUTES")
+	if raw == "" {
+		return defaultIdleStopMinutes * time.Minute
+	}
+
+	minutes, err := strconv.Atoi(raw)
+	if err != nil {
+		log.Printf("warning: FLOWERA_IDLE_STOP_MINUTES=%q is not a number; using the default of %d minutes", raw, defaultIdleStopMinutes)
+		return defaultIdleStopMinutes * time.Minute
+	}
+
+	if minutes <= 0 {
+		return 0
+	}
+
+	return time.Duration(minutes) * time.Minute
+}
+
 // main loads configuration, sets up the Docker client, ensures required images/networks exist, registers HTTP routes, and starts the server.
 func main() {
 	showVersion := flag.Bool("version", false, "print the Flowera version and exit")
 	buildImages := flag.Bool("build-images", false, "build the desktop images from the build context embedded in this binary, then exit")
 	rebuild := flag.Bool("rebuild", false, "with -build-images, rebuild images that already exist instead of skipping them")
+	cliMode := flag.Bool("cli", false, "run an interactive CLI against a running control plane instead of starting the server")
+	cliURL := flag.String("url", "http://127.0.0.1:8080", "with -cli, the control plane's URL")
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Printf("flowera %s\n", version)
 		return
+	}
+
+	// -cli needs none of the setup below: no Docker client, no database -
+	// it is a thin client for a control plane already running somewhere
+	// else, reached over the same HTTP API the dashboard uses.
+	if *cliMode {
+		os.Exit(runCLI(*cliURL))
 	}
 
 	log.Printf("Flowera %s starting", version)
@@ -149,20 +218,51 @@ func main() {
 
 	log.Printf("Records: %s", dbPath)
 
+	tasksStore := must(tasks.NewStore(db))
+	lanAccess := lanaccess.NewStore()
+
 	server := httpapi.NewServer(
 		desktops,
 		must(querynotes.NewStore(db)),
 		must(memory.NewStore(db)),
 		must(conversation.NewStore(db)),
 		must(stepimages.NewStore(db, stepImagesMaxBytes())),
-		must(tasks.NewStore(db)),
+		tasksStore,
 		tunnel.NewStore(),
 		must(claudeauth.NewStore(db)),
+		lanAccess,
 		webui.NewRenderer(),
 	)
 
 	mux := http.NewServeMux()
 	server.RegisterRoutes(mux)
+	server.RegisterLocalRoutes(mux)
+
+	// The second listener is what a Cloudflare tunnel or a direct LAN
+	// address should be pointed at: every route the primary listener serves,
+	// gated behind lanAccess.Middleware. It always starts - the access code
+	// gating it is what makes that safe - so build.sh/rebuild.sh can always
+	// point the tunnel here without the control plane needing to know
+	// whether anyone actually uses it. See internal/lanaccess's package doc
+	// for why this is a second port rather than authenticating :8080 itself.
+	lanMux := http.NewServeMux()
+	server.RegisterRoutes(lanMux)
+
+	lanAddr := lanListenAddr()
+
+	go func() {
+		log.Printf("LAN/tunnel listener on %s (access code: %s)", lanAddr, lanAccess.Password())
+
+		if err := http.ListenAndServe(lanAddr, lanAccess.Middleware(lanMux)); err != nil {
+			log.Printf("warning: LAN/tunnel listener failed: %v", err)
+		}
+	}()
+
+	// Rotates the access code on its own every lanaccess.AutoRotateInterval,
+	// the same drop-every-session rotation the Mobile menu's "New code"
+	// button triggers by hand - see RunAutoRotate's doc for why it waits out
+	// the first interval rather than rotating immediately.
+	go lanAccess.RunAutoRotate(context.Background(), lanaccess.AutoRotateInterval)
 
 	// IMPORTANT:
 	// Ollama initialization must not block the HTTP server.
@@ -174,6 +274,22 @@ func main() {
 
 		log.Println("Ollama ready.")
 	}()
+
+	// On by default (see idleStopThreshold) - see internal/idlepause's
+	// package doc for why this only ever does what a manual Stop already
+	// does. Always started: Checker.Run itself is a no-op when Threshold is
+	// non-positive, so FLOWERA_IDLE_STOP_MINUTES=0 opts out without any
+	// different wiring here.
+	idleThreshold := idleStopThreshold()
+
+	if idleThreshold > 0 {
+		log.Printf("Idle-pause: stopping desktops idle past %s. Set FLOWERA_IDLE_STOP_MINUTES=0 to disable.", idleThreshold)
+	} else {
+		log.Println("Idle-pause: disabled (FLOWERA_IDLE_STOP_MINUTES=0).")
+	}
+
+	checker := &idlepause.Checker{Desktops: desktops, Tasks: tasksStore, Threshold: idleThreshold}
+	go checker.Run(context.Background())
 
 	log.Printf("Desktop manager listening on %s", listenAddr)
 

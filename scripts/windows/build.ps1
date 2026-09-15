@@ -15,7 +15,14 @@
 
     Ctrl+C while it runs (including while the tunnel is up) just stops
     watching the tunnel - it does not tear Flowera down.
+.PARAMETER Cli
+    Skip the tunnel and open the terminal CLI instead (docker compose exec
+    desktop-manager ./flowera --cli), a text alternative to the dashboard.
 #>
+
+param(
+    [switch]$Cli
+)
 
 #region Functions
 function Test-CommandAvailable {
@@ -66,6 +73,7 @@ function Wait-ForDashboard {
 # on its own.
 function Invoke-Cleanup {
     Write-Host ""
+    Stop-LanTunnel
     Write-Host "=== Tunnel stopped. Flowera is still running: http://127.0.0.1:8080 ==="
     Write-Host "(Run this script again for a new tunnel, or 'docker compose down' to stop Flowera.)"
 }
@@ -76,6 +84,7 @@ function Invoke-Cleanup {
 Set-Location (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
 
 . "$PSScriptRoot/lib/Ollama-Setup.ps1"
+. "$PSScriptRoot/lib/Lan-Tunnel.ps1"
 
 $script:IntentionalExit = $false
 
@@ -148,6 +157,90 @@ try {
     Write-Host "========================================"
     Write-Host ""
     Write-Host "Dashboard: http://localhost:8080"
+    Write-Host "Idle desktops stop automatically after 5 minutes (set FLOWERA_IDLE_STOP_MINUTES=0 in .env to disable, or to another number of minutes)."
+
+    # FLOWERA_LAN_PORT in .env changes which port the access-code-gated
+    # listener binds.
+    $lanPort = Read-EnvVar -Name "FLOWERA_LAN_PORT"
+    if (-not $lanPort) { $lanPort = "8090" }
+
+    # The machine's own address on whatever network it's on, so both the
+    # admin (unauthenticated) and LAN (access-code-gated) URLs below are
+    # something another device can actually use - not "localhost", which
+    # only means anything on this machine. Opening a UDP "connection" sends
+    # no packets; it only asks Windows which local address it would use to
+    # reach the internet, the same trick build.sh's "ip route get" does.
+    $lanIP = $null
+    try {
+        $socket = New-Object System.Net.Sockets.Socket(
+            [System.Net.Sockets.AddressFamily]::InterNetwork,
+            [System.Net.Sockets.SocketType]::Dgram,
+            [System.Net.Sockets.ProtocolType]::Udp)
+        $socket.Connect("1.1.1.1", 65530)
+        $lanIP = $socket.LocalEndPoint.Address.ToString()
+        $socket.Close()
+    } catch {
+        # No route to the internet, or sockets unavailable - $lanIP stays unset.
+    }
+
+    if ($lanIP) {
+        $adminUrl = "http://${lanIP}:8080"
+        $lanUrl = "http://${lanIP}:$lanPort"
+
+        # Reported once here, separately from the tunnel URL below (which is
+        # reported every time cloudflared prints one) - see
+        # httpapi.tunnelHandler, which never lets one blank out the other.
+        try {
+            Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8080/api/tunnel" `
+                -ContentType "application/json" `
+                -Body (@{ admin_url = $adminUrl; lan_url = $lanUrl } | ConvertTo-Json -Compress) `
+                -TimeoutSec 5 | Out-Null
+        } catch {
+            # Best effort - the dashboard's Mobile menu is the fallback.
+        }
+
+        Write-Host ""
+        Write-Host "Admin URL (full control, no code - keep this to yourself): $adminUrl"
+        Write-Host "LAN access URL (needs the code below, works without the tunnel): $lanUrl"
+    }
+
+    # Printed here as a convenience - it also always lives in the
+    # dashboard's Mobile menu (both URLs above alongside it), which is the
+    # one place it stays current after a rotate.
+    $lanCode = $null
+    try {
+        $lan = Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/lan-access/status" -TimeoutSec 5
+        if ($lan.code) {
+            $lanCode = $lan.code
+            Write-Host ""
+            Write-Host "Access code: $lanCode"
+            Write-Host "(Needed once by anyone using the LAN URL above. Also in the dashboard's Mobile menu, which can generate a new one.)"
+
+            # A one-click link for whoever is sitting at this terminal right
+            # now - they already have the code above, so this authenticates
+            # on click instead of asking them to type it into the gate's form.
+            if ($lanUrl) {
+                Write-Host ""
+                Write-Host "Open it yourself without typing the code: $lanUrl/__flowera_access/authenticate?code=$lanCode"
+            }
+        }
+    } catch {
+        # Best effort - the dashboard's Mobile menu always has it too.
+    }
+
+    # -Cli is a terminal-native alternative to the tunnel below - it never
+    # opens a tunnel URL, so Invoke-Cleanup's "tunnel stopped" message would
+    # not make sense here. Exit-Build marks this as intentional so that
+    # finally{} skips it, same as every other deliberate exit.
+    if ($Cli) {
+        Write-Host ""
+        Write-Host "=== Opening the Flowera CLI ==="
+        Write-Host "(Flowera keeps running after you exit; 'exit' or Ctrl+D to leave.)"
+        Write-Host ""
+
+        docker compose exec desktop-manager ./flowera --cli
+        Exit-Build $LASTEXITCODE
+    }
 
     Write-Host ""
     Write-Host "=== Starting Cloudflare Tunnel ==="
@@ -157,27 +250,44 @@ try {
         Write-Host "access from other devices."
         Exit-Build 1
     }
+
+    # A second tunnel, to the access-code-gated listener - so the
+    # code-protected URL works from anywhere, not just $lanUrl above on this
+    # machine's own network. Backgrounded (see lib/Lan-Tunnel.ps1), so it
+    # doesn't block the primary tunnel's own foreground loop just below.
+    Start-LanTunnel -LanPort $lanPort
+
     Write-Host ""
+
+    # Points at the primary listener (:8080), not the access-code-gated one -
+    # so this URL is full, unauthenticated control of the machine, reachable
+    # by anyone who has the link, the same as sitting at the machine itself.
+    # The gated URL printed above ($lanUrl, over $lanPort) and its own tunnel
+    # link just above are still there for anyone who wants the code-gated
+    # option instead.
 
     # cloudflared logs to stderr, hence 2>&1. Echo every line while watching
     # for the trycloudflare.com URL, and report it to the control plane for
     # display in the dashboard's Mobile dropdown. "$_" rather than $_: in
     # Windows PowerShell 5.1 a redirected stderr line arrives as an
     # ErrorRecord, and only its string form is the line itself.
-    cloudflared tunnel --protocol http2 --url http://127.0.0.1:8080 2>&1 | ForEach-Object {
+    cloudflared tunnel --protocol http2 --url "http://127.0.0.1:8080" 2>&1 | ForEach-Object {
         $line = "$_"
         Write-Host $line
 
         if ($line -match 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com') {
+            $tunnelUrl = $Matches[0]
             try {
                 Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8080/api/tunnel" `
                     -ContentType "application/json" `
-                    -Body (@{ url = $Matches[0] } | ConvertTo-Json -Compress) `
+                    -Body (@{ url = $tunnelUrl } | ConvertTo-Json -Compress) `
                     -TimeoutSec 5 | Out-Null
             } catch {
                 # Best effort: the tunnel works whether or not the dashboard
                 # shows it.
             }
+
+            Write-Host "(No access code needed for this URL - full control of this machine. Keep it to yourself.)"
         }
     }
 }

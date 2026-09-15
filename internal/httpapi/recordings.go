@@ -221,7 +221,7 @@ func (s *Server) recordTaskHandler(w http.ResponseWriter, r *http.Request) {
 
 	route := s.routeRequest(worker, content)
 
-	if err := s.Desktops.SendRequest(r.Context(), id, content, route.TaskID); err != nil {
+	if err := s.deliverRequest(r.Context(), id, content, route.TaskID); err != nil {
 		sendRequestError(w, err)
 		return
 	}

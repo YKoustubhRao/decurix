@@ -504,7 +504,7 @@
   <div class="grid">
 {{if .Desktops}}
 {{range .Desktops}}
-    <article class="dcard">
+    <article class="dcard" data-desktop-id="{{.ID}}">
       {{/* A thumbnail, not an embedded screen. This used to be an
            <iframe src="/desktop/<id>/">, i.e. a whole noVNC client per card:
            83 requests and a WebSocket each, against the one origin a browser
@@ -539,8 +539,8 @@
           </div>
         </div>
 
-        <span class="status {{.Status}}">
-          <span class="dot"></span>{{.Status}}
+        <span class="status {{.Status}}" data-status-pill data-base-status="{{.Status}}">
+          <span class="dot"></span><span data-status-label>{{.Status}}</span>
         </span>
       <details class="dcard-info">
         <summary title="Desktop info" aria-label="Desktop info">
@@ -552,8 +552,8 @@
         <div class="dcard-info-body">
           <div class="dcard-info-title">
             <span>Desktop details</span>
-            <span class="status {{.Status}}">
-              <span class="dot"></span>{{.Status}}
+            <span class="status {{.Status}}" data-status-pill data-base-status="{{.Status}}">
+              <span class="dot"></span><span data-status-label>{{.Status}}</span>
             </span>
           </div>
           <dl class="specs">
@@ -1420,6 +1420,30 @@
     railCount.textContent = String(notes.length);
     rail.classList.toggle("on", notes.length > 0);
     Flowera.setQueryBadge(notes.length);
+    applyCardAttention(notes);
+  }
+
+  /* Each card's status pill is one slot: a desktop with an open query note
+     takes it over from its own "running" state instead of adding a second
+     competing badge next to it. Derived at render time from the same notes
+     the rail already polls - never stored - so it can never drift from what
+     the rail shows. Only a *running* desktop's pill is touched: a note left
+     over from before a desktop was stopped or restarted is not "needs you
+     right now". */
+  function applyCardAttention(notes){
+    var needsYou = new Set();
+    notes.forEach(function(note){ if(note.desktop_id){ needsYou.add(note.desktop_id); } });
+
+    document.querySelectorAll(".dcard[data-desktop-id]").forEach(function(card){
+      var attention = needsYou.has(card.dataset.desktopId);
+
+      card.querySelectorAll("[data-status-pill]").forEach(function(pill){
+        if(pill.dataset.baseStatus !== "running"){ return; }
+
+        pill.classList.toggle("needs-you", attention);
+        pill.querySelector("[data-status-label]").textContent = attention ? "needs you" : "running";
+      });
+    });
   }
 
   async function loadNotes(){
@@ -1428,7 +1452,9 @@
       if(!response.ok){ return; }
 
       var notes = await response.json();
-      renderNotes(Array.isArray(notes) ? notes : []);
+      notes = Array.isArray(notes) ? notes : [];
+      renderNotes(notes);
+      Flowera.notifyNewQueries(notes);
     }catch(e){ /* keep the current rail contents */ }
   }
 

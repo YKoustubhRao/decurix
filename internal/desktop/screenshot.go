@@ -106,6 +106,8 @@ func (m *Manager) Screenshot(ctx context.Context, rawID string, maxWidth int) ([
 		return nil, err
 	}
 
+	m.touchViewed(sanitizedID)
+
 	entry := m.shotCacheFor(sanitizedID)
 
 	entry.mu.Lock()
