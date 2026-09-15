@@ -8,6 +8,10 @@
 #
 # Want a clean slate instead (fresh images, fresh desktops, empty database)?
 # Use scripts/linux/rebuild.sh.
+#
+# Flags:
+#   --cli   skip the tunnel and open the terminal CLI instead (see
+#           `docker compose exec desktop-manager ./flowera --cli`, below)
 
 set -e
 
@@ -16,6 +20,18 @@ cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 # shellcheck source=lib/ollama-setup.sh
 source ./scripts/linux/lib/ollama-setup.sh
+
+CLI_MODE=""
+
+for arg in "$@"; do
+    case "$arg" in
+        --cli) CLI_MODE="1" ;;
+        *)
+            echo "ERROR: unknown flag: $arg" >&2
+            exit 1
+            ;;
+    esac
+done
 
 # Ctrl+C lands here while the script is tailing the tunnel's logs, which run
 # forever until interrupted. Unlike rebuild.sh, this script's whole point is
@@ -85,6 +101,21 @@ echo ""
 echo "========================================"
 echo " Flowera is running"
 echo "========================================"
+
+# --cli is a terminal-native alternative to the tunnel below: it never opens
+# a tunnel URL, so the INT/TERM trap's "tunnel stopped" message would not
+# make sense here - Ctrl+C to leave the CLI should just leave it.
+if [ -n "$CLI_MODE" ]; then
+    trap - INT TERM
+
+    echo ""
+    echo "=== Opening the Flowera CLI ==="
+    echo "(Flowera keeps running after you exit; 'exit' or Ctrl+D to leave.)"
+    echo ""
+
+    docker compose exec desktop-manager ./flowera --cli
+    exit $?
+fi
 
 echo ""
 echo "=== Starting Cloudflare Tunnel ==="

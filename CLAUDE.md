@@ -8,7 +8,15 @@ Flowera is a control plane for spinning up disposable "desktop" VMs (Docker cont
 cmd/flowera/main.go — entrypoint: loads .env, builds the Docker client, wires
                        the packages below, registers routes, ListenAndServe(:8080);
                        --version, and --build-images/--rebuild which build the
-                       desktop images from the embedded context and exit
+                       desktop images from the embedded context and exit;
+                       --cli, which skips all of the above and hands off to
+                       cli.go instead (see "The --cli terminal client" below)
+cli.go             — runCLI: an interactive REPL that is the same binary's
+                       --cli mode, a text alternative to the dashboard/chat
+                       page for a control plane already running somewhere -
+                       reached purely over internal/httpapi's existing JSON
+                       API (GET/POST /api/desktops*, /api/querynotes), so it
+                       needs no Docker client and no database of its own
 embed.go           — package flowera at the MODULE ROOT: //go:embed of
                        docker/desktop.*.Dockerfile + agent/ → DesktopBuildContext.
                        It has to live at the root because go:embed cannot reach
@@ -315,19 +323,21 @@ The benchmark is `bench/gui/`: 20 tasks (12 in a web admin panel, 5 in LibreOffi
 ./scripts/linux/build.sh         # "open the app": builds only missing images, starts the control
                                   # plane if it isn't already running, waits for :8080, opens a
                                   # tunnel. Leaves existing desktop_* containers/volumes and the
-                                  # flowera-data volume (the DB) untouched
+                                  # flowera-data volume (the DB) untouched. --cli opens the CLI
+                                  # (below) against it instead of the tunnel
 ./scripts/linux/rebuild.sh       # "reinstall": removes every desktop_* container/volume, and
                                   # (after a confirmation prompt, -y to skip it) deletes the
                                   # flowera-data volume - task history, chats, worker memory, gone
                                   # for good. Rebuilds every image and the control plane too (so
                                   # agent/ or Dockerfile changes land), but with the normal build
-                                  # cache, not --no-cache - stays as fast as build.sh
+                                  # cache, not --no-cache - stays as fast as build.sh. --cli same
+                                  # as build.sh's
 ./scripts/release/release.sh     # cross-compiles standalone executables + archives into dist/
 docker compose up -d             # just the control plane (uses docker/Dockerfile, mounts /var/run/docker.sock)
 go build ./... && go vet ./... && go test ./...   # compile, lint, unit tests
                                   # (internal/memory, internal/conversation, internal/webui,
                                   #  internal/stepimages, internal/httpapi, internal/tasks,
-                                  #  internal/sqlitedb, internal/claudeauth)
+                                  #  internal/sqlitedb, internal/claudeauth, cmd/flowera's --cli)
 PYTHONPATH=agent python3 -m unittest discover -s agent/tests   # computer-use gate/refs/rendering,
                                   # task IDs and usage totals, recordings (input merging,
                                   # privacy, volatility, the store, replay against a fake screen)
@@ -336,6 +346,12 @@ python3 bench/gui/run.py --engine ollama --engine thebot --engine claude  # per-
 ```
 
 `scripts/` is split by who runs it: `mac/` (`setup.sh`, `build-images.sh`, `build.sh`, `quickstart.sh`, `test-vm.sh`), `linux/` (`setup.sh`, `build-images.sh`, `build.sh`, `rebuild.sh`, `quickstart.sh`, `test-vm.sh`, plus a `lib/ollama-setup.sh` the last two source rather than duplicate), `windows/` (the same as `.ps1`, with `lib/Ollama-Setup.ps1`), and `release/` (`release.sh` + `release.ps1`). Each `.sh` has a `.ps1` twin at the same position in the other directory — they are hand-maintained, not generated from each other, so a change to one needs the same change to the other; the `lib/` sharing is within a platform only; `build.sh`/`build.ps1` and `rebuild.sh`/`rebuild.ps1` each source it independently rather than duplicating the ~200-line "find an Ollama the desktops can reach" logic. Every script resolves the repo root from its own location, never from `$PWD`.
+
+### The `--cli` terminal client
+
+`flowera --cli` (`cmd/flowera/cli.go`) is a text alternative to the dashboard/chat page: an interactive REPL (`list`/`create`/`start`/`stop`/`restart`/`delete`/`chat`/`queries`) that talks to a control plane already running somewhere, purely over `internal/httpapi`'s existing JSON endpoints — no Docker client, no database, nothing the server-mode branch of `main()` sets up. `main()` checks `-cli` immediately after `-version` and before any of that setup, same posture as `-build-images` short-circuiting startup. `chat <id>` polls `GET /api/desktops/chat` (the same snapshot the chat page's polling fallback uses) once a second, tracking how many `Thread.Entries`/`Thread.Steps` it has already printed so a repeated poll only shows what's new, and returns to the prompt once the turn stops `Running` with at least one new entry; Ctrl+C during that wait returns to the prompt without cancelling the task (it keeps running on the desktop) by trapping `os.Interrupt` only for the duration of that wait, never at the top-level prompt.
+
+`build.sh --cli` / `rebuild.ps1 -Cli` (etc.) run their normal flow through "Flowera is running", then run `docker compose exec desktop-manager ./flowera --cli` instead of opening the Cloudflare tunnel — the same binary the container already runs, reached at its own `127.0.0.1:8080` (also `--cli`'s default `-url`, which is why it works unchanged if someone runs the released binary directly against the compose-published port instead). Both scripts clear their INT/TERM trap right before that hand-off: `build.sh`'s otherwise prints a "tunnel stopped" message that would not make sense here, and `rebuild.sh`'s otherwise tears the whole stack back down on Ctrl+C — correct for an interrupted *rebuild*, wrong once the rebuild has already finished and someone is just leaving the CLI.
 
 ### Distributable builds
 
