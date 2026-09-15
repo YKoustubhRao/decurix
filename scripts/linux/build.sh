@@ -147,7 +147,7 @@ if command -v jq >/dev/null 2>&1; then
     if [ -n "$lan_code" ]; then
         echo ""
         echo "Access code: $lan_code"
-        echo "(Needed once by anyone using the LAN or tunnel URL above. Also in the dashboard's Mobile menu, which can generate a new one.)"
+        echo "(Needed once by anyone using the LAN URL above. Also in the dashboard's Mobile menu, which can generate a new one.)"
 
         # A one-click link for whoever is sitting at this terminal right now -
         # they already have the code above, so this authenticates on click
@@ -185,12 +185,16 @@ fi
 
 echo ""
 
+# Points at the primary listener (:8080), not the access-code-gated one -
+# so this URL is full, unauthenticated control of the machine, reachable by
+# anyone who has the link, the same as sitting at the machine itself. The
+# gated URL printed above ($lan_url, over $lan_port) is still there for
+# anyone who wants the code-gated option instead.
+#
 # Start Cloudflare tunnel, echoing its logs while watching for the
 # trycloudflare.com URL so it can be reported to the control plane for
-# display in the dashboard's Mobile dropdown. The report itself still goes to
-# 8080 - it is just the dashboard's own record of the URL, not something
-# that needs the access code.
-cloudflared tunnel --protocol http2 --url "http://127.0.0.1:$lan_port" 2>&1 | while IFS= read -r line; do
+# display in the dashboard's Mobile dropdown.
+cloudflared tunnel --protocol http2 --url "http://127.0.0.1:8080" 2>&1 | while IFS= read -r line; do
     echo "$line"
 
     url=$(echo "$line" | grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' || true)
@@ -201,10 +205,6 @@ cloudflared tunnel --protocol http2 --url "http://127.0.0.1:$lan_port" 2>&1 | wh
             -d "{\"url\":\"$url\"}" \
             >/dev/null 2>&1 || true
 
-        # lan_code was already read above, before this pipeline started -
-        # this subshell can read it, just not write it back.
-        if [ -n "$lan_code" ]; then
-            echo "Open it yourself without typing the code: $url/__flowera_access/authenticate?code=$lan_code"
-        fi
+        echo "(No access code needed for this URL - full control of this machine. Keep it to yourself.)"
     fi
 done
