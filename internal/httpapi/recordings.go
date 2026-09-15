@@ -1,0 +1,493 @@
+package httpapi
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"log"
+	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YKoustubhRao/flowera/internal/desktop"
+	"github.com/YKoustubhRao/flowera/internal/tasks"
+	"github.com/YKoustubhRao/flowera/internal/webui"
+)
+
+// A recording's ID and a frame's name are checked here, before either goes
+// into a URL path on the desktop, against the same patterns the desktop's
+// recording.py enforces on its side.
+var (
+	recordingIDPattern = regexp.MustCompile(`^(task|adhoc|demo)-[A-Za-z0-9-]{1,64}$`)
+	frameNamePattern   = regexp.MustCompile(`^[0-9a-f]{20}\.png$`)
+	paramNamePattern   = regexp.MustCompile(`^[a-z][a-z0-9_]{0,39}$`)
+)
+
+const (
+	// recordingsRequestTimeout bounds every call to a desktop's recordings API
+	// except an export, which streams for as long as the recording is large.
+	recordingsRequestTimeout = 60 * time.Second
+
+	maxReplayParams     = 50
+	maxReplayParamBytes = 4096
+)
+
+// demonstrationActions are what the recordings page can ask of a desktop's
+// demonstration recorder.
+var demonstrationActions = map[string]bool{"start": true, "pause": true, "resume": true, "stop": true}
+
+// ticketActions are what the GUI screen's toolbar can ask of the ticket open
+// on a desktop.
+var ticketActions = map[string]bool{"begin": true, "pause": true, "resume": true, "note": true, "end": true}
+
+// recordingsPageHandler renders one desktop's recordings: demonstrations
+// recorded on it and the tasks its agent worked, each replayable and
+// exportable. The page reads the recordings from the desktop itself.
+func (s *Server) recordingsPageHandler(w http.ResponseWriter, r *http.Request) {
+	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/recordings/"), "/")
+	if id == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	found, err := s.Desktops.Get(r.Context(), id)
+	if errors.Is(err, desktop.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		log.Printf("recordings page: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	session := r.URL.Query().Get("session")
+	if !recordingIDPattern.MatchString(session) {
+		session = ""
+	}
+
+	if err := s.Web.RenderRecordings(w, webui.RecordingsPageData{Desktop: found, Session: session}); err != nil {
+		log.Printf("recordings page: %v", err)
+	}
+}
+
+// recordingsAPIHandler lists a desktop's recordings and the demonstration
+// being recorded on it, if any.
+func (s *Server) recordingsAPIHandler(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireDesktop(w, r, http.MethodGet)
+	if !ok {
+		return
+	}
+
+	s.callAgent(w, r, id, http.MethodGet, "/recordings", nil, true)
+}
+
+// recordingAPIHandler returns one recording: its meta, its events, and the
+// program a replay of it would run.
+func (s *Server) recordingAPIHandler(w http.ResponseWriter, r *http.Request) {
+	id, session, ok := requireRecording(w, r, http.MethodGet)
+	if !ok {
+		return
+	}
+
+	s.callAgent(w, r, id, http.MethodGet, "/recordings/"+session, nil, true)
+}
+
+// recordingFrameHandler serves one full-size frame of a recording.
+func (s *Server) recordingFrameHandler(w http.ResponseWriter, r *http.Request) {
+	id, session, ok := requireRecording(w, r, http.MethodGet)
+	if !ok {
+		return
+	}
+
+	frame := r.URL.Query().Get("frame")
+	if !frameNamePattern.MatchString(frame) {
+		jsonStatusError(w, http.StatusBadRequest, "not a frame of a recording")
+		return
+	}
+
+	s.callAgent(w, r, id, http.MethodGet, "/recordings/"+session+"/frames/"+frame, nil, true)
+}
+
+// recordingExportHandler streams a recording as a zip: meta.json,
+// events.jsonl, program.json and its frames.
+func (s *Server) recordingExportHandler(w http.ResponseWriter, r *http.Request) {
+	id, session, ok := requireRecording(w, r, http.MethodGet)
+	if !ok {
+		return
+	}
+
+	s.callAgent(w, r, id, http.MethodGet, "/recordings/"+session+"/export", nil, false)
+}
+
+// recordingUpdateHandler renames a recording or changes its description.
+func (s *Server) recordingUpdateHandler(w http.ResponseWriter, r *http.Request) {
+	id, session, ok := requireRecording(w, r, http.MethodPost)
+	if !ok {
+		return
+	}
+
+	payload := map[string]string{}
+	for _, field := range []string{"title", "description"} {
+		if values, present := r.PostForm[field]; present && len(values) > 0 {
+			payload[field] = values[0]
+		}
+	}
+
+	s.callAgent(w, r, id, http.MethodPost, "/recordings/"+session+"/update", payload, true)
+}
+
+// recordingDeleteHandler deletes a recording from its desktop.
+func (s *Server) recordingDeleteHandler(w http.ResponseWriter, r *http.Request) {
+	id, session, ok := requireRecording(w, r, http.MethodPost)
+	if !ok {
+		return
+	}
+
+	s.callAgent(w, r, id, http.MethodPost, "/recordings/"+session+"/delete", map[string]string{}, true)
+}
+
+// demonstrationHandler reads (GET) or starts, pauses, resumes or stops (POST)
+// recording a person's demonstration on a desktop.
+func (s *Server) demonstrationHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		if id, ok := requireDesktop(w, r, http.MethodGet); ok {
+			s.callAgent(w, r, id, http.MethodGet, "/demonstration", nil, true)
+		}
+		return
+	}
+
+	id, ok := requireDesktop(w, r, http.MethodPost)
+	if !ok {
+		return
+	}
+
+	action := r.FormValue("action")
+	if !demonstrationActions[action] {
+		jsonStatusError(w, http.StatusBadRequest, "action must be start, pause, resume or stop")
+		return
+	}
+
+	payload := map[string]string{
+		"title":       r.FormValue("title"),
+		"description": r.FormValue("description"),
+		"reason":      r.FormValue("reason"),
+	}
+
+	s.callAgent(w, r, id, http.MethodPost, "/demonstration/"+action, payload, true)
+}
+
+// recordTaskHandler is the GUI screen toolbar's + : it sends "/record <task>"
+// to a desktop, which opens a ticket for a person to do that task rather than
+// handing it to the desktop's engine (record_task.py). Opening a ticket does
+// not itself start capturing - the toolbar's Record does that, through
+// ticketActionHandler("begin") - so a person can create the ticket, then
+// start recording only once they are actually at the screen and ready.
+//
+// It is a chat request in every other respect - Plan, the desktop accepts it,
+// Commit, the chat shows it - so the ticket and the human's steps land in a
+// task of their own. Refused while the agent is busy, for the reason a replay
+// is: sent to a paused agent it would be taken as the reply.
+func (s *Server) recordTaskHandler(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireDesktop(w, r, http.MethodPost)
+	if !ok {
+		return
+	}
+
+	task := strings.TrimSpace(r.FormValue("task"))
+	if task == "" {
+		jsonStatusError(w, http.StatusBadRequest, "say what task you are about to do")
+		return
+	}
+
+	content := tasks.RecordCommand + " " + task
+	if len(content) > maxRequestBytes {
+		jsonStatusError(w, http.StatusBadRequest, "request too long")
+		return
+	}
+
+	worker := desktop.SanitizeID(id)
+
+	if why, err := s.Tasks.Busy(worker); err != nil {
+		log.Printf("record: %v", err)
+	} else if why != "" {
+		jsonStatusError(w, http.StatusConflict, why)
+		return
+	}
+
+	route := s.routeRequest(worker, content)
+
+	if err := s.Desktops.SendRequest(r.Context(), id, content, route.TaskID); err != nil {
+		sendRequestError(w, err)
+		return
+	}
+
+	route = s.recordDelivered(r.Context(), worker, content, route)
+
+	jsonResponse(w, map[string]string{"status": "sent", "task_id": route.TaskID, "content": content})
+}
+
+// ticketStatusHandler reads the ticket open on a desktop, if any: the GUI
+// screen toolbar's poll, so every open tab (and the recordings page) agrees
+// on whether it is armed, recording, or paused.
+func (s *Server) ticketStatusHandler(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireDesktop(w, r, http.MethodGet)
+	if !ok {
+		return
+	}
+
+	s.callAgent(w, r, id, http.MethodGet, "/ticket", nil, true)
+}
+
+// ticketActionHandler begins, pauses, resumes, notes or ends capturing for
+// the ticket open on a desktop - the GUI screen toolbar's Record/Stop/
+// Continue/Reason/End. begin/pause/resume are the same demonstration.py
+// primitives the recordings page's own ad-hoc recorder uses; note adds a
+// person's own written explanation to the recording at this moment; end is
+// what finishes the ticket's task (record_task.end), which is what makes its
+// recording's export downloadable.
+func (s *Server) ticketActionHandler(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireDesktop(w, r, http.MethodPost)
+	if !ok {
+		return
+	}
+
+	action := r.FormValue("action")
+	if !ticketActions[action] {
+		jsonStatusError(w, http.StatusBadRequest, "action must be begin, pause, resume, note or end")
+		return
+	}
+
+	// callAgent tests its payload against the untyped nil literal, so a nil
+	// map boxed into the `any` parameter would not compare equal to it and
+	// would be marshalled as the JSON literal null instead of no body at all
+	// - pass nil itself for the actions that take no fields.
+	switch action {
+	case "pause":
+		s.callAgent(w, r, id, http.MethodPost, "/ticket/pause", map[string]string{"reason": r.FormValue("reason")}, true)
+		return
+	case "note":
+		text := strings.TrimSpace(r.FormValue("text"))
+		if text == "" {
+			jsonStatusError(w, http.StatusBadRequest, "say what you're doing")
+			return
+		}
+		s.callAgent(w, r, id, http.MethodPost, "/ticket/note", map[string]string{"text": text}, true)
+		return
+	}
+
+	s.callAgent(w, r, id, http.MethodPost, "/ticket/"+action, nil, true)
+}
+
+// replayRecordingHandler runs a recording again on its desktop, as a task.
+//
+// It goes through the task records exactly like a chat request - Plan, the
+// desktop accepts it, Commit, and the chat shows it - so the replay's steps,
+// pauses and outcome land in a task like any other. What the chat and the
+// records see is replayContent: the recording and the step. The parameter
+// values travel only in the request to the desktop, which keeps them in
+// memory, so a password given to a replay is written down nowhere.
+func (s *Server) replayRecordingHandler(w http.ResponseWriter, r *http.Request) {
+	id, session, ok := requireRecording(w, r, http.MethodPost)
+	if !ok {
+		return
+	}
+
+	from := 1
+	if value := r.FormValue("from"); value != "" {
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 1 {
+			jsonStatusError(w, http.StatusBadRequest, "from must be a step number")
+			return
+		}
+		from = n
+	}
+
+	params, errText := parseReplayParams(r.FormValue("params"))
+	if errText != "" {
+		jsonStatusError(w, http.StatusBadRequest, errText)
+		return
+	}
+
+	worker := desktop.SanitizeID(id)
+
+	if why, err := s.Tasks.Busy(worker); err != nil {
+		log.Printf("replay: %v", err)
+	} else if why != "" {
+		jsonStatusError(w, http.StatusConflict, why)
+		return
+	}
+
+	content := replayContent(session, from)
+	route := s.routeRequest(worker, content)
+
+	ctx, cancel := context.WithTimeout(r.Context(), recordingsRequestTimeout)
+	defer cancel()
+
+	body, err := json.Marshal(map[string]any{"task_id": route.TaskID, "from": from, "params": params})
+	if err != nil {
+		jsonError(w, err)
+		return
+	}
+
+	resp, err := s.Desktops.AgentRequest(ctx, id, http.MethodPost, "/recordings/"+session+"/replay", bytes.NewReader(body))
+	if err != nil {
+		recordingsError(w, err)
+		return
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		relayAgent(w, resp)
+		return
+	}
+	resp.Body.Close()
+
+	route = s.recordDelivered(r.Context(), worker, content, route)
+
+	jsonResponse(w, map[string]string{"status": "sent", "task_id": route.TaskID, "content": content})
+}
+
+// replayContent is the request a replay is sent and recorded as. The desktop's
+// watcher routes on it (replay_task.parse) and the chat shows it; it names the
+// recording and the step to start at, never a parameter's value.
+func replayContent(session string, from int) string {
+	if from > 1 {
+		return "/replay " + session + " from=" + strconv.Itoa(from)
+	}
+	return "/replay " + session
+}
+
+// parseReplayParams reads a replay's parameters, a JSON object of name to
+// text, and returns an explanation for the person when they are not usable.
+func parseReplayParams(raw string) (map[string]string, string) {
+	params := map[string]string{}
+
+	if strings.TrimSpace(raw) == "" {
+		return params, ""
+	}
+
+	if err := json.Unmarshal([]byte(raw), &params); err != nil {
+		return nil, "params must be a JSON object of parameter names to text"
+	}
+
+	if len(params) > maxReplayParams {
+		return nil, "too many parameters"
+	}
+
+	for name, value := range params {
+		if !paramNamePattern.MatchString(name) {
+			return nil, "not a parameter name: " + name
+		}
+		if len(value) > maxReplayParamBytes {
+			return nil, "the value of " + name + " is too long"
+		}
+	}
+
+	return params, ""
+}
+
+// requireDesktop checks the method and reads the desktop ID a recordings call
+// is for.
+func requireDesktop(w http.ResponseWriter, r *http.Request, method string) (string, bool) {
+	if r.Method != method {
+		http.Error(w, method+" required", http.StatusMethodNotAllowed)
+		return "", false
+	}
+
+	id := strings.TrimSpace(r.FormValue("id"))
+	if id == "" {
+		jsonStatusError(w, http.StatusBadRequest, "missing desktop id")
+		return "", false
+	}
+
+	return id, true
+}
+
+// requireRecording is requireDesktop plus a valid recording ID.
+func requireRecording(w http.ResponseWriter, r *http.Request, method string) (string, string, bool) {
+	id, ok := requireDesktop(w, r, method)
+	if !ok {
+		return "", "", false
+	}
+
+	session := r.FormValue("session")
+	if !recordingIDPattern.MatchString(session) {
+		jsonStatusError(w, http.StatusBadRequest, "not a recording id")
+		return "", "", false
+	}
+
+	return id, session, true
+}
+
+// callAgent sends one call to a desktop's recordings API and relays the
+// answer. `bounded` puts recordingsRequestTimeout on it.
+func (s *Server) callAgent(w http.ResponseWriter, r *http.Request, id, method, path string, payload any, bounded bool) {
+	ctx := r.Context()
+
+	if bounded {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, recordingsRequestTimeout)
+		defer cancel()
+	}
+
+	var body io.Reader
+	if payload != nil {
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			jsonError(w, err)
+			return
+		}
+		body = bytes.NewReader(encoded)
+	}
+
+	resp, err := s.Desktops.AgentRequest(ctx, id, method, path, body)
+	if err != nil {
+		recordingsError(w, err)
+		return
+	}
+
+	relayAgent(w, resp)
+}
+
+// relayAgent copies a desktop agent's answer to the client: its status, the
+// headers that describe the body, and the body, streamed. A 4xx carries words
+// the agent wrote for a person ("stop the demonstration first") and is passed
+// on; a 5xx can carry an exception's text, which jsonError's rule keeps from
+// the client, so it is logged and replaced.
+func relayAgent(w http.ResponseWriter, resp *http.Response) {
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusInternalServerError {
+		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		log.Printf("desktop agent returned %d: %s", resp.StatusCode, detail)
+		jsonStatusError(w, http.StatusBadGateway, "the desktop could not do that - its agent log has the details")
+		return
+	}
+
+	for _, name := range []string{"Content-Type", "Content-Length", "Content-Disposition", "Cache-Control"} {
+		if value := resp.Header.Get(name); value != "" {
+			w.Header().Set(name, value)
+		}
+	}
+
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
+}
+
+// recordingsError maps a failure to reach a desktop's agent to a status and
+// words a person can act on.
+func recordingsError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, desktop.ErrNoNetwork), errors.Is(err, desktop.ErrNoAddress):
+		log.Printf("recordings: %v", err)
+		jsonStatusError(w, http.StatusServiceUnavailable, "the desktop is not reachable on the Flowera network")
+	case errors.Is(err, context.DeadlineExceeded):
+		jsonStatusError(w, http.StatusGatewayTimeout, "the desktop took too long to answer")
+	default:
+		sendRequestError(w, err)
+	}
+}

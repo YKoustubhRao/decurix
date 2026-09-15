@@ -6,9 +6,9 @@ without building/running the whole flowera stack.
 
 A desktop's agent makes two kinds of outbound call to CONTROL_PLANE_URL:
 
-  POST /api/helptext     (agent/flowera_agent/messaging.py) - sent both for a
-                         genuine help request and for the final "task
-                         completed" message (ask_for_help/write_final_message)
+  POST /api/querytext    (agent/flowera_agent/messaging.py) - sent both for a
+                         genuine query and for the final "task
+                         completed" reply (ask_for_query/write_final_reply)
   POST /api/agent/events (agent/flowera_agent/progress.py) - one line per step
                          while a task runs, whichever harness is driving it
 
@@ -19,7 +19,7 @@ permissive 200 so nothing the agent does ever blocks on a missing endpoint.
 No task-delivery endpoint is needed here: test-vm.sh/.ps1 deliver the task
 the same way the real control plane does, by POSTing straight to the
 desktop's own vm_server.py on port 8081 (see internal/desktop/manager.go's
-SendMessage) - this process only ever receives calls, never makes them.
+SendRequest) - this process only ever receives calls, never makes them.
 """
 
 import json
@@ -39,7 +39,7 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length) if length else b""
 
-        if self.path == "/api/helptext":
+        if self.path == "/api/querytext":
             try:
                 data = json.loads(raw.decode("utf-8"))
             except (ValueError, UnicodeDecodeError):
@@ -76,10 +76,10 @@ class Handler(BaseHTTPRequestHandler):
         self._reply(200, {"status": "ok", "note": "dummy control plane for test-vm"})
 
     def log_message(self, fmt, *args):
-        pass  # keep stdout to the /api/helptext output above
+        pass  # keep stdout to the /api/querytext output above
 
 
 if __name__ == "__main__":
     server = ThreadingHTTPServer(("0.0.0.0", 8080), Handler)
-    print("Dummy control plane listening on :8080 - watching for /api/helptext ...", flush=True)
+    print("Dummy control plane listening on :8080 - watching for /api/querytext ...", flush=True)
     server.serve_forever()

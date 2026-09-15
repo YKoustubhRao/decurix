@@ -11,6 +11,13 @@ services:
 
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      # Task records, chats, help requests, worker memory and action
+      # screenshots (flowera.db). Without a volume, every rebuild of this
+      # container would start the records from nothing.
+      - flowera-data:/data
+
+    environment:
+      - FLOWERA_DATA_DIR=/data
 
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -23,3 +30,7 @@ services:
 networks:
   flowera-network:
     name: flowera-network
+
+volumes:
+  flowera-data:
+    name: flowera-data

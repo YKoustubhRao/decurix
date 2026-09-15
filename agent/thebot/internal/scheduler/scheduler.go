@@ -23,7 +23,7 @@
 //     fails and has work depending on it gets the plan's remainder replanned
 //     around it, once.
 //  6. Pause - a step that needs approval or an answer stops the job with a
-//     Checkpoint. The next message in the session resumes it exactly where
+//     Checkpoint. The next request in the session resumes it exactly where
 //     it stopped, instead of starting the task over.
 //  7. Compose - one step's own answer is returned as is; several steps'
 //     results are synthesised into one reply by a final model call.
@@ -54,7 +54,7 @@ const (
 	// says what and why. A "yes" in the same session resumes it.
 	OutcomeNeedsApproval Outcome = "needs_approval"
 	// OutcomeNeedsInput - paused because only the human can unblock it;
-	// Question is what it needs. Their next message resumes it.
+	// Question is what it needs. Their next request resumes it.
 	OutcomeNeedsInput Outcome = "needs_input"
 	// OutcomeFailed - it ran to the end and could not do what was asked;
 	// FinalAnswer says what happened.
@@ -114,7 +114,7 @@ type Job struct {
 	Checkpoint *Checkpoint
 }
 
-// Request is one message to run.
+// Request is what one job runs.
 type Request struct {
 	// Prompt is the task, and only the task.
 	Prompt string

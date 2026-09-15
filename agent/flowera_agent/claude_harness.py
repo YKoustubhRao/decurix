@@ -2,12 +2,14 @@ import json
 import os
 import subprocess
 import threading
+from pathlib import Path
 
-from flowera_agent import config, progress, state
+from flowera_agent import config, progress, state, usage
+from flowera_agent.computer import approval
 from flowera_agent.logging_utils import log
 from flowera_agent.identity import get_identity_context
 from flowera_agent.memory_context import get_memory_context
-from flowera_agent.messaging import ask_for_help, write_final_message
+from flowera_agent.messaging import ask_for_query, write_final_reply
 
 
 # ============================================================
@@ -18,7 +20,7 @@ from flowera_agent.messaging import ask_for_help, write_final_message
 # `claude` CLI in non-interactive mode, which runs its own agentic
 # loop (including executing shell commands) to completion and returns
 # one final JSON result. Exposes the same perform_task/
-# continue_after_help signatures as task_runner.py so harness.py can
+# continue_after_query signatures as task_runner.py so harness.py can
 # dispatch to either one interchangeably.
 #
 # The CLI is run with --output-format stream-json rather than json, so
@@ -47,7 +49,7 @@ other action with real-world consequences that you are not fully
 confident about: stop before performing that action. Do not perform it
 yet.
 
-Instead, respond with a message that begins with exactly:
+Instead, respond with a reply that begins with exactly:
 
 {APPROVAL_MARKER}
 
@@ -55,6 +57,35 @@ followed by a clear description of exactly what you want to do and
 why. A human will review this on the Flowera dashboard and respond
 with approval or further instructions before you continue.
 """.strip()
+
+SCREEN_SYSTEM_PROMPT = f"""
+This desktop has a graphical screen (XFCE, Chromium, LibreOffice). To work
+in a window, use the computer tools rather than shell tricks like xdotool:
+mcp__computer__observe (screenshot + elements with refs), mcp__computer__act
+(click/type/key/scroll/select on a ref; coordinates only when no element
+fits), mcp__computer__verify (confirm the result), mcp__computer__open
+(a URL, file or app). Act on refs from your latest observation, and verify
+before reporting that something on screen is done.
+
+You do not need to ask before clicking an on-screen control: the act tool
+itself stops before anything that sends, pays, buys or publishes. When it
+returns NEEDS_APPROVAL, stop and reply beginning with {APPROVAL_MARKER}
+describing that action; after approval, repeat the same action.
+""".strip()
+
+# The computer MCP server (flowera_agent/computer/mcp_server.py), run from
+# the directory this package lives in so `python3 -m` finds it whatever the
+# task's working directory is.
+MCP_CONFIG = json.dumps({
+    "mcpServers": {
+        "computer": {
+            "type": "stdio",
+            "command": "python3",
+            "args": ["-m", "flowera_agent.computer.mcp_server"],
+            "env": {"PYTHONPATH": str(Path(__file__).resolve().parent.parent)},
+        }
+    }
+})
 
 # Tool inputs are arbitrary JSON; these are the keys worth showing in a
 # one-line step, in the order that best identifies what the tool is doing
@@ -127,6 +158,11 @@ def _emit_event(event):
                 progress.emit(text)
 
         elif block.get("type") == "tool_use":
+            # The computer tools report themselves, with screenshots, from
+            # inside the action layer (computer/audit.py) - the same steps the
+            # other engines produce. A second line here would only repeat them.
+            if (block.get("name") or "").startswith("mcp__computer__"):
+                continue
             progress.emit(_describe_tool(block))
 
 
@@ -142,7 +178,17 @@ def _run_claude(prompt, resume_session_id=None):
 
     cmd = [
         "claude",
-        "--bare",
+        # No --bare: it forces API-key-only auth ("OAuth and keychain are
+        # never read") and this harness authenticates with the shared
+        # Claude Code login a human completes through the dashboard's
+        # popup (internal/desktop/claudelogin.go, saved by
+        # internal/claudeauth) instead of an ANTHROPIC_API_KEY - so the CLI
+        # needs to be free to read the OAuth credentials seeded into
+        # ~/.claude/.credentials.json when this desktop was created. The
+        # trade-off is the rest of what --bare would have skipped (hooks,
+        # LSP, plugin sync, attribution, auto-memory, CLAUDE.md
+        # auto-discovery) is back on, same as running `claude` anywhere
+        # else - none of it applies inside a desktop's empty work dir.
         "-p", prompt,
         # stream-json requires --verbose; without it the CLI refuses to
         # stream in print mode and the loop below would see nothing.
@@ -154,10 +200,15 @@ def _run_claude(prompt, resume_session_id=None):
         # Which desktop this is. Claude Code can of course run `hostname`
         # to find out, but a question about the desktop it is already
         # running on should not cost a tool call - and on the other two
-        # harnesses not knowing this turned into a help request that
+        # harnesses not knowing this turned into a query that
         # blocked the desktop outright. Same facts, same wording, all
         # three harnesses.
         "--append-system-prompt", get_identity_context("Claude Code"),
+        # The screen, as tools - the same observe/act/verify layer the other
+        # two engines reach through the `gui` command, with screenshots,
+        # because Claude can read them.
+        "--mcp-config", MCP_CONFIG,
+        "--append-system-prompt", SCREEN_SYSTEM_PROMPT,
     ]
 
     memory_context = get_memory_context()
@@ -224,7 +275,11 @@ def _run_claude(prompt, resume_session_id=None):
 
             if event.get("type") == "result":
                 result = event
+                _record_usage(event)
                 continue
+
+            if event.get("type") == "system" and event.get("subtype") == "init":
+                usage.set_model(event.get("model"))
 
             _emit_event(event)
     finally:
@@ -246,10 +301,37 @@ def _run_claude(prompt, resume_session_id=None):
     return result, None
 
 
+def _record_usage(result):
+    """
+    Add one Claude Code run's spend to the task's totals. Each run - the
+    task, and every resume after a human's reply - is its own process, and
+    its result event's total_cost_usd is taken as that process's spend, so
+    the runs are summed. Assumed rather than verified on a live resume: if
+    a resumed run reports the session's running total, this double-counts.
+    """
+
+    tokens = result.get("usage") or {}
+
+    input_tokens = sum(
+        tokens.get(key) or 0
+        for key in (
+            "input_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+        )
+    )
+
+    usage.add(
+        input_tokens=input_tokens if tokens else None,
+        output_tokens=tokens.get("output_tokens"),
+        cost_usd=result.get("total_cost_usd"),
+    )
+
+
 def _handle_result(result):
     """
-    Route a successful Claude Code result to either write_final_message
-    or ask_for_help, updating this harness's session-continuation state.
+    Route a successful Claude Code result to either write_final_reply
+    or ask_for_query, updating this harness's session-continuation state.
     """
 
     global _current_session_id
@@ -259,7 +341,7 @@ def _handle_result(result):
         _current_session_id = session_id
 
     if result.get("is_error"):
-        ask_for_help(
+        ask_for_query(
             result.get("result")
             or "Claude Code reported an error but gave no details."
         )
@@ -268,16 +350,28 @@ def _handle_result(result):
     result_text = (result.get("result") or "").strip()
 
     if result_text.startswith(APPROVAL_MARKER):
-        ask_for_help(result_text[len(APPROVAL_MARKER):].strip())
+        ask_for_query(result_text[len(APPROVAL_MARKER):].strip(), kind="approval")
         return
 
-    write_final_message(result_text or "(no result text)")
+    # The act tool stopped an on-screen action for approval, and the turn
+    # ended without saying so. Whatever Claude wrote instead, the task is
+    # paused on that action - a reply that skipped the pause must not reach
+    # the human as a finished answer.
+    blocked = approval.pending()
+    if blocked is not None:
+        note = approval.request_text(blocked)
+        if result_text:
+            note += f"\n\nThe agent's own last words:\n{result_text}"
+        ask_for_query(note, kind="approval")
+        return
+
+    write_final_reply(result_text or "(no result text)")
 
 
 def perform_task(task, task_file):
     state.current_task = task
     state.current_task_file = task_file
-    state.waiting_for_help = False
+    state.waiting_for_query = False
 
     log("========================================")
     log("STARTING TASK (Claude Code harness)")
@@ -287,7 +381,7 @@ def perform_task(task, task_file):
     result, error = _run_claude(task)
 
     if error:
-        ask_for_help(
+        ask_for_query(
             f"""
 Claude Code harness failed to run the task.
 
@@ -300,30 +394,30 @@ Error:
     _handle_result(result)
 
 
-def continue_after_help(help_response):
+def continue_after_query(query_response):
     if not state.current_task:
         log(
-            "Received help response but no "
+            "Received a reply to a query but no "
             "active task exists."
         )
         return
 
-    state.waiting_for_help = False
+    state.waiting_for_query = False
 
     log("========================================")
-    log("RECEIVED HUMAN HELP (Claude Code harness)")
-    log(help_response)
+    log("RECEIVED HUMAN REPLY TO QUERY (Claude Code harness)")
+    log(query_response)
     log("========================================")
 
     result, error = _run_claude(
-        help_response,
+        query_response,
         resume_session_id=_current_session_id,
     )
 
     if error:
-        ask_for_help(
+        ask_for_query(
             f"""
-The agent tried to continue after human help,
+The agent tried to continue after the human's reply,
 but the Claude Code harness failed again.
 
 Error:

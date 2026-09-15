@@ -74,7 +74,7 @@ func TestDownloadPrefersURLInTheStepOverPriorFindings(t *testing.T) {
 }
 
 // No URL anywhere - own step or prior findings - must fail honestly with
-// a message that reflects both places were checked.
+// output that reflects both places were checked.
 func TestDownloadNoURLAnywhereFailsHonestly(t *testing.T) {
 	rc := newDownloadRC(t)
 	res, err := NewDownload().Run(rc, Subtask{Step: "download the files", Type: "download"})

@@ -1,9 +1,10 @@
+import base64
 import json
 import queue
 import threading
 import urllib.request
 
-from flowera_agent import config
+from flowera_agent import config, task_context
 from flowera_agent.logging_utils import log
 
 
@@ -38,12 +39,16 @@ _sender_lock = threading.Lock()
 _sender_started = False
 
 
-def _post(text):
+def _post(item):
     payload = {
         "desktop_id": config.DESKTOP_ID,
         "vm_name": config.DESKTOP_NAME,
-        "text": text,
     }
+
+    if isinstance(item, dict):
+        payload.update(item)
+    else:
+        payload["text"] = item
 
     request = urllib.request.Request(
         config.CONTROL_PLANE_URL.rstrip("/") + "/api/agent/events",
@@ -102,10 +107,48 @@ def emit(text):
     _ensure_sender()
 
     try:
-        _pending.put_nowait(text)
+        # The task is read now, not when the line is sent: by then the next
+        # task may already have started.
+        _pending.put_nowait({"text": text, "task_id": task_context.current()})
     except queue.Full:
         # The sender is behind. Losing a progress line is always better
         # than blocking the task that produced it.
+        pass
+
+
+def emit_action(text, action, before_png=None, after_png=None, task_id=None):
+    """
+    Report one on-screen action as a step, with its before and after
+    screenshots, for the chat's audit trail.
+
+    Same contract as emit(): never blocks, never raises. Screenshots are the
+    heavy part of a step, so when the sender is already behind they are the
+    first thing dropped - the step itself still arrives, and the full-size
+    frames are on the desktop's own disk either way (computer/audit.py).
+    `task_id` names the task outright, for a reporter that knows it better
+    than the current-task file does (a demonstration recorded for a task).
+    """
+
+    if not text:
+        return
+
+    item = {
+        "text": str(text).strip()[:MAX_TEXT],
+        "action": action,
+        "task_id": task_id if task_id is not None else task_context.current(),
+    }
+
+    if _pending.qsize() < MAX_PENDING // 4:
+        if before_png:
+            item["before_png"] = base64.b64encode(before_png).decode("ascii")
+        if after_png:
+            item["after_png"] = base64.b64encode(after_png).decode("ascii")
+
+    _ensure_sender()
+
+    try:
+        _pending.put_nowait(item)
+    except queue.Full:
         pass
 
 

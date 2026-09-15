@@ -6,6 +6,7 @@ type Desktop struct {
 	Name        string `json:"name"`
 	Profile     string `json:"profile"`
 	Harness     string `json:"harness"`
+	Model       string `json:"model,omitempty"`
 	ContainerID string `json:"container_id"`
 	Volume      string `json:"volume"`
 	Status      string `json:"status"`

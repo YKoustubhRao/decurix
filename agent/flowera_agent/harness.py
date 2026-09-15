@@ -2,12 +2,12 @@ from flowera_agent import config, state
 
 # The only place that branches on which reasoning engine drives tasks.
 # Every branch exposes perform_task(task, task_file),
-# continue_after_help(help_response) and wait_for_backend() with identical
+# continue_after_query(query_response) and wait_for_backend() with identical
 # signatures, so watchers.py's command_watcher() and app.py's startup
 # don't need to know which is active.
 
 if config.AGENT_HARNESS == "claude":
-    from flowera_agent.claude_harness import perform_task, continue_after_help
+    from flowera_agent.claude_harness import perform_task, continue_after_query
 
     def _wait_for_backend():
         """
@@ -18,12 +18,12 @@ if config.AGENT_HARNESS == "claude":
 elif config.AGENT_HARNESS == "thebot":
     from flowera_agent.thebot_harness import (
         perform_task,
-        continue_after_help,
+        continue_after_query,
         wait_for_backend as _wait_for_backend,
     )
 
 else:
-    from flowera_agent.task_runner import perform_task, continue_after_help
+    from flowera_agent.task_runner import perform_task, continue_after_query
     from flowera_agent.ollama_client import wait_for_ollama as _wait_for_backend
 
 
@@ -42,4 +42,4 @@ def wait_for_backend():
     state.backend_ready = True
 
 
-__all__ = ["perform_task", "continue_after_help", "wait_for_backend"]
+__all__ = ["perform_task", "continue_after_query", "wait_for_backend"]

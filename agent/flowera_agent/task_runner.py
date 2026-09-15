@@ -1,10 +1,11 @@
 from flowera_agent import config, progress, state
 from flowera_agent.commands import run_command
+from flowera_agent.computer import approval
 from flowera_agent.logging_utils import log
 from flowera_agent.messaging import (
-    ask_for_help,
+    ask_for_query,
     backend_failure_note,
-    write_final_message,
+    write_final_reply,
 )
 from flowera_agent.ollama_client import (
     ask_agent,
@@ -41,7 +42,7 @@ MAX_COMMAND_OUTPUT_CHARS = 4000
 # SYSTEM_PROMPT), and a pause for approval legitimately happens before any
 # command runs - so the one thing this must never do is argue an agent out
 # of asking permission.
-PREMATURE_HELP_NUDGE = """
+PREMATURE_QUERY_NUDGE = """
 You asked for help before running a single command, so nothing has
 actually been tried yet.
 
@@ -69,7 +70,7 @@ def invalid_format_nudge(response):
     Ask for the same answer back, with a marker on the front.
 
     Quoting the model's own words matters more than it looks. The generic
-    version of this message - a restatement of the three markers, with no
+    version of this reply - a restatement of the three markers, with no
     reference to what was actually said - was measured against the real
     model on the real failure below: it answered a correct, marker-less
     "241" with a HELP request asking the human whether they needed
@@ -158,7 +159,7 @@ def salvage_unmarked_response(response):
     many files are in /etc, it ran the right command, read the right
     number, and replied "241" - the task was finished at step two. It
     then spent forty-eight more steps being told about markers, and the
-    human got a help request about a loop, for a question that had been
+    human got a query about a loop, for a question that had been
     answered correctly minutes earlier. An answer without a marker is
     still an answer; a false alarm is not.
     """
@@ -173,14 +174,14 @@ def salvage_unmarked_response(response):
         "as the final answer."
     )
 
-    write_final_message(text)
+    write_final_reply(text)
 
     return True
 
 
 def format_command_result(result):
     """
-    Render a command's exit code and output as the history message the model
+    Render a command's exit code and output as the history entry the model
     sees, truncating output so a single noisy command can't balloon the
     prompt sent on every later step of the task.
     """
@@ -199,6 +200,46 @@ def format_command_result(result):
         f"exit_code: {result['exit_code']}\n\n"
         f"output:\n{output}"
     )
+
+
+MAX_RECENT_FULL_TURNS = 6
+OLD_COMMAND_OUTPUT_CHARS = 200
+
+
+def compact_history(history, max_recent=MAX_RECENT_FULL_TURNS):
+    """
+    Keep recent turns in full detail, while compressing the verbose outputs
+    of older turns so total prompt size stays comfortably within num_ctx (8192)
+    and RAM budgets without forgetting what commands have already been run.
+    """
+    if len(history) <= max_recent * 2:
+        return history
+
+    cutoff = len(history) - (max_recent * 2)
+    compacted = []
+
+    for i, msg in enumerate(history):
+        if i >= cutoff or msg.get("role") != "user":
+            compacted.append(msg)
+            continue
+
+        content = msg.get("content", "")
+        if "Command execution result:\n\n" in content and "output:\n" in content:
+            parts = content.split("output:\n", 1)
+            header = parts[0] + "output:\n"
+            body = parts[1].strip()
+            if len(body) > OLD_COMMAND_OUTPUT_CHARS:
+                compacted_body = (
+                    body[:OLD_COMMAND_OUTPUT_CHARS]
+                    + "\n... [earlier output compacted for context budget]"
+                )
+                compacted.append({"role": "user", "content": header + compacted_body})
+            else:
+                compacted.append(msg)
+        else:
+            compacted.append(msg)
+
+    return compacted
 
 
 def describe_result(result):
@@ -220,10 +261,76 @@ def describe_result(result):
     return summary
 
 
+# The `gui` command the approval gate stopped, kept so that an approving
+# reply can run exactly that command again. Module-private for the same
+# reason claude_harness keeps its session id: continue_after_query starts a
+# fresh conversation, and this is the one thing from the old one it needs.
+_pending_gui_command = None
+
+
+def pause_for_screen_approval(command, result):
+    """
+    Pause the task if `command` was an on-screen action the approval gate
+    stopped. Returns True when it did.
+
+    Decided here, from the command's exit code, not left to the model: a 3B
+    model told NEEDS_APPROVAL is as likely to try the same click by
+    coordinates as to ask, and a pause that depends on the model noticing is
+    not a pause.
+    """
+
+    global _pending_gui_command
+
+    blocked = approval.blocked_command(result["exit_code"], result["output"])
+
+    if blocked is None:
+        return False
+
+    log("On-screen action stopped for approval - pausing the task.")
+
+    _pending_gui_command = command
+    ask_for_query(blocked, kind="approval")
+
+    return True
+
+
+def resume_approved_screen_action(history):
+    """
+    After a human replied to a screen approval: if they approved, run the
+    stopped command now and put its result in front of the model. Returns
+    (command, result), or (None, None) when there was nothing to run.
+    """
+
+    global _pending_gui_command
+
+    command = _pending_gui_command
+    _pending_gui_command = None
+
+    # watchers.command_watcher has already turned an approving reply into a
+    # grant; no grant means the human said no, which the model reads in the
+    # reply itself.
+    if not command or not approval.has_grant():
+        return None, None
+
+    log("Human approved the on-screen action - running it now.")
+
+    progress.emit(f"$ {command}")
+    result = run_command(command)
+    progress.emit(describe_result(result))
+
+    history.append({"role": "assistant", "content": f"COMMAND:\n{command}"})
+    history.append({"role": "user", "content": format_command_result(result)})
+
+    return command, result
+
+
 def perform_task(task, task_file):
+    global _pending_gui_command
+
     state.current_task = task
     state.current_task_file = task_file
-    state.waiting_for_help = False
+    state.waiting_for_query = False
+    _pending_gui_command = None
 
     log("========================================")
     log("STARTING TASK")
@@ -233,8 +340,8 @@ def perform_task(task, task_file):
     history = []
 
     # Whether the agent has actually run anything yet, and whether it has
-    # already been told that asking for help before trying counts as not
-    # having tried. Both gate PREMATURE_HELP_NUDGE, which fires at most
+    # already been told that asking a query before trying counts as not
+    # having tried. Both gate PREMATURE_QUERY_NUDGE, which fires at most
     # once per task.
     commands_run = 0
     nudged = False
@@ -263,19 +370,19 @@ def perform_task(task, task_file):
         try:
             response = ask_agent(
                 task,
-                history,
+                compact_history(history),
             )
 
         except Exception as exc:
 
-            # The task is over, not paused. This used to be ask_for_help,
+            # The task is over, not paused. This used to be ask_for_query,
             # which leaves the desktop waiting on a reply - but the note
-            # tells the human to send their message again, and there is
+            # tells the human to send their request again, and there is
             # nothing a reply could add to a model that never answered.
             # Measured live: the human sent a new task instead, it was
-            # routed to continue_after_help as the "reply" to a greeting,
+            # routed to continue_after_query as the "reply" to a greeting,
             # and the finished note reported it under the greeting's Task.
-            write_final_message(
+            write_final_reply(
                 backend_failure_note(
                     "The reasoning model "
                     f"({config.OLLAMA_MODEL})",
@@ -296,18 +403,18 @@ def perform_task(task, task_file):
 
         if action == "done":
 
-            write_final_message(value)
+            write_final_reply(value)
 
             return
 
-        if action == "help":
+        if action == "query":
 
             if commands_run == 0 and not nudged:
 
                 nudged = True
 
                 log(
-                    "Agent asked for help before running anything - "
+                    "Agent had a query before running anything - "
                     "pushing back once."
                 )
 
@@ -321,13 +428,13 @@ def perform_task(task, task_file):
                 history.append(
                     {
                         "role": "user",
-                        "content": PREMATURE_HELP_NUDGE,
+                        "content": PREMATURE_QUERY_NUDGE,
                     }
                 )
 
                 continue
 
-            ask_for_help(value)
+            ask_for_query(value)
 
             return
 
@@ -336,7 +443,7 @@ def perform_task(task, task_file):
             command = value
 
             if not command:
-                ask_for_help(
+                ask_for_query(
                     "The agent generated an empty COMMAND."
                 )
                 return
@@ -380,12 +487,12 @@ def perform_task(task, task_file):
                 )
 
                 if last_result["exit_code"] == 0:
-                    write_final_message(
+                    write_final_reply(
                         final_answer_from_command(command, last_result)
                     )
                     return
 
-                ask_for_help(
+                ask_for_query(
                     f"""
 The agent kept retrying the same command, which keeps failing with exit
 code {last_result['exit_code']}:
@@ -415,6 +522,9 @@ It is not going to get past this on its own.
 
             progress.emit(describe_result(result))
 
+            if pause_for_screen_approval(command, result):
+                return
+
             history.append(
                 {
                     "role": "assistant",
@@ -440,7 +550,7 @@ It is not going to get past this on its own.
                 if salvage_unmarked_response(response):
                     return
 
-                ask_for_help(
+                ask_for_query(
                     "The agent stopped producing usable responses - its "
                     f"last {MAX_INVALID_RESPONSES} replies had no "
                     "COMMAND, DONE or HELP marker and the final one was "
@@ -466,7 +576,7 @@ It is not going to get past this on its own.
             continue
 
     # Agent exhausted its step limit.
-    ask_for_help(
+    ask_for_query(
         f"""
 The agent ran its full budget of {max_steps} steps without finishing
 the task, having run {commands_run} command(s).
@@ -479,22 +589,22 @@ Please look at the steps above and tell it what to do differently.
 
 
 # ============================================================
-# Help response detection
+# Query response detection
 # ============================================================
 
-def is_help_response(filename, content):
+def is_query_response(filename, content):
     """
-    A message received while waiting for help is treated
-    as the human's response to the current blocked task.
+    A request received while waiting for a query to be answered is
+    treated as the human's response to the current blocked task.
     """
 
-    if not state.waiting_for_help:
+    if not state.waiting_for_query:
         return False
 
     lower_name = filename.lower()
 
-    # Ignore our own generated result/help files.
-    if lower_name.startswith("help_"):
+    # Ignore our own generated result/query files.
+    if lower_name.startswith("query_"):
         return False
 
     if lower_name.startswith("result_"):
@@ -503,25 +613,25 @@ def is_help_response(filename, content):
     return True
 
 
-def continue_after_help(help_response):
+def continue_after_query(query_response):
     """
-    Continue the current task after a human provides help.
+    Continue the current task after a human answers a query.
     """
 
     if not state.current_task:
         log(
-            "Received help response but no "
+            "Received a reply to a query but no "
             "active task exists."
         )
         return
 
     task = state.current_task
 
-    state.waiting_for_help = False
+    state.waiting_for_query = False
 
     log("========================================")
-    log("RECEIVED HUMAN HELP")
-    log(help_response)
+    log("RECEIVED HUMAN REPLY TO QUERY")
+    log(query_response)
     log("========================================")
 
     # Continue the same task with the human's
@@ -532,8 +642,8 @@ def continue_after_help(help_response):
         {
             "role": "user",
             "content": (
-                "The human has provided help:\n\n"
-                + help_response
+                "The human replied:\n\n"
+                + query_response
             ),
         }
     ]
@@ -555,6 +665,13 @@ def continue_after_help(help_response):
     last_result = None
     command_repeats = 0
 
+    # A reply that approved an on-screen action runs that action first -
+    # the model is not asked to find the same button again.
+    last_command, last_result = resume_approved_screen_action(history)
+
+    if last_result is not None and pause_for_screen_approval(last_command, last_result):
+        return
+
     max_steps = 50
 
     for step in range(max_steps):
@@ -568,18 +685,18 @@ def continue_after_help(help_response):
                         "content": (
                             f"Original task:\n\n"
                             f"{task}\n\n"
-                            f"Human help:\n\n"
-                            f"{help_response}\n\n"
+                            f"Human reply:\n\n"
+                            f"{query_response}\n\n"
                             f"Continue the task."
                         ),
                     },
-                    *history,
+                    *compact_history(history),
                 ]
             )
 
         except Exception as exc:
 
-            ask_for_help(
+            ask_for_query(
                 "The agent tried to continue after your reply, but the "
                 "reasoning model failed again.\n\n"
                 + backend_failure_note(
@@ -600,12 +717,12 @@ def continue_after_help(help_response):
 
         if action == "done":
 
-            write_final_message(value)
+            write_final_reply(value)
             return
 
-        if action == "help":
+        if action == "query":
 
-            ask_for_help(value)
+            ask_for_query(value)
             return
 
         if action == "command":
@@ -646,12 +763,12 @@ def continue_after_help(help_response):
                 )
 
                 if last_result["exit_code"] == 0:
-                    write_final_message(
+                    write_final_reply(
                         final_answer_from_command(value, last_result)
                     )
                     return
 
-                ask_for_help(
+                ask_for_query(
                     f"""
 After your reply the agent kept retrying the same command, which keeps
 failing with exit code {last_result['exit_code']}:
@@ -676,6 +793,9 @@ $ {value}
 
             progress.emit(describe_result(result))
 
+            if pause_for_screen_approval(value, result):
+                return
+
             history.append(
                 {
                     "role": "assistant",
@@ -699,7 +819,7 @@ $ {value}
             if salvage_unmarked_response(response):
                 return
 
-            ask_for_help(
+            ask_for_query(
                 "After your reply the agent stopped producing usable "
                 "responses - none of its last "
                 f"{MAX_INVALID_RESPONSES} had a COMMAND, DONE or HELP "
@@ -722,7 +842,7 @@ $ {value}
             }
         )
 
-    ask_for_help(
+    ask_for_query(
         f"The agent ran {max_steps} more steps after your reply without "
         "finishing the task."
     )

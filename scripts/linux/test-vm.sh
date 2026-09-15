@@ -3,7 +3,7 @@
 # Spins up ONE throwaway desktop container standalone, for quickly testing a
 # desktop image or the agent harness without building/running the whole
 # flowera control plane. Pairs with scripts/testing/dummy_control_plane.py,
-# a stdlib-only stub that accepts the desktop's help/completion callbacks
+# a stdlib-only stub that accepts the desktop's query/completion callbacks
 # and prints them live, so you can watch the agent work.
 #
 # Usage:
@@ -161,7 +161,7 @@ if [ -n "$TASK" ]; then
     echo ""
     echo "=== Sending task ==="
     payload=$(jq -n --arg content "$TASK" '{content:$content}')
-    curl -fsS -X POST "http://127.0.0.1:18081/message" \
+    curl -fsS -X POST "http://127.0.0.1:18081/request" \
         -H "Content-Type: application/json" \
         -d "$payload" \
         >/dev/null && echo "Sent." || echo "WARNING: could not deliver the task yet - the agent may still be starting. Retry with the same --task once it's up."
@@ -175,7 +175,7 @@ echo "VNC:              http://localhost:16901/vnc.html"
 if [ "$HARNESS" = "thebot" ]; then
 echo "Agent chat UI:     http://localhost:14900/"
 fi
-echo "Send a task:       curl -X POST http://localhost:18081/message -H 'Content-Type: application/json' -d '{\"content\":\"...\"}'"
+echo "Send a task:       curl -X POST http://localhost:18081/request -H 'Content-Type: application/json' -d '{\"content\":\"...\"}'"
 echo "Watch callbacks:    docker logs -f ${DUMMY_CP}"
 echo "Watch agent logs:   docker exec ${DESKTOP_CONTAINER} tail -f /tmp/flowera-startup.log"
 echo "Tear down:          ./scripts/linux/test-vm.sh --name ${NAME} --down"

@@ -14,7 +14,7 @@ from flowera_agent import config
 # This exists because a question as ordinary as "what's your desktop
 # name?" was genuinely unanswerable. No system prompt said what the
 # desktop was called, so the model's only honest move was to ask the
-# human - which arrived as a help request that blocked the task and
+# human - which arrived as a query that blocked the task and
 # paged a person to supply a fact the container already had in its own
 # environment. An agent that cannot answer "who are you" looks broken
 # long before it is asked to do anything real.

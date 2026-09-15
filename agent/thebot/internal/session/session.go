@@ -1,7 +1,7 @@
 // Package session holds each UI conversation's real turn-by-turn history
-// in memory, so a second message in the same session actually has the
+// in memory, so a second request in the same session actually has the
 // first one available to it. Real bug this fixes, found live: general.go
-// sent only the current message with zero history, so "what's my name"
+// sent only the current request with zero history, so "what's my name"
 // right after "my name is X" got an honest "I don't have that" - the
 // model wasn't lying, the system genuinely never gave it anything to
 // remember with.
@@ -44,7 +44,7 @@ func (s *Store) Append(sessionID string, msg llm.Message) {
 }
 
 // History returns a real copy of the session's turns so far - safe for a
-// caller to append its own new message onto without mutating the store.
+// caller to append its own new turn onto without mutating the store.
 func (s *Store) History(sessionID string) []llm.Message {
 	if sessionID == "" {
 		return nil

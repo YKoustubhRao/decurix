@@ -382,8 +382,33 @@
 .create-grid{display:grid;gap:15px}
 .claude-hint{display:none}
 .claude-hint.on{display:block}
+.claude-auth-row{display:none;align-items:center;gap:10px;margin-top:2px}
+.claude-auth-row.on{display:flex}
+.claude-auth-row span{font-size:12.5px;color:var(--text-2);flex:1;min-width:0}
 
-/* ---------- help rail ---------- */
+/* ---------- claude login dialog ---------- */
+
+.claude-login-url-row{display:flex;align-items:center;gap:8px}
+
+.claude-login-url{
+  display:block;
+  flex:1;
+  min-width:0;
+  padding:9px 11px;
+  border:1px solid var(--line);
+  border-radius:var(--r-md);
+  background:var(--surface-2);
+  font-size:12.5px;
+  word-break:break-all;
+  color:var(--text);
+  text-decoration:none
+}
+.claude-login-url:hover{border-color:var(--line-2)}
+.copy-btn:disabled{opacity:.4;cursor:not-allowed}
+.claude-login-error{display:none;font-size:12.5px;color:var(--danger)}
+.claude-login-error.on{display:block}
+
+/* ---------- query rail ---------- */
 
 .rail{
   position:fixed;
@@ -448,7 +473,7 @@
 </style>
 </head>
 
-<body data-tunnel="{{.TunnelURL}}" data-help-poll="own">
+<body data-tunnel="{{.TunnelURL}}" data-query-poll="own">
 
 {{template "sprite"}}
 
@@ -613,6 +638,10 @@
              that full-size screen is opened from, so the marker lives here -
              deliberately not on the dcard-preview iframe above, which is a
              small non-interactive thumbnail. */}}
+        {{/* Recordings (record a demonstration, replay, export) live inside the
+             desktop screen itself now - the ticket toolbar injectTicketToolbar
+             splices into every open screen - rather than as a second entry
+             point on the card; see proxy.go's ticketToolbar. */}}
         <button class="btn btn-default btn-sm action-icon" data-open="{{.URL}}?resize=remote&ui=touch" title="Open the screen in a new tab" aria-label="Open the desktop screen in a new tab">
           <svg width="14" height="14"><use href="#i-external"/></svg>
         </button>
@@ -650,7 +679,7 @@
 </main>
 
 
-<aside class="rail" id="helpRail" aria-live="polite">
+<aside class="rail" id="queryRail" aria-live="polite">
   <div class="rail-head">
     <svg width="15" height="15" style="color:var(--accent)"><use href="#i-inbox"/></svg>
     <span class="eyebrow">Needs you · <span id="railCount">0</span></span>
@@ -698,6 +727,10 @@
         </div>
         <div class="hint claude-hint" id="claudeHint">Claude Code needs the Developer or AI Developer profile — the <code class="mono">claude</code> binary isn't in the Basic image.</div>
         <div class="hint">TheBot uses the same shared Ollama flowera already runs for every desktop — no separate URL to set up. PDF/HTML/Office-format document parsing isn't available yet in this harness; plain text/code files and real terminal execution both work fully.</div>
+        <div class="claude-auth-row" id="claudeAuthRow">
+          <span id="claudeAuthText">Checking Claude sign-in…</span>
+          <button type="button" class="btn btn-quiet btn-sm" id="claudeAuthBtn">Log in to Claude</button>
+        </div>
       </div>
 
       <div class="field">
@@ -724,6 +757,45 @@
     <div class="dialog-foot">
       <button type="button" class="btn btn-quiet" data-close-dialog>Cancel</button>
       <button type="submit" class="btn btn-primary" id="createSubmit">Create desktop</button>
+    </div>
+  </form>
+</dialog>
+
+
+<dialog id="claudeLoginDialog">
+  <form method="dialog" id="claudeLoginForm">
+    <div class="dialog-head">
+      <div>
+        <h2>Sign in to Claude</h2>
+        <p>One login, shared by every Claude Code desktop.</p>
+      </div>
+      <button type="button" class="icon-btn" data-close-claude-login aria-label="Close">
+        <svg width="16" height="16"><use href="#i-x"/></svg>
+      </button>
+    </div>
+
+    <div class="dialog-body create-grid">
+      <div class="field">
+        <span class="field-label">1. Open the sign-in page</span>
+        <div class="claude-login-url-row">
+          <a class="claude-login-url mono" id="claudeLoginUrl" href="#" target="_blank" rel="noopener">Getting a sign-in link…</a>
+          <button type="button" class="icon-btn copy-btn" id="claudeLoginCopyBtn" data-copy="" disabled aria-label="Copy sign-in link">
+            <svg width="13" height="13"><use href="#i-copy"/></svg>
+          </button>
+        </div>
+        <div class="hint">Opens in a new tab. Sign in, then copy the code it gives you back.</div>
+      </div>
+
+      <div class="field">
+        <label for="claudeLoginCode">2. Paste the code</label>
+        <input class="input mono" type="text" id="claudeLoginCode" name="code" placeholder="code#state" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <div class="hint claude-login-error" id="claudeLoginError"></div>
+      </div>
+    </div>
+
+    <div class="dialog-foot">
+      <button type="button" class="btn btn-quiet" data-close-claude-login>Cancel</button>
+      <button type="submit" class="btn btn-primary" id="claudeLoginSubmit">Sign in</button>
     </div>
   </form>
 </dialog>
@@ -880,6 +952,7 @@
   function openCreate(){
     createDialog.showModal();
     document.getElementById("dName").focus();
+    loadClaudeAuthStatus();
   }
 
   document.getElementById("newDesktopBtn").addEventListener("click", openCreate);
@@ -901,17 +974,154 @@
     if(blocked && claude.checked){
       createForm.querySelector("input[name=harness][value=ollama]").checked = true;
     }
+
+    document.getElementById("claudeAuthRow").classList.toggle(
+      "on",
+      createForm.querySelector("input[name=harness]:checked").value === "claude"
+    );
   }
 
-  createForm.querySelectorAll("input[name=profile]").forEach(function(input){
+  createForm.querySelectorAll("input[name=profile], input[name=harness]").forEach(function(input){
     input.addEventListener("change", syncHarness);
   });
 
   syncHarness();
 
-  createForm.addEventListener("submit", async function(event){
+  /* ---------------- claude login ---------------- */
+
+  var claudeAuthLoggedIn = false;
+
+  async function loadClaudeAuthStatus(){
+    var text = document.getElementById("claudeAuthText");
+    var btn = document.getElementById("claudeAuthBtn");
+
+    try{
+      var response = await fetch("/api/claude-auth/status");
+      var status = await response.json();
+
+      claudeAuthLoggedIn = !!status.loggedIn;
+
+      if(claudeAuthLoggedIn){
+        text.textContent = "Signed in to Claude" + (status.email ? " as " + status.email : "") + ".";
+        btn.textContent = "Switch account";
+      }else{
+        text.textContent = "Not signed in to Claude yet.";
+        btn.textContent = "Log in to Claude";
+      }
+    }catch(e){
+      text.textContent = "Could not check Claude sign-in status.";
+    }
+  }
+
+  loadClaudeAuthStatus();
+
+  var claudeLoginDialog = document.getElementById("claudeLoginDialog");
+  var claudeLoginForm = document.getElementById("claudeLoginForm");
+  var claudeLoginUrl = document.getElementById("claudeLoginUrl");
+  var claudeLoginCopyBtn = document.getElementById("claudeLoginCopyBtn");
+  var claudeLoginCode = document.getElementById("claudeLoginCode");
+  var claudeLoginError = document.getElementById("claudeLoginError");
+  var claudeLoginSubmit = document.getElementById("claudeLoginSubmit");
+  var claudeLoginId = null;
+
+  /* Set when "Create desktop" itself triggers the login dialog (claude
+     harness picked, nobody signed in yet) rather than the user clicking
+     "Log in to Claude" on their own - a successful sign-in then finishes
+     the create instead of just closing the dialog. */
+  var createPendingClaudeLogin = false;
+
+  function showClaudeLoginError(message){
+    claudeLoginError.textContent = message;
+    claudeLoginError.classList.toggle("on", !!message);
+  }
+
+  /* Esc and the backdrop close a <dialog> without running a click handler,
+     so cancelling the in-progress container lives here - the one place a
+     close always passes through, whichever way it happened. */
+  claudeLoginDialog.addEventListener("close", function(){
+    var id = claudeLoginId;
+    claudeLoginId = null;
+    createPendingClaudeLogin = false;
+
+    if(id){
+      post("/api/claude-auth/login/cancel", {login_id: id}).catch(function(){});
+    }
+  });
+
+  document.getElementById("claudeAuthBtn").addEventListener("click", async function(){
+    var btn = this;
+    btn.disabled = true;
+
+    claudeLoginId = null;
+    claudeLoginUrl.textContent = "Getting a sign-in link…";
+    claudeLoginUrl.href = "#";
+    claudeLoginCopyBtn.disabled = true;
+    claudeLoginCopyBtn.dataset.copy = "";
+    claudeLoginCode.value = "";
+    showClaudeLoginError("");
+    claudeLoginDialog.showModal();
+
+    try{
+      var result = await post("/api/claude-auth/login/start", {});
+      claudeLoginId = result.loginId;
+      claudeLoginUrl.textContent = result.url;
+      claudeLoginUrl.href = result.url;
+      claudeLoginCopyBtn.disabled = false;
+      claudeLoginCopyBtn.dataset.copy = result.url;
+      claudeLoginCode.focus();
+    }catch(e){
+      showClaudeLoginError(e.message);
+    }finally{
+      btn.disabled = false;
+    }
+  });
+
+  document.querySelectorAll("[data-close-claude-login]").forEach(function(button){
+    button.addEventListener("click", function(){ claudeLoginDialog.close(); });
+  });
+
+  claudeLoginForm.addEventListener("submit", async function(event){
     event.preventDefault();
 
+    if(!claudeLoginId){
+      showClaudeLoginError("The sign-in link isn't ready yet.");
+      return;
+    }
+
+    var code = claudeLoginCode.value.trim();
+    if(!code){ return; }
+
+    claudeLoginSubmit.disabled = true;
+    claudeLoginSubmit.textContent = "Signing in…";
+    showClaudeLoginError("");
+
+    try{
+      var result = await post("/api/claude-auth/login/code", {login_id: claudeLoginId, code: code});
+
+      var resumeCreate = createPendingClaudeLogin;
+      createPendingClaudeLogin = false;
+
+      claudeLoginId = null;
+      claudeLoginDialog.close();
+      toast("Signed in to Claude" + (result.email ? " as " + result.email : "") + ".");
+      claudeAuthLoggedIn = true;
+      loadClaudeAuthStatus();
+
+      if(resumeCreate){ await performCreate(); }
+    }catch(e){
+      showClaudeLoginError(e.message);
+      claudeLoginCode.value = "";
+      claudeLoginCode.focus();
+    }finally{
+      claudeLoginSubmit.disabled = false;
+      claudeLoginSubmit.textContent = "Sign in";
+    }
+  });
+
+  /* The actual POST /api/desktops/create - split out so a Claude sign-in
+     triggered by Create desktop (see the submit handler below) can finish
+     the create itself once the login succeeds. */
+  async function performCreate(){
     var data = new FormData(createForm);
     var name = (data.get("name") || "").trim();
 
@@ -936,6 +1146,28 @@
       submit.textContent = "Create desktop";
       toast(e.message, "error");
     }
+  }
+
+  createForm.addEventListener("submit", async function(event){
+    event.preventDefault();
+
+    var harness = createForm.querySelector("input[name=harness]:checked").value;
+
+    /* Claude opted in with nobody signed in to the shared session: prompt
+       for login right here instead of creating a desktop that comes up
+       unauthenticated. Re-check status first rather than trusting the
+       cached flag - it was only as fresh as the dialog's last open. */
+    if(harness === "claude"){
+      await loadClaudeAuthStatus();
+
+      if(!claudeAuthLoggedIn){
+        createPendingClaudeLogin = true;
+        document.getElementById("claudeAuthBtn").click();
+        return;
+      }
+    }
+
+    await performCreate();
   });
 
   /* ---------------- lifecycle actions ---------------- */
@@ -1103,12 +1335,12 @@
     });
   });
 
-  /* ---------------- help requests rail ----------------
+  /* ---------------- query rail ----------------
      Rendered by diffing against what is already on screen: a blind
      innerHTML rewrite every poll would restart the animation and drop
      the user's scroll position mid-read. */
 
-  var rail = document.getElementById("helpRail");
+  var rail = document.getElementById("queryRail");
   var railList = document.getElementById("railList");
   var railCount = document.getElementById("railCount");
   var shown = new Map();
@@ -1187,12 +1419,12 @@
 
     railCount.textContent = String(notes.length);
     rail.classList.toggle("on", notes.length > 0);
-    Flowera.setHelpBadge(notes.length);
+    Flowera.setQueryBadge(notes.length);
   }
 
   async function loadNotes(){
     try{
-      var response = await fetch("/api/helpnotes", {cache: "no-store"});
+      var response = await fetch("/api/querynotes", {cache: "no-store"});
       if(!response.ok){ return; }
 
       var notes = await response.json();
@@ -1202,7 +1434,7 @@
 
   async function resolveNote(id){
     try{
-      await post("/api/helpnotes/close", {id: id});
+      await post("/api/querynotes/close", {id: id});
       loadNotes();
     }catch(e){
       toast(e.message, "error");

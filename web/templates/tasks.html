@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
+<title>Tasks · Flowera</title>
+
+{{template "theme"}}
+
+<style>
+.head-controls{display:flex;align-items:center;gap:10px}
+.windows{display:flex;gap:2px;padding:3px;background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-md)}
+.windows a{
+  display:flex;align-items:center;height:28px;padding:0 11px;
+  border-radius:var(--r-sm);color:var(--text-2);font-size:12.5px;font-weight:500;white-space:nowrap
+}
+.windows a:hover{color:var(--text)}
+.windows a.active{background:var(--surface);color:var(--text);font-weight:600;box-shadow:var(--shadow-1)}
+
+/* ---------- the answer ---------- */
+
+.answer{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:0;margin-bottom:26px;overflow:hidden}
+.answer-main{padding:22px 24px;border-right:1px solid var(--line)}
+.answer-side{padding:22px 24px;display:grid;gap:16px;align-content:start;background:var(--surface-2)}
+
+.big{display:flex;align-items:baseline;gap:10px;margin:8px 0 6px}
+.big strong{font-size:44px;font-weight:650;letter-spacing:-.03em;line-height:1;font-variant-numeric:tabular-nums}
+.big span{color:var(--text-2);font-size:14px}
+.answer-line{font-size:14px;color:var(--text-2);line-height:1.55}
+.answer-line b{color:var(--text);font-weight:600}
+.definition{margin-top:14px;font-size:12px;color:var(--text-3);line-height:1.5;max-width:62ch}
+
+.fact .eyebrow{margin-bottom:4px}
+.fact-value{font-size:15px;font-weight:600;letter-spacing:-.01em}
+.fact-sub{font-size:12.5px;color:var(--text-2);margin-top:2px}
+
+.stats{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin-bottom:30px}
+.stat{padding:13px 14px}
+.stat-value{font-size:20px;font-weight:620;letter-spacing:-.02em;font-variant-numeric:tabular-nums;margin-top:3px}
+.stat-sub{font-size:11.5px;color:var(--text-3);margin-top:1px}
+
+section{margin-bottom:32px}
+
+/* ---------- tables ---------- */
+
+.table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{
+  text-align:left;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--text-3);padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap
+}
+td{padding:11px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+tr:last-child td{border-bottom:0}
+tbody tr:hover{background:var(--surface-2)}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.row-title{font-weight:600;color:var(--text)}
+.row-title:hover{color:var(--accent)}
+.row-sub{font-size:11.5px;color:var(--text-3);margin-top:1px}
+.muted{color:var(--text-3)}
+
+.rate{display:flex;align-items:center;gap:9px;min-width:130px}
+.rate-bar{flex:1;height:6px;border-radius:99px;background:var(--surface-3);overflow:hidden;min-width:60px}
+.rate-bar i{display:block;height:100%;border-radius:99px;background:var(--live)}
+.rate b{font-variant-numeric:tabular-nums;font-weight:620;min-width:36px;text-align:right}
+
+.best-tag{
+  display:inline-flex;align-items:center;height:18px;padding:0 6px;margin-left:6px;border-radius:5px;
+  background:var(--live-soft);color:var(--live);font-size:10.5px;font-weight:650;letter-spacing:.03em;text-transform:uppercase;vertical-align:1px
+}
+
+.split{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px}
+
+/* ---------- reasons ---------- */
+
+.reasons{display:grid}
+.reason{padding:14px 18px;border-bottom:1px solid var(--line)}
+.reason:last-child{border-bottom:0}
+.reason-head{display:grid;grid-template-columns:minmax(0,1fr) 170px 58px;align-items:center;gap:14px}
+.reason-label{font-weight:600;display:flex;align-items:center;gap:8px;min-width:0}
+.reason-kind{flex:none;width:8px;height:8px;border-radius:50%;background:var(--danger)}
+.reason-kind.is-approval{background:var(--accent)}
+.share-bar{height:6px;border-radius:99px;background:var(--surface-3);overflow:hidden}
+.share-bar i{display:block;height:100%;background:var(--text-2);border-radius:99px}
+.reason-count{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
+.reason-count span{color:var(--text-3);font-weight:450;font-size:11.5px;margin-left:3px}
+.reason-engines{display:flex;flex-wrap:wrap;gap:5px;margin:8px 0 0 16px}
+.examples{margin:9px 0 0 16px;display:grid;gap:6px}
+.example{font-size:12.5px;color:var(--text-2);line-height:1.5;overflow-wrap:anywhere}
+.example a{font-weight:550}
+.example q{color:var(--text-3);quotes:"“" "”"}
+
+.key{display:flex;gap:16px;font-size:12px;color:var(--text-3);margin-top:-6px;margin-bottom:12px}
+.key span{display:inline-flex;align-items:center;gap:6px}
+
+/* ---------- task list ---------- */
+
+.tstatus{
+  display:inline-flex;align-items:center;gap:5px;height:21px;padding:0 8px;border-radius:999px;
+  font-size:11.5px;font-weight:600;white-space:nowrap;
+  background:var(--idle-soft);color:var(--text-2)
+}
+.tstatus.done{background:var(--live-soft);color:var(--live)}
+.tstatus.waiting,.tstatus.query{background:var(--accent-soft);color:var(--accent)}
+.tstatus.error,.tstatus.abandoned{background:var(--danger-soft);color:var(--danger)}
+
+.verdict{font-size:12px;font-weight:600;white-space:nowrap;text-transform:capitalize}
+.verdict.correct{color:var(--live)}
+.verdict.wrong{color:var(--danger)}
+
+.request{max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block}
+
+.filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.filters a.chip:hover{background:var(--surface-3);color:var(--text)}
+
+@media (max-width:900px){
+  .stats{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .split{grid-template-columns:minmax(0,1fr)}
+}
+
+@media (max-width:720px){
+  .page-head{flex-direction:column;align-items:flex-start}
+  .answer{grid-template-columns:minmax(0,1fr)}
+  .answer-main{border-right:0;border-bottom:1px solid var(--line);padding:18px}
+  .answer-side{padding:18px}
+  .big strong{font-size:38px}
+  .stats{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .reason{padding:13px 14px}
+  .reason-head{grid-template-columns:minmax(0,1fr) 58px}
+  .share-bar{display:none}
+  .windows a{padding:0 8px}
+}
+</style>
+</head>
+
+<body>
+
+{{template "sprite"}}
+
+<div id="progress"></div>
+<div id="toasts"></div>
+
+{{template "topbar" "tasks"}}
+
+{{$window := .Window}}
+{{$report := .Report}}
+
+<main class="wrap">
+
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">Records</div>
+      <h1>Tasks and autonomy</h1>
+      <p class="page-sub">Every task a worker was given, what it did, where a person had to step in, and whether the answer held up.</p>
+    </div>
+
+    <nav class="windows" aria-label="Period">
+      {{range .Windows}}
+      <a href="/tasks?days={{.Value}}"{{if .Active}} class="active" aria-current="page"{{end}}>{{.Label}}</a>
+      {{end}}
+    </nav>
+  </div>
+
+{{if not $report.Totals.Tasks}}
+  <div class="empty">
+    <div class="empty-mark"><svg width="19" height="19"><use href="#i-inbox"/></svg></div>
+    <h2>No tasks {{$window.Phrase}}</h2>
+    <p>Send a desktop a request from its chat. It shows up here as a task record, along with its steps, any query it needed, and your verdict.</p>
+  </div>
+{{else}}
+
+  <div class="panel answer">
+    <div class="answer-main">
+      <div class="eyebrow">Autonomy {{$window.Phrase}}</div>
+
+      {{if $report.Totals.Settled}}
+      <div class="big">
+        <strong>{{$report.Totals.RatePercent}}%</strong>
+        <span>{{$report.Totals.Autonomous}} of {{$report.Totals.Settled}} tasks needed nobody</span>
+      </div>
+      {{else}}
+      <div class="big"><strong>—</strong><span>nothing has finished yet</span></div>
+      {{end}}
+
+      <p class="answer-line">
+        {{if $report.Best}}
+        <b>{{$report.Best.Label}}</b> had the best rate, {{$report.Best.RatePercent}}% ({{$report.Best.Autonomous}} of {{$report.Best.Settled}}).
+        {{end}}
+        {{if $report.Reasons}}{{with index $report.Reasons 0}}
+        People stepped in {{$report.StepIns}} {{if eq $report.StepIns 1}}time{{else}}times{{end}}. The most common reason was <b>{{.Label}}</b> ({{.Count}}).
+        {{end}}{{else if $report.Totals.Settled}}
+        Nobody had to step in.
+        {{end}}
+      </p>
+
+      <p class="definition">{{$report.Definition}}</p>
+    </div>
+
+    <div class="answer-side">
+      <div class="fact">
+        <div class="eyebrow">Checked by a person</div>
+        <div class="fact-value">{{$report.Totals.Correct}} correct · {{$report.Totals.Wrong}} wrong</div>
+        <div class="fact-sub">{{$report.Totals.Unverified}} autonomous {{if eq $report.Totals.Unverified 1}}answer is{{else}}answers are{{end}} unchecked. A finished task is only the agent's word until someone checks it.</div>
+      </div>
+      <div class="fact">
+        <div class="eyebrow">Typical task</div>
+        <div class="fact-value">{{$report.Totals.Median}}</div>
+        <div class="fact-sub">median time, including any wait for a person</div>
+      </div>
+      <div class="fact">
+        <div class="eyebrow">Reported spend</div>
+        <div class="fact-value">{{$report.Totals.Cost}}</div>
+        <div class="fact-sub">API cost reported by the engines. Local models cost $0.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="stats">
+    <div class="panel stat"><div class="eyebrow">Tasks</div><div class="stat-value">{{$report.Totals.Tasks}}</div><div class="stat-sub">{{$report.Totals.Settled}} counted</div></div>
+    <div class="panel stat"><div class="eyebrow">Autonomous</div><div class="stat-value">{{$report.Totals.Autonomous}}</div><div class="stat-sub">no one stepped in</div></div>
+    <div class="panel stat"><div class="eyebrow">Queries asked</div><div class="stat-value">{{$report.Totals.Interventions}}</div><div class="stat-sub">{{$report.Totals.Approvals}} were approvals</div></div>
+    <div class="panel stat"><div class="eyebrow">Failed</div><div class="stat-value">{{$report.Totals.Errors}}</div><div class="stat-sub">attempts ended in error</div></div>
+    <div class="panel stat"><div class="eyebrow">Marked wrong</div><div class="stat-value">{{$report.Totals.Wrong}}</div><div class="stat-sub">of {{add $report.Totals.Correct $report.Totals.Wrong}} checked</div></div>
+    <div class="panel stat"><div class="eyebrow">Step-ins</div><div class="stat-value">{{$report.StepIns}}</div><div class="stat-sub">queries, approvals, errors, stops, wrong answers</div></div>
+  </div>
+
+  <section>
+    <div class="rule"><span class="eyebrow">By engine</span></div>
+
+    <div class="panel table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Engine</th>
+            <th>Autonomy</th>
+            <th class="num">Counted</th>
+            <th class="num">Queries / approvals</th>
+            <th class="num">Failed</th>
+            <th class="num">Correct / wrong</th>
+            <th class="num">Median</th>
+            <th class="num">Spend</th>
+            <th>Top reason to step in</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range $report.ByEngine}}
+          <tr>
+            <td>
+              <a class="row-title" href="/tasks?days={{$window.Value}}&engine={{.Key}}#recent">{{.Label}}</a>{{if and $report.Best (eq $report.Best.Key .Key)}}<span class="best-tag">Best</span>{{end}}
+              <div class="row-sub">{{range $i, $m := .Models}}{{if $i}}, {{end}}{{$m}}{{else}}model not reported{{end}}</div>
+            </td>
+            <td>{{if .Settled}}<div class="rate"><div class="rate-bar"><i style="width:{{.RatePercent}}%"></i></div><b>{{.RatePercent}}%</b></div>{{else}}<span class="muted">nothing counted yet</span>{{end}}</td>
+            <td class="num">{{.Settled}}<span class="muted"> / {{.Tasks}}</span></td>
+            <td class="num">{{.Interventions}}<span class="muted"> / {{.Approvals}}</span></td>
+            <td class="num">{{.Errors}}</td>
+            <td class="num">{{.Correct}}<span class="muted"> / </span>{{.Wrong}}</td>
+            <td class="num">{{.Median}}</td>
+            <td class="num">{{.Cost}}</td>
+            <td>{{if .TopReason}}{{.TopReasonLabel}}{{else}}<span class="muted">none</span>{{end}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="rule"><span class="eyebrow">Why people stepped in</span></div>
+
+    {{if $report.Reasons}}
+    <div class="key">
+      <span><i class="reason-kind is-approval"></i>The agent asked first, as it should</span>
+      <span><i class="reason-kind"></i>Stuck, failed, or wrong</span>
+    </div>
+
+    <div class="panel reasons">
+      {{range $report.Reasons}}
+      <div class="reason">
+        <div class="reason-head">
+          <div class="reason-label"><i class="reason-kind{{if .Approval}} is-approval{{end}}"></i><span>{{.Label}}</span></div>
+          <div class="share-bar"><i style="width:{{.SharePercent}}%"></i></div>
+          <div class="reason-count">{{.Count}}<span>{{.SharePercent}}%</span></div>
+        </div>
+
+        <div class="reason-engines">
+          {{range .ByEngine}}<span class="chip">{{.Label}} · {{.Count}}</span>{{end}}
+        </div>
+
+        <div class="examples">
+          {{range .Examples}}
+          <div class="example">
+            <a href="/tasks/{{.TaskID}}">{{.Request}}</a>
+            <span class="muted">· {{.Worker}}</span>
+            {{if .Words}}<br><q>{{.Words}}</q>{{end}}
+          </div>
+          {{end}}
+        </div>
+      </div>
+      {{end}}
+    </div>
+    {{else}}
+    <div class="panel" style="padding:18px 20px;color:var(--text-2)">Nobody had to step in {{$window.Phrase}}.</div>
+    {{end}}
+  </section>
+
+  <div class="split">
+    <section>
+      <div class="rule"><span class="eyebrow">By worker</span></div>
+
+      <div class="panel table-wrap">
+        <table>
+          <thead><tr><th>Worker</th><th>Autonomy</th><th class="num">Counted</th><th>Top reason</th></tr></thead>
+          <tbody>
+            {{range $report.ByWorker}}
+            <tr>
+              <td>
+                <a class="row-title" href="/tasks?days={{$window.Value}}&worker={{.Key}}#recent">{{.Label}}</a>
+                <div class="row-sub">{{engineLabel .Engine}}</div>
+              </td>
+              <td>{{if .Settled}}<div class="rate"><div class="rate-bar"><i style="width:{{.RatePercent}}%"></i></div><b>{{.RatePercent}}%</b></div>{{else}}<span class="muted">—</span>{{end}}</td>
+              <td class="num">{{.Settled}}<span class="muted"> / {{.Tasks}}</span></td>
+              <td>{{if .TopReason}}{{.TopReasonLabel}}{{else}}<span class="muted">none</span>{{end}}</td>
+            </tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <div class="rule"><span class="eyebrow">By task type</span></div>
+
+      <div class="panel table-wrap">
+        <table>
+          <thead><tr><th>Type</th><th>Autonomy</th><th class="num">Counted</th><th>Top reason</th></tr></thead>
+          <tbody>
+            {{range $report.ByType}}
+            <tr>
+              <td><a class="row-title" href="/tasks?days={{$window.Value}}&type={{.Key}}#recent">{{.Label}}</a></td>
+              <td>{{if .Settled}}<div class="rate"><div class="rate-bar"><i style="width:{{.RatePercent}}%"></i></div><b>{{.RatePercent}}%</b></div>{{else}}<span class="muted">—</span>{{end}}</td>
+              <td class="num">{{.Settled}}<span class="muted"> / {{.Tasks}}</span></td>
+              <td>{{if .TopReason}}{{.TopReasonLabel}}{{else}}<span class="muted">none</span>{{end}}</td>
+            </tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <section id="recent">
+    <div class="rule"><span class="eyebrow">Tasks {{$window.Phrase}}</span></div>
+
+    {{if or .Filter.Engine .Filter.WorkerID .Filter.Type}}
+    <div class="filters">
+      <span class="hint">Showing only</span>
+      {{with .Filter.Engine}}<span class="chip">{{engineLabel .}}</span>{{end}}
+      {{with .Filter.WorkerID}}<span class="chip">{{.}}</span>{{end}}
+      {{with .Filter.Type}}<span class="chip">{{typeLabel .}}</span>{{end}}
+      <a class="chip" href="/tasks?days={{$window.Value}}#recent">
+        <svg width="11" height="11"><use href="#i-x"/></svg>
+        Clear
+      </a>
+    </div>
+    {{end}}
+
+    {{if .Tasks}}
+    <div class="panel table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Task</th>
+            <th>Worker</th>
+            <th>Type</th>
+            <th>Outcome</th>
+            <th class="num">Step-ins</th>
+            <th>Verdict</th>
+            <th class="num">Time</th>
+            <th class="num">Spend</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .Tasks}}
+          <tr>
+            <td>
+              <a class="row-title request" href="/tasks/{{.ID}}" title="{{.Request}}">{{.Request}}</a>
+              <div class="row-sub"><time data-created="{{iso .CreatedAt}}">{{clock .CreatedAt}}</time>{{if gt .Executions 1}} · {{.Executions}} attempts{{end}}{{if .ScreenActions}} · {{.ScreenActions}} on-screen {{if eq .ScreenActions 1}}action{{else}}actions{{end}}{{end}}</div>
+            </td>
+            <td>{{.WorkerName}}<div class="row-sub">{{engineLabel .Engine}}</div></td>
+            <td>{{typeLabel .Type}}</td>
+            <td><span class="tstatus {{.Status}}">{{statusLabel .Status}}</span></td>
+            <td class="num">{{len .SteppedIn}}</td>
+            <td>{{if .Verdict}}<span class="verdict {{.Verdict}}">{{.Verdict}}</span>{{else if eq .Status "done"}}<span class="muted">unchecked</span>{{else}}<span class="muted">—</span>{{end}}</td>
+            <td class="num">{{duration .Duration}}</td>
+            <td class="num">{{cost .CostUSD}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+    {{else}}
+    <div class="panel" style="padding:18px 20px;color:var(--text-2)">No tasks match this filter.</div>
+    {{end}}
+  </section>
+
+{{end}}
+
+</main>
+
+{{template "chrome-js"}}
+
+<script>
+(function(){
+  "use strict";
+
+  document.querySelectorAll("[data-created]").forEach(function(el){
+    var date = new Date(el.dataset.created);
+    if(isNaN(date.getTime())){ return; }
+
+    var seconds = Math.round((Date.now() - date.getTime()) / 1000);
+
+    if(seconds < 60){ el.textContent = "just now"; }
+    else if(seconds < 3600){ el.textContent = Math.floor(seconds / 60) + "m ago"; }
+    else if(seconds < 86400){ el.textContent = Math.floor(seconds / 3600) + "h ago"; }
+    else if(seconds < 604800){ el.textContent = Math.floor(seconds / 86400) + "d ago"; }
+
+    el.title = date.toLocaleString();
+  });
+})();
+</script>
+
+</body>
+</html>
