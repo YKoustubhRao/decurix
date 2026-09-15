@@ -13,6 +13,7 @@
 package lanaccess
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -49,6 +50,13 @@ const (
 
 	maxAttempts   = 5
 	lockoutWindow = 5 * time.Minute
+
+	// AutoRotateInterval is how often RunAutoRotate replaces the access
+	// code on its own, without anyone pressing the Mobile menu's "New code"
+	// button - the same drop-every-session rotation, just on a timer rather
+	// than triggered by a human, so a code that leaked (a screenshot, a
+	// shoulder surf) does not stay valid indefinitely.
+	AutoRotateInterval = 48 * time.Hour
 )
 
 // Store holds the current access code and the sessions it has granted, for
@@ -119,6 +127,33 @@ func (s *Store) Rotate() string {
 	s.sessions = make(map[string]time.Time)
 
 	return s.password
+}
+
+// RunAutoRotate calls Rotate every interval until ctx is done - the timed
+// counterpart to the Mobile menu's manual "New code" button. It waits out
+// the first interval before rotating rather than rotating immediately (the
+// freshly generated NewStore password has had no chance to reach anyone
+// yet), and an interval of zero or less disables it, same as
+// idlepause.Checker's non-positive Threshold - so a caller can always start
+// it unconditionally and let the interval decide. Meant to be run in its own
+// goroutine (see cmd/flowera/main.go).
+func (s *Store) RunAutoRotate(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.Rotate()
+			log.Printf("lanaccess: access code rotated automatically (%s interval)", interval)
+		}
+	}
 }
 
 // newSession mints and records a session token good for sessionTTL.

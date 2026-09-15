@@ -1,22 +1,23 @@
 // Package tunnel holds the in-memory record of the addresses a host-side
 // script (scripts/*/build.sh, rebuild.sh) discovers and reports back for the
 // dashboard's Mobile menu to display: the current Cloudflare quick tunnel
-// URL, and the machine's own LAN address for each of the two listeners
-// cmd/flowera/main.go starts - the primary one (full, unauthenticated
-// control) and the internal/lanaccess-gated one. All three are "how do I
-// reach this control plane from somewhere else", discovered outside the Go
-// process and reported in, not computed here.
+// URL for each of the two listeners cmd/flowera/main.go starts - the primary
+// one (full, unauthenticated control) and the internal/lanaccess-gated one -
+// and the machine's own LAN address for each of them too. All four are "how
+// do I reach this control plane from somewhere else", discovered outside the
+// Go process and reported in, not computed here.
 package tunnel
 
 import "sync"
 
-// Store is an in-memory, mutex-guarded holder of the current tunnel URL and
+// Store is an in-memory, mutex-guarded holder of the current tunnel URLs and
 // the two LAN addresses.
 type Store struct {
-	mu       sync.Mutex
-	url      string
-	adminURL string
-	lanURL   string
+	mu           sync.Mutex
+	url          string
+	adminURL     string
+	lanURL       string
+	lanTunnelURL string
 }
 
 // NewStore creates an empty tunnel Store.
@@ -75,4 +76,24 @@ func (s *Store) LANURL() string {
 	defer s.mu.Unlock()
 
 	return s.lanURL
+}
+
+// SetLANTunnelURL records the current Cloudflare quick tunnel URL for the
+// internal/lanaccess-gated listener - what makes the gated URL reachable
+// from anywhere, still behind the access code, instead of only on the local
+// network like LANURL.
+func (s *Store) SetLANTunnelURL(url string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.lanTunnelURL = url
+}
+
+// LANTunnelURL returns the current gated-listener tunnel URL, or "" if none
+// has been recorded.
+func (s *Store) LANTunnelURL() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.lanTunnelURL
 }

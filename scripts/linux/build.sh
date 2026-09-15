@@ -20,6 +20,8 @@ cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 # shellcheck source=lib/ollama-setup.sh
 source ./scripts/linux/lib/ollama-setup.sh
+# shellcheck source=lib/lan-tunnel.sh
+source ./scripts/linux/lib/lan-tunnel.sh
 
 CLI_MODE=""
 
@@ -39,6 +41,7 @@ done
 # tunnel, it does not tear anything down.
 cleanup() {
     echo ""
+    stop_lan_tunnel
     echo "=== Tunnel stopped. Flowera is still running: http://127.0.0.1:8080 ==="
     echo "(Run this script again for a new tunnel, or 'docker compose down' to stop Flowera.)"
 }
@@ -183,13 +186,20 @@ if ! command -v cloudflared >/dev/null 2>&1; then
     exit 1
 fi
 
+# A second tunnel, to the access-code-gated listener - so the code-protected
+# URL works from anywhere, not just $lan_url above on this machine's own
+# network. Backgrounded (see lib/lan-tunnel.sh), so it doesn't block the
+# primary tunnel's own foreground loop just below.
+start_lan_tunnel "$lan_port"
+
 echo ""
 
 # Points at the primary listener (:8080), not the access-code-gated one -
 # so this URL is full, unauthenticated control of the machine, reachable by
 # anyone who has the link, the same as sitting at the machine itself. The
-# gated URL printed above ($lan_url, over $lan_port) is still there for
-# anyone who wants the code-gated option instead.
+# gated URL printed above ($lan_url, over $lan_port) and its own tunnel link
+# just above are still there for anyone who wants the code-gated option
+# instead.
 #
 # Start Cloudflare tunnel, echoing its logs while watching for the
 # trycloudflare.com URL so it can be reported to the control plane for
