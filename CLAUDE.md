@@ -307,7 +307,10 @@ The benchmark is `bench/gui/`: 20 tasks (12 in a web admin panel, 5 in LibreOffi
 ## Running it
 
 ```bash
-./scripts/linux/setup.sh         # one-time host setup: Docker, cloudflared, QEMU (needs sudo)
+./scripts/mac/setup.sh           # macOS host setup: Docker, cloudflared, Ollama
+./scripts/mac/build-images.sh    # builds desktop images with --platform linux/amd64
+./scripts/mac/build.sh           # build images, check Ollama, restart compose, open tunnel
+./scripts/linux/setup.sh         # Linux host setup: Docker, cloudflared, QEMU (needs sudo)
 ./scripts/linux/build-images.sh  # builds the three flowera-desktop:* images and nothing else
 ./scripts/linux/build.sh         # "open the app": builds only missing images, starts the control
                                   # plane if it isn't already running, waits for :8080, opens a
@@ -332,7 +335,7 @@ python3 bench/gui/run.py --engine oracle --container desktop_<id>   # GUI benchm
 python3 bench/gui/run.py --engine ollama --engine thebot --engine claude  # per-engine success rate
 ```
 
-`scripts/` is split by who runs it: `linux/` (`setup.sh`, `build-images.sh`, `build.sh`, `rebuild.sh`, `quickstart.sh`, `test-vm.sh`, plus a `lib/ollama-setup.sh` the last two source rather than duplicate), `windows/` (the same as `.ps1`, with `lib/Ollama-Setup.ps1`), and `release/` (`release.sh` + `release.ps1`). Each `.sh` has a `.ps1` twin at the same position in the other directory — they are hand-maintained, not generated from each other, so a change to one needs the same change to the other; the `lib/` sharing is within a platform only; `build.sh`/`build.ps1` and `rebuild.sh`/`rebuild.ps1` each source it independently rather than duplicating the ~200-line "find an Ollama the desktops can reach" logic. Every script resolves the repo root from its own location, never from `$PWD`.
+`scripts/` is split by who runs it: `mac/` (`setup.sh`, `build-images.sh`, `build.sh`, `quickstart.sh`, `test-vm.sh`), `linux/` (`setup.sh`, `build-images.sh`, `build.sh`, `rebuild.sh`, `quickstart.sh`, `test-vm.sh`, plus a `lib/ollama-setup.sh` the last two source rather than duplicate), `windows/` (the same as `.ps1`, with `lib/Ollama-Setup.ps1`), and `release/` (`release.sh` + `release.ps1`). Each `.sh` has a `.ps1` twin at the same position in the other directory — they are hand-maintained, not generated from each other, so a change to one needs the same change to the other; the `lib/` sharing is within a platform only; `build.sh`/`build.ps1` and `rebuild.sh`/`rebuild.ps1` each source it independently rather than duplicating the ~200-line "find an Ollama the desktops can reach" logic. Every script resolves the repo root from its own location, never from `$PWD`.
 
 ### Distributable builds
 
