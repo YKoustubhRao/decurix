@@ -1,10 +1,12 @@
 package lanaccess
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func protectedHandler() http.Handler {
@@ -334,5 +336,51 @@ func TestPasswordIsStableUntilRotated(t *testing.T) {
 	rotated := store.Rotate()
 	if rotated == first {
 		t.Fatal("Rotate() returned the same code")
+	}
+}
+
+func TestRunAutoRotateDisabledByNonPositiveInterval(t *testing.T) {
+	store := NewStore()
+
+	done := make(chan struct{})
+	go func() {
+		store.RunAutoRotate(context.Background(), 0)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("RunAutoRotate with a non-positive interval should return immediately instead of looping")
+	}
+}
+
+func TestRunAutoRotateRotatesOnInterval(t *testing.T) {
+	store := NewStore()
+	first := store.Password()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		store.RunAutoRotate(ctx, 10*time.Millisecond)
+		close(done)
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for store.Password() == first {
+		if time.Now().After(deadline) {
+			t.Fatal("RunAutoRotate did not rotate the code within the deadline")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("RunAutoRotate did not return after its context was cancelled")
 	}
 }

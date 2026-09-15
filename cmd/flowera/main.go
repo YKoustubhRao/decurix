@@ -258,6 +258,12 @@ func main() {
 		}
 	}()
 
+	// Rotates the access code on its own every lanaccess.AutoRotateInterval,
+	// the same drop-every-session rotation the Mobile menu's "New code"
+	// button triggers by hand - see RunAutoRotate's doc for why it waits out
+	// the first interval rather than rotating immediately.
+	go lanAccess.RunAutoRotate(context.Background(), lanaccess.AutoRotateInterval)
+
 	// IMPORTANT:
 	// Ollama initialization must not block the HTTP server.
 	go func() {

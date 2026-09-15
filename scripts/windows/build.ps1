@@ -73,6 +73,7 @@ function Wait-ForDashboard {
 # on its own.
 function Invoke-Cleanup {
     Write-Host ""
+    Stop-LanTunnel
     Write-Host "=== Tunnel stopped. Flowera is still running: http://127.0.0.1:8080 ==="
     Write-Host "(Run this script again for a new tunnel, or 'docker compose down' to stop Flowera.)"
 }
@@ -83,6 +84,7 @@ function Invoke-Cleanup {
 Set-Location (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
 
 . "$PSScriptRoot/lib/Ollama-Setup.ps1"
+. "$PSScriptRoot/lib/Lan-Tunnel.ps1"
 
 $script:IntentionalExit = $false
 
@@ -248,13 +250,21 @@ try {
         Write-Host "access from other devices."
         Exit-Build 1
     }
+
+    # A second tunnel, to the access-code-gated listener - so the
+    # code-protected URL works from anywhere, not just $lanUrl above on this
+    # machine's own network. Backgrounded (see lib/Lan-Tunnel.ps1), so it
+    # doesn't block the primary tunnel's own foreground loop just below.
+    Start-LanTunnel -LanPort $lanPort
+
     Write-Host ""
 
     # Points at the primary listener (:8080), not the access-code-gated one -
     # so this URL is full, unauthenticated control of the machine, reachable
     # by anyone who has the link, the same as sitting at the machine itself.
-    # The gated URL printed above ($lanUrl, over $lanPort) is still there for
-    # anyone who wants the code-gated option instead.
+    # The gated URL printed above ($lanUrl, over $lanPort) and its own tunnel
+    # link just above are still there for anyone who wants the code-gated
+    # option instead.
 
     # cloudflared logs to stderr, hence 2>&1. Echo every line while watching
     # for the trycloudflare.com URL, and report it to the control plane for

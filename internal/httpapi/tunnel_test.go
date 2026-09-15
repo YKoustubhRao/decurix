@@ -23,19 +23,21 @@ func TestTunnelHandlerPostThenGet(t *testing.T) {
 		}
 	}
 
-	// The admin/LAN URLs and the tunnel URL are reported by separate calls -
-	// neither should blank out the other.
+	// The admin/LAN URLs and the two tunnel URLs are reported by separate
+	// calls - none should blank out another.
 	post(`{"admin_url":"http://192.168.1.42:8080","lan_url":"http://192.168.1.42:8090"}`)
 	post(`{"url":"https://foo.trycloudflare.com"}`)
+	post(`{"lan_tunnel_url":"https://bar.trycloudflare.com"}`)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/tunnel", nil)
 	rec := httptest.NewRecorder()
 	s.tunnelHandler(rec, req)
 
 	var body struct {
-		URL      string `json:"url"`
-		AdminURL string `json:"admin_url"`
-		LANURL   string `json:"lan_url"`
+		URL          string `json:"url"`
+		AdminURL     string `json:"admin_url"`
+		LANURL       string `json:"lan_url"`
+		LANTunnelURL string `json:"lan_tunnel_url"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatal(err)
@@ -49,5 +51,8 @@ func TestTunnelHandlerPostThenGet(t *testing.T) {
 	}
 	if body.LANURL != "http://192.168.1.42:8090" {
 		t.Errorf("lan_url = %q", body.LANURL)
+	}
+	if body.LANTunnelURL != "https://bar.trycloudflare.com" {
+		t.Errorf("lan_tunnel_url = %q", body.LANTunnelURL)
 	}
 }

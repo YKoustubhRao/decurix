@@ -803,15 +803,17 @@ body.busy{cursor:progress}
 
   /* ---- addresses to reach this control plane from elsewhere ----
      Everything here is either reported by build.sh (or rebuild.sh, per OS)
-     via POST /api/tunnel - the tunnel URL and the machine's own LAN address
-     for each of the two listeners cmd/flowera/main.go starts - or, for the
-     access code the gated ones need, read from internal/lanaccess via
-     /api/lan-access/status. One panel, one source of truth for all of it,
-     rather than the code living only in a terminal a person has since closed. */
+     via POST /api/tunnel - a Cloudflare tunnel URL and the machine's own LAN
+     address for each of the two listeners cmd/flowera/main.go starts - or,
+     for the access code the gated ones need, read from internal/lanaccess
+     via /api/lan-access/status. One panel, one source of truth for all of
+     it, rather than the code living only in a terminal a person has since
+     closed. */
 
   var lastTunnelURL = "";
   var lastAdminURL = "";
   var lastLANURL = "";
+  var lastLANTunnelURL = "";
   var lastLAN = null;
 
   // addLinkRow appends a copyable, clickable address row (a Cloudflare
@@ -866,15 +868,25 @@ body.busy{cursor:progress}
 
     panel.innerHTML = "";
 
-    /* -- the direct LAN address of the gated listener, the one address here
-       that still needs the code below. -- */
+    /* -- the gated listener's addresses - both need the code below. The
+       tunnel link is listed first since it works from anywhere (over the
+       internet, not just this network); the direct LAN address is still
+       shown underneath as a same-network fallback that doesn't depend on
+       cloudflared being installed or up. -- */
     addSectionTitle(panel, "Open on your phone");
 
-    if(lastLANURL){
+    if(lastLANTunnelURL || lastLANURL){
       addNote(panel, "Needs the access code below.");
-      addLinkRow(panel, lastLANURL, "Copy LAN link");
+
+      if(lastLANTunnelURL){
+        addLinkRow(panel, lastLANTunnelURL, "Copy tunnel link");
+      }
+      if(lastLANURL){
+        if(lastLANTunnelURL){ addNote(panel, "Same network only:"); }
+        addLinkRow(panel, lastLANURL, "Copy LAN link");
+      }
     }else{
-      addNote(panel, "No LAN address known yet. Start Flowera with scripts/build.sh.");
+      addNote(panel, "No address known yet. Start Flowera with scripts/build.sh.");
     }
 
     /* -- the code the LAN address above needs -- */
@@ -951,6 +963,7 @@ body.busy{cursor:progress}
         lastTunnelURL = data.url || "";
         lastAdminURL = data.admin_url || "";
         lastLANURL = data.lan_url || "";
+        lastLANTunnelURL = data.lan_tunnel_url || "";
       }
     }catch(e){ /* keep whatever is already rendered */ }
 
