@@ -575,9 +575,21 @@ class Note(unittest.TestCase):
         self.assertNotIn("sk-ant-api03", self.pause_calls[0])
         self.assertIn("API key", self.pause_calls[0])
 
-    def test_a_note_is_refused_while_paused(self):
-        with mock.patch.object(record_task.demonstration, "_running", lambda: self.active(paused=True)):
-            self.assertRaises(ComputerError, record_task.demonstration.note, "anything")
+    def test_a_note_can_be_added_while_already_paused(self):
+        # The toolbar pauses before it ever opens the text box, so this is
+        # the ordinary case, not an edge case: a note written during a pause
+        # must not be refused, and must leave the recording paused rather
+        # than resuming it - only an explicit resume() (Continue) does that,
+        # since the pause it was added to may predate the note and be about
+        # to cover something the note itself must not.
+        with mock.patch.object(record_task.demonstration, "_running", lambda: self.active(paused=True)), \
+                mock.patch.object(core, "observe", lambda remember=False: self.observation()), \
+                self.patch_pause():
+            event = record_task.demonstration.note("signing in now")
+
+        self.assertEqual(event["kind"], "note")
+        self.assertEqual(len(self.pause_calls), 1)
+        self.assertIn("signing in now", self.pause_calls[0])
 
     def test_a_blank_note_is_refused(self):
         with mock.patch.object(record_task.demonstration, "_running", lambda: self.active()):
@@ -733,7 +745,7 @@ class RecordTask(unittest.TestCase):
     def test_note_is_added_at_this_moment_while_recording(self):
         # record_task.note()'s own gate is the same "has recording started"
         # check pause()/resume() use; whether it is *paused* right now is
-        # demonstration.note()'s own concern (Note.test_a_note_is_refused_while_paused).
+        # demonstration.note()'s own concern (Note.test_a_note_can_be_added_while_already_paused).
         fake = FakeRecorder([{"kind": "click", "actor": "human"}])
 
         def drive():

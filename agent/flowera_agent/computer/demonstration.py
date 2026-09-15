@@ -241,11 +241,18 @@ def note(text):
     exactly as a typed field's would be, since a person explaining themselves
     can paste the wrong thing too.
 
-    Pauses the recording once the note is written - the same private-step
-    pause a person would use before something they don't want captured, so
-    writing a reason and then, say, typing a password right after it is
-    covered without having to remember to pause first. Nothing more is kept
-    until resume().
+    Callable whether the recording is currently active or already paused -
+    the toolbar pauses before opening its text box, so nothing on the screen
+    is kept while a reason is composed, but a note can just as well be added
+    to a pause already in effect (e.g. Stop, before something private) without
+    disturbing it.
+
+    Always ends paused, with this note's own summary as the reason - even
+    when a pause was already in effect, refreshing its reason to this note's
+    text rather than whatever it started with. Writing a note is therefore
+    never itself what resumes capturing; only an explicit resume() (the
+    toolbar's Continue) is - which matters when the pause it is added to
+    predates the note and is about to cover something the note must not.
 
     Goes straight into the session - recording.append already serialises
     every writer with a file lock - rather than through the recorder
@@ -254,8 +261,6 @@ def note(text):
     """
 
     active = _running()
-    if active.get("paused"):
-        raise ComputerError("recording is paused - nothing has a timeline position to sit at right now")
 
     text = (text or "").strip()
     if not text:
@@ -292,11 +297,11 @@ def note(text):
     _report_to_chat(session_id, task_id, event, frame, None)
 
     # Writing a reason is itself stepping away from the demonstration, the
-    # same as a private step: pause, so nothing after it is kept until the
-    # person resumes. Reuses the note's own summary as the pause_reason, so
-    # the "manual" event resume() eventually writes reads naturally ("a
-    # private step, not recorded: <what they said>") rather than the generic
-    # default every other pause gets.
+    # same as a private step: (re-)pause, so nothing after it is kept until
+    # the person resumes. Reuses the note's own summary as the pause_reason,
+    # so the "manual" event resume() eventually writes reads naturally ("a
+    # private step, not recorded: <what they said>") rather than whatever
+    # reason the pause started with.
     pause(entry["summary"])
 
     return event
