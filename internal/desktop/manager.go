@@ -30,6 +30,14 @@ type Manager struct {
 	// desktop never stalls another's thumbnail.
 	shotMu sync.Mutex
 	shots  map[string]*shotEntry
+
+	// claudeLogin is the one in-progress "claude auth login" attempt (see
+	// claudelogin.go) - there is one shared Claude session for the whole
+	// app, so only one login attempt is ever in flight. Guarded by
+	// claudeLoginMu, separate from mu since a login attempt has nothing to
+	// do with container CRUD.
+	claudeLoginMu sync.Mutex
+	claudeLogin   *claudeLoginSession
 }
 
 // NewManager creates a Manager backed by the given Docker client.
@@ -37,7 +45,11 @@ func NewManager(cli *client.Client) *Manager {
 	return &Manager{client: cli}
 }
 
-// Create provisions a new desktop container (volume, env, container config) for the given profile and starts it, rolling back on failure.
+// Create provisions a new desktop container (volume, env, container config)
+// for the given profile and starts it, rolling back on failure.
+// claudeCredentialsJSON seeds a claude-harness desktop with the shared
+// Claude session (see internal/claudeauth); pass "" for every other harness,
+// or when nobody has logged in yet.
 func (m *Manager) Create(
 	ctx context.Context,
 	name string,
@@ -45,6 +57,7 @@ func (m *Manager) Create(
 	harness string,
 	cpus int64,
 	memoryMB int64,
+	claudeCredentialsJSON string,
 ) (*Desktop, error) {
 
 	m.mu.Lock()
@@ -138,6 +151,15 @@ func (m *Manager) Create(
 			"start container: %w",
 			err,
 		)
+	}
+
+	// Best-effort, like PersistMemoryFile: the desktop is still created and
+	// usable without it, just unauthenticated until someone logs in and a
+	// new desktop picks up the session, or this one is recreated.
+	if harness == HarnessClaude && claudeCredentialsJSON != "" {
+		if err := m.PersistClaudeCredentials(ctx, sanitizeName(name), claudeCredentialsJSON); err != nil {
+			log.Printf("seed claude credentials into %s: %v", containerName, err)
+		}
 	}
 
 	return &Desktop{

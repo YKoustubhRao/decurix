@@ -23,6 +23,14 @@ internal/desktop   — owns the Docker client; desktop image build
                       AgentRequest (recordings.go: one call to a desktop's :8081 API,
                       how recordings are read off the desktop rather than copied),
                       PersistMemoryFile (docker-exec write into a desktop),
+                      claudelogin.go: the interactive half of the shared Claude
+                      Code login (StartClaudeLogin/SubmitClaudeLoginCode/
+                      CancelClaudeLogin, driving `claude auth login` in a
+                      throwaway container so the dashboard's popup can hand a
+                      human its sign-in URL and feed back the verification
+                      code) and PersistClaudeCredentials (PersistMemoryFile's
+                      write-into-a-desktop pattern, seeding a new claude-harness
+                      desktop with the session internal/claudeauth stored),
                       Screenshot (screenshot.go: a minimal RFB client that reads
                       a desktop's framebuffer straight off Xvnc:5901 and returns
                       a cached JPEG thumbnail — what the dashboard cards show),
@@ -58,9 +66,20 @@ internal/tasks     — the task records: Task → Execution → Steps → Interv
 internal/tunnel    — in-memory store of the current Cloudflare quick tunnel URL,
                       set by scripts/linux/build.sh or rebuild.sh via POST /api/tunnel,
                       surfaced in the dashboard's Mobile dropdown
+internal/claudeauth — the one shared Claude Code login every claude-harness
+                      desktop is seeded from (in place of an ANTHROPIC_API_KEY):
+                      a single-row SQLite table holding the raw
+                      ~/.claude/.credentials.json content plus the account's
+                      email, so it survives a control-plane restart, build.sh
+                      leaves it alone, and rebuild.sh wipes it for free as part
+                      of wiping flowera-data — no script changes needed for
+                      either half of that
 internal/httpapi   — the only package touching net/http; all HTTP handlers,
                       composes desktop+helpnotes+memory+conversation+stepimages+tasks+
-                      tunnel+webui. recordings.go: the recordings page and the
+                      tunnel+claudeauth+webui. claudeauth.go: the dashboard's Claude
+                      login popup (/api/claude-auth/status + login/start + login/code
+                      + login/cancel), backed by desktop.Manager's claudelogin.go and
+                      saved through claudeauth.Store. recordings.go: the recordings page and the
                       /api/desktops/recordings* + /api/desktops/demonstration proxy, replay
                       as a task (Busy check, Plan/Commit, parameters never recorded), and the
                       ticket API (/api/desktops/record opens one, /api/desktops/ticket* drives
@@ -188,7 +207,7 @@ desktop container (flowera-desktop:{basic,developer,ai})
 
 Control plane → desktop communication happens over the Docker bridge network `flowera-network` (container name `desktop_<id>`, not published ports). Desktop → control plane communication uses `CONTROL_PLANE_URL` (`http://host.docker.internal:8080`).
 
-Go package dependency direction (no cycles): `httpapi` → `desktop`, `helpnotes`, `memory`, `conversation`, `stepimages`, `tasks`, `tunnel`, `webui`; `webui` → `desktop`, `helpnotes`, `memory`, `tasks`, `web`; `desktop` → `ollama` (only for `ollama.DesktopURL`/`DesktopModel`, the Ollama a new desktop is given), `flowera` (the root package, for the embedded build context); `helpnotes`, `memory`, `conversation`, `stepimages`, `tasks` → `sqlitedb` only; `ollama`, `sqlitedb`, `tunnel`, `web`, `flowera` depend on nothing internal.
+Go package dependency direction (no cycles): `httpapi` → `desktop`, `helpnotes`, `memory`, `conversation`, `stepimages`, `tasks`, `tunnel`, `claudeauth`, `webui`; `webui` → `desktop`, `helpnotes`, `memory`, `tasks`, `web`; `desktop` → `ollama` (only for `ollama.DesktopURL`/`DesktopModel`, the Ollama a new desktop is given), `flowera` (the root package, for the embedded build context); `helpnotes`, `memory`, `conversation`, `stepimages`, `tasks`, `claudeauth` → `sqlitedb` only; `ollama`, `sqlitedb`, `tunnel`, `web`, `flowera` depend on nothing internal. Note that `desktop` does *not* depend on `claudeauth`: `httpapi.createDesktopHandler` reads the stored session and hands `Create` its raw credentials JSON as a plain string, and `claudelogin.go`'s login flow hands the same shape back to `httpapi` to save — `desktop` only ever sees bytes, never the store.
 
 Three desktop profiles share the same `agent/` contents but differ in installed tooling:
 - `docker/desktop.basic.Dockerfile` — VNC desktop only (no `claude` binary — Ollama harness only)
@@ -200,7 +219,7 @@ Three desktop profiles share the same `agent/` contents but differ in installed 
 Each desktop picks a harness at creation time (`Desktop.Harness`, `desktop-harness` container label, `AGENT_HARNESS` env var passed into the container — see `internal/httpapi/desktops.go`'s `createDesktopHandler` and `internal/desktop/docker.go`'s `buildDesktopEnv`). All three reach the exact same command/helptext/memory/progress contract through `harness.py`'s dispatch:
 
 - **`ollama`** (default): the hand-rolled `COMMAND:`/`DONE:`/`HELP:` loop in `task_runner.py`, driving an Ollama model.
-- **`claude`**: requires the developer or ai profile (`claude` binary isn't installed in basic) and `ANTHROPIC_API_KEY` set in the control plane's `.env` (passed through to the container only when non-empty). Runs `claude --bare -p "<task>" --output-format stream-json --verbose --dangerously-skip-permissions --append-system-prompt "<memory + safety rules>"`, optionally `--resume <session_id>` to continue after a human responds. `--bare` forces API-key-only auth (no OAuth/keychain), matching "the easiest access mode." `--dangerously-skip-permissions` is intentional and matches the Ollama harness's existing unrestricted shell access (`commands.run_command`) — not a new risk category, just the same one applied to a second engine. `stream-json` (which *requires* `--verbose`) is what lets the turn be watched as it happens; its final `result` event carries the same fields the one-shot `json` format returned, so only `_run_claude` knows the difference.
+- **`claude`**: requires the developer or ai profile (`claude` binary isn't installed in basic) and a shared Claude Code login completed once through the dashboard's popup (see `internal/claudeauth` and `internal/desktop/claudelogin.go` above) rather than an `ANTHROPIC_API_KEY` in `.env` — `httpapi.createDesktopHandler` reads the stored session and `desktop.Manager.Create` seeds it into the new container's `~/.claude/.credentials.json` (`PersistClaudeCredentials`) only when the harness is `claude` and someone has logged in. Runs `claude -p "<task>" --output-format stream-json --verbose --dangerously-skip-permissions --append-system-prompt "<memory + safety rules>"`, optionally `--resume <session_id>` to continue after a human responds. No `--bare`: that flag forces API-key-only auth ("OAuth and keychain are never read" — confirmed against the CLI's own `--help`), which is exactly what this harness now needs to *not* do; the trade-off is that `--bare`'s other isolation (hooks, LSP, plugin sync, attribution, auto-memory, CLAUDE.md auto-discovery) is back on too, same as running `claude` anywhere else — none of it matters inside a desktop's empty `~/work`. `--dangerously-skip-permissions` is intentional and matches the Ollama harness's existing unrestricted shell access (`commands.run_command`) — not a new risk category, just the same one applied to a second engine. `stream-json` (which *requires* `--verbose`) is what lets the turn be watched as it happens; its final `result` event carries the same fields the one-shot `json` format returned, so only `_run_claude` knows the difference.
 - **`thebot`**: TheBot's `soul` binary, built from `agent/thebot/` (its own Go module) into all three images and started as a daemon on port 4900 when `AGENT_HARNESS=thebot`. Reuses the same `OLLAMA_URL`/`OLLAMA_MODEL` every desktop already gets, so it needs no env var of its own. Inside soul a job goes: **recall** (L1 facts) → one shared **system frame** (`internal/prompt`: persona + host context, byte-identical for every model call in the job so Ollama's prompt cache carries across them) → **triage** (`internal/atomizer/triage.go`, deterministic: `chat` / one `skill` / `operate` / `plan`) → a tagged step **graph** from the planner only for `plan` (`[do] [shell] [web] [read] [download] [write] [code] [docs] [answer]`, with `(after N)` dependencies) → the **scheduler** (`internal/scheduler`) runs ready steps in parallel under a process-wide model-concurrency limit (`llm.Limited`), recovers a failed step (retry / decompose / ask), replans the rest once if it still fails, and **pauses** with a `Checkpoint` when a step needs approval or an answer → one **synthesised reply** for multi-step jobs. `operate` is the **operator** skill (`internal/skills/operator.go`): a Go `COMMAND:`/`DONE:`/`HELP:` loop carrying the Ollama harness's measured lessons, which is what lets TheBot answer "what's the kernel version?" by running `uname -r` instead of planning a web search. Consequential commands and requests are stopped by `internal/safety` before they run, whatever the model decided.
 - All three system prompts (`SYSTEM_PROMPT` in `ollama_client.py`, `SAFETY_SYSTEM_PROMPT` in `claude_harness.py`, `SAFETY_PREAMBLE` in `thebot_harness.py`) instruct the agent to stop and request human approval — via the same `HELP`/`ask_for_help` → helptext path — before payments, sending messages on the human's behalf (WhatsApp/email/SMS), or any action with real-world consequences it isn't fully confident about. Claude and TheBot signal it with a `NEEDS_APPROVAL:` prefix on their final answer; the Ollama loop uses its `HELP:` control signal.
 
@@ -252,7 +271,7 @@ verify()   observe again, compare with the last observation, optionally check te
 
 How each engine reaches it:
 
-- **Claude** gets them as MCP tools (`mcp__computer__observe/act/verify/open`) via `claude_harness.MCP_CONFIG` (`--mcp-config` still works under `--bare`; verified: the stream's init event lists the server `connected` with all four tools). Every result carries the screenshot, because Claude can read one.
+- **Claude** gets them as MCP tools (`mcp__computer__observe/act/verify/open`) via `claude_harness.MCP_CONFIG` (verified: the stream's init event lists the server `connected` with all four tools). Every result carries the screenshot, because Claude can read one.
 - **Ollama** and **TheBot** use the `gui` shell command through their existing `COMMAND:` loops (no contract change) and read the element list **as text only**. A 3B model on a CPU cannot read pixels; `elements.render` is budgeted to `FLOWERA_GUI_TEXT_CHARS` (3500) because `task_runner` shows a model at most 4000 characters of any command's output. TheBot's `atomizer.Triage` routes screen work (`wantsScreen`: a surface *and* an action) to the operator, ahead of the web skill that would otherwise fetch any URL itself.
 
 `gui` exit codes are a contract harnesses read: 0 done, 1 could not, **3 NEEDS_APPROVAL (nothing happened)**, 4 verify failed.
@@ -305,7 +324,7 @@ docker compose up -d             # just the control plane (uses docker/Dockerfil
 go build ./... && go vet ./... && go test ./...   # compile, lint, unit tests
                                   # (internal/memory, internal/conversation, internal/webui,
                                   #  internal/stepimages, internal/httpapi, internal/tasks,
-                                  #  internal/sqlitedb)
+                                  #  internal/sqlitedb, internal/claudeauth)
 PYTHONPATH=agent python3 -m unittest discover -s agent/tests   # computer-use gate/refs/rendering,
                                   # task IDs and usage totals, recordings (input merging,
                                   # privacy, volatility, the store, replay against a fake screen)
@@ -330,7 +349,6 @@ See [README.md](README.md#-getting-started-running-it-locally) for full step-by-
 | Var | Read in | Default | Notes |
 |---|---|---|---|
 | `DEFAULT_PASSWORD` | `docker.buildDesktopEnv` | `admin` | Becomes `VNC_PW` in every new desktop container. |
-| `ANTHROPIC_API_KEY` | `docker.buildDesktopEnv` | *(unset → omitted)* | Only passed into a container's env when non-empty. Required for the `claude` harness to authenticate; unused by `ollama`-harness desktops. |
 | `OLLAMA_URL` | `ollama.DesktopURL` | `http://host.docker.internal:11434` | Passed into every new desktop by `buildDesktopEnv`, and the server `ollama.EnsureReady` preloads. `ollama.BundledURL` makes the control plane run and provision `flowera-ollama` itself. |
 | `OLLAMA_MODEL` | `ollama.DesktopModel` | `ollama.Model` (`qwen2.5-coder:3b`) | In `.env.example`. `scripts/linux/build.sh`/`rebuild.sh` pull it when the server lacks it, and only fall back to a model the server already has if that pull fails. |
 | `DESKTOP_STOP_TIMEOUT_SECONDS` | `desktop.Manager.Stop` | `10` | Parsed with `strconv.Atoi`; invalid/`<=0` values are ignored. |
@@ -390,6 +408,7 @@ See [README.md](README.md#-getting-started-running-it-locally) for full step-by-
 - Clearing a chat no longer deletes its screenshots: the task records still point at them. `stepimages` only forgets by its byte budget.
 - `ask_for_help(problem, kind="approval")` for a safety pause, plain `ask_for_help(problem)` for being stuck — every harness's approval path passes the kind (`task_runner.pause_for_screen_approval`, both `NEEDS_APPROVAL` branches, soul's `needs_approval`, a pending screen approval in `claude_harness`). The Ollama model's own `HELP:` can still be an approval; `tasks.InterventionReason` reads the words for that case.
 - Claude's `total_cost_usd` is summed across a task's runs (the task and each `--resume`), on the assumption that each result is that process's own spend. That is not verified against a live resumed run: searching the 2.1.266 CLI found no cost restore on a print-mode resume, but did not prove there is none. If resumed runs turn out to report session totals, `claude_harness._record_usage` double-counts the cost of a task that paused.
+- **The dashboard's Claude login popup drives the real `claude auth login --claudeai`, not a reimplementation of OAuth.** `desktop.Manager.StartClaudeLogin` runs it in a throwaway container (the developer image, entrypoint overridden straight to `claude` — the desktop's normal tini/startup.sh never runs), attached with `Tty: false`. That matters: confirmed live, a `Tty: true` attach gets the CLI's colored/OSC8-hyperlinked output (the sign-in URL appears twice, once inside an OSC8 escape), while a plain non-tty pipe gets exactly `Opening browser to sign in…` / `If the browser didn't open, visit: <url>` / `Paste code here if prompted > ` with no escape codes to strip — the second is what `extractClaudeSignInURL` parses. `stdcopy.StdCopy` demuxes the non-tty stream into one combined buffer; parsing waits for the `Paste code here if prompted` prompt as a sync point before trusting the `visit:` line is fully flushed. There is one shared login attempt for the whole app at a time (`Manager.claudeLogin`), matching one shared session; starting a new one tears down whatever was in progress. A rejected code (confirmed live: `Invalid code. Please make sure the full code was copied.`) leaves the container alive for another try on the same login ID — `SubmitClaudeLoginCode` distinguishes that from every other failure via `ErrClaudeLoginInvalidCode` so the popup can prompt again instead of restarting the flow. The session is seeded into a desktop **only at creation time** (`Manager.Create` → `PersistClaudeCredentials`, `chmod 600`d): logging in after a claude-harness desktop already exists does not retroactively authenticate it — recreate the desktop, or exec in and repeat the login by hand.
 - `httpapi.jsonError` intentionally does not leak `err.Error()` to the client (logs it server-side, returns a generic message) — preserve that when adding new handlers that call it.
 - `memory.WorkerMemoryEntry` records are kept even if `desktop.PersistMemoryFile` (the write into the desktop's container) fails afterward — that's intentional (matches the original single-file behavior), not a bug to "fix" by rolling back the in-memory record.
 - `harness.py` is the only file that should ever check `config.AGENT_HARNESS` — `task_runner.py`/`claude_harness.py`/`thebot_harness.py` and everything upstream of them (`watchers.py`, `messaging.py`, `memory_context.py`, `identity.py`, `progress.py`, `readiness.py`) must stay harness-agnostic, so adding a fourth harness only means adding one more branch in `harness.py`.

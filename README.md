@@ -175,7 +175,7 @@ cp .env.example .env        # Windows: copy .env.example .env
 
 (Skipping this is fine if you use `build.sh`/`build.ps1`, which create `.env` from `.env.example` when there isn't one.)
 
-Open `.env` and fill in what you need. See [Environment variables](#-environment-variables) below. You can leave it as it is: every variable has a working default except `ANTHROPIC_API_KEY`, which only the Claude harness needs (see below). The two you're most likely to change are `OLLAMA_URL` and `OLLAMA_MODEL`, which pick the model server and model every worker uses.
+Open `.env` and fill in what you need. See [Environment variables](#-environment-variables) below — every variable already has a working default. The two you're most likely to change are `OLLAMA_URL` and `OLLAMA_MODEL`, which pick the model server and model every worker uses. The Claude harness needs no `.env` entry at all — see [Setting up the Claude harness](#-setting-up-the-claude-harness) below.
 
 ### 🦙 Setting up Ollama
 
@@ -220,6 +220,16 @@ This should print JSON listing the models you pulled.
 `OLLAMA_URL` can also point at an Ollama on another machine, e.g. `http://10.0.0.5:11434`. At startup the control plane loads `OLLAMA_MODEL` into memory on that server, so the first message doesn't wait for it.
 
 > **Changing the model only affects desktops created afterwards.** Each desktop gets `OLLAMA_URL`/`OLLAMA_MODEL` when it is created. After editing `.env`, restart the control plane (`docker compose up --build -d`, since `.env` is baked into its image) and create a new desktop.
+
+### 🔐 Setting up the Claude harness
+
+The `claude` harness authenticates with a real Claude Code login instead of an API key — one shared sign-in used by every desktop created on the `claude` harness, not a separate login per desktop.
+
+1. Open the dashboard and start creating a desktop (the **+** button).
+2. Pick **Claude Code** as the agent harness. If nobody has signed in yet, you'll see a **Log in to Claude** prompt there.
+3. Click it: a popup opens with a sign-in link and a box for a verification code — the same flow as running `claude auth login` yourself. Open the link, sign in, and paste the code it gives you back into the popup.
+
+That's it — the popup calls the control plane, which runs the login in a throwaway container and stores the resulting session in `flowera.db`. Every claude-harness desktop created from then on is seeded with it automatically; you only do this again if you want to switch which account desktops sign in as. `build.sh`/`rebuild.sh` treat it exactly like the rest of `flowera.db`: `build.sh` never touches it, `rebuild.sh` wipes it along with everything else in that database.
 
 ### 2. Build the desktop images
 
@@ -333,11 +343,10 @@ Set these in your own `.env` (copied from `.env.example`) — the control plane 
 | Variable | Required? | Default | Purpose |
 |---|---|---|---|
 | `DEFAULT_PASSWORD` | No | `admin` | VNC login password baked into every new desktop. |
-| `ANTHROPIC_API_KEY` | Only to use the **Claude harness** | *(unset)* | Passed through into a desktop's container so the `claude` CLI can authenticate — this is literally all that's needed, no login/OAuth step. Only desktops created with the "Claude Code" harness use it. |
 | `OLLAMA_URL` | No | `http://host.docker.internal:11434` | The Ollama server every new desktop reasons with. The default is the host running Flowera. See [Setting up Ollama](#-setting-up-ollama). |
 | `OLLAMA_MODEL` | No | `qwen2.5-coder:3b` | The chat model every new desktop uses. It must already be pulled on `OLLAMA_URL`'s server (`build.sh` pulls it for you). |
 | `DESKTOP_STOP_TIMEOUT_SECONDS` | No | `10` | Seconds to wait for a desktop container to stop gracefully before force-killing it. |
-| `FLOWERA_DATA_DIR` | No | your user config dir + `/flowera` (`/data` in the Docker image) | Where `flowera.db` lives: task records, chats, help requests, worker memory and action screenshots. `docker compose` keeps it on the `flowera-data` volume. |
+| `FLOWERA_DATA_DIR` | No | your user config dir + `/flowera` (`/data` in the Docker image) | Where `flowera.db` lives: task records, chats, help requests, worker memory, action screenshots, and the shared Claude session (see [Setting up the Claude harness](#-setting-up-the-claude-harness)). `docker compose` keeps it on the `flowera-data` volume. |
 | `FLOWERA_STEP_IMAGES_MB` | No | `1024` | Disk budget for the before/after screenshots of on-screen actions. The oldest are dropped first. A desktop keeps its full-size originals regardless. |
 
 Every other setting (the agent harness, the control-plane URL a desktop calls home to, etc.) is set up for each desktop when you create it. See [`CLAUDE.md`](CLAUDE.md) if you're changing that wiring.

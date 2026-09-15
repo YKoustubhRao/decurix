@@ -128,10 +128,11 @@ Setup
 
          $copyEnv
 
-     Edit .env -- set DEFAULT_PASSWORD (the VNC password for new desktops)
-     and, if you want to use the Claude harness, ANTHROPIC_API_KEY. Flowera
-     reads .env from the working directory, or from the folder the executable
-     lives in. Plain environment variables work too.
+     Edit .env -- set DEFAULT_PASSWORD (the VNC password for new desktops).
+     Flowera reads .env from the working directory, or from the folder the
+     executable lives in. Plain environment variables work too. The Claude
+     harness needs no .env entry -- log in from the dashboard instead, next
+     to the "Claude Code" option when creating a desktop.
 
      Workers think with a model served by Ollama (https://ollama.com).
      OLLAMA_URL picks the server (default: the Ollama on this machine) and

@@ -7,6 +7,7 @@ package httpapi
 import (
 	"net/http"
 
+	"github.com/YKoustubhRao/flowera/internal/claudeauth"
 	"github.com/YKoustubhRao/flowera/internal/conversation"
 	"github.com/YKoustubhRao/flowera/internal/desktop"
 	"github.com/YKoustubhRao/flowera/internal/helpnotes"
@@ -18,8 +19,9 @@ import (
 )
 
 // Server wires the desktop manager, help-notes store, memory store, chat
-// store, action-step screenshot store, task records, tunnel store, and web UI
-// renderer together to serve the Flowera control plane.
+// store, action-step screenshot store, task records, tunnel store, shared
+// Claude session store, and web UI renderer together to serve the Flowera
+// control plane.
 type Server struct {
 	Desktops   *desktop.Manager
 	HelpNotes  *helpnotes.Store
@@ -28,11 +30,12 @@ type Server struct {
 	StepImages *stepimages.Store
 	Tasks      *tasks.Store
 	Tunnel     *tunnel.Store
+	ClaudeAuth *claudeauth.Store
 	Web        *webui.Renderer
 }
 
 // NewServer creates a Server from its component stores/managers.
-func NewServer(desktops *desktop.Manager, helpNotes *helpnotes.Store, memoryStore *memory.Store, chat *conversation.Store, stepImages *stepimages.Store, taskRecords *tasks.Store, tunnelStore *tunnel.Store, web *webui.Renderer) *Server {
+func NewServer(desktops *desktop.Manager, helpNotes *helpnotes.Store, memoryStore *memory.Store, chat *conversation.Store, stepImages *stepimages.Store, taskRecords *tasks.Store, tunnelStore *tunnel.Store, claudeAuth *claudeauth.Store, web *webui.Renderer) *Server {
 	return &Server{
 		Desktops:   desktops,
 		HelpNotes:  helpNotes,
@@ -41,6 +44,7 @@ func NewServer(desktops *desktop.Manager, helpNotes *helpnotes.Store, memoryStor
 		StepImages: stepImages,
 		Tasks:      taskRecords,
 		Tunnel:     tunnelStore,
+		ClaudeAuth: claudeAuth,
 		Web:        web,
 	}
 }
@@ -89,5 +93,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/desktops/ticket", s.ticketStatusHandler)
 	mux.HandleFunc("/api/desktops/ticket/action", s.ticketActionHandler)
 	mux.HandleFunc("/api/tunnel", s.tunnelHandler)
+	mux.HandleFunc("/api/claude-auth/status", s.claudeAuthStatusHandler)
+	mux.HandleFunc("/api/claude-auth/login/start", s.claudeAuthLoginStartHandler)
+	mux.HandleFunc("/api/claude-auth/login/code", s.claudeAuthLoginCodeHandler)
+	mux.HandleFunc("/api/claude-auth/login/cancel", s.claudeAuthLoginCancelHandler)
 	mux.HandleFunc("/favicon.svg", s.faviconHandler)
 }

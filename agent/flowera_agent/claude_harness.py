@@ -178,7 +178,17 @@ def _run_claude(prompt, resume_session_id=None):
 
     cmd = [
         "claude",
-        "--bare",
+        # No --bare: it forces API-key-only auth ("OAuth and keychain are
+        # never read") and this harness authenticates with the shared
+        # Claude Code login a human completes through the dashboard's
+        # popup (internal/desktop/claudelogin.go, saved by
+        # internal/claudeauth) instead of an ANTHROPIC_API_KEY - so the CLI
+        # needs to be free to read the OAuth credentials seeded into
+        # ~/.claude/.credentials.json when this desktop was created. The
+        # trade-off is the rest of what --bare would have skipped (hooks,
+        # LSP, plugin sync, attribution, auto-memory, CLAUDE.md
+        # auto-discovery) is back on, same as running `claude` anywhere
+        # else - none of it applies inside a desktop's empty work dir.
         "-p", prompt,
         # stream-json requires --verbose; without it the CLI refuses to
         # stream in print mode and the loop below would see nothing.
@@ -196,8 +206,7 @@ def _run_claude(prompt, resume_session_id=None):
         "--append-system-prompt", get_identity_context("Claude Code"),
         # The screen, as tools - the same observe/act/verify layer the other
         # two engines reach through the `gui` command, with screenshots,
-        # because Claude can read them. --bare still honours an explicit
-        # --mcp-config; it only skips MCP servers discovered from settings.
+        # because Claude can read them.
         "--mcp-config", MCP_CONFIG,
         "--append-system-prompt", SCREEN_SYSTEM_PROMPT,
     ]
