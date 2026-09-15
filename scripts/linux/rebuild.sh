@@ -15,6 +15,8 @@
 #
 # Flags:
 #   -y, --yes   skip the confirmation prompt (for scripted/CI use)
+#   --cli       skip the tunnel and open the terminal CLI instead (see
+#               `docker compose exec desktop-manager ./flowera --cli`, below)
 
 set -e
 
@@ -23,12 +25,16 @@ cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 # shellcheck source=lib/ollama-setup.sh
 source ./scripts/linux/lib/ollama-setup.sh
+# shellcheck source=lib/lan-tunnel.sh
+source ./scripts/linux/lib/lan-tunnel.sh
 
 SKIP_CONFIRM=""
+CLI_MODE=""
 
 for arg in "$@"; do
     case "$arg" in
         -y|--yes) SKIP_CONFIRM="1" ;;
+        --cli) CLI_MODE="1" ;;
         *)
             echo "ERROR: unknown flag: $arg" >&2
             exit 1
@@ -66,6 +72,7 @@ fi
 # leave it running detached.
 cleanup() {
     echo ""
+    stop_lan_tunnel
     echo "=== Interrupted: stopping Flowera and its containers ==="
 
     docker compose down || true
@@ -162,6 +169,80 @@ echo ""
 echo "========================================"
 echo " Flowera is running (clean slate)"
 echo "========================================"
+echo ""
+echo "Idle desktops stop automatically after 5 minutes (set FLOWERA_IDLE_STOP_MINUTES=0 in .env to disable, or to another number of minutes)."
+
+# FLOWERA_LAN_PORT in .env changes which port the access-code-gated listener
+# binds; read_env_var comes from lib/ollama-setup.sh, already sourced above.
+lan_port="$(read_env_var FLOWERA_LAN_PORT)"
+lan_port="${lan_port:-8090}"
+
+# The machine's own address on whatever network it's on, so both the admin
+# (unauthenticated) and LAN (access-code-gated) URLs below are something
+# another device can actually use - not "localhost", which only means
+# anything on this machine. "ip route get" asks the kernel which source
+# address it would use to reach the internet without sending a single
+# packet; hostname -I is the fallback for a machine without `ip` (rare, but
+# cheap to guard against a script erroring out over a cosmetic feature).
+lan_ip="$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p')"
+if [ -z "$lan_ip" ]; then
+    lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+fi
+
+if [ -n "$lan_ip" ]; then
+    admin_url="http://$lan_ip:8080"
+    lan_url="http://$lan_ip:$lan_port"
+
+    # Reported once here, separately from the tunnel URL below (which is
+    # reported every time cloudflared prints one) - see httpapi.tunnelHandler,
+    # which never lets one blank out the other.
+    curl -fsS -X POST http://127.0.0.1:8080/api/tunnel \
+        -H "Content-Type: application/json" \
+        -d "{\"admin_url\":\"$admin_url\",\"lan_url\":\"$lan_url\"}" \
+        >/dev/null 2>&1 || true
+
+    echo ""
+    echo "Admin URL (full control, no code - keep this to yourself): $admin_url"
+    echo "LAN access URL (needs the code below, works without the tunnel):  $lan_url"
+fi
+
+# Printed here as a convenience - it also always lives in the dashboard's
+# Mobile menu (both URLs above alongside it), which is the one place it
+# stays current after a rotate.
+if command -v jq >/dev/null 2>&1; then
+    lan_code="$(curl -fsS http://127.0.0.1:8080/api/lan-access/status 2>/dev/null | jq -r '.code // empty')"
+
+    if [ -n "$lan_code" ]; then
+        echo ""
+        echo "Access code: $lan_code"
+        echo "(Needed once by anyone using the LAN URL above. Also in the dashboard's Mobile menu, which can generate a new one.)"
+
+        # A one-click link for whoever is sitting at this terminal right now -
+        # they already have the code above, so this authenticates on click
+        # instead of asking them to type it into the gate's form.
+        if [ -n "$lan_url" ]; then
+            echo ""
+            echo "Open it yourself without typing the code: $lan_url/__flowera_access/authenticate?code=$lan_code"
+        fi
+    fi
+fi
+
+# The rebuild itself is done at this point (fresh images, fresh desktops,
+# empty database, dashboard responding) - clear the interrupt trap before
+# handing off to the CLI so leaving it (however that happens) just leaves
+# Flowera running, the same as leaving build.sh's CLI does, rather than
+# tearing down the stack this script just finished rebuilding.
+if [ -n "$CLI_MODE" ]; then
+    trap - INT TERM
+
+    echo ""
+    echo "=== Opening the Flowera CLI ==="
+    echo "(Flowera keeps running after you exit; 'exit' or Ctrl+D to leave.)"
+    echo ""
+
+    docker compose exec desktop-manager ./flowera --cli
+    exit $?
+fi
 
 echo ""
 echo "=== Starting Cloudflare Tunnel ==="
@@ -171,12 +252,25 @@ if ! command -v cloudflared >/dev/null 2>&1; then
     exit 1
 fi
 
+# A second tunnel, to the access-code-gated listener - so the code-protected
+# URL works from anywhere, not just $lan_url above on this machine's own
+# network. Backgrounded (see lib/lan-tunnel.sh), so it doesn't block the
+# primary tunnel's own foreground loop just below.
+start_lan_tunnel "$lan_port"
+
 echo ""
 
+# Points at the primary listener (:8080), not the access-code-gated one -
+# so this URL is full, unauthenticated control of the machine, reachable by
+# anyone who has the link, the same as sitting at the machine itself. The
+# gated URL printed above ($lan_url, over $lan_port) and its own tunnel link
+# just above are still there for anyone who wants the code-gated option
+# instead.
+#
 # Start Cloudflare tunnel, echoing its logs while watching for the
 # trycloudflare.com URL so it can be reported to the control plane for
 # display in the dashboard's Mobile dropdown.
-cloudflared tunnel --protocol http2 --url http://127.0.0.1:8080 2>&1 | while IFS= read -r line; do
+cloudflared tunnel --protocol http2 --url "http://127.0.0.1:8080" 2>&1 | while IFS= read -r line; do
     echo "$line"
 
     url=$(echo "$line" | grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' || true)
@@ -186,5 +280,7 @@ cloudflared tunnel --protocol http2 --url http://127.0.0.1:8080 2>&1 | while IFS
             -H "Content-Type: application/json" \
             -d "{\"url\":\"$url\"}" \
             >/dev/null 2>&1 || true
+
+        echo "(No access code needed for this URL - full control of this machine. Keep it to yourself.)"
     fi
 done

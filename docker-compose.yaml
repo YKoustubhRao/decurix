@@ -9,6 +9,12 @@ services:
 
     ports:
       - "8080:8080"
+      # The LAN/tunnel-facing listener (internal/lanaccess) - gated by an
+      # access code, unlike 8080 above. What a Cloudflare tunnel or a direct
+      # LAN address should be pointed at. FLOWERA_LAN_PORT in .env changes
+      # the port on both sides at once (compose's own variable substitution
+      # here; the binary reads the same .env, copied into the image).
+      - "${FLOWERA_LAN_PORT:-8090}:${FLOWERA_LAN_PORT:-8090}"
 
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
