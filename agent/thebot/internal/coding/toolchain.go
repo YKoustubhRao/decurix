@@ -185,9 +185,9 @@ pythonpath = ["."]
 			}
 			return []string{
 				env.PythonBin + " -m venv .venv",
-				".venv/bin/python -m pip install --upgrade pip",
-				".venv/bin/python -m pip install pytest",
-				depInstall(".venv/bin/python -m pip install", d.Dependencies),
+				".venv/bin/python -m pip install --timeout 15 --retries 1 --upgrade pip",
+				".venv/bin/python -m pip install --timeout 15 --retries 1 pytest",
+				depInstall(".venv/bin/python -m pip install --timeout 15 --retries 1", d.Dependencies),
 			}
 		},
 

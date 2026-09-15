@@ -202,6 +202,46 @@ def format_command_result(result):
     )
 
 
+MAX_RECENT_FULL_TURNS = 6
+OLD_COMMAND_OUTPUT_CHARS = 200
+
+
+def compact_history(history, max_recent=MAX_RECENT_FULL_TURNS):
+    """
+    Keep recent turns in full detail, while compressing the verbose outputs
+    of older turns so total prompt size stays comfortably within num_ctx (8192)
+    and RAM budgets without forgetting what commands have already been run.
+    """
+    if len(history) <= max_recent * 2:
+        return history
+
+    cutoff = len(history) - (max_recent * 2)
+    compacted = []
+
+    for i, msg in enumerate(history):
+        if i >= cutoff or msg.get("role") != "user":
+            compacted.append(msg)
+            continue
+
+        content = msg.get("content", "")
+        if "Command execution result:\n\n" in content and "output:\n" in content:
+            parts = content.split("output:\n", 1)
+            header = parts[0] + "output:\n"
+            body = parts[1].strip()
+            if len(body) > OLD_COMMAND_OUTPUT_CHARS:
+                compacted_body = (
+                    body[:OLD_COMMAND_OUTPUT_CHARS]
+                    + "\n... [earlier output compacted for context budget]"
+                )
+                compacted.append({"role": "user", "content": header + compacted_body})
+            else:
+                compacted.append(msg)
+        else:
+            compacted.append(msg)
+
+    return compacted
+
+
 def describe_result(result):
     """
     Summarize a command's outcome as one line for the chat's live step view.
@@ -330,7 +370,7 @@ def perform_task(task, task_file):
         try:
             response = ask_agent(
                 task,
-                history,
+                compact_history(history),
             )
 
         except Exception as exc:
@@ -650,7 +690,7 @@ def continue_after_query(query_response):
                             f"Continue the task."
                         ),
                     },
-                    *history,
+                    *compact_history(history),
                 ]
             )
 

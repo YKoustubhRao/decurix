@@ -132,14 +132,38 @@ var taskFuncs = template.FuncMap{
 
 // Renderer loads and executes the web UI's HTML templates.
 type Renderer struct {
-	indexTmpl *template.Template
+	indexTmpl      *template.Template
+	requestsTmpl   *template.Template
+	dashboardTmpl  *template.Template
+	desktopTmpl    *template.Template
+	tasksTmpl      *template.Template
+	taskTmpl       *template.Template
+	recordingsTmpl *template.Template
 }
 
-// NewRenderer parses the templates that are safe to parse once at startup.
+// NewRenderer parses all templates once at startup.
 func NewRenderer() *Renderer {
 	return &Renderer{
 		indexTmpl: template.Must(
 			template.ParseFS(web.TemplatesFS, templatePaths("index.html")...),
+		),
+		requestsTmpl: template.Must(
+			template.ParseFS(web.TemplatesFS, templatePaths("requests.html")...),
+		),
+		dashboardTmpl: template.Must(
+			template.ParseFS(web.TemplatesFS, templatePaths("dashboard.html")...),
+		),
+		desktopTmpl: template.Must(
+			template.ParseFS(web.TemplatesFS, templatePaths("desktop.html")...),
+		),
+		tasksTmpl: template.Must(
+			template.New("tasks.html").Funcs(taskFuncs).ParseFS(web.TemplatesFS, templatePaths("tasks.html")...),
+		),
+		taskTmpl: template.Must(
+			template.New("task.html").Funcs(taskFuncs).ParseFS(web.TemplatesFS, templatePaths("task.html")...),
+		),
+		recordingsTmpl: template.Must(
+			template.ParseFS(web.TemplatesFS, templatePaths("recordings.html")...),
 		),
 	}
 }
@@ -149,62 +173,35 @@ func (rd *Renderer) RenderIndex(w io.Writer, data PageData) error {
 	return rd.indexTmpl.ExecuteTemplate(w, "index.html", data)
 }
 
-// RenderRequests renders the requests page. The template is re-parsed on
-// every call, matching the original handler's behavior.
+// RenderRequests renders the requests page.
 func (rd *Renderer) RenderRequests(w io.Writer, data PageData) error {
-	tmpl := template.Must(
-		template.ParseFS(web.TemplatesFS, templatePaths("requests.html")...),
-	)
-
-	return tmpl.ExecuteTemplate(w, "requests.html", data)
+	return rd.requestsTmpl.ExecuteTemplate(w, "requests.html", data)
 }
 
-// RenderQueryNotesDashboard renders the query-notes dashboard. The template is
-// re-parsed on every call, matching the original handler's behavior.
+// RenderQueryNotesDashboard renders the query-notes dashboard.
 func (rd *Renderer) RenderQueryNotesDashboard(w io.Writer, data QueryNotesPageData) error {
-	tmpl := template.Must(
-		template.ParseFS(web.TemplatesFS, templatePaths("dashboard.html")...),
-	)
-
-	return tmpl.ExecuteTemplate(w, "dashboard.html", data)
+	return rd.dashboardTmpl.ExecuteTemplate(w, "dashboard.html", data)
 }
 
 // RenderDesktopView renders a single desktop's detail page (Desktop/Agent
-// tabs, split view). The template is re-parsed on every call, matching the
-// other secondary pages' behavior.
+// tabs, split view).
 func (rd *Renderer) RenderDesktopView(w io.Writer, data DesktopViewPageData) error {
-	tmpl := template.Must(
-		template.ParseFS(web.TemplatesFS, templatePaths("desktop.html")...),
-	)
-
-	return tmpl.ExecuteTemplate(w, "desktop.html", data)
+	return rd.desktopTmpl.ExecuteTemplate(w, "desktop.html", data)
 }
 
 // RenderTasks renders the task records dashboard.
 func (rd *Renderer) RenderTasks(w io.Writer, data TasksPageData) error {
-	tmpl := template.Must(
-		template.New("tasks.html").Funcs(taskFuncs).ParseFS(web.TemplatesFS, templatePaths("tasks.html")...),
-	)
-
-	return tmpl.ExecuteTemplate(w, "tasks.html", data)
+	return rd.tasksTmpl.ExecuteTemplate(w, "tasks.html", data)
 }
 
 // RenderTask renders one task record.
 func (rd *Renderer) RenderTask(w io.Writer, data TaskPageData) error {
-	tmpl := template.Must(
-		template.New("task.html").Funcs(taskFuncs).ParseFS(web.TemplatesFS, templatePaths("task.html")...),
-	)
-
-	return tmpl.ExecuteTemplate(w, "task.html", data)
+	return rd.taskTmpl.ExecuteTemplate(w, "task.html", data)
 }
 
 // RenderRecordings renders one desktop's recordings page.
 func (rd *Renderer) RenderRecordings(w io.Writer, data RecordingsPageData) error {
-	tmpl := template.Must(
-		template.ParseFS(web.TemplatesFS, templatePaths("recordings.html")...),
-	)
-
-	return tmpl.ExecuteTemplate(w, "recordings.html", data)
+	return rd.recordingsTmpl.ExecuteTemplate(w, "recordings.html", data)
 }
 
 // FaviconSVG is the Flowera brand mark, served as the control plane's favicon.

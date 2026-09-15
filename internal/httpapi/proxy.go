@@ -83,15 +83,7 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 	// Query parameters (e.g. index.html's open-in-a-new-tab resize=remote&ui=touch)
 	// are preserved automatically since only r.URL.Path was rewritten above.
 	reverseProxy.ModifyResponse = func(resp *http.Response) error {
-		if err := rewriteFloweraBranding(resp); err != nil {
-			return err
-		}
-
-		if err := injectTicketToolbar(resp, desktopID); err != nil {
-			return err
-		}
-
-		return injectMobileEnhancements(resp)
+		return rewriteDesktopHTML(resp, desktopID)
 	}
 	reverseProxy.ErrorHandler = func(
 		rw http.ResponseWriter,
@@ -150,6 +142,41 @@ var floweraBrandingRewrites = [][2][]byte{
 // load (unlike injectMobileEnhancements, it isn't gated on ?ui=touch) so a
 // user is never shown that a desktop's screen is noVNC/VNC under the hood -
 // the control plane presents it purely as "your desktop".
+// rewriteDesktopHTML executes all desktop HTML modifications (branding rewrite,
+// ticket toolbar injection, and mobile touch enhancements) in a single pass over
+// the response body, avoiding multiple read/re-wrap cycles.
+func rewriteDesktopHTML(resp *http.Response, desktopID string) error {
+	if !strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
+		return nil
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return err
+	}
+
+	for _, rewrite := range floweraBrandingRewrites {
+		body = bytes.Replace(body, rewrite[0], rewrite[1], 1)
+	}
+
+	marker := []byte("</body>")
+	if bytes.Contains(body, marker) {
+		var injections strings.Builder
+		injections.WriteString(strings.ReplaceAll(ticketToolbar, "__DESKTOP_ID__", desktopID))
+		if resp.Request != nil && resp.Request.URL != nil && resp.Request.URL.Query().Get("ui") == "touch" {
+			injections.WriteString(mobileViewerEnhancements)
+		}
+		body = bytes.Replace(body, marker, append([]byte(injections.String()), marker...), 1)
+	}
+
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	resp.ContentLength = int64(len(body))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+	resp.Header.Set("Content-Type", "text/html; charset=utf-8")
+	return nil
+}
+
 func rewriteFloweraBranding(resp *http.Response) error {
 	if !strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
 		return nil

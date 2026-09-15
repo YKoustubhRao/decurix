@@ -517,13 +517,5 @@ chmod 600 %s`,
 		return fmt.Errorf("start claude credentials write exec for %s: %w", containerName, err)
 	}
 
-	inspect, err := m.client.ContainerExecInspect(ctx, execID.ID)
-	if err != nil {
-		return fmt.Errorf("inspect claude credentials write exec for %s: %w", containerName, err)
-	}
-	if inspect.ExitCode != 0 {
-		return fmt.Errorf("claude credentials write exec for %s exited %d", containerName, inspect.ExitCode)
-	}
-
-	return nil
+	return waitExec(ctx, m.client, execID.ID, fmt.Sprintf("claude credentials write exec for %s", containerName))
 }

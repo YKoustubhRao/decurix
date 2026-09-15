@@ -15,6 +15,8 @@ import (
 	"github.com/YKoustubhRao/flowera/internal/webui"
 )
 
+var validDesktopNameRe = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+
 // dashboardHandler renders the root dashboard page listing all desktops.
 func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
@@ -128,8 +130,7 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		name = fmt.Sprintf("desktop-%d", time.Now().Unix())
 	}
 
-	validNameRe := regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
-	if !validNameRe.MatchString(name) {
+	if !validDesktopNameRe.MatchString(name) {
 		http.Error(w, "invalid name: only alphanumeric, hyphens, underscores, and dots allowed", http.StatusBadRequest)
 		return
 	}

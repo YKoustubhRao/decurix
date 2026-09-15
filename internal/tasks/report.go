@@ -77,6 +77,19 @@ type Filter struct {
 	Limit    int
 }
 
+// ReportAndList computes the autonomy report and filtered task list in a single
+// database pass over the tasks created since a time.
+func (s *Store) ReportAndList(filter Filter) (Report, []Summary, error) {
+	summaries, err := s.summaries(filter.Since)
+	if err != nil {
+		return Report{}, nil, err
+	}
+
+	report := reportFromSummaries(filter.Since, summaries)
+	list := filterSummaries(summaries, filter)
+	return report, list, nil
+}
+
 // List returns task summaries, newest first.
 func (s *Store) List(filter Filter) ([]Summary, error) {
 	summaries, err := s.summaries(filter.Since)
@@ -84,7 +97,11 @@ func (s *Store) List(filter Filter) ([]Summary, error) {
 		return nil, err
 	}
 
-	kept := summaries[:0]
+	return filterSummaries(summaries, filter), nil
+}
+
+func filterSummaries(summaries []Summary, filter Filter) []Summary {
+	var kept []Summary
 
 	for _, summary := range summaries {
 		if filter.WorkerID != "" && summary.WorkerID != filter.WorkerID ||
@@ -100,7 +117,7 @@ func (s *Store) List(filter Filter) ([]Summary, error) {
 		kept = kept[:filter.Limit]
 	}
 
-	return kept, nil
+	return kept
 }
 
 // summaries loads every task created since a time, with its figures.
@@ -357,6 +374,10 @@ func (s *Store) Report(since time.Time) (Report, error) {
 		return Report{}, err
 	}
 
+	return reportFromSummaries(since, summaries), nil
+}
+
+func reportFromSummaries(since time.Time, summaries []Summary) Report {
 	report := Report{
 		Since:      since,
 		Definition: AutonomyDefinition,
@@ -481,7 +502,7 @@ func (s *Store) Report(since time.Time) (Report, error) {
 		return report.Reasons[i].Key < report.Reasons[j].Key
 	})
 
-	return report, nil
+	return report
 }
 
 func newGroup(key, label string) Group {

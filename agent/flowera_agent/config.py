@@ -46,16 +46,20 @@ THEBOT_URL = os.environ.get(
 # Everything the agent keeps for itself lives under one hidden directory, so
 # the home a human browses on the desktop holds only the work directory.
 # start_agent_terminal.sh moves these in from where older desktops kept them.
-FLOWERA_DIR = Path("/home/headless/.flowera")
+_default_base = Path("/home/headless") if Path("/home/headless").exists() else Path.home()
+FLOWERA_DIR = Path(os.environ.get("FLOWERA_DIR", _default_base / ".flowera"))
 
 COMMAND_DIR = FLOWERA_DIR / "command"
 QUERYTEXT_DIR = FLOWERA_DIR / "querytext"
 FINAL_DIR = FLOWERA_DIR / "final"
 MEMORY_DIR = FLOWERA_DIR / "memory"
-WORK_DIR = Path("/home/headless/work")
+WORK_DIR = Path(os.environ.get("FLOWERA_WORK_DIR", _default_base / "work"))
 
-COMMAND_DIR.mkdir(parents=True, exist_ok=True)
-QUERYTEXT_DIR.mkdir(parents=True, exist_ok=True)
-FINAL_DIR.mkdir(parents=True, exist_ok=True)
-WORK_DIR.mkdir(parents=True, exist_ok=True)
-MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    COMMAND_DIR.mkdir(parents=True, exist_ok=True)
+    QUERYTEXT_DIR.mkdir(parents=True, exist_ok=True)
+    FINAL_DIR.mkdir(parents=True, exist_ok=True)
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
+    MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    pass

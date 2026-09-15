@@ -405,6 +405,10 @@ func (m *Manager) Delete(
 		return err
 	}
 
+	m.shotMu.Lock()
+	delete(m.shots, sanitizeName(id))
+	m.shotMu.Unlock()
+
 	// Delete persistent storage too.
 	if volumeName != "" {
 		if err := m.client.VolumeRemove(
@@ -620,13 +624,26 @@ mkdir -p "$dir" && cat <<'%s' > "$dir/%s"
 		return fmt.Errorf("start memory write exec for %s: %w", containerName, err)
 	}
 
-	inspect, err := m.client.ContainerExecInspect(ctx, execID.ID)
-	if err != nil {
-		return fmt.Errorf("inspect memory write exec for %s: %w", containerName, err)
-	}
-	if inspect.ExitCode != 0 {
-		return fmt.Errorf("memory write exec for %s exited %d", containerName, inspect.ExitCode)
-	}
+	return waitExec(ctx, m.client, execID.ID, fmt.Sprintf("memory write exec for %s", containerName))
+}
 
-	return nil
+// waitExec polls ContainerExecInspect until the exec process exits or ctx is cancelled.
+func waitExec(ctx context.Context, cli *client.Client, execID, desc string) error {
+	for {
+		inspect, err := cli.ContainerExecInspect(ctx, execID)
+		if err != nil {
+			return fmt.Errorf("inspect %s: %w", desc, err)
+		}
+		if !inspect.Running {
+			if inspect.ExitCode != 0 {
+				return fmt.Errorf("%s exited %d", desc, inspect.ExitCode)
+			}
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
