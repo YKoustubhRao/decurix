@@ -35,10 +35,17 @@ const (
 	sessionCookie = "flowera_lan_session"
 	sessionTTL    = 30 * 24 * time.Hour
 
-	// loginPath is the only path this package's middleware ever handles
-	// itself; every other path either passes through (valid session) or
-	// gets the gate page instead of reaching the real mux.
+	// loginPath is the path the gate's own form POSTs a typed code to.
 	loginPath = "/__flowera_access/login"
+
+	// authPath grants a session from a code carried in the URL itself
+	// (?code=...&next=...) instead of typed into the gate's form - what lets
+	// build.sh/rebuild.sh (and their Windows twins) hand the person who just
+	// ran them a link that authenticates on click, since that person already
+	// has the code printed in their own terminal a moment earlier. It goes
+	// through the exact same verify as a typed code, so a link is not a way
+	// around the lockout.
+	authPath = "/__flowera_access/authenticate"
 
 	maxAttempts   = 5
 	lockoutWindow = 5 * time.Minute
@@ -213,6 +220,13 @@ func (s *Store) clearFailures(key string) {
 // the package doc.
 func (s *Store) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Checked ahead of the session cookie so a stale or already-used link
+		// still re-verifies its code rather than 404ing against the real mux.
+		if r.Method == http.MethodGet && r.URL.Path == authPath {
+			s.handleAuthenticate(w, r)
+			return
+		}
+
 		if cookie, err := r.Cookie(sessionCookie); err == nil && s.validSession(cookie.Value) {
 			next.ServeHTTP(w, r)
 			return
@@ -232,25 +246,17 @@ func (s *Store) Middleware(next http.Handler) http.Handler {
 	})
 }
 
-// handleSubmit validates a submitted code, applying the lockout, and either
-// grants a session (redirecting on to whatever page was originally
-// requested) or re-shows the gate with an error.
-func (s *Store) handleSubmit(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		s.renderGate(w, http.StatusBadRequest, "/", "Something went wrong reading that - try again.")
-		return
-	}
-
-	next := sanitizeNext(r.FormValue("next"))
-	key := remoteKey(r)
-
+// verify checks code against the current password for key, applying and
+// updating the same lockout bookkeeping a form submission does - shared by
+// handleSubmit and handleAuthenticate so a code carried in a link is not a
+// way around the brute-force protection. ok reports whether code was
+// accepted; when it is not, status and errMsg are what renderGate should
+// show.
+func (s *Store) verify(code, key string) (ok bool, status int, errMsg string) {
 	if locked, wait := s.locked(key); locked {
-		s.renderGate(w, http.StatusTooManyRequests, next,
-			fmt.Sprintf("Too many attempts - try again in %s.", roundDuration(wait)))
-		return
+		return false, http.StatusTooManyRequests,
+			fmt.Sprintf("Too many attempts - try again in %s.", roundDuration(wait))
 	}
-
-	code := strings.TrimSpace(r.FormValue("code"))
 
 	if code == "" || subtle.ConstantTimeCompare([]byte(code), []byte(s.Password())) != 1 {
 		s.recordFailure(key)
@@ -259,17 +265,21 @@ func (s *Store) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		// rather than making the person submit once more just to learn why
 		// nothing happened.
 		if locked, wait := s.locked(key); locked {
-			s.renderGate(w, http.StatusTooManyRequests, next,
-				fmt.Sprintf("Too many attempts - try again in %s.", roundDuration(wait)))
-			return
+			return false, http.StatusTooManyRequests,
+				fmt.Sprintf("Too many attempts - try again in %s.", roundDuration(wait))
 		}
 
-		s.renderGate(w, http.StatusOK, next, "That code isn't right.")
-		return
+		return false, http.StatusOK, "That code isn't right."
 	}
 
 	s.clearFailures(key)
+	return true, http.StatusOK, ""
+}
 
+// grantSession mints a session and sets it as this response's cookie - the
+// last step shared by a typed code (handleSubmit) and a code carried in a
+// link (handleAuthenticate).
+func (s *Store) grantSession(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    s.newSession(),
@@ -284,7 +294,50 @@ func (s *Store) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 		Expires:  time.Now().Add(sessionTTL),
 	})
+}
 
+// handleAuthenticate grants a session from ?code=&next= carried in the URL
+// itself, without showing the gate's form - see authPath. A bare visit with
+// no code at all (someone navigating here directly) just shows the ordinary
+// gate rather than counting as a wrong attempt.
+func (s *Store) handleAuthenticate(w http.ResponseWriter, r *http.Request) {
+	next := sanitizeNext(r.URL.Query().Get("next"))
+	code := r.URL.Query().Get("code")
+
+	if code == "" {
+		s.renderGate(w, http.StatusOK, next, "")
+		return
+	}
+
+	ok, status, errMsg := s.verify(code, remoteKey(r))
+	if !ok {
+		s.renderGate(w, status, next, errMsg)
+		return
+	}
+
+	s.grantSession(w)
+	http.Redirect(w, r, next, http.StatusFound)
+}
+
+// handleSubmit validates a submitted code, applying the lockout, and either
+// grants a session (redirecting on to whatever page was originally
+// requested) or re-shows the gate with an error.
+func (s *Store) handleSubmit(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		s.renderGate(w, http.StatusBadRequest, "/", "Something went wrong reading that - try again.")
+		return
+	}
+
+	next := sanitizeNext(r.FormValue("next"))
+	code := strings.TrimSpace(r.FormValue("code"))
+
+	ok, status, errMsg := s.verify(code, remoteKey(r))
+	if !ok {
+		s.renderGate(w, status, next, errMsg)
+		return
+	}
+
+	s.grantSession(w)
 	http.Redirect(w, r, next, http.StatusFound)
 }
 

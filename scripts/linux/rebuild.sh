@@ -213,6 +213,14 @@ if command -v jq >/dev/null 2>&1; then
         echo ""
         echo "Access code: $lan_code"
         echo "(Needed once by anyone using the LAN or tunnel URL above. Also in the dashboard's Mobile menu, which can generate a new one.)"
+
+        # A one-click link for whoever is sitting at this terminal right now -
+        # they already have the code above, so this authenticates on click
+        # instead of asking them to type it into the gate's form.
+        if [ -n "$lan_url" ]; then
+            echo ""
+            echo "Open it yourself without typing the code: $lan_url/__flowera_access/authenticate?code=$lan_code"
+        fi
     fi
 fi
 
@@ -263,5 +271,11 @@ cloudflared tunnel --protocol http2 --url "http://127.0.0.1:$lan_port" 2>&1 | wh
             -H "Content-Type: application/json" \
             -d "{\"url\":\"$url\"}" \
             >/dev/null 2>&1 || true
+
+        # lan_code was already read above, before this pipeline started -
+        # this subshell can read it, just not write it back.
+        if [ -n "$lan_code" ]; then
+            echo "Open it yourself without typing the code: $url/__flowera_access/authenticate?code=$lan_code"
+        fi
     fi
 done
