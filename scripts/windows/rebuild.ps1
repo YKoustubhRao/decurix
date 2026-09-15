@@ -19,10 +19,14 @@
     Needs Docker Desktop running. Does not need Administrator.
 .PARAMETER Yes
     Skip the confirmation prompt (for scripted/CI use).
+.PARAMETER Cli
+    Skip the tunnel and open the terminal CLI instead (docker compose exec
+    desktop-manager ./flowera --cli), a text alternative to the dashboard.
 #>
 
 param(
-    [switch]$Yes
+    [switch]$Yes,
+    [switch]$Cli
 )
 
 #region Functions
@@ -203,6 +207,22 @@ try {
     Write-Host "========================================"
     Write-Host ""
     Write-Host "Dashboard: http://localhost:8080"
+
+    # The rebuild itself is done at this point (fresh images, fresh
+    # desktops, empty database, dashboard responding). Exit-Build marks this
+    # as intentional so finally{}'s Invoke-Cleanup - which tears the whole
+    # stack back down, for an interrupted *rebuild* - is skipped: leaving the
+    # CLI should just leave Flowera running, not undo the rebuild that just
+    # finished.
+    if ($Cli) {
+        Write-Host ""
+        Write-Host "=== Opening the Flowera CLI ==="
+        Write-Host "(Flowera keeps running after you exit; 'exit' or Ctrl+D to leave.)"
+        Write-Host ""
+
+        docker compose exec desktop-manager ./flowera --cli
+        Exit-Build $LASTEXITCODE
+    }
 
     Write-Host ""
     Write-Host "=== Starting Cloudflare Tunnel ==="

@@ -16,10 +16,10 @@ import (
 	"github.com/YKoustubhRao/flowera/internal/claudeauth"
 	"github.com/YKoustubhRao/flowera/internal/conversation"
 	"github.com/YKoustubhRao/flowera/internal/desktop"
-	"github.com/YKoustubhRao/flowera/internal/querynotes"
 	"github.com/YKoustubhRao/flowera/internal/httpapi"
 	"github.com/YKoustubhRao/flowera/internal/memory"
 	"github.com/YKoustubhRao/flowera/internal/ollama"
+	"github.com/YKoustubhRao/flowera/internal/querynotes"
 	"github.com/YKoustubhRao/flowera/internal/sqlitedb"
 	"github.com/YKoustubhRao/flowera/internal/stepimages"
 	"github.com/YKoustubhRao/flowera/internal/tasks"
@@ -91,11 +91,20 @@ func main() {
 	showVersion := flag.Bool("version", false, "print the Flowera version and exit")
 	buildImages := flag.Bool("build-images", false, "build the desktop images from the build context embedded in this binary, then exit")
 	rebuild := flag.Bool("rebuild", false, "with -build-images, rebuild images that already exist instead of skipping them")
+	cliMode := flag.Bool("cli", false, "run an interactive CLI against a running control plane instead of starting the server")
+	cliURL := flag.String("url", "http://127.0.0.1:8080", "with -cli, the control plane's URL")
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Printf("flowera %s\n", version)
 		return
+	}
+
+	// -cli needs none of the setup below: no Docker client, no database -
+	// it is a thin client for a control plane already running somewhere
+	// else, reached over the same HTTP API the dashboard uses.
+	if *cliMode {
+		os.Exit(runCLI(*cliURL))
 	}
 
 	log.Printf("Flowera %s starting", version)

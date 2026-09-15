@@ -15,7 +15,14 @@
 
     Ctrl+C while it runs (including while the tunnel is up) just stops
     watching the tunnel - it does not tear Flowera down.
+.PARAMETER Cli
+    Skip the tunnel and open the terminal CLI instead (docker compose exec
+    desktop-manager ./flowera --cli), a text alternative to the dashboard.
 #>
+
+param(
+    [switch]$Cli
+)
 
 #region Functions
 function Test-CommandAvailable {
@@ -148,6 +155,20 @@ try {
     Write-Host "========================================"
     Write-Host ""
     Write-Host "Dashboard: http://localhost:8080"
+
+    # -Cli is a terminal-native alternative to the tunnel below - it never
+    # opens a tunnel URL, so Invoke-Cleanup's "tunnel stopped" message would
+    # not make sense here. Exit-Build marks this as intentional so that
+    # finally{} skips it, same as every other deliberate exit.
+    if ($Cli) {
+        Write-Host ""
+        Write-Host "=== Opening the Flowera CLI ==="
+        Write-Host "(Flowera keeps running after you exit; 'exit' or Ctrl+D to leave.)"
+        Write-Host ""
+
+        docker compose exec desktop-manager ./flowera --cli
+        Exit-Build $LASTEXITCODE
+    }
 
     Write-Host ""
     Write-Host "=== Starting Cloudflare Tunnel ==="

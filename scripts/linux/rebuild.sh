@@ -15,6 +15,8 @@
 #
 # Flags:
 #   -y, --yes   skip the confirmation prompt (for scripted/CI use)
+#   --cli       skip the tunnel and open the terminal CLI instead (see
+#               `docker compose exec desktop-manager ./flowera --cli`, below)
 
 set -e
 
@@ -25,10 +27,12 @@ cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source ./scripts/linux/lib/ollama-setup.sh
 
 SKIP_CONFIRM=""
+CLI_MODE=""
 
 for arg in "$@"; do
     case "$arg" in
         -y|--yes) SKIP_CONFIRM="1" ;;
+        --cli) CLI_MODE="1" ;;
         *)
             echo "ERROR: unknown flag: $arg" >&2
             exit 1
@@ -162,6 +166,23 @@ echo ""
 echo "========================================"
 echo " Flowera is running (clean slate)"
 echo "========================================"
+
+# The rebuild itself is done at this point (fresh images, fresh desktops,
+# empty database, dashboard responding) - clear the interrupt trap before
+# handing off to the CLI so leaving it (however that happens) just leaves
+# Flowera running, the same as leaving build.sh's CLI does, rather than
+# tearing down the stack this script just finished rebuilding.
+if [ -n "$CLI_MODE" ]; then
+    trap - INT TERM
+
+    echo ""
+    echo "=== Opening the Flowera CLI ==="
+    echo "(Flowera keeps running after you exit; 'exit' or Ctrl+D to leave.)"
+    echo ""
+
+    docker compose exec desktop-manager ./flowera --cli
+    exit $?
+fi
 
 echo ""
 echo "=== Starting Cloudflare Tunnel ==="
