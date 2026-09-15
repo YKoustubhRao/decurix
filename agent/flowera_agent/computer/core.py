@@ -359,7 +359,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     Do one thing on the screen and report what changed. `end` is the point a
     drag drops at.
 
-    Returns a dict: status ("done" | "needs_approval"), message (one
+    Returns a dict: status ("done" | "needs_approval"), text (one
     paragraph for the engine), element, change, observation (the "after"
     observation, or the "before" one when nothing ran).
     """
@@ -409,7 +409,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     decision = approval.check(kind, element, text=text, keys=keys, point=point, context=_context(before))
 
     if not decision.allowed:
-        message = approval.request_message(decision.request)
+        text = approval.request_text(decision.request)
         entry.update({
             "outcome": "needs_approval",
             "reason": decision.reason,
@@ -418,7 +418,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         audit.record(entry, before=before["frame"], masks=masks)
         return {
             "status": "needs_approval",
-            "message": "NEEDS_APPROVAL: " + message,
+            "text": "NEEDS_APPROVAL: " + text,
             "element": element,
             "change": None,
             "observation": before,
@@ -458,21 +458,21 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         "select": "Selected in", "drag": "Dragged",
     }[kind]
 
-    message = f"{verb} {target or 'the focused window'}"
+    summary = f"{verb} {target or 'the focused window'}"
     if kind == "type":
-        message = f"Typed {privacy.shown_text(text, withheld)} into {target or 'the focused element'}"
+        summary = f"Typed {privacy.shown_text(text, withheld)} into {target or 'the focused element'}"
     elif kind == "drag":
-        message = f"Dragged {target} to {end[0]},{end[1]}"
+        summary = f"Dragged {target} to {end[0]},{end[1]}"
     elif kind == "key":
-        message = f"Pressed {' '.join(keys)}" + (f" on {target}" if target else "")
+        summary = f"Pressed {' '.join(keys)}" + (f" on {target}" if target else "")
     elif kind == "select":
-        message = f"Selected {el._quote(option or '')} in {target}"
+        summary = f"Selected {el._quote(option or '')} in {target}"
     if decision.approved:
-        message += " (approved by the human)"
+        summary += " (approved by the human)"
 
     return {
         "status": "done",
-        "message": f"{message}.\nWhat changed: {change_text}",
+        "text": f"{summary}.\nWhat changed: {change_text}",
         "element": element,
         "change": change,
         "observation": after,
@@ -634,7 +634,7 @@ def verify(expect_text=None, role=None, name=None):
     Look at the screen again, report what changed since the last
     observation, and check an expectation if one is given.
 
-    Returns {"ok": bool | None, "message": str, "observation": ...}; ok is
+    Returns {"ok": bool | None, "text": str, "observation": ...}; ok is
     None when nothing was expected.
     """
 
@@ -676,11 +676,11 @@ def verify(expect_text=None, role=None, name=None):
         what = " ".join(p for p in (role, el._quote(name) if name else "") if p)
         detail += ("; " if detail else "") + (f"found {found}" if hit else f"no {what} on the screen")
 
-    message = f"Since the last look: {change_text}."
+    text = f"Since the last look: {change_text}."
     if detail:
-        message = f"{'PASS' if ok else 'FAIL'}: {detail}.\n" + message
+        text = f"{'PASS' if ok else 'FAIL'}: {detail}.\n" + text
 
-    return {"ok": ok, "message": message, "observation": after}
+    return {"ok": ok, "text": text, "observation": after}
 
 
 class _SampleFrame:
@@ -735,7 +735,7 @@ def _chromium_argv(url):
 def open_target(target, new_tab=False):
     """
     Open a web page, a document or an app, and wait for it to be on screen.
-    Returns a one-line message. Recorded in the audit trail like any action.
+    Returns a one-line summary. Recorded in the audit trail like any action.
     """
 
     session.ensure()
@@ -748,7 +748,7 @@ def open_target(target, new_tab=False):
     }
 
     try:
-        message = _open(target, new_tab)
+        summary = _open(target, new_tab)
     except ComputerError as exc:
         entry.update({"outcome": "failed", "reason": str(exc), "summary": f"open {entry['target']} - failed: {exc}"})
         audit.record(entry, before=before)
@@ -759,14 +759,14 @@ def open_target(target, new_tab=False):
 
     entry.update({
         "outcome": "done",
-        "change": message,
-        "summary": f"open {entry['target']} - {message}",
+        "change": summary,
+        "summary": f"open {entry['target']} - {summary}",
         "screen": [after.width, after.height],
         "expect": {"active_window": privacy.kept_text(active) or None},
     })
     audit.record(entry, before=before, after=after)
 
-    return message
+    return summary
 
 
 def _open(target, new_tab):

@@ -33,10 +33,10 @@ class TaskIDs(unittest.TestCase):
         self.assertTrue(name.endswith(".txt"), name)
         self.assertEqual(task_context.task_id_from_filename(name), TASK)
 
-        # The watcher renames a handled file; it must still read as a message.
+        # The watcher renames a handled file; it must still read as a request.
         self.assertEqual(task_context.task_id_from_filename(name + ".done"), "")
 
-    def test_a_message_without_an_id_is_saved_as_before(self):
+    def test_a_request_without_an_id_is_saved_as_before(self):
         self.assertEqual(task_context.command_filename("20260913_101500_ab12cd34", ""), "20260913_101500_ab12cd34.txt")
         self.assertEqual(task_context.task_id_from_filename("20260913_101500_ab12cd34.txt"), "")
 
@@ -53,7 +53,7 @@ class TaskIDs(unittest.TestCase):
         state.current_task_id = ""
         self.assertEqual(task_context.current(), TASK)
 
-    def test_a_message_without_an_id_clears_the_last_one(self):
+    def test_a_request_without_an_id_clears_the_last_one(self):
         task_context.start(TASK)
         task_context.start("")
 

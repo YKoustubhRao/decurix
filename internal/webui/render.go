@@ -1,4 +1,4 @@
-// Package webui renders the HTML dashboard/messages pages.
+// Package webui renders the HTML dashboard/requests pages.
 package webui
 
 import (
@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/YKoustubhRao/flowera/internal/desktop"
-	"github.com/YKoustubhRao/flowera/internal/helpnotes"
 	"github.com/YKoustubhRao/flowera/internal/memory"
+	"github.com/YKoustubhRao/flowera/internal/querynotes"
 	"github.com/YKoustubhRao/flowera/internal/tasks"
 	"github.com/YKoustubhRao/flowera/web"
 )
@@ -41,9 +41,9 @@ type PageData struct {
 	TunnelURL       string
 }
 
-// HelpNotesPageData is the template data for the help-notes dashboard.
-type HelpNotesPageData struct {
-	Notes []helpnotes.HelpNote
+// QueryNotesPageData is the template data for the query-notes dashboard.
+type QueryNotesPageData struct {
+	Notes []querynotes.QueryNote
 }
 
 // DesktopViewPageData is the template data for a single desktop's detail
@@ -149,19 +149,19 @@ func (rd *Renderer) RenderIndex(w io.Writer, data PageData) error {
 	return rd.indexTmpl.ExecuteTemplate(w, "index.html", data)
 }
 
-// RenderMessages renders the messages page. The template is re-parsed on
+// RenderRequests renders the requests page. The template is re-parsed on
 // every call, matching the original handler's behavior.
-func (rd *Renderer) RenderMessages(w io.Writer, data PageData) error {
+func (rd *Renderer) RenderRequests(w io.Writer, data PageData) error {
 	tmpl := template.Must(
-		template.ParseFS(web.TemplatesFS, templatePaths("messages.html")...),
+		template.ParseFS(web.TemplatesFS, templatePaths("requests.html")...),
 	)
 
-	return tmpl.ExecuteTemplate(w, "messages.html", data)
+	return tmpl.ExecuteTemplate(w, "requests.html", data)
 }
 
-// RenderHelpNotesDashboard renders the help-notes dashboard. The template is
+// RenderQueryNotesDashboard renders the query-notes dashboard. The template is
 // re-parsed on every call, matching the original handler's behavior.
-func (rd *Renderer) RenderHelpNotesDashboard(w io.Writer, data HelpNotesPageData) error {
+func (rd *Renderer) RenderQueryNotesDashboard(w io.Writer, data QueryNotesPageData) error {
 	tmpl := template.Must(
 		template.ParseFS(web.TemplatesFS, templatePaths("dashboard.html")...),
 	)

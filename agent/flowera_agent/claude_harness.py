@@ -9,7 +9,7 @@ from flowera_agent.computer import approval
 from flowera_agent.logging_utils import log
 from flowera_agent.identity import get_identity_context
 from flowera_agent.memory_context import get_memory_context
-from flowera_agent.messaging import ask_for_help, write_final_message
+from flowera_agent.messaging import ask_for_query, write_final_reply
 
 
 # ============================================================
@@ -20,7 +20,7 @@ from flowera_agent.messaging import ask_for_help, write_final_message
 # `claude` CLI in non-interactive mode, which runs its own agentic
 # loop (including executing shell commands) to completion and returns
 # one final JSON result. Exposes the same perform_task/
-# continue_after_help signatures as task_runner.py so harness.py can
+# continue_after_query signatures as task_runner.py so harness.py can
 # dispatch to either one interchangeably.
 #
 # The CLI is run with --output-format stream-json rather than json, so
@@ -49,7 +49,7 @@ other action with real-world consequences that you are not fully
 confident about: stop before performing that action. Do not perform it
 yet.
 
-Instead, respond with a message that begins with exactly:
+Instead, respond with a reply that begins with exactly:
 
 {APPROVAL_MARKER}
 
@@ -200,7 +200,7 @@ def _run_claude(prompt, resume_session_id=None):
         # Which desktop this is. Claude Code can of course run `hostname`
         # to find out, but a question about the desktop it is already
         # running on should not cost a tool call - and on the other two
-        # harnesses not knowing this turned into a help request that
+        # harnesses not knowing this turned into a query that
         # blocked the desktop outright. Same facts, same wording, all
         # three harnesses.
         "--append-system-prompt", get_identity_context("Claude Code"),
@@ -330,8 +330,8 @@ def _record_usage(result):
 
 def _handle_result(result):
     """
-    Route a successful Claude Code result to either write_final_message
-    or ask_for_help, updating this harness's session-continuation state.
+    Route a successful Claude Code result to either write_final_reply
+    or ask_for_query, updating this harness's session-continuation state.
     """
 
     global _current_session_id
@@ -341,7 +341,7 @@ def _handle_result(result):
         _current_session_id = session_id
 
     if result.get("is_error"):
-        ask_for_help(
+        ask_for_query(
             result.get("result")
             or "Claude Code reported an error but gave no details."
         )
@@ -350,7 +350,7 @@ def _handle_result(result):
     result_text = (result.get("result") or "").strip()
 
     if result_text.startswith(APPROVAL_MARKER):
-        ask_for_help(result_text[len(APPROVAL_MARKER):].strip(), kind="approval")
+        ask_for_query(result_text[len(APPROVAL_MARKER):].strip(), kind="approval")
         return
 
     # The act tool stopped an on-screen action for approval, and the turn
@@ -359,19 +359,19 @@ def _handle_result(result):
     # the human as a finished answer.
     blocked = approval.pending()
     if blocked is not None:
-        note = approval.request_message(blocked)
+        note = approval.request_text(blocked)
         if result_text:
             note += f"\n\nThe agent's own last words:\n{result_text}"
-        ask_for_help(note, kind="approval")
+        ask_for_query(note, kind="approval")
         return
 
-    write_final_message(result_text or "(no result text)")
+    write_final_reply(result_text or "(no result text)")
 
 
 def perform_task(task, task_file):
     state.current_task = task
     state.current_task_file = task_file
-    state.waiting_for_help = False
+    state.waiting_for_query = False
 
     log("========================================")
     log("STARTING TASK (Claude Code harness)")
@@ -381,7 +381,7 @@ def perform_task(task, task_file):
     result, error = _run_claude(task)
 
     if error:
-        ask_for_help(
+        ask_for_query(
             f"""
 Claude Code harness failed to run the task.
 
@@ -394,30 +394,30 @@ Error:
     _handle_result(result)
 
 
-def continue_after_help(help_response):
+def continue_after_query(query_response):
     if not state.current_task:
         log(
-            "Received help response but no "
+            "Received a reply to a query but no "
             "active task exists."
         )
         return
 
-    state.waiting_for_help = False
+    state.waiting_for_query = False
 
     log("========================================")
-    log("RECEIVED HUMAN HELP (Claude Code harness)")
-    log(help_response)
+    log("RECEIVED HUMAN REPLY TO QUERY (Claude Code harness)")
+    log(query_response)
     log("========================================")
 
     result, error = _run_claude(
-        help_response,
+        query_response,
         resume_session_id=_current_session_id,
     )
 
     if error:
-        ask_for_help(
+        ask_for_query(
             f"""
-The agent tried to continue after human help,
+The agent tried to continue after the human's reply,
 but the Claude Code harness failed again.
 
 Error:

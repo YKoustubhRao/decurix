@@ -24,7 +24,7 @@ We believe the next generation of AI won't just live inside chat boxes.
 
 It will have **computers, tools, responsibilities, and the ability to learn.**
 
-A Flowera worker should be able to join your team, learn how a particular job is done, execute it thousands of times, ask for help when necessary, and continuously improve through real-world experience.
+A Flowera worker should be able to join your team, learn how a particular job is done, execute it thousands of times, raise a query when necessary, and continuously improve through real-world experience.
 
 Imagine creating workers for:
 
@@ -40,7 +40,7 @@ Imagine creating workers for:
 
 You shouldn't have to explain the same process to an AI every time.
 
-**Teach it. Let it work. Help it when it gets stuck. Watch it get better.**
+**Teach it. Let it work. Answer it when it gets stuck. Watch it get better.**
 
 ---
 
@@ -52,7 +52,7 @@ It's trying to make humans **10× more capable**.
 
 Workers handle the repetitive execution. Humans handle the judgment calls.
 
-When something unexpected happens, the worker can stop and ask for help. That interaction becomes part of its experience — so the next time it encounters a similar situation, it has a better chance of handling it itself.
+When something unexpected happens, the worker can stop and raise a query. That interaction becomes part of its experience — so the next time it encounters a similar situation, it has a better chance of handling it itself.
 
 Over time, the boundary between what requires you and what your workers can handle **keeps moving forward.**
 
@@ -85,7 +85,7 @@ Flowera currently provides the foundation for:
 * Human approval and assistance when workers get stuck
 * Computer use: every worker can see and operate its desktop's apps — web pages, LibreOffice, file manager — through one shared action layer, with Send/Pay-style buttons stopped for your approval and every action recorded with before/after screenshots
 * A GUI benchmark (`bench/gui/`) measuring each engine's success rate on real graphical tasks
-* Task records: every message becomes a stored task (what was asked, each attempt's steps and screenshots, every help or approval request with your reply, how it ended, how long it took and what it cost), kept in an embedded SQLite database so a restart loses nothing
+* Task records: every request becomes a stored task (what was asked, each attempt's steps and screenshots, every query or approval request with your reply, how it ended, how long it took and what it cost), kept in an embedded SQLite database so a restart loses nothing
 * A one-tap **Correct / Wrong** on every answer in the chat, since "done" is only the agent's own claim
 * An autonomy dashboard (**Tasks** in the top bar): autonomy rate by engine, worker and task type, and the most common reasons people had to step in
 * Persistent worker environments
@@ -101,7 +101,7 @@ Flowera is being built toward a world where AI workers can:
 
 * Learn complex workflows from demonstration
 * Work autonomously for long periods
-* Understand when they need human help
+* Understand when they need to raise a query
 * Learn continuously from human feedback
 * Use different tools and applications
 * Coordinate with other workers
@@ -193,7 +193,7 @@ ollama pull qwen2.5-coder:3b     # the chat model (~2 GB), whatever OLLAMA_MODEL
 ollama pull nomic-embed-text     # embeddings, needed only by the thebot harness (~270 MB)
 ```
 
-`qwen2.5-coder:3b` is the default because it's the smallest model we tested that reliably follows the agent's `COMMAND:` / `DONE:` / `HELP:` contract, and it runs on a CPU-only laptop. `qwen3:0.6b` was too weak, and `llama3.2` guessed at destructive commands where it should have asked for help. If you have a GPU, a bigger model such as `qwen2.5-coder:14b` works better. Pull it and set `OLLAMA_MODEL` to its name.
+`qwen2.5-coder:3b` is the default because it's the smallest model we tested that reliably follows the agent's `COMMAND:` / `DONE:` / `HELP:` contract, and it runs on a CPU-only laptop. `qwen3:0.6b` was too weak, and `llama3.2` guessed at destructive commands where it should have raised a query. If you have a GPU, a bigger model such as `qwen2.5-coder:14b` works better. Pull it and set `OLLAMA_MODEL` to its name.
 
 `nomic-embed-text` is a separate model, not an alternative to the chat model. Without it, the `thebot` harness still answers but can't remember anything it learns.
 
@@ -217,7 +217,7 @@ This should print JSON listing the models you pulled.
 3. If no Ollama is reachable at all, point `OLLAMA_URL` at a bundled `flowera-ollama` container that the control plane starts and fills with models itself.
 4. Pull `OLLAMA_MODEL` and `nomic-embed-text` if they're missing, then write the result back into `.env` and print the URL and model the desktops will use.
 
-`OLLAMA_URL` can also point at an Ollama on another machine, e.g. `http://10.0.0.5:11434`. At startup the control plane loads `OLLAMA_MODEL` into memory on that server, so the first message doesn't wait for it.
+`OLLAMA_URL` can also point at an Ollama on another machine, e.g. `http://10.0.0.5:11434`. At startup the control plane loads `OLLAMA_MODEL` into memory on that server, so the first request doesn't wait for it.
 
 > **Changing the model only affects desktops created afterwards.** Each desktop gets `OLLAMA_URL`/`OLLAMA_MODEL` when it is created. After editing `.env`, restart the control plane (`docker compose up --build -d`, since `.env` is baked into its image) and create a new desktop.
 
@@ -274,7 +274,7 @@ Want a clean slate instead — fresh images, no leftover desktops, an empty dash
 .\scripts\windows\rebuild.ps1     # Windows (PowerShell)
 ```
 
-This is the "reinstall" script. After a confirmation prompt (`-y`/`-Yes` to skip it), it removes every `desktop_*` container and volume, removes the bundled `flowera-ollama` container (its pulled-models volume is kept — no reason to redownload gigabytes of models), and **permanently deletes the `flowera-data` volume**, so all task history, chat transcripts, help notes and worker memory are gone. It also rebuilds every desktop image and the control plane image — so a change to `agent/` or a Dockerfile is picked up — but with Docker's normal build cache rather than `--no-cache`, so it's just as fast as `build.sh` when nothing actually changed. `.env` is left as it is. Ctrl+C during a rebuild tears the whole stack down rather than leaving it half old, half fresh.
+This is the "reinstall" script. After a confirmation prompt (`-y`/`-Yes` to skip it), it removes every `desktop_*` container and volume, removes the bundled `flowera-ollama` container (its pulled-models volume is kept — no reason to redownload gigabytes of models), and **permanently deletes the `flowera-data` volume**, so all task history, chat transcripts, query notes and worker memory are gone. It also rebuilds every desktop image and the control plane image — so a change to `agent/` or a Dockerfile is picked up — but with Docker's normal build cache rather than `--no-cache`, so it's just as fast as `build.sh` when nothing actually changed. `.env` is left as it is. Ctrl+C during a rebuild tears the whole stack down rather than leaving it half old, half fresh.
 
 ### Testing one desktop image standalone
 
@@ -285,7 +285,7 @@ Iterating on `agent/` or a `docker/desktop.*.Dockerfile` doesn't need the whole 
 .\scripts\windows\test-vm.ps1 -DesktopProfile basic -Harness thebot -Task "say hi"   # Windows
 ```
 
-VNC comes up at `http://localhost:16901/vnc.html` and, for the `thebot` harness, TheBot's own built-in UI directly at `http://localhost:14900/` — both published straight to the host, bypassing the control plane's proxy entirely. That UI is a debugging surface here, not the normal way to use a worker: it talks to TheBot's engine directly, so it skips the Flowera agent and with it worker memory and the approval path. The dashboard's **Chat** is the real path. Watch the agent's progress and help/completion callbacks with `docker logs -f flowera-dummy-cp`. Tear down with `./scripts/linux/test-vm.sh --down` (or the Windows equivalent) once you're done; it only ever removes containers this script created.
+VNC comes up at `http://localhost:16901/vnc.html` and, for the `thebot` harness, TheBot's own built-in UI directly at `http://localhost:14900/` — both published straight to the host, bypassing the control plane's proxy entirely. That UI is a debugging surface here, not the normal way to use a worker: it talks to TheBot's engine directly, so it skips the Flowera agent and with it worker memory and the approval path. The dashboard's **Chat** is the real path. Watch the agent's progress and query/completion callbacks with `docker logs -f flowera-dummy-cp`. Tear down with `./scripts/linux/test-vm.sh --down` (or the Windows equivalent) once you're done; it only ever removes containers this script created.
 
 ### 5. Or: run a prebuilt executable (no Go, no repo)
 
@@ -346,7 +346,7 @@ Set these in your own `.env` (copied from `.env.example`) — the control plane 
 | `OLLAMA_URL` | No | `http://host.docker.internal:11434` | The Ollama server every new desktop reasons with. The default is the host running Flowera. See [Setting up Ollama](#-setting-up-ollama). |
 | `OLLAMA_MODEL` | No | `qwen2.5-coder:3b` | The chat model every new desktop uses. It must already be pulled on `OLLAMA_URL`'s server (`build.sh` pulls it for you). |
 | `DESKTOP_STOP_TIMEOUT_SECONDS` | No | `10` | Seconds to wait for a desktop container to stop gracefully before force-killing it. |
-| `FLOWERA_DATA_DIR` | No | your user config dir + `/flowera` (`/data` in the Docker image) | Where `flowera.db` lives: task records, chats, help requests, worker memory, action screenshots, and the shared Claude session (see [Setting up the Claude harness](#-setting-up-the-claude-harness)). `docker compose` keeps it on the `flowera-data` volume. |
+| `FLOWERA_DATA_DIR` | No | your user config dir + `/flowera` (`/data` in the Docker image) | Where `flowera.db` lives: task records, chats, queries, worker memory, action screenshots, and the shared Claude session (see [Setting up the Claude harness](#-setting-up-the-claude-harness)). `docker compose` keeps it on the `flowera-data` volume. |
 | `FLOWERA_STEP_IMAGES_MB` | No | `1024` | Disk budget for the before/after screenshots of on-screen actions. The oldest are dropped first. A desktop keeps its full-size originals regardless. |
 
 Every other setting (the agent harness, the control-plane URL a desktop calls home to, etc.) is set up for each desktop when you create it. See [`CLAUDE.md`](CLAUDE.md) if you're changing that wiring.

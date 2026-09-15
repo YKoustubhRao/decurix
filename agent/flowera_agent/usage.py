@@ -8,7 +8,7 @@ import threading
 # the work, the tokens it read and wrote, and what it cost. Each harness
 # adds what its engine reports - the Ollama loop the token counts on every
 # /api/chat, Claude Code the cost and usage on each run's result event -
-# and messaging.send_helptext sends the running totals with every reply.
+# and messaging.send_query sends the running totals with every reply.
 #
 # Totals, not deltas: a task that pauses for a human and resumes is one
 # execution across several engine runs, so each reply carries everything

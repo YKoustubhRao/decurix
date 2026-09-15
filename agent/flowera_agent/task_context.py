@@ -10,13 +10,13 @@ from flowera_agent import state
 #
 # The control plane keeps a record of every task it sends (Task ->
 # Execution -> Steps -> Interventions -> Outcome) and names each one with
-# an ID it hands the desktop alongside the message. Everything the desktop
+# an ID it hands the desktop alongside the request. Everything the desktop
 # reports for that task - each progress line, each on-screen action, the
 # reply that ends it - carries the ID back, so the record is attributed
 # exactly rather than guessed from timing.
 #
 # Harness-agnostic, like progress.py and messaging.py: the watcher sets the
-# ID when it dispatches a message, and every engine's reports pick it up.
+# ID when it dispatches a request, and every engine's reports pick it up.
 #
 # The ID lives in two places. state.current_task_id is the agent process's
 # own copy. CURRENT_FILE is for the processes that report steps without
@@ -42,7 +42,7 @@ def valid(task_id):
 
 
 def command_filename(stem, task_id):
-    """The name a received message is saved under, carrying its task ID."""
+    """The name a received request is saved under, carrying its task ID."""
 
     if valid(task_id):
         return f"{stem}.{task_id}.txt"
@@ -62,7 +62,7 @@ def start(task_id, request=None):
     """
     Make task_id the task every report from here on belongs to.
 
-    An empty ID (a message from a control plane too old to send one) clears
+    An empty ID (a request from a control plane too old to send one) clears
     it, so reports go out without one and the control plane attributes them
     to whatever it knows this desktop is running. `request` is what the task
     asked for, kept beside the ID so a recording of the task can be titled

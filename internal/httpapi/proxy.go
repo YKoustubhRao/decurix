@@ -227,7 +227,7 @@ func injectTicketToolbar(resp *http.Response, desktopID string) error {
 // (index.html), since every desktop screen already carries this - a small
 // tab at the top of the page that drops down into a ticket's lifecycle - +
 // opens a ticket (POST /api/desktops/record, the same call the chat's
-// "/record" message goes through), Record starts capturing for it, Stop
+// "/record" request goes through), Record starts capturing for it, Stop
 // pauses (for a private step such as signing in), Continue resumes, and End
 // finishes it - which is what makes its recording's export downloadable,
 // offered right there once it does. The tab is also a drag handle: pressing

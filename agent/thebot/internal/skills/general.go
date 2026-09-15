@@ -14,7 +14,7 @@ import (
 // file writes.
 //
 // Real bug found live and fixed here: this used to send ONLY the current
-// message with zero prior context, so a second message in the same UI
+// request with zero prior context, so a second request in the same UI
 // session had no idea the first one ever happened ("what's my name?"
 // right after "my name is X" got an honest "I don't have that" - the
 // model wasn't lying, it was never given anything to remember with).

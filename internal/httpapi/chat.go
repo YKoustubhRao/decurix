@@ -295,45 +295,45 @@ func clip(value string, limit int) string {
 // caller falls back to reading it off the note's own text.
 func chatKindFor(reported string) string {
 	switch strings.ToLower(strings.TrimSpace(reported)) {
-	case "help", "approval":
+	case "query", "approval":
 		return conversation.KindApproval
 	case "error":
 		return conversation.KindError
 	case "final", "message":
-		return conversation.KindMessage
+		return conversation.KindEntry
 	default:
 		return ""
 	}
 }
 
-// helpNoteHeadings are the boilerplate section headings a desktop agent wraps
+// queryNoteHeadings are the boilerplate section headings a desktop agent wraps
 // its callbacks in (see flowera_agent/messaging.py), paired with the chat kind
 // each one implies.
-var helpNoteHeadings = []struct {
+var queryNoteHeadings = []struct {
 	Heading string
 	Kind    string
 }{
-	{Heading: "\nFinal message:\n", Kind: conversation.KindMessage},
+	{Heading: "\nFinal reply:\n", Kind: conversation.KindEntry},
 	{Heading: "\nProblem:\n", Kind: conversation.KindApproval},
 }
 
-// helpNoteTrailers are the boilerplate sections that follow the part a human
+// queryNoteTrailers are the boilerplate sections that follow the part a human
 // actually wants to read, and so mark where to stop.
-var helpNoteTrailers = []string{
+var queryNoteTrailers = []string{
 	"\n\nCompleted at:",
-	"\n\nHelp ID:",
+	"\n\nQuery ID:",
 }
 
-// agentMessageFromNote pulls the human-facing sentence out of a help note and
-// reports what kind of message it is.
+// agentReplyFromNote pulls the human-facing sentence out of a query note and
+// reports what kind of entry it is.
 //
 // Desktops built from a current image send that text directly, as its own
 // field; this is the fallback for one built before that, whose only channel is
 // the formatted note. The note's shape is an agent-side presentation detail
 // rather than a contract, which is exactly why it is parsed here as a
 // compatibility path and not relied on as the primary one.
-func agentMessageFromNote(content string) (text string, kind string) {
-	for _, section := range helpNoteHeadings {
+func agentReplyFromNote(content string) (text string, kind string) {
+	for _, section := range queryNoteHeadings {
 		start := strings.Index(content, section.Heading)
 		if start == -1 {
 			continue
@@ -341,7 +341,7 @@ func agentMessageFromNote(content string) (text string, kind string) {
 
 		rest := content[start+len(section.Heading):]
 
-		for _, trailer := range helpNoteTrailers {
+		for _, trailer := range queryNoteTrailers {
 			if end := strings.Index(rest, trailer); end != -1 {
 				rest = rest[:end]
 			}
@@ -350,5 +350,5 @@ func agentMessageFromNote(content string) (text string, kind string) {
 		return strings.TrimSpace(rest), section.Kind
 	}
 
-	return strings.TrimSpace(content), conversation.KindMessage
+	return strings.TrimSpace(content), conversation.KindEntry
 }

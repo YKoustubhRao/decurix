@@ -35,7 +35,7 @@ const (
 	// run the agent loop: tested directly against the real SYSTEM_PROMPT,
 	// it echoed the prompt's own placeholder text back verbatim, emitted
 	// COMMAND: twice in one response, and then hallucinated a DONE: success
-	// message without ever running anything. qwen2.5-coder:3b was chosen
+	// reply without ever running anything. qwen2.5-coder:3b was chosen
 	// after head-to-head testing against llama3.2:latest (3B) on the
 	// prompt's own worked examples: both handled the plain greeting fine,
 	// but only qwen2.5-coder:3b replied HELP (as the prompt's own example
@@ -114,8 +114,8 @@ func (m *Manager) EnsureReady(ctx context.Context) error {
 	// CPU-only host whose desktops all used the host's own Ollama: the
 	// preload took 2GB of RAM on a server nobody talked to, while the
 	// server they did talk to loaded cold, in 210 seconds, inside the first
-	// message's 300-second timeout. That message came back as a help
-	// request saying the model did not answer in time.
+	// request's 300-second timeout. That request came back as a query
+	// saying the model did not answer in time.
 	if url := DesktopURL(); url != BundledURL {
 		log.Printf(
 			"Desktops use the Ollama at %s - leaving the bundled %s container alone.",
@@ -315,7 +315,7 @@ func (m *Manager) EnsureReady(ctx context.Context) error {
 	// Only the thebot harness ever embeds anything, so failing to get it
 	// must not stop ollama- and claude-harness desktops from working -
 	// and must not skip the preload below, which is what makes the first
-	// message to a new desktop answer in time.
+	// request to a new desktop answer in time.
 	log.Printf(
 		"Ensuring Ollama model %s...",
 		EmbedModel,
@@ -333,10 +333,10 @@ func (m *Manager) EnsureReady(ctx context.Context) error {
 
 	// Load the chat model before anyone asks a question with it. On a
 	// CPU-only host this is tens of seconds of weight loading that would
-	// otherwise land on the first message a human sends, inside whatever
+	// otherwise land on the first request a human sends, inside whatever
 	// timeout that harness happens to use - which is exactly how "hello"
-	// to a freshly built desktop came back as a request for human help
-	// about a deadline being exceeded.
+	// to a freshly built desktop came back as a query about a deadline
+	// being exceeded.
 	m.preloadModel(ctx, BundledURL, DesktopModel())
 
 	log.Println("Ollama ready.")

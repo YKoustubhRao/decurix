@@ -27,10 +27,10 @@ func jsonError(w http.ResponseWriter, err error) {
 	)
 }
 
-// jsonStatusError writes a curated client-facing message with a specific
-// status. Like jsonError it never echoes err.Error() - the message is one
+// jsonStatusError writes a curated client-facing reason with a specific
+// status. Like jsonError it never echoes err.Error() - the reason is one
 // this package chose, not one an internal error handed it.
-func jsonStatusError(w http.ResponseWriter, status int, message string) {
+func jsonStatusError(w http.ResponseWriter, status int, reason string) {
 	w.Header().Set(
 		"Content-Type",
 		"application/json",
@@ -40,7 +40,7 @@ func jsonStatusError(w http.ResponseWriter, status int, message string) {
 
 	_ = json.NewEncoder(w).Encode(
 		map[string]string{
-			"error": message,
+			"error": reason,
 		},
 	)
 }

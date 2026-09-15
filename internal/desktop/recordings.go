@@ -9,7 +9,7 @@ import (
 )
 
 // vmAgentPort is where a desktop's own agent (vm_server.py) listens: the port
-// SendMessage delivers to, and the one that serves the desktop's recordings.
+// SendRequest delivers to, and the one that serves the desktop's recordings.
 const vmAgentPort = "8081"
 
 // agentClient has no overall timeout on purpose: exporting a recording streams

@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/YKoustubhRao/flowera/internal/desktop"
-	"github.com/YKoustubhRao/flowera/internal/helpnotes"
 	"github.com/YKoustubhRao/flowera/internal/memory"
+	"github.com/YKoustubhRao/flowera/internal/querynotes"
 	"github.com/YKoustubhRao/flowera/internal/tasks"
 )
 
@@ -76,23 +76,23 @@ func TestRenderEveryPage(t *testing.T) {
 		t.Fatal("the dashboard no longer opens a desktop screen with ?ui=touch; mobile keyboard and pinch-zoom will not be injected")
 	}
 
-	if err := renderer.RenderMessages(io.Discard, page); err != nil {
-		t.Fatalf("RenderMessages: %v", err)
+	if err := renderer.RenderRequests(io.Discard, page); err != nil {
+		t.Fatalf("RenderRequests: %v", err)
 	}
 
-	notes := HelpNotesPageData{
-		Notes: []helpnotes.HelpNote{{
+	notes := QueryNotesPageData{
+		Notes: []querynotes.QueryNote{{
 			ID:        "1",
 			DesktopID: running.ID,
 			VMName:    running.Name,
 			Filename:  "11092026120000.txt",
-			Content:   "FLOWERA HELP REQUEST",
+			Content:   "FLOWERA QUERY REQUEST",
 			CreatedAt: time.Now(),
 		}},
 	}
 
-	if err := renderer.RenderHelpNotesDashboard(io.Discard, notes); err != nil {
-		t.Fatalf("RenderHelpNotesDashboard: %v", err)
+	if err := renderer.RenderQueryNotesDashboard(io.Discard, notes); err != nil {
+		t.Fatalf("RenderQueryNotesDashboard: %v", err)
 	}
 
 	// The task pages, empty and full: the empty dashboard is a different
@@ -135,7 +135,7 @@ func TestRenderEveryPage(t *testing.T) {
 		Task:   summary.Task,
 		Worker: tasks.Worker{ID: running.ID, Name: running.Name, DeletedAt: now},
 		Executions: []tasks.Execution{
-			{ID: "x1", Attempt: 1, Engine: "claude", Status: tasks.StatusError, FinalMessage: "timed out", StartedAt: now, EndedAt: now.Add(time.Minute)},
+			{ID: "x1", Attempt: 1, Engine: "claude", Status: tasks.StatusError, FinalReply: "timed out", StartedAt: now, EndedAt: now.Add(time.Minute)},
 			{ID: "x2", Attempt: 2, Engine: "claude", Model: "claude-opus-5", Status: tasks.StatusWaiting, StartedAt: now, CostUSD: &cost, InputTokens: &tokens,
 				Steps: []tasks.Step{
 					{Text: "$ ls", CreatedAt: now},

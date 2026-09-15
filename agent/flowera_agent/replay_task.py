@@ -5,7 +5,7 @@ import traceback
 from flowera_agent import state, usage
 from flowera_agent.computer import approval, replay
 from flowera_agent.logging_utils import log
-from flowera_agent.messaging import ask_for_help, write_final_message
+from flowera_agent.messaging import ask_for_query, write_final_reply
 
 
 # ============================================================
@@ -14,7 +14,7 @@ from flowera_agent.messaging import ask_for_help, write_final_message
 # "/replay <recording>" sent to a desktop - by the recordings page's Replay
 # button, or typed into the chat - runs that recording (computer/replay.py)
 # rather than an engine. The command watcher dispatches it like any other
-# message, so it queues behind a running task, carries its task ID, and
+# request, so it queues behind a running task, carries its task ID, and
 # reports its steps, pauses and outcome through the same messaging calls
 # every harness uses. The task records show it as engine "replay", with no
 # model and no tokens.
@@ -36,7 +36,7 @@ _held_lock = threading.Lock()
 
 
 def parse(content):
-    """(session, params, start) of a "/replay" message, or None for any other message."""
+    """(session, params, start) of a "/replay" request, or None for any other request."""
 
     match = COMMAND_RE.match((content or "").strip())
     if not match:
@@ -73,11 +73,11 @@ def _take_params(task_id):
 
 
 def perform(content, task_file=None):
-    """Run a "/replay" message as the task the watcher dispatched it as."""
+    """Run a "/replay" request as the task the watcher dispatched it as."""
 
     state.current_task = content
     state.current_task_file = task_file
-    state.waiting_for_help = False
+    state.waiting_for_query = False
     state.paused_replay = None
 
     # Known, not unknown: a replay reads no prompt and costs nothing.
@@ -89,7 +89,7 @@ def perform(content, task_file=None):
     try:
         _, program = replay.load_program(session_id)
     except (FileNotFoundError, ValueError):
-        write_final_message(f"There is no recording {session_id} on this desktop.", kind="error", engine=ENGINE)
+        write_final_reply(f"There is no recording {session_id} on this desktop.", kind="error", engine=ENGINE)
         return
 
     _run(program, params, start)
@@ -100,10 +100,10 @@ def _run(program, params, start):
         result = replay.run(program, params=params, start=start)
     except Exception as exc:
         log(traceback.format_exc())
-        write_final_message(f"The replay stopped on an internal error: {exc}", kind="error", engine=ENGINE)
+        write_final_reply(f"The replay stopped on an internal error: {exc}", kind="error", engine=ENGINE)
         return
 
-    log(f"Replay of {program['session']} ended {result['outcome']}: {result['message']}")
+    log(f"Replay of {program['session']} ended {result['outcome']}: {result['text']}")
 
     if result["outcome"] in (replay.NEEDS_APPROVAL, replay.NEEDS_HUMAN):
         state.paused_replay = {
@@ -113,12 +113,12 @@ def _run(program, params, start):
             "step": result["step"],
             "resume_from": result["resume_from"],
         }
-        kind = "approval" if result["outcome"] == replay.NEEDS_APPROVAL else "help"
-        ask_for_help(result["message"], kind=kind, engine=ENGINE)
+        kind = "approval" if result["outcome"] == replay.NEEDS_APPROVAL else "query"
+        ask_for_query(result["text"], kind=kind, engine=ENGINE)
         return
 
     kind = "final" if result["outcome"] in replay.SUCCESS else "error"
-    write_final_message(result["message"], kind=kind, engine=ENGINE)
+    write_final_reply(result["text"], kind=kind, engine=ENGINE)
 
 
 def resume(reply, approval_outcome=None):
@@ -130,10 +130,10 @@ def resume(reply, approval_outcome=None):
 
     paused = state.paused_replay
     state.paused_replay = None
-    state.waiting_for_help = False
+    state.waiting_for_query = False
 
     if paused is None:
-        write_final_message("There was no paused replay to continue.", kind="error", engine=ENGINE)
+        write_final_reply("There was no paused replay to continue.", kind="error", engine=ENGINE)
         return
 
     if paused["outcome"] == replay.NEEDS_APPROVAL:
@@ -142,7 +142,7 @@ def resume(reply, approval_outcome=None):
         stop = bool(STOP_RE.match(reply or ""))
 
     if stop:
-        write_final_message(
+        write_final_reply(
             f"Stopped the replay before step {paused['step']}, as you asked. Nothing from that step on was done.",
             kind="final", engine=ENGINE,
         )

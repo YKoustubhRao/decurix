@@ -89,7 +89,7 @@ HELP:
 %s
 Task: %s`
 
-// successHelpNudge answers a HELP that arrives straight after a command
+// successQueryNudge answers a HELP that arrives straight after a command
 // succeeded, with that command's output in front of the model again.
 //
 // Measured on qwen2.5-coder:3b through this loop: asked "how many files are
@@ -99,7 +99,7 @@ Task: %s`
 // answer - under HELP. Both paged a human about a task that was already
 // done. A HELP that neither follows a failure nor asks for anything a human
 // alone can give is a mislabelled answer far more often than a real block.
-const successHelpNudge = `Nothing failed: your last command finished with exit code 0 and printed:
+const successQueryNudge = `Nothing failed: your last command finished with exit code 0 and printed:
 
 %s
 
@@ -111,10 +111,10 @@ Only reply HELP again if the human really has to act - to choose between options
 // a person can give. Such a HELP is always delivered, never pushed back on.
 var humanOnlyRe = regexp.MustCompile(`(?i)\b(approv|permission|consent|confirm|authori[sz]|password|passphrase|token|api[ -]?key|credential|secret|log ?in|sign ?in|2fa|otp|which\s+(one|of)|choose|pick|prefer|decide|should\s+i|do\s+you\s+want|payment|pay\b|purchase|send(ing)?\s+(an?\s+)?(e-?mail|message|sms)|publish|push)`)
 
-// prematureHelpNudge answers a HELP sent before any command ran. Its last
+// prematureQueryNudge answers a HELP sent before any command ran. Its last
 // paragraph matters: HELP is also the approval brake, and this must never
 // talk the model out of asking permission.
-const prematureHelpNudge = `You asked for help before running a single command, so nothing has been tried yet.
+const prematureQueryNudge = `You asked for help before running a single command, so nothing has been tried yet.
 
 If you can already answer - including from the facts you were given - answer now with DONE.
 If you could find out by running something, run it with COMMAND.
@@ -368,18 +368,18 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 		case "help":
 			if st.CommandsRun == 0 && !st.Nudged {
 				st.Nudged = true
-				rc.Logf("operator", "asked for help before trying anything - pushing back once")
-				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: prematureHelpNudge})
+				rc.Logf("operator", "had a query before trying anything - pushing back once")
+				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: prematureQueryNudge})
 				continue
 			}
 			if st.LastResult != nil && st.LastResult.ExitCode == 0 && !st.SuccessNudged && !humanOnlyRe.MatchString(value) {
 				st.SuccessNudged = true
-				rc.Logf("operator", "asked for help right after a command succeeded - showing it the output again")
+				rc.Logf("operator", "had a query right after a command succeeded - showing it the output again")
 				out := strings.TrimSpace(st.LastResult.Output)
 				if out == "" {
 					out = "(no output)"
 				}
-				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: fmt.Sprintf(successHelpNudge, truncateText(out, maxCommandOutputChars))})
+				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: fmt.Sprintf(successQueryNudge, truncateText(out, maxCommandOutputChars))})
 				continue
 			}
 			st.Messages = append(st.Messages, reply)
