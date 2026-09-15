@@ -13,6 +13,7 @@ import (
 	"github.com/YKoustubhRao/flowera/internal/lanaccess"
 	"github.com/YKoustubhRao/flowera/internal/memory"
 	"github.com/YKoustubhRao/flowera/internal/querynotes"
+	"github.com/YKoustubhRao/flowera/internal/schedule"
 	"github.com/YKoustubhRao/flowera/internal/stepimages"
 	"github.com/YKoustubhRao/flowera/internal/tasks"
 	"github.com/YKoustubhRao/flowera/internal/tunnel"
@@ -21,8 +22,8 @@ import (
 
 // Server wires the desktop manager, query-notes store, memory store, chat
 // store, action-step screenshot store, task records, tunnel store, shared
-// Claude session store, LAN-access store, and web UI renderer together to
-// serve the Flowera control plane.
+// Claude session store, LAN-access store, scheduled-request store, and web UI
+// renderer together to serve the Flowera control plane.
 type Server struct {
 	Desktops   *desktop.Manager
 	QueryNotes *querynotes.Store
@@ -33,11 +34,12 @@ type Server struct {
 	Tunnel     *tunnel.Store
 	ClaudeAuth *claudeauth.Store
 	LANAccess  *lanaccess.Store
+	Schedules  *schedule.Store
 	Web        *webui.Renderer
 }
 
 // NewServer creates a Server from its component stores/managers.
-func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memoryStore *memory.Store, chat *conversation.Store, stepImages *stepimages.Store, taskRecords *tasks.Store, tunnelStore *tunnel.Store, claudeAuth *claudeauth.Store, lanAccess *lanaccess.Store, web *webui.Renderer) *Server {
+func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memoryStore *memory.Store, chat *conversation.Store, stepImages *stepimages.Store, taskRecords *tasks.Store, tunnelStore *tunnel.Store, claudeAuth *claudeauth.Store, lanAccess *lanaccess.Store, schedules *schedule.Store, web *webui.Renderer) *Server {
 	return &Server{
 		Desktops:   desktops,
 		QueryNotes: queryNotes,
@@ -48,6 +50,7 @@ func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memorySt
 		Tunnel:     tunnelStore,
 		ClaudeAuth: claudeAuth,
 		LANAccess:  lanAccess,
+		Schedules:  schedules,
 		Web:        web,
 	}
 }
@@ -66,6 +69,10 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/desktops/delete", s.deleteDesktopHandler)
 	mux.HandleFunc("/requests", s.requestsDashboardHandler)
 	mux.HandleFunc("/api/desktops/send", s.sendRequestHandler)
+	mux.HandleFunc("/api/schedules", s.schedulesHandler)
+	mux.HandleFunc("/api/schedules/create", s.createScheduleHandler)
+	mux.HandleFunc("/api/schedules/delete", s.deleteScheduleHandler)
+	mux.HandleFunc("/api/schedules/toggle", s.toggleScheduleHandler)
 	mux.HandleFunc("/api/desktops/memory", s.desktopMemoryHandler)
 	mux.HandleFunc("/api/desktops/screenshot", s.desktopScreenshotHandler)
 	mux.HandleFunc("/api/desktops/chat", s.chatHandler)
