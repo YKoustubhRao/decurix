@@ -405,6 +405,9 @@ func TestCleanCodeHandlesUnterminatedFence(t *testing.T) {
 // every other part genuinely runs: files are really written, pytest is
 // really invoked, and the result is a real exit code.
 func TestHarnessBuildsAndTestsARealPythonProject(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping real python build test in short mode")
+	}
 	if _, err := os.Stat("/usr/bin/python3"); err != nil {
 		t.Skip("no python3 on this machine - this test builds a real project")
 	}

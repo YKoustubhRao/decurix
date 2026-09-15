@@ -166,7 +166,8 @@ report work you did not actually verify.
 COMMAND - you need to inspect or change something on this machine. One
 command per reply; you get its exit code and output back, then you reply
 again. If it fails, read the error and try a different approach. Never
-send a command that just failed.
+send a command that just failed. Write the command directly without
+markdown code blocks (```) or backticks.
 
 HELP - you are blocked and no command can unblock you: the human has to
 choose between real alternatives, supply a secret, or fix something
@@ -259,13 +260,13 @@ def build_system_messages():
 def ask_agent(task, history):
     messages = build_system_messages()
 
-    messages.extend(history)
-
     messages.append(
         {
             "role": "user",
             "content": task,
         }
     )
+
+    messages.extend(history)
 
     return ollama_request(messages)

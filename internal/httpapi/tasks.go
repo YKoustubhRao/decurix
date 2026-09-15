@@ -66,16 +66,10 @@ func (s *Server) tasksPageHandler(w http.ResponseWriter, r *http.Request) {
 
 	window, since := reportWindow(r)
 
-	report, err := s.Tasks.Report(since)
-	if err != nil {
-		http.Error(w, "could not read the task records", http.StatusInternalServerError)
-		return
-	}
-
 	filter := taskFilter(r, since)
 	filter.Limit = maxListedTasks
 
-	list, err := s.Tasks.List(filter)
+	report, list, err := s.Tasks.ReportAndList(filter)
 	if err != nil {
 		http.Error(w, "could not read the task records", http.StatusInternalServerError)
 		return

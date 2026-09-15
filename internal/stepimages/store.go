@@ -20,6 +20,7 @@ import (
 	"image"
 	"image/jpeg"
 	"image/png"
+	"strings"
 	"sync"
 	"time"
 
@@ -190,16 +191,24 @@ func (s *Store) evict() error {
 			return nil
 		}
 
+		var toDelete []any
+		var placeholders []string
+		deletedBytes := 0
 		for _, v := range victims {
-			if s.size <= s.maxBytes {
-				return nil
+			toDelete = append(toDelete, v.id)
+			placeholders = append(placeholders, "?")
+			deletedBytes += v.size
+			if s.size-deletedBytes <= s.maxBytes {
+				break
 			}
+		}
 
-			if _, err := s.db.Exec(`DELETE FROM step_images WHERE id = ?`, v.id); err != nil {
+		if len(toDelete) > 0 {
+			query := fmt.Sprintf(`DELETE FROM step_images WHERE id IN (%s)`, strings.Join(placeholders, ","))
+			if _, err := s.db.Exec(query, toDelete...); err != nil {
 				return fmt.Errorf("stepimages: evicting: %w", err)
 			}
-
-			s.size -= v.size
+			s.size -= deletedBytes
 		}
 	}
 
