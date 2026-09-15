@@ -38,6 +38,15 @@ type Manager struct {
 	// do with container CRUD.
 	claudeLoginMu sync.Mutex
 	claudeLogin   *claudeLoginSession
+
+	// viewed is the last time each desktop's thumbnail was fetched or its
+	// screen was actually proxied to, keyed by sanitized desktop ID. Guarded
+	// by its own mutex for the same reason shots is: this has nothing to do
+	// with container CRUD. internal/idlepause reads it so a desktop nobody
+	// has a task running on, but someone still has open in a browser tab,
+	// is never stopped out from under them.
+	viewedMu sync.Mutex
+	viewed   map[string]time.Time
 }
 
 // NewManager creates a Manager backed by the given Docker client.
@@ -178,6 +187,13 @@ func (m *Manager) Create(
 	}, nil
 }
 
+// listInspectConcurrency bounds how many ContainerInspect calls List issues
+// at once. List is on the hot path for the dashboard, the JSON API, and
+// internal/idlepause's sweep - a control plane managing many desktops must
+// not pay for them one inspect at a time, but an unbounded fan-out would
+// just move the bottleneck onto the Docker daemon instead.
+const listInspectConcurrency = 8
+
 // List returns all desktop containers managed by this instance, read from their Docker labels and inspect data.
 func (m *Manager) List(
 	ctx context.Context,
@@ -201,102 +217,126 @@ func (m *Manager) List(
 		return nil, err
 	}
 
-	result := make([]Desktop, 0, len(containers))
+	// Each container's own Desktop lands at its own index, written by its
+	// own goroutine only - no shared state, so no lock is needed alongside
+	// the semaphore.
+	result := make([]Desktop, len(containers))
 
-	for _, c := range containers {
+	sem := make(chan struct{}, listInspectConcurrency)
+	var wg sync.WaitGroup
 
-		name := ""
-		if len(c.Names) > 0 {
-			name = strings.TrimPrefix(
-				c.Names[0],
-				"/",
-			)
-		}
+	for i, c := range containers {
+		wg.Add(1)
+		sem <- struct{}{}
 
-		volumeName := ""
-		model := ""
-		var cpus int64
-		var memoryMB int64
+		go func(i int, c container.Summary) {
+			defer wg.Done()
+			defer func() { <-sem }()
 
-		inspect, err := m.client.ContainerInspect(
-			ctx,
-			c.ID,
-		)
+			result[i] = m.desktopFromContainer(ctx, c)
+		}(i, c)
+	}
 
-		if err == nil {
-			for _, mount := range inspect.Mounts {
-				if mount.Destination == "/home/headless" {
-					volumeName = mount.Name
-					break
-				}
-			}
+	wg.Wait()
 
-			if inspect.Config != nil {
-				model = envValue(inspect.Config.Env, "OLLAMA_MODEL")
-			}
+	return result, nil
+}
 
-			if inspect.HostConfig != nil {
-				if inspect.HostConfig.NanoCPUs > 0 {
-					cpus = inspect.HostConfig.NanoCPUs / 1_000_000_000
-				}
-
-				if inspect.HostConfig.Memory > 0 {
-					memoryMB = inspect.HostConfig.Memory / (1024 * 1024)
-				}
-			}
-		}
-
-		profile := c.Labels["desktop-profile"]
-
-		if profile == "" {
-			profile = "basic"
-		}
-
-		harness := c.Labels["desktop-harness"]
-
-		if harness == "" {
-			harness = HarnessOllama
-		}
-
-		status := "stopped"
-
-		if c.State == "running" {
-			status = "running"
-		}
-
-		id := strings.TrimPrefix(
-			name,
-			"desktop_",
-		)
-
-		createdAt := ""
-		if c.Created > 0 {
-			createdAt = time.Unix(
-				c.Created,
-				0,
-			).Format(time.RFC3339)
-		}
-
-		result = append(
-			result,
-			Desktop{
-				ID:          id,
-				Name:        id,
-				Profile:     profile,
-				Harness:     harness,
-				Model:       model,
-				ContainerID: c.ID,
-				Volume:      volumeName,
-				Status:      status,
-				URL:         desktopURL(id),
-				CreatedAt:   createdAt,
-				CPUs:        cpus,
-				MemoryMB:    memoryMB,
-			},
+// desktopFromContainer builds one Desktop from a ContainerList entry plus its
+// own ContainerInspect - the per-container work List fans out concurrently.
+func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary) Desktop {
+	name := ""
+	if len(c.Names) > 0 {
+		name = strings.TrimPrefix(
+			c.Names[0],
+			"/",
 		)
 	}
 
-	return result, nil
+	volumeName := ""
+	model := ""
+	var cpus int64
+	var memoryMB int64
+
+	inspect, err := m.client.ContainerInspect(
+		ctx,
+		c.ID,
+	)
+
+	if err == nil {
+		for _, mount := range inspect.Mounts {
+			if mount.Destination == "/home/headless" {
+				volumeName = mount.Name
+				break
+			}
+		}
+
+		if inspect.Config != nil {
+			model = envValue(inspect.Config.Env, "OLLAMA_MODEL")
+		}
+
+		if inspect.HostConfig != nil {
+			if inspect.HostConfig.NanoCPUs > 0 {
+				cpus = inspect.HostConfig.NanoCPUs / 1_000_000_000
+			}
+
+			if inspect.HostConfig.Memory > 0 {
+				memoryMB = inspect.HostConfig.Memory / (1024 * 1024)
+			}
+		}
+	}
+
+	profile := c.Labels["desktop-profile"]
+
+	if profile == "" {
+		profile = "basic"
+	}
+
+	harness := c.Labels["desktop-harness"]
+
+	if harness == "" {
+		harness = HarnessOllama
+	}
+
+	status := "stopped"
+
+	if c.State == "running" {
+		status = "running"
+	}
+
+	id := strings.TrimPrefix(
+		name,
+		"desktop_",
+	)
+
+	createdAt := ""
+	if c.Created > 0 {
+		createdAt = time.Unix(
+			c.Created,
+			0,
+		).Format(time.RFC3339)
+	}
+
+	startedAt := ""
+	if err == nil && inspect.State != nil && inspect.State.Running {
+		startedAt = inspect.State.StartedAt
+	}
+
+	return Desktop{
+		ID:          id,
+		Name:        id,
+		Profile:     profile,
+		Harness:     harness,
+		Model:       model,
+		ContainerID: c.ID,
+		Volume:      volumeName,
+		Status:      status,
+		URL:         desktopURL(id),
+		CreatedAt:   createdAt,
+		StartedAt:   startedAt,
+		CPUs:        cpus,
+		MemoryMB:    memoryMB,
+	}
 }
 
 // Start starts the Docker container backing the given desktop ID.
@@ -409,6 +449,10 @@ func (m *Manager) Delete(
 	delete(m.shots, sanitizeName(id))
 	m.shotMu.Unlock()
 
+	m.viewedMu.Lock()
+	delete(m.viewed, sanitizeName(id))
+	m.viewedMu.Unlock()
+
 	// Delete persistent storage too.
 	if volumeName != "" {
 		if err := m.client.VolumeRemove(
@@ -462,9 +506,37 @@ func (m *Manager) Get(ctx context.Context, id string) (Desktop, error) {
 
 	if inspect.State != nil && inspect.State.Running {
 		found.Status = "running"
+		found.StartedAt = inspect.State.StartedAt
 	}
 
 	return found, nil
+}
+
+// touchViewed records that someone just looked at a desktop's thumbnail or
+// screen right now. Best-effort and fire-and-forget - a missed touch just
+// means idlepause has one less signal, never an error a caller has to
+// handle.
+func (m *Manager) touchViewed(sanitizedID string) {
+	m.viewedMu.Lock()
+	defer m.viewedMu.Unlock()
+
+	if m.viewed == nil {
+		m.viewed = make(map[string]time.Time)
+	}
+
+	m.viewed[sanitizedID] = time.Now()
+}
+
+// LastViewed returns when a desktop's thumbnail was last fetched or its
+// screen last proxied to, or ok=false if this process has never seen either
+// for that ID (a desktop nobody has opened since the control plane started).
+func (m *Manager) LastViewed(id string) (t time.Time, ok bool) {
+	m.viewedMu.Lock()
+	defer m.viewedMu.Unlock()
+
+	t, ok = m.viewed[sanitizeName(id)]
+
+	return t, ok
 }
 
 // envValue returns one variable from a container's environment list.

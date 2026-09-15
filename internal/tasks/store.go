@@ -489,6 +489,30 @@ func (s *Store) Busy(workerID string) (string, error) {
 	}
 }
 
+// LastActivity returns when a worker's task records were last touched - a
+// task created, started, finished, or reopened by a human's reply - or
+// ok=false when the worker has no task records at all yet. Used by
+// internal/idlepause as the idle clock for a worker with nothing currently
+// running: how long ago its last task last changed.
+func (s *Store) LastActivity(workerID string) (t time.Time, ok bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var ns sql.NullInt64
+
+	if err := s.db.QueryRow(
+		`SELECT MAX(updated_ns) FROM tasks WHERE worker_id = ?`, workerID,
+	).Scan(&ns); err != nil {
+		return time.Time{}, false, fmt.Errorf("tasks: last activity: %w", err)
+	}
+
+	if !ns.Valid {
+		return time.Time{}, false, nil
+	}
+
+	return sqlitedb.FromNS(ns.Int64), true, nil
+}
+
 // NewRoute is the route for a request whose planning failed: a new task. A
 // request is still delivered when its record cannot be.
 func NewRoute() Route {

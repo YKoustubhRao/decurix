@@ -75,5 +75,7 @@ func (m *Manager) resolveProxyTarget(ctx context.Context, rawID, port string) (p
 		return nil, sanitizedID, fmt.Errorf("parse proxy target: %w", err)
 	}
 
+	m.touchViewed(sanitizedID)
+
 	return proxyURL, sanitizedID, nil
 }
