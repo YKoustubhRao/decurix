@@ -154,6 +154,13 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var claudeCredentialsJSON string
+	if harness == desktop.HarnessClaude {
+		if session, ok := s.ClaudeAuth.Get(); ok {
+			claudeCredentialsJSON = session.CredentialsJSON
+		}
+	}
+
 	created, err := s.Desktops.Create(
 		r.Context(),
 		name,
@@ -161,6 +168,7 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		harness,
 		cpus,
 		memoryMB,
+		claudeCredentialsJSON,
 	)
 	if err != nil {
 		jsonError(w, err)

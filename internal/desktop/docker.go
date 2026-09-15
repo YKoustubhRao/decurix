@@ -118,9 +118,9 @@ func buildDesktopEnv(name, harness string) []string {
 		defaultPassword = "admin"
 	}
 
-	// OLLAMA_URL/OLLAMA_MODEL follow the same pattern as DEFAULT_PASSWORD
-	// and ANTHROPIC_API_KEY below: the control plane's own environment wins,
-	// with a default that has to work on a machine nobody configured.
+	// OLLAMA_URL/OLLAMA_MODEL follow the same pattern as DEFAULT_PASSWORD:
+	// the control plane's own environment wins, with a default that has to
+	// work on a machine nobody configured.
 	//
 	// The default used to be a hardcoded Cloudflare quick-tunnel URL
 	// pointing at a developer's own Ollama. Quick-tunnel hostnames are
@@ -159,10 +159,6 @@ func buildDesktopEnv(name, harness string) []string {
 		"OLLAMA_URL=" + ollamaURL,
 		"OLLAMA_MODEL=" + ollamaModel,
 		"AGENT_HARNESS=" + harness,
-	}
-
-	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
-		env = append(env, "ANTHROPIC_API_KEY="+apiKey)
 	}
 
 	return env

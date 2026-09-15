@@ -13,6 +13,7 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/joho/godotenv"
 
+	"github.com/YKoustubhRao/flowera/internal/claudeauth"
 	"github.com/YKoustubhRao/flowera/internal/conversation"
 	"github.com/YKoustubhRao/flowera/internal/desktop"
 	"github.com/YKoustubhRao/flowera/internal/helpnotes"
@@ -156,6 +157,7 @@ func main() {
 		must(stepimages.NewStore(db, stepImagesMaxBytes())),
 		must(tasks.NewStore(db)),
 		tunnel.NewStore(),
+		must(claudeauth.NewStore(db)),
 		webui.NewRenderer(),
 	)
 

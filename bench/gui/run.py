@@ -17,9 +17,10 @@ never on what the agent says it did.
 
 Standard library only. Needs the `docker` CLI on this machine, and for real
 engines a running control plane (default http://localhost:8080). The claude
-engine also needs ANTHROPIC_API_KEY in the control plane's .env and a
-developer or ai profile; the default profile here is developer, so all
-three engines run on identical desktops.
+engine also needs a shared Claude login already completed through the
+dashboard (see README.md "Setting up the Claude harness") and a developer or
+ai profile; the default profile here is developer, so all three engines run
+on identical desktops.
 """
 
 import argparse
