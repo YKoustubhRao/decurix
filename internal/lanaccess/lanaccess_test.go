@@ -34,6 +34,122 @@ func login(t *testing.T, srv *httptest.Server, code, next string) *http.Response
 	return resp
 }
 
+// authenticateViaLink GETs authPath with code and next as query parameters -
+// the one-click link build.sh/rebuild.sh print - and returns the response
+// along with any Set-Cookie header it issued.
+func authenticateViaLink(t *testing.T, srv *httptest.Server, code, next string) *http.Response {
+	t.Helper()
+
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+
+	resp, err := client.Get(srv.URL + authPath + "?code=" + code + "&next=" + next)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return resp
+}
+
+func TestAuthenticateLinkGrantsASessionAndRedirectsOn(t *testing.T) {
+	store := NewStore()
+	srv := httptest.NewServer(store.Middleware(protectedHandler()))
+	defer srv.Close()
+
+	resp := authenticateViaLink(t, srv, store.Password(), "/view/research-box")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status = %d, want 302", resp.StatusCode)
+	}
+
+	if loc := resp.Header.Get("Location"); loc != "/view/research-box" {
+		t.Fatalf("redirect location = %q, want /view/research-box", loc)
+	}
+
+	var cookie *http.Cookie
+	for _, c := range resp.Cookies() {
+		if c.Name == "flowera_lan_session" {
+			cookie = c
+		}
+	}
+	if cookie == nil {
+		t.Fatal("no session cookie was set")
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/view/research-box", nil)
+	req.AddCookie(cookie)
+
+	authed, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer authed.Body.Close()
+
+	body := make([]byte, 4096)
+	n, _ := authed.Body.Read(body)
+
+	if !strings.HasPrefix(string(body[:n]), "protected: /view/research-box") {
+		t.Fatalf("expected the real handler to run once authenticated, got: %s", body[:n])
+	}
+}
+
+func TestAuthenticateLinkWithWrongCodeDoesNotGrantASession(t *testing.T) {
+	store := NewStore()
+	srv := httptest.NewServer(store.Middleware(protectedHandler()))
+	defer srv.Close()
+
+	resp := authenticateViaLink(t, srv, "not-the-code", "/")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (re-shown gate)", resp.StatusCode)
+	}
+
+	for _, c := range resp.Cookies() {
+		if c.Name == "flowera_lan_session" {
+			t.Fatal("a wrong code must not set a session cookie")
+		}
+	}
+}
+
+func TestAuthenticateLinkWithNoCodeShowsPlainGateWithoutCountingAsAFailure(t *testing.T) {
+	store := NewStore()
+	srv := httptest.NewServer(store.Middleware(protectedHandler()))
+	defer srv.Close()
+
+	// A bare visit to authPath (no ?code= at all) must not count against the
+	// lockout - only an actually wrong code should.
+	for i := 0; i < maxAttempts; i++ {
+		resp := authenticateViaLink(t, srv, "", "/")
+		resp.Body.Close()
+	}
+
+	resp := authenticateViaLink(t, srv, store.Password(), "/")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status for the correct code after bare visits = %d, want 302 (not locked out)", resp.StatusCode)
+	}
+}
+
+func TestAuthenticateLinkFailuresCountTowardLockout(t *testing.T) {
+	store := NewStore()
+	srv := httptest.NewServer(store.Middleware(protectedHandler()))
+	defer srv.Close()
+
+	var last *http.Response
+	for i := 0; i < maxAttempts; i++ {
+		last = authenticateViaLink(t, srv, "wrong", "/")
+		last.Body.Close()
+	}
+
+	if last.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status after %d failures via link = %d, want 429", maxAttempts, last.StatusCode)
+	}
+}
+
 func TestUnauthenticatedRequestGetsTheGatePage(t *testing.T) {
 	store := NewStore()
 	srv := httptest.NewServer(store.Middleware(protectedHandler()))

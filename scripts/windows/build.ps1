@@ -205,12 +205,22 @@ try {
     # Printed here as a convenience - it also always lives in the
     # dashboard's Mobile menu (both URLs above alongside it), which is the
     # one place it stays current after a rotate.
+    $lanCode = $null
     try {
         $lan = Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/lan-access/status" -TimeoutSec 5
         if ($lan.code) {
+            $lanCode = $lan.code
             Write-Host ""
-            Write-Host "Access code: $($lan.code)"
+            Write-Host "Access code: $lanCode"
             Write-Host "(Needed once by anyone using the LAN or tunnel URL above. Also in the dashboard's Mobile menu, which can generate a new one.)"
+
+            # A one-click link for whoever is sitting at this terminal right
+            # now - they already have the code above, so this authenticates
+            # on click instead of asking them to type it into the gate's form.
+            if ($lanUrl) {
+                Write-Host ""
+                Write-Host "Open it yourself without typing the code: $lanUrl/__flowera_access/authenticate?code=$lanCode"
+            }
         }
     } catch {
         # Best effort - the dashboard's Mobile menu always has it too.
@@ -257,14 +267,20 @@ try {
         Write-Host $line
 
         if ($line -match 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com') {
+            $tunnelUrl = $Matches[0]
             try {
                 Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8080/api/tunnel" `
                     -ContentType "application/json" `
-                    -Body (@{ url = $Matches[0] } | ConvertTo-Json -Compress) `
+                    -Body (@{ url = $tunnelUrl } | ConvertTo-Json -Compress) `
                     -TimeoutSec 5 | Out-Null
             } catch {
                 # Best effort: the tunnel works whether or not the dashboard
                 # shows it.
+            }
+
+            # $lanCode was already read above, before this pipeline started.
+            if ($lanCode) {
+                Write-Host "Open it yourself without typing the code: $tunnelUrl/__flowera_access/authenticate?code=$lanCode"
             }
         }
     }
