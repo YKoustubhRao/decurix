@@ -10,6 +10,7 @@ import (
 	"github.com/YKoustubhRao/flowera/internal/claudeauth"
 	"github.com/YKoustubhRao/flowera/internal/conversation"
 	"github.com/YKoustubhRao/flowera/internal/desktop"
+	"github.com/YKoustubhRao/flowera/internal/lanaccess"
 	"github.com/YKoustubhRao/flowera/internal/memory"
 	"github.com/YKoustubhRao/flowera/internal/querynotes"
 	"github.com/YKoustubhRao/flowera/internal/stepimages"
@@ -20,8 +21,8 @@ import (
 
 // Server wires the desktop manager, query-notes store, memory store, chat
 // store, action-step screenshot store, task records, tunnel store, shared
-// Claude session store, and web UI renderer together to serve the Flowera
-// control plane.
+// Claude session store, LAN-access store, and web UI renderer together to
+// serve the Flowera control plane.
 type Server struct {
 	Desktops   *desktop.Manager
 	QueryNotes *querynotes.Store
@@ -31,11 +32,12 @@ type Server struct {
 	Tasks      *tasks.Store
 	Tunnel     *tunnel.Store
 	ClaudeAuth *claudeauth.Store
+	LANAccess  *lanaccess.Store
 	Web        *webui.Renderer
 }
 
 // NewServer creates a Server from its component stores/managers.
-func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memoryStore *memory.Store, chat *conversation.Store, stepImages *stepimages.Store, taskRecords *tasks.Store, tunnelStore *tunnel.Store, claudeAuth *claudeauth.Store, web *webui.Renderer) *Server {
+func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memoryStore *memory.Store, chat *conversation.Store, stepImages *stepimages.Store, taskRecords *tasks.Store, tunnelStore *tunnel.Store, claudeAuth *claudeauth.Store, lanAccess *lanaccess.Store, web *webui.Renderer) *Server {
 	return &Server{
 		Desktops:   desktops,
 		QueryNotes: queryNotes,
@@ -45,6 +47,7 @@ func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memorySt
 		Tasks:      taskRecords,
 		Tunnel:     tunnelStore,
 		ClaudeAuth: claudeAuth,
+		LANAccess:  lanAccess,
 		Web:        web,
 	}
 }
@@ -98,4 +101,15 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/claude-auth/login/code", s.claudeAuthLoginCodeHandler)
 	mux.HandleFunc("/api/claude-auth/login/cancel", s.claudeAuthLoginCancelHandler)
 	mux.HandleFunc("/favicon.svg", s.faviconHandler)
+}
+
+// RegisterLocalRoutes registers the handful of routes that must only ever be
+// reachable on the primary listener, never on the LAN/tunnel-facing one a
+// phone reaches: the current LAN access code and the button that rotates it.
+// Serving the code back over the very listener it gates would make it
+// pointless the moment someone else on that listener asked for it, so
+// cmd/flowera/main.go calls this only for the primary mux.
+func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/api/lan-access/status", s.lanAccessStatusHandler)
+	mux.HandleFunc("/api/lan-access/rotate", s.lanAccessRotateHandler)
 }

@@ -101,6 +101,55 @@ echo ""
 echo "========================================"
 echo " Flowera is running"
 echo "========================================"
+echo ""
+echo "Idle desktops stop automatically after 5 minutes (set FLOWERA_IDLE_STOP_MINUTES=0 in .env to disable, or to another number of minutes)."
+
+# FLOWERA_LAN_PORT in .env changes which port the access-code-gated listener
+# binds; read_env_var comes from lib/ollama-setup.sh, already sourced above.
+lan_port="$(read_env_var FLOWERA_LAN_PORT)"
+lan_port="${lan_port:-8090}"
+
+# The machine's own address on whatever network it's on, so both the admin
+# (unauthenticated) and LAN (access-code-gated) URLs below are something
+# another device can actually use - not "localhost", which only means
+# anything on this machine. "ip route get" asks the kernel which source
+# address it would use to reach the internet without sending a single
+# packet; hostname -I is the fallback for a machine without `ip` (rare, but
+# cheap to guard against a script erroring out over a cosmetic feature).
+lan_ip="$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p')"
+if [ -z "$lan_ip" ]; then
+    lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+fi
+
+if [ -n "$lan_ip" ]; then
+    admin_url="http://$lan_ip:8080"
+    lan_url="http://$lan_ip:$lan_port"
+
+    # Reported once here, separately from the tunnel URL below (which is
+    # reported every time cloudflared prints one) - see httpapi.tunnelHandler,
+    # which never lets one blank out the other.
+    curl -fsS -X POST http://127.0.0.1:8080/api/tunnel \
+        -H "Content-Type: application/json" \
+        -d "{\"admin_url\":\"$admin_url\",\"lan_url\":\"$lan_url\"}" \
+        >/dev/null 2>&1 || true
+
+    echo ""
+    echo "Admin URL (full control, no code - keep this to yourself): $admin_url"
+    echo "LAN access URL (needs the code below, works without the tunnel):  $lan_url"
+fi
+
+# Printed here as a convenience - it also always lives in the dashboard's
+# Mobile menu (both URLs above alongside it), which is the one place it
+# stays current after a rotate.
+if command -v jq >/dev/null 2>&1; then
+    lan_code="$(curl -fsS http://127.0.0.1:8080/api/lan-access/status 2>/dev/null | jq -r '.code // empty')"
+
+    if [ -n "$lan_code" ]; then
+        echo ""
+        echo "Access code: $lan_code"
+        echo "(Needed once by anyone using the LAN or tunnel URL above. Also in the dashboard's Mobile menu, which can generate a new one.)"
+    fi
+fi
 
 # --cli is a terminal-native alternative to the tunnel below: it never opens
 # a tunnel URL, so the INT/TERM trap's "tunnel stopped" message would not
@@ -130,8 +179,10 @@ echo ""
 
 # Start Cloudflare tunnel, echoing its logs while watching for the
 # trycloudflare.com URL so it can be reported to the control plane for
-# display in the dashboard's Mobile dropdown.
-cloudflared tunnel --protocol http2 --url http://127.0.0.1:8080 2>&1 | while IFS= read -r line; do
+# display in the dashboard's Mobile dropdown. The report itself still goes to
+# 8080 - it is just the dashboard's own record of the URL, not something
+# that needs the access code.
+cloudflared tunnel --protocol http2 --url "http://127.0.0.1:$lan_port" 2>&1 | while IFS= read -r line; do
     echo "$line"
 
     url=$(echo "$line" | grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' || true)

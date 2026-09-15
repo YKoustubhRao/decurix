@@ -498,3 +498,31 @@ func TestReportAnswersWhichEngineAndWhy(t *testing.T) {
 		t.Fatal("a reason came with no example task to open")
 	}
 }
+
+func TestLastActivity(t *testing.T) {
+	c := newClock()
+	s := openStore(t, c)
+	w := worker("bordu", "claude")
+
+	if _, ok, err := s.LastActivity(w.ID); err != nil {
+		t.Fatal(err)
+	} else if ok {
+		t.Fatal("a worker with no task records should report ok=false")
+	}
+
+	send(t, s, w, "hello")
+	want := c.now()
+
+	c.advance(time.Hour)
+
+	got, ok, err := s.LastActivity(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected a last-activity time once a task exists")
+	}
+	if !got.Equal(want) {
+		t.Fatalf("last activity = %v, want %v", got, want)
+	}
+}

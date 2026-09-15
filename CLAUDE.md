@@ -6,8 +6,11 @@ Flowera is a control plane for spinning up disposable "desktop" VMs (Docker cont
 
 ```
 cmd/flowera/main.go — entrypoint: loads .env, builds the Docker client, wires
-                       the packages below, registers routes, ListenAndServe(:8080);
-                       --version, and --build-images/--rebuild which build the
+                       the packages below, registers routes, ListenAndServe(:8080)
+                       plus a second, access-code-gated ListenAndServe (:8090 by
+                       default - see "Two listeners, one process, one set of
+                       routes" below); --version, and --build-images/--rebuild
+                       which build the
                        desktop images from the embedded context and exit;
                        --cli, which skips all of the above and hands off to
                        cli.go instead (see "The --cli terminal client" below)
@@ -27,6 +30,16 @@ internal/desktop   — owns the Docker client; desktop image build
                       flowera.DesktopBuildContext to the daemon); container CRUD
                       (Create/Start/Stop/Restart/Delete/List), image/network
                       ensure, SendRequest (POST to a desktop's :8081),
+                      List/desktopFromContainer: one ContainerInspect per
+                      desktop, fanned out up to listInspectConcurrency (8) at
+                      once rather than one at a time — List is what the
+                      dashboard, the JSON API and internal/idlepause's sweep
+                      all call, so its cost has to stay roughly flat as the
+                      desktop count grows, not linear in wall-clock time,
+                      LastViewed (screenshot.go/proxy.go touch it on every
+                      thumbnail fetch and every proxied screen request — the
+                      "someone has this open" signal internal/idlepause reads,
+                      cleaned up in Delete alongside the shots cache),
                       ProxyTarget (resolves the VNC reverse-proxy address),
                       AgentRequest (recordings.go: one call to a desktop's :8081 API,
                       how recordings are read off the desktop rather than copied),
@@ -71,9 +84,29 @@ internal/tasks     — the task records: Task → Execution → Steps → Interv
                       execution), verdicts, CloseOpen on stop/restart/delete. classify.go:
                       deterministic task type and intervention reason. report.go: autonomy
                       by engine/worker/type and the reasons people stepped in
-internal/tunnel    — in-memory store of the current Cloudflare quick tunnel URL,
-                      set by scripts/linux/build.sh or rebuild.sh via POST /api/tunnel,
-                      surfaced in the dashboard's Mobile dropdown
+internal/tunnel    — in-memory store of the addresses scripts/linux/build.sh
+                      (or rebuild.sh, or their Windows twins) discovers and
+                      reports via POST /api/tunnel: the current Cloudflare
+                      quick tunnel URL, and this machine's own LAN address for
+                      each of the two listeners below (AdminURL for the
+                      primary one, LANURL for the gated one) - all three
+                      surfaced together in the dashboard's Mobile menu
+internal/idlepause — Checker.Run: a ticker that stops a desktop once it has sat
+                      idle (tasks.Store.Busy empty, and past Threshold since the
+                      later of its container's own start time, its last task
+                      activity, and desktop.Manager.LastViewed) - on by default
+                      at 5 minutes (cmd/flowera.defaultIdleStopMinutes),
+                      FLOWERA_IDLE_STOP_MINUTES=0 opts out, and it never does
+                      more than the same Stop a human's own button does
+internal/lanaccess — Store: the rotating access code gating the second,
+                      LAN/tunnel-facing listener main.go starts alongside the
+                      primary one (see "Two listeners, one process, one set of
+                      routes" below) - Middleware shows an "enter the code"
+                      page to anything without a valid session cookie, Rotate
+                      replaces the code and drops every session it granted.
+                      Depends on nothing internal by design, same tier as
+                      tunnel/sqlitedb: it must never be able to reach, and must
+                      never be reached by, the primary listener's own routing
 internal/claudeauth — the one shared Claude Code login every claude-harness
                       desktop is seeded from (in place of an ANTHROPIC_API_KEY):
                       a single-row SQLite table holding the raw
@@ -84,7 +117,11 @@ internal/claudeauth — the one shared Claude Code login every claude-harness
                       either half of that
 internal/httpapi   — the only package touching net/http; all HTTP handlers,
                       composes desktop+querynotes+memory+conversation+stepimages+tasks+
-                      tunnel+claudeauth+webui. claudeauth.go: the dashboard's Claude
+                      tunnel+claudeauth+lanaccess+webui. lanaccess.go: the two routes
+                      RegisterLocalRoutes registers only on the primary listener -
+                      the current LAN/tunnel access code and the button that rotates
+                      it - never served back over the listener that code itself
+                      gates. claudeauth.go: the dashboard's Claude
                       login popup (/api/claude-auth/status + login/start + login/code
                       + login/cancel), backed by desktop.Manager's claudelogin.go and
                       saved through claudeauth.Store. recordings.go: the recordings page and the
@@ -213,9 +250,13 @@ desktop container (flowera-desktop:{basic,developer,ai})
                               ThreadingHTTPServer.serve_forever
 ```
 
-Control plane → desktop communication happens over the Docker bridge network `flowera-network` (container name `desktop_<id>`, not published ports). Desktop → control plane communication uses `CONTROL_PLANE_URL` (`http://host.docker.internal:8080`).
+Control plane → desktop communication happens over the Docker bridge network `flowera-network` (container name `desktop_<id>`, not published ports). Desktop → control plane communication uses `CONTROL_PLANE_URL` (`http://host.docker.internal:8080`) — always the primary listener below, never the gated one, since an agent's own callbacks must never depend on a human having typed an access code anywhere.
 
-Go package dependency direction (no cycles): `httpapi` → `desktop`, `querynotes`, `memory`, `conversation`, `stepimages`, `tasks`, `tunnel`, `claudeauth`, `webui`; `webui` → `desktop`, `querynotes`, `memory`, `tasks`, `web`; `desktop` → `ollama` (only for `ollama.DesktopURL`/`DesktopModel`, the Ollama a new desktop is given), `flowera` (the root package, for the embedded build context); `querynotes`, `memory`, `conversation`, `stepimages`, `tasks`, `claudeauth` → `sqlitedb` only; `ollama`, `sqlitedb`, `tunnel`, `web`, `flowera` depend on nothing internal. Note that `desktop` does *not* depend on `claudeauth`: `httpapi.createDesktopHandler` reads the stored session and hands `Create` its raw credentials JSON as a plain string, and `claudelogin.go`'s login flow hands the same shape back to `httpapi` to save — `desktop` only ever sees bytes, never the store.
+**Two listeners, one process, one set of routes.** `cmd/flowera/main.go` builds two `*http.ServeMux`s from the same `Server` and calls `RegisterRoutes` on both, so they serve identical behavior; only `RegisterLocalRoutes` (the LAN access code + rotate button, see `internal/httpapi`'s `lanaccess.go` above) is added to one of them. The primary listener (`:8080`) is unauthenticated, exactly as it has always been: desktop agents call back into it, and a human at the control plane's own machine uses it directly. The second (`:8090` by default, `FLOWERA_LAN_PORT`) is wrapped in `internal/lanaccess.Store.Middleware` and is what `scripts/*/build.sh`/`rebuild.sh` point the Cloudflare tunnel at (and what a direct address on the local network should be given too) — a public quick-tunnel URL used to hand out full, unauthenticated control of the machine to whoever had the link; now it needs the code shown in the dashboard's Mobile menu, once, to set a session cookie. `:8080` was deliberately left alone rather than gated in place: it is also what `host.docker.internal:8080` resolves to from inside every desktop container, and there was no way to verify from this repo alone that Docker's published-port routing for that host-gateway path would still work if `:8080`'s own binding changed — so this is a second, additive port rather than a retrofit of the first.
+
+The scripts also discover this machine's own LAN-facing IP (`ip route get 1.1.1.1`'s `src` field on Linux/macOS — asks the kernel which address it would use, no packet actually sent; a UDP `Connect` to a public IP on Windows, the same trick) and `POST /api/tunnel` two more addresses built from it: `admin_url` (`:8080`, unauthenticated) and `lan_url` (the gated port) — both stored on the same `tunnel.Store` as the Cloudflare URL and shown together in the Mobile menu, so a phone on the same network can skip the tunnel round-trip entirely and reach `lan_url` directly, still behind the code. `httpapi.tunnelHandler`'s POST only ever sets the fields present in that call's body, since the admin/LAN report (once, right after startup) and the tunnel-URL report (once per line `cloudflared` prints) are separate calls that must never blank out each other's fields.
+
+Go package dependency direction (no cycles): `httpapi` → `desktop`, `querynotes`, `memory`, `conversation`, `stepimages`, `tasks`, `tunnel`, `claudeauth`, `lanaccess`, `webui`; `webui` → `desktop`, `querynotes`, `memory`, `tasks`, `web`; `desktop` → `ollama` (only for `ollama.DesktopURL`/`DesktopModel`, the Ollama a new desktop is given), `flowera` (the root package, for the embedded build context); `idlepause` → `desktop` (only for the `desktop.Desktop` struct and the `DesktopLister` interface `*desktop.Manager` satisfies) via a narrow interface, so it can be tested with a fake instead of a real Docker client; `querynotes`, `memory`, `conversation`, `stepimages`, `tasks`, `claudeauth` → `sqlitedb` only; `ollama`, `sqlitedb`, `tunnel`, `lanaccess`, `web`, `flowera` depend on nothing internal. Note that `desktop` does *not* depend on `claudeauth`: `httpapi.createDesktopHandler` reads the stored session and hands `Create` its raw credentials JSON as a plain string, and `claudelogin.go`'s login flow hands the same shape back to `httpapi` to save — `desktop` only ever sees bytes, never the store.
 
 Three desktop profiles share the same `agent/` contents but differ in installed tooling:
 - `docker/desktop.basic.Dockerfile` — VNC desktop only (no `claude` binary — Ollama harness only)
@@ -238,7 +279,7 @@ Each desktop picks a harness at creation time (`Desktop.Harness`, `desktop-harne
 ```
 human types in the chat
   → POST /api/desktops/send        → tasks.Plan (new task / reply / retry → a task ID)
-                                   → desktop.Manager.SendRequest(content, task_id) → :8081
+                                   → httpapi.deliverRequest → desktop.Manager.SendRequest(content, task_id) → :8081
                                      → COMMAND_DIR/<stem>.t<id>.txt → watchers.py
                                      → task_context.start(id) → harness.py → engine
                                    → tasks.Commit + conversation.AppendUserRequest
@@ -337,7 +378,8 @@ docker compose up -d             # just the control plane (uses docker/Dockerfil
 go build ./... && go vet ./... && go test ./...   # compile, lint, unit tests
                                   # (internal/memory, internal/conversation, internal/webui,
                                   #  internal/stepimages, internal/httpapi, internal/tasks,
-                                  #  internal/sqlitedb, internal/claudeauth, cmd/flowera's --cli)
+                                  #  internal/sqlitedb, internal/claudeauth, internal/lanaccess,
+                                  #  internal/idlepause, internal/desktop, cmd/flowera's --cli)
 PYTHONPATH=agent python3 -m unittest discover -s agent/tests   # computer-use gate/refs/rendering,
                                   # task IDs and usage totals, recordings (input merging,
                                   # privacy, volatility, the store, replay against a fake screen)
@@ -373,6 +415,8 @@ See [README.md](README.md#-getting-started-running-it-locally) for full step-by-
 | `DESKTOP_STOP_TIMEOUT_SECONDS` | `desktop.Manager.Stop` | `10` | Parsed with `strconv.Atoi`; invalid/`<=0` values are ignored. |
 | `FLOWERA_DATA_DIR` | `sqlitedb.DataDir` | `os.UserConfigDir()/flowera` (`/data` in `docker/Dockerfile`) | Where `flowera.db` lives. |
 | `FLOWERA_STEP_IMAGES_MB` | `cmd/flowera.stepImagesMaxBytes` | `1024` | Byte budget of `stepimages`; oldest screenshots evicted first. |
+| `FLOWERA_LAN_PORT` | `cmd/flowera.lanListenAddr` | `8090` | Port of the second, `lanaccess`-gated listener; also what `docker-compose.yaml`'s `ports:` publishes (`${FLOWERA_LAN_PORT:-8090}`, compose's own substitution from the same `.env`) and what `build.sh`/`rebuild.sh` point `cloudflared` at. |
+| `FLOWERA_IDLE_STOP_MINUTES` | `cmd/flowera.idleStopThreshold` | `5` (on) | `idlepause.Checker.Threshold`, in minutes. Unset or invalid means the default 5; `0` (or any non-positive value) is the explicit opt-out, which the checker's own `Run` loop turns into "do nothing" rather than `main.go` needing separate enabled/disabled wiring. |
 
 **Set automatically per-desktop** (baked into the container's env by `buildDesktopEnv` at creation time — not something you set in `.env`, listed here for wiring reference): `VNC_PW`, `VNC_RESOLUTION` (hardcoded `1280x720`), `DESKTOP_ID` (`sanitizeName(name)` — must stay equal to `Desktop.ID`, see the gotcha below), `DESKTOP_NAME`, `CONTROL_PLANE_URL` (hardcoded `http://host.docker.internal:8080`), `OLLAMA_URL` and `OLLAMA_MODEL` (the control plane's own env when set, otherwise `http://host.docker.internal:11434` + `ollama.Model` (`qwen2.5-coder:3b`) — the Ollama on the host running the control plane, reached over the same `ExtraHosts` entry as `CONTROL_PLANE_URL`; that host's Ollama must listen on more than loopback, i.e. `OLLAMA_HOST=0.0.0.0`), `AGENT_HARNESS` (`ollama`/`claude`/`thebot`, from the harness chosen at creation).
 
@@ -459,6 +503,12 @@ See [README.md](README.md#-getting-started-running-it-locally) for full step-by-
 - A request that arrives before the reasoning backend is up is **queued, never failed**. `watchers.command_watcher` leaves the file sitting in `COMMAND_DIR` while `state.backend_ready` is False and picks it up on a later pass, the same way it already defers a request that arrives mid-task; `harness.wait_for_backend` sets that flag once the engine answers. Dispatching into a backend that is still starting is what turned "Ollama is 20 seconds from ready" into a query asking a human to fix something that was about to fix itself. Every branch of `wait_for_backend` must mean *reachable*, not *launched* — `thebot` waits on both the shared Ollama and soul's own `/api/health`, because soul reports an unreachable Ollama as a reasoning failure that reads like a real one.
 - The command watcher claims the task slot (`state.current_task = content`, under `state.state_lock`) *before* starting the harness thread, not inside `perform_task`. Otherwise the loop tests `current_task` again for the next queued file before the thread it just started has run a line, and dispatches a second task on top of the first — rare when requests trickled in one at a time, routine once a queued backlog can be released all at once.
 - Don't hardcode a Cloudflare quick-tunnel URL as anyone's default. Quick-tunnel hostnames are regenerated on every `cloudflared` restart, so a checked-in one is dead code the day it's written — `buildDesktopEnv`'s `OLLAMA_URL` default was one, and every desktop created after that tunnel died was structurally brainless. Tunnel URLs belong in `.env` (or `internal/tunnel`, set at runtime), never in a literal.
+- **`internal/lanaccess` only ever gates the second listener, never the primary one.** The primary listener (`:8080`) is what `CONTROL_PLANE_URL` points every desktop agent's callbacks at, so putting a login page in front of it would make every `POST /api/querytext`/`/api/agent/events` from inside a container fail closed the moment the control plane started, with no human anywhere to type a code. `cmd/flowera/main.go` builds two independent `*http.ServeMux`s from the one `Server` (`RegisterRoutes` called on both) precisely so a bug in the gate can never touch the primary listener's routing — the two are different `net.Listener`s on different ports, not one mux with some paths exempted. `RegisterLocalRoutes` (the code itself, and the rotate button) is the one asymmetry: registered only on the primary mux, so the code is never fetchable over the very listener it protects.
+- **`lanaccess.Store`'s lockout degrades to one shared bucket for all Cloudflare quick-tunnel traffic**, not a per-attacker throttle. `cloudflared` proxies every external connection through its own local process, so every request the control plane sees over the tunnel carries the same loopback `RemoteAddr` regardless of who is actually on the other end of the internet — `recordFailure`'s per-source key can't tell a legitimate retry from an attacker in that case (a genuine direct-LAN connection, by contrast, gets AO's real per-device lockout). This is why the access code is 10 characters from a 54-character alphabet (`passwordChars`: no `0`/`O`/`1`/`I`/`l`, kept readable and typeable on a phone) rather than AO's 8: the code's own entropy is carrying weight the lockout can't, on that one path.
+- **`idlepause` never guesses "idle" from task history alone.** `Checker.idleSince` takes the *latest* of the desktop's own container start time (`desktop.Desktop.StartedAt`, read off `container.Inspect`'s `State.StartedAt` in `List`/`Get`), its last task activity (`tasks.Store.LastActivity`, `MAX(updated_ns)` over that worker's tasks), and `desktop.Manager.LastViewed` (bumped by `Screenshot` and `resolveProxyTarget` — a card's thumbnail poll or an open screen tab) — never just one signal. A desktop with old task history that was just started fresh, or one with no tasks at all but someone actually looking at its screen right now, must not be stopped out from under them — idle-pause is on by default, so this is the ordinary case, not an edge case someone opted into. `idleSince` returns `ok=false` (leave it alone, never "assume idle") when `StartedAt` itself can't be parsed, which is Docker's own zero-value RFC3339 string for "never started" — a container inspect briefly failing is not evidence of anything.
+- **`idlepause.Checker.Run` returning immediately when `Threshold <= 0` is load-bearing, not an optimization.** `cmd/flowera/main.go` calls `go checker.Run(ctx)` unconditionally, every startup, passing whatever `idleStopThreshold()` returns — including `0` after an explicit `FLOWERA_IDLE_STOP_MINUTES=0` opt-out. The type has to be safe to start with a non-positive `Threshold` because of this, not as a defensive extra: it is the only thing that makes the opt-out actually opt out, rather than `main.go` needing its own enabled/disabled branch that could drift from `idleStopThreshold`'s own idea of "disabled".
+- **`idlepause.Checker.sweep` checks up to `sweepConcurrency` (8) desktops at once, not one at a time.** A burst of desktops crossing the idle threshold in the same tick used to mean stopping them sequentially, and one `Stop` can itself take up to `DESKTOP_STOP_TIMEOUT_SECONDS` (10s default) waiting for a graceful shutdown — with many desktops idle-eligible together (the ordinary case idle-pause is *for*, at scale), a sequential sweep could take minutes and leave the rest of that tick's candidates idle-but-unstopped until the next one. Each `checkOne` only touches its own desktop's state, so nothing here needs a lock beyond the semaphore bounding how many run at once.
+- **A stopped desktop no longer fails a request — `httpapi.deliverRequest` starts it and waits, up to `autoStartTimeout` (90s), before giving up.** This is what makes idle-pause's default-on behavior actually mean "works only when a task is assigned" instead of "silently breaks until a human notices and clicks Start": `desktop.Manager.SendRequest` itself stays a fast "send now, fail if not running" primitive (`ErrNotRunning`), and the wait-and-retry policy lives in `httpapi` — `sendRequestHandler` and `recordTaskHandler` are the two callers, both already about to block the human/automation on the desktop's reply anyway. The retry loop tolerates both `ErrNotRunning` (container still coming up) and `ErrAgentUnreachable` (container up, `vm_server.py` hasn't bound `:8081` yet) as "keep waiting", and returns immediately on anything else. Measured live on this repo's own dev host: a cold `ollama`-harness `basic` desktop took ~20s from stopped to accepting a request — comfortably inside the timeout, but real time a human or an API caller now waits out rather than seeing an error.
 - `progress.emit` is decoration and must stay that way: it never blocks, never raises into a harness, and drops lines when its bounded queue is full. A desktop reporting what it is doing must never be able to slow down or fail the task it is describing — which is also why `agentEventHandler` answers a malformed event with 200 rather than an error the agent would then have to handle.
 - **A turn's last step can arrive after its reply.** Steps go out on `progress`'s background queue, but the reply is POSTed directly, so TheBot's final log line ("wrote … verified on disk") reached the control plane under a millisecond *after* the answer — and `AppendStep`, seeing no running turn, opened a new one that nothing ever closed: the chat showed "Working…" forever over a finished task. Two guards: `messaging.send_query` calls `progress.flush()` (bounded) before sending, and `conversation.AppendStep` attaches a step arriving within `lateStepWindow` of an agent reply to that reply instead of reopening a turn — the second is what covers desktops built from an older image.
 - `DESKTOP_ID` (what a desktop calls itself on every callback) and `Desktop.ID` (what the dashboard lists it as, derived from the container name) must produce the same string, since query notes and chat entries are keyed by it. Both now go through `sanitizeName`; they diverged for any name containing a character only `sanitizeName` rewrites (`my.box` stayed `my.box` in the env var while the desktop was listed as `my-box`), and that desktop's callbacks matched no desktop the dashboard knew. Use `desktop.SanitizeID` from outside the package.

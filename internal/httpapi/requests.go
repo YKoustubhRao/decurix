@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/YKoustubhRao/flowera/internal/desktop"
 	"github.com/YKoustubhRao/flowera/internal/tasks"
@@ -14,6 +15,17 @@ import (
 
 // maxRequestBytes is the longest request a human can send a desktop.
 const maxRequestBytes = 8192
+
+// autoStartTimeout bounds how long deliverRequest waits for a desktop that
+// internal/idlepause (or a person) had stopped to come back up and answer,
+// before giving up. Generous: booting a full XFCE desktop is not instant,
+// and the alternative - failing the request outright - is exactly the
+// "assign it a task and it just works" promise idle-pause's default-on
+// behavior depends on.
+const autoStartTimeout = 90 * time.Second
+
+// autoStartPoll is how often deliverRequest retries while waiting.
+const autoStartPoll = 2 * time.Second
 
 // requestsDashboardHandler renders the requests dashboard page for sending requests to desktops.
 func (s *Server) requestsDashboardHandler(w http.ResponseWriter, r *http.Request) {
@@ -65,12 +77,7 @@ func (s *Server) sendRequestHandler(w http.ResponseWriter, r *http.Request) {
 	id := desktop.SanitizeID(desktopID)
 	route := s.routeRequest(id, content)
 
-	if err := s.Desktops.SendRequest(
-		r.Context(),
-		desktopID,
-		content,
-		route.TaskID,
-	); err != nil {
+	if err := s.deliverRequest(r.Context(), desktopID, content, route.TaskID); err != nil {
 		sendRequestError(w, err)
 		return
 	}
@@ -94,6 +101,57 @@ func (s *Server) routeRequest(desktopID, content string) tasks.Route {
 	}
 
 	return route
+}
+
+// deliverRequest sends content to a desktop, starting it first (and waiting
+// for its agent to come back up) when it is currently stopped, instead of
+// failing outright. internal/idlepause stops a desktop that has sat idle by
+// default - for that to actually mean "works only when a task is assigned"
+// rather than "breaks until a human notices and clicks Start", assigning it
+// a task has to be able to wake it up on its own.
+//
+// desktop.Manager.SendRequest itself stays a fast, simple "send now, fail if
+// not running" primitive; the wait-and-retry policy lives here, since both
+// callers (sendRequestHandler, recordTaskHandler) are already about to
+// block the human/automation on the desktop's reply anyway - there is
+// nothing better to do while it boots than wait for it.
+func (s *Server) deliverRequest(ctx context.Context, desktopID, content, taskID string) error {
+	err := s.Desktops.SendRequest(ctx, desktopID, content, taskID)
+	if err == nil || !errors.Is(err, desktop.ErrNotRunning) {
+		return err
+	}
+
+	if startErr := s.Desktops.Start(ctx, desktopID); startErr != nil {
+		return startErr
+	}
+
+	started := time.Now()
+	log.Printf("deliverRequest: %s was stopped - starting it and waiting up to %s for its agent", desktopID, autoStartTimeout)
+
+	deadline := started.Add(autoStartTimeout)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(autoStartPoll):
+		}
+
+		err = s.Desktops.SendRequest(ctx, desktopID, content, taskID)
+
+		switch {
+		case err == nil:
+			log.Printf("deliverRequest: %s was up and reachable %s after starting", desktopID, time.Since(started).Round(time.Second))
+			return nil
+		case !errors.Is(err, desktop.ErrNotRunning) && !errors.Is(err, desktop.ErrAgentUnreachable):
+			// Something other than "still coming up" - not worth waiting out
+			// the rest of the timeout for (the desktop vanished, say).
+			return err
+		case time.Now().After(deadline):
+			log.Printf("deliverRequest: gave up waiting for %s after %s: %v", desktopID, autoStartTimeout, err)
+			return err
+		}
+	}
 }
 
 // recordDelivered records a request the desktop has accepted, in the task

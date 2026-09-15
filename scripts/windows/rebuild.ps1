@@ -207,6 +207,66 @@ try {
     Write-Host "========================================"
     Write-Host ""
     Write-Host "Dashboard: http://localhost:8080"
+    Write-Host "Idle desktops stop automatically after 5 minutes (set FLOWERA_IDLE_STOP_MINUTES=0 in .env to disable, or to another number of minutes)."
+
+    # FLOWERA_LAN_PORT in .env changes which port the access-code-gated
+    # listener binds.
+    $lanPort = Read-EnvVar -Name "FLOWERA_LAN_PORT"
+    if (-not $lanPort) { $lanPort = "8090" }
+
+    # The machine's own address on whatever network it's on, so both the
+    # admin (unauthenticated) and LAN (access-code-gated) URLs below are
+    # something another device can actually use - not "localhost", which
+    # only means anything on this machine. Opening a UDP "connection" sends
+    # no packets; it only asks Windows which local address it would use to
+    # reach the internet, the same trick build.sh's "ip route get" does.
+    $lanIP = $null
+    try {
+        $socket = New-Object System.Net.Sockets.Socket(
+            [System.Net.Sockets.AddressFamily]::InterNetwork,
+            [System.Net.Sockets.SocketType]::Dgram,
+            [System.Net.Sockets.ProtocolType]::Udp)
+        $socket.Connect("1.1.1.1", 65530)
+        $lanIP = $socket.LocalEndPoint.Address.ToString()
+        $socket.Close()
+    } catch {
+        # No route to the internet, or sockets unavailable - $lanIP stays unset.
+    }
+
+    if ($lanIP) {
+        $adminUrl = "http://${lanIP}:8080"
+        $lanUrl = "http://${lanIP}:$lanPort"
+
+        # Reported once here, separately from the tunnel URL below (which is
+        # reported every time cloudflared prints one) - see
+        # httpapi.tunnelHandler, which never lets one blank out the other.
+        try {
+            Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8080/api/tunnel" `
+                -ContentType "application/json" `
+                -Body (@{ admin_url = $adminUrl; lan_url = $lanUrl } | ConvertTo-Json -Compress) `
+                -TimeoutSec 5 | Out-Null
+        } catch {
+            # Best effort - the dashboard's Mobile menu is the fallback.
+        }
+
+        Write-Host ""
+        Write-Host "Admin URL (full control, no code - keep this to yourself): $adminUrl"
+        Write-Host "LAN access URL (needs the code below, works without the tunnel): $lanUrl"
+    }
+
+    # Printed here as a convenience - it also always lives in the
+    # dashboard's Mobile menu (both URLs above alongside it), which is the
+    # one place it stays current after a rotate.
+    try {
+        $lan = Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/lan-access/status" -TimeoutSec 5
+        if ($lan.code) {
+            Write-Host ""
+            Write-Host "Access code: $($lan.code)"
+            Write-Host "(Needed once by anyone using the LAN or tunnel URL above. Also in the dashboard's Mobile menu, which can generate a new one.)"
+        }
+    } catch {
+        # Best effort - the dashboard's Mobile menu always has it too.
+    }
 
     # The rebuild itself is done at this point (fresh images, fresh
     # desktops, empty database, dashboard responding). Exit-Build marks this
@@ -232,12 +292,19 @@ try {
     }
     Write-Host ""
 
+    # Points at the second, access-code-gated listener (internal/lanaccess),
+    # not 8080 - so the tunnel's public URL is useless without the code
+    # printed above, rather than handing the whole control plane to whoever
+    # gets the link. $lanPort was already read from .env above.
+
     # cloudflared logs to stderr, hence 2>&1. Echo every line while watching
     # for the trycloudflare.com URL, and report it to the control plane for
-    # display in the dashboard's Mobile dropdown. "$_" rather than $_: in
+    # display in the dashboard's Mobile dropdown - that report itself still
+    # goes to 8080, since it is just the dashboard's own record of the URL,
+    # not something that needs the access code. "$_" rather than $_: in
     # Windows PowerShell 5.1 a redirected stderr line arrives as an
     # ErrorRecord, and only its string form is the line itself.
-    cloudflared tunnel --protocol http2 --url http://127.0.0.1:8080 2>&1 | ForEach-Object {
+    cloudflared tunnel --protocol http2 --url "http://127.0.0.1:$lanPort" 2>&1 | ForEach-Object {
         $line = "$_"
         Write-Host $line
 

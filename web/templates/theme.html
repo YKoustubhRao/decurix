@@ -254,6 +254,8 @@ svg{display:block;flex:none}
   transition:background .12s ease,color .12s ease
 }
 .icon-btn:hover{background:var(--surface-2);color:var(--text)}
+.icon-btn.on{color:var(--accent)}
+.icon-btn.on:hover{background:var(--accent-soft);color:var(--accent)}
 
 /* ---------- dropdown menu ---------- */
 
@@ -290,6 +292,13 @@ svg{display:block;flex:none}
   word-break:break-all
 }
 .menu-link:hover{border-color:var(--line-2)}
+
+.menu-title-spaced{margin-top:13px}
+
+.code-row{display:flex;align-items:center;gap:8px;margin-top:9px}
+.code-row .menu-link{margin-top:0;flex:1;min-width:0;letter-spacing:.04em}
+
+.rotate-code-btn{margin-top:9px;width:100%;justify-content:center}
 
 /* theme toggle: swap glyphs with the same three-state pattern as the tokens */
 .t-sun{display:none}
@@ -406,6 +415,14 @@ svg{display:block;flex:none}
 }
 .status.running{background:var(--live-soft);color:var(--live)}
 .status.stopped{background:var(--idle-soft);color:var(--text-2)}
+
+/* A desktop with an open query note takes this over its own "running" pill -
+   one status slot, not a second competing badge - using the same accent
+   already used for the nav's query count rather than a new hue: Flowera's
+   palette is deliberately three semantic colors (live/idle/danger) plus
+   accent, not a wider status-color system. */
+.status.needs-you{background:var(--accent-soft);color:var(--accent)}
+.status.needs-you .dot{animation:none}
 
 .dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
 .status.running .dot{animation:pulse 2.4s ease-in-out infinite}
@@ -649,6 +666,7 @@ body.busy{cursor:progress}
 <symbol id="i-record" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="8.4"/><circle cx="12" cy="12" r="3.6" fill="currentColor" stroke="none"/></symbol>
 <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/></symbol>
 <symbol id="i-monitor"viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.8" y="4" width="18.4" height="12.4" rx="2.2"/><path d="M8.5 20.2h7M12 16.4v3.8"/></symbol>
+<symbol id="i-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 10.6a6 6 0 0 1 12 0c0 3.3.9 5.3 1.8 6.4H4.2c.9-1.1 1.8-3.1 1.8-6.4Z"/><path d="M10.2 19.8a1.9 1.9 0 0 0 3.6 0"/></symbol>
 </defs></svg>
 {{end}}
 
@@ -783,45 +801,163 @@ body.busy{cursor:progress}
     });
   }
 
-  /* ---- cloud tunnel link ---- */
+  /* ---- addresses to reach this control plane from elsewhere ----
+     Everything here is either reported by build.sh (or rebuild.sh, per OS)
+     via POST /api/tunnel - the tunnel URL and the machine's own LAN address
+     for each of the two listeners cmd/flowera/main.go starts - or, for the
+     access code the gated ones need, read from internal/lanaccess via
+     /api/lan-access/status. One panel, one source of truth for all of it,
+     rather than the code living only in a terminal a person has since closed. */
 
-  function renderTunnel(url){
+  var lastTunnelURL = "";
+  var lastAdminURL = "";
+  var lastLANURL = "";
+  var lastLAN = null;
+
+  // addLinkRow appends a copyable, clickable address row (a Cloudflare
+  // tunnel URL or a LAN address) to panel.
+  function addLinkRow(panel, url, copyLabel){
+    var row = document.createElement("div");
+    row.className = "code-row";
+
+    var link = document.createElement("a");
+    link.className = "menu-link";
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.textContent = url;
+    row.appendChild(link);
+
+    var copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "icon-btn";
+    copyBtn.setAttribute("aria-label", copyLabel);
+    copyBtn.innerHTML = '<svg width="13" height="13"><use href="#i-copy"/></svg>';
+    copyBtn.addEventListener("click", async function(){
+      try{
+        await navigator.clipboard.writeText(url);
+        toast("Copied.");
+      }catch(e){
+        toast("Couldn't copy to the clipboard.", "error");
+      }
+    });
+    row.appendChild(copyBtn);
+
+    panel.appendChild(row);
+  }
+
+  function addSectionTitle(panel, text, spaced){
+    var title = document.createElement("div");
+    title.className = spaced ? "menu-title menu-title-spaced" : "menu-title";
+    title.textContent = text;
+    panel.appendChild(title);
+  }
+
+  function addNote(panel, text){
+    var note = document.createElement("div");
+    note.className = "menu-note";
+    note.textContent = text;
+    panel.appendChild(note);
+  }
+
+  function renderMobilePanel(){
     var panel = document.getElementById("tunnelPanel");
     if(!panel){ return; }
 
     panel.innerHTML = "";
 
-    var title = document.createElement("div");
-    title.className = "menu-title";
-    title.textContent = "Open on your phone";
-    panel.appendChild(title);
+    /* -- reachable addresses: the tunnel and/or the direct LAN address of
+       the gated listener, whichever exist. Both need the code below. -- */
+    addSectionTitle(panel, "Open on your phone");
 
-    var note = document.createElement("div");
-    note.className = "menu-note";
-    note.textContent = url
-      ? "This Cloudflare tunnel points at the control plane."
-      : "No cloud tunnel is running. Start one with scripts/build.sh.";
-    panel.appendChild(note);
+    if(lastTunnelURL || lastLANURL){
+      addNote(panel, "Needs the access code below, whichever address you use.");
+      if(lastTunnelURL){ addLinkRow(panel, lastTunnelURL, "Copy tunnel link"); }
+      if(lastLANURL){ addLinkRow(panel, lastLANURL, "Copy LAN link"); }
+    }else{
+      addNote(panel, "No tunnel running and no LAN address known yet. Start one with scripts/build.sh.");
+    }
 
-    if(url){
-      var link = document.createElement("a");
-      link.className = "menu-link";
-      link.href = url;
-      link.target = "_blank";
-      link.rel = "noopener";
-      link.textContent = url;
-      panel.appendChild(link);
+    /* -- the code both addresses above need -- */
+    if(lastLAN && lastLAN.enabled){
+      addSectionTitle(panel, "Access code", true);
+      addNote(panel, "Enter it once per device; it's remembered after that.");
+
+      var codeRow = document.createElement("div");
+      codeRow.className = "code-row";
+
+      var codeEl = document.createElement("code");
+      codeEl.className = "menu-link code-value";
+      codeEl.textContent = lastLAN.code;
+      codeRow.appendChild(codeEl);
+
+      var copyBtn = document.createElement("button");
+      copyBtn.type = "button";
+      copyBtn.className = "icon-btn";
+      copyBtn.setAttribute("aria-label", "Copy access code");
+      copyBtn.innerHTML = '<svg width="13" height="13"><use href="#i-copy"/></svg>';
+      copyBtn.addEventListener("click", async function(){
+        try{
+          await navigator.clipboard.writeText(lastLAN.code);
+          toast("Access code copied.");
+        }catch(e){
+          toast("Couldn't copy to the clipboard.", "error");
+        }
+      });
+      codeRow.appendChild(copyBtn);
+      panel.appendChild(codeRow);
+
+      var rotateBtn = document.createElement("button");
+      rotateBtn.type = "button";
+      rotateBtn.className = "btn btn-quiet btn-sm rotate-code-btn";
+      rotateBtn.textContent = "New code";
+      rotateBtn.title = "Generates a new code and signs out anyone already connected.";
+      rotateBtn.addEventListener("click", async function(){
+        rotateBtn.disabled = true;
+
+        try{
+          var result = await post("/api/lan-access/rotate", {});
+          lastLAN.code = result.code;
+          renderMobilePanel();
+          toast("New access code generated - anyone already connected was signed out.");
+        }catch(e){
+          toast(e.message, "error");
+        }finally{
+          rotateBtn.disabled = false;
+        }
+      });
+      panel.appendChild(rotateBtn);
+    }
+
+    /* -- the unauthenticated admin address, kept visually separate and
+       clearly labelled so it never reads as "the" link to hand out -- */
+    addSectionTitle(panel, "Admin access", true);
+
+    if(lastAdminURL){
+      addNote(panel, "Full control, no code needed - keep this to yourself.");
+      addLinkRow(panel, lastAdminURL, "Copy admin link");
+    }else{
+      addNote(panel, "Not known yet - start Flowera with scripts/build.sh.");
     }
   }
 
   async function refreshTunnel(){
     try{
       var response = await fetch("/api/tunnel", {cache: "no-store"});
-      if(!response.ok){ return; }
-
-      var data = await response.json();
-      renderTunnel(data.url || "");
+      if(response.ok){
+        var data = await response.json();
+        lastTunnelURL = data.url || "";
+        lastAdminURL = data.admin_url || "";
+        lastLANURL = data.lan_url || "";
+      }
     }catch(e){ /* keep whatever is already rendered */ }
+
+    try{
+      var lanResponse = await fetch("/api/lan-access/status", {cache: "no-store"});
+      if(lanResponse.ok){ lastLAN = await lanResponse.json(); }
+    }catch(e){ /* keep whatever is already rendered */ }
+
+    renderMobilePanel();
   }
 
   /* ---- open query count in the nav ---- */
@@ -840,8 +976,95 @@ body.busy{cursor:progress}
       if(!response.ok){ return; }
 
       var notes = await response.json();
-      setQueryBadge(Array.isArray(notes) ? notes.length : 0);
+      notes = Array.isArray(notes) ? notes : [];
+      setQueryBadge(notes.length);
+      notifyNewQueries(notes);
     }catch(e){ /* leave the badge alone */ }
+  }
+
+  /* ---- desktop notifications for queries that need you ----
+     Opt-in (the bell toggle), and only for notes that arrive after this page
+     is already open - the first sync after a load just records what already
+     exists so opening the dashboard never fires a burst of stale alerts. A
+     notification only fires while the tab is hidden or unfocused: if it is
+     the thing on screen, the badge/rail/card already said so and a native
+     popup on top would just be noise (see the design system's "no fake
+     urgency" rule this borrows from). */
+
+  var NOTIFY_KEY = "flowera-notify";
+  var notifiedIds = null;
+
+  function notifySupported(){
+    return typeof Notification !== "undefined";
+  }
+
+  function notifyEnabled(){
+    try{ return localStorage.getItem(NOTIFY_KEY) === "on"; }catch(e){ return false; }
+  }
+
+  function setNotifyEnabled(on){
+    try{ localStorage.setItem(NOTIFY_KEY, on ? "on" : "off"); }catch(e){}
+  }
+
+  function updateNotifyButton(){
+    var btn = document.getElementById("notifyToggle");
+    if(!btn){ return; }
+
+    var on = notifyEnabled() && notifySupported() && Notification.permission === "granted";
+    btn.classList.toggle("on", on);
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    btn.setAttribute("aria-label", on ? "Desktop notifications on for queries" : "Turn on desktop notifications for queries");
+  }
+
+  function notifyNewQueries(notes){
+    if(notifiedIds === null){
+      notifiedIds = new Set(notes.map(function(n){ return n.id; }));
+      return;
+    }
+
+    var seenBefore = notifiedIds;
+    notifiedIds = new Set(notes.map(function(n){ return n.id; }));
+
+    if(!notifyEnabled() || !notifySupported() || Notification.permission !== "granted"){ return; }
+    if(document.visibilityState === "visible" && document.hasFocus()){ return; }
+
+    notes.forEach(function(note){
+      if(seenBefore.has(note.id)){ return; }
+
+      try{
+        var n = new Notification((note.vm_name || note.filename || "A desktop") + " needs you", {
+          body: (note.content || "").slice(0, 180),
+          tag: "flowera-query-" + note.id
+        });
+        n.onclick = function(){ window.focus(); n.close(); };
+      }catch(e){ /* notifications unavailable or blocked mid-session */ }
+    });
+  }
+
+  async function toggleNotify(){
+    if(!notifySupported()){
+      toast("This browser doesn't support desktop notifications.", "error");
+      return;
+    }
+
+    if(notifyEnabled()){
+      setNotifyEnabled(false);
+      updateNotifyButton();
+      return;
+    }
+
+    var permission = Notification.permission;
+    if(permission === "default"){ permission = await Notification.requestPermission(); }
+
+    if(permission !== "granted"){
+      toast("Notifications are blocked for this site in your browser.", "error");
+      updateNotifyButton();
+      return;
+    }
+
+    setNotifyEnabled(true);
+    updateNotifyButton();
+    toast("Desktop notifications are on for queries that need you.");
   }
 
   /* ---- boot ---- */
@@ -857,7 +1080,14 @@ body.busy{cursor:progress}
     var themeButton = document.getElementById("themeToggle");
     if(themeButton){ themeButton.addEventListener("click", toggleTheme); }
 
-    renderTunnel(document.body.dataset.tunnel || "");
+    var notifyButton = document.getElementById("notifyToggle");
+    if(notifyButton){
+      notifyButton.addEventListener("click", toggleNotify);
+      updateNotifyButton();
+    }
+
+    lastTunnelURL = document.body.dataset.tunnel || "";
+    renderMobilePanel();
     refreshTunnel();
     setInterval(refreshTunnel, 15000);
 
@@ -872,7 +1102,8 @@ body.busy{cursor:progress}
     toast: toast,
     busy: busy,
     post: post,
-    setQueryBadge: setQueryBadge
+    setQueryBadge: setQueryBadge,
+    notifyNewQueries: notifyNewQueries
   };
 })();
 </script>
@@ -904,6 +1135,10 @@ body.busy{cursor:progress}
       </button>
       <div class="menu-panel" id="tunnelPanel"></div>
     </div>
+
+    <button type="button" class="icon-btn" id="notifyToggle" aria-pressed="false" aria-label="Turn on desktop notifications for queries">
+      <svg width="17" height="17"><use href="#i-bell"/></svg>
+    </button>
 
     <button type="button" class="icon-btn" id="themeToggle" aria-label="Toggle color theme">
       <svg class="t-sun" width="17" height="17"><use href="#i-sun"/></svg>
