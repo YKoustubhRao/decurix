@@ -866,19 +866,18 @@ body.busy{cursor:progress}
 
     panel.innerHTML = "";
 
-    /* -- reachable addresses: the tunnel and/or the direct LAN address of
-       the gated listener, whichever exist. Both need the code below. -- */
+    /* -- the direct LAN address of the gated listener, the one address here
+       that still needs the code below. -- */
     addSectionTitle(panel, "Open on your phone");
 
-    if(lastTunnelURL || lastLANURL){
-      addNote(panel, "Needs the access code below, whichever address you use.");
-      if(lastTunnelURL){ addLinkRow(panel, lastTunnelURL, "Copy tunnel link"); }
-      if(lastLANURL){ addLinkRow(panel, lastLANURL, "Copy LAN link"); }
+    if(lastLANURL){
+      addNote(panel, "Needs the access code below.");
+      addLinkRow(panel, lastLANURL, "Copy LAN link");
     }else{
-      addNote(panel, "No tunnel running and no LAN address known yet. Start one with scripts/build.sh.");
+      addNote(panel, "No LAN address known yet. Start Flowera with scripts/build.sh.");
     }
 
-    /* -- the code both addresses above need -- */
+    /* -- the code the LAN address above needs -- */
     if(lastLAN && lastLAN.enabled){
       addSectionTitle(panel, "Access code", true);
       addNote(panel, "Enter it once per device; it's remembered after that.");
@@ -929,13 +928,16 @@ body.busy{cursor:progress}
       panel.appendChild(rotateBtn);
     }
 
-    /* -- the unauthenticated admin address, kept visually separate and
-       clearly labelled so it never reads as "the" link to hand out -- */
+    /* -- the unauthenticated addresses: the local admin address and the
+       Cloudflare tunnel (which now points at the same, unauthenticated
+       listener) - kept visually separate and clearly labelled so neither
+       reads as safe to hand out casually -- */
     addSectionTitle(panel, "Admin access", true);
 
-    if(lastAdminURL){
-      addNote(panel, "Full control, no code needed - keep this to yourself.");
-      addLinkRow(panel, lastAdminURL, "Copy admin link");
+    if(lastAdminURL || lastTunnelURL){
+      addNote(panel, "Full control, no code needed - keep these to yourself.");
+      if(lastAdminURL){ addLinkRow(panel, lastAdminURL, "Copy admin link"); }
+      if(lastTunnelURL){ addLinkRow(panel, lastTunnelURL, "Copy tunnel link"); }
     }else{
       addNote(panel, "Not known yet - start Flowera with scripts/build.sh.");
     }

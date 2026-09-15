@@ -264,7 +264,7 @@ try {
             $lanCode = $lan.code
             Write-Host ""
             Write-Host "Access code: $lanCode"
-            Write-Host "(Needed once by anyone using the LAN or tunnel URL above. Also in the dashboard's Mobile menu, which can generate a new one.)"
+            Write-Host "(Needed once by anyone using the LAN URL above. Also in the dashboard's Mobile menu, which can generate a new one.)"
 
             # A one-click link for whoever is sitting at this terminal right
             # now - they already have the code above, so this authenticates
@@ -302,19 +302,18 @@ try {
     }
     Write-Host ""
 
-    # Points at the second, access-code-gated listener (internal/lanaccess),
-    # not 8080 - so the tunnel's public URL is useless without the code
-    # printed above, rather than handing the whole control plane to whoever
-    # gets the link. $lanPort was already read from .env above.
+    # Points at the primary listener (:8080), not the access-code-gated one -
+    # so this URL is full, unauthenticated control of the machine, reachable
+    # by anyone who has the link, the same as sitting at the machine itself.
+    # The gated URL printed above ($lanUrl, over $lanPort) is still there for
+    # anyone who wants the code-gated option instead.
 
     # cloudflared logs to stderr, hence 2>&1. Echo every line while watching
     # for the trycloudflare.com URL, and report it to the control plane for
-    # display in the dashboard's Mobile dropdown - that report itself still
-    # goes to 8080, since it is just the dashboard's own record of the URL,
-    # not something that needs the access code. "$_" rather than $_: in
+    # display in the dashboard's Mobile dropdown. "$_" rather than $_: in
     # Windows PowerShell 5.1 a redirected stderr line arrives as an
     # ErrorRecord, and only its string form is the line itself.
-    cloudflared tunnel --protocol http2 --url "http://127.0.0.1:$lanPort" 2>&1 | ForEach-Object {
+    cloudflared tunnel --protocol http2 --url "http://127.0.0.1:8080" 2>&1 | ForEach-Object {
         $line = "$_"
         Write-Host $line
 
@@ -330,10 +329,7 @@ try {
                 # shows it.
             }
 
-            # $lanCode was already read above, before this pipeline started.
-            if ($lanCode) {
-                Write-Host "Open it yourself without typing the code: $tunnelUrl/__flowera_access/authenticate?code=$lanCode"
-            }
+            Write-Host "(No access code needed for this URL - full control of this machine. Keep it to yourself.)"
         }
     }
 }
