@@ -23,6 +23,7 @@ import (
 	"github.com/YKoustubhRao/flowera/internal/memory"
 	"github.com/YKoustubhRao/flowera/internal/ollama"
 	"github.com/YKoustubhRao/flowera/internal/querynotes"
+	"github.com/YKoustubhRao/flowera/internal/schedule"
 	"github.com/YKoustubhRao/flowera/internal/sqlitedb"
 	"github.com/YKoustubhRao/flowera/internal/stepimages"
 	"github.com/YKoustubhRao/flowera/internal/tasks"
@@ -220,6 +221,7 @@ func main() {
 
 	tasksStore := must(tasks.NewStore(db))
 	lanAccess := lanaccess.NewStore()
+	schedules := must(schedule.NewStore(db))
 
 	server := httpapi.NewServer(
 		desktops,
@@ -231,6 +233,7 @@ func main() {
 		tunnel.NewStore(),
 		must(claudeauth.NewStore(db)),
 		lanAccess,
+		schedules,
 		webui.NewRenderer(),
 	)
 
@@ -290,6 +293,12 @@ func main() {
 
 	checker := &idlepause.Checker{Desktops: desktops, Tasks: tasksStore, Threshold: idleThreshold}
 	go checker.Run(context.Background())
+
+	// Fires each recurring request set up on the requests page when its cron
+	// expression next matches, through the same path a one-off Send takes
+	// (Server.Submit). See internal/schedule's package doc.
+	scheduler := &schedule.Runner{Store: schedules, Submitter: server}
+	go scheduler.Run(context.Background())
 
 	log.Printf("Desktop manager listening on %s", listenAddr)
 

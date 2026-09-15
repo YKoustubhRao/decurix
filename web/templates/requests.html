@@ -50,6 +50,48 @@
 
 .sent{display:flex;align-items:center;gap:6px;color:var(--live);font-size:12.5px;font-weight:550}
 
+.repeat-row{display:flex;align-items:center;gap:9px;cursor:pointer;user-select:none}
+.repeat-row input{width:16px;height:16px;accent-color:var(--accent);cursor:pointer}
+.repeat-row span{font-size:13px;font-weight:550;color:var(--text)}
+
+.cron-field{display:none}
+.cron-field.on{display:grid}
+.cron-field .input{font-family:var(--mono)}
+
+.sched-panel{margin-top:18px}
+.sched-panel .panel-head{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:15px 20px;
+  border-bottom:1px solid var(--line);
+  font-size:14px;
+  font-weight:650;
+  color:var(--text)
+}
+.sched-panel .panel-head svg{color:var(--text-3)}
+.sched-row{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:14px;
+  padding:14px 20px;
+  border-bottom:1px solid var(--line)
+}
+.sched-row:last-child{border-bottom:none}
+.sched-row[data-enabled="false"]{opacity:.55}
+.sched-main{min-width:0;display:grid;gap:5px}
+.sched-content{
+  font-size:13px;
+  color:var(--text);
+  white-space:pre-wrap;
+  word-break:break-word;
+  max-width:64ch
+}
+.sched-meta{display:flex;flex-wrap:wrap;align-items:center;gap:7px 11px;font-size:11.5px;color:var(--text-3)}
+.sched-actions{display:flex;gap:6px;flex-shrink:0}
+.sched-empty{padding:26px 20px;color:var(--text-3);font-size:13px;text-align:center}
+
 .dest-status{
   display:inline-flex;
   align-items:center;
@@ -120,6 +162,24 @@
         <div class="hint">Saved inside the desktop as <span class="mono">DDMMYYYYHHMMSS.txt</span>.</div>
       </div>
 
+      <div class="field">
+        <label class="repeat-row">
+          <input type="checkbox" id="repeat">
+          <span>Repeat on a schedule</span>
+        </label>
+      </div>
+
+      <div class="field cron-field" id="cronField">
+        <label for="cron">Cron schedule <span class="mono">(minute hour day month weekday, UTC)</span></label>
+        <input class="input" id="cron" name="cron" placeholder="*/30 * * * *" autocomplete="off">
+        <div class="hint">
+          Resubmits this same request every time the schedule matches, and appends
+          <span class="mono">TIME:{&hellip;}</span> to it with when that run triggered. Examples:
+          <span class="mono">0 * * * *</span> hourly, <span class="mono">0 9 * * *</span> daily at 09:00 UTC,
+          <span class="mono">0 9 * * 1</span> every Monday at 09:00 UTC.
+        </div>
+      </div>
+
     </div>
 
     <div class="compose-foot">
@@ -130,6 +190,14 @@
       </button>
     </div>
   </form>
+
+  <div class="panel sched-panel">
+    <div class="panel-head">
+      <svg width="15" height="15"><use href="#i-clock"/></svg>
+      Scheduled requests
+    </div>
+    <div id="schedList"></div>
+  </div>
 {{else}}
   <div class="empty">
     <div class="empty-mark"><svg width="19" height="19"><use href="#i-monitor"/></svg></div>
@@ -159,6 +227,10 @@
   var content = document.getElementById("content");
   var counter = document.getElementById("counter");
   var sendButton = document.getElementById("sendButton");
+  var repeat = document.getElementById("repeat");
+  var cronField = document.getElementById("cronField");
+  var cronInput = document.getElementById("cron");
+  var schedList = document.getElementById("schedList");
 
   /* ---------------- destination status ---------------- */
 
@@ -173,6 +245,22 @@
 
   select.addEventListener("change", syncStatus);
   syncStatus();
+
+  /* ---------------- repeat-on-a-schedule toggle ---------------- */
+
+  function syncRepeatUI(){
+    var on = repeat.checked;
+
+    cronField.classList.toggle("on", on);
+    cronInput.required = on;
+
+    sendButton.innerHTML = on
+      ? '<svg width="15" height="15"><use href="#i-clock"/></svg>Schedule it'
+      : '<svg width="15" height="15"><use href="#i-send"/></svg>Send to desktop';
+  }
+
+  repeat.addEventListener("change", syncRepeatUI);
+  syncRepeatUI();
 
   /* ---------------- character count ---------------- */
 
@@ -199,16 +287,34 @@
       return toast("Write a request first.", "error");
     }
 
+    var repeating = repeat.checked;
+    var cron = cronInput.value.trim();
+
+    if(repeating && !cron){
+      cronInput.focus();
+      return toast("Enter a cron schedule first.", "error");
+    }
+
     sendButton.disabled = true;
     Flowera.busy(true);
 
     try{
-      await post("/api/desktops/send", {id: select.value, content: text});
+      if(repeating){
+        await post("/api/schedules/create", {id: select.value, content: text, cron: cron});
+
+        cronInput.value = "";
+        repeat.checked = false;
+        syncRepeatUI();
+        markSent("Schedule created");
+        loadSchedules();
+      }else{
+        await post("/api/desktops/send", {id: select.value, content: text});
+        markSent("Delivered to the desktop");
+      }
 
       content.value = "";
       counter.textContent = "0";
       content.focus();
-      markSent();
     }catch(e){
       toast(e.message, "error");
     }finally{
@@ -218,18 +324,157 @@
   });
 
   /* Swap the keyboard hint for a confirmation, then put the hint back. */
-  function markSent(){
+  function markSent(message){
     var hint = document.getElementById("footHint");
     var original = hint.innerHTML;
 
     hint.className = "sent";
-    hint.innerHTML = '<svg width="14" height="14"><use href="#i-check"/></svg>Delivered to the desktop';
+    hint.innerHTML = '<svg width="14" height="14"><use href="#i-check"/></svg>' + message;
 
     setTimeout(function(){
       hint.className = "hint";
       hint.innerHTML = original;
     }, 3200);
   }
+
+  /* ---------------- scheduled requests list ---------------- */
+
+  function desktopName(id){
+    var option = select.querySelector('option[value="' + id.replace(/"/g, '\\"') + '"]');
+    return option ? option.textContent : id;
+  }
+
+  /* Zero time comes back as Go's RFC3339 zero value - "never happened",
+     not a real timestamp. */
+  function formatWhen(iso){
+    if(!iso){ return null; }
+
+    var d = new Date(iso);
+    if(isNaN(d.getTime()) || d.getUTCFullYear() <= 1){ return null; }
+
+    return d.toLocaleString(undefined, {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
+  }
+
+  function scheduleRow(sch){
+    var row = document.createElement("div");
+    row.className = "sched-row";
+    row.dataset.enabled = sch.enabled ? "true" : "false";
+
+    var main = document.createElement("div");
+    main.className = "sched-main";
+
+    var body = document.createElement("div");
+    body.className = "sched-content";
+    body.textContent = sch.content;
+    main.appendChild(body);
+
+    var meta = document.createElement("div");
+    meta.className = "sched-meta";
+
+    var cronChip = document.createElement("span");
+    cronChip.className = "mono";
+    cronChip.textContent = sch.cron_expr;
+    meta.appendChild(cronChip);
+
+    var dest = document.createElement("span");
+    dest.textContent = desktopName(sch.desktop_id);
+    meta.appendChild(dest);
+
+    var state = document.createElement("span");
+    if(!sch.enabled){
+      state.textContent = "Paused";
+    }else{
+      var next = formatWhen(sch.next_run_at);
+      state.textContent = next ? ("Next " + next + " UTC") : "Next run pending";
+    }
+    meta.appendChild(state);
+
+    var lastRun = formatWhen(sch.last_run_at);
+    if(lastRun){
+      var last = document.createElement("span");
+      last.textContent = "Last ran " + lastRun + " UTC";
+      meta.appendChild(last);
+    }
+
+    main.appendChild(meta);
+    row.appendChild(main);
+
+    var actions = document.createElement("div");
+    actions.className = "sched-actions";
+
+    var toggleBtn = document.createElement("button");
+    toggleBtn.type = "button";
+    toggleBtn.className = "btn btn-quiet btn-sm";
+    toggleBtn.textContent = sch.enabled ? "Pause" : "Resume";
+    toggleBtn.addEventListener("click", function(){
+      toggleSchedule(sch.id, !sch.enabled);
+    });
+    actions.appendChild(toggleBtn);
+
+    var deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "btn btn-quiet btn-sm";
+    deleteBtn.setAttribute("aria-label", "Delete schedule");
+    deleteBtn.innerHTML = '<svg width="14" height="14"><use href="#i-trash"/></svg>';
+    deleteBtn.addEventListener("click", function(){
+      deleteSchedule(sch.id);
+    });
+    actions.appendChild(deleteBtn);
+
+    row.appendChild(actions);
+
+    return row;
+  }
+
+  function renderSchedules(list){
+    schedList.innerHTML = "";
+
+    if(!list.length){
+      var empty = document.createElement("div");
+      empty.className = "sched-empty";
+      empty.textContent = "No scheduled requests yet.";
+      schedList.appendChild(empty);
+      return;
+    }
+
+    list.forEach(function(sch){
+      schedList.appendChild(scheduleRow(sch));
+    });
+  }
+
+  async function loadSchedules(){
+    var list;
+
+    try{
+      var response = await fetch("/api/schedules", {cache: "no-store"});
+      list = await response.json();
+    }catch(e){
+      return;
+    }
+
+    renderSchedules(list || []);
+  }
+
+  async function toggleSchedule(id, enabled){
+    try{
+      await post("/api/schedules/toggle", {id: id, enabled: String(enabled)});
+      loadSchedules();
+    }catch(e){
+      toast(e.message, "error");
+    }
+  }
+
+  async function deleteSchedule(id){
+    try{
+      await post("/api/schedules/delete", {id: id});
+      loadSchedules();
+    }catch(e){
+      toast(e.message, "error");
+    }
+  }
+
+  loadSchedules();
+  setInterval(loadSchedules, 20000);
 })();
 </script>
 

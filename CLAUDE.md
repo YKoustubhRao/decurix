@@ -122,9 +122,30 @@ internal/claudeauth — the one shared Claude Code login every claude-harness
                       leaves it alone, and rebuild.sh wipes it for free as part
                       of wiping flowera-data — no script changes needed for
                       either half of that
+internal/schedule  — recurring requests set up from the requests page (not the
+                      chat): Store persists each one (desktop, request text,
+                      a standard 5-field cron expression, next/last run) in
+                      SQLite; cron.go is a small pure-Go parser/matcher (no
+                      external dependency, matching the sqlitedb/modernc.org
+                      choice to stay CGO_ENABLED=0) with the standard
+                      day-of-month/day-of-week OR rule, run in UTC. Runner
+                      ticks (20s default) and fires a schedule through the
+                      Submitter interface once its next-run time has arrived,
+                      appending "\n\nTIME:{<RFC3339>}" to the request text so
+                      the agent knows when that run triggered; a schedule
+                      always advances to its next occurrence after firing
+                      (success or not), so a control-plane outage causes one
+                      catch-up run on restart, never a backlog. Depends on
+                      nothing internal but sqlitedb
 internal/httpapi   — the only package touching net/http; all HTTP handlers,
                       composes desktop+querynotes+memory+conversation+stepimages+tasks+
-                      tunnel+claudeauth+lanaccess+webui. lanaccess.go: the two routes
+                      tunnel+claudeauth+lanaccess+schedule+webui. schedules.go: the
+                      requests page's recurring-request CRUD (/api/schedules,
+                      .../create, .../delete, .../toggle) and Server.Submit, which
+                      implements schedule.Submitter by calling the same submitRequest
+                      every human-typed request already goes through - a schedule's
+                      fired request is a fourth door onto Plan/deliver/Commit, after
+                      the chat, the requests page and a query reply. lanaccess.go: the two routes
                       RegisterLocalRoutes registers only on the primary listener -
                       the current LAN/tunnel access code and the button that rotates
                       it - never served back over the listener that code itself
@@ -263,7 +284,7 @@ Control plane → desktop communication happens over the Docker bridge network `
 
 The scripts also discover this machine's own LAN-facing IP (`ip route get 1.1.1.1`'s `src` field on Linux/macOS — asks the kernel which address it would use, no packet actually sent; a UDP `Connect` to a public IP on Windows, the same trick) and `POST /api/tunnel` two more addresses built from it: `admin_url` (`:8080`, unauthenticated) and `lan_url` (the gated port) — stored on the same `tunnel.Store` as the two Cloudflare URLs (`url` for the primary tunnel, `lan_tunnel_url` for the gated one) and shown together in the Mobile menu (`url`/`admin_url` grouped as unauthenticated, `lan_url`/`lan_tunnel_url` grouped separately with the code, tunnel link listed first since it works off-network), so a phone on the same network can skip either tunnel round-trip entirely and reach an address directly. `httpapi.tunnelHandler`'s POST only ever sets the fields present in that call's body, since the admin/LAN report (once, right after startup) and each tunnel-URL report (once per line its own `cloudflared` process prints) are separate calls that must never blank out each other's fields.
 
-Go package dependency direction (no cycles): `httpapi` → `desktop`, `querynotes`, `memory`, `conversation`, `stepimages`, `tasks`, `tunnel`, `claudeauth`, `lanaccess`, `webui`; `webui` → `desktop`, `querynotes`, `memory`, `tasks`, `web`; `desktop` → `ollama` (only for `ollama.DesktopURL`/`DesktopModel`, the Ollama a new desktop is given), `flowera` (the root package, for the embedded build context); `idlepause` → `desktop` (only for the `desktop.Desktop` struct and the `DesktopLister` interface `*desktop.Manager` satisfies) via a narrow interface, so it can be tested with a fake instead of a real Docker client; `querynotes`, `memory`, `conversation`, `stepimages`, `tasks`, `claudeauth` → `sqlitedb` only; `ollama`, `sqlitedb`, `tunnel`, `lanaccess`, `web`, `flowera` depend on nothing internal. Note that `desktop` does *not* depend on `claudeauth`: `httpapi.createDesktopHandler` reads the stored session and hands `Create` its raw credentials JSON as a plain string, and `claudelogin.go`'s login flow hands the same shape back to `httpapi` to save — `desktop` only ever sees bytes, never the store.
+Go package dependency direction (no cycles): `httpapi` → `desktop`, `querynotes`, `memory`, `conversation`, `stepimages`, `tasks`, `tunnel`, `claudeauth`, `lanaccess`, `schedule`, `webui`; `webui` → `desktop`, `querynotes`, `memory`, `tasks`, `web`; `desktop` → `ollama` (only for `ollama.DesktopURL`/`DesktopModel`, the Ollama a new desktop is given), `flowera` (the root package, for the embedded build context); `idlepause` → `desktop` (only for the `desktop.Desktop` struct and the `DesktopLister` interface `*desktop.Manager` satisfies) via a narrow interface, so it can be tested with a fake instead of a real Docker client; `schedule` has no internal dependency of its own - its `Runner` reaches `httpapi` only through the `Submitter` interface `*httpapi.Server` satisfies (`Submit`), the same narrowing `idlepause` uses for `desktop`; `querynotes`, `memory`, `conversation`, `stepimages`, `tasks`, `claudeauth`, `schedule` → `sqlitedb` only; `ollama`, `sqlitedb`, `tunnel`, `lanaccess`, `web`, `flowera` depend on nothing internal. Note that `desktop` does *not* depend on `claudeauth`: `httpapi.createDesktopHandler` reads the stored session and hands `Create` its raw credentials JSON as a plain string, and `claudelogin.go`'s login flow hands the same shape back to `httpapi` to save — `desktop` only ever sees bytes, never the store.
 
 Three desktop profiles share the same `agent/` contents but differ in installed tooling:
 - `docker/desktop.basic.Dockerfile` — VNC desktop only (no `claude` binary — Ollama harness only)
@@ -386,7 +407,8 @@ go build ./... && go vet ./... && go test ./...   # compile, lint, unit tests
                                   # (internal/memory, internal/conversation, internal/webui,
                                   #  internal/stepimages, internal/httpapi, internal/tasks,
                                   #  internal/sqlitedb, internal/claudeauth, internal/lanaccess,
-                                  #  internal/idlepause, internal/desktop, cmd/flowera's --cli)
+                                  #  internal/idlepause, internal/schedule, internal/desktop,
+                                  #  cmd/flowera's --cli)
 PYTHONPATH=agent python3 -m unittest discover -s agent/tests   # computer-use gate/refs/rendering,
                                   # task IDs and usage totals, recordings (input merging,
                                   # privacy, volatility, the store, replay against a fake screen)
@@ -557,3 +579,4 @@ See [README.md](README.md#-getting-started-running-it-locally) for full step-by-
 - **The ticket toolbar's tab is a drag handle, not just a click target.** Pointer-down on `#flowera-ticket-tab` starts tracking; past `DRAG_THRESHOLD` (6px) it "pins" the toolbar (`flowera-pinned` class, cancelling the default centered `transform`) to an explicit `left`/`top` clamped to the viewport, so it can be moved off whatever it's covering on the desktop underneath. A drag's terminal `pointerup` still fires a `click` on the tab — the same handler that opens/closes the panel — so the click listener checks the `dragged` flag first and swallows that one click rather than also toggling the panel.
 - **Every rewrite in the proxy's `ModifyResponse` chain writes UTF-8, but the proxied container's own `Content-Type` never says so.** `rewriteFloweraBranding` (always first) now sets `Content-Type: text/html; charset=utf-8` explicitly. It has to be there and not later in the chain: `injectTicketToolbar` splices its own copy in right before `</body>`, far past a browser's ~1024-byte `<meta charset>` sniffing window, so by the time that text exists in the document the browser has already committed to whatever encoding it guessed for the whole thing. Without the header, a guess other than UTF-8 turns every non-ASCII byte added anywhere in the chain to mojibake — this is what an em dash in the toolbar's own copy needs the header for, not anything wrong with how that string is written in Go.
 - **A note written while paused stays paused; whether to continue afterward is the toolbar's call, not `demonstration.note`'s.** `note()` no longer refuses a call while paused (that used to be its only guard on `_running()`'s state) — it writes the note into whatever pause it finds, active or not, and always (re-)pauses after with its own summary as the reason. The toolbar's Reason button pauses *before* opening its text box (not after submitting, like Stop), and only follows a successful submit with an explicit `resume` when its own click is what caused that pause (`reasonAutoPaused`, reset on every path that leaves the box) — never when Reason was opened on top of a pause already in effect, since that pause may be covering exactly what the note is warning about, and auto-continuing would hand it straight back to the recording.
+- **A schedule (`internal/schedule`) is a fourth door onto `submitRequest`, set up from the requests page, never from the chat.** Creating one never sends the request immediately — its first run is the next time the cron expression matches, same as cron itself never fires the instant a job is added. `Runner.fire` appends `\n\nTIME:{<RFC3339 UTC>}` to the request text on every trigger and always advances the schedule to its next occurrence afterward, whether or not the submit itself succeeded — a desktop that is unreachable this minute must not turn every following tick into a retry of that same stale run, and a control-plane outage across several missed occurrences produces one catch-up run on the next tick, not a replayed backlog. Cron fields are matched in UTC regardless of the host's own timezone, and `cron.go` is a small hand-written parser (no external dependency) rather than a library, matching this repo's `modernc.org/sqlite`-over-cgo preference for a static, dependency-light binary. A schedule whose expression can no longer match anything (day 31 in a month field restricted to February, say) disables itself on the next `MarkRun` instead of being checked forever.
