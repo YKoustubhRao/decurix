@@ -80,6 +80,7 @@ func (m *Manager) buildImage(ctx context.Context, out io.Writer, img desktopImag
 	defer reader.Close()
 
 	resp, err := m.client.ImageBuild(ctx, reader, build.ImageBuildOptions{
+		Platform:   "linux/amd64",
 		Tags:       []string{img.Tag},
 		Dockerfile: img.Dockerfile,
 		Remove:     true,

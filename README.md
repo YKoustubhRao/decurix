@@ -134,27 +134,36 @@ Flowera has two moving pieces: a Go **control plane** (the dashboard + Docker or
 
 * Docker + Docker Compose
   * Linux: run `sudo ./scripts/linux/setup.sh` once if you don't already have Docker (also installs `cloudflared` and QEMU) — or just install Docker yourself.
-  * macOS / Windows: Docker Desktop.
+  * macOS: Docker Desktop (run `./scripts/mac/setup.sh` to check prerequisites, configure Ollama, and verify Docker).
+  * Windows: Docker Desktop (`scripts\windows\setup.ps1`).
 * [Ollama](https://ollama.com/download), the local model server the workers think with. You can skip it and Flowera will run its own Ollama in a container, but a native install is faster, and it's the only way to use a GPU. See [Setting up Ollama](#-setting-up-ollama).
 * Optional: Go 1.26+, needed only to run the control plane directly with `go run` while developing it, or to build the standalone executables with `scripts/release/release.sh` (step 5).
 
 ### The scripts
 
-Everything scripted lives under [`scripts/`](scripts/), split by who runs it. `linux/` and `windows/` hold the same scripts in each platform's dialect; `release/` is the cross-compiler and runs from either; `testing/` holds a small stdlib-only stub shared by both platforms' `test-vm` script.
+Everything scripted lives under [`scripts/`](scripts/), split by who runs it. `linux/`, `mac/`, and `windows/` hold the scripts in each platform's dialect; `release/` is the cross-compiler and runs from Unix or Windows; `testing/` holds a small stdlib-only stub shared by all platforms' `test-vm` script.
 
-| | Linux / macOS | Windows (PowerShell) | What it does |
-|---|---|---|---|
-| **One-shot** | `scripts/linux/quickstart.sh` | `scripts\windows\quickstart.ps1` | Fresh machine to running dashboard in one command: host setup (if Docker's missing) then Start, below. |
-| **Host setup** | `scripts/linux/setup.sh` | `scripts\windows\setup.ps1` | One-time: Docker, `cloudflared`, QEMU. Needs root/admin. |
-| **Desktop images** | `scripts/linux/build-images.sh` | `scripts\windows\build-images.ps1` | Builds `flowera-desktop:{basic,developer,ai}`. |
-| **Start** | `scripts/linux/build.sh` | `scripts\windows\build.ps1` | Like opening the app: builds only missing images, starts the control plane if it isn't already running, opens a tunnel. Leaves existing desktops and the database untouched. |
-| **Rebuild** | `scripts/linux/rebuild.sh` | `scripts\windows\rebuild.ps1` | Like reinstalling: rebuilds every image and the control plane (still cached, so it's fast), every `desktop_*` container/volume removed, and (after a confirmation prompt) the app database wiped. |
-| **Standalone VM test** | `scripts/linux/test-vm.sh` | `scripts\windows\test-vm.ps1` | One throwaway desktop container + a dummy control-plane stub, no full Flowera stack needed. See below. |
-| **Release** | `scripts/release/release.sh` | `scripts\release\release.ps1` | Cross-compiles the downloadable executables into `dist/`. |
+| | Linux | macOS | Windows (PowerShell) | What it does |
+|---|---|---|---|---|
+| **One-shot** | `scripts/linux/quickstart.sh` | `scripts/mac/quickstart.sh` | `scripts\windows\quickstart.ps1` | Fresh machine to running dashboard in one command: host setup (if Docker's missing) then Start, below. |
+| **Host setup** | `scripts/linux/setup.sh` | `scripts/mac/setup.sh` | `scripts\windows\setup.ps1` | One-time: Docker, `cloudflared`, Ollama / QEMU. |
+| **Desktop images** | `scripts/linux/build-images.sh` | `scripts/mac/build-images.sh` | `scripts\windows\build-images.ps1` | Builds `flowera-desktop:{basic,developer,ai}`. |
+| **Start** | `scripts/linux/build.sh` | `scripts/mac/build.sh` | `scripts\windows\build.ps1` | Like opening the app: builds only missing images, starts the control plane if it isn't already running, opens a tunnel. Leaves existing desktops and the database untouched. |
+| **Rebuild** | `scripts/linux/rebuild.sh` | — | `scripts\windows\rebuild.ps1` | Like reinstalling: rebuilds every image and the control plane (still cached, so it's fast), every `desktop_*` container/volume removed, and (after a confirmation prompt) the app database wiped. |
+| **Standalone VM test** | `scripts/linux/test-vm.sh` | `scripts/mac/test-vm.sh` | `scripts\windows\test-vm.ps1` | One throwaway desktop container + a dummy control-plane stub, no full Flowera stack needed. See below. |
+| **Release** | `scripts/release/release.sh` | `scripts/release/release.sh` | `scripts\release\release.ps1` | Cross-compiles the downloadable executables into `dist/`. |
 
-Starting from nothing? `./scripts/linux/quickstart.sh` (or `.\scripts\windows\quickstart.ps1`) is the one-shot version of steps 1-4 below — it installs Docker/`cloudflared`/QEMU if they're missing, builds every image, and starts the dashboard with a tunnel.
+Starting from nothing?
+- **macOS:** `./scripts/mac/quickstart.sh`
+- **Linux:** `./scripts/linux/quickstart.sh`
+- **Windows:** `.\scripts\windows\quickstart.ps1`
+
+This is the one-shot version of steps 1-4 below — it checks Docker/`cloudflared`/Ollama, builds every image, and starts the dashboard with a tunnel.
 
 Every script figures out the repo root on its own, so it doesn't matter where you run it from.
+
+**On macOS:**
+The desktop images and control plane run under `--platform linux/amd64` (Docker Desktop handles Rosetta 2 emulation automatically on Apple Silicon M-series chips). Make sure Docker Desktop is running before starting.
 
 **On Windows:** run the `.ps1` scripts from an ordinary PowerShell window, not WSL. Only `setup.ps1` needs Administrator. Docker Desktop must be running first. Windows won't run downloaded scripts by default, so allow them for that window before the first one:
 
@@ -163,7 +172,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\windows\quickstart.ps1
 ```
 
-`build.ps1` does everything `build.sh` does: builds any missing images, sets up Ollama, starts the control plane if it isn't already running, and opens the tunnel. `rebuild.ps1` mirrors `rebuild.sh`.
+`build.sh` / `build.ps1` do everything: build any missing images, set up Ollama, start the control plane if it isn't already running, and open the tunnel. `rebuild.sh` / `rebuild.ps1` mirror this and rebuild from scratch.
 
 ### 1. Clone and configure
 
@@ -199,8 +208,9 @@ ollama pull nomic-embed-text     # embeddings, needed only by the thebot harness
 
 **2. Make Ollama reachable from containers.** Desktops are Docker containers, so they reach Ollama over the network, not on `127.0.0.1`:
 
+* **macOS:** By default, Ollama on macOS binds strictly to `127.0.0.1`, which rejects connections from Docker containers arriving via `host.docker.internal`. Configure it to bind to `0.0.0.0` by running `launchctl setenv OLLAMA_HOST 0.0.0.0` (or `export OLLAMA_HOST=0.0.0.0 && ollama serve`). Running `./scripts/mac/setup.sh` configures this automatically.
 * **Linux (including Docker Engine inside WSL):** Ollama must listen on more than loopback. Set `OLLAMA_HOST=0.0.0.0` for its service (`sudo systemctl edit ollama`, add `Environment="OLLAMA_HOST=0.0.0.0"` under `[Service]`, then `sudo systemctl restart ollama`).
-* **macOS / Windows with Docker Desktop:** `host.docker.internal` already forwards to the host's localhost, so a default install usually works as-is. If it doesn't, set `OLLAMA_HOST=0.0.0.0` in your user environment variables and restart the Ollama app from the Start menu.
+* **Windows with Docker Desktop:** `host.docker.internal` forwards to localhost. If unreachable, set `OLLAMA_HOST=0.0.0.0` in user environment variables and restart the Ollama app from the Start menu.
 
 Check it from a container:
 
@@ -210,7 +220,7 @@ docker run --rm --add-host host.docker.internal:host-gateway curlimages/curl -s 
 
 This should print JSON listing the models you pulled.
 
-**Or let the build/rebuild script handle it.** `./scripts/linux/build.sh`/`rebuild.sh` and `.\scripts\windows\build.ps1`/`rebuild.ps1` all do this, checking reachability from inside a container:
+**Or let the build/rebuild script handle it.** `./scripts/mac/build.sh`, `./scripts/linux/build.sh`/`rebuild.sh`, and `.\scripts\windows\build.ps1`/`rebuild.ps1` all do this, checking reachability from inside a container:
 
 1. Use `OLLAMA_URL` from `.env` if a container can reach it; otherwise try the host's Ollama.
 2. If Ollama is running on the host but only on loopback, make it listen on all interfaces. On Linux that means `OLLAMA_HOST=0.0.0.0` on its systemd service (with `sudo`). On Windows it means `OLLAMA_HOST` in your user environment, followed by a restart of the Ollama app.
@@ -234,16 +244,17 @@ That's it — the popup calls the control plane, which runs the login in a throw
 ### 2. Build the desktop images
 
 ```bash
-./scripts/linux/build-images.sh      # Linux/macOS
+./scripts/mac/build-images.sh        # macOS (Apple Silicon / Intel)
+./scripts/linux/build-images.sh      # Linux
 .\scripts\windows\build-images.ps1   # Windows (PowerShell)
 ```
 
-which is just a wrapper around:
+which is a wrapper around:
 
 ```bash
-docker build -f docker/desktop.basic.Dockerfile     -t flowera-desktop:basic     .
-docker build -f docker/desktop.developer.Dockerfile -t flowera-desktop:developer .
-docker build -f docker/desktop.ai.Dockerfile        -t flowera-desktop:ai        .
+docker build --platform linux/amd64 -f docker/desktop.basic.Dockerfile     -t flowera-desktop:basic     .
+docker build --platform linux/amd64 -f docker/desktop.developer.Dockerfile -t flowera-desktop:developer .
+docker build --platform linux/amd64 -f docker/desktop.ai.Dockerfile        -t flowera-desktop:ai        .
 ```
 
 Re-run whichever of these changed whenever you edit `agent/` or a `docker/desktop.*.Dockerfile` — the control plane doesn't rebuild them for you.
@@ -261,7 +272,8 @@ Hit **Chat** on a desktop to talk to its agent: one conversation per worker, wit
 ### 4. Or: do steps 2+3 in one go
 
 ```bash
-./scripts/linux/build.sh        # Linux/macOS
+./scripts/mac/build.sh          # macOS
+./scripts/linux/build.sh        # Linux
 .\scripts\windows\build.ps1     # Windows (PowerShell)
 ```
 
@@ -281,7 +293,8 @@ This is the "reinstall" script. After a confirmation prompt (`-y`/`-Yes` to skip
 Iterating on `agent/` or a `docker/desktop.*.Dockerfile` doesn't need the whole control plane running. `test-vm` starts one throwaway desktop container plus a stdlib-only dummy control plane (`scripts/testing/dummy_control_plane.py`) that just prints whatever the agent sends it — no `docker compose`, no dashboard, no touching any desktop you already have running:
 
 ```bash
-./scripts/linux/test-vm.sh --profile basic --harness thebot --task "say hi"   # Linux/macOS
+./scripts/mac/test-vm.sh --profile basic --harness thebot --task "say hi"     # macOS
+./scripts/linux/test-vm.sh --profile basic --harness thebot --task "say hi"   # Linux
 .\scripts\windows\test-vm.ps1 -DesktopProfile basic -Harness thebot -Task "say hi"   # Windows
 ```
 
@@ -336,6 +349,40 @@ go run ./cmd/flowera                                # run it directly (needs Doc
 
 The templates in `web/templates/` are embedded into the binary with `go:embed` (see [`web/embed.go`](web/embed.go)), so editing one needs a rebuild — `go run` does that for you, but a binary you already built won't pick the change up.
 
+### 🍎 macOS Special Steps & Notes
+
+If you are running Flowera on macOS (especially Apple Silicon M-series):
+
+1. **Architecture Emulation (Rosetta 2):**
+   * The desktop images and Docker containers run with `--platform linux/amd64`.
+   * Docker Desktop for Mac handles this automatically via Rosetta 2 / emulation. In Docker Desktop **Settings > General**, ensure *"Use Rosetta for x86/amd64 emulation on Apple Silicon"* is checked for maximum performance.
+   * `scripts/mac/` handles `--platform linux/amd64` flags automatically.
+
+2. **Ollama on Mac (Metal GPU Acceleration):**
+   * Running Ollama natively on macOS gives the workers full Apple Silicon Metal GPU acceleration.
+   * By default, the macOS Ollama app binds only to `127.0.0.1`. Docker containers talk to the host via `http://host.docker.internal:11434`, which requires Ollama to listen on `0.0.0.0`.
+   * Run:
+     ```bash
+     export OLLAMA_HOST=0.0.0.0
+     ollama serve
+     ```
+     Or configure it system-wide with `launchctl setenv OLLAMA_HOST 0.0.0.0` (already handled if you ran `./scripts/mac/setup.sh`).
+   * Remember to pull the required models:
+     ```bash
+     ollama pull qwen2.5-coder:3b
+     ollama pull nomic-embed-text
+     ```
+
+3. **Docker Socket Access:**
+   * Flowera mounts `/var/run/docker.sock` to orchestrate desktop containers.
+   * In Docker Desktop **Settings > Advanced**, ensure *"Allow the default Docker socket to be used"* is enabled.
+
+4. **Remote Access / Mobile Tunnel (Optional):**
+   * If you'd like a public tunnel to interact with workers from your phone, install `cloudflared`:
+     ```bash
+     brew install cloudflared
+     ```
+
 ### 🔑 Environment variables
 
 Set these in your own `.env` (copied from `.env.example`) — the control plane loads it via `godotenv` on startup.
@@ -363,7 +410,7 @@ For developers interested in the current implementation, see:
 
 * [`CLAUDE.md`](CLAUDE.md) — architecture reference (packages, agent harnesses, conventions)
 * [`CODE_MAP.md`](CODE_MAP.md) — codebase reference
-* [`scripts/`](scripts/) — `linux/` and `windows/` hold the same scripts per platform, `release/` builds the downloadable executables
+* [`scripts/`](scripts/) — `linux/`, `mac/`, and `windows/` hold the scripts per platform, `release/` builds the downloadable executables
 
 ---
 
