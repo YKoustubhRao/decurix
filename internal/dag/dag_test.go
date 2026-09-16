@@ -267,6 +267,30 @@ func TestDeleteNodeRefusedWhileALiveRunDependsOnIt(t *testing.T) {
 	}
 }
 
+func TestDeleteEdgeRefusedWhileALiveRunIsWaitingOnIt(t *testing.T) {
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	store := newTestStore(t, now)
+	d, _ := store.Create("pipeline")
+
+	a, _ := store.AddNode(d.ID, "a", "box-a", "")
+	b, _ := store.AddNode(d.ID, "b", "box-b", "")
+
+	edge, err := store.AddEdge(d.ID, a.ID, b.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.StartRun(d.ID, TriggerManual, now); err != nil {
+		t.Fatal(err)
+	}
+
+	// b is still pending, waiting on a - removing a->b out from under it
+	// would let b dispatch without ever having waited for a.
+	if err := store.DeleteEdge(edge.ID); err == nil {
+		t.Fatal("expected deletion to be refused while a run is waiting on this edge's node")
+	}
+}
+
 func TestSetCronClearsOnEmptyString(t *testing.T) {
 	now := time.Date(2026, 9, 15, 12, 30, 0, 0, time.UTC)
 	store := newTestStore(t, now)

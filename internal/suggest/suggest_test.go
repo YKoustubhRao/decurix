@@ -3,6 +3,7 @@ package suggest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -255,5 +256,47 @@ func TestRecencyPickUsesTaskAndViewSignals(t *testing.T) {
 	got, ok := s.Suggest(context.Background(), "short")
 	if !ok || got.DesktopID != "a" {
 		t.Fatalf("expected alpha via LastViewed beating bravo's task activity, got %+v ok=%v", got, ok)
+	}
+}
+
+// TestCacheMissingVectorsBoundsBackfillPerCall covers a cold cache: a large
+// batch of memory entries with no cached embedding yet must not turn one
+// Suggest call into dozens of sequential Ollama round trips inside the
+// caller's ctx budget (internal/httpapi's suggestTimeout) - the cache still
+// fills in, just across more than one call.
+func TestCacheMissingVectorsBoundsBackfillPerCall(t *testing.T) {
+	desktops := &fakeDesktops{list: []desktop.Desktop{{ID: "d1", Name: "d1"}}}
+
+	entries := make([]memory.WorkerMemoryEntry, 0, maxBackfillPerCall+5)
+	for i := 0; i < maxBackfillPerCall+5; i++ {
+		entries = append(entries, memory.WorkerMemoryEntry{
+			ID:        fmt.Sprintf("m%d", i),
+			DesktopID: "d1",
+			Title:     fmt.Sprintf("title-%d", i),
+			Summary:   "summary",
+		})
+	}
+
+	var embedCalls int
+	embed := func(_ context.Context, _ string) ([]float32, error) {
+		embedCalls++
+		return []float32{1, 0}, nil
+	}
+
+	s := newTestStore(t, desktops, &fakeActivity{}, &fakeMemory{entries: entries}, embed)
+
+	s.Suggest(context.Background(), "deploy the app to staging")
+
+	// 1 call for the request text itself, plus at most maxBackfillPerCall
+	// for the memory entries.
+	if want := maxBackfillPerCall + 1; embedCalls > want {
+		t.Fatalf("embed called %d times in one Suggest call, want at most %d", embedCalls, want)
+	}
+
+	embedCalls = 0
+	s.Suggest(context.Background(), "deploy the app to staging")
+
+	if embedCalls == 0 {
+		t.Fatal("expected a second call to keep backfilling the entries the first call left uncached")
 	}
 }

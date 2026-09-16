@@ -630,7 +630,7 @@
           {{if .ParentID}}
           <div class="dcard-spec">
             <svg width="13" height="13"><use href="#i-fork"/></svg>
-            <span>Child of <span class="mono">{{.ParentID}}</span></span>
+            <span>Child of <span class="mono">{{with index $.DesktopNames .ParentID}}{{.}}{{else}}{{.ParentID}}{{end}}</span></span>
           </div>
           {{end}}
 
@@ -690,10 +690,11 @@
           {{if index $.LinkedMemory .ID}}
           <div class="mem-shared">
             <span class="mem-shared-label">Shares memory with</span>
-            {{range index $.LinkedMemory .ID}}
+            {{range $lid := index $.LinkedMemory .ID}}
+            {{$lname := $lid}}{{with index $.DesktopNames $lid}}{{$lname = .}}{{end}}
             <span class="mem-shared-chip">
-              {{.}}
-              <button type="button" class="mem-unlink" data-unlink-memory="{{$selfID}}" data-linked-id="{{.}}" title="Stop sharing memory with {{.}}" aria-label="Stop sharing memory with {{.}}">
+              {{$lname}}
+              <button type="button" class="mem-unlink" data-unlink-memory="{{$selfID}}" data-linked-id="{{$lid}}" title="Stop sharing memory with {{$lname}}" aria-label="Stop sharing memory with {{$lname}}">
                 <svg width="10" height="10"><use href="#i-x"/></svg>
               </button>
             </span>
@@ -755,7 +756,7 @@
         </button>
         {{end}}
 
-        <button class="btn btn-default btn-sm action-icon" data-spawn-child="{{.ID}}" data-spawn-child-name="{{.Name}}" title="Spawn a specialized child worker" aria-label="Spawn a specialized child worker">
+        <button class="btn btn-default btn-sm action-icon" data-spawn-child="{{.ID}}" data-spawn-child-name="{{.Name}}" data-spawn-child-profile="{{.Profile}}" data-spawn-child-harness="{{.Harness}}" data-spawn-child-cpus="{{.CPUs}}" data-spawn-child-memory-mb="{{.MemoryMB}}" title="Spawn a specialized child worker" aria-label="Spawn a specialized child worker">
           <svg width="14" height="14"><use href="#i-fork"/></svg>
         </button>
 
@@ -1059,11 +1060,24 @@
   var createForm = document.getElementById("createForm");
   var specializationField = document.getElementById("specializationField");
 
-  /* parent is {id, name}, or omitted for an ordinary "New desktop" open. */
+  /* parent is {id, name, profile, harness, cpus, memoryMb}, or omitted for
+     an ordinary "New desktop" open. */
   function openCreate(parent){
     createForm.reset();
     document.getElementById("dParentId").value = parent ? parent.id : "";
     specializationField.style.display = parent ? "" : "none";
+
+    if(parent){
+      // Inherit the parent's profile/harness/CPU/memory rather than always
+      // resetting to the hardcoded defaults - a specialization meant to run
+      // on (say) a Claude-harness developer desktop shouldn't silently
+      // become a bare Ollama/Basic child unless someone notices and
+      // re-picks every option by hand.
+      selectRadio("profile", parent.profile);
+      selectRadio("harness", parent.harness);
+      selectRadio("cpus", parent.cpus);
+      selectRadio("memory_mb", parent.memoryMb);
+    }
 
     document.getElementById("createDialogTitle").textContent =
       parent ? "Spawn a specialized child worker" : "New desktop";
@@ -1079,11 +1093,24 @@
 
   document.getElementById("newDesktopBtn").addEventListener("click", function(){ openCreate(); });
 
+  function selectRadio(name, value){
+    if(!value){ return; }
+    var input = createForm.querySelector('input[name="' + name + '"][value="' + String(value).replace(/"/g, '\\"') + '"]');
+    if(input){ input.checked = true; }
+  }
+
   document.addEventListener("click", function(event){
     var button = event.target.closest("[data-spawn-child]");
     if(!button){ return; }
 
-    openCreate({id: button.dataset.spawnChild, name: button.dataset.spawnChildName});
+    openCreate({
+      id: button.dataset.spawnChild,
+      name: button.dataset.spawnChildName,
+      profile: button.dataset.spawnChildProfile,
+      harness: button.dataset.spawnChildHarness,
+      cpus: button.dataset.spawnChildCpus,
+      memoryMb: button.dataset.spawnChildMemoryMb,
+    });
   });
 
   document.querySelectorAll("[data-close-dialog]").forEach(function(button){

@@ -27,7 +27,7 @@ func scheduleServer(t *testing.T) *Server {
 		t.Fatal(err)
 	}
 
-	return &Server{Schedules: store}
+	return &Server{Schedules: store, Desktops: fakeDesktopManager(t, "bordu")}
 }
 
 func TestCreateScheduleHandlerRunAtCreatesAOneTimeSchedule(t *testing.T) {

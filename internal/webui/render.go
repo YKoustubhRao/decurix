@@ -43,6 +43,12 @@ type PageData struct {
 	// memory with (see memory.Store.Link) - what the card's "Shared with"
 	// row and unlink button read.
 	LinkedMemory map[string][]string
+	// DesktopNames maps a desktop ID to its display name, so a card can show
+	// a linked/parent desktop's name (matching how the rest of the card
+	// always shows .Name, never a raw ID) rather than the ID itself. A
+	// lookup miss (the desktop was since deleted) falls back to the ID in
+	// the template.
+	DesktopNames map[string]string
 	TunnelURL    string
 }
 
@@ -84,9 +90,14 @@ type DagsPageData struct {
 	Dags []dag.Summary
 }
 
-// DagPageData is the template data for one DAG's editor page.
+// DagPageData is the template data for one DAG's editor page. Only the DAG
+// record itself - its name and cron expression - is rendered server-side;
+// the canvas and run history are populated by the page's own JS fetches
+// (loadDag/loadRuns), so the handler has no reason to pay for the nodes,
+// edges and run-history queries dag.Detail would otherwise do on every page
+// view just to have them go unused.
 type DagPageData struct {
-	Detail   dag.Detail
+	DAG      dag.DAG
 	Desktops []desktop.Desktop
 }
 

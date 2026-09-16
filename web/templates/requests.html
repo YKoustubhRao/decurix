@@ -266,6 +266,7 @@
   var userPickedDesktop = false;
   var suggestTimer = null;
   var suggestMinChars = 8;
+  var suggestGeneration = 0;
 
   function hideSuggestNote(){
     destSuggestNote.hidden = true;
@@ -301,6 +302,11 @@
     var text = content.value.trim();
     if(text.length < suggestMinChars){ return; }
 
+    // A slow embedding round trip (can take seconds on CPU) must never let
+    // an earlier keystroke's response land after, and override, a later
+    // one's - only the most recently issued call is allowed to apply.
+    var generation = ++suggestGeneration;
+
     var suggestion;
     try{
       suggestion = await post("/api/desktops/suggest", {content: text});
@@ -308,6 +314,7 @@
       return;
     }
 
+    if(generation !== suggestGeneration){ return; }
     if(userPickedDesktop || !suggestion || !suggestion.desktop_id){ return; }
 
     var option = select.querySelector('option[value="' + suggestion.desktop_id.replace(/"/g, '\\"') + '"]');

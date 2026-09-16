@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -54,6 +55,16 @@ func (s *Server) createScheduleHandler(w http.ResponseWriter, r *http.Request) {
 
 	if len(content) > maxRequestBytes {
 		http.Error(w, "request too long", http.StatusBadRequest)
+		return
+	}
+
+	if _, err := s.Desktops.Get(r.Context(), desktopID); err != nil {
+		if errors.Is(err, desktop.ErrNotFound) {
+			http.Error(w, "desktop not found", http.StatusBadRequest)
+			return
+		}
+
+		jsonError(w, err)
 		return
 	}
 

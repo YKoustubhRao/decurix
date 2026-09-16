@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="color-scheme" content="light dark">
-<title>{{.Detail.DAG.Name}} · Flowera</title>
+<title>{{.DAG.Name}} · Flowera</title>
 
 {{template "theme"}}
 
@@ -99,7 +99,7 @@
 </style>
 </head>
 
-<body data-dag-id="{{.Detail.DAG.ID}}">
+<body data-dag-id="{{.DAG.ID}}">
 
 {{template "sprite"}}
 
@@ -115,7 +115,7 @@
   <div class="page-head">
     <div>
       <div class="eyebrow">DAG</div>
-      <h1>{{.Detail.DAG.Name}}</h1>
+      <h1>{{.DAG.Name}}</h1>
       <p class="page-sub">Drag a node to move it. Drag from its dot to another node to connect them - a node dispatches its ticket once every one of its parents has succeeded.</p>
     </div>
   </div>
@@ -123,7 +123,7 @@
   <div class="dag-toolbar">
     <div class="field">
       <label for="cronInput">Cron trigger <span class="mono">(UTC, optional)</span></label>
-      <input class="input mono" id="cronInput" placeholder="*/30 * * * *" value="{{.Detail.DAG.CronExpr}}" autocomplete="off">
+      <input class="input mono" id="cronInput" placeholder="*/30 * * * *" value="{{.DAG.CronExpr}}" autocomplete="off">
     </div>
     <button type="button" class="btn btn-default" id="saveCronBtn">Save cron</button>
     <button type="button" class="btn btn-primary" id="runNowBtn">
@@ -235,6 +235,12 @@
   var lastRunsSnapshot = null;
   var lastRunDetailKey = null;
 
+  // Both loadRuns and openRun are on the 5s poll below, so a genuine outage
+  // must toast once when it starts, not once per tick - these track whether
+  // the *previous* attempt already reported it, and reset on success.
+  var runsLoadFailed = false;
+  var runDetailLoadFailed = false;
+
   var desktopsById = {};
   document.querySelectorAll("#nodeDesktop option").forEach(function(opt){
     desktopsById[opt.value] = opt.textContent;
@@ -249,8 +255,14 @@
 
     try{
       var response = await fetch("/api/dags/get?id=" + encodeURIComponent(dagID), {cache: "no-store"});
+      if(!response.ok){ throw new Error("HTTP " + response.status); }
       detail = await response.json();
     }catch(e){
+      // Not called from the 5s poll (only loadRuns/openRun are), so this
+      // never repeats on its own - a silent failure here would otherwise
+      // leave the canvas empty with nothing to tell it apart from a
+      // genuinely empty new DAG.
+      toast("Could not load this DAG - " + e.message, "error");
       return;
     }
 
@@ -543,8 +555,19 @@
 
     var name = "node" + (Object.keys(nodesById).length + 1);
 
+    // A new node has no position of its own yet (pos_x/pos_y default to
+    // 0,0 server-side) - stagger it so repeated clicks don't stack every
+    // node exactly on top of the last, leaving only the topmost clickable
+    // until dragged apart by hand.
+    var offset = (Object.keys(nodesById).length % 8) * 40;
+
     try{
       var created = await post("/api/dags/nodes/create", {dag_id: dagID, name: name, desktop_id: firstOption.value, content: ""});
+
+      if(offset > 0){
+        await post("/api/dags/nodes/position", {id: created.id, x: String(offset), y: String(offset)}).catch(function(){});
+      }
+
       await loadDag();
       if(nodesById[created.id]){ openInspector(nodesById[created.id]); }
     }catch(e){
@@ -621,10 +644,16 @@
 
     try{
       var response = await fetch("/api/dags/runs?dag_id=" + encodeURIComponent(dagID), {cache: "no-store"});
+      if(!response.ok){ throw new Error("HTTP " + response.status); }
       list = await response.json();
     }catch(e){
+      if(!runsLoadFailed){
+        runsLoadFailed = true;
+        toast("Could not refresh the run list - " + e.message, "error");
+      }
       return;
     }
+    runsLoadFailed = false;
 
     var snapshot = JSON.stringify(list);
     if(snapshot === lastRunsSnapshot){ return; }
@@ -650,10 +679,21 @@
 
     try{
       var response = await fetch("/api/dags/runs/get?id=" + encodeURIComponent(runID), {cache: "no-store"});
+      if(!response.ok){ throw new Error("HTTP " + response.status); }
       detail = await response.json();
     }catch(e){
+      if(runID === openRunId && !runDetailLoadFailed){
+        runDetailLoadFailed = true;
+        toast("Could not refresh this run - " + e.message, "error");
+      }
       return;
     }
+    runDetailLoadFailed = false;
+
+    // The user (or the 5s poll) may have moved on to a different run while
+    // this fetch was in flight - a slow response for a run no longer open
+    // must never overwrite what's now on screen.
+    if(runID !== openRunId){ return; }
 
     var key = runID + ":" + JSON.stringify(detail);
     if(key === lastRunDetailKey){ return; }

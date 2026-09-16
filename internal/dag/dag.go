@@ -712,7 +712,11 @@ func (s *Store) Edges(dagID string) ([]Edge, error) {
 
 // AddEdge adds a directed dependency from -> to: reject a self-loop, an edge
 // into the head (the head must always have zero incoming edges), a
-// duplicate, or anything that would create a cycle.
+// duplicate, or anything that would create a cycle. The whole check-then-act
+// sequence runs in one transaction, same as AddNode/DeleteNode - two
+// concurrent AddEdge calls on the same DAG (a double-submit, two tabs) must
+// not each read a cycle-free edge set and then together introduce a cycle
+// the check was supposed to prevent.
 func (s *Store) AddEdge(dagID, from, to string) (Edge, error) {
 	from = strings.TrimSpace(from)
 	to = strings.TrimSpace(to)
@@ -725,18 +729,27 @@ func (s *Store) AddEdge(dagID, from, to string) (Edge, error) {
 		return Edge{}, fmt.Errorf("dag: a node cannot depend on itself")
 	}
 
-	d, err := s.Get(dagID)
+	tx, err := s.db.Begin()
 	if err != nil {
-		return Edge{}, err
+		return Edge{}, fmt.Errorf("dag: add edge: %w", err)
+	}
+	defer tx.Rollback()
+
+	var head string
+	if err := tx.QueryRow(`SELECT head_node_id FROM dags WHERE id = ?`, dagID).Scan(&head); err != nil {
+		if err == sql.ErrNoRows {
+			return Edge{}, ErrNotFound
+		}
+		return Edge{}, fmt.Errorf("dag: add edge: %w", err)
 	}
 
-	if to == d.HeadNodeID {
+	if to == head {
 		return Edge{}, fmt.Errorf("dag: the head node cannot have an incoming edge")
 	}
 
 	for _, nodeID := range [2]string{from, to} {
 		var owner string
-		if err := s.db.QueryRow(`SELECT dag_id FROM dag_nodes WHERE id = ?`, nodeID).Scan(&owner); err != nil {
+		if err := tx.QueryRow(`SELECT dag_id FROM dag_nodes WHERE id = ?`, nodeID).Scan(&owner); err != nil {
 			if err == sql.ErrNoRows {
 				return Edge{}, ErrNotFound
 			}
@@ -747,9 +760,24 @@ func (s *Store) AddEdge(dagID, from, to string) (Edge, error) {
 		}
 	}
 
-	edges, err := s.Edges(dagID)
+	rows, err := tx.Query(`SELECT from_node_id, to_node_id FROM dag_edges WHERE dag_id = ?`, dagID)
 	if err != nil {
-		return Edge{}, err
+		return Edge{}, fmt.Errorf("dag: add edge: %w", err)
+	}
+
+	var edges []Edge
+	for rows.Next() {
+		var e Edge
+		if err := rows.Scan(&e.FromNodeID, &e.ToNodeID); err != nil {
+			rows.Close()
+			return Edge{}, fmt.Errorf("dag: add edge: %w", err)
+		}
+		edges = append(edges, e)
+	}
+	scanErr := rows.Err()
+	rows.Close()
+	if scanErr != nil {
+		return Edge{}, fmt.Errorf("dag: add edge: %w", scanErr)
 	}
 
 	for _, e := range edges {
@@ -765,10 +793,14 @@ func (s *Store) AddEdge(dagID, from, to string) (Edge, error) {
 	now := s.clock()
 	edge := Edge{ID: newID("dedge-"), DAGID: dagID, FromNodeID: from, ToNodeID: to, CreatedAt: now}
 
-	if _, err := s.db.Exec(
+	if _, err := tx.Exec(
 		`INSERT INTO dag_edges (id, dag_id, from_node_id, to_node_id, created_ns) VALUES (?, ?, ?, ?, ?)`,
 		edge.ID, edge.DAGID, edge.FromNodeID, edge.ToNodeID, sqlitedb.ToNS(now),
 	); err != nil {
+		return Edge{}, fmt.Errorf("dag: add edge: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
 		return Edge{}, fmt.Errorf("dag: add edge: %w", err)
 	}
 
@@ -810,13 +842,44 @@ func reaches(edges []Edge, start, target string) bool {
 	return false
 }
 
-// DeleteEdge removes an edge by ID. A no-op if the ID is not present.
+// DeleteEdge removes an edge by ID. Refused while a run still in progress
+// has the edge's to-node pending or running - the same "a run can never be
+// orphaned mid-flight by an edit" rule DeleteNode enforces: pulling a
+// dependency out from under a live join would let that node dispatch
+// without waiting for (or after the failure of) a parent it was still
+// counting on. A no-op if the ID is not present.
 func (s *Store) DeleteEdge(id string) error {
-	if _, err := s.db.Exec(`DELETE FROM dag_edges WHERE id = ?`, id); err != nil {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("dag: delete edge %s: %w", id, err)
+	}
+	defer tx.Rollback()
+
+	var toNodeID string
+	if err := tx.QueryRow(`SELECT to_node_id FROM dag_edges WHERE id = ?`, id).Scan(&toNodeID); err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
 		return fmt.Errorf("dag: delete edge %s: %w", id, err)
 	}
 
-	return nil
+	var live int
+	if err := tx.QueryRow(
+		`SELECT COUNT(*) FROM dag_run_nodes rn JOIN dag_runs r ON r.id = rn.run_id
+		 WHERE rn.node_id = ? AND r.status = ? AND rn.status IN (?, ?)`,
+		toNodeID, RunRunning, NodePending, NodeRunning,
+	).Scan(&live); err != nil {
+		return fmt.Errorf("dag: delete edge %s: %w", id, err)
+	}
+	if live > 0 {
+		return fmt.Errorf("dag: a run in progress is still waiting on this edge's node - wait for it to finish before deleting it")
+	}
+
+	if _, err := tx.Exec(`DELETE FROM dag_edges WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("dag: delete edge %s: %w", id, err)
+	}
+
+	return tx.Commit()
 }
 
 // ---------------------------------------------------------------------------

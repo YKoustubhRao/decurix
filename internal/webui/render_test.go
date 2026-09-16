@@ -35,12 +35,13 @@ func TestRenderEveryPage(t *testing.T) {
 	}
 
 	stopped := desktop.Desktop{
-		ID:      "spare-box",
-		Name:    "spare-box",
-		Profile: "basic",
-		Harness: desktop.HarnessOllama,
-		Status:  "stopped",
-		URL:     "/desktop/spare-box/",
+		ID:       "spare-box",
+		Name:     "spare-box",
+		Profile:  "basic",
+		Harness:  desktop.HarnessOllama,
+		Status:   "stopped",
+		URL:      "/desktop/spare-box/",
+		ParentID: running.ID,
 	}
 
 	entry := memory.WorkerMemoryEntry{
@@ -57,6 +58,13 @@ func TestRenderEveryPage(t *testing.T) {
 		WorkerMemory: []memory.WorkerMemoryEntry{entry},
 		MemoryByDesktop: map[string][]memory.WorkerMemoryEntry{
 			running.ID: {entry},
+		},
+		LinkedMemory: map[string][]string{
+			running.ID: {stopped.ID},
+		},
+		DesktopNames: map[string]string{
+			running.ID: running.Name,
+			stopped.ID: stopped.Name,
 		},
 		TunnelURL: "https://example.trycloudflare.com",
 	}
@@ -187,20 +195,13 @@ func TestRenderEveryPage(t *testing.T) {
 		t.Fatalf("RenderDags: %v", err)
 	}
 
-	// The DAG editor, with a head node, a child wired to it by an edge (its
-	// content using the named output placeholder), and one recent run - the
-	// canvas, the inspector's hints and the run history all reach real data.
-	dagDetail := dag.Detail{
-		DAG: dag.DAG{ID: "dag-1", Name: "nightly-report", HeadNodeID: "dnode-1", CronExpr: "0 9 * * *"},
-		Nodes: []dag.Node{
-			{ID: "dnode-1", DAGID: "dag-1", Name: "fetch", DesktopID: running.ID, Content: "fetch the data", PosX: 40, PosY: 40},
-			{ID: "dnode-2", DAGID: "dag-1", Name: "summarize", DesktopID: running.ID, Content: "summarize {{nodes.fetch.reply}}", PosX: 260, PosY: 40},
-		},
-		Edges:      []dag.Edge{{ID: "dedge-1", DAGID: "dag-1", FromNodeID: "dnode-1", ToNodeID: "dnode-2"}},
-		RecentRuns: []dag.Run{dagRun},
-	}
-
-	if err := renderer.RenderDag(io.Discard, DagPageData{Detail: dagDetail, Desktops: []desktop.Desktop{running, stopped}}); err != nil {
+	// The DAG editor page itself only renders the DAG record server-side;
+	// the canvas and run history are populated by the page's own JS
+	// fetches (loadDag/loadRuns) against /api/dags/get and /api/dags/runs.
+	if err := renderer.RenderDag(io.Discard, DagPageData{
+		DAG:      dag.DAG{ID: "dag-1", Name: "nightly-report", HeadNodeID: "dnode-1", CronExpr: "0 9 * * *"},
+		Desktops: []desktop.Desktop{running, stopped},
+	}); err != nil {
 		t.Fatalf("RenderDag: %v", err)
 	}
 }
