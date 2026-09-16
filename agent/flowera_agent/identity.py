@@ -49,6 +49,20 @@ def get_identity_context(engine=""):
         ]
     )
 
+    if config.DESKTOP_SPECIALIZATION:
+        facts.append(
+            "- Your specialization (what you were created to focus on): "
+            f"{config.DESKTOP_SPECIALIZATION}"
+        )
+
+    if config.DESKTOP_PARENT_ID:
+        facts.append(
+            "- You were spawned as a specialized child of desktop "
+            f"'{config.DESKTOP_PARENT_ID}'. You started with a copy of its "
+            "learned memory, and new memory it records may be shared with "
+            "you too - see your own learned-memory context below."
+        )
+
     return (
         "Facts about yourself. These are already known - answer questions "
         "about them directly, never ask the human for them:\n"

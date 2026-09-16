@@ -102,6 +102,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/dags/runs", s.dagRunsHandler)
 	mux.HandleFunc("/api/dags/runs/get", s.dagRunAPIHandler)
 	mux.HandleFunc("/api/desktops/memory", s.desktopMemoryHandler)
+	mux.HandleFunc("/api/desktops/memory/link", s.linkDesktopMemoryHandler)
+	mux.HandleFunc("/api/desktops/memory/unlink", s.unlinkDesktopMemoryHandler)
 	mux.HandleFunc("/api/desktops/screenshot", s.desktopScreenshotHandler)
 	mux.HandleFunc("/api/desktops/chat", s.chatHandler)
 	mux.HandleFunc("/api/desktops/chat/stream", s.chatStreamHandler)

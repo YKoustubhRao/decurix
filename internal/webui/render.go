@@ -39,7 +39,11 @@ type PageData struct {
 	Desktops        []desktop.Desktop
 	WorkerMemory    []memory.WorkerMemoryEntry
 	MemoryByDesktop map[string][]memory.WorkerMemoryEntry
-	TunnelURL       string
+	// LinkedMemory maps a desktop ID to the other desktop IDs it shares L1
+	// memory with (see memory.Store.Link) - what the card's "Shared with"
+	// row and unlink button read.
+	LinkedMemory map[string][]string
+	TunnelURL    string
 }
 
 // QueryNotesPageData is the template data for the query-notes dashboard.

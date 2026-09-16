@@ -34,6 +34,16 @@ var schema = []string{
 		created_ns INTEGER NOT NULL
 	)`,
 	`CREATE INDEX worker_memory_desktop ON worker_memory (desktop_id, created_ns)`,
+	// worker_a/worker_b are always stored in canonicalized order (see
+	// linkKey) so a link between two desktops is one row regardless of
+	// which side asked for it, and re-linking the same pair is a no-op
+	// rather than a duplicate.
+	`CREATE TABLE worker_memory_links (
+		worker_a   TEXT NOT NULL,
+		worker_b   TEXT NOT NULL,
+		created_ns INTEGER NOT NULL,
+		PRIMARY KEY (worker_a, worker_b)
+	)`,
 }
 
 // Store is a SQLite-backed collection of WorkerMemoryEntry, keyed by desktop ID.
@@ -139,6 +149,95 @@ func (s *Store) List(desktopID string) []WorkerMemoryEntry {
 	}
 
 	return entries
+}
+
+// linkKey canonicalizes a pair of desktop IDs into a stable (a, b) order so
+// a link is stored and looked up the same way regardless of which desktop
+// asked for it.
+func linkKey(x, y string) (a, b string) {
+	if x <= y {
+		return x, y
+	}
+	return y, x
+}
+
+// Link records that two workers share L1 memory going forward: a future
+// entry recorded for either one is also persisted into the other's desktop
+// (see httpapi's desktopMemoryHandler). It is idempotent - linking an
+// already-linked pair changes nothing. Sharing is deliberately a link
+// between two desktop IDs, not a merge of their entries: each entry keeps
+// recording under the desktop it was actually learned on.
+func (s *Store) Link(desktopA, desktopB string) error {
+	desktopA = strings.TrimSpace(desktopA)
+	desktopB = strings.TrimSpace(desktopB)
+
+	if desktopA == "" || desktopB == "" {
+		return fmt.Errorf("both desktop IDs are required")
+	}
+
+	if desktopA == desktopB {
+		return fmt.Errorf("a worker cannot share memory with itself")
+	}
+
+	a, b := linkKey(desktopA, desktopB)
+
+	if _, err := s.db.Exec(
+		`INSERT OR IGNORE INTO worker_memory_links (worker_a, worker_b, created_ns) VALUES (?, ?, ?)`,
+		a, b, sqlitedb.ToNS(time.Now()),
+	); err != nil {
+		return fmt.Errorf("memory: link: %w", err)
+	}
+
+	return nil
+}
+
+// Unlink stops sharing L1 memory between two workers. Entries already
+// copied into either desktop's container stay put - this only stops future
+// entries from crossing over.
+func (s *Store) Unlink(desktopA, desktopB string) error {
+	a, b := linkKey(strings.TrimSpace(desktopA), strings.TrimSpace(desktopB))
+
+	if _, err := s.db.Exec(
+		`DELETE FROM worker_memory_links WHERE worker_a = ? AND worker_b = ?`,
+		a, b,
+	); err != nil {
+		return fmt.Errorf("memory: unlink: %w", err)
+	}
+
+	return nil
+}
+
+// LinkedWorkers returns the desktop IDs sharing L1 memory with desktopID,
+// in no particular order.
+func (s *Store) LinkedWorkers(desktopID string) []string {
+	desktopID = strings.TrimSpace(desktopID)
+	linked := make([]string, 0)
+
+	rows, err := s.db.Query(
+		`SELECT worker_a, worker_b FROM worker_memory_links WHERE worker_a = ? OR worker_b = ?`,
+		desktopID, desktopID,
+	)
+	if err != nil {
+		log.Printf("memory: linked workers: %v", err)
+		return linked
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var a, b string
+		if err := rows.Scan(&a, &b); err != nil {
+			log.Printf("memory: linked workers: %v", err)
+			continue
+		}
+
+		if a == desktopID {
+			linked = append(linked, b)
+		} else {
+			linked = append(linked, a)
+		}
+	}
+
+	return linked
 }
 
 // FormatForDesktopFile renders a memory entry as the flat text file that gets
