@@ -4,5 +4,9 @@
   <property name="general" type="empty">
     <property name="theme" type="string" value="Yaru-dark"/>
     <property name="title_font" type="string" value="Inter Bold 9"/>
+    <!-- Minimize/maximize/close grouped on the right with nothing on the
+         left, like a Windows titlebar, instead of xfwm4's own default of a
+         window-menu button on the left plus the three on the right. -->
+    <property name="button_layout" type="string" value="|HMC"/>
   </property>
 </channel>
