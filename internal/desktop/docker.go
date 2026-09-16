@@ -112,7 +112,7 @@ func resolveDesktopImage(profile string) (string, error) {
 }
 
 // buildDesktopEnv builds the container environment variables (VNC, desktop identity, control-plane/Ollama URLs, agent harness) for a desktop by name.
-func buildDesktopEnv(name, harness string) []string {
+func buildDesktopEnv(name, harness, specialization, parentID string) []string {
 	defaultPassword := os.Getenv("DEFAULT_PASSWORD")
 	if defaultPassword == "" {
 		defaultPassword = "admin"
@@ -159,6 +159,14 @@ func buildDesktopEnv(name, harness string) []string {
 		"OLLAMA_URL=" + ollamaURL,
 		"OLLAMA_MODEL=" + ollamaModel,
 		"AGENT_HARNESS=" + harness,
+	}
+
+	if specialization != "" {
+		env = append(env, "DESKTOP_SPECIALIZATION="+specialization)
+	}
+
+	if parentID != "" {
+		env = append(env, "DESKTOP_PARENT_ID="+parentID)
 	}
 
 	return env

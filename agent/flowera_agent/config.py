@@ -34,6 +34,12 @@ AGENT_HARNESS = os.environ.get(
     "ollama"
 ).strip().lower()
 
+# Set only for a desktop spawned as another desktop's specialized child (see
+# httpapi.createDesktopHandler / desktop.Manager.Create) - "" for an ordinary,
+# standalone desktop.
+DESKTOP_SPECIALIZATION = os.environ.get("DESKTOP_SPECIALIZATION", "").strip()
+DESKTOP_PARENT_ID = os.environ.get("DESKTOP_PARENT_ID", "").strip()
+
 # TheBot harness only: the soul binary (agent/soul, started as a
 # background daemon by start_agent_terminal.sh when AGENT_HARNESS=thebot)
 # listens on this port inside the container - not exposed outside it, same

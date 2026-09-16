@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -36,10 +37,18 @@ func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 		memoryByDesktop[entry.DesktopID] = append(memoryByDesktop[entry.DesktopID], entry)
 	}
 
+	linkedMemory := map[string][]string{}
+	for _, d := range desktops {
+		if linked := s.Memory.LinkedWorkers(d.ID); len(linked) > 0 {
+			linkedMemory[d.ID] = linked
+		}
+	}
+
 	data := webui.PageData{
 		Desktops:        desktops,
 		WorkerMemory:    memories,
 		MemoryByDesktop: memoryByDesktop,
+		LinkedMemory:    linkedMemory,
 		TunnelURL:       s.Tunnel.Get(),
 	}
 
@@ -59,7 +68,7 @@ func (s *Server) desktopsAPIHandler(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, desktops)
 }
 
-// createDesktopHandler validates a desktop-creation request (name, profile, cpus, memory) and creates the desktop.
+// createDesktopHandler validates a desktop-creation request (name, profile, cpus, memory, and optionally a specialization/parent_id spawning it as another desktop's child) and creates the desktop.
 func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
@@ -69,6 +78,10 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.FormValue("name"))
 	profile := strings.TrimSpace(r.FormValue("profile"))
 	harness := strings.TrimSpace(r.FormValue("harness"))
+	// One line: a textarea's newlines would otherwise land in a Docker env
+	// var and, later, in identity.py's plain fact list.
+	specialization := strings.Join(strings.Fields(r.FormValue("specialization")), " ")
+	parentID := strings.TrimSpace(r.FormValue("parent_id"))
 
 	cpus := int64(2)
 	memoryMB := int64(4096)
@@ -162,6 +175,21 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// A specialized child worker must be spawned from a desktop that
+	// actually exists - otherwise ParentID would name a parent nobody can
+	// ever look up.
+	if parentID != "" {
+		if _, err := s.Desktops.Get(r.Context(), parentID); err != nil {
+			if errors.Is(err, desktop.ErrNotFound) {
+				http.Error(w, "parent desktop not found", http.StatusBadRequest)
+				return
+			}
+
+			jsonError(w, fmt.Errorf("parent desktop %s: %w", parentID, err))
+			return
+		}
+	}
+
 	created, err := s.Desktops.Create(
 		r.Context(),
 		name,
@@ -170,10 +198,24 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		cpus,
 		memoryMB,
 		claudeCredentialsJSON,
+		specialization,
+		parentID,
 	)
 	if err != nil {
 		jsonError(w, err)
 		return
+	}
+
+	// A child worker starts out sharing L1 memory with the parent it was
+	// specialized from, so a focused worker still knows what the original
+	// one had already learned. Best-effort: the desktop itself is already
+	// created and usable without this.
+	if parentID != "" {
+		if err := s.Memory.Link(parentID, created.ID); err != nil {
+			log.Printf("createDesktop: link child %s to parent %s: %v", created.ID, parentID, err)
+		} else {
+			s.backfillSharedMemory(r.Context(), parentID, created.ID)
+		}
 	}
 
 	if err := s.Tasks.UpsertWorker(tasks.Worker{

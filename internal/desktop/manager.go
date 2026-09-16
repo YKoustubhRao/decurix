@@ -63,7 +63,9 @@ func NewManager(cli *client.Client) *Manager {
 // for the given profile and starts it, rolling back on failure.
 // claudeCredentialsJSON seeds a claude-harness desktop with the shared
 // Claude session (see internal/claudeauth); pass "" for every other harness,
-// or when nobody has logged in yet.
+// or when nobody has logged in yet. specialization and parentID are "" for
+// an ordinary, standalone desktop; see httpapi.createDesktopHandler for how
+// a specialized child desktop is spawned from an existing one.
 func (m *Manager) Create(
 	ctx context.Context,
 	name string,
@@ -72,6 +74,8 @@ func (m *Manager) Create(
 	cpus int64,
 	memoryMB int64,
 	claudeCredentialsJSON string,
+	specialization string,
+	parentID string,
 ) (*Desktop, error) {
 
 	imageName, err := resolveDesktopImage(profile)
@@ -103,7 +107,7 @@ func (m *Manager) Create(
 		sanitizeName(name),
 	)
 
-	env := buildDesktopEnv(name, harness)
+	env := buildDesktopEnv(name, harness, specialization, parentID)
 
 	config, hostConfig, networkingConfig := buildContainerConfigs(
 		imageName,
@@ -174,18 +178,20 @@ func (m *Manager) Create(
 	}
 
 	return &Desktop{
-		ID:          sanitizeName(name),
-		Name:        name,
-		Profile:     profile,
-		Harness:     harness,
-		Model:       envValue(env, "OLLAMA_MODEL"),
-		ContainerID: resp.ID,
-		Volume:      volumeName,
-		Status:      "running",
-		CPUs:        cpus,
-		MemoryMB:    memoryMB,
-		URL:         desktopURL(sanitizeName(name)),
-		CreatedAt:   time.Now().Format(time.RFC3339),
+		ID:             sanitizeName(name),
+		Name:           name,
+		Profile:        profile,
+		Harness:        harness,
+		Model:          envValue(env, "OLLAMA_MODEL"),
+		ContainerID:    resp.ID,
+		Volume:         volumeName,
+		Status:         "running",
+		CPUs:           cpus,
+		MemoryMB:       memoryMB,
+		URL:            desktopURL(sanitizeName(name)),
+		CreatedAt:      time.Now().Format(time.RFC3339),
+		Specialization: specialization,
+		ParentID:       parentID,
 	}, nil
 }
 
@@ -288,6 +294,14 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 		}
 	}
 
+	specialization := ""
+	parentID := ""
+
+	if inspect.Config != nil {
+		specialization = envValue(inspect.Config.Env, "DESKTOP_SPECIALIZATION")
+		parentID = envValue(inspect.Config.Env, "DESKTOP_PARENT_ID")
+	}
+
 	profile := c.Labels["desktop-profile"]
 
 	if profile == "" {
@@ -325,19 +339,21 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 	}
 
 	return Desktop{
-		ID:          id,
-		Name:        id,
-		Profile:     profile,
-		Harness:     harness,
-		Model:       model,
-		ContainerID: c.ID,
-		Volume:      volumeName,
-		Status:      status,
-		URL:         desktopURL(id),
-		CreatedAt:   createdAt,
-		StartedAt:   startedAt,
-		CPUs:        cpus,
-		MemoryMB:    memoryMB,
+		ID:             id,
+		Name:           id,
+		Profile:        profile,
+		Harness:        harness,
+		Model:          model,
+		ContainerID:    c.ID,
+		Volume:         volumeName,
+		Status:         status,
+		URL:            desktopURL(id),
+		CreatedAt:      createdAt,
+		StartedAt:      startedAt,
+		CPUs:           cpus,
+		MemoryMB:       memoryMB,
+		Specialization: specialization,
+		ParentID:       parentID,
 	}
 }
 
@@ -508,6 +524,8 @@ func (m *Manager) Get(ctx context.Context, id string) (Desktop, error) {
 		}
 
 		found.Model = envValue(inspect.Config.Env, "OLLAMA_MODEL")
+		found.Specialization = envValue(inspect.Config.Env, "DESKTOP_SPECIALIZATION")
+		found.ParentID = envValue(inspect.Config.Env, "DESKTOP_PARENT_ID")
 	}
 
 	if inspect.HostConfig != nil {
