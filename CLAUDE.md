@@ -141,9 +141,30 @@ internal/schedule  — recurring or one-time-future requests set up from the
                       disables itself after its one firing, the same
                       terminal state a cron schedule reaches when it runs out
                       of matches. Depends on nothing internal but sqlitedb
+internal/suggest   — picks a desktop for a request before it is sent, for the
+                      requests page's compose form: the one most recently
+                      actually in use, or - when some desktop's own worker
+                      memory (internal/memory) closely matches the typed
+                      request - that desktop instead. Mirrors idlepause's
+                      narrow-interface pattern (DesktopLister/ActivityStore,
+                      plus a MemoryLister over memory.Store) so it needs no
+                      changes to desktop/tasks/memory themselves. Embeds text
+                      through the shared Ollama (ollama.Embed, EmbedModel)
+                      and ranks by cosine similarity; a memory entry's
+                      embedding is cached in its own SQLite table
+                      (suggestion_embeddings) the first time it's compared
+                      against, so a suggest call after that only ever pays
+                      for one embedding round trip - the typed text's own.
+                      Every failure path (no Ollama, no embedding model,
+                      nothing in memory yet) just falls back to recency and
+                      never blocks or fails sending a request - the same
+                      best-effort posture ollama.Manager.preloadModel already
+                      takes. Depends on desktop (narrow interface), tasks
+                      (narrow interface), memory (narrow interface), ollama,
+                      sqlitedb
 internal/httpapi   — the only package touching net/http; all HTTP handlers,
                       composes desktop+querynotes+memory+conversation+stepimages+tasks+
-                      tunnel+claudeauth+lanaccess+schedule+webui. schedules.go: the
+                      tunnel+claudeauth+lanaccess+schedule+suggest+webui. schedules.go: the
                       requests page's recurring-request CRUD (/api/schedules,
                       .../create, .../delete, .../toggle) and Server.Submit, which
                       implements schedule.Submitter by calling the same submitRequest
@@ -288,7 +309,7 @@ Control plane → desktop communication happens over the Docker bridge network `
 
 The scripts also discover this machine's own LAN-facing IP (`ip route get 1.1.1.1`'s `src` field on Linux/macOS — asks the kernel which address it would use, no packet actually sent; a UDP `Connect` to a public IP on Windows, the same trick) and `POST /api/tunnel` two more addresses built from it: `admin_url` (`:8080`, unauthenticated) and `lan_url` (the gated port) — stored on the same `tunnel.Store` as the two Cloudflare URLs (`url` for the primary tunnel, `lan_tunnel_url` for the gated one) and shown together in the Mobile menu (`url`/`admin_url` grouped as unauthenticated, `lan_url`/`lan_tunnel_url` grouped separately with the code, tunnel link listed first since it works off-network), so a phone on the same network can skip either tunnel round-trip entirely and reach an address directly. `httpapi.tunnelHandler`'s POST only ever sets the fields present in that call's body, since the admin/LAN report (once, right after startup) and each tunnel-URL report (once per line its own `cloudflared` process prints) are separate calls that must never blank out each other's fields.
 
-Go package dependency direction (no cycles): `httpapi` → `desktop`, `querynotes`, `memory`, `conversation`, `stepimages`, `tasks`, `tunnel`, `claudeauth`, `lanaccess`, `schedule`, `webui`; `webui` → `desktop`, `querynotes`, `memory`, `tasks`, `web`; `desktop` → `ollama` (only for `ollama.DesktopURL`/`DesktopModel`, the Ollama a new desktop is given), `flowera` (the root package, for the embedded build context); `idlepause` → `desktop` (only for the `desktop.Desktop` struct and the `DesktopLister` interface `*desktop.Manager` satisfies) via a narrow interface, so it can be tested with a fake instead of a real Docker client; `schedule` has no internal dependency of its own - its `Runner` reaches `httpapi` only through the `Submitter` interface `*httpapi.Server` satisfies (`Submit`), the same narrowing `idlepause` uses for `desktop`; `querynotes`, `memory`, `conversation`, `stepimages`, `tasks`, `claudeauth`, `schedule` → `sqlitedb` only; `ollama`, `sqlitedb`, `tunnel`, `lanaccess`, `web`, `flowera` depend on nothing internal. Note that `desktop` does *not* depend on `claudeauth`: `httpapi.createDesktopHandler` reads the stored session and hands `Create` its raw credentials JSON as a plain string, and `claudelogin.go`'s login flow hands the same shape back to `httpapi` to save — `desktop` only ever sees bytes, never the store.
+Go package dependency direction (no cycles): `httpapi` → `desktop`, `querynotes`, `memory`, `conversation`, `stepimages`, `tasks`, `tunnel`, `claudeauth`, `lanaccess`, `schedule`, `suggest`, `webui`; `webui` → `desktop`, `querynotes`, `memory`, `tasks`, `web`; `desktop` → `ollama` (only for `ollama.DesktopURL`/`DesktopModel`, the Ollama a new desktop is given), `flowera` (the root package, for the embedded build context); `idlepause` → `desktop` (only for the `desktop.Desktop` struct and the `DesktopLister` interface `*desktop.Manager` satisfies) via a narrow interface, so it can be tested with a fake instead of a real Docker client; `schedule` has no internal dependency of its own - its `Runner` reaches `httpapi` only through the `Submitter` interface `*httpapi.Server` satisfies (`Submit`), the same narrowing `idlepause` uses for `desktop`; `suggest` → `memory`, `ollama` (only for `ollama.Embed`), `desktop` (only for the `desktop.Desktop` struct and its own `DesktopLister`, the same narrowing `idlepause` uses), `tasks` (only for its own `ActivityStore`, narrowing `tasks.Store.LastActivity`), `sqlitedb`; `querynotes`, `memory`, `conversation`, `stepimages`, `tasks`, `claudeauth`, `schedule`, `suggest` → `sqlitedb` only; `ollama`, `sqlitedb`, `tunnel`, `lanaccess`, `web`, `flowera` depend on nothing internal. Note that `desktop` does *not* depend on `claudeauth`: `httpapi.createDesktopHandler` reads the stored session and hands `Create` its raw credentials JSON as a plain string, and `claudelogin.go`'s login flow hands the same shape back to `httpapi` to save — `desktop` only ever sees bytes, never the store.
 
 Three desktop profiles share the same `agent/` contents but differ in installed tooling:
 - `docker/desktop.basic.Dockerfile` — VNC desktop only (no `claude` binary — Ollama harness only)
@@ -411,8 +432,8 @@ go build ./... && go vet ./... && go test ./...   # compile, lint, unit tests
                                   # (internal/memory, internal/conversation, internal/webui,
                                   #  internal/stepimages, internal/httpapi, internal/tasks,
                                   #  internal/sqlitedb, internal/claudeauth, internal/lanaccess,
-                                  #  internal/idlepause, internal/schedule, internal/desktop,
-                                  #  cmd/flowera's --cli)
+                                  #  internal/idlepause, internal/schedule, internal/suggest,
+                                  #  internal/desktop, cmd/flowera's --cli)
 PYTHONPATH=agent python3 -m unittest discover -s agent/tests   # computer-use gate/refs/rendering,
                                   # task IDs and usage totals, recordings (input merging,
                                   # privacy, volatility, the store, replay against a fake screen)

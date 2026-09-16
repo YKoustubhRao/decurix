@@ -1,7 +1,7 @@
 // Package httpapi implements the Flowera control-plane HTTP API and
 // dashboard: it is the only package that touches net/http request/response
 // objects, composing the desktop, querynotes, memory, conversation,
-// stepimages, tasks, tunnel, and webui packages.
+// stepimages, tasks, tunnel, suggest, and webui packages.
 package httpapi
 
 import (
@@ -15,6 +15,7 @@ import (
 	"github.com/YKoustubhRao/flowera/internal/querynotes"
 	"github.com/YKoustubhRao/flowera/internal/schedule"
 	"github.com/YKoustubhRao/flowera/internal/stepimages"
+	"github.com/YKoustubhRao/flowera/internal/suggest"
 	"github.com/YKoustubhRao/flowera/internal/tasks"
 	"github.com/YKoustubhRao/flowera/internal/tunnel"
 	"github.com/YKoustubhRao/flowera/internal/webui"
@@ -35,11 +36,12 @@ type Server struct {
 	ClaudeAuth *claudeauth.Store
 	LANAccess  *lanaccess.Store
 	Schedules  *schedule.Store
+	Suggest    *suggest.Store
 	Web        *webui.Renderer
 }
 
 // NewServer creates a Server from its component stores/managers.
-func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memoryStore *memory.Store, chat *conversation.Store, stepImages *stepimages.Store, taskRecords *tasks.Store, tunnelStore *tunnel.Store, claudeAuth *claudeauth.Store, lanAccess *lanaccess.Store, schedules *schedule.Store, web *webui.Renderer) *Server {
+func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memoryStore *memory.Store, chat *conversation.Store, stepImages *stepimages.Store, taskRecords *tasks.Store, tunnelStore *tunnel.Store, claudeAuth *claudeauth.Store, lanAccess *lanaccess.Store, schedules *schedule.Store, suggestions *suggest.Store, web *webui.Renderer) *Server {
 	return &Server{
 		Desktops:   desktops,
 		QueryNotes: queryNotes,
@@ -51,6 +53,7 @@ func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memorySt
 		ClaudeAuth: claudeAuth,
 		LANAccess:  lanAccess,
 		Schedules:  schedules,
+		Suggest:    suggestions,
 		Web:        web,
 	}
 }
@@ -69,6 +72,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/desktops/delete", s.deleteDesktopHandler)
 	mux.HandleFunc("/requests", s.requestsDashboardHandler)
 	mux.HandleFunc("/api/desktops/send", s.sendRequestHandler)
+	mux.HandleFunc("/api/desktops/suggest", s.suggestDesktopHandler)
 	mux.HandleFunc("/api/schedules", s.schedulesHandler)
 	mux.HandleFunc("/api/schedules/create", s.createScheduleHandler)
 	mux.HandleFunc("/api/schedules/delete", s.deleteScheduleHandler)
