@@ -1,0 +1,15 @@
+# Full feature set, including docling for office-doc RAG ingestion (PDF/DOCX/
+# etc) -- this pulls in torch/transformers/accelerate transitively, so this is
+# a large, slow install by design (the lighter core-features-only set would
+# just be the first four). Ollama is reached via OLLAMA_URL (server.py), not a
+# package dependency.
+fastapi
+uvicorn[standard]
+pdfplumber
+psutil
+pymupdf
+requests
+beautifulsoup4
+pandas
+camelot-py[cv]
+docling

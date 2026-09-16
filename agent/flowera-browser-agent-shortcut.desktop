@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Browser Agent
+Comment=AI-controlled browser automation UI
+Exec=chromium-browser --new-window http://localhost:8090
+Icon=web-browser
+Terminal=false
+StartupNotify=false

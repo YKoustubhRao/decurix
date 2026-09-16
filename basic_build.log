@@ -1,0 +1,1143 @@
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from desktop.basic.Dockerfile
+#1 transferring dockerfile: 6.98kB 0.0s done
+#1 DONE 0.1s
+
+#2 [internal] load metadata for docker.io/library/golang:1.27
+#2 DONE 0.1s
+
+#3 [internal] load metadata for docker.io/accetto/ubuntu-vnc-xfce-chromium-g3:latest
+#3 DONE 2.2s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 2B done
+#4 DONE 0.1s
+
+#5 [internal] load build context
+#5 DONE 0.0s
+
+#6 [thebot-builder 1/8] FROM docker.io/library/golang:1.27@sha256:f44f6e88636cfb311f9ebace870ded69d943f227bb3cb27d32ffd84ea18c43ea
+#6 resolve docker.io/library/golang:1.27@sha256:f44f6e88636cfb311f9ebace870ded69d943f227bb3cb27d32ffd84ea18c43ea 0.0s done
+#6 DONE 0.0s
+
+#7 [stage-1  1/25] FROM docker.io/accetto/ubuntu-vnc-xfce-chromium-g3:latest@sha256:0fe9f5ec6dc37ce2d4bf77a1d444dcaaf5852c91880281d9f1acca33e537c8e1
+#7 resolve docker.io/accetto/ubuntu-vnc-xfce-chromium-g3:latest@sha256:0fe9f5ec6dc37ce2d4bf77a1d444dcaaf5852c91880281d9f1acca33e537c8e1 0.0s done
+#7 CACHED
+
+#5 [internal] load build context
+#5 transferring context: 1.34MB 0.2s done
+#5 DONE 0.2s
+
+#8 [thebot-builder 2/8] WORKDIR /src
+#8 CACHED
+
+#9 [thebot-builder 3/8] COPY agent/thebot/go.mod agent/thebot/go.sum ./
+#9 CACHED
+
+#10 [thebot-builder 4/8] RUN go mod download
+#10 CACHED
+
+#11 [thebot-builder 5/8] COPY agent/thebot/cmd ./cmd
+#11 DONE 0.1s
+
+#12 [stage-1  2/25] RUN apt-get update &&     apt-get install -y --no-install-recommends         xdotool         python3-xlib         python3-gi         gir1.2-atspi-2.0         at-spi2-core         libatk-adaptor         python3-pip         python3-venv &&     apt-get clean &&     rm -rf /var/lib/apt/lists/*
+#12 ...
+
+#13 [thebot-builder 6/8] COPY agent/thebot/internal ./internal
+#13 DONE 0.1s
+
+#14 [thebot-builder 7/8] COPY agent/thebot/web ./web
+#14 DONE 0.0s
+
+#15 [thebot-builder 8/8] RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /soul ./cmd/soul
+#15 ...
+
+#12 [stage-1  2/25] RUN apt-get update &&     apt-get install -y --no-install-recommends         xdotool         python3-xlib         python3-gi         gir1.2-atspi-2.0         at-spi2-core         libatk-adaptor         python3-pip         python3-venv &&     apt-get clean &&     rm -rf /var/lib/apt/lists/*
+#12 1.173 Get:1 http://security.ubuntu.com/ubuntu noble-security InRelease [126 kB]
+#12 1.310 Get:2 http://archive.ubuntu.com/ubuntu noble InRelease [256 kB]
+#12 2.090 Get:3 http://security.ubuntu.com/ubuntu noble-security/multiverse amd64 Packages [50.0 kB]
+#12 2.310 Get:4 http://security.ubuntu.com/ubuntu noble-security/restricted amd64 Packages [1801 kB]
+#12 2.348 Get:5 http://archive.ubuntu.com/ubuntu noble-updates InRelease [126 kB]
+#12 2.594 Get:6 http://archive.ubuntu.com/ubuntu noble-backports InRelease [126 kB]
+#12 2.869 Get:7 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages [1808 kB]
+#12 3.036 Get:8 http://security.ubuntu.com/ubuntu noble-security/universe amd64 Packages [1532 kB]
+#12 3.229 Get:9 http://security.ubuntu.com/ubuntu noble-security/main amd64 Packages [1244 kB]
+#12 3.563 Get:10 http://archive.ubuntu.com/ubuntu noble/universe amd64 Packages [19.3 MB]
+#12 5.976 Get:11 http://archive.ubuntu.com/ubuntu noble/restricted amd64 Packages [117 kB]
+#12 5.982 Get:12 http://archive.ubuntu.com/ubuntu noble/multiverse amd64 Packages [331 kB]
+#12 6.010 Get:13 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages [1566 kB]
+#12 6.358 Get:14 http://archive.ubuntu.com/ubuntu noble-updates/universe amd64 Packages [2147 kB]
+#12 6.465 Get:15 http://archive.ubuntu.com/ubuntu noble-updates/multiverse amd64 Packages [56.2 kB]
+#12 6.466 Get:16 http://archive.ubuntu.com/ubuntu noble-updates/restricted amd64 Packages [1922 kB]
+#12 6.535 Get:17 http://archive.ubuntu.com/ubuntu noble-backports/main amd64 Packages [48.9 kB]
+#12 6.536 Get:18 http://archive.ubuntu.com/ubuntu noble-backports/universe amd64 Packages [35.9 kB]
+#12 6.537 Get:19 http://archive.ubuntu.com/ubuntu noble-backports/multiverse amd64 Packages [671 B]
+#12 7.771 Fetched 32.6 MB in 7s (4649 kB/s)
+#12 7.771 Reading package lists...
+#12 10.99 Reading package lists...
+#12 13.39 Building dependency tree...
+#12 13.94 Reading state information...
+#12 14.52 The following additional packages will be installed:
+#12 14.52   gir1.2-girepository-2.0 gsettings-desktop-schemas libgirepository-1.0-1
+#12 14.53   libpython3.12-minimal libpython3.12-stdlib libxdo3 python3-pip-whl
+#12 14.53   python3-setuptools python3-setuptools-whl python3-six python3-wheel
+#12 14.53   python3.12 python3.12-minimal python3.12-venv session-migration
+#12 14.53 Suggested packages:
+#12 14.53   python-setuptools-doc python3.12-doc binutils binfmt-support
+#12 14.53 Recommended packages:
+#12 14.53   build-essential python3-dev
+#12 14.72 The following NEW packages will be installed:
+#12 14.73   at-spi2-core gir1.2-atspi-2.0 gir1.2-girepository-2.0
+#12 14.74   gsettings-desktop-schemas libatk-adaptor libgirepository-1.0-1 libxdo3
+#12 14.74   python3-gi python3-pip python3-pip-whl python3-setuptools
+#12 14.74   python3-setuptools-whl python3-six python3-venv python3-wheel python3-xlib
+#12 14.74   python3.12-venv session-migration xdotool
+#12 14.75 The following packages will be upgraded:
+#12 14.75   libpython3.12-minimal libpython3.12-stdlib python3.12 python3.12-minimal
+#12 15.24 4 upgraded, 19 newly installed, 0 to remove and 81 not upgraded.
+#12 15.24 Need to get 10.8 MB of archives.
+#12 15.24 After this operation, 15.1 MB of additional disk space will be used.
+#12 15.24 Get:1 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 python3.12 amd64 3.12.3-1ubuntu0.17 [651 kB]
+#12 16.57 Get:2 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 libpython3.12-stdlib amd64 3.12.3-1ubuntu0.17 [2071 kB]
+#12 17.07 Get:3 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 python3.12-minimal amd64 3.12.3-1ubuntu0.17 [2335 kB]
+#12 17.43 Get:4 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 libpython3.12-minimal amd64 3.12.3-1ubuntu0.17 [839 kB]
+#12 17.47 Get:5 http://archive.ubuntu.com/ubuntu noble/main amd64 libgirepository-1.0-1 amd64 1.80.1-1 [81.9 kB]
+#12 17.48 Get:6 http://archive.ubuntu.com/ubuntu noble/main amd64 gir1.2-girepository-2.0 amd64 1.80.1-1 [24.5 kB]
+#12 17.48 Get:7 http://archive.ubuntu.com/ubuntu noble/main amd64 python3-gi amd64 3.48.2-1 [232 kB]
+#12 17.50 Get:8 http://archive.ubuntu.com/ubuntu noble/main amd64 session-migration amd64 0.3.9build1 [9034 B]
+#12 17.50 Get:9 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 gsettings-desktop-schemas all 46.1-0ubuntu1 [35.6 kB]
+#12 17.50 Get:10 http://archive.ubuntu.com/ubuntu noble/main amd64 at-spi2-core amd64 2.52.0-1build1 [56.6 kB]
+#12 17.50 Get:11 http://archive.ubuntu.com/ubuntu noble/main amd64 gir1.2-atspi-2.0 amd64 2.52.0-1build1 [19.8 kB]
+#12 17.50 Get:12 http://archive.ubuntu.com/ubuntu noble/main amd64 libatk-adaptor amd64 2.52.0-1build1 [6032 B]
+#12 17.63 Get:13 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 python3-setuptools all 68.1.2-2ubuntu1.2 [397 kB]
+#12 17.67 Get:14 http://archive.ubuntu.com/ubuntu noble/universe amd64 python3-wheel all 0.42.0-2 [53.1 kB]
+#12 17.67 Get:15 http://archive.ubuntu.com/ubuntu noble-updates/universe amd64 python3-pip all 24.0+dfsg-1ubuntu1.3 [1320 kB]
+#12 17.78 Get:16 http://archive.ubuntu.com/ubuntu noble-updates/universe amd64 python3-pip-whl all 24.0+dfsg-1ubuntu1.3 [1707 kB]
+#12 18.24 Get:17 http://archive.ubuntu.com/ubuntu noble-updates/universe amd64 python3-setuptools-whl all 68.1.2-2ubuntu1.2 [716 kB]
+#12 18.43 Get:18 http://archive.ubuntu.com/ubuntu noble/main amd64 python3-six all 1.16.0-4 [12.4 kB]
+#12 18.43 Get:19 http://archive.ubuntu.com/ubuntu noble-updates/universe amd64 python3.12-venv amd64 3.12.3-1ubuntu0.17 [5684 B]
+#12 18.43 Get:20 http://archive.ubuntu.com/ubuntu noble-updates/universe amd64 python3-venv amd64 3.12.3-0ubuntu2.1 [1032 B]
+#12 18.43 Get:21 http://archive.ubuntu.com/ubuntu noble/universe amd64 libxdo3 amd64 1:3.20160805.1-5build1 [22.2 kB]
+#12 18.43 Get:22 http://archive.ubuntu.com/ubuntu noble/universe amd64 python3-xlib all 0.33-2 [120 kB]
+#12 18.45 Get:23 http://archive.ubuntu.com/ubuntu noble/universe amd64 xdotool amd64 1:3.20160805.1-5build1 [42.6 kB]
+#12 18.84 debconf: delaying package configuration, since apt-utils is not installed
+#12 18.92 Fetched 10.8 MB in 4s (2961 kB/s)
+#12 19.00 (Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 36753 files and directories currently installed.)
+#12 19.18 Preparing to unpack .../00-python3.12_3.12.3-1ubuntu0.17_amd64.deb ...
+#12 19.36 Unpacking python3.12 (3.12.3-1ubuntu0.17) over (3.12.3-1ubuntu0.13) ...
+#12 19.48 Preparing to unpack .../01-libpython3.12-stdlib_3.12.3-1ubuntu0.17_amd64.deb ...
+#12 19.55 Unpacking libpython3.12-stdlib:amd64 (3.12.3-1ubuntu0.17) over (3.12.3-1ubuntu0.13) ...
+#12 21.27 Preparing to unpack .../02-python3.12-minimal_3.12.3-1ubuntu0.17_amd64.deb ...
+#12 21.29 Unpacking python3.12-minimal (3.12.3-1ubuntu0.17) over (3.12.3-1ubuntu0.13) ...
+#12 21.53 Preparing to unpack .../03-libpython3.12-minimal_3.12.3-1ubuntu0.17_amd64.deb ...
+#12 21.64 Unpacking libpython3.12-minimal:amd64 (3.12.3-1ubuntu0.17) over (3.12.3-1ubuntu0.13) ...
+#12 22.92 Selecting previously unselected package libgirepository-1.0-1:amd64.
+#12 22.92 Preparing to unpack .../04-libgirepository-1.0-1_1.80.1-1_amd64.deb ...
+#12 22.94 Unpacking libgirepository-1.0-1:amd64 (1.80.1-1) ...
+#12 23.01 Selecting previously unselected package gir1.2-girepository-2.0:amd64.
+#12 23.02 Preparing to unpack .../05-gir1.2-girepository-2.0_1.80.1-1_amd64.deb ...
+#12 23.02 Unpacking gir1.2-girepository-2.0:amd64 (1.80.1-1) ...
+#12 23.08 Selecting previously unselected package python3-gi.
+#12 23.08 Preparing to unpack .../06-python3-gi_3.48.2-1_amd64.deb ...
+#12 23.09 Unpacking python3-gi (3.48.2-1) ...
+#12 23.15 Selecting previously unselected package session-migration.
+#12 23.16 Preparing to unpack .../07-session-migration_0.3.9build1_amd64.deb ...
+#12 23.17 Unpacking session-migration (0.3.9build1) ...
+#12 23.21 Selecting previously unselected package gsettings-desktop-schemas.
+#12 23.21 Preparing to unpack .../08-gsettings-desktop-schemas_46.1-0ubuntu1_all.deb ...
+#12 23.22 Unpacking gsettings-desktop-schemas (46.1-0ubuntu1) ...
+#12 23.30 Selecting previously unselected package at-spi2-core.
+#12 23.30 Preparing to unpack .../09-at-spi2-core_2.52.0-1build1_amd64.deb ...
+#12 23.31 Unpacking at-spi2-core (2.52.0-1build1) ...
+#12 23.38 Selecting previously unselected package gir1.2-atspi-2.0:amd64.
+#12 23.39 Preparing to unpack .../10-gir1.2-atspi-2.0_2.52.0-1build1_amd64.deb ...
+#12 23.40 Unpacking gir1.2-atspi-2.0:amd64 (2.52.0-1build1) ...
+#12 23.45 Selecting previously unselected package libatk-adaptor:amd64.
+#12 23.46 Preparing to unpack .../11-libatk-adaptor_2.52.0-1build1_amd64.deb ...
+#12 23.46 Unpacking libatk-adaptor:amd64 (2.52.0-1build1) ...
+#12 23.52 Selecting previously unselected package python3-setuptools.
+#12 23.52 Preparing to unpack .../12-python3-setuptools_68.1.2-2ubuntu1.2_all.deb ...
+#12 23.53 Unpacking python3-setuptools (68.1.2-2ubuntu1.2) ...
+#12 23.64 Selecting previously unselected package python3-wheel.
+#12 23.65 Preparing to unpack .../13-python3-wheel_0.42.0-2_all.deb ...
+#12 23.65 Unpacking python3-wheel (0.42.0-2) ...
+#12 23.72 Selecting previously unselected package python3-pip.
+#12 23.72 Preparing to unpack .../14-python3-pip_24.0+dfsg-1ubuntu1.3_all.deb ...
+#12 23.73 Unpacking python3-pip (24.0+dfsg-1ubuntu1.3) ...
+#12 23.94 Selecting previously unselected package python3-pip-whl.
+#12 23.95 Preparing to unpack .../15-python3-pip-whl_24.0+dfsg-1ubuntu1.3_all.deb ...
+#12 23.95 Unpacking python3-pip-whl (24.0+dfsg-1ubuntu1.3) ...
+#12 24.01 Selecting previously unselected package python3-setuptools-whl.
+#12 24.01 Preparing to unpack .../16-python3-setuptools-whl_68.1.2-2ubuntu1.2_all.deb ...
+#12 24.02 Unpacking python3-setuptools-whl (68.1.2-2ubuntu1.2) ...
+#12 24.09 Selecting previously unselected package python3-six.
+#12 24.09 Preparing to unpack .../17-python3-six_1.16.0-4_all.deb ...
+#12 24.10 Unpacking python3-six (1.16.0-4) ...
+#12 24.16 Selecting previously unselected package python3.12-venv.
+#12 24.16 Preparing to unpack .../18-python3.12-venv_3.12.3-1ubuntu0.17_amd64.deb ...
+#12 24.17 Unpacking python3.12-venv (3.12.3-1ubuntu0.17) ...
+#12 24.21 Selecting previously unselected package python3-venv.
+#12 24.21 Preparing to unpack .../19-python3-venv_3.12.3-0ubuntu2.1_amd64.deb ...
+#12 24.22 Unpacking python3-venv (3.12.3-0ubuntu2.1) ...
+#12 24.27 Selecting previously unselected package libxdo3:amd64.
+#12 24.28 Preparing to unpack .../20-libxdo3_1%3a3.20160805.1-5build1_amd64.deb ...
+#12 24.29 Unpacking libxdo3:amd64 (1:3.20160805.1-5build1) ...
+#12 24.35 Selecting previously unselected package python3-xlib.
+#12 24.35 Preparing to unpack .../21-python3-xlib_0.33-2_all.deb ...
+#12 24.36 Unpacking python3-xlib (0.33-2) ...
+#12 24.43 Selecting previously unselected package xdotool.
+#12 24.43 Preparing to unpack .../22-xdotool_1%3a3.20160805.1-5build1_amd64.deb ...
+#12 24.44 Unpacking xdotool (1:3.20160805.1-5build1) ...
+#12 24.51 Setting up session-migration (0.3.9build1) ...
+#12 24.75 /usr/bin/systemctl:1541: SyntaxWarning: invalid escape sequence '\w'
+#12 24.76   expanded = re.sub("[$](\w+)", lambda m: get_env1(m), cmd.replace("\\\n",""))
+#12 24.76 /usr/bin/systemctl:1543: SyntaxWarning: invalid escape sequence '\w'
+#12 24.76   new_text = re.sub("[$][{](\w+)[}]", lambda m: get_env2(m), expanded)
+#12 24.76 /usr/bin/systemctl:1628: SyntaxWarning: invalid escape sequence '\w'
+#12 24.76   cmd3 = re.sub("[$](\w+)", lambda m: get_env1(m), cmd2)
+#12 24.76 /usr/bin/systemctl:1631: SyntaxWarning: invalid escape sequence '\w'
+#12 24.76   newcmd += [ re.sub("[$][{](\w+)[}]", lambda m: get_env2(m), part) ]
+#12 25.07 Usage: systemctl [options] command [name...]
+#12 25.07 
+#12 25.07 systemctl: error: no such option: --global
+#12 25.09 /usr/bin/deb-systemd-helper: error: systemctl preset failed on session-migration.service: No such file or directory
+#12 25.10 Setting up python3-setuptools-whl (68.1.2-2ubuntu1.2) ...
+#12 25.11 Setting up python3-setuptools (68.1.2-2ubuntu1.2) ...
+#12 26.83 Setting up python3-pip-whl (24.0+dfsg-1ubuntu1.3) ...
+#12 27.00 Setting up libpython3.12-minimal:amd64 (3.12.3-1ubuntu0.17) ...
+#12 27.22 Setting up gir1.2-atspi-2.0:amd64 (2.52.0-1build1) ...
+#12 27.29 Setting up python3-wheel (0.42.0-2) ...
+#12 27.61 Setting up python3-six (1.16.0-4) ...
+#12 27.87 Setting up libxdo3:amd64 (1:3.20160805.1-5build1) ...
+#12 27.89 Setting up python3-pip (24.0+dfsg-1ubuntu1.3) ...
+#12 29.90 Setting up libgirepository-1.0-1:amd64 (1.80.1-1) ...
+#12 29.92 Setting up libatk-adaptor:amd64 (2.52.0-1build1) ...
+#12 29.96 Setting up python3-xlib (0.33-2) ...
+#12 30.30 Setting up gsettings-desktop-schemas (46.1-0ubuntu1) ...
+#12 30.31 Setting up python3.12-minimal (3.12.3-1ubuntu0.17) ...
+#12 ...
+
+#15 [thebot-builder 8/8] RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /soul ./cmd/soul
+#15 DONE 30.2s
+
+#12 [stage-1  2/25] RUN apt-get update &&     apt-get install -y --no-install-recommends         xdotool         python3-xlib         python3-gi         gir1.2-atspi-2.0         at-spi2-core         libatk-adaptor         python3-pip         python3-venv &&     apt-get clean &&     rm -rf /var/lib/apt/lists/*
+#12 31.40 Setting up libpython3.12-stdlib:amd64 (3.12.3-1ubuntu0.17) ...
+#12 31.42 Setting up xdotool (1:3.20160805.1-5build1) ...
+#12 31.43 Setting up python3.12 (3.12.3-1ubuntu0.17) ...
+#12 32.76 Setting up gir1.2-girepository-2.0:amd64 (1.80.1-1) ...
+#12 32.78 Setting up python3-gi (3.48.2-1) ...
+#12 33.01 Setting up python3.12-venv (3.12.3-1ubuntu0.17) ...
+#12 33.12 Setting up python3-venv (3.12.3-0ubuntu2.1) ...
+#12 33.14 Processing triggers for desktop-file-utils (0.27-2build1) ...
+#12 33.18 Processing triggers for libc-bin (2.39-0ubuntu8.7) ...
+#12 33.46 Processing triggers for man-db (2.12.0-4build2) ...
+#12 33.74 Processing triggers for libglib2.0-0t64:amd64 (2.80.0-6ubuntu3.8) ...
+#12 33.79 Setting up at-spi2-core (2.52.0-1build1) ...
+#12 DONE 33.9s
+
+#16 [stage-1  3/25] COPY agent/vm_server.py /opt/vm_server.py
+#16 DONE 0.1s
+
+#17 [stage-1  4/25] COPY agent/flowera_agent /opt/flowera_agent
+#17 DONE 0.1s
+
+#18 [stage-1  5/25] COPY agent/start_agent_terminal.sh /opt/start_agent_terminal.sh
+#18 DONE 0.1s
+
+#19 [stage-1  6/25] COPY agent/gui /usr/local/bin/gui
+#19 DONE 0.1s
+
+#20 [stage-1  7/25] COPY --from=thebot-builder /soul /opt/soul
+#20 DONE 0.1s
+
+#21 [stage-1  8/25] COPY agent/thebot/scripts /opt/thebot-scripts
+#21 DONE 0.1s
+
+#22 [stage-1  9/25] COPY agent/flowera-wallpaper.svg /opt/flowera-wallpaper.svg
+#22 DONE 0.1s
+
+#23 [stage-1 10/25] COPY agent/chromium-browser.init /opt/flowera-chromium.init
+#23 DONE 0.1s
+
+#24 [stage-1 11/25] COPY agent/chromium-browser.init /home/headless/.chromium-browser.init
+#24 DONE 0.0s
+
+#25 [stage-1 12/25] COPY agent/browser-agent /opt/browser-agent
+#25 DONE 0.1s
+
+#26 [stage-1 13/25] COPY agent/doc-ui /opt/doc-ui
+#26 DONE 0.1s
+
+#27 [stage-1 14/25] RUN python3 -m venv /opt/flowera-tools-venv &&     /opt/flowera-tools-venv/bin/pip install --no-cache-dir         -r /opt/browser-agent/requirements.txt         -r /opt/doc-ui/requirements.txt &&     /opt/flowera-tools-venv/bin/playwright install --with-deps chromium
+#27 5.629 Collecting fastapi (from -r /opt/browser-agent/requirements.txt (line 4))
+#27 5.739   Downloading fastapi-0.141.1-py3-none-any.whl.metadata (27 kB)
+#27 5.809 Collecting playwright (from -r /opt/browser-agent/requirements.txt (line 6))
+#27 5.825   Downloading playwright-1.63.0-py3-none-manylinux1_x86_64.whl.metadata (3.3 kB)
+#27 5.857 Collecting beautifulsoup4 (from -r /opt/browser-agent/requirements.txt (line 7))
+#27 5.870   Downloading beautifulsoup4-4.15.0-py3-none-any.whl.metadata (3.8 kB)
+#27 5.989 Collecting psutil (from -r /opt/browser-agent/requirements.txt (line 8))
+#27 6.004   Downloading psutil-7.2.2-cp36-abi3-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl.metadata (22 kB)
+#27 6.055 Collecting requests (from -r /opt/browser-agent/requirements.txt (line 9))
+#27 6.068   Downloading requests-2.34.2-py3-none-any.whl.metadata (4.8 kB)
+#27 6.100 Collecting pdfplumber (from -r /opt/doc-ui/requirements.txt (line 8))
+#27 6.114   Downloading pdfplumber-0.11.10-py3-none-any.whl.metadata (43 kB)
+#27 6.118      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 43.7/43.7 kB 209.2 MB/s eta 0:00:00
+#27 6.333 Collecting pymupdf (from -r /opt/doc-ui/requirements.txt (line 10))
+#27 6.346   Downloading pymupdf-1.28.2-cp310-abi3-manylinux_2_28_x86_64.whl.metadata (26 kB)
+#27 6.537 Collecting pandas (from -r /opt/doc-ui/requirements.txt (line 13))
+#27 6.555   Downloading pandas-3.0.5-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl.metadata (79 kB)
+#27 6.562      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 79.5/79.5 kB 19.4 MB/s eta 0:00:00
+#27 6.669 Collecting docling (from -r /opt/doc-ui/requirements.txt (line 15))
+#27 6.684   Downloading docling-2.127.0-py3-none-any.whl.metadata (11 kB)
+#27 6.739 Collecting uvicorn[standard] (from -r /opt/browser-agent/requirements.txt (line 5))
+#27 6.751   Downloading uvicorn-0.53.0-py3-none-any.whl.metadata (6.6 kB)
+#27 6.778 Collecting camelot-py[cv] (from -r /opt/doc-ui/requirements.txt (line 14))
+#27 6.792   Downloading camelot_py-2.0.0-py3-none-any.whl.metadata (13 kB)
+#27 6.958 Collecting starlette>=0.46.0 (from fastapi->-r /opt/browser-agent/requirements.txt (line 4))
+#27 6.971   Downloading starlette-1.6.0-py3-none-any.whl.metadata (6.4 kB)
+#27 7.176 Collecting pydantic>=2.9.0 (from fastapi->-r /opt/browser-agent/requirements.txt (line 4))
+#27 7.193   Downloading pydantic-2.13.5-py3-none-any.whl.metadata (110 kB)
+#27 7.199      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 110.2/110.2 kB 38.9 MB/s eta 0:00:00
+#27 7.240 Collecting typing-extensions>=4.8.0 (from fastapi->-r /opt/browser-agent/requirements.txt (line 4))
+#27 7.252   Downloading typing_extensions-4.16.0-py3-none-any.whl.metadata (3.3 kB)
+#27 7.277 Collecting typing-inspection>=0.4.2 (from fastapi->-r /opt/browser-agent/requirements.txt (line 4))
+#27 7.289   Downloading typing_inspection-0.4.4-py3-none-any.whl.metadata (2.6 kB)
+#27 7.311 Collecting annotated-doc>=0.0.2 (from fastapi->-r /opt/browser-agent/requirements.txt (line 4))
+#27 7.323   Downloading annotated_doc-0.0.5-py3-none-any.whl.metadata (6.5 kB)
+#27 7.377 Collecting click>=7.0 (from uvicorn[standard]->-r /opt/browser-agent/requirements.txt (line 5))
+#27 7.389   Downloading click-8.5.0-py3-none-any.whl.metadata (2.6 kB)
+#27 7.415 Collecting h11>=0.8 (from uvicorn[standard]->-r /opt/browser-agent/requirements.txt (line 5))
+#27 7.427   Downloading h11-0.16.0-py3-none-any.whl.metadata (8.3 kB)
+#27 7.482 Collecting httptools>=0.8.0 (from uvicorn[standard]->-r /opt/browser-agent/requirements.txt (line 5))
+#27 7.493   Downloading httptools-0.8.0-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl.metadata (3.5 kB)
+#27 7.525 Collecting python-dotenv>=0.13 (from uvicorn[standard]->-r /opt/browser-agent/requirements.txt (line 5))
+#27 7.538   Downloading python_dotenv-1.2.3-py3-none-any.whl.metadata (29 kB)
+#27 7.607 Collecting pyyaml>=5.1 (from uvicorn[standard]->-r /opt/browser-agent/requirements.txt (line 5))
+#27 7.620   Downloading pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (2.4 kB)
+#27 7.681 Collecting uvloop>=0.15.1 (from uvicorn[standard]->-r /opt/browser-agent/requirements.txt (line 5))
+#27 7.694   Downloading uvloop-0.22.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (4.9 kB)
+#27 7.816 Collecting watchfiles>=0.20 (from uvicorn[standard]->-r /opt/browser-agent/requirements.txt (line 5))
+#27 7.829   Downloading watchfiles-1.2.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (4.9 kB)
+#27 8.090 Collecting websockets>=13.0 (from uvicorn[standard]->-r /opt/browser-agent/requirements.txt (line 5))
+#27 8.102   Downloading websockets-17.1-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl.metadata (6.3 kB)
+#27 8.138 Collecting pyee<14,>=13 (from playwright->-r /opt/browser-agent/requirements.txt (line 6))
+#27 8.151   Downloading pyee-13.0.1-py3-none-any.whl.metadata (3.0 kB)
+#27 8.385 Collecting greenlet<4.0.0,>=3.1.1 (from playwright->-r /opt/browser-agent/requirements.txt (line 6))
+#27 8.397   Downloading greenlet-3.5.6-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl.metadata (3.8 kB)
+#27 8.440 Collecting soupsieve>=1.6.1 (from beautifulsoup4->-r /opt/browser-agent/requirements.txt (line 7))
+#27 8.451   Downloading soupsieve-2.9.2-py3-none-any.whl.metadata (4.6 kB)
+#27 8.696 Collecting charset_normalizer<4,>=2 (from requests->-r /opt/browser-agent/requirements.txt (line 9))
+#27 8.712   Downloading charset_normalizer-3.5.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (45 kB)
+#27 8.715      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 45.9/45.9 kB 249.9 MB/s eta 0:00:00
+#27 8.758 Collecting idna<4,>=2.5 (from requests->-r /opt/browser-agent/requirements.txt (line 9))
+#27 8.770   Downloading idna-3.19-py3-none-any.whl.metadata (9.2 kB)
+#27 8.829 Collecting urllib3<3,>=1.26 (from requests->-r /opt/browser-agent/requirements.txt (line 9))
+#27 8.843   Downloading urllib3-2.8.0-py3-none-any.whl.metadata (7.4 kB)
+#27 8.882 Collecting certifi>=2023.5.7 (from requests->-r /opt/browser-agent/requirements.txt (line 9))
+#27 8.895   Downloading certifi-2026.7.22-py3-none-any.whl.metadata (2.5 kB)
+#27 8.927 Collecting pdfminer.six==20260107 (from pdfplumber->-r /opt/doc-ui/requirements.txt (line 8))
+#27 8.936   Downloading pdfminer_six-20260107-py3-none-any.whl.metadata (4.3 kB)
+#27 9.367 Collecting Pillow>=12.2.0 (from pdfplumber->-r /opt/doc-ui/requirements.txt (line 8))
+#27 9.380   Downloading pillow-12.3.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl.metadata (9.1 kB)
+#27 9.534 Collecting pypdfium2>=5.9.0 (from pdfplumber->-r /opt/doc-ui/requirements.txt (line 8))
+#27 9.549   Downloading pypdfium2-5.13.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (66 kB)
+#27 9.555      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 66.5/66.5 kB 20.3 MB/s eta 0:00:00
+#27 9.910 Collecting cryptography>=36.0.0 (from pdfminer.six==20260107->pdfplumber->-r /opt/doc-ui/requirements.txt (line 8))
+#27 9.930   Downloading cryptography-50.0.1-cp311-abi3-manylinux_2_34_x86_64.whl.metadata (4.3 kB)
+#27 10.49 Collecting numpy>=1.26.0 (from pandas->-r /opt/doc-ui/requirements.txt (line 13))
+#27 10.50   Downloading numpy-2.5.3-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl.metadata (6.6 kB)
+#27 10.54 Collecting python-dateutil>=2.8.2 (from pandas->-r /opt/doc-ui/requirements.txt (line 13))
+#27 10.55   Downloading python_dateutil-2.9.0.post0-py2.py3-none-any.whl.metadata (8.4 kB)
+#27 10.56 WARNING: camelot-py 2.0.0 does not provide the extra 'cv'
+#27 10.64 Collecting openpyxl>=3.1.0 (from camelot-py[cv]->-r /opt/doc-ui/requirements.txt (line 14))
+#27 10.65   Downloading openpyxl-3.1.5-py2.py3-none-any.whl.metadata (2.5 kB)
+#27 10.69 Collecting tabulate>=0.9.0 (from camelot-py[cv]->-r /opt/doc-ui/requirements.txt (line 14))
+#27 10.70   Downloading tabulate-0.10.0-py3-none-any.whl.metadata (40 kB)
+#27 10.71      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 40.8/40.8 kB 199.4 MB/s eta 0:00:00
+#27 10.80 Collecting opencv-python-headless>=4.7.0.68 (from camelot-py[cv]->-r /opt/doc-ui/requirements.txt (line 14))
+#27 10.82   Downloading opencv_python_headless-5.0.0.93-cp37-abi3-manylinux_2_28_x86_64.whl.metadata (19 kB)
+#27 10.90 Collecting playa-pdf>=0.8.1 (from camelot-py[cv]->-r /opt/doc-ui/requirements.txt (line 14))
+#27 10.91   Downloading playa_pdf-1.1.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (27 kB)
+#27 10.97 Collecting docling-slim==2.127.0 (from docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 10.98   Downloading docling_slim-2.127.0-py3-none-any.whl.metadata (20 kB)
+#27 11.27 Collecting docling-core<3.0.0,>=2.91.0 (from docling-slim==2.127.0->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 11.29   Downloading docling_core-2.96.1-py3-none-any.whl.metadata (8.4 kB)
+#27 11.32 Collecting filetype<2.0.0,>=1.2.0 (from docling-slim==2.127.0->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 11.33   Downloading filetype-1.2.0-py2.py3-none-any.whl.metadata (6.5 kB)
+#27 11.36 Collecting langcodes<4.0.0,>=3.5.0 (from docling-slim==2.127.0->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 11.37   Downloading langcodes-3.5.1-py3-none-any.whl.metadata (30 kB)
+#27 11.40 Collecting pluggy<2.0.0,>=1.0.0 (from docling-slim==2.127.0->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 11.42   Downloading pluggy-1.6.0-py3-none-any.whl.metadata (4.8 kB)
+#27 11.45 Collecting pydantic-settings<3.0.0,>=2.3.0 (from docling-slim==2.127.0->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 11.47   Downloading pydantic_settings-2.15.0-py3-none-any.whl.metadata (3.9 kB)
+#27 11.58 Collecting tqdm<5.0.0,>=4.65.0 (from docling-slim==2.127.0->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 11.59   Downloading tqdm-4.70.1-py3-none-any.whl.metadata (57 kB)
+#27 11.60      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 57.4/57.4 kB 36.5 MB/s eta 0:00:00
+#27 11.86 Collecting accelerate<2,>=1.0.0 (from docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 11.88   Downloading accelerate-1.15.0-py3-none-any.whl.metadata (19 kB)
+#27 11.91 Collecting defusedxml<0.8.0,>=0.7.1 (from docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 11.93   Downloading defusedxml-0.7.1-py2.py3-none-any.whl.metadata (32 kB)
+#27 11.99 Collecting docling-ibm-models<5,>=4.0.2 (from docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 12.00   Downloading docling_ibm_models-4.0.2-py3-none-any.whl.metadata (6.3 kB)
+#27 12.23 Collecting docling-parse<8.0.0,>=7.16.0 (from docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 12.25   Downloading docling_parse-7.20.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl.metadata (15 kB)
+#27 12.50 Collecting httpx<1.0.0,>=0.28 (from docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 12.51   Downloading httpx-0.28.1-py3-none-any.whl.metadata (7.1 kB)
+#27 12.64 Collecting huggingface-hub<2,>=0.23 (from docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 12.66   Downloading huggingface_hub-1.31.0-py3-none-any.whl.metadata (16 kB)
+#27 12.70 Collecting mail-parser<5.0.0,>=4.1.4 (from docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 12.72   Downloading mail_parser-4.6.5-py3-none-any.whl.metadata (25 kB)
+#27 12.76 Collecting marko<3.0.0,>=2.1.2 (from docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 12.77   Downloading marko-2.2.4-py3-none-any.whl.metadata (4.5 kB)
+#27 12.84 Collecting polyfactory>=2.22.2 (from docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 12.85   Downloading polyfactory-3.3.0-py3-none-any.whl.metadata (27 kB)
+#27 12.88 Collecting pylatexenc<3.0,>=2.10 (from docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 12.90   Downloading pylatexenc-2.11-py2.py3-none-any.whl.metadata (3.9 kB)
+#27 12.94 Collecting python-docx<2.0.0,>=1.2.0 (from docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 12.95   Downloading python_docx-1.2.0-py3-none-any.whl.metadata (2.0 kB)
+#27 12.98 Collecting python-oxmsg<0.1.0,>=0.0.2 (from docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 13.00   Downloading python_oxmsg-0.0.2-py3-none-any.whl.metadata (5.0 kB)
+#27 13.03 Collecting python-pptx<2.0.0,>=1.0.2 (from docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 13.05   Downloading python_pptx-1.0.2-py3-none-any.whl.metadata (2.5 kB)
+#27 13.08 Collecting rapidocr<4.0.0,>=3.9.1 (from docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 13.09   Downloading rapidocr-3.9.2-py3-none-any.whl.metadata (1.1 kB)
+#27 13.18 Collecting rich>=13.0.0 (from docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 13.19   Downloading rich-15.0.0-py3-none-any.whl.metadata (18 kB)
+#27 13.24 Collecting rtree<2.0.0,>=1.3.0 (from docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 13.26   Downloading rtree-1.4.1-py3-none-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl.metadata (2.1 kB)
+#27 13.49 Collecting scipy<2.0.0,>=1.6.0 (from docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 13.50   Downloading scipy-1.18.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl.metadata (62 kB)
+#27 13.51      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 62.4/62.4 kB 49.9 MB/s eta 0:00:00
+#27 13.60 Collecting torch<3.0.0,>=2.2.2 (from docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 13.62   Downloading torch-2.14.0-cp312-cp312-manylinux_2_28_x86_64.whl.metadata (37 kB)
+#27 13.70 Collecting torchvision<1,>=0 (from docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 13.71   Downloading torchvision-0.29.0-cp312-cp312-manylinux_2_28_x86_64.whl.metadata (5.7 kB)
+#27 13.77 Collecting typer<0.27.0,>=0.19.0 (from docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 13.78   Downloading typer-0.26.8-py3-none-any.whl.metadata (15 kB)
+#27 13.80 Collecting websockets>=13.0 (from uvicorn[standard]->-r /opt/browser-agent/requirements.txt (line 5))
+#27 13.81   Downloading websockets-16.1.1-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl.metadata (6.8 kB)
+#27 13.91 Collecting et-xmlfile (from openpyxl>=3.1.0->camelot-py[cv]->-r /opt/doc-ui/requirements.txt (line 14))
+#27 13.93   Downloading et_xmlfile-2.0.0-py3-none-any.whl.metadata (2.7 kB)
+#27 13.99 Collecting mypy-extensions (from playa-pdf>=0.8.1->camelot-py[cv]->-r /opt/doc-ui/requirements.txt (line 14))
+#27 14.00   Downloading mypy_extensions-1.1.0-py3-none-any.whl.metadata (1.1 kB)
+#27 14.06 Collecting annotated-types>=0.6.0 (from pydantic>=2.9.0->fastapi->-r /opt/browser-agent/requirements.txt (line 4))
+#27 14.10   Downloading annotated_types-0.8.0-py3-none-any.whl.metadata (15 kB)
+#27 15.42 Collecting pydantic-core==2.46.5 (from pydantic>=2.9.0->fastapi->-r /opt/browser-agent/requirements.txt (line 4))
+#27 15.43   Downloading pydantic_core-2.46.5-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (6.6 kB)
+#27 15.50 Collecting six>=1.5 (from python-dateutil>=2.8.2->pandas->-r /opt/doc-ui/requirements.txt (line 13))
+#27 15.52   Downloading six-1.17.0-py2.py3-none-any.whl.metadata (1.7 kB)
+#27 15.59 Collecting anyio<5,>=3.6.2 (from starlette>=0.46.0->fastapi->-r /opt/browser-agent/requirements.txt (line 4))
+#27 15.61   Downloading anyio-4.15.1-py3-none-any.whl.metadata (4.7 kB)
+#27 15.84 Collecting packaging>=20.0 (from accelerate<2,>=1.0.0->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 15.85   Downloading packaging-26.3-py3-none-any.whl.metadata (3.5 kB)
+#27 16.13 Collecting safetensors>=0.4.3 (from accelerate<2,>=1.0.0->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 16.14   Downloading safetensors-0.8.0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (4.2 kB)
+#27 16.36 Collecting cffi>=2.0.0 (from cryptography>=36.0.0->pdfminer.six==20260107->pdfplumber->-r /opt/doc-ui/requirements.txt (line 8))
+#27 16.37   Downloading cffi-2.1.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (2.5 kB)
+#27 16.79 Collecting jsonschema<5.0.0,>=4.16.0 (from docling-core<3.0.0,>=2.91.0->docling-slim==2.127.0->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 16.80   Downloading jsonschema-4.26.0-py3-none-any.whl.metadata (7.6 kB)
+#27 16.85 Collecting jsonref<2.0.0,>=1.1.0 (from docling-core<3.0.0,>=2.91.0->docling-slim==2.127.0->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 16.87   Downloading jsonref-1.1.0-py3-none-any.whl.metadata (2.7 kB)
+#27 16.97 Collecting latex2mathml<4.0.0,>=3.77.0 (from docling-core<3.0.0,>=2.91.0->docling-slim==2.127.0->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 16.98   Downloading latex2mathml-3.81.1-py3-none-any.whl.metadata (15 kB)
+#27 17.01 Collecting doclang<0.8,>=0.7 (from docling-core<3.0.0,>=2.91.0->docling-slim==2.127.0->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 17.03   Downloading doclang-0.7.3-py3-none-any.whl.metadata (4.6 kB)
+#27 17.11 Collecting semchunk<4.0.0,>=2.2.0 (from docling-core[chunking]<3.0.0,>=2.94.1; extra == "standard"->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 17.13   Downloading semchunk-3.2.5-py3-none-any.whl.metadata (14 kB)
+#27 17.20 Collecting tree-sitter<0.27.0,>=0.25.0 (from docling-core[chunking]<3.0.0,>=2.94.1; extra == "standard"->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 17.21   Downloading tree_sitter-0.26.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (10 kB)
+#27 17.25 Collecting tree-sitter-python>=0.23.6 (from docling-core[chunking]<3.0.0,>=2.94.1; extra == "standard"->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 17.26   Downloading tree_sitter_python-0.25.0-cp310-abi3-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl.metadata (1.9 kB)
+#27 17.29 Collecting tree-sitter-c>=0.23.4 (from docling-core[chunking]<3.0.0,>=2.94.1; extra == "standard"->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 17.30   Downloading tree_sitter_c-0.24.2-cp310-abi3-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl.metadata (1.8 kB)
+#27 17.33 Collecting tree-sitter-javascript>=0.23.1 (from docling-core[chunking]<3.0.0,>=2.94.1; extra == "standard"->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 17.35   Downloading tree_sitter_javascript-0.25.0-cp310-abi3-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl.metadata (2.2 kB)
+#27 17.38 Collecting tree-sitter-typescript>=0.23.2 (from docling-core[chunking]<3.0.0,>=2.94.1; extra == "standard"->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 17.39   Downloading tree_sitter_typescript-0.23.2-cp39-abi3-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (2.3 kB)
+#27 17.50 Collecting transformers<6.0.0,>=4.42.0 (from docling-core[chunking]<3.0.0,>=2.94.1; extra == "standard"->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 17.51   Downloading transformers-5.17.0-py3-none-any.whl.metadata (32 kB)
+#27 17.64 Collecting httpcore==1.* (from httpx<1.0.0,>=0.28->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 17.65   Downloading httpcore-1.0.9-py3-none-any.whl.metadata (21 kB)
+#27 17.80 Collecting filelock>=3.10.0 (from huggingface-hub<2,>=0.23->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 17.81   Downloading filelock-3.32.7-py3-none-any.whl.metadata (2.0 kB)
+#27 17.86 Collecting fsspec>=2023.5.0 (from huggingface-hub<2,>=0.23->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 17.88   Downloading fsspec-2026.7.0-py3-none-any.whl.metadata (10 kB)
+#27 17.96 Collecting hf-xet<2.0.0,>=1.5.2 (from huggingface-hub<2,>=0.23->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 17.97   Downloading hf_xet-1.6.0-cp38-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (4.9 kB)
+#27 18.27 Collecting faker>=5.0.0 (from polyfactory>=2.22.2->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 18.28   Downloading faker-40.39.0-py3-none-any.whl.metadata (16 kB)
+#27 18.76 Collecting lxml>=3.1.0 (from python-docx<2.0.0,>=1.2.0->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 18.78   Downloading lxml-6.1.3-cp312-cp312-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl.metadata (3.3 kB)
+#27 18.82 Collecting olefile (from python-oxmsg<0.1.0,>=0.0.2->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 18.83   Downloading olefile-0.47-py2.py3-none-any.whl.metadata (9.7 kB)
+#27 18.91 Collecting XlsxWriter>=0.5.7 (from python-pptx<2.0.0,>=1.0.2->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 18.92   Downloading xlsxwriter-3.2.9-py3-none-any.whl.metadata (2.7 kB)
+#27 19.00 Collecting pyclipper>=1.2.0 (from rapidocr<4.0.0,>=3.9.1->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 19.01   Downloading pyclipper-1.4.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (8.6 kB)
+#27 19.10 Collecting opencv_python>=4.5.1.48 (from rapidocr<4.0.0,>=3.9.1->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 19.12   Downloading opencv_python-5.0.0.93-cp37-abi3-manylinux_2_28_x86_64.whl.metadata (19 kB)
+#27 19.27 Collecting Shapely!=2.0.4,>=1.7.1 (from rapidocr<4.0.0,>=3.9.1->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 19.28   Downloading shapely-2.1.2-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (6.8 kB)
+#27 19.35 Collecting omegaconf!=2.2.1 (from rapidocr<4.0.0,>=3.9.1->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 19.36   Downloading omegaconf-2.3.1-py3-none-any.whl.metadata (4.5 kB)
+#27 19.40 Collecting colorlog (from rapidocr<4.0.0,>=3.9.1->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 19.42   Downloading colorlog-6.12.0-py3-none-any.whl.metadata (11 kB)
+#27 19.47 Collecting markdown-it-py>=2.2.0 (from rich>=13.0.0->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 19.48   Downloading markdown_it_py-4.2.0-py3-none-any.whl.metadata (7.4 kB)
+#27 19.53 Collecting pygments<3.0.0,>=2.13.0 (from rich>=13.0.0->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 19.54   Downloading pygments-2.21.0-py3-none-any.whl.metadata (2.5 kB)
+#27 20.30 Collecting setuptools>=77.0.3 (from torch<3.0.0,>=2.2.2->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 20.31   Downloading setuptools-84.0.0-py3-none-any.whl.metadata (6.6 kB)
+#27 20.35 Collecting sympy>=1.13.3 (from torch<3.0.0,>=2.2.2->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 20.37   Downloading sympy-1.14.0-py3-none-any.whl.metadata (12 kB)
+#27 20.42 Collecting networkx>=2.5.1 (from torch<3.0.0,>=2.2.2->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 20.43   Downloading networkx-3.6.1-py3-none-any.whl.metadata (6.8 kB)
+#27 20.47 Collecting jinja2 (from torch<3.0.0,>=2.2.2->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 20.48   Downloading jinja2-3.1.6-py3-none-any.whl.metadata (2.9 kB)
+#27 20.52 Collecting cuda-toolkit==13.0.3 (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch<3.0.0,>=2.2.2->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 20.54   Downloading cuda_toolkit-13.0.3.0-py2.py3-none-any.whl.metadata (17 kB)
+#27 20.59 Collecting cuda-bindings<14,>=13.0.3 (from torch<3.0.0,>=2.2.2->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 20.61   Downloading cuda_bindings-13.4.1-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl.metadata (2.4 kB)
+#27 20.65 Collecting nvidia-cudnn-cu13==9.24.0.43 (from torch<3.0.0,>=2.2.2->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 20.66   Downloading nvidia_cudnn_cu13-9.24.0.43-py3-none-manylinux_2_27_x86_64.whl.metadata (1.9 kB)
+#27 20.68 Collecting nvidia-cusparselt-cu13==0.8.1 (from torch<3.0.0,>=2.2.2->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 20.70   Downloading nvidia_cusparselt_cu13-0.8.1-py3-none-manylinux2014_x86_64.whl.metadata (12 kB)
+#27 20.73 Collecting nvidia-nccl-cu13==2.30.7 (from torch<3.0.0,>=2.2.2->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 20.74   Downloading nvidia_nccl_cu13-2.30.7-py3-none-manylinux_2_18_x86_64.whl.metadata (2.1 kB)
+#27 20.77 Collecting nvidia-nvshmem-cu13==3.4.5 (from torch<3.0.0,>=2.2.2->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 20.78   Downloading nvidia_nvshmem_cu13-3.4.5-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (2.1 kB)
+#27 20.82 Collecting triton~=3.8.0 (from torch<3.0.0,>=2.2.2->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 20.84   Downloading triton-3.8.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl.metadata (978 bytes)
+#27 21.34 Collecting nvidia-cublas==13.1.1.3.* (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch<3.0.0,>=2.2.2->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 21.35   Downloading nvidia_cublas-13.1.1.3-py3-none-manylinux_2_27_x86_64.whl.metadata (1.8 kB)
+#27 21.39 Collecting nvidia-cuda-nvrtc==13.0.88.* (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch<3.0.0,>=2.2.2->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 21.40   Downloading nvidia_cuda_nvrtc-13.0.88-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl.metadata (1.7 kB)
+#27 21.44 Collecting nvidia-cuda-runtime==13.0.96.* (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch<3.0.0,>=2.2.2->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 21.45   Downloading nvidia_cuda_runtime-13.0.96-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (1.7 kB)
+#27 21.49 Collecting nvidia-cufft==12.0.0.61.* (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch<3.0.0,>=2.2.2->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 21.50   Downloading nvidia_cufft-12.0.0.61-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (1.8 kB)
+#27 21.53 Collecting nvidia-nvjitlink<14,>=13.0.88 (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch<3.0.0,>=2.2.2->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 21.54   Downloading nvidia_nvjitlink-13.4.52-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl.metadata (1.8 kB)
+#27 21.57 Collecting nvidia-cufile==1.15.1.6.* (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch<3.0.0,>=2.2.2->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 21.58   Downloading nvidia_cufile-1.15.1.6-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (1.7 kB)
+#27 21.61 Collecting nvidia-cuda-cupti==13.0.85.* (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch<3.0.0,>=2.2.2->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 21.62   Downloading nvidia_cuda_cupti-13.0.85-py3-none-manylinux_2_25_x86_64.whl.metadata (1.7 kB)
+#27 21.65 Collecting nvidia-curand==10.4.0.35.* (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch<3.0.0,>=2.2.2->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 21.66   Downloading nvidia_curand-10.4.0.35-py3-none-manylinux_2_27_x86_64.whl.metadata (1.7 kB)
+#27 21.69 Collecting nvidia-cusolver==12.0.4.66.* (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch<3.0.0,>=2.2.2->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 21.70   Downloading nvidia_cusolver-12.0.4.66-py3-none-manylinux_2_27_x86_64.whl.metadata (1.8 kB)
+#27 21.73 Collecting nvidia-cusparse==12.6.3.3.* (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch<3.0.0,>=2.2.2->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 21.74   Downloading nvidia_cusparse-12.6.3.3-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (1.8 kB)
+#27 21.77 Collecting nvidia-nvtx==13.0.85.* (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch<3.0.0,>=2.2.2->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 21.78   Downloading nvidia_nvtx-13.0.85-py3-none-manylinux1_x86_64.manylinux_2_5_x86_64.whl.metadata (1.8 kB)
+#27 22.15 Collecting shellingham>=1.3.0 (from typer<0.27.0,>=0.19.0->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 22.17   Downloading shellingham-1.5.4-py2.py3-none-any.whl.metadata (3.5 kB)
+#27 22.27 Collecting pycparser (from cffi>=2.0.0->cryptography>=36.0.0->pdfminer.six==20260107->pdfplumber->-r /opt/doc-ui/requirements.txt (line 8))
+#27 22.29   Downloading pycparser-3.0-py3-none-any.whl.metadata (8.2 kB)
+#27 22.34 Collecting cuda-pathfinder>=1.4.2 (from cuda-bindings<14,>=13.0.3->torch<3.0.0,>=2.2.2->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 22.35   Downloading cuda_pathfinder-1.8.1-py3-none-any.whl.metadata (1.9 kB)
+#27 22.64 Collecting attrs>=22.2.0 (from jsonschema<5.0.0,>=4.16.0->docling-core<3.0.0,>=2.91.0->docling-slim==2.127.0->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 22.65   Downloading attrs-26.1.0-py3-none-any.whl.metadata (8.8 kB)
+#27 22.69 Collecting jsonschema-specifications>=2023.03.6 (from jsonschema<5.0.0,>=4.16.0->docling-core<3.0.0,>=2.91.0->docling-slim==2.127.0->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 22.70   Downloading jsonschema_specifications-2025.9.1-py3-none-any.whl.metadata (2.9 kB)
+#27 22.75 Collecting referencing>=0.28.4 (from jsonschema<5.0.0,>=4.16.0->docling-core<3.0.0,>=2.91.0->docling-slim==2.127.0->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 22.76   Downloading referencing-0.37.0-py3-none-any.whl.metadata (2.8 kB)
+#27 23.19 Collecting rpds-py>=0.25.0 (from jsonschema<5.0.0,>=4.16.0->docling-core<3.0.0,>=2.91.0->docling-slim==2.127.0->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 23.20   Downloading rpds_py-2026.6.3-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (4.1 kB)
+#27 23.31 Collecting mdurl~=0.1 (from markdown-it-py>=2.2.0->rich>=13.0.0->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 23.32   Downloading mdurl-0.1.2-py3-none-any.whl.metadata (1.6 kB)
+#27 23.43 Collecting antlr4-python3-runtime==4.9.* (from omegaconf!=2.2.1->rapidocr<4.0.0,>=3.9.1->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 23.44   Downloading antlr4-python3-runtime-4.9.3.tar.gz (117 kB)
+#27 23.45      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 117.0/117.0 kB 24.1 MB/s eta 0:00:00
+#27 23.49   Installing build dependencies: started
+#27 25.45   Installing build dependencies: finished with status 'done'
+#27 25.45   Getting requirements to build wheel: started
+#27 25.70   Getting requirements to build wheel: finished with status 'done'
+#27 25.70   Preparing metadata (pyproject.toml): started
+#27 25.97   Preparing metadata (pyproject.toml): finished with status 'done'
+#27 26.23 Collecting mpire[dill] (from semchunk<4.0.0,>=2.2.0->docling-core[chunking]<3.0.0,>=2.94.1; extra == "standard"->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 26.24   Downloading mpire-2.10.2-py3-none-any.whl.metadata (14 kB)
+#27 26.46 Collecting mpmath<1.4,>=1.1.0 (from sympy>=1.13.3->torch<3.0.0,>=2.2.2->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 26.47   Downloading mpmath-1.3.0-py3-none-any.whl.metadata (8.6 kB)
+#27 27.28 Collecting regex>=2025.10.22 (from transformers<6.0.0,>=4.42.0->docling-core[chunking]<3.0.0,>=2.94.1; extra == "standard"->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 27.29   Downloading regex-2026.9.10-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (40 kB)
+#27 27.30      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 40.6/40.6 kB 188.7 MB/s eta 0:00:00
+#27 27.94 Collecting tokenizers<0.24.0,>=0.23.1 (from transformers<6.0.0,>=4.42.0->docling-core[chunking]<3.0.0,>=2.94.1; extra == "standard"->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 27.95   Downloading tokenizers-0.23.2-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (9.8 kB)
+#27 28.30 Collecting MarkupSafe>=2.0 (from jinja2->torch<3.0.0,>=2.2.2->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 28.31   Downloading markupsafe-3.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (2.7 kB)
+#27 28.83 Collecting multiprocess>=0.70.15 (from mpire[dill]->semchunk<4.0.0,>=2.2.0->docling-core[chunking]<3.0.0,>=2.94.1; extra == "standard"->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 28.84   Downloading multiprocess-0.70.19-py312-none-any.whl.metadata (7.5 kB)
+#27 28.99 Collecting dill>=0.4.1 (from multiprocess>=0.70.15->mpire[dill]->semchunk<4.0.0,>=2.2.0->docling-core[chunking]<3.0.0,>=2.94.1; extra == "standard"->docling-slim[standard]==2.127.0->docling->-r /opt/doc-ui/requirements.txt (line 15))
+#27 29.00   Downloading dill-0.4.1-py3-none-any.whl.metadata (10 kB)
+#27 29.11 Downloading fastapi-0.141.1-py3-none-any.whl (131 kB)
+#27 29.12    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 132.0/132.0 kB 19.2 MB/s eta 0:00:00
+#27 29.13 Downloading playwright-1.63.0-py3-none-manylinux1_x86_64.whl (48.2 MB)
+#27 33.26    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 48.2/48.2 MB 11.8 MB/s eta 0:00:00
+#27 33.27 Downloading beautifulsoup4-4.15.0-py3-none-any.whl (109 kB)
+#27 33.28    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 109.9/109.9 kB 15.8 MB/s eta 0:00:00
+#27 33.29 Downloading psutil-7.2.2-cp36-abi3-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl (155 kB)
+#27 33.30    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 155.6/155.6 kB 19.2 MB/s eta 0:00:00
+#27 33.32 Downloading requests-2.34.2-py3-none-any.whl (73 kB)
+#27 33.32    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 73.1/73.1 kB 26.2 MB/s eta 0:00:00
+#27 33.34 Downloading pdfplumber-0.11.10-py3-none-any.whl (60 kB)
+#27 33.34    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 60.0/60.0 kB 20.7 MB/s eta 0:00:00
+#27 33.36 Downloading pdfminer_six-20260107-py3-none-any.whl (6.6 MB)
+#27 33.92    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 6.6/6.6 MB 11.9 MB/s eta 0:00:00
+#27 33.93 Downloading pymupdf-1.28.2-cp310-abi3-manylinux_2_28_x86_64.whl (25.8 MB)
+#27 37.19    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 25.8/25.8 MB 11.3 MB/s eta 0:00:00
+#27 37.20 Downloading pandas-3.0.5-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl (11.0 MB)
+#27 38.14    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 11.0/11.0 MB 11.8 MB/s eta 0:00:00
+#27 38.15 Downloading docling-2.127.0-py3-none-any.whl (5.2 kB)
+#27 38.17 Downloading docling_slim-2.127.0-py3-none-any.whl (844 kB)
+#27 38.24    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 844.5/844.5 kB 13.1 MB/s eta 0:00:00
+#27 38.25 Downloading annotated_doc-0.0.5-py3-none-any.whl (5.3 kB)
+#27 38.26 Downloading certifi-2026.7.22-py3-none-any.whl (136 kB)
+#27 38.28    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 137.0/137.0 kB 15.8 MB/s eta 0:00:00
+#27 38.29 Downloading charset_normalizer-3.5.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (248 kB)
+#27 38.31    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 248.8/248.8 kB 13.4 MB/s eta 0:00:00
+#27 38.32 Downloading click-8.5.0-py3-none-any.whl (125 kB)
+#27 38.33    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 125.3/125.3 kB 21.3 MB/s eta 0:00:00
+#27 38.35 Downloading greenlet-3.5.6-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl (621 kB)
+#27 38.40    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 621.4/621.4 kB 12.5 MB/s eta 0:00:00
+#27 38.41 Downloading h11-0.16.0-py3-none-any.whl (37 kB)
+#27 38.43 Downloading httptools-0.8.0-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl (523 kB)
+#27 38.47    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 523.9/523.9 kB 13.1 MB/s eta 0:00:00
+#27 38.49 Downloading idna-3.19-py3-none-any.whl (68 kB)
+#27 38.49    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 68.5/68.5 kB 40.9 MB/s eta 0:00:00
+#27 38.50 Downloading numpy-2.5.3-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (16.7 MB)
+#27 39.93    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 16.7/16.7 MB 11.8 MB/s eta 0:00:00
+#27 39.94 Downloading opencv_python_headless-5.0.0.93-cp37-abi3-manylinux_2_28_x86_64.whl (61.2 MB)
+#27 45.16    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 61.2/61.2 MB 11.8 MB/s eta 0:00:00
+#27 45.17 Downloading openpyxl-3.1.5-py2.py3-none-any.whl (250 kB)
+#27 45.19    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 250.9/250.9 kB 14.5 MB/s eta 0:00:00
+#27 45.21 Downloading pillow-12.3.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (6.9 MB)
+#27 45.79    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 6.9/6.9 MB 11.9 MB/s eta 0:00:00
+#27 45.81 Downloading playa_pdf-1.1.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (9.2 MB)
+#27 46.59    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 9.2/9.2 MB 11.8 MB/s eta 0:00:00
+#27 46.60 Downloading pydantic-2.13.5-py3-none-any.whl (472 kB)
+#27 46.64    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 472.6/472.6 kB 13.1 MB/s eta 0:00:00
+#27 46.66 Downloading pydantic_core-2.46.5-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (2.1 MB)
+#27 46.83    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.1/2.1 MB 12.1 MB/s eta 0:00:00
+#27 46.84 Downloading pyee-13.0.1-py3-none-any.whl (15 kB)
+#27 46.86 Downloading pypdfium2-5.13.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (3.7 MB)
+#27 47.18    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.7/3.7 MB 11.8 MB/s eta 0:00:00
+#27 47.19 Downloading python_dateutil-2.9.0.post0-py2.py3-none-any.whl (229 kB)
+#27 47.21    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 229.9/229.9 kB 12.6 MB/s eta 0:00:00
+#27 47.22 Downloading python_dotenv-1.2.3-py3-none-any.whl (22 kB)
+#27 47.23 Downloading pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (807 kB)
+#27 47.30    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 807.9/807.9 kB 12.5 MB/s eta 0:00:00
+#27 47.31 Downloading soupsieve-2.9.2-py3-none-any.whl (37 kB)
+#27 47.33 Downloading starlette-1.6.0-py3-none-any.whl (75 kB)
+#27 47.34    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 76.0/76.0 kB 17.6 MB/s eta 0:00:00
+#27 47.35 Downloading tabulate-0.10.0-py3-none-any.whl (39 kB)
+#27 47.37 Downloading typing_extensions-4.16.0-py3-none-any.whl (45 kB)
+#27 47.37    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 45.6/45.6 kB 152.3 MB/s eta 0:00:00
+#27 47.38 Downloading typing_inspection-0.4.4-py3-none-any.whl (14 kB)
+#27 47.40 Downloading urllib3-2.8.0-py3-none-any.whl (135 kB)
+#27 47.41    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 135.7/135.7 kB 18.5 MB/s eta 0:00:00
+#27 47.42 Downloading uvloop-0.22.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (4.4 MB)
+#27 47.80    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.4/4.4 MB 11.9 MB/s eta 0:00:00
+#27 47.81 Downloading watchfiles-1.2.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (456 kB)
+#27 47.85    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 456.4/456.4 kB 13.3 MB/s eta 0:00:00
+#27 47.86 Downloading websockets-16.1.1-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl (187 kB)
+#27 47.89    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 187.1/187.1 kB 10.8 MB/s eta 0:00:00
+#27 47.90 Downloading camelot_py-2.0.0-py3-none-any.whl (113 kB)
+#27 47.91    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 113.2/113.2 kB 18.0 MB/s eta 0:00:00
+#27 47.93 Downloading uvicorn-0.53.0-py3-none-any.whl (87 kB)
+#27 47.93    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 87.1/87.1 kB 37.7 MB/s eta 0:00:00
+#27 47.95 Downloading accelerate-1.15.0-py3-none-any.whl (394 kB)
+#27 47.98    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 394.3/394.3 kB 15.0 MB/s eta 0:00:00
+#27 47.99 Downloading annotated_types-0.8.0-py3-none-any.whl (13 kB)
+#27 48.01 Downloading anyio-4.15.1-py3-none-any.whl (132 kB)
+#27 48.02    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 132.1/132.1 kB 21.5 MB/s eta 0:00:00
+#27 48.03 Downloading cryptography-50.0.1-cp311-abi3-manylinux_2_34_x86_64.whl (4.7 MB)
+#27 48.43    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.7/4.7 MB 11.9 MB/s eta 0:00:00
+#27 48.44 Downloading defusedxml-0.7.1-py2.py3-none-any.whl (25 kB)
+#27 48.46 Downloading docling_core-2.96.1-py3-none-any.whl (302 kB)
+#27 48.48    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 302.9/302.9 kB 13.9 MB/s eta 0:00:00
+#27 48.50 Downloading docling_ibm_models-4.0.2-py3-none-any.whl (69 kB)
+#27 48.50    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 69.4/69.4 kB 19.9 MB/s eta 0:00:00
+#27 48.52 Downloading docling_parse-7.20.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (10.8 MB)
+#27 49.43    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 10.8/10.8 MB 11.8 MB/s eta 0:00:00
+#27 49.45 Downloading filetype-1.2.0-py2.py3-none-any.whl (19 kB)
+#27 49.46 Downloading httpx-0.28.1-py3-none-any.whl (73 kB)
+#27 49.47    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 73.5/73.5 kB 21.0 MB/s eta 0:00:00
+#27 49.48 Downloading httpcore-1.0.9-py3-none-any.whl (78 kB)
+#27 49.49    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 78.8/78.8 kB 17.9 MB/s eta 0:00:00
+#27 49.50 Downloading huggingface_hub-1.31.0-py3-none-any.whl (798 kB)
+#27 49.57    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 798.3/798.3 kB 12.9 MB/s eta 0:00:00
+#27 49.58 Downloading langcodes-3.5.1-py3-none-any.whl (183 kB)
+#27 49.60    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 183.1/183.1 kB 16.1 MB/s eta 0:00:00
+#27 49.61 Downloading mail_parser-4.6.5-py3-none-any.whl (50 kB)
+#27 49.62    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 50.1/50.1 kB 18.8 MB/s eta 0:00:00
+#27 49.63 Downloading marko-2.2.4-py3-none-any.whl (46 kB)
+#27 49.64    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 46.8/46.8 kB 14.3 MB/s eta 0:00:00
+#27 49.65 Downloading pluggy-1.6.0-py3-none-any.whl (20 kB)
+#27 49.67 Downloading polyfactory-3.3.0-py3-none-any.whl (62 kB)
+#27 49.68    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 62.7/62.7 kB 41.4 MB/s eta 0:00:00
+#27 49.69 Downloading pydantic_settings-2.15.0-py3-none-any.whl (69 kB)
+#27 49.70    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 69.4/69.4 kB 15.3 MB/s eta 0:00:00
+#27 49.72 Downloading pylatexenc-2.11-py2.py3-none-any.whl (137 kB)
+#27 49.73    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 137.5/137.5 kB 15.0 MB/s eta 0:00:00
+#27 49.75 Downloading python_docx-1.2.0-py3-none-any.whl (252 kB)
+#27 49.77    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 253.0/253.0 kB 13.9 MB/s eta 0:00:00
+#27 49.79 Downloading python_oxmsg-0.0.2-py3-none-any.whl (31 kB)
+#27 49.80 Downloading python_pptx-1.0.2-py3-none-any.whl (472 kB)
+#27 49.85    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 472.8/472.8 kB 12.4 MB/s eta 0:00:00
+#27 49.86 Downloading rapidocr-3.9.2-py3-none-any.whl (27.3 MB)
+#27 52.18    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 27.3/27.3 MB 11.7 MB/s eta 0:00:00
+#27 52.20 Downloading rich-15.0.0-py3-none-any.whl (310 kB)
+#27 52.22    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 310.7/310.7 kB 12.8 MB/s eta 0:00:00
+#27 52.24 Downloading rtree-1.4.1-py3-none-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl (507 kB)
+#27 52.28    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 507.6/507.6 kB 13.7 MB/s eta 0:00:00
+#27 52.30 Downloading scipy-1.18.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (35.3 MB)
+#27 55.31    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 35.3/35.3 MB 11.7 MB/s eta 0:00:00
+#27 55.32 Downloading six-1.17.0-py2.py3-none-any.whl (11 kB)
+#27 55.34 Downloading torch-2.14.0-cp312-cp312-manylinux_2_28_x86_64.whl (554.6 MB)
+#27 102.6    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 554.6/554.6 MB 11.7 MB/s eta 0:00:00
+#27 102.6 Downloading cuda_toolkit-13.0.3.0-py2.py3-none-any.whl (2.5 kB)
+#27 102.6 Downloading nvidia_cudnn_cu13-9.24.0.43-py3-none-manylinux_2_27_x86_64.whl (553.1 MB)
+#27 153.2    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 553.1/553.1 MB 11.7 MB/s eta 0:00:00
+#27 153.3 Downloading nvidia_cusparselt_cu13-0.8.1-py3-none-manylinux2014_x86_64.whl (170.1 MB)
+#27 167.7    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 170.1/170.1 MB 11.8 MB/s eta 0:00:00
+#27 167.7 Downloading nvidia_nccl_cu13-2.30.7-py3-none-manylinux_2_18_x86_64.whl (216.0 MB)
+#27 186.1    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 216.0/216.0 MB 11.7 MB/s eta 0:00:00
+#27 186.2 Downloading nvidia_nvshmem_cu13-3.4.5-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (60.4 MB)
+#27 191.3    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 60.4/60.4 MB 11.6 MB/s eta 0:00:00
+#27 191.3 Downloading nvidia_cublas-13.1.1.3-py3-none-manylinux_2_27_x86_64.whl (423.1 MB)
+#27 227.4    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 423.1/423.1 MB 11.7 MB/s eta 0:00:00
+#27 227.4 Downloading nvidia_cuda_cupti-13.0.85-py3-none-manylinux_2_25_x86_64.whl (10.7 MB)
+#27 228.3    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 10.7/10.7 MB 11.8 MB/s eta 0:00:00
+#27 228.3 Downloading nvidia_cuda_nvrtc-13.0.88-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl (90.2 MB)
+#27 236.0    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 90.2/90.2 MB 11.7 MB/s eta 0:00:00
+#27 236.0 Downloading nvidia_cuda_runtime-13.0.96-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (2.2 MB)
+#27 236.2    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.2/2.2 MB 11.9 MB/s eta 0:00:00
+#27 236.2 Downloading nvidia_cufft-12.0.0.61-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (214.1 MB)
+#27 254.4    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 214.1/214.1 MB 11.8 MB/s eta 0:00:00
+#27 254.4 Downloading nvidia_cufile-1.15.1.6-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (1.2 MB)
+#27 254.5    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.2/1.2 MB 12.0 MB/s eta 0:00:00
+#27 254.5 Downloading nvidia_curand-10.4.0.35-py3-none-manylinux_2_27_x86_64.whl (59.5 MB)
+#27 259.6    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 59.5/59.5 MB 11.8 MB/s eta 0:00:00
+#27 259.7 Downloading nvidia_cusolver-12.0.4.66-py3-none-manylinux_2_27_x86_64.whl (200.9 MB)
+#27 276.8    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 200.9/200.9 MB 11.8 MB/s eta 0:00:00
+#27 276.8 Downloading nvidia_cusparse-12.6.3.3-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (145.9 MB)
+#27 289.2    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 145.9/145.9 MB 11.7 MB/s eta 0:00:00
+#27 289.2 Downloading nvidia_nvtx-13.0.85-py3-none-manylinux1_x86_64.manylinux_2_5_x86_64.whl (148 kB)
+#27 289.2    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 148.0/148.0 kB 13.6 MB/s eta 0:00:00
+#27 289.2 Downloading torchvision-0.29.0-cp312-cp312-manylinux_2_28_x86_64.whl (7.4 MB)
+#27 289.9    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 7.4/7.4 MB 11.8 MB/s eta 0:00:00
+#27 289.9 Downloading tqdm-4.70.1-py3-none-any.whl (80 kB)
+#27 289.9    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 80.2/80.2 kB 13.4 MB/s eta 0:00:00
+#27 289.9 Downloading typer-0.26.8-py3-none-any.whl (122 kB)
+#27 289.9    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 122.6/122.6 kB 13.2 MB/s eta 0:00:00
+#27 289.9 Downloading et_xmlfile-2.0.0-py3-none-any.whl (18 kB)
+#27 290.0 Downloading mypy_extensions-1.1.0-py3-none-any.whl (5.0 kB)
+#27 290.0 Downloading cffi-2.1.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (221 kB)
+#27 290.0    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 221.8/221.8 kB 12.8 MB/s eta 0:00:00
+#27 290.0 Downloading cuda_bindings-13.4.1-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl (7.2 MB)
+#27 290.6    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 7.2/7.2 MB 11.8 MB/s eta 0:00:00
+#27 290.6 Downloading doclang-0.7.3-py3-none-any.whl (32 kB)
+#27 290.6 Downloading faker-40.39.0-py3-none-any.whl (2.1 MB)
+#27 290.8    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.1/2.1 MB 11.9 MB/s eta 0:00:00
+#27 290.8 Downloading filelock-3.32.7-py3-none-any.whl (100 kB)
+#27 290.8    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100.2/100.2 kB 15.6 MB/s eta 0:00:00
+#27 290.8 Downloading fsspec-2026.7.0-py3-none-any.whl (206 kB)
+#27 290.9    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 206.6/206.6 kB 13.6 MB/s eta 0:00:00
+#27 290.9 Downloading hf_xet-1.6.0-cp38-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (4.5 MB)
+#27 291.3    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.5/4.5 MB 11.8 MB/s eta 0:00:00
+#27 291.3 Downloading jsonref-1.1.0-py3-none-any.whl (9.4 kB)
+#27 291.3 Downloading jsonschema-4.26.0-py3-none-any.whl (90 kB)
+#27 291.3    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 90.6/90.6 kB 17.0 MB/s eta 0:00:00
+#27 291.3 Downloading latex2mathml-3.81.1-py3-none-any.whl (79 kB)
+#27 291.3    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 79.2/79.2 kB 17.9 MB/s eta 0:00:00
+#27 291.4 Downloading lxml-6.1.3-cp312-cp312-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl (5.2 MB)
+#27 292.8    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 5.2/5.2 MB 3.7 MB/s eta 0:00:00
+#27 292.8 Downloading markdown_it_py-4.2.0-py3-none-any.whl (91 kB)
+#27 292.8    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 91.7/91.7 kB 17.4 MB/s eta 0:00:00
+#27 292.8 Downloading networkx-3.6.1-py3-none-any.whl (2.1 MB)
+#27 293.6    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.1/2.1 MB 3.2 MB/s eta 0:00:00
+#27 293.6 Downloading omegaconf-2.3.1-py3-none-any.whl (79 kB)
+#27 293.6    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 79.5/79.5 kB 9.8 MB/s eta 0:00:00
+#27 293.6 Downloading opencv_python-5.0.0.93-cp37-abi3-manylinux_2_28_x86_64.whl (73.8 MB)
+#27 301.6    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 73.8/73.8 MB 11.8 MB/s eta 0:00:00
+#27 301.6 Downloading packaging-26.3-py3-none-any.whl (129 kB)
+#27 301.6    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 130.0/130.0 kB 14.0 MB/s eta 0:00:00
+#27 301.7 Downloading pyclipper-1.4.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (978 kB)
+#27 301.7    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 978.2/978.2 kB 12.1 MB/s eta 0:00:00
+#27 301.8 Downloading pygments-2.21.0-py3-none-any.whl (1.3 MB)
+#27 301.9    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.3/1.3 MB 12.2 MB/s eta 0:00:00
+#27 301.9 Downloading safetensors-0.8.0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (516 kB)
+#27 301.9    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 516.0/516.0 kB 12.3 MB/s eta 0:00:00
+#27 301.9 Downloading semchunk-3.2.5-py3-none-any.whl (13 kB)
+#27 301.9 Downloading setuptools-84.0.0-py3-none-any.whl (818 kB)
+#27 302.0    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 818.2/818.2 kB 11.8 MB/s eta 0:00:00
+#27 302.0 Downloading shapely-2.1.2-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (3.1 MB)
+#27 302.3    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.1/3.1 MB 11.7 MB/s eta 0:00:00
+#27 302.3 Downloading shellingham-1.5.4-py2.py3-none-any.whl (9.8 kB)
+#27 302.3 Downloading sympy-1.14.0-py3-none-any.whl (6.3 MB)
+#27 302.9    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 6.3/6.3 MB 11.6 MB/s eta 0:00:00
+#27 302.9 Downloading transformers-5.17.0-py3-none-any.whl (12.3 MB)
+#27 303.9    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 12.3/12.3 MB 11.7 MB/s eta 0:00:00
+#27 303.9 Downloading tree_sitter-0.26.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (667 kB)
+#27 304.0    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 667.5/667.5 kB 11.6 MB/s eta 0:00:00
+#27 304.0 Downloading tree_sitter_c-0.24.2-cp310-abi3-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl (94 kB)
+#27 304.0    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 94.3/94.3 kB 17.2 MB/s eta 0:00:00
+#27 304.0 Downloading tree_sitter_javascript-0.25.0-cp310-abi3-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl (99 kB)
+#27 304.0    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 99.7/99.7 kB 14.9 MB/s eta 0:00:00
+#27 304.0 Downloading tree_sitter_python-0.25.0-cp310-abi3-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl (108 kB)
+#27 304.0    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 108.1/108.1 kB 19.0 MB/s eta 0:00:00
+#27 304.1 Downloading tree_sitter_typescript-0.23.2-cp39-abi3-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl (344 kB)
+#27 304.1    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 345.0/345.0 kB 12.0 MB/s eta 0:00:00
+#27 304.1 Downloading triton-3.8.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (248.0 MB)
+#27 325.3    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 248.0/248.0 MB 12.0 MB/s eta 0:00:00
+#27 325.3 Downloading xlsxwriter-3.2.9-py3-none-any.whl (175 kB)
+#27 325.3    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 175.3/175.3 kB 12.1 MB/s eta 0:00:00
+#27 325.3 Downloading colorlog-6.12.0-py3-none-any.whl (12 kB)
+#27 325.3 Downloading jinja2-3.1.6-py3-none-any.whl (134 kB)
+#27 325.3    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 134.9/134.9 kB 13.5 MB/s eta 0:00:00
+#27 325.3 Downloading olefile-0.47-py2.py3-none-any.whl (114 kB)
+#27 325.3    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 114.6/114.6 kB 14.6 MB/s eta 0:00:00
+#27 325.3 Downloading attrs-26.1.0-py3-none-any.whl (67 kB)
+#27 325.3    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 67.5/67.5 kB 24.7 MB/s eta 0:00:00
+#27 325.4 Downloading cuda_pathfinder-1.8.1-py3-none-any.whl (62 kB)
+#27 325.4    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 62.6/62.6 kB 17.6 MB/s eta 0:00:00
+#27 325.4 Downloading jsonschema_specifications-2025.9.1-py3-none-any.whl (18 kB)
+#27 325.4 Downloading markupsafe-3.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (22 kB)
+#27 325.4 Downloading mdurl-0.1.2-py3-none-any.whl (10.0 kB)
+#27 325.4 Downloading mpmath-1.3.0-py3-none-any.whl (536 kB)
+#27 325.5    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 536.2/536.2 kB 11.9 MB/s eta 0:00:00
+#27 325.5 Downloading nvidia_nvjitlink-13.4.52-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl (42.5 MB)
+#27 329.1    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 42.5/42.5 MB 11.8 MB/s eta 0:00:00
+#27 329.1 Downloading referencing-0.37.0-py3-none-any.whl (26 kB)
+#27 329.1 Downloading regex-2026.9.10-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (804 kB)
+#27 329.2    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 804.6/804.6 kB 11.9 MB/s eta 0:00:00
+#27 329.2 Downloading rpds_py-2026.6.3-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (366 kB)
+#27 329.2    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 366.2/366.2 kB 12.8 MB/s eta 0:00:00
+#27 329.2 Downloading tokenizers-0.23.2-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (3.4 MB)
+#27 329.5    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.4/3.4 MB 11.8 MB/s eta 0:00:00
+#27 329.5 Downloading pycparser-3.0-py3-none-any.whl (48 kB)
+#27 329.5    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 48.2/48.2 kB 16.3 MB/s eta 0:00:00
+#27 329.5 Downloading multiprocess-0.70.19-py312-none-any.whl (150 kB)
+#27 329.5    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 150.3/150.3 kB 19.3 MB/s eta 0:00:00
+#27 329.6 Downloading mpire-2.10.2-py3-none-any.whl (272 kB)
+#27 329.6    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 272.8/272.8 kB 11.3 MB/s eta 0:00:00
+#27 329.6 Downloading dill-0.4.1-py3-none-any.whl (120 kB)
+#27 329.6    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 120.0/120.0 kB 12.3 MB/s eta 0:00:00
+#27 335.6 Building wheels for collected packages: antlr4-python3-runtime
+#27 335.6   Building wheel for antlr4-python3-runtime (pyproject.toml): started
+#27 335.8   Building wheel for antlr4-python3-runtime (pyproject.toml): finished with status 'done'
+#27 335.8   Created wheel for antlr4-python3-runtime: filename=antlr4_python3_runtime-4.9.3-py3-none-any.whl size=144590 sha256=6ca8ad11e70a8c2ecdf9bda7208c1d993d1b26023f7a5d409d604f7c58f55adf
+#27 335.8   Stored in directory: /tmp/pip-ephem-wheel-cache-zjkj0vzk/wheels/1f/be/48/13754633f1d08d1fbfc60d5e80ae1e5d7329500477685286cd
+#27 335.8 Successfully built antlr4-python3-runtime
+#27 336.5 Installing collected packages: pylatexenc, nvidia-cusparselt-cu13, mpmath, filetype, cuda-toolkit, antlr4-python3-runtime, XlsxWriter, websockets, uvloop, urllib3, typing-extensions, triton, tree-sitter-typescript, tree-sitter-python, tree-sitter-javascript, tree-sitter-c, tree-sitter, tqdm, tabulate, sympy, soupsieve, six, shellingham, setuptools, safetensors, rtree, rpds-py, regex, pyyaml, python-dotenv, pypdfium2, pymupdf, pygments, pycparser, pyclipper, psutil, pluggy, Pillow, packaging, olefile, nvidia-nvtx, nvidia-nvshmem-cu13, nvidia-nvjitlink, nvidia-nccl-cu13, nvidia-curand, nvidia-cufile, nvidia-cuda-runtime, nvidia-cuda-nvrtc, nvidia-cuda-cupti, numpy, networkx, mypy-extensions, mdurl, MarkupSafe, marko, mail-parser, lxml, latex2mathml, langcodes, jsonref, idna, httptools, hf-xet, h11, greenlet, fsspec, filelock, faker, et-xmlfile, dill, defusedxml, cuda-pathfinder, colorlog, click, charset_normalizer, certifi, attrs, annotated-types, annotated-doc, uvicorn, typing-inspection, Shapely, scipy, requests, referencing, python-pptx, python-oxmsg, python-docx, python-dateutil, pyee, pydantic-core, polyfactory, playa-pdf, openpyxl, opencv-python-headless, opencv_python, omegaconf, nvidia-cusparse, nvidia-cufft, nvidia-cublas, multiprocess, mpire, markdown-it-py, jinja2, httpcore, cuda-bindings, cffi, beautifulsoup4, anyio, watchfiles, starlette, rich, rapidocr, pydantic, playwright, pandas, nvidia-cusolver, nvidia-cudnn-cu13, jsonschema-specifications, httpx, cryptography, typer, semchunk, pydantic-settings, pdfminer.six, jsonschema, huggingface-hub, fastapi, camelot-py, torch, tokenizers, pdfplumber, doclang, transformers, torchvision, docling-core, accelerate, docling-slim, docling-parse, docling-ibm-models, docling
+#27 409.6 Successfully installed MarkupSafe-3.0.3 Pillow-12.3.0 Shapely-2.1.2 XlsxWriter-3.2.9 accelerate-1.15.0 annotated-doc-0.0.5 annotated-types-0.8.0 antlr4-python3-runtime-4.9.3 anyio-4.15.1 attrs-26.1.0 beautifulsoup4-4.15.0 camelot-py-2.0.0 certifi-2026.7.22 cffi-2.1.1 charset_normalizer-3.5.1 click-8.5.0 colorlog-6.12.0 cryptography-50.0.1 cuda-bindings-13.4.1 cuda-pathfinder-1.8.1 cuda-toolkit-13.0.3.0 defusedxml-0.7.1 dill-0.4.1 doclang-0.7.3 docling-2.127.0 docling-core-2.96.1 docling-ibm-models-4.0.2 docling-parse-7.20.0 docling-slim-2.127.0 et-xmlfile-2.0.0 faker-40.39.0 fastapi-0.141.1 filelock-3.32.7 filetype-1.2.0 fsspec-2026.7.0 greenlet-3.5.6 h11-0.16.0 hf-xet-1.6.0 httpcore-1.0.9 httptools-0.8.0 httpx-0.28.1 huggingface-hub-1.31.0 idna-3.19 jinja2-3.1.6 jsonref-1.1.0 jsonschema-4.26.0 jsonschema-specifications-2025.9.1 langcodes-3.5.1 latex2mathml-3.81.1 lxml-6.1.3 mail-parser-4.6.5 markdown-it-py-4.2.0 marko-2.2.4 mdurl-0.1.2 mpire-2.10.2 mpmath-1.3.0 multiprocess-0.70.19 mypy-extensions-1.1.0 networkx-3.6.1 numpy-2.5.3 nvidia-cublas-13.1.1.3 nvidia-cuda-cupti-13.0.85 nvidia-cuda-nvrtc-13.0.88 nvidia-cuda-runtime-13.0.96 nvidia-cudnn-cu13-9.24.0.43 nvidia-cufft-12.0.0.61 nvidia-cufile-1.15.1.6 nvidia-curand-10.4.0.35 nvidia-cusolver-12.0.4.66 nvidia-cusparse-12.6.3.3 nvidia-cusparselt-cu13-0.8.1 nvidia-nccl-cu13-2.30.7 nvidia-nvjitlink-13.4.52 nvidia-nvshmem-cu13-3.4.5 nvidia-nvtx-13.0.85 olefile-0.47 omegaconf-2.3.1 opencv-python-headless-5.0.0.93 opencv_python-5.0.0.93 openpyxl-3.1.5 packaging-26.3 pandas-3.0.5 pdfminer.six-20260107 pdfplumber-0.11.10 playa-pdf-1.1.0 playwright-1.63.0 pluggy-1.6.0 polyfactory-3.3.0 psutil-7.2.2 pyclipper-1.4.0 pycparser-3.0 pydantic-2.13.5 pydantic-core-2.46.5 pydantic-settings-2.15.0 pyee-13.0.1 pygments-2.21.0 pylatexenc-2.11 pymupdf-1.28.2 pypdfium2-5.13.0 python-dateutil-2.9.0.post0 python-docx-1.2.0 python-dotenv-1.2.3 python-oxmsg-0.0.2 python-pptx-1.0.2 pyyaml-6.0.3 rapidocr-3.9.2 referencing-0.37.0 regex-2026.9.10 requests-2.34.2 rich-15.0.0 rpds-py-2026.6.3 rtree-1.4.1 safetensors-0.8.0 scipy-1.18.1 semchunk-3.2.5 setuptools-84.0.0 shellingham-1.5.4 six-1.17.0 soupsieve-2.9.2 starlette-1.6.0 sympy-1.14.0 tabulate-0.10.0 tokenizers-0.23.2 torch-2.14.0 torchvision-0.29.0 tqdm-4.70.1 transformers-5.17.0 tree-sitter-0.26.0 tree-sitter-c-0.24.2 tree-sitter-javascript-0.25.0 tree-sitter-python-0.25.0 tree-sitter-typescript-0.23.2 triton-3.8.0 typer-0.26.8 typing-extensions-4.16.0 typing-inspection-0.4.4 urllib3-2.8.0 uvicorn-0.53.0 uvloop-0.22.1 watchfiles-1.2.0 websockets-16.1.1
+#27 415.6 Installing dependencies...
+#27 416.2 Get:1 http://archive.ubuntu.com/ubuntu noble InRelease [256 kB]
+#27 416.9 Get:2 http://security.ubuntu.com/ubuntu noble-security InRelease [126 kB]
+#27 417.0 Get:3 http://archive.ubuntu.com/ubuntu noble-updates InRelease [126 kB]
+#27 417.2 Get:4 http://archive.ubuntu.com/ubuntu noble-backports InRelease [126 kB]
+#27 417.4 Get:5 http://archive.ubuntu.com/ubuntu noble/multiverse amd64 Packages [331 kB]
+#27 417.6 Get:6 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages [1808 kB]
+#27 417.9 Get:7 http://security.ubuntu.com/ubuntu noble-security/main amd64 Packages [1244 kB]
+#27 418.0 Get:8 http://archive.ubuntu.com/ubuntu noble/universe amd64 Packages [19.3 MB]
+#27 420.1 Get:9 http://security.ubuntu.com/ubuntu noble-security/restricted amd64 Packages [1801 kB]
+#27 420.4 Get:10 http://archive.ubuntu.com/ubuntu noble/restricted amd64 Packages [117 kB]
+#27 420.4 Get:11 http://archive.ubuntu.com/ubuntu noble-updates/restricted amd64 Packages [1922 kB]
+#27 420.6 Get:12 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages [1566 kB]
+#27 420.9 Get:13 http://archive.ubuntu.com/ubuntu noble-updates/multiverse amd64 Packages [56.2 kB]
+#27 420.9 Get:14 http://archive.ubuntu.com/ubuntu noble-updates/universe amd64 Packages [2147 kB]
+#27 421.1 Get:15 http://security.ubuntu.com/ubuntu noble-security/multiverse amd64 Packages [50.0 kB]
+#27 421.1 Get:16 http://security.ubuntu.com/ubuntu noble-security/universe amd64 Packages [1532 kB]
+#27 421.3 Get:17 http://archive.ubuntu.com/ubuntu noble-backports/universe amd64 Packages [35.9 kB]
+#27 421.3 Get:18 http://archive.ubuntu.com/ubuntu noble-backports/main amd64 Packages [48.9 kB]
+#27 421.3 Get:19 http://archive.ubuntu.com/ubuntu noble-backports/multiverse amd64 Packages [671 B]
+#27 422.6 Fetched 32.6 MB in 7s (4722 kB/s)
+#27 422.6 Reading package lists...
+#27 424.3 Reading package lists...
+#27 425.5 Building dependency tree...
+#27 425.7 Reading state information...
+#27 426.0 libatk-bridge2.0-0t64 is already the newest version (2.52.0-1build1).
+#27 426.0 libatk1.0-0t64 is already the newest version (2.52.0-1build1).
+#27 426.0 libatspi2.0-0t64 is already the newest version (2.52.0-1build1).
+#27 426.0 libcairo2 is already the newest version (1.18.0-3build1).
+#27 426.0 libdbus-1-3 is already the newest version (1.14.10-4ubuntu4.1).
+#27 426.0 libglib2.0-0t64 is already the newest version (2.80.0-6ubuntu3.8).
+#27 426.0 libnspr4 is already the newest version (2:4.35-1.1build1).
+#27 426.0 libpango-1.0-0 is already the newest version (1.52.1+ds-1build1).
+#27 426.0 libx11-6 is already the newest version (2:1.8.7-1build1).
+#27 426.0 libxcb1 is already the newest version (1.15-1ubuntu2).
+#27 426.0 libxcomposite1 is already the newest version (1:0.4.5-1build3).
+#27 426.0 libxdamage1 is already the newest version (1:1.1.6-1build1).
+#27 426.0 libxext6 is already the newest version (2:1.3.4-1build2).
+#27 426.0 libxfixes3 is already the newest version (1:6.0.0-2build1).
+#27 426.0 libxkbcommon0 is already the newest version (1.6.0-1build1).
+#27 426.0 libxrandr2 is already the newest version (2:1.5.2-2build1).
+#27 426.0 libfontconfig1 is already the newest version (2.15.0-1.1ubuntu2).
+#27 426.0 libfreetype6 is already the newest version (2.13.2+dfsg-1ubuntu0.1).
+#27 426.0 Suggested packages:
+#27 426.0   alsa-utils libasound2-plugins cups-common
+#27 426.0 Recommended packages:
+#27 426.0   fonts-ipafont-mincho fonts-liberation-sans-narrow fonts-tlwg-loma
+#27 426.0   alsa-ucm-conf alsa-topology-conf mesa-vulkan-drivers | vulkan-icd
+#27 426.0   xfonts-base
+#27 426.1 The following NEW packages will be installed:
+#27 426.1   fonts-freefont-ttf fonts-ipafont-gothic fonts-liberation
+#27 426.1   fonts-noto-color-emoji fonts-tlwg-loma-otf fonts-unifont fonts-wqy-zenhei
+#27 426.1   libfontenc1 libgl1 libgl1-mesa-dri libglvnd0 libglx-mesa0 libglx0 libunwind8
+#27 426.1   libvulkan1 libxcb-glx0 libxfont2 xfonts-cyrillic xfonts-encodings
+#27 426.1   xfonts-scalable xfonts-utils xserver-common xvfb
+#27 426.1 The following packages will be upgraded:
+#27 426.1   libasound2-data libasound2t64 libcups2t64 libdrm-amdgpu1 libdrm-common
+#27 426.1   libdrm-intel1 libdrm2 libgbm1 libnss3 mesa-libgallium
+#27 426.4 10 upgraded, 23 newly installed, 0 to remove and 71 not upgraded.
+#27 426.4 Need to get 47.1 MB of archives.
+#27 426.4 After this operation, 100 MB of additional disk space will be used.
+#27 426.4 Get:1 http://archive.ubuntu.com/ubuntu noble/universe amd64 fonts-ipafont-gothic all 00303-21ubuntu1 [3513 kB]
+#27 427.8 Get:2 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 libdrm-common all 2.4.125-1ubuntu0.1~24.04.2 [9250 B]
+#27 427.8 Get:3 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 libdrm2 amd64 2.4.125-1ubuntu0.1~24.04.2 [41.4 kB]
+#27 427.8 Get:4 http://archive.ubuntu.com/ubuntu noble/main amd64 fonts-freefont-ttf all 20211204+svn4273-2 [5641 kB]
+#27 428.6 Get:5 http://archive.ubuntu.com/ubuntu noble/main amd64 fonts-liberation all 1:2.1.5-3 [1603 kB]
+#27 428.7 Get:6 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 fonts-noto-color-emoji all 2.047-0ubuntu0.24.04.1 [9764 kB]
+#27 429.9 Get:7 http://archive.ubuntu.com/ubuntu noble/universe amd64 fonts-tlwg-loma-otf all 1:0.7.3-1 [107 kB]
+#27 429.9 Get:8 http://archive.ubuntu.com/ubuntu noble/universe amd64 fonts-unifont all 1:15.1.01-1build1 [2993 kB]
+#27 430.2 Get:9 http://archive.ubuntu.com/ubuntu noble/universe amd64 fonts-wqy-zenhei all 0.9.45-8 [7472 kB]
+#27 431.0 Get:10 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 libasound2t64 amd64 1.2.11-1ubuntu0.3 [398 kB]
+#27 431.0 Get:11 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 libasound2-data all 1.2.11-1ubuntu0.3 [21.4 kB]
+#27 431.0 Get:12 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 libcups2t64 amd64 2.4.7-1.2ubuntu7.14 [274 kB]
+#27 431.0 Get:13 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 libdrm-amdgpu1 amd64 2.4.125-1ubuntu0.1~24.04.2 [21.4 kB]
+#27 431.0 Get:14 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 libdrm-intel1 amd64 2.4.125-1ubuntu0.1~24.04.2 [63.9 kB]
+#27 431.0 Get:15 http://archive.ubuntu.com/ubuntu noble/main amd64 libfontenc1 amd64 1:1.1.8-1build1 [14.0 kB]
+#27 431.0 Get:16 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 libgbm1 amd64 25.2.8-0ubuntu0.24.04.2 [34.2 kB]
+#27 431.0 Get:17 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 mesa-libgallium amd64 25.2.8-0ubuntu0.24.04.2 [10.8 MB]
+#27 431.8 Get:18 http://archive.ubuntu.com/ubuntu noble/main amd64 libvulkan1 amd64 1.3.275.0-1build1 [142 kB]
+#27 431.8 Get:19 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 libgl1-mesa-dri amd64 25.2.8-0ubuntu0.24.04.2 [37.9 kB]
+#27 431.8 Get:20 http://archive.ubuntu.com/ubuntu noble/main amd64 libxcb-glx0 amd64 1.15-1ubuntu2 [24.8 kB]
+#27 431.8 Get:21 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 libglx-mesa0 amd64 25.2.8-0ubuntu0.24.04.2 [110 kB]
+#27 431.9 Get:22 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 libnss3 amd64 2:3.98-1ubuntu0.2 [1445 kB]
+#27 432.0 Get:23 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 libunwind8 amd64 1.6.2-3build1.1 [55.3 kB]
+#27 432.0 Get:24 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 libxfont2 amd64 1:2.0.6-1+deb13u1build0.24.04.2 [94.0 kB]
+#27 432.0 Get:25 http://archive.ubuntu.com/ubuntu noble/main amd64 xfonts-encodings all 1:1.0.5-0ubuntu2 [578 kB]
+#27 432.0 Get:26 http://archive.ubuntu.com/ubuntu noble/main amd64 xfonts-utils amd64 1:7.7+6build3 [94.4 kB]
+#27 432.0 Get:27 http://archive.ubuntu.com/ubuntu noble/universe amd64 xfonts-cyrillic all 1:1.0.5+nmu1 [384 kB]
+#27 432.1 Get:28 http://archive.ubuntu.com/ubuntu noble/main amd64 xfonts-scalable all 1:1.0.3-1.3 [304 kB]
+#27 432.1 Get:29 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 xserver-common all 2:21.1.12-1ubuntu1.6 [34.7 kB]
+#27 432.1 Get:30 http://archive.ubuntu.com/ubuntu noble/main amd64 libglvnd0 amd64 1.7.0-1build1 [69.6 kB]
+#27 432.1 Get:31 http://archive.ubuntu.com/ubuntu noble/main amd64 libglx0 amd64 1.7.0-1build1 [38.6 kB]
+#27 432.1 Get:32 http://archive.ubuntu.com/ubuntu noble/main amd64 libgl1 amd64 1.7.0-1build1 [102 kB]
+#27 432.1 Get:33 http://archive.ubuntu.com/ubuntu noble-updates/universe amd64 xvfb amd64 2:21.1.12-1ubuntu1.6 [877 kB]
+#27 432.6 debconf: delaying package configuration, since apt-utils is not installed
+#27 432.7 Fetched 47.1 MB in 6s (7726 kB/s)
+#27 432.8 Selecting previously unselected package fonts-ipafont-gothic.
+#27 432.8 (Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 37941 files and directories currently installed.)
+#27 432.9 Preparing to unpack .../00-fonts-ipafont-gothic_00303-21ubuntu1_all.deb ...
+#27 433.0 Unpacking fonts-ipafont-gothic (00303-21ubuntu1) ...
+#27 433.3 Preparing to unpack .../01-libdrm-common_2.4.125-1ubuntu0.1~24.04.2_all.deb ...
+#27 433.3 Unpacking libdrm-common (2.4.125-1ubuntu0.1~24.04.2) over (2.4.125-1ubuntu0.1~24.04.1) ...
+#27 433.4 Preparing to unpack .../02-libdrm2_2.4.125-1ubuntu0.1~24.04.2_amd64.deb ...
+#27 433.4 Unpacking libdrm2:amd64 (2.4.125-1ubuntu0.1~24.04.2) over (2.4.125-1ubuntu0.1~24.04.1) ...
+#27 433.4 Selecting previously unselected package fonts-freefont-ttf.
+#27 433.4 Preparing to unpack .../03-fonts-freefont-ttf_20211204+svn4273-2_all.deb ...
+#27 433.4 Unpacking fonts-freefont-ttf (20211204+svn4273-2) ...
+#27 433.7 Selecting previously unselected package fonts-liberation.
+#27 433.7 Preparing to unpack .../04-fonts-liberation_1%3a2.1.5-3_all.deb ...
+#27 433.7 Unpacking fonts-liberation (1:2.1.5-3) ...
+#27 433.7 Selecting previously unselected package fonts-noto-color-emoji.
+#27 433.7 Preparing to unpack .../05-fonts-noto-color-emoji_2.047-0ubuntu0.24.04.1_all.deb ...
+#27 433.7 Unpacking fonts-noto-color-emoji (2.047-0ubuntu0.24.04.1) ...
+#27 433.9 Selecting previously unselected package fonts-tlwg-loma-otf.
+#27 433.9 Preparing to unpack .../06-fonts-tlwg-loma-otf_1%3a0.7.3-1_all.deb ...
+#27 433.9 Unpacking fonts-tlwg-loma-otf (1:0.7.3-1) ...
+#27 433.9 Selecting previously unselected package fonts-unifont.
+#27 433.9 Preparing to unpack .../07-fonts-unifont_1%3a15.1.01-1build1_all.deb ...
+#27 433.9 Unpacking fonts-unifont (1:15.1.01-1build1) ...
+#27 434.3 Selecting previously unselected package fonts-wqy-zenhei.
+#27 434.3 Preparing to unpack .../08-fonts-wqy-zenhei_0.9.45-8_all.deb ...
+#27 434.4 Unpacking fonts-wqy-zenhei (0.9.45-8) ...
+#27 434.9 Preparing to unpack .../09-libasound2t64_1.2.11-1ubuntu0.3_amd64.deb ...
+#27 434.9 Unpacking libasound2t64:amd64 (1.2.11-1ubuntu0.3) over (1.2.11-1ubuntu0.2) ...
+#27 435.0 Preparing to unpack .../10-libasound2-data_1.2.11-1ubuntu0.3_all.deb ...
+#27 435.0 Unpacking libasound2-data (1.2.11-1ubuntu0.3) over (1.2.11-1ubuntu0.2) ...
+#27 435.2 Preparing to unpack .../11-libcups2t64_2.4.7-1.2ubuntu7.14_amd64.deb ...
+#27 435.2 Unpacking libcups2t64:amd64 (2.4.7-1.2ubuntu7.14) over (2.4.7-1.2ubuntu7.9) ...
+#27 435.3 Preparing to unpack .../12-libdrm-amdgpu1_2.4.125-1ubuntu0.1~24.04.2_amd64.deb ...
+#27 435.3 Unpacking libdrm-amdgpu1:amd64 (2.4.125-1ubuntu0.1~24.04.2) over (2.4.125-1ubuntu0.1~24.04.1) ...
+#27 435.3 Preparing to unpack .../13-libdrm-intel1_2.4.125-1ubuntu0.1~24.04.2_amd64.deb ...
+#27 435.3 Unpacking libdrm-intel1:amd64 (2.4.125-1ubuntu0.1~24.04.2) over (2.4.125-1ubuntu0.1~24.04.1) ...
+#27 435.4 Selecting previously unselected package libfontenc1:amd64.
+#27 435.4 Preparing to unpack .../14-libfontenc1_1%3a1.1.8-1build1_amd64.deb ...
+#27 435.4 Unpacking libfontenc1:amd64 (1:1.1.8-1build1) ...
+#27 435.4 Preparing to unpack .../15-libgbm1_25.2.8-0ubuntu0.24.04.2_amd64.deb ...
+#27 435.4 Unpacking libgbm1:amd64 (25.2.8-0ubuntu0.24.04.2) over (25.2.8-0ubuntu0.24.04.1) ...
+#27 435.5 Preparing to unpack .../16-mesa-libgallium_25.2.8-0ubuntu0.24.04.2_amd64.deb ...
+#27 435.5 Unpacking mesa-libgallium:amd64 (25.2.8-0ubuntu0.24.04.2) over (25.2.8-0ubuntu0.24.04.1) ...
+#27 435.8 Selecting previously unselected package libvulkan1:amd64.
+#27 435.8 Preparing to unpack .../17-libvulkan1_1.3.275.0-1build1_amd64.deb ...
+#27 435.8 Unpacking libvulkan1:amd64 (1.3.275.0-1build1) ...
+#27 435.8 Selecting previously unselected package libgl1-mesa-dri:amd64.
+#27 435.8 Preparing to unpack .../18-libgl1-mesa-dri_25.2.8-0ubuntu0.24.04.2_amd64.deb ...
+#27 435.8 Unpacking libgl1-mesa-dri:amd64 (25.2.8-0ubuntu0.24.04.2) ...
+#27 435.8 Selecting previously unselected package libxcb-glx0:amd64.
+#27 435.8 Preparing to unpack .../19-libxcb-glx0_1.15-1ubuntu2_amd64.deb ...
+#27 435.8 Unpacking libxcb-glx0:amd64 (1.15-1ubuntu2) ...
+#27 435.9 Selecting previously unselected package libglx-mesa0:amd64.
+#27 435.9 Preparing to unpack .../20-libglx-mesa0_25.2.8-0ubuntu0.24.04.2_amd64.deb ...
+#27 435.9 Unpacking libglx-mesa0:amd64 (25.2.8-0ubuntu0.24.04.2) ...
+#27 435.9 Preparing to unpack .../21-libnss3_2%3a3.98-1ubuntu0.2_amd64.deb ...
+#27 435.9 Unpacking libnss3:amd64 (2:3.98-1ubuntu0.2) over (2:3.98-1ubuntu0.1) ...
+#27 436.1 Selecting previously unselected package libunwind8:amd64.
+#27 436.1 Preparing to unpack .../22-libunwind8_1.6.2-3build1.1_amd64.deb ...
+#27 436.1 Unpacking libunwind8:amd64 (1.6.2-3build1.1) ...
+#27 436.1 Selecting previously unselected package libxfont2:amd64.
+#27 436.1 Preparing to unpack .../23-libxfont2_1%3a2.0.6-1+deb13u1build0.24.04.2_amd64.deb ...
+#27 436.1 Unpacking libxfont2:amd64 (1:2.0.6-1+deb13u1build0.24.04.2) ...
+#27 436.1 Selecting previously unselected package xfonts-encodings.
+#27 436.1 Preparing to unpack .../24-xfonts-encodings_1%3a1.0.5-0ubuntu2_all.deb ...
+#27 436.1 Unpacking xfonts-encodings (1:1.0.5-0ubuntu2) ...
+#27 436.2 Selecting previously unselected package xfonts-utils.
+#27 436.2 Preparing to unpack .../25-xfonts-utils_1%3a7.7+6build3_amd64.deb ...
+#27 436.2 Unpacking xfonts-utils (1:7.7+6build3) ...
+#27 436.2 Selecting previously unselected package xfonts-cyrillic.
+#27 436.2 Preparing to unpack .../26-xfonts-cyrillic_1%3a1.0.5+nmu1_all.deb ...
+#27 436.2 Unpacking xfonts-cyrillic (1:1.0.5+nmu1) ...
+#27 436.3 Selecting previously unselected package xfonts-scalable.
+#27 436.3 Preparing to unpack .../27-xfonts-scalable_1%3a1.0.3-1.3_all.deb ...
+#27 436.3 Unpacking xfonts-scalable (1:1.0.3-1.3) ...
+#27 436.3 Selecting previously unselected package xserver-common.
+#27 436.3 Preparing to unpack .../28-xserver-common_2%3a21.1.12-1ubuntu1.6_all.deb ...
+#27 436.3 Unpacking xserver-common (2:21.1.12-1ubuntu1.6) ...
+#27 436.3 Selecting previously unselected package libglvnd0:amd64.
+#27 436.3 Preparing to unpack .../29-libglvnd0_1.7.0-1build1_amd64.deb ...
+#27 436.3 Unpacking libglvnd0:amd64 (1.7.0-1build1) ...
+#27 436.3 Selecting previously unselected package libglx0:amd64.
+#27 436.3 Preparing to unpack .../30-libglx0_1.7.0-1build1_amd64.deb ...
+#27 436.4 Unpacking libglx0:amd64 (1.7.0-1build1) ...
+#27 436.4 Selecting previously unselected package libgl1:amd64.
+#27 436.4 Preparing to unpack .../31-libgl1_1.7.0-1build1_amd64.deb ...
+#27 436.4 Unpacking libgl1:amd64 (1.7.0-1build1) ...
+#27 436.4 Selecting previously unselected package xvfb.
+#27 436.4 Preparing to unpack .../32-xvfb_2%3a21.1.12-1ubuntu1.6_amd64.deb ...
+#27 436.4 Unpacking xvfb (2:21.1.12-1ubuntu1.6) ...
+#27 436.5 Setting up fonts-noto-color-emoji (2.047-0ubuntu0.24.04.1) ...
+#27 436.5 Setting up libglvnd0:amd64 (1.7.0-1build1) ...
+#27 436.5 Setting up libxcb-glx0:amd64 (1.15-1ubuntu2) ...
+#27 436.5 Setting up fonts-wqy-zenhei (0.9.45-8) ...
+#27 436.5 Setting up fonts-freefont-ttf (20211204+svn4273-2) ...
+#27 436.5 Setting up libnss3:amd64 (2:3.98-1ubuntu0.2) ...
+#27 436.5 Setting up libunwind8:amd64 (1.6.2-3build1.1) ...
+#27 436.5 Setting up libasound2-data (1.2.11-1ubuntu0.3) ...
+#27 436.5 Setting up libfontenc1:amd64 (1:1.1.8-1build1) ...
+#27 436.5 Setting up libasound2t64:amd64 (1.2.11-1ubuntu0.3) ...
+#27 436.6 Setting up fonts-tlwg-loma-otf (1:0.7.3-1) ...
+#27 436.6 Setting up xfonts-encodings (1:1.0.5-0ubuntu2) ...
+#27 436.6 Setting up libvulkan1:amd64 (1.3.275.0-1build1) ...
+#27 436.6 Setting up fonts-ipafont-gothic (00303-21ubuntu1) ...
+#27 436.6 update-alternatives: using /usr/share/fonts/opentype/ipafont-gothic/ipag.ttf to provide /usr/share/fonts/truetype/fonts-japanese-gothic.ttf (fonts-japanese-gothic.ttf) in auto mode
+#27 436.6 Setting up fonts-liberation (1:2.1.5-3) ...
+#27 436.6 Setting up xserver-common (2:21.1.12-1ubuntu1.6) ...
+#27 436.6 Setting up libdrm-common (2.4.125-1ubuntu0.1~24.04.2) ...
+#27 436.6 Setting up libxfont2:amd64 (1:2.0.6-1+deb13u1build0.24.04.2) ...
+#27 436.6 Setting up libcups2t64:amd64 (2.4.7-1.2ubuntu7.14) ...
+#27 436.6 Setting up fonts-unifont (1:15.1.01-1build1) ...
+#27 436.6 Setting up xfonts-utils (1:7.7+6build3) ...
+#27 436.6 Setting up libdrm2:amd64 (2.4.125-1ubuntu0.1~24.04.2) ...
+#27 436.7 Setting up xfonts-cyrillic (1:1.0.5+nmu1) ...
+#27 436.7 Setting up xfonts-scalable (1:1.0.3-1.3) ...
+#27 436.8 Setting up libdrm-amdgpu1:amd64 (2.4.125-1ubuntu0.1~24.04.2) ...
+#27 436.8 Setting up libdrm-intel1:amd64 (2.4.125-1ubuntu0.1~24.04.2) ...
+#27 436.8 Setting up mesa-libgallium:amd64 (25.2.8-0ubuntu0.24.04.2) ...
+#27 436.8 Setting up libgbm1:amd64 (25.2.8-0ubuntu0.24.04.2) ...
+#27 436.8 Setting up libgl1-mesa-dri:amd64 (25.2.8-0ubuntu0.24.04.2) ...
+#27 436.8 Setting up libglx-mesa0:amd64 (25.2.8-0ubuntu0.24.04.2) ...
+#27 436.8 Setting up libglx0:amd64 (1.7.0-1build1) ...
+#27 436.8 Setting up libgl1:amd64 (1.7.0-1build1) ...
+#27 436.8 Setting up xvfb (2:21.1.12-1ubuntu1.6) ...
+#27 436.8 Processing triggers for man-db (2.12.0-4build2) ...
+#27 436.9 Processing triggers for fontconfig (2.15.0-1.1ubuntu2) ...
+#27 437.0 Processing triggers for libc-bin (2.39-0ubuntu8.7) ...
+#27 437.1 Downloading Chrome for Testing 153.0.8010.12 (playwright chromium v1243) from https://cdn.playwright.dev/builds/cft/153.0.8010.12/linux64/chrome-linux64.zip
+#27 437.9 |                                                                                |   0% of 186.8 MiB
+#27 441.2 |■■■■■■■■                                                                        |  10% of 186.8 MiB
+#27 442.8 |■■■■■■■■■■■■■■■■                                                                |  20% of 186.8 MiB
+#27 444.5 |■■■■■■■■■■■■■■■■■■■■■■■■                                                        |  30% of 186.8 MiB
+#27 446.3 |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                                                |  40% of 186.8 MiB
+#27 448.0 |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                                        |  50% of 186.8 MiB
+#27 449.7 |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                                |  60% of 186.8 MiB
+#27 451.3 |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                        |  70% of 186.8 MiB
+#27 453.2 |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                |  80% of 186.8 MiB
+#27 454.8 |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■        |  90% of 186.8 MiB
+#27 456.5 |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■| 100% of 186.8 MiB
+#27 459.3 Chrome for Testing 153.0.8010.12 (playwright chromium v1243) downloaded to /home/headless/.cache/ms-playwright/chromium-1243
+#27 459.3 Downloading FFmpeg (playwright ffmpeg v1011) from https://cdn.playwright.dev/dbazure/download/playwright/builds/ffmpeg/1011/ffmpeg-linux.zip
+#27 460.0 |                                                                                |   0% of 2.3 MiB
+#27 460.1 |■■■■■■■■                                                                        |  10% of 2.3 MiB
+#27 460.1 |■■■■■■■■■■■■■■■■                                                                |  20% of 2.3 MiB
+#27 460.1 |■■■■■■■■■■■■■■■■■■■■■■■■                                                        |  30% of 2.3 MiB
+#27 460.1 |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                                                |  40% of 2.3 MiB
+#27 460.1 |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                                        |  50% of 2.3 MiB
+#27 460.2 |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                                |  60% of 2.3 MiB
+#27 460.2 |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                        |  70% of 2.3 MiB
+#27 460.2 |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                |  80% of 2.3 MiB
+#27 460.2 |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■        |  90% of 2.3 MiB
+#27 460.2 |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■| 100% of 2.3 MiB
+#27 460.3 FFmpeg (playwright ffmpeg v1011) downloaded to /home/headless/.cache/ms-playwright/ffmpeg-1011
+#27 460.3 Downloading Chrome Headless Shell 153.0.8010.12 (playwright chromium-headless-shell v1243) from https://cdn.playwright.dev/builds/cft/153.0.8010.12/linux64/chrome-headless-shell-linux64.zip
+#27 461.0 |                                                                                |   0% of 114.3 MiB
+#27 463.5 |■■■■■■■■                                                                        |  10% of 114.3 MiB
+#27 464.5 |■■■■■■■■■■■■■■■■                                                                |  20% of 114.3 MiB
+#27 465.5 |■■■■■■■■■■■■■■■■■■■■■■■■                                                        |  30% of 114.3 MiB
+#27 466.5 |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                                                |  40% of 114.3 MiB
+#27 467.7 |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                                        |  50% of 114.3 MiB
+#27 468.7 |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                                |  60% of 114.3 MiB
+#27 469.7 |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                        |  70% of 114.3 MiB
+#27 470.8 |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                |  80% of 114.3 MiB
+#27 471.8 |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■        |  90% of 114.3 MiB
+#27 472.9 |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■| 100% of 114.3 MiB
+#27 474.9 Chrome Headless Shell 153.0.8010.12 (playwright chromium-headless-shell v1243) downloaded to /home/headless/.cache/ms-playwright/chromium_headless_shell-1243
+#27 DONE 475.6s
+
+#28 [stage-1 15/25] COPY agent/flowera-tools-start.sh /opt/flowera-tools-start.sh
+#28 DONE 0.4s
+
+#29 [stage-1 16/25] COPY agent/flowera-tools.desktop /home/headless/.config/autostart/flowera-tools.desktop
+#29 DONE 0.0s
+
+#30 [stage-1 17/25] COPY agent/flowera-browser-agent-shortcut.desktop /home/headless/Desktop/Browser-Agent.desktop
+#30 DONE 0.0s
+
+#31 [stage-1 18/25] COPY agent/flowera-doc-ui-shortcut.desktop /home/headless/Desktop/Doc-UI.desktop
+#31 DONE 0.0s
+
+#32 [stage-1 19/25] RUN chmod +x /opt/flowera-tools-start.sh         /home/headless/Desktop/Browser-Agent.desktop         /home/headless/Desktop/Doc-UI.desktop &&     chmod 644 /home/headless/.config/autostart/flowera-tools.desktop &&     chown -R headless:headless /home/headless/Desktop         /home/headless/.config/autostart/flowera-tools.desktop
+#32 DONE 0.3s
+
+#33 [stage-1 20/25] RUN chmod +x /opt/vm_server.py /opt/start_agent_terminal.sh /opt/soul /usr/local/bin/gui
+#33 DONE 0.3s
+
+#34 [stage-1 21/25] RUN mkdir -p /home/headless/.config/autostart     /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml     && chown -R headless:headless /home/headless/.config
+#34 DONE 0.2s
+
+#35 [stage-1 22/25] COPY agent/flowera-agent.desktop /home/headless/.config/autostart/flowera-agent.desktop
+#35 DONE 0.0s
+
+#36 [stage-1 23/25] COPY agent/flowera-desktop-wallpaper.xml /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml
+#36 DONE 0.0s
+
+#37 [stage-1 24/25] RUN chmod 644 /home/headless/.config/autostart/flowera-agent.desktop     /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml     /home/headless/.chromium-browser.init /opt/flowera-chromium.init     && chown headless:headless     /home/headless/.config/autostart/flowera-agent.desktop     /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml     /home/headless/.chromium-browser.init
+#37 DONE 0.2s
+
+#38 [stage-1 25/25] RUN chmod 666 /etc/passwd /etc/group
+#38 DONE 0.2s
+
+#39 exporting to image
+#39 exporting layers
+#39 exporting layers 152.5s done
+#39 exporting manifest sha256:be806cc20fc05d2f3f330528dd3c0b494a35b85863a801e1cb711db5ce14ecd1 done
+#39 exporting config sha256:fcd90fe8d3f7ae6f6857d269e3cc774f8330f7ac09e4075c6e19b9a297455269 done
+#39 exporting attestation manifest sha256:f64cacc31fd3ae21d3f01d73aaad49ec8513e25a976da4426e890e90d87fea6f 0.0s done
+#39 exporting manifest list sha256:07156cbf9932134055dd9b79fe13c0eaeb30e02d72c3845b3d43fc083b1d0b85 done
+#39 naming to docker.io/library/flowera-desktop:basic done
+#39 unpacking to docker.io/library/flowera-desktop:basic
+#39 unpacking to docker.io/library/flowera-desktop:basic 28.9s done
+#39 DONE 181.5s
