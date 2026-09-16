@@ -36,6 +36,16 @@ def get_memory_context():
             continue
 
         entry = f"Memory file: {path.name}\n\n{content}"
+
+        # A single oversized entry (memory is never pruned, and
+        # sharing/spawning can copy another desktop's whole history in at
+        # once) must not blow the budget just because it's the one being
+        # looked at right now - skip it and keep looking for one that fits,
+        # unless nothing has been included yet, in which case take it anyway
+        # rather than returning no context at all.
+        if entries and len(entry) > budget:
+            continue
+
         budget -= len(entry)
         entries.append(entry)
 

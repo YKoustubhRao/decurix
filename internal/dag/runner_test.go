@@ -49,10 +49,11 @@ func (f *fakeSubmitter) callsFor(desktopID string) []string {
 }
 
 // fakeTaskResults is a TaskResults a test can script: set a task's result
-// once its node should be treated as finished.
+// once its node should be treated as finished, or mark a desktop busy.
 type fakeTaskResults struct {
 	mu      sync.Mutex
 	results map[string]struct{ status, reply string }
+	busy    map[string]string
 }
 
 func newFakeTaskResults() *fakeTaskResults {
@@ -75,6 +76,24 @@ func (f *fakeTaskResults) set(taskID, status, reply string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.results[taskID] = struct{ status, reply string }{status, reply}
+}
+
+func (f *fakeTaskResults) Busy(desktopID string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.busy[desktopID], nil
+}
+
+func (f *fakeTaskResults) setBusy(desktopID, reason string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.busy == nil {
+		f.busy = map[string]string{}
+	}
+
+	f.busy[desktopID] = reason
 }
 
 func newTestRunner(store *Store, submitter Submitter, results TaskResults, now time.Time) *Runner {
@@ -486,5 +505,79 @@ func TestRunSucceedsWhenEveryReachableNodeSucceeds(t *testing.T) {
 
 	if final.Status != RunSucceeded {
 		t.Fatalf("run status = %q, want succeeded", final.Status)
+	}
+}
+
+// TestDispatchBacksOffWhenDesktopBusy covers a fan-out that rejoins on one
+// desktop (two branches of a diamond both assigned to the same desktop_id -
+// nothing about AddNode/AddEdge prevents that shape, and it's the natural
+// thing to build against a small desktop pool): if both branches become
+// ready in the same advance() call, dispatch must not submit both tickets to
+// a desktop that is already busy with something else. Letting
+// internal/tasks queue the second one behind it risks absorbQueuedReply
+// silently deleting that second ticket's task record if the first one it
+// landed behind then pauses for a query or approval, hanging the run
+// forever on a run-node whose task no longer exists.
+func TestDispatchBacksOffWhenDesktopBusy(t *testing.T) {
+	now := time.Now()
+	store := newTestStore(t, now)
+	d, _ := store.Create("pipeline")
+
+	a, _ := store.AddNode(d.ID, "a", "box-a", "")
+	b, _ := store.AddNode(d.ID, "b", "box-shared", "")
+	c, _ := store.AddNode(d.ID, "c", "box-shared", "")
+
+	for _, pair := range [][2]string{{a.ID, b.ID}, {a.ID, c.ID}} {
+		if _, err := store.AddEdge(d.ID, pair[0], pair[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	submitter := &fakeSubmitter{}
+	results := newFakeTaskResults()
+	runner := newTestRunner(store, submitter, results, now)
+
+	run, err := runner.Trigger(context.Background(), d.ID, TriggerManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	taskIDFor := func(nodeID string) string {
+		runNodes, _ := store.RunNodes(run.ID)
+		for _, rn := range runNodes {
+			if rn.NodeID == nodeID {
+				return rn.TaskID
+			}
+		}
+		return ""
+	}
+
+	results.set(taskIDFor(a.ID), tasks.StatusDone, "a done")
+
+	// box-shared is already busy with something else the moment b and c
+	// both become ready together.
+	results.setBusy("box-shared", "a task is still running on this desktop")
+	runner.advance(context.Background(), run)
+
+	if calls := submitter.callsFor("box-shared"); len(calls) != 0 {
+		t.Fatalf("submitted to a busy desktop: %v", calls)
+	}
+
+	runNodes, _ := store.RunNodes(run.ID)
+	statusOf := make(map[string]string, len(runNodes))
+	for _, rn := range runNodes {
+		statusOf[rn.NodeID] = rn.Status
+	}
+
+	if statusOf[b.ID] != NodePending || statusOf[c.ID] != NodePending {
+		t.Fatalf("b/c status = %q/%q, want both still pending so they retry next tick", statusOf[b.ID], statusOf[c.ID])
+	}
+
+	// Once the desktop frees up, both dispatch normally.
+	results.setBusy("box-shared", "")
+	runner.advance(context.Background(), run)
+
+	if calls := submitter.callsFor("box-shared"); len(calls) != 2 {
+		t.Fatalf("calls to box-shared = %v, want 2 once it's free", calls)
 	}
 }

@@ -39,10 +39,12 @@ func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 
 	linkedAll := s.Memory.LinkedWorkersMap()
 	linkedMemory := map[string][]string{}
+	desktopNames := map[string]string{}
 	for _, d := range desktops {
 		if linked := linkedAll[d.ID]; len(linked) > 0 {
 			linkedMemory[d.ID] = linked
 		}
+		desktopNames[d.ID] = d.Name
 	}
 
 	data := webui.PageData{
@@ -50,6 +52,7 @@ func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 		WorkerMemory:    memories,
 		MemoryByDesktop: memoryByDesktop,
 		LinkedMemory:    linkedMemory,
+		DesktopNames:    desktopNames,
 		TunnelURL:       s.Tunnel.Get(),
 	}
 

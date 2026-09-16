@@ -40,6 +40,7 @@ func (s *Server) desktopViewHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.Web.RenderDesktopView(w, data); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("desktop view: render: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 	}
 }

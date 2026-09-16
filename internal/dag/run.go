@@ -285,6 +285,68 @@ func (s *Store) MarkRunNodeDispatched(id, taskID string, now time.Time) (bool, e
 	return changed > 0, err
 }
 
+// ClaimRunNode compare-and-swaps a run-node from pending to running with no
+// task ID yet - a node's slot in the run must be claimed *before* its ticket
+// is actually submitted (see runner.go's dispatch), so two racing advance()
+// calls (a manual Trigger landing on the same tick as the background
+// Runner.Run, see the package doc) can't both submit the same node's ticket;
+// the loser of this CAS never calls Submitter at all. A run-node claimed but
+// not yet holding a task ID (status running, task_id "") is deliberately
+// invisible to resolveRunning (it checks task_id != ""), so it is never
+// mistaken for one whose ticket is already in flight.
+func (s *Store) ClaimRunNode(id string, now time.Time) (bool, error) {
+	result, err := s.db.Exec(
+		`UPDATE dag_run_nodes SET status = ?, started_ns = ? WHERE id = ? AND status = ?`,
+		NodeRunning, sqlitedb.ToNS(now), id, NodePending,
+	)
+	if err != nil {
+		return false, fmt.Errorf("dag: claim run node %s: %w", id, err)
+	}
+
+	changed, err := result.RowsAffected()
+
+	return changed > 0, err
+}
+
+// SetRunNodeTaskID records the task ID a claimed run-node's ticket landed
+// under. Not a compare-and-swap against a race with another dispatcher -
+// only the goroutine that won ClaimRunNode ever calls this for a given
+// run-node - but still scoped to a claimed-and-not-yet-submitted row (status
+// running, task_id empty) as a defensive guard against calling it twice.
+func (s *Store) SetRunNodeTaskID(id, taskID string) error {
+	_, err := s.db.Exec(
+		`UPDATE dag_run_nodes SET task_id = ? WHERE id = ? AND status = ? AND task_id = ''`,
+		taskID, id, NodeRunning,
+	)
+	if err != nil {
+		return fmt.Errorf("dag: set run node task id %s: %w", id, err)
+	}
+
+	return nil
+}
+
+// ReleaseRunNode reverts a claimed-but-not-yet-submitted run-node back to
+// pending, so it is retried on a later tick instead of dispatching into a
+// desktop that turned out to be busy - see runner.go's dispatch, which backs
+// off rather than letting internal/tasks queue (and possibly silently drop,
+// see absorbQueuedReply) a second ticket behind whatever is already running
+// there. Scoped to a claimed row with no task ID yet, the same guard
+// SetRunNodeTaskID uses, so it can never revert a node whose ticket was
+// actually submitted.
+func (s *Store) ReleaseRunNode(id string) (bool, error) {
+	result, err := s.db.Exec(
+		`UPDATE dag_run_nodes SET status = ?, started_ns = 0, ended_ns = 0 WHERE id = ? AND status = ? AND task_id = ''`,
+		NodePending, id, NodeRunning,
+	)
+	if err != nil {
+		return false, fmt.Errorf("dag: release run node %s: %w", id, err)
+	}
+
+	changed, err := result.RowsAffected()
+
+	return changed > 0, err
+}
+
 // MarkRunNodeTerminal transitions a run-node from fromStatus to a terminal
 // toStatus (succeeded or failed), recording the reply it ended with.
 // Compare-and-swap, same reason as MarkRunNodeDispatched.

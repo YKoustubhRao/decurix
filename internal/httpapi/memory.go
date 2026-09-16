@@ -42,14 +42,9 @@ func (s *Server) desktopMemoryHandler(w http.ResponseWriter, r *http.Request) {
 
 	filename, content := memory.FormatForDesktopFile(entry)
 
-	if err := s.Desktops.PersistMemoryFile(
-		r.Context(),
-		entry.DesktopID,
-		filename,
-		content,
-	); err != nil {
-		jsonError(w, fmt.Errorf("persist memory: %w", err))
-		return
+	persistErr := s.Desktops.PersistMemoryFile(r.Context(), entry.DesktopID, filename, content)
+	if persistErr != nil {
+		log.Printf("desktopMemoryHandler: persist entry %s to %s: %v", entry.ID, entry.DesktopID, persistErr)
 	}
 
 	// Fan the same entry out to every worker this one shares L1 memory
@@ -64,6 +59,11 @@ func (s *Server) desktopMemoryHandler(w http.ResponseWriter, r *http.Request) {
 		if err := s.Desktops.PersistMemoryFile(r.Context(), linkedID, filename, content); err != nil {
 			log.Printf("desktopMemoryHandler: share entry %s with %s: %v", entry.ID, linkedID, err)
 		}
+	}
+
+	if persistErr != nil {
+		jsonError(w, fmt.Errorf("persist memory: %w", persistErr))
+		return
 	}
 
 	jsonResponse(w, entry)

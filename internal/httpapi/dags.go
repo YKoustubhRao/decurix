@@ -41,7 +41,7 @@ func (s *Server) dagPageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	detail, err := s.Dags.Detail(id)
+	d, err := s.Dags.Get(id)
 	if errors.Is(err, dag.ErrNotFound) {
 		http.NotFound(w, r)
 		return
@@ -57,7 +57,7 @@ func (s *Server) dagPageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.Web.RenderDag(w, webui.DagPageData{Detail: detail, Desktops: desktops}); err != nil {
+	if err := s.Web.RenderDag(w, webui.DagPageData{DAG: d, Desktops: desktops}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
@@ -136,6 +136,16 @@ func (s *Server) createDagNodeHandler(w http.ResponseWriter, r *http.Request) {
 
 	desktopID := desktop.SanitizeID(strings.TrimSpace(r.FormValue("desktop_id")))
 
+	if _, err := s.Desktops.Get(r.Context(), desktopID); err != nil {
+		if errors.Is(err, desktop.ErrNotFound) {
+			jsonStatusError(w, http.StatusBadRequest, "no such desktop")
+			return
+		}
+
+		jsonError(w, err)
+		return
+	}
+
 	node, err := s.Dags.AddNode(r.FormValue("dag_id"), r.FormValue("name"), desktopID, r.FormValue("content"))
 	if errors.Is(err, dag.ErrNotFound) {
 		jsonStatusError(w, http.StatusNotFound, "no such DAG")
@@ -157,6 +167,16 @@ func (s *Server) updateDagNodeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	desktopID := desktop.SanitizeID(strings.TrimSpace(r.FormValue("desktop_id")))
+
+	if _, err := s.Desktops.Get(r.Context(), desktopID); err != nil {
+		if errors.Is(err, desktop.ErrNotFound) {
+			jsonStatusError(w, http.StatusBadRequest, "no such desktop")
+			return
+		}
+
+		jsonError(w, err)
+		return
+	}
 
 	node, err := s.Dags.UpdateNode(r.FormValue("id"), r.FormValue("name"), desktopID, r.FormValue("content"))
 	if errors.Is(err, dag.ErrNotFound) {

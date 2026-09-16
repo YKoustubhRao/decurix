@@ -288,14 +288,31 @@ func (s *Store) loadCachedVectors(entries []memory.WorkerMemoryEntry) map[string
 	return vectors
 }
 
-// cacheMissingVectors embeds and persists any entry not already in vectors,
-// adding each one to vectors as it succeeds. Best-effort per entry: one
-// embedding failure is logged and skipped, never aborts the rest.
+// maxBackfillPerCall bounds how many missing embeddings one Suggest call
+// will attempt before leaving the rest for a later call. A cold cache (or a
+// burst of newly recorded memory) would otherwise turn a single compose-form
+// suggestion into dozens of sequential Ollama round trips inside the
+// handler's own ctx budget (internal/httpapi's suggestTimeout) - the cache
+// still only ever grows, one call's leftovers are just picked up by the
+// next.
+const maxBackfillPerCall = 20
+
+// cacheMissingVectors embeds and persists up to maxBackfillPerCall entries
+// not already in vectors, adding each one to vectors as it succeeds.
+// Best-effort per entry: one embedding failure is logged and skipped, never
+// aborts the rest.
 func (s *Store) cacheMissingVectors(ctx context.Context, entries []memory.WorkerMemoryEntry, vectors map[string][]float32) {
+	attempted := 0
+
 	for _, entry := range entries {
 		if _, ok := vectors[entry.ID]; ok {
 			continue
 		}
+
+		if attempted >= maxBackfillPerCall {
+			return
+		}
+		attempted++
 
 		vector, err := s.Embed(ctx, entry.Title+"\n"+entry.Summary)
 		if err != nil {
@@ -304,7 +321,7 @@ func (s *Store) cacheMissingVectors(ctx context.Context, entries []memory.Worker
 		}
 
 		if _, err := s.db.Exec(
-			`INSERT INTO suggestion_embeddings (memory_id, vector, dims, created_ns) VALUES (?, ?, ?, ?)`,
+			`INSERT OR IGNORE INTO suggestion_embeddings (memory_id, vector, dims, created_ns) VALUES (?, ?, ?, ?)`,
 			entry.ID, encodeVector(vector), len(vector), sqlitedb.ToNS(time.Now()),
 		); err != nil {
 			log.Printf("suggest: caching embedding for memory entry %s: %v", entry.ID, err)
