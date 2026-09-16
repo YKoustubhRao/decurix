@@ -95,8 +95,15 @@ func (s *Store) Record(desktopID, title, summary, category string) (WorkerMemory
 	return entry, nil
 }
 
-// List returns worker memory entries, most recent first. When desktopID is
-// empty, entries for every desktop are returned.
+// maxListedEntries bounds one List call. Worker memory accumulates forever -
+// nothing here deletes or archives an entry - so an unfiltered List (the
+// dashboard's own call, on every page load) stays flat-cost as the fleet's
+// history grows instead of materializing every entry ever recorded.
+const maxListedEntries = 2000
+
+// List returns worker memory entries, most recent first, up to
+// maxListedEntries. When desktopID is empty, entries for every desktop are
+// returned.
 func (s *Store) List(desktopID string) []WorkerMemoryEntry {
 	query := `SELECT id, desktop_id, title, summary, category, created_ns FROM worker_memory`
 	args := []any{}
@@ -106,7 +113,8 @@ func (s *Store) List(desktopID string) []WorkerMemoryEntry {
 		args = append(args, desktopID)
 	}
 
-	query += ` ORDER BY created_ns DESC`
+	query += ` ORDER BY created_ns DESC LIMIT ?`
+	args = append(args, maxListedEntries)
 
 	entries := make([]WorkerMemoryEntry, 0)
 
@@ -137,7 +145,13 @@ func (s *Store) List(desktopID string) []WorkerMemoryEntry {
 // persisted into a desktop's memory directory, and returns the filename to
 // use for it.
 func FormatForDesktopFile(entry WorkerMemoryEntry) (filename string, content string) {
-	filename = time.Now().Format("20060102150405") + ".txt"
+	// entry.ID ("memory-<unixnano>") rather than a fresh, second-granularity
+	// timestamp: two entries recorded for the same desktop within the same
+	// second used to collide and one silently overwrote the other once
+	// persisted. The ID is already unique (and, since it carries the
+	// nanosecond timestamp, still sorts chronologically the way
+	// memory_context.py's glob().sort() on the filename expects).
+	filename = entry.ID + ".txt"
 
 	content = fmt.Sprintf(
 		`Title: %s

@@ -553,10 +553,6 @@ def type_text(element, text, replace=True):
                     press_key(page, "Backspace")
                 if index < len(lines) - 1:
                     press_key(page, "Enter")
-
-        return page.evaluate(
-            f"(function(){{const n=document.activeElement;return n&&n.value!==undefined?String(n.value):null}})()"
-        )
     finally:
         page.close()
 

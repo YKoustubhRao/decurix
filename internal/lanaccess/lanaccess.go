@@ -226,6 +226,8 @@ func (s *Store) recordFailure(key string) {
 
 	now := time.Now()
 
+	s.evictStaleAttemptsLocked(now)
+
 	a, ok := s.attempts[key]
 	if !ok || now.Sub(a.windowStart) > lockoutWindow {
 		a = &attemptState{windowStart: now}
@@ -238,6 +240,21 @@ func (s *Store) recordFailure(key string) {
 		a.lockedUntil = now.Add(lockoutWindow)
 		a.count = 0
 		a.windowStart = now
+	}
+}
+
+// evictStaleAttemptsLocked drops attempt records that are no longer
+// relevant - past both their lockout and their counting window - so a
+// source that fails once and never returns does not grow this map without
+// bound. Piggybacks on recordFailure's own lock rather than a separate timer
+// goroutine. Callers must hold attemptsMu.
+func (s *Store) evictStaleAttemptsLocked(now time.Time) {
+	for key, a := range s.attempts {
+		if now.Before(a.lockedUntil) || now.Sub(a.windowStart) <= lockoutWindow {
+			continue
+		}
+
+		delete(s.attempts, key)
 	}
 }
 

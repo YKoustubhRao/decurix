@@ -3,6 +3,7 @@ package schedule
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 )
 
@@ -21,6 +22,14 @@ type Submitter interface {
 // minute still fires within one Interval of its minute, not one Interval per
 // check of that minute specifically.
 const defaultInterval = 20 * time.Second
+
+// fireConcurrency bounds how many due schedules tick fires at once, mirroring
+// internal/idlepause.Checker's sweepConcurrency. A stopped desktop's Submit
+// can block up to httpapi's autoStartTimeout (90s) waiting for it to boot;
+// idle-pause being on by default makes that the common case for a scheduled
+// desktop, not the exception, so firing schedules one at a time would let one
+// slow-to-start desktop hold up every other schedule due in the same tick.
+const fireConcurrency = 8
 
 // Runner fires each schedule's request when its cron expression next
 // matches.
@@ -70,9 +79,22 @@ func (r *Runner) tick(ctx context.Context) {
 		return
 	}
 
+	sem := make(chan struct{}, fireConcurrency)
+	var wg sync.WaitGroup
+
 	for _, sch := range due {
-		r.fire(ctx, sch, now)
+		wg.Add(1)
+		sem <- struct{}{}
+
+		go func(sch Schedule) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			r.fire(ctx, sch, now)
+		}(sch)
 	}
+
+	wg.Wait()
 }
 
 // fire submits sch's request, with a TIME field recording when this run

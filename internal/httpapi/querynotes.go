@@ -16,6 +16,12 @@ import (
 	"github.com/YKoustubhRao/flowera/internal/webui"
 )
 
+// maxQueryTextRequestBytes bounds one POST /api/querytext body. Content
+// itself is capped at 16384 bytes below; this leaves headroom for the
+// other fields and stops the full body being buffered before that check
+// ever runs.
+const maxQueryTextRequestBytes = 32768
+
 // queryTextHandler records a query note submitted from inside a desktop.
 func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -48,6 +54,7 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		OutputTokens *int64   `json:"output_tokens"`
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxQueryTextRequestBytes)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

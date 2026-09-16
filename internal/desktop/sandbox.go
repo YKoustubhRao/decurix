@@ -44,7 +44,21 @@ var desktopSeccompProfile string
 // (agent/chromium-browser.init) probes for working namespaces at launch and
 // only then drops --no-sandbox, so both halves degrade to exactly the old
 // behaviour.
+//
+// Whether the daemon enforces seccomp cannot change while it keeps running,
+// so a definitive answer (with or without the profile) is cached for the
+// rest of the process (secOpt/secOptResolved, guarded by secOptMu) instead
+// of asking the daemon again on every single Create. A failure to even ask
+// is not cached, so a transient Info() error is retried on the next Create
+// rather than silently going without the sandbox forever.
 func (m *Manager) desktopSecurityOpt(ctx context.Context) []string {
+	m.secOptMu.Lock()
+	defer m.secOptMu.Unlock()
+
+	if m.secOptResolved {
+		return m.secOpt
+	}
+
 	info, err := m.client.Info(ctx)
 	if err != nil {
 		log.Printf("warning: could not ask the Docker daemon about seccomp (%v) - creating the desktop without the Chromium sandbox profile", err)
@@ -53,11 +67,14 @@ func (m *Manager) desktopSecurityOpt(ctx context.Context) []string {
 
 	for _, opt := range info.SecurityOptions {
 		if strings.HasPrefix(opt, "name=seccomp") {
-			return []string{"seccomp=" + desktopSeccompProfile}
+			m.secOpt = []string{"seccomp=" + desktopSeccompProfile}
+			m.secOptResolved = true
+			return m.secOpt
 		}
 	}
 
 	log.Println("warning: this Docker daemon does not enforce seccomp - Chromium in new desktops will run without its sandbox")
+	m.secOptResolved = true
 
 	return nil
 }

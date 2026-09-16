@@ -133,7 +133,11 @@ func (c *Checker) checkOne(ctx context.Context, d desktop.Desktop) {
 		return
 	}
 
-	idleSince, ok := c.idleSince(d)
+	idleSince, ok, err := c.idleSince(d)
+	if err != nil {
+		log.Printf("idlepause: checking %s: %v", d.ID, err)
+		return
+	}
 	if !ok {
 		return
 	}
@@ -153,16 +157,22 @@ func (c *Checker) checkOne(ctx context.Context, d desktop.Desktop) {
 // records last changed, and when its thumbnail or screen was last looked at -
 // the point after which "idle" can actually start being measured from. ok is
 // false only when the desktop's start time itself is unknown, since that is
-// the one signal every running desktop must have.
-func (c *Checker) idleSince(d desktop.Desktop) (time.Time, bool) {
+// the one signal every running desktop must have. A LastActivity store error
+// fails safe the same way Busy's does: reported as an error rather than
+// silently falling back to the other two signals, since proceeding on
+// incomplete data here is what could stop a desktop mid-use rather than just
+// leave one alone.
+func (c *Checker) idleSince(d desktop.Desktop) (time.Time, bool, error) {
 	started, ok := parseStartedAt(d.StartedAt)
 	if !ok {
-		return time.Time{}, false
+		return time.Time{}, false, nil
 	}
 
 	since := started
 
-	if last, found, err := c.Tasks.LastActivity(d.ID); err == nil && found && last.After(since) {
+	if last, found, err := c.Tasks.LastActivity(d.ID); err != nil {
+		return time.Time{}, false, err
+	} else if found && last.After(since) {
 		since = last
 	}
 
@@ -170,7 +180,7 @@ func (c *Checker) idleSince(d desktop.Desktop) (time.Time, bool) {
 		since = last
 	}
 
-	return since, true
+	return since, true, nil
 }
 
 // parseStartedAt reads Docker's RFC3339Nano State.StartedAt, treating both a

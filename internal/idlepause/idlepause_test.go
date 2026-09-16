@@ -2,6 +2,7 @@ package idlepause
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"sync"
 	"testing"
@@ -42,13 +43,18 @@ func (f *fakeDesktops) LastViewed(id string) (time.Time, bool) {
 
 // fakeTasks is an ActivityStore a test can script.
 type fakeTasks struct {
-	busy     map[string]string
-	activity map[string]time.Time
+	busy         map[string]string
+	activity     map[string]time.Time
+	activityErrs map[string]error
 }
 
 func (f *fakeTasks) Busy(workerID string) (string, error) { return f.busy[workerID], nil }
 
 func (f *fakeTasks) LastActivity(workerID string) (time.Time, bool, error) {
+	if err, ok := f.activityErrs[workerID]; ok {
+		return time.Time{}, false, err
+	}
+
 	t, ok := f.activity[workerID]
 	return t, ok, nil
 }
@@ -82,6 +88,25 @@ func TestIdlePastThresholdIsStopped(t *testing.T) {
 
 	if len(desktops.stopped) != 1 || desktops.stopped[0] != "bordu" {
 		t.Fatalf("stopped = %v, want [bordu]", desktops.stopped)
+	}
+}
+
+func TestLastActivityErrorFailsSafeRatherThanStopping(t *testing.T) {
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+
+	// StartedAt alone is already past Threshold - the old, buggy behavior
+	// silently fell back to it whenever LastActivity errored, and would
+	// have stopped this desktop even though its real last-activity signal
+	// (unreachable here) could easily have been recent.
+	d := desktop.Desktop{ID: "bordu", Status: "running", StartedAt: now.Add(-day).Format(time.RFC3339Nano)}
+	desktops := &fakeDesktops{list: []desktop.Desktop{d}}
+	tasks := &fakeTasks{activityErrs: map[string]error{"bordu": errors.New("database is locked")}}
+
+	c := &Checker{Desktops: desktops, Tasks: tasks, Threshold: time.Hour, now: func() time.Time { return now }}
+	c.sweep(context.Background())
+
+	if len(desktops.stopped) != 0 {
+		t.Fatalf("stopped a desktop despite a LastActivity error: %v", desktops.stopped)
 	}
 }
 
