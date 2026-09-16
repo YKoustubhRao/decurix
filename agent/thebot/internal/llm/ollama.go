@@ -169,12 +169,17 @@ func (o *OllamaProvider) Chat(ctx context.Context, model string, messages []Mess
 	// was working fine, nothing ever got to see it. Streaming keeps real
 	// bytes flowing the whole time, so an idle timeout never fires, and the
 	// accumulated result is identical.
+	keepAlive := o.KeepAlive
+	if opts.KeepAlive != "" {
+		keepAlive = opts.KeepAlive
+	}
+
 	reqBody := ollamaChatRequest{
 		Model:     model,
 		Messages:  msgs,
 		Stream:    true,
 		Options:   ollamaOpts,
-		KeepAlive: o.KeepAlive,
+		KeepAlive: keepAlive,
 	}
 	body, err := json.Marshal(reqBody)
 	if err != nil {

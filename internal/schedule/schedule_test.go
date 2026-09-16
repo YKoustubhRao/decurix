@@ -1,6 +1,8 @@
 package schedule
 
 import (
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -374,5 +376,79 @@ func TestListFiltersByDesktop(t *testing.T) {
 
 	if got := store.List(""); len(got) != 2 {
 		t.Fatalf("List(\"\") = %v, want 2", got)
+	}
+}
+
+// TestConcurrentMarkRunAndSetEnabledDoNotLoseAnUpdate guards the race
+// Store.mu closes: MarkRun and SetEnabled each read a schedule's row and
+// write it back, and sqlitedb's pool is no longer one connection serialising
+// every call for them. It needs a real, file-backed store (sqlitedb.OpenMemory
+// stays pinned to one connection deliberately, which would serialise these
+// calls anyway and hide the bug being guarded against) so the calls can
+// actually run on different connections at once.
+//
+// A RunOnce schedule gives a crisp, deterministic invariant to check:
+// SetEnabled's own doc comment says a schedule that has already fired is a
+// terminal state MarkRun never returns from - enabled=1 and a non-zero
+// LastRunAt must never both be true at once. Without the mutex, this
+// interleaving loses an update: SetEnabled reads last_run_ns=0 (not fired
+// yet), MarkRun fires in between and sets enabled=0 with last_run_ns=now,
+// then SetEnabled's write - working off what it already read - sets
+// enabled=1 back onto a schedule that has, by then, already fired.
+func TestConcurrentMarkRunAndSetEnabledDoNotLoseAnUpdate(t *testing.T) {
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	runAt := now.Add(time.Hour)
+
+	db, err := sqlitedb.Open(filepath.Join(t.TempDir(), "flowera.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	store, err := NewStore(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.now = func() time.Time { return now }
+
+	sch, err := store.CreateOnce("bordu", "check the mail", runAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const iterations = 500
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			if err := store.MarkRun(sch.ID, now); err != nil {
+				t.Error(err)
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			// Errors are expected once MarkRun's disable has landed -
+			// SetEnabled correctly refuses a fired RunOnce schedule. What
+			// must never happen is a write slipping through anyway.
+			store.SetEnabled(sch.ID, true)
+		}
+	}()
+
+	wg.Wait()
+
+	got := store.List("bordu")
+	if len(got) != 1 {
+		t.Fatalf("List = %v, want exactly the one schedule", got)
+	}
+
+	final := got[0]
+	if final.Enabled && !final.LastRunAt.IsZero() {
+		t.Fatalf("lost update: schedule re-enabled after it had already fired: %+v", final)
 	}
 }

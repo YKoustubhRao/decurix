@@ -60,6 +60,23 @@ type Options struct {
 	// MaxTokens caps the response itself, set alongside NumCtx so a long
 	// file has both the room to exist and permission to be long.
 	MaxTokens int
+	// KeepAlive overrides the provider's own default for this call alone.
+	// Unset, the provider's default applies (Ollama's is OLLAMA_KEEP_ALIVE,
+	// 30m).
+	//
+	// Exists for the other half of the NumCtx problem above: Ollama treats
+	// the same model at two different num_ctx values as two separate loaded
+	// instances, and by default only keeps one resident at a time - a
+	// coding call asking for the 32768 window evicts the 8192 instance
+	// every other desktop's ordinary chat turn uses, and the next ordinary
+	// turn evicts it right back (measured: 161s each way). Raising
+	// OLLAMA_MAX_LOADED_MODELS lets both stay loaded at once instead of
+	// trading places, but that only pays off if the rarely-used one
+	// actually lets go of its memory promptly once idle - so a call that
+	// asks for a big NumCtx should also ask for a short KeepAlive, rather
+	// than pinning a 32768-context instance resident for the same 30
+	// minutes an ordinary chat turn earns.
+	KeepAlive string
 }
 
 type Provider interface {

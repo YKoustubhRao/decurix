@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/YKoustubhRao/flowera/internal/sqlitedb"
@@ -53,6 +54,15 @@ var schema = []string{
 // Store is a SQLite-backed collection of Schedules.
 type Store struct {
 	db *sql.DB
+
+	// mu guards MarkRun and SetEnabled, the only two methods that read a
+	// schedule's row and then write it back - with sqlitedb's pool no longer
+	// held to one connection (see sqlitedb.Open), those two would otherwise
+	// race each other's read and write on the same row: the Runner ticking a
+	// schedule via MarkRun and a human toggling it via SetEnabled at the same
+	// moment could interleave into a lost update. Every other method here is
+	// one SQL statement, already atomic on its own.
+	mu sync.Mutex
 
 	// now is the test seam - defaults to time.Now().UTC.
 	now func() time.Time
@@ -231,6 +241,9 @@ func (s *Store) Due(now time.Time) ([]Schedule, error) {
 // once is the whole job - so it is simply disabled, the same terminal state a
 // cron schedule reaches when it runs out of matches.
 func (s *Store) MarkRun(id string, ranAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	var cronExpr string
 	var runOnce int
 
@@ -288,6 +301,9 @@ func (s *Store) MarkRun(id string, ranAt time.Time) error {
 // passed while it sat paused - unless it already fired once, which is a
 // terminal state MarkRun never returns from.
 func (s *Store) SetEnabled(id string, enabled bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if !enabled {
 		if _, err := s.db.Exec(`UPDATE schedules SET enabled = 0 WHERE id = ?`, id); err != nil {
 			return fmt.Errorf("schedule: disable %s: %w", id, err)
