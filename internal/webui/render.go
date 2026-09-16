@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YKoustubhRao/flowera/internal/dag"
 	"github.com/YKoustubhRao/flowera/internal/desktop"
 	"github.com/YKoustubhRao/flowera/internal/memory"
 	"github.com/YKoustubhRao/flowera/internal/querynotes"
@@ -72,6 +73,17 @@ type TasksPageData struct {
 // TaskPageData is the template data for one task record.
 type TaskPageData struct {
 	Task tasks.Detail
+}
+
+// DagsPageData is the template data for the DAGs list page.
+type DagsPageData struct {
+	Dags []dag.Summary
+}
+
+// DagPageData is the template data for one DAG's editor page.
+type DagPageData struct {
+	Detail   dag.Detail
+	Desktops []desktop.Desktop
 }
 
 // RecordingsPageData is the template data for one desktop's recordings page.
@@ -139,6 +151,8 @@ type Renderer struct {
 	tasksTmpl      *template.Template
 	taskTmpl       *template.Template
 	recordingsTmpl *template.Template
+	dagsTmpl       *template.Template
+	dagTmpl        *template.Template
 }
 
 // NewRenderer parses all templates once at startup.
@@ -164,6 +178,12 @@ func NewRenderer() *Renderer {
 		),
 		recordingsTmpl: template.Must(
 			template.ParseFS(web.TemplatesFS, templatePaths("recordings.html")...),
+		),
+		dagsTmpl: template.Must(
+			template.New("dags.html").Funcs(taskFuncs).ParseFS(web.TemplatesFS, templatePaths("dags.html")...),
+		),
+		dagTmpl: template.Must(
+			template.New("dag.html").Funcs(taskFuncs).ParseFS(web.TemplatesFS, templatePaths("dag.html")...),
 		),
 	}
 }
@@ -202,6 +222,16 @@ func (rd *Renderer) RenderTask(w io.Writer, data TaskPageData) error {
 // RenderRecordings renders one desktop's recordings page.
 func (rd *Renderer) RenderRecordings(w io.Writer, data RecordingsPageData) error {
 	return rd.recordingsTmpl.ExecuteTemplate(w, "recordings.html", data)
+}
+
+// RenderDags renders the DAGs list page.
+func (rd *Renderer) RenderDags(w io.Writer, data DagsPageData) error {
+	return rd.dagsTmpl.ExecuteTemplate(w, "dags.html", data)
+}
+
+// RenderDag renders one DAG's editor page.
+func (rd *Renderer) RenderDag(w io.Writer, data DagPageData) error {
+	return rd.dagTmpl.ExecuteTemplate(w, "dag.html", data)
 }
 
 // FaviconSVG is the Flowera brand mark, served as the control plane's favicon.

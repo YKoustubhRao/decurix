@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YKoustubhRao/flowera/internal/dag"
 	"github.com/YKoustubhRao/flowera/internal/desktop"
 	"github.com/YKoustubhRao/flowera/internal/memory"
 	"github.com/YKoustubhRao/flowera/internal/querynotes"
@@ -168,5 +169,38 @@ func TestRenderEveryPage(t *testing.T) {
 		if d.Status == "running" && !strings.Contains(out.String(), `data-session="demo-20260914T101500-abc123"`) {
 			t.Fatal("the recordings page lost the recording it was asked to open")
 		}
+	}
+
+	// The DAGs list, empty and with one entry that has already run.
+	if err := renderer.RenderDags(io.Discard, DagsPageData{}); err != nil {
+		t.Fatalf("RenderDags (empty): %v", err)
+	}
+
+	dagRun := dag.Run{ID: "drun-1", DAGID: "dag-1", Status: dag.RunSucceeded, Trigger: dag.TriggerManual, StartedAt: now, EndedAt: now.Add(time.Minute)}
+
+	if err := renderer.RenderDags(io.Discard, DagsPageData{
+		Dags: []dag.Summary{{
+			DAG:       dag.DAG{ID: "dag-1", Name: "nightly-report", HeadNodeID: "dnode-1", CronExpr: "0 9 * * *"},
+			NodeCount: 2, EdgeCount: 1, LastRun: &dagRun,
+		}},
+	}); err != nil {
+		t.Fatalf("RenderDags: %v", err)
+	}
+
+	// The DAG editor, with a head node, a child wired to it by an edge (its
+	// content using the named output placeholder), and one recent run - the
+	// canvas, the inspector's hints and the run history all reach real data.
+	dagDetail := dag.Detail{
+		DAG: dag.DAG{ID: "dag-1", Name: "nightly-report", HeadNodeID: "dnode-1", CronExpr: "0 9 * * *"},
+		Nodes: []dag.Node{
+			{ID: "dnode-1", DAGID: "dag-1", Name: "fetch", DesktopID: running.ID, Content: "fetch the data", PosX: 40, PosY: 40},
+			{ID: "dnode-2", DAGID: "dag-1", Name: "summarize", DesktopID: running.ID, Content: "summarize {{nodes.fetch.reply}}", PosX: 260, PosY: 40},
+		},
+		Edges:      []dag.Edge{{ID: "dedge-1", DAGID: "dag-1", FromNodeID: "dnode-1", ToNodeID: "dnode-2"}},
+		RecentRuns: []dag.Run{dagRun},
+	}
+
+	if err := renderer.RenderDag(io.Discard, DagPageData{Detail: dagDetail, Desktops: []desktop.Desktop{running, stopped}}); err != nil {
+		t.Fatalf("RenderDag: %v", err)
 	}
 }

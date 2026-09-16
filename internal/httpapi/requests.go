@@ -111,6 +111,15 @@ func (s *Server) Submit(ctx context.Context, desktopID, content string) error {
 	return err
 }
 
+// SubmitTracked implements internal/dag's Submitter: the same door onto
+// submitRequest that Submit is, but also hands back the task ID the request
+// landed under, since a DAG run has to watch that specific task to know
+// when its node is done.
+func (s *Server) SubmitTracked(ctx context.Context, desktopID, content string) (string, error) {
+	route, err := s.submitRequest(ctx, desktopID, content)
+	return route.TaskID, err
+}
+
 // routeRequest decides which task record a human request belongs to before it
 // is sent, because the desktop is told the task ID along with the request. A
 // records failure never stops a request: it is sent as a new task regardless.

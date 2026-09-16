@@ -1130,6 +1130,21 @@ func scanTask(scanner interface{ Scan(...any) error }) (Task, error) {
 	return task, nil
 }
 
+// TaskResult returns a task's current status and, once an execution has
+// ended, the reply it ended with - what internal/dag polls to learn a
+// dispatched node's ticket has finished, and what a later node's output
+// placeholder pulls from. ok is false when taskID does not exist.
+func (s *Store) TaskResult(taskID string) (status, finalReply string, ok bool) {
+	err := s.db.QueryRow(
+		`SELECT status, final_reply FROM executions WHERE task_id = ? ORDER BY attempt DESC LIMIT 1`, taskID,
+	).Scan(&status, &finalReply)
+	if err != nil {
+		return "", "", false
+	}
+
+	return status, finalReply, true
+}
+
 // Get returns one task with its worker, executions, steps and interventions.
 func (s *Store) Get(taskID string) (Detail, error) {
 	row := s.db.QueryRow(
