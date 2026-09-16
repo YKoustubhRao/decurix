@@ -180,6 +180,22 @@
         </div>
       </div>
 
+      <div class="field">
+        <label class="repeat-row">
+          <input type="checkbox" id="runOnce">
+          <span>Run once at a future time</span>
+        </label>
+      </div>
+
+      <div class="field cron-field" id="runOnceField">
+        <label for="runAt">Run at <span class="mono">(your local time)</span></label>
+        <input class="input" type="datetime-local" id="runAt" name="run_at" autocomplete="off">
+        <div class="hint">
+          Sends this request exactly once, at the time you pick, the same way a repeating schedule
+          resubmits it - with <span class="mono">TIME:{&hellip;}</span> appended too.
+        </div>
+      </div>
+
     </div>
 
     <div class="compose-foot">
@@ -230,6 +246,9 @@
   var repeat = document.getElementById("repeat");
   var cronField = document.getElementById("cronField");
   var cronInput = document.getElementById("cron");
+  var runOnce = document.getElementById("runOnce");
+  var runOnceField = document.getElementById("runOnceField");
+  var runAtInput = document.getElementById("runAt");
   var schedList = document.getElementById("schedList");
 
   /* ---------------- destination status ---------------- */
@@ -246,20 +265,41 @@
   select.addEventListener("change", syncStatus);
   syncStatus();
 
-  /* ---------------- repeat-on-a-schedule toggle ---------------- */
+  /* ---------------- repeat-on-a-schedule / run-once toggles ---------------- */
 
   function syncRepeatUI(){
-    var on = repeat.checked;
+    var repeating = repeat.checked;
+    var once = runOnce.checked;
 
-    cronField.classList.toggle("on", on);
-    cronInput.required = on;
+    cronField.classList.toggle("on", repeating);
+    cronInput.required = repeating;
 
-    sendButton.innerHTML = on
-      ? '<svg width="15" height="15"><use href="#i-clock"/></svg>Schedule it'
-      : '<svg width="15" height="15"><use href="#i-send"/></svg>Send to desktop';
+    runOnceField.classList.toggle("on", once);
+    runAtInput.required = once;
+
+    if(repeating){
+      sendButton.innerHTML = '<svg width="15" height="15"><use href="#i-clock"/></svg>Schedule it';
+    }else if(once){
+      sendButton.innerHTML = '<svg width="15" height="15"><use href="#i-clock"/></svg>Run at that time';
+    }else{
+      sendButton.innerHTML = '<svg width="15" height="15"><use href="#i-send"/></svg>Send to desktop';
+    }
   }
 
-  repeat.addEventListener("change", syncRepeatUI);
+  repeat.addEventListener("change", function(){
+    if(repeat.checked){
+      runOnce.checked = false;
+    }
+    syncRepeatUI();
+  });
+
+  runOnce.addEventListener("change", function(){
+    if(runOnce.checked){
+      repeat.checked = false;
+    }
+    syncRepeatUI();
+  });
+
   syncRepeatUI();
 
   /* ---------------- character count ---------------- */
@@ -288,11 +328,34 @@
     }
 
     var repeating = repeat.checked;
+    var once = runOnce.checked;
     var cron = cronInput.value.trim();
+    var runAtLocal = runAtInput.value;
 
     if(repeating && !cron){
       cronInput.focus();
       return toast("Enter a cron schedule first.", "error");
+    }
+
+    var runAtDate = null;
+
+    if(once){
+      if(!runAtLocal){
+        runAtInput.focus();
+        return toast("Pick a time to run this at.", "error");
+      }
+
+      runAtDate = new Date(runAtLocal);
+
+      if(isNaN(runAtDate.getTime())){
+        runAtInput.focus();
+        return toast("That time doesn't look valid.", "error");
+      }
+
+      if(runAtDate.getTime() <= Date.now()){
+        runAtInput.focus();
+        return toast("Pick a time in the future.", "error");
+      }
     }
 
     sendButton.disabled = true;
@@ -306,6 +369,14 @@
         repeat.checked = false;
         syncRepeatUI();
         markSent("Schedule created");
+        loadSchedules();
+      }else if(once){
+        await post("/api/schedules/create", {id: select.value, content: text, run_at: runAtDate.toISOString()});
+
+        runAtInput.value = "";
+        runOnce.checked = false;
+        syncRepeatUI();
+        markSent("Run scheduled");
         loadSchedules();
       }else{
         await post("/api/desktops/send", {id: select.value, content: text});
@@ -373,15 +444,20 @@
 
     var cronChip = document.createElement("span");
     cronChip.className = "mono";
-    cronChip.textContent = sch.cron_expr;
+    cronChip.textContent = sch.run_once ? "once" : sch.cron_expr;
     meta.appendChild(cronChip);
 
     var dest = document.createElement("span");
     dest.textContent = desktopName(sch.desktop_id);
     meta.appendChild(dest);
 
+    var lastRun = formatWhen(sch.last_run_at);
+    var hasFired = !!lastRun;
+
     var state = document.createElement("span");
-    if(!sch.enabled){
+    if(sch.run_once && hasFired){
+      state.textContent = "Ran";
+    }else if(!sch.enabled){
       state.textContent = "Paused";
     }else{
       var next = formatWhen(sch.next_run_at);
@@ -389,7 +465,6 @@
     }
     meta.appendChild(state);
 
-    var lastRun = formatWhen(sch.last_run_at);
     if(lastRun){
       var last = document.createElement("span");
       last.textContent = "Last ran " + lastRun + " UTC";
@@ -402,14 +477,17 @@
     var actions = document.createElement("div");
     actions.className = "sched-actions";
 
-    var toggleBtn = document.createElement("button");
-    toggleBtn.type = "button";
-    toggleBtn.className = "btn btn-quiet btn-sm";
-    toggleBtn.textContent = sch.enabled ? "Pause" : "Resume";
-    toggleBtn.addEventListener("click", function(){
-      toggleSchedule(sch.id, !sch.enabled);
-    });
-    actions.appendChild(toggleBtn);
+    /* A fired one-time run is a terminal state - nothing left to pause or resume. */
+    if(!(sch.run_once && hasFired)){
+      var toggleBtn = document.createElement("button");
+      toggleBtn.type = "button";
+      toggleBtn.className = "btn btn-quiet btn-sm";
+      toggleBtn.textContent = sch.enabled ? "Pause" : "Resume";
+      toggleBtn.addEventListener("click", function(){
+        toggleSchedule(sch.id, !sch.enabled);
+      });
+      actions.appendChild(toggleBtn);
+    }
 
     var deleteBtn = document.createElement("button");
     deleteBtn.type = "button";

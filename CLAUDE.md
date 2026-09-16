@@ -122,21 +122,25 @@ internal/claudeauth — the one shared Claude Code login every claude-harness
                       leaves it alone, and rebuild.sh wipes it for free as part
                       of wiping flowera-data — no script changes needed for
                       either half of that
-internal/schedule  — recurring requests set up from the requests page (not the
-                      chat): Store persists each one (desktop, request text,
-                      a standard 5-field cron expression, next/last run) in
-                      SQLite; cron.go is a small pure-Go parser/matcher (no
-                      external dependency, matching the sqlitedb/modernc.org
-                      choice to stay CGO_ENABLED=0) with the standard
-                      day-of-month/day-of-week OR rule, run in UTC. Runner
-                      ticks (20s default) and fires a schedule through the
-                      Submitter interface once its next-run time has arrived,
-                      appending "\n\nTIME:{<RFC3339>}" to the request text so
-                      the agent knows when that run triggered; a schedule
-                      always advances to its next occurrence after firing
-                      (success or not), so a control-plane outage causes one
-                      catch-up run on restart, never a backlog. Depends on
-                      nothing internal but sqlitedb
+internal/schedule  — recurring or one-time-future requests set up from the
+                      requests page (not the chat): Store persists each one
+                      (desktop, request text, either a standard 5-field cron
+                      expression or a single future run time (RunOnce), next/
+                      last run) in SQLite; cron.go is a small pure-Go
+                      parser/matcher (no external dependency, matching the
+                      sqlitedb/modernc.org choice to stay CGO_ENABLED=0) with
+                      the standard day-of-month/day-of-week OR rule, run in
+                      UTC. Runner ticks (20s default) and fires a schedule
+                      through the Submitter interface once its next-run time
+                      has arrived, appending "\n\nTIME:{<RFC3339>}" to the
+                      request text so the agent knows when that run
+                      triggered; a recurring schedule always advances to its
+                      next occurrence after firing (success or not), so a
+                      control-plane outage causes one catch-up run on
+                      restart, never a backlog - a RunOnce schedule instead
+                      disables itself after its one firing, the same
+                      terminal state a cron schedule reaches when it runs out
+                      of matches. Depends on nothing internal but sqlitedb
 internal/httpapi   — the only package touching net/http; all HTTP handlers,
                       composes desktop+querynotes+memory+conversation+stepimages+tasks+
                       tunnel+claudeauth+lanaccess+schedule+webui. schedules.go: the
@@ -579,4 +583,5 @@ See [README.md](README.md#-getting-started-running-it-locally) for full step-by-
 - **The ticket toolbar's tab is a drag handle, not just a click target.** Pointer-down on `#flowera-ticket-tab` starts tracking; past `DRAG_THRESHOLD` (6px) it "pins" the toolbar (`flowera-pinned` class, cancelling the default centered `transform`) to an explicit `left`/`top` clamped to the viewport, so it can be moved off whatever it's covering on the desktop underneath. A drag's terminal `pointerup` still fires a `click` on the tab — the same handler that opens/closes the panel — so the click listener checks the `dragged` flag first and swallows that one click rather than also toggling the panel.
 - **Every rewrite in the proxy's `ModifyResponse` chain writes UTF-8, but the proxied container's own `Content-Type` never says so.** `rewriteFloweraBranding` (always first) now sets `Content-Type: text/html; charset=utf-8` explicitly. It has to be there and not later in the chain: `injectTicketToolbar` splices its own copy in right before `</body>`, far past a browser's ~1024-byte `<meta charset>` sniffing window, so by the time that text exists in the document the browser has already committed to whatever encoding it guessed for the whole thing. Without the header, a guess other than UTF-8 turns every non-ASCII byte added anywhere in the chain to mojibake — this is what an em dash in the toolbar's own copy needs the header for, not anything wrong with how that string is written in Go.
 - **A note written while paused stays paused; whether to continue afterward is the toolbar's call, not `demonstration.note`'s.** `note()` no longer refuses a call while paused (that used to be its only guard on `_running()`'s state) — it writes the note into whatever pause it finds, active or not, and always (re-)pauses after with its own summary as the reason. The toolbar's Reason button pauses *before* opening its text box (not after submitting, like Stop), and only follows a successful submit with an explicit `resume` when its own click is what caused that pause (`reasonAutoPaused`, reset on every path that leaves the box) — never when Reason was opened on top of a pause already in effect, since that pause may be covering exactly what the note is warning about, and auto-continuing would hand it straight back to the recording.
-- **A schedule (`internal/schedule`) is a fourth door onto `submitRequest`, set up from the requests page, never from the chat.** Creating one never sends the request immediately — its first run is the next time the cron expression matches, same as cron itself never fires the instant a job is added. `Runner.fire` appends `\n\nTIME:{<RFC3339 UTC>}` to the request text on every trigger and always advances the schedule to its next occurrence afterward, whether or not the submit itself succeeded — a desktop that is unreachable this minute must not turn every following tick into a retry of that same stale run, and a control-plane outage across several missed occurrences produces one catch-up run on the next tick, not a replayed backlog. Cron fields are matched in UTC regardless of the host's own timezone, and `cron.go` is a small hand-written parser (no external dependency) rather than a library, matching this repo's `modernc.org/sqlite`-over-cgo preference for a static, dependency-light binary. A schedule whose expression can no longer match anything (day 31 in a month field restricted to February, say) disables itself on the next `MarkRun` instead of being checked forever.
+- **A schedule (`internal/schedule`) is a fourth door onto `submitRequest`, set up from the requests page, never from the chat.** Creating one never sends the request immediately — its first run is the next time the cron expression matches (or, for a one-time run, the future time it was given), same as cron itself never fires the instant a job is added. `Runner.fire` appends `\n\nTIME:{<RFC3339 UTC>}` to the request text on every trigger and always advances the schedule afterward, whether or not the submit itself succeeded — a desktop that is unreachable this minute must not turn every following tick into a retry of that same stale run, and a control-plane outage across several missed occurrences produces one catch-up run on the next tick, not a replayed backlog. Cron fields are matched in UTC regardless of the host's own timezone, and `cron.go` is a small hand-written parser (no external dependency) rather than a library, matching this repo's `modernc.org/sqlite`-over-cgo preference for a static, dependency-light binary. A schedule whose expression can no longer match anything (day 31 in a month field restricted to February, say) disables itself on the next `MarkRun` instead of being checked forever.
+- **A one-time schedule (`Schedule.RunOnce`, created by `Store.CreateOnce` with a future run time instead of a cron expression, `cron_expr` left `""`) fires exactly once and then disables itself** — `MarkRun` special-cases `RunOnce` to skip the cron-based "next occurrence" computation entirely (there is no cron expression to recompute from) rather than trying to `Parse("")` and erroring. `createScheduleHandler` (`internal/httpapi/schedules.go`) accepts either `cron` or `run_at` (RFC3339) on the same `/api/schedules/create` endpoint, never both — the requests page's "Repeat on a schedule" and "Run once at a future time" checkboxes are mutually exclusive for the same reason. Re-enabling (`SetEnabled(id, true)`) a paused `RunOnce` schedule that has *not* fired yet keeps its original run time rather than recomputing one (there is nothing to recompute from), which means a run time that passed while paused fires as an immediate catch-up on the next tick, same as a cron schedule that missed occurrences during an outage; re-enabling one that *has* already fired errors, since firing is `RunOnce`'s terminal state and there is no second occurrence to resume into.

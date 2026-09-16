@@ -176,6 +176,146 @@ func TestSetEnabledRecomputesNextRun(t *testing.T) {
 	}
 }
 
+func TestCreateOnceRejectsAPastTime(t *testing.T) {
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	store := newTestStore(t, now)
+
+	if _, err := store.CreateOnce("bordu", "check the mail", now.Add(-time.Minute)); err == nil {
+		t.Fatal("expected an error for a run time in the past")
+	}
+
+	if _, err := store.CreateOnce("bordu", "check the mail", now); err == nil {
+		t.Fatal("expected an error for a run time equal to now")
+	}
+}
+
+func TestCreateOnceAndMarkRunDisablesRatherThanRecurring(t *testing.T) {
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	store := newTestStore(t, now)
+
+	runAt := now.Add(time.Hour)
+
+	sch, err := store.CreateOnce("bordu", "check the mail", runAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !sch.RunOnce {
+		t.Fatal("expected RunOnce to be true")
+	}
+
+	if !sch.NextRunAt.Equal(runAt) {
+		t.Fatalf("NextRunAt = %v, want %v", sch.NextRunAt, runAt)
+	}
+
+	due, err := store.Due(runAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(due) != 1 || due[0].ID != sch.ID {
+		t.Fatalf("Due = %v, want [%s]", due, sch.ID)
+	}
+
+	if err := store.MarkRun(sch.ID, runAt); err != nil {
+		t.Fatal(err)
+	}
+
+	after := store.List("")
+	if len(after) != 1 {
+		t.Fatalf("List = %v", after)
+	}
+
+	if after[0].Enabled {
+		t.Fatal("expected a one-time schedule to disable itself after firing")
+	}
+
+	if !after[0].LastRunAt.Equal(runAt) {
+		t.Fatalf("LastRunAt = %v, want %v", after[0].LastRunAt, runAt)
+	}
+
+	if !after[0].NextRunAt.IsZero() {
+		t.Fatalf("expected no next run after a one-time schedule fires, got %v", after[0].NextRunAt)
+	}
+
+	// Never due again.
+	due, err = store.Due(runAt.Add(24 * time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(due) != 0 {
+		t.Fatalf("expected a fired one-time schedule never to be due again, got %v", due)
+	}
+}
+
+func TestSetEnabledOnAFiredOnceScheduleErrors(t *testing.T) {
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	store := newTestStore(t, now)
+
+	runAt := now.Add(time.Hour)
+
+	sch, err := store.CreateOnce("bordu", "check the mail", runAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.MarkRun(sch.ID, runAt); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.SetEnabled(sch.ID, true); err == nil {
+		t.Fatal("expected an error resuming a one-time schedule that already fired")
+	}
+}
+
+func TestSetEnabledOnAPendingOnceScheduleKeepsItsRunTime(t *testing.T) {
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	store := newTestStore(t, now)
+
+	runAt := now.Add(time.Hour)
+
+	sch, err := store.CreateOnce("bordu", "check the mail", runAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.SetEnabled(sch.ID, false); err != nil {
+		t.Fatal(err)
+	}
+
+	// Time passes while paused, past the original run time.
+	later := runAt.Add(time.Hour)
+	store.now = func() time.Time { return later }
+
+	if err := store.SetEnabled(sch.ID, true); err != nil {
+		t.Fatal(err)
+	}
+
+	after := store.List("")
+	if len(after) != 1 {
+		t.Fatalf("List = %v", after)
+	}
+
+	if !after[0].Enabled {
+		t.Fatal("expected the schedule to be enabled again")
+	}
+
+	if !after[0].NextRunAt.Equal(runAt) {
+		t.Fatalf("NextRunAt = %v, want the original %v preserved, not recomputed", after[0].NextRunAt, runAt)
+	}
+
+	// Now due as a catch-up run, same as a cron schedule due after an outage.
+	due, err := store.Due(later)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(due) != 1 || due[0].ID != sch.ID {
+		t.Fatalf("Due = %v, want [%s]", due, sch.ID)
+	}
+}
+
 func TestDeleteRemovesSchedule(t *testing.T) {
 	store := newTestStore(t, time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC))
 
