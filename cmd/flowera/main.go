@@ -16,6 +16,7 @@ import (
 
 	"github.com/YKoustubhRao/flowera/internal/claudeauth"
 	"github.com/YKoustubhRao/flowera/internal/conversation"
+	"github.com/YKoustubhRao/flowera/internal/dag"
 	"github.com/YKoustubhRao/flowera/internal/desktop"
 	"github.com/YKoustubhRao/flowera/internal/httpapi"
 	"github.com/YKoustubhRao/flowera/internal/idlepause"
@@ -223,6 +224,7 @@ func main() {
 	tasksStore := must(tasks.NewStore(db))
 	lanAccess := lanaccess.NewStore()
 	schedules := must(schedule.NewStore(db))
+	dags := must(dag.NewStore(db))
 	memoryStore := must(memory.NewStore(db))
 	suggestions := must(suggest.NewStore(db, desktops, tasksStore, memoryStore, ollama.Embed))
 
@@ -237,9 +239,18 @@ func main() {
 		must(claudeauth.NewStore(db)),
 		lanAccess,
 		schedules,
+		dags,
 		suggestions,
 		webui.NewRenderer(),
 	)
+
+	// internal/dag's Runner needs Server itself as its Submitter
+	// (SubmitTracked, which - unlike Submit - hands back the task ID a node's
+	// ticket landed under), so it is built after Server and wired back onto
+	// it rather than passed through NewServer.
+	dagRunner := &dag.Runner{Store: dags, Submitter: server, Tasks: tasksStore}
+	server.DagRunner = dagRunner
+	go dagRunner.Run(context.Background())
 
 	mux := http.NewServeMux()
 	server.RegisterRoutes(mux)

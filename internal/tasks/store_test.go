@@ -577,3 +577,34 @@ func TestLastActivity(t *testing.T) {
 		t.Fatalf("last activity = %v, want %v", got, want)
 	}
 }
+
+// internal/dag polls TaskResult to learn when a node it dispatched has
+// finished - it must see the latest attempt, not the first one that failed.
+func TestTaskResult(t *testing.T) {
+	c := newClock()
+	s := openStore(t, c)
+	box := worker("box", "thebot")
+
+	first := send(t, s, box, "hello, whats your name?")
+	outcome(t, s, "box", first.TaskID, Outcome{Kind: OutcomeError, Reply: "did not finish answering in time"})
+
+	send(t, s, box, "Hello,  whats your name?")
+	outcome(t, s, "box", first.TaskID, Outcome{Kind: OutcomeDone, Reply: "I'm box."})
+
+	status, reply, ok := s.TaskResult(first.TaskID)
+	if !ok {
+		t.Fatal("TaskResult ok = false, want true")
+	}
+
+	if status != StatusDone || reply != "I'm box." {
+		t.Fatalf("TaskResult = (%q, %q), want the latest attempt (%q, %q)", status, reply, StatusDone, "I'm box.")
+	}
+}
+
+func TestTaskResultUnknownID(t *testing.T) {
+	s := openStore(t, newClock())
+
+	if _, _, ok := s.TaskResult("t0000000000000000"); ok {
+		t.Fatal("TaskResult ok = true for an unknown task, want false")
+	}
+}

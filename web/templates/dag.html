@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
+<title>{{.Detail.DAG.Name}} · Flowera</title>
+
+{{template "theme"}}
+
+<style>
+.back{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--text-2);margin-bottom:12px}
+.back svg{transform:rotate(90deg)}
+.back:hover{color:var(--text)}
+
+.dag-toolbar{display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap}
+.dag-toolbar .field{min-width:220px}
+
+.dag-editor{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:16px;align-items:start;margin-top:20px}
+
+.dag-canvas-wrap{padding:0;overflow:hidden}
+.dag-canvas-toolbar{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:11px 14px;border-bottom:1px solid var(--line)
+}
+
+.dag-canvas{position:relative;height:560px;overflow:auto;background:var(--surface-2)}
+.dag-canvas-inner{
+  position:relative;width:2400px;height:1600px;
+  background-image:radial-gradient(circle,var(--line-2) 1px,transparent 1px);
+  background-size:22px 22px
+}
+
+#edgesLayer{position:absolute;top:0;left:0;pointer-events:none}
+#edgesLayer line{stroke:var(--text-3);stroke-width:1.6;pointer-events:auto;cursor:pointer}
+#edgesLayer line:hover{stroke:var(--danger)}
+#edgesLayer line.drag{stroke:var(--accent);stroke-dasharray:4 3;pointer-events:none}
+
+.dag-node{
+  position:absolute;min-width:150px;max-width:220px;padding:10px 12px 9px;
+  background:var(--surface);border:1px solid var(--line-2);border-radius:var(--r-md);
+  box-shadow:var(--shadow-1);cursor:grab;touch-action:none;user-select:none
+}
+.dag-node:active{cursor:grabbing}
+.dag-node.selected{border-color:var(--accent);box-shadow:0 0 0 3px var(--ring)}
+.dag-node.head{border-color:var(--accent)}
+
+.dag-node-badge{
+  position:absolute;top:-9px;left:10px;height:16px;padding:0 6px;border-radius:999px;
+  background:var(--accent);color:var(--surface);font-size:9.5px;font-weight:700;
+  letter-spacing:.05em;display:flex;align-items:center
+}
+.dag-node-name{font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dag-node-desktop{font-size:11px;color:var(--text-3);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dag-node-handle{
+  position:absolute;right:-7px;bottom:-7px;width:14px;height:14px;border-radius:50%;
+  background:var(--accent);border:2px solid var(--surface);cursor:crosshair
+}
+
+.dag-inspector{padding:16px;display:grid;gap:14px;align-content:start}
+.dag-inspector-head{display:flex;align-items:center;justify-content:space-between}
+.dag-inspector-actions{display:flex;gap:8px}
+.dag-inspector-empty{padding:16px;color:var(--text-3);font-size:13px}
+
+.dstatus{
+  display:inline-flex;align-items:center;gap:5px;height:21px;padding:0 8px;border-radius:999px;
+  font-size:11.5px;font-weight:600;white-space:nowrap;text-transform:capitalize;
+  background:var(--idle-soft);color:var(--text-2)
+}
+.dstatus.succeeded{background:var(--live-soft);color:var(--live)}
+.dstatus.running{background:var(--accent-soft);color:var(--accent)}
+.dstatus.failed{background:var(--danger-soft);color:var(--danger)}
+
+.run-row{
+  display:flex;align-items:center;gap:10px;padding:11px 16px;border-bottom:1px solid var(--line);cursor:pointer
+}
+.run-row:last-child{border-bottom:0}
+.run-row:hover{background:var(--surface-2)}
+.run-row-main{display:flex;align-items:center;gap:10px;min-width:0}
+.run-empty{padding:20px 16px;color:var(--text-3);font-size:13px;text-align:center}
+
+.dag-run-detail{margin-top:12px;overflow:auto}
+.dag-run-canvas-inner{position:relative;width:2400px;height:1600px}
+.dag-run-node{
+  position:absolute;min-width:150px;max-width:220px;padding:10px 12px;font-size:12.5px;
+  background:var(--surface);border:1px solid var(--line-2);border-radius:var(--r-md);box-shadow:var(--shadow-1)
+}
+.dag-run-node.succeeded{border-color:var(--live)}
+.dag-run-node.running{border-color:var(--accent)}
+.dag-run-node.failed{border-color:var(--danger)}
+.dag-run-node.skipped{opacity:.55}
+.dag-run-node-link{font-size:11px}
+.dag-run-canvas-inner svg{position:absolute;top:0;left:0;pointer-events:none}
+.dag-run-canvas-inner svg line{stroke:var(--line-2);stroke-width:1.6}
+
+@media (max-width:900px){
+  .dag-editor{grid-template-columns:1fr}
+}
+</style>
+</head>
+
+<body data-dag-id="{{.Detail.DAG.ID}}">
+
+{{template "sprite"}}
+
+<div id="progress"></div>
+<div id="toasts"></div>
+
+{{template "topbar" "dags"}}
+
+<main class="wrap">
+
+  <a class="back" href="/dags"><svg width="14" height="14"><use href="#i-chevron"/></svg>All DAGs</a>
+
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">DAG</div>
+      <h1>{{.Detail.DAG.Name}}</h1>
+      <p class="page-sub">Drag a node to move it. Drag from its dot to another node to connect them - a node dispatches its ticket once every one of its parents has succeeded.</p>
+    </div>
+  </div>
+
+  <div class="dag-toolbar">
+    <div class="field">
+      <label for="cronInput">Cron trigger <span class="mono">(UTC, optional)</span></label>
+      <input class="input mono" id="cronInput" placeholder="*/30 * * * *" value="{{.Detail.DAG.CronExpr}}" autocomplete="off">
+    </div>
+    <button type="button" class="btn btn-default" id="saveCronBtn">Save cron</button>
+    <button type="button" class="btn btn-primary" id="runNowBtn">
+      <svg width="15" height="15"><use href="#i-play"/></svg>
+      Run now
+    </button>
+  </div>
+
+  <div class="dag-editor">
+    <div class="panel dag-canvas-wrap">
+      <div class="dag-canvas-toolbar">
+        <span class="hint">Drag a node to reposition it, or drag its dot onto another node to add an edge.</span>
+        <button type="button" class="btn btn-default btn-sm" id="addNodeBtn">
+          <svg width="14" height="14"><use href="#i-plus"/></svg>
+          Add node
+        </button>
+      </div>
+      <div class="dag-canvas" id="canvas">
+        <div class="dag-canvas-inner" id="canvasInner">
+          <svg id="edgesLayer" width="2400" height="1600">
+            <defs>
+              <marker id="dagArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0 0L10 5L0 10z" fill="var(--text-3)"></path>
+              </marker>
+            </defs>
+          </svg>
+        </div>
+      </div>
+    </div>
+
+    <aside class="panel dag-inspector" id="inspector" hidden>
+      <div class="dag-inspector-head">
+        <h2>Node</h2>
+        <button type="button" class="icon-btn" id="closeInspectorBtn" aria-label="Close">
+          <svg width="15" height="15"><use href="#i-x"/></svg>
+        </button>
+      </div>
+
+      <div class="field">
+        <label for="nodeName">Name</label>
+        <input class="input" id="nodeName" autocomplete="off">
+        <div class="hint">Letters, digits, - and _ only. Used as {{"{{"}}nodes.&lt;name&gt;.reply{{"}}"}} elsewhere in the DAG.</div>
+      </div>
+
+      <div class="field">
+        <label for="nodeDesktop">Desktop</label>
+        <select class="select" id="nodeDesktop">
+          {{range .Desktops}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+        </select>
+      </div>
+
+      <div class="field">
+        <label for="nodeContent">Request</label>
+        <textarea class="textarea" id="nodeContent" rows="7" placeholder="Describe the task…"></textarea>
+        <div class="hint">
+          Reference an upstream node's reply with {{"{{"}}nodes.&lt;name&gt;.reply{{"}}"}}, or the shorter
+          {{"{{"}}parent.reply{{"}}"}} when this node has exactly one incoming edge.
+        </div>
+      </div>
+
+      <div class="dag-inspector-actions">
+        <button type="button" class="btn btn-default btn-sm" id="setHeadBtn">Set as head</button>
+        <button type="button" class="btn btn-danger btn-sm" id="deleteNodeBtn">
+          <svg width="14" height="14"><use href="#i-trash"/></svg>
+          Delete
+        </button>
+      </div>
+
+      <button type="button" class="btn btn-primary" id="saveNodeBtn">Save node</button>
+    </aside>
+  </div>
+
+  <section style="margin-top:30px">
+    <div class="rule"><span class="eyebrow">Run history</span></div>
+    <div class="panel" id="runList"></div>
+    <div class="panel dag-run-detail" id="runDetail" hidden></div>
+  </section>
+
+</main>
+
+{{template "chrome-js"}}
+
+<script>
+(function(){
+  "use strict";
+
+  var toast = Flowera.toast, post = Flowera.post, busy = Flowera.busy;
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  var DRAG_THRESHOLD = 6;
+
+  var dagID = document.body.dataset.dagId;
+  var canvasInner = document.getElementById("canvasInner");
+  var edgesLayer = document.getElementById("edgesLayer");
+  var inspector = document.getElementById("inspector");
+  var runListEl = document.getElementById("runList");
+  var runDetailEl = document.getElementById("runDetail");
+
+  var nodesById = {};
+  var edges = [];
+  var headNodeId = "";
+  var selectedNodeId = null;
+  var openRunId = null;
+
+  var desktopsById = {};
+  document.querySelectorAll("#nodeDesktop option").forEach(function(opt){
+    desktopsById[opt.value] = opt.textContent;
+  });
+
+  function desktopName(id){ return desktopsById[id] || id; }
+
+  /* ---------------- loading / rendering the DAG ---------------- */
+
+  async function loadDag(){
+    var detail;
+
+    try{
+      var response = await fetch("/api/dags/get?id=" + encodeURIComponent(dagID), {cache: "no-store"});
+      detail = await response.json();
+    }catch(e){
+      return;
+    }
+
+    headNodeId = (detail.dag && detail.dag.head_node_id) || "";
+    nodesById = {};
+    (detail.nodes || []).forEach(function(n){ nodesById[n.id] = n; });
+    edges = detail.edges || [];
+
+    document.getElementById("cronInput").value = (detail.dag && detail.dag.cron_expr) || "";
+
+    renderCanvas();
+    closeInspector();
+  }
+
+  function renderCanvas(){
+    Array.prototype.slice.call(canvasInner.querySelectorAll(".dag-node")).forEach(function(el){ el.remove(); });
+
+    Object.keys(nodesById).forEach(function(id){
+      canvasInner.appendChild(createNodeEl(nodesById[id]));
+    });
+
+    renderEdges();
+  }
+
+  function createNodeEl(node){
+    var el = document.createElement("div");
+    el.className = "dag-node" + (node.id === headNodeId ? " head" : "");
+    el.dataset.id = node.id;
+    el.style.left = (node.pos_x || 0) + "px";
+    el.style.top = (node.pos_y || 0) + "px";
+
+    if(node.id === headNodeId){
+      var badge = document.createElement("span");
+      badge.className = "dag-node-badge";
+      badge.textContent = "HEAD";
+      el.appendChild(badge);
+    }
+
+    var name = document.createElement("div");
+    name.className = "dag-node-name";
+    name.textContent = node.name;
+    el.appendChild(name);
+
+    var dest = document.createElement("div");
+    dest.className = "dag-node-desktop";
+    dest.textContent = desktopName(node.desktop_id);
+    el.appendChild(dest);
+
+    var handle = document.createElement("div");
+    handle.className = "dag-node-handle";
+    handle.title = "Drag to another node to connect them";
+    el.appendChild(handle);
+
+    bindNodeDrag(el, node);
+    bindHandleDrag(handle, node);
+
+    return el;
+  }
+
+  function nodeCenter(el){
+    return {
+      x: (parseFloat(el.style.left) || 0) + el.offsetWidth / 2,
+      y: (parseFloat(el.style.top) || 0) + el.offsetHeight / 2
+    };
+  }
+
+  function renderEdges(){
+    Array.prototype.slice.call(edgesLayer.querySelectorAll("line:not(.drag)")).forEach(function(l){ l.remove(); });
+
+    edges.forEach(function(edge){
+      var fromEl = canvasInner.querySelector('.dag-node[data-id="' + edge.from_node_id + '"]');
+      var toEl = canvasInner.querySelector('.dag-node[data-id="' + edge.to_node_id + '"]');
+      if(!fromEl || !toEl){ return; }
+
+      var a = nodeCenter(fromEl), b = nodeCenter(toEl);
+
+      var line = document.createElementNS(SVG_NS, "line");
+      line.setAttribute("x1", a.x);
+      line.setAttribute("y1", a.y);
+      line.setAttribute("x2", b.x);
+      line.setAttribute("y2", b.y);
+      line.setAttribute("marker-end", "url(#dagArrow)");
+      line.addEventListener("click", function(){
+        if(window.confirm("Delete this edge?")){ deleteEdge(edge.id); }
+      });
+
+      edgesLayer.appendChild(line);
+    });
+  }
+
+  /* ---------------- dragging a node ---------------- */
+
+  function bindNodeDrag(el, node){
+    var dragging = false, dragged = false, startX = 0, startY = 0, baseLeft = 0, baseTop = 0;
+
+    el.addEventListener("pointerdown", function(e){
+      if(e.target.closest(".dag-node-handle")){ return; }
+
+      dragging = true;
+      dragged = false;
+      startX = e.clientX;
+      startY = e.clientY;
+      baseLeft = parseFloat(el.style.left) || 0;
+      baseTop = parseFloat(el.style.top) || 0;
+
+      el.setPointerCapture(e.pointerId);
+    });
+
+    el.addEventListener("pointermove", function(e){
+      if(!dragging){ return; }
+
+      var dx = e.clientX - startX, dy = e.clientY - startY;
+      if(!dragged && Math.hypot(dx, dy) < DRAG_THRESHOLD){ return; }
+
+      dragged = true;
+      el.style.left = (baseLeft + dx) + "px";
+      el.style.top = (baseTop + dy) + "px";
+      renderEdges();
+    });
+
+    el.addEventListener("pointerup", function(){
+      if(!dragging){ return; }
+      dragging = false;
+
+      if(dragged){
+        var x = parseFloat(el.style.left) || 0;
+        var y = parseFloat(el.style.top) || 0;
+
+        node.pos_x = x;
+        node.pos_y = y;
+
+        post("/api/dags/nodes/position", {id: node.id, x: String(x), y: String(y)}).catch(function(e){
+          toast(e.message, "error");
+        });
+      }else{
+        openInspector(node);
+      }
+    });
+  }
+
+  /* ---------------- dragging an edge from a node's handle ---------------- */
+
+  function bindHandleDrag(handleEl, node){
+    handleEl.addEventListener("pointerdown", function(e){
+      e.stopPropagation();
+      e.preventDefault();
+
+      var tempLine = document.createElementNS(SVG_NS, "line");
+      tempLine.setAttribute("class", "drag");
+      edgesLayer.appendChild(tempLine);
+
+      var canvasRect = canvasInner.getBoundingClientRect();
+
+      function place(clientX, clientY){
+        var nodeEl = canvasInner.querySelector('.dag-node[data-id="' + node.id + '"]');
+        var start = nodeEl ? nodeCenter(nodeEl) : {x: 0, y: 0};
+
+        tempLine.setAttribute("x1", start.x);
+        tempLine.setAttribute("y1", start.y);
+        tempLine.setAttribute("x2", clientX - canvasRect.left);
+        tempLine.setAttribute("y2", clientY - canvasRect.top);
+      }
+
+      place(e.clientX, e.clientY);
+
+      function move(ev){ place(ev.clientX, ev.clientY); }
+
+      function up(ev){
+        document.removeEventListener("pointermove", move);
+        document.removeEventListener("pointerup", up);
+        tempLine.remove();
+
+        var target = document.elementFromPoint(ev.clientX, ev.clientY);
+        var targetEl = target && target.closest(".dag-node");
+
+        if(targetEl && targetEl.dataset.id !== node.id){
+          createEdge(node.id, targetEl.dataset.id);
+        }
+      }
+
+      document.addEventListener("pointermove", move);
+      document.addEventListener("pointerup", up);
+    });
+  }
+
+  function createEdge(from, to){
+    post("/api/dags/edges/create", {dag_id: dagID, from: from, to: to}).then(loadDag).catch(function(e){
+      toast(e.message, "error");
+    });
+  }
+
+  function deleteEdge(id){
+    post("/api/dags/edges/delete", {id: id}).then(loadDag).catch(function(e){
+      toast(e.message, "error");
+    });
+  }
+
+  /* ---------------- the inspector panel ---------------- */
+
+  function markSelected(id){
+    canvasInner.querySelectorAll(".dag-node.selected").forEach(function(el){ el.classList.remove("selected"); });
+    var el = canvasInner.querySelector('.dag-node[data-id="' + id + '"]');
+    if(el){ el.classList.add("selected"); }
+  }
+
+  function openInspector(node){
+    selectedNodeId = node.id;
+
+    document.getElementById("nodeName").value = node.name;
+    document.getElementById("nodeDesktop").value = node.desktop_id;
+    document.getElementById("nodeContent").value = node.content;
+    document.getElementById("setHeadBtn").disabled = node.id === headNodeId;
+
+    inspector.hidden = false;
+    markSelected(node.id);
+  }
+
+  function closeInspector(){
+    inspector.hidden = true;
+    selectedNodeId = null;
+    canvasInner.querySelectorAll(".dag-node.selected").forEach(function(el){ el.classList.remove("selected"); });
+  }
+
+  document.getElementById("closeInspectorBtn").addEventListener("click", closeInspector);
+
+  document.getElementById("saveNodeBtn").addEventListener("click", async function(){
+    if(!selectedNodeId){ return; }
+
+    var name = document.getElementById("nodeName").value.trim();
+    var desktopId = document.getElementById("nodeDesktop").value;
+    var content = document.getElementById("nodeContent").value;
+
+    if(!name){ return toast("Name the node first.", "error"); }
+
+    try{
+      await post("/api/dags/nodes/update", {id: selectedNodeId, name: name, desktop_id: desktopId, content: content});
+      toast("Saved");
+      await loadDag();
+    }catch(e){
+      toast(e.message, "error");
+    }
+  });
+
+  document.getElementById("deleteNodeBtn").addEventListener("click", async function(){
+    if(!selectedNodeId){ return; }
+    if(!window.confirm("Delete this node? Its edges go with it.")){ return; }
+
+    try{
+      await post("/api/dags/nodes/delete", {id: selectedNodeId});
+      closeInspector();
+      await loadDag();
+    }catch(e){
+      toast(e.message, "error");
+    }
+  });
+
+  document.getElementById("setHeadBtn").addEventListener("click", async function(){
+    if(!selectedNodeId){ return; }
+
+    try{
+      await post("/api/dags/nodes/set-head", {dag_id: dagID, node_id: selectedNodeId});
+      var id = selectedNodeId;
+      await loadDag();
+      if(nodesById[id]){ openInspector(nodesById[id]); }
+    }catch(e){
+      toast(e.message, "error");
+    }
+  });
+
+  document.getElementById("addNodeBtn").addEventListener("click", async function(){
+    var firstOption = document.querySelector("#nodeDesktop option");
+    if(!firstOption){ return toast("Create a desktop first.", "error"); }
+
+    var name = "node" + (Object.keys(nodesById).length + 1);
+
+    try{
+      var created = await post("/api/dags/nodes/create", {dag_id: dagID, name: name, desktop_id: firstOption.value, content: ""});
+      await loadDag();
+      if(nodesById[created.id]){ openInspector(nodesById[created.id]); }
+    }catch(e){
+      toast(e.message, "error");
+    }
+  });
+
+  /* ---------------- cron + manual run ---------------- */
+
+  document.getElementById("saveCronBtn").addEventListener("click", async function(){
+    var expr = document.getElementById("cronInput").value.trim();
+
+    try{
+      await post("/api/dags/cron/set", {dag_id: dagID, cron_expr: expr});
+      toast(expr ? "Cron saved" : "Cron cleared");
+    }catch(e){
+      toast(e.message, "error");
+    }
+  });
+
+  document.getElementById("runNowBtn").addEventListener("click", async function(){
+    var btn = this;
+    btn.disabled = true;
+    busy(true);
+
+    try{
+      await post("/api/dags/run", {id: dagID});
+      toast("Run started");
+      loadRuns();
+    }catch(e){
+      toast(e.message, "error");
+    }finally{
+      busy(false);
+      btn.disabled = false;
+    }
+  });
+
+  /* ---------------- run history ---------------- */
+
+  function formatWhen(iso){
+    if(!iso){ return ""; }
+
+    var d = new Date(iso);
+    if(isNaN(d.getTime()) || d.getUTCFullYear() <= 1){ return ""; }
+
+    return d.toLocaleString(undefined, {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
+  }
+
+  function runRow(run){
+    var row = document.createElement("div");
+    row.className = "run-row";
+
+    var main = document.createElement("div");
+    main.className = "run-row-main";
+
+    var pill = document.createElement("span");
+    pill.className = "dstatus " + run.status;
+    pill.textContent = run.status;
+    main.appendChild(pill);
+
+    var meta = document.createElement("span");
+    meta.className = "row-sub";
+    meta.textContent = run.trigger + " · " + (formatWhen(run.started_at) || "just now");
+    main.appendChild(meta);
+
+    row.appendChild(main);
+    row.addEventListener("click", function(){ openRun(run.id); });
+
+    return row;
+  }
+
+  async function loadRuns(){
+    var list;
+
+    try{
+      var response = await fetch("/api/dags/runs?dag_id=" + encodeURIComponent(dagID), {cache: "no-store"});
+      list = await response.json();
+    }catch(e){
+      return;
+    }
+
+    runListEl.innerHTML = "";
+
+    if(!list || !list.length){
+      var empty = document.createElement("div");
+      empty.className = "run-empty";
+      empty.textContent = "No runs yet.";
+      runListEl.appendChild(empty);
+      return;
+    }
+
+    list.forEach(function(run){ runListEl.appendChild(runRow(run)); });
+  }
+
+  async function openRun(runID){
+    openRunId = runID;
+
+    var detail;
+
+    try{
+      var response = await fetch("/api/dags/runs/get?id=" + encodeURIComponent(runID), {cache: "no-store"});
+      detail = await response.json();
+    }catch(e){
+      return;
+    }
+
+    renderRunDetail(detail);
+  }
+
+  function renderRunDetail(detail){
+    runDetailEl.hidden = false;
+    runDetailEl.innerHTML = "";
+
+    var nodes = detail.nodes || [];
+    var byID = {};
+    nodes.forEach(function(n){ byID[n.id] = n; });
+
+    var statusByNode = {};
+    (detail.run_nodes || []).forEach(function(rn){ statusByNode[rn.node_id] = rn; });
+
+    var inner = document.createElement("div");
+    inner.className = "dag-run-canvas-inner";
+
+    var svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("width", "2400");
+    svg.setAttribute("height", "1600");
+    inner.appendChild(svg);
+
+    (detail.edges || []).forEach(function(edge){
+      var from = byID[edge.from_node_id], to = byID[edge.to_node_id];
+      if(!from || !to){ return; }
+
+      var line = document.createElementNS(SVG_NS, "line");
+      line.setAttribute("x1", from.pos_x + 75);
+      line.setAttribute("y1", from.pos_y + 24);
+      line.setAttribute("x2", to.pos_x + 75);
+      line.setAttribute("y2", to.pos_y + 24);
+      svg.appendChild(line);
+    });
+
+    nodes.forEach(function(node){
+      var rn = statusByNode[node.id];
+
+      var box = document.createElement("div");
+      box.className = "dag-run-node" + (rn ? " " + rn.status : "");
+      box.style.left = node.pos_x + "px";
+      box.style.top = node.pos_y + "px";
+
+      var name = document.createElement("div");
+      name.textContent = node.name + (rn ? " · " + rn.status : "");
+      box.appendChild(name);
+
+      if(rn && rn.task_id){
+        var link = document.createElement("a");
+        link.className = "dag-run-node-link";
+        link.href = "/tasks/" + rn.task_id;
+        link.textContent = "task ↗";
+        box.appendChild(link);
+      }
+
+      inner.appendChild(box);
+    });
+
+    runDetailEl.appendChild(inner);
+  }
+
+  setInterval(function(){
+    loadRuns();
+    if(openRunId){ openRun(openRunId); }
+  }, 5000);
+
+  loadDag();
+  loadRuns();
+})();
+</script>
+
+</body>
+</html>
