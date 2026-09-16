@@ -163,6 +163,7 @@ func rewriteDesktopHTML(resp *http.Response, desktopID string) error {
 	marker := []byte("</body>")
 	if bytes.Contains(body, marker) {
 		var injections strings.Builder
+		injections.WriteString(strings.ReplaceAll(titleOverrideScript, "__DESKTOP_ID__", desktopID))
 		injections.WriteString(strings.ReplaceAll(ticketToolbar, "__DESKTOP_ID__", desktopID))
 		if resp.Request != nil && resp.Request.URL != nil && resp.Request.URL.Query().Get("ui") == "touch" {
 			injections.WriteString(mobileViewerEnhancements)
@@ -829,6 +830,35 @@ tab.addEventListener("click", function(){
 render();
 refresh();
 setInterval(refresh, POLL_MS);
+})();
+</script>
+`
+
+// titleOverrideScript pins the browser tab's title to the desktop's own
+// assigned name (e.g. "burga"). The static <title> swap in
+// floweraBrandingRewrites only lasts until noVNC's own JS runs: once the RFB
+// connection reports the container's X11 desktop name - built from the
+// container hostname, "desktop_<id>:1 (headless) - noVNC" - noVNC overwrites
+// document.title with it asynchronously, after this page has already loaded.
+// Object.defineProperty shadows document.title's own accessor with one that
+// ignores whatever value anything on the page (noVNC included) tries to set
+// afterward, so every later attempt keeps landing on the desktop's name.
+const titleOverrideScript = `
+<script>
+(function(){
+"use strict";
+var desiredTitle = "__DESKTOP_ID__";
+var titleEl = document.querySelector("title");
+if(!titleEl){
+  titleEl = document.createElement("title");
+  document.head.appendChild(titleEl);
+}
+Object.defineProperty(document, "title", {
+  configurable: true,
+  get: function(){ return desiredTitle; },
+  set: function(){ titleEl.textContent = desiredTitle; }
+});
+document.title = desiredTitle;
 })();
 </script>
 `
