@@ -36,6 +36,14 @@ const maxFileContextChars = 2500
 const (
 	codeGenNumCtx    = 32768
 	codeGenMaxTokens = 8192
+	// codeGenKeepAlive is deliberately shorter than the chat model's own
+	// 30-minute default (Ollama's stock default, 5m): this window is only
+	// ever asked for here, and with OLLAMA_MAX_LOADED_MODELS raised to let
+	// it stay resident alongside the 8192 instance every other desktop's
+	// chat turn uses (see ollama.maxLoadedModels), the memory it holds
+	// should go back to that shared instance soon after a build finishes,
+	// not sit pinned for as long as an ordinary chat turn earns.
+	codeGenKeepAlive = "5m"
 )
 
 // codeGenOptions is the single place every generation call gets its real
@@ -46,6 +54,7 @@ func codeGenOptions() llm.Options {
 		Temperature: 0.1,
 		NumCtx:      codeGenNumCtx,
 		MaxTokens:   codeGenMaxTokens,
+		KeepAlive:   codeGenKeepAlive,
 	}
 }
 

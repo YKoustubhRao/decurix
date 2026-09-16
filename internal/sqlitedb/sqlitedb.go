@@ -41,13 +41,28 @@ func DataDir() string {
 	return "data"
 }
 
+// maxOpenConns bounds the connection pool. WAL journal mode (below) lets any
+// number of readers run alongside the one connection actually writing at a
+// given instant, so the pool no longer needs to be held to one connection to
+// stay correct - busy_timeout absorbs the rare case of two connections
+// writing at once, the same as it always has. Sized like this codebase's
+// other fixed concurrency limits (desktop.listInspectConcurrency,
+// idlepause.sweepConcurrency): enough that a burst of readers doesn't queue
+// behind each other, small enough to stay a bounded resource on a
+// CPU/RAM-constrained host. A store that reads a row and writes it back
+// still needs its own mutex for that read-modify-write to stay atomic now
+// that "one caller on the connection at a time" no longer provides it for
+// free - see schedule.Store.mu for the one store that needed it.
+const maxOpenConns = 8
+
 // Open opens (creating if needed) the database file at path.
 //
-// The pool is held to one connection. Writes to SQLite serialise anyway, and a
-// single connection rules out SQLITE_BUSY between a reader upgrading to a
-// writer and another writer - the price is that no caller may run a query
-// while it still holds an open *sql.Rows, which every store here respects by
-// reading rows to the end before doing anything else.
+// No caller may run a query while it still holds an open *sql.Rows: an idle
+// *sql.Rows on one connection can't be reasoned about by a second query
+// issued from the same goroutine (nothing frees the first connection back to
+// the pool until its Rows is closed), and a long-open read transaction holds
+// back WAL's checkpoint. Every store here reads rows to the end, and closes
+// them, before its next statement - keep it that way.
 func Open(path string) (*sql.DB, error) {
 	if dir := filepath.Dir(path); dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -61,22 +76,26 @@ func Open(path string) (*sql.DB, error) {
 	query.Add("_pragma", "synchronous(NORMAL)")
 	query.Add("_pragma", "foreign_keys(ON)")
 
-	return open("file:" + filepath.ToSlash(path) + "?" + query.Encode())
+	return open("file:"+filepath.ToSlash(path)+"?"+query.Encode(), maxOpenConns)
 }
 
-// OpenMemory opens a private in-memory database, for tests. With the pool held
-// to one connection, every query sees the same database.
+// OpenMemory opens a private in-memory database, for tests. Its pool is held
+// to one connection deliberately, unlike Open's: SQLite gives each connection
+// to an in-memory database its own private database unless the DSN opts into
+// a shared cache, so a second connection here would see an empty database
+// instead of the first connection's tables and rows.
 func OpenMemory() (*sql.DB, error) {
-	return open("file::memory:?_pragma=foreign_keys(ON)")
+	return open("file::memory:?_pragma=foreign_keys(ON)", 1)
 }
 
-func open(dsn string) (*sql.DB, error) {
+func open(dsn string, maxConns int) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("sqlitedb: open: %w", err)
 	}
 
-	db.SetMaxOpenConns(1)
+	db.SetMaxOpenConns(maxConns)
+	db.SetMaxIdleConns(maxConns)
 	db.SetConnMaxIdleTime(0)
 	db.SetConnMaxLifetime(0)
 
