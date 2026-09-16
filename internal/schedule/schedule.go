@@ -19,12 +19,15 @@ import (
 	"github.com/YKoustubhRao/flowera/internal/sqlitedb"
 )
 
-// Schedule is a recurring request.
+// Schedule is a recurring request, or a one-time request held for a single
+// future run (RunOnce), which fires exactly once and then disables itself
+// rather than computing a next occurrence.
 type Schedule struct {
 	ID        string    `json:"id"`
 	DesktopID string    `json:"desktop_id"`
 	Content   string    `json:"content"`
 	CronExpr  string    `json:"cron_expr"`
+	RunOnce   bool      `json:"run_once"`
 	Enabled   bool      `json:"enabled"`
 	CreatedAt time.Time `json:"created_at"`
 	LastRunAt time.Time `json:"last_run_at"`
@@ -44,6 +47,7 @@ var schema = []string{
 	)`,
 	`CREATE INDEX schedules_desktop ON schedules (desktop_id, created_ns)`,
 	`CREATE INDEX schedules_due ON schedules (enabled, next_run_ns)`,
+	`ALTER TABLE schedules ADD COLUMN run_once INTEGER NOT NULL DEFAULT 0`,
 }
 
 // Store is a SQLite-backed collection of Schedules.
@@ -101,8 +105,8 @@ func (s *Store) Create(desktopID, content, cronExpr string) (Schedule, error) {
 	}
 
 	if _, err := s.db.Exec(
-		`INSERT INTO schedules (id, desktop_id, content, cron_expr, enabled, created_ns, last_run_ns, next_run_ns)
-		 VALUES (?, ?, ?, ?, 1, ?, 0, ?)`,
+		`INSERT INTO schedules (id, desktop_id, content, cron_expr, enabled, created_ns, last_run_ns, next_run_ns, run_once)
+		 VALUES (?, ?, ?, ?, 1, ?, 0, ?, 0)`,
 		sch.ID, sch.DesktopID, sch.Content, sch.CronExpr,
 		sqlitedb.ToNS(sch.CreatedAt), sqlitedb.ToNS(sch.NextRunAt),
 	); err != nil {
@@ -112,10 +116,54 @@ func (s *Store) Create(desktopID, content, cronExpr string) (Schedule, error) {
 	return sch, nil
 }
 
+// CreateOnce persists a request held for a single future run at runAt, rather
+// than a recurring cron expression. It fires exactly once (see MarkRun) - the
+// same "never immediately" rule as Create applies here too: runAt must be
+// strictly after now.
+func (s *Store) CreateOnce(desktopID, content string, runAt time.Time) (Schedule, error) {
+	desktopID = strings.TrimSpace(desktopID)
+
+	if desktopID == "" {
+		return Schedule{}, fmt.Errorf("desktop id is required")
+	}
+
+	if strings.TrimSpace(content) == "" {
+		return Schedule{}, fmt.Errorf("request text is required")
+	}
+
+	now := s.clock()
+	runAt = runAt.UTC()
+
+	if !runAt.After(now) {
+		return Schedule{}, fmt.Errorf("run time must be in the future")
+	}
+
+	sch := Schedule{
+		ID:        newID(),
+		DesktopID: desktopID,
+		Content:   content,
+		RunOnce:   true,
+		Enabled:   true,
+		CreatedAt: now,
+		NextRunAt: runAt,
+	}
+
+	if _, err := s.db.Exec(
+		`INSERT INTO schedules (id, desktop_id, content, cron_expr, enabled, created_ns, last_run_ns, next_run_ns, run_once)
+		 VALUES (?, ?, ?, '', 1, ?, 0, ?, 1)`,
+		sch.ID, sch.DesktopID, sch.Content,
+		sqlitedb.ToNS(sch.CreatedAt), sqlitedb.ToNS(sch.NextRunAt),
+	); err != nil {
+		return Schedule{}, fmt.Errorf("schedule: create once: %w", err)
+	}
+
+	return sch, nil
+}
+
 // List returns schedules, most recently created first. When desktopID is
 // empty, schedules for every desktop are returned.
 func (s *Store) List(desktopID string) []Schedule {
-	query := `SELECT id, desktop_id, content, cron_expr, enabled, created_ns, last_run_ns, next_run_ns FROM schedules`
+	query := `SELECT id, desktop_id, content, cron_expr, enabled, created_ns, last_run_ns, next_run_ns, run_once FROM schedules`
 
 	args := []any{}
 
@@ -151,7 +199,7 @@ func (s *Store) List(desktopID string) []Schedule {
 // Due returns enabled schedules whose next run has arrived by now.
 func (s *Store) Due(now time.Time) ([]Schedule, error) {
 	rows, err := s.db.Query(
-		`SELECT id, desktop_id, content, cron_expr, enabled, created_ns, last_run_ns, next_run_ns
+		`SELECT id, desktop_id, content, cron_expr, enabled, created_ns, last_run_ns, next_run_ns, run_once
 		 FROM schedules WHERE enabled = 1 AND next_run_ns > 0 AND next_run_ns <= ?`,
 		sqlitedb.ToNS(now),
 	)
@@ -178,16 +226,31 @@ func (s *Store) Due(now time.Time) ([]Schedule, error) {
 // next occurrence, computed from ranAt rather than whatever "now" is by the
 // time this runs. A cron expression that can no longer match anything (day 31
 // in a month field restricted to February, say) disables the schedule
-// instead of leaving it stuck re-checking a run that will never come.
+// instead of leaving it stuck re-checking a run that will never come. A
+// one-time (RunOnce) schedule has no next occurrence by design - firing it
+// once is the whole job - so it is simply disabled, the same terminal state a
+// cron schedule reaches when it runs out of matches.
 func (s *Store) MarkRun(id string, ranAt time.Time) error {
 	var cronExpr string
+	var runOnce int
 
-	if err := s.db.QueryRow(`SELECT cron_expr FROM schedules WHERE id = ?`, id).Scan(&cronExpr); err != nil {
+	if err := s.db.QueryRow(`SELECT cron_expr, run_once FROM schedules WHERE id = ?`, id).Scan(&cronExpr, &runOnce); err != nil {
 		if err == sql.ErrNoRows {
 			return nil
 		}
 
 		return fmt.Errorf("schedule: mark run %s: %w", id, err)
+	}
+
+	if runOnce != 0 {
+		if _, err := s.db.Exec(
+			`UPDATE schedules SET enabled = 0, last_run_ns = ?, next_run_ns = 0 WHERE id = ?`,
+			sqlitedb.ToNS(ranAt), id,
+		); err != nil {
+			return fmt.Errorf("schedule: mark run %s: %w", id, err)
+		}
+
+		return nil
 	}
 
 	expr, err := Parse(cronExpr)
@@ -216,9 +279,14 @@ func (s *Store) MarkRun(id string, ranAt time.Time) error {
 	return nil
 }
 
-// SetEnabled turns a schedule on or off. Turning one back on recomputes its
-// next run from now, since whatever it last computed may be long past after
-// sitting disabled.
+// SetEnabled turns a schedule on or off. Turning a cron schedule back on
+// recomputes its next run from now, since whatever it last computed may be
+// long past after sitting disabled. A one-time (RunOnce) schedule has no cron
+// expression to recompute from, so re-enabling one instead keeps whatever
+// run time it was created with - due immediately (a catch-up run, same as a
+// cron schedule due after a control-plane outage) if that time has already
+// passed while it sat paused - unless it already fired once, which is a
+// terminal state MarkRun never returns from.
 func (s *Store) SetEnabled(id string, enabled bool) error {
 	if !enabled {
 		if _, err := s.db.Exec(`UPDATE schedules SET enabled = 0 WHERE id = ?`, id); err != nil {
@@ -229,13 +297,27 @@ func (s *Store) SetEnabled(id string, enabled bool) error {
 	}
 
 	var cronExpr string
+	var runOnce int
+	var lastRunNS int64
 
-	if err := s.db.QueryRow(`SELECT cron_expr FROM schedules WHERE id = ?`, id).Scan(&cronExpr); err != nil {
+	if err := s.db.QueryRow(`SELECT cron_expr, run_once, last_run_ns FROM schedules WHERE id = ?`, id).Scan(&cronExpr, &runOnce, &lastRunNS); err != nil {
 		if err == sql.ErrNoRows {
 			return fmt.Errorf("schedule not found")
 		}
 
 		return fmt.Errorf("schedule: enable %s: %w", id, err)
+	}
+
+	if runOnce != 0 {
+		if lastRunNS != 0 {
+			return fmt.Errorf("this one-time run has already fired")
+		}
+
+		if _, err := s.db.Exec(`UPDATE schedules SET enabled = 1 WHERE id = ?`, id); err != nil {
+			return fmt.Errorf("schedule: enable %s: %w", id, err)
+		}
+
+		return nil
 	}
 
 	expr, err := Parse(cronExpr)
@@ -280,14 +362,15 @@ func (s *Store) DeleteForDesktop(desktopID string) {
 
 func scanSchedule(rows *sql.Rows) (Schedule, error) {
 	var sch Schedule
-	var enabled int
+	var enabled, runOnce int
 	var created, lastRun, nextRun int64
 
-	if err := rows.Scan(&sch.ID, &sch.DesktopID, &sch.Content, &sch.CronExpr, &enabled, &created, &lastRun, &nextRun); err != nil {
+	if err := rows.Scan(&sch.ID, &sch.DesktopID, &sch.Content, &sch.CronExpr, &enabled, &created, &lastRun, &nextRun, &runOnce); err != nil {
 		return Schedule{}, err
 	}
 
 	sch.Enabled = enabled != 0
+	sch.RunOnce = runOnce != 0
 	sch.CreatedAt = sqlitedb.FromNS(created)
 	sch.LastRunAt = sqlitedb.FromNS(lastRun)
 	sch.NextRunAt = sqlitedb.FromNS(nextRun)

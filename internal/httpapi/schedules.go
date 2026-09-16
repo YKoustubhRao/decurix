@@ -4,8 +4,10 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/YKoustubhRao/flowera/internal/desktop"
+	"github.com/YKoustubhRao/flowera/internal/schedule"
 )
 
 // schedulesHandler returns the recurring requests set up from the requests
@@ -24,10 +26,11 @@ func (s *Server) schedulesHandler(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, s.Schedules.List(id))
 }
 
-// createScheduleHandler sets up a recurring request: the same content
-// resubmitted to a desktop every time cron next matches, through the same
-// path a one-off Send takes (see requests.go's submitRequest and
-// internal/schedule's Runner).
+// createScheduleHandler sets up a recurring request (cron) or a one-time
+// request held for a single future run (run_at, an RFC3339 timestamp) - both
+// resubmit the same content through the same path a one-off Send takes (see
+// requests.go's submitRequest and internal/schedule's Runner), differing only
+// in whether there is a next occurrence after the first.
 func (s *Server) createScheduleHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
@@ -37,6 +40,7 @@ func (s *Server) createScheduleHandler(w http.ResponseWriter, r *http.Request) {
 	desktopID := desktop.SanitizeID(strings.TrimSpace(r.FormValue("id")))
 	content := r.FormValue("content")
 	cronExpr := strings.TrimSpace(r.FormValue("cron"))
+	runAtStr := strings.TrimSpace(r.FormValue("run_at"))
 
 	if desktopID == "" {
 		http.Error(w, "missing desktop id", http.StatusBadRequest)
@@ -53,7 +57,30 @@ func (s *Server) createScheduleHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sch, err := s.Schedules.Create(desktopID, content, cronExpr)
+	if cronExpr != "" && runAtStr != "" {
+		http.Error(w, "choose either a repeating schedule or a one-time run, not both", http.StatusBadRequest)
+		return
+	}
+
+	var sch schedule.Schedule
+	var err error
+
+	switch {
+	case runAtStr != "":
+		runAt, perr := time.Parse(time.RFC3339, runAtStr)
+		if perr != nil {
+			http.Error(w, "invalid run time", http.StatusBadRequest)
+			return
+		}
+
+		sch, err = s.Schedules.CreateOnce(desktopID, content, runAt)
+	case cronExpr != "":
+		sch, err = s.Schedules.Create(desktopID, content, cronExpr)
+	default:
+		http.Error(w, "missing cron expression or run time", http.StatusBadRequest)
+		return
+	}
+
 	if err != nil {
 		jsonStatusError(w, http.StatusBadRequest, err.Error())
 		return
