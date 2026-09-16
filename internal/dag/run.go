@@ -28,18 +28,34 @@ func scanRun(scanner interface{ Scan(...any) error }) (Run, error) {
 	return r, nil
 }
 
-func (s *Store) lastRun(dagID string) (Run, bool, error) {
-	run, err := scanRun(s.db.QueryRow(
-		`SELECT `+runColumns+` FROM dag_runs WHERE dag_id = ? ORDER BY started_ns DESC LIMIT 1`, dagID,
-	))
-	if err == sql.ErrNoRows {
-		return Run{}, false, nil
-	}
+// lastRuns returns every DAG's single most recent run, keyed by dag_id, in
+// one query - what List uses instead of one "last run" query per DAG. The
+// inner subquery picks each dag_id's max started_ns; a tie (two runs
+// started in the same nanosecond) is harmless here since either is an
+// equally valid "most recent".
+func (s *Store) lastRuns() (map[string]Run, error) {
+	rows, err := s.db.Query(
+		`SELECT ` + runColumns + ` FROM dag_runs WHERE (dag_id, started_ns) IN (
+			SELECT dag_id, MAX(started_ns) FROM dag_runs GROUP BY dag_id
+		)`,
+	)
 	if err != nil {
-		return Run{}, false, err
+		return nil, err
+	}
+	defer rows.Close()
+
+	runs := make(map[string]Run)
+
+	for rows.Next() {
+		r, err := scanRun(rows)
+		if err != nil {
+			return nil, err
+		}
+
+		runs[r.DAGID] = r
 	}
 
-	return run, true, nil
+	return runs, rows.Err()
 }
 
 // Runs returns a DAG's run history, most recent first, capped at limit (or

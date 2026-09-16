@@ -203,6 +203,16 @@ var schema = []string{
 	)`,
 	`CREATE UNIQUE INDEX dag_run_nodes_run_node ON dag_run_nodes (run_id, node_id)`,
 	`CREATE INDEX dag_run_nodes_task ON dag_run_nodes (task_id)`,
+	// Edges(dagID) - called on every Runner tick for every active run, via
+	// advance() - had no index with dag_id as its leading column; the three
+	// above are all keyed by node ID instead. Appended, not merged into the
+	// dag_edges block above: a schema change is always a new step, never an
+	// edit to one already applied (see sqlitedb.Migrate).
+	`CREATE INDEX dag_edges_dag ON dag_edges (dag_id)`,
+	// DeleteNode's live-run guard filters dag_run_nodes by node_id alone;
+	// dag_run_nodes_run_node above can't seek on that (run_id, its leading
+	// column, isn't part of the WHERE clause there).
+	`CREATE INDEX dag_run_nodes_node ON dag_run_nodes (node_id)`,
 }
 
 // Store is the SQLite-backed collection of DAGs, their nodes/edges, and the
@@ -308,7 +318,9 @@ func (s *Store) Get(id string) (DAG, error) {
 }
 
 // List returns every DAG, most recently created first, with its node/edge
-// counts and last run for the list page.
+// counts and last run for the list page. Counts and last runs are each one
+// query across every DAG (grouped by dag_id) rather than three queries per
+// DAG, so the list page's cost stays flat as the number of DAGs grows.
 func (s *Store) List() ([]Summary, error) {
 	rows, err := s.db.Query(`SELECT ` + dagColumns + ` FROM dags ORDER BY created_ns DESC`)
 	if err != nil {
@@ -333,29 +345,61 @@ func (s *Store) List() ([]Summary, error) {
 		return nil, fmt.Errorf("dag: list: %w", err)
 	}
 
+	nodeCounts, err := s.countsByDAG(`SELECT dag_id, COUNT(*) FROM dag_nodes GROUP BY dag_id`)
+	if err != nil {
+		return nil, fmt.Errorf("dag: list: %w", err)
+	}
+
+	edgeCounts, err := s.countsByDAG(`SELECT dag_id, COUNT(*) FROM dag_edges GROUP BY dag_id`)
+	if err != nil {
+		return nil, fmt.Errorf("dag: list: %w", err)
+	}
+
+	lastRuns, err := s.lastRuns()
+	if err != nil {
+		return nil, fmt.Errorf("dag: list: %w", err)
+	}
+
 	summaries := make([]Summary, 0, len(dags))
 
 	for _, d := range dags {
-		summary := Summary{DAG: d}
+		summary := Summary{DAG: d, NodeCount: nodeCounts[d.ID], EdgeCount: edgeCounts[d.ID]}
 
-		if err := s.db.QueryRow(`SELECT COUNT(*) FROM dag_nodes WHERE dag_id = ?`, d.ID).Scan(&summary.NodeCount); err != nil {
-			return nil, fmt.Errorf("dag: list: %w", err)
-		}
-
-		if err := s.db.QueryRow(`SELECT COUNT(*) FROM dag_edges WHERE dag_id = ?`, d.ID).Scan(&summary.EdgeCount); err != nil {
-			return nil, fmt.Errorf("dag: list: %w", err)
-		}
-
-		if run, ok, err := s.lastRun(d.ID); err != nil {
-			return nil, fmt.Errorf("dag: list: %w", err)
-		} else if ok {
-			summary.LastRun = &run
+		if run, ok := lastRuns[d.ID]; ok {
+			runCopy := run
+			summary.LastRun = &runCopy
 		}
 
 		summaries = append(summaries, summary)
 	}
 
 	return summaries, nil
+}
+
+// countsByDAG runs a "SELECT dag_id, COUNT(*) ... GROUP BY dag_id" query and
+// returns it as a map, for List to load every DAG's node/edge count in one
+// round trip instead of one query per DAG.
+func (s *Store) countsByDAG(query string) (map[string]int, error) {
+	rows, err := s.db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int)
+
+	for rows.Next() {
+		var dagID string
+		var count int
+
+		if err := rows.Scan(&dagID, &count); err != nil {
+			return nil, err
+		}
+
+		counts[dagID] = count
+	}
+
+	return counts, rows.Err()
 }
 
 // Detail returns one DAG with its nodes, edges and recent run history.

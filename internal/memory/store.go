@@ -240,6 +240,33 @@ func (s *Store) LinkedWorkers(desktopID string) []string {
 	return linked
 }
 
+// LinkedWorkersMap returns every desktop's linked worker IDs in one query,
+// keyed by desktop ID - what the dashboard uses to build its whole page's
+// worth of links without one LinkedWorkers query per desktop listed.
+func (s *Store) LinkedWorkersMap() map[string][]string {
+	linked := map[string][]string{}
+
+	rows, err := s.db.Query(`SELECT worker_a, worker_b FROM worker_memory_links`)
+	if err != nil {
+		log.Printf("memory: linked workers map: %v", err)
+		return linked
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var a, b string
+		if err := rows.Scan(&a, &b); err != nil {
+			log.Printf("memory: linked workers map: %v", err)
+			continue
+		}
+
+		linked[a] = append(linked[a], b)
+		linked[b] = append(linked[b], a)
+	}
+
+	return linked
+}
+
 // FormatForDesktopFile renders a memory entry as the flat text file that gets
 // persisted into a desktop's memory directory, and returns the filename to
 // use for it.
