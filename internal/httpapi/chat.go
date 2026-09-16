@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/YKoustubhRao/flowera/internal/conversation"
 	"github.com/YKoustubhRao/flowera/internal/desktop"
@@ -191,7 +192,7 @@ func (s *Server) agentEventHandler(w http.ResponseWriter, r *http.Request) {
 
 	if desktopID != "" && text != "" {
 		if len(text) > maxStepTextBytes {
-			text = text[:maxStepTextBytes] + "…"
+			text = truncateUTF8(text, maxStepTextBytes) + "…"
 		}
 
 		step := tasks.Step{Text: text}
@@ -284,10 +285,26 @@ func clip(value string, limit int) string {
 	value = strings.TrimSpace(value)
 
 	if len(value) > limit {
-		return value[:limit] + "…"
+		return truncateUTF8(value, limit) + "…"
 	}
 
 	return value
+}
+
+// truncateUTF8 cuts value to at most limit bytes without splitting a
+// multi-byte rune - a plain byte slice (value[:limit]) can land mid-rune
+// and hand back invalid UTF-8, which showed up as mojibake once already in
+// this package (proxy.go's charset fix).
+func truncateUTF8(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+
+	for limit > 0 && !utf8.RuneStart(value[limit]) {
+		limit--
+	}
+
+	return value[:limit]
 }
 
 // chatKindFor maps the kind an agent reports on its callback to the kind the

@@ -22,8 +22,6 @@ import (
 type Manager struct {
 	client *client.Client
 
-	mu sync.Mutex
-
 	// shots caches the dashboard's desktop thumbnails, keyed by desktop ID.
 	// Guarded by shotMu, which covers the map alone - each entry carries its
 	// own lock for the capture itself (see screenshot.go), so one slow
@@ -33,20 +31,27 @@ type Manager struct {
 
 	// claudeLogin is the one in-progress "claude auth login" attempt (see
 	// claudelogin.go) - there is one shared Claude session for the whole
-	// app, so only one login attempt is ever in flight. Guarded by
-	// claudeLoginMu, separate from mu since a login attempt has nothing to
-	// do with container CRUD.
+	// app, so only one login attempt is ever in flight. Guarded by its own
+	// mutex, separate from shotMu/viewedMu since a login attempt has
+	// nothing to do with either of those.
 	claudeLoginMu sync.Mutex
 	claudeLogin   *claudeLoginSession
 
 	// viewed is the last time each desktop's thumbnail was fetched or its
 	// screen was actually proxied to, keyed by sanitized desktop ID. Guarded
-	// by its own mutex for the same reason shots is: this has nothing to do
-	// with container CRUD. internal/idlepause reads it so a desktop nobody
-	// has a task running on, but someone still has open in a browser tab,
-	// is never stopped out from under them.
+	// by its own mutex for the same reason shots is. internal/idlepause
+	// reads it so a desktop nobody has a task running on, but someone still
+	// has open in a browser tab, is never stopped out from under them.
 	viewedMu sync.Mutex
 	viewed   map[string]time.Time
+
+	// secOpt/secOptResolved cache whether the Docker daemon enforces
+	// seccomp (see sandbox.go's desktopSecurityOpt) - a property of the
+	// daemon that cannot change while it keeps running, so it is worth
+	// asking at most once rather than on every desktop Create.
+	secOptMu       sync.Mutex
+	secOpt         []string
+	secOptResolved bool
 }
 
 // NewManager creates a Manager backed by the given Docker client.
@@ -68,9 +73,6 @@ func (m *Manager) Create(
 	memoryMB int64,
 	claudeCredentialsJSON string,
 ) (*Desktop, error) {
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	imageName, err := resolveDesktopImage(profile)
 	if err != nil {
@@ -412,9 +414,6 @@ func (m *Manager) Delete(
 	id string,
 ) error {
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	name := "desktop_" + sanitizeName(id)
 
 	inspect, err := m.client.ContainerInspect(
@@ -492,6 +491,13 @@ func (m *Manager) Get(ctx context.Context, id string) (Desktop, error) {
 		CreatedAt:   inspect.Created,
 	}
 
+	for _, mount := range inspect.Mounts {
+		if mount.Destination == "/home/headless" {
+			found.Volume = mount.Name
+			break
+		}
+	}
+
 	if inspect.Config != nil {
 		if profile := inspect.Config.Labels["desktop-profile"]; profile != "" {
 			found.Profile = profile
@@ -502,6 +508,16 @@ func (m *Manager) Get(ctx context.Context, id string) (Desktop, error) {
 		}
 
 		found.Model = envValue(inspect.Config.Env, "OLLAMA_MODEL")
+	}
+
+	if inspect.HostConfig != nil {
+		if inspect.HostConfig.NanoCPUs > 0 {
+			found.CPUs = inspect.HostConfig.NanoCPUs / 1_000_000_000
+		}
+
+		if inspect.HostConfig.Memory > 0 {
+			found.MemoryMB = inspect.HostConfig.Memory / (1024 * 1024)
+		}
 	}
 
 	if inspect.State != nil && inspect.State.Running {

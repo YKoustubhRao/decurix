@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/YKoustubhRao/flowera/internal/desktop"
 )
 
 // schedulesHandler returns the recurring requests set up from the requests
@@ -14,7 +16,12 @@ func (s *Server) schedulesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jsonResponse(w, s.Schedules.List(r.URL.Query().Get("id")))
+	id := r.URL.Query().Get("id")
+	if id != "" {
+		id = desktop.SanitizeID(id)
+	}
+
+	jsonResponse(w, s.Schedules.List(id))
 }
 
 // createScheduleHandler sets up a recurring request: the same content
@@ -27,7 +34,7 @@ func (s *Server) createScheduleHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	desktopID := strings.TrimSpace(r.FormValue("id"))
+	desktopID := desktop.SanitizeID(strings.TrimSpace(r.FormValue("id")))
 	content := r.FormValue("content")
 	cronExpr := strings.TrimSpace(r.FormValue("cron"))
 

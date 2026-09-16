@@ -291,6 +291,10 @@ func (s *Server) deleteDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("deleteDesktop: %v", err)
 	}
 
+	// A schedule targeting a deleted desktop would otherwise keep matching
+	// forever, failing silently every time it fires.
+	s.Schedules.DeleteForDesktop(desktop.SanitizeID(id))
+
 	jsonResponse(w, map[string]string{
 		"status": "deleted",
 	})

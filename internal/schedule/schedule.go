@@ -265,6 +265,19 @@ func (s *Store) Delete(id string) {
 	}
 }
 
+// DeleteForDesktop removes every schedule targeting desktopID. Called when a
+// desktop is deleted, so a schedule never outlives the desktop it fires
+// requests at - left behind, it would keep matching forever: every
+// occurrence, the submit fails fast against the now-nonexistent desktop and
+// MarkRun just advances to the next one, an indefinite failure loop with
+// nothing in the UI to say so (unlike a cron expression that can no longer
+// match anything, which MarkRun already disables on its own).
+func (s *Store) DeleteForDesktop(desktopID string) {
+	if _, err := s.db.Exec(`DELETE FROM schedules WHERE desktop_id = ?`, desktopID); err != nil {
+		log.Printf("schedule: delete for desktop %s: %v", desktopID, err)
+	}
+}
+
 func scanSchedule(rows *sql.Rows) (Schedule, error) {
 	var sch Schedule
 	var enabled int

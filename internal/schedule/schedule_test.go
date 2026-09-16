@@ -191,6 +191,32 @@ func TestDeleteRemovesSchedule(t *testing.T) {
 	}
 }
 
+func TestDeleteForDesktopRemovesOnlyThatDesktopsSchedules(t *testing.T) {
+	store := newTestStore(t, time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC))
+
+	if _, err := store.Create("bordu", "check the mail", "* * * * *"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.Create("bordu", "water the plants", "0 9 * * *"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.Create("tanager", "check the mail", "* * * * *"); err != nil {
+		t.Fatal(err)
+	}
+
+	store.DeleteForDesktop("bordu")
+
+	if got := store.List("bordu"); len(got) != 0 {
+		t.Fatalf("List(bordu) after DeleteForDesktop = %v, want empty", got)
+	}
+
+	if got := store.List("tanager"); len(got) != 1 {
+		t.Fatalf("List(tanager) after DeleteForDesktop(bordu) = %v, want 1 untouched schedule", got)
+	}
+}
+
 func TestListFiltersByDesktop(t *testing.T) {
 	store := newTestStore(t, time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC))
 

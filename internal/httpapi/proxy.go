@@ -137,14 +137,13 @@ var floweraBrandingRewrites = [][2][]byte{
 	},
 }
 
-// rewriteFloweraBranding replaces noVNC's own "noVNC" branding in a desktop
-// screen's HTML with Flowera's, per floweraBrandingRewrites. Applied to every
-// load (unlike injectMobileEnhancements, it isn't gated on ?ui=touch) so a
-// user is never shown that a desktop's screen is noVNC/VNC under the hood -
-// the control plane presents it purely as "your desktop".
-// rewriteDesktopHTML executes all desktop HTML modifications (branding rewrite,
-// ticket toolbar injection, and mobile touch enhancements) in a single pass over
-// the response body, avoiding multiple read/re-wrap cycles.
+// rewriteDesktopHTML executes all desktop HTML modifications in a single pass
+// over the response body, avoiding multiple read/re-wrap cycles: replacing
+// noVNC's own "noVNC" branding with Flowera's (per floweraBrandingRewrites,
+// applied to every load so a user is never shown that a desktop's screen is
+// noVNC/VNC under the hood - the control plane presents it purely as "your
+// desktop"), splicing in the ticket toolbar, and - only for requests carrying
+// ?ui=touch - the mobile touch enhancements.
 func rewriteDesktopHTML(resp *http.Response, desktopID string) error {
 	if !strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
 		return nil
@@ -174,79 +173,14 @@ func rewriteDesktopHTML(resp *http.Response, desktopID string) error {
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	resp.ContentLength = int64(len(body))
 	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
-	resp.Header.Set("Content-Type", "text/html; charset=utf-8")
-	return nil
-}
-
-func rewriteFloweraBranding(resp *http.Response) error {
-	if !strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
-		return nil
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
-
-	if err != nil {
-		return err
-	}
-
-	for _, rewrite := range floweraBrandingRewrites {
-		body = bytes.Replace(body, rewrite[0], rewrite[1], 1)
-	}
-
-	resp.Body = io.NopCloser(bytes.NewReader(body))
-	resp.ContentLength = int64(len(body))
-	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
 
 	// The proxied container's own Content-Type carries no charset, and this
-	// handler (running first, unconditionally, on every html response) is
-	// where every other rewrite in the chain appends UTF-8 text (the ticket
-	// toolbar's own copy, e.g. its em dashes) very late in the body - well
-	// past a browser's ~1024-byte <meta charset> sniffing window. Without an
-	// explicit charset here a browser guesses one for the whole document
-	// before any of that text is even in it, and every non-ASCII byte we add
-	// later renders as mojibake. Declaring it once here, on the one response
-	// every rewrite shares, is what makes the rest of them safe to write
-	// UTF-8 at all.
+	// is where every rewrite above appends UTF-8 text (the ticket toolbar's
+	// own copy, e.g. its em dashes) well past a browser's ~1024-byte <meta
+	// charset> sniffing window. Without an explicit charset here a browser
+	// guesses one for the whole document before any of that text is even in
+	// it, and every non-ASCII byte added above renders as mojibake.
 	resp.Header.Set("Content-Type", "text/html; charset=utf-8")
-
-	return nil
-}
-
-// injectTicketToolbar rewrites the noVNC vnc.html response to splice
-// ticketToolbar before </body>, on every load - unconditional, like
-// rewriteFloweraBranding, since vnc.html is only ever loaded for the full
-// interactive screen (a dashboard card's preview is a JPEG, never this page;
-// see desktop.Screenshot). desktopID is already sanitized
-// (desktop.SanitizeID, by ProxyTarget before this is ever called) to
-// [a-z0-9_-], so it is safe to write directly into the page's JS.
-func injectTicketToolbar(resp *http.Response, desktopID string) error {
-	if !strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
-		return nil
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
-
-	if err != nil {
-		return err
-	}
-
-	marker := []byte("</body>")
-
-	if !bytes.Contains(body, marker) {
-		resp.Body = io.NopCloser(bytes.NewReader(body))
-		return nil
-	}
-
-	script := strings.ReplaceAll(ticketToolbar, "__DESKTOP_ID__", desktopID)
-
-	rewritten := bytes.Replace(body, marker, append([]byte(script), marker...), 1)
-
-	resp.Body = io.NopCloser(bytes.NewReader(rewritten))
-	resp.ContentLength = int64(len(rewritten))
-	resp.Header.Set("Content-Length", strconv.Itoa(len(rewritten)))
-
 	return nil
 }
 
@@ -863,57 +797,21 @@ document.title = desiredTitle;
 </script>
 `
 
-// injectMobileEnhancements rewrites the noVNC vnc.html response to splice
-// mobileViewerEnhancements in before </body>, but only for requests carrying
-// ?ui=touch - the marker index.html's "open the screen in a new tab" button
-// puts on the full-size, interactive screen URL, so this never lands in the
-// same page's small, non-interactive dcard-preview thumbnail (same vnc.html,
-// same query-free URL otherwise). The injected script itself further gates on
-// the browser actually being touch-capable, so a mouse-and-keyboard visitor
-// opening the same screen sees nothing extra either.
+// mobileViewerEnhancements is spliced into the noVNC vnc.html response by
+// rewriteDesktopHTML, but only for requests carrying ?ui=touch - the marker
+// index.html's "open the screen in a new tab" button puts on the full-size,
+// interactive screen URL, so this never lands in the same page's small,
+// non-interactive dcard-preview thumbnail (same vnc.html, same query-free URL
+// otherwise). The injected script itself further gates on the browser
+// actually being touch-capable, so a mouse-and-keyboard visitor opening the
+// same screen sees nothing extra either.
 //
 // That button is now the only thing emitting ?ui=touch: the per-desktop page
 // at /view/<id> is the chat alone and embeds no screen. Anything that opens a
 // desktop screen for real use needs to carry the marker, or these affordances
 // silently stop being injected.
-func injectMobileEnhancements(resp *http.Response) error {
-	if resp.Request.URL.Query().Get("ui") != "touch" {
-		return nil
-	}
-
-	if !strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
-		return nil
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
-
-	if err != nil {
-		return err
-	}
-
-	marker := []byte("</body>")
-
-	if !bytes.Contains(body, marker) {
-		resp.Body = io.NopCloser(bytes.NewReader(body))
-		return nil
-	}
-
-	rewritten := bytes.Replace(
-		body,
-		marker,
-		append([]byte(mobileViewerEnhancements), marker...),
-		1,
-	)
-
-	resp.Body = io.NopCloser(bytes.NewReader(rewritten))
-	resp.ContentLength = int64(len(rewritten))
-	resp.Header.Set("Content-Length", strconv.Itoa(len(rewritten)))
-
-	return nil
-}
-
-// mobileViewerEnhancements adds two touch-only affordances on top of stock
+//
+// It adds two touch-only affordances on top of stock
 // noVNC, which otherwise leaves mobile visitors clicking a tiny keyboard
 // icon buried in a sidebar that auto-collapses after 2s (app/ui.js's
 // idleControlbarTimeout), with no way to zoom in on small UI targets short

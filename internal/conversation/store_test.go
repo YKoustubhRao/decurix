@@ -64,6 +64,43 @@ func TestThreadLifecycle(t *testing.T) {
 	}
 }
 
+func TestSecondRequestWhileRunningKeepsTheFirstTurnsSteps(t *testing.T) {
+	s := newStore(t)
+
+	s.AppendUserRequest("desktop-1", "", "tidy up /work")
+	s.AppendStep("desktop-1", "Running: ls -la /work")
+
+	// A second message sent while the first is still running is not a new
+	// turn - the desktop either queues it behind the running task or
+	// absorbs it as that task's reply if it pauses (see
+	// watchers.command_watcher/absorbQueuedReply) - so it must not wipe the
+	// live steps the turn already in flight has reported.
+	s.AppendUserRequest("desktop-1", "", "also check disk space")
+
+	thread := s.Snapshot("desktop-1")
+
+	if !thread.Running {
+		t.Fatal("expected the turn to still be running")
+	}
+
+	if len(thread.Steps) != 1 {
+		t.Fatalf("expected the first turn's step to survive a second request, got %d steps", len(thread.Steps))
+	}
+
+	if len(thread.Entries) != 2 {
+		t.Fatalf("expected both user requests recorded, got %d entries", len(thread.Entries))
+	}
+
+	s.AppendStep("desktop-1", "Running: df -h")
+	s.AppendAgentReply("desktop-1", "", KindEntry, "Cleaned up /work. Disk space looks fine.")
+
+	thread = s.Snapshot("desktop-1")
+
+	if got := len(thread.Entries[2].Steps); got != 2 {
+		t.Fatalf("expected the reply to carry both steps from the turn, got %d", got)
+	}
+}
+
 func TestStepWithoutUserRequestOpensTurn(t *testing.T) {
 	s := newStore(t)
 
