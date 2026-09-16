@@ -37,9 +37,10 @@ func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 		memoryByDesktop[entry.DesktopID] = append(memoryByDesktop[entry.DesktopID], entry)
 	}
 
+	linkedAll := s.Memory.LinkedWorkersMap()
 	linkedMemory := map[string][]string{}
 	for _, d := range desktops {
-		if linked := s.Memory.LinkedWorkers(d.ID); len(linked) > 0 {
+		if linked := linkedAll[d.ID]; len(linked) > 0 {
 			linkedMemory[d.ID] = linked
 		}
 	}

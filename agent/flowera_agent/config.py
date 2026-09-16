@@ -61,6 +61,19 @@ FINAL_DIR = FLOWERA_DIR / "final"
 MEMORY_DIR = FLOWERA_DIR / "memory"
 WORK_DIR = Path(os.environ.get("FLOWERA_WORK_DIR", _default_base / "work"))
 
+# How much persisted worker memory (every *.txt file under MEMORY_DIR,
+# concatenated - see memory_context.get_memory_context) is worth injecting
+# into every harness's system prompt. Nothing prunes MEMORY_DIR, and a
+# linked/shared desktop or a specialized child spawned from a parent can
+# copy another desktop's whole memory history in at once, so this is what
+# keeps that system prefix from growing without bound as memory
+# accumulates - unlike SYSTEM_PROMPT/identity, whose byte length is fixed.
+# Ollama's num_ctx is a fixed 8192 everywhere (see ollama_client's
+# build_system_messages) and prompt evaluation, not generation, is what
+# makes a CPU-only desktop feel slow, so this budget matters the same way
+# FLOWERA_GUI_TEXT_CHARS does for a `gui` command's output.
+MEMORY_CONTEXT_CHARS = int(os.environ.get("FLOWERA_MEMORY_CONTEXT_CHARS", "6000"))
+
 try:
     COMMAND_DIR.mkdir(parents=True, exist_ok=True)
     QUERYTEXT_DIR.mkdir(parents=True, exist_ok=True)

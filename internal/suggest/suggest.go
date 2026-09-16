@@ -176,33 +176,47 @@ func parseTimestamp(raw string) (time.Time, bool) {
 // whose embedding is close enough to content's to suggest that desktop
 // instead of the recency fallback.
 func (s *Store) memoryPick(ctx context.Context, content string, desktops []desktop.Desktop) (Suggestion, bool) {
-	entries := s.Memory.List("")
-	if len(entries) == 0 {
-		return Suggestion{}, false
-	}
-
 	candidates := make(map[string]desktop.Desktop, len(desktops))
 	for _, d := range desktops {
 		candidates[d.ID] = d
 	}
 
-	vectors := s.loadCachedVectors()
-	s.cacheMissingVectors(ctx, entries, vectors)
+	// Scoped to entries that could actually be suggested, not every memory
+	// entry the whole fleet has ever recorded (memory.Store.List(desktopID)
+	// filters in SQL, but the "every desktop" call this package needs has
+	// no such filter to give it - see MemoryLister). This is what keeps
+	// both the embedding backfill below and the cache query it feeds from
+	// growing with total fleet memory instead of with what this particular
+	// request could ever match.
+	entries := make([]memory.WorkerMemoryEntry, 0)
+	for _, entry := range s.Memory.List("") {
+		if _, ok := candidates[entry.DesktopID]; ok {
+			entries = append(entries, entry)
+		}
+	}
 
+	if len(entries) == 0 {
+		return Suggestion{}, false
+	}
+
+	// The request text's own embedding first: it is the one call that
+	// actually decides this request's outcome. Backfilling missing cache
+	// entries (below) is opportunistic upkeep - it must never be allowed to
+	// spend this call's whole ctx deadline before the call that matters
+	// even runs.
 	contentVector, err := s.Embed(ctx, content)
 	if err != nil {
 		log.Printf("suggest: embedding request text: %v", err)
 		return Suggestion{}, false
 	}
 
+	vectors := s.loadCachedVectors(entries)
+	s.cacheMissingVectors(ctx, entries, vectors)
+
 	var best memory.WorkerMemoryEntry
 	bestScore := minConfidence
 
 	for _, entry := range entries {
-		if _, ok := candidates[entry.DesktopID]; !ok {
-			continue
-		}
-
 		vector, ok := vectors[entry.ID]
 		if !ok {
 			continue
@@ -228,14 +242,30 @@ func (s *Store) memoryPick(ctx context.Context, content string, desktops []deskt
 	}, true
 }
 
-// loadCachedVectors reads every cached memory-entry embedding. Rows are
-// fully read and closed before returning - the SQLite pool here is one
+// loadCachedVectors reads the cached embedding for each of entries (never
+// the whole suggestion_embeddings table - that would grow with total fleet
+// memory rather than with what this call could ever use). Rows are fully
+// read and closed before returning - the SQLite pool here is one
 // connection, and no query may run while a *sql.Rows from an earlier one is
 // still open.
-func (s *Store) loadCachedVectors() map[string][]float32 {
-	vectors := make(map[string][]float32)
+func (s *Store) loadCachedVectors(entries []memory.WorkerMemoryEntry) map[string][]float32 {
+	vectors := make(map[string][]float32, len(entries))
+	if len(entries) == 0 {
+		return vectors
+	}
 
-	rows, err := s.db.Query(`SELECT memory_id, vector, dims FROM suggestion_embeddings`)
+	placeholders := make([]string, len(entries))
+	args := make([]any, len(entries))
+
+	for i, entry := range entries {
+		placeholders[i] = "?"
+		args[i] = entry.ID
+	}
+
+	query := `SELECT memory_id, vector, dims FROM suggestion_embeddings WHERE memory_id IN (` +
+		strings.Join(placeholders, ",") + `)`
+
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		log.Printf("suggest: loading cached embeddings: %v", err)
 		return vectors

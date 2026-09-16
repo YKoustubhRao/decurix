@@ -227,6 +227,14 @@
   var selectedNodeId = null;
   var openRunId = null;
 
+  // Both set from the 5s poll below (setInterval) as well as a direct user
+  // action (clicking a run row), so a snapshot compare is what keeps that
+  // poll from tearing down and rebuilding the whole run list / run-detail
+  // canvas every 5 seconds when nothing has actually changed - the same
+  // "diff before rebuild" rule the ticket toolbar's own poll follows.
+  var lastRunsSnapshot = null;
+  var lastRunDetailKey = null;
+
   var desktopsById = {};
   document.querySelectorAll("#nodeDesktop option").forEach(function(opt){
     desktopsById[opt.value] = opt.textContent;
@@ -333,6 +341,23 @@
     });
   }
 
+  // Coalesces renderEdges() to at most once per animation frame: a pointer
+  // can fire pointermove far faster than the display refreshes, and
+  // renderEdges rebuilds every edge line from scratch (including a
+  // querySelector lookup per endpoint) - calling it straight from the
+  // handler below made dragging a node in a DAG with many edges visibly
+  // stutter.
+  var renderEdgesQueued = false;
+
+  function requestRenderEdges(){
+    if(renderEdgesQueued){ return; }
+    renderEdgesQueued = true;
+    requestAnimationFrame(function(){
+      renderEdgesQueued = false;
+      renderEdges();
+    });
+  }
+
   /* ---------------- dragging a node ---------------- */
 
   function bindNodeDrag(el, node){
@@ -360,7 +385,7 @@
       dragged = true;
       el.style.left = (baseLeft + dx) + "px";
       el.style.top = (baseTop + dy) + "px";
-      renderEdges();
+      requestRenderEdges();
     });
 
     el.addEventListener("pointerup", function(){
@@ -601,6 +626,10 @@
       return;
     }
 
+    var snapshot = JSON.stringify(list);
+    if(snapshot === lastRunsSnapshot){ return; }
+    lastRunsSnapshot = snapshot;
+
     runListEl.innerHTML = "";
 
     if(!list || !list.length){
@@ -625,6 +654,10 @@
     }catch(e){
       return;
     }
+
+    var key = runID + ":" + JSON.stringify(detail);
+    if(key === lastRunDetailKey){ return; }
+    lastRunDetailKey = key;
 
     renderRunDetail(detail);
   }
