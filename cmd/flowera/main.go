@@ -26,6 +26,7 @@ import (
 	"github.com/YKoustubhRao/flowera/internal/schedule"
 	"github.com/YKoustubhRao/flowera/internal/sqlitedb"
 	"github.com/YKoustubhRao/flowera/internal/stepimages"
+	"github.com/YKoustubhRao/flowera/internal/suggest"
 	"github.com/YKoustubhRao/flowera/internal/tasks"
 	"github.com/YKoustubhRao/flowera/internal/tunnel"
 	"github.com/YKoustubhRao/flowera/internal/webui"
@@ -222,11 +223,13 @@ func main() {
 	tasksStore := must(tasks.NewStore(db))
 	lanAccess := lanaccess.NewStore()
 	schedules := must(schedule.NewStore(db))
+	memoryStore := must(memory.NewStore(db))
+	suggestions := must(suggest.NewStore(db, desktops, tasksStore, memoryStore, ollama.Embed))
 
 	server := httpapi.NewServer(
 		desktops,
 		must(querynotes.NewStore(db)),
-		must(memory.NewStore(db)),
+		memoryStore,
 		must(conversation.NewStore(db)),
 		must(stepimages.NewStore(db, stepImagesMaxBytes())),
 		tasksStore,
@@ -234,6 +237,7 @@ func main() {
 		must(claudeauth.NewStore(db)),
 		lanAccess,
 		schedules,
+		suggestions,
 		webui.NewRenderer(),
 	)
 

@@ -153,6 +153,8 @@
         <span class="dest-status" id="destStatus"><span class="dot"></span><span id="destStatusText">—</span></span>
       </div>
 
+      <div class="hint" id="destSuggestNote" hidden></div>
+
       <div class="field">
         <label for="content">Request</label>
         <div class="msg-box">
@@ -242,6 +244,7 @@
   var select = document.getElementById("desktop");
   var content = document.getElementById("content");
   var counter = document.getElementById("counter");
+  var destSuggestNote = document.getElementById("destSuggestNote");
   var sendButton = document.getElementById("sendButton");
   var repeat = document.getElementById("repeat");
   var cronField = document.getElementById("cronField");
@@ -250,6 +253,29 @@
   var runOnceField = document.getElementById("runOnceField");
   var runAtInput = document.getElementById("runAt");
   var schedList = document.getElementById("schedList");
+
+  /* ---------------- destination suggestion ---------------- */
+
+  // Suggests a desktop while the request is typed: the one whose worker
+  // memory looks like it, or - lacking that - the one most recently in use.
+  // Applies automatically only until the human picks a desktop themselves;
+  // after that this stops touching the dropdown for the rest of this
+  // compose. Best-effort: any failure here is silently ignored, the same
+  // "decoration, never the task itself" rule progress.emit follows on the
+  // desktop side.
+  var userPickedDesktop = false;
+  var suggestTimer = null;
+  var suggestMinChars = 8;
+
+  function hideSuggestNote(){
+    destSuggestNote.hidden = true;
+    destSuggestNote.textContent = "";
+  }
+
+  function showSuggestNote(text){
+    destSuggestNote.textContent = text;
+    destSuggestNote.hidden = false;
+  }
 
   /* ---------------- destination status ---------------- */
 
@@ -262,8 +288,38 @@
     document.getElementById("destStatusText").textContent = state || "—";
   }
 
-  select.addEventListener("change", syncStatus);
+  select.addEventListener("change", function(){
+    userPickedDesktop = true;
+    hideSuggestNote();
+    syncStatus();
+  });
   syncStatus();
+
+  async function maybeSuggest(){
+    if(userPickedDesktop){ return; }
+
+    var text = content.value.trim();
+    if(text.length < suggestMinChars){ return; }
+
+    var suggestion;
+    try{
+      suggestion = await post("/api/desktops/suggest", {content: text});
+    }catch(e){
+      return;
+    }
+
+    if(userPickedDesktop || !suggestion || !suggestion.desktop_id){ return; }
+
+    var option = select.querySelector('option[value="' + suggestion.desktop_id.replace(/"/g, '\\"') + '"]');
+    if(!option){ return; }
+
+    if(select.value !== suggestion.desktop_id){
+      select.value = suggestion.desktop_id;
+      syncStatus();
+    }
+
+    showSuggestNote("Auto-selected — " + (suggestion.why || "suggested destination"));
+  }
 
   /* ---------------- repeat-on-a-schedule / run-once toggles ---------------- */
 
@@ -306,6 +362,9 @@
 
   content.addEventListener("input", function(){
     counter.textContent = String(content.value.length);
+
+    clearTimeout(suggestTimer);
+    suggestTimer = setTimeout(maybeSuggest, 600);
   });
 
   content.addEventListener("keydown", function(event){
@@ -386,6 +445,10 @@
       content.value = "";
       counter.textContent = "0";
       content.focus();
+
+      userPickedDesktop = false;
+      clearTimeout(suggestTimer);
+      hideSuggestNote();
     }catch(e){
       toast(e.message, "error");
     }finally{
