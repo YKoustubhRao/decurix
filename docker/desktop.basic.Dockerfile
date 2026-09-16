@@ -38,6 +38,23 @@ RUN apt-get update && \
 # widgets over AT-SPI at all. Without this the accessibility tree is empty.
 ENV NO_AT_BRIDGE=0
 
+# A modern look for the desktop a human actually opens: Ubuntu's own Yaru
+# theme (GTK + xfwm4, in a red accent to match Flowera's own palette),
+# Papirus icons (colorful, actively maintained, much clearer at a glance
+# than the base image's flat default set) and the Breeze cursor. Inter is
+# a screen-tuned UI font, used in place of the base image's plain "Sans".
+# Verified live over VNC: this alone takes the desktop from stock
+# Xubuntu-grey to something that looks intentionally designed - see
+# flowera-xsettings.xml/flowera-xfwm4.xml below for where it's applied.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        yaru-theme-gtk \
+        papirus-icon-theme \
+        breeze-cursor-theme \
+        fonts-inter && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
 COPY agent/vm_server.py /opt/vm_server.py
 COPY agent/flowera_agent /opt/flowera_agent
 COPY agent/start_agent_terminal.sh /opt/start_agent_terminal.sh
@@ -72,17 +89,28 @@ RUN mkdir -p /home/headless/.config/autostart \
     && chown -R headless:headless /home/headless/.config
 
 COPY agent/flowera-agent.desktop /home/headless/.config/autostart/flowera-agent.desktop
-# Pre-seeds xfce4-desktop's xfconf channel so XFCE starts on the Flowera
-# wallpaper instead of generating its own default on first launch - see
-# agent/flowera-desktop-wallpaper.xml for the actual property values.
+# Pre-seeds three xfconf channels so XFCE starts already looking like
+# Flowera instead of generating the base image's own defaults on first
+# launch: the wallpaper (flowera-desktop-wallpaper.xml), the GTK
+# theme/icons/font/cursor (flowera-xsettings.xml) and the matching
+# window-manager theme (flowera-xfwm4.xml). Each file only sets the
+# properties it cares about - everything else still falls back to
+# xfwm4/xfsettingsd's own defaults, verified live by diffing a fresh
+# session's full property dump against one seeded with just these.
 COPY agent/flowera-desktop-wallpaper.xml /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml
+COPY agent/flowera-xsettings.xml /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml
+COPY agent/flowera-xfwm4.xml /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml
 
 RUN chmod 644 /home/headless/.config/autostart/flowera-agent.desktop \
     /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml \
+    /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml \
+    /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml \
     /home/headless/.chromium-browser.init /opt/flowera-chromium.init \
     && chown headless:headless \
     /home/headless/.config/autostart/flowera-agent.desktop \
     /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml \
+    /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml \
+    /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml \
     /home/headless/.chromium-browser.init
 
 # Restore the base image's own permissions on /etc/passwd and /etc/group.
