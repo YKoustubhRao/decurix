@@ -56,13 +56,25 @@ pull_ollama_model() {
 import json, sys, urllib.request
 req = urllib.request.Request(
     '${1%/}/api/pull',
-    data=json.dumps({'model': '$2', 'stream': False}).encode(),
+    data=json.dumps({'model': '$2', 'stream': True}).encode(),
     headers={'Content-Type': 'application/json'},
 )
 try:
-    # No timeout: pulling a model is a download, and how long it takes is
-    # a property of the network, not of whether it is working.
-    urllib.request.urlopen(req)
+    with urllib.request.urlopen(req) as resp:
+        for line in resp:
+            try:
+                data = json.loads(line.decode().strip())
+                status = data.get('status', '')
+                total = data.get('total', 0)
+                completed = data.get('completed', 0)
+                if total > 0:
+                    pct = int(completed * 100 / total)
+                    print(f'\r  {status}: {pct}% ({completed // 1048576}MB / {total // 1048576}MB)', end='', flush=True)
+                elif status:
+                    print(f'\r  {status}...', end='', flush=True)
+            except Exception:
+                pass
+        print('')
 except Exception as exc:
     print(exc, file=sys.stderr)
     sys.exit(1)

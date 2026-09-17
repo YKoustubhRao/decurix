@@ -63,6 +63,16 @@ if [ ! -f .env ]; then
     fi
 fi
 
+# Enable Linux KSM for RAM deduplication if supported
+if [ -d /sys/kernel/mm/ksm ]; then
+    if [ -w /sys/kernel/mm/ksm/run ]; then
+        echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
+        echo 1 > /sys/kernel/mm/ksm/use_zero_pages 2>/dev/null || true
+    else
+        docker run --rm --privileged -v /sys/kernel/mm/ksm:/sys/kernel/mm/ksm alpine sh -c "echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null; echo 1 > /sys/kernel/mm/ksm/use_zero_pages 2>/dev/null" >/dev/null 2>&1 || true
+    fi
+fi
+
 # Only build an image that doesn't exist yet - that is the entire difference
 # between "open the app" and "rebuild the app". A missing image (first run,
 # or a profile added since) still gets built.

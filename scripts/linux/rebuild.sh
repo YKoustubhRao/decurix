@@ -133,6 +133,20 @@ echo "=== Removing the bundled Ollama container (keeping its model volume) ==="
 docker rm -f flowera-ollama >/dev/null 2>&1 \
     || echo "(nothing to remove)"
 
+export DOCKER_BUILDKIT=1
+
+echo ""
+echo "=== Enabling Linux Kernel Samepage Merging (KSM) for RAM deduplication ==="
+if [ -w /sys/kernel/mm/ksm/run ]; then
+    echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null && echo "KSM enabled (run=1)" || true
+    if [ -w /sys/kernel/mm/ksm/use_zero_pages ]; then
+        echo 1 > /sys/kernel/mm/ksm/use_zero_pages 2>/dev/null && echo "KSM zero pages deduplication enabled" || true
+    fi
+else
+    # Try enabling via docker with mounted sysfs if direct write is not permitted
+    docker run --rm --privileged -v /sys/kernel/mm/ksm:/sys/kernel/mm/ksm alpine sh -c "echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null; echo 1 > /sys/kernel/mm/ksm/use_zero_pages 2>/dev/null" >/dev/null 2>&1 || true
+fi
+
 echo ""
 ./scripts/linux/build-images.sh
 

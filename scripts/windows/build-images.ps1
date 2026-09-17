@@ -35,6 +35,8 @@ Write-Host " Building Flowera desktop images"
 Write-Host "========================================"
 Write-Host ""
 
+$env:DOCKER_BUILDKIT = "1"
+
 function Test-ImageExists {
     param([string]$Tag)
     docker image inspect $Tag *>$null
@@ -45,12 +47,12 @@ function Build-DesktopImage {
     param([string]$Tag, [string]$Dockerfile, [string]$Label)
 
     if ($OnlyMissing -and (Test-ImageExists $Tag)) {
-        Write-Host "=== $Label desktop image already exists, skipping ($Tag) ==="
+        Write-Host "=== $Label image already exists, skipping ($Tag) ==="
         Write-Host ""
         return
     }
 
-    Write-Host "=== Building $Label desktop image ==="
+    Write-Host "=== Building $Label image ==="
 
     docker build -f $Dockerfile -t $Tag .
 
@@ -58,10 +60,25 @@ function Build-DesktopImage {
     Write-Host ""
 }
 
-Build-DesktopImage -Tag "flowera-desktop:basic" -Dockerfile "docker/desktop.basic.Dockerfile" -Label "Basic"
-Build-DesktopImage -Tag "flowera-desktop:developer" -Dockerfile "docker/desktop.developer.Dockerfile" -Label "Developer"
-Build-DesktopImage -Tag "flowera-desktop:ai" -Dockerfile "docker/desktop.ai.Dockerfile" -Label "AI Developer"
+Build-DesktopImage -Tag "flowera-desktop:basic" -Dockerfile "docker/desktop.basic.Dockerfile" -Label "Unified Desktop Base"
+Build-DesktopImage -Tag "flowera-tools:latest" -Dockerfile "docker/tools.Dockerfile" -Label "Shared Tools Runtime"
 
-Write-Host "=== Desktop images built ==="
-docker images "flowera-desktop"
+Write-Host "=== Aliasing desktop profiles (developer / ai) to unified base ==="
+docker tag flowera-desktop:basic flowera-desktop:developer
+docker tag flowera-desktop:basic flowera-desktop:ai
+
 Write-Host ""
+Write-Host "=== Populating shared tools volume (flowera-tools) ==="
+docker volume create flowera-tools *>$null
+docker run --rm -v flowera-tools:/target flowera-tools:latest
+docker volume create flowera-cache *>$null
+
+Write-Host ""
+Write-Host "=== Pruning dangling build layers to reclaim disk space ==="
+docker image prune -f *>$null
+
+Write-Host ""
+Write-Host "=== Desktop and tools images ready ==="
+docker images --filter "reference=flowera-*"
+Write-Host ""
+

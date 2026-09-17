@@ -203,7 +203,7 @@ Everything scripted lives under [`scripts/`](scripts/), split by who runs it. `l
 | **Host setup** | `scripts/linux/setup.sh` | `scripts/mac/setup.sh` | `scripts\windows\setup.ps1` | One-time: Docker, `cloudflared`, Ollama / QEMU. |
 | **Desktop images** | `scripts/linux/build-images.sh` | `scripts/mac/build-images.sh` | `scripts\windows\build-images.ps1` | Builds `flowera-desktop:{basic,developer,ai}`. |
 | **Start** | `scripts/linux/build.sh` | `scripts/mac/build.sh` | `scripts\windows\build.ps1` | Like opening the app: builds only missing images, starts the control plane if it isn't already running, opens a tunnel. Leaves existing desktops and the database untouched. |
-| **Rebuild** | `scripts/linux/rebuild.sh` | — | `scripts\windows\rebuild.ps1` | Like reinstalling: rebuilds every image and the control plane (still cached, so it's fast), every `desktop_*` container/volume removed, and (after a confirmation prompt) the app database wiped. |
+| **Rebuild** | `scripts/linux/rebuild.sh` | `scripts/mac/rebuild.sh` | `scripts\windows\rebuild.ps1` | Like reinstalling: rebuilds every image and the control plane (still cached, so it's fast), every `desktop_*` container/volume removed, and (after a confirmation prompt) the app database wiped. |
 | **Standalone VM test** | `scripts/linux/test-vm.sh` | `scripts/mac/test-vm.sh` | `scripts\windows\test-vm.ps1` | One throwaway desktop container + a dummy control-plane stub, no full Flowera stack needed. See below. |
 | **Release** | `scripts/release/release.sh` | `scripts/release/release.sh` | `scripts\release\release.ps1` | Cross-compiles the downloadable executables into `dist/`. |
 
@@ -342,7 +342,8 @@ Idle desktops stop themselves automatically after 5 minutes with no task running
 Want a clean slate instead — fresh images, no leftover desktops, an empty dashboard?
 
 ```bash
-./scripts/linux/rebuild.sh        # Linux/macOS
+./scripts/mac/rebuild.sh          # macOS
+./scripts/linux/rebuild.sh        # Linux
 .\scripts\windows\rebuild.ps1     # Windows (PowerShell)
 ```
 

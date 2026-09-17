@@ -9,9 +9,10 @@ import (
 )
 
 const (
-	ksmRunPath   = "/sys/kernel/mm/ksm/run"
-	ksmPagesPath = "/sys/kernel/mm/ksm/pages_to_scan"
-	ksmSleepPath = "/sys/kernel/mm/ksm/sleep_millisecs"
+	ksmRunPath       = "/sys/kernel/mm/ksm/run"
+	ksmPagesPath     = "/sys/kernel/mm/ksm/pages_to_scan"
+	ksmSleepPath     = "/sys/kernel/mm/ksm/sleep_millisecs"
+	ksmZeroPagesPath = "/sys/kernel/mm/ksm/use_zero_pages"
 )
 
 // OptimizeHostKSM inspects and enables Linux Kernel Samepage Merging (KSM)
@@ -26,6 +27,7 @@ func OptimizeHostKSM() {
 
 	val := strings.TrimSpace(string(data))
 	if val == "1" {
+		_ = os.WriteFile(ksmZeroPagesPath, []byte("1"), 0644)
 		log.Println("[ksm] Linux Kernel Samepage Merging (KSM) is active (deduplicating RAM across containers).")
 		return
 	}
@@ -39,6 +41,7 @@ func OptimizeHostKSM() {
 	// Configure gentle scan parameters if writable
 	_ = os.WriteFile(ksmPagesPath, []byte("100"), 0644)
 	_ = os.WriteFile(ksmSleepPath, []byte("20"), 0644)
+	_ = os.WriteFile(ksmZeroPagesPath, []byte("1"), 0644)
 
 	log.Println("[ksm] Enabled Linux Kernel Samepage Merging (KSM) for cross-container RAM deduplication.")
 }

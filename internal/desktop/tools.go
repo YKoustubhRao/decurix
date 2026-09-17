@@ -15,23 +15,31 @@ func (m *Manager) EnsureToolsVolume(ctx context.Context) error {
 	_ = m.EnsureCacheVolume(ctx)
 
 	vol, err := m.client.VolumeInspect(ctx, ToolsVolumeName)
+	alreadyPopulated := false
 	if err == nil && vol.Name == ToolsVolumeName {
+		if vol.Labels != nil && vol.Labels["flowera.populated"] == "true" {
+			alreadyPopulated = true
+		}
+	} else {
+		log.Printf("Creating shared tools volume %s...", ToolsVolumeName)
+		_, err = m.client.VolumeCreate(ctx, volume.CreateOptions{
+			Name: ToolsVolumeName,
+			Labels: map[string]string{
+				"flowera":           "true",
+				"flowera.populated": "false",
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("create tools volume: %w", err)
+		}
+	}
+
+	if alreadyPopulated {
 		return nil
 	}
 
-	log.Printf("Creating shared tools volume %s...", ToolsVolumeName)
-	_, err = m.client.VolumeCreate(ctx, volume.CreateOptions{
-		Name: ToolsVolumeName,
-		Labels: map[string]string{
-			"flowera": "true",
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("create tools volume: %w", err)
-	}
-
 	if _, _, err := m.client.ImageInspectWithRaw(ctx, ToolsImage); err != nil {
-		log.Printf("Tools image %s not present yet; volume created empty", ToolsImage)
+		log.Printf("Tools image %s not present yet; volume ready for future population", ToolsImage)
 		return nil
 	}
 
