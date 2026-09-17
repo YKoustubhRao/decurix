@@ -14,6 +14,8 @@ import (
 	"net/http"
 	neturl "net/url"
 	"os"
+	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -92,6 +94,33 @@ const (
 	// to apply there.
 	maxLoadedModels = "2"
 )
+
+func defaultNumThread() int {
+	cpus := runtime.NumCPU()
+	if cpus > 4 {
+		return cpus / 2
+	}
+	return cpus
+}
+
+func getenvInt(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return fallback
+	}
+	return n
+}
+
+func getenvDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
 
 // DesktopURL returns the Ollama URL every new desktop is given: OLLAMA_URL
 // from the control plane's environment, otherwise the host's own Ollama.
@@ -252,6 +281,9 @@ func (m *Manager) EnsureReady(ctx context.Context) error {
 			Env: []string{
 				"OLLAMA_HOST=0.0.0.0:11434",
 				"OLLAMA_MAX_LOADED_MODELS=" + maxLoadedModels,
+				"OLLAMA_FLASH_ATTENTION=" + getenvDefault("OLLAMA_FLASH_ATTENTION", "1"),
+				"OLLAMA_KV_CACHE_TYPE=" + getenvDefault("OLLAMA_KV_CACHE_TYPE", "q8_0"),
+				"OLLAMA_NUM_PARALLEL=" + getenvDefault("OLLAMA_NUM_PARALLEL", "1"),
 			},
 
 			Labels: map[string]string{
@@ -416,11 +448,19 @@ func (m *Manager) preloadModel(ctx context.Context, baseURL, model string) {
 	// agents send, so the resident copy this creates is the one they go on
 	// to use. Without num_ctx it loaded at Ollama's 4096 default, and the
 	// agents' first 8192 request threw it away and loaded the model again.
+	preloadOpts := map[string]any{
+		"num_ctx": NumCtx,
+	}
+	if nt := getenvInt("OLLAMA_NUM_THREAD", defaultNumThread()); nt > 0 {
+		preloadOpts["num_thread"] = nt
+	}
+	preloadOpts["num_batch"] = getenvInt("OLLAMA_NUM_BATCH", 512)
+
 	body, err := json.Marshal(map[string]any{
 		"model":      model,
 		"prompt":     "",
 		"keep_alive": "30m",
-		"options":    map[string]any{"num_ctx": NumCtx},
+		"options":    preloadOpts,
 	})
 
 	if err != nil {
