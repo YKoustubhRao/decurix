@@ -472,7 +472,8 @@ func (m *Manager) Stop(
 
 	name := "desktop_" + sanitizeName(id)
 
-	if inspect, err := m.client.ContainerInspect(ctx, name); err == nil && inspect.State != nil && inspect.State.Paused {
+	inspect, inspectErr := m.client.ContainerInspect(ctx, name)
+	if inspectErr == nil && inspect.State != nil && inspect.State.Paused {
 		_ = m.client.ContainerUnpause(ctx, name)
 	}
 
@@ -493,6 +494,9 @@ func (m *Manager) Stop(
 	)
 
 	m.startedMu.Lock()
+	if inspectErr == nil && inspect.ID != "" {
+		delete(m.startedCache, inspect.ID)
+	}
 	delete(m.startedCache, name)
 	m.startedMu.Unlock()
 
@@ -507,7 +511,8 @@ func (m *Manager) Restart(
 
 	name := "desktop_" + sanitizeName(id)
 
-	if inspect, err := m.client.ContainerInspect(ctx, name); err == nil && inspect.State != nil && inspect.State.Paused {
+	inspect, inspectErr := m.client.ContainerInspect(ctx, name)
+	if inspectErr == nil && inspect.State != nil && inspect.State.Paused {
 		_ = m.client.ContainerUnpause(ctx, name)
 	}
 
@@ -524,6 +529,9 @@ func (m *Manager) Restart(
 	}
 
 	m.startedMu.Lock()
+	if inspectErr == nil && inspect.ID != "" {
+		delete(m.startedCache, inspect.ID)
+	}
 	delete(m.startedCache, name)
 	m.startedMu.Unlock()
 

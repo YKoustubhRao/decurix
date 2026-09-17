@@ -178,6 +178,12 @@ func runCLI(baseURL string) int {
 		case "start":
 			cliSimpleAction(ctx, client, "/api/desktops/start", args, "started")
 
+		case "pause":
+			cliSimpleAction(ctx, client, "/api/desktops/pause", args, "paused")
+
+		case "unpause", "wake":
+			cliSimpleAction(ctx, client, "/api/desktops/unpause", args, "woken")
+
 		case "stop":
 			cliSimpleAction(ctx, client, "/api/desktops/stop", args, "stopped")
 
@@ -204,6 +210,8 @@ func printCLIHelp() {
   list | ls                          list desktops
   create <name> [--profile basic|developer|ai] [--harness ollama|claude|thebot] [--cpus N] [--memory-mb N]
   start <id>
+  pause <id>                         freeze container CPU (0% CPU)
+  unpause | wake <id>                thaw frozen container (< 1ms)
   stop <id>
   restart <id>
   delete <id> [--yes]
