@@ -35,6 +35,13 @@ if [ -f /opt/flowera-chromium.init ]; then
         || echo "[$(date)] could not install Chromium launch flags" >> "$LOG"
 fi
 
+# Pre-warm Chromium in the background with --no-startup-window so that
+# clicking the browser icon or navigating via CDP is instantaneous.
+if which chromium-browser >/dev/null 2>&1; then
+    setsid chromium-browser --no-startup-window >> /tmp/chromium-prewarm.log 2>&1 < /dev/null &
+    echo "[$(date)] Chromium pre-warmed in background (pid $!)" >> "$LOG"
+fi
+
 # Clear out core dumps a crashing Chromium already left behind, before core
 # dumps were switched off (see agent/chromium-browser.init). Only files that
 # are named core.<pid> AND are ELF core dumps - a file that merely shares
