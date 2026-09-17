@@ -64,11 +64,9 @@ class Frame:
                 + struct.pack(">I", zlib.crc32(tag + body) & 0xFFFFFFFF)
             )
 
-        return (
         res = (
             b"\x89PNG\r\n\x1a\n"
             + chunk(b"IHDR", struct.pack(">IIBBBBB", out_w, out_h, 8, 2, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(b"".join(rows), 6))
             + chunk(b"IDAT", zlib.compress(b"".join(rows), 1))
             + chunk(b"IEND", b"")
         )
@@ -89,7 +87,6 @@ class Frame:
         for y in range(0, self.height, step_y):
             row = self.rgb[y * stride:(y + 1) * stride]
             grid += row[0::3 * step_x] + row[1::3 * step_x] + row[2::3 * step_x]
-        return bytes(grid)
         sampled = bytes(grid)
         if columns == 64 and rows == 36:
             self._sample = sampled
@@ -143,7 +140,6 @@ def changed_fraction(before, after, tolerance=24):
     if len(a) != len(b) or not a:
         return 1.0
 
-    changed = sum(1 for x, y in zip(a, b) if abs(x - y) > tolerance)
     n = len(a)
     tol = tolerance
     changed = 0
@@ -151,7 +147,6 @@ def changed_fraction(before, after, tolerance=24):
         if abs(a[i] - b[i]) > tol:
             changed += 1
 
-    return changed / len(a)
     return changed / n
 
 
@@ -196,8 +191,6 @@ def grab(display=None):
     root = d.screen().root
 
     try:
-        geometry = root.get_geometry()
-        image = root.get_image(0, 0, geometry.width, geometry.height, X.ZPixmap, 0xFFFFFFFF)
         if _SCREEN_GEOMETRY is None:
             g = root.get_geometry()
             _SCREEN_GEOMETRY = (g.width, g.height)
@@ -211,7 +204,6 @@ def grab(display=None):
     if isinstance(data, str):
         data = data.encode("latin-1")
 
-    pixels = geometry.width * geometry.height
     pixels = width * height
     rgb = bytearray(pixels * 3)
 
@@ -220,7 +212,6 @@ def grab(display=None):
     rgb[1::3] = data[1::4][:pixels]
     rgb[2::3] = data[0::4][:pixels]
 
-    return Frame(geometry.width, geometry.height, rgb)
     return Frame(width, height, rgb)
 
 

@@ -44,6 +44,8 @@ type openaiChatRequest struct {
 	Model       string          `json:"model"`
 	Messages    []openaiMessage `json:"messages"`
 	Temperature float64         `json:"temperature,omitempty"`
+	MaxTokens   int             `json:"max_tokens,omitempty"`
+	Stop        []string        `json:"stop,omitempty"`
 }
 
 type openaiChatResponse struct {
@@ -74,7 +76,13 @@ func (o *OpenAIProvider) Chat(ctx context.Context, model string, messages []Mess
 		msgs[i] = openaiMessage{Role: m.Role, Content: m.Content}
 	}
 
-	body, err := json.Marshal(openaiChatRequest{Model: model, Messages: msgs, Temperature: opts.Temperature})
+	body, err := json.Marshal(openaiChatRequest{
+		Model:       model,
+		Messages:    msgs,
+		Temperature: opts.Temperature,
+		MaxTokens:   opts.MaxTokens,
+		Stop:        opts.Stop,
+	})
 	if err != nil {
 		return Result{}, fmt.Errorf("openai: marshal request: %w", err)
 	}

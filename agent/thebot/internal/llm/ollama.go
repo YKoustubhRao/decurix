@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -90,6 +91,26 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 	return time.Duration(ms) * time.Millisecond
 }
 
+func defaultNumThread() int {
+	cpus := runtime.NumCPU()
+	if cpus > 4 {
+		return cpus / 2
+	}
+	return cpus
+}
+
+func getenvInt(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return fallback
+	}
+	return n
+}
+
 func (o *OllamaProvider) Name() string { return "ollama" }
 
 type ollamaMessage struct {
@@ -150,12 +171,19 @@ func (o *OllamaProvider) Chat(ctx context.Context, model string, messages []Mess
 	if opts.NumCtx > 0 {
 		numCtx = opts.NumCtx
 	}
-	ollamaOpts := map[string]any{"num_ctx": numCtx}
+	ollamaOpts := map[string]any{
+		"num_ctx":    numCtx,
+		"num_thread": getenvInt("OLLAMA_NUM_THREAD", defaultNumThread()),
+		"num_batch":  getenvInt("OLLAMA_NUM_BATCH", 512),
+	}
 	if opts.Temperature > 0 {
 		ollamaOpts["temperature"] = opts.Temperature
 	}
 	if opts.MaxTokens > 0 {
 		ollamaOpts["num_predict"] = opts.MaxTokens
+	}
+	if len(opts.Stop) > 0 {
+		ollamaOpts["stop"] = opts.Stop
 	}
 	// Streaming, always - even though every caller here wants one complete
 	// answer and nothing renders tokens as they arrive.

@@ -1,3 +1,5 @@
+import os
+
 from flowera_agent import config, progress, state
 from flowera_agent.commands import run_command
 from flowera_agent.computer import approval
@@ -202,17 +204,28 @@ def format_command_result(result):
     )
 
 
-MAX_RECENT_FULL_TURNS = 6
+MAX_RECENT_FULL_TURNS = int(os.environ.get("FLOWERA_MAX_RECENT_TURNS", "12"))
+MAX_HISTORY_CHARS_BEFORE_COMPACTION = int(os.environ.get("FLOWERA_MAX_HISTORY_CHARS", "16000"))
 OLD_COMMAND_OUTPUT_CHARS = 200
 
 
-def compact_history(history, max_recent=MAX_RECENT_FULL_TURNS):
+def compact_history(history, max_recent=MAX_RECENT_FULL_TURNS, max_chars=MAX_HISTORY_CHARS_BEFORE_COMPACTION):
     """
     Keep recent turns in full detail, while compressing the verbose outputs
     of older turns so total prompt size stays comfortably within num_ctx (8192)
     and RAM budgets without forgetting what commands have already been run.
+
+    Crucially, avoid eagerly mutating history when total prompt characters are
+    well within context limits. Mutating earlier messages destroys llama.cpp's
+    KV prefix cache, turning ~0.5s cached turns into ~30s full-prompt evaluations on CPU.
     """
     if len(history) <= max_recent * 2:
+        return history
+
+    total_chars = sum(len(m.get("content", "")) for m in history)
+    # If using default max_recent and character count is well within safety budget,
+    # preserve the exact history to keep KV cache prefix intact.
+    if total_chars <= max_chars and max_recent >= MAX_RECENT_FULL_TURNS:
         return history
 
     cutoff = len(history) - (max_recent * 2)

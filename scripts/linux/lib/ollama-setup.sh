@@ -139,7 +139,7 @@ ensure_ollama_ready() {
             echo ""
 
             if sudo mkdir -p /etc/systemd/system/ollama.service.d \
-                && printf '[Service]\nEnvironment="OLLAMA_HOST=0.0.0.0"\n' \
+                && printf '[Service]\nEnvironment="OLLAMA_HOST=0.0.0.0"\nEnvironment="OLLAMA_FLASH_ATTENTION=1"\nEnvironment="OLLAMA_KV_CACHE_TYPE=q8_0"\nEnvironment="OLLAMA_NUM_PARALLEL=1"\n' \
                     | sudo tee /etc/systemd/system/ollama.service.d/flowera.conf >/dev/null \
                 && sudo systemctl daemon-reload \
                 && sudo systemctl restart ollama; then
