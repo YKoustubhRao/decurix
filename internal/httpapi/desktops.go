@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -88,7 +89,18 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	parentID := strings.TrimSpace(r.FormValue("parent_id"))
 
 	cpus := int64(2)
-	memoryMB := int64(4096)
+	if envCpus := os.Getenv("FLOWERA_DEFAULT_DESKTOP_CPUS"); envCpus != "" {
+		if parsed, err := strconv.ParseInt(envCpus, 10, 64); err == nil && parsed > 0 {
+			cpus = parsed
+		}
+	}
+
+	memoryMB := int64(2048)
+	if envMem := os.Getenv("FLOWERA_DEFAULT_DESKTOP_MEMORY_MB"); envMem != "" {
+		if parsed, err := strconv.ParseInt(envMem, 10, 64); err == nil && parsed > 0 {
+			memoryMB = parsed
+		}
+	}
 
 	if profile == "" {
 		profile = "basic"

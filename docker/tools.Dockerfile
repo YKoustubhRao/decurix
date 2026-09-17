@@ -99,7 +99,7 @@ RUN echo '#!/bin/sh' > /opt/tools/env.sh && \
     chmod -R 755 /opt/tools
 
 # Final stage: minimal populator
-FROM busybox:latest
+FROM alpine:latest
 COPY --from=builder /opt/tools /opt/tools
 CMD ["cp", "-a", "/opt/tools/.", "/target/"]
 

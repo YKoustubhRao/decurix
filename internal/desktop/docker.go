@@ -218,11 +218,12 @@ func buildContainerConfigs(imageName, containerName, profile, harness string, cp
 		ShmSize:     512 * 1024 * 1024,
 		SecurityOpt: securityOpt,
 		Resources: container.Resources{
-			NanoCPUs:         cpus * 1_000_000_000,
-			CPUShares:        cpus * 1024,
-			Memory:           memoryMB * 1024 * 1024,
-			MemorySwappiness: &swappinessZero,
-			Ulimits:          desktopUlimits(),
+			NanoCPUs:          cpus * 1_000_000_000,
+			CPUShares:         cpus * 1024,
+			Memory:            memoryMB * 1024 * 1024,
+			MemoryReservation: (memoryMB * 1024 * 1024) / 2,
+			MemorySwappiness:  &swappinessZero,
+			Ulimits:           desktopUlimits(),
 		},
 		Tmpfs: map[string]string{
 			"/tmp": "rw,nosuid,size=256m,mode=1777",

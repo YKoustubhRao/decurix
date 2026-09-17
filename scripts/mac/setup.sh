@@ -1,4 +1,7 @@
 #!/bin/bash
+#
+# Flowera macOS Setup: installs prerequisites (Homebrew, Docker Desktop,
+# Ollama, cloudflared, QEMU, jq, git) and configures host bindings.
 
 set -e
 
@@ -14,6 +17,10 @@ if ! command -v brew >/dev/null 2>&1; then
     exit 1
 fi
 
+echo "=== Installing base dependencies ==="
+brew install git jq qemu || true
+
+echo ""
 echo "=== Checking Docker Desktop ==="
 if command -v docker >/dev/null 2>&1 && [ -d "/Applications/Docker.app" ]; then
     echo "Docker Desktop is already installed."
@@ -37,7 +44,7 @@ echo "=== Configuring Ollama host binding ==="
 launchctl setenv OLLAMA_HOST 0.0.0.0 || true
 echo "Set OLLAMA_HOST=0.0.0.0 via launchctl."
 
-if ! grep -qs "OLLAMA_HOST" "$HOME/.zshrc"; then
+if ! grep -qs "OLLAMA_HOST" "$HOME/.zshrc" 2>/dev/null; then
     echo 'export OLLAMA_HOST="0.0.0.0"' >> "$HOME/.zshrc"
     echo "Added 'export OLLAMA_HOST=0.0.0.0' to ~/.zshrc."
 fi
@@ -70,5 +77,43 @@ fi
 
 echo ""
 echo "========================================"
+echo "        Verifying Installation"
+echo "========================================"
+echo ""
+
+echo "Git:"
+git --version || true
+
+echo ""
+echo "Docker:"
+docker --version || true
+
+echo ""
+echo "Docker Compose:"
+docker compose version || true
+
+echo ""
+echo "QEMU:"
+qemu-system-x86_64 --version 2>/dev/null | head -n 1 || echo "(qemu installed)"
+
+echo ""
+echo "Ollama:"
+ollama --version 2>/dev/null || echo "(ollama installed)"
+
+echo ""
+echo "Cloudflared:"
+cloudflared --version 2>/dev/null || echo "(cloudflared installed)"
+
+echo ""
+echo "========================================"
 echo " macOS Host Setup Complete"
+echo "========================================"
+echo ""
+echo "Next steps:"
+echo "  - For a full clean-slate build (clears old desktops & database):"
+echo "      ./scripts/mac/rebuild.sh"
+echo ""
+echo "  - To open Flowera (retaining existing desktops and data):"
+echo "      ./scripts/mac/build.sh"
+echo ""
 echo "========================================"
