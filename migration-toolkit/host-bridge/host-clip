@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# host-clip: Copy text or stdin directly to the local host machine clipboard (Mac, Windows, Linux)
+exec host-run clip "$@"
+

@@ -57,7 +57,7 @@ func (m *Manager) PopulateToolsVolume(ctx context.Context) error {
 		ctx,
 		&container.Config{
 			Image: ToolsImage,
-			Cmd:   []string{"sh", "-c", "if [ ! -f /target/.flowera-tools-ready ]; then cp -a /opt/tools/. /target/ && sync; fi"},
+			Cmd:   []string{"sh", "-c", "if [ ! -f /target/.flowera-tools-ready ]; then cp -a /opt/tools/. /target/ && touch /target/.flowera-tools-ready && sync; fi"},
 		},
 		&container.HostConfig{
 			Binds: []string{
