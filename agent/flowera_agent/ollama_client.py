@@ -39,9 +39,8 @@ NUM_BATCH = int(os.environ.get("OLLAMA_NUM_BATCH", "512"))
 def get_optimal_threads():
     """
     Determine the optimal thread count for CPU inference.
-    On hyperthreaded CPUs (e.g. 4 physical cores, 8 threads), running with
-    threads equal to physical cores avoids L1/L2 cache and FMA/AVX2 contention,
-    yielding 15-25% faster token generation and lower thermal throttling.
+    Reserves at least 1-2 cores for host OS responsiveness and desktop interactivity,
+    and caps threads to physical cores on hyperthreaded CPUs to prevent AVX2/cache thrashing.
     """
     env_threads = os.environ.get("OLLAMA_NUM_THREAD")
     if env_threads:
@@ -52,7 +51,15 @@ def get_optimal_threads():
         except ValueError:
             pass
 
-    # Try reading physical cores from /proc/cpuinfo (Linux)
+    logical = os.cpu_count() or 4
+    if logical > 4:
+        max_allowed = logical - 2
+    elif logical > 2:
+        max_allowed = logical - 1
+    else:
+        max_allowed = 1
+
+    # Try reading physical cores from /proc/cpuinfo (Linux) to avoid hyperthreading contention
     try:
         core_ids = set()
         with open("/proc/cpuinfo", "r") as f:
@@ -64,12 +71,11 @@ def get_optimal_threads():
                     core_id = line.split(":", 1)[1].strip()
                     core_ids.add((phys_id, core_id))
         if core_ids:
-            return len(core_ids)
+            return max(1, min(len(core_ids), max_allowed))
     except Exception:
         pass
 
-    logical = os.cpu_count() or 4
-    return max(1, min(logical, 4))
+    return max(1, max_allowed)
 
 
 def is_openai_endpoint(url):

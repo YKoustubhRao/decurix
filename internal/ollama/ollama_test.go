@@ -41,3 +41,16 @@ func TestDialableURLLeavesOtherHostsAlone(t *testing.T) {
 		}
 	}
 }
+
+func TestDefaultNumThread(t *testing.T) {
+	t.Setenv("OLLAMA_NUM_THREAD", "3")
+	if got := DefaultNumThread(); got != 3 {
+		t.Errorf("DefaultNumThread() with OLLAMA_NUM_THREAD=3 got %d, want 3", got)
+	}
+
+	t.Setenv("OLLAMA_NUM_THREAD", "")
+	got := DefaultNumThread()
+	if got < 1 {
+		t.Errorf("DefaultNumThread() fallback = %d, want >= 1", got)
+	}
+}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -212,6 +213,14 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// Pre-warm the shared tools volume asynchronously in the background so the
+	// first VM creation does not have to wait for volume initialization.
+	go func() {
+		if err := desktops.EnsureToolsVolume(context.Background()); err != nil {
+			log.Printf("background tools volume: %v", err)
+		}
+	}()
+
 	dbPath := filepath.Join(sqlitedb.DataDir(), sqlitedb.FileName)
 
 	db, err := sqlitedb.Open(dbPath)
@@ -312,6 +321,7 @@ func main() {
 	}
 
 	checker := &idlepause.Checker{Desktops: desktops, Tasks: tasksStore, Threshold: idleThreshold, Action: idleAction}
+	server.IdleChecker = checker
 	go checker.Run(context.Background())
 
 	// Fires each recurring request set up on the requests page when its cron
@@ -322,7 +332,14 @@ func main() {
 
 	log.Printf("Desktop manager listening on %s", listenAddr)
 
-	if err := http.ListenAndServe(listenAddr, httpapi.GzipMiddleware(mux)); err != nil {
+	httpServer := &http.Server{
+		Addr:              listenAddr,
+		Handler:           httpapi.GzipMiddleware(mux),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+
+	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
 }

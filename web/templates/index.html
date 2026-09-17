@@ -71,6 +71,33 @@
   background:var(--surface-2);
 }
 
+.dcard-paused-overlay{
+  position:absolute;
+  bottom:8px;
+  right:8px;
+  display:flex;
+  align-items:center;
+  gap:6px;
+  z-index:2;
+  pointer-events:none;
+}
+
+.dcard-paused-badge{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:4px 10px;
+  border-radius:12px;
+  font-size:11px;
+  font-weight:600;
+  background:rgba(18, 20, 24, 0.82);
+  backdrop-filter:blur(6px);
+  -webkit-backdrop-filter:blur(6px);
+  color:#38bdf8;
+  border:1px solid rgba(56, 189, 248, 0.25);
+  box-shadow:0 2px 6px rgba(0,0,0,0.35);
+}
+
 /* ---------- card header ---------- */
 
 .dcard-head{
@@ -561,11 +588,18 @@
            starved the VNC handshake of any screen actually opened for use.
            See httpapi.desktopScreenshotHandler. */}}
       <div class="dcard-preview">
-        {{if eq .Status "running"}}
+        {{if or (eq .Status "running") (eq .Status "paused")}}
           <img class="dcard-shot" data-shot="{{.ID}}" alt="{{.Name}} screen" decoding="async">
           <div class="dcard-preview-placeholder" data-shot-placeholder>
             Waiting for the screen…
           </div>
+          {{if eq .Status "paused"}}
+            <div class="dcard-paused-overlay">
+              <span class="dcard-paused-badge">
+                <span class="dot"></span> Idle (Paused)
+              </span>
+            </div>
+          {{end}}
         {{else}}
           <div class="dcard-preview-placeholder">
             Desktop is {{.Status}}
@@ -745,6 +779,21 @@
         </button>
         <button class="btn btn-default btn-sm action-icon" data-act="restart" data-id="{{.ID}}" title="Restart" aria-label="Restart desktop">
           <svg width="14" height="14"><use href="#i-restart"/></svg>
+        </button>
+        <button class="btn btn-default btn-sm action-icon" data-act="stop" data-id="{{.ID}}" title="Stop" aria-label="Stop desktop">
+          <svg width="14" height="14"><use href="#i-stop"/></svg>
+        </button>
+        {{else if eq .Status "paused"}}
+        <a class="btn btn-primary btn-sm" href="/view/{{.ID}}">
+          <svg width="14" height="14"><use href="#i-blossom"/></svg>
+          Chat
+        </a>
+        <button class="btn btn-default btn-sm action-icon" data-open="{{.URL}}?resize=remote&ui=touch" title="Open the screen in a new tab (auto-wakes)" aria-label="Open the desktop screen in a new tab">
+          <svg width="14" height="14"><use href="#i-external"/></svg>
+        </button>
+        <button class="btn btn-default btn-sm" data-act="unpause" data-id="{{.ID}}" title="Wake desktop" aria-label="Wake desktop">
+          <svg width="14" height="14"><use href="#i-play"/></svg>
+          Wake
         </button>
         <button class="btn btn-default btn-sm action-icon" data-act="stop" data-id="{{.ID}}" title="Stop" aria-label="Stop desktop">
           <svg width="14" height="14"><use href="#i-stop"/></svg>
@@ -976,7 +1025,13 @@
     for(var i = 0; i < images.length; i++){
       if(document.visibilityState !== "visible"){ return; }
 
-      await loadShot(images[i]);
+      var img = images[i];
+      var card = img.closest(".dcard");
+      if(card && card.querySelector(".status.paused") && img.classList.contains("is-live")){
+        continue;
+      }
+
+      await loadShot(img);
     }
   }
 
@@ -1332,6 +1387,8 @@
 
   var ACTIONS = {
     start:   {url: "/api/desktops/start",   pending: "Starting…"},
+    unpause: {url: "/api/desktops/unpause", pending: "Waking…"},
+    pause:   {url: "/api/desktops/pause",   pending: "Pausing…"},
     stop:    {url: "/api/desktops/stop",    pending: "Stopping…"},
     restart: {url: "/api/desktops/restart", pending: "Restarting…"},
     delete:  {url: "/api/desktops/delete",  pending: "Deleting…"}

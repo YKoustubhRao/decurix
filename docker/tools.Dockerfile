@@ -97,9 +97,8 @@ RUN echo '#!/bin/sh' > /opt/tools/env.sh && \
     chmod 755 /opt/tools/env.sh && \
     touch /opt/tools/.flowera-tools-ready && \
     chmod -R 755 /opt/tools
-
 # Final stage: minimal populator
 FROM alpine:latest
 COPY --from=builder /opt/tools /opt/tools
-CMD ["cp", "-a", "/opt/tools/.", "/target/"]
+CMD ["sh", "-c", "if [ ! -f /target/.flowera-tools-ready ]; then cp -a /opt/tools/. /target/ && sync; fi"]
 

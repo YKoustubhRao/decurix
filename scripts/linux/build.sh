@@ -68,8 +68,10 @@ if [ -d /sys/kernel/mm/ksm ]; then
     if [ -w /sys/kernel/mm/ksm/run ]; then
         echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
         echo 1 > /sys/kernel/mm/ksm/use_zero_pages 2>/dev/null || true
+        echo 1000 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null || true
+        echo 20 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
     else
-        docker run --rm --privileged -v /sys/kernel/mm/ksm:/sys/kernel/mm/ksm alpine sh -c "echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null; echo 1 > /sys/kernel/mm/ksm/use_zero_pages 2>/dev/null" >/dev/null 2>&1 || true
+        docker run --rm --privileged -v /sys/kernel/mm/ksm:/sys/kernel/mm/ksm alpine sh -c "echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null; echo 1 > /sys/kernel/mm/ksm/use_zero_pages 2>/dev/null; echo 1000 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null; echo 20 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null" >/dev/null 2>&1 || true
     fi
 fi
 

@@ -55,6 +55,7 @@ func (s *Server) desktopScreenshotHandler(w http.ResponseWriter, r *http.Request
 		return
 
 	case errors.Is(err, desktop.ErrNotRunning),
+		errors.Is(err, desktop.ErrPaused),
 		errors.Is(err, desktop.ErrNoNetwork),
 		errors.Is(err, desktop.ErrNoAddress):
 
