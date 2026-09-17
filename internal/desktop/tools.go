@@ -12,21 +12,22 @@ import (
 // EnsureToolsVolume ensures the shared flowera-tools volume exists and is populated
 // with the executables from flowera-tools:latest.
 func (m *Manager) EnsureToolsVolume(ctx context.Context) error {
+	m.toolsMu.Lock()
+	defer m.toolsMu.Unlock()
+
+	if m.toolsPopulated {
+		return nil
+	}
+
 	_ = m.EnsureCacheVolume(ctx)
 
 	vol, err := m.client.VolumeInspect(ctx, ToolsVolumeName)
-	alreadyPopulated := false
-	if err == nil && vol.Name == ToolsVolumeName {
-		if vol.Labels != nil && vol.Labels["flowera.populated"] == "true" {
-			alreadyPopulated = true
-		}
-	} else {
+	if err != nil || vol.Name != ToolsVolumeName {
 		log.Printf("Creating shared tools volume %s...", ToolsVolumeName)
 		_, err = m.client.VolumeCreate(ctx, volume.CreateOptions{
 			Name: ToolsVolumeName,
 			Labels: map[string]string{
-				"flowera":           "true",
-				"flowera.populated": "false",
+				"flowera": "true",
 			},
 		})
 		if err != nil {
@@ -34,16 +35,17 @@ func (m *Manager) EnsureToolsVolume(ctx context.Context) error {
 		}
 	}
 
-	if alreadyPopulated {
-		return nil
-	}
-
 	if _, _, err := m.client.ImageInspectWithRaw(ctx, ToolsImage); err != nil {
 		log.Printf("Tools image %s not present yet; volume ready for future population", ToolsImage)
 		return nil
 	}
 
-	return m.PopulateToolsVolume(ctx)
+	if err := m.PopulateToolsVolume(ctx); err != nil {
+		return err
+	}
+
+	m.toolsPopulated = true
+	return nil
 }
 
 // PopulateToolsVolume populates the flowera-tools volume using the tools image.
@@ -55,6 +57,7 @@ func (m *Manager) PopulateToolsVolume(ctx context.Context) error {
 		ctx,
 		&container.Config{
 			Image: ToolsImage,
+			Cmd:   []string{"sh", "-c", "if [ ! -f /target/.flowera-tools-ready ]; then cp -a /opt/tools/. /target/ && sync; fi"},
 		},
 		&container.HostConfig{
 			Binds: []string{

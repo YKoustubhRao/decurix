@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -93,6 +94,16 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		if parsed, err := strconv.ParseInt(envCpus, 10, 64); err == nil && parsed > 0 {
 			cpus = parsed
 		}
+	} else {
+		// Adaptively scale default CPUs to keep host system and desktop UI responsive:
+		numCPU := runtime.NumCPU()
+		if numCPU > 4 {
+			cpus = int64(min(2, numCPU-2))
+		} else if numCPU > 2 {
+			cpus = int64(min(2, numCPU-1))
+		} else {
+			cpus = 1
+		}
 	}
 
 	memoryMB := int64(2048)
@@ -172,6 +183,15 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	if cpus > 64 {
 		http.Error(w, "cpus must not exceed 64", http.StatusBadRequest)
 		return
+	}
+
+	// Clamp cpus so a desktop container never completely starves the host OS
+	maxHostCpus := int64(runtime.NumCPU())
+	if maxHostCpus > 2 {
+		maxHostCpus -= 1
+	}
+	if cpus > maxHostCpus && maxHostCpus > 0 {
+		cpus = maxHostCpus
 	}
 
 	if memoryMB <= 0 {

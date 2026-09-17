@@ -94,9 +94,12 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 func defaultNumThread() int {
 	cpus := runtime.NumCPU()
 	if cpus > 4 {
-		return cpus / 2
+		return cpus - 2
 	}
-	return cpus
+	if cpus > 2 {
+		return cpus - 1
+	}
+	return 1
 }
 
 func getenvInt(key string, fallback int) int {

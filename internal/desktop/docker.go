@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/docker/docker/api/types/container"
@@ -175,6 +176,36 @@ func buildDesktopEnv(name, harness, specialization, parentID string) []string {
 		"AGENT_HARNESS=" + harness,
 	}
 
+	// Forward Ollama performance & thread tuning into desktops so agents don't
+	// starve the host CPU or thrash caches.
+	numThreads := os.Getenv("OLLAMA_NUM_THREAD")
+	if numThreads == "" {
+		numThreads = strconv.Itoa(ollama.DefaultNumThread())
+	}
+	env = append(env, "OLLAMA_NUM_THREAD="+numThreads)
+
+	kvCache := os.Getenv("OLLAMA_KV_CACHE_TYPE")
+	if kvCache == "" {
+		kvCache = "q8_0"
+	}
+	env = append(env, "OLLAMA_KV_CACHE_TYPE="+kvCache)
+
+	flashAttn := os.Getenv("OLLAMA_FLASH_ATTENTION")
+	if flashAttn == "" {
+		flashAttn = "1"
+	}
+	env = append(env, "OLLAMA_FLASH_ATTENTION="+flashAttn)
+
+	if numBatch := os.Getenv("OLLAMA_NUM_BATCH"); numBatch != "" {
+		env = append(env, "OLLAMA_NUM_BATCH="+numBatch)
+	}
+
+	numParallel := os.Getenv("OLLAMA_NUM_PARALLEL")
+	if numParallel == "" {
+		numParallel = "1"
+	}
+	env = append(env, "OLLAMA_NUM_PARALLEL="+numParallel)
+
 	if specialization != "" {
 		env = append(env, "DESKTOP_SPECIALIZATION="+specialization)
 	}
@@ -202,20 +233,33 @@ func buildDesktopEnv(name, harness, specialization, parentID string) []string {
 
 // buildContainerConfigs builds the Docker container, host, and network configuration for a desktop from its resolved image, resources, profile, harness, and security options.
 func buildContainerConfigs(imageName, containerName, profile, harness string, cpus, memoryMB int64, env []string, volumeName string, securityOpt []string) (*container.Config, *container.HostConfig, *network.NetworkingConfig) {
+	labels := map[string]string{
+		"desktop-manager":        "true",
+		"desktop-profile":        profile,
+		"desktop-harness":        harness,
+		"desktop-cpus":           strconv.FormatInt(cpus, 10),
+		"desktop-memory":         strconv.FormatInt(memoryMB, 10),
+		"desktop-model":          envValue(env, "OLLAMA_MODEL"),
+		"desktop-specialization": envValue(env, "DESKTOP_SPECIALIZATION"),
+		"desktop-parent-id":      envValue(env, "DESKTOP_PARENT_ID"),
+	}
+
 	config := &container.Config{
 		Image:    imageName,
 		Env:      env,
 		Hostname: containerName,
-		Labels: map[string]string{
-			"desktop-manager": "true",
-			"desktop-profile": profile,
-			"desktop-harness": harness,
-		},
+		Labels:   labels,
 	}
 
 	swappinessZero := int64(0)
+	shmBytes := int64(512 * 1024 * 1024)
+	if shmEnv := os.Getenv("FLOWERA_DESKTOP_SHM_MB"); shmEnv != "" {
+		if parsed, err := strconv.ParseInt(shmEnv, 10, 64); err == nil && parsed > 0 {
+			shmBytes = parsed * 1024 * 1024
+		}
+	}
 	hostConfig := &container.HostConfig{
-		ShmSize:     512 * 1024 * 1024,
+		ShmSize:     shmBytes,
 		SecurityOpt: securityOpt,
 		Resources: container.Resources{
 			NanoCPUs:          cpus * 1_000_000_000,

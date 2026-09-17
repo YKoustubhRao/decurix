@@ -128,6 +128,8 @@ if [ -d /sys/kernel/mm/ksm ]; then
     echo "=== Enabling Linux Kernel Samepage Merging (KSM) for RAM deduplication ==="
     echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null && echo "KSM enabled (run=1)" || true
     echo 1 > /sys/kernel/mm/ksm/use_zero_pages 2>/dev/null && echo "KSM zero pages deduplication enabled" || true
+    echo 1000 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null || true
+    echo 20 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
 fi
 
 

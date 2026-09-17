@@ -414,6 +414,7 @@ svg{display:block;flex:none}
   text-transform:capitalize
 }
 .status.running{background:var(--live-soft);color:var(--live)}
+.status.paused{background:rgba(56, 189, 248, 0.16);color:#38bdf8}
 .status.stopped{background:var(--idle-soft);color:var(--text-2)}
 
 /* A desktop with an open query note takes this over its own "running" pill -
@@ -423,6 +424,7 @@ svg{display:block;flex:none}
    accent, not a wider status-color system. */
 .status.needs-you{background:var(--accent-soft);color:var(--accent)}
 .status.needs-you .dot{animation:none}
+.status.paused .dot{animation:none}
 
 .dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
 .status.running .dot{animation:pulse 2.4s ease-in-out infinite}

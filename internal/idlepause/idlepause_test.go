@@ -257,3 +257,18 @@ func TestIdlePastThresholdIsPaused(t *testing.T) {
 		t.Fatalf("stopped = %v, want []", desktops.stopped)
 	}
 }
+
+func TestCheckFastPause(t *testing.T) {
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+
+	d := desktop.Desktop{ID: "bordu", Status: "running", StartedAt: now.Add(-day).Format(time.RFC3339Nano)}
+	desktops := &fakeDesktops{list: []desktop.Desktop{d}}
+	tasks := &fakeTasks{activity: map[string]time.Time{"bordu": now.Add(-30 * time.Second)}}
+
+	c := &Checker{Desktops: desktops, Tasks: tasks, Threshold: time.Hour, Action: "pause", now: func() time.Time { return now }}
+	c.checkFastPause(context.Background(), d, 15*time.Second)
+
+	if len(desktops.paused) != 1 || desktops.paused[0] != "bordu" {
+		t.Fatalf("fast-pause: paused = %v, want [bordu]", desktops.paused)
+	}
+}

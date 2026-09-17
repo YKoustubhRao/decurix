@@ -147,11 +147,22 @@ ensure_ollama_ready() {
         if command -v systemctl >/dev/null 2>&1 \
             && systemctl cat ollama >/dev/null 2>&1; then
 
-            echo "Giving its service OLLAMA_HOST=0.0.0.0 (needs sudo, once)."
+            echo "Giving its service OLLAMA_HOST=0.0.0.0 and CPU priority/thread limits (needs sudo, once)."
             echo ""
 
+            local ncpus threads quota_pct
+            ncpus="$(nproc 2>/dev/null || echo 4)"
+            if [ "$ncpus" -gt 4 ]; then
+                threads=$((ncpus - 2))
+            elif [ "$ncpus" -gt 2 ]; then
+                threads=$((ncpus - 1))
+            else
+                threads=1
+            fi
+            quota_pct=$((threads * 100))
+
             if sudo mkdir -p /etc/systemd/system/ollama.service.d \
-                && printf '[Service]\nEnvironment="OLLAMA_HOST=0.0.0.0"\nEnvironment="OLLAMA_FLASH_ATTENTION=1"\nEnvironment="OLLAMA_KV_CACHE_TYPE=q8_0"\nEnvironment="OLLAMA_NUM_PARALLEL=1"\n' \
+                && printf '[Service]\nEnvironment="OLLAMA_HOST=0.0.0.0"\nEnvironment="OLLAMA_FLASH_ATTENTION=1"\nEnvironment="OLLAMA_KV_CACHE_TYPE=q8_0"\nEnvironment="OLLAMA_NUM_PARALLEL=1"\nEnvironment="OLLAMA_NUM_THREAD=%d"\nNice=10\nCPUShares=512\nCPUQuota=%d%%\n' "$threads" "$quota_pct" \
                     | sudo tee /etc/systemd/system/ollama.service.d/flowera.conf >/dev/null \
                 && sudo systemctl daemon-reload \
                 && sudo systemctl restart ollama; then

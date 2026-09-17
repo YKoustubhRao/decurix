@@ -53,6 +53,17 @@ type Manager struct {
 	secOpt         []string
 	secOptResolved bool
 
+	// toolsMu/toolsPopulated ensure the shared flowera-tools volume is
+	// populated at most once in-process, preventing redundant init containers
+	// and disk I/O on every VM creation.
+	toolsMu        sync.Mutex
+	toolsPopulated bool
+
+	// startedMu/startedCache cache Docker's StartedAt timestamp for running
+	// containers, eliminating redundant ContainerInspect RPCs during List.
+	startedMu    sync.Mutex
+	startedCache map[string]string
+
 	// httpClient pools persistent HTTP connections (Keep-Alive) to desktop
 	// agent APIs on port 8081, eliminating TCP handshake overhead on every
 	// command dispatch.
@@ -62,7 +73,8 @@ type Manager struct {
 // NewManager creates a Manager backed by the given Docker client.
 func NewManager(cli *client.Client) *Manager {
 	return &Manager{
-		client: cli,
+		client:       cli,
+		startedCache: make(map[string]string),
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 			Transport: &http.Transport{
@@ -270,7 +282,8 @@ func (m *Manager) List(
 }
 
 // desktopFromContainer builds one Desktop from a ContainerList entry plus its
-// own ContainerInspect - the per-container work List fans out concurrently.
+// metadata labels, falling back to ContainerInspect only for legacy containers
+// or on first boot to cache StartedAt.
 func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary) Desktop {
 	name := ""
 	if len(c.Names) > 0 {
@@ -281,60 +294,89 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 	}
 
 	volumeName := ""
-	model := ""
+	for _, mount := range c.Mounts {
+		if mount.Destination == "/home/headless" {
+			volumeName = mount.Name
+			break
+		}
+	}
+
+	model := c.Labels["desktop-model"]
+	specialization := c.Labels["desktop-specialization"]
+	parentID := c.Labels["desktop-parent-id"]
+
 	var cpus int64
+	if s := c.Labels["desktop-cpus"]; s != "" {
+		cpus, _ = strconv.ParseInt(s, 10, 64)
+	}
 	var memoryMB int64
+	if s := c.Labels["desktop-memory"]; s != "" {
+		memoryMB, _ = strconv.ParseInt(s, 10, 64)
+	}
 
-	inspect, err := m.client.ContainerInspect(
-		ctx,
-		c.ID,
-	)
+	startedAt := ""
+	if c.State == "running" {
+		m.startedMu.Lock()
+		cached, ok := m.startedCache[c.ID]
+		m.startedMu.Unlock()
+		if ok {
+			startedAt = cached
+		}
+	} else {
+		m.startedMu.Lock()
+		delete(m.startedCache, c.ID)
+		m.startedMu.Unlock()
+	}
 
-	if err == nil {
-		for _, mount := range inspect.Mounts {
-			if mount.Destination == "/home/headless" {
-				volumeName = mount.Name
-				break
+	// Inspect only if missing critical metadata (legacy container) or if
+	// StartedAt is not yet cached for a running container.
+	needsInspect := (c.State == "running" && startedAt == "") || (model == "" && c.Labels["desktop-manager"] == "true")
+	if needsInspect {
+		inspectCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		inspect, err := m.client.ContainerInspect(inspectCtx, c.ID)
+		cancel()
+		if err == nil {
+			if inspect.State != nil && inspect.State.Running {
+				startedAt = inspect.State.StartedAt
+				m.startedMu.Lock()
+				m.startedCache[c.ID] = startedAt
+				m.startedMu.Unlock()
 			}
-		}
-
-		if inspect.Config != nil {
-			model = envValue(inspect.Config.Env, "OLLAMA_MODEL")
-		}
-
-		if inspect.HostConfig != nil {
-			if inspect.HostConfig.NanoCPUs > 0 {
+			if volumeName == "" {
+				for _, mount := range inspect.Mounts {
+					if mount.Destination == "/home/headless" {
+						volumeName = mount.Name
+						break
+					}
+				}
+			}
+			if model == "" && inspect.Config != nil {
+				model = envValue(inspect.Config.Env, "OLLAMA_MODEL")
+			}
+			if specialization == "" && inspect.Config != nil {
+				specialization = envValue(inspect.Config.Env, "DESKTOP_SPECIALIZATION")
+				parentID = envValue(inspect.Config.Env, "DESKTOP_PARENT_ID")
+			}
+			if cpus == 0 && inspect.HostConfig != nil && inspect.HostConfig.NanoCPUs > 0 {
 				cpus = inspect.HostConfig.NanoCPUs / 1_000_000_000
 			}
-
-			if inspect.HostConfig.Memory > 0 {
+			if memoryMB == 0 && inspect.HostConfig != nil && inspect.HostConfig.Memory > 0 {
 				memoryMB = inspect.HostConfig.Memory / (1024 * 1024)
 			}
 		}
 	}
 
-	specialization := ""
-	parentID := ""
-
-	if inspect.Config != nil {
-		specialization = envValue(inspect.Config.Env, "DESKTOP_SPECIALIZATION")
-		parentID = envValue(inspect.Config.Env, "DESKTOP_PARENT_ID")
-	}
-
 	profile := c.Labels["desktop-profile"]
-
 	if profile == "" {
 		profile = "basic"
 	}
 
 	harness := c.Labels["desktop-harness"]
-
 	if harness == "" {
 		harness = HarnessOllama
 	}
 
 	status := "stopped"
-
 	if c.State == "running" {
 		status = "running"
 	} else if c.State == "paused" {
@@ -352,11 +394,6 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 			c.Created,
 			0,
 		).Format(time.RFC3339)
-	}
-
-	startedAt := ""
-	if err == nil && inspect.State != nil && inspect.State.Running {
-		startedAt = inspect.State.StartedAt
 	}
 
 	return Desktop{
@@ -398,11 +435,23 @@ func (m *Manager) Start(
 }
 
 // Pause pauses the Docker container processes backing the given desktop ID using the cgroup freezer.
+// It captures and persists the desktop's current screen frame before freezing the container,
+// guaranteeing that the last active screen is cached and available while paused.
 func (m *Manager) Pause(
 	ctx context.Context,
 	id string,
 ) error {
-	name := "desktop_" + sanitizeName(id)
+	sanitizedID := sanitizeName(id)
+	name := "desktop_" + sanitizedID
+
+	// Capture the current screen frame before freezing processes, so the dashboard
+	// can show the last active screen while the container is idle/frozen.
+	captureCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	if data, err := m.Screenshot(captureCtx, sanitizedID, 480); err == nil && len(data) > 0 {
+		saveShotToDisk(sanitizedID, data)
+	}
+	cancel()
+
 	return m.client.ContainerPause(ctx, name)
 }
 
@@ -423,6 +472,10 @@ func (m *Manager) Stop(
 
 	name := "desktop_" + sanitizeName(id)
 
+	if inspect, err := m.client.ContainerInspect(ctx, name); err == nil && inspect.State != nil && inspect.State.Paused {
+		_ = m.client.ContainerUnpause(ctx, name)
+	}
+
 	timeoutEnv := os.Getenv("DESKTOP_STOP_TIMEOUT_SECONDS")
 	timeout := 10
 	if timeoutEnv != "" {
@@ -431,13 +484,19 @@ func (m *Manager) Stop(
 		}
 	}
 
-	return m.client.ContainerStop(
+	err := m.client.ContainerStop(
 		ctx,
 		name,
 		container.StopOptions{
 			Timeout: &timeout,
 		},
 	)
+
+	m.startedMu.Lock()
+	delete(m.startedCache, name)
+	m.startedMu.Unlock()
+
+	return err
 }
 
 // Restart stops and restarts the Docker container backing the given desktop ID.
@@ -447,6 +506,10 @@ func (m *Manager) Restart(
 ) error {
 
 	name := "desktop_" + sanitizeName(id)
+
+	if inspect, err := m.client.ContainerInspect(ctx, name); err == nil && inspect.State != nil && inspect.State.Paused {
+		_ = m.client.ContainerUnpause(ctx, name)
+	}
 
 	timeout := 10
 
@@ -459,6 +522,10 @@ func (m *Manager) Restart(
 	); err != nil {
 		// Container may already be stopped.
 	}
+
+	m.startedMu.Lock()
+	delete(m.startedCache, name)
+	m.startedMu.Unlock()
 
 	return m.client.ContainerStart(
 		ctx,
@@ -483,6 +550,10 @@ func (m *Manager) Delete(
 		return err
 	}
 
+	if inspect.State != nil && inspect.State.Paused {
+		_ = m.client.ContainerUnpause(ctx, name)
+	}
+
 	var volumeName string
 
 	for _, mount := range inspect.Mounts {
@@ -502,6 +573,11 @@ func (m *Manager) Delete(
 	if err != nil {
 		return err
 	}
+
+	m.startedMu.Lock()
+	delete(m.startedCache, inspect.ID)
+	delete(m.startedCache, name)
+	m.startedMu.Unlock()
 
 	m.shotMu.Lock()
 	delete(m.shots, sanitizeName(id))

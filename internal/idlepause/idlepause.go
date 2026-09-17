@@ -161,6 +161,55 @@ func (c *Checker) checkOne(ctx context.Context, d desktop.Desktop) {
 	}
 }
 
+// FastPauseAfter schedules an idle check for desktopID after delay (e.g. 15 seconds after a task finishes).
+// If the desktop is not busy and hasn't had new activity or views during that window, it transitions to idle immediately.
+func (c *Checker) FastPauseAfter(desktopID string, delay time.Duration) {
+	if c == nil || c.Threshold <= 0 {
+		return
+	}
+	go func() {
+		time.Sleep(delay)
+		ctx := context.Background()
+		desktops, err := c.Desktops.List(ctx)
+		if err != nil {
+			return
+		}
+		for _, d := range desktops {
+			if d.ID == desktopID && d.Status == "running" {
+				c.checkFastPause(ctx, d, delay)
+				return
+			}
+		}
+	}()
+}
+
+func (c *Checker) checkFastPause(ctx context.Context, d desktop.Desktop, minIdle time.Duration) {
+	if reason, err := c.Tasks.Busy(d.ID); err != nil || reason != "" {
+		return
+	}
+
+	idleSince, ok, err := c.idleSince(d)
+	if err != nil || !ok {
+		return
+	}
+
+	if c.clock().Sub(idleSince) < minIdle {
+		return
+	}
+
+	if c.Action == "pause" {
+		log.Printf("idlepause: fast-pausing %s after task completion - idle since %s", d.ID, idleSince.Format(time.RFC3339))
+		if err := c.Desktops.Pause(ctx, d.ID); err != nil {
+			log.Printf("idlepause: fast-pausing %s: %v", d.ID, err)
+		}
+	} else {
+		log.Printf("idlepause: fast-stopping %s after task completion - idle since %s", d.ID, idleSince.Format(time.RFC3339))
+		if err := c.Desktops.Stop(ctx, d.ID); err != nil {
+			log.Printf("idlepause: fast-stopping %s: %v", d.ID, err)
+		}
+	}
+}
+
 // idleSince is the latest of: when the desktop last started, when its task
 // records last changed, and when its thumbnail or screen was last looked at -
 // the point after which "idle" can actually start being measured from. ok is

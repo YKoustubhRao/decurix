@@ -71,7 +71,7 @@ func Open(path string) (*sql.DB, error) {
 	}
 
 	query := url.Values{}
-	query.Add("_pragma", "busy_timeout(5000)")
+	query.Add("_pragma", "busy_timeout(10000)")
 	query.Add("_pragma", "journal_mode(WAL)")
 	query.Add("_pragma", "synchronous(NORMAL)")
 	query.Add("_pragma", "foreign_keys(ON)")

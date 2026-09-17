@@ -12,6 +12,7 @@ import (
 	"github.com/YKoustubhRao/flowera/internal/conversation"
 	"github.com/YKoustubhRao/flowera/internal/dag"
 	"github.com/YKoustubhRao/flowera/internal/desktop"
+	"github.com/YKoustubhRao/flowera/internal/idlepause"
 	"github.com/YKoustubhRao/flowera/internal/lanaccess"
 	"github.com/YKoustubhRao/flowera/internal/memory"
 	"github.com/YKoustubhRao/flowera/internal/querynotes"
@@ -43,8 +44,11 @@ type Server struct {
 	// through NewServer: it holds this *Server itself as its Submitter
 	// (SubmitTracked), so it cannot be built before the Server exists.
 	DagRunner *dag.Runner
-	Suggest   *suggest.Store
-	Web       *webui.Renderer
+	// IdleChecker is optionally assigned by cmd/flowera/main.go after construction,
+	// allowing task completion events to request fast-idle transitions.
+	IdleChecker *idlepause.Checker
+	Suggest     *suggest.Store
+	Web         *webui.Renderer
 
 	stepImagesMu     sync.Mutex
 	recentStepImages map[string]string

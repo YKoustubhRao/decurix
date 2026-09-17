@@ -89,7 +89,9 @@ func defaultMaxLoadedModels() string {
 	return maxLoadedModels
 }
 
-func defaultNumThread() int {
+// DefaultNumThread returns the recommended thread count for CPU inference,
+// strictly reserving at least 1-2 cores for host and desktop responsiveness.
+func DefaultNumThread() int {
 	if v := getenvInt("OLLAMA_NUM_THREAD", 0); v > 0 {
 		return v
 	}
@@ -101,7 +103,11 @@ func defaultNumThread() int {
 	if cpus > 2 {
 		return cpus - 1
 	}
-	return cpus
+	return 1
+}
+
+func defaultNumThread() int {
+	return DefaultNumThread()
 }
 
 func getenvInt(key string, fallback int) int {
@@ -294,11 +300,15 @@ func (m *Manager) EnsureReady(ctx context.Context) error {
 			},
 		}
 
+		threads := DefaultNumThread()
 		hostConfig := &container.HostConfig{
 			Binds: []string{
 				volumeName + ":/root/.ollama",
 			},
-
+			Resources: container.Resources{
+				NanoCPUs:  int64(threads) * 1_000_000_000,
+				CPUShares: 512, // Lower priority than interactive desktop containers (1024)
+			},
 			RestartPolicy: container.RestartPolicy{
 				Name: "unless-stopped",
 			},
