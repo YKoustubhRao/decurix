@@ -73,6 +73,24 @@ const (
 	// Ollama loads a model for one context size, and a request for another
 	// makes it reload - which on a CPU-only host is minutes, not seconds.
 	NumCtx = 8192
+
+	// maxLoadedModels raises Ollama's own ceiling (OLLAMA_MAX_LOADED_MODELS,
+	// server default 1 on a CPU-only host) on the bundled container from 1
+	// to 2 - exactly enough for the two context sizes actually in play
+	// system-wide (NumCtx for every ordinary call, TheBot coding's 32768,
+	// see internal/coding.codeGenNumCtx), never more. Below this, the same
+	// model at two different num_ctx values is two different Ollama
+	// runners that take turns evicting each other: measured, a single
+	// coding call reloaded the shared model for every desktop (161s) and
+	// then reloaded it back the moment an ordinary chat turn followed it.
+	// Raising the ceiling lets both stay resident; codeGenKeepAlive (a
+	// short 5m, against the chat runner's 30m) is what then gives the
+	// rarely-used one's memory back promptly instead of both simply
+	// staying loaded forever. Only takes effect for the bundled container -
+	// an external Ollama named by OLLAMA_URL is not this control plane's to
+	// configure, and needs the same env var set by hand for the same fix
+	// to apply there.
+	maxLoadedModels = "2"
 )
 
 // DesktopURL returns the Ollama URL every new desktop is given: OLLAMA_URL
@@ -233,6 +251,7 @@ func (m *Manager) EnsureReady(ctx context.Context) error {
 
 			Env: []string{
 				"OLLAMA_HOST=0.0.0.0:11434",
+				"OLLAMA_MAX_LOADED_MODELS=" + maxLoadedModels,
 			},
 
 			Labels: map[string]string{

@@ -1,7 +1,7 @@
 // Package httpapi implements the Flowera control-plane HTTP API and
 // dashboard: it is the only package that touches net/http request/response
 // objects, composing the desktop, querynotes, memory, conversation,
-// stepimages, tasks, tunnel, and webui packages.
+// stepimages, tasks, tunnel, suggest, and webui packages.
 package httpapi
 
 import (
@@ -9,11 +9,14 @@ import (
 
 	"github.com/YKoustubhRao/flowera/internal/claudeauth"
 	"github.com/YKoustubhRao/flowera/internal/conversation"
+	"github.com/YKoustubhRao/flowera/internal/dag"
 	"github.com/YKoustubhRao/flowera/internal/desktop"
 	"github.com/YKoustubhRao/flowera/internal/lanaccess"
 	"github.com/YKoustubhRao/flowera/internal/memory"
 	"github.com/YKoustubhRao/flowera/internal/querynotes"
+	"github.com/YKoustubhRao/flowera/internal/schedule"
 	"github.com/YKoustubhRao/flowera/internal/stepimages"
+	"github.com/YKoustubhRao/flowera/internal/suggest"
 	"github.com/YKoustubhRao/flowera/internal/tasks"
 	"github.com/YKoustubhRao/flowera/internal/tunnel"
 	"github.com/YKoustubhRao/flowera/internal/webui"
@@ -21,8 +24,8 @@ import (
 
 // Server wires the desktop manager, query-notes store, memory store, chat
 // store, action-step screenshot store, task records, tunnel store, shared
-// Claude session store, LAN-access store, and web UI renderer together to
-// serve the Flowera control plane.
+// Claude session store, LAN-access store, scheduled-request store, DAG
+// store, and web UI renderer together to serve the Flowera control plane.
 type Server struct {
 	Desktops   *desktop.Manager
 	QueryNotes *querynotes.Store
@@ -33,11 +36,18 @@ type Server struct {
 	Tunnel     *tunnel.Store
 	ClaudeAuth *claudeauth.Store
 	LANAccess  *lanaccess.Store
-	Web        *webui.Renderer
+	Schedules  *schedule.Store
+	Dags       *dag.Store
+	// DagRunner is assigned by cmd/flowera/main.go after construction, not
+	// through NewServer: it holds this *Server itself as its Submitter
+	// (SubmitTracked), so it cannot be built before the Server exists.
+	DagRunner *dag.Runner
+	Suggest   *suggest.Store
+	Web       *webui.Renderer
 }
 
 // NewServer creates a Server from its component stores/managers.
-func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memoryStore *memory.Store, chat *conversation.Store, stepImages *stepimages.Store, taskRecords *tasks.Store, tunnelStore *tunnel.Store, claudeAuth *claudeauth.Store, lanAccess *lanaccess.Store, web *webui.Renderer) *Server {
+func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memoryStore *memory.Store, chat *conversation.Store, stepImages *stepimages.Store, taskRecords *tasks.Store, tunnelStore *tunnel.Store, claudeAuth *claudeauth.Store, lanAccess *lanaccess.Store, schedules *schedule.Store, dags *dag.Store, suggestions *suggest.Store, web *webui.Renderer) *Server {
 	return &Server{
 		Desktops:   desktops,
 		QueryNotes: queryNotes,
@@ -48,6 +58,9 @@ func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memorySt
 		Tunnel:     tunnelStore,
 		ClaudeAuth: claudeAuth,
 		LANAccess:  lanAccess,
+		Schedules:  schedules,
+		Dags:       dags,
+		Suggest:    suggestions,
 		Web:        web,
 	}
 }
@@ -66,7 +79,31 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/desktops/delete", s.deleteDesktopHandler)
 	mux.HandleFunc("/requests", s.requestsDashboardHandler)
 	mux.HandleFunc("/api/desktops/send", s.sendRequestHandler)
+	mux.HandleFunc("/api/desktops/suggest", s.suggestDesktopHandler)
+	mux.HandleFunc("/api/schedules", s.schedulesHandler)
+	mux.HandleFunc("/api/schedules/create", s.createScheduleHandler)
+	mux.HandleFunc("/api/schedules/delete", s.deleteScheduleHandler)
+	mux.HandleFunc("/api/schedules/toggle", s.toggleScheduleHandler)
+	mux.HandleFunc("/dags", s.dagsPageHandler)
+	mux.HandleFunc("/dags/", s.dagPageHandler)
+	mux.HandleFunc("/api/dags", s.dagsAPIHandler)
+	mux.HandleFunc("/api/dags/create", s.createDagHandler)
+	mux.HandleFunc("/api/dags/get", s.dagAPIHandler)
+	mux.HandleFunc("/api/dags/delete", s.deleteDagHandler)
+	mux.HandleFunc("/api/dags/nodes/create", s.createDagNodeHandler)
+	mux.HandleFunc("/api/dags/nodes/update", s.updateDagNodeHandler)
+	mux.HandleFunc("/api/dags/nodes/position", s.dagNodePositionHandler)
+	mux.HandleFunc("/api/dags/nodes/delete", s.deleteDagNodeHandler)
+	mux.HandleFunc("/api/dags/nodes/set-head", s.setDagHeadHandler)
+	mux.HandleFunc("/api/dags/edges/create", s.createDagEdgeHandler)
+	mux.HandleFunc("/api/dags/edges/delete", s.deleteDagEdgeHandler)
+	mux.HandleFunc("/api/dags/cron/set", s.setDagCronHandler)
+	mux.HandleFunc("/api/dags/run", s.runDagHandler)
+	mux.HandleFunc("/api/dags/runs", s.dagRunsHandler)
+	mux.HandleFunc("/api/dags/runs/get", s.dagRunAPIHandler)
 	mux.HandleFunc("/api/desktops/memory", s.desktopMemoryHandler)
+	mux.HandleFunc("/api/desktops/memory/link", s.linkDesktopMemoryHandler)
+	mux.HandleFunc("/api/desktops/memory/unlink", s.unlinkDesktopMemoryHandler)
 	mux.HandleFunc("/api/desktops/screenshot", s.desktopScreenshotHandler)
 	mux.HandleFunc("/api/desktops/chat", s.chatHandler)
 	mux.HandleFunc("/api/desktops/chat/stream", s.chatStreamHandler)

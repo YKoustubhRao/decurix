@@ -289,8 +289,6 @@ def handle(message):
         except Exception as exc:
             logging_utils.log(traceback.format_exc())
             content, is_error = [_text(f"internal error: {type(exc).__name__}: {exc}")], True
-        finally:
-            progress.flush()
 
         return {"jsonrpc": "2.0", "id": msg_id, "result": {"content": content, "isError": is_error}}
 
@@ -300,21 +298,31 @@ def handle(message):
 def main():
     logging_utils.log_to_file("/tmp/flowera-mcp.log")
 
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
+    try:
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
 
-        try:
-            message = json.loads(line)
-        except ValueError:
-            continue
+            try:
+                message = json.loads(line)
+            except ValueError:
+                continue
 
-        reply = handle(message)
+            reply = handle(message)
 
-        if reply is not None:
-            sys.stdout.write(json.dumps(reply) + "\n")
-            sys.stdout.flush()
+            if reply is not None:
+                sys.stdout.write(json.dumps(reply) + "\n")
+                sys.stdout.flush()
+    finally:
+        # Unlike cli.py's gui command, this process stays alive across many
+        # tool calls for the whole turn - flushing after every single one
+        # would block Claude's tool-call turnaround on the control plane
+        # under any latency, contradicting progress.emit's own "never slows
+        # down the thing it is describing" contract. Flush once, here, when
+        # the server itself is about to exit (stdin closed), so the last
+        # queued step still isn't lost.
+        progress.flush()
 
 
 if __name__ == "__main__":

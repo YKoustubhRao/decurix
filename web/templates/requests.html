@@ -50,6 +50,48 @@
 
 .sent{display:flex;align-items:center;gap:6px;color:var(--live);font-size:12.5px;font-weight:550}
 
+.repeat-row{display:flex;align-items:center;gap:9px;cursor:pointer;user-select:none}
+.repeat-row input{width:16px;height:16px;accent-color:var(--accent);cursor:pointer}
+.repeat-row span{font-size:13px;font-weight:550;color:var(--text)}
+
+.cron-field{display:none}
+.cron-field.on{display:grid}
+.cron-field .input{font-family:var(--mono)}
+
+.sched-panel{margin-top:18px}
+.sched-panel .panel-head{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:15px 20px;
+  border-bottom:1px solid var(--line);
+  font-size:14px;
+  font-weight:650;
+  color:var(--text)
+}
+.sched-panel .panel-head svg{color:var(--text-3)}
+.sched-row{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:14px;
+  padding:14px 20px;
+  border-bottom:1px solid var(--line)
+}
+.sched-row:last-child{border-bottom:none}
+.sched-row[data-enabled="false"]{opacity:.55}
+.sched-main{min-width:0;display:grid;gap:5px}
+.sched-content{
+  font-size:13px;
+  color:var(--text);
+  white-space:pre-wrap;
+  word-break:break-word;
+  max-width:64ch
+}
+.sched-meta{display:flex;flex-wrap:wrap;align-items:center;gap:7px 11px;font-size:11.5px;color:var(--text-3)}
+.sched-actions{display:flex;gap:6px;flex-shrink:0}
+.sched-empty{padding:26px 20px;color:var(--text-3);font-size:13px;text-align:center}
+
 .dest-status{
   display:inline-flex;
   align-items:center;
@@ -111,6 +153,8 @@
         <span class="dest-status" id="destStatus"><span class="dot"></span><span id="destStatusText">—</span></span>
       </div>
 
+      <div class="hint" id="destSuggestNote" hidden></div>
+
       <div class="field">
         <label for="content">Request</label>
         <div class="msg-box">
@@ -118,6 +162,40 @@
           <span class="counter" id="counter">0</span>
         </div>
         <div class="hint">Saved inside the desktop as <span class="mono">DDMMYYYYHHMMSS.txt</span>.</div>
+      </div>
+
+      <div class="field">
+        <label class="repeat-row">
+          <input type="checkbox" id="repeat">
+          <span>Repeat on a schedule</span>
+        </label>
+      </div>
+
+      <div class="field cron-field" id="cronField">
+        <label for="cron">Cron schedule <span class="mono">(minute hour day month weekday, UTC)</span></label>
+        <input class="input" id="cron" name="cron" placeholder="*/30 * * * *" autocomplete="off">
+        <div class="hint">
+          Resubmits this same request every time the schedule matches, and appends
+          <span class="mono">TIME:{&hellip;}</span> to it with when that run triggered. Examples:
+          <span class="mono">0 * * * *</span> hourly, <span class="mono">0 9 * * *</span> daily at 09:00 UTC,
+          <span class="mono">0 9 * * 1</span> every Monday at 09:00 UTC.
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="repeat-row">
+          <input type="checkbox" id="runOnce">
+          <span>Run once at a future time</span>
+        </label>
+      </div>
+
+      <div class="field cron-field" id="runOnceField">
+        <label for="runAt">Run at <span class="mono">(your local time)</span></label>
+        <input class="input" type="datetime-local" id="runAt" name="run_at" autocomplete="off">
+        <div class="hint">
+          Sends this request exactly once, at the time you pick, the same way a repeating schedule
+          resubmits it - with <span class="mono">TIME:{&hellip;}</span> appended too.
+        </div>
       </div>
 
     </div>
@@ -130,6 +208,14 @@
       </button>
     </div>
   </form>
+
+  <div class="panel sched-panel">
+    <div class="panel-head">
+      <svg width="15" height="15"><use href="#i-clock"/></svg>
+      Scheduled requests
+    </div>
+    <div id="schedList"></div>
+  </div>
 {{else}}
   <div class="empty">
     <div class="empty-mark"><svg width="19" height="19"><use href="#i-monitor"/></svg></div>
@@ -158,7 +244,39 @@
   var select = document.getElementById("desktop");
   var content = document.getElementById("content");
   var counter = document.getElementById("counter");
+  var destSuggestNote = document.getElementById("destSuggestNote");
   var sendButton = document.getElementById("sendButton");
+  var repeat = document.getElementById("repeat");
+  var cronField = document.getElementById("cronField");
+  var cronInput = document.getElementById("cron");
+  var runOnce = document.getElementById("runOnce");
+  var runOnceField = document.getElementById("runOnceField");
+  var runAtInput = document.getElementById("runAt");
+  var schedList = document.getElementById("schedList");
+
+  /* ---------------- destination suggestion ---------------- */
+
+  // Suggests a desktop while the request is typed: the one whose worker
+  // memory looks like it, or - lacking that - the one most recently in use.
+  // Applies automatically only until the human picks a desktop themselves;
+  // after that this stops touching the dropdown for the rest of this
+  // compose. Best-effort: any failure here is silently ignored, the same
+  // "decoration, never the task itself" rule progress.emit follows on the
+  // desktop side.
+  var userPickedDesktop = false;
+  var suggestTimer = null;
+  var suggestMinChars = 8;
+  var suggestGeneration = 0;
+
+  function hideSuggestNote(){
+    destSuggestNote.hidden = true;
+    destSuggestNote.textContent = "";
+  }
+
+  function showSuggestNote(text){
+    destSuggestNote.textContent = text;
+    destSuggestNote.hidden = false;
+  }
 
   /* ---------------- destination status ---------------- */
 
@@ -171,13 +289,89 @@
     document.getElementById("destStatusText").textContent = state || "—";
   }
 
-  select.addEventListener("change", syncStatus);
+  select.addEventListener("change", function(){
+    userPickedDesktop = true;
+    hideSuggestNote();
+    syncStatus();
+  });
   syncStatus();
+
+  async function maybeSuggest(){
+    if(userPickedDesktop){ return; }
+
+    var text = content.value.trim();
+    if(text.length < suggestMinChars){ return; }
+
+    // A slow embedding round trip (can take seconds on CPU) must never let
+    // an earlier keystroke's response land after, and override, a later
+    // one's - only the most recently issued call is allowed to apply.
+    var generation = ++suggestGeneration;
+
+    var suggestion;
+    try{
+      suggestion = await post("/api/desktops/suggest", {content: text});
+    }catch(e){
+      return;
+    }
+
+    if(generation !== suggestGeneration){ return; }
+    if(userPickedDesktop || !suggestion || !suggestion.desktop_id){ return; }
+
+    var option = select.querySelector('option[value="' + suggestion.desktop_id.replace(/"/g, '\\"') + '"]');
+    if(!option){ return; }
+
+    if(select.value !== suggestion.desktop_id){
+      select.value = suggestion.desktop_id;
+      syncStatus();
+    }
+
+    showSuggestNote("Auto-selected — " + (suggestion.why || "suggested destination"));
+  }
+
+  /* ---------------- repeat-on-a-schedule / run-once toggles ---------------- */
+
+  function syncRepeatUI(){
+    var repeating = repeat.checked;
+    var once = runOnce.checked;
+
+    cronField.classList.toggle("on", repeating);
+    cronInput.required = repeating;
+
+    runOnceField.classList.toggle("on", once);
+    runAtInput.required = once;
+
+    if(repeating){
+      sendButton.innerHTML = '<svg width="15" height="15"><use href="#i-clock"/></svg>Schedule it';
+    }else if(once){
+      sendButton.innerHTML = '<svg width="15" height="15"><use href="#i-clock"/></svg>Run at that time';
+    }else{
+      sendButton.innerHTML = '<svg width="15" height="15"><use href="#i-send"/></svg>Send to desktop';
+    }
+  }
+
+  repeat.addEventListener("change", function(){
+    if(repeat.checked){
+      runOnce.checked = false;
+    }
+    syncRepeatUI();
+  });
+
+  runOnce.addEventListener("change", function(){
+    if(runOnce.checked){
+      repeat.checked = false;
+    }
+    syncRepeatUI();
+  });
+
+  syncRepeatUI();
 
   /* ---------------- character count ---------------- */
 
   content.addEventListener("input", function(){
     counter.textContent = String(content.value.length);
+
+    clearTimeout(suggestTimer);
+    suggestTimer = setTimeout(maybeSuggest, 600);
   });
 
   content.addEventListener("keydown", function(event){
@@ -199,16 +393,69 @@
       return toast("Write a request first.", "error");
     }
 
+    var repeating = repeat.checked;
+    var once = runOnce.checked;
+    var cron = cronInput.value.trim();
+    var runAtLocal = runAtInput.value;
+
+    if(repeating && !cron){
+      cronInput.focus();
+      return toast("Enter a cron schedule first.", "error");
+    }
+
+    var runAtDate = null;
+
+    if(once){
+      if(!runAtLocal){
+        runAtInput.focus();
+        return toast("Pick a time to run this at.", "error");
+      }
+
+      runAtDate = new Date(runAtLocal);
+
+      if(isNaN(runAtDate.getTime())){
+        runAtInput.focus();
+        return toast("That time doesn't look valid.", "error");
+      }
+
+      if(runAtDate.getTime() <= Date.now()){
+        runAtInput.focus();
+        return toast("Pick a time in the future.", "error");
+      }
+    }
+
     sendButton.disabled = true;
     Flowera.busy(true);
 
     try{
-      await post("/api/desktops/send", {id: select.value, content: text});
+      if(repeating){
+        await post("/api/schedules/create", {id: select.value, content: text, cron: cron});
+
+        cronInput.value = "";
+        repeat.checked = false;
+        syncRepeatUI();
+        markSent("Schedule created");
+        loadSchedules();
+      }else if(once){
+        await post("/api/schedules/create", {id: select.value, content: text, run_at: runAtDate.toISOString()});
+
+        runAtInput.value = "";
+        runOnce.checked = false;
+        syncRepeatUI();
+        markSent("Run scheduled");
+        loadSchedules();
+      }else{
+        await post("/api/desktops/send", {id: select.value, content: text});
+        markSent("Delivered to the desktop");
+      }
 
       content.value = "";
       counter.textContent = "0";
       content.focus();
-      markSent();
+
+      userPickedDesktop = false;
+      clearTimeout(suggestTimer);
+      hideSuggestNote();
     }catch(e){
       toast(e.message, "error");
     }finally{
@@ -218,18 +465,164 @@
   });
 
   /* Swap the keyboard hint for a confirmation, then put the hint back. */
-  function markSent(){
+  function markSent(message){
     var hint = document.getElementById("footHint");
     var original = hint.innerHTML;
 
     hint.className = "sent";
-    hint.innerHTML = '<svg width="14" height="14"><use href="#i-check"/></svg>Delivered to the desktop';
+    hint.innerHTML = '<svg width="14" height="14"><use href="#i-check"/></svg>' + message;
 
     setTimeout(function(){
       hint.className = "hint";
       hint.innerHTML = original;
     }, 3200);
   }
+
+  /* ---------------- scheduled requests list ---------------- */
+
+  function desktopName(id){
+    var option = select.querySelector('option[value="' + id.replace(/"/g, '\\"') + '"]');
+    return option ? option.textContent : id;
+  }
+
+  /* Zero time comes back as Go's RFC3339 zero value - "never happened",
+     not a real timestamp. */
+  function formatWhen(iso){
+    if(!iso){ return null; }
+
+    var d = new Date(iso);
+    if(isNaN(d.getTime()) || d.getUTCFullYear() <= 1){ return null; }
+
+    return d.toLocaleString(undefined, {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
+  }
+
+  function scheduleRow(sch){
+    var row = document.createElement("div");
+    row.className = "sched-row";
+    row.dataset.enabled = sch.enabled ? "true" : "false";
+
+    var main = document.createElement("div");
+    main.className = "sched-main";
+
+    var body = document.createElement("div");
+    body.className = "sched-content";
+    body.textContent = sch.content;
+    main.appendChild(body);
+
+    var meta = document.createElement("div");
+    meta.className = "sched-meta";
+
+    var cronChip = document.createElement("span");
+    cronChip.className = "mono";
+    cronChip.textContent = sch.run_once ? "once" : sch.cron_expr;
+    meta.appendChild(cronChip);
+
+    var dest = document.createElement("span");
+    dest.textContent = desktopName(sch.desktop_id);
+    meta.appendChild(dest);
+
+    var lastRun = formatWhen(sch.last_run_at);
+    var hasFired = !!lastRun;
+
+    var state = document.createElement("span");
+    if(sch.run_once && hasFired){
+      state.textContent = "Ran";
+    }else if(!sch.enabled){
+      state.textContent = "Paused";
+    }else{
+      var next = formatWhen(sch.next_run_at);
+      state.textContent = next ? ("Next " + next + " UTC") : "Next run pending";
+    }
+    meta.appendChild(state);
+
+    if(lastRun){
+      var last = document.createElement("span");
+      last.textContent = "Last ran " + lastRun + " UTC";
+      meta.appendChild(last);
+    }
+
+    main.appendChild(meta);
+    row.appendChild(main);
+
+    var actions = document.createElement("div");
+    actions.className = "sched-actions";
+
+    /* A fired one-time run is a terminal state - nothing left to pause or resume. */
+    if(!(sch.run_once && hasFired)){
+      var toggleBtn = document.createElement("button");
+      toggleBtn.type = "button";
+      toggleBtn.className = "btn btn-quiet btn-sm";
+      toggleBtn.textContent = sch.enabled ? "Pause" : "Resume";
+      toggleBtn.addEventListener("click", function(){
+        toggleSchedule(sch.id, !sch.enabled);
+      });
+      actions.appendChild(toggleBtn);
+    }
+
+    var deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "btn btn-quiet btn-sm";
+    deleteBtn.setAttribute("aria-label", "Delete schedule");
+    deleteBtn.innerHTML = '<svg width="14" height="14"><use href="#i-trash"/></svg>';
+    deleteBtn.addEventListener("click", function(){
+      deleteSchedule(sch.id);
+    });
+    actions.appendChild(deleteBtn);
+
+    row.appendChild(actions);
+
+    return row;
+  }
+
+  function renderSchedules(list){
+    schedList.innerHTML = "";
+
+    if(!list.length){
+      var empty = document.createElement("div");
+      empty.className = "sched-empty";
+      empty.textContent = "No scheduled requests yet.";
+      schedList.appendChild(empty);
+      return;
+    }
+
+    list.forEach(function(sch){
+      schedList.appendChild(scheduleRow(sch));
+    });
+  }
+
+  async function loadSchedules(){
+    var list;
+
+    try{
+      var response = await fetch("/api/schedules", {cache: "no-store"});
+      list = await response.json();
+    }catch(e){
+      return;
+    }
+
+    renderSchedules(list || []);
+  }
+
+  async function toggleSchedule(id, enabled){
+    try{
+      await post("/api/schedules/toggle", {id: id, enabled: String(enabled)});
+      loadSchedules();
+    }catch(e){
+      toast(e.message, "error");
+    }
+  }
+
+  async function deleteSchedule(id){
+    try{
+      await post("/api/schedules/delete", {id: id});
+      loadSchedules();
+    }catch(e){
+      toast(e.message, "error");
+    }
+  }
+
+  loadSchedules();
+  setInterval(loadSchedules, 20000);
 })();
 </script>
 

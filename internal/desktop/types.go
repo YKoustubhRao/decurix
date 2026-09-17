@@ -23,4 +23,15 @@ type Desktop struct {
 
 	CPUs     int64 `json:"cpus"`
 	MemoryMB int64 `json:"memory_mb"`
+
+	// Specialization is a one-line description of what this desktop was
+	// created to focus on, set at creation time and injected into the
+	// agent's identity context (see agent/flowera_agent/identity.py). "" for
+	// a desktop with no particular focus.
+	Specialization string `json:"specialization,omitempty"`
+
+	// ParentID is the desktop this one was spawned as a specialized child
+	// of (see httpapi.createDesktopHandler), or "" for a desktop created
+	// standalone. Set once at creation and never changed afterward.
+	ParentID string `json:"parent_id,omitempty"`
 }

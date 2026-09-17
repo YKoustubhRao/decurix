@@ -248,17 +248,28 @@ func (s *Store) AppendUserRequest(desktopID, taskID, content string) Entry {
 	var dropped []Entry
 
 	current.entries, dropped = appendCapped(current.entries, entry, maxEntries)
-	current.steps = nil
+
+	// A request sent while the desktop is already working on an earlier one
+	// (queued behind it, or absorbed as its reply if that task pauses - see
+	// watchers.command_watcher/absorbQueuedReply) does not start a fresh
+	// turn: the live steps already reported for the turn in flight are real,
+	// ongoing work and must not be wiped out from under it.
+	startingNewTurn := !current.running
+	if startingNewTurn {
+		current.steps = nil
+		current.startedAt = entry.CreatedAt
+	}
 	current.running = true
-	current.startedAt = entry.CreatedAt
 
 	s.persist(desktopID, current, func(tx *sql.Tx) error {
 		if err := insertEntry(tx, entry); err != nil {
 			return err
 		}
 
-		if _, err := tx.Exec(`DELETE FROM chat_steps WHERE desktop_id = ? AND entry_id = ''`, desktopID); err != nil {
-			return err
+		if startingNewTurn {
+			if _, err := tx.Exec(`DELETE FROM chat_steps WHERE desktop_id = ? AND entry_id = ''`, desktopID); err != nil {
+				return err
+			}
 		}
 
 		return deleteEntries(tx, dropped)

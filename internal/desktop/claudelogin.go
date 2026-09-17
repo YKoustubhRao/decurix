@@ -353,12 +353,17 @@ func (m *Manager) CancelClaudeLogin(loginID string) {
 }
 
 // endClaudeLoginSession clears session as the manager's current login attempt
-// (if it still is one) without touching its container - the caller owns that
-// cleanup because finishClaudeLogin still needs the container to read the
-// credentials file back out of it.
+// (if it still is one) and closes its hijacked attach connection, without
+// touching its container - the caller owns that cleanup because
+// finishClaudeLogin still needs the container to read the credentials file
+// back out of it.
 func (m *Manager) endClaudeLoginSession(session *claudeLoginSession) {
 	if session.timer != nil {
 		session.timer.Stop()
+	}
+
+	if session.conn != nil {
+		_ = session.conn.Close()
 	}
 
 	m.claudeLoginMu.Lock()

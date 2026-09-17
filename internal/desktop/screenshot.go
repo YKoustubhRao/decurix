@@ -101,12 +101,7 @@ func (m *Manager) shotCacheFor(desktopID string) *shotEntry {
 // actually doing without embedding a noVNC client per card. Frames are cached
 // for screenshotTTL and captured one-at-a-time per desktop.
 func (m *Manager) Screenshot(ctx context.Context, rawID string, maxWidth int) ([]byte, error) {
-	addr, password, sanitizedID, err := m.captureTarget(ctx, rawID)
-	if err != nil {
-		return nil, err
-	}
-
-	m.touchViewed(sanitizedID)
+	sanitizedID := sanitizeName(rawID)
 
 	entry := m.shotCacheFor(sanitizedID)
 
@@ -114,8 +109,19 @@ func (m *Manager) Screenshot(ctx context.Context, rawID string, maxWidth int) ([
 	defer entry.mu.Unlock()
 
 	if entry.data != nil && time.Since(entry.at) < screenshotTTL {
+		m.touchViewed(sanitizedID)
 		return entry.data, nil
 	}
+
+	// Only a cache miss pays for the ContainerInspect captureTarget needs to
+	// resolve the desktop's address and password - a cache hit above never
+	// touches Docker at all.
+	addr, password, _, err := m.captureTarget(ctx, rawID)
+	if err != nil {
+		return nil, err
+	}
+
+	m.touchViewed(sanitizedID)
 
 	frame, err := captureFrame(ctx, addr, password)
 	if err != nil {
@@ -394,10 +400,10 @@ func rfbInit(reader io.Reader, writer io.Writer) (width, height int, err error) 
 	// layout to decode below.
 	setPixelFormat := []byte{
 		msgSetPixelFormat, 0, 0, 0,
-		32,   // bits per pixel
-		24,   // depth
-		0,    // big-endian flag
-		1,    // true-colour flag
+		32,     // bits per pixel
+		24,     // depth
+		0,      // big-endian flag
+		1,      // true-colour flag
 		0, 255, // red max
 		0, 255, // green max
 		0, 255, // blue max

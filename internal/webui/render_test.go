@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YKoustubhRao/flowera/internal/dag"
 	"github.com/YKoustubhRao/flowera/internal/desktop"
 	"github.com/YKoustubhRao/flowera/internal/memory"
 	"github.com/YKoustubhRao/flowera/internal/querynotes"
@@ -34,12 +35,13 @@ func TestRenderEveryPage(t *testing.T) {
 	}
 
 	stopped := desktop.Desktop{
-		ID:      "spare-box",
-		Name:    "spare-box",
-		Profile: "basic",
-		Harness: desktop.HarnessOllama,
-		Status:  "stopped",
-		URL:     "/desktop/spare-box/",
+		ID:       "spare-box",
+		Name:     "spare-box",
+		Profile:  "basic",
+		Harness:  desktop.HarnessOllama,
+		Status:   "stopped",
+		URL:      "/desktop/spare-box/",
+		ParentID: running.ID,
 	}
 
 	entry := memory.WorkerMemoryEntry{
@@ -56,6 +58,13 @@ func TestRenderEveryPage(t *testing.T) {
 		WorkerMemory: []memory.WorkerMemoryEntry{entry},
 		MemoryByDesktop: map[string][]memory.WorkerMemoryEntry{
 			running.ID: {entry},
+		},
+		LinkedMemory: map[string][]string{
+			running.ID: {stopped.ID},
+		},
+		DesktopNames: map[string]string{
+			running.ID: running.Name,
+			stopped.ID: stopped.Name,
 		},
 		TunnelURL: "https://example.trycloudflare.com",
 	}
@@ -168,5 +177,31 @@ func TestRenderEveryPage(t *testing.T) {
 		if d.Status == "running" && !strings.Contains(out.String(), `data-session="demo-20260914T101500-abc123"`) {
 			t.Fatal("the recordings page lost the recording it was asked to open")
 		}
+	}
+
+	// The DAGs list, empty and with one entry that has already run.
+	if err := renderer.RenderDags(io.Discard, DagsPageData{}); err != nil {
+		t.Fatalf("RenderDags (empty): %v", err)
+	}
+
+	dagRun := dag.Run{ID: "drun-1", DAGID: "dag-1", Status: dag.RunSucceeded, Trigger: dag.TriggerManual, StartedAt: now, EndedAt: now.Add(time.Minute)}
+
+	if err := renderer.RenderDags(io.Discard, DagsPageData{
+		Dags: []dag.Summary{{
+			DAG:       dag.DAG{ID: "dag-1", Name: "nightly-report", HeadNodeID: "dnode-1", CronExpr: "0 9 * * *"},
+			NodeCount: 2, EdgeCount: 1, LastRun: &dagRun,
+		}},
+	}); err != nil {
+		t.Fatalf("RenderDags: %v", err)
+	}
+
+	// The DAG editor page itself only renders the DAG record server-side;
+	// the canvas and run history are populated by the page's own JS
+	// fetches (loadDag/loadRuns) against /api/dags/get and /api/dags/runs.
+	if err := renderer.RenderDag(io.Discard, DagPageData{
+		DAG:      dag.DAG{ID: "dag-1", Name: "nightly-report", HeadNodeID: "dnode-1", CronExpr: "0 9 * * *"},
+		Desktops: []desktop.Desktop{running, stopped},
+	}); err != nil {
+		t.Fatalf("RenderDag: %v", err)
 	}
 }

@@ -553,13 +553,33 @@ func (s *Store) Commit(route Route, worker Worker, text string) (Route, error) {
 			break
 		}
 
+		interventionID := route.InterventionID
+
+		if status == StatusWaiting {
+			// The execution can have resumed on a faster reply and paused
+			// again on a *new* intervention since Plan picked this route -
+			// always attach to whichever intervention is actually open now,
+			// never the one Plan resolved, so a delayed reply can't land on
+			// an intervention that has already been answered and closed
+			// while this one's delivery was still in flight.
+			var currentID string
+			if err := tx.QueryRow(
+				`SELECT id FROM interventions WHERE execution_id = ? AND replied_ns = 0
+				 ORDER BY requested_ns DESC LIMIT 1`,
+				route.ExecutionID,
+			).Scan(&currentID); err == nil {
+				interventionID = currentID
+				route.InterventionID = currentID
+			}
+		}
+
 		// A second reply landing before the agent resumed joins the first.
 		if _, err := tx.Exec(
 			`UPDATE interventions SET
 				reply = CASE WHEN reply = '' THEN ? ELSE reply || char(10) || char(10) || ? END,
 				replied_ns = CASE WHEN replied_ns = 0 THEN ? ELSE replied_ns END
 			 WHERE id = ?`,
-			text, text, sqlitedb.ToNS(now), route.InterventionID,
+			text, text, sqlitedb.ToNS(now), interventionID,
 		); err != nil {
 			return route, fmt.Errorf("tasks: recording reply: %w", err)
 		}
@@ -1108,6 +1128,21 @@ func scanTask(scanner interface{ Scan(...any) error }) (Task, error) {
 	task.UpdatedAt = sqlitedb.FromNS(updated)
 
 	return task, nil
+}
+
+// TaskResult returns a task's current status and, once an execution has
+// ended, the reply it ended with - what internal/dag polls to learn a
+// dispatched node's ticket has finished, and what a later node's output
+// placeholder pulls from. ok is false when taskID does not exist.
+func (s *Store) TaskResult(taskID string) (status, finalReply string, ok bool) {
+	err := s.db.QueryRow(
+		`SELECT status, final_reply FROM executions WHERE task_id = ? ORDER BY attempt DESC LIMIT 1`, taskID,
+	).Scan(&status, &finalReply)
+	if err != nil {
+		return "", "", false
+	}
+
+	return status, finalReply, true
 }
 
 // Get returns one task with its worker, executions, steps and interventions.
