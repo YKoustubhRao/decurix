@@ -20,6 +20,7 @@ type fakeDesktops struct {
 
 	mu      sync.Mutex
 	stopped []string
+	paused  []string
 	viewed  map[string]time.Time
 }
 
@@ -30,6 +31,14 @@ func (f *fakeDesktops) Stop(_ context.Context, id string) error {
 	defer f.mu.Unlock()
 
 	f.stopped = append(f.stopped, id)
+	return nil
+}
+
+func (f *fakeDesktops) Pause(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.paused = append(f.paused, id)
 	return nil
 }
 
@@ -228,5 +237,23 @@ func TestSweepChecksManyDesktopsConcurrentlyAndStopsAllThatAreIdle(t *testing.T)
 		if got[i] != want[i] {
 			t.Fatalf("stopped = %v, want %v", got, want)
 		}
+	}
+}
+
+func TestIdlePastThresholdIsPaused(t *testing.T) {
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+
+	d := desktop.Desktop{ID: "bordu", Status: "running", StartedAt: now.Add(-day).Format(time.RFC3339Nano)}
+	desktops := &fakeDesktops{list: []desktop.Desktop{d}}
+	tasks := &fakeTasks{activity: map[string]time.Time{"bordu": now.Add(-2 * time.Hour)}}
+
+	c := &Checker{Desktops: desktops, Tasks: tasks, Threshold: time.Hour, Action: "pause", now: func() time.Time { return now }}
+	c.sweep(context.Background())
+
+	if len(desktops.paused) != 1 || desktops.paused[0] != "bordu" {
+		t.Fatalf("paused = %v, want [bordu]", desktops.paused)
+	}
+	if len(desktops.stopped) != 0 {
+		t.Fatalf("stopped = %v, want []", desktops.stopped)
 	}
 }

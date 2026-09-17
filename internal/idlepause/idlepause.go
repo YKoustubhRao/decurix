@@ -31,6 +31,7 @@ import (
 type DesktopLister interface {
 	List(ctx context.Context) ([]desktop.Desktop, error)
 	Stop(ctx context.Context, id string) error
+	Pause(ctx context.Context, id string) error
 	LastViewed(id string) (time.Time, bool)
 }
 
@@ -42,13 +43,14 @@ type ActivityStore interface {
 	LastActivity(workerID string) (time.Time, bool, error)
 }
 
-// Checker sweeps running desktops on an interval and stops the ones that
+// Checker sweeps running desktops on an interval and stops or pauses the ones that
 // have been idle past Threshold.
 type Checker struct {
 	Desktops  DesktopLister
 	Tasks     ActivityStore
 	Threshold time.Duration
 	Interval  time.Duration // defaultInterval if zero
+	Action    string        // "pause" (freeze at 0% CPU) or "stop" (default)
 
 	// now is the test seam - defaults to time.Now.
 	now func() time.Time
@@ -146,10 +148,16 @@ func (c *Checker) checkOne(ctx context.Context, d desktop.Desktop) {
 		return
 	}
 
-	log.Printf("idlepause: stopping %s - idle since %s", d.ID, idleSince.Format(time.RFC3339))
-
-	if err := c.Desktops.Stop(ctx, d.ID); err != nil {
-		log.Printf("idlepause: stopping %s: %v", d.ID, err)
+	if c.Action == "pause" {
+		log.Printf("idlepause: pausing %s - idle since %s", d.ID, idleSince.Format(time.RFC3339))
+		if err := c.Desktops.Pause(ctx, d.ID); err != nil {
+			log.Printf("idlepause: pausing %s: %v", d.ID, err)
+		}
+	} else {
+		log.Printf("idlepause: stopping %s - idle since %s", d.ID, idleSince.Format(time.RFC3339))
+		if err := c.Desktops.Stop(ctx, d.ID); err != nil {
+			log.Printf("idlepause: stopping %s: %v", d.ID, err)
+		}
 	}
 }
 

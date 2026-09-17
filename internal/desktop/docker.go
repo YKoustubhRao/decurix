@@ -27,6 +27,17 @@ const (
 	desktopImageDeveloper = "flowera-desktop:developer"
 	desktopImageAI        = "flowera-desktop:ai"
 
+	// ToolsImage is the lightweight container that builds and populates the shared tools volume.
+	ToolsImage = "flowera-tools:latest"
+
+	// ToolsVolumeName is the single shared Docker volume mounted read-only (:ro)
+	// into desktop containers at /opt/tools.
+	ToolsVolumeName = "flowera-tools"
+
+	// CacheVolumeName is the shared writable volume mounted into desktop containers
+	// at /var/cache/flowera to deduplicate Go modules, npm downloads, and cargo registries.
+	CacheVolumeName = "flowera-cache"
+
 	// NetworkName is the shared Docker bridge network desktop containers
 	// (and the shared Ollama container) are attached to.
 	NetworkName = "flowera-network"
@@ -50,6 +61,9 @@ func (m *Manager) EnsureImages(ctx context.Context) error {
 
 	if len(missing) == 0 {
 		log.Println("All desktop images present.")
+		if err := m.EnsureToolsVolume(ctx); err != nil {
+			log.Printf("warning: ensure tools volume: %v", err)
+		}
 		return nil
 	}
 
@@ -169,6 +183,20 @@ func buildDesktopEnv(name, harness, specialization, parentID string) []string {
 		env = append(env, "DESKTOP_PARENT_ID="+parentID)
 	}
 
+	env = append(env,
+		"PATH=/opt/tools/bin:/opt/tools/go/bin:/opt/tools/node/bin:/opt/tools/rust/bin:/home/headless/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"GOROOT=/opt/tools/go",
+		"RUSTUP_HOME=/opt/tools/rust",
+		"CARGO_HOME=/home/headless/.cargo",
+		"NPM_CONFIG_CACHE=/var/cache/flowera/npm",
+		"GOPATH=/home/headless/go",
+		"GOMODCACHE=/var/cache/flowera/go",
+		"PIP_CACHE_DIR=/var/cache/flowera/pip",
+		"HF_HOME=/var/cache/flowera/huggingface",
+		"PYTHONDONTWRITEBYTECODE=1",
+		"PYTHONUNBUFFERED=1",
+	)
+
 	return env
 }
 
@@ -185,16 +213,32 @@ func buildContainerConfigs(imageName, containerName, profile, harness string, cp
 		},
 	}
 
+	swappinessZero := int64(0)
 	hostConfig := &container.HostConfig{
 		ShmSize:     512 * 1024 * 1024,
 		SecurityOpt: securityOpt,
 		Resources: container.Resources{
-			NanoCPUs: cpus * 1_000_000_000,
-			Memory:   memoryMB * 1024 * 1024,
-			Ulimits:  desktopUlimits(),
+			NanoCPUs:         cpus * 1_000_000_000,
+			CPUShares:        cpus * 1024,
+			Memory:           memoryMB * 1024 * 1024,
+			MemorySwappiness: &swappinessZero,
+			Ulimits:          desktopUlimits(),
+		},
+		Tmpfs: map[string]string{
+			"/tmp": "rw,nosuid,size=256m,mode=1777",
+			"/run": "rw,nosuid,size=64m,mode=755",
 		},
 		Binds: []string{
 			volumeName + ":/home/headless",
+			ToolsVolumeName + ":/opt/tools:ro",
+			CacheVolumeName + ":/var/cache/flowera:rw",
+		},
+		LogConfig: container.LogConfig{
+			Type: "json-file",
+			Config: map[string]string{
+				"max-size": "10m",
+				"max-file": "3",
+			},
 		},
 		RestartPolicy: container.RestartPolicy{
 			Name: "unless-stopped",

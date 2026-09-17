@@ -21,7 +21,7 @@
 # browser through it, the same trust the agent's shell already has.
 # --no-default-browser-check: the "not your default browser" bar is one more
 # thing between an agent and the page it was asked to use.
-CHROMIUM_FLAGS="--disable-gpu --start-maximized --remote-debugging-port=9222 --no-default-browser-check"
+CHROMIUM_FLAGS="--disable-gpu --start-maximized --remote-debugging-port=9222 --no-default-browser-check --renderer-process-limit=2 --disable-dev-shm-usage --enable-features=MemorySaverMode --disk-cache-dir=/tmp/chromium-cache --disk-cache-size=33554432 --js-flags=--max-old-space-size=256 --disable-features=AudioServiceOutOfProcess,Translate,AutofillServerCommunication --disable-background-networking --disable-component-update --disable-domain-reliability --disable-sync --no-first-run --no-pings --mute-audio"
 
 # The warning bar is left alone in that case: the browser really is
 # running unsandboxed there, and hiding that would be a lie.

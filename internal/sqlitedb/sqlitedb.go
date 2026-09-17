@@ -75,8 +75,22 @@ func Open(path string) (*sql.DB, error) {
 	query.Add("_pragma", "journal_mode(WAL)")
 	query.Add("_pragma", "synchronous(NORMAL)")
 	query.Add("_pragma", "foreign_keys(ON)")
+	query.Add("_pragma", "auto_vacuum(INCREMENTAL)")
+	query.Add("_pragma", "temp_store(MEMORY)")
+	query.Add("_pragma", "cache_size(-16000)")
+	query.Add("_pragma", "mmap_size(67108864)")
 
 	return open("file:"+filepath.ToSlash(path)+"?"+query.Encode(), maxOpenConns)
+}
+
+// IncrementalVacuum frees up to pages unused database pages back to the host filesystem.
+// If pages <= 0, a default batch of 100 pages is reclaimed.
+func IncrementalVacuum(db *sql.DB, pages int) error {
+	if pages <= 0 {
+		pages = 100
+	}
+	_, err := db.Exec(fmt.Sprintf("PRAGMA incremental_vacuum(%d)", pages))
+	return err
 }
 
 // OpenMemory opens a private in-memory database, for tests. Its pool is held

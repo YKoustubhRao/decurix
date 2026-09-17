@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -230,19 +232,41 @@ func (s *Server) agentEventHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // stepImageURL stores one screenshot sent with an action step and returns the
-// URL the chat loads it from, or "" when there is none or it is unusable. An
-// action whose screenshot is dropped is still recorded - the step is the
-// record; the picture is evidence the desktop also keeps on its own disk.
+// stepImageURL stores one screenshot sent with an action step and returns the
+// URL the chat loads it from, or "" when there is none or it is unusable.
+// Screenshots are content-deduplicated: consecutive action steps often report
+// identical frames (or step N+1's before is step N's after), which avoids
+// redundant JPEG encoding, SQLite writes, and disk consumption.
 func (s *Server) stepImageURL(desktopID string, data []byte) string {
 	if len(data) == 0 || s.StepImages == nil {
 		return ""
 	}
+
+	sum := sha256.Sum256(data)
+	key := desktopID + ":" + hex.EncodeToString(sum[:])
+
+	s.stepImagesMu.Lock()
+	if s.recentStepImages == nil {
+		s.recentStepImages = make(map[string]string)
+	}
+	if id, ok := s.recentStepImages[key]; ok {
+		s.stepImagesMu.Unlock()
+		return stepImagePath + "?id=" + id
+	}
+	s.stepImagesMu.Unlock()
 
 	id, err := s.StepImages.Put(desktopID, data)
 	if err != nil {
 		log.Printf("step screenshot from %s dropped: %v", desktopID, err)
 		return ""
 	}
+
+	s.stepImagesMu.Lock()
+	if len(s.recentStepImages) > 500 {
+		s.recentStepImages = make(map[string]string)
+	}
+	s.recentStepImages[key] = id
+	s.stepImagesMu.Unlock()
 
 	return stepImagePath + "?id=" + id
 }

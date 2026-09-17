@@ -21,5 +21,6 @@ import "embed"
 //go:embed docker/desktop.basic.Dockerfile
 //go:embed docker/desktop.developer.Dockerfile
 //go:embed docker/desktop.ai.Dockerfile
+//go:embed docker/tools.Dockerfile
 //go:embed agent
 var DesktopBuildContext embed.FS

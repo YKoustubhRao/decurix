@@ -186,6 +186,7 @@ func main() {
 	defer cli.Close()
 
 	desktops := desktop.NewManager(cli)
+	desktop.OptimizeHostKSM()
 	ollamaManager := ollama.NewManager(cli, desktop.NetworkName)
 
 	// Building all three images takes a long time and a lot of disk, so it is
@@ -271,7 +272,7 @@ func main() {
 	go func() {
 		log.Printf("LAN/tunnel listener on %s (access code: %s)", lanAddr, lanAccess.Password())
 
-		if err := http.ListenAndServe(lanAddr, lanAccess.Middleware(lanMux)); err != nil {
+		if err := http.ListenAndServe(lanAddr, lanAccess.Middleware(httpapi.GzipMiddleware(lanMux))); err != nil {
 			log.Printf("warning: LAN/tunnel listener failed: %v", err)
 		}
 	}()
@@ -299,14 +300,18 @@ func main() {
 	// non-positive, so FLOWERA_IDLE_STOP_MINUTES=0 opts out without any
 	// different wiring here.
 	idleThreshold := idleStopThreshold()
+	idleAction := os.Getenv("FLOWERA_IDLE_ACTION")
+	if idleAction == "" {
+		idleAction = "pause"
+	}
 
 	if idleThreshold > 0 {
-		log.Printf("Idle-pause: stopping desktops idle past %s. Set FLOWERA_IDLE_STOP_MINUTES=0 to disable.", idleThreshold)
+		log.Printf("Idle-pause: %sing desktops idle past %s. Set FLOWERA_IDLE_STOP_MINUTES=0 to disable.", idleAction, idleThreshold)
 	} else {
 		log.Println("Idle-pause: disabled (FLOWERA_IDLE_STOP_MINUTES=0).")
 	}
 
-	checker := &idlepause.Checker{Desktops: desktops, Tasks: tasksStore, Threshold: idleThreshold}
+	checker := &idlepause.Checker{Desktops: desktops, Tasks: tasksStore, Threshold: idleThreshold, Action: idleAction}
 	go checker.Run(context.Background())
 
 	// Fires each recurring request set up on the requests page when its cron
@@ -317,7 +322,7 @@ func main() {
 
 	log.Printf("Desktop manager listening on %s", listenAddr)
 
-	if err := http.ListenAndServe(listenAddr, mux); err != nil {
+	if err := http.ListenAndServe(listenAddr, httpapi.GzipMiddleware(mux)); err != nil {
 		log.Fatal(err)
 	}
 }

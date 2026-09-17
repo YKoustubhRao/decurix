@@ -209,6 +209,7 @@ func (s *Store) memoryPick(ctx context.Context, content string, desktops []deskt
 		log.Printf("suggest: embedding request text: %v", err)
 		return Suggestion{}, false
 	}
+	contentVector = normalizeVector(contentVector)
 
 	vectors := s.loadCachedVectors(entries)
 	s.cacheMissingVectors(ctx, entries, vectors)
@@ -282,7 +283,7 @@ func (s *Store) loadCachedVectors(entries []memory.WorkerMemoryEntry) map[string
 			continue
 		}
 
-		vectors[id] = decodeVector(raw, dims)
+		vectors[id] = normalizeVector(decodeVector(raw, dims))
 	}
 
 	return vectors
@@ -328,7 +329,7 @@ func (s *Store) cacheMissingVectors(ctx context.Context, entries []memory.Worker
 			continue
 		}
 
-		vectors[entry.ID] = vector
+		vectors[entry.ID] = normalizeVector(vector)
 	}
 }
 
@@ -360,8 +361,30 @@ func decodeVector(raw []byte, dims int) []float32 {
 	return v
 }
 
+// normalizeVector returns a unit vector (norm = 1.0) for fast dot-product cosine similarity.
+// If v is empty or zero, it returns v unchanged.
+func normalizeVector(v []float32) []float32 {
+	if len(v) == 0 {
+		return v
+	}
+	var norm float64
+	for _, x := range v {
+		norm += float64(x) * float64(x)
+	}
+	if norm == 0 {
+		return v
+	}
+	inv := float32(1.0 / math.Sqrt(norm))
+	out := make([]float32, len(v))
+	for i, x := range v {
+		out[i] = x * inv
+	}
+	return out
+}
+
 // cosineSimilarity returns the cosine similarity of a and b, or 0 when they
 // are empty, mismatched in length, or either is the zero vector.
+// When both a and b are unit-normalized vectors, this evaluates directly as an inner dot product.
 func cosineSimilarity(a, b []float32) float64 {
 	if len(a) == 0 || len(a) != len(b) {
 		return 0
@@ -373,6 +396,11 @@ func cosineSimilarity(a, b []float32) float64 {
 		dot += float64(a[i]) * float64(b[i])
 		normA += float64(a[i]) * float64(a[i])
 		normB += float64(b[i]) * float64(b[i])
+	}
+
+	// Fast path for normalized unit vectors
+	if math.Abs(normA-1.0) < 1e-4 && math.Abs(normB-1.0) < 1e-4 {
+		return dot
 	}
 
 	if normA == 0 || normB == 0 {

@@ -13,6 +13,7 @@ import (
 var (
 	ErrNotFound   = errors.New("desktop not found")
 	ErrNotRunning = errors.New("desktop is not running")
+	ErrPaused     = errors.New("desktop is paused")
 	ErrNoNetwork  = errors.New("desktop is not connected to Flowera network")
 	ErrNoAddress  = errors.New("desktop has no network IP")
 
@@ -52,6 +53,12 @@ func (m *Manager) resolveProxyTarget(ctx context.Context, rawID, port string) (p
 
 	if inspect.State == nil || !inspect.State.Running {
 		return nil, sanitizedID, ErrNotRunning
+	}
+
+	if inspect.State.Paused {
+		if err := m.client.ContainerUnpause(ctx, name); err != nil {
+			return nil, sanitizedID, fmt.Errorf("auto-wake paused desktop: %w", err)
+		}
 	}
 
 	networkInfo, ok := inspect.NetworkSettings.Networks[NetworkName]

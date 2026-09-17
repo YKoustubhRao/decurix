@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -69,13 +71,19 @@ func (s *Server) desktopScreenshotHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	etag := fmt.Sprintf("\"%x\"", sha256.Sum256(image))
+	w.Header().Set("ETag", etag)
+
+	if match := r.Header.Get("If-None-Match"); match != "" {
+		if strings.Contains(match, etag) || match == "*" {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+	}
+
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("Content-Length", strconv.Itoa(len(image)))
-
-	// The dashboard decides when a thumbnail is stale and re-requests it;
-	// a cached one would freeze the card on whatever the desktop was doing
-	// the first time it loaded.
-	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Cache-Control", "private, no-cache")
 
 	_, _ = w.Write(image)
 }

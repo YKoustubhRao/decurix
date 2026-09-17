@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"strings"
 	"sync"
@@ -172,12 +173,19 @@ func (m *Manager) StartClaudeLogin(ctx context.Context) (loginID string, signInU
 
 	m.teardownClaudeLoginLocked(context.Background())
 
+	if err := m.EnsureToolsVolume(ctx); err != nil {
+		log.Printf("warning: ensure tools volume: %v", err)
+	}
+
 	containerName := "flowera-claude-login-" + randomHex(4)
 
 	resp, err := m.client.ContainerCreate(
 		ctx,
 		&container.Config{
 			Image: desktopImageDeveloper,
+			Env: []string{
+				"PATH=/opt/tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+			},
 			// Bypasses the image's tini/startup.sh entrypoint (the full XFCE
 			// desktop) entirely - this container only ever runs one CLI command.
 			Entrypoint:   []string{"claude"},
@@ -189,7 +197,11 @@ func (m *Manager) StartClaudeLogin(ctx context.Context) (loginID string, signInU
 			AttachStderr: true,
 			StdinOnce:    false,
 		},
-		&container.HostConfig{},
+		&container.HostConfig{
+			Binds: []string{
+				ToolsVolumeName + ":/opt/tools:ro",
+			},
+		},
 		nil,
 		nil,
 		containerName,

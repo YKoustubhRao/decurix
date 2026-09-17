@@ -285,6 +285,54 @@ func (s *Server) stopDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// pauseDesktopHandler freezes a running desktop by ID using the cgroup freezer (0% CPU).
+func (s *Server) pauseDesktopHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+
+	id := r.FormValue("id")
+
+	if id == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.Desktops.Pause(r.Context(), id); err != nil {
+		jsonError(w, err)
+		return
+	}
+
+	jsonResponse(w, map[string]string{
+		"status": "paused",
+	})
+}
+
+// unpauseDesktopHandler thaws a paused desktop by ID (< 1ms).
+func (s *Server) unpauseDesktopHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+
+	id := r.FormValue("id")
+
+	if id == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.Desktops.Unpause(r.Context(), id); err != nil {
+		jsonError(w, err)
+		return
+	}
+
+	jsonResponse(w, map[string]string{
+		"status": "running",
+	})
+}
+
 // restartDesktopHandler restarts a desktop by ID.
 func (s *Server) restartDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
