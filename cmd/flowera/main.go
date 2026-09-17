@@ -16,6 +16,7 @@ import (
 
 	"github.com/YKoustubhRao/flowera/internal/claudeauth"
 	"github.com/YKoustubhRao/flowera/internal/conversation"
+	"github.com/YKoustubhRao/flowera/internal/dag"
 	"github.com/YKoustubhRao/flowera/internal/desktop"
 	"github.com/YKoustubhRao/flowera/internal/httpapi"
 	"github.com/YKoustubhRao/flowera/internal/idlepause"
@@ -23,8 +24,10 @@ import (
 	"github.com/YKoustubhRao/flowera/internal/memory"
 	"github.com/YKoustubhRao/flowera/internal/ollama"
 	"github.com/YKoustubhRao/flowera/internal/querynotes"
+	"github.com/YKoustubhRao/flowera/internal/schedule"
 	"github.com/YKoustubhRao/flowera/internal/sqlitedb"
 	"github.com/YKoustubhRao/flowera/internal/stepimages"
+	"github.com/YKoustubhRao/flowera/internal/suggest"
 	"github.com/YKoustubhRao/flowera/internal/tasks"
 	"github.com/YKoustubhRao/flowera/internal/tunnel"
 	"github.com/YKoustubhRao/flowera/internal/webui"
@@ -220,19 +223,34 @@ func main() {
 
 	tasksStore := must(tasks.NewStore(db))
 	lanAccess := lanaccess.NewStore()
+	schedules := must(schedule.NewStore(db))
+	dags := must(dag.NewStore(db))
+	memoryStore := must(memory.NewStore(db))
+	suggestions := must(suggest.NewStore(db, desktops, tasksStore, memoryStore, ollama.Embed))
 
 	server := httpapi.NewServer(
 		desktops,
 		must(querynotes.NewStore(db)),
-		must(memory.NewStore(db)),
+		memoryStore,
 		must(conversation.NewStore(db)),
 		must(stepimages.NewStore(db, stepImagesMaxBytes())),
 		tasksStore,
 		tunnel.NewStore(),
 		must(claudeauth.NewStore(db)),
 		lanAccess,
+		schedules,
+		dags,
+		suggestions,
 		webui.NewRenderer(),
 	)
+
+	// internal/dag's Runner needs Server itself as its Submitter
+	// (SubmitTracked, which - unlike Submit - hands back the task ID a node's
+	// ticket landed under), so it is built after Server and wired back onto
+	// it rather than passed through NewServer.
+	dagRunner := &dag.Runner{Store: dags, Submitter: server, Tasks: tasksStore}
+	server.DagRunner = dagRunner
+	go dagRunner.Run(context.Background())
 
 	mux := http.NewServeMux()
 	server.RegisterRoutes(mux)
@@ -290,6 +308,12 @@ func main() {
 
 	checker := &idlepause.Checker{Desktops: desktops, Tasks: tasksStore, Threshold: idleThreshold}
 	go checker.Run(context.Background())
+
+	// Fires each recurring request set up on the requests page when its cron
+	// expression next matches, through the same path a one-off Send takes
+	// (Server.Submit). See internal/schedule's package doc.
+	scheduler := &schedule.Runner{Store: schedules, Submitter: server}
+	go scheduler.Run(context.Background())
 
 	log.Printf("Desktop manager listening on %s", listenAddr)
 

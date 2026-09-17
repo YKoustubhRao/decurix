@@ -314,12 +314,25 @@ def _fail_on_backend(reason):
     write_final_reply(_backend_note(reason), kind="error")
 
 
-def _handle_job(job, error):
+def _handle_job(job, error, resuming=False):
     if error:
-        if _looks_like_backend_failure(error):
-            _fail_on_backend(error)
+        # _run_thebot's own error return means the request never produced
+        # a job to report on at all (soul unreachable, no job id, or the
+        # job never finished) - by construction a backend failure, not
+        # something to run through _looks_like_backend_failure's text
+        # matching (that heuristic is for soul's own authored answers,
+        # which this error string never is).
+        if resuming:
+            # The documented exception: a failure while resuming after a
+            # human's reply keeps the task paused, so a resend of that
+            # same reply still carries the original job rather than
+            # dispatching an unrelated new one.
+            ask_for_query(
+                "The agent tried to continue after your reply, but "
+                "TheBot's backend failed again.\n\n" + _backend_note(error)
+            )
             return
-        _escalate(error)
+        _fail_on_backend(error)
         return
 
     outcome = job.get("outcome") or ""
@@ -425,4 +438,4 @@ def continue_after_query(query_response):
     # handing it to the operator that asked. No need to restate the task:
     # the checkpoint still has it.
     job, error = _run_thebot(query_response, reply=True)
-    _handle_job(job, error)
+    _handle_job(job, error, resuming=True)

@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
+<title>DAGs · Flowera</title>
+
+{{template "theme"}}
+
+<style>
+.dstatus{
+  display:inline-flex;align-items:center;gap:5px;height:21px;padding:0 8px;border-radius:999px;
+  font-size:11.5px;font-weight:600;white-space:nowrap;text-transform:capitalize;
+  background:var(--idle-soft);color:var(--text-2)
+}
+.dstatus.succeeded{background:var(--live-soft);color:var(--live)}
+.dstatus.running{background:var(--accent-soft);color:var(--accent)}
+.dstatus.failed{background:var(--danger-soft);color:var(--danger)}
+
+.row-title{font-weight:600;color:var(--text)}
+.row-title:hover{color:var(--accent)}
+.row-sub{font-size:11.5px;color:var(--text-3);margin-top:1px}
+.muted{color:var(--text-3)}
+
+.table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{
+  text-align:left;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--text-3);padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap
+}
+td{padding:11px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+tr:last-child td{border-bottom:0}
+tbody tr:hover{background:var(--surface-2)}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+</style>
+</head>
+
+<body>
+
+{{template "sprite"}}
+
+<div id="progress"></div>
+<div id="toasts"></div>
+
+{{template "topbar" "dags"}}
+
+<main class="wrap">
+
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">Automation</div>
+      <h1>DAGs</h1>
+      <p class="page-sub">A chain of tickets: a cron or a manual run starts the head node, and each node's success submits the next, along the edges you wire up.</p>
+    </div>
+
+    <button type="button" class="btn btn-primary" id="newDagBtn">
+      <svg width="15" height="15"><use href="#i-plus"/></svg>
+      New DAG
+    </button>
+  </div>
+
+{{if .Dags}}
+  <div class="panel table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>DAG</th>
+          <th class="num">Nodes</th>
+          <th class="num">Edges</th>
+          <th>Cron</th>
+          <th>Last run</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Dags}}
+        <tr data-id="{{.DAG.ID}}">
+          <td>
+            <a class="row-title" href="/dags/{{.DAG.ID}}">{{.DAG.Name}}</a>
+            <div class="row-sub">{{if .DAG.HeadNodeID}}head set{{else}}no head yet{{end}}</div>
+          </td>
+          <td class="num">{{.NodeCount}}</td>
+          <td class="num">{{.EdgeCount}}</td>
+          <td>{{if .DAG.CronExpr}}<span class="mono">{{.DAG.CronExpr}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+          <td>
+            {{if .LastRun}}
+            <span class="dstatus {{.LastRun.Status}}">{{.LastRun.Status}}</span>
+            <div class="row-sub"><time data-created="{{iso .LastRun.StartedAt}}">{{clock .LastRun.StartedAt}}</time></div>
+            {{else}}
+            <span class="muted">never run</span>
+            {{end}}
+          </td>
+          <td>
+            <button type="button" class="btn btn-quiet btn-sm" data-delete="{{.DAG.ID}}" aria-label="Delete DAG">
+              <svg width="14" height="14"><use href="#i-trash"/></svg>
+            </button>
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+{{else}}
+  <div class="empty">
+    <div class="empty-mark"><svg width="19" height="19"><use href="#i-inbox"/></svg></div>
+    <h2>No DAGs yet</h2>
+    <p>Create one, add a few nodes bound to your desktops, and wire up the edges between them.</p>
+  </div>
+{{end}}
+
+</main>
+
+<dialog id="newDagDialog">
+  <form method="dialog" id="newDagForm">
+    <div class="dialog-head">
+      <div>
+        <h2>New DAG</h2>
+        <p>Starts empty - add nodes and edges once it's created.</p>
+      </div>
+      <button type="button" class="icon-btn" data-close-dialog aria-label="Close">
+        <svg width="16" height="16"><use href="#i-x"/></svg>
+      </button>
+    </div>
+
+    <div class="dialog-body">
+      <div class="field">
+        <label for="dagName">Name</label>
+        <input class="input" type="text" id="dagName" name="name" placeholder="nightly-report" autocomplete="off" required>
+      </div>
+    </div>
+
+    <div class="dialog-foot">
+      <button type="button" class="btn btn-quiet" data-close-dialog>Cancel</button>
+      <button type="submit" class="btn btn-primary" id="newDagSubmit">Create DAG</button>
+    </div>
+  </form>
+</dialog>
+
+{{template "chrome-js"}}
+
+<script>
+(function(){
+  "use strict";
+
+  var toast = Flowera.toast, post = Flowera.post, busy = Flowera.busy;
+
+  document.querySelectorAll("[data-created]").forEach(function(el){
+    var date = new Date(el.dataset.created);
+    if(isNaN(date.getTime())){ return; }
+
+    var seconds = Math.round((Date.now() - date.getTime()) / 1000);
+
+    if(seconds < 60){ el.textContent = "just now"; }
+    else if(seconds < 3600){ el.textContent = Math.floor(seconds / 60) + "m ago"; }
+    else if(seconds < 86400){ el.textContent = Math.floor(seconds / 3600) + "h ago"; }
+    else if(seconds < 604800){ el.textContent = Math.floor(seconds / 86400) + "d ago"; }
+
+    el.title = date.toLocaleString();
+  });
+
+  var dialog = document.getElementById("newDagDialog");
+  var form = document.getElementById("newDagForm");
+
+  document.getElementById("newDagBtn").addEventListener("click", function(){
+    dialog.showModal();
+    document.getElementById("dagName").focus();
+  });
+
+  document.querySelectorAll("[data-close-dialog]").forEach(function(button){
+    button.addEventListener("click", function(){ dialog.close(); });
+  });
+
+  form.addEventListener("submit", async function(event){
+    event.preventDefault();
+
+    var name = document.getElementById("dagName").value.trim();
+    if(!name){ return toast("Name the DAG first.", "error"); }
+
+    var submit = document.getElementById("newDagSubmit");
+    submit.disabled = true;
+    busy(true);
+
+    try{
+      var created = await post("/api/dags/create", {name: name});
+      location.href = "/dags/" + created.id;
+    }catch(e){
+      busy(false);
+      submit.disabled = false;
+      toast(e.message, "error");
+    }
+  });
+
+  document.querySelectorAll("[data-delete]").forEach(function(button){
+    button.addEventListener("click", async function(){
+      if(!window.confirm("Delete this DAG? This removes its nodes, edges and run history.")){ return; }
+
+      try{
+        await post("/api/dags/delete", {id: button.dataset.delete});
+        button.closest("tr").remove();
+      }catch(e){
+        toast(e.message, "error");
+      }
+    });
+  });
+})();
+</script>
+
+</body>
+</html>

@@ -74,20 +74,50 @@ func (s *Server) sendRequestHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id := desktop.SanitizeID(desktopID)
-	route := s.routeRequest(id, content)
-
-	if err := s.deliverRequest(r.Context(), desktopID, content, route.TaskID); err != nil {
+	route, err := s.submitRequest(r.Context(), desktopID, content)
+	if err != nil {
 		sendRequestError(w, err)
 		return
 	}
-
-	route = s.recordDelivered(r.Context(), id, content, route)
 
 	jsonResponse(w, map[string]string{
 		"status":  "sent",
 		"task_id": route.TaskID,
 	})
+}
+
+// submitRequest sends content to a desktop through the same path every
+// human request takes - Plan a task route, deliver it (starting the desktop
+// first if it is stopped), then Commit the route and append it to the chat -
+// and returns the route it landed under. Shared by sendRequestHandler and
+// Submit, so a cron-triggered request (internal/schedule's Runner) lands in
+// the task records and chat exactly the way a typed one does.
+func (s *Server) submitRequest(ctx context.Context, desktopID, content string) (tasks.Route, error) {
+	id := desktop.SanitizeID(desktopID)
+	route := s.routeRequest(id, content)
+
+	if err := s.deliverRequest(ctx, desktopID, content, route.TaskID); err != nil {
+		return tasks.Route{}, err
+	}
+
+	return s.recordDelivered(ctx, id, content, route), nil
+}
+
+// Submit implements internal/schedule's Submitter: it is the fourth door
+// onto submitRequest, after the chat, the requests page and a query reply -
+// see that package's Runner for when this is called.
+func (s *Server) Submit(ctx context.Context, desktopID, content string) error {
+	_, err := s.submitRequest(ctx, desktopID, content)
+	return err
+}
+
+// SubmitTracked implements internal/dag's Submitter: the same door onto
+// submitRequest that Submit is, but also hands back the task ID the request
+// landed under, since a DAG run has to watch that specific task to know
+// when its node is done.
+func (s *Server) SubmitTracked(ctx context.Context, desktopID, content string) (string, error) {
+	route, err := s.submitRequest(ctx, desktopID, content)
+	return route.TaskID, err
 }
 
 // routeRequest decides which task record a human request belongs to before it

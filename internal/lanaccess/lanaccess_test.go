@@ -267,6 +267,30 @@ func TestLockoutAfterRepeatedFailures(t *testing.T) {
 	}
 }
 
+func TestStaleAttemptsAreEvicted(t *testing.T) {
+	store := NewStore()
+
+	// A source that failed once, long enough ago to be outside both the
+	// counting window and any lockout, and never came back.
+	store.attemptsMu.Lock()
+	store.attempts["stale"] = &attemptState{
+		count:       1,
+		windowStart: time.Now().Add(-2 * lockoutWindow),
+	}
+	store.attemptsMu.Unlock()
+
+	// Any later failure (from a different source) should sweep it out.
+	store.recordFailure("someone-else")
+
+	store.attemptsMu.Lock()
+	_, stillThere := store.attempts["stale"]
+	store.attemptsMu.Unlock()
+
+	if stillThere {
+		t.Fatal("expected a stale attempt record to be evicted, but it is still present")
+	}
+}
+
 func TestRotateDropsExistingSessions(t *testing.T) {
 	store := NewStore()
 	srv := httptest.NewServer(store.Middleware(protectedHandler()))

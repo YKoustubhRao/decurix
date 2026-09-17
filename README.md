@@ -95,6 +95,60 @@ This is the beginning.
 
 ---
 
+## ✅ Feature Overview
+
+A rundown of what's actually built and working, grouped by area. See [`CLAUDE.md`](CLAUDE.md) for the full architecture behind each of these.
+
+**Workers & environments**
+* Create, start, stop, restart and delete disposable desktop VMs (Docker containers running a full XFCE desktop over VNC) from a single dashboard
+* Three desktop profiles — `basic` (VNC only), `developer` (+ LibreOffice, git, Node, Go, Rust, gh, Claude Code) and `ai` (developer + Codex) — picked per worker at creation time
+* Persistent per-worker environments and worker memory that survive a container being recreated
+* Idle workers stop themselves automatically after a configurable timeout, and a stopped worker auto-starts (and the request waits for it) the moment it's given something to do
+* Live desktop thumbnails on every dashboard card, driven by a direct RFB screenshot reader rather than an embedded VNC iframe, so the dashboard stays fast at any worker count
+
+**Multiple AI engines, one contract**
+* Three interchangeable agent harnesses per worker — **Ollama** (local, hand-rolled command loop), **Claude Code** (real Claude Code CLI with a shared OAuth login, no API key needed) and **TheBot** (a purpose-built Go agent with its own planner/scheduler/skills loop)
+* Identical chat, task, query, approval and memory behavior across all three — the harness is invisible from the chat page
+* A GUI benchmark suite (`bench/gui/`) with an "oracle" mode (scripted, no model) to score each engine's real success rate on web, spreadsheet and desktop-app tasks
+
+**One conversation per worker**
+* A single, persistent chat thread per worker — the same conversation on a laptop, a phone through the tunnel, or a second browser tab, live-streamed (SSE, with automatic polling fallback for tunnels that don't carry SSE)
+* Replying to a paused agent is just sending another message — the same chat box, the Requests page and a query reply are three doors onto the same conversation
+* Per-task token/model/cost accounting shown alongside every reply
+* One-tap **Correct / Wrong** verdicts, since "done" is only the agent's own claim
+
+**Computer use**
+* One shared action layer (`observe` / `act` / `verify` / `open`) every engine drives — Claude via MCP tools, Ollama/TheBot via a `gui` shell command — so screen access, approval and auditing can't be bypassed by any engine
+* Screen understanding via AT-SPI (GTK/XFCE/LibreOffice), the Chrome DevTools Protocol (Chromium) and `xdotool` input
+* Consequential actions (Send/Pay/Publish-style controls) are stopped for explicit human approval before anything happens
+* Every action recorded with before/after screenshots, shown inline in the chat
+
+**Recordings, demonstrations & replay**
+* Every on-screen action a worker takes is recorded to a structured, replayable event log
+* Record a human demonstration directly from the desktop screen via a floating **ticket toolbar** — start/stop/continue capturing, annotate with a reason, and end to produce a downloadable, replayable recording
+* Replay any recording as a task — from the Recordings page, by typing `/replay <id>` in chat, or via an engine's own `gui replay` / MCP tools — with parameterized values and privacy-safe halting instead of guessing
+* Built-in privacy scrubbing: passwords and credential-shaped text are withheld at the source, never recorded
+
+**Task tracking & autonomy**
+* Every request becomes a stored task: attempts, steps, screenshots, interventions and their outcome, kept in an embedded SQLite database that survives restarts
+* An autonomy dashboard (**Tasks**) breaking down autonomy rate by engine, worker and task type, and the most common reasons a human had to step in — with a single, precise definition of "autonomous"
+
+**Scheduling & automation**
+* Recurring requests on a standard 5-field cron expression, or a one-time request for a future moment — set up from the Requests page and fired automatically by a built-in scheduler (no external cron dependency)
+* **DAG workflows** (`/dags`): a drag-and-drop canvas for wiring multiple workers' requests into a directed graph, where a node's output can be referenced in a downstream node's request text, dispatch is gated on every upstream node succeeding, and a failed node skips everything only reachable through it — runnable on its own cron trigger or on demand
+* A worker-recommender that suggests the best desktop for a newly typed request, based on which worker is most recently active or whose past memory most closely matches the request (embedding similarity), with recency as the always-available fallback
+
+**Access & connectivity**
+* An always-on primary listener for local/dashboard use and desktop callbacks, plus a second, access-code-gated listener for exposing Flowera safely off-network — the code rotates on demand and automatically every 48 hours
+* Cloudflare quick tunnels (one per listener) plus direct LAN URLs, all surfaced together in the dashboard's Mobile menu
+* An interactive `--cli` terminal client for driving a running control plane without a browser
+
+**Distribution**
+* A single self-contained executable (Go, `CGO_ENABLED=0`) with the dashboard UI and desktop build context embedded — no separate assets, one file to run
+* Cross-platform release builds (Linux/macOS/Windows, amd64/arm64) via `scripts/release/release.sh`
+
+---
+
 ## 🗺️ What's Next
 
 Flowera is being built toward a world where AI workers can:

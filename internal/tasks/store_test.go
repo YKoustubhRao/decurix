@@ -168,6 +168,57 @@ func TestReplyResumesTheInterventionItAnswers(t *testing.T) {
 	}
 }
 
+// A reply planned against one open intervention must not land on a
+// different one that has since opened, if its delivery is slow enough that
+// the execution paused again before the Commit for it finally runs.
+func TestSlowReplyAttachesToTheInterventionOpenAtCommitTime(t *testing.T) {
+	c := newClock()
+	s := openStore(t, c)
+	box := worker("box", "claude")
+
+	route := send(t, s, box, "pick a color to paint the wall")
+	outcome(t, s, "box", route.TaskID, Outcome{Kind: OutcomeQuery, Reply: "which color?"})
+
+	// Human A starts replying, but delivery of A's reply stalls - only
+	// Plan has run so far, nothing is committed yet.
+	routeA, err := s.Plan(box.ID, "blue")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c.advance(time.Second)
+
+	// Human B's faster reply reaches Commit first, resuming the execution.
+	if reply := send(t, s, box, "blue-ish"); reply.Kind != RouteReply {
+		t.Fatalf("B's reply routed as %+v, want a reply", reply)
+	}
+
+	// The agent resumes on B's answer and pauses again, on a new
+	// intervention.
+	c.advance(time.Second)
+	outcome(t, s, "box", route.TaskID, Outcome{Kind: OutcomeQuery, Reply: "light or dark?"})
+
+	// A's stale route finally reaches Commit.
+	if _, err := s.Commit(routeA, box, "blue"); err != nil {
+		t.Fatal(err)
+	}
+
+	interventions := get(t, s, route.TaskID).Executions[0].Interventions
+	if len(interventions) != 2 {
+		t.Fatalf("got %d interventions, want 2", len(interventions))
+	}
+
+	first, second := interventions[0], interventions[1]
+
+	if first.Reply != "blue-ish" {
+		t.Fatalf("first intervention's reply = %q, want it untouched by A's stale reply", first.Reply)
+	}
+
+	if second.Reply != "blue" || second.RepliedAt.IsZero() {
+		t.Fatalf("second intervention = %+v, want A's stale reply attached to it, answered", second)
+	}
+}
+
 // The failure note says "send the request again"; doing so is another
 // attempt at the same task, not a second task.
 func TestResendingAfterAnErrorIsARetry(t *testing.T) {
@@ -524,5 +575,36 @@ func TestLastActivity(t *testing.T) {
 	}
 	if !got.Equal(want) {
 		t.Fatalf("last activity = %v, want %v", got, want)
+	}
+}
+
+// internal/dag polls TaskResult to learn when a node it dispatched has
+// finished - it must see the latest attempt, not the first one that failed.
+func TestTaskResult(t *testing.T) {
+	c := newClock()
+	s := openStore(t, c)
+	box := worker("box", "thebot")
+
+	first := send(t, s, box, "hello, whats your name?")
+	outcome(t, s, "box", first.TaskID, Outcome{Kind: OutcomeError, Reply: "did not finish answering in time"})
+
+	send(t, s, box, "Hello,  whats your name?")
+	outcome(t, s, "box", first.TaskID, Outcome{Kind: OutcomeDone, Reply: "I'm box."})
+
+	status, reply, ok := s.TaskResult(first.TaskID)
+	if !ok {
+		t.Fatal("TaskResult ok = false, want true")
+	}
+
+	if status != StatusDone || reply != "I'm box." {
+		t.Fatalf("TaskResult = (%q, %q), want the latest attempt (%q, %q)", status, reply, StatusDone, "I'm box.")
+	}
+}
+
+func TestTaskResultUnknownID(t *testing.T) {
+	s := openStore(t, newClock())
+
+	if _, _, ok := s.TaskResult("t0000000000000000"); ok {
+		t.Fatal("TaskResult ok = true for an unknown task, want false")
 	}
 }

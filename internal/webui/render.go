@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YKoustubhRao/flowera/internal/dag"
 	"github.com/YKoustubhRao/flowera/internal/desktop"
 	"github.com/YKoustubhRao/flowera/internal/memory"
 	"github.com/YKoustubhRao/flowera/internal/querynotes"
@@ -38,7 +39,17 @@ type PageData struct {
 	Desktops        []desktop.Desktop
 	WorkerMemory    []memory.WorkerMemoryEntry
 	MemoryByDesktop map[string][]memory.WorkerMemoryEntry
-	TunnelURL       string
+	// LinkedMemory maps a desktop ID to the other desktop IDs it shares L1
+	// memory with (see memory.Store.Link) - what the card's "Shared with"
+	// row and unlink button read.
+	LinkedMemory map[string][]string
+	// DesktopNames maps a desktop ID to its display name, so a card can show
+	// a linked/parent desktop's name (matching how the rest of the card
+	// always shows .Name, never a raw ID) rather than the ID itself. A
+	// lookup miss (the desktop was since deleted) falls back to the ID in
+	// the template.
+	DesktopNames map[string]string
+	TunnelURL    string
 }
 
 // QueryNotesPageData is the template data for the query-notes dashboard.
@@ -72,6 +83,22 @@ type TasksPageData struct {
 // TaskPageData is the template data for one task record.
 type TaskPageData struct {
 	Task tasks.Detail
+}
+
+// DagsPageData is the template data for the DAGs list page.
+type DagsPageData struct {
+	Dags []dag.Summary
+}
+
+// DagPageData is the template data for one DAG's editor page. Only the DAG
+// record itself - its name and cron expression - is rendered server-side;
+// the canvas and run history are populated by the page's own JS fetches
+// (loadDag/loadRuns), so the handler has no reason to pay for the nodes,
+// edges and run-history queries dag.Detail would otherwise do on every page
+// view just to have them go unused.
+type DagPageData struct {
+	DAG      dag.DAG
+	Desktops []desktop.Desktop
 }
 
 // RecordingsPageData is the template data for one desktop's recordings page.
@@ -139,6 +166,8 @@ type Renderer struct {
 	tasksTmpl      *template.Template
 	taskTmpl       *template.Template
 	recordingsTmpl *template.Template
+	dagsTmpl       *template.Template
+	dagTmpl        *template.Template
 }
 
 // NewRenderer parses all templates once at startup.
@@ -164,6 +193,12 @@ func NewRenderer() *Renderer {
 		),
 		recordingsTmpl: template.Must(
 			template.ParseFS(web.TemplatesFS, templatePaths("recordings.html")...),
+		),
+		dagsTmpl: template.Must(
+			template.New("dags.html").Funcs(taskFuncs).ParseFS(web.TemplatesFS, templatePaths("dags.html")...),
+		),
+		dagTmpl: template.Must(
+			template.New("dag.html").Funcs(taskFuncs).ParseFS(web.TemplatesFS, templatePaths("dag.html")...),
 		),
 	}
 }
@@ -202,6 +237,16 @@ func (rd *Renderer) RenderTask(w io.Writer, data TaskPageData) error {
 // RenderRecordings renders one desktop's recordings page.
 func (rd *Renderer) RenderRecordings(w io.Writer, data RecordingsPageData) error {
 	return rd.recordingsTmpl.ExecuteTemplate(w, "recordings.html", data)
+}
+
+// RenderDags renders the DAGs list page.
+func (rd *Renderer) RenderDags(w io.Writer, data DagsPageData) error {
+	return rd.dagsTmpl.ExecuteTemplate(w, "dags.html", data)
+}
+
+// RenderDag renders one DAG's editor page.
+func (rd *Renderer) RenderDag(w io.Writer, data DagPageData) error {
+	return rd.dagTmpl.ExecuteTemplate(w, "dag.html", data)
 }
 
 // FaviconSVG is the Flowera brand mark, served as the control plane's favicon.

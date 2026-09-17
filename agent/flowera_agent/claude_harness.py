@@ -39,6 +39,38 @@ TASK_TIMEOUT_SECONDS = int(
 
 MAX_BUDGET_USD = os.environ.get("CLAUDE_MAX_BUDGET_USD", "5")
 
+
+def _claude_failure_note(error):
+    """
+    Turn a raw claude-CLI failure into a note that says what to do about
+    it, the same principle as messaging.backend_failure_note - but this
+    harness's failures are a local subprocess (didn't start, timed out,
+    exited non-zero), not a networked backend, so that helper's "at
+    <url>" phrasing doesn't fit and this mirrors it instead of reusing it.
+    """
+
+    text = str(error)
+    lowered = text.lower()
+
+    if "did not finish within" in lowered:
+        cause = "The Claude Code CLI did not finish this task in time."
+        fix = (
+            "Send the request again - a smaller task, or a lower "
+            "CLAUDE_TASK_TIMEOUT_SECONDS worth waiting out, may help."
+        )
+    elif "could not start claude" in lowered:
+        cause = "The Claude Code CLI itself failed to start on this desktop."
+        fix = (
+            "Check that the `claude` binary is installed and that this "
+            "desktop has completed the shared Claude Code login, then "
+            "send the request again."
+        )
+    else:
+        cause = "The Claude Code CLI failed while working on this task."
+        fix = "Send the request again, or check the desktop's own logs."
+
+    return f"{cause}\n\n{fix}\n\nTechnical detail:\n{text}"
+
 SAFETY_SYSTEM_PROMPT = f"""
 IMPORTANT SAFETY RULE:
 
@@ -381,14 +413,12 @@ def perform_task(task, task_file):
     result, error = _run_claude(task)
 
     if error:
-        ask_for_query(
-            f"""
-Claude Code harness failed to run the task.
-
-Error:
-{error}
-""".strip()
-        )
+        # The task is over, not paused - matching task_runner.py and
+        # thebot_harness.py. This used to be ask_for_query, which leaves
+        # the desktop waiting on a reply that has nothing to add to a CLI
+        # that never produced a result; the human's next, unrelated
+        # request would be routed as a "reply" to this one instead.
+        write_final_reply(_claude_failure_note(error), kind="error")
         return
 
     _handle_result(result)
@@ -415,14 +445,15 @@ def continue_after_query(query_response):
     )
 
     if error:
+        # Unlike perform_task's fresh-task failure above, this is the
+        # documented exception: a failure while resuming after a human's
+        # reply keeps the task paused, so a resend of that same reply
+        # still carries the original session rather than starting a new,
+        # unrelated task.
         ask_for_query(
-            f"""
-The agent tried to continue after the human's reply,
-but the Claude Code harness failed again.
-
-Error:
-{error}
-""".strip()
+            "The agent tried to continue after your reply, but the "
+            "Claude Code harness failed again.\n\n"
+            + _claude_failure_note(error)
         )
         return
 

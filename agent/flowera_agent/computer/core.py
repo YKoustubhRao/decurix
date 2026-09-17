@@ -1,8 +1,10 @@
 import base64
+import fcntl
 import json
 import re
 import shutil
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from flowera_agent import progress
@@ -54,6 +56,25 @@ def _save_state(observation, next_ref):
     tmp.replace(STATE_FILE)
 
 
+@contextmanager
+def _state_lock():
+    """
+    Guard the read-modify-write of the ref-continuity state, the same way
+    approval.py's and recording.py's own stores already guard theirs. The
+    atomic rename in _save_state only stops a torn read; it does nothing
+    about two observe() calls (two MCP tool calls, or an MCP call racing
+    the demonstration recorder's read-only core.observe(remember=False))
+    both reading the same "previous" state and each computing their own ref
+    assignments, where the second writer would silently discard the first's.
+    """
+
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+    with open(STATE_DIR / "observation.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
 def observe(remember=True):
     """
     Look at the screen: a screenshot, the open windows, and every accessible
@@ -98,25 +119,26 @@ def observe(remember=True):
 
     groups = _order_groups(groups, windows, active_title)
 
-    previous = _load_state()
-    next_ref = el.assign_refs(found, previous)
-
     width, height = frame.width, frame.height
 
-    observation = {
-        "time": time.time(),
-        "size": [width, height],
-        "active_title": active_title,
-        "windows": [{"id": w["id"], "title": w["title"], "box": w["box"], "active": w["active"]} for w in windows],
-        "groups": groups,
-        "elements": found,
-        "notes": notes,
-        "page_url": page_group.get("url") if page_group else "",
-        "frame": frame,
-    }
+    with _state_lock():
+        previous = _load_state()
+        next_ref = el.assign_refs(found, previous)
 
-    if remember:
-        _save_state(observation, next_ref)
+        observation = {
+            "time": time.time(),
+            "size": [width, height],
+            "active_title": active_title,
+            "windows": [{"id": w["id"], "title": w["title"], "box": w["box"], "active": w["active"]} for w in windows],
+            "groups": groups,
+            "elements": found,
+            "notes": notes,
+            "page_url": page_group.get("url") if page_group else "",
+            "frame": frame,
+        }
+
+        if remember:
+            _save_state(observation, next_ref)
 
     return observation
 
@@ -195,10 +217,11 @@ def _wait_for_settle(reference):
 
 def _window_id_for(element, observation=None):
     title = element.get("window_title") or ""
-    for w in screen.windows():
+    windows = screen.windows()
+    for w in windows:
         if w["title"] == title:
             return w["id"]
-    for w in screen.windows():
+    for w in windows:
         if title and (title in w["title"] or w["title"] in title):
             return w["id"]
     return None
@@ -376,10 +399,18 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     keys = [k for k in (keys or []) if k and k.strip()]
     target = el.describe(element) if element else (f"{point[0]},{point[1]}" if point else "")
 
-    # Typing with no target goes to whatever has focus, and that field is the
-    # one whose secrecy decides whether the text may be kept.
+    # Typing with no target at all (no ref/role/name/path/point) goes to
+    # whatever already has focus, and that field is the one whose secrecy
+    # decides whether the text may be kept - before is accurate here because
+    # nothing will change focus before typing. But when a point was given
+    # and simply didn't resolve to a tracked element, _perform still clicks
+    # there before typing, so the field that ends up focused is unknown
+    # until after that click - substituting before's already-focused field
+    # would describe the wrong element's secrecy. Leave field unresolved in
+    # that case; privacy.withhold_text(None, ...) still catches text that is
+    # itself shaped like a credential.
     field = element
-    if kind == "type" and field is None:
+    if kind == "type" and field is None and point is None:
         field = next((e for e in before["elements"] if "focused" in e.get("states", [])), None)
     kept, withheld = privacy.withhold_text(field, text) if kind == "type" else (None, None)
     described = approval.describe_action(kind, element, text, keys, point, withheld=withheld)

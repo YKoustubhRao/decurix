@@ -133,6 +133,20 @@ class Refs(unittest.TestCase):
         with self.assertRaises(Exception):
             el.find(items, name="Save")  # a button and a link, both exact
 
+    def test_find_by_path_raises_on_ambiguity_instead_of_guessing(self):
+        # Paths are rooted at the window title, and two windows that happen
+        # to share one (two "Untitled - Mousepad" windows, say) can produce
+        # the same path - find must not silently act on the first match.
+        items = [
+            element("button", "Save", ref="e1", path="Untitled - Mousepad > button Save"),
+            element("button", "Save", ref="e2", path="Untitled - Mousepad > button Save"),
+        ]
+        with self.assertRaises(Exception):
+            el.find(items, path="Untitled - Mousepad > button Save")
+
+        unique = [element("button", "Save", ref="e1", path="Untitled - Mousepad > button Save")]
+        self.assertEqual(el.find(unique, path="Untitled - Mousepad > button Save")["ref"], "e1")
+
     def test_render_folds_bars_and_respects_budget(self):
         items = [element("button", n, ref=f"e{i}", bar="Standard") for i, n in enumerate(["New", "Open", "Save"], 1)]
         items.append(element("textbox", "Name", ref="e9"))

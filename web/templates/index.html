@@ -259,6 +259,19 @@
   line-height:1.35;
 }
 
+.dcard-spec{
+  display:flex;
+  align-items:flex-start;
+  gap:7px;
+  min-width:0;
+  margin-top:9px;
+  font-size:11.5px;
+  line-height:1.4;
+  color:var(--text-3);
+}
+
+.dcard-spec svg{flex:0 0 auto;margin-top:2px;opacity:.75}
+
 .copy-btn{
   flex:0 0 auto;
   width:28px;
@@ -364,6 +377,41 @@
 .mem-form .select{background-position:calc(100% - 15px) 14px,calc(100% - 11px) 14px}
 .mem-form .textarea{min-height:58px}
 .mem-form .btn{justify-self:end}
+
+.mem-shared{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:6px;
+  padding-top:10px;
+  margin-top:10px;
+  border-top:1px dashed var(--line-2);
+}
+
+.mem-shared-label{font-size:11.5px;color:var(--text-3)}
+
+.mem-shared-chip{
+  display:inline-flex;
+  align-items:center;
+  gap:5px;
+  padding:3px 4px 3px 9px;
+  border-radius:999px;
+  background:var(--surface-2);
+  border:1px solid var(--line);
+  font-size:11.5px;
+}
+
+.mem-unlink{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  width:16px;
+  height:16px;
+  border-radius:50%;
+  color:var(--text-3);
+}
+
+.mem-unlink:hover{color:var(--danger, #e5484d);background:var(--surface-3)}
 
 /* ---------- card actions ---------- */
 
@@ -504,6 +552,7 @@
   <div class="grid">
 {{if .Desktops}}
 {{range .Desktops}}
+    {{$selfID := .ID}}
     <article class="dcard" data-desktop-id="{{.ID}}">
       {{/* A thumbnail, not an embedded screen. This used to be an
            <iframe src="/desktop/<id>/">, i.e. a whole noVNC client per card:
@@ -571,6 +620,20 @@
             </div>
           </dl>
 
+          {{if .Specialization}}
+          <div class="dcard-spec">
+            <svg width="13" height="13"><use href="#i-fork"/></svg>
+            <span>Specialized for: {{.Specialization}}</span>
+          </div>
+          {{end}}
+
+          {{if .ParentID}}
+          <div class="dcard-spec">
+            <svg width="13" height="13"><use href="#i-fork"/></svg>
+            <span>Child of <span class="mono">{{with index $.DesktopNames .ParentID}}{{.}}{{else}}{{.ParentID}}{{end}}</span></span>
+          </div>
+          {{end}}
+
           <div class="dcard-url">
             <svg width="13" height="13"><use href="#i-monitor"/></svg>
             <span class="mono trunc" title="{{.URL}}">{{.URL}}</span>
@@ -623,6 +686,41 @@
               <button type="submit" class="btn btn-primary btn-sm">Save rule</button>
             </form>
           </details>
+
+          {{if index $.LinkedMemory .ID}}
+          <div class="mem-shared">
+            <span class="mem-shared-label">Shares memory with</span>
+            {{range $lid := index $.LinkedMemory .ID}}
+            {{$lname := $lid}}{{with index $.DesktopNames $lid}}{{$lname = .}}{{end}}
+            <span class="mem-shared-chip">
+              {{$lname}}
+              <button type="button" class="mem-unlink" data-unlink-memory="{{$selfID}}" data-linked-id="{{$lid}}" title="Stop sharing memory with {{$lname}}" aria-label="Stop sharing memory with {{$lname}}">
+                <svg width="10" height="10"><use href="#i-x"/></svg>
+              </button>
+            </span>
+            {{end}}
+          </div>
+          {{end}}
+
+          <details class="mem-add">
+            <summary>
+              <svg width="13" height="13"><use href="#i-link"/></svg>
+              Share memory with another worker
+            </summary>
+
+            <form class="mem-form mem-link-form" data-link-memory-form>
+              <input type="hidden" name="desktop_id" value="{{$selfID}}">
+              <select class="select" name="linked_id" required>
+                <option value="" disabled selected>Choose a worker…</option>
+                {{range $.Desktops}}
+                {{if ne .ID $selfID}}
+                <option value="{{.ID}}">{{.Name}}</option>
+                {{end}}
+                {{end}}
+              </select>
+              <button type="submit" class="btn btn-primary btn-sm">Share memory</button>
+            </form>
+          </details>
         </div>
       </details>
 
@@ -658,6 +756,10 @@
         </button>
         {{end}}
 
+        <button class="btn btn-default btn-sm action-icon" data-spawn-child="{{.ID}}" data-spawn-child-name="{{.Name}}" data-spawn-child-profile="{{.Profile}}" data-spawn-child-harness="{{.Harness}}" data-spawn-child-cpus="{{.CPUs}}" data-spawn-child-memory-mb="{{.MemoryMB}}" title="Spawn a specialized child worker" aria-label="Spawn a specialized child worker">
+          <svg width="14" height="14"><use href="#i-fork"/></svg>
+        </button>
+
         <span class="spacer"></span>
 
         <button class="btn btn-danger btn-sm action-icon" data-act="delete" data-id="{{.ID}}" data-name="{{.Name}}" title="Delete" aria-label="Delete desktop">
@@ -691,10 +793,12 @@
 
 <dialog id="createDialog">
   <form method="dialog" id="createForm">
+    <input type="hidden" id="dParentId" name="parent_id" value="">
+
     <div class="dialog-head">
       <div>
-        <h2>New desktop</h2>
-        <p>A fresh container with a persistent home directory.</p>
+        <h2 id="createDialogTitle">New desktop</h2>
+        <p id="createDialogSub">A fresh container with a persistent home directory.</p>
       </div>
       <button type="button" class="icon-btn" data-close-dialog aria-label="Close">
         <svg width="16" height="16"><use href="#i-x"/></svg>
@@ -706,6 +810,12 @@
         <label for="dName">Name</label>
         <input class="input" type="text" id="dName" name="name" placeholder="research-box" autocomplete="off">
         <div class="hint">Lowercase letters, numbers and dashes. Leave empty for a generated name.</div>
+      </div>
+
+      <div class="field" id="specializationField" style="display:none">
+        <label for="dSpecialization">Specialization</label>
+        <textarea class="textarea" id="dSpecialization" name="specialization" placeholder="e.g. Handle inbound support email and draft replies" style="min-height:52px"></textarea>
+        <div class="hint">What this child worker should focus on. It starts with a copy of the parent's learned memory, and shares new memory with it from then on.</div>
       </div>
 
       <div class="field">
@@ -948,14 +1058,60 @@
 
   var createDialog = document.getElementById("createDialog");
   var createForm = document.getElementById("createForm");
+  var specializationField = document.getElementById("specializationField");
 
-  function openCreate(){
+  /* parent is {id, name, profile, harness, cpus, memoryMb}, or omitted for
+     an ordinary "New desktop" open. */
+  function openCreate(parent){
+    createForm.reset();
+    document.getElementById("dParentId").value = parent ? parent.id : "";
+    specializationField.style.display = parent ? "" : "none";
+
+    if(parent){
+      // Inherit the parent's profile/harness/CPU/memory rather than always
+      // resetting to the hardcoded defaults - a specialization meant to run
+      // on (say) a Claude-harness developer desktop shouldn't silently
+      // become a bare Ollama/Basic child unless someone notices and
+      // re-picks every option by hand.
+      selectRadio("profile", parent.profile);
+      selectRadio("harness", parent.harness);
+      selectRadio("cpus", parent.cpus);
+      selectRadio("memory_mb", parent.memoryMb);
+    }
+
+    document.getElementById("createDialogTitle").textContent =
+      parent ? "Spawn a specialized child worker" : "New desktop";
+    document.getElementById("createDialogSub").textContent = parent
+      ? "A new desktop spawned from " + parent.name + ", sharing its learned memory."
+      : "A fresh container with a persistent home directory.";
+
+    syncHarness();
     createDialog.showModal();
-    document.getElementById("dName").focus();
+    document.getElementById(parent ? "dSpecialization" : "dName").focus();
     loadClaudeAuthStatus();
   }
 
-  document.getElementById("newDesktopBtn").addEventListener("click", openCreate);
+  document.getElementById("newDesktopBtn").addEventListener("click", function(){ openCreate(); });
+
+  function selectRadio(name, value){
+    if(!value){ return; }
+    var input = createForm.querySelector('input[name="' + name + '"][value="' + String(value).replace(/"/g, '\\"') + '"]');
+    if(input){ input.checked = true; }
+  }
+
+  document.addEventListener("click", function(event){
+    var button = event.target.closest("[data-spawn-child]");
+    if(!button){ return; }
+
+    openCreate({
+      id: button.dataset.spawnChild,
+      name: button.dataset.spawnChildName,
+      profile: button.dataset.spawnChildProfile,
+      harness: button.dataset.spawnChildHarness,
+      cpus: button.dataset.spawnChildCpus,
+      memoryMb: button.dataset.spawnChildMemoryMb,
+    });
+  });
 
   document.querySelectorAll("[data-close-dialog]").forEach(function(button){
     button.addEventListener("click", function(){ createDialog.close(); });
@@ -1136,7 +1292,9 @@
         profile: data.get("profile"),
         harness: data.get("harness"),
         cpus: data.get("cpus"),
-        memory_mb: data.get("memory_mb")
+        memory_mb: data.get("memory_mb"),
+        specialization: data.get("specialization") || "",
+        parent_id: data.get("parent_id") || ""
       });
 
       location.reload();
@@ -1333,6 +1491,47 @@
         toast(e.message, "error");
       }
     });
+  });
+
+  document.querySelectorAll("[data-link-memory-form]").forEach(function(form){
+    form.addEventListener("submit", async function(event){
+      event.preventDefault();
+
+      var submit = form.querySelector("button[type=submit]");
+      submit.disabled = true;
+      submit.textContent = "Sharing…";
+
+      try{
+        var fields = {};
+        new FormData(form).forEach(function(value, key){ fields[key] = value; });
+
+        await post("/api/desktops/memory/link", fields);
+        location.reload();
+      }catch(e){
+        submit.disabled = false;
+        submit.textContent = "Share memory";
+        toast(e.message, "error");
+      }
+    });
+  });
+
+  document.addEventListener("click", async function(event){
+    var button = event.target.closest("[data-unlink-memory]");
+    if(!button){ return; }
+
+    busy(true);
+
+    try{
+      await post("/api/desktops/memory/unlink", {
+        desktop_id: button.dataset.unlinkMemory,
+        linked_id: button.dataset.linkedId
+      });
+
+      location.reload();
+    }catch(e){
+      busy(false);
+      toast(e.message, "error");
+    }
   });
 
   /* ---------------- query rail ----------------

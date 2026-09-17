@@ -5,6 +5,10 @@ import (
 	"net/http"
 )
 
+// maxTunnelRequestBytes bounds one POST /api/tunnel body - four short URLs,
+// never legitimately more than a few hundred bytes.
+const maxTunnelRequestBytes = 8192
+
 // tunnelHandler records the addresses scripts/*/build.sh (or rebuild.sh)
 // discovers for this machine (POST, one call for the admin/LAN URLs once
 // Flowera is up, and one call per line each time either Cloudflare tunnel -
@@ -23,6 +27,7 @@ func (s *Server) tunnelHandler(w http.ResponseWriter, r *http.Request) {
 			LANTunnelURL string `json:"lan_tunnel_url"`
 		}
 
+		r.Body = http.MaxBytesReader(w, r.Body, maxTunnelRequestBytes)
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return

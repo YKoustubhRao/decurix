@@ -22,8 +22,6 @@ import (
 type Manager struct {
 	client *client.Client
 
-	mu sync.Mutex
-
 	// shots caches the dashboard's desktop thumbnails, keyed by desktop ID.
 	// Guarded by shotMu, which covers the map alone - each entry carries its
 	// own lock for the capture itself (see screenshot.go), so one slow
@@ -33,20 +31,27 @@ type Manager struct {
 
 	// claudeLogin is the one in-progress "claude auth login" attempt (see
 	// claudelogin.go) - there is one shared Claude session for the whole
-	// app, so only one login attempt is ever in flight. Guarded by
-	// claudeLoginMu, separate from mu since a login attempt has nothing to
-	// do with container CRUD.
+	// app, so only one login attempt is ever in flight. Guarded by its own
+	// mutex, separate from shotMu/viewedMu since a login attempt has
+	// nothing to do with either of those.
 	claudeLoginMu sync.Mutex
 	claudeLogin   *claudeLoginSession
 
 	// viewed is the last time each desktop's thumbnail was fetched or its
 	// screen was actually proxied to, keyed by sanitized desktop ID. Guarded
-	// by its own mutex for the same reason shots is: this has nothing to do
-	// with container CRUD. internal/idlepause reads it so a desktop nobody
-	// has a task running on, but someone still has open in a browser tab,
-	// is never stopped out from under them.
+	// by its own mutex for the same reason shots is. internal/idlepause
+	// reads it so a desktop nobody has a task running on, but someone still
+	// has open in a browser tab, is never stopped out from under them.
 	viewedMu sync.Mutex
 	viewed   map[string]time.Time
+
+	// secOpt/secOptResolved cache whether the Docker daemon enforces
+	// seccomp (see sandbox.go's desktopSecurityOpt) - a property of the
+	// daemon that cannot change while it keeps running, so it is worth
+	// asking at most once rather than on every desktop Create.
+	secOptMu       sync.Mutex
+	secOpt         []string
+	secOptResolved bool
 }
 
 // NewManager creates a Manager backed by the given Docker client.
@@ -58,7 +63,9 @@ func NewManager(cli *client.Client) *Manager {
 // for the given profile and starts it, rolling back on failure.
 // claudeCredentialsJSON seeds a claude-harness desktop with the shared
 // Claude session (see internal/claudeauth); pass "" for every other harness,
-// or when nobody has logged in yet.
+// or when nobody has logged in yet. specialization and parentID are "" for
+// an ordinary, standalone desktop; see httpapi.createDesktopHandler for how
+// a specialized child desktop is spawned from an existing one.
 func (m *Manager) Create(
 	ctx context.Context,
 	name string,
@@ -67,10 +74,9 @@ func (m *Manager) Create(
 	cpus int64,
 	memoryMB int64,
 	claudeCredentialsJSON string,
+	specialization string,
+	parentID string,
 ) (*Desktop, error) {
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	imageName, err := resolveDesktopImage(profile)
 	if err != nil {
@@ -101,7 +107,7 @@ func (m *Manager) Create(
 		sanitizeName(name),
 	)
 
-	env := buildDesktopEnv(name, harness)
+	env := buildDesktopEnv(name, harness, specialization, parentID)
 
 	config, hostConfig, networkingConfig := buildContainerConfigs(
 		imageName,
@@ -172,18 +178,20 @@ func (m *Manager) Create(
 	}
 
 	return &Desktop{
-		ID:          sanitizeName(name),
-		Name:        name,
-		Profile:     profile,
-		Harness:     harness,
-		Model:       envValue(env, "OLLAMA_MODEL"),
-		ContainerID: resp.ID,
-		Volume:      volumeName,
-		Status:      "running",
-		CPUs:        cpus,
-		MemoryMB:    memoryMB,
-		URL:         desktopURL(sanitizeName(name)),
-		CreatedAt:   time.Now().Format(time.RFC3339),
+		ID:             sanitizeName(name),
+		Name:           name,
+		Profile:        profile,
+		Harness:        harness,
+		Model:          envValue(env, "OLLAMA_MODEL"),
+		ContainerID:    resp.ID,
+		Volume:         volumeName,
+		Status:         "running",
+		CPUs:           cpus,
+		MemoryMB:       memoryMB,
+		URL:            desktopURL(sanitizeName(name)),
+		CreatedAt:      time.Now().Format(time.RFC3339),
+		Specialization: specialization,
+		ParentID:       parentID,
 	}, nil
 }
 
@@ -286,6 +294,14 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 		}
 	}
 
+	specialization := ""
+	parentID := ""
+
+	if inspect.Config != nil {
+		specialization = envValue(inspect.Config.Env, "DESKTOP_SPECIALIZATION")
+		parentID = envValue(inspect.Config.Env, "DESKTOP_PARENT_ID")
+	}
+
 	profile := c.Labels["desktop-profile"]
 
 	if profile == "" {
@@ -323,19 +339,21 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 	}
 
 	return Desktop{
-		ID:          id,
-		Name:        id,
-		Profile:     profile,
-		Harness:     harness,
-		Model:       model,
-		ContainerID: c.ID,
-		Volume:      volumeName,
-		Status:      status,
-		URL:         desktopURL(id),
-		CreatedAt:   createdAt,
-		StartedAt:   startedAt,
-		CPUs:        cpus,
-		MemoryMB:    memoryMB,
+		ID:             id,
+		Name:           id,
+		Profile:        profile,
+		Harness:        harness,
+		Model:          model,
+		ContainerID:    c.ID,
+		Volume:         volumeName,
+		Status:         status,
+		URL:            desktopURL(id),
+		CreatedAt:      createdAt,
+		StartedAt:      startedAt,
+		CPUs:           cpus,
+		MemoryMB:       memoryMB,
+		Specialization: specialization,
+		ParentID:       parentID,
 	}
 }
 
@@ -411,9 +429,6 @@ func (m *Manager) Delete(
 	ctx context.Context,
 	id string,
 ) error {
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	name := "desktop_" + sanitizeName(id)
 
@@ -492,6 +507,13 @@ func (m *Manager) Get(ctx context.Context, id string) (Desktop, error) {
 		CreatedAt:   inspect.Created,
 	}
 
+	for _, mount := range inspect.Mounts {
+		if mount.Destination == "/home/headless" {
+			found.Volume = mount.Name
+			break
+		}
+	}
+
 	if inspect.Config != nil {
 		if profile := inspect.Config.Labels["desktop-profile"]; profile != "" {
 			found.Profile = profile
@@ -502,6 +524,18 @@ func (m *Manager) Get(ctx context.Context, id string) (Desktop, error) {
 		}
 
 		found.Model = envValue(inspect.Config.Env, "OLLAMA_MODEL")
+		found.Specialization = envValue(inspect.Config.Env, "DESKTOP_SPECIALIZATION")
+		found.ParentID = envValue(inspect.Config.Env, "DESKTOP_PARENT_ID")
+	}
+
+	if inspect.HostConfig != nil {
+		if inspect.HostConfig.NanoCPUs > 0 {
+			found.CPUs = inspect.HostConfig.NanoCPUs / 1_000_000_000
+		}
+
+		if inspect.HostConfig.Memory > 0 {
+			found.MemoryMB = inspect.HostConfig.Memory / (1024 * 1024)
+		}
 	}
 
 	if inspect.State != nil && inspect.State.Running {

@@ -183,10 +183,21 @@ def find(elements, ref=None, role=None, name=None, path=None, active_group=None)
         )
 
     if path:
-        for element in elements:
-            if element["path"] == path:
-                return element
-        raise ComputerError(f"no element at path {path!r}. Run observe again.")
+        # Paths aren't guaranteed unique across two windows that share a
+        # title (dedupe_paths only dedupes within one window's own slice) -
+        # take the first match silently and a future caller could act on
+        # the wrong window's element. Raise the same way the role+name
+        # branch below does on genuine ambiguity, rather than guessing.
+        matches = [element for element in elements if element["path"] == path]
+
+        if not matches:
+            raise ComputerError(f"no element at path {path!r}. Run observe again.")
+
+        if len(matches) > 1:
+            listed = "; ".join(describe(e) for e in matches[:8])
+            raise ComputerError(f"{len(matches)} elements share path {path!r} - use one of these refs: {listed}")
+
+        return matches[0]
 
     if not role and not name:
         raise ComputerError("say which element: a ref like e12, or a role and name")

@@ -1,9 +1,12 @@
 package httpapi
 
 import (
+	"errors"
+	"log"
 	"net/http"
 	"strings"
 
+	"github.com/YKoustubhRao/flowera/internal/desktop"
 	"github.com/YKoustubhRao/flowera/internal/webui"
 )
 
@@ -21,27 +24,23 @@ func (s *Server) desktopViewHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	desktops, err := s.Desktops.List(r.Context())
+	d, err := s.Desktops.Get(r.Context(), id)
+	if errors.Is(err, desktop.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("desktop view: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	for _, d := range desktops {
-		if d.ID != id {
-			continue
-		}
-
-		data := webui.DesktopViewPageData{
-			Desktop: d,
-		}
-
-		if err := s.Web.RenderDesktopView(w, data); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-		}
-
-		return
+	data := webui.DesktopViewPageData{
+		Desktop: d,
 	}
 
-	http.NotFound(w, r)
+	if err := s.Web.RenderDesktopView(w, data); err != nil {
+		log.Printf("desktop view: render: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}
 }
