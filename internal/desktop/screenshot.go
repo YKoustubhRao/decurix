@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/des"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -118,6 +119,12 @@ func (m *Manager) Screenshot(ctx context.Context, rawID string, maxWidth int) ([
 	// touches Docker at all.
 	addr, password, _, err := m.captureTarget(ctx, rawID)
 	if err != nil {
+		if errors.Is(err, ErrPaused) && entry.data != nil {
+			// Container is frozen: its screen is completely static. Return
+			// the frozen thumbnail without attempting to dial VNC or failing.
+			m.touchViewed(sanitizedID)
+			return entry.data, nil
+		}
 		return nil, err
 	}
 
@@ -154,6 +161,10 @@ func (m *Manager) captureTarget(ctx context.Context, rawID string) (addr, passwo
 
 	if inspect.State == nil || !inspect.State.Running {
 		return "", "", sanitizedID, ErrNotRunning
+	}
+
+	if inspect.State.Paused {
+		return "", "", sanitizedID, ErrPaused
 	}
 
 	networkInfo, ok := inspect.NetworkSettings.Networks[NetworkName]
@@ -483,19 +494,22 @@ func rfbReadFrame(reader io.Reader, writer io.Writer, width, height int) (*image
 
 // rfbPaintUpdate reads one FramebufferUpdate's rectangles into frame.
 func rfbPaintUpdate(reader io.Reader, frame *image.RGBA) error {
-	header := make([]byte, 3)
+	var header [3]byte
 
-	if _, err := io.ReadFull(reader, header); err != nil {
+	if _, err := io.ReadFull(reader, header[:]); err != nil {
 		return fmt.Errorf("read update header: %w", err)
 	}
 
 	bounds := frame.Bounds()
 	rectangles := binary.BigEndian.Uint16(header[1:3])
 
-	for i := 0; i < int(rectangles); i++ {
-		spec := make([]byte, 12)
+	// Reuse a single row buffer across all rectangles and scanlines.
+	rowBuf := make([]byte, bounds.Dx()*4)
 
-		if _, err := io.ReadFull(reader, spec); err != nil {
+	for i := 0; i < int(rectangles); i++ {
+		var spec [12]byte
+
+		if _, err := io.ReadFull(reader, spec[:]); err != nil {
 			return fmt.Errorf("read rectangle header: %w", err)
 		}
 
@@ -517,7 +531,7 @@ func rfbPaintUpdate(reader io.Reader, frame *image.RGBA) error {
 			return fmt.Errorf("desktop sent a rectangle outside the screen")
 		}
 
-		row := make([]byte, w*4)
+		row := rowBuf[:w*4]
 
 		for line := 0; line < h; line++ {
 			if _, err := io.ReadFull(reader, row); err != nil {
@@ -570,18 +584,28 @@ func rfbSkipCutText(reader io.Reader) error {
 	return err
 }
 
+var jpegBufPool = sync.Pool{
+	New: func() any {
+		return new(bytes.Buffer)
+	},
+}
+
 // encodeThumbnail scales a captured screen down so its width is at most
 // maxWidth and encodes it as JPEG.
 func encodeThumbnail(frame *image.RGBA, maxWidth int) ([]byte, error) {
 	scaled := downscale(frame, maxWidth)
 
-	var buffer bytes.Buffer
+	buf := jpegBufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer jpegBufPool.Put(buf)
 
-	if err := jpeg.Encode(&buffer, scaled, &jpeg.Options{Quality: jpegQuality}); err != nil {
+	if err := jpeg.Encode(buf, scaled, &jpeg.Options{Quality: jpegQuality}); err != nil {
 		return nil, fmt.Errorf("encode screen: %w", err)
 	}
 
-	return buffer.Bytes(), nil
+	res := make([]byte, buf.Len())
+	copy(res, buf.Bytes())
+	return res, nil
 }
 
 // downscale box-filters an image to at most maxWidth wide, preserving aspect

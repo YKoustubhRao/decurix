@@ -63,3 +63,16 @@ func TestTimeRoundTrip(t *testing.T) {
 		t.Fatal("the zero time must survive a round trip")
 	}
 }
+
+func TestIncrementalVacuum(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := IncrementalVacuum(db, 10); err != nil {
+		t.Fatalf("incremental vacuum failed: %v", err)
+	}
+}

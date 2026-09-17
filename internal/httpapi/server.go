@@ -6,6 +6,7 @@ package httpapi
 
 import (
 	"net/http"
+	"sync"
 
 	"github.com/YKoustubhRao/flowera/internal/claudeauth"
 	"github.com/YKoustubhRao/flowera/internal/conversation"
@@ -44,24 +45,28 @@ type Server struct {
 	DagRunner *dag.Runner
 	Suggest   *suggest.Store
 	Web       *webui.Renderer
+
+	stepImagesMu     sync.Mutex
+	recentStepImages map[string]string
 }
 
 // NewServer creates a Server from its component stores/managers.
 func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memoryStore *memory.Store, chat *conversation.Store, stepImages *stepimages.Store, taskRecords *tasks.Store, tunnelStore *tunnel.Store, claudeAuth *claudeauth.Store, lanAccess *lanaccess.Store, schedules *schedule.Store, dags *dag.Store, suggestions *suggest.Store, web *webui.Renderer) *Server {
 	return &Server{
-		Desktops:   desktops,
-		QueryNotes: queryNotes,
-		Memory:     memoryStore,
-		Chat:       chat,
-		StepImages: stepImages,
-		Tasks:      taskRecords,
-		Tunnel:     tunnelStore,
-		ClaudeAuth: claudeAuth,
-		LANAccess:  lanAccess,
-		Schedules:  schedules,
-		Dags:       dags,
-		Suggest:    suggestions,
-		Web:        web,
+		Desktops:         desktops,
+		QueryNotes:       queryNotes,
+		Memory:           memoryStore,
+		Chat:             chat,
+		StepImages:       stepImages,
+		Tasks:            taskRecords,
+		Tunnel:           tunnelStore,
+		ClaudeAuth:       claudeAuth,
+		LANAccess:        lanAccess,
+		Schedules:        schedules,
+		Dags:             dags,
+		Suggest:          suggestions,
+		Web:              web,
+		recentStepImages: make(map[string]string),
 	}
 }
 
@@ -75,6 +80,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/desktops/create", s.createDesktopHandler)
 	mux.HandleFunc("/api/desktops/start", s.startDesktopHandler)
 	mux.HandleFunc("/api/desktops/stop", s.stopDesktopHandler)
+	mux.HandleFunc("/api/desktops/pause", s.pauseDesktopHandler)
+	mux.HandleFunc("/api/desktops/unpause", s.unpauseDesktopHandler)
 	mux.HandleFunc("/api/desktops/restart", s.restartDesktopHandler)
 	mux.HandleFunc("/api/desktops/delete", s.deleteDesktopHandler)
 	mux.HandleFunc("/requests", s.requestsDashboardHandler)

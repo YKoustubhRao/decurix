@@ -52,11 +52,26 @@ type Manager struct {
 	secOptMu       sync.Mutex
 	secOpt         []string
 	secOptResolved bool
+
+	// httpClient pools persistent HTTP connections (Keep-Alive) to desktop
+	// agent APIs on port 8081, eliminating TCP handshake overhead on every
+	// command dispatch.
+	httpClient *http.Client
 }
 
 // NewManager creates a Manager backed by the given Docker client.
 func NewManager(cli *client.Client) *Manager {
-	return &Manager{client: cli}
+	return &Manager{
+		client: cli,
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 16,
+				IdleConnTimeout:     90 * time.Second,
+			},
+		},
+	}
 }
 
 // Create provisions a new desktop container (volume, env, container config)
@@ -81,6 +96,10 @@ func (m *Manager) Create(
 	imageName, err := resolveDesktopImage(profile)
 	if err != nil {
 		return nil, err
+	}
+
+	if err := m.EnsureToolsVolume(ctx); err != nil {
+		log.Printf("warning: ensure tools volume: %v", err)
 	}
 
 	volumeName := fmt.Sprintf(
@@ -318,6 +337,8 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 
 	if c.State == "running" {
 		status = "running"
+	} else if c.State == "paused" {
+		status = "paused"
 	}
 
 	id := strings.TrimPrefix(
@@ -357,19 +378,41 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 	}
 }
 
-// Start starts the Docker container backing the given desktop ID.
+// Start starts or unpauses the Docker container backing the given desktop ID.
 func (m *Manager) Start(
 	ctx context.Context,
 	id string,
 ) error {
-
 	name := "desktop_" + sanitizeName(id)
+
+	inspect, err := m.client.ContainerInspect(ctx, name)
+	if err == nil && inspect.State != nil && inspect.State.Paused {
+		return m.client.ContainerUnpause(ctx, name)
+	}
 
 	return m.client.ContainerStart(
 		ctx,
 		name,
 		container.StartOptions{},
 	)
+}
+
+// Pause pauses the Docker container processes backing the given desktop ID using the cgroup freezer.
+func (m *Manager) Pause(
+	ctx context.Context,
+	id string,
+) error {
+	name := "desktop_" + sanitizeName(id)
+	return m.client.ContainerPause(ctx, name)
+}
+
+// Unpause unpauses the Docker container processes backing the given desktop ID.
+func (m *Manager) Unpause(
+	ctx context.Context,
+	id string,
+) error {
+	name := "desktop_" + sanitizeName(id)
+	return m.client.ContainerUnpause(ctx, name)
 }
 
 // Stop stops the Docker container backing the given desktop ID.
@@ -619,6 +662,12 @@ func (m *Manager) SendRequest(
 		)
 	}
 
+	if inspect.State.Paused {
+		if err := m.client.ContainerUnpause(ctx, name); err != nil {
+			return fmt.Errorf("auto-wake desktop %s: %w", desktopID, err)
+		}
+	}
+
 	payload := map[string]string{
 		"content": content,
 	}
@@ -654,11 +703,12 @@ func (m *Manager) SendRequest(
 		"application/json",
 	)
 
-	httpClient := &http.Client{
-		Timeout: 10 * time.Second,
+	cli := m.httpClient
+	if cli == nil {
+		cli = &http.Client{Timeout: 10 * time.Second}
 	}
 
-	resp, err := httpClient.Do(req)
+	resp, err := cli.Do(req)
 	if err != nil {
 		// Nothing listening on :8081 inside a running container. Reported
 		// as ErrAgentUnreachable rather than a bare transport error so the

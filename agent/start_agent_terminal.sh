@@ -1,6 +1,12 @@
 #!/bin/bash
 
-sleep 15
+# Adaptively wait for X11 display :1 to be ready (up to 15s max), proceeding immediately once available
+for i in $(seq 1 30); do
+    if [ -S /tmp/.X11-unix/X1 ] || (which xdpyinfo >/dev/null 2>&1 && xdpyinfo -display :1 >/dev/null 2>&1); then
+        break
+    fi
+    sleep 0.5
+done
 
 LOG=/tmp/flowera-startup.log
 
@@ -16,6 +22,10 @@ fi
 
 echo "DISPLAY=$DISPLAY" >> "$LOG"
 echo "USER=$(whoami)" >> "$LOG"
+
+if [ -f /opt/tools/env.sh ]; then
+    . /opt/tools/env.sh
+fi
 
 # Chromium's launch flags live in $HOME, which is this desktop's persistent
 # volume - so an image rebuild alone never replaces the base image's copy

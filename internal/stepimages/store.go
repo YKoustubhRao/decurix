@@ -209,6 +209,7 @@ func (s *Store) evict() error {
 				return fmt.Errorf("stepimages: evicting: %w", err)
 			}
 			s.size -= deletedBytes
+			_ = sqlitedb.IncrementalVacuum(s.db, len(toDelete)*2)
 		}
 	}
 
