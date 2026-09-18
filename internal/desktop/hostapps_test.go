@@ -119,7 +119,7 @@ func TestPackDynamicApp(t *testing.T) {
 		Name:        "Spotify Music",
 		Category:    "Media & Entertainment",
 		Description: "Spotify Windows desktop app",
-		HostCmd:     `cmd.exe /c start "" "shell:AppsFolder\Spotify.exe"`,
+		HostCmd:     `cmd.exe /c start explorer.exe shell:AppsFolder\Spotify.exe`,
 		Icon:        "audio-x-generic",
 	}
 
@@ -133,6 +133,7 @@ func TestPackDynamicApp(t *testing.T) {
 	tr := tar.NewReader(buf)
 	foundFiles := make(map[string]bool)
 	var desktopContent string
+	var wrapperContent string
 
 	for {
 		hdr, err := tr.Next()
@@ -147,16 +148,26 @@ func TestPackDynamicApp(t *testing.T) {
 			data, _ := io.ReadAll(tr)
 			desktopContent = string(data)
 		}
+		if hdr.Name == ".local/bin/spotify-music-host" {
+			data, _ := io.ReadAll(tr)
+			wrapperContent = string(data)
+		}
 	}
 
+	if !foundFiles[".local/bin/spotify-music-host"] {
+		t.Errorf("expected .local/bin/spotify-music-host wrapper to be packed")
+	}
 	if !foundFiles["Desktop/spotify-music-host.desktop"] {
 		t.Errorf("expected Desktop/spotify-music-host.desktop to be packed")
 	}
 	if !foundFiles[".local/share/applications/spotify-music-host.desktop"] {
 		t.Errorf("expected .local/share/applications/spotify-music-host.desktop to be packed")
 	}
-	if !strings.Contains(desktopContent, "Exec=/home/headless/.local/bin/host-run cmd.exe /c start") {
+	if !strings.Contains(desktopContent, "Exec=/home/headless/.local/bin/spotify-music-host %U") {
 		t.Errorf("unexpected desktop content: %s", desktopContent)
+	}
+	if !strings.Contains(wrapperContent, "exec host-run cmd.exe /c start explorer.exe shell:AppsFolder\\Spotify.exe") {
+		t.Errorf("unexpected wrapper script content: %s", wrapperContent)
 	}
 }
 
