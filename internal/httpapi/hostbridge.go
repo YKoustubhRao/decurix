@@ -9,12 +9,27 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/YKoustubhRao/flowera/internal/desktop"
 )
+
+// findDockerBinary locates an available docker binary on the host or in standard container paths.
+func findDockerBinary() string {
+	candidates := []string{"docker", "/usr/bin/docker", "/usr/local/bin/docker", "/bin/docker"}
+	for _, c := range candidates {
+		if p, err := exec.LookPath(c); err == nil {
+			return p
+		}
+		if fi, err := os.Stat(c); err == nil && !fi.IsDir() && (fi.Mode()&0111 != 0) {
+			return c
+		}
+	}
+	return ""
+}
 
 // detectHostAppsHandler returns the detected applications, session stores,
 // and developer tokens found on the host machine.
@@ -77,7 +92,7 @@ func (s *Server) hostBridgeExecHandler(w http.ResponseWriter, r *http.Request) {
 	for _, guiPrefix := range []string{
 		"google-chrome", "chromium", "firefox", "msedge", "code",
 		"x-terminal-emulator", "xdg-open", "open", "cmd.exe", "powershell.exe",
-		"start", "spotify", "discord", "slack",
+		"explorer.exe", "start", "spotify", "discord", "slack",
 	} {
 		if strings.Contains(cmdLower, guiPrefix) {
 			isGUIApp = true
@@ -88,6 +103,8 @@ func (s *Server) hostBridgeExecHandler(w http.ResponseWriter, r *http.Request) {
 	if isGUIApp {
 		// Launch detached GUI process on the host desktop
 		cmd := createHostCmd(nil, req.Cmd, req.Args...)
+		var stderrBuf bytes.Buffer
+		cmd.Stderr = &stderrBuf
 
 		if err := cmd.Start(); err != nil {
 			log.Printf("host-bridge: failed to launch GUI app %s: %v", req.Cmd, err)
@@ -99,13 +116,17 @@ func (s *Server) hostBridgeExecHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		pid := cmd.Process.Pid
 		go func() {
-			_ = cmd.Wait()
+			err := cmd.Wait()
+			if err != nil {
+				log.Printf("host-bridge: GUI app %s (pid %d) exited with error: %v, stderr: %s", req.Cmd, pid, err, strings.TrimSpace(stderrBuf.String()))
+			}
 		}()
 
 		jsonResponse(w, hostBridgeExecResponse{
 			Success:  true,
-			Stdout:   fmt.Sprintf("Launched %s on host desktop (pid %d)\n", req.Cmd, cmd.Process.Pid),
+			Stdout:   fmt.Sprintf("Launched %s on host desktop (pid %d)\n", req.Cmd, pid),
 			ExitCode: 0,
 		})
 		return
@@ -151,19 +172,27 @@ func createHostCmd(ctx context.Context, cmdStr string, args ...string) *exec.Cmd
 		fullCmd = fullCmd + " " + strings.Join(quoted, " ")
 	}
 
-	isWinCmd := strings.HasPrefix(fullCmd, "cmd.exe") || strings.HasPrefix(fullCmd, "powershell.exe")
+	cmdBase := strings.ToLower(filepath.Base(cmdStr))
+	isWinCmd := strings.HasPrefix(cmdBase, "cmd") ||
+		strings.HasPrefix(cmdBase, "powershell") ||
+		strings.HasPrefix(cmdBase, "explorer") ||
+		strings.HasPrefix(cmdBase, "start") ||
+		strings.HasSuffix(cmdBase, ".exe") ||
+		strings.HasPrefix(fullCmd, "cmd.exe") ||
+		strings.HasPrefix(fullCmd, "powershell.exe") ||
+		strings.HasPrefix(fullCmd, "explorer.exe")
 
 	// If it's a Windows command and cmd.exe is not directly executable in PATH (e.g. inside Docker container)
 	if isWinCmd && desktop.IsWSLOrWindows() {
 		if _, err := exec.LookPath("cmd.exe"); err != nil {
 			if _, err := os.Stat("/var/run/docker.sock"); err == nil {
-				if _, err := exec.LookPath("docker"); err == nil {
-					nsCmd := fmt.Sprintf("PATH=$PATH:/mnt/c/WINDOWS/system32:/mnt/c/Windows/system32:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0 %s", fullCmd)
+				if dockerBin := findDockerBinary(); dockerBin != "" {
+					nsCmd := fmt.Sprintf("PATH=$PATH:/mnt/c/WINDOWS/system32:/mnt/c/Windows/system32:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0:/mnt/c/Windows/System32/WindowsPowerShell/v1.0:/mnt/c/Windows %s", fullCmd)
 					var cmd *exec.Cmd
 					if ctx != nil {
-						cmd = exec.CommandContext(ctx, "docker", "run", "--rm", "--privileged", "--pid=host", "alpine", "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "bash", "-c", nsCmd)
+						cmd = exec.CommandContext(ctx, dockerBin, "run", "--rm", "--privileged", "--pid=host", "alpine", "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "bash", "-c", nsCmd)
 					} else {
-						cmd = exec.Command("docker", "run", "--rm", "--privileged", "--pid=host", "alpine", "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "bash", "-c", nsCmd)
+						cmd = exec.Command(dockerBin, "run", "--rm", "--privileged", "--pid=host", "alpine", "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "bash", "-c", nsCmd)
 					}
 					cmd.Stdin = strings.NewReader("")
 					return cmd
@@ -180,6 +209,11 @@ func createHostCmd(ctx context.Context, cmdStr string, args ...string) *exec.Cmd
 	}
 	cmd.Stdin = strings.NewReader("")
 	cmd.Env = os.Environ()
+	if isWinCmd && desktop.IsWSLOrWindows() {
+		currPath := os.Getenv("PATH")
+		winPaths := "/mnt/c/WINDOWS/system32:/mnt/c/Windows/system32:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0:/mnt/c/Windows/System32/WindowsPowerShell/v1.0:/mnt/c/Windows"
+		cmd.Env = append(cmd.Env, fmt.Sprintf("PATH=%s:%s", currPath, winPaths))
+	}
 	if runtime.GOOS == "linux" && os.Getenv("DISPLAY") == "" {
 		cmd.Env = append(cmd.Env, "DISPLAY=:0")
 	}

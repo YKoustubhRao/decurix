@@ -115,3 +115,17 @@ func TestHostBridgeOpenHandlerValidation(t *testing.T) {
 		t.Errorf("expected 400 Bad Request for empty target, got %d", rec.Code)
 	}
 }
+
+func TestFindDockerBinary(t *testing.T) {
+	_ = findDockerBinary()
+}
+
+func TestCreateHostCmdWindowsCommand(t *testing.T) {
+	cmd := createHostCmd(nil, "cmd.exe", "/c", "start", "explorer.exe", "shell:AppsFolder\\OpenAI.Codex_2p2nqsd0c76g0!App")
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd")
+	}
+	if len(cmd.Args) == 0 {
+		t.Fatal("expected cmd to have args")
+	}
+}
