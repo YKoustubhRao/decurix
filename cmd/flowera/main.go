@@ -25,6 +25,7 @@ import (
 	"github.com/YKoustubhRao/flowera/internal/memory"
 	"github.com/YKoustubhRao/flowera/internal/ollama"
 	"github.com/YKoustubhRao/flowera/internal/querynotes"
+	"github.com/YKoustubhRao/flowera/internal/resourcemon"
 	"github.com/YKoustubhRao/flowera/internal/schedule"
 	"github.com/YKoustubhRao/flowera/internal/sqlitedb"
 	"github.com/YKoustubhRao/flowera/internal/stepimages"
@@ -253,6 +254,10 @@ func main() {
 		suggestions,
 		webui.NewRenderer(),
 	)
+
+	resMon := resourcemon.NewMonitor(desktops)
+	server.ResourceMon = resMon
+	go resMon.Run(context.Background())
 
 	// internal/dag's Runner needs Server itself as its Submitter
 	// (SubmitTracked, which - unlike Submit - hands back the task ID a node's

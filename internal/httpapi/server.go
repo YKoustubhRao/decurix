@@ -16,6 +16,7 @@ import (
 	"github.com/YKoustubhRao/flowera/internal/lanaccess"
 	"github.com/YKoustubhRao/flowera/internal/memory"
 	"github.com/YKoustubhRao/flowera/internal/querynotes"
+	"github.com/YKoustubhRao/flowera/internal/resourcemon"
 	"github.com/YKoustubhRao/flowera/internal/schedule"
 	"github.com/YKoustubhRao/flowera/internal/stepimages"
 	"github.com/YKoustubhRao/flowera/internal/suggest"
@@ -47,6 +48,8 @@ type Server struct {
 	// IdleChecker is optionally assigned by cmd/flowera/main.go after construction,
 	// allowing task completion events to request fast-idle transitions.
 	IdleChecker *idlepause.Checker
+	// ResourceMon monitors container resource usage and handles autoscaling alerts.
+	ResourceMon *resourcemon.Monitor
 	Suggest     *suggest.Store
 	Web         *webui.Renderer
 
@@ -88,6 +91,10 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/desktops/unpause", s.unpauseDesktopHandler)
 	mux.HandleFunc("/api/desktops/restart", s.restartDesktopHandler)
 	mux.HandleFunc("/api/desktops/delete", s.deleteDesktopHandler)
+	mux.HandleFunc("/api/desktops/resource-alerts", s.resourceAlertsHandler)
+	mux.HandleFunc("/api/desktops/resource-increase", s.resourceIncreaseHandler)
+	mux.HandleFunc("/api/desktops/resource-dismiss", s.resourceDismissHandler)
+	mux.HandleFunc("/api/desktops/resource-report", s.resourceReportHandler)
 	mux.HandleFunc("/requests", s.requestsDashboardHandler)
 	mux.HandleFunc("/api/desktops/send", s.sendRequestHandler)
 	mux.HandleFunc("/api/desktops/suggest", s.suggestDesktopHandler)

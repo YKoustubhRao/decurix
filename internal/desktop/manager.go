@@ -64,6 +64,12 @@ type Manager struct {
 	startedMu    sync.Mutex
 	startedCache map[string]string
 
+	// resourceMu/resourceOverrides track dynamically updated CPU and memory
+	// allocations for containers, keeping Desktop.CPUs and Desktop.MemoryMB in
+	// sync even though Docker labels cannot be altered after container creation.
+	resourceMu        sync.Mutex
+	resourceOverrides map[string]ResourceAllocation
+
 	// httpClient pools persistent HTTP connections (Keep-Alive) to desktop
 	// agent APIs on port 8081, eliminating TCP handshake overhead on every
 	// command dispatch.
@@ -73,8 +79,9 @@ type Manager struct {
 // NewManager creates a Manager backed by the given Docker client.
 func NewManager(cli *client.Client) *Manager {
 	return &Manager{
-		client:       cli,
-		startedCache: make(map[string]string),
+		client:            cli,
+		startedCache:      make(map[string]string),
+		resourceOverrides: make(map[string]ResourceAllocation),
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 			Transport: &http.Transport{
@@ -395,6 +402,16 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 			0,
 		).Format(time.RFC3339)
 	}
+
+	m.resourceMu.Lock()
+	if override, ok := m.resourceOverrides[id]; ok {
+		cpus = override.CPUs
+		memoryMB = override.MemoryMB
+	} else if override, ok := m.resourceOverrides[c.ID]; ok {
+		cpus = override.CPUs
+		memoryMB = override.MemoryMB
+	}
+	m.resourceMu.Unlock()
 
 	return Desktop{
 		ID:             id,
@@ -886,4 +903,63 @@ func waitExec(ctx context.Context, cli *client.Client, execID, desc string) erro
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
+}
+
+// UpdateResources dynamically updates the CPU and memory limits of a desktop container
+// without restarting it, using Docker's ContainerUpdate API.
+func (m *Manager) UpdateResources(
+	ctx context.Context,
+	id string,
+	cpus int64,
+	memoryMB int64,
+) error {
+	sanitizedID := sanitizeName(id)
+	name := "desktop_" + sanitizedID
+
+	swappinessZero := int64(0)
+	updateConfig := container.UpdateConfig{
+		Resources: container.Resources{
+			NanoCPUs:          cpus * 1_000_000_000,
+			CPUShares:         cpus * 1024,
+			Memory:            memoryMB * 1024 * 1024,
+			MemoryReservation: (memoryMB * 1024 * 1024) / 2,
+			MemorySwappiness:  &swappinessZero,
+		},
+	}
+
+	resp, err := m.client.ContainerUpdate(ctx, name, updateConfig)
+	if err != nil {
+		return fmt.Errorf("update container resources for %s: %w", name, err)
+	}
+	if len(resp.Warnings) > 0 {
+		log.Printf("container %s resource update warnings: %v", name, resp.Warnings)
+	}
+
+	m.resourceMu.Lock()
+	m.resourceOverrides[sanitizedID] = ResourceAllocation{CPUs: cpus, MemoryMB: memoryMB}
+	m.resourceMu.Unlock()
+
+	return nil
+}
+
+// Stats returns a single snapshot of container resource usage statistics.
+func (m *Manager) Stats(
+	ctx context.Context,
+	id string,
+) (*container.StatsResponse, error) {
+	sanitizedID := sanitizeName(id)
+	name := "desktop_" + sanitizedID
+
+	reader, err := m.client.ContainerStatsOneShot(ctx, name)
+	if err != nil {
+		return nil, fmt.Errorf("fetch container stats for %s: %w", name, err)
+	}
+	defer reader.Body.Close()
+
+	var stats container.StatsResponse
+	if err := json.NewDecoder(reader.Body).Decode(&stats); err != nil {
+		return nil, fmt.Errorf("decode container stats for %s: %w", name, err)
+	}
+
+	return &stats, nil
 }
