@@ -2,7 +2,9 @@ package httpapi
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -11,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/YKoustubhRao/flowera/internal/desktop"
+	"github.com/YKoustubhRao/flowera/internal/webui"
 )
 
 // desktopProxyHandler reverse-proxies HTTP requests to the desktop container's internal address.
@@ -147,6 +150,19 @@ var floweraBrandingRewrites = [][2][]byte{
 		[]byte(`<p class="noVNC_logo" translate="no"><span>no</span>VNC</p>`),
 		[]byte(`<p class="noVNC_logo flowera-logo" translate="no" style="font-size:20px;line-height:1.2;display:flex;flex-direction:column;align-items:center;gap:10px;text-shadow:none;color:#f2f0ea;font-family:ui-sans-serif,system-ui,sans-serif"><img src="/favicon.svg" alt="" width="56" height="56" style="display:block;border-radius:12px"><span style="color:inherit;font-weight:700;letter-spacing:.02em">Flowera</span></p>`),
 	},
+}
+
+func init() {
+	if len(webui.FaviconSVG) > 0 {
+		dataURI := "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString(webui.FaviconSVG)
+		faviconLink := fmt.Sprintf(`<link rel="icon" type="image/svg+xml" href="%s">`, dataURI)
+		smallLogo := fmt.Sprintf(`<h1 class="noVNC_logo flowera-logo" translate="no" style="font-size:13px;line-height:1.2;display:flex;align-items:center;gap:8px;text-shadow:none;color:#f2f0ea;font-family:ui-sans-serif,system-ui,sans-serif"><img src="%s" alt="" width="20" height="20" style="display:block;border-radius:4px"><span style="color:inherit;font-weight:700">Flowera</span></h1>`, dataURI)
+		largeLogo := fmt.Sprintf(`<p class="noVNC_logo flowera-logo" translate="no" style="font-size:20px;line-height:1.2;display:flex;flex-direction:column;align-items:center;gap:10px;text-shadow:none;color:#f2f0ea;font-family:ui-sans-serif,system-ui,sans-serif"><img src="%s" alt="" width="56" height="56" style="display:block;border-radius:12px"><span style="color:inherit;font-weight:700;letter-spacing:.02em">Flowera</span></p>`, dataURI)
+
+		floweraBrandingRewrites[1][1] = []byte(faviconLink)
+		floweraBrandingRewrites[2][1] = []byte(smallLogo)
+		floweraBrandingRewrites[3][1] = []byte(largeLogo)
+	}
 }
 
 // rewriteDesktopHTML executes all desktop HTML modifications in a single pass
@@ -846,10 +862,10 @@ const autoConnectHelper = `
   var interval = setInterval(function(){
     attempts++;
     autoFillAndConnect();
-    if (attempts > 30) {
+    if (attempts > 60) {
       clearInterval(interval);
     }
-  }, 300);
+  }, 50);
 
   window.addEventListener('DOMContentLoaded', autoFillAndConnect);
   window.addEventListener('load', autoFillAndConnect);

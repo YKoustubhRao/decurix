@@ -52,6 +52,10 @@ var (
 	hostAppsCacheMu sync.RWMutex
 	cachedHostApps  []HostAppItem
 	cachedHostTime  time.Time
+
+	startAppsMu      sync.RWMutex
+	startAppsCached  []rawStartApp
+	startAppsQueried bool
 )
 
 // InitHostAppsScan starts an asynchronous scan of the host environment at startup
@@ -209,7 +213,12 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 
 	for id := range selectedMap {
 		if def, ok := defMap[id]; ok {
-			paths := def.probeFn()
+			var paths []string
+			if appItem, found := appMap[id]; found && len(appItem.DetectedPaths) > 0 {
+				paths = appItem.DetectedPaths
+			} else if def.probeFn != nil {
+				paths = def.probeFn()
+			}
 			if len(paths) == 0 && def.id != "host_bridge" {
 				continue
 			}
@@ -243,41 +252,6 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 
 	if err := m.client.CopyToContainer(ctx, inspect.ID, "/home/headless", tarBuf, copyOpts); err != nil {
 		return fmt.Errorf("copy host apps to %s: %w", containerName, err)
-	}
-
-	// Fix permissions inside container:
-	// - Set ownership to headless:headless (1000:1000)
-	// - Secure .ssh and keyring directories
-	fixCmd := `
-chown -R 1000:1000 /home/headless/.local /home/headless/.config /home/headless/Desktop 2>/dev/null || true
-if [ -d /home/headless/.ssh ]; then
-    chown -R 1000:1000 /home/headless/.ssh
-    chmod 700 /home/headless/.ssh
-    chmod 600 /home/headless/.ssh/id_* /home/headless/.ssh/config /home/headless/.ssh/known_hosts 2>/dev/null || true
-fi
-if [ -d /home/headless/.local/share/keyrings ]; then
-    chown -R 1000:1000 /home/headless/.local/share/keyrings
-    chmod 700 /home/headless/.local/share/keyrings
-    chmod 600 /home/headless/.local/share/keyrings/* 2>/dev/null || true
-fi
-if [ -d /home/headless/.local/bin ]; then
-    chmod +x /home/headless/.local/bin/* 2>/dev/null || true
-fi
-if [ -d /home/headless/Desktop ]; then
-    chmod +x /home/headless/Desktop/*.desktop 2>/dev/null || true
-fi
-if [ -d /home/headless/.local/share/applications ]; then
-    chmod +x /home/headless/.local/share/applications/*.desktop 2>/dev/null || true
-fi
-`
-	execCfg := container.ExecOptions{
-		Cmd:          []string{"bash", "-c", fixCmd},
-		AttachStdout: true,
-		AttachStderr: true,
-	}
-	if execResp, err := m.client.ContainerExecCreate(ctx, inspect.ID, execCfg); err == nil {
-		_ = m.client.ContainerExecStart(ctx, execResp.ID, container.ExecStartOptions{})
-		_ = waitExec(ctx, m.client, execResp.ID, fmt.Sprintf("permissions fix for %s", containerName))
 	}
 
 	log.Printf("hostapps: successfully migrated %d component(s) into %s", migratedCount, containerName)
@@ -420,13 +394,16 @@ fi
 				if err := writeStringToTar(tw, ".local/bin/edge-host", edgeWrapper, 0755); err != nil {
 					return err
 				}
+				if iconSlug, svg := getAppSVGIcon("edge"); svg != "" {
+					_ = writeStringToTar(tw, ".local/share/icons/hicolor/scalable/apps/"+iconSlug+".svg", svg, 0644)
+				}
 				edgeDesktop := `[Desktop Entry]
 Version=1.0
 Type=Application
 Name=Microsoft Edge (Host)
 Comment=Run Microsoft Edge on host desktop with active login session
 Exec=/home/headless/.local/bin/edge-host %U
-Icon=microsoft-edge
+Icon=/home/headless/.local/share/icons/hicolor/scalable/apps/microsoft-edge.svg
 Terminal=false
 Categories=Network;WebBrowser;
 `
@@ -478,13 +455,16 @@ fi
 				if err := writeStringToTar(tw, ".local/bin/youtube-host", youtubeWrapper, 0755); err != nil {
 					return err
 				}
+				if iconSlug, svg := getAppSVGIcon("youtube"); svg != "" {
+					_ = writeStringToTar(tw, ".local/share/icons/hicolor/scalable/apps/"+iconSlug+".svg", svg, 0644)
+				}
 				ytDesktop := `[Desktop Entry]
 Version=1.0
 Type=Application
 Name=YouTube (Host)
 Comment=Watch YouTube on host desktop with active account session
 Exec=/home/headless/.local/bin/youtube-host
-Icon=video-display
+Icon=/home/headless/.local/share/icons/hicolor/scalable/apps/youtube.svg
 Terminal=false
 Categories=AudioVideo;Network;
 `
@@ -552,13 +532,16 @@ Categories=AudioVideo;Network;
 				if err := writeStringToTar(tw, ".local/bin/chrome-host", chromeWrapper, 0755); err != nil {
 					return err
 				}
+				if iconSlug, svg := getAppSVGIcon("chrome"); svg != "" {
+					_ = writeStringToTar(tw, ".local/share/icons/hicolor/scalable/apps/"+iconSlug+".svg", svg, 0644)
+				}
 				chromeDesktop := `[Desktop Entry]
 Version=1.0
 Type=Application
 Name=Google Chrome (Host)
 Comment=Run Google Chrome on host desktop with zero duplicate VM RAM
 Exec=/home/headless/.local/bin/chrome-host %U
-Icon=google-chrome
+Icon=/home/headless/.local/share/icons/hicolor/scalable/apps/google-chrome.svg
 Terminal=false
 Categories=Network;WebBrowser;
 `
@@ -650,13 +633,16 @@ exec host-run cmd.exe /c start https://claude.ai "$@"
 				if err := writeStringToTar(tw, ".local/bin/claude-host", claudeWrapper, 0755); err != nil {
 					return err
 				}
+				if iconSlug, svg := getAppSVGIcon("claude"); svg != "" {
+					_ = writeStringToTar(tw, ".local/share/icons/hicolor/scalable/apps/"+iconSlug+".svg", svg, 0644)
+				}
 				claudeDesktop := `[Desktop Entry]
 Version=1.0
 Type=Application
 Name=Claude (Host)
 Comment=Run Claude directly in VM desktop with zero host desktop popup
 Exec=/home/headless/.local/bin/claude-host %U
-Icon=help-browser
+Icon=/home/headless/.local/share/icons/hicolor/scalable/apps/claude.svg
 Terminal=false
 Categories=Office;Utility;Network;
 `
@@ -703,13 +689,16 @@ exec host-run cmd.exe /c start https://chatgpt.com "$@"
 				if err := writeStringToTar(tw, ".local/bin/chatgpt-host", chatgptWrapper, 0755); err != nil {
 					return err
 				}
+				if iconSlug, svg := getAppSVGIcon("chatgpt"); svg != "" {
+					_ = writeStringToTar(tw, ".local/share/icons/hicolor/scalable/apps/"+iconSlug+".svg", svg, 0644)
+				}
 				chatgptDesktop := `[Desktop Entry]
 Version=1.0
 Type=Application
 Name=ChatGPT (Host)
 Comment=Run ChatGPT directly in VM desktop with zero host desktop popup
 Exec=/home/headless/.local/bin/chatgpt-host %U
-Icon=user-available
+Icon=/home/headless/.local/share/icons/hicolor/scalable/apps/chatgpt.svg
 Terminal=false
 Categories=Office;Utility;Network;
 `
@@ -843,13 +832,16 @@ Categories=Office;Utility;Network;
 				if err := writeStringToTar(tw, ".local/bin/code-host", codeWrapper, 0755); err != nil {
 					return err
 				}
+				if iconSlug, svg := getAppSVGIcon("vscode"); svg != "" {
+					_ = writeStringToTar(tw, ".local/share/icons/hicolor/scalable/apps/"+iconSlug+".svg", svg, 0644)
+				}
 				codeDesktop := `[Desktop Entry]
 Version=1.0
 Type=Application
 Name=VS Code (Host)
 Comment=Run Visual Studio Code on host desktop with zero duplicate VM RAM
 Exec=/home/headless/.local/bin/code-host %F
-Icon=code
+Icon=/home/headless/.local/share/icons/hicolor/scalable/apps/vscode.svg
 Terminal=false
 Categories=Development;IDE;
 `
@@ -1104,10 +1096,26 @@ func findDockerBinary() string {
 }
 
 func queryWindowsStartApps() []rawStartApp {
+	startAppsMu.RLock()
+	if startAppsQueried {
+		cached := startAppsCached
+		startAppsMu.RUnlock()
+		return cached
+	}
+	startAppsMu.RUnlock()
+
+	startAppsMu.Lock()
+	defer startAppsMu.Unlock()
+	if startAppsQueried {
+		return startAppsCached
+	}
+
 	// 1. Check pre-cached file generated by rebuild.sh / build.sh
 	for _, cachePath := range []string{"/tmp/flowera_host_apps.json", "/data/flowera_host_apps.json"} {
 		if data, err := os.ReadFile(cachePath); err == nil && len(data) > 0 {
 			if apps := parseGetStartAppsJSON(data); len(apps) > 0 {
+				startAppsCached = apps
+				startAppsQueried = true
 				return apps
 			}
 		}
@@ -1116,35 +1124,44 @@ func queryWindowsStartApps() []rawStartApp {
 	// 2. Direct execution of powershell.exe with -InputFormat None and empty stdin
 	psExe := findPowershellExe()
 	if psExe != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
 		cmd := exec.CommandContext(ctx, psExe, "-NoProfile", "-NonInteractive", "-InputFormat", "None", "-Command", "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress")
 		cmd.Stdin = strings.NewReader("")
 		if output, err := cmd.Output(); err == nil && len(output) > 0 {
 			if apps := parseGetStartAppsJSON(output); len(apps) > 0 {
+				startAppsCached = apps
+				startAppsQueried = true
 				return apps
 			}
 		}
 	}
 
 	// 3. Containerized host execution via Docker socket if running inside container
-	if _, err := os.Stat("/var/run/docker.sock"); err == nil {
-		if dockerBin := findDockerBinary(); dockerBin != "" {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
+	// Only attempt if Windows C drive candidate exists (avoid 10s nsenter timeout on pure Linux)
+	hasWindowsDrive := len(getWindowsCDriveCandidates()) > 0 || psExe != ""
+	if hasWindowsDrive {
+		if _, err := os.Stat("/var/run/docker.sock"); err == nil {
+			if dockerBin := findDockerBinary(); dockerBin != "" {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
 
-			psCmd := "PATH=$PATH:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0:/mnt/c/Windows/System32/WindowsPowerShell/v1.0:/mnt/c/WINDOWS/system32:/mnt/c/Windows/system32 powershell.exe -NoProfile -NonInteractive -InputFormat None -Command 'Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress' < /dev/null"
-			cmd := exec.CommandContext(ctx, dockerBin, "run", "--rm", "--privileged", "--pid=host", "alpine", "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "bash", "-c", psCmd)
-			cmd.Stdin = strings.NewReader("")
-			if output, err := cmd.Output(); err == nil && len(output) > 0 {
-				if apps := parseGetStartAppsJSON(output); len(apps) > 0 {
-					return apps
+				psCmd := "PATH=$PATH:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0:/mnt/c/Windows/System32/WindowsPowerShell/v1.0:/mnt/c/WINDOWS/system32:/mnt/c/Windows/system32 powershell.exe -NoProfile -NonInteractive -InputFormat None -Command 'Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress' < /dev/null"
+				cmd := exec.CommandContext(ctx, dockerBin, "run", "--rm", "--privileged", "--pid=host", "alpine", "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "bash", "-c", psCmd)
+				cmd.Stdin = strings.NewReader("")
+				if output, err := cmd.Output(); err == nil && len(output) > 0 {
+					if apps := parseGetStartAppsJSON(output); len(apps) > 0 {
+						startAppsCached = apps
+						startAppsQueried = true
+						return apps
+					}
 				}
 			}
 		}
 	}
 
+	startAppsQueried = true
 	return nil
 }
 
@@ -1693,6 +1710,31 @@ func packDynamicApp(tw *tar.Writer, app HostAppItem) error {
 			slug = app.ID
 		}
 		icon := app.Icon
+
+		// Check if we have an embedded SVG icon for this app
+		iconSlug, svgContent := getAppSVGIcon(app.Name)
+		if svgContent == "" && icon != "" {
+			iconSlug, svgContent = getAppSVGIcon(icon)
+		}
+
+		if svgContent != "" {
+			iconTarget := fmt.Sprintf(".local/share/icons/hicolor/scalable/apps/%s.svg", iconSlug)
+			_ = writeStringToTar(tw, iconTarget, svgContent, 0644)
+			icon = fmt.Sprintf("/home/headless/%s", iconTarget)
+		} else if icon != "" && filepath.IsAbs(icon) {
+			// If app has an absolute host icon path that exists, copy it into the archive
+			if fi, err := os.Stat(icon); err == nil && !fi.IsDir() {
+				ext := filepath.Ext(icon)
+				if ext == "" {
+					ext = ".png"
+				}
+				iconTarget := fmt.Sprintf(".local/share/icons/hicolor/48x48/apps/%s%s", slug, ext)
+				if err := writeFileToTar(tw, icon, iconTarget, 0644); err == nil {
+					icon = fmt.Sprintf("/home/headless/%s", iconTarget)
+				}
+			}
+		}
+
 		if icon == "" {
 			icon = pickAppIcon(app.Name)
 		}
@@ -1950,10 +1992,19 @@ func writeDirToTar(tw *tar.Writer, srcDir, destPrefix string, excludeFilter func
 		header.Uname = "headless"
 		header.Gname = "headless"
 
+		isSSH := destPrefix == ".ssh" || strings.HasPrefix(destPrefix, ".ssh/")
+		isKeyring := strings.Contains(destPrefix, "keyrings")
+
 		if isDir {
-			header.Mode = 0755
+			if isSSH || isKeyring {
+				header.Mode = 0700
+			} else {
+				header.Mode = 0755
+			}
 		} else if info.Mode().IsRegular() {
-			if info.Mode()&0111 != 0 {
+			if isSSH || isKeyring {
+				header.Mode = 0600
+			} else if info.Mode()&0111 != 0 {
 				header.Mode = 0755
 			} else {
 				header.Mode = 0644
