@@ -1905,7 +1905,7 @@
   });
 
   function insertProvisioningCard(info){
-    var grid = document.querySelector(".dash .grid");
+    var grid = document.querySelector(".grid");
     if(!grid){ return null; }
 
     var empty = grid.querySelector(".empty");
@@ -2050,17 +2050,16 @@
       parentId: parentId
     });
 
-    // Close the creation dialog without triggering abort
-    isSubmittingCreate = true;
+    /* The dialog is closed before the request goes out, so there is nothing
+       left to cancel: no AbortController here. The dialog's "close" event is
+       queued, not synchronous - it fires after this function has moved on, so
+       a controller created below would be aborted by that handler and take
+       the card down with it. */
     if(createDialog && createDialog.open){
       createDialog.close();
     }
-    isSubmittingCreate = false;
 
     toast("Desktop '" + sanitizedID + "' accepted. Spinning up in background…", "info");
-
-    activeCreateController = new AbortController();
-    var signal = activeCreateController.signal;
 
     try{
       await post("/api/desktops/create", {
@@ -2073,9 +2072,8 @@
         parent_id: parentId,
         copy_host_apps: copyHostApps ? "1" : "0",
         host_apps: selectedApps.join(",")
-      }, { signal: signal });
+      });
 
-      activeCreateController = null;
       busy(false);
       submit.disabled = false;
       submit.textContent = "Create desktop";
@@ -2088,15 +2086,11 @@
       submit.textContent = "Create desktop";
       if(card){
         card.remove();
-        var grid = document.querySelector(".dash .grid");
+        var grid = document.querySelector(".grid");
         if(grid && !grid.querySelector(".dcard")){
           var empty = grid.querySelector(".empty");
           if(empty){ empty.style.display = ""; }
         }
-      }
-      activeCreateController = null;
-      if(e.name === "AbortError" || (signal && signal.aborted)){
-        return;
       }
       toast(e.message, "error");
     }
