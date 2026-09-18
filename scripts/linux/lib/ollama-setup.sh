@@ -56,13 +56,25 @@ pull_ollama_model() {
 import json, sys, urllib.request
 req = urllib.request.Request(
     '${1%/}/api/pull',
-    data=json.dumps({'model': '$2', 'stream': False}).encode(),
+    data=json.dumps({'model': '$2', 'stream': True}).encode(),
     headers={'Content-Type': 'application/json'},
 )
 try:
-    # No timeout: pulling a model is a download, and how long it takes is
-    # a property of the network, not of whether it is working.
-    urllib.request.urlopen(req)
+    with urllib.request.urlopen(req) as resp:
+        for line in resp:
+            try:
+                data = json.loads(line.decode().strip())
+                status = data.get('status', '')
+                total = data.get('total', 0)
+                completed = data.get('completed', 0)
+                if total > 0:
+                    pct = int(completed * 100 / total)
+                    print(f'\r  {status}: {pct}% ({completed // 1048576}MB / {total // 1048576}MB)', end='', flush=True)
+                elif status:
+                    print(f'\r  {status}...', end='', flush=True)
+            except Exception:
+                pass
+        print('')
 except Exception as exc:
     print(exc, file=sys.stderr)
     sys.exit(1)
@@ -135,11 +147,22 @@ ensure_ollama_ready() {
         if command -v systemctl >/dev/null 2>&1 \
             && systemctl cat ollama >/dev/null 2>&1; then
 
-            echo "Giving its service OLLAMA_HOST=0.0.0.0 (needs sudo, once)."
+            echo "Giving its service OLLAMA_HOST=0.0.0.0 and CPU priority/thread limits (needs sudo, once)."
             echo ""
 
+            local ncpus threads quota_pct
+            ncpus="$(nproc 2>/dev/null || echo 4)"
+            if [ "$ncpus" -gt 4 ]; then
+                threads=$((ncpus - 2))
+            elif [ "$ncpus" -gt 2 ]; then
+                threads=$((ncpus - 1))
+            else
+                threads=1
+            fi
+            quota_pct=$((threads * 100))
+
             if sudo mkdir -p /etc/systemd/system/ollama.service.d \
-                && printf '[Service]\nEnvironment="OLLAMA_HOST=0.0.0.0"\n' \
+                && printf '[Service]\nEnvironment="OLLAMA_HOST=0.0.0.0"\nEnvironment="OLLAMA_FLASH_ATTENTION=1"\nEnvironment="OLLAMA_KV_CACHE_TYPE=q8_0"\nEnvironment="OLLAMA_NUM_PARALLEL=1"\nEnvironment="OLLAMA_NUM_THREAD=%d"\nNice=10\nCPUShares=512\nCPUQuota=%d%%\n' "$threads" "$quota_pct" \
                     | sudo tee /etc/systemd/system/ollama.service.d/flowera.conf >/dev/null \
                 && sudo systemctl daemon-reload \
                 && sudo systemctl restart ollama; then

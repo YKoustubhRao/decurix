@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# host-run: Universal Host Execution Bridge (Mac / Windows / Linux)
+# Executes commands directly on your local host machine from inside the Linux VM.
+# The executable runs in the host's memory, with zero duplicate RAM on the VM.
+# ==============================================================================
+
+set -euo pipefail
+
+HOST_TUNNEL_PORT="${HOST_TUNNEL_PORT:-2222}"
+HOST_USER="${HOST_USER:-$USER}"
+
+usage() {
+    cat << EOF
+Usage: host-run <command> [args...]
+       host-run open <file-or-url>
+       host-run clip <text or pipe from stdin>
+
+Examples:
+  # macOS host:
+  host-run open -a "Google Chrome" "https://github.com"
+  host-run pbcopy < token.txt
+  host-run brew list
+
+  # Windows host:
+  host-run powershell.exe "Get-Process"
+  host-run cmd.exe /c dir
+  host-run notepad.exe
+
+  # Open file or URL on local host screen:
+  host-run open https://google.com
+EOF
+    exit 0
+}
+
+[ $# -eq 0 ] && usage
+
+# Check if reverse tunnel is active
+if ! timeout 1 bash -c "cat < /dev/null > /dev/tcp/127.0.0.1/${HOST_TUNNEL_PORT}" 2>/dev/null; then
+    echo -e "\033[31mError: Host reverse tunnel is not active on port ${HOST_TUNNEL_PORT}.\033[0m"
+    echo "Make sure you connected from your local Mac/Windows/Linux machine using:"
+    echo "  ssh -R ${HOST_TUNNEL_PORT}:localhost:22 user@linux-vm"
+    echo "Or via: ./connect-to-vm-with-bridge.sh user@linux-vm"
+    exit 1
+fi
+
+SSH_CMD=(ssh -F /dev/null -p "${HOST_TUNNEL_PORT}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
+
+# Helper: Detect host OS type
+detect_host_os() {
+    "${SSH_CMD[@]}" "${HOST_USER}@127.0.0.1" "uname -s 2>/dev/null || echo Windows" 2>/dev/null | tr -d '\r\n'
+}
+
+# Special subcommands
+case "$1" in
+    open)
+        shift
+        TARGET="${1:-.}"
+        HOST_OS=$(detect_host_os)
+        if [[ "$HOST_OS" =~ Darwin ]]; then
+            # macOS
+            "${SSH_CMD[@]}" "${HOST_USER}@127.0.0.1" "open \"$TARGET\""
+        elif [[ "$HOST_OS" =~ Windows ]] || [[ "$HOST_OS" =~ MINGW ]] || [[ "$HOST_OS" =~ CYGWIN ]]; then
+            # Windows
+            "${SSH_CMD[@]}" "${HOST_USER}@127.0.0.1" "cmd.exe /c start \"\" \"$TARGET\""
+        else
+            # Linux host
+            "${SSH_CMD[@]}" "${HOST_USER}@127.0.0.1" "xdg-open \"$TARGET\" 2>/dev/null || true"
+        fi
+        ;;
+    clip)
+        shift
+        HOST_OS=$(detect_host_os)
+        if [ $# -gt 0 ]; then
+            INPUT="$*"
+        else
+            INPUT=$(cat)
+        fi
+        if [[ "$HOST_OS" =~ Darwin ]]; then
+            # macOS clipboard
+            echo -n "$INPUT" | "${SSH_CMD[@]}" "${HOST_USER}@127.0.0.1" "pbcopy"
+            echo "Copied to macOS host clipboard!"
+        elif [[ "$HOST_OS" =~ Windows ]] || [[ "$HOST_OS" =~ MINGW ]] || [[ "$HOST_OS" =~ CYGWIN ]]; then
+            # Windows clipboard
+            echo -n "$INPUT" | "${SSH_CMD[@]}" "${HOST_USER}@127.0.0.1" "clip.exe"
+            echo "Copied to Windows host clipboard!"
+        else
+            # Linux host clipboard
+            echo -n "$INPUT" | "${SSH_CMD[@]}" "${HOST_USER}@127.0.0.1" "xclip -selection clipboard 2>/dev/null || wl-copy 2>/dev/null"
+            echo "Copied to Linux host clipboard!"
+        fi
+        ;;
+    -h|--help)
+        usage
+        ;;
+    *)
+        # Generic command execution on host
+        "${SSH_CMD[@]}" "${HOST_USER}@127.0.0.1" "$@"
+        ;;
+esac
+

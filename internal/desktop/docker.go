@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/docker/docker/api/types/container"
@@ -26,6 +27,17 @@ const (
 	desktopImageBasic     = "flowera-desktop:basic"
 	desktopImageDeveloper = "flowera-desktop:developer"
 	desktopImageAI        = "flowera-desktop:ai"
+
+	// ToolsImage is the lightweight container that builds and populates the shared tools volume.
+	ToolsImage = "flowera-tools:latest"
+
+	// ToolsVolumeName is the single shared Docker volume mounted read-only (:ro)
+	// into desktop containers at /opt/tools.
+	ToolsVolumeName = "flowera-tools"
+
+	// CacheVolumeName is the shared writable volume mounted into desktop containers
+	// at /var/cache/flowera to deduplicate Go modules, npm downloads, and cargo registries.
+	CacheVolumeName = "flowera-cache"
 
 	// NetworkName is the shared Docker bridge network desktop containers
 	// (and the shared Ollama container) are attached to.
@@ -50,6 +62,9 @@ func (m *Manager) EnsureImages(ctx context.Context) error {
 
 	if len(missing) == 0 {
 		log.Println("All desktop images present.")
+		if err := m.EnsureToolsVolume(ctx); err != nil {
+			log.Printf("warning: ensure tools volume: %v", err)
+		}
 		return nil
 	}
 
@@ -161,6 +176,36 @@ func buildDesktopEnv(name, harness, specialization, parentID string) []string {
 		"AGENT_HARNESS=" + harness,
 	}
 
+	// Forward Ollama performance & thread tuning into desktops so agents don't
+	// starve the host CPU or thrash caches.
+	numThreads := os.Getenv("OLLAMA_NUM_THREAD")
+	if numThreads == "" {
+		numThreads = strconv.Itoa(ollama.DefaultNumThread())
+	}
+	env = append(env, "OLLAMA_NUM_THREAD="+numThreads)
+
+	kvCache := os.Getenv("OLLAMA_KV_CACHE_TYPE")
+	if kvCache == "" {
+		kvCache = "q8_0"
+	}
+	env = append(env, "OLLAMA_KV_CACHE_TYPE="+kvCache)
+
+	flashAttn := os.Getenv("OLLAMA_FLASH_ATTENTION")
+	if flashAttn == "" {
+		flashAttn = "1"
+	}
+	env = append(env, "OLLAMA_FLASH_ATTENTION="+flashAttn)
+
+	if numBatch := os.Getenv("OLLAMA_NUM_BATCH"); numBatch != "" {
+		env = append(env, "OLLAMA_NUM_BATCH="+numBatch)
+	}
+
+	numParallel := os.Getenv("OLLAMA_NUM_PARALLEL")
+	if numParallel == "" {
+		numParallel = "1"
+	}
+	env = append(env, "OLLAMA_NUM_PARALLEL="+numParallel)
+
 	if specialization != "" {
 		env = append(env, "DESKTOP_SPECIALIZATION="+specialization)
 	}
@@ -169,32 +214,76 @@ func buildDesktopEnv(name, harness, specialization, parentID string) []string {
 		env = append(env, "DESKTOP_PARENT_ID="+parentID)
 	}
 
+	env = append(env,
+		"PATH=/opt/tools/bin:/opt/tools/go/bin:/opt/tools/node/bin:/opt/tools/rust/bin:/home/headless/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"GOROOT=/opt/tools/go",
+		"RUSTUP_HOME=/opt/tools/rust",
+		"CARGO_HOME=/home/headless/.cargo",
+		"NPM_CONFIG_CACHE=/var/cache/flowera/npm",
+		"GOPATH=/home/headless/go",
+		"GOMODCACHE=/var/cache/flowera/go",
+		"PIP_CACHE_DIR=/var/cache/flowera/pip",
+		"HF_HOME=/var/cache/flowera/huggingface",
+		"PYTHONDONTWRITEBYTECODE=1",
+		"PYTHONUNBUFFERED=1",
+	)
+
 	return env
 }
 
 // buildContainerConfigs builds the Docker container, host, and network configuration for a desktop from its resolved image, resources, profile, harness, and security options.
 func buildContainerConfigs(imageName, containerName, profile, harness string, cpus, memoryMB int64, env []string, volumeName string, securityOpt []string) (*container.Config, *container.HostConfig, *network.NetworkingConfig) {
+	labels := map[string]string{
+		"desktop-manager":        "true",
+		"desktop-profile":        profile,
+		"desktop-harness":        harness,
+		"desktop-cpus":           strconv.FormatInt(cpus, 10),
+		"desktop-memory":         strconv.FormatInt(memoryMB, 10),
+		"desktop-model":          envValue(env, "OLLAMA_MODEL"),
+		"desktop-specialization": envValue(env, "DESKTOP_SPECIALIZATION"),
+		"desktop-parent-id":      envValue(env, "DESKTOP_PARENT_ID"),
+	}
+
 	config := &container.Config{
 		Image:    imageName,
 		Env:      env,
 		Hostname: containerName,
-		Labels: map[string]string{
-			"desktop-manager": "true",
-			"desktop-profile": profile,
-			"desktop-harness": harness,
-		},
+		Labels:   labels,
 	}
 
+	swappinessZero := int64(0)
+	shmBytes := int64(512 * 1024 * 1024)
+	if shmEnv := os.Getenv("FLOWERA_DESKTOP_SHM_MB"); shmEnv != "" {
+		if parsed, err := strconv.ParseInt(shmEnv, 10, 64); err == nil && parsed > 0 {
+			shmBytes = parsed * 1024 * 1024
+		}
+	}
 	hostConfig := &container.HostConfig{
-		ShmSize:     512 * 1024 * 1024,
+		ShmSize:     shmBytes,
 		SecurityOpt: securityOpt,
 		Resources: container.Resources{
-			NanoCPUs: cpus * 1_000_000_000,
-			Memory:   memoryMB * 1024 * 1024,
-			Ulimits:  desktopUlimits(),
+			NanoCPUs:          cpus * 1_000_000_000,
+			CPUShares:         cpus * 1024,
+			Memory:            memoryMB * 1024 * 1024,
+			MemoryReservation: (memoryMB * 1024 * 1024) / 2,
+			MemorySwappiness:  &swappinessZero,
+			Ulimits:           desktopUlimits(),
+		},
+		Tmpfs: map[string]string{
+			"/tmp": "rw,nosuid,size=256m,mode=1777",
+			"/run": "rw,nosuid,size=64m,mode=755",
 		},
 		Binds: []string{
 			volumeName + ":/home/headless",
+			ToolsVolumeName + ":/opt/tools:ro",
+			CacheVolumeName + ":/var/cache/flowera:rw",
+		},
+		LogConfig: container.LogConfig{
+			Type: "json-file",
+			Config: map[string]string{
+				"max-size": "10m",
+				"max-file": "3",
+			},
 		},
 		RestartPolicy: container.RestartPolicy{
 			Name: "unless-stopped",

@@ -24,6 +24,8 @@ class Frame:
         self.width = width
         self.height = height
         self.rgb = rgb
+        self._png_cache = {}
+        self._sample = None
 
     def png(self, scale=1):
         """
@@ -33,6 +35,11 @@ class Frame:
         nearest-neighbour, which is exactly right for what the smaller copies
         are for: a thumbnail in the chat's audit trail.
         """
+
+        if not hasattr(self, "_png_cache"):
+            self._png_cache = {}
+        if scale in self._png_cache:
+            return self._png_cache[scale]
 
         width, height, rgb = self.width, self.height, self.rgb
         stride = width * 3
@@ -57,15 +64,20 @@ class Frame:
                 + struct.pack(">I", zlib.crc32(tag + body) & 0xFFFFFFFF)
             )
 
-        return (
+        res = (
             b"\x89PNG\r\n\x1a\n"
             + chunk(b"IHDR", struct.pack(">IIBBBBB", out_w, out_h, 8, 2, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(b"".join(rows), 6))
+            + chunk(b"IDAT", zlib.compress(b"".join(rows), 1))
             + chunk(b"IEND", b"")
         )
+        self._png_cache[scale] = res
+        return res
 
     def sample(self, columns=64, rows=36):
         """A coarse grid of pixels, for cheap before/after comparisons."""
+
+        if columns == 64 and rows == 36 and getattr(self, "_sample", None) is not None:
+            return self._sample
 
         step_x = max(1, self.width // columns)
         step_y = max(1, self.height // rows)
@@ -75,7 +87,10 @@ class Frame:
         for y in range(0, self.height, step_y):
             row = self.rgb[y * stride:(y + 1) * stride]
             grid += row[0::3 * step_x] + row[1::3 * step_x] + row[2::3 * step_x]
-        return bytes(grid)
+        sampled = bytes(grid)
+        if columns == 64 and rows == 36:
+            self._sample = sampled
+        return sampled
 
     def digest(self):
         return hashlib.sha1(self.sample()).hexdigest()
@@ -116,18 +131,27 @@ def changed_fraction(before, after, tolerance=24):
     over a third of it must.
     """
 
+    if before is None or after is None:
+        return 1.0
+
     a = before.sample()
     b = after.sample()
 
     if len(a) != len(b) or not a:
         return 1.0
 
-    changed = sum(1 for x, y in zip(a, b) if abs(x - y) > tolerance)
+    n = len(a)
+    tol = tolerance
+    changed = 0
+    for i in range(n):
+        if abs(a[i] - b[i]) > tol:
+            changed += 1
 
-    return changed / len(a)
+    return changed / n
 
 
 _display = None
+_SCREEN_GEOMETRY = None
 
 
 def _connect():
@@ -162,20 +186,25 @@ def grab(display=None):
 
     from Xlib import X
 
+    global _SCREEN_GEOMETRY
     d = display or _connect()
     root = d.screen().root
 
     try:
-        geometry = root.get_geometry()
-        image = root.get_image(0, 0, geometry.width, geometry.height, X.ZPixmap, 0xFFFFFFFF)
+        if _SCREEN_GEOMETRY is None:
+            g = root.get_geometry()
+            _SCREEN_GEOMETRY = (g.width, g.height)
+        width, height = _SCREEN_GEOMETRY
+        image = root.get_image(0, 0, width, height, X.ZPixmap, 0xFFFFFFFF)
     except Exception as exc:
+        _SCREEN_GEOMETRY = None
         raise ComputerError(f"could not read the screen: {exc}")
 
     data = image.data
     if isinstance(data, str):
         data = data.encode("latin-1")
 
-    pixels = geometry.width * geometry.height
+    pixels = width * height
     rgb = bytearray(pixels * 3)
 
     # 24-bit TrueColor ZPixmap on a little-endian server: B, G, R, pad.
@@ -183,7 +212,7 @@ def grab(display=None):
     rgb[1::3] = data[1::4][:pixels]
     rgb[2::3] = data[0::4][:pixels]
 
-    return Frame(geometry.width, geometry.height, rgb)
+    return Frame(width, height, rgb)
 
 
 def size():

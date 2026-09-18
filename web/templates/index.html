@@ -71,6 +71,33 @@
   background:var(--surface-2);
 }
 
+.dcard-paused-overlay{
+  position:absolute;
+  bottom:8px;
+  right:8px;
+  display:flex;
+  align-items:center;
+  gap:6px;
+  z-index:2;
+  pointer-events:none;
+}
+
+.dcard-paused-badge{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:4px 10px;
+  border-radius:12px;
+  font-size:11px;
+  font-weight:600;
+  background:rgba(18, 20, 24, 0.82);
+  backdrop-filter:blur(6px);
+  -webkit-backdrop-filter:blur(6px);
+  color:#38bdf8;
+  border:1px solid rgba(56, 189, 248, 0.25);
+  box-shadow:0 2px 6px rgba(0,0,0,0.35);
+}
+
 /* ---------- card header ---------- */
 
 .dcard-head{
@@ -281,6 +308,72 @@
 
 .copy-btn.done{color:var(--live)}
 
+.dcard-resource-alert{
+  margin: 10px 14px 4px;
+  padding: 10px 12px;
+  background: rgba(217, 119, 6, 0.12);
+  border: 1px solid rgba(217, 119, 6, 0.4);
+  border-radius: var(--r-md);
+  color: var(--text);
+  animation: dcardAlertFadeIn .2s ease-out;
+}
+@keyframes dcardAlertFadeIn{
+  from{opacity:0;transform:translateY(-4px)}
+  to{opacity:1;transform:none}
+}
+.dra-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  margin-bottom:4px;
+}
+.dra-title{
+  font-size:11.5px;
+  font-weight:700;
+  color:#f59e0b;
+  display:flex;
+  align-items:center;
+  gap:5px;
+}
+.dra-close{
+  background:transparent;
+  border:none;
+  color:var(--text-3);
+  font-size:16px;
+  line-height:1;
+  cursor:pointer;
+  padding:0 2px;
+}
+.dra-close:hover{color:var(--text)}
+.dra-msg{
+  font-size:11.5px;
+  line-height:1.4;
+  color:var(--text-2);
+  margin-bottom:8px;
+}
+.dra-actions{
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  gap:6px;
+}
+.dra-btn-yes{
+  background:#d97706 !important;
+  border-color:#d97706 !important;
+  color:#fff !important;
+  font-weight:650 !important;
+  font-size:11px !important;
+  padding:3px 10px !important;
+}
+.dra-btn-yes:hover{
+  background:#b45309 !important;
+  border-color:#b45309 !important;
+}
+.dra-btn-no{
+  font-size:11px !important;
+  padding:3px 8px !important;
+}
+
 @media (max-width:720px){
   .dcard-info-body{
     right:-4px;
@@ -434,6 +527,160 @@
 .claude-auth-row.on{display:flex}
 .claude-auth-row span{font-size:12.5px;color:var(--text-2);flex:1;min-width:0}
 
+/* ---------- copy host apps section ---------- */
+
+.host-apps-section{
+  padding:12px 14px;
+  background:var(--surface-2);
+  border:1px solid var(--line);
+  border-radius:var(--r-lg);
+  margin-top:2px;
+}
+.host-apps-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+}
+.host-apps-toggle-wrap{
+  display:inline-flex;
+  align-items:center;
+  cursor:pointer;
+  user-select:none;
+}
+.host-apps-toggle{
+  position:relative;
+  width:40px;
+  height:22px;
+  appearance:none;
+  -webkit-appearance:none;
+  background:var(--line-2, rgba(255,255,255,0.15));
+  outline:none;
+  border-radius:12px;
+  cursor:pointer;
+  transition:background .2s ease;
+  border:1px solid var(--line-2);
+  margin:0;
+}
+.host-apps-toggle:checked{
+  background:var(--accent, #38bdf8);
+  border-color:var(--accent, #38bdf8);
+}
+.host-apps-toggle::after{
+  content:'';
+  position:absolute;
+  top:2px;
+  left:2px;
+  width:16px;
+  height:16px;
+  border-radius:50%;
+  background:#fff;
+  transition:transform .2s ease;
+  box-shadow:0 1px 3px rgba(0,0,0,0.3);
+}
+.host-apps-toggle:checked::after{
+  transform:translateX(18px);
+}
+.host-apps-panel{
+  margin-top:12px;
+  padding-top:10px;
+  border-top:1px solid var(--line);
+}
+.host-apps-toolbar{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  margin-bottom:8px;
+}
+.host-apps-status{
+  font-size:12px;
+  color:var(--text-3);
+}
+.host-apps-btn-group{
+  display:flex;
+  gap:4px;
+}
+.host-apps-btn-group .btn-xs{
+  padding:2px 8px;
+  font-size:11px;
+  height:24px;
+}
+.host-apps-list{
+  display:grid;
+  gap:6px;
+  max-height:220px;
+  overflow-y:auto;
+  padding-right:4px;
+}
+.host-app-row{
+  display:flex;
+  align-items:flex-start;
+  gap:9px;
+  padding:8px 10px;
+  background:var(--surface);
+  border:1px solid var(--line);
+  border-radius:var(--r-md);
+  cursor:pointer;
+  transition:border-color .15s ease,background .15s ease;
+}
+.host-app-row:hover{
+  border-color:var(--line-2);
+  background:color-mix(in srgb,var(--surface) 80%,var(--surface-2));
+}
+.host-app-row.is-detected{
+  border-color:color-mix(in srgb,var(--line-2) 65%,#10b981 35%);
+}
+.host-app-row input[type="checkbox"]{
+  margin-top:2px;
+  cursor:pointer;
+  accent-color:var(--accent, #38bdf8);
+}
+.host-app-info{
+  flex:1;
+  min-width:0;
+}
+.host-app-title-line{
+  display:flex;
+  align-items:center;
+  gap:7px;
+  font-size:12.5px;
+  font-weight:600;
+  color:var(--text);
+}
+.host-app-badge{
+  font-size:10px;
+  font-weight:600;
+  padding:1px 6px;
+  border-radius:4px;
+  text-transform:uppercase;
+  letter-spacing:.03em;
+}
+.host-app-badge.detected{
+  background:rgba(16, 185, 129, 0.15);
+  color:#10b981;
+  border:1px solid rgba(16, 185, 129, 0.3);
+}
+.host-app-badge.missing{
+  background:rgba(148, 163, 184, 0.1);
+  color:var(--text-3);
+  border:1px solid rgba(148, 163, 184, 0.2);
+}
+.host-app-cat{
+  font-size:10px;
+  color:var(--text-3);
+  background:var(--surface-2);
+  border:1px solid var(--line);
+  padding:1px 5px;
+  border-radius:4px;
+}
+.host-app-desc{
+  font-size:11.5px;
+  color:var(--text-3);
+  margin-top:2px;
+  line-height:1.35;
+}
+
 /* ---------- claude login dialog ---------- */
 
 .claude-login-url-row{display:flex;align-items:center;gap:8px}
@@ -561,16 +808,35 @@
            starved the VNC handshake of any screen actually opened for use.
            See httpapi.desktopScreenshotHandler. */}}
       <div class="dcard-preview">
-        {{if eq .Status "running"}}
+        {{if or (eq .Status "running") (eq .Status "paused")}}
           <img class="dcard-shot" data-shot="{{.ID}}" alt="{{.Name}} screen" decoding="async">
           <div class="dcard-preview-placeholder" data-shot-placeholder>
             Waiting for the screen…
           </div>
+          {{if eq .Status "paused"}}
+            <div class="dcard-paused-overlay">
+              <span class="dcard-paused-badge">
+                <span class="dot"></span> Idle (Paused)
+              </span>
+            </div>
+          {{end}}
         {{else}}
           <div class="dcard-preview-placeholder">
             Desktop is {{.Status}}
           </div>
         {{end}}
+      </div>
+
+      <div class="dcard-resource-alert" data-resource-alert="{{.ID}}" style="display:none;">
+        <div class="dra-head">
+          <span class="dra-title">⚠️ Resource Alert</span>
+          <button type="button" class="dra-close" data-resource-dismiss="{{.ID}}" title="Dismiss">&times;</button>
+        </div>
+        <div class="dra-msg" data-resource-msg="{{.ID}}">High resource usage detected.</div>
+        <div class="dra-actions">
+          <button type="button" class="btn btn-default btn-xs dra-btn-no" data-resource-no="{{.ID}}">No</button>
+          <button type="button" class="btn btn-primary btn-xs dra-btn-yes" data-resource-yes="{{.ID}}">Yes, Increase</button>
+        </div>
       </div>
 
       <div class="dcard-head">
@@ -608,11 +874,11 @@
           <dl class="specs">
             <div>
               <dt>CPU</dt>
-              <dd>{{.CPUs}} {{if eq .CPUs 1}}core{{else}}cores{{end}}</dd>
+              <dd data-cpu-val="{{.ID}}">{{.CPUs}} {{if eq .CPUs 1}}core{{else}}cores{{end}}</dd>
             </div>
             <div>
               <dt>Memory</dt>
-              <dd data-mb="{{.MemoryMB}}">{{.MemoryMB}} MB</dd>
+              <dd data-mb="{{.MemoryMB}}" data-mem-val="{{.ID}}">{{.MemoryMB}} MB</dd>
             </div>
             <div>
               <dt>Created</dt>
@@ -740,11 +1006,34 @@
              desktop screen itself now - the ticket toolbar injectTicketToolbar
              splices into every open screen - rather than as a second entry
              point on the card; see proxy.go's ticketToolbar. */}}
-        <button class="btn btn-default btn-sm action-icon" data-open="{{.URL}}?resize=remote&ui=touch" title="Open the screen in a new tab" aria-label="Open the desktop screen in a new tab">
+        <button class="btn btn-default btn-sm action-icon" data-open="{{.URL}}?autoconnect=true&resize=remote&ui=touch" title="Open the screen in a new tab" aria-label="Open the desktop screen in a new tab">
           <svg width="14" height="14"><use href="#i-external"/></svg>
         </button>
         <button class="btn btn-default btn-sm action-icon" data-act="restart" data-id="{{.ID}}" title="Restart" aria-label="Restart desktop">
           <svg width="14" height="14"><use href="#i-restart"/></svg>
+        </button>
+        <button class="btn btn-default btn-sm action-icon" data-act="stop" data-id="{{.ID}}" title="Stop" aria-label="Stop desktop">
+          <svg width="14" height="14"><use href="#i-stop"/></svg>
+        </button>
+        {{else if eq .Status "provisioning"}}
+        <button class="btn btn-default btn-sm" disabled style="opacity:0.85; cursor:wait;">
+          <svg class="spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"/></svg>
+          Spinning up…
+        </button>
+        <button class="btn btn-default btn-sm action-icon" data-open="{{.URL}}?autoconnect=true&resize=remote&ui=touch" title="Open launch screen" aria-label="Open launch screen">
+          <svg width="14" height="14"><use href="#i-external"/></svg>
+        </button>
+        {{else if eq .Status "paused"}}
+        <a class="btn btn-primary btn-sm" href="/view/{{.ID}}">
+          <svg width="14" height="14"><use href="#i-blossom"/></svg>
+          Chat
+        </a>
+        <button class="btn btn-default btn-sm action-icon" data-open="{{.URL}}?autoconnect=true&resize=remote&ui=touch" title="Open the screen in a new tab (auto-wakes)" aria-label="Open the desktop screen in a new tab">
+          <svg width="14" height="14"><use href="#i-external"/></svg>
+        </button>
+        <button class="btn btn-default btn-sm" data-act="unpause" data-id="{{.ID}}" title="Wake desktop" aria-label="Wake desktop">
+          <svg width="14" height="14"><use href="#i-play"/></svg>
+          Wake
         </button>
         <button class="btn btn-default btn-sm action-icon" data-act="stop" data-id="{{.ID}}" title="Stop" aria-label="Stop desktop">
           <svg width="14" height="14"><use href="#i-stop"/></svg>
@@ -846,8 +1135,8 @@
       <div class="field">
         <span class="field-label">CPU</span>
         <div class="segmented" role="radiogroup" aria-label="CPU cores">
-          <label class="seg"><input type="radio" name="cpus" value="1" checked><span>1</span></label>
-          <label class="seg"><input type="radio" name="cpus" value="2"><span>2</span></label>
+          <label class="seg"><input type="radio" name="cpus" value="1"><span>1</span></label>
+          <label class="seg"><input type="radio" name="cpus" value="2" checked><span>2</span></label>
           <label class="seg"><input type="radio" name="cpus" value="4"><span>4</span></label>
           <label class="seg"><input type="radio" name="cpus" value="8"><span>8</span></label>
         </div>
@@ -860,6 +1149,35 @@
           <label class="seg"><input type="radio" name="memory_mb" value="4096"><span>4 GB</span></label>
           <label class="seg"><input type="radio" name="memory_mb" value="8192"><span>8 GB</span></label>
           <label class="seg"><input type="radio" name="memory_mb" value="16384"><span>16 GB</span></label>
+        </div>
+      </div>
+
+      <div class="field host-apps-section">
+        <div class="host-apps-head">
+          <div>
+            <span class="field-label" style="margin-bottom:2px">Copy apps & sessions from desktop</span>
+            <div class="hint">Copy login sessions, tokens, and configs with zero duplicate memory. Programs run on your desktop, lightly emulated on the VM.</div>
+          </div>
+          <label class="host-apps-toggle-wrap">
+            <input type="checkbox" class="host-apps-toggle" id="dCopyHostApps" name="copy_host_apps" value="1">
+          </label>
+        </div>
+
+        <div class="host-apps-panel" id="hostAppsPanel" style="display:none">
+          <div style="margin-bottom:8px">
+            <input type="search" class="input input-sm" id="hostAppsSearch" placeholder="Search apps (regex supported, e.g. /code|term/i, ^chrome)..." style="width:100%;font-size:12px;padding:5px 10px;height:28px;border-radius:var(--r-md);" autocomplete="off">
+          </div>
+          <div class="host-apps-toolbar">
+            <span class="host-apps-status" id="hostAppsStatusText">Detecting desktop apps…</span>
+            <div class="host-apps-btn-group">
+              <button type="button" class="btn btn-quiet btn-xs" id="hostAppsBtnRescan" title="Rescan host applications">Rescan</button>
+              <button type="button" class="btn btn-quiet btn-xs" id="hostAppsBtnAll">Select All</button>
+              <button type="button" class="btn btn-quiet btn-xs" id="hostAppsBtnNone">Select None</button>
+            </div>
+          </div>
+          <div class="host-apps-list" id="hostAppsList">
+            <!-- Populated dynamically via /api/host-apps/detect -->
+          </div>
         </div>
       </div>
     </div>
@@ -946,6 +1264,7 @@
 
     return "/api/desktops/screenshot?id=" + encodeURIComponent(img.dataset.shot) +
       "&w=" + width + "&t=" + Date.now();
+      "&w=" + width;
   }
 
   function loadShot(img){
@@ -976,7 +1295,13 @@
     for(var i = 0; i < images.length; i++){
       if(document.visibilityState !== "visible"){ return; }
 
-      await loadShot(images[i]);
+      var img = images[i];
+      var card = img.closest(".dcard");
+      if(card && card.querySelector(".status.paused") && img.classList.contains("is-live")){
+        continue;
+      }
+
+      await loadShot(img);
     }
   }
 
@@ -1089,6 +1414,7 @@
     createDialog.showModal();
     document.getElementById(parent ? "dSpecialization" : "dName").focus();
     loadClaudeAuthStatus();
+    resetHostAppsSection();
   }
 
   document.getElementById("newDesktopBtn").addEventListener("click", function(){ openCreate(); });
@@ -1113,9 +1439,42 @@
     });
   });
 
+  var activeCreateController = null;
+
+  function cancelCreateAction(){
+    if(activeCreateController){
+      try{ activeCreateController.abort(); }catch(e){}
+      activeCreateController = null;
+    }
+    busy(false);
+    var submit = document.getElementById("createSubmit");
+    if(submit){
+      submit.disabled = false;
+      submit.textContent = "Create desktop";
+    }
+    if(createDialog && createDialog.open){
+      createDialog.close();
+    }
+  }
+
   document.querySelectorAll("[data-close-dialog]").forEach(function(button){
-    button.addEventListener("click", function(){ createDialog.close(); });
+    button.addEventListener("click", function(e){
+      e.preventDefault();
+      cancelCreateAction();
+    });
   });
+
+  if(createDialog){
+    createDialog.addEventListener("cancel", function(e){
+      e.preventDefault();
+      cancelCreateAction();
+    });
+    createDialog.addEventListener("close", function(){
+      if(activeCreateController){
+        cancelCreateAction();
+      }
+    });
+  }
 
   /* The claude harness needs the developer or ai profile - it is the only
      one with the claude binary installed. */
@@ -1142,6 +1501,238 @@
   });
 
   syncHarness();
+
+  /* ---------------- copy host apps ---------------- */
+
+  var hostAppsData = null;
+  var dCopyHostApps = document.getElementById("dCopyHostApps");
+  var hostAppsPanel = document.getElementById("hostAppsPanel");
+  var hostAppsList = document.getElementById("hostAppsList");
+  var hostAppsStatusText = document.getElementById("hostAppsStatusText");
+  var hostAppsSearch = document.getElementById("hostAppsSearch");
+
+  function escapeHTML(s){
+    return String(s || "").replace(/[&<>"']/g, function(m){
+      return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m];
+    });
+  }
+
+  var currentSearchIsRegex = false;
+
+  function resetHostAppsSection(){
+    if(dCopyHostApps){
+      dCopyHostApps.checked = false;
+    }
+    if(hostAppsPanel){
+      hostAppsPanel.style.display = "none";
+    }
+    if(hostAppsSearch){
+      hostAppsSearch.value = "";
+    }
+    if(hostAppsList){
+      hostAppsList.querySelectorAll("input[name=host_app_choice]").forEach(function(cb){ cb.checked = false; });
+    }
+    if(hostAppsData){
+      filterHostAppsList();
+      updateHostAppsSelectionSummary();
+    }
+  }
+
+  function updateHostAppsSelectionSummary(){
+    if(!hostAppsList){ return; }
+    var selected = hostAppsList.querySelectorAll("input[name=host_app_choice]:checked").length;
+    var total = hostAppsList.querySelectorAll(".host-app-row").length;
+    var rawQ = (hostAppsSearch && hostAppsSearch.value || "").trim();
+    if(hostAppsStatusText){
+      if(rawQ){
+        var visible = hostAppsList.querySelectorAll(".host-app-row:not([style*='display: none'])").length;
+        var modeDesc = currentSearchIsRegex ? "regex" : "query";
+        hostAppsStatusText.textContent = visible + " matching " + modeDesc + " '" + rawQ + "' (" + selected + " selected)";
+      } else {
+        hostAppsStatusText.textContent = total + " apps discovered (" + selected + " selected)";
+      }
+    }
+  }
+
+  function filterHostAppsList(){
+    if(!hostAppsList || !hostAppsData){ return; }
+    var rawQ = (hostAppsSearch && hostAppsSearch.value || "").trim();
+    var rows = hostAppsList.querySelectorAll(".host-app-row");
+    var visible = 0;
+    currentSearchIsRegex = false;
+
+    if(!rawQ){
+      rows.forEach(function(row){
+        row.style.display = "";
+        visible++;
+      });
+      updateHostAppsSelectionSummary();
+      return;
+    }
+
+    var regex = null;
+    try {
+      if(rawQ.length >= 2 && rawQ.startsWith("/") && rawQ.lastIndexOf("/") > 0){
+        var lastSlash = rawQ.lastIndexOf("/");
+        var pattern = rawQ.slice(1, lastSlash);
+        var flags = rawQ.slice(lastSlash + 1);
+        regex = new RegExp(pattern, flags || "i");
+        currentSearchIsRegex = true;
+      } else {
+        regex = new RegExp(rawQ, "i");
+        if(/[.*+?^${}()|[\]\\]/.test(rawQ)){
+          currentSearchIsRegex = true;
+        }
+      }
+    } catch(e) {
+      regex = null;
+      currentSearchIsRegex = false;
+    }
+
+    var terms = rawQ.toLowerCase().split(/\s+/).filter(Boolean);
+
+    rows.forEach(function(row){
+      var text = (row.dataset.searchText || "").toLowerCase();
+      var match = false;
+      if(regex){
+        try {
+          match = regex.test(text);
+        } catch(e){
+          match = false;
+        }
+      }
+      if(!match && terms.length > 0){
+        match = terms.every(function(term){
+          return text.indexOf(term) !== -1;
+        });
+      }
+
+      row.style.display = match ? "" : "none";
+      if(match){ visible++; }
+    });
+    updateHostAppsSelectionSummary();
+  }
+
+  if(hostAppsSearch){
+    hostAppsSearch.addEventListener("input", filterHostAppsList);
+  }
+
+  var hostAppsLoading = false;
+
+  async function loadHostApps(refresh){
+    if(hostAppsLoading){ return; }
+    if(!hostAppsStatusText || !hostAppsList){ return; }
+    hostAppsLoading = true;
+    hostAppsStatusText.textContent = "Scanning host machine for apps and sessions…";
+
+    if(!hostAppsData || refresh){
+      hostAppsList.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-3);font-size:12.5px;">Discovering installed desktop apps and sessions…</div>';
+    }
+
+    try{
+      var url = "/api/host-apps/detect" + (refresh ? "?refresh=1" : "");
+      var res = await fetch(url);
+      if(!res.ok){ throw new Error("status " + res.status); }
+      var rawData = await res.json();
+
+      // Show ONLY apps that were found on the host system
+      hostAppsData = (rawData || []).filter(function(item){
+        return item.detected;
+      });
+
+      hostAppsList.innerHTML = "";
+      if(hostAppsData.length === 0){
+        hostAppsList.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-3);font-size:12.5px;">No applications or sessions were detected on your host machine.</div>';
+        hostAppsStatusText.textContent = "0 apps detected";
+        return;
+      }
+
+      hostAppsData.forEach(function(item){
+        var row = document.createElement("label");
+        row.className = "host-app-row is-detected";
+        var paths = Array.isArray(item.detected_paths) ? item.detected_paths.join(" ") : "";
+        row.dataset.searchText = [
+          item.name || "",
+          item.id || "",
+          item.category || "",
+          item.description || "",
+          item.host_cmd || "",
+          paths
+        ].join(" ").toLowerCase();
+        row.innerHTML =
+          '<input type="checkbox" name="host_app_choice" value="' + escapeHTML(item.id) + '" ' +
+          'data-detected="true">' +
+          '<div class="host-app-info">' +
+            '<div class="host-app-title-line">' +
+              '<span>' + escapeHTML(item.name) + '</span>' +
+              (item.category ? '<span class="host-app-cat">' + escapeHTML(item.category) + '</span>' : '') +
+              '<span class="host-app-badge detected">Found</span>' +
+            '</div>' +
+            '<div class="host-app-desc">' + escapeHTML(item.description) + '</div>' +
+          '</div>';
+        hostAppsList.appendChild(row);
+      });
+
+      filterHostAppsList();
+      updateHostAppsSelectionSummary();
+    }catch(err){
+      hostAppsStatusText.textContent = "Failed to detect host apps: " + err.message;
+    }finally{
+      hostAppsLoading = false;
+    }
+  }
+
+  if(hostAppsList){
+    hostAppsList.addEventListener("change", function(e){
+      if(e.target && e.target.name === "host_app_choice"){
+        updateHostAppsSelectionSummary();
+      }
+    });
+  }
+
+  if(dCopyHostApps){
+    dCopyHostApps.addEventListener("change", function(){
+      var active = dCopyHostApps.checked;
+      if(hostAppsPanel){
+        hostAppsPanel.style.display = active ? "" : "none";
+      }
+      if(!active){
+        if(hostAppsList){
+          hostAppsList.querySelectorAll("input[name=host_app_choice]").forEach(function(cb){ cb.checked = false; });
+          updateHostAppsSelectionSummary();
+        }
+      } else {
+        if(!hostAppsData){
+          loadHostApps();
+        } else {
+          updateHostAppsSelectionSummary();
+        }
+      }
+    });
+  }
+
+  var btnRescan = document.getElementById("hostAppsBtnRescan");
+  if(btnRescan){
+    btnRescan.addEventListener("click", function(){
+      loadHostApps(true);
+    });
+  }
+
+  var btnAll = document.getElementById("hostAppsBtnAll");
+  if(btnAll){
+    btnAll.addEventListener("click", function(){
+      hostAppsList.querySelectorAll("input[name=host_app_choice]").forEach(function(cb){ cb.checked = true; });
+      updateHostAppsSelectionSummary();
+    });
+  }
+
+  var btnNone = document.getElementById("hostAppsBtnNone");
+  if(btnNone){
+    btnNone.addEventListener("click", function(){
+      hostAppsList.querySelectorAll("input[name=host_app_choice]").forEach(function(cb){ cb.checked = false; });
+      updateHostAppsSelectionSummary();
+    });
+  }
 
   /* ---------------- claude login ---------------- */
 
@@ -1280,28 +1871,81 @@
   async function performCreate(){
     var data = new FormData(createForm);
     var name = (data.get("name") || "").trim();
+    var rawName = (data.get("name") || "").trim();
+    var finalName = rawName || ("desktop-" + Math.floor(Date.now() / 1000));
+    var sanitizedID = finalName.toLowerCase().replace(/[^a-z0-9_-]/g, "-").replace(/^-+|-+$/g, "");
+    if(!sanitizedID){
+      sanitizedID = "desktop-" + Math.floor(Date.now() / 1000);
+    }
 
     var submit = document.getElementById("createSubmit");
     submit.disabled = true;
     submit.textContent = "Creating…";
     busy(true);
 
+    activeCreateController = new AbortController();
+    var signal = activeCreateController.signal;
+
+    var copyHostApps = dCopyHostApps && dCopyHostApps.checked;
+    var selectedApps = [];
+    if(copyHostApps && hostAppsList){
+      hostAppsList.querySelectorAll("input[name=host_app_choice]:checked").forEach(function(cb){
+        selectedApps.push(cb.value);
+      });
+    }
+
+    // 1. Immediately open desktop tab synchronously to prevent browser popup blockers.
+    // The opened tab loads /desktop/<id>/ which renders the live launch screen while provisioning.
+    var targetURL = "/desktop/" + encodeURIComponent(sanitizedID) + "/?autoconnect=true&resize=remote&ui=touch";
+    var guiWin = null;
+    try{
+      guiWin = window.open(targetURL, "_blank");
+    }catch(err){
+      console.warn("Could not open desktop tab directly:", err);
+    }
+
+    // 2. Immediately close the creation dialog - user never hangs!
+    if(createDialog && createDialog.open){
+      createDialog.close();
+    }
+    toast("Desktop '" + sanitizedID + "' accepted. Spinning up in background…", "info");
+
+    activeCreateController = new AbortController();
+    var signal = activeCreateController.signal;
+
     try{
       await post("/api/desktops/create", {
         name: name || ("desktop-" + Date.now()),
+        name: sanitizedID,
         profile: data.get("profile"),
         harness: data.get("harness"),
         cpus: data.get("cpus"),
         memory_mb: data.get("memory_mb"),
         specialization: data.get("specialization") || "",
-        parent_id: data.get("parent_id") || ""
-      });
+        parent_id: data.get("parent_id") || "",
+        copy_host_apps: copyHostApps ? "1" : "0",
+        host_apps: selectedApps.join(",")
+      }, { signal: signal });
 
+      activeCreateController = null;
       location.reload();
+      setTimeout(function(){
+        location.reload();
+      }, 400);
     }catch(e){
       busy(false);
       submit.disabled = false;
       submit.textContent = "Create desktop";
+      if(guiWin && !guiWin.closed){
+        try{ guiWin.close(); }catch(err){}
+      }
+      activeCreateController = null;
+      if(e.name === "AbortError" || (signal && signal.aborted)){
+        // Aborted intentionally by Cancel button or closing modal
+        activeCreateController = null;
+        return;
+      }
+      activeCreateController = null;
       toast(e.message, "error");
     }
   }
@@ -1332,6 +1976,8 @@
 
   var ACTIONS = {
     start:   {url: "/api/desktops/start",   pending: "Starting…"},
+    unpause: {url: "/api/desktops/unpause", pending: "Waking…"},
+    pause:   {url: "/api/desktops/pause",   pending: "Pausing…"},
     stop:    {url: "/api/desktops/stop",    pending: "Stopping…"},
     restart: {url: "/api/desktops/restart", pending: "Restarting…"},
     delete:  {url: "/api/desktops/delete",  pending: "Deleting…"}
@@ -1668,6 +2314,134 @@
 
   loadNotes();
   setInterval(loadNotes, 2500);
+
+  /* ---------------- resource autoscaling alerts ---------------- */
+  var activeAlerts = new Map();
+  var dismissedAlerts = new Set();
+
+  async function pollResourceAlerts(){
+    try{
+      var response = await fetch("/api/desktops/resource-alerts", {cache: "no-store"});
+      if(!response.ok){ return; }
+      var data = await response.json();
+      var alerts = data.alerts || [];
+      var alertMap = new Map();
+      alerts.forEach(function(a){ alertMap.set(a.desktop_id, a); });
+
+      document.querySelectorAll(".dcard[data-desktop-id]").forEach(function(card){
+        var id = card.dataset.desktopId;
+        var alertBox = card.querySelector('[data-resource-alert="' + id + '"]');
+        if(!alertBox){ return; }
+
+        if(dismissedAlerts.has(id)){
+          alertBox.style.display = "none";
+          return;
+        }
+
+        var alert = alertMap.get(id);
+        if(alert){
+          activeAlerts.set(id, alert);
+          var msg = card.querySelector('[data-resource-msg="' + id + '"]');
+          if(msg){
+            msg.textContent = alert.message || (
+              "CPU: " + Math.round(alert.cpu_percent) + "%, RAM: " + Math.round(alert.memory_percent) +
+              "%. Increase to " + alert.predicted_cpus + " CPUs & " + alert.predicted_memory_mb + " MB RAM?"
+            );
+          }
+          alertBox.style.display = "block";
+        }else{
+          activeAlerts.delete(id);
+          alertBox.style.display = "none";
+        }
+      });
+    }catch(e){}
+  }
+
+  document.addEventListener("click", async function(e){
+    var dismissBtn = e.target.closest("[data-resource-dismiss], [data-resource-no]");
+    if(dismissBtn){
+      var id = dismissBtn.dataset.resourceDismiss || dismissBtn.dataset.resourceNo;
+      dismissedAlerts.add(id);
+      var card = document.querySelector('.dcard[data-desktop-id="' + id + '"]');
+      if(card){
+        var alertBox = card.querySelector('[data-resource-alert="' + id + '"]');
+        if(alertBox){ alertBox.style.display = "none"; }
+      }
+      try{
+        await post("/api/desktops/resource-dismiss", {desktop_id: id});
+      }catch(err){}
+      setTimeout(function(){ dismissedAlerts.delete(id); }, 300000);
+      return;
+    }
+
+    var yesBtn = e.target.closest("[data-resource-yes]");
+    if(yesBtn){
+      var id = yesBtn.dataset.resourceYes;
+      var alert = activeAlerts.get(id);
+      yesBtn.disabled = true;
+      yesBtn.textContent = "Increasing...";
+      try{
+        var payload = { desktop_id: id };
+        if(alert){
+          payload.cpus = alert.predicted_cpus;
+          payload.memory_mb = alert.predicted_memory_mb;
+        }
+        var resp = await post("/api/desktops/resource-increase", payload);
+        var card = document.querySelector('.dcard[data-desktop-id="' + id + '"]');
+        if(card){
+          var msg = card.querySelector('[data-resource-msg="' + id + '"]');
+          if(msg){ msg.textContent = "✓ Increased to " + resp.cpus + " CPUs and " + resp.memory_mb + " MB RAM!"; }
+          var noBtn = card.querySelector('[data-resource-no="' + id + '"]');
+          if(noBtn){ noBtn.style.display = "none"; }
+          yesBtn.style.display = "none";
+
+          var cpuVal = card.querySelector('[data-cpu-val="' + id + '"]');
+          if(cpuVal){ cpuVal.textContent = resp.cpus + (resp.cpus === 1 ? " core" : " cores"); }
+          var memVal = card.querySelector('[data-mem-val="' + id + '"]');
+          if(memVal){ memVal.textContent = resp.memory_mb + " MB"; }
+
+          setTimeout(function(){
+            var alertBox = card.querySelector('[data-resource-alert="' + id + '"]');
+            if(alertBox){ alertBox.style.display = "none"; }
+            yesBtn.disabled = false;
+            yesBtn.style.display = "";
+            if(noBtn){ noBtn.style.display = ""; }
+            yesBtn.textContent = "Yes, Increase";
+            activeAlerts.delete(id);
+          }, 3000);
+        }
+      }catch(err){
+        yesBtn.disabled = false;
+        yesBtn.textContent = "Retry";
+        toast(err.message || "Failed to increase resources", "error");
+      }
+      return;
+    }
+  });
+
+  pollResourceAlerts();
+  setInterval(pollResourceAlerts, 4000);
+
+  /* ---------------- provisioning desktop poller ---------------- */
+  function checkProvisioningDesktops(){
+    var provCards = document.querySelectorAll(".status.provisioning");
+    if(!provCards || provCards.length === 0){ return; }
+
+    provCards.forEach(function(pill){
+      var card = pill.closest(".dcard");
+      if(!card || !card.dataset.desktopId){ return; }
+      var id = card.dataset.desktopId;
+      fetch("/api/desktops/status?id=" + encodeURIComponent(id))
+        .then(function(res){ return res.json(); })
+        .then(function(data){
+          if(data && (data.ready || data.status === "running")){
+            location.reload();
+          }
+        })
+        .catch(function(){});
+    });
+  }
+  setInterval(checkProvisioningDesktops, 2000);
 
   /* ---------------- shortcuts ---------------- */
 

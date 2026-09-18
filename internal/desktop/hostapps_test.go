@@ -1,0 +1,552 @@
+package desktop
+
+import (
+	"archive/tar"
+	"bytes"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestDetectHostApps(t *testing.T) {
+	items := DetectHostApps()
+	if len(items) == 0 {
+		t.Fatal("expected non-empty host app list")
+	}
+
+	foundBridge := false
+	foundEdge := false
+
+	for _, item := range items {
+		if !item.Detected {
+			t.Errorf("expected ONLY detected apps, but found undetected item: %s (%s)", item.Name, item.ID)
+		}
+		if item.ID == "host_bridge" {
+			foundBridge = true
+		}
+		if item.ID == "edge" || item.ID == "win_microsoft_edge" || strings.Contains(strings.ToLower(item.Name), "edge") {
+			foundEdge = true
+		}
+	}
+
+	if !foundBridge {
+		t.Errorf("expected host_bridge in DetectHostApps list")
+	}
+	if IsWSLOrWindows() && !foundEdge {
+		t.Errorf("expected Edge to be detected on WSL/Windows host")
+	}
+
+	t.Logf("Detected %d total verified apps across host system", len(items))
+	detectedCount := 0
+	for _, item := range items {
+		if item.Detected {
+			detectedCount++
+			t.Logf("  [READY] %s (%s) - %s [cmd: %s]", item.Name, item.Category, item.Description, item.HostCmd)
+		}
+	}
+	t.Logf("Total ready/detected: %d / %d", detectedCount, len(items))
+}
+
+func TestParseGetStartAppsJSON(t *testing.T) {
+	jsonArray := []byte(`[
+		{"Name":"Microsoft Edge","AppID":"Microsoft.MicrosoftEdge.Stable_8wekyb3d8bbwe!App"},
+		{"Name":"YouTube","AppID":"Chrome._crx_agimnkijcaiengbajagbfclojfljnakf"},
+		{"Name":"Spotify","AppID":"Spotify.exe"}
+	]`)
+
+	apps := parseGetStartAppsJSON(jsonArray)
+	if len(apps) != 3 {
+		t.Fatalf("expected 3 apps, got %d", len(apps))
+	}
+	if apps[0].Name != "Microsoft Edge" || apps[1].Name != "YouTube" || apps[2].Name != "Spotify" {
+		t.Errorf("unexpected parsed apps: %+v", apps)
+	}
+
+	// Single object format
+	singleJSON := []byte(`{"Name":"Discord","AppID":"com.squirrel.Discord.Discord"}`)
+	singleApps := parseGetStartAppsJSON(singleJSON)
+	if len(singleApps) != 1 || singleApps[0].Name != "Discord" {
+		t.Errorf("unexpected single parsed app: %+v", singleApps)
+	}
+}
+
+func TestWSLToWindowsPath(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"/mnt/c/ProgramData/Microsoft/Windows/Start Menu/Programs", `C:\ProgramData\Microsoft\Windows\Start Menu\Programs`},
+		{"/mnt/c/Users/Administrator/AppData/Local/Microsoft/Edge/User Data", `C:\Users\Administrator\AppData\Local\Microsoft\Edge\User Data`},
+		{"/c/Users/User/AppData", `C:\Users\User\AppData`},
+		{"/mnt/d/Games/Steam", `D:\Games\Steam`},
+	}
+
+	for _, tc := range tests {
+		res := wslToWindowsPath(tc.input)
+		if res != tc.expected {
+			t.Errorf("wslToWindowsPath(%q) = %q; want %q", tc.input, res, tc.expected)
+		}
+	}
+}
+
+func TestCleanAppShortcutName(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"Visual Studio Code (64-bit)", "Visual Studio Code"},
+		{"Spotify - Shortcut", "Spotify"},
+		{"Google Chrome (32-bit) - Shortcut", "Google Chrome"},
+		{"Microsoft Edge", "Microsoft Edge"},
+	}
+
+	for _, tc := range tests {
+		res := cleanAppShortcutName(tc.input)
+		if res != tc.expected {
+			t.Errorf("cleanAppShortcutName(%q) = %q; want %q", tc.input, res, tc.expected)
+		}
+	}
+}
+
+func TestPackDynamicApp(t *testing.T) {
+	buf := new(bytes.Buffer)
+	tw := tar.NewWriter(buf)
+
+	app := HostAppItem{
+		ID:          "win_spotify",
+		Name:        "Spotify Music",
+		Category:    "Media & Entertainment",
+		Description: "Spotify Windows desktop app",
+		HostCmd:     `cmd.exe /c start explorer.exe shell:AppsFolder\Spotify.exe`,
+		Icon:        "audio-x-generic",
+	}
+
+	if err := packDynamicApp(tw, app); err != nil {
+		t.Fatalf("packDynamicApp failed: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tr := tar.NewReader(buf)
+	foundFiles := make(map[string]bool)
+	var desktopContent string
+	var wrapperContent string
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		foundFiles[hdr.Name] = true
+		if hdr.Name == "Desktop/spotify-music-host.desktop" {
+			data, _ := io.ReadAll(tr)
+			desktopContent = string(data)
+		}
+		if hdr.Name == ".local/bin/spotify-music-host" {
+			data, _ := io.ReadAll(tr)
+			wrapperContent = string(data)
+		}
+	}
+
+	if !foundFiles[".local/bin/spotify-music-host"] {
+		t.Errorf("expected .local/bin/spotify-music-host wrapper to be packed")
+	}
+	if !foundFiles["Desktop/spotify-music-host.desktop"] {
+		t.Errorf("expected Desktop/spotify-music-host.desktop to be packed")
+	}
+	if !foundFiles[".local/share/applications/spotify-music-host.desktop"] {
+		t.Errorf("expected .local/share/applications/spotify-music-host.desktop to be packed")
+	}
+	if !strings.Contains(desktopContent, "Exec=/home/headless/.local/bin/spotify-music-host %U") {
+		t.Errorf("unexpected desktop content: %s", desktopContent)
+	}
+	if !strings.Contains(wrapperContent, "exec host-run cmd.exe /c start explorer.exe shell:AppsFolder\\Spotify.exe") {
+		t.Errorf("unexpected wrapper script content: %s", wrapperContent)
+	}
+}
+
+func TestCacheExclusion(t *testing.T) {
+	testCases := []struct {
+		name     string
+		path     string
+		isDir    bool
+		expected bool
+	}{
+		{"Normal file", "/home/user/.config/gh/hosts.yml", false, false},
+		{"Chrome Cache dir", "/home/user/.config/google-chrome/Default/Cache", true, true},
+		{"GPUCache", "/home/user/.config/google-chrome/Default/GPUCache", true, true},
+		{"Code Cache", "/home/user/.config/google-chrome/Default/Code Cache", true, true},
+		{"Crashpad", "/home/user/.config/google-chrome/Crashpad", true, true},
+		{"Temporary file", "/home/user/.config/google-chrome/Default/file.tmp", false, true},
+		{"Log file", "/home/user/.config/google-chrome/Default/debug.log", false, true},
+		{"Flowera repo recursion", "/home/user/flowera/cmd/flowera", true, true},
+		{"Migration toolkit recursion", "/home/user/migration-toolkit", true, true},
+		{"Node modules", "/home/user/.config/Code/node_modules", true, true},
+		{"Cookies DB", "/home/user/.config/google-chrome/Default/Cookies", false, false},
+		{"Login Data DB", "/home/user/.config/google-chrome/Default/Login Data", false, false},
+	}
+
+	for _, tc := range testCases {
+		res := isCacheOrTransient(filepath.Base(tc.path), tc.path, tc.isDir)
+		if res != tc.expected {
+			t.Errorf("isCacheOrTransient(%q, %q, %v) = %v; want %v", filepath.Base(tc.path), tc.path, tc.isDir, res, tc.expected)
+		}
+	}
+}
+
+func TestPackHostBridgeLaunchers(t *testing.T) {
+	buf := new(bytes.Buffer)
+	tw := tar.NewWriter(buf)
+
+	if err := packHostBridgeLaunchers(tw); err != nil {
+		t.Fatalf("packHostBridgeLaunchers failed: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar: %v", err)
+	}
+
+	tr := tar.NewReader(buf)
+	foundFiles := make(map[string]bool)
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read tar: %v", err)
+		}
+		foundFiles[hdr.Name] = true
+
+		if strings.HasSuffix(hdr.Name, ".desktop") || strings.HasPrefix(hdr.Name, ".local/bin/") {
+			if hdr.Mode&0111 == 0 {
+				t.Errorf("file %s expected executable bit set, got mode %o", hdr.Name, hdr.Mode)
+			}
+		}
+	}
+
+	expected := []string{
+		".local/bin/host-run",
+		".local/bin/host-open",
+		".local/bin/host-clip",
+		".local/bin/win-run",
+		".local/bin/mac-run",
+	}
+
+	for _, exp := range expected {
+		if !foundFiles[exp] {
+			t.Errorf("expected %s in host bridge tar archive", exp)
+		}
+	}
+
+	unexpected := []string{
+		".local/bin/chrome-host",
+		".local/bin/edge-host",
+		".local/bin/youtube-host",
+		".local/bin/code-host",
+		".local/bin/terminal-host",
+		"Desktop/chrome-host.desktop",
+		"Desktop/edge-host.desktop",
+		"Desktop/youtube-host.desktop",
+		"Desktop/code-host.desktop",
+		"Desktop/terminal-host.desktop",
+		".local/share/applications/chrome-host.desktop",
+		".local/share/applications/edge-host.desktop",
+		".local/share/applications/youtube-host.desktop",
+		".local/share/applications/code-host.desktop",
+		".local/share/applications/terminal-host.desktop",
+	}
+
+	for _, unexp := range unexpected {
+		if foundFiles[unexp] {
+			t.Errorf("did NOT expect %s in host bridge tar archive (should only be packed when explicitly selected)", unexp)
+		}
+	}
+}
+
+func TestSelectedAppsPackaging(t *testing.T) {
+	defs := getKnownAppDefs()
+	defMap := make(map[string]knownAppDef)
+	for _, d := range defs {
+		defMap[d.id] = d
+	}
+
+	testCases := []struct {
+		id           string
+		expectedFile string
+	}{
+		{"chrome", "Desktop/chrome-host.desktop"},
+		{"edge", "Desktop/edge-host.desktop"},
+		{"youtube", "Desktop/youtube-host.desktop"},
+		{"vscode", "Desktop/code-host.desktop"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.id, func(t *testing.T) {
+			def, ok := defMap[tc.id]
+			if !ok {
+				t.Fatalf("missing def for %s", tc.id)
+			}
+			buf := new(bytes.Buffer)
+			tw := tar.NewWriter(buf)
+			if err := def.packFn(tw, []string{}); err != nil {
+				t.Fatalf("packFn for %s failed: %v", tc.id, err)
+			}
+			if err := tw.Close(); err != nil {
+				t.Fatalf("close tar: %v", err)
+			}
+
+			tr := tar.NewReader(buf)
+			found := false
+			for {
+				hdr, err := tr.Next()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatalf("read tar: %v", err)
+				}
+				if hdr.Name == tc.expectedFile {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("expected %s to be packed when %s is selected", tc.expectedFile, tc.id)
+			}
+		})
+	}
+}
+
+func TestWriteDirToTar(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "hostapps_test_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Create dummy files: cookies, cache, config
+	_ = os.WriteFile(filepath.Join(tmpDir, "Cookies"), []byte("auth_cookie_token=abc123xyz"), 0600)
+	_ = os.MkdirAll(filepath.Join(tmpDir, "Cache"), 0755)
+	_ = os.WriteFile(filepath.Join(tmpDir, "Cache", "data_0"), []byte("cache_blob_should_be_stripped"), 0644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "Preferences"), []byte(`{"logged_in": true}`), 0644)
+
+	buf := new(bytes.Buffer)
+	tw := tar.NewWriter(buf)
+
+	err = writeDirToTar(tw, tmpDir, ".config/app", isCacheOrTransient)
+	if err != nil {
+		t.Fatalf("writeDirToTar: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tr := tar.NewReader(buf)
+	foundFiles := make(map[string]bool)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		foundFiles[hdr.Name] = true
+	}
+
+	if !foundFiles[".config/app/Cookies"] {
+		t.Errorf("expected Cookies to be preserved")
+	}
+	if !foundFiles[".config/app/Preferences"] {
+		t.Errorf("expected Preferences to be preserved")
+	}
+	if foundFiles[".config/app/Cache/data_0"] {
+		t.Errorf("Cache/data_0 should have been stripped!")
+	}
+}
+
+func TestGetWebAppURLForApp(t *testing.T) {
+	tests := []struct {
+		name     string
+		cmdOrId  string
+		expected string
+	}{
+		{"Claude", "Claude_pzs8sxrjxfjjc!Claude", "https://claude.ai"},
+		{"ChatGPT", "OpenAI.Codex_2p2nqsd0c76g0!App", "https://chatgpt.com"},
+		{"Chat GPT", "chatgpt.exe", "https://chatgpt.com"},
+		{"Microsoft Copilot", "Microsoft.Copilot_8wekyb3d8bbwe!App", "https://copilot.microsoft.com"},
+		{"YouTube", "Chrome._crx_agimnkijcaiengbajagbfclojfljnakf", "https://www.youtube.com"},
+		{"WhatsApp", "5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App", "https://web.whatsapp.com"},
+		{"Discord", "com.squirrel.Discord.Discord", "https://discord.com/app"},
+		{"Slack", "slack.exe", "https://app.slack.com"},
+		{"Custom Web App", "https://example.com/myapp", "https://example.com/myapp"},
+		{"Start URL", "cmd.exe /c start https://linear.app", "https://linear.app"},
+		{"Regular Windows App", "notepad.exe", ""},
+		{"Calculator", "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App", ""},
+	}
+
+	for _, tc := range tests {
+		got := getWebAppURLForApp(tc.name, tc.cmdOrId)
+		if got != tc.expected {
+			t.Errorf("getWebAppURLForApp(%q, %q) = %q; want %q", tc.name, tc.cmdOrId, got, tc.expected)
+		}
+	}
+}
+
+func TestPackDynamicAppWebAppMode(t *testing.T) {
+	app := HostAppItem{
+		ID:          "win_claude",
+		Name:        "Claude",
+		Category:    "Productivity",
+		Description: "AI assistant",
+		HostCmd:     `cmd.exe /c start explorer.exe shell:AppsFolder\Claude_pzs8sxrjxfjjc!Claude`,
+	}
+
+	buf := new(bytes.Buffer)
+	tw := tar.NewWriter(buf)
+
+	if err := packDynamicApp(tw, app); err != nil {
+		t.Fatalf("packDynamicApp: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tr := tar.NewReader(buf)
+	foundWrapper := false
+	var wrapperContent string
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hdr.Name == ".local/bin/claude-host" {
+			foundWrapper = true
+			data, err := io.ReadAll(tr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wrapperContent = string(data)
+		}
+	}
+
+	if !foundWrapper {
+		t.Fatal("expected .local/bin/claude-host to be packed")
+	}
+	if !strings.Contains(wrapperContent, `chromium-browser --app="https://claude.ai"`) {
+		t.Errorf("expected wrapper to use chromium-browser --app mode for Claude, got:\n%s", wrapperContent)
+	}
+}
+
+func TestPackDynamicAppSVGIcon(t *testing.T) {
+	app := HostAppItem{
+		ID:          "win_edge",
+		Name:        "Microsoft Edge",
+		Category:    "Browsers & Web",
+		Description: "Web browser",
+		HostCmd:     `cmd.exe /c start msedge.exe`,
+	}
+
+	buf := new(bytes.Buffer)
+	tw := tar.NewWriter(buf)
+
+	if err := packDynamicApp(tw, app); err != nil {
+		t.Fatalf("packDynamicApp: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tr := tar.NewReader(buf)
+	foundSVG := false
+	foundDesktop := false
+	var desktopContent string
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hdr.Name == ".local/share/icons/hicolor/scalable/apps/microsoft-edge.svg" {
+			foundSVG = true
+			data, err := io.ReadAll(tr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(data), "<svg") {
+				t.Errorf("expected valid SVG content, got:\n%s", string(data))
+			}
+		}
+		if hdr.Name == "Desktop/microsoft-edge-host.desktop" {
+			foundDesktop = true
+			data, err := io.ReadAll(tr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			desktopContent = string(data)
+		}
+	}
+
+	if !foundSVG {
+		t.Errorf("expected embedded SVG icon to be packed at .local/share/icons/hicolor/scalable/apps/microsoft-edge.svg")
+	}
+	if !foundDesktop {
+		t.Fatalf("expected Desktop/microsoft-edge-host.desktop to be packed")
+	}
+	if !strings.Contains(desktopContent, "Icon=/home/headless/.local/share/icons/hicolor/scalable/apps/microsoft-edge.svg") {
+		t.Errorf("expected desktop entry Icon to reference scalable svg icon, got:\n%s", desktopContent)
+	}
+}
+
+func TestPackHostBridgeLaunchersIncludesDisplay(t *testing.T) {
+	buf := new(bytes.Buffer)
+	tw := tar.NewWriter(buf)
+
+	if err := packHostBridgeLaunchers(tw); err != nil {
+		t.Fatalf("packHostBridgeLaunchers: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tr := tar.NewReader(buf)
+	var hostRunContent string
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hdr.Name == ".local/bin/host-run" {
+			data, err := io.ReadAll(tr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hostRunContent = string(data)
+			break
+		}
+	}
+
+	if !strings.Contains(hostRunContent, "'display': os.environ.get('DISPLAY', ':1')") {
+		t.Errorf("expected host-run to send container DISPLAY in payload, got:\n%s", hostRunContent)
+	}
+	if !strings.Contains(hostRunContent, "DISPLAY=${DISPLAY:-:1}") {
+		t.Errorf("expected host-run SSH fallback to forward DISPLAY, got:\n%s", hostRunContent)
+	}
+}

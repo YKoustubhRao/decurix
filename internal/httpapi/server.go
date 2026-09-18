@@ -6,14 +6,17 @@ package httpapi
 
 import (
 	"net/http"
+	"sync"
 
 	"github.com/YKoustubhRao/flowera/internal/claudeauth"
 	"github.com/YKoustubhRao/flowera/internal/conversation"
 	"github.com/YKoustubhRao/flowera/internal/dag"
 	"github.com/YKoustubhRao/flowera/internal/desktop"
+	"github.com/YKoustubhRao/flowera/internal/idlepause"
 	"github.com/YKoustubhRao/flowera/internal/lanaccess"
 	"github.com/YKoustubhRao/flowera/internal/memory"
 	"github.com/YKoustubhRao/flowera/internal/querynotes"
+	"github.com/YKoustubhRao/flowera/internal/resourcemon"
 	"github.com/YKoustubhRao/flowera/internal/schedule"
 	"github.com/YKoustubhRao/flowera/internal/stepimages"
 	"github.com/YKoustubhRao/flowera/internal/suggest"
@@ -42,26 +45,38 @@ type Server struct {
 	// through NewServer: it holds this *Server itself as its Submitter
 	// (SubmitTracked), so it cannot be built before the Server exists.
 	DagRunner *dag.Runner
-	Suggest   *suggest.Store
-	Web       *webui.Renderer
+	// IdleChecker is optionally assigned by cmd/flowera/main.go after construction,
+	// allowing task completion events to request fast-idle transitions.
+	IdleChecker *idlepause.Checker
+	// ResourceMon monitors container resource usage and handles autoscaling alerts.
+	ResourceMon *resourcemon.Monitor
+	Suggest     *suggest.Store
+	Web         *webui.Renderer
+
+	stepImagesMu     sync.Mutex
+	recentStepImages map[string]string
 }
 
 // NewServer creates a Server from its component stores/managers.
 func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memoryStore *memory.Store, chat *conversation.Store, stepImages *stepimages.Store, taskRecords *tasks.Store, tunnelStore *tunnel.Store, claudeAuth *claudeauth.Store, lanAccess *lanaccess.Store, schedules *schedule.Store, dags *dag.Store, suggestions *suggest.Store, web *webui.Renderer) *Server {
+	// Pre-warm host apps discovery in background so desktop creation and scanning UI are instant
+	desktop.InitHostAppsScan()
+
 	return &Server{
-		Desktops:   desktops,
-		QueryNotes: queryNotes,
-		Memory:     memoryStore,
-		Chat:       chat,
-		StepImages: stepImages,
-		Tasks:      taskRecords,
-		Tunnel:     tunnelStore,
-		ClaudeAuth: claudeAuth,
-		LANAccess:  lanAccess,
-		Schedules:  schedules,
-		Dags:       dags,
-		Suggest:    suggestions,
-		Web:        web,
+		Desktops:         desktops,
+		QueryNotes:       queryNotes,
+		Memory:           memoryStore,
+		Chat:             chat,
+		StepImages:       stepImages,
+		Tasks:            taskRecords,
+		Tunnel:           tunnelStore,
+		ClaudeAuth:       claudeAuth,
+		LANAccess:        lanAccess,
+		Schedules:        schedules,
+		Dags:             dags,
+		Suggest:          suggestions,
+		Web:              web,
+		recentStepImages: make(map[string]string),
 	}
 }
 
@@ -73,13 +88,24 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/agent/", s.agentProxyHandler)
 	mux.HandleFunc("/api/desktops", s.desktopsAPIHandler)
 	mux.HandleFunc("/api/desktops/create", s.createDesktopHandler)
+	mux.HandleFunc("/api/desktops/status", s.desktopStatusHandler)
 	mux.HandleFunc("/api/desktops/start", s.startDesktopHandler)
 	mux.HandleFunc("/api/desktops/stop", s.stopDesktopHandler)
+	mux.HandleFunc("/api/desktops/pause", s.pauseDesktopHandler)
+	mux.HandleFunc("/api/desktops/unpause", s.unpauseDesktopHandler)
 	mux.HandleFunc("/api/desktops/restart", s.restartDesktopHandler)
 	mux.HandleFunc("/api/desktops/delete", s.deleteDesktopHandler)
+	mux.HandleFunc("/api/desktops/resource-alerts", s.resourceAlertsHandler)
+	mux.HandleFunc("/api/desktops/resource-increase", s.resourceIncreaseHandler)
+	mux.HandleFunc("/api/desktops/resource-dismiss", s.resourceDismissHandler)
+	mux.HandleFunc("/api/desktops/resource-report", s.resourceReportHandler)
 	mux.HandleFunc("/requests", s.requestsDashboardHandler)
 	mux.HandleFunc("/api/desktops/send", s.sendRequestHandler)
 	mux.HandleFunc("/api/desktops/suggest", s.suggestDesktopHandler)
+	mux.HandleFunc("/api/host-apps/detect", s.detectHostAppsHandler)
+	mux.HandleFunc("/api/host-bridge/exec", s.hostBridgeExecHandler)
+	mux.HandleFunc("/api/host-bridge/open", s.hostBridgeOpenHandler)
+	mux.HandleFunc("/api/host-bridge/clip", s.hostBridgeClipHandler)
 	mux.HandleFunc("/api/schedules", s.schedulesHandler)
 	mux.HandleFunc("/api/schedules/create", s.createScheduleHandler)
 	mux.HandleFunc("/api/schedules/delete", s.deleteScheduleHandler)

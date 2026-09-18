@@ -77,6 +77,8 @@ type Options struct {
 	// than pinning a 32768-context instance resident for the same 30
 	// minutes an ordinary chat turn earns.
 	KeepAlive string
+	// Stop sequence list to truncate generation early when model finishes structured output
+	Stop []string
 }
 
 type Provider interface {

@@ -1,12 +1,21 @@
 #!/bin/bash
 
-sleep 15
+# Adaptively wait for X11 display :1 to be ready (up to 15s max), proceeding immediately once available
+for i in $(seq 1 150); do
+    if [ -S /tmp/.X11-unix/X1 ] || (which xdpyinfo >/dev/null 2>&1 && xdpyinfo -display :1 >/dev/null 2>&1); then
+        break
+    fi
+    sleep 0.1
+done
 
 LOG=/tmp/flowera-startup.log
 
 echo "[$(date)] Starting Flowera agent" >> "$LOG"
 
 export DISPLAY=:1
+
+# Allow incoming display connections for host-bridge display tunneling
+which xhost >/dev/null 2>&1 && xhost + >/dev/null 2>&1 || true
 
 if [ -z "$XDG_RUNTIME_DIR" ]; then
     export XDG_RUNTIME_DIR="/tmp/runtime-headless"
@@ -17,6 +26,10 @@ fi
 echo "DISPLAY=$DISPLAY" >> "$LOG"
 echo "USER=$(whoami)" >> "$LOG"
 
+if [ -f /opt/tools/env.sh ]; then
+    . /opt/tools/env.sh
+fi
+
 # Chromium's launch flags live in $HOME, which is this desktop's persistent
 # volume - so an image rebuild alone never replaces the base image's copy
 # with its hardcoded --no-sandbox. Reinstall ours on every start.
@@ -25,10 +38,18 @@ if [ -f /opt/flowera-chromium.init ]; then
         || echo "[$(date)] could not install Chromium launch flags" >> "$LOG"
 fi
 
+# Pre-warm Chromium in the background only if explicitly requested, saving
+# ~300MB RAM and boot CPU on lightweight containers.
+if [ "$FLOWERA_PREWARM_CHROMIUM" = "1" ] && which chromium-browser >/dev/null 2>&1; then
+    setsid chromium-browser --no-startup-window >> /tmp/chromium-prewarm.log 2>&1 < /dev/null &
+    echo "[$(date)] Chromium pre-warmed in background (pid $!)" >> "$LOG"
+fi
+
 # Clear out core dumps a crashing Chromium already left behind, before core
 # dumps were switched off (see agent/chromium-browser.init). Only files that
 # are named core.<pid> AND are ELF core dumps - a file that merely shares
 # the name is left alone.
+if ls "$HOME"/core.* "$HOME/Desktop"/core.* >/dev/null 2>&1; then
 python3 - "$HOME" "$HOME/Desktop" >> "$LOG" 2>&1 <<'PY'
 import os, re, sys
 
@@ -54,16 +75,22 @@ for folder in sys.argv[1:]:
 if removed:
     print(f"removed {removed} leftover core dump(s)")
 PY
+fi
 
 # The agent's own directories live under ~/.flowera, so ~/work is the only
 # one it adds to the home a human browses. A volume from before that still
 # has them at the top level: move them in before anything that uses them
 # starts, so worker memory, the audit trail and TheBot's stores carry over.
-# Where both exist (the control plane saved a memory entry first), entries
-# move one at a time and nothing already there is overwritten. ~/ai is only
-# TheBot's on a TheBot desktop; anywhere else it could be a human's folder.
 legacy_dirs="command helptext final memory audit"
 [ "$AGENT_HARNESS" = "thebot" ] && legacy_dirs="$legacy_dirs ai"
+has_legacy=0
+for d in $legacy_dirs; do
+    if [ -d "$HOME/$d" ] && [ ! -L "$HOME/$d" ]; then
+        has_legacy=1
+        break
+    fi
+done
+if [ "$has_legacy" -eq 1 ]; then
 python3 - "$HOME" $legacy_dirs >> "$LOG" 2>&1 <<'PY'
 import os, sys
 
@@ -86,11 +113,13 @@ for name in names:
     except OSError as e:
         print(f"could not move ~/{name} to ~/.flowera/{name}: {e}")
 PY
+fi
 
 # The help-notes directory was renamed to querytext when the "help"
 # terminology became "query" throughout the app. A volume that still has
 # the old name - including one that just landed there from the legacy move
 # above - gets it renamed in place, merged the same non-destructive way.
+if [ -d "$HOME/.flowera/helptext" ] && [ ! -L "$HOME/.flowera/helptext" ]; then
 python3 - "$HOME/.flowera" >> "$LOG" 2>&1 <<'PY'
 import os, sys
 
@@ -109,8 +138,11 @@ if os.path.isdir(old) and not os.path.islink(old):
     except OSError as e:
         print(f"could not move ~/.flowera/helptext to ~/.flowera/querytext: {e}")
 PY
+fi
 
-setsid python3 /opt/vm_server.py >> "$LOG" 2>&1 < /dev/null &
+# Run background agent daemon with nice -n 10 so interactive GUI (Xvnc, Xorg,
+# xfce4, terminal) always has scheduling priority over background agent reasoning.
+setsid nice -n 10 python3 /opt/vm_server.py >> "$LOG" 2>&1 < /dev/null &
 
 echo "[$(date)] vm_server.py started as background daemon (pid $!)" >> "$LOG"
 
@@ -148,6 +180,6 @@ if [ "$AGENT_HARNESS" = "thebot" ] && [ -x /opt/soul ]; then
     export THEBOT_WEB_PAGE_CHARS="${THEBOT_WEB_PAGE_CHARS:-2500}"
     export SOUL_PORT="4900"
     export DOCLING_SCRIPT="/opt/thebot-scripts/docling_convert.py"
-    setsid /opt/soul >> /tmp/thebot-soul.log 2>&1 < /dev/null &
+    setsid nice -n 10 /opt/soul >> /tmp/thebot-soul.log 2>&1 < /dev/null &
     echo "[$(date)] soul (TheBot) started as background daemon (pid $!)" >> "$LOG"
 fi

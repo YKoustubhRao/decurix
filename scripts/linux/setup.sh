@@ -123,6 +123,16 @@ echo ""
 echo "Cloudflared:"
 cloudflared --version
 
+if [ -d /sys/kernel/mm/ksm ]; then
+    echo ""
+    echo "=== Enabling Linux Kernel Samepage Merging (KSM) for RAM deduplication ==="
+    echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null && echo "KSM enabled (run=1)" || true
+    echo 1 > /sys/kernel/mm/ksm/use_zero_pages 2>/dev/null && echo "KSM zero pages deduplication enabled" || true
+    echo 1000 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null || true
+    echo 20 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
+fi
+
+
 echo ""
 echo "========================================"
 echo "        Setup Complete"
@@ -135,8 +145,11 @@ echo "  ${REAL_USER}"
 echo ""
 echo "Log out and back in, or run:"
 echo "  newgrp docker"
+echo "Next steps:"
+echo "  - For a full clean-slate build (clears old desktops & database):"
+echo "      ./scripts/linux/rebuild.sh"
 echo ""
-echo "Then run:"
-echo "  ./scripts/linux/build.sh"
+echo "  - To open Flowera (retaining existing desktops and data):"
+echo "      ./scripts/linux/build.sh"
 echo ""
 echo "========================================"

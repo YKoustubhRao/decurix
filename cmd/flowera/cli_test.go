@@ -192,3 +192,34 @@ func TestWaitForReplyStopsOnNewEntry(t *testing.T) {
 		t.Errorf("output missing the live step printed while running, got:\n%s", out)
 	}
 }
+
+func TestCLIPauseAndUnpauseAction(t *testing.T) {
+	var calledPaths []string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calledPaths = append(calledPaths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"status":"ok"}`)
+	}))
+	defer srv.Close()
+
+	client := newAPIClient(srv.URL)
+
+	outPause := captureStdout(t, func() {
+		cliSimpleAction(context.Background(), client, "/api/desktops/pause", []string{"box"}, "paused")
+	})
+	if !strings.Contains(outPause, "box paused") {
+		t.Errorf("expected 'box paused', got %q", outPause)
+	}
+
+	outUnpause := captureStdout(t, func() {
+		cliSimpleAction(context.Background(), client, "/api/desktops/unpause", []string{"box"}, "woken")
+	})
+	if !strings.Contains(outUnpause, "box woken") {
+		t.Errorf("expected 'box woken', got %q", outUnpause)
+	}
+
+	if len(calledPaths) != 2 || calledPaths[0] != "/api/desktops/pause" || calledPaths[1] != "/api/desktops/unpause" {
+		t.Errorf("unexpected called paths: %v", calledPaths)
+	}
+}

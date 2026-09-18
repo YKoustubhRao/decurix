@@ -414,6 +414,8 @@ svg{display:block;flex:none}
   text-transform:capitalize
 }
 .status.running{background:var(--live-soft);color:var(--live)}
+.status.provisioning{background:rgba(234, 179, 8, 0.16);color:#eab308}
+.status.paused{background:rgba(56, 189, 248, 0.16);color:#38bdf8}
 .status.stopped{background:var(--idle-soft);color:var(--text-2)}
 
 /* A desktop with an open query note takes this over its own "running" pill -
@@ -423,9 +425,11 @@ svg{display:block;flex:none}
    accent, not a wider status-color system. */
 .status.needs-you{background:var(--accent-soft);color:var(--accent)}
 .status.needs-you .dot{animation:none}
+.status.paused .dot{animation:none}
 
 .dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
 .status.running .dot{animation:pulse 2.4s ease-in-out infinite}
+.status.provisioning .dot{animation:pulse 1.2s ease-in-out infinite}
 
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
 
@@ -751,16 +755,21 @@ body.busy{cursor:progress}
 
   /* ---- form-encoded POST helper ---- */
 
-  async function post(url, fields){
+  async function post(url, fields, options){
     var body = new URLSearchParams();
 
     Object.keys(fields).forEach(function(k){ body.append(k, fields[k]); });
 
-    var response = await fetch(url, {
+    var fetchOpts = {
       method: "POST",
       headers: {"Content-Type": "application/x-www-form-urlencoded"},
       body: body
-    });
+    };
+    if(options && options.signal){
+      fetchOpts.signal = options.signal;
+    }
+
+    var response = await fetch(url, fetchOpts);
 
     var data = await response.json().catch(function(){ return {}; });
 

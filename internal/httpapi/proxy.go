@@ -2,7 +2,9 @@ package httpapi
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -11,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/YKoustubhRao/flowera/internal/desktop"
+	"github.com/YKoustubhRao/flowera/internal/webui"
 )
 
 // desktopProxyHandler reverse-proxies HTTP requests to the desktop container's internal address.
@@ -26,7 +29,29 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// If the desktop is actively provisioning and not yet ready for GUI connections,
+	// display a sleek launch progress screen rather than connection failures or 404s.
+	if prov, ok := s.Desktops.GetProvisioning(parts[0]); ok && !prov.Ready {
+		if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			http.Error(w, "desktop is still provisioning", http.StatusServiceUnavailable)
+			return
+		}
+		s.renderProvisioningLaunchScreen(w, r, prov)
+		return
+	}
+
 	proxyURL, desktopID, err := s.Desktops.ProxyTarget(r.Context(), parts[0])
+
+	if err != nil {
+		if prov, ok := s.Desktops.GetProvisioning(parts[0]); ok && !prov.Ready {
+			if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+				http.Error(w, "desktop is still provisioning", http.StatusServiceUnavailable)
+				return
+			}
+			s.renderProvisioningLaunchScreen(w, r, prov)
+			return
+		}
+	}
 
 	switch {
 	case errors.Is(err, desktop.ErrNotFound):
@@ -80,9 +105,20 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 		r.URL.Path = "/vnc.html"
 	}
 
+	if r.URL.Path == "/vnc.html" {
+		query := r.URL.Query()
+		if query.Get("autoconnect") == "" {
+			query.Set("autoconnect", "true")
+			r.URL.RawQuery = query.Encode()
+		}
+	}
+
 	// Query parameters (e.g. index.html's open-in-a-new-tab resize=remote&ui=touch)
 	// are preserved automatically since only r.URL.Path was rewritten above.
 	reverseProxy.ModifyResponse = func(resp *http.Response) error {
+		if !strings.Contains(resp.Header.Get("Content-Type"), "text/html") && resp.StatusCode == http.StatusOK {
+			resp.Header.Set("Cache-Control", "public, max-age=86400, stale-while-revalidate=3600")
+		}
 		return rewriteDesktopHTML(resp, desktopID)
 	}
 	reverseProxy.ErrorHandler = func(
@@ -90,6 +126,7 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 		req *http.Request,
 		err error,
 	) {
+		s.Desktops.InvalidateProxyTarget(desktopID)
 		log.Printf(
 			"desktop proxy error for %s: %v",
 			desktopID,
@@ -137,6 +174,19 @@ var floweraBrandingRewrites = [][2][]byte{
 	},
 }
 
+func init() {
+	if len(webui.FaviconSVG) > 0 {
+		dataURI := "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString(webui.FaviconSVG)
+		faviconLink := fmt.Sprintf(`<link rel="icon" type="image/svg+xml" href="%s">`, dataURI)
+		smallLogo := fmt.Sprintf(`<h1 class="noVNC_logo flowera-logo" translate="no" style="font-size:13px;line-height:1.2;display:flex;align-items:center;gap:8px;text-shadow:none;color:#f2f0ea;font-family:ui-sans-serif,system-ui,sans-serif"><img src="%s" alt="" width="20" height="20" style="display:block;border-radius:4px"><span style="color:inherit;font-weight:700">Flowera</span></h1>`, dataURI)
+		largeLogo := fmt.Sprintf(`<p class="noVNC_logo flowera-logo" translate="no" style="font-size:20px;line-height:1.2;display:flex;flex-direction:column;align-items:center;gap:10px;text-shadow:none;color:#f2f0ea;font-family:ui-sans-serif,system-ui,sans-serif"><img src="%s" alt="" width="56" height="56" style="display:block;border-radius:12px"><span style="color:inherit;font-weight:700;letter-spacing:.02em">Flowera</span></p>`, dataURI)
+
+		floweraBrandingRewrites[1][1] = []byte(faviconLink)
+		floweraBrandingRewrites[2][1] = []byte(smallLogo)
+		floweraBrandingRewrites[3][1] = []byte(largeLogo)
+	}
+}
+
 // rewriteDesktopHTML executes all desktop HTML modifications in a single pass
 // over the response body, avoiding multiple read/re-wrap cycles: replacing
 // noVNC's own "noVNC" branding with Flowera's (per floweraBrandingRewrites,
@@ -164,6 +214,8 @@ func rewriteDesktopHTML(resp *http.Response, desktopID string) error {
 		var injections strings.Builder
 		injections.WriteString(strings.ReplaceAll(titleOverrideScript, "__DESKTOP_ID__", desktopID))
 		injections.WriteString(strings.ReplaceAll(ticketToolbar, "__DESKTOP_ID__", desktopID))
+		injections.WriteString(strings.ReplaceAll(resourceAlertPopup, "__DESKTOP_ID__", desktopID))
+		injections.WriteString(autoConnectHelper)
 		if resp.Request != nil && resp.Request.URL != nil && resp.Request.URL.Query().Get("ui") == "touch" {
 			injections.WriteString(mobileViewerEnhancements)
 		}
@@ -797,6 +849,240 @@ document.title = desiredTitle;
 </script>
 `
 
+// autoConnectHelper ensures the user connects directly into the VM GUI
+// without stalling on noVNC's manual connect button or VNC password dialog.
+const autoConnectHelper = `
+<script>
+(function(){
+  "use strict";
+  function autoFillAndConnect(){
+    var pwdInput = document.getElementById('noVNC_password_input');
+    var pwdDlg = document.getElementById('noVNC_password_dlg');
+    var pwdBtn = document.getElementById('noVNC_password_button');
+    if (pwdDlg && pwdDlg.classList.contains('noVNC_open') && pwdInput && pwdBtn) {
+      if (!pwdInput.value) {
+        pwdInput.value = "admin";
+      }
+      pwdBtn.click();
+    }
+
+    var connBtn = document.getElementById('noVNC_connect_button');
+    var connDlg = document.getElementById('noVNC_connect_dlg');
+    if (connDlg && connDlg.classList.contains('noVNC_open') && connBtn) {
+      connBtn.click();
+    }
+  }
+
+  if (window.MutationObserver && document.documentElement) {
+    var observer = new MutationObserver(function() {
+      autoFillAndConnect();
+    });
+    observer.observe(document.documentElement, { attributes: true, subtree: true, attributeFilter: ['class', 'style'] });
+  }
+
+  var attempts = 0;
+  var interval = setInterval(function(){
+    attempts++;
+    autoFillAndConnect();
+    if (attempts > 60) {
+      clearInterval(interval);
+    }
+  }, 50);
+
+  window.addEventListener('DOMContentLoaded', autoFillAndConnect);
+  window.addEventListener('load', autoFillAndConnect);
+})();
+</script>
+`
+
+// resourceAlertPopup is injected into the VM GUI viewer at /desktop/<id>/,
+// displaying a sleek notification banner when container resources are about
+// to exceed. It prompts the user with "Yes" (to apply predicted CPU/RAM increase)
+// and "No" (to dismiss).
+const resourceAlertPopup = `
+<style>
+#flowera-res-alert-wrap {
+  position: fixed;
+  top: 18px;
+  right: 18px;
+  z-index: 10000;
+  max-width: 360px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  display: none;
+}
+#flowera-res-alert-box {
+  background: rgba(28, 25, 23, 0.95);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid #d97706;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.6), 0 0 15px rgba(217, 119, 6, 0.25);
+  border-radius: 10px;
+  padding: 14px 16px;
+  color: #fef3c7;
+  animation: flowera-slide-down 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes flowera-slide-down {
+  from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.fra-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.fra-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 13.5px;
+  color: #fbbf24;
+}
+.fra-close {
+  background: transparent;
+  border: none;
+  color: #a8a29e;
+  font-size: 18px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 4px;
+}
+.fra-close:hover { color: #f5f5f4; }
+.fra-body {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: #e7e5e4;
+  margin-bottom: 12px;
+}
+.fra-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.fra-btn {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.fra-btn-yes {
+  background: #d97706;
+  color: #ffffff;
+}
+.fra-btn-yes:hover {
+  background: #b45309;
+}
+.fra-btn-no {
+  background: #292524;
+  color: #d6d3d1;
+  border-color: #44403c;
+}
+.fra-btn-no:hover {
+  background: #44403c;
+  color: #fafaf9;
+}
+</style>
+<div id="flowera-res-alert-wrap">
+  <div id="flowera-res-alert-box">
+    <div class="fra-header">
+      <div class="fra-title">⚠️ Resource Warning</div>
+      <button class="fra-close" id="fra-close-btn">&times;</button>
+    </div>
+    <div class="fra-body" id="fra-body-text">Resources are about to exceed. Automatically increase CPU/RAM?</div>
+    <div class="fra-actions">
+      <button class="fra-btn fra-btn-no" id="fra-no-btn">No</button>
+      <button class="fra-btn fra-btn-yes" id="fra-yes-btn">Yes, Increase</button>
+    </div>
+  </div>
+</div>
+<script>
+(function() {
+  var desktopID = "__DESKTOP_ID__";
+  var wrap = document.getElementById("flowera-res-alert-wrap");
+  var bodyText = document.getElementById("fra-body-text");
+  var yesBtn = document.getElementById("fra-yes-btn");
+  var noBtn = document.getElementById("fra-no-btn");
+  var closeBtn = document.getElementById("fra-close-btn");
+  var activeAlert = null;
+  var dismissed = false;
+
+  function pollAlert() {
+    if (dismissed) return;
+    fetch("/api/desktops/resource-alerts?id=" + encodeURIComponent(desktopID))
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data && data.alert) {
+          activeAlert = data.alert;
+          bodyText.textContent = data.alert.message || (
+            "CPU: " + Math.round(data.alert.cpu_percent) + "%, RAM: " + Math.round(data.alert.memory_percent) +
+            "%. Increase to " + data.alert.predicted_cpus + " CPUs & " + data.alert.predicted_memory_mb + " MB RAM?"
+          );
+          wrap.style.display = "block";
+        } else if (!activeAlert) {
+          wrap.style.display = "none";
+        }
+      })
+      .catch(function() {});
+  }
+
+  function dismissAlert() {
+    dismissed = true;
+    wrap.style.display = "none";
+    activeAlert = null;
+    fetch("/api/desktops/resource-dismiss", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: "desktop_id=" + encodeURIComponent(desktopID)
+    }).catch(function() {});
+    setTimeout(function() { dismissed = false; }, 300000);
+  }
+
+  function acceptIncrease() {
+    if (!activeAlert) return;
+    yesBtn.disabled = true;
+    yesBtn.textContent = "Increasing...";
+    fetch("/api/desktops/resource-increase", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: "desktop_id=" + encodeURIComponent(desktopID) +
+            "&cpus=" + encodeURIComponent(activeAlert.predicted_cpus) +
+            "&memory_mb=" + encodeURIComponent(activeAlert.predicted_memory_mb)
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(res) {
+      bodyText.textContent = "✓ Resources increased to " + res.cpus + " CPUs and " + res.memory_mb + " MB RAM!";
+      yesBtn.style.display = "none";
+      noBtn.style.display = "none";
+      setTimeout(function() {
+        wrap.style.display = "none";
+        activeAlert = null;
+        yesBtn.disabled = false;
+        yesBtn.style.display = "";
+        noBtn.style.display = "";
+        yesBtn.textContent = "Yes, Increase";
+      }, 3000);
+    })
+    .catch(function() {
+      yesBtn.disabled = false;
+      yesBtn.textContent = "Retry";
+      bodyText.textContent = "Failed to scale resources. Please try again.";
+    });
+  }
+
+  if (noBtn) noBtn.addEventListener("click", dismissAlert);
+  if (closeBtn) closeBtn.addEventListener("click", dismissAlert);
+  if (yesBtn) yesBtn.addEventListener("click", acceptIncrease);
+
+  setInterval(pollAlert, 4000);
+  setTimeout(pollAlert, 1500);
+})();
+</script>
+`
+
 // mobileViewerEnhancements is spliced into the noVNC vnc.html response by
 // rewriteDesktopHTML, but only for requests carrying ?ui=touch - the marker
 // index.html's "open the screen in a new tab" button puts on the full-size,
@@ -1106,3 +1392,243 @@ func (s *Server) agentProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	reverseProxy.ServeHTTP(w, r)
 }
+
+func (s *Server) renderProvisioningLaunchScreen(w http.ResponseWriter, r *http.Request, prov *desktop.ProvisioningDesktop) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.WriteHeader(http.StatusOK)
+
+	name := htmlEscape(prov.Name)
+	if name == "" {
+		name = htmlEscape(prov.ID)
+	}
+
+	progress := prov.Progress
+	if progress < 10 {
+		progress = 10
+	}
+	message := htmlEscape(prov.Message)
+	if message == "" {
+		message = "Spinning up desktop environment..."
+	}
+
+	fmt.Fprintf(w, launchScreenHTML, name, name, progress, message, prov.ID)
+}
+
+func htmlEscape(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	s = strings.ReplaceAll(s, `"`, "&quot;")
+	return s
+}
+
+const launchScreenHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Starting %s - Flowera</title>
+<style>
+  :root {
+    --bg: #090d16;
+    --card: rgba(18, 24, 38, 0.75);
+    --border: rgba(255, 255, 255, 0.08);
+    --primary: #3b82f6;
+    --accent: #60a5fa;
+    --text: #f3f4f6;
+    --text-muted: #9ca3af;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: radial-gradient(circle at top center, #1e293b 0%%, var(--bg) 70%%);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+  }
+  .card {
+    background: var(--card);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid var(--border);
+    border-radius: 1.25rem;
+    padding: 2.5rem 2rem;
+    max-width: 480px;
+    width: 100%%;
+    text-align: center;
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5), 0 0 40px rgba(59, 130, 246, 0.1);
+    animation: fadeIn 0.4s ease-out;
+  }
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  .icon-wrap {
+    width: 64px;
+    height: 64px;
+    border-radius: 1rem;
+    background: linear-gradient(135deg, rgba(59, 130, 246, 0.2), rgba(96, 165, 250, 0.05));
+    border: 1px solid rgba(59, 130, 246, 0.3);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 1.5rem;
+    position: relative;
+  }
+  .spinner {
+    position: absolute;
+    inset: -4px;
+    border: 2px solid transparent;
+    border-top-color: var(--accent);
+    border-right-color: rgba(96, 165, 250, 0.4);
+    border-radius: 1.25rem;
+    animation: spin 1.2s cubic-bezier(0.5, 0, 0.5, 1) infinite;
+  }
+  @keyframes spin {
+    0%% { transform: rotate(0deg); }
+    100%% { transform: rotate(360deg); }
+  }
+  h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; letter-spacing: -0.02em; }
+  .name-badge {
+    display: inline-block;
+    padding: 0.25rem 0.75rem;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid var(--border);
+    border-radius: 9999px;
+    font-size: 0.85rem;
+    color: var(--accent);
+    margin-bottom: 1.5rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+  .progress-track {
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 9999px;
+    height: 8px;
+    overflow: hidden;
+    position: relative;
+    margin-bottom: 1rem;
+    border: 1px solid rgba(255, 255, 255, 0.04);
+  }
+  .progress-bar {
+    height: 100%%;
+    background: linear-gradient(90deg, #3b82f6, #60a5fa, #93c5fd);
+    border-radius: 9999px;
+    transition: width 0.4s ease;
+    box-shadow: 0 0 12px rgba(96, 165, 250, 0.6);
+  }
+  .status-msg {
+    font-size: 0.95rem;
+    color: var(--text-muted);
+    min-height: 1.5rem;
+    transition: all 0.2s;
+  }
+  .hint {
+    margin-top: 1.5rem;
+    font-size: 0.8rem;
+    color: rgba(156, 163, 175, 0.6);
+  }
+  .error-box {
+    display: none;
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    color: #fca5a5;
+    padding: 1rem;
+    border-radius: 0.75rem;
+    margin-top: 1rem;
+    font-size: 0.9rem;
+    text-align: left;
+  }
+  .back-btn {
+    display: inline-block;
+    margin-top: 1rem;
+    padding: 0.5rem 1.25rem;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid var(--border);
+    color: #fff;
+    border-radius: 0.5rem;
+    text-decoration: none;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+  .back-btn:hover { background: rgba(255, 255, 255, 0.15); }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="icon-wrap">
+    <div class="spinner"></div>
+    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+      <line x1="8" y1="21" x2="16" y2="21"></line>
+      <line x1="12" y1="17" x2="12" y2="21"></line>
+    </svg>
+  </div>
+  <h1>Spinning Up Desktop</h1>
+  <div class="name-badge">%s</div>
+  <div class="progress-track">
+    <div class="progress-bar" id="pbar" style="width: %d%%;"></div>
+  </div>
+  <div class="status-msg" id="statusMsg">%s</div>
+  <div class="error-box" id="errorBox"></div>
+  <div class="hint" id="hint">Flowera is provisioning your container and copying desktop apps. The GUI will connect automatically as soon as it's ready.</div>
+</div>
+<script>
+(function() {
+  const desktopID = %q;
+  const targetURL = window.location.href;
+  const pbar = document.getElementById('pbar');
+  const statusMsg = document.getElementById('statusMsg');
+  const errorBox = document.getElementById('errorBox');
+  const hint = document.getElementById('hint');
+
+  let pollCount = 0;
+  const poll = async () => {
+    pollCount++;
+    try {
+      const res = await fetch('/api/desktops/status?id=' + encodeURIComponent(desktopID));
+      if (!res.ok) {
+        if (pollCount > 10) throw new Error('Status poll returned ' + res.status);
+        setTimeout(poll, 800);
+        return;
+      }
+      const data = await res.json();
+      if (data.status === 'failed') {
+        errorBox.style.display = 'block';
+        errorBox.innerHTML = '<strong>Creation Error:</strong><br>' + (data.error || data.message || 'Unknown error') +
+          '<br><a href="/" class="back-btn">&larr; Return to Dashboard</a>';
+        statusMsg.textContent = 'Provisioning Failed';
+        statusMsg.style.color = '#ef4444';
+        pbar.style.background = '#ef4444';
+        return;
+      }
+      if (data.ready || (data.status === 'running' && data.stage === 'ready')) {
+        pbar.style.width = '100%%';
+        statusMsg.textContent = 'Ready! Connecting to GUI...';
+        statusMsg.style.color = '#10b981';
+        setTimeout(() => {
+          window.location.replace(targetURL);
+        }, 500);
+        return;
+      }
+      if (data.progress) {
+        pbar.style.width = Math.max(15, data.progress) + '%%';
+      }
+      if (data.message) {
+        statusMsg.textContent = data.message;
+      }
+    } catch (e) {
+      console.warn('Status poll warning:', e);
+    }
+    setTimeout(poll, 600);
+  };
+  setTimeout(poll, 600);
+})();
+</script>
+</body>
+</html>
+`
+

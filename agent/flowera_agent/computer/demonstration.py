@@ -61,6 +61,9 @@ QUIET_SECONDS = 1.2
 # How long the screen must stay still before it is read again.
 SETTLED_SECONDS = 0.5
 
+# Throttle idle screen polling so background checks do not cause X11 lag.
+LOOK_INTERVAL = 1.0
+
 # More of the screen than this changed since the last observation, and its
 # elements no longer describe what the person acted on.
 STALE_FRACTION = 0.02
@@ -484,6 +487,7 @@ class Recorder:
         self._caps = False
         self._keys_held = set()
         self._pause = None
+        self._last_look = 0.0
 
     # ---- X input, on its own thread and its own connections ----
 
@@ -634,6 +638,11 @@ class Recorder:
     def _look(self):
         """Read the screen again once it has changed and settled."""
 
+        now = time.monotonic()
+        if now - self._last_look < LOOK_INTERVAL:
+            return
+        self._last_look = now
+
         try:
             frame = screen.grab()
         except ComputerError:
@@ -654,6 +663,7 @@ class Recorder:
 
         try:
             self.latest = core.observe(remember=False)
+            self.latest = core.observe(remember=False, frame=frame)
         except ComputerError as exc:
             log(f"Could not read the screen: {exc}")
 
@@ -740,6 +750,7 @@ class Recorder:
 
         try:
             after = core.observe(remember=False)
+            after = core.observe(remember=False, frame=settled)
         except ComputerError as exc:
             log(f"Could not read the screen after an action: {exc}")
             after = None

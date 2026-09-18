@@ -75,7 +75,7 @@ def _state_lock():
         yield
 
 
-def observe(remember=True):
+def observe(remember=True, frame=None):
     """
     Look at the screen: a screenshot, the open windows, and every accessible
     element in them. Saves the result as the reference for the next action -
@@ -85,7 +85,8 @@ def observe(remember=True):
 
     session.ensure()
 
-    frame = screen.grab()
+    if frame is None:
+        frame = screen.grab()
     windows = screen.windows()
     active = next((w for w in windows if w["active"]), None)
     active_title = active["title"] if active else ""
@@ -199,17 +200,17 @@ def _wait_for_settle(reference):
     """
 
     deadline = time.monotonic() + SETTLE_SECONDS
-    time.sleep(0.25)
+    time.sleep(0.15)
     last = screen.grab()
     stable_since = time.monotonic()
 
     while time.monotonic() < deadline:
-        time.sleep(0.2)
+        time.sleep(0.15)
         current = screen.grab()
         if screen.changed_fraction(last, current) > 0.002:
             last = current
             stable_since = time.monotonic()
-        elif time.monotonic() - stable_since >= 0.6:
+        elif time.monotonic() - stable_since >= 0.35:
             break
 
     return last
@@ -823,12 +824,21 @@ def _open(target, new_tab):
 
         session.launch(_chromium_argv(url))
         _wait_until(cdp.available, 30, "Chromium did not start")
-        title = cdp.navigate(url)
+        title = cdp.wait_ready(timeout=15, default_title=url)
         _raise_browser()
         return f"Started Chromium on {url} (tab title {el._quote(title, 60)})."
 
     path = Path(target).expanduser()
     lower = target.lower()
+
+    if lower in CHROMIUM_APPS:
+        if any(re.search(r"chromium", t, re.I) for t in before_titles) or cdp.available():
+            _raise_browser()
+            return "Brought Chromium to the front."
+        session.launch(_chromium_argv("about:blank"))
+        _wait_until(cdp.available, 30, "Chromium did not start")
+        _raise_browser()
+        return "Started Chromium."
 
     if path.exists():
         if path.suffix.lower() in OFFICE_EXTENSIONS:
