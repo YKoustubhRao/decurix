@@ -18,7 +18,16 @@ const (
 // OptimizeHostKSM inspects and enables Linux Kernel Samepage Merging (KSM)
 // if supported by the host kernel, deduplicating identical physical memory
 // pages across container processes.
+// pages across container processes. If FLOWERA_DISABLE_KSM is set, it explicitly disables KSM.
 func OptimizeHostKSM() {
+	if os.Getenv("FLOWERA_DISABLE_KSM") == "1" ||
+		os.Getenv("FLOWERA_DISABLE_KSM") == "true" ||
+		os.Getenv("FLOWERA_ENABLE_KSM") == "0" ||
+		os.Getenv("FLOWERA_ENABLE_KSM") == "false" {
+		DisableHostKSM()
+		return
+	}
+
 	data, err := os.ReadFile(ksmRunPath)
 	if err != nil {
 		// KSM not present or kernel doesn't support CONFIG_KSM
@@ -44,4 +53,18 @@ func OptimizeHostKSM() {
 	_ = os.WriteFile(ksmZeroPagesPath, []byte("1"), 0644)
 
 	log.Println("[ksm] Enabled Linux Kernel Samepage Merging (KSM) for cross-container RAM deduplication.")
+}
+
+// DisableHostKSM disables Linux Kernel Samepage Merging (KSM) scanning to eliminate
+// all kernel memory scanning CPU overhead and copy-on-write page fault latencies.
+func DisableHostKSM() {
+	data, err := os.ReadFile(ksmRunPath)
+	if err != nil {
+		return
+	}
+	if strings.TrimSpace(string(data)) != "0" {
+		if err := os.WriteFile(ksmRunPath, []byte("0"), 0644); err == nil {
+			log.Println("[ksm] Disabled Linux Kernel Samepage Merging (KSM) scanning.")
+		}
+	}
 }

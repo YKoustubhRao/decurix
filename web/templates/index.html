@@ -1015,6 +1015,14 @@
         <button class="btn btn-default btn-sm action-icon" data-act="stop" data-id="{{.ID}}" title="Stop" aria-label="Stop desktop">
           <svg width="14" height="14"><use href="#i-stop"/></svg>
         </button>
+        {{else if eq .Status "provisioning"}}
+        <button class="btn btn-default btn-sm" disabled style="opacity:0.85; cursor:wait;">
+          <svg class="spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"/></svg>
+          Spinning up…
+        </button>
+        <button class="btn btn-default btn-sm action-icon" data-open="{{.URL}}?autoconnect=true&resize=remote&ui=touch" title="Open launch screen" aria-label="Open launch screen">
+          <svg width="14" height="14"><use href="#i-external"/></svg>
+        </button>
         {{else if eq .Status "paused"}}
         <a class="btn btn-primary btn-sm" href="/view/{{.ID}}">
           <svg width="14" height="14"><use href="#i-blossom"/></svg>
@@ -1256,6 +1264,7 @@
 
     return "/api/desktops/screenshot?id=" + encodeURIComponent(img.dataset.shot) +
       "&w=" + width + "&t=" + Date.now();
+      "&w=" + width;
   }
 
   function loadShot(img){
@@ -1862,6 +1871,12 @@
   async function performCreate(){
     var data = new FormData(createForm);
     var name = (data.get("name") || "").trim();
+    var rawName = (data.get("name") || "").trim();
+    var finalName = rawName || ("desktop-" + Math.floor(Date.now() / 1000));
+    var sanitizedID = finalName.toLowerCase().replace(/[^a-z0-9_-]/g, "-").replace(/^-+|-+$/g, "");
+    if(!sanitizedID){
+      sanitizedID = "desktop-" + Math.floor(Date.now() / 1000);
+    }
 
     var submit = document.getElementById("createSubmit");
     submit.disabled = true;
@@ -1879,9 +1894,29 @@
       });
     }
 
+    // 1. Immediately open desktop tab synchronously to prevent browser popup blockers.
+    // The opened tab loads /desktop/<id>/ which renders the live launch screen while provisioning.
+    var targetURL = "/desktop/" + encodeURIComponent(sanitizedID) + "/?autoconnect=true&resize=remote&ui=touch";
+    var guiWin = null;
+    try{
+      guiWin = window.open(targetURL, "_blank");
+    }catch(err){
+      console.warn("Could not open desktop tab directly:", err);
+    }
+
+    // 2. Immediately close the creation dialog - user never hangs!
+    if(createDialog && createDialog.open){
+      createDialog.close();
+    }
+    toast("Desktop '" + sanitizedID + "' accepted. Spinning up in background…", "info");
+
+    activeCreateController = new AbortController();
+    var signal = activeCreateController.signal;
+
     try{
       await post("/api/desktops/create", {
         name: name || ("desktop-" + Date.now()),
+        name: sanitizedID,
         profile: data.get("profile"),
         harness: data.get("harness"),
         cpus: data.get("cpus"),
@@ -1894,10 +1929,17 @@
 
       activeCreateController = null;
       location.reload();
+      setTimeout(function(){
+        location.reload();
+      }, 400);
     }catch(e){
       busy(false);
       submit.disabled = false;
       submit.textContent = "Create desktop";
+      if(guiWin && !guiWin.closed){
+        try{ guiWin.close(); }catch(err){}
+      }
+      activeCreateController = null;
       if(e.name === "AbortError" || (signal && signal.aborted)){
         // Aborted intentionally by Cancel button or closing modal
         activeCreateController = null;
@@ -2379,6 +2421,27 @@
 
   pollResourceAlerts();
   setInterval(pollResourceAlerts, 4000);
+
+  /* ---------------- provisioning desktop poller ---------------- */
+  function checkProvisioningDesktops(){
+    var provCards = document.querySelectorAll(".status.provisioning");
+    if(!provCards || provCards.length === 0){ return; }
+
+    provCards.forEach(function(pill){
+      var card = pill.closest(".dcard");
+      if(!card || !card.dataset.desktopId){ return; }
+      var id = card.dataset.desktopId;
+      fetch("/api/desktops/status?id=" + encodeURIComponent(id))
+        .then(function(res){ return res.json(); })
+        .then(function(data){
+          if(data && (data.ready || data.status === "running")){
+            location.reload();
+          }
+        })
+        .catch(function(){});
+    });
+  }
+  setInterval(checkProvisioningDesktops, 2000);
 
   /* ---------------- shortcuts ---------------- */
 

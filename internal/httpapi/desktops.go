@@ -243,6 +243,12 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 
 	created, err := s.Desktops.Create(
 		r.Context(),
+	if r.Context().Err() != nil {
+		log.Printf("createDesktop: client canceled before creation for %s", name)
+		return
+	}
+
+	prov, err := s.Desktops.BeginProvisioning(
 		name,
 		profile,
 		harness,
@@ -252,6 +258,26 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		specialization,
 		parentID,
 		selectedApps,
+		func(created *desktop.Desktop) error {
+			if parentID != "" {
+				if err := s.Memory.Link(parentID, created.ID); err != nil {
+					log.Printf("createDesktop: link child %s to parent %s: %v", created.ID, parentID, err)
+				} else {
+					s.backfillSharedMemory(context.Background(), parentID, created.ID)
+				}
+			}
+
+			if err := s.Tasks.UpsertWorker(tasks.Worker{
+				ID:      created.ID,
+				Name:    created.Name,
+				Engine:  created.Harness,
+				Profile: created.Profile,
+				Model:   created.Model,
+			}); err != nil {
+				log.Printf("createDesktop: %v", err)
+			}
+			return nil
+		},
 	)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || r.Context().Err() != nil {
@@ -266,6 +292,15 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Context().Err() != nil {
 		log.Printf("createDesktop: client canceled after container creation, deleting %s", created.ID)
 		_ = s.Desktops.Delete(context.Background(), created.ID)
+	w.WriteHeader(http.StatusAccepted)
+	jsonResponse(w, prov)
+}
+
+// desktopStatusHandler returns the current provisioning and readiness status for a desktop.
+func (s *Server) desktopStatusHandler(w http.ResponseWriter, r *http.Request) {
+	desktopID := strings.TrimSpace(r.URL.Query().Get("id"))
+	if desktopID == "" {
+		http.Error(w, "missing id parameter", http.StatusBadRequest)
 		return
 	}
 
@@ -279,6 +314,20 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		} else {
 			s.backfillSharedMemory(r.Context(), parentID, created.ID)
 		}
+	// 1. Check in-flight provisioning state
+	if prov, ok := s.Desktops.GetProvisioning(desktopID); ok {
+		jsonResponse(w, map[string]any{
+			"id":       prov.ID,
+			"name":     prov.Name,
+			"status":   prov.Status,
+			"stage":    prov.Stage,
+			"message":  prov.Message,
+			"progress": prov.Progress,
+			"ready":    prov.Ready,
+			"url":      prov.URL,
+			"error":    prov.Error,
+		})
+		return
 	}
 
 	if err := s.Tasks.UpsertWorker(tasks.Worker{
@@ -294,10 +343,29 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Context().Err() != nil {
 		log.Printf("createDesktop: client canceled, deleting %s", created.ID)
 		_ = s.Desktops.Delete(context.Background(), created.ID)
+	// 2. Otherwise inspect the desktop
+	d, err := s.Desktops.Get(r.Context(), desktopID)
+	if err != nil {
+		if errors.Is(err, desktop.ErrNotFound) {
+			http.Error(w, "desktop not found", http.StatusNotFound)
+			return
+		}
+		jsonError(w, err)
 		return
 	}
 
 	jsonResponse(w, created)
+	isReady := d.Status == "running"
+	jsonResponse(w, map[string]any{
+		"id":       d.ID,
+		"name":     d.Name,
+		"status":   d.Status,
+		"stage":    "ready",
+		"message":  "Desktop is running",
+		"progress": 100,
+		"ready":    isReady,
+		"url":      d.URL,
+	})
 }
 
 // startDesktopHandler starts an existing desktop by ID.
