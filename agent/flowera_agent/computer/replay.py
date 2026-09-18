@@ -405,10 +405,14 @@ def _screen_brief(observation):
 
 class _Halt(Exception):
 
-    def __init__(self, reason, evidence=""):
+    def __init__(self, reason, evidence="", missing=False):
         super().__init__(reason)
         self.reason = reason
         self.evidence = evidence
+        # The step's target was not on the screen (or was not one element) -
+        # as opposed to the action itself failing. It is the only halt an
+        # optional step is allowed to step over.
+        self.missing = missing
 
 
 def resolve(step, observation):
@@ -477,7 +481,9 @@ def _find(step):
             return element, point
 
         if time.monotonic() >= deadline:
-            raise _Halt(reason, _screen_brief(observation))
+            # Two candidates is not "not there": a replay does not guess
+            # between them, and neither may an optional step.
+            raise _Halt(reason, _screen_brief(observation), missing="elements match" not in reason)
 
         time.sleep(POLL_SECONDS)
 
@@ -552,7 +558,7 @@ def run(program, params=None, start=1, report=None):
         else:
             values[param["name"]] = param.get("default") or ""
 
-    counts = {"done": 0, "verified": 0, "unverified": 0}
+    counts = {"done": 0, "verified": 0, "unverified": 0, "skipped": 0}
 
     def finish(outcome, step=None, reason="", resume_from=None, evidence=""):
         result = dict(
@@ -587,6 +593,15 @@ def run(program, params=None, start=1, report=None):
         try:
             result = _run_step(step, values)
         except _Halt as halt:
+            # An optional step (a skill learned that it only sometimes
+            # happens) that is not on the screen simply did not happen this
+            # time. Nothing else is stepped over: an optional step whose
+            # action fails, or whose target is ambiguous, still halts.
+            if step.get("optional") and halt.missing:
+                counts["skipped"] += 1
+                report(f"Left out step {step['n']}: it only sometimes happens and is not on the screen")
+                continue
+
             outcome = HALTED if counts["done"] else HALTED_BEFORE_EFFECT
             return finish(outcome, step, reason=halt.reason, resume_from=step["n"], evidence=halt.evidence)
         finally:
@@ -625,7 +640,10 @@ def _summary_text(program, result, step):
     evidence = f" Now {result['evidence']}." if result.get("evidence") else ""
     outcome = result["outcome"]
 
-    ran = f"all {total} steps ran" if result["done"] == total else f"steps {total - result['done'] + 1}-{total} ran"
+    if result.get("skipped"):
+        ran = f"{result['done']} of {total} steps ran ({result['skipped']} optional, not on the screen, left out)"
+    else:
+        ran = f"all {total} steps ran" if result["done"] == total else f"steps {total - result['done'] + 1}-{total} ran"
 
     if outcome == VERIFIED:
         return f"Replayed {name}: {ran}, and every step's expected result was on the screen. No model was used."

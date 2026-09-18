@@ -823,8 +823,8 @@ func (s *Store) AddStep(workerID, taskID string, step Step) (bool, error) {
 	// screen.
 	if step.Action != nil {
 		if _, err := tx.Exec(
-			`UPDATE tasks SET task_type = ? WHERE id = ? AND task_type NOT IN (?, ?)`,
-			TypeScreen, ref.taskID, TypeConsequential, TypeDemonstration,
+			`UPDATE tasks SET task_type = ? WHERE id = ? AND task_type NOT IN (?, ?, ?)`,
+			TypeScreen, ref.taskID, TypeConsequential, TypeDemonstration, TypeTeaching,
 		); err != nil {
 			return false, fmt.Errorf("tasks: recording step: %w", err)
 		}

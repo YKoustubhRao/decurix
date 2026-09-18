@@ -28,6 +28,10 @@ var engineLabels = map[string]string{
 	"replay": "Replay (no model)",
 	// A person doing a task while the desktop recorded them.
 	"human": "Recorded by a person",
+	// A desktop being taught a skill, and one doing a skill it was taught:
+	// both with no model.
+	"learn": "Teaching (no model)",
+	"skill": "Skill (no model)",
 }
 
 // EngineLabel is the human-readable name of an engine.
@@ -402,8 +406,9 @@ func reportFromSummaries(since time.Time, summaries []Summary) Report {
 	}
 
 	for _, summary := range summaries {
-		// A person did it while it was recorded: no engine was being autonomous.
-		if summary.Type == TypeDemonstration {
+		// A person did it while it was recorded, or was being asked about it
+		// while it was learned: no engine was being autonomous.
+		if summary.Type == TypeDemonstration || summary.Type == TypeTeaching {
 			continue
 		}
 

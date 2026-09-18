@@ -225,7 +225,8 @@ def _report(ticket):
 
     count = meta.get("event_count", 0)
     steps = "1 step" if count == 1 else f"{count} steps"
-    replay = f"Replay it with `/replay {session_id}`, or download it from the desktop's recordings."
+    replay = (f"Replay it with `/replay {session_id}`, or teach me to do it myself with `/learn {session_id}` "
+              "(I will ask what I need to know), or download it from the desktop's recordings.")
 
     if meta.get("status") != "complete":
         reason = meta.get("reason") or "the recorder stopped before it finished"

@@ -23,6 +23,13 @@ const (
 	// them ("/record <task>"). No engine attempted it, so it is kept out of
 	// the autonomy report.
 	TypeDemonstration = "demonstration"
+
+	// TypeTeaching is a desktop being taught a skill from a recording
+	// ("/learn <recording>"): a conversation of questions and answers with
+	// the person who recorded it. No engine attempted anything, and every
+	// question is the point rather than a failure, so it is kept out of the
+	// autonomy report the way a demonstration is.
+	TypeTeaching = "teaching"
 )
 
 // RecordCommand starts a "/record <task>" request: the desktop records a
@@ -37,7 +44,32 @@ func IsRecordCommand(request string) bool {
 	return ok && (rest == "" || rest[0] == ' ' || rest[0] == '\t' || rest[0] == '\n')
 }
 
+// LearnCommand starts a "/learn <recording>" request: the desktop asks what it
+// needs to know to do a recorded task itself.
+const LearnCommand = "/learn"
+
+// SkillCommand starts a "/skill <name>" request: the desktop does a task it
+// was taught, with no model, stopping to ask when it is unsure.
+const SkillCommand = "/skill"
+
+// IsLearnCommand says whether a request opens with "/learn".
+func IsLearnCommand(request string) bool {
+	return hasCommand(request, LearnCommand)
+}
+
+// IsSkillCommand says whether a request opens with "/skill" (or "/skills").
+func IsSkillCommand(request string) bool {
+	return hasCommand(request, SkillCommand) || hasCommand(request, SkillCommand+"s")
+}
+
+func hasCommand(request, command string) bool {
+	rest, ok := strings.CutPrefix(strings.TrimSpace(request), command)
+
+	return ok && (rest == "" || rest[0] == ' ' || rest[0] == '\t' || rest[0] == '\n')
+}
+
 var typeLabels = map[string]string{
+	TypeTeaching:      "Teaching a skill",
 	TypeDemonstration: "Recorded by a person",
 	TypeConsequential: "Payments & messages",
 	TypeScreen:        "On-screen work",
@@ -80,6 +112,16 @@ var questionStart = regexp.MustCompile(`^(what|whats|what's|how|who|why|when|whe
 func Classify(request string) string {
 	if IsRecordCommand(request) {
 		return TypeDemonstration
+	}
+
+	if IsLearnCommand(request) {
+		return TypeTeaching
+	}
+
+	// A skill works the screen, whatever its name says: "/skill pay-invoice"
+	// is not a request to pay anything by its words.
+	if IsSkillCommand(request) {
+		return TypeScreen
 	}
 
 	text := strings.ToLower(strings.TrimSpace(request))

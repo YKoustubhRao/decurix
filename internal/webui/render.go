@@ -109,6 +109,12 @@ type RecordingsPageData struct {
 	Session string
 }
 
+// SkillsPageData is the template data for one desktop's skills page. The
+// skills are not in it: the page reads them from the desktop, which keeps them.
+type SkillsPageData struct {
+	Desktop desktop.Desktop
+}
+
 // taskFuncs are the formatting helpers the task pages need, which are about
 // presenting records rather than anything a page should compute itself.
 var taskFuncs = template.FuncMap{
@@ -166,6 +172,7 @@ type Renderer struct {
 	tasksTmpl      *template.Template
 	taskTmpl       *template.Template
 	recordingsTmpl *template.Template
+	skillsTmpl     *template.Template
 	dagsTmpl       *template.Template
 	dagTmpl        *template.Template
 }
@@ -193,6 +200,9 @@ func NewRenderer() *Renderer {
 		),
 		recordingsTmpl: template.Must(
 			template.ParseFS(web.TemplatesFS, templatePaths("recordings.html")...),
+		),
+		skillsTmpl: template.Must(
+			template.ParseFS(web.TemplatesFS, templatePaths("skills.html")...),
 		),
 		dagsTmpl: template.Must(
 			template.New("dags.html").Funcs(taskFuncs).ParseFS(web.TemplatesFS, templatePaths("dags.html")...),
@@ -237,6 +247,11 @@ func (rd *Renderer) RenderTask(w io.Writer, data TaskPageData) error {
 // RenderRecordings renders one desktop's recordings page.
 func (rd *Renderer) RenderRecordings(w io.Writer, data RecordingsPageData) error {
 	return rd.recordingsTmpl.ExecuteTemplate(w, "recordings.html", data)
+}
+
+// RenderSkills renders one desktop's skills page.
+func (rd *Renderer) RenderSkills(w io.Writer, data SkillsPageData) error {
+	return rd.skillsTmpl.ExecuteTemplate(w, "skills.html", data)
 }
 
 // RenderDags renders the DAGs list page.
