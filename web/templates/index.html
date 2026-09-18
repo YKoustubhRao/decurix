@@ -308,6 +308,72 @@
 
 .copy-btn.done{color:var(--live)}
 
+.dcard-resource-alert{
+  margin: 10px 14px 4px;
+  padding: 10px 12px;
+  background: rgba(217, 119, 6, 0.12);
+  border: 1px solid rgba(217, 119, 6, 0.4);
+  border-radius: var(--r-md);
+  color: var(--text);
+  animation: dcardAlertFadeIn .2s ease-out;
+}
+@keyframes dcardAlertFadeIn{
+  from{opacity:0;transform:translateY(-4px)}
+  to{opacity:1;transform:none}
+}
+.dra-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  margin-bottom:4px;
+}
+.dra-title{
+  font-size:11.5px;
+  font-weight:700;
+  color:#f59e0b;
+  display:flex;
+  align-items:center;
+  gap:5px;
+}
+.dra-close{
+  background:transparent;
+  border:none;
+  color:var(--text-3);
+  font-size:16px;
+  line-height:1;
+  cursor:pointer;
+  padding:0 2px;
+}
+.dra-close:hover{color:var(--text)}
+.dra-msg{
+  font-size:11.5px;
+  line-height:1.4;
+  color:var(--text-2);
+  margin-bottom:8px;
+}
+.dra-actions{
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  gap:6px;
+}
+.dra-btn-yes{
+  background:#d97706 !important;
+  border-color:#d97706 !important;
+  color:#fff !important;
+  font-weight:650 !important;
+  font-size:11px !important;
+  padding:3px 10px !important;
+}
+.dra-btn-yes:hover{
+  background:#b45309 !important;
+  border-color:#b45309 !important;
+}
+.dra-btn-no{
+  font-size:11px !important;
+  padding:3px 8px !important;
+}
+
 @media (max-width:720px){
   .dcard-info-body{
     right:-4px;
@@ -607,6 +673,18 @@
         {{end}}
       </div>
 
+      <div class="dcard-resource-alert" data-resource-alert="{{.ID}}" style="display:none;">
+        <div class="dra-head">
+          <span class="dra-title">⚠️ Resource Alert</span>
+          <button type="button" class="dra-close" data-resource-dismiss="{{.ID}}" title="Dismiss">&times;</button>
+        </div>
+        <div class="dra-msg" data-resource-msg="{{.ID}}">High resource usage detected.</div>
+        <div class="dra-actions">
+          <button type="button" class="btn btn-default btn-xs dra-btn-no" data-resource-no="{{.ID}}">No</button>
+          <button type="button" class="btn btn-primary btn-xs dra-btn-yes" data-resource-yes="{{.ID}}">Yes, Increase</button>
+        </div>
+      </div>
+
       <div class="dcard-head">
         <div style="min-width:0">
           <h2 class="dcard-name trunc" title="{{.Name}}">{{.Name}}</h2>
@@ -642,11 +720,11 @@
           <dl class="specs">
             <div>
               <dt>CPU</dt>
-              <dd>{{.CPUs}} {{if eq .CPUs 1}}core{{else}}cores{{end}}</dd>
+              <dd data-cpu-val="{{.ID}}">{{.CPUs}} {{if eq .CPUs 1}}core{{else}}cores{{end}}</dd>
             </div>
             <div>
               <dt>Memory</dt>
-              <dd data-mb="{{.MemoryMB}}">{{.MemoryMB}} MB</dd>
+              <dd data-mb="{{.MemoryMB}}" data-mem-val="{{.ID}}">{{.MemoryMB}} MB</dd>
             </div>
             <div>
               <dt>Created</dt>
@@ -1725,6 +1803,113 @@
 
   loadNotes();
   setInterval(loadNotes, 2500);
+
+  /* ---------------- resource autoscaling alerts ---------------- */
+  var activeAlerts = new Map();
+  var dismissedAlerts = new Set();
+
+  async function pollResourceAlerts(){
+    try{
+      var response = await fetch("/api/desktops/resource-alerts", {cache: "no-store"});
+      if(!response.ok){ return; }
+      var data = await response.json();
+      var alerts = data.alerts || [];
+      var alertMap = new Map();
+      alerts.forEach(function(a){ alertMap.set(a.desktop_id, a); });
+
+      document.querySelectorAll(".dcard[data-desktop-id]").forEach(function(card){
+        var id = card.dataset.desktopId;
+        var alertBox = card.querySelector('[data-resource-alert="' + id + '"]');
+        if(!alertBox){ return; }
+
+        if(dismissedAlerts.has(id)){
+          alertBox.style.display = "none";
+          return;
+        }
+
+        var alert = alertMap.get(id);
+        if(alert){
+          activeAlerts.set(id, alert);
+          var msg = card.querySelector('[data-resource-msg="' + id + '"]');
+          if(msg){
+            msg.textContent = alert.message || (
+              "CPU: " + Math.round(alert.cpu_percent) + "%, RAM: " + Math.round(alert.memory_percent) +
+              "%. Increase to " + alert.predicted_cpus + " CPUs & " + alert.predicted_memory_mb + " MB RAM?"
+            );
+          }
+          alertBox.style.display = "block";
+        }else{
+          activeAlerts.delete(id);
+          alertBox.style.display = "none";
+        }
+      });
+    }catch(e){}
+  }
+
+  document.addEventListener("click", async function(e){
+    var dismissBtn = e.target.closest("[data-resource-dismiss], [data-resource-no]");
+    if(dismissBtn){
+      var id = dismissBtn.dataset.resourceDismiss || dismissBtn.dataset.resourceNo;
+      dismissedAlerts.add(id);
+      var card = document.querySelector('.dcard[data-desktop-id="' + id + '"]');
+      if(card){
+        var alertBox = card.querySelector('[data-resource-alert="' + id + '"]');
+        if(alertBox){ alertBox.style.display = "none"; }
+      }
+      try{
+        await post("/api/desktops/resource-dismiss", {desktop_id: id});
+      }catch(err){}
+      setTimeout(function(){ dismissedAlerts.delete(id); }, 300000);
+      return;
+    }
+
+    var yesBtn = e.target.closest("[data-resource-yes]");
+    if(yesBtn){
+      var id = yesBtn.dataset.resourceYes;
+      var alert = activeAlerts.get(id);
+      yesBtn.disabled = true;
+      yesBtn.textContent = "Increasing...";
+      try{
+        var payload = { desktop_id: id };
+        if(alert){
+          payload.cpus = alert.predicted_cpus;
+          payload.memory_mb = alert.predicted_memory_mb;
+        }
+        var resp = await post("/api/desktops/resource-increase", payload);
+        var card = document.querySelector('.dcard[data-desktop-id="' + id + '"]');
+        if(card){
+          var msg = card.querySelector('[data-resource-msg="' + id + '"]');
+          if(msg){ msg.textContent = "✓ Increased to " + resp.cpus + " CPUs and " + resp.memory_mb + " MB RAM!"; }
+          var noBtn = card.querySelector('[data-resource-no="' + id + '"]');
+          if(noBtn){ noBtn.style.display = "none"; }
+          yesBtn.style.display = "none";
+
+          var cpuVal = card.querySelector('[data-cpu-val="' + id + '"]');
+          if(cpuVal){ cpuVal.textContent = resp.cpus + (resp.cpus === 1 ? " core" : " cores"); }
+          var memVal = card.querySelector('[data-mem-val="' + id + '"]');
+          if(memVal){ memVal.textContent = resp.memory_mb + " MB"; }
+
+          setTimeout(function(){
+            var alertBox = card.querySelector('[data-resource-alert="' + id + '"]');
+            if(alertBox){ alertBox.style.display = "none"; }
+            yesBtn.disabled = false;
+            yesBtn.style.display = "";
+            if(noBtn){ noBtn.style.display = ""; }
+            yesBtn.textContent = "Yes, Increase";
+            activeAlerts.delete(id);
+          }, 3000);
+        }
+      }catch(err){
+        yesBtn.disabled = false;
+        yesBtn.textContent = "Retry";
+        toast(err.message || "Failed to increase resources", "error");
+      }
+      return;
+    }
+  });
+
+  pollResourceAlerts();
+  setInterval(pollResourceAlerts, 4000);
 
   /* ---------------- shortcuts ---------------- */
 

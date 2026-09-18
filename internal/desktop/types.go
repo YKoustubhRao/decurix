@@ -35,3 +35,9 @@ type Desktop struct {
 	// standalone. Set once at creation and never changed afterward.
 	ParentID string `json:"parent_id,omitempty"`
 }
+
+// ResourceAllocation represents a container's CPU and memory allocation.
+type ResourceAllocation struct {
+	CPUs     int64 `json:"cpus"`
+	MemoryMB int64 `json:"memory_mb"`
+}

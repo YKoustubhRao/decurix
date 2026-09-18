@@ -164,6 +164,7 @@ func rewriteDesktopHTML(resp *http.Response, desktopID string) error {
 		var injections strings.Builder
 		injections.WriteString(strings.ReplaceAll(titleOverrideScript, "__DESKTOP_ID__", desktopID))
 		injections.WriteString(strings.ReplaceAll(ticketToolbar, "__DESKTOP_ID__", desktopID))
+		injections.WriteString(strings.ReplaceAll(resourceAlertPopup, "__DESKTOP_ID__", desktopID))
 		if resp.Request != nil && resp.Request.URL != nil && resp.Request.URL.Query().Get("ui") == "touch" {
 			injections.WriteString(mobileViewerEnhancements)
 		}
@@ -793,6 +794,194 @@ Object.defineProperty(document, "title", {
   set: function(){ titleEl.textContent = desiredTitle; }
 });
 document.title = desiredTitle;
+})();
+</script>
+`
+
+// resourceAlertPopup is injected into the VM GUI viewer at /desktop/<id>/,
+// displaying a sleek notification banner when container resources are about
+// to exceed. It prompts the user with "Yes" (to apply predicted CPU/RAM increase)
+// and "No" (to dismiss).
+const resourceAlertPopup = `
+<style>
+#flowera-res-alert-wrap {
+  position: fixed;
+  top: 18px;
+  right: 18px;
+  z-index: 10000;
+  max-width: 360px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  display: none;
+}
+#flowera-res-alert-box {
+  background: rgba(28, 25, 23, 0.95);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid #d97706;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.6), 0 0 15px rgba(217, 119, 6, 0.25);
+  border-radius: 10px;
+  padding: 14px 16px;
+  color: #fef3c7;
+  animation: flowera-slide-down 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes flowera-slide-down {
+  from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.fra-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.fra-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 13.5px;
+  color: #fbbf24;
+}
+.fra-close {
+  background: transparent;
+  border: none;
+  color: #a8a29e;
+  font-size: 18px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 4px;
+}
+.fra-close:hover { color: #f5f5f4; }
+.fra-body {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: #e7e5e4;
+  margin-bottom: 12px;
+}
+.fra-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.fra-btn {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.fra-btn-yes {
+  background: #d97706;
+  color: #ffffff;
+}
+.fra-btn-yes:hover {
+  background: #b45309;
+}
+.fra-btn-no {
+  background: #292524;
+  color: #d6d3d1;
+  border-color: #44403c;
+}
+.fra-btn-no:hover {
+  background: #44403c;
+  color: #fafaf9;
+}
+</style>
+<div id="flowera-res-alert-wrap">
+  <div id="flowera-res-alert-box">
+    <div class="fra-header">
+      <div class="fra-title">⚠️ Resource Warning</div>
+      <button class="fra-close" id="fra-close-btn">&times;</button>
+    </div>
+    <div class="fra-body" id="fra-body-text">Resources are about to exceed. Automatically increase CPU/RAM?</div>
+    <div class="fra-actions">
+      <button class="fra-btn fra-btn-no" id="fra-no-btn">No</button>
+      <button class="fra-btn fra-btn-yes" id="fra-yes-btn">Yes, Increase</button>
+    </div>
+  </div>
+</div>
+<script>
+(function() {
+  var desktopID = "__DESKTOP_ID__";
+  var wrap = document.getElementById("flowera-res-alert-wrap");
+  var bodyText = document.getElementById("fra-body-text");
+  var yesBtn = document.getElementById("fra-yes-btn");
+  var noBtn = document.getElementById("fra-no-btn");
+  var closeBtn = document.getElementById("fra-close-btn");
+  var activeAlert = null;
+  var dismissed = false;
+
+  function pollAlert() {
+    if (dismissed) return;
+    fetch("/api/desktops/resource-alerts?id=" + encodeURIComponent(desktopID))
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data && data.alert) {
+          activeAlert = data.alert;
+          bodyText.textContent = data.alert.message || (
+            "CPU: " + Math.round(data.alert.cpu_percent) + "%, RAM: " + Math.round(data.alert.memory_percent) +
+            "%. Increase to " + data.alert.predicted_cpus + " CPUs & " + data.alert.predicted_memory_mb + " MB RAM?"
+          );
+          wrap.style.display = "block";
+        } else if (!activeAlert) {
+          wrap.style.display = "none";
+        }
+      })
+      .catch(function() {});
+  }
+
+  function dismissAlert() {
+    dismissed = true;
+    wrap.style.display = "none";
+    activeAlert = null;
+    fetch("/api/desktops/resource-dismiss", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: "desktop_id=" + encodeURIComponent(desktopID)
+    }).catch(function() {});
+    setTimeout(function() { dismissed = false; }, 300000);
+  }
+
+  function acceptIncrease() {
+    if (!activeAlert) return;
+    yesBtn.disabled = true;
+    yesBtn.textContent = "Increasing...";
+    fetch("/api/desktops/resource-increase", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: "desktop_id=" + encodeURIComponent(desktopID) +
+            "&cpus=" + encodeURIComponent(activeAlert.predicted_cpus) +
+            "&memory_mb=" + encodeURIComponent(activeAlert.predicted_memory_mb)
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(res) {
+      bodyText.textContent = "✓ Resources increased to " + res.cpus + " CPUs and " + res.memory_mb + " MB RAM!";
+      yesBtn.style.display = "none";
+      noBtn.style.display = "none";
+      setTimeout(function() {
+        wrap.style.display = "none";
+        activeAlert = null;
+        yesBtn.disabled = false;
+        yesBtn.style.display = "";
+        noBtn.style.display = "";
+        yesBtn.textContent = "Yes, Increase";
+      }, 3000);
+    })
+    .catch(function() {
+      yesBtn.disabled = false;
+      yesBtn.textContent = "Retry";
+      bodyText.textContent = "Failed to scale resources. Please try again.";
+    });
+  }
+
+  if (noBtn) noBtn.addEventListener("click", dismissAlert);
+  if (closeBtn) closeBtn.addEventListener("click", dismissAlert);
+  if (yesBtn) yesBtn.addEventListener("click", acceptIncrease);
+
+  setInterval(pollAlert, 4000);
+  setTimeout(pollAlert, 1500);
 })();
 </script>
 `
