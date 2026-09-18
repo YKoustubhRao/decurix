@@ -527,6 +527,152 @@
 .claude-auth-row.on{display:flex}
 .claude-auth-row span{font-size:12.5px;color:var(--text-2);flex:1;min-width:0}
 
+/* ---------- copy host apps section ---------- */
+
+.host-apps-section{
+  padding:12px 14px;
+  background:var(--surface-2);
+  border:1px solid var(--line);
+  border-radius:var(--r-lg);
+  margin-top:2px;
+}
+.host-apps-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+}
+.host-apps-toggle-wrap{
+  display:inline-flex;
+  align-items:center;
+  cursor:pointer;
+  user-select:none;
+}
+.host-apps-toggle{
+  position:relative;
+  width:40px;
+  height:22px;
+  appearance:none;
+  -webkit-appearance:none;
+  background:var(--line-2, rgba(255,255,255,0.15));
+  outline:none;
+  border-radius:12px;
+  cursor:pointer;
+  transition:background .2s ease;
+  border:1px solid var(--line-2);
+  margin:0;
+}
+.host-apps-toggle:checked{
+  background:var(--accent, #38bdf8);
+  border-color:var(--accent, #38bdf8);
+}
+.host-apps-toggle::after{
+  content:'';
+  position:absolute;
+  top:2px;
+  left:2px;
+  width:16px;
+  height:16px;
+  border-radius:50%;
+  background:#fff;
+  transition:transform .2s ease;
+  box-shadow:0 1px 3px rgba(0,0,0,0.3);
+}
+.host-apps-toggle:checked::after{
+  transform:translateX(18px);
+}
+.host-apps-panel{
+  margin-top:12px;
+  padding-top:10px;
+  border-top:1px solid var(--line);
+}
+.host-apps-toolbar{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  margin-bottom:8px;
+}
+.host-apps-status{
+  font-size:12px;
+  color:var(--text-3);
+}
+.host-apps-btn-group{
+  display:flex;
+  gap:4px;
+}
+.host-apps-btn-group .btn-xs{
+  padding:2px 8px;
+  font-size:11px;
+  height:24px;
+}
+.host-apps-list{
+  display:grid;
+  gap:6px;
+  max-height:220px;
+  overflow-y:auto;
+  padding-right:4px;
+}
+.host-app-row{
+  display:flex;
+  align-items:flex-start;
+  gap:9px;
+  padding:8px 10px;
+  background:var(--surface);
+  border:1px solid var(--line);
+  border-radius:var(--r-md);
+  cursor:pointer;
+  transition:border-color .15s ease,background .15s ease;
+}
+.host-app-row:hover{
+  border-color:var(--line-2);
+  background:color-mix(in srgb,var(--surface) 80%,var(--surface-2));
+}
+.host-app-row.is-detected{
+  border-color:color-mix(in srgb,var(--line-2) 65%,#10b981 35%);
+}
+.host-app-row input[type="checkbox"]{
+  margin-top:2px;
+  cursor:pointer;
+  accent-color:var(--accent, #38bdf8);
+}
+.host-app-info{
+  flex:1;
+  min-width:0;
+}
+.host-app-title-line{
+  display:flex;
+  align-items:center;
+  gap:7px;
+  font-size:12.5px;
+  font-weight:600;
+  color:var(--text);
+}
+.host-app-badge{
+  font-size:10px;
+  font-weight:600;
+  padding:1px 6px;
+  border-radius:4px;
+  text-transform:uppercase;
+  letter-spacing:.03em;
+}
+.host-app-badge.detected{
+  background:rgba(16, 185, 129, 0.15);
+  color:#10b981;
+  border:1px solid rgba(16, 185, 129, 0.3);
+}
+.host-app-badge.missing{
+  background:rgba(148, 163, 184, 0.1);
+  color:var(--text-3);
+  border:1px solid rgba(148, 163, 184, 0.2);
+}
+.host-app-desc{
+  font-size:11.5px;
+  color:var(--text-3);
+  margin-top:2px;
+  line-height:1.35;
+}
+
 /* ---------- claude login dialog ---------- */
 
 .claude-login-url-row{display:flex;align-items:center;gap:8px}
@@ -989,6 +1135,32 @@
           <label class="seg"><input type="radio" name="memory_mb" value="16384"><span>16 GB</span></label>
         </div>
       </div>
+
+      <div class="field host-apps-section">
+        <div class="host-apps-head">
+          <div>
+            <span class="field-label" style="margin-bottom:2px">Copy apps & sessions from desktop</span>
+            <div class="hint">Copy login sessions, tokens, and configs with zero duplicate memory. Programs run on your desktop, lightly emulated on the VM.</div>
+          </div>
+          <label class="host-apps-toggle-wrap">
+            <input type="checkbox" class="host-apps-toggle" id="dCopyHostApps" name="copy_host_apps" value="1">
+          </label>
+        </div>
+
+        <div class="host-apps-panel" id="hostAppsPanel" style="display:none">
+          <div class="host-apps-toolbar">
+            <span class="host-apps-status" id="hostAppsStatusText">Detecting desktop apps…</span>
+            <div class="host-apps-btn-group">
+              <button type="button" class="btn btn-quiet btn-xs" id="hostAppsBtnAll">All</button>
+              <button type="button" class="btn btn-quiet btn-xs" id="hostAppsBtnDetected">Detected</button>
+              <button type="button" class="btn btn-quiet btn-xs" id="hostAppsBtnNone">None</button>
+            </div>
+          </div>
+          <div class="host-apps-list" id="hostAppsList">
+            <!-- Populated dynamically via /api/host-apps/detect -->
+          </div>
+        </div>
+      </div>
     </div>
 
     <div class="dialog-foot">
@@ -1222,6 +1394,7 @@
     createDialog.showModal();
     document.getElementById(parent ? "dSpecialization" : "dName").focus();
     loadClaudeAuthStatus();
+    resetHostAppsSection();
   }
 
   document.getElementById("newDesktopBtn").addEventListener("click", function(){ openCreate(); });
@@ -1275,6 +1448,99 @@
   });
 
   syncHarness();
+
+  /* ---------------- copy host apps ---------------- */
+
+  var hostAppsData = null;
+  var dCopyHostApps = document.getElementById("dCopyHostApps");
+  var hostAppsPanel = document.getElementById("hostAppsPanel");
+  var hostAppsList = document.getElementById("hostAppsList");
+  var hostAppsStatusText = document.getElementById("hostAppsStatusText");
+
+  function escapeHTML(s){
+    return String(s || "").replace(/[&<>"']/g, function(m){
+      return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m];
+    });
+  }
+
+  function resetHostAppsSection(){
+    if(dCopyHostApps){
+      dCopyHostApps.checked = false;
+      hostAppsPanel.style.display = "none";
+    }
+    if(!hostAppsData){
+      loadHostApps();
+    }
+  }
+
+  async function loadHostApps(){
+    if(!hostAppsStatusText || !hostAppsList){ return; }
+    hostAppsStatusText.textContent = "Scanning host machine for apps and sessions…";
+    try{
+      var res = await fetch("/api/host-apps/detect");
+      if(!res.ok){ throw new Error("status " + res.status); }
+      hostAppsData = await res.json();
+
+      var detectedCount = 0;
+      hostAppsList.innerHTML = "";
+      (hostAppsData || []).forEach(function(item){
+        if(item.detected){ detectedCount++; }
+        var row = document.createElement("label");
+        row.className = "host-app-row" + (item.detected ? " is-detected" : "");
+        row.innerHTML =
+          '<input type="checkbox" name="host_app_choice" value="' + escapeHTML(item.id) + '" ' +
+          (item.default_selected ? 'checked ' : '') +
+          'data-detected="' + (item.detected ? 'true' : 'false') + '">' +
+          '<div class="host-app-info">' +
+            '<div class="host-app-title-line">' +
+              '<span>' + escapeHTML(item.name) + '</span>' +
+              '<span class="host-app-badge ' + (item.detected ? 'detected' : 'missing') + '">' +
+                (item.detected ? 'Detected' : 'Not found') +
+              '</span>' +
+            '</div>' +
+            '<div class="host-app-desc">' + escapeHTML(item.description) + '</div>' +
+          '</div>';
+        hostAppsList.appendChild(row);
+      });
+
+      hostAppsStatusText.textContent = detectedCount + " apps & sessions detected on your desktop";
+    }catch(err){
+      hostAppsStatusText.textContent = "Failed to detect host apps: " + err.message;
+    }
+  }
+
+  if(dCopyHostApps){
+    dCopyHostApps.addEventListener("change", function(){
+      var active = dCopyHostApps.checked;
+      hostAppsPanel.style.display = active ? "" : "none";
+      if(active && !hostAppsData){
+        loadHostApps();
+      }
+    });
+  }
+
+  var btnAll = document.getElementById("hostAppsBtnAll");
+  if(btnAll){
+    btnAll.addEventListener("click", function(){
+      hostAppsList.querySelectorAll("input[type=checkbox]").forEach(function(cb){ cb.checked = true; });
+    });
+  }
+
+  var btnDetected = document.getElementById("hostAppsBtnDetected");
+  if(btnDetected){
+    btnDetected.addEventListener("click", function(){
+      hostAppsList.querySelectorAll("input[type=checkbox]").forEach(function(cb){
+        cb.checked = cb.dataset.detected === "true";
+      });
+    });
+  }
+
+  var btnNone = document.getElementById("hostAppsBtnNone");
+  if(btnNone){
+    btnNone.addEventListener("click", function(){
+      hostAppsList.querySelectorAll("input[type=checkbox]").forEach(function(cb){ cb.checked = false; });
+    });
+  }
 
   /* ---------------- claude login ---------------- */
 
@@ -1419,6 +1685,14 @@
     submit.textContent = "Creating…";
     busy(true);
 
+    var copyHostApps = dCopyHostApps && dCopyHostApps.checked;
+    var selectedApps = [];
+    if(copyHostApps && hostAppsList){
+      hostAppsList.querySelectorAll("input[name=host_app_choice]:checked").forEach(function(cb){
+        selectedApps.push(cb.value);
+      });
+    }
+
     try{
       await post("/api/desktops/create", {
         name: name || ("desktop-" + Date.now()),
@@ -1427,7 +1701,9 @@
         cpus: data.get("cpus"),
         memory_mb: data.get("memory_mb"),
         specialization: data.get("specialization") || "",
-        parent_id: data.get("parent_id") || ""
+        parent_id: data.get("parent_id") || "",
+        copy_host_apps: copyHostApps ? "1" : "0",
+        host_apps: selectedApps.join(",")
       });
 
       location.reload();

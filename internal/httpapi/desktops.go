@@ -264,6 +264,33 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("createDesktop: %v", err)
 	}
 
+	// Migrate host desktop applications, session tokens, and credentials if requested
+	copyHostApps := r.FormValue("copy_host_apps") == "1" ||
+		strings.EqualFold(r.FormValue("copy_host_apps"), "true")
+	if copyHostApps {
+		var selectedApps []string
+		appsVal := strings.TrimSpace(r.FormValue("host_apps"))
+		if appsVal != "" {
+			for _, part := range strings.Split(appsVal, ",") {
+				if trimmed := strings.TrimSpace(part); trimmed != "" {
+					selectedApps = append(selectedApps, trimmed)
+				}
+			}
+		}
+		if len(selectedApps) == 0 {
+			detected := desktop.DetectHostApps()
+			for _, item := range detected {
+				if item.Detected {
+					selectedApps = append(selectedApps, item.ID)
+				}
+			}
+		}
+
+		if err := s.Desktops.MigrateHostApps(r.Context(), created.ID, selectedApps); err != nil {
+			log.Printf("createDesktop: migrate host apps into %s: %v", created.ID, err)
+		}
+	}
+
 	jsonResponse(w, created)
 }
 
