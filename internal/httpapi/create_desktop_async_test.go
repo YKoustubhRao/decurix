@@ -83,3 +83,33 @@ func TestCreateDesktopAsyncAndStatusPoll(t *testing.T) {
 	}
 }
 
+func TestCreateDesktopDefaultCPU(t *testing.T) {
+	mgr := fakeDesktopManager(t)
+	srv := &Server{
+		Desktops: mgr,
+	}
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	// Post create without cpus specified
+	body := strings.NewReader("name=desk-default-cpu&profile=basic&harness=ollama")
+	req := httptest.NewRequest(http.MethodPost, "/api/desktops/create", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected HTTP 202 Accepted, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Verify that the desktop was registered in provisioning with CPUs == 1
+	prov, ok := mgr.GetProvisioning("desk-default-cpu")
+	if !ok {
+		t.Fatalf("expected desktop in provisioning, not found")
+	}
+	if prov.CPUs != 1 {
+		t.Errorf("expected default CPU count to be 1, got %d", prov.CPUs)
+	}
+}
