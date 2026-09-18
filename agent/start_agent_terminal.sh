@@ -14,6 +14,9 @@ echo "[$(date)] Starting Flowera agent" >> "$LOG"
 
 export DISPLAY=:1
 
+# Allow incoming display connections for host-bridge display tunneling
+which xhost >/dev/null 2>&1 && xhost + >/dev/null 2>&1 || true
+
 if [ -z "$XDG_RUNTIME_DIR" ]; then
     export XDG_RUNTIME_DIR="/tmp/runtime-headless"
     mkdir -p "$XDG_RUNTIME_DIR"

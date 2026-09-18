@@ -370,3 +370,120 @@ func TestWriteDirToTar(t *testing.T) {
 		t.Errorf("Cache/data_0 should have been stripped!")
 	}
 }
+
+func TestGetWebAppURLForApp(t *testing.T) {
+	tests := []struct {
+		name     string
+		cmdOrId  string
+		expected string
+	}{
+		{"Claude", "Claude_pzs8sxrjxfjjc!Claude", "https://claude.ai"},
+		{"ChatGPT", "OpenAI.Codex_2p2nqsd0c76g0!App", "https://chatgpt.com"},
+		{"Chat GPT", "chatgpt.exe", "https://chatgpt.com"},
+		{"Microsoft Copilot", "Microsoft.Copilot_8wekyb3d8bbwe!App", "https://copilot.microsoft.com"},
+		{"YouTube", "Chrome._crx_agimnkijcaiengbajagbfclojfljnakf", "https://www.youtube.com"},
+		{"WhatsApp", "5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App", "https://web.whatsapp.com"},
+		{"Discord", "com.squirrel.Discord.Discord", "https://discord.com/app"},
+		{"Slack", "slack.exe", "https://app.slack.com"},
+		{"Custom Web App", "https://example.com/myapp", "https://example.com/myapp"},
+		{"Start URL", "cmd.exe /c start https://linear.app", "https://linear.app"},
+		{"Regular Windows App", "notepad.exe", ""},
+		{"Calculator", "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App", ""},
+	}
+
+	for _, tc := range tests {
+		got := getWebAppURLForApp(tc.name, tc.cmdOrId)
+		if got != tc.expected {
+			t.Errorf("getWebAppURLForApp(%q, %q) = %q; want %q", tc.name, tc.cmdOrId, got, tc.expected)
+		}
+	}
+}
+
+func TestPackDynamicAppWebAppMode(t *testing.T) {
+	app := HostAppItem{
+		ID:          "win_claude",
+		Name:        "Claude",
+		Category:    "Productivity",
+		Description: "AI assistant",
+		HostCmd:     `cmd.exe /c start explorer.exe shell:AppsFolder\Claude_pzs8sxrjxfjjc!Claude`,
+	}
+
+	buf := new(bytes.Buffer)
+	tw := tar.NewWriter(buf)
+
+	if err := packDynamicApp(tw, app); err != nil {
+		t.Fatalf("packDynamicApp: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tr := tar.NewReader(buf)
+	foundWrapper := false
+	var wrapperContent string
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hdr.Name == ".local/bin/claude-host" {
+			foundWrapper = true
+			data, err := io.ReadAll(tr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wrapperContent = string(data)
+		}
+	}
+
+	if !foundWrapper {
+		t.Fatal("expected .local/bin/claude-host to be packed")
+	}
+	if !strings.Contains(wrapperContent, `chromium-browser --app="https://claude.ai"`) {
+		t.Errorf("expected wrapper to use chromium-browser --app mode for Claude, got:\n%s", wrapperContent)
+	}
+}
+
+func TestPackHostBridgeLaunchersIncludesDisplay(t *testing.T) {
+	buf := new(bytes.Buffer)
+	tw := tar.NewWriter(buf)
+
+	if err := packHostBridgeLaunchers(tw); err != nil {
+		t.Fatalf("packHostBridgeLaunchers: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tr := tar.NewReader(buf)
+	var hostRunContent string
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hdr.Name == ".local/bin/host-run" {
+			data, err := io.ReadAll(tr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hostRunContent = string(data)
+			break
+		}
+	}
+
+	if !strings.Contains(hostRunContent, "'display': os.environ.get('DISPLAY', ':1')") {
+		t.Errorf("expected host-run to send container DISPLAY in payload, got:\n%s", hostRunContent)
+	}
+	if !strings.Contains(hostRunContent, "DISPLAY=${DISPLAY:-:1}") {
+		t.Errorf("expected host-run SSH fallback to forward DISPLAY, got:\n%s", hostRunContent)
+	}
+}

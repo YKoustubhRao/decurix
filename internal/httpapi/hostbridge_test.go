@@ -121,7 +121,7 @@ func TestFindDockerBinary(t *testing.T) {
 }
 
 func TestCreateHostCmdWindowsCommand(t *testing.T) {
-	cmd := createHostCmd(nil, "cmd.exe", "/c", "start", "explorer.exe", "shell:AppsFolder\\OpenAI.Codex_2p2nqsd0c76g0!App")
+	cmd := createHostCmd(nil, "172.18.0.2:1", "cmd.exe", "/c", "start", "explorer.exe", "shell:AppsFolder\\OpenAI.Codex_2p2nqsd0c76g0!App")
 	if cmd == nil {
 		t.Fatal("expected non-nil cmd")
 	}

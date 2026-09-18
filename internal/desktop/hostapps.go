@@ -604,6 +604,122 @@ Categories=Network;WebBrowser;
 			},
 		},
 		{
+			id:              "claude",
+			name:            "Claude",
+			category:        "Productivity",
+			description:     "Claude desktop & AI assistant (renders directly in VM desktop with active session)",
+			defaultSelected: false,
+			probeFn: func() []string {
+				var found []string
+				for _, app := range queryWindowsStartApps() {
+					if strings.Contains(strings.ToLower(app.Name), "claude") {
+						found = append(found, "windows_app:"+app.AppID)
+						break
+					}
+				}
+				for _, h := range homes {
+					for _, c := range []string{
+						filepath.Join(h, ".cache", "claude"),
+						filepath.Join(h, ".cache", "claude-cli-nodejs"),
+						filepath.Join(h, ".config", "claude"),
+					} {
+						if _, err := os.Stat(c); err == nil {
+							found = append(found, c)
+						}
+					}
+				}
+				for _, cDrive := range cDrives {
+					pattern := filepath.Join(cDrive, "Users", "*", "AppData", "Roaming", "Claude")
+					if matches, err := filepath.Glob(pattern); err == nil && len(matches) > 0 {
+						found = append(found, matches...)
+					}
+				}
+				return found
+			},
+			packFn: func(tw *tar.Writer, paths []string) error {
+				claudeWrapper := `#!/usr/bin/env bash
+if command -v chromium-browser >/dev/null 2>&1; then
+    exec chromium-browser --app="https://claude.ai" "$@"
+elif command -v google-chrome >/dev/null 2>&1; then
+    exec google-chrome --app="https://claude.ai" "$@"
+elif command -v chromium >/dev/null 2>&1; then
+    exec chromium --app="https://claude.ai" "$@"
+fi
+exec host-run cmd.exe /c start https://claude.ai "$@"
+`
+				if err := writeStringToTar(tw, ".local/bin/claude-host", claudeWrapper, 0755); err != nil {
+					return err
+				}
+				claudeDesktop := `[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Claude (Host)
+Comment=Run Claude directly in VM desktop with zero host desktop popup
+Exec=/home/headless/.local/bin/claude-host %U
+Icon=help-browser
+Terminal=false
+Categories=Office;Utility;Network;
+`
+				if err := writeStringToTar(tw, "Desktop/claude-host.desktop", claudeDesktop, 0755); err != nil {
+					return err
+				}
+				return writeStringToTar(tw, ".local/share/applications/claude-host.desktop", claudeDesktop, 0755)
+			},
+		},
+		{
+			id:              "chatgpt",
+			name:            "ChatGPT",
+			category:        "Productivity",
+			description:     "ChatGPT desktop & AI assistant (renders directly in VM desktop with active session)",
+			defaultSelected: false,
+			probeFn: func() []string {
+				var found []string
+				for _, app := range queryWindowsStartApps() {
+					lower := strings.ToLower(app.Name)
+					if strings.Contains(lower, "chatgpt") || strings.Contains(lower, "chat gpt") || strings.Contains(strings.ToLower(app.AppID), "openai.codex") {
+						found = append(found, "windows_app:"+app.AppID)
+						break
+					}
+				}
+				for _, cDrive := range cDrives {
+					pattern := filepath.Join(cDrive, "Users", "*", "AppData", "Roaming", "ChatGPT")
+					if matches, err := filepath.Glob(pattern); err == nil && len(matches) > 0 {
+						found = append(found, matches...)
+					}
+				}
+				return found
+			},
+			packFn: func(tw *tar.Writer, paths []string) error {
+				chatgptWrapper := `#!/usr/bin/env bash
+if command -v chromium-browser >/dev/null 2>&1; then
+    exec chromium-browser --app="https://chatgpt.com" "$@"
+elif command -v google-chrome >/dev/null 2>&1; then
+    exec google-chrome --app="https://chatgpt.com" "$@"
+elif command -v chromium >/dev/null 2>&1; then
+    exec chromium --app="https://chatgpt.com" "$@"
+fi
+exec host-run cmd.exe /c start https://chatgpt.com "$@"
+`
+				if err := writeStringToTar(tw, ".local/bin/chatgpt-host", chatgptWrapper, 0755); err != nil {
+					return err
+				}
+				chatgptDesktop := `[Desktop Entry]
+Version=1.0
+Type=Application
+Name=ChatGPT (Host)
+Comment=Run ChatGPT directly in VM desktop with zero host desktop popup
+Exec=/home/headless/.local/bin/chatgpt-host %U
+Icon=user-available
+Terminal=false
+Categories=Office;Utility;Network;
+`
+				if err := writeStringToTar(tw, "Desktop/chatgpt-host.desktop", chatgptDesktop, 0755); err != nil {
+					return err
+				}
+				return writeStringToTar(tw, ".local/share/applications/chatgpt-host.desktop", chatgptDesktop, 0755)
+			},
+		},
+		{
 			id:              "gh",
 			name:            "GitHub CLI & Git Config",
 			category:        "Development",
@@ -1115,9 +1231,83 @@ func isPopularApp(name string) bool {
 	return false
 }
 
+// getWebAppURLForApp detects if an application name or host command/AppID represents
+// an AI service, PWA, or cloud application that should render directly in the VM
+// desktop using Chromium standalone app mode instead of popping up on the host physical monitor.
+func getWebAppURLForApp(name, cmdOrId string) string {
+	lowerCmd := strings.ToLower(cmdOrId)
+	lowerName := strings.ToLower(name)
+
+	// Direct URL shortcuts
+	for _, prefix := range []string{"https://", "http://"} {
+		if strings.HasPrefix(cmdOrId, prefix) {
+			return cmdOrId
+		}
+		if idx := strings.Index(cmdOrId, prefix); idx != -1 {
+			fields := strings.Fields(cmdOrId[idx:])
+			if len(fields) > 0 {
+				return fields[0]
+			}
+		}
+	}
+
+	// Known AI, cloud, and productivity applications
+	switch {
+	case strings.Contains(lowerName, "claude") || strings.Contains(lowerCmd, "claude"):
+		return "https://claude.ai"
+	case strings.Contains(lowerName, "chatgpt") || strings.Contains(lowerName, "chat gpt") ||
+		strings.Contains(lowerCmd, "openai.codex") || strings.Contains(lowerCmd, "chatgpt"):
+		return "https://chatgpt.com"
+	case strings.Contains(lowerName, "copilot"):
+		return "https://copilot.microsoft.com"
+	case strings.Contains(lowerName, "perplexity"):
+		return "https://www.perplexity.ai"
+	case strings.Contains(lowerName, "youtube") || strings.Contains(lowerCmd, "youtube"):
+		return "https://www.youtube.com"
+	case strings.Contains(lowerName, "whatsapp") || strings.Contains(lowerCmd, "whatsapp"):
+		return "https://web.whatsapp.com"
+	case strings.Contains(lowerName, "discord"):
+		return "https://discord.com/app"
+	case strings.Contains(lowerName, "slack"):
+		return "https://app.slack.com"
+	case strings.Contains(lowerName, "spotify"):
+		return "https://open.spotify.com"
+	case strings.Contains(lowerName, "notion"):
+		return "https://www.notion.so"
+	case strings.Contains(lowerName, "figma"):
+		return "https://www.figma.com"
+	case strings.Contains(lowerName, "linear"):
+		return "https://linear.app"
+	case strings.Contains(lowerName, "github"):
+		return "https://github.com"
+	case strings.Contains(lowerName, "telegram"):
+		return "https://web.telegram.org"
+	case strings.Contains(lowerName, "reddit"):
+		return "https://www.reddit.com"
+	case strings.Contains(lowerName, "gmail") || strings.Contains(lowerName, "google mail"):
+		return "https://mail.google.com"
+	case strings.Contains(lowerName, "google drive"):
+		return "https://drive.google.com"
+	case strings.Contains(lowerName, "google docs"):
+		return "https://docs.google.com"
+	case strings.Contains(lowerName, "google sheets"):
+		return "https://sheets.google.com"
+	case strings.Contains(lowerName, "google meet"):
+		return "https://meet.google.com"
+	default:
+		return ""
+	}
+}
+
 func pickAppIcon(name string) string {
 	lower := strings.ToLower(name)
 	switch {
+	case strings.Contains(lower, "claude") || strings.Contains(lower, "anthropic"):
+		return "help-browser"
+	case strings.Contains(lower, "chatgpt") || strings.Contains(lower, "openai"):
+		return "user-available"
+	case strings.Contains(lower, "copilot") || strings.Contains(lower, "perplexity"):
+		return "system-search"
 	case strings.Contains(lower, "edge"):
 		return "microsoft-edge"
 	case strings.Contains(lower, "chrome"):
@@ -1454,11 +1644,15 @@ func exploreDynamicApps(seen map[string]bool) []HostAppItem {
 			seen[id] = true
 
 			hostCmd := fmt.Sprintf(`cmd.exe /c start explorer.exe shell:AppsFolder\%s`, app.AppID)
+			desc := "Windows application (runs on host desktop)"
+			if getWebAppURLForApp(app.Name, app.AppID) != "" {
+				desc = "AI & cloud application (renders directly in VM desktop)"
+			}
 			items = append(items, HostAppItem{
 				ID:              id,
 				Name:            app.Name,
 				Category:        categorizeAppName(app.Name),
-				Description:     "Windows application (runs on host desktop)",
+				Description:     desc,
 				Detected:        true,
 				DefaultSelected: false,
 				AppType:         "windows_app",
@@ -1504,7 +1698,24 @@ func packDynamicApp(tw *tar.Writer, app HostAppItem) error {
 		}
 		cat := getCategoriesForApp(app.Category)
 
-		wrapperScript := fmt.Sprintf("#!/usr/bin/env bash\nexec host-run %s \"$@\"\n", app.HostCmd)
+		var wrapperScript string
+		webURL := getWebAppURLForApp(app.Name, app.HostCmd)
+		if webURL != "" {
+			wrapperScript = fmt.Sprintf(`#!/usr/bin/env bash
+# First preference: Render directly inside the VM desktop using Chromium standalone app mode
+if command -v chromium-browser >/dev/null 2>&1; then
+    exec chromium-browser --app=%q "$@"
+elif command -v google-chrome >/dev/null 2>&1; then
+    exec google-chrome --app=%q "$@"
+elif command -v chromium >/dev/null 2>&1; then
+    exec chromium --app=%q "$@"
+fi
+exec host-run %s "$@"
+`, webURL, webURL, webURL, app.HostCmd)
+		} else {
+			wrapperScript = fmt.Sprintf("#!/usr/bin/env bash\nexec host-run %s \"$@\"\n", app.HostCmd)
+		}
+
 		if err := writeStringToTar(tw, ".local/bin/"+slug+"-host", wrapperScript, 0755); err != nil {
 			return err
 		}
@@ -1602,7 +1813,7 @@ case "$subcmd" in
         if [ $# -gt 0 ]; then
             args_json=$(python3 -c "import json,sys; print(json.dumps(sys.argv[1:]))" "$@")
         fi
-        payload=$(python3 -c "import json,sys; print(json.dumps({'cmd': sys.argv[1], 'args': json.loads(sys.argv[2])}))" "$cmd" "$args_json")
+        payload=$(python3 -c "import json,sys,os; print(json.dumps({'cmd': sys.argv[1], 'args': json.loads(sys.argv[2]), 'display': os.environ.get('DISPLAY', ':1')}))" "$cmd" "$args_json")
 
         response=$(curl -s -f -X POST "${CP_URL}/api/host-bridge/exec" -H "Content-Type: application/json" -d "$payload" 2>/dev/null || true)
         if [ -n "$response" ]; then
@@ -1611,7 +1822,7 @@ case "$subcmd" in
         fi
 
         if timeout 1 bash -c "cat < /dev/null > /dev/tcp/127.0.0.1/${TUNNEL_PORT}" 2>/dev/null; then
-            ssh -F /dev/null -p "${TUNNEL_PORT}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 127.0.0.1 "$cmd" "$@"
+            ssh -F /dev/null -p "${TUNNEL_PORT}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 127.0.0.1 "DISPLAY=${DISPLAY:-:1} $cmd" "$@"
             exit $?
         fi
         echo "Error: Could not reach host bridge at ${CP_URL} to execute '${cmd}'."
