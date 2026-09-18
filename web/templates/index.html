@@ -1006,7 +1006,7 @@
              desktop screen itself now - the ticket toolbar injectTicketToolbar
              splices into every open screen - rather than as a second entry
              point on the card; see proxy.go's ticketToolbar. */}}
-        <button class="btn btn-default btn-sm action-icon" data-open="{{.URL}}?resize=remote&ui=touch" title="Open the screen in a new tab" aria-label="Open the desktop screen in a new tab">
+        <button class="btn btn-default btn-sm action-icon" data-open="{{.URL}}?autoconnect=true&resize=remote&ui=touch" title="Open the screen in a new tab" aria-label="Open the desktop screen in a new tab">
           <svg width="14" height="14"><use href="#i-external"/></svg>
         </button>
         <button class="btn btn-default btn-sm action-icon" data-act="restart" data-id="{{.ID}}" title="Restart" aria-label="Restart desktop">
@@ -1020,7 +1020,7 @@
           <svg width="14" height="14"><use href="#i-blossom"/></svg>
           Chat
         </a>
-        <button class="btn btn-default btn-sm action-icon" data-open="{{.URL}}?resize=remote&ui=touch" title="Open the screen in a new tab (auto-wakes)" aria-label="Open the desktop screen in a new tab">
+        <button class="btn btn-default btn-sm action-icon" data-open="{{.URL}}?autoconnect=true&resize=remote&ui=touch" title="Open the screen in a new tab (auto-wakes)" aria-label="Open the desktop screen in a new tab">
           <svg width="14" height="14"><use href="#i-external"/></svg>
         </button>
         <button class="btn btn-default btn-sm" data-act="unpause" data-id="{{.ID}}" title="Wake desktop" aria-label="Wake desktop">
@@ -1157,7 +1157,7 @@
 
         <div class="host-apps-panel" id="hostAppsPanel" style="display:none">
           <div style="margin-bottom:8px">
-            <input type="search" class="input input-sm" id="hostAppsSearch" placeholder="Search apps (e.g. Edge, YouTube, Spotify, Code)..." style="width:100%;font-size:12px;padding:5px 10px;height:28px;border-radius:var(--r-md);" autocomplete="off">
+            <input type="search" class="input input-sm" id="hostAppsSearch" placeholder="Search apps (regex supported, e.g. /code|term/i, ^chrome)..." style="width:100%;font-size:12px;padding:5px 10px;height:28px;border-radius:var(--r-md);" autocomplete="off">
           </div>
           <div class="host-apps-toolbar">
             <span class="host-apps-status" id="hostAppsStatusText">Detecting desktop apps…</span>
@@ -1508,10 +1508,14 @@
     });
   }
 
+  var currentSearchIsRegex = false;
+
   function resetHostAppsSection(){
     if(dCopyHostApps){
       dCopyHostApps.checked = false;
-      hostAppsPanel.style.display = "";
+    }
+    if(hostAppsPanel){
+      hostAppsPanel.style.display = "none";
     }
     if(hostAppsSearch){
       hostAppsSearch.value = "";
@@ -1519,9 +1523,7 @@
     if(hostAppsList){
       hostAppsList.querySelectorAll("input[name=host_app_choice]").forEach(function(cb){ cb.checked = false; });
     }
-    if(!hostAppsData){
-      loadHostApps();
-    } else {
+    if(hostAppsData){
       filterHostAppsList();
       updateHostAppsSelectionSummary();
     }
@@ -1531,14 +1533,12 @@
     if(!hostAppsList){ return; }
     var selected = hostAppsList.querySelectorAll("input[name=host_app_choice]:checked").length;
     var total = hostAppsList.querySelectorAll(".host-app-row").length;
-    if(dCopyHostApps){
-      dCopyHostApps.checked = selected > 0;
-    }
-    var q = (hostAppsSearch && hostAppsSearch.value || "").trim().toLowerCase();
+    var rawQ = (hostAppsSearch && hostAppsSearch.value || "").trim();
     if(hostAppsStatusText){
-      if(q){
+      if(rawQ){
         var visible = hostAppsList.querySelectorAll(".host-app-row:not([style*='display: none'])").length;
-        hostAppsStatusText.textContent = visible + " matching '" + q + "' (" + selected + " selected)";
+        var modeDesc = currentSearchIsRegex ? "regex" : "query";
+        hostAppsStatusText.textContent = visible + " matching " + modeDesc + " '" + rawQ + "' (" + selected + " selected)";
       } else {
         hostAppsStatusText.textContent = total + " apps discovered (" + selected + " selected)";
       }
@@ -1547,12 +1547,57 @@
 
   function filterHostAppsList(){
     if(!hostAppsList || !hostAppsData){ return; }
-    var q = (hostAppsSearch && hostAppsSearch.value || "").trim().toLowerCase();
+    var rawQ = (hostAppsSearch && hostAppsSearch.value || "").trim();
     var rows = hostAppsList.querySelectorAll(".host-app-row");
     var visible = 0;
+    currentSearchIsRegex = false;
+
+    if(!rawQ){
+      rows.forEach(function(row){
+        row.style.display = "";
+        visible++;
+      });
+      updateHostAppsSelectionSummary();
+      return;
+    }
+
+    var regex = null;
+    try {
+      if(rawQ.length >= 2 && rawQ.startsWith("/") && rawQ.lastIndexOf("/") > 0){
+        var lastSlash = rawQ.lastIndexOf("/");
+        var pattern = rawQ.slice(1, lastSlash);
+        var flags = rawQ.slice(lastSlash + 1);
+        regex = new RegExp(pattern, flags || "i");
+        currentSearchIsRegex = true;
+      } else {
+        regex = new RegExp(rawQ, "i");
+        if(/[.*+?^${}()|[\]\\]/.test(rawQ)){
+          currentSearchIsRegex = true;
+        }
+      }
+    } catch(e) {
+      regex = null;
+      currentSearchIsRegex = false;
+    }
+
+    var terms = rawQ.toLowerCase().split(/\s+/).filter(Boolean);
+
     rows.forEach(function(row){
       var text = (row.dataset.searchText || "").toLowerCase();
-      var match = !q || text.indexOf(q) !== -1;
+      var match = false;
+      if(regex){
+        try {
+          match = regex.test(text);
+        } catch(e){
+          match = false;
+        }
+      }
+      if(!match && terms.length > 0){
+        match = terms.every(function(term){
+          return text.indexOf(term) !== -1;
+        });
+      }
+
       row.style.display = match ? "" : "none";
       if(match){ visible++; }
     });
@@ -1596,7 +1641,15 @@
       hostAppsData.forEach(function(item){
         var row = document.createElement("label");
         row.className = "host-app-row is-detected";
-        row.dataset.searchText = (item.name + " " + (item.category || "") + " " + (item.description || "")).toLowerCase();
+        var paths = Array.isArray(item.detected_paths) ? item.detected_paths.join(" ") : "";
+        row.dataset.searchText = [
+          item.name || "",
+          item.id || "",
+          item.category || "",
+          item.description || "",
+          item.host_cmd || "",
+          paths
+        ].join(" ").toLowerCase();
         row.innerHTML =
           '<input type="checkbox" name="host_app_choice" value="' + escapeHTML(item.id) + '" ' +
           'data-detected="true">' +
@@ -1631,13 +1684,20 @@
   if(dCopyHostApps){
     dCopyHostApps.addEventListener("change", function(){
       var active = dCopyHostApps.checked;
-      hostAppsPanel.style.display = "";
-      if(!active){
-        hostAppsList.querySelectorAll("input[name=host_app_choice]").forEach(function(cb){ cb.checked = false; });
-        updateHostAppsSelectionSummary();
+      if(hostAppsPanel){
+        hostAppsPanel.style.display = active ? "" : "none";
       }
-      if(active && !hostAppsData){
-        loadHostApps();
+      if(!active){
+        if(hostAppsList){
+          hostAppsList.querySelectorAll("input[name=host_app_choice]").forEach(function(cb){ cb.checked = false; });
+          updateHostAppsSelectionSummary();
+        }
+      } else {
+        if(!hostAppsData){
+          loadHostApps();
+        } else {
+          updateHostAppsSelectionSummary();
+        }
       }
     });
   }
@@ -1664,9 +1724,6 @@
       updateHostAppsSelectionSummary();
     });
   }
-
-  // Pre-load host apps eagerly in background on page load
-  loadHostApps();
 
   /* ---------------- claude login ---------------- */
 

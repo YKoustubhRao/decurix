@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -64,6 +65,12 @@ type Manager struct {
 	startedMu    sync.Mutex
 	startedCache map[string]string
 
+	// proxyTargetMu and proxyTargets cache resolved reverse-proxy URLs for running
+	// desktop containers (VNC port and agent port). Eliminates dozens of
+	// blocking Docker ContainerInspect calls when noVNC loads ~40 static assets.
+	proxyTargetMu sync.RWMutex
+	proxyTargets  map[string]proxyTargetCacheEntry
+
 	// resourceMu/resourceOverrides track dynamically updated CPU and memory
 	// allocations for containers, keeping Desktop.CPUs and Desktop.MemoryMB in
 	// sync even though Docker labels cannot be altered after container creation.
@@ -76,11 +83,30 @@ type Manager struct {
 	httpClient *http.Client
 }
 
+// proxyTargetCacheEntry stores a cached reverse-proxy URL along with its expiration.
+type proxyTargetCacheEntry struct {
+	proxyURL *url.URL
+	expires  time.Time
+}
+
+// InvalidateProxyTarget purges any cached reverse-proxy URLs for the given desktop ID.
+func (m *Manager) InvalidateProxyTarget(rawID string) {
+	sanitizedID := sanitizeName(rawID)
+	m.proxyTargetMu.Lock()
+	defer m.proxyTargetMu.Unlock()
+	for k := range m.proxyTargets {
+		if strings.HasPrefix(k, sanitizedID+":") {
+			delete(m.proxyTargets, k)
+		}
+	}
+}
+
 // NewManager creates a Manager backed by the given Docker client.
 func NewManager(cli *client.Client) *Manager {
 	return &Manager{
 		client:            cli,
 		startedCache:      make(map[string]string),
+		proxyTargets:      make(map[string]proxyTargetCacheEntry),
 		resourceOverrides: make(map[string]ResourceAllocation),
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
@@ -459,6 +485,7 @@ func (m *Manager) Pause(
 	id string,
 ) error {
 	sanitizedID := sanitizeName(id)
+	m.InvalidateProxyTarget(sanitizedID)
 	name := "desktop_" + sanitizedID
 
 	// Capture the current screen frame before freezing processes, so the dashboard
@@ -487,7 +514,9 @@ func (m *Manager) Stop(
 	id string,
 ) error {
 
-	name := "desktop_" + sanitizeName(id)
+	sanitizedID := sanitizeName(id)
+	m.InvalidateProxyTarget(sanitizedID)
+	name := "desktop_" + sanitizedID
 
 	inspect, inspectErr := m.client.ContainerInspect(ctx, name)
 	if inspectErr == nil && inspect.State != nil && inspect.State.Paused {
@@ -526,7 +555,9 @@ func (m *Manager) Restart(
 	id string,
 ) error {
 
-	name := "desktop_" + sanitizeName(id)
+	sanitizedID := sanitizeName(id)
+	m.InvalidateProxyTarget(sanitizedID)
+	name := "desktop_" + sanitizedID
 
 	inspect, inspectErr := m.client.ContainerInspect(ctx, name)
 	if inspectErr == nil && inspect.State != nil && inspect.State.Paused {
@@ -565,7 +596,9 @@ func (m *Manager) Delete(
 	id string,
 ) error {
 
-	name := "desktop_" + sanitizeName(id)
+	sanitizedID := sanitizeName(id)
+	m.InvalidateProxyTarget(sanitizedID)
+	name := "desktop_" + sanitizedID
 
 	inspect, err := m.client.ContainerInspect(
 		ctx,
