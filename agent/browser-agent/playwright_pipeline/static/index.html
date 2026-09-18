@@ -1,0 +1,624 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Browser Agent</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f7f8; --panel: #ffffff; --border: #e0e0e3; --text: #1c1c1f;
+    --muted: #6b6b73; --accent: #3b5bdb; --ok: #2f9e44; --err: #e03131;
+    --warn: #f08c00; --code-bg: #f1f2f6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16171a; --panel: #1e1f23; --border: #2f3036; --text: #eaeaec;
+      --muted: #9a9aa2; --accent: #6f8bff; --ok: #51cf66; --err: #ff6b6b;
+      --warn: #ffa94d; --code-bg: #141518;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif; font-size: 14px;
+    padding: 12px 16px 40px;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 12px; font-size: 13px; }
+
+  #statsBar {
+    display: flex; flex-wrap: wrap; gap: 14px; align-items: center;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 6px 12px; font-size: 12px; color: var(--muted); margin-bottom: 14px;
+  }
+  #statsBar b { color: var(--text); }
+  .bar { display: inline-block; width: 60px; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; vertical-align: middle; margin-left: 4px; }
+  .bar > span { display: block; height: 100%; background: var(--accent); }
+
+  .layout { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
+  .col-browser { flex: 1 1 480px; min-width: 320px; }
+  .col-controls { flex: 1 1 380px; min-width: 320px; }
+
+  .panel {
+    border: 1px solid var(--border); background: var(--panel); border-radius: 8px;
+    padding: 12px; margin-bottom: 12px;
+  }
+  .panel h2 { font-size: 13px; margin: 0 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+
+  #browserView { width: 100%; border-radius: 6px; background: #000; display: block; aspect-ratio: 4/3; object-fit: contain; }
+
+  textarea, input[type=text], select {
+    width: 100%; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text);
+    font-family: ui-monospace, Consolas, monospace; font-size: 13px;
+  }
+  textarea { min-height: 90px; resize: vertical; }
+  .row { display: flex; gap: 10px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+  label.inline { display: flex; align-items: center; gap: 5px; font-size: 13px; color: var(--muted); }
+  button {
+    padding: 8px 16px; border-radius: 6px; border: none; background: var(--accent);
+    color: white; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  button.secondary { background: var(--border); color: var(--text); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .status-line { color: var(--muted); font-size: 13px; }
+
+  ul#steps { list-style: none; padding: 0; margin: 8px 0 0; }
+  .step {
+    border: 1px solid var(--border); background: var(--bg); border-radius: 8px;
+    padding: 8px 12px; margin-bottom: 6px;
+  }
+  .step-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .instr { font-weight: 500; }
+  .badge {
+    font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 600;
+    background: var(--border); color: var(--muted); white-space: nowrap;
+  }
+  .badge.running { background: var(--accent); color: white; }
+  .badge.done { background: var(--ok); color: white; }
+  .badge.error, .badge.failed { background: var(--err); color: white; }
+  .badge.halted { background: var(--warn); color: white; }
+  pre {
+    background: var(--code-bg); border-radius: 6px; padding: 8px 10px; margin: 8px 0 0;
+    font-size: 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-word;
+  }
+  .detail { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .err-text { color: var(--err); }
+  #answerBox { margin-top: 8px; font-size: 13px; }
+  .stage { color: var(--accent); font-size: 12px; margin-top: 4px; font-weight: 600; }
+  .stage.swap { color: var(--warn); }
+  .stage::before { content: '● '; }
+  .browser-status { font-size: 11px; color: var(--muted); margin-top: 6px; }
+  .browser-status.err { color: var(--err); }
+  .cursor::after { content: '▍'; animation: blink 1s step-start infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .expectation { font-size: 12px; color: var(--text); margin-top: 6px; background: var(--code-bg); padding: 4px 8px; border-radius: 6px; }
+  .verification { font-size: 12px; margin-top: 6px; padding: 4px 8px; border-radius: 6px; background: var(--code-bg); }
+  .verification.ok { color: var(--ok); }
+  .verification.bad { color: var(--err); }
+  .warn-text { color: var(--warn); }
+</style>
+</head>
+<body>
+  <h1>Browser Agent</h1>
+  <p class="sub">One sub-instruction per line. The selected model writes and runs a Playwright snippet for each, grounded in the live page.</p>
+
+  <div id="statsBar">loading stats...</div>
+
+  <div class="layout">
+    <div class="col-browser">
+      <div class="panel">
+        <h2>Live browser</h2>
+        <img id="browserView" alt="live browser view">
+        <div class="browser-status" id="browserStatus">connecting...</div>
+      </div>
+
+      <div class="panel">
+        <h2>Interrogate current page</h2>
+        <input type="text" id="question" placeholder="e.g. is there a login form on this page?">
+        <div class="row">
+          <button id="askBtn">Ask</button>
+          <span class="status-line" id="askStatus"></span>
+        </div>
+        <div id="answerBox"></div>
+      </div>
+    </div>
+
+    <div class="col-controls">
+      <div class="panel">
+        <h2>Task</h2>
+        <textarea id="instructions" placeholder="go to google.com
+search for openai">go to google.com
+search for openai</textarea>
+        <div class="row">
+          <select id="modelSelect"></select>
+          <label class="inline"><input type="checkbox" id="visionToggle"> vision (screenshot + HTML)</label>
+          <label class="inline"><input type="checkbox" id="verifyToggle" checked> enable expectation matching</label>
+        </div>
+        <div class="row">
+          <button id="runBtn">Run All</button>
+          <button id="resetBtn" class="secondary">Reset</button>
+          <span class="status-line" id="statusLine"></span>
+        </div>
+      </div>
+
+      <div class="panel" id="planPanel" hidden>
+        <h2>Task decomposition</h2>
+        <div class="detail"><b>Full task:</b></div>
+        <pre id="fullTaskPre"></pre>
+        <div class="detail"><b>Remaining:</b></div>
+        <pre id="remainingPre"></pre>
+        <div class="stage" id="planStage"></div>
+        <pre id="planPre" hidden></pre>
+      </div>
+
+      <ul id="steps"></ul>
+    </div>
+  </div>
+
+<script>
+const runBtn = document.getElementById('runBtn');
+const stepsEl = document.getElementById('steps');
+const statusLine = document.getElementById('statusLine');
+const modelSelect = document.getElementById('modelSelect');
+const visionToggle = document.getElementById('visionToggle');
+const verifyToggle = document.getElementById('verifyToggle');
+let MODELS = {};
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// ---- models ----
+async function loadModels() {
+  MODELS = await (await fetch('/models')).json();
+  modelSelect.innerHTML = Object.entries(MODELS)
+    .map(([key, m]) => `<option value="${key}">${escapeHtml(m.label)}</option>`).join('');
+  updateVisionAvailability();
+}
+function updateVisionAvailability() {
+  const m = MODELS[modelSelect.value];
+  const supportsVision = m && m.vision;
+  visionToggle.disabled = !supportsVision;
+  if (!supportsVision) visionToggle.checked = false;
+}
+modelSelect.addEventListener('change', updateVisionAvailability);
+
+// ---- stats ----
+function fmtMb(mb) { return mb == null ? '?' : (mb / 1024).toFixed(1) + ' GB'; }
+function barHtml(used, total) {
+  if (!used || !total) return '';
+  const pct = Math.min(100, Math.round(100 * used / total));
+  return `<span class="bar"><span style="width:${pct}%"></span></span>`;
+}
+async function refreshStats() {
+  let s;
+  try { s = await (await fetch('/stats')).json(); } catch { return; }
+  const vram = s.vram ? `VRAM: <b>${fmtMb(s.vram.used_mb)}</b> / ${fmtMb(s.vram.total_mb)} ${barHtml(s.vram.used_mb, s.vram.total_mb)}` : 'VRAM: n/a';
+  const ram = s.ram ? `RAM: <b>${fmtMb(s.ram.used_mb)}</b> / ${fmtMb(s.ram.total_mb)} ${barHtml(s.ram.used_mb, s.ram.total_mb)}` : 'RAM: n/a';
+  const loaded = (s.ollama_models || []).map(m => `${m.name} (${fmtMb(m.size_vram_mb)})`).join(', ') || 'none loaded';
+  const lu = s.last_request || {};
+  const ctxStr = lu.model
+    ? `Last call: <b>${escapeHtml(lu.model)}</b> — ${lu.prompt_tokens ?? '?'} + ${lu.completion_tokens ?? '?'} tok / ${lu.num_ctx ?? '?'} ctx`
+    : 'Last call: none yet';
+  document.getElementById('statsBar').innerHTML =
+    `<span>${vram}</span><span>${ram}</span><span>Loaded: ${escapeHtml(loaded)}</span><span>${ctxStr}</span>`;
+}
+
+// ---- steps UI ----
+function stepRow(i, instruction) {
+  const li = document.createElement('li');
+  li.className = 'step';
+  li.id = `step-${i}`;
+  li.innerHTML = `
+    <div class="step-head">
+      <span class="instr" id="instr-${i}">${i + 1}. ${escapeHtml(instruction)}</span>
+      <span class="badge" id="badge-${i}">pending</span>
+    </div>
+    <div class="stage" id="stage-${i}" hidden></div>
+    <div class="expectation" id="expect-${i}" hidden></div>
+    <pre id="code-${i}" hidden></pre>
+    <div class="verification" id="verify-${i}" hidden></div>
+    <div class="detail" id="detail-${i}"></div>
+  `;
+  return li;
+}
+// Steps aren't known upfront anymore -- the atomizer decides the next one live,
+// so a row for index i is created the first time we see it and updated (not
+// duplicated) if we see that index again, e.g. after a manual /retry.
+function getOrCreateStepRow(i, instruction) {
+  let li = document.getElementById(`step-${i}`);
+  if (!li) {
+    li = stepRow(i, instruction);
+    stepsEl.appendChild(li);
+  } else {
+    const instrEl = document.getElementById(`instr-${i}`);
+    if (instrEl) instrEl.textContent = `${i + 1}. ${instruction}`;
+    const retryBtn = li.querySelector('.retry-btn');
+    if (retryBtn) retryBtn.remove();
+  }
+  return li;
+}
+function showRetryButton(i) {
+  const li = document.getElementById(`step-${i}`);
+  if (!li || li.querySelector('.retry-btn')) return;
+  const btn = document.createElement('button');
+  btn.className = 'secondary retry-btn';
+  btn.textContent = 'Retry';
+  btn.style.marginTop = '6px';
+  btn.addEventListener('click', () => retryStep(btn));
+  li.appendChild(btn);
+}
+function setStage(i, text, cls) {
+  const s = document.getElementById(`stage-${i}`);
+  if (!s) return;
+  s.textContent = text;
+  s.className = 'stage' + (cls ? ' ' + cls : '');
+  s.hidden = !text;
+}
+function setBadge(i, text, cls) {
+  const b = document.getElementById(`badge-${i}`);
+  if (!b) return;
+  b.textContent = text;
+  b.className = 'badge' + (cls ? ' ' + cls : '');
+}
+function setDetail(i, html) {
+  const d = document.getElementById(`detail-${i}`);
+  if (d) d.innerHTML = html;
+}
+function setExpectation(i, text, streaming) {
+  const e = document.getElementById(`expect-${i}`);
+  if (!e) return;
+  e.innerHTML = `<b>Expecting:</b> ${escapeHtml(text)}`;
+  e.hidden = false;
+  e.classList.toggle('cursor', !!streaming);
+}
+function setCode(i, code, streaming) {
+  const c = document.getElementById(`code-${i}`);
+  if (!c) return;
+  c.textContent = code;
+  c.hidden = false;
+  c.classList.toggle('cursor', !!streaming);
+}
+function setVerification(i, met, reason) {
+  const v = document.getElementById(`verify-${i}`);
+  if (!v) return;
+  const icon = met === true ? '✓ met' : met === false ? '✗ not met' : '? unknown';
+  v.innerHTML = `<b>${icon}</b>${reason ? ' — ' + escapeHtml(reason) : ''}`;
+  v.className = 'verification' + (met === true ? ' ok' : met === false ? ' bad' : '');
+  v.hidden = false;
+}
+let currentRunController = null;
+const planPanel = document.getElementById('planPanel');
+const planStage = document.getElementById('planStage');
+const planPre = document.getElementById('planPre');
+const fullTaskPre = document.getElementById('fullTaskPre');
+const remainingPre = document.getElementById('remainingPre');
+
+async function consumeStream(resp) {
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const parts = buf.split('\n\n');
+      buf = parts.pop();
+      for (const part of parts) {
+        const line = part.split('\n').find(l => l.startsWith('data: '));
+        if (!line) continue;
+        handleEvent(JSON.parse(line.slice(6)));
+      }
+    }
+  } catch (e) {
+    if (e.name !== 'AbortError') throw e;
+  }
+}
+
+async function runAll() {
+  const lines = document.getElementById('instructions').value
+    .split('\n').map(s => s.trim()).filter(Boolean);
+  if (!lines.length) return;
+
+  stepsEl.innerHTML = '';
+  planPanel.hidden = false;
+  fullTaskPre.textContent = lines.join('\n');
+  remainingPre.textContent = lines.join('\n');
+  planStage.textContent = 'Starting...';
+  planPre.hidden = true;
+  runBtn.disabled = true;
+  statusLine.textContent = 'Running...';
+
+  currentRunController = new AbortController();
+  let resp;
+  try {
+    resp = await fetch('/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        instructions: lines,
+        model: modelSelect.value,
+        vision: visionToggle.checked,
+        verify_enabled: verifyToggle.checked,
+      }),
+      signal: currentRunController.signal,
+    });
+  } catch (e) {
+    runBtn.disabled = false;
+    statusLine.textContent = e.name === 'AbortError' ? 'Cancelled.' : `Request failed: ${e}`;
+    return;
+  }
+
+  await consumeStream(resp);
+  runBtn.disabled = false;
+  if (statusLine.textContent === 'Running...') statusLine.textContent = 'Done.';
+}
+
+// Resumes a paused run at exactly the step that failed -- server.py's /retry
+// remembers full_task/remaining/last_error/model/vision/verify from that
+// step's step_failed event, so this call carries no body at all.
+async function retryStep(btn) {
+  btn.disabled = true;
+  btn.textContent = 'Retrying...';
+  runBtn.disabled = true;
+  statusLine.textContent = 'Retrying...';
+
+  currentRunController = new AbortController();
+  let resp;
+  try {
+    resp = await fetch('/retry', { method: 'POST', signal: currentRunController.signal });
+  } catch (e) {
+    runBtn.disabled = false;
+    btn.disabled = false;
+    btn.textContent = 'Retry';
+    statusLine.textContent = e.name === 'AbortError' ? 'Cancelled.' : `Retry failed: ${e}`;
+    return;
+  }
+  if (!resp.ok) {
+    const data = await resp.json().catch(() => ({}));
+    statusLine.textContent = `Retry failed: ${data.error || resp.status}`;
+    runBtn.disabled = false;
+    btn.disabled = false;
+    btn.textContent = 'Retry';
+    return;
+  }
+  btn.remove();
+  await consumeStream(resp);
+  runBtn.disabled = false;
+  if (statusLine.textContent === 'Retrying...') statusLine.textContent = 'Done.';
+}
+
+async function resetAll() {
+  if (currentRunController) currentRunController.abort();
+  runBtn.disabled = false;
+  statusLine.textContent = 'Resetting...';
+  stepsEl.innerHTML = '';
+  planPanel.hidden = true;
+  planPre.textContent = '';
+  document.getElementById('answerBox').innerHTML = '';
+  document.getElementById('question').value = '';
+  try {
+    await fetch('/reset', { method: 'POST' });
+    statusLine.textContent = 'Reset.';
+  } catch (e) {
+    statusLine.textContent = `Reset failed: ${e}`;
+  }
+}
+
+const PURPOSE_LABELS = {
+  atomize: 'deciding the next step',
+  expectation: 'stating what success looks like',
+  codegen: 'writing Playwright code',
+  verify: 'checking whether it worked',
+};
+const STAGE_LABELS = {
+  snapshotting: 'Reading page (HTML + state)...',
+  calling_model: (model, purpose) => `Asking ${model} (${PURPOSE_LABELS[purpose] || purpose})...`,
+  swapping_model: (model, purpose) =>
+    `Loading ${model} into VRAM (${PURPOSE_LABELS[purpose] || purpose}; evicting the other model — can take 10-30s)...`,
+  executing: 'Running generated code in the browser...',
+};
+
+// Before the atomizer has decided the next instruction, there's no step row
+// yet to attach progress to -- these events route to the "Deciding next step"
+// panel instead. Once 'atomized' arrives the row exists and everything after
+// (expectation/codegen/execute/verify) targets it by index.
+function isPreAtomizeEvent(ev) {
+  if (ev.type === 'stage') return ev.stage === 'snapshotting' || ev.purpose === 'atomize';
+  if (ev.type === 'generating') return ev.phase === 'atomize';
+  return false;
+}
+
+function handleEvent(ev) {
+  const i = ev.index;
+
+  if (isPreAtomizeEvent(ev)) {
+    planPanel.hidden = false;
+    if (ev.type === 'stage') {
+      const label = STAGE_LABELS[ev.stage];
+      const text = typeof label === 'function' ? label(ev.model, ev.purpose) : label;
+      planStage.textContent = text || ev.stage;
+      planPre.hidden = true;
+      planPre.classList.remove('cursor');
+    } else {
+      planPre.hidden = false;
+      planPre.textContent = ev.partial;
+      planPre.classList.add('cursor');
+    }
+    return;
+  }
+
+  switch (ev.type) {
+    case 'atomized':
+      planPre.classList.remove('cursor');
+      planStage.textContent = '';
+      remainingPre.textContent = ev.remaining;
+      getOrCreateStepRow(i, ev.instruction);
+      setBadge(i, 'running', 'running');
+      setStage(i, '');
+      setDetail(i, '');
+      break;
+    case 'stage': {
+      const label = STAGE_LABELS[ev.stage];
+      const text = typeof label === 'function' ? label(ev.model, ev.purpose) : label;
+      setStage(i, text || ev.stage, ev.stage === 'swapping_model' ? 'swap' : '');
+      break;
+    }
+    case 'generating':
+      if (ev.phase === 'expectation') setExpectation(i, ev.partial, true);
+      else setCode(i, ev.partial, true);
+      break;
+    case 'expectation_set':
+      setExpectation(i, ev.text, false);
+      break;
+    case 'self_check':
+      // fast-path only: the model's own judgment of whether its LAST action
+      // actually worked, made as part of this step's single combined call.
+      setDetail(i, `self-check: ${escapeHtml(ev.text)}`);
+      break;
+    case 'expectation_failed':
+      setDetail(i, `<span class="warn-text">Couldn't set an expectation (${escapeHtml(ev.error)}) -- proceeding without verification.</span>`);
+      break;
+    case 'verification':
+      setVerification(i, ev.met, ev.reason);
+      break;
+    case 'cancelled':
+      statusLine.textContent = 'Cancelled.';
+      if (i != null) setBadge(i, 'cancelled', 'failed');
+      break;
+    case 'code_generated':
+      setCode(i, ev.code, false);
+      setStage(i, '');
+      break;
+    case 'step_done':
+      setBadge(i, 'done', 'done');
+      setStage(i, '');
+      setDetail(i, `&rarr; ${escapeHtml(ev.url)}`);
+      break;
+    case 'step_failed':
+      setBadge(i, 'failed', 'failed');
+      setStage(i, '');
+      setDetail(i, `<span class="err-text">${escapeHtml(String(ev.error).slice(0, 400))}</span>`);
+      showRetryButton(i);
+      statusLine.textContent = 'Paused: a step failed. Click Retry to resume.';
+      break;
+    case 'task_complete':
+      remainingPre.textContent = 'done';
+      planStage.textContent = 'Task complete.';
+      statusLine.textContent = 'Task complete.';
+      break;
+    case 'halted_captcha':
+      setBadge(i, 'halted: captcha', 'halted');
+      setStage(i, '');
+      setDetail(i, `<span class="err-text">CAPTCHA detected: ${escapeHtml(ev.detail)}</span>`);
+      statusLine.textContent = 'Halted: CAPTCHA detected.';
+      break;
+    case 'fatal_error':
+      statusLine.textContent = `Fatal error: ${ev.error}`;
+      break;
+  }
+}
+
+// ---- interrogate ----
+document.getElementById('askBtn').addEventListener('click', async () => {
+  const question = document.getElementById('question').value.trim();
+  if (!question) return;
+  const askStatus = document.getElementById('askStatus');
+  const answerBox = document.getElementById('answerBox');
+  askStatus.textContent = 'Thinking...';
+  answerBox.textContent = '';
+  try {
+    const resp = await fetch('/interrogate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question, model: modelSelect.value, vision: visionToggle.checked }),
+    });
+    const data = await resp.json();
+    askStatus.textContent = '';
+    if (data.error) {
+      answerBox.innerHTML = `<span class="err-text">${escapeHtml(data.error)}</span>`;
+    } else {
+      answerBox.innerHTML = `<div class="detail">${escapeHtml(data.title || '')} — ${escapeHtml(data.url || '')}</div><div>${escapeHtml(data.answer)}</div>`;
+    }
+  } catch (e) {
+    askStatus.textContent = '';
+    answerBox.innerHTML = `<span class="err-text">${escapeHtml(String(e))}</span>`;
+  }
+});
+
+// ---- live browser view ----
+// A plain <img src="/screencast.mjpg"> relies on the browser's native
+// multipart/x-mixed-replace support, which doesn't reliably keep rendering
+// after the underlying connection drops (e.g. a server restart) -- <img> has
+// no built-in retry. This instead reads the stream manually, cuts out each
+// JPEG frame, and swaps it in via a Blob URL, with its own reconnect loop.
+function indexOfBytes(haystack, needle, from) {
+  outer: for (let i = from; i <= haystack.length - needle.length; i++) {
+    for (let j = 0; j < needle.length; j++) {
+      if (haystack[i + j] !== needle[j]) continue outer;
+    }
+    return i;
+  }
+  return -1;
+}
+
+async function runScreencastLoop() {
+  const img = document.getElementById('browserView');
+  const statusEl = document.getElementById('browserStatus');
+  const HEADER_END = new TextEncoder().encode('\r\n\r\n');
+  const BOUNDARY = new TextEncoder().encode('--frame');
+  let lastBlobUrl = null;
+
+  while (true) {
+    try {
+      statusEl.textContent = 'connecting...';
+      statusEl.className = 'browser-status';
+      const resp = await fetch('/screencast.mjpg');
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const reader = resp.body.getReader();
+      let buf = new Uint8Array(0);
+      let gotFrame = false;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const merged = new Uint8Array(buf.length + value.length);
+        merged.set(buf); merged.set(value, buf.length);
+        buf = merged;
+
+        while (true) {
+          const headerEnd = indexOfBytes(buf, HEADER_END, 0);
+          if (headerEnd === -1) break;
+          const dataStart = headerEnd + HEADER_END.length;
+          const nextBoundary = indexOfBytes(buf, BOUNDARY, dataStart);
+          if (nextBoundary === -1) break; // frame not fully received yet
+          const frameBytes = buf.slice(dataStart, nextBoundary - 2); // trim trailing \r\n
+          const blob = new Blob([frameBytes], { type: 'image/jpeg' });
+          const url = URL.createObjectURL(blob);
+          img.src = url;
+          if (lastBlobUrl) URL.revokeObjectURL(lastBlobUrl);
+          lastBlobUrl = url;
+          if (!gotFrame) { gotFrame = true; statusEl.textContent = ''; }
+          buf = buf.slice(nextBoundary);
+        }
+      }
+      throw new Error('stream ended');
+    } catch (e) {
+      statusEl.textContent = `disconnected (${e.message || e}), retrying...`;
+      statusEl.className = 'browser-status err';
+    }
+    await new Promise(r => setTimeout(r, 1000));
+  }
+}
+
+runBtn.addEventListener('click', runAll);
+document.getElementById('resetBtn').addEventListener('click', resetAll);
+loadModels();
+refreshStats();
+setInterval(refreshStats, 3000);
+runScreencastLoop();
+</script>
+</body>
+</html>

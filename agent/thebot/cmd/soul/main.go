@@ -710,6 +710,11 @@ func main() {
 	// classifier, so its place in the order only has to be ahead of the
 	// fallback.
 	skills.Register(skills.NewOperator())
+	// The browser skill hands an interactive web task to the browser-agent
+	// Chrome extension (agent/browser-agent) instead of the operator's
+	// coordinate/xdotool loop - also routed to by task type ("browser"),
+	// never by a classifier here.
+	skills.Register(skills.NewBrowser())
 	// general is the conversational catch-all - registered normally (it
 	// matches task type "general", which atomizer.Classify() only ever
 	// returns when nothing more specific already claimed the step) AND
