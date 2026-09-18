@@ -410,22 +410,26 @@ func getKnownAppDefs() []knownAppDef {
 						break
 					}
 				}
-				var hostCmd string
-				if IsWSLOrWindows() {
-					hostCmd = "cmd.exe /c start msedge"
-				} else {
-					hostCmd = "microsoft-edge"
+				edgeWrapper := `#!/usr/bin/env bash
+if command -v cmd.exe >/dev/null 2>&1 || [ -e /mnt/c ]; then
+    exec host-run cmd.exe /c start msedge "$@"
+else
+    exec host-run microsoft-edge "$@"
+fi
+`
+				if err := writeStringToTar(tw, ".local/bin/edge-host", edgeWrapper, 0755); err != nil {
+					return err
 				}
-				edgeDesktop := fmt.Sprintf(`[Desktop Entry]
+				edgeDesktop := `[Desktop Entry]
 Version=1.0
 Type=Application
 Name=Microsoft Edge (Host)
 Comment=Run Microsoft Edge on host desktop with active login session
-Exec=/home/headless/.local/bin/host-run %s
+Exec=/home/headless/.local/bin/edge-host %U
 Icon=microsoft-edge
 Terminal=false
 Categories=Network;WebBrowser;
-`, hostCmd)
+`
 				if err := writeStringToTar(tw, "Desktop/edge-host.desktop", edgeDesktop, 0755); err != nil {
 					return err
 				}
@@ -445,28 +449,6 @@ Categories=Network;WebBrowser;
 					if matches, err := filepath.Glob(pwaPattern); err == nil && len(matches) > 0 {
 						found = append(found, matches...)
 					}
-					for _, edgeExe := range []string{
-						filepath.Join(cDrive, "Program Files (x86)", "Microsoft", "Edge", "Application", "msedge.exe"),
-						filepath.Join(cDrive, "Program Files", "Microsoft", "Edge", "Application", "msedge.exe"),
-					} {
-						if fi, err := os.Stat(edgeExe); err == nil && !fi.IsDir() {
-							found = append(found, edgeExe)
-							break
-						}
-					}
-					for _, chromeExe := range []string{
-						filepath.Join(cDrive, "Program Files", "Google", "Chrome", "Application", "chrome.exe"),
-						filepath.Join(cDrive, "Program Files (x86)", "Google", "Chrome", "Application", "chrome.exe"),
-					} {
-						if fi, err := os.Stat(chromeExe); err == nil && !fi.IsDir() {
-							found = append(found, chromeExe)
-							break
-						}
-					}
-					braveExe := filepath.Join(cDrive, "Program Files", "BraveSoftware", "Brave-Browser", "Application", "brave.exe")
-					if fi, err := os.Stat(braveExe); err == nil && !fi.IsDir() {
-						found = append(found, braveExe)
-					}
 				}
 				for _, app := range queryWindowsStartApps() {
 					if strings.Contains(strings.ToLower(app.Name), "youtube") {
@@ -474,30 +456,38 @@ Categories=Network;WebBrowser;
 						break
 					}
 				}
-				for _, bin := range []string{"google-chrome", "chromium", "microsoft-edge", "brave-browser"} {
-					if p, err := exec.LookPath(bin); err == nil {
-						found = append(found, p)
+				for _, h := range homes {
+					linuxDesktopPattern := filepath.Join(h, ".local", "share", "applications", "*youtube*.desktop")
+					if matches, err := filepath.Glob(linuxDesktopPattern); err == nil && len(matches) > 0 {
+						found = append(found, matches...)
 					}
+				}
+				if matches, err := filepath.Glob("/usr/share/applications/*youtube*.desktop"); err == nil && len(matches) > 0 {
+					found = append(found, matches...)
 				}
 				return found
 			},
 			packFn: func(tw *tar.Writer, paths []string) error {
-				var hostCmd string
-				if IsWSLOrWindows() {
-					hostCmd = "cmd.exe /c start msedge --app=https://www.youtube.com"
-				} else {
-					hostCmd = "xdg-open https://www.youtube.com"
+				youtubeWrapper := `#!/usr/bin/env bash
+if command -v cmd.exe >/dev/null 2>&1 || [ -e /mnt/c ]; then
+    exec host-run cmd.exe /c start msedge --app=https://www.youtube.com
+else
+    exec host-run host-open https://www.youtube.com
+fi
+`
+				if err := writeStringToTar(tw, ".local/bin/youtube-host", youtubeWrapper, 0755); err != nil {
+					return err
 				}
-				ytDesktop := fmt.Sprintf(`[Desktop Entry]
+				ytDesktop := `[Desktop Entry]
 Version=1.0
 Type=Application
 Name=YouTube (Host)
 Comment=Watch YouTube on host desktop with active account session
-Exec=/home/headless/.local/bin/host-run %s
+Exec=/home/headless/.local/bin/youtube-host
 Icon=video-display
 Terminal=false
 Categories=AudioVideo;Network;
-`, hostCmd)
+`
 				if err := writeStringToTar(tw, "Desktop/youtube-host.desktop", ytDesktop, 0755); err != nil {
 					return err
 				}
@@ -555,7 +545,27 @@ Categories=AudioVideo;Network;
 					Uid:      1000,
 					Gid:      1000,
 				}
-				return tw.WriteHeader(header)
+				if err := tw.WriteHeader(header); err != nil {
+					return err
+				}
+				chromeWrapper := "#!/usr/bin/env bash\nexec host-run google-chrome \"$@\"\n"
+				if err := writeStringToTar(tw, ".local/bin/chrome-host", chromeWrapper, 0755); err != nil {
+					return err
+				}
+				chromeDesktop := `[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Google Chrome (Host)
+Comment=Run Google Chrome on host desktop with zero duplicate VM RAM
+Exec=/home/headless/.local/bin/chrome-host %U
+Icon=google-chrome
+Terminal=false
+Categories=Network;WebBrowser;
+`
+				if err := writeStringToTar(tw, "Desktop/chrome-host.desktop", chromeDesktop, 0755); err != nil {
+					return err
+				}
+				return writeStringToTar(tw, ".local/share/applications/chrome-host.desktop", chromeDesktop, 0755)
 			},
 		},
 		{
@@ -713,7 +723,24 @@ Categories=AudioVideo;Network;
 						return err
 					}
 				}
-				return nil
+				codeWrapper := "#!/usr/bin/env bash\nexec host-run code \"$@\"\n"
+				if err := writeStringToTar(tw, ".local/bin/code-host", codeWrapper, 0755); err != nil {
+					return err
+				}
+				codeDesktop := `[Desktop Entry]
+Version=1.0
+Type=Application
+Name=VS Code (Host)
+Comment=Run Visual Studio Code on host desktop with zero duplicate VM RAM
+Exec=/home/headless/.local/bin/code-host %F
+Icon=code
+Terminal=false
+Categories=Development;IDE;
+`
+				if err := writeStringToTar(tw, "Desktop/code-host.desktop", codeDesktop, 0755); err != nil {
+					return err
+				}
+				return writeStringToTar(tw, ".local/share/applications/code-host.desktop", codeDesktop, 0755)
 			},
 		},
 		{
@@ -1587,117 +1614,7 @@ esac
 	if err := writeStringToTar(tw, ".local/bin/win-run", "#!/usr/bin/env bash\nexec host-run \"$@\"\n", 0755); err != nil {
 		return err
 	}
-	if err := writeStringToTar(tw, ".local/bin/mac-run", "#!/usr/bin/env bash\nexec host-run \"$@\"\n", 0755); err != nil {
-		return err
-	}
-
-	// 2. Host app wrappers in .local/bin
-	chromeWrapper := "#!/usr/bin/env bash\nexec host-run google-chrome \"$@\"\n"
-	if err := writeStringToTar(tw, ".local/bin/chrome-host", chromeWrapper, 0755); err != nil {
-		return err
-	}
-	codeWrapper := "#!/usr/bin/env bash\nexec host-run code \"$@\"\n"
-	if err := writeStringToTar(tw, ".local/bin/code-host", codeWrapper, 0755); err != nil {
-		return err
-	}
-	termWrapper := "#!/usr/bin/env bash\nexec host-run x-terminal-emulator \"$@\"\n"
-	if err := writeStringToTar(tw, ".local/bin/terminal-host", termWrapper, 0755); err != nil {
-		return err
-	}
-	edgeWrapper := `#!/usr/bin/env bash
-if command -v cmd.exe >/dev/null 2>&1 || [ -e /mnt/c ]; then
-    exec host-run cmd.exe /c start msedge "$@"
-else
-    exec host-run microsoft-edge "$@"
-fi
-`
-	if err := writeStringToTar(tw, ".local/bin/edge-host", edgeWrapper, 0755); err != nil {
-		return err
-	}
-	youtubeWrapper := `#!/usr/bin/env bash
-if command -v cmd.exe >/dev/null 2>&1 || [ -e /mnt/c ]; then
-    exec host-run cmd.exe /c start msedge --app=https://www.youtube.com
-else
-    exec host-run host-open https://www.youtube.com
-fi
-`
-	if err := writeStringToTar(tw, ".local/bin/youtube-host", youtubeWrapper, 0755); err != nil {
-		return err
-	}
-
-	// 3. Desktop launchers in Desktop/ and .local/share/applications/
-	chromeDesktop := `[Desktop Entry]
-Version=1.0
-Type=Application
-Name=Google Chrome (Host)
-Comment=Run Google Chrome on host desktop with zero duplicate VM RAM
-Exec=/home/headless/.local/bin/chrome-host %U
-Icon=google-chrome
-Terminal=false
-Categories=Network;WebBrowser;
-`
-	edgeDesktop := `[Desktop Entry]
-Version=1.0
-Type=Application
-Name=Microsoft Edge (Host)
-Comment=Run Microsoft Edge on host desktop with zero duplicate VM RAM
-Exec=/home/headless/.local/bin/edge-host %U
-Icon=microsoft-edge
-Terminal=false
-Categories=Network;WebBrowser;
-`
-	youtubeDesktop := `[Desktop Entry]
-Version=1.0
-Type=Application
-Name=YouTube (Host)
-Comment=Watch YouTube on host desktop with active account session
-Exec=/home/headless/.local/bin/youtube-host
-Icon=video-display
-Terminal=false
-Categories=AudioVideo;Network;
-`
-	codeDesktop := `[Desktop Entry]
-Version=1.0
-Type=Application
-Name=VS Code (Host)
-Comment=Run Visual Studio Code on host desktop with zero duplicate VM RAM
-Exec=/home/headless/.local/bin/code-host %F
-Icon=code
-Terminal=false
-Categories=Development;IDE;
-`
-	termDesktop := `[Desktop Entry]
-Version=1.0
-Type=Application
-Name=Host Terminal (Host)
-Comment=Open terminal on host desktop
-Exec=/home/headless/.local/bin/terminal-host
-Icon=utilities-terminal
-Terminal=false
-Categories=Utility;TerminalEmulator;
-`
-
-	entries := []struct {
-		filename string
-		content  string
-	}{
-		{"chrome-host.desktop", chromeDesktop},
-		{"edge-host.desktop", edgeDesktop},
-		{"youtube-host.desktop", youtubeDesktop},
-		{"code-host.desktop", codeDesktop},
-		{"terminal-host.desktop", termDesktop},
-	}
-
-	for _, entry := range entries {
-		if err := writeStringToTar(tw, "Desktop/"+entry.filename, entry.content, 0755); err != nil {
-			return err
-		}
-		if err := writeStringToTar(tw, ".local/share/applications/"+entry.filename, entry.content, 0755); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return writeStringToTar(tw, ".local/bin/mac-run", "#!/usr/bin/env bash\nexec host-run \"$@\"\n", 0755)
 }
 
 // -----------------------------------------------------------------------------

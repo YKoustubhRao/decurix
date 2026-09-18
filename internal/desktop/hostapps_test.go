@@ -224,6 +224,17 @@ func TestPackHostBridgeLaunchers(t *testing.T) {
 		".local/bin/host-run",
 		".local/bin/host-open",
 		".local/bin/host-clip",
+		".local/bin/win-run",
+		".local/bin/mac-run",
+	}
+
+	for _, exp := range expected {
+		if !foundFiles[exp] {
+			t.Errorf("expected %s in host bridge tar archive", exp)
+		}
+	}
+
+	unexpected := []string{
 		".local/bin/chrome-host",
 		".local/bin/edge-host",
 		".local/bin/youtube-host",
@@ -237,12 +248,67 @@ func TestPackHostBridgeLaunchers(t *testing.T) {
 		".local/share/applications/chrome-host.desktop",
 		".local/share/applications/edge-host.desktop",
 		".local/share/applications/youtube-host.desktop",
+		".local/share/applications/code-host.desktop",
+		".local/share/applications/terminal-host.desktop",
 	}
 
-	for _, exp := range expected {
-		if !foundFiles[exp] {
-			t.Errorf("expected %s in host bridge tar archive", exp)
+	for _, unexp := range unexpected {
+		if foundFiles[unexp] {
+			t.Errorf("did NOT expect %s in host bridge tar archive (should only be packed when explicitly selected)", unexp)
 		}
+	}
+}
+
+func TestSelectedAppsPackaging(t *testing.T) {
+	defs := getKnownAppDefs()
+	defMap := make(map[string]knownAppDef)
+	for _, d := range defs {
+		defMap[d.id] = d
+	}
+
+	testCases := []struct {
+		id           string
+		expectedFile string
+	}{
+		{"chrome", "Desktop/chrome-host.desktop"},
+		{"edge", "Desktop/edge-host.desktop"},
+		{"youtube", "Desktop/youtube-host.desktop"},
+		{"vscode", "Desktop/code-host.desktop"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.id, func(t *testing.T) {
+			def, ok := defMap[tc.id]
+			if !ok {
+				t.Fatalf("missing def for %s", tc.id)
+			}
+			buf := new(bytes.Buffer)
+			tw := tar.NewWriter(buf)
+			if err := def.packFn(tw, []string{}); err != nil {
+				t.Fatalf("packFn for %s failed: %v", tc.id, err)
+			}
+			if err := tw.Close(); err != nil {
+				t.Fatalf("close tar: %v", err)
+			}
+
+			tr := tar.NewReader(buf)
+			found := false
+			for {
+				hdr, err := tr.Next()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatalf("read tar: %v", err)
+				}
+				if hdr.Name == tc.expectedFile {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("expected %s to be packed when %s is selected", tc.expectedFile, tc.id)
+			}
+		})
 	}
 }
 
