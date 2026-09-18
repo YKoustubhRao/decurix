@@ -227,6 +227,20 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	var selectedApps []string
+	copyHostApps := r.FormValue("copy_host_apps") == "1" ||
+		strings.EqualFold(r.FormValue("copy_host_apps"), "true")
+	if copyHostApps {
+		appsVal := strings.TrimSpace(r.FormValue("host_apps"))
+		if appsVal != "" {
+			for _, part := range strings.Split(appsVal, ",") {
+				if trimmed := strings.TrimSpace(part); trimmed != "" {
+					selectedApps = append(selectedApps, trimmed)
+				}
+			}
+		}
+	}
+
 	created, err := s.Desktops.Create(
 		r.Context(),
 		name,
@@ -237,6 +251,7 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		claudeCredentialsJSON,
 		specialization,
 		parentID,
+		selectedApps,
 	)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || r.Context().Err() != nil {
@@ -276,28 +291,8 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("createDesktop: %v", err)
 	}
 
-	// Migrate host desktop applications, session tokens, and credentials if requested
-	copyHostApps := r.FormValue("copy_host_apps") == "1" ||
-		strings.EqualFold(r.FormValue("copy_host_apps"), "true")
-	if copyHostApps && r.Context().Err() == nil {
-		var selectedApps []string
-		appsVal := strings.TrimSpace(r.FormValue("host_apps"))
-		if appsVal != "" {
-			for _, part := range strings.Split(appsVal, ",") {
-				if trimmed := strings.TrimSpace(part); trimmed != "" {
-					selectedApps = append(selectedApps, trimmed)
-				}
-			}
-		}
-		if len(selectedApps) > 0 {
-			if err := s.Desktops.MigrateHostApps(r.Context(), created.ID, selectedApps); err != nil {
-				log.Printf("createDesktop: migrate host apps into %s: %v", created.ID, err)
-			}
-		}
-	}
-
 	if r.Context().Err() != nil {
-		log.Printf("createDesktop: client canceled during migration, deleting %s", created.ID)
+		log.Printf("createDesktop: client canceled, deleting %s", created.ID)
 		_ = s.Desktops.Delete(context.Background(), created.ID)
 		return
 	}

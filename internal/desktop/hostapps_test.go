@@ -448,6 +448,69 @@ func TestPackDynamicAppWebAppMode(t *testing.T) {
 	}
 }
 
+func TestPackDynamicAppSVGIcon(t *testing.T) {
+	app := HostAppItem{
+		ID:          "win_edge",
+		Name:        "Microsoft Edge",
+		Category:    "Browsers & Web",
+		Description: "Web browser",
+		HostCmd:     `cmd.exe /c start msedge.exe`,
+	}
+
+	buf := new(bytes.Buffer)
+	tw := tar.NewWriter(buf)
+
+	if err := packDynamicApp(tw, app); err != nil {
+		t.Fatalf("packDynamicApp: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tr := tar.NewReader(buf)
+	foundSVG := false
+	foundDesktop := false
+	var desktopContent string
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hdr.Name == ".local/share/icons/hicolor/scalable/apps/microsoft-edge.svg" {
+			foundSVG = true
+			data, err := io.ReadAll(tr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(data), "<svg") {
+				t.Errorf("expected valid SVG content, got:\n%s", string(data))
+			}
+		}
+		if hdr.Name == "Desktop/microsoft-edge-host.desktop" {
+			foundDesktop = true
+			data, err := io.ReadAll(tr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			desktopContent = string(data)
+		}
+	}
+
+	if !foundSVG {
+		t.Errorf("expected embedded SVG icon to be packed at .local/share/icons/hicolor/scalable/apps/microsoft-edge.svg")
+	}
+	if !foundDesktop {
+		t.Fatalf("expected Desktop/microsoft-edge-host.desktop to be packed")
+	}
+	if !strings.Contains(desktopContent, "Icon=/home/headless/.local/share/icons/hicolor/scalable/apps/microsoft-edge.svg") {
+		t.Errorf("expected desktop entry Icon to reference scalable svg icon, got:\n%s", desktopContent)
+	}
+}
+
 func TestPackHostBridgeLaunchersIncludesDisplay(t *testing.T) {
 	buf := new(bytes.Buffer)
 	tw := tar.NewWriter(buf)

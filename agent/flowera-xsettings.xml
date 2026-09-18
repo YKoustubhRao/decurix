@@ -4,11 +4,14 @@
   <property name="Net" type="empty">
     <property name="ThemeName" type="string" value="Yaru-red-dark"/>
     <property name="IconThemeName" type="string" value="Papirus-Dark"/>
+    <property name="EnableEventSounds" type="bool" value="false"/>
+    <property name="EnableInputFeedbackSounds" type="bool" value="false"/>
   </property>
   <property name="Gtk" type="empty">
     <property name="FontName" type="string" value="Inter 10"/>
     <property name="CursorThemeName" type="string" value="breeze_cursors"/>
     <property name="CursorThemeSize" type="int" value="24"/>
+    <property name="EnableAnimations" type="bool" value="false"/>
   </property>
   <property name="Xft" type="empty">
     <property name="Antialias" type="int" value="1"/>

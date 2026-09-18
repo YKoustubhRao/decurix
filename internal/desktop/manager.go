@@ -136,6 +136,7 @@ func (m *Manager) Create(
 	claudeCredentialsJSON string,
 	specialization string,
 	parentID string,
+	hostApps ...[]string,
 ) (*Desktop, error) {
 
 	imageName, err := resolveDesktopImage(profile)
@@ -204,6 +205,16 @@ func (m *Manager) Create(
 			"create container: %w",
 			err,
 		)
+	}
+
+	// Pre-seed host applications onto the volume BEFORE container startup.
+	// This ensures desktop launchers, wrapper scripts, credentials, and SVG
+	// icons exist on disk before XFCE initializes, avoiding icon refresh lag
+	// and startup race conditions.
+	if len(hostApps) > 0 && len(hostApps[0]) > 0 {
+		if err := m.MigrateHostApps(ctx, sanitizeName(name), hostApps[0]); err != nil {
+			log.Printf("hostapps: pre-start migration for %s: %v", containerName, err)
+		}
 	}
 
 	if err := m.client.ContainerStart(

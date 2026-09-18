@@ -8,5 +8,7 @@
          left, like a Windows titlebar, instead of xfwm4's own default of a
          window-menu button on the left plus the three on the right. -->
     <property name="button_layout" type="string" value="|HMC"/>
+    <!-- Disable software alpha compositing to eliminate window dragging lag and CPU overhead over VNC -->
+    <property name="use_compositing" type="bool" value="false"/>
   </property>
 </channel>
