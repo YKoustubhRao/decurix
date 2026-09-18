@@ -33,19 +33,26 @@ const (
 
 	// Model is the Ollama model every desktop agent is configured to use.
 	//
-	// qwen3:0.6b (this constant's previous value) was too weak to actually
+	// qwen3:0.6b (this constant's original value) was too weak to actually
 	// run the agent loop: tested directly against the real SYSTEM_PROMPT,
 	// it echoed the prompt's own placeholder text back verbatim, emitted
 	// COMMAND: twice in one response, and then hallucinated a DONE: success
-	// reply without ever running anything. qwen2.5-coder:3b was chosen
+	// reply without ever running anything. qwen2.5-coder:3b replaced it
 	// after head-to-head testing against llama3.2:latest (3B) on the
-	// prompt's own worked examples: both handled the plain greeting fine,
+	// prompt's own worked examples - both handled the plain greeting fine,
 	// but only qwen2.5-coder:3b replied HELP (as the prompt's own example
-	// requires) to an ambiguous "delete the project" - llama3.2 hallucinated
-	// a destructive `rm -rf` on a guessed path instead. Still ~1.9GB, so it
-	// stays cheap for ensureModel to pull and light enough to run without a
-	// GPU, unlike the 7B/14B class models this package does not use.
-	Model = "qwen2.5-coder:3b"
+	// requires) to an ambiguous "delete the project", where llama3.2
+	// hallucinated a destructive `rm -rf` on a guessed path instead.
+	//
+	// Temporarily devstral-small-2:24b instead, for every harness, while the
+	// browser-agent extension integration (agent/BROWSER_INTEGRATION.md) is
+	// being worked on - it's the one model already verified end to end
+	// against that pipeline, and every desktop should reason with the same
+	// model the extension itself is grounded on rather than mixing two.
+	// Heavier than the 3B default (needs a GPU that can hold ~15GB), so this
+	// is deliberately a stopgap, not a final choice - qwen2.5-coder:3b's own
+	// case above still holds for a CPU-only or memory-constrained host.
+	Model = "devstral-small-2:24b"
 
 	// EmbedModel is the embedding model the thebot harness needs, and it
 	// is a genuinely separate dependency: Ollama will not embed with a

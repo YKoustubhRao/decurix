@@ -282,6 +282,11 @@ func init() {
 	Register("download", downloadRe.MatchString)
 	Register("terminal", terminalRe.MatchString)
 	Register("file-write", fileWriteRe.MatchString)
+	// browser before web: a step that names a destination AND an action on
+	// it ("search google.com for X") is interactive browsing, not a fetch -
+	// see wantsBrowser in triage.go for the same distinction at the whole-
+	// request level.
+	Register("browser", wantsBrowser)
 	Register("web", func(step string) bool {
 		return webRe.MatchString(step) || urlOnlyRe.MatchString(step) || siteRe.MatchString(step)
 	})

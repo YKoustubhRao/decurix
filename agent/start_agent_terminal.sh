@@ -146,6 +146,17 @@ setsid nice -n 10 python3 /opt/vm_server.py >> "$LOG" 2>&1 < /dev/null &
 
 echo "[$(date)] vm_server.py started as background daemon (pid $!)" >> "$LOG"
 
+# extension_pipeline/ext_server.py: the backend the browser-agent extension
+# (loaded into this desktop's Chromium via agent/chromium-browser.init's
+# --load-extension) talks to on 127.0.0.1:8092. Harness-independent - the
+# extension is a property of this desktop's browser, not of which engine is
+# running - so it starts unconditionally, the same way vm_server.py does.
+if [ -x /opt/browser-agent-venv/bin/python3 ]; then
+    setsid /opt/browser-agent-venv/bin/python3 /opt/browser-agent/extension_pipeline/ext_server.py \
+        >> /tmp/flowera-ext-server.log 2>&1 < /dev/null &
+    echo "[$(date)] ext_server.py started as background daemon (pid $!)" >> "$LOG"
+fi
+
 # TheBot harness only - its soul binary is a persistent HTTP server
 # thebot_harness.py talks to (see flowera_agent/thebot_harness.py), not a
 # per-task CLI like claude, so it needs to already be running before any
@@ -165,7 +176,7 @@ if [ "$AGENT_HARNESS" = "thebot" ] && [ -x /opt/soul ]; then
     # one; it replaced a hardcoded Cloudflare quick-tunnel URL that stopped
     # resolving as soon as that tunnel was restarted.
     export OLLAMA_HOST="${OLLAMA_URL:-http://host.docker.internal:11434}"
-    export CHAT_MODEL="${OLLAMA_MODEL:-qwen2.5-coder:3b}"
+    export CHAT_MODEL="${OLLAMA_MODEL:-devstral-small-2:24b}"
     # Coding builds can run on their own model (see TheBot's internal/llm
     # Models.ForTaskType): a build sends the longest prompts the agent ever
     # produces and wants the largest context window, while chat wants a good

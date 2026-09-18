@@ -1,0 +1,15 @@
+# extension_pipeline/ext_server.py + the core/ modules it imports. Ollama is
+# reached via OLLAMA_URL (core/models.py), not a package dependency -- the
+# desktop's Ollama is whatever OLLAMA_URL points at.
+#
+# playwright is imported by core/worker.py for its HTML-cleaning helper
+# (reused unmodified by ext_server.py) -- the extension pipeline never
+# launches a Playwright browser itself, so only the Python package is
+# needed here, never `playwright install`.
+fastapi
+uvicorn[standard]
+pydantic
+playwright
+beautifulsoup4
+psutil
+requests
