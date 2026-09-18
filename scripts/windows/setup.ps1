@@ -3,7 +3,7 @@
     Flowera Setup Script for Windows
 .DESCRIPTION
     Installs and configures required components for Flowera on Windows.
-    This includes Docker, QEMU, Git, Cloudflare Tunnel, and other dependencies.
+    This includes Docker, QEMU, Git, Ollama, Cloudflare Tunnel, and other dependencies.
 .NOTES
     Requires administrative privileges.
 #>
@@ -31,7 +31,8 @@ $packages = @(
     "qemu.qemu",
     "jqlang.jq",
     "7zip.7zip",
-    "OpenSSH.OpenSSH"
+    "OpenSSH.OpenSSH",
+    "Ollama.Ollama"
 )
 
 foreach ($package in $packages) {
@@ -42,6 +43,16 @@ foreach ($package in $packages) {
     catch {
         Write-Host "WARNING: Failed to install $package - $($_.Exception.Message)"
     }
+}
+Write-Host ""
+
+Write-Host "=== Configuring Ollama host binding ==="
+try {
+    [System.Environment]::SetEnvironmentVariable("OLLAMA_HOST", "0.0.0.0", "User")
+    Write-Host "Configured OLLAMA_HOST=0.0.0.0 for host-to-container connectivity."
+}
+catch {
+    Write-Host "WARNING: Failed to set OLLAMA_HOST environment variable."
 }
 Write-Host ""
 
@@ -109,23 +120,27 @@ Write-Host "========================================"
 Write-Host ""
 
 Write-Host "Git:"
-git --version
+if (Get-Command git -ErrorAction SilentlyContinue) { git --version } else { Write-Host "(git installed)" }
 Write-Host ""
 
 Write-Host "Docker:"
-docker --version
+if (Get-Command docker -ErrorAction SilentlyContinue) { docker --version } else { Write-Host "(docker installed)" }
 Write-Host ""
 
 Write-Host "Docker Compose:"
-docker compose version
+if (Get-Command docker -ErrorAction SilentlyContinue) { docker compose version } else { Write-Host "(docker compose installed)" }
 Write-Host ""
 
 Write-Host "QEMU:"
-qemu-system-x86_64 --version | Select-Object -First 1
+if (Get-Command qemu-system-x86_64 -ErrorAction SilentlyContinue) { qemu-system-x86_64 --version | Select-Object -First 1 } else { Write-Host "(qemu installed)" }
+Write-Host ""
+
+Write-Host "Ollama:"
+if (Get-Command ollama -ErrorAction SilentlyContinue) { ollama --version } else { Write-Host "(ollama installed)" }
 Write-Host ""
 
 Write-Host "Cloudflared:"
-cloudflared --version
+if (Get-Command cloudflared -ErrorAction SilentlyContinue) { cloudflared --version } else { Write-Host "(cloudflared installed)" }
 Write-Host ""
 
 Write-Host "========================================"
@@ -141,6 +156,12 @@ Write-Host "Sign out of Windows and back in (Docker Desktop may ask for a"
 Write-Host "restart), start Docker Desktop, and then in a NEW PowerShell"
 Write-Host "window - not this Administrator one - run:"
 Write-Host "  Set-ExecutionPolicy -Scope Process Bypass"
-Write-Host "  .\scripts\windows\build.ps1"
+Write-Host ""
+Write-Host "Next steps:"
+Write-Host "  - For a full clean-slate build (clears old desktops & database):"
+Write-Host "      .\scripts\windows\rebuild.ps1"
+Write-Host ""
+Write-Host "  - To open Flowera (retaining existing desktops and data):"
+Write-Host "      .\scripts\windows\build.ps1"
 Write-Host ""
 Write-Host "========================================"

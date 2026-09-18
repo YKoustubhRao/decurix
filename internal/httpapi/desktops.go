@@ -1,11 +1,14 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -88,7 +91,28 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	parentID := strings.TrimSpace(r.FormValue("parent_id"))
 
 	cpus := int64(2)
-	memoryMB := int64(4096)
+	if envCpus := os.Getenv("FLOWERA_DEFAULT_DESKTOP_CPUS"); envCpus != "" {
+		if parsed, err := strconv.ParseInt(envCpus, 10, 64); err == nil && parsed > 0 {
+			cpus = parsed
+		}
+	} else {
+		// Adaptively scale default CPUs to keep host system and desktop UI responsive:
+		numCPU := runtime.NumCPU()
+		if numCPU > 4 {
+			cpus = int64(min(2, numCPU-2))
+		} else if numCPU > 2 {
+			cpus = int64(min(2, numCPU-1))
+		} else {
+			cpus = 1
+		}
+	}
+
+	memoryMB := int64(2048)
+	if envMem := os.Getenv("FLOWERA_DEFAULT_DESKTOP_MEMORY_MB"); envMem != "" {
+		if parsed, err := strconv.ParseInt(envMem, 10, 64); err == nil && parsed > 0 {
+			memoryMB = parsed
+		}
+	}
 
 	if profile == "" {
 		profile = "basic"
@@ -162,6 +186,15 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Clamp cpus so a desktop container never completely starves the host OS
+	maxHostCpus := int64(runtime.NumCPU())
+	if maxHostCpus > 2 {
+		maxHostCpus -= 1
+	}
+	if cpus > maxHostCpus && maxHostCpus > 0 {
+		cpus = maxHostCpus
+	}
+
 	if memoryMB <= 0 {
 		http.Error(w, "memory_mb must be positive", http.StatusBadRequest)
 		return
@@ -194,8 +227,28 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	var selectedApps []string
+	copyHostApps := r.FormValue("copy_host_apps") == "1" ||
+		strings.EqualFold(r.FormValue("copy_host_apps"), "true")
+	if copyHostApps {
+		appsVal := strings.TrimSpace(r.FormValue("host_apps"))
+		if appsVal != "" {
+			for _, part := range strings.Split(appsVal, ",") {
+				if trimmed := strings.TrimSpace(part); trimmed != "" {
+					selectedApps = append(selectedApps, trimmed)
+				}
+			}
+		}
+	}
+
 	created, err := s.Desktops.Create(
 		r.Context(),
+	if r.Context().Err() != nil {
+		log.Printf("createDesktop: client canceled before creation for %s", name)
+		return
+	}
+
+	prov, err := s.Desktops.BeginProvisioning(
 		name,
 		profile,
 		harness,
@@ -204,9 +257,50 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		claudeCredentialsJSON,
 		specialization,
 		parentID,
+		selectedApps,
+		func(created *desktop.Desktop) error {
+			if parentID != "" {
+				if err := s.Memory.Link(parentID, created.ID); err != nil {
+					log.Printf("createDesktop: link child %s to parent %s: %v", created.ID, parentID, err)
+				} else {
+					s.backfillSharedMemory(context.Background(), parentID, created.ID)
+				}
+			}
+
+			if err := s.Tasks.UpsertWorker(tasks.Worker{
+				ID:      created.ID,
+				Name:    created.Name,
+				Engine:  created.Harness,
+				Profile: created.Profile,
+				Model:   created.Model,
+			}); err != nil {
+				log.Printf("createDesktop: %v", err)
+			}
+			return nil
+		},
 	)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || r.Context().Err() != nil {
+			log.Printf("createDesktop: request canceled by client, aborting creation for %s", name)
+			return
+		}
 		jsonError(w, err)
+		return
+	}
+
+	// Clean up immediately if client aborted while Create was finishing
+	if r.Context().Err() != nil {
+		log.Printf("createDesktop: client canceled after container creation, deleting %s", created.ID)
+		_ = s.Desktops.Delete(context.Background(), created.ID)
+	w.WriteHeader(http.StatusAccepted)
+	jsonResponse(w, prov)
+}
+
+// desktopStatusHandler returns the current provisioning and readiness status for a desktop.
+func (s *Server) desktopStatusHandler(w http.ResponseWriter, r *http.Request) {
+	desktopID := strings.TrimSpace(r.URL.Query().Get("id"))
+	if desktopID == "" {
+		http.Error(w, "missing id parameter", http.StatusBadRequest)
 		return
 	}
 
@@ -220,6 +314,20 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		} else {
 			s.backfillSharedMemory(r.Context(), parentID, created.ID)
 		}
+	// 1. Check in-flight provisioning state
+	if prov, ok := s.Desktops.GetProvisioning(desktopID); ok {
+		jsonResponse(w, map[string]any{
+			"id":       prov.ID,
+			"name":     prov.Name,
+			"status":   prov.Status,
+			"stage":    prov.Stage,
+			"message":  prov.Message,
+			"progress": prov.Progress,
+			"ready":    prov.Ready,
+			"url":      prov.URL,
+			"error":    prov.Error,
+		})
+		return
 	}
 
 	if err := s.Tasks.UpsertWorker(tasks.Worker{
@@ -232,7 +340,32 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("createDesktop: %v", err)
 	}
 
+	if r.Context().Err() != nil {
+		log.Printf("createDesktop: client canceled, deleting %s", created.ID)
+		_ = s.Desktops.Delete(context.Background(), created.ID)
+	// 2. Otherwise inspect the desktop
+	d, err := s.Desktops.Get(r.Context(), desktopID)
+	if err != nil {
+		if errors.Is(err, desktop.ErrNotFound) {
+			http.Error(w, "desktop not found", http.StatusNotFound)
+			return
+		}
+		jsonError(w, err)
+		return
+	}
+
 	jsonResponse(w, created)
+	isReady := d.Status == "running"
+	jsonResponse(w, map[string]any{
+		"id":       d.ID,
+		"name":     d.Name,
+		"status":   d.Status,
+		"stage":    "ready",
+		"message":  "Desktop is running",
+		"progress": 100,
+		"ready":    isReady,
+		"url":      d.URL,
+	})
 }
 
 // startDesktopHandler starts an existing desktop by ID.
@@ -282,6 +415,54 @@ func (s *Server) stopDesktopHandler(w http.ResponseWriter, r *http.Request) {
 
 	jsonResponse(w, map[string]string{
 		"status": "stopped",
+	})
+}
+
+// pauseDesktopHandler freezes a running desktop by ID using the cgroup freezer (0% CPU).
+func (s *Server) pauseDesktopHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+
+	id := r.FormValue("id")
+
+	if id == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.Desktops.Pause(r.Context(), id); err != nil {
+		jsonError(w, err)
+		return
+	}
+
+	jsonResponse(w, map[string]string{
+		"status": "paused",
+	})
+}
+
+// unpauseDesktopHandler thaws a paused desktop by ID (< 1ms).
+func (s *Server) unpauseDesktopHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+
+	id := r.FormValue("id")
+
+	if id == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.Desktops.Unpause(r.Context(), id); err != nil {
+		jsonError(w, err)
+		return
+	}
+
+	jsonResponse(w, map[string]string{
+		"status": "running",
 	})
 }
 

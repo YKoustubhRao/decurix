@@ -39,6 +39,39 @@ func TestOpenAIChatParsesRealResponse(t *testing.T) {
 	}
 }
 
+func TestOpenAIChatForwardsMaxTokensAndStop(t *testing.T) {
+	var gotMaxTokens any
+	var gotStop any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotMaxTokens = body["max_tokens"]
+		gotStop = body["stop"]
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]any{"content": "ok"}}},
+		})
+	}))
+	defer srv.Close()
+
+	p := NewOpenAI("test-key", "")
+	p.BaseURL = srv.URL
+	stopSeq := []string{"\nCommand execution result:"}
+	_, err := p.Chat(context.Background(), "gpt-4o", []Message{{Role: "user", Content: "hi"}}, Options{
+		MaxTokens: 1024,
+		Stop:      stopSeq,
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if gotMaxTokens != float64(1024) {
+		t.Errorf("max_tokens sent = %v, want 1024", gotMaxTokens)
+	}
+	stopList, ok := gotStop.([]any)
+	if !ok || len(stopList) != 1 || stopList[0] != stopSeq[0] {
+		t.Errorf("stop sent = %v, want %v", gotStop, stopSeq)
+	}
+}
+
 func TestOpenAIChatSurfacesError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)

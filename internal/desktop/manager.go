@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -52,11 +54,77 @@ type Manager struct {
 	secOptMu       sync.Mutex
 	secOpt         []string
 	secOptResolved bool
+
+	// toolsMu/toolsPopulated ensure the shared flowera-tools volume is
+	// populated at most once in-process, preventing redundant init containers
+	// and disk I/O on every VM creation.
+	toolsMu        sync.Mutex
+	toolsPopulated bool
+
+	// startedMu/startedCache cache Docker's StartedAt timestamp for running
+	// containers, eliminating redundant ContainerInspect RPCs during List.
+	startedMu    sync.Mutex
+	startedCache map[string]string
+
+	// proxyTargetMu and proxyTargets cache resolved reverse-proxy URLs for running
+	// desktop containers (VNC port and agent port). Eliminates dozens of
+	// blocking Docker ContainerInspect calls when noVNC loads ~40 static assets.
+	proxyTargetMu sync.RWMutex
+	proxyTargets  map[string]proxyTargetCacheEntry
+
+	// resourceMu/resourceOverrides track dynamically updated CPU and memory
+	// allocations for containers, keeping Desktop.CPUs and Desktop.MemoryMB in
+	// sync even though Docker labels cannot be altered after container creation.
+	resourceMu        sync.Mutex
+	resourceOverrides map[string]ResourceAllocation
+
+	// httpClient pools persistent HTTP connections (Keep-Alive) to desktop
+	// agent APIs on port 8081, eliminating TCP handshake overhead on every
+	// command dispatch.
+	httpClient *http.Client
+
+	// provisioningMu and provisioning track in-flight desktop creation so that
+	// requests are accepted immediately (< 15ms) while the container spins up
+	// and desktop icons/apps are migrated in the background.
+	provisioningMu sync.RWMutex
+	provisioning   map[string]*ProvisioningDesktop
+}
+
+// proxyTargetCacheEntry stores a cached reverse-proxy URL along with its expiration.
+type proxyTargetCacheEntry struct {
+	proxyURL *url.URL
+	expires  time.Time
+}
+
+// InvalidateProxyTarget purges any cached reverse-proxy URLs for the given desktop ID.
+func (m *Manager) InvalidateProxyTarget(rawID string) {
+	sanitizedID := sanitizeName(rawID)
+	m.proxyTargetMu.Lock()
+	defer m.proxyTargetMu.Unlock()
+	for k := range m.proxyTargets {
+		if strings.HasPrefix(k, sanitizedID+":") {
+			delete(m.proxyTargets, k)
+		}
+	}
 }
 
 // NewManager creates a Manager backed by the given Docker client.
 func NewManager(cli *client.Client) *Manager {
-	return &Manager{client: cli}
+	return &Manager{
+		client:            cli,
+		startedCache:      make(map[string]string),
+		proxyTargets:      make(map[string]proxyTargetCacheEntry),
+		resourceOverrides: make(map[string]ResourceAllocation),
+		provisioning:      make(map[string]*ProvisioningDesktop),
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 16,
+				IdleConnTimeout:     90 * time.Second,
+			},
+		},
+	}
 }
 
 // Create provisions a new desktop container (volume, env, container config)
@@ -76,11 +144,16 @@ func (m *Manager) Create(
 	claudeCredentialsJSON string,
 	specialization string,
 	parentID string,
+	hostApps ...[]string,
 ) (*Desktop, error) {
 
 	imageName, err := resolveDesktopImage(profile)
 	if err != nil {
 		return nil, err
+	}
+
+	if err := m.EnsureToolsVolume(ctx); err != nil {
+		log.Printf("warning: ensure tools volume: %v", err)
 	}
 
 	volumeName := fmt.Sprintf(
@@ -142,6 +215,16 @@ func (m *Manager) Create(
 		)
 	}
 
+	// Pre-seed host applications onto the volume BEFORE container startup.
+	// This ensures desktop launchers, wrapper scripts, credentials, and SVG
+	// icons exist on disk before XFCE initializes, avoiding icon refresh lag
+	// and startup race conditions.
+	if len(hostApps) > 0 && len(hostApps[0]) > 0 {
+		if err := m.MigrateHostApps(ctx, sanitizeName(name), hostApps[0]); err != nil {
+			log.Printf("hostapps: pre-start migration for %s: %v", containerName, err)
+		}
+	}
+
 	if err := m.client.ContainerStart(
 		ctx,
 		resp.ID,
@@ -193,6 +276,248 @@ func (m *Manager) Create(
 		Specialization: specialization,
 		ParentID:       parentID,
 	}, nil
+}
+
+// BeginProvisioning registers an in-flight provisioning desktop and launches
+// an asynchronous background goroutine to create the volume, container, host app
+// migration, container start, and readiness probing. It returns the ProvisioningDesktop
+// immediately (< 15ms) so that HTTP APIs and user interfaces never hang.
+func (m *Manager) BeginProvisioning(
+	name string,
+	profile string,
+	harness string,
+	cpus int64,
+	memoryMB int64,
+	claudeCredentialsJSON string,
+	specialization string,
+	parentID string,
+	selectedApps []string,
+	onStarted func(d *Desktop) error,
+) (*ProvisioningDesktop, error) {
+	sanitizedID := sanitizeName(name)
+	if sanitizedID == "" {
+		return nil, fmt.Errorf("invalid desktop name")
+	}
+
+	// Verify no existing container or provisioning desktop with this name
+	m.provisioningMu.RLock()
+	if _, exists := m.provisioning[sanitizedID]; exists {
+		m.provisioningMu.RUnlock()
+		return nil, fmt.Errorf("desktop %s is already being created", name)
+	}
+	m.provisioningMu.RUnlock()
+
+	// Check if container already exists
+	if _, err := m.client.ContainerInspect(context.Background(), "desktop_"+sanitizedID); err == nil {
+		return nil, fmt.Errorf("desktop %s already exists", name)
+	}
+
+	prov := &ProvisioningDesktop{
+		ID:             sanitizedID,
+		Name:           name,
+		Profile:        profile,
+		Harness:        harness,
+		CPUs:           cpus,
+		MemoryMB:       memoryMB,
+		Status:         "provisioning",
+		Stage:          "initializing",
+		Message:        "Spinning up desktop...",
+		Progress:       10,
+		URL:            desktopURL(sanitizedID),
+		CreatedAt:      time.Now().Format(time.RFC3339),
+		Specialization: specialization,
+		ParentID:       parentID,
+		Ready:          false,
+	}
+
+	m.provisioningMu.Lock()
+	m.provisioning[sanitizedID] = prov
+	m.provisioningMu.Unlock()
+
+	go m.runProvisioning(prov, claudeCredentialsJSON, selectedApps, onStarted)
+
+	return prov, nil
+}
+
+func (m *Manager) runProvisioning(
+	prov *ProvisioningDesktop,
+	claudeCredentialsJSON string,
+	selectedApps []string,
+	onStarted func(d *Desktop) error,
+) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	sanitizedID := prov.ID
+	name := prov.Name
+	containerName := "desktop_" + sanitizedID
+	volumeName := fmt.Sprintf("desktop_%s_home", sanitizedID)
+
+	updateStage := func(stage, message string, progress int) {
+		m.provisioningMu.Lock()
+		prov.Stage = stage
+		prov.Message = message
+		prov.Progress = progress
+		m.provisioningMu.Unlock()
+	}
+
+	fail := func(err error) {
+		log.Printf("desktop provisioning failed for %s: %v", sanitizedID, err)
+		m.provisioningMu.Lock()
+		prov.Status = "failed"
+		prov.Error = err.Error()
+		prov.Message = fmt.Sprintf("Creation failed: %v", err)
+		m.provisioningMu.Unlock()
+
+		// Clean up Docker resources if partially created
+		_ = m.client.ContainerRemove(context.Background(), containerName, container.RemoveOptions{Force: true})
+		_ = m.client.VolumeRemove(context.Background(), volumeName, true)
+
+		// Retain error for 60s so UI polls can display the error before cleaning up
+		time.AfterFunc(60*time.Second, func() {
+			m.provisioningMu.Lock()
+			delete(m.provisioning, sanitizedID)
+			m.provisioningMu.Unlock()
+		})
+	}
+
+	// 1. Resolve image
+	updateStage("initializing", "Resolving desktop image...", 15)
+	imageName, err := resolveDesktopImage(prov.Profile)
+	if err != nil {
+		fail(err)
+		return
+	}
+
+	// Prewarm tools volume
+	if err := m.EnsureToolsVolume(ctx); err != nil {
+		log.Printf("warning: ensure tools volume for %s: %v", sanitizedID, err)
+	}
+
+	// 2. Storage Volume
+	updateStage("volume", "Creating persistent storage volume...", 30)
+	_, err = m.client.VolumeCreate(ctx, volume.CreateOptions{Name: volumeName})
+	if err != nil {
+		fail(fmt.Errorf("create volume: %w", err))
+		return
+	}
+
+	// 3. Container Configuration & Creation
+	updateStage("container", "Creating container environment...", 45)
+	env := buildDesktopEnv(name, prov.Harness, prov.Specialization, prov.ParentID)
+	prov.Model = envValue(env, "OLLAMA_MODEL")
+
+	config, hostConfig, networkingConfig := buildContainerConfigs(
+		imageName,
+		containerName,
+		prov.Profile,
+		prov.Harness,
+		prov.CPUs,
+		prov.MemoryMB,
+		env,
+		volumeName,
+		m.desktopSecurityOpt(ctx),
+	)
+
+	resp, err := m.client.ContainerCreate(ctx, config, hostConfig, networkingConfig, nil, containerName)
+	if err != nil {
+		fail(fmt.Errorf("create container: %w", err))
+		return
+	}
+
+	// 4. Migrate Desktop Icons & Host Apps
+	if len(selectedApps) > 0 {
+		updateStage("apps", "Copying desktop icons and host apps...", 65)
+		if err := m.MigrateHostApps(ctx, sanitizedID, selectedApps); err != nil {
+			log.Printf("hostapps: migration for %s: %v", containerName, err)
+		}
+	}
+
+	// 5. Start Container
+	updateStage("starting", "Starting desktop environment...", 80)
+	if err := m.client.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		fail(fmt.Errorf("start container: %w", err))
+		return
+	}
+
+	// Claude session persistence
+	if prov.Harness == HarnessClaude && claudeCredentialsJSON != "" {
+		if err := m.PersistClaudeCredentials(ctx, sanitizedID, claudeCredentialsJSON); err != nil {
+			log.Printf("seed claude credentials into %s: %v", containerName, err)
+		}
+	}
+
+	// Desktop struct for callbacks
+	createdDesktop := prov.ToDesktop()
+	createdDesktop.ContainerID = resp.ID
+	createdDesktop.Status = "running"
+
+	if onStarted != nil {
+		if err := onStarted(&createdDesktop); err != nil {
+			log.Printf("desktop onStarted callback for %s: %v", sanitizedID, err)
+		}
+	}
+
+	// 6. Readiness Probe (Wait for VNC / websockify to listen)
+	updateStage("readiness", "Waiting for desktop GUI to initialize...", 90)
+	ready := m.WaitForGUIReady(ctx, sanitizedID, 25*time.Second)
+	if !ready {
+		log.Printf("warning: desktop %s GUI readiness probe timed out (will continue running)", sanitizedID)
+	}
+
+	// 7. Ready!
+	m.provisioningMu.Lock()
+	prov.Stage = "ready"
+	prov.Message = "Desktop is ready!"
+	prov.Progress = 100
+	prov.Status = "running"
+	prov.Ready = true
+	m.provisioningMu.Unlock()
+
+	// Retain ready state in provisioning for 5 seconds so in-flight status polls receive ready: true
+	time.Sleep(5 * time.Second)
+	m.provisioningMu.Lock()
+	delete(m.provisioning, sanitizedID)
+	m.provisioningMu.Unlock()
+}
+
+// GetProvisioning returns the current in-flight provisioning state for a desktop ID if one is active.
+func (m *Manager) GetProvisioning(rawID string) (*ProvisioningDesktop, bool) {
+	sanitizedID := sanitizeName(rawID)
+	m.provisioningMu.RLock()
+	defer m.provisioningMu.RUnlock()
+	prov, ok := m.provisioning[sanitizedID]
+	if !ok {
+		return nil, false
+	}
+	copyProv := *prov
+	return &copyProv, true
+}
+
+// WaitForGUIReady waits until the desktop container's VNC/websockify port is
+// accepting TCP connections, meaning the GUI is initialized and ready for user interaction.
+func (m *Manager) WaitForGUIReady(ctx context.Context, rawID string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return false
+		default:
+		}
+
+		proxyURL, _, err := m.ProxyTarget(ctx, rawID)
+		if err == nil && proxyURL != nil {
+			host := proxyURL.Host
+			conn, dialErr := net.DialTimeout("tcp", host, 500*time.Millisecond)
+			if dialErr == nil {
+				conn.Close()
+				return true
+			}
+		}
+
+		time.Sleep(300 * time.Millisecond)
+	}
+	return false
 }
 
 // listInspectConcurrency bounds how many ContainerInspect calls List issues
@@ -247,11 +572,35 @@ func (m *Manager) List(
 
 	wg.Wait()
 
+	// Prepend any active provisioning desktops that haven't registered Docker containers yet
+	m.provisioningMu.RLock()
+	var pendingProv []Desktop
+	for _, p := range m.provisioning {
+		if p.Status == "provisioning" {
+			found := false
+			for _, r := range result {
+				if r.ID == p.ID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				pendingProv = append(pendingProv, p.ToDesktop())
+			}
+		}
+	}
+	m.provisioningMu.RUnlock()
+
+	if len(pendingProv) > 0 {
+		result = append(pendingProv, result...)
+	}
+
 	return result, nil
 }
 
 // desktopFromContainer builds one Desktop from a ContainerList entry plus its
-// own ContainerInspect - the per-container work List fans out concurrently.
+// metadata labels, falling back to ContainerInspect only for legacy containers
+// or on first boot to cache StartedAt.
 func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary) Desktop {
 	name := ""
 	if len(c.Names) > 0 {
@@ -262,68 +611,105 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 	}
 
 	volumeName := ""
-	model := ""
+	for _, mount := range c.Mounts {
+		if mount.Destination == "/home/headless" {
+			volumeName = mount.Name
+			break
+		}
+	}
+
+	model := c.Labels["desktop-model"]
+	specialization := c.Labels["desktop-specialization"]
+	parentID := c.Labels["desktop-parent-id"]
+
 	var cpus int64
+	if s := c.Labels["desktop-cpus"]; s != "" {
+		cpus, _ = strconv.ParseInt(s, 10, 64)
+	}
 	var memoryMB int64
+	if s := c.Labels["desktop-memory"]; s != "" {
+		memoryMB, _ = strconv.ParseInt(s, 10, 64)
+	}
 
-	inspect, err := m.client.ContainerInspect(
-		ctx,
-		c.ID,
-	)
+	startedAt := ""
+	if c.State == "running" {
+		m.startedMu.Lock()
+		cached, ok := m.startedCache[c.ID]
+		m.startedMu.Unlock()
+		if ok {
+			startedAt = cached
+		}
+	} else {
+		m.startedMu.Lock()
+		delete(m.startedCache, c.ID)
+		m.startedMu.Unlock()
+	}
 
-	if err == nil {
-		for _, mount := range inspect.Mounts {
-			if mount.Destination == "/home/headless" {
-				volumeName = mount.Name
-				break
+	// Inspect only if missing critical metadata (legacy container) or if
+	// StartedAt is not yet cached for a running container.
+	needsInspect := (c.State == "running" && startedAt == "") || (model == "" && c.Labels["desktop-manager"] == "true")
+	if needsInspect {
+		inspectCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		inspect, err := m.client.ContainerInspect(inspectCtx, c.ID)
+		cancel()
+		if err == nil {
+			if inspect.State != nil && inspect.State.Running {
+				startedAt = inspect.State.StartedAt
+				m.startedMu.Lock()
+				m.startedCache[c.ID] = startedAt
+				m.startedMu.Unlock()
 			}
-		}
-
-		if inspect.Config != nil {
-			model = envValue(inspect.Config.Env, "OLLAMA_MODEL")
-		}
-
-		if inspect.HostConfig != nil {
-			if inspect.HostConfig.NanoCPUs > 0 {
+			if volumeName == "" {
+				for _, mount := range inspect.Mounts {
+					if mount.Destination == "/home/headless" {
+						volumeName = mount.Name
+						break
+					}
+				}
+			}
+			if model == "" && inspect.Config != nil {
+				model = envValue(inspect.Config.Env, "OLLAMA_MODEL")
+			}
+			if specialization == "" && inspect.Config != nil {
+				specialization = envValue(inspect.Config.Env, "DESKTOP_SPECIALIZATION")
+				parentID = envValue(inspect.Config.Env, "DESKTOP_PARENT_ID")
+			}
+			if cpus == 0 && inspect.HostConfig != nil && inspect.HostConfig.NanoCPUs > 0 {
 				cpus = inspect.HostConfig.NanoCPUs / 1_000_000_000
 			}
-
-			if inspect.HostConfig.Memory > 0 {
+			if memoryMB == 0 && inspect.HostConfig != nil && inspect.HostConfig.Memory > 0 {
 				memoryMB = inspect.HostConfig.Memory / (1024 * 1024)
 			}
 		}
 	}
 
-	specialization := ""
-	parentID := ""
-
-	if inspect.Config != nil {
-		specialization = envValue(inspect.Config.Env, "DESKTOP_SPECIALIZATION")
-		parentID = envValue(inspect.Config.Env, "DESKTOP_PARENT_ID")
-	}
-
 	profile := c.Labels["desktop-profile"]
-
 	if profile == "" {
 		profile = "basic"
 	}
 
 	harness := c.Labels["desktop-harness"]
-
 	if harness == "" {
 		harness = HarnessOllama
 	}
 
 	status := "stopped"
-
 	if c.State == "running" {
 		status = "running"
+	} else if c.State == "paused" {
+		status = "paused"
 	}
 
 	id := strings.TrimPrefix(
 		name,
 		"desktop_",
 	)
+
+	m.provisioningMu.RLock()
+	if prov, ok := m.provisioning[id]; ok && prov.Status == "provisioning" {
+		status = "provisioning"
+	}
+	m.provisioningMu.RUnlock()
 
 	createdAt := ""
 	if c.Created > 0 {
@@ -333,10 +719,15 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 		).Format(time.RFC3339)
 	}
 
-	startedAt := ""
-	if err == nil && inspect.State != nil && inspect.State.Running {
-		startedAt = inspect.State.StartedAt
+	m.resourceMu.Lock()
+	if override, ok := m.resourceOverrides[id]; ok {
+		cpus = override.CPUs
+		memoryMB = override.MemoryMB
+	} else if override, ok := m.resourceOverrides[c.ID]; ok {
+		cpus = override.CPUs
+		memoryMB = override.MemoryMB
 	}
+	m.resourceMu.Unlock()
 
 	return Desktop{
 		ID:             id,
@@ -357,13 +748,17 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 	}
 }
 
-// Start starts the Docker container backing the given desktop ID.
+// Start starts or unpauses the Docker container backing the given desktop ID.
 func (m *Manager) Start(
 	ctx context.Context,
 	id string,
 ) error {
-
 	name := "desktop_" + sanitizeName(id)
+
+	inspect, err := m.client.ContainerInspect(ctx, name)
+	if err == nil && inspect.State != nil && inspect.State.Paused {
+		return m.client.ContainerUnpause(ctx, name)
+	}
 
 	return m.client.ContainerStart(
 		ctx,
@@ -372,29 +767,77 @@ func (m *Manager) Start(
 	)
 }
 
+// Pause pauses the Docker container processes backing the given desktop ID using the cgroup freezer.
+// It captures and persists the desktop's current screen frame before freezing the container,
+// guaranteeing that the last active screen is cached and available while paused.
+func (m *Manager) Pause(
+	ctx context.Context,
+	id string,
+) error {
+	sanitizedID := sanitizeName(id)
+	m.InvalidateProxyTarget(sanitizedID)
+	name := "desktop_" + sanitizedID
+
+	// Capture the current screen frame before freezing processes, so the dashboard
+	// can show the last active screen while the container is idle/frozen.
+	captureCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	if data, err := m.Screenshot(captureCtx, sanitizedID, 480); err == nil && len(data) > 0 {
+		saveShotToDisk(sanitizedID, data)
+	}
+	cancel()
+
+	return m.client.ContainerPause(ctx, name)
+}
+
+// Unpause unpauses the Docker container processes backing the given desktop ID.
+func (m *Manager) Unpause(
+	ctx context.Context,
+	id string,
+) error {
+	name := "desktop_" + sanitizeName(id)
+	return m.client.ContainerUnpause(ctx, name)
+}
+
 // Stop stops the Docker container backing the given desktop ID.
 func (m *Manager) Stop(
 	ctx context.Context,
 	id string,
 ) error {
 
-	name := "desktop_" + sanitizeName(id)
+	sanitizedID := sanitizeName(id)
+	m.InvalidateProxyTarget(sanitizedID)
+	name := "desktop_" + sanitizedID
+
+	inspect, inspectErr := m.client.ContainerInspect(ctx, name)
+	if inspectErr == nil && inspect.State != nil && inspect.State.Paused {
+		_ = m.client.ContainerUnpause(ctx, name)
+	}
 
 	timeoutEnv := os.Getenv("DESKTOP_STOP_TIMEOUT_SECONDS")
 	timeout := 10
+	timeout := 3
 	if timeoutEnv != "" {
 		if parsedTimeout, err := strconv.Atoi(timeoutEnv); err == nil && parsedTimeout > 0 {
 			timeout = parsedTimeout
 		}
 	}
 
-	return m.client.ContainerStop(
+	err := m.client.ContainerStop(
 		ctx,
 		name,
 		container.StopOptions{
 			Timeout: &timeout,
 		},
 	)
+
+	m.startedMu.Lock()
+	if inspectErr == nil && inspect.ID != "" {
+		delete(m.startedCache, inspect.ID)
+	}
+	delete(m.startedCache, name)
+	m.startedMu.Unlock()
+
+	return err
 }
 
 // Restart stops and restarts the Docker container backing the given desktop ID.
@@ -403,7 +846,14 @@ func (m *Manager) Restart(
 	id string,
 ) error {
 
-	name := "desktop_" + sanitizeName(id)
+	sanitizedID := sanitizeName(id)
+	m.InvalidateProxyTarget(sanitizedID)
+	name := "desktop_" + sanitizedID
+
+	inspect, inspectErr := m.client.ContainerInspect(ctx, name)
+	if inspectErr == nil && inspect.State != nil && inspect.State.Paused {
+		_ = m.client.ContainerUnpause(ctx, name)
+	}
 
 	timeout := 10
 
@@ -416,6 +866,13 @@ func (m *Manager) Restart(
 	); err != nil {
 		// Container may already be stopped.
 	}
+
+	m.startedMu.Lock()
+	if inspectErr == nil && inspect.ID != "" {
+		delete(m.startedCache, inspect.ID)
+	}
+	delete(m.startedCache, name)
+	m.startedMu.Unlock()
 
 	return m.client.ContainerStart(
 		ctx,
@@ -430,7 +887,9 @@ func (m *Manager) Delete(
 	id string,
 ) error {
 
-	name := "desktop_" + sanitizeName(id)
+	sanitizedID := sanitizeName(id)
+	m.InvalidateProxyTarget(sanitizedID)
+	name := "desktop_" + sanitizedID
 
 	inspect, err := m.client.ContainerInspect(
 		ctx,
@@ -438,6 +897,10 @@ func (m *Manager) Delete(
 	)
 	if err != nil {
 		return err
+	}
+
+	if inspect.State != nil && inspect.State.Paused {
+		_ = m.client.ContainerUnpause(ctx, name)
 	}
 
 	var volumeName string
@@ -459,6 +922,11 @@ func (m *Manager) Delete(
 	if err != nil {
 		return err
 	}
+
+	m.startedMu.Lock()
+	delete(m.startedCache, inspect.ID)
+	delete(m.startedCache, name)
+	m.startedMu.Unlock()
 
 	m.shotMu.Lock()
 	delete(m.shots, sanitizeName(id))
@@ -490,6 +958,14 @@ func (m *Manager) Delete(
 // container was created with (Desktop.Model).
 func (m *Manager) Get(ctx context.Context, id string) (Desktop, error) {
 	desktopID := sanitizeName(id)
+
+	m.provisioningMu.RLock()
+	if prov, ok := m.provisioning[desktopID]; ok && prov.Status == "provisioning" {
+		d := prov.ToDesktop()
+		m.provisioningMu.RUnlock()
+		return d, nil
+	}
+	m.provisioningMu.RUnlock()
 
 	inspect, err := m.client.ContainerInspect(ctx, "desktop_"+desktopID)
 	if err != nil {
@@ -542,6 +1018,12 @@ func (m *Manager) Get(ctx context.Context, id string) (Desktop, error) {
 		found.Status = "running"
 		found.StartedAt = inspect.State.StartedAt
 	}
+
+	m.provisioningMu.RLock()
+	if prov, ok := m.provisioning[desktopID]; ok && prov.Status == "provisioning" {
+		found.Status = "provisioning"
+	}
+	m.provisioningMu.RUnlock()
 
 	return found, nil
 }
@@ -619,6 +1101,12 @@ func (m *Manager) SendRequest(
 		)
 	}
 
+	if inspect.State.Paused {
+		if err := m.client.ContainerUnpause(ctx, name); err != nil {
+			return fmt.Errorf("auto-wake desktop %s: %w", desktopID, err)
+		}
+	}
+
 	payload := map[string]string{
 		"content": content,
 	}
@@ -654,11 +1142,12 @@ func (m *Manager) SendRequest(
 		"application/json",
 	)
 
-	httpClient := &http.Client{
-		Timeout: 10 * time.Second,
+	cli := m.httpClient
+	if cli == nil {
+		cli = &http.Client{Timeout: 10 * time.Second}
 	}
 
-	resp, err := httpClient.Do(req)
+	resp, err := cli.Do(req)
 	if err != nil {
 		// Nothing listening on :8081 inside a running container. Reported
 		// as ErrAgentUnreachable rather than a bare transport error so the
@@ -752,4 +1241,63 @@ func waitExec(ctx context.Context, cli *client.Client, execID, desc string) erro
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
+}
+
+// UpdateResources dynamically updates the CPU and memory limits of a desktop container
+// without restarting it, using Docker's ContainerUpdate API.
+func (m *Manager) UpdateResources(
+	ctx context.Context,
+	id string,
+	cpus int64,
+	memoryMB int64,
+) error {
+	sanitizedID := sanitizeName(id)
+	name := "desktop_" + sanitizedID
+
+	swappinessZero := int64(0)
+	updateConfig := container.UpdateConfig{
+		Resources: container.Resources{
+			NanoCPUs:          cpus * 1_000_000_000,
+			CPUShares:         cpus * 1024,
+			Memory:            memoryMB * 1024 * 1024,
+			MemoryReservation: (memoryMB * 1024 * 1024) / 2,
+			MemorySwappiness:  &swappinessZero,
+		},
+	}
+
+	resp, err := m.client.ContainerUpdate(ctx, name, updateConfig)
+	if err != nil {
+		return fmt.Errorf("update container resources for %s: %w", name, err)
+	}
+	if len(resp.Warnings) > 0 {
+		log.Printf("container %s resource update warnings: %v", name, resp.Warnings)
+	}
+
+	m.resourceMu.Lock()
+	m.resourceOverrides[sanitizedID] = ResourceAllocation{CPUs: cpus, MemoryMB: memoryMB}
+	m.resourceMu.Unlock()
+
+	return nil
+}
+
+// Stats returns a single snapshot of container resource usage statistics.
+func (m *Manager) Stats(
+	ctx context.Context,
+	id string,
+) (*container.StatsResponse, error) {
+	sanitizedID := sanitizeName(id)
+	name := "desktop_" + sanitizedID
+
+	reader, err := m.client.ContainerStatsOneShot(ctx, name)
+	if err != nil {
+		return nil, fmt.Errorf("fetch container stats for %s: %w", name, err)
+	}
+	defer reader.Body.Close()
+
+	var stats container.StatsResponse
+	if err := json.NewDecoder(reader.Body).Decode(&stats); err != nil {
+		return nil, fmt.Errorf("decode container stats for %s: %w", name, err)
+	}
+
+	return &stats, nil
 }

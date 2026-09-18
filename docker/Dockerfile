@@ -15,6 +15,12 @@ FROM debian:bookworm-slim
 
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    docker.io \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
 # The templates are embedded in the binary (web/embed.go), so only .env has
 # to come along.
 COPY --from=builder /app/flowera .

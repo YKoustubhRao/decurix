@@ -22,9 +22,15 @@ services:
       # screenshots (flowera.db). Without a volume, every rebuild of this
       # container would start the records from nothing.
       - flowera-data:/data
+      # Mount host Windows C: drive and Linux user home for host apps and session discovery
+      - ${FLOWERA_HOST_MNT_C:-/mnt/c}:/mnt/c:ro
+      - ${FLOWERA_HOST_HOME:-/home}:/host-home:ro
+      - /tmp:/tmp
 
     environment:
       - FLOWERA_DATA_DIR=/data
+      - FLOWERA_HOST_MNT_C=/mnt/c
+      - FLOWERA_HOST_HOME=/host-home
 
     extra_hosts:
       - "host.docker.internal:host-gateway"

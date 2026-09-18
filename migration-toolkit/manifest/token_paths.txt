@@ -1,0 +1,4 @@
+/home/koustubh/.config/gh
+/home/koustubh/.gitconfig
+/home/koustubh/.docker
+/home/koustubh/.ssh

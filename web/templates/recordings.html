@@ -270,7 +270,7 @@
 
   function openScreen(){
     var url = body.dataset.screen;
-    if(url){ window.open(url + "?resize=remote&ui=touch", "_blank", "noopener"); }
+    if(url){ window.open(url + "?autoconnect=true&resize=remote&ui=touch", "_blank", "noopener"); }
   }
 
   document.querySelectorAll("[data-open-screen]").forEach(function(b){ b.addEventListener("click", openScreen); });

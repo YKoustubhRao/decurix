@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types/build"
+	"github.com/docker/docker/api/types/filters"
 
 	"github.com/YKoustubhRao/flowera"
 )
@@ -20,12 +21,11 @@ type desktopImage struct {
 	Dockerfile string
 }
 
-// desktopImages lists every image a desktop can be created from, in the order
-// they are built (cheapest first, so a failure surfaces quickly).
+// desktopImages lists the images built by Flowera: the unified base desktop
+// and the shared tools runtime image.
 var desktopImages = []desktopImage{
 	{Tag: desktopImageBasic, Dockerfile: "docker/desktop.basic.Dockerfile"},
-	{Tag: desktopImageDeveloper, Dockerfile: "docker/desktop.developer.Dockerfile"},
-	{Tag: desktopImageAI, Dockerfile: "docker/desktop.ai.Dockerfile"},
+	{Tag: ToolsImage, Dockerfile: "docker/tools.Dockerfile"},
 }
 
 // MissingImages returns the desktop image tags that are not present locally.
@@ -41,10 +41,10 @@ func (m *Manager) MissingImages(ctx context.Context) []string {
 	return missing
 }
 
-// BuildImages builds every desktop image from the build context embedded in
-// the binary, streaming the daemon's progress to out. Images that already
-// exist are rebuilt, which is cheap because Docker's layer cache still
-// applies; pass onlyMissing to skip them entirely.
+// BuildImages builds the unified desktop and shared tools images from the build
+// context embedded in the binary, streaming the daemon's progress to out.
+// It also tags the base image for developer and ai profiles, and populates
+// the shared flowera-tools volume.
 func (m *Manager) BuildImages(ctx context.Context, out io.Writer, onlyMissing bool) error {
 	for _, img := range desktopImages {
 		if onlyMissing {
@@ -63,7 +63,35 @@ func (m *Manager) BuildImages(ctx context.Context, out io.Writer, onlyMissing bo
 		fmt.Fprintf(out, "==> %s ready\n", img.Tag)
 	}
 
+	// Tag the base desktop image as developer and ai for backwards compatibility.
+	_ = m.client.ImageTag(ctx, desktopImageBasic, desktopImageDeveloper)
+	_ = m.client.ImageTag(ctx, desktopImageBasic, desktopImageAI)
+
+	// Ensure the shared tools volume is populated from the tools image.
+	if err := m.PopulateToolsVolume(ctx); err != nil {
+		fmt.Fprintf(out, "==> warning: populate tools volume: %v\n", err)
+	}
+
+	// Prune dangling build layers left behind by image rebuilds to reclaim disk space.
+	if reclaimed, err := m.PruneDanglingResources(ctx); err == nil && reclaimed > 0 {
+		fmt.Fprintf(out, "==> Pruned dangling build layers (reclaimed %d MB)\n", reclaimed/(1024*1024))
+	}
+
 	return nil
+}
+
+// PruneDanglingResources prunes untagged/dangling Docker image layers left behind
+// by builds, reclaiming disk space without affecting any active desktop images.
+func (m *Manager) PruneDanglingResources(ctx context.Context) (uint64, error) {
+	pruneFilters := filters.NewArgs()
+	pruneFilters.Add("dangling", "true")
+
+	report, err := m.client.ImagesPrune(ctx, pruneFilters)
+	if err != nil {
+		return 0, fmt.Errorf("prune dangling images: %w", err)
+	}
+
+	return report.SpaceReclaimed, nil
 }
 
 // buildImage streams the embedded build context to the daemon and reports the

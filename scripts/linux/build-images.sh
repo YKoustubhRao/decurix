@@ -45,17 +45,31 @@ echo "========================================"
 echo " Building Flowera desktop images"
 echo "========================================"
 
+if [ ! -f ~/.docker/cli-plugins/docker-buildx ] && [ -f /usr/libexec/docker/cli-plugins/docker-buildx ]; then
+    mkdir -p ~/.docker/cli-plugins
+    ln -sf /usr/libexec/docker/cli-plugins/docker-buildx ~/.docker/cli-plugins/docker-buildx 2>/dev/null || true
+fi
+
+# Ensure broken Windows desktop credential helper does not fail Linux builds
+if [ -f ~/.docker/config.json ] && grep -q '"desktop\.exe"' ~/.docker/config.json 2>/dev/null; then
+    if ! command -v docker-credential-desktop.exe >/dev/null 2>&1; then
+        sed -i '/desktop\.exe/d' ~/.docker/config.json 2>/dev/null || true
+    fi
+fi
+
+export DOCKER_BUILDKIT=1
+
 build_one() {
     local tag="$1" dockerfile="$2" label="$3"
 
     if [ -n "$ONLY_MISSING" ] && docker image inspect "$tag" >/dev/null 2>&1; then
         echo ""
-        echo "=== $label desktop image already exists, skipping ($tag) ==="
+        echo "=== $label image already exists, skipping ($tag) ==="
         return 0
     fi
 
     echo ""
-    echo "=== Building $label desktop image ==="
+    echo "=== Building $label image ==="
 
     docker build \
         -f "$dockerfile" \
@@ -63,11 +77,26 @@ build_one() {
         .
 }
 
-build_one flowera-desktop:basic docker/desktop.basic.Dockerfile "Basic"
-build_one flowera-desktop:developer docker/desktop.developer.Dockerfile "Developer"
-build_one flowera-desktop:ai docker/desktop.ai.Dockerfile "AI Developer"
+build_one flowera-desktop:basic docker/desktop.basic.Dockerfile "Unified Desktop Base"
+build_one flowera-tools:latest docker/tools.Dockerfile "Shared Tools Runtime"
 
 echo ""
-echo "=== Desktop images built ==="
+echo "=== Aliasing desktop profiles (developer / ai) to unified base ==="
+docker tag flowera-desktop:basic flowera-desktop:developer
+docker tag flowera-desktop:basic flowera-desktop:ai
 
-docker images "flowera-desktop"
+echo ""
+echo "=== Populating shared tools volume (flowera-tools) ==="
+docker volume create flowera-tools >/dev/null
+docker run --rm -v flowera-tools:/target flowera-tools:latest
+docker volume create flowera-cache >/dev/null
+
+echo ""
+echo "=== Pruning dangling build layers to reclaim disk space ==="
+docker image prune -f >/dev/null 2>&1 || true
+
+echo ""
+echo "=== Desktop and tools images ready ==="
+
+docker images --filter "reference=flowera-*"
+

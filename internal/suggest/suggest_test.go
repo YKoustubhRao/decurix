@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -298,5 +299,34 @@ func TestCacheMissingVectorsBoundsBackfillPerCall(t *testing.T) {
 
 	if embedCalls == 0 {
 		t.Fatal("expected a second call to keep backfilling the entries the first call left uncached")
+	}
+}
+
+func TestNormalizeVectorAndFastDotProduct(t *testing.T) {
+	v1 := []float32{3, 4}
+	norm1 := normalizeVector(v1)
+
+	// Length should be 1.0 (3/5 = 0.6, 4/5 = 0.8; 0.6^2 + 0.8^2 = 1.0)
+	sumSq := float64(norm1[0]*norm1[0] + norm1[1]*norm1[1])
+	if math.Abs(sumSq-1.0) > 1e-5 {
+		t.Fatalf("expected norm 1.0, got %f", sumSq)
+	}
+
+	v2 := []float32{0, 5}
+	norm2 := normalizeVector(v2)
+
+	// Dot product: 0.6*0 + 0.8*1 = 0.8
+	sim := cosineSimilarity(norm1, norm2)
+	if math.Abs(sim-0.8) > 1e-4 {
+		t.Fatalf("expected cosine similarity ~0.8, got %f", sim)
+	}
+
+	// Test zero vector handling
+	zero := []float32{0, 0}
+	if normZero := normalizeVector(zero); len(normZero) != 2 || normZero[0] != 0 {
+		t.Fatalf("expected zero vector unchanged, got %v", normZero)
+	}
+	if simZero := cosineSimilarity(norm1, zero); simZero != 0 {
+		t.Fatalf("expected 0 for zero vector similarity, got %f", simZero)
 	}
 }

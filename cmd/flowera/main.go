@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -24,6 +25,7 @@ import (
 	"github.com/YKoustubhRao/flowera/internal/memory"
 	"github.com/YKoustubhRao/flowera/internal/ollama"
 	"github.com/YKoustubhRao/flowera/internal/querynotes"
+	"github.com/YKoustubhRao/flowera/internal/resourcemon"
 	"github.com/YKoustubhRao/flowera/internal/schedule"
 	"github.com/YKoustubhRao/flowera/internal/sqlitedb"
 	"github.com/YKoustubhRao/flowera/internal/stepimages"
@@ -186,6 +188,7 @@ func main() {
 	defer cli.Close()
 
 	desktops := desktop.NewManager(cli)
+	desktop.OptimizeHostKSM()
 	ollamaManager := ollama.NewManager(cli, desktop.NetworkName)
 
 	// Building all three images takes a long time and a lot of disk, so it is
@@ -210,6 +213,14 @@ func main() {
 	if err := desktops.EnsureNetwork(ctx); err != nil {
 		log.Fatal(err)
 	}
+
+	// Pre-warm the shared tools volume asynchronously in the background so the
+	// first VM creation does not have to wait for volume initialization.
+	go func() {
+		if err := desktops.EnsureToolsVolume(context.Background()); err != nil {
+			log.Printf("background tools volume: %v", err)
+		}
+	}()
 
 	dbPath := filepath.Join(sqlitedb.DataDir(), sqlitedb.FileName)
 
@@ -244,6 +255,10 @@ func main() {
 		webui.NewRenderer(),
 	)
 
+	resMon := resourcemon.NewMonitor(desktops)
+	server.ResourceMon = resMon
+	go resMon.Run(context.Background())
+
 	// internal/dag's Runner needs Server itself as its Submitter
 	// (SubmitTracked, which - unlike Submit - hands back the task ID a node's
 	// ticket landed under), so it is built after Server and wired back onto
@@ -271,7 +286,7 @@ func main() {
 	go func() {
 		log.Printf("LAN/tunnel listener on %s (access code: %s)", lanAddr, lanAccess.Password())
 
-		if err := http.ListenAndServe(lanAddr, lanAccess.Middleware(lanMux)); err != nil {
+		if err := http.ListenAndServe(lanAddr, lanAccess.Middleware(httpapi.GzipMiddleware(lanMux))); err != nil {
 			log.Printf("warning: LAN/tunnel listener failed: %v", err)
 		}
 	}()
@@ -299,14 +314,19 @@ func main() {
 	// non-positive, so FLOWERA_IDLE_STOP_MINUTES=0 opts out without any
 	// different wiring here.
 	idleThreshold := idleStopThreshold()
+	idleAction := os.Getenv("FLOWERA_IDLE_ACTION")
+	if idleAction == "" {
+		idleAction = "pause"
+	}
 
 	if idleThreshold > 0 {
-		log.Printf("Idle-pause: stopping desktops idle past %s. Set FLOWERA_IDLE_STOP_MINUTES=0 to disable.", idleThreshold)
+		log.Printf("Idle-pause: %sing desktops idle past %s. Set FLOWERA_IDLE_STOP_MINUTES=0 to disable.", idleAction, idleThreshold)
 	} else {
 		log.Println("Idle-pause: disabled (FLOWERA_IDLE_STOP_MINUTES=0).")
 	}
 
-	checker := &idlepause.Checker{Desktops: desktops, Tasks: tasksStore, Threshold: idleThreshold}
+	checker := &idlepause.Checker{Desktops: desktops, Tasks: tasksStore, Threshold: idleThreshold, Action: idleAction}
+	server.IdleChecker = checker
 	go checker.Run(context.Background())
 
 	// Fires each recurring request set up on the requests page when its cron
@@ -317,7 +337,14 @@ func main() {
 
 	log.Printf("Desktop manager listening on %s", listenAddr)
 
-	if err := http.ListenAndServe(listenAddr, mux); err != nil {
+	httpServer := &http.Server{
+		Addr:              listenAddr,
+		Handler:           httpapi.GzipMiddleware(mux),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+
+	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
 }

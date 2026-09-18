@@ -329,3 +329,24 @@ func TestChatHandlerRequiresID(t *testing.T) {
 		t.Fatalf("expected 400 without an id, got %d", rec.Code)
 	}
 }
+
+func TestStepImageURLDeduplicatesIdenticalScreenshots(t *testing.T) {
+	s := chatServer(t)
+
+	img := image.NewRGBA(image.Rect(0, 0, 16, 16))
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	pngData := buf.Bytes()
+
+	url1 := s.stepImageURL("box-1", pngData)
+	if url1 == "" {
+		t.Fatal("expected url1, got empty")
+	}
+
+	url2 := s.stepImageURL("box-1", pngData)
+	if url2 != url1 {
+		t.Fatalf("expected identical screenshot to reuse URL, got %s vs %s", url1, url2)
+	}
+}

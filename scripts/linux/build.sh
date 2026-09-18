@@ -63,6 +63,18 @@ if [ ! -f .env ]; then
     fi
 fi
 
+# Enable Linux KSM for RAM deduplication if supported
+if [ -d /sys/kernel/mm/ksm ]; then
+    if [ -w /sys/kernel/mm/ksm/run ]; then
+        echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
+        echo 1 > /sys/kernel/mm/ksm/use_zero_pages 2>/dev/null || true
+        echo 1000 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null || true
+        echo 20 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
+    else
+        docker run --rm --privileged -v /sys/kernel/mm/ksm:/sys/kernel/mm/ksm alpine sh -c "echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null; echo 1 > /sys/kernel/mm/ksm/use_zero_pages 2>/dev/null; echo 1000 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null; echo 20 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null" >/dev/null 2>&1 || true
+    fi
+fi
+
 # Only build an image that doesn't exist yet - that is the entire difference
 # between "open the app" and "rebuild the app". A missing image (first run,
 # or a profile added since) still gets built.
@@ -72,6 +84,22 @@ echo ""
 echo "=== Ensuring the desktops can reach Ollama ==="
 
 ensure_ollama_ready
+
+echo ""
+echo "=== Configuring host filesystem integration ==="
+if [ -d /mnt/c ]; then
+    export FLOWERA_HOST_MNT_C="/mnt/c"
+    if [ -x "/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe" ]; then
+        /mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -NonInteractive -InputFormat None -Command "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress" < /dev/null > /tmp/flowera_host_apps.json 2>/dev/null || true
+    elif [ -x "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe" ]; then
+        /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -NonInteractive -InputFormat None -Command "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress" < /dev/null > /tmp/flowera_host_apps.json 2>/dev/null || true
+    elif command -v powershell.exe >/dev/null 2>&1; then
+        powershell.exe -NoProfile -NonInteractive -InputFormat None -Command "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress" < /dev/null > /tmp/flowera_host_apps.json 2>/dev/null || true
+    fi
+else
+    export FLOWERA_HOST_MNT_C="/"
+fi
+export FLOWERA_HOST_HOME="${HOME:-/home}"
 
 echo ""
 echo "=== Starting Flowera ==="
@@ -204,17 +232,22 @@ echo ""
 # Start Cloudflare tunnel, echoing its logs while watching for the
 # trycloudflare.com URL so it can be reported to the control plane for
 # display in the dashboard's Mobile dropdown.
-cloudflared tunnel --protocol http2 --url "http://127.0.0.1:8080" 2>&1 | while IFS= read -r line; do
-    echo "$line"
+while true; do
+    cloudflared tunnel --protocol http2 --url "http://127.0.0.1:8080" 2>&1 | while IFS= read -r line; do
+        echo "$line"
 
-    url=$(echo "$line" | grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' || true)
+        url=$(echo "$line" | grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' || true)
 
-    if [ -n "$url" ]; then
-        curl -fsS -X POST http://127.0.0.1:8080/api/tunnel \
-            -H "Content-Type: application/json" \
-            -d "{\"url\":\"$url\"}" \
-            >/dev/null 2>&1 || true
+        if [ -n "$url" ]; then
+            curl -fsS -X POST http://127.0.0.1:8080/api/tunnel \
+                -H "Content-Type: application/json" \
+                -d "{\"url\":\"$url\"}" \
+                >/dev/null 2>&1 || true
 
-        echo "(No access code needed for this URL - full control of this machine. Keep it to yourself.)"
-    fi
+            echo "(No access code needed for this URL - full control of this machine. Keep it to yourself.)"
+        fi
+    done
+
+    echo "Cloudflare tunnel disconnected. Reconnecting in 3s..."
+    sleep 3
 done

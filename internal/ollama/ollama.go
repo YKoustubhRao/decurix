@@ -14,6 +14,8 @@ import (
 	"net/http"
 	neturl "net/url"
 	"os"
+	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -74,24 +76,58 @@ const (
 	// makes it reload - which on a CPU-only host is minutes, not seconds.
 	NumCtx = 8192
 
-	// maxLoadedModels raises Ollama's own ceiling (OLLAMA_MAX_LOADED_MODELS,
-	// server default 1 on a CPU-only host) on the bundled container from 1
-	// to 2 - exactly enough for the two context sizes actually in play
-	// system-wide (NumCtx for every ordinary call, TheBot coding's 32768,
-	// see internal/coding.codeGenNumCtx), never more. Below this, the same
-	// model at two different num_ctx values is two different Ollama
-	// runners that take turns evicting each other: measured, a single
-	// coding call reloaded the shared model for every desktop (161s) and
-	// then reloaded it back the moment an ordinary chat turn followed it.
-	// Raising the ceiling lets both stay resident; codeGenKeepAlive (a
-	// short 5m, against the chat runner's 30m) is what then gives the
-	// rarely-used one's memory back promptly instead of both simply
-	// staying loaded forever. Only takes effect for the bundled container -
-	// an external Ollama named by OLLAMA_URL is not this control plane's to
-	// configure, and needs the same env var set by hand for the same fix
-	// to apply there.
-	maxLoadedModels = "2"
+	// maxLoadedModels defaults to 1 on memory-constrained machines to prevent
+	// concurrent multi-gigabyte runner allocation and memory thrashing.
+	// Override with OLLAMA_MAX_LOADED_MODELS in .env if desired.
+	maxLoadedModels = "1"
 )
+
+func defaultMaxLoadedModels() string {
+	if v := os.Getenv("OLLAMA_MAX_LOADED_MODELS"); v != "" {
+		return v
+	}
+	return maxLoadedModels
+}
+
+// DefaultNumThread returns the recommended thread count for CPU inference,
+// strictly reserving at least 1-2 cores for host and desktop responsiveness.
+func DefaultNumThread() int {
+	if v := getenvInt("OLLAMA_NUM_THREAD", 0); v > 0 {
+		return v
+	}
+	cpus := runtime.NumCPU()
+	if cpus > 4 {
+		// Leave at least 2 cores completely free for X11, Chromium, VNC, and OS responsiveness
+		return cpus - 2
+	}
+	if cpus > 2 {
+		return cpus - 1
+	}
+	return 1
+}
+
+func defaultNumThread() int {
+	return DefaultNumThread()
+}
+
+func getenvInt(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return fallback
+	}
+	return n
+}
+
+func getenvDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
 
 // DesktopURL returns the Ollama URL every new desktop is given: OLLAMA_URL
 // from the control plane's environment, otherwise the host's own Ollama.
@@ -251,7 +287,11 @@ func (m *Manager) EnsureReady(ctx context.Context) error {
 
 			Env: []string{
 				"OLLAMA_HOST=0.0.0.0:11434",
-				"OLLAMA_MAX_LOADED_MODELS=" + maxLoadedModels,
+				"OLLAMA_MAX_LOADED_MODELS=" + defaultMaxLoadedModels(),
+				"OLLAMA_FLASH_ATTENTION=" + getenvDefault("OLLAMA_FLASH_ATTENTION", "1"),
+				"OLLAMA_KV_CACHE_TYPE=" + getenvDefault("OLLAMA_KV_CACHE_TYPE", "q8_0"),
+				"OLLAMA_NUM_PARALLEL=" + getenvDefault("OLLAMA_NUM_PARALLEL", "1"),
+				"OLLAMA_NUM_THREAD=" + strconv.Itoa(defaultNumThread()),
 			},
 
 			Labels: map[string]string{
@@ -260,11 +300,15 @@ func (m *Manager) EnsureReady(ctx context.Context) error {
 			},
 		}
 
+		threads := DefaultNumThread()
 		hostConfig := &container.HostConfig{
 			Binds: []string{
 				volumeName + ":/root/.ollama",
 			},
-
+			Resources: container.Resources{
+				NanoCPUs:  int64(threads) * 1_000_000_000,
+				CPUShares: 512, // Lower priority than interactive desktop containers (1024)
+			},
 			RestartPolicy: container.RestartPolicy{
 				Name: "unless-stopped",
 			},
@@ -416,11 +460,19 @@ func (m *Manager) preloadModel(ctx context.Context, baseURL, model string) {
 	// agents send, so the resident copy this creates is the one they go on
 	// to use. Without num_ctx it loaded at Ollama's 4096 default, and the
 	// agents' first 8192 request threw it away and loaded the model again.
+	preloadOpts := map[string]any{
+		"num_ctx": NumCtx,
+	}
+	if nt := getenvInt("OLLAMA_NUM_THREAD", defaultNumThread()); nt > 0 {
+		preloadOpts["num_thread"] = nt
+	}
+	preloadOpts["num_batch"] = getenvInt("OLLAMA_NUM_BATCH", 512)
+
 	body, err := json.Marshal(map[string]any{
 		"model":      model,
 		"prompt":     "",
 		"keep_alive": "30m",
-		"options":    map[string]any{"num_ctx": NumCtx},
+		"options":    preloadOpts,
 	})
 
 	if err != nil {

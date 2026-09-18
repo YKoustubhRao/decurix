@@ -236,3 +236,35 @@ func TestOllamaChatForwardsNumCtxAndMaxTokens(t *testing.T) {
 		t.Errorf("num_predict sent = %v, want 8192", gotPredict)
 	}
 }
+
+func TestOllamaChatForwardsStopAndThreadOptions(t *testing.T) {
+	var gotStop any
+	var gotThread, gotBatch any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		opts, _ := body["options"].(map[string]any)
+		gotStop = opts["stop"]
+		gotThread = opts["num_thread"]
+		gotBatch = opts["num_batch"]
+		_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]any{"content": "ok"}, "done": true})
+	}))
+	defer srv.Close()
+
+	stopSeq := []string{"\nCommand execution result:"}
+	if _, err := NewOllama(srv.URL).Chat(context.Background(), "m",
+		[]Message{{Role: "user", Content: "hi"}}, Options{Stop: stopSeq}); err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+
+	stopList, ok := gotStop.([]any)
+	if !ok || len(stopList) != 1 || stopList[0] != stopSeq[0] {
+		t.Errorf("stop sequence sent = %v, want %v", gotStop, stopSeq)
+	}
+	if gotThread == nil || gotThread.(float64) <= 0 {
+		t.Errorf("num_thread sent = %v, want > 0", gotThread)
+	}
+	if gotBatch != float64(512) {
+		t.Errorf("num_batch sent = %v, want 512", gotBatch)
+	}
+}

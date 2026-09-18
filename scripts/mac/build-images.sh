@@ -1,8 +1,11 @@
 #!/bin/bash
 #
-# Builds the three desktop images (basic / developer / ai) from the
-# docker/desktop.*.Dockerfile build contexts using --platform linux/amd64
-# for seamless execution under macOS (Apple Silicon / Intel).
+# Builds the unified desktop base image and tools runtime from the
+# docker/ build contexts using --platform linux/amd64 for seamless
+# execution under macOS (Apple Silicon / Intel).
+#
+# Flags:
+#   --only-missing   skip building an image if it already exists locally
 
 set -e
 
@@ -21,34 +24,67 @@ fi
 
 cd "$root"
 
+ONLY_MISSING=""
+
+for arg in "$@"; do
+    case "$arg" in
+        --only-missing) ONLY_MISSING="1" ;;
+        *)
+            echo "ERROR: unknown flag: $arg" >&2
+            exit 1
+            ;;
+    esac
+done
+
 echo "========================================"
 echo " Building Flowera desktop images (macOS)"
 echo "========================================"
 
+export DOCKER_BUILDKIT=1
+
+image_exists() {
+    docker image inspect "$1" >/dev/null 2>&1
+}
+
+build_one() {
+    local tag="$1" dockerfile="$2" label="$3"
+
+    if [ -n "$ONLY_MISSING" ] && image_exists "$tag"; then
+        echo "=== $label image already exists, skipping ($tag) ==="
+        return
+    fi
+
+    echo ""
+    echo "=== Building $label image (linux/amd64) ==="
+    docker build \
+        --platform linux/amd64 \
+        -f "$dockerfile" \
+        -t "$tag" \
+        .
+}
+
+# 1. Build Base and Tools
+build_one "flowera-desktop:basic" "docker/desktop.basic.Dockerfile" "Unified Desktop Base"
+build_one "flowera-tools:latest" "docker/tools.Dockerfile" "Shared Tools Runtime"
+
+# 2. Tag Developer & AI profiles directly to basic (0 disk, 0 build time)
 echo ""
-echo "=== Building Basic desktop image (linux/amd64) ==="
-docker build \
-    --platform linux/amd64 \
-    -f docker/desktop.basic.Dockerfile \
-    -t flowera-desktop:basic \
-    .
+echo "=== Aliasing desktop profiles (developer / ai) to unified base ==="
+docker tag "flowera-desktop:basic" "flowera-desktop:developer"
+docker tag "flowera-desktop:basic" "flowera-desktop:ai"
+
+# 3. Populate shared tools volume
+echo ""
+echo "=== Populating shared tools volume (flowera-tools) ==="
+docker volume create flowera-tools >/dev/null
+docker run --rm -v flowera-tools:/target flowera-tools:latest
+docker volume create flowera-cache >/dev/null
+
+# 4. Prune dangling build layers
+echo ""
+echo "=== Pruning dangling build layers to reclaim disk space ==="
+docker image prune -f >/dev/null 2>&1 || true
 
 echo ""
-echo "=== Building Developer desktop image (linux/amd64) ==="
-docker build \
-    --platform linux/amd64 \
-    -f docker/desktop.developer.Dockerfile \
-    -t flowera-desktop:developer \
-    .
-
-echo ""
-echo "=== Building AI Developer desktop image (linux/amd64) ==="
-docker build \
-    --platform linux/amd64 \
-    -f docker/desktop.ai.Dockerfile \
-    -t flowera-desktop:ai \
-    .
-
-echo ""
-echo "=== Desktop images built ==="
-docker images "flowera-desktop"
+echo "=== Desktop and tools images ready ==="
+docker images --filter "reference=flowera-*"

@@ -118,6 +118,10 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
+	if s.IdleChecker != nil && outcomeKindFor(req.Kind, chatKind) == tasks.OutcomeDone {
+		s.IdleChecker.FastPauseAfter(desktopID, 15*time.Second)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 
 	json.NewEncoder(w).Encode(map[string]string{

@@ -665,3 +665,45 @@ def navigate(url, new_tab=False):
         return page.evaluate("document.title") or url
     finally:
         page.close()
+
+
+def wait_ready(timeout=15, default_title=""):
+    """
+    Wait for the active Chromium tab to reach interactive or complete state
+    and return its title, without navigating again.
+    """
+
+    deadline = time.monotonic() + timeout
+    page = None
+    while time.monotonic() < deadline:
+        try:
+            page = active_page()
+            break
+        except ComputerError:
+            time.sleep(0.2)
+
+    if page is None:
+        return default_title
+
+    try:
+        try:
+            page.call("Page.bringToFront")
+        except ComputerError:
+            pass
+
+        while time.monotonic() < deadline:
+            try:
+                state = page.evaluate("document.readyState")
+                if state in ("interactive", "complete"):
+                    break
+            except ComputerError:
+                pass
+            time.sleep(0.2)
+
+        try:
+            return page.evaluate("document.title") or default_title
+        except ComputerError:
+            return default_title
+    finally:
+        page.close()
+

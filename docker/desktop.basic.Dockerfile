@@ -160,6 +160,24 @@ RUN chmod 644 /home/headless/.config/autostart/flowera-agent.desktop \
 # no VNC and no agent - looking like a broken image rather than a
 # permission bit. Restoring 666 here, after every install and before the
 # USER switch, puts the base image's mechanism back exactly as designed.
+# Shared tools runtime configuration:
+# When flowera-tools is mounted at /opt/tools, environment scripts and path
+# automatically expose all tools to interactive shells, desktop apps, and daemons.
+RUN mkdir -p /opt/tools /var/cache/flowera /etc/profile.d && \
+    chmod 1777 /var/cache/flowera && \
+    echo 'if [ -f /opt/tools/env.sh ]; then . /opt/tools/env.sh; fi' > /etc/profile.d/flowera-tools.sh && \
+    chmod 644 /etc/profile.d/flowera-tools.sh
+
+ENV PATH="/opt/tools/bin:/opt/tools/go/bin:/opt/tools/node/bin:/opt/tools/rust/bin:${PATH}" \
+    GOROOT="/opt/tools/go" \
+    RUSTUP_HOME="/opt/tools/rust" \
+    CARGO_HOME="/home/headless/.cargo" \
+    NPM_CONFIG_CACHE="/var/cache/flowera/npm" \
+    GOPATH="/home/headless/go" \
+    GOMODCACHE="/var/cache/flowera/go" \
+    PIP_CACHE_DIR="/var/cache/flowera/pip" \
+    HF_HOME="/var/cache/flowera/huggingface"
+
 RUN chmod 666 /etc/passwd /etc/group
 
 USER headless

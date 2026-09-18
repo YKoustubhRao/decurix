@@ -31,6 +31,7 @@ import (
 type DesktopLister interface {
 	List(ctx context.Context) ([]desktop.Desktop, error)
 	Stop(ctx context.Context, id string) error
+	Pause(ctx context.Context, id string) error
 	LastViewed(id string) (time.Time, bool)
 }
 
@@ -42,13 +43,14 @@ type ActivityStore interface {
 	LastActivity(workerID string) (time.Time, bool, error)
 }
 
-// Checker sweeps running desktops on an interval and stops the ones that
+// Checker sweeps running desktops on an interval and stops or pauses the ones that
 // have been idle past Threshold.
 type Checker struct {
 	Desktops  DesktopLister
 	Tasks     ActivityStore
 	Threshold time.Duration
 	Interval  time.Duration // defaultInterval if zero
+	Action    string        // "pause" (freeze at 0% CPU) or "stop" (default)
 
 	// now is the test seam - defaults to time.Now.
 	now func() time.Time
@@ -146,10 +148,65 @@ func (c *Checker) checkOne(ctx context.Context, d desktop.Desktop) {
 		return
 	}
 
-	log.Printf("idlepause: stopping %s - idle since %s", d.ID, idleSince.Format(time.RFC3339))
+	if c.Action == "pause" {
+		log.Printf("idlepause: pausing %s - idle since %s", d.ID, idleSince.Format(time.RFC3339))
+		if err := c.Desktops.Pause(ctx, d.ID); err != nil {
+			log.Printf("idlepause: pausing %s: %v", d.ID, err)
+		}
+	} else {
+		log.Printf("idlepause: stopping %s - idle since %s", d.ID, idleSince.Format(time.RFC3339))
+		if err := c.Desktops.Stop(ctx, d.ID); err != nil {
+			log.Printf("idlepause: stopping %s: %v", d.ID, err)
+		}
+	}
+}
 
-	if err := c.Desktops.Stop(ctx, d.ID); err != nil {
-		log.Printf("idlepause: stopping %s: %v", d.ID, err)
+// FastPauseAfter schedules an idle check for desktopID after delay (e.g. 15 seconds after a task finishes).
+// If the desktop is not busy and hasn't had new activity or views during that window, it transitions to idle immediately.
+func (c *Checker) FastPauseAfter(desktopID string, delay time.Duration) {
+	if c == nil || c.Threshold <= 0 {
+		return
+	}
+	go func() {
+		time.Sleep(delay)
+		ctx := context.Background()
+		desktops, err := c.Desktops.List(ctx)
+		if err != nil {
+			return
+		}
+		for _, d := range desktops {
+			if d.ID == desktopID && d.Status == "running" {
+				c.checkFastPause(ctx, d, delay)
+				return
+			}
+		}
+	}()
+}
+
+func (c *Checker) checkFastPause(ctx context.Context, d desktop.Desktop, minIdle time.Duration) {
+	if reason, err := c.Tasks.Busy(d.ID); err != nil || reason != "" {
+		return
+	}
+
+	idleSince, ok, err := c.idleSince(d)
+	if err != nil || !ok {
+		return
+	}
+
+	if c.clock().Sub(idleSince) < minIdle {
+		return
+	}
+
+	if c.Action == "pause" {
+		log.Printf("idlepause: fast-pausing %s after task completion - idle since %s", d.ID, idleSince.Format(time.RFC3339))
+		if err := c.Desktops.Pause(ctx, d.ID); err != nil {
+			log.Printf("idlepause: fast-pausing %s: %v", d.ID, err)
+		}
+	} else {
+		log.Printf("idlepause: fast-stopping %s after task completion - idle since %s", d.ID, idleSince.Format(time.RFC3339))
+		if err := c.Desktops.Stop(ctx, d.ID); err != nil {
+			log.Printf("idlepause: fast-stopping %s: %v", d.ID, err)
+		}
 	}
 }
 

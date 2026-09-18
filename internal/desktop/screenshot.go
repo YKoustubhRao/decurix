@@ -6,15 +6,20 @@ import (
 	"context"
 	"crypto/des"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	"image/jpeg"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/YKoustubhRao/flowera/internal/sqlitedb"
 )
 
 // vncPort is the desktop's raw RFB port - the one Xvnc itself listens on
@@ -31,7 +36,7 @@ const vncPort = "5901"
 // (connect, RFB handshake, and a full framebuffer read); a desktop that is
 // mid-boot or wedged must never hold a dashboard request open.
 const (
-	captureTimeout = 12 * time.Second
+	captureTimeout = 3 * time.Second
 
 	// screenshotTTL is how long one captured frame is reused. Every browser
 	// showing the dashboard asks for every desktop's thumbnail, so without
@@ -66,9 +71,11 @@ const (
 // desktop wait for the frame already being fetched instead of each opening
 // their own VNC session.
 type shotEntry struct {
-	mu   sync.Mutex
-	data []byte
-	at   time.Time
+	mu      sync.Mutex
+	data    []byte
+	at      time.Time
+	lastErr error
+	errAt   time.Time
 }
 
 // shotCacheFor returns the cache entry for a desktop, creating it on first
@@ -93,6 +100,33 @@ func (m *Manager) shotCacheFor(desktopID string) *shotEntry {
 	return created
 }
 
+// shotFilePath returns the filesystem path where the latest thumbnail for
+// sanitizedID is persisted.
+func shotFilePath(sanitizedID string) string {
+	return filepath.Join(sqlitedb.DataDir(), "shots", sanitizedID+".jpg")
+}
+
+// saveShotToDisk atomically writes the JPEG thumbnail data to disk.
+func saveShotToDisk(sanitizedID string, data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	dir := filepath.Join(sqlitedb.DataDir(), "shots")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return
+	}
+	tmp := filepath.Join(dir, sanitizedID+".tmp")
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, filepath.Join(dir, sanitizedID+".jpg"))
+}
+
+// loadShotFromDisk loads the persisted JPEG thumbnail data for sanitizedID from disk.
+func loadShotFromDisk(sanitizedID string) ([]byte, error) {
+	return os.ReadFile(shotFilePath(sanitizedID))
+}
+
 // Screenshot returns a JPEG thumbnail of a desktop's current screen, scaled
 // so its longest edge is at most maxWidth pixels wide.
 //
@@ -113,11 +147,35 @@ func (m *Manager) Screenshot(ctx context.Context, rawID string, maxWidth int) ([
 		return entry.data, nil
 	}
 
+	// Negative caching: if capture failed very recently (e.g. desktop booting or VNC down),
+	// return the last error immediately instead of re-dialing and stalling dashboard threads.
+	if entry.lastErr != nil && time.Since(entry.errAt) < 2*time.Second {
+		return nil, entry.lastErr
+	}
+
 	// Only a cache miss pays for the ContainerInspect captureTarget needs to
 	// resolve the desktop's address and password - a cache hit above never
 	// touches Docker at all.
 	addr, password, _, err := m.captureTarget(ctx, rawID)
 	if err != nil {
+		if errors.Is(err, ErrPaused) {
+			if entry.data != nil {
+				// Container is frozen: its screen is completely static. Return
+				// the frozen thumbnail without attempting to dial VNC or failing.
+				m.touchViewed(sanitizedID)
+				return entry.data, nil
+			}
+			// Fall back to the screenshot persisted on disk before the pause or restart.
+			if diskData, diskErr := loadShotFromDisk(sanitizedID); diskErr == nil && len(diskData) > 0 {
+				entry.data = diskData
+				entry.at = time.Now()
+				entry.lastErr = nil
+				m.touchViewed(sanitizedID)
+				return diskData, nil
+			}
+		}
+		entry.lastErr = err
+		entry.errAt = time.Now()
 		return nil, err
 	}
 
@@ -125,16 +183,22 @@ func (m *Manager) Screenshot(ctx context.Context, rawID string, maxWidth int) ([
 
 	frame, err := captureFrame(ctx, addr, password)
 	if err != nil {
+		entry.lastErr = err
+		entry.errAt = time.Now()
 		return nil, err
 	}
 
 	encoded, err := encodeThumbnail(frame, maxWidth)
 	if err != nil {
+		entry.lastErr = err
+		entry.errAt = time.Now()
 		return nil, err
 	}
 
 	entry.data = encoded
 	entry.at = time.Now()
+	entry.lastErr = nil
+	go saveShotToDisk(sanitizedID, encoded)
 
 	return encoded, nil
 }
@@ -154,6 +218,10 @@ func (m *Manager) captureTarget(ctx context.Context, rawID string) (addr, passwo
 
 	if inspect.State == nil || !inspect.State.Running {
 		return "", "", sanitizedID, ErrNotRunning
+	}
+
+	if inspect.State.Paused {
+		return "", "", sanitizedID, ErrPaused
 	}
 
 	networkInfo, ok := inspect.NetworkSettings.Networks[NetworkName]
@@ -181,7 +249,9 @@ func (m *Manager) captureTarget(ctx context.Context, rawID string) (addr, passwo
 // full screen as an image. The session is deliberately short-lived: connect,
 // authenticate, ask for one non-incremental update, read it, hang up.
 func captureFrame(ctx context.Context, addr, password string) (*image.RGBA, error) {
-	dialer := net.Dialer{}
+	dialer := net.Dialer{
+		Timeout: 2 * time.Second,
+	}
 
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
@@ -483,19 +553,22 @@ func rfbReadFrame(reader io.Reader, writer io.Writer, width, height int) (*image
 
 // rfbPaintUpdate reads one FramebufferUpdate's rectangles into frame.
 func rfbPaintUpdate(reader io.Reader, frame *image.RGBA) error {
-	header := make([]byte, 3)
+	var header [3]byte
 
-	if _, err := io.ReadFull(reader, header); err != nil {
+	if _, err := io.ReadFull(reader, header[:]); err != nil {
 		return fmt.Errorf("read update header: %w", err)
 	}
 
 	bounds := frame.Bounds()
 	rectangles := binary.BigEndian.Uint16(header[1:3])
 
-	for i := 0; i < int(rectangles); i++ {
-		spec := make([]byte, 12)
+	// Reuse a single row buffer across all rectangles and scanlines.
+	rowBuf := make([]byte, bounds.Dx()*4)
 
-		if _, err := io.ReadFull(reader, spec); err != nil {
+	for i := 0; i < int(rectangles); i++ {
+		var spec [12]byte
+
+		if _, err := io.ReadFull(reader, spec[:]); err != nil {
 			return fmt.Errorf("read rectangle header: %w", err)
 		}
 
@@ -517,7 +590,7 @@ func rfbPaintUpdate(reader io.Reader, frame *image.RGBA) error {
 			return fmt.Errorf("desktop sent a rectangle outside the screen")
 		}
 
-		row := make([]byte, w*4)
+		row := rowBuf[:w*4]
 
 		for line := 0; line < h; line++ {
 			if _, err := io.ReadFull(reader, row); err != nil {
@@ -570,18 +643,28 @@ func rfbSkipCutText(reader io.Reader) error {
 	return err
 }
 
+var jpegBufPool = sync.Pool{
+	New: func() any {
+		return new(bytes.Buffer)
+	},
+}
+
 // encodeThumbnail scales a captured screen down so its width is at most
 // maxWidth and encodes it as JPEG.
 func encodeThumbnail(frame *image.RGBA, maxWidth int) ([]byte, error) {
 	scaled := downscale(frame, maxWidth)
 
-	var buffer bytes.Buffer
+	buf := jpegBufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer jpegBufPool.Put(buf)
 
-	if err := jpeg.Encode(&buffer, scaled, &jpeg.Options{Quality: jpegQuality}); err != nil {
+	if err := jpeg.Encode(buf, scaled, &jpeg.Options{Quality: jpegQuality}); err != nil {
 		return nil, fmt.Errorf("encode screen: %w", err)
 	}
 
-	return buffer.Bytes(), nil
+	res := make([]byte, buf.Len())
+	copy(res, buf.Bytes())
+	return res, nil
 }
 
 // downscale box-filters an image to at most maxWidth wide, preserving aspect

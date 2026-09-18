@@ -133,6 +133,20 @@ echo "=== Removing the bundled Ollama container (keeping its model volume) ==="
 docker rm -f flowera-ollama >/dev/null 2>&1 \
     || echo "(nothing to remove)"
 
+export DOCKER_BUILDKIT=1
+
+echo ""
+echo "=== Enabling Linux Kernel Samepage Merging (KSM) for RAM deduplication ==="
+if [ -w /sys/kernel/mm/ksm/run ]; then
+    echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null && echo "KSM enabled (run=1)" || true
+    if [ -w /sys/kernel/mm/ksm/use_zero_pages ]; then
+        echo 1 > /sys/kernel/mm/ksm/use_zero_pages 2>/dev/null && echo "KSM zero pages deduplication enabled" || true
+    fi
+else
+    # Try enabling via docker with mounted sysfs if direct write is not permitted
+    docker run --rm --privileged -v /sys/kernel/mm/ksm:/sys/kernel/mm/ksm alpine sh -c "echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null; echo 1 > /sys/kernel/mm/ksm/use_zero_pages 2>/dev/null" >/dev/null 2>&1 || true
+fi
+
 echo ""
 ./scripts/linux/build-images.sh
 
@@ -140,6 +154,24 @@ echo ""
 echo "=== Ensuring the desktops can reach Ollama ==="
 
 ensure_ollama_ready
+
+echo ""
+echo "=== Configuring host filesystem integration ==="
+if [ -d /mnt/c ]; then
+    export FLOWERA_HOST_MNT_C="/mnt/c"
+    echo "Discovered Windows filesystem at /mnt/c (WSL environment)"
+    # Pre-cache Windows applications list to /tmp/flowera_host_apps.json
+    if [ -x "/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe" ]; then
+        /mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -NonInteractive -InputFormat None -Command "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress" < /dev/null > /tmp/flowera_host_apps.json 2>/dev/null && echo "Pre-cached Windows applications via PowerShell." || true
+    elif [ -x "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe" ]; then
+        /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -NonInteractive -InputFormat None -Command "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress" < /dev/null > /tmp/flowera_host_apps.json 2>/dev/null && echo "Pre-cached Windows applications via PowerShell." || true
+    elif command -v powershell.exe >/dev/null 2>&1; then
+        powershell.exe -NoProfile -NonInteractive -InputFormat None -Command "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress" < /dev/null > /tmp/flowera_host_apps.json 2>/dev/null && echo "Pre-cached Windows applications via PowerShell." || true
+    fi
+else
+    export FLOWERA_HOST_MNT_C="/"
+fi
+export FLOWERA_HOST_HOME="${HOME:-/home}"
 
 echo ""
 echo "=== Starting Flowera ==="
@@ -270,17 +302,22 @@ echo ""
 # Start Cloudflare tunnel, echoing its logs while watching for the
 # trycloudflare.com URL so it can be reported to the control plane for
 # display in the dashboard's Mobile dropdown.
-cloudflared tunnel --protocol http2 --url "http://127.0.0.1:8080" 2>&1 | while IFS= read -r line; do
-    echo "$line"
+while true; do
+    cloudflared tunnel --protocol http2 --url "http://127.0.0.1:8080" 2>&1 | while IFS= read -r line; do
+        echo "$line"
 
-    url=$(echo "$line" | grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' || true)
+        url=$(echo "$line" | grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' || true)
 
-    if [ -n "$url" ]; then
-        curl -fsS -X POST http://127.0.0.1:8080/api/tunnel \
-            -H "Content-Type: application/json" \
-            -d "{\"url\":\"$url\"}" \
-            >/dev/null 2>&1 || true
+        if [ -n "$url" ]; then
+            curl -fsS -X POST http://127.0.0.1:8080/api/tunnel \
+                -H "Content-Type: application/json" \
+                -d "{\"url\":\"$url\"}" \
+                >/dev/null 2>&1 || true
 
-        echo "(No access code needed for this URL - full control of this machine. Keep it to yourself.)"
-    fi
+            echo "(No access code needed for this URL - full control of this machine. Keep it to yourself.)"
+        fi
+    done
+
+    echo "Cloudflare tunnel disconnected. Reconnecting in 3s..."
+    sleep 3
 done

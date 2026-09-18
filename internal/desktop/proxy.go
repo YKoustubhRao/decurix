@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // Sentinel errors returned by ProxyTarget so callers can map them to the
@@ -13,6 +14,7 @@ import (
 var (
 	ErrNotFound   = errors.New("desktop not found")
 	ErrNotRunning = errors.New("desktop is not running")
+	ErrPaused     = errors.New("desktop is paused")
 	ErrNoNetwork  = errors.New("desktop is not connected to Flowera network")
 	ErrNoAddress  = errors.New("desktop has no network IP")
 
@@ -43,6 +45,17 @@ func (m *Manager) AgentProxyTarget(ctx context.Context, rawID string) (proxyURL 
 // port the caller asks for (VNC vs. TheBot's own agent port).
 func (m *Manager) resolveProxyTarget(ctx context.Context, rawID, port string) (proxyURL *url.URL, sanitizedID string, err error) {
 	sanitizedID = sanitizeName(rawID)
+	cacheKey := sanitizedID + ":" + port
+
+	m.proxyTargetMu.RLock()
+	if entry, ok := m.proxyTargets[cacheKey]; ok && time.Now().Before(entry.expires) {
+		cachedURL := entry.proxyURL
+		m.proxyTargetMu.RUnlock()
+		m.touchViewed(sanitizedID)
+		return cachedURL, sanitizedID, nil
+	}
+	m.proxyTargetMu.RUnlock()
+
 	name := "desktop_" + sanitizedID
 
 	inspect, err := m.client.ContainerInspect(ctx, name)
@@ -52,6 +65,12 @@ func (m *Manager) resolveProxyTarget(ctx context.Context, rawID, port string) (p
 
 	if inspect.State == nil || !inspect.State.Running {
 		return nil, sanitizedID, ErrNotRunning
+	}
+
+	if inspect.State.Paused {
+		if err := m.client.ContainerUnpause(ctx, name); err != nil {
+			return nil, sanitizedID, fmt.Errorf("auto-wake paused desktop: %w", err)
+		}
 	}
 
 	networkInfo, ok := inspect.NetworkSettings.Networks[NetworkName]
@@ -76,6 +95,16 @@ func (m *Manager) resolveProxyTarget(ctx context.Context, rawID, port string) (p
 	}
 
 	m.touchViewed(sanitizedID)
+
+	m.proxyTargetMu.Lock()
+	if m.proxyTargets == nil {
+		m.proxyTargets = make(map[string]proxyTargetCacheEntry)
+	}
+	m.proxyTargets[cacheKey] = proxyTargetCacheEntry{
+		proxyURL: proxyURL,
+		expires:  time.Now().Add(15 * time.Second),
+	}
+	m.proxyTargetMu.Unlock()
 
 	return proxyURL, sanitizedID, nil
 }
