@@ -308,3 +308,69 @@ the web to example.com and tell me the page's main heading."` on a fresh
 `thebot` desktop came back as `Example Domain` — the same clean pass as
 before the port, confirming the browser skill needed no changes to keep
 working against the rewritten extension.
+
+## Verification off, no retries, cancellation - live tuning after real use
+
+Three changes made after actually chatting with a `thebot` desktop and
+watching real browsing runs:
+
+- **Step verification is off by default.** `extension/background.js`'s
+  `DEFAULT_LISTENER_SETTINGS.verifyEnabled` and `popup.html`'s `verify`
+  checkbox both flipped from on to off. Verification was a second model
+  call after every action, judging whether it actually achieved the step's
+  goal - roughly doubling steps-per-task, and the thing that turned a
+  genuine success (Wikipedia's search really did land on the right article)
+  into a false "paused" over a verify-timing race against the page's own
+  client-side redirect (see the Wikipedia run further up this file). The
+  action's own result (did the click/type/navigate itself succeed) is still
+  checked either way - only the separate did-it-achieve-the-goal judgment
+  is now opt-in.
+- **A browse that doesn't fully finish is reported, not retried.**
+  `internal/skills/browser.go`'s `report()` used to turn `blocked`/
+  `paused`/`stalled`/`timeout` into a terse failure with `needsUserInput`,
+  which sent every one of them through the scheduler's failure-reasoning
+  call (`internal/scheduler/recovery.go`) - an extra model round-trip to
+  reach a retry that, per the person actually using this, "rarely succeeds
+  once it fails." Every outcome except "done with no answer" now goes
+  through `summarizeBrowserRun()`, which compiles what the browser actually
+  saw and did from the extension's own step-by-step log into one narrative,
+  and the whole thing is reported as a **verified** answer - not a failure
+  to recover from. Genuine infrastructure failures (`ext_server.py`
+  unreachable, no request id, TheBot's own poll timing out with nothing to
+  show) are the one case still marked `fatal: true` instead: nothing was
+  observed, so there's nothing to compile, and there's equally nothing a
+  same-approach retry would fix.
+- **TheBot can actually cancel a browsing run, and the extension really
+  stops.** `POST /api/jobs/{id}/cancel` (already existed - `cmd/soul`'s
+  own job cancellation, and already called by `flowera_agent/
+  thebot_harness.py._cancel_job` when the harness gives up waiting on a
+  job) used to only ever stop TheBot's own side; the browser extension had
+  no way to hear about it and kept running against the real page, orphaned.
+  Now: `ext_server.py` gained `POST /requests/{id}/cancel` (flags a
+  `pending` request done immediately; flags a `running` one for the
+  extension to notice) and `GET /requests/{id}/cancelled` (a lightweight
+  poll target). `background.js`'s `runListenerLoop` runs a 1s poll of that
+  flag alongside the request it's processing, and reacts by both setting
+  `run.stop` (so the loop's own top-of-iteration check catches it between
+  steps) and aborting whatever model call is *currently in flight*
+  (`run.currentAbort`, threaded through `getJSON`/`postJSON`'s new optional
+  `run` argument via `callSignal()` - a manual `setTimeout`+`AbortController`
+  pairing, since this desktop's Chromium 112 predates `AbortSignal.any`).
+  `internal/skills/browser.go`'s `Run()` now calls this cancel endpoint
+  (`cancelAndReport`, its own background context - `rc.Ctx` is already dead
+  by the time this fires) the moment TheBot's own job context is cancelled,
+  then gives the extension a short grace window to actually stop and post
+  its real result, so what comes back is a genuine compiled account of
+  whatever it saw before being cancelled - handled by the exact same
+  `report()`/`summarizeBrowserRun()` path as any other outcome, which is
+  also what makes "TheBot can still answer questions about what it
+  observed" true: the compiled narrative is the skill's real output either
+  way, cancelled or not.
+
+Verified live: submitted a long, multi-step Wikipedia task directly to
+`ext_server.py`, let it start (confirmed `status: "running"`, one step
+already logged), then called `POST /requests/{id}/cancel` directly. The
+request was `"status": "done"` with `result.status: "cancelled"` within
+about a second - the poll interval's own granularity - with the real log up
+to that point intact (`Navigate to wikipedia.org` succeeded, then the
+in-flight second model call was the one actually aborted).

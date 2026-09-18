@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -19,13 +20,12 @@ import (
 // agent/BROWSER_INTEGRATION.md), instead of driving pages through the
 // operator's generic coordinate/xdotool loop.
 //
-// The extension already runs its own atomize -> act -> verify loop against
+// The extension already runs its own atomize -> act loop against
 // extension_pipeline/ext_server.py (agent/browser-agent, listening on
-// 127.0.0.1:8092 in this same container) and keeps itself listening for
-// work on its own (extension/background.js's ensureListening, woken by a
-// chrome.alarms watchdog so it survives the service worker being evicted
-// and restarted) - this skill only ever has to hand it a task and read
-// back the answer.
+// 127.0.0.1:8092 in this same container) and listens for work on its own by
+// default (extension/background.js's LISTENER, persisted across service-
+// worker and browser restarts) - this skill only ever has to hand it a task
+// and read back the answer.
 type BrowserSkill struct {
 	// BaseURL defaults to ext_server.py's own address; overridable (and,
 	// via EXT_SERVER_URL, settable without a rebuild) for a container laid
@@ -171,21 +171,36 @@ func (b *BrowserSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	var submitted struct {
 		ID string `json:"id"`
 	}
+	// fatal on every path below that reaches no real browser observation at
+	// all (never got a request id, or the poll itself never got an answer):
+	// there is nothing here a single cleverer retry could fix, and the
+	// scheduler's own failure-reasoning call (an extra model round-trip)
+	// would just spend a minute concluding the same thing. A run that DID
+	// observe something, even one that didn't finish the actual task, is
+	// handled entirely differently below (see report()) - that is not a
+	// failure to recover from, it is an answer.
 	if err := b.postJSON(rc.Ctx, "/requests", map[string]any{"kind": "instruction", "task": task}, &submitted); err != nil {
 		return finish("Could not reach the browser extension's backend (ext_server.py on :8092): "+err.Error(), false, map[string]any{
-			"error": err.Error(), "needsUserInput": true,
+			"error": err.Error(), "fatal": true, "needsUserInput": true,
 			"failureReasoning": "ext_server.py is not reachable - the desktop's browser extension may not have started yet",
 		})
 	}
 	if submitted.ID == "" {
 		return finish("The browser extension's backend accepted the task but returned no request id.", false,
-			map[string]any{"error": "empty request id", "needsUserInput": true})
+			map[string]any{"error": "empty request id", "fatal": true, "needsUserInput": true})
 	}
 
 	deadline := time.Now().Add(b.timeout())
 	for time.Now().Before(deadline) {
 		if err := rc.Ctx.Err(); err != nil {
-			return finish("Stopped before the browser finished: "+err.Error(), false, map[string]any{"error": err.Error(), "fatal": true})
+			// TheBot's own job was cancelled (POST /api/jobs/{id}/cancel,
+			// cmd/soul/main.go) - propagate that to the browser itself, or
+			// it just keeps running orphaned, still acting on the real page
+			// after this skill has stopped watching it. rc.Ctx is already
+			// done, so the cancel call (and the short wait below for the
+			// extension to actually notice and report) needs its own
+			// context, never rc.Ctx.
+			return b.cancelAndReport(subtask, submitted.ID, err)
 		}
 
 		var status extRequestsStatus
@@ -204,67 +219,126 @@ func (b *BrowserSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	}
 
 	return finish(fmt.Sprintf("The browser did not finish within %s.", b.timeout()), false, map[string]any{
-		"needsUserInput":   true,
+		"fatal": true, "needsUserInput": true,
 		"failureReasoning": "the browser extension took too long - it may be stuck, or nothing is listening for requests",
 	})
+}
+
+// cancelAndReport tells the extension to stop a request TheBot itself has
+// already given up waiting on (rc.Ctx is done), then gives it a short
+// window to actually notice, stop, and post its real result - so the
+// answer, if one comes back in time, is a genuine compiled account of
+// whatever the browser saw before it was cancelled (see report()), not a
+// bare "stopped" with nothing in it. Uses its own background context
+// throughout: rc.Ctx is already cancelled and cannot be used to make a new
+// request at all, let alone wait on one.
+const cancelGraceWindow = 8 * time.Second
+
+func (b *BrowserSkill) cancelAndReport(subtask Subtask, requestID string, causeErr error) (Result, error) {
+	meta := map[string]any{"userFacing": true, "error": causeErr.Error(), "fatal": true}
+	if requestID == "" {
+		return Result{Subtask: subtask, SkillName: b.Name(), Output: "Stopped before the browser started: " + causeErr.Error(), Verified: false, Meta: meta}, nil
+	}
+
+	bg := context.Background()
+	_ = b.postJSON(bg, "/requests/"+url.PathEscape(requestID)+"/cancel", map[string]any{}, nil)
+
+	deadline := time.Now().Add(cancelGraceWindow)
+	for time.Now().Before(deadline) {
+		var status extRequestsStatus
+		if err := b.getJSON(bg, "/requests/status", &status); err == nil {
+			for _, r := range status.Requests {
+				if r.ID == requestID && r.Status == "done" {
+					return b.report(subtask, r)
+				}
+			}
+		}
+		time.Sleep(browserPollInterval)
+	}
+
+	return Result{Subtask: subtask, SkillName: b.Name(), Output: "Cancelled: " + causeErr.Error() + " (the browser had not confirmed stopping yet).", Verified: false, Meta: meta}, nil
 }
 
 // report turns the extension's own outcome into a skill Result. r.Result is
 // never nil here - the caller only reaches this once the queue entry itself
 // is "done", which background.js only sets alongside posting a result.
+//
+// Anything the browser actually did - even a run that never finished the
+// task - is reported as a verified answer, never as a failure to recover
+// from: a captcha, a stalled step or a run that used up its own time budget
+// almost never goes differently on a second try, and the scheduler's retry/
+// decompose/ask-user machinery exists for failures a different approach
+// could fix, not this. What it actually saw along the way (compiled from
+// the extension's own step-by-step log) is real information TheBot should
+// be able to answer follow-up questions about regardless of whether the
+// original task was fully completed.
 func (b *BrowserSkill) report(subtask Subtask, r extRequest) (Result, error) {
 	meta := map[string]any{"userFacing": true}
 	res := r.Result
 	if res == nil {
+		meta["fatal"] = true
 		return Result{Subtask: subtask, SkillName: b.Name(), Output: "The browser finished with no result.", Verified: false, Meta: meta}, nil
 	}
 	if res.FinalURL != "" {
 		meta["url"] = res.FinalURL
 	}
 
-	switch res.Status {
-	case "done":
-		if res.Answer != "" {
-			return Result{Subtask: subtask, SkillName: b.Name(), Output: res.Answer, Verified: true, Meta: meta}, nil
-		}
-		var steps []string
-		for _, s := range res.Steps {
-			if s.Instruction != "" {
-				steps = append(steps, s.Instruction)
-			}
-		}
-		output := "Done in the browser."
-		if len(steps) > 0 {
-			output = "Done in the browser: " + strings.Join(steps, "; ")
-		}
-		return Result{Subtask: subtask, SkillName: b.Name(), Output: output, Verified: true, Meta: meta}, nil
-
-	case "blocked":
-		meta["needsUserInput"] = true
-		meta["failureReasoning"] = "the page blocked the browser (a captcha or bot check): " + res.Error
-		return Result{Subtask: subtask, SkillName: b.Name(), Output: "The browser was blocked: " + res.Error, Verified: false, Meta: meta}, nil
-
-	case "paused", "stalled":
-		reason := res.Error
-		if reason == "" {
-			reason = "the browser paused and needs a human to look"
-		}
-		meta["needsUserInput"] = true
-		meta["failureReasoning"] = reason
-		return Result{Subtask: subtask, SkillName: b.Name(), Output: "The browser paused: " + reason, Verified: false, Meta: meta}, nil
-
-	case "timeout":
-		meta["needsUserInput"] = true
-		meta["failureReasoning"] = "the browser task's own time limit ran out"
-		return Result{Subtask: subtask, SkillName: b.Name(), Output: "The browser task timed out.", Verified: false, Meta: meta}, nil
-
-	default: // "error", or anything this version of the extension doesn't send
-		errMsg := res.Error
-		if errMsg == "" {
-			errMsg = "unknown error"
-		}
-		meta["needsUserInput"] = true
-		meta["failureReasoning"] = errMsg
-		return Result{Subtask: subtask, SkillName: b.Name(), Output: "The browser could not finish: " + errMsg, Verified: false, Meta: meta}, nil
+	if res.Status == "done" && res.Answer != "" {
+		return Result{Subtask: subtask, SkillName: b.Name(), Output: res.Answer, Verified: true, Meta: meta}, nil
 	}
+	return Result{Subtask: subtask, SkillName: b.Name(), Output: summarizeBrowserRun(res), Verified: true, Meta: meta}, nil
+}
+
+// statusPrefixes are the one-line framing summarizeBrowserRun opens with,
+// before the compiled log - what kind of outcome this was, in plain words.
+var statusPrefixes = map[string]string{
+	"done":      "Finished browsing, but without a specific answer to report.",
+	"blocked":   "Blocked partway through by the page itself (a captcha or bot check).",
+	"paused":    "Paused partway through and did not finish the task.",
+	"stalled":   "Stopped making progress and did not finish the task.",
+	"timeout":   "Ran out of time before finishing the task.",
+	"cancelled": "Stopped early because the request was cancelled.",
+}
+
+// summarizeBrowserRun compiles what the browser actually saw and did into
+// one narrative, from the extension's own step-by-step log (background.js's
+// `log`, the same lines its popup shows live) - real observations, not a
+// guess at what probably happened.
+func summarizeBrowserRun(res *extResult) string {
+	var b strings.Builder
+
+	prefix, ok := statusPrefixes[res.Status]
+	if !ok {
+		prefix = "Hit an error before finishing the task."
+	}
+	b.WriteString(prefix)
+	if res.Error != "" {
+		fmt.Fprintf(&b, " Reason: %s", res.Error)
+	}
+	b.WriteString("\n\nWhat it actually saw and did:\n")
+
+	switch {
+	case len(res.Log) > 0:
+		b.WriteString(strings.Join(res.Log, "\n"))
+	case len(res.Steps) > 0:
+		var lines []string
+		for _, s := range res.Steps {
+			if s.Instruction == "" {
+				continue
+			}
+			line := "- " + s.Instruction
+			if s.Status != "" {
+				line += " (" + s.Status + ")"
+			}
+			lines = append(lines, line)
+		}
+		b.WriteString(strings.Join(lines, "\n"))
+	default:
+		b.WriteString("(nothing was recorded)")
+	}
+
+	if res.FinalURL != "" {
+		fmt.Fprintf(&b, "\n\nLast page: %s", res.FinalURL)
+	}
+	return strings.TrimSpace(b.String())
 }

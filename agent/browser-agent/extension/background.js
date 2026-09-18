@@ -132,21 +132,56 @@ function sleep(ms) {
 // single stalled call never returned.
 const CALL_TIMEOUT_MS = 180000;
 
-async function getJSON(path) {
-  const resp = await fetch(SERVER + path, { signal: AbortSignal.timeout(CALL_TIMEOUT_MS) });
-  return resp.json();
+// Chromium 112 (this desktop's base image) has no AbortSignal.any, so one
+// call's own timeout and an external cancel share ONE controller instead:
+// callSignal() makes a fresh one per call (a run's fetches happen one at a
+// time, in sequence, so each needs its own timeout window), and tracks it
+// on `run.currentAbort` for the run's whole duration - the request-listener
+// loop's cancellation poll (see runListenerLoop) aborts whatever that
+// currently points at, immediately, rather than waiting for CALL_TIMEOUT_MS
+// or for the loop to next check `run.stop` between steps.
+function callSignal(run) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new DOMException("Timed out", "TimeoutError")), CALL_TIMEOUT_MS);
+  if (run) run.currentAbort = controller;
+  return {
+    signal: controller.signal,
+    release() {
+      clearTimeout(timer);
+      if (run && run.currentAbort === controller) run.currentAbort = null;
+    },
+  };
 }
 
-async function postJSON(path, body) {
-  const resp = await fetch(SERVER + path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
-  });
-  const data = await resp.json();
-  if (!resp.ok || data.error) throw new Error(data.error || `${path} failed: ${resp.status}`);
-  return data;
+// `run` is optional and only ever needed for a call that should be
+// interruptible by an external cancel (see callSignal) - /models, /stats,
+// /requests/next and the rest of the listener's own bookkeeping calls don't
+// belong to any one run and are left as plain timeouts.
+async function getJSON(path, run = null) {
+  const call = callSignal(run);
+  try {
+    const resp = await fetch(SERVER + path, { signal: call.signal });
+    return await resp.json();
+  } finally {
+    call.release();
+  }
+}
+
+async function postJSON(path, body, run = null) {
+  const call = callSignal(run);
+  try {
+    const resp = await fetch(SERVER + path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: call.signal,
+    });
+    const data = await resp.json();
+    if (!resp.ok || data.error) throw new Error(data.error || `${path} failed: ${resp.status}`);
+    return data;
+  } finally {
+    call.release();
+  }
 }
 
 // Builds a per-request live-push callback for runLoop/handleProgram's
@@ -170,7 +205,7 @@ const PURPOSE_LABELS = {
 async function announceCall(run, modelKey, purpose) {
   let swap = false;
   try {
-    swap = (await getJSON(`/will_swap?model_key=${encodeURIComponent(modelKey)}`)).swap;
+    swap = (await getJSON(`/will_swap?model_key=${encodeURIComponent(modelKey)}`, run)).swap;
   } catch { /* ext_server unreachable -- the call itself will surface that */ }
   const text = swap
     ? `Loading ${modelKey} into VRAM (${PURPOSE_LABELS[purpose] || purpose}) -- can take 10-30s...`
@@ -661,6 +696,7 @@ async function runLoop(run, { task, remaining, modelKey, vision, verifyEnabled, 
 
   try {
     for (let i = 0; i < MAX_STEPS; i++) {
+      if (run.cancelledByUser) { stage(run, "Cancelled."); log(run, "Cancelled."); break; }
       if (run.stop) { stage(run, "Stopped by user."); log(run, "Stopped by user."); break; }
       if (deadline && Date.now() > deadline) {
         stage(run, "Stopped: task time limit reached.");
@@ -683,7 +719,7 @@ async function runLoop(run, { task, remaining, modelKey, vision, verifyEnabled, 
           model_key: modelKey, screenshot_b64: useVision ? snap.screenshot_b64 : null,
           last_error: lastError, verify_enabled: verifyEnabled, live_fields: snap.liveFields,
           visible_text: snap.visibleText, memory, flavour, stack,
-        });
+        }, run);
       } catch (e) {
         // Grammar-constrained output (STEP_SCHEMA) means the model can no
         // longer emit an unparseable action line -- the one remaining
@@ -839,7 +875,7 @@ async function runLoop(run, { task, remaining, modelKey, vision, verifyEnabled, 
           expectation: stepResp.expectation, url: afterSnap.url, raw_html: afterSnap.html,
           title: afterSnap.title, model_key: modelKey, live_fields: afterSnap.liveFields,
           screenshot_b64: useVision ? afterSnap.screenshot_b64 : null,
-        });
+        }, run);
         log(run, `  verify: ${verifyResp.met ? "MET" : "NOT_MET"} ${verifyResp.reason || ""}`);
         if (!verifyResp.met) {
           upsertStep(run, i, { status: "not_met", verify: verifyResp });
@@ -1120,6 +1156,7 @@ async function runListenerLoop({ modelKey, vision, verifyEnabled, flavour = "liv
         run.trace = [];
         run.paused = null;
         run.timedOut = false;
+        run.cancelledByUser = false;
 
         const label = req.kind === "program" ? `program "${req.program}"` : req.task;
         log(run, `── Request ${req.id} [${req.kind}]: ${label}`);
@@ -1132,29 +1169,60 @@ async function runListenerLoop({ modelKey, vision, verifyEnabled, flavour = "liv
 
         const pushLiveStep = makeLivePusher(req.id);
 
-        if (req.kind === "program") {
-          run.running = true;
+        // Polled independent of the step loop's own pacing, so a cancel
+        // (POST /requests/{id}/cancel -- TheBot's browser skill calls this
+        // when its own job is cancelled) interrupts a slow model call
+        // immediately (run.currentAbort, set by callSignal) rather than
+        // waiting for it to finish or time out, and still catches a run
+        // between steps if nothing happened to be in flight. Cleared in the
+        // finally below the instant this request is done, one way or another.
+        const cancelPoll = setInterval(async () => {
           try {
-            await handleProgram(run, req, started + capMs, pushLiveStep);
-          } finally {
-            run.running = false;
+            const { cancelled } = await getJSON(`/requests/${encodeURIComponent(req.id)}/cancelled`);
+            if (cancelled && !run.cancelledByUser) {
+              run.cancelledByUser = true;
+              run.stop = true;
+              log(run, "Cancelled by request.");
+              stage(run, "Cancelling...");
+              run.currentAbort?.abort(new DOMException("Cancelled", "AbortError"));
+            }
+          } catch { /* ext_server hiccup -- try again next tick */ }
+        }, 1000);
+
+        try {
+          if (req.kind === "program") {
+            run.running = true;
+            try {
+              await handleProgram(run, req, started + capMs, pushLiveStep);
+            } finally {
+              run.running = false;
+            }
+            if (run.cancelledByUser) { status = "cancelled"; error = "Cancelled by request."; }
+            else if (run.timedOut) status = "timeout";
+          } else {
+            await runLoop(run, {
+              task: req.task, remaining: req.task, modelKey, vision, verifyEnabled,
+              lastError: null, memory: "", flavour, stack: null, deadline: started + capMs,
+              onStepState: pushLiveStep,
+            });
+            if (run.cancelledByUser) { status = "cancelled"; error = "Cancelled by request."; }
+            else if (run.blocked) { status = "blocked"; error = run.blocked; }
+            else if (run.fatalError) { status = "error"; error = run.fatalError; }
+            else if (run.timedOut) status = "timeout";
+            else if (run.paused) { status = "paused"; error = run.paused.lastError; }
+            else if (run.stalled) { status = "stalled"; error = run.stalled; }
           }
-          if (run.timedOut) status = "timeout";
-        } else {
-          await runLoop(run, {
-            task: req.task, remaining: req.task, modelKey, vision, verifyEnabled,
-            lastError: null, memory: "", flavour, stack: null, deadline: started + capMs,
-            onStepState: pushLiveStep,
-          });
-          if (run.blocked) { status = "blocked"; error = run.blocked; }
-          else if (run.fatalError) { status = "error"; error = run.fatalError; }
-          else if (run.timedOut) status = "timeout";
-          else if (run.paused) { status = "paused"; error = run.paused.lastError; }
-          else if (run.stalled) { status = "stalled"; error = run.stalled; }
+        } finally {
+          clearInterval(cancelPoll);
         }
       } catch (exc) {
-        status = "error";
-        error = String(exc.message || exc);
+        if (run?.cancelledByUser) {
+          status = "cancelled";
+          error = "Cancelled by request.";
+        } else {
+          status = "error";
+          error = String(exc.message || exc);
+        }
         if (run) log(run, `Request failed: ${error}`);
       }
 
@@ -1215,7 +1283,15 @@ async function runListenerLoop({ modelKey, vision, verifyEnabled, flavour = "liv
 // clicks Start. An explicit Stop persists enabled:false and is respected --
 // this only fills in the unconfigured case.
 const DEFAULT_LISTENER_SETTINGS = {
-  modelKey: "devstral", vision: false, verifyEnabled: true, flavour: "live", perTaskSeconds: 900,
+  // verifyEnabled off by default: an extra model call after every single
+  // action, second-guessing it against an expectation, roughly doubles
+  // steps-per-task and is what turned a real success (the search actually
+  // landed) into a false "paused" over a verify-timing race against a
+  // page's own client-side redirect (see agent/BROWSER_INTEGRATION.md).
+  // The action's own result (did the click/type/navigate itself succeed)
+  // is still checked either way - this only turns off the SEPARATE
+  // did-it-achieve-the-goal judgment call layered on top.
+  modelKey: "devstral", vision: false, verifyEnabled: false, flavour: "live", perTaskSeconds: 900,
 };
 
 // Re-arms the listener after a service-worker restart or a fresh browser

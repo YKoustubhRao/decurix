@@ -87,8 +87,57 @@ class RequestResultBody(BaseModel):
 
 def _add_request(r: RequestBody):
     rid = r.id or f"r{int(time.time() * 1000)}{len(REQUESTS)}"
-    REQUESTS.append({**r.model_dump(), "id": rid, "status": "pending", "result": None, "live_steps": []})
+    REQUESTS.append({
+        **r.model_dump(), "id": rid, "status": "pending", "result": None,
+        "live_steps": [], "cancel_requested": False,
+    })
     return rid
+
+
+@app.post("/requests/{request_id}/cancel")
+def cancel_request(request_id: str):
+    """Cancels a request from OUTSIDE the extension -- the caller (TheBot's
+    browser skill, agent/thebot/internal/skills/browser.go) has no way to
+    reach into the browser itself, so this just raises a flag the extension
+    checks on its own, whether or not the request has actually started yet:
+
+    - still "pending" (queued, never claimed by /requests/next): finished
+      right here, with no browser involved at all, since nothing is running
+      it yet.
+    - "running": left alone here. background.js's own cancellation poll
+      (GET .../cancelled) is what actually stops it, mid-step if need be,
+      and files the real /requests/result once it has -- whatever it saw up
+      to that point, not a synthesized "cancelled" with nothing in it.
+    - already "done": a no-op. Nothing to stop, and the real result -
+      succeeded, failed, or already reported as cancelled - stands as-is."""
+    with REQUESTS_LOCK:
+        for r in REQUESTS:
+            if str(r.get("id")) != str(request_id):
+                continue
+            r["cancel_requested"] = True
+            if r["status"] == "pending":
+                r["status"] = "done"
+                r["result"] = {
+                    "id": request_id, "status": "cancelled", "answer": None, "steps": [],
+                    "log": ["Cancelled before it started."], "error": "Cancelled before it started.",
+                    "final_url": None, "check_passed": None, "elapsed_s": 0.0,
+                }
+            return {"ok": True, "status": r["status"]}
+    return {"ok": False, "error": "unknown request id"}
+
+
+@app.get("/requests/{request_id}/cancelled")
+def is_cancelled(request_id: str):
+    """Polled by background.js while a request is running (see
+    runListenerLoop) -- deliberately its own tiny endpoint rather than
+    folded into /requests/status, which returns every request's full
+    state (screenshots included) and would be wasteful to poll every
+    second just to read one boolean."""
+    with REQUESTS_LOCK:
+        for r in REQUESTS:
+            if str(r.get("id")) == str(request_id):
+                return {"cancelled": bool(r.get("cancel_requested"))}
+    return {"cancelled": False}
 
 
 # Bounds how many in-flight step snapshots (each with a screenshot + HTML)
