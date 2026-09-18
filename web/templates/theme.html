@@ -753,16 +753,21 @@ body.busy{cursor:progress}
 
   /* ---- form-encoded POST helper ---- */
 
-  async function post(url, fields){
+  async function post(url, fields, options){
     var body = new URLSearchParams();
 
     Object.keys(fields).forEach(function(k){ body.append(k, fields[k]); });
 
-    var response = await fetch(url, {
+    var fetchOpts = {
       method: "POST",
       headers: {"Content-Type": "application/x-www-form-urlencoded"},
       body: body
-    });
+    };
+    if(options && options.signal){
+      fetchOpts.signal = options.signal;
+    }
+
+    var response = await fetch(url, fetchOpts);
 
     var data = await response.json().catch(function(){ return {}; });
 

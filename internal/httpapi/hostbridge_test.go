@@ -45,6 +45,14 @@ func TestDetectHostAppsHandler(t *testing.T) {
 	if !foundBridge {
 		t.Errorf("expected host_bridge in /api/host-apps/detect response")
 	}
+
+	// Verify ?refresh=1 force refresh parameter
+	reqRef := httptest.NewRequest(http.MethodGet, "/api/host-apps/detect?refresh=1", nil)
+	recRef := httptest.NewRecorder()
+	mux.ServeHTTP(recRef, reqRef)
+	if recRef.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on refresh, got %d: %s", recRef.Code, recRef.Body.String())
+	}
 }
 
 func TestHostBridgeExecHandlerCLI(t *testing.T) {

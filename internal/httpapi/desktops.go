@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -238,7 +239,18 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		parentID,
 	)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || r.Context().Err() != nil {
+			log.Printf("createDesktop: request canceled by client, aborting creation for %s", name)
+			return
+		}
 		jsonError(w, err)
+		return
+	}
+
+	// Clean up immediately if client aborted while Create was finishing
+	if r.Context().Err() != nil {
+		log.Printf("createDesktop: client canceled after container creation, deleting %s", created.ID)
+		_ = s.Desktops.Delete(context.Background(), created.ID)
 		return
 	}
 
@@ -267,7 +279,7 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	// Migrate host desktop applications, session tokens, and credentials if requested
 	copyHostApps := r.FormValue("copy_host_apps") == "1" ||
 		strings.EqualFold(r.FormValue("copy_host_apps"), "true")
-	if copyHostApps {
+	if copyHostApps && r.Context().Err() == nil {
 		var selectedApps []string
 		appsVal := strings.TrimSpace(r.FormValue("host_apps"))
 		if appsVal != "" {
@@ -277,18 +289,17 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		if len(selectedApps) == 0 {
-			detected := desktop.DetectHostApps()
-			for _, item := range detected {
-				if item.Detected {
-					selectedApps = append(selectedApps, item.ID)
-				}
+		if len(selectedApps) > 0 {
+			if err := s.Desktops.MigrateHostApps(r.Context(), created.ID, selectedApps); err != nil {
+				log.Printf("createDesktop: migrate host apps into %s: %v", created.ID, err)
 			}
 		}
+	}
 
-		if err := s.Desktops.MigrateHostApps(r.Context(), created.ID, selectedApps); err != nil {
-			log.Printf("createDesktop: migrate host apps into %s: %v", created.ID, err)
-		}
+	if r.Context().Err() != nil {
+		log.Printf("createDesktop: client canceled during migration, deleting %s", created.ID)
+		_ = s.Desktops.Delete(context.Background(), created.ID)
+		return
 	}
 
 	jsonResponse(w, created)

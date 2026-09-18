@@ -17,16 +17,146 @@ func TestDetectHostApps(t *testing.T) {
 	}
 
 	foundBridge := false
+	foundEdge := false
+
 	for _, item := range items {
+		if !item.Detected {
+			t.Errorf("expected ONLY detected apps, but found undetected item: %s (%s)", item.Name, item.ID)
+		}
 		if item.ID == "host_bridge" {
 			foundBridge = true
-			if !item.Detected {
-				t.Errorf("host_bridge should always be marked detected")
-			}
+		}
+		if item.ID == "edge" || item.ID == "win_microsoft_edge" || strings.Contains(strings.ToLower(item.Name), "edge") {
+			foundEdge = true
 		}
 	}
+
 	if !foundBridge {
 		t.Errorf("expected host_bridge in DetectHostApps list")
+	}
+	if IsWSLOrWindows() && !foundEdge {
+		t.Errorf("expected Edge to be detected on WSL/Windows host")
+	}
+
+	t.Logf("Detected %d total verified apps across host system", len(items))
+	detectedCount := 0
+	for _, item := range items {
+		if item.Detected {
+			detectedCount++
+			t.Logf("  [READY] %s (%s) - %s [cmd: %s]", item.Name, item.Category, item.Description, item.HostCmd)
+		}
+	}
+	t.Logf("Total ready/detected: %d / %d", detectedCount, len(items))
+}
+
+func TestParseGetStartAppsJSON(t *testing.T) {
+	jsonArray := []byte(`[
+		{"Name":"Microsoft Edge","AppID":"Microsoft.MicrosoftEdge.Stable_8wekyb3d8bbwe!App"},
+		{"Name":"YouTube","AppID":"Chrome._crx_agimnkijcaiengbajagbfclojfljnakf"},
+		{"Name":"Spotify","AppID":"Spotify.exe"}
+	]`)
+
+	apps := parseGetStartAppsJSON(jsonArray)
+	if len(apps) != 3 {
+		t.Fatalf("expected 3 apps, got %d", len(apps))
+	}
+	if apps[0].Name != "Microsoft Edge" || apps[1].Name != "YouTube" || apps[2].Name != "Spotify" {
+		t.Errorf("unexpected parsed apps: %+v", apps)
+	}
+
+	// Single object format
+	singleJSON := []byte(`{"Name":"Discord","AppID":"com.squirrel.Discord.Discord"}`)
+	singleApps := parseGetStartAppsJSON(singleJSON)
+	if len(singleApps) != 1 || singleApps[0].Name != "Discord" {
+		t.Errorf("unexpected single parsed app: %+v", singleApps)
+	}
+}
+
+func TestWSLToWindowsPath(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"/mnt/c/ProgramData/Microsoft/Windows/Start Menu/Programs", `C:\ProgramData\Microsoft\Windows\Start Menu\Programs`},
+		{"/mnt/c/Users/Administrator/AppData/Local/Microsoft/Edge/User Data", `C:\Users\Administrator\AppData\Local\Microsoft\Edge\User Data`},
+		{"/c/Users/User/AppData", `C:\Users\User\AppData`},
+		{"/mnt/d/Games/Steam", `D:\Games\Steam`},
+	}
+
+	for _, tc := range tests {
+		res := wslToWindowsPath(tc.input)
+		if res != tc.expected {
+			t.Errorf("wslToWindowsPath(%q) = %q; want %q", tc.input, res, tc.expected)
+		}
+	}
+}
+
+func TestCleanAppShortcutName(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"Visual Studio Code (64-bit)", "Visual Studio Code"},
+		{"Spotify - Shortcut", "Spotify"},
+		{"Google Chrome (32-bit) - Shortcut", "Google Chrome"},
+		{"Microsoft Edge", "Microsoft Edge"},
+	}
+
+	for _, tc := range tests {
+		res := cleanAppShortcutName(tc.input)
+		if res != tc.expected {
+			t.Errorf("cleanAppShortcutName(%q) = %q; want %q", tc.input, res, tc.expected)
+		}
+	}
+}
+
+func TestPackDynamicApp(t *testing.T) {
+	buf := new(bytes.Buffer)
+	tw := tar.NewWriter(buf)
+
+	app := HostAppItem{
+		ID:          "win_spotify",
+		Name:        "Spotify Music",
+		Category:    "Media & Entertainment",
+		Description: "Spotify Windows desktop app",
+		HostCmd:     `cmd.exe /c start "" "shell:AppsFolder\Spotify.exe"`,
+		Icon:        "audio-x-generic",
+	}
+
+	if err := packDynamicApp(tw, app); err != nil {
+		t.Fatalf("packDynamicApp failed: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tr := tar.NewReader(buf)
+	foundFiles := make(map[string]bool)
+	var desktopContent string
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		foundFiles[hdr.Name] = true
+		if hdr.Name == "Desktop/spotify-music-host.desktop" {
+			data, _ := io.ReadAll(tr)
+			desktopContent = string(data)
+		}
+	}
+
+	if !foundFiles["Desktop/spotify-music-host.desktop"] {
+		t.Errorf("expected Desktop/spotify-music-host.desktop to be packed")
+	}
+	if !foundFiles[".local/share/applications/spotify-music-host.desktop"] {
+		t.Errorf("expected .local/share/applications/spotify-music-host.desktop to be packed")
+	}
+	if !strings.Contains(desktopContent, "Exec=/home/headless/.local/bin/host-run cmd.exe /c start") {
+		t.Errorf("unexpected desktop content: %s", desktopContent)
 	}
 }
 
@@ -95,12 +225,18 @@ func TestPackHostBridgeLaunchers(t *testing.T) {
 		".local/bin/host-open",
 		".local/bin/host-clip",
 		".local/bin/chrome-host",
+		".local/bin/edge-host",
+		".local/bin/youtube-host",
 		".local/bin/code-host",
 		".local/bin/terminal-host",
 		"Desktop/chrome-host.desktop",
+		"Desktop/edge-host.desktop",
+		"Desktop/youtube-host.desktop",
 		"Desktop/code-host.desktop",
 		"Desktop/terminal-host.desktop",
 		".local/share/applications/chrome-host.desktop",
+		".local/share/applications/edge-host.desktop",
+		".local/share/applications/youtube-host.desktop",
 	}
 
 	for _, exp := range expected {
