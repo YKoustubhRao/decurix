@@ -195,6 +195,20 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 	// Build tar archive buffer
 	tarBuf := new(bytes.Buffer)
 	tw := tar.NewWriter(tarBuf)
+	// Stream archive directly into container at /home/headless via pipe (zero RAM duplication)
+	pr, pw := io.Pipe()
+	copyOpts := container.CopyToContainerOptions{
+		AllowOverwriteDirWithFile: false,
+		CopyUIDGID:                false,
+	}
+
+	copyErrCh := make(chan error, 1)
+	go func() {
+		defer pr.Close()
+		copyErrCh <- m.client.CopyToContainer(ctx, inspect.ID, "/home/headless", pr, copyOpts)
+	}()
+
+	tw := tar.NewWriter(pw)
 
 	defs := getKnownAppDefs()
 	defMap := make(map[string]knownAppDef)
@@ -237,8 +251,11 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 	}
 
 	if err := tw.Close(); err != nil {
+		_ = pw.CloseWithError(err)
+		<-copyErrCh
 		return fmt.Errorf("close tar archive: %w", err)
 	}
+	_ = pw.Close()
 
 	if tarBuf.Len() == 0 {
 		return nil
@@ -251,6 +268,7 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 	}
 
 	if err := m.client.CopyToContainer(ctx, inspect.ID, "/home/headless", tarBuf, copyOpts); err != nil {
+	if err := <-copyErrCh; err != nil {
 		return fmt.Errorf("copy host apps to %s: %w", containerName, err)
 	}
 
@@ -1911,18 +1929,23 @@ func isCacheOrTransient(name, fullPath string, isDir bool) bool {
 		return true
 	}
 	if lower == "gpu-cache" || lower == "gpucache" || lower == "code cache" || lower == "codecache" || lower == "dawncache" {
+	if lower == "gpu-cache" || lower == "gpucache" || lower == "code cache" || lower == "codecache" || lower == "dawncache" || lower == "grshadercache" {
 		return true
 	}
 	if lower == "crashpad" || lower == "crash reports" || strings.HasPrefix(lower, "browsermetrics") {
+	if lower == "crashpad" || lower == "crash reports" || strings.HasPrefix(lower, "browsermetrics") || lower == "minidumps" {
 		return true
 	}
 	if strings.HasSuffix(lower, ".tmp") || strings.HasSuffix(lower, ".log") || strings.HasSuffix(lower, ".dmp") {
+	if strings.HasSuffix(lower, ".tmp") || strings.HasSuffix(lower, ".log") || strings.HasSuffix(lower, ".dmp") || strings.HasSuffix(lower, ".swp") {
 		return true
 	}
 	if isDir && (lower == "logs" || lower == "node_modules" || lower == "pkg" || lower == "temp" ||
 		lower == "indexeddb" || lower == "service worker" || lower == "blob_storage" || lower == "file system" ||
 		lower == "storage" || lower == "extensions" || lower == "dictionaries" || lower == "media cache" ||
 		lower == "optimizationguide" || lower == "hyphenation-data" || lower == "variations" || lower == "webrtc_event_logs") {
+		lower == "optimizationguide" || lower == "hyphenation-data" || lower == "variations" || lower == "webrtc_event_logs" ||
+		lower == ".git" || lower == "__pycache__" || lower == ".pytest_cache" || lower == ".mypy_cache" || lower == ".cache") {
 		return true
 	}
 
@@ -1954,6 +1977,11 @@ func writeDirToTar(tw *tar.Writer, srcDir, destPrefix string, excludeFilter func
 			if strings.Count(rel, string(filepath.Separator)) >= 3 {
 				return filepath.SkipDir
 			}
+		}
+
+		// Skip non-regular special files (sockets, pipes, devices)
+		if !isDir && (info.Mode()&(os.ModeSocket|os.ModeNamedPipe|os.ModeDevice) != 0) {
+			return nil
 		}
 
 		if excludeFilter != nil && excludeFilter(info.Name(), path, isDir) {

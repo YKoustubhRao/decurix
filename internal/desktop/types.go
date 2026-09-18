@@ -41,3 +41,46 @@ type ResourceAllocation struct {
 	CPUs     int64 `json:"cpus"`
 	MemoryMB int64 `json:"memory_mb"`
 }
+
+// ProvisioningDesktop tracks an in-flight desktop creation so that callers
+// receive immediate acceptance (<15ms) while the volume, container, host apps,
+// and VNC initialization finish asynchronously in the background.
+type ProvisioningDesktop struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Profile        string `json:"profile"`
+	Harness        string `json:"harness"`
+	Model          string `json:"model,omitempty"`
+	CPUs           int64  `json:"cpus"`
+	MemoryMB       int64  `json:"memory_mb"`
+	Status         string `json:"status"` // "provisioning", "running", "failed"
+	Stage          string `json:"stage"`  // "initializing", "volume", "container", "apps", "starting", "readiness", "ready"
+	Message        string `json:"message"`
+	Progress       int    `json:"progress"` // percentage 0-100
+	URL            string `json:"url"`
+	CreatedAt      string `json:"created_at"`
+	Error          string `json:"error,omitempty"`
+	Specialization string `json:"specialization,omitempty"`
+	ParentID       string `json:"parent_id,omitempty"`
+	Ready          bool   `json:"ready"`
+}
+
+// ToDesktop converts a ProvisioningDesktop into a Desktop struct.
+func (p *ProvisioningDesktop) ToDesktop() Desktop {
+	return Desktop{
+		ID:             p.ID,
+		Name:           p.Name,
+		Profile:        p.Profile,
+		Harness:        p.Harness,
+		Model:          p.Model,
+		Volume:         "desktop_" + p.ID + "_home",
+		Status:         p.Status,
+		CPUs:           p.CPUs,
+		MemoryMB:       p.MemoryMB,
+		URL:            p.URL,
+		CreatedAt:      p.CreatedAt,
+		Specialization: p.Specialization,
+		ParentID:       p.ParentID,
+	}
+}
+

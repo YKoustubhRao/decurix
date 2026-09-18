@@ -414,6 +414,7 @@ svg{display:block;flex:none}
   text-transform:capitalize
 }
 .status.running{background:var(--live-soft);color:var(--live)}
+.status.provisioning{background:rgba(234, 179, 8, 0.16);color:#eab308}
 .status.paused{background:rgba(56, 189, 248, 0.16);color:#38bdf8}
 .status.stopped{background:var(--idle-soft);color:var(--text-2)}
 
@@ -428,6 +429,7 @@ svg{display:block;flex:none}
 
 .dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
 .status.running .dot{animation:pulse 2.4s ease-in-out infinite}
+.status.provisioning .dot{animation:pulse 1.2s ease-in-out infinite}
 
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
 

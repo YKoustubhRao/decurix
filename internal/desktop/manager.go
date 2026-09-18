@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -81,6 +82,12 @@ type Manager struct {
 	// agent APIs on port 8081, eliminating TCP handshake overhead on every
 	// command dispatch.
 	httpClient *http.Client
+
+	// provisioningMu and provisioning track in-flight desktop creation so that
+	// requests are accepted immediately (< 15ms) while the container spins up
+	// and desktop icons/apps are migrated in the background.
+	provisioningMu sync.RWMutex
+	provisioning   map[string]*ProvisioningDesktop
 }
 
 // proxyTargetCacheEntry stores a cached reverse-proxy URL along with its expiration.
@@ -108,6 +115,7 @@ func NewManager(cli *client.Client) *Manager {
 		startedCache:      make(map[string]string),
 		proxyTargets:      make(map[string]proxyTargetCacheEntry),
 		resourceOverrides: make(map[string]ResourceAllocation),
+		provisioning:      make(map[string]*ProvisioningDesktop),
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 			Transport: &http.Transport{
@@ -270,6 +278,248 @@ func (m *Manager) Create(
 	}, nil
 }
 
+// BeginProvisioning registers an in-flight provisioning desktop and launches
+// an asynchronous background goroutine to create the volume, container, host app
+// migration, container start, and readiness probing. It returns the ProvisioningDesktop
+// immediately (< 15ms) so that HTTP APIs and user interfaces never hang.
+func (m *Manager) BeginProvisioning(
+	name string,
+	profile string,
+	harness string,
+	cpus int64,
+	memoryMB int64,
+	claudeCredentialsJSON string,
+	specialization string,
+	parentID string,
+	selectedApps []string,
+	onStarted func(d *Desktop) error,
+) (*ProvisioningDesktop, error) {
+	sanitizedID := sanitizeName(name)
+	if sanitizedID == "" {
+		return nil, fmt.Errorf("invalid desktop name")
+	}
+
+	// Verify no existing container or provisioning desktop with this name
+	m.provisioningMu.RLock()
+	if _, exists := m.provisioning[sanitizedID]; exists {
+		m.provisioningMu.RUnlock()
+		return nil, fmt.Errorf("desktop %s is already being created", name)
+	}
+	m.provisioningMu.RUnlock()
+
+	// Check if container already exists
+	if _, err := m.client.ContainerInspect(context.Background(), "desktop_"+sanitizedID); err == nil {
+		return nil, fmt.Errorf("desktop %s already exists", name)
+	}
+
+	prov := &ProvisioningDesktop{
+		ID:             sanitizedID,
+		Name:           name,
+		Profile:        profile,
+		Harness:        harness,
+		CPUs:           cpus,
+		MemoryMB:       memoryMB,
+		Status:         "provisioning",
+		Stage:          "initializing",
+		Message:        "Spinning up desktop...",
+		Progress:       10,
+		URL:            desktopURL(sanitizedID),
+		CreatedAt:      time.Now().Format(time.RFC3339),
+		Specialization: specialization,
+		ParentID:       parentID,
+		Ready:          false,
+	}
+
+	m.provisioningMu.Lock()
+	m.provisioning[sanitizedID] = prov
+	m.provisioningMu.Unlock()
+
+	go m.runProvisioning(prov, claudeCredentialsJSON, selectedApps, onStarted)
+
+	return prov, nil
+}
+
+func (m *Manager) runProvisioning(
+	prov *ProvisioningDesktop,
+	claudeCredentialsJSON string,
+	selectedApps []string,
+	onStarted func(d *Desktop) error,
+) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	sanitizedID := prov.ID
+	name := prov.Name
+	containerName := "desktop_" + sanitizedID
+	volumeName := fmt.Sprintf("desktop_%s_home", sanitizedID)
+
+	updateStage := func(stage, message string, progress int) {
+		m.provisioningMu.Lock()
+		prov.Stage = stage
+		prov.Message = message
+		prov.Progress = progress
+		m.provisioningMu.Unlock()
+	}
+
+	fail := func(err error) {
+		log.Printf("desktop provisioning failed for %s: %v", sanitizedID, err)
+		m.provisioningMu.Lock()
+		prov.Status = "failed"
+		prov.Error = err.Error()
+		prov.Message = fmt.Sprintf("Creation failed: %v", err)
+		m.provisioningMu.Unlock()
+
+		// Clean up Docker resources if partially created
+		_ = m.client.ContainerRemove(context.Background(), containerName, container.RemoveOptions{Force: true})
+		_ = m.client.VolumeRemove(context.Background(), volumeName, true)
+
+		// Retain error for 60s so UI polls can display the error before cleaning up
+		time.AfterFunc(60*time.Second, func() {
+			m.provisioningMu.Lock()
+			delete(m.provisioning, sanitizedID)
+			m.provisioningMu.Unlock()
+		})
+	}
+
+	// 1. Resolve image
+	updateStage("initializing", "Resolving desktop image...", 15)
+	imageName, err := resolveDesktopImage(prov.Profile)
+	if err != nil {
+		fail(err)
+		return
+	}
+
+	// Prewarm tools volume
+	if err := m.EnsureToolsVolume(ctx); err != nil {
+		log.Printf("warning: ensure tools volume for %s: %v", sanitizedID, err)
+	}
+
+	// 2. Storage Volume
+	updateStage("volume", "Creating persistent storage volume...", 30)
+	_, err = m.client.VolumeCreate(ctx, volume.CreateOptions{Name: volumeName})
+	if err != nil {
+		fail(fmt.Errorf("create volume: %w", err))
+		return
+	}
+
+	// 3. Container Configuration & Creation
+	updateStage("container", "Creating container environment...", 45)
+	env := buildDesktopEnv(name, prov.Harness, prov.Specialization, prov.ParentID)
+	prov.Model = envValue(env, "OLLAMA_MODEL")
+
+	config, hostConfig, networkingConfig := buildContainerConfigs(
+		imageName,
+		containerName,
+		prov.Profile,
+		prov.Harness,
+		prov.CPUs,
+		prov.MemoryMB,
+		env,
+		volumeName,
+		m.desktopSecurityOpt(ctx),
+	)
+
+	resp, err := m.client.ContainerCreate(ctx, config, hostConfig, networkingConfig, nil, containerName)
+	if err != nil {
+		fail(fmt.Errorf("create container: %w", err))
+		return
+	}
+
+	// 4. Migrate Desktop Icons & Host Apps
+	if len(selectedApps) > 0 {
+		updateStage("apps", "Copying desktop icons and host apps...", 65)
+		if err := m.MigrateHostApps(ctx, sanitizedID, selectedApps); err != nil {
+			log.Printf("hostapps: migration for %s: %v", containerName, err)
+		}
+	}
+
+	// 5. Start Container
+	updateStage("starting", "Starting desktop environment...", 80)
+	if err := m.client.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		fail(fmt.Errorf("start container: %w", err))
+		return
+	}
+
+	// Claude session persistence
+	if prov.Harness == HarnessClaude && claudeCredentialsJSON != "" {
+		if err := m.PersistClaudeCredentials(ctx, sanitizedID, claudeCredentialsJSON); err != nil {
+			log.Printf("seed claude credentials into %s: %v", containerName, err)
+		}
+	}
+
+	// Desktop struct for callbacks
+	createdDesktop := prov.ToDesktop()
+	createdDesktop.ContainerID = resp.ID
+	createdDesktop.Status = "running"
+
+	if onStarted != nil {
+		if err := onStarted(&createdDesktop); err != nil {
+			log.Printf("desktop onStarted callback for %s: %v", sanitizedID, err)
+		}
+	}
+
+	// 6. Readiness Probe (Wait for VNC / websockify to listen)
+	updateStage("readiness", "Waiting for desktop GUI to initialize...", 90)
+	ready := m.WaitForGUIReady(ctx, sanitizedID, 25*time.Second)
+	if !ready {
+		log.Printf("warning: desktop %s GUI readiness probe timed out (will continue running)", sanitizedID)
+	}
+
+	// 7. Ready!
+	m.provisioningMu.Lock()
+	prov.Stage = "ready"
+	prov.Message = "Desktop is ready!"
+	prov.Progress = 100
+	prov.Status = "running"
+	prov.Ready = true
+	m.provisioningMu.Unlock()
+
+	// Retain ready state in provisioning for 5 seconds so in-flight status polls receive ready: true
+	time.Sleep(5 * time.Second)
+	m.provisioningMu.Lock()
+	delete(m.provisioning, sanitizedID)
+	m.provisioningMu.Unlock()
+}
+
+// GetProvisioning returns the current in-flight provisioning state for a desktop ID if one is active.
+func (m *Manager) GetProvisioning(rawID string) (*ProvisioningDesktop, bool) {
+	sanitizedID := sanitizeName(rawID)
+	m.provisioningMu.RLock()
+	defer m.provisioningMu.RUnlock()
+	prov, ok := m.provisioning[sanitizedID]
+	if !ok {
+		return nil, false
+	}
+	copyProv := *prov
+	return &copyProv, true
+}
+
+// WaitForGUIReady waits until the desktop container's VNC/websockify port is
+// accepting TCP connections, meaning the GUI is initialized and ready for user interaction.
+func (m *Manager) WaitForGUIReady(ctx context.Context, rawID string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return false
+		default:
+		}
+
+		proxyURL, _, err := m.ProxyTarget(ctx, rawID)
+		if err == nil && proxyURL != nil {
+			host := proxyURL.Host
+			conn, dialErr := net.DialTimeout("tcp", host, 500*time.Millisecond)
+			if dialErr == nil {
+				conn.Close()
+				return true
+			}
+		}
+
+		time.Sleep(300 * time.Millisecond)
+	}
+	return false
+}
+
 // listInspectConcurrency bounds how many ContainerInspect calls List issues
 // at once. List is on the hot path for the dashboard, the JSON API, and
 // internal/idlepause's sweep - a control plane managing many desktops must
@@ -321,6 +571,29 @@ func (m *Manager) List(
 	}
 
 	wg.Wait()
+
+	// Prepend any active provisioning desktops that haven't registered Docker containers yet
+	m.provisioningMu.RLock()
+	var pendingProv []Desktop
+	for _, p := range m.provisioning {
+		if p.Status == "provisioning" {
+			found := false
+			for _, r := range result {
+				if r.ID == p.ID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				pendingProv = append(pendingProv, p.ToDesktop())
+			}
+		}
+	}
+	m.provisioningMu.RUnlock()
+
+	if len(pendingProv) > 0 {
+		result = append(pendingProv, result...)
+	}
 
 	return result, nil
 }
@@ -432,6 +705,12 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 		"desktop_",
 	)
 
+	m.provisioningMu.RLock()
+	if prov, ok := m.provisioning[id]; ok && prov.Status == "provisioning" {
+		status = "provisioning"
+	}
+	m.provisioningMu.RUnlock()
+
 	createdAt := ""
 	if c.Created > 0 {
 		createdAt = time.Unix(
@@ -536,6 +815,7 @@ func (m *Manager) Stop(
 
 	timeoutEnv := os.Getenv("DESKTOP_STOP_TIMEOUT_SECONDS")
 	timeout := 10
+	timeout := 3
 	if timeoutEnv != "" {
 		if parsedTimeout, err := strconv.Atoi(timeoutEnv); err == nil && parsedTimeout > 0 {
 			timeout = parsedTimeout
@@ -679,6 +959,14 @@ func (m *Manager) Delete(
 func (m *Manager) Get(ctx context.Context, id string) (Desktop, error) {
 	desktopID := sanitizeName(id)
 
+	m.provisioningMu.RLock()
+	if prov, ok := m.provisioning[desktopID]; ok && prov.Status == "provisioning" {
+		d := prov.ToDesktop()
+		m.provisioningMu.RUnlock()
+		return d, nil
+	}
+	m.provisioningMu.RUnlock()
+
 	inspect, err := m.client.ContainerInspect(ctx, "desktop_"+desktopID)
 	if err != nil {
 		return Desktop{}, fmt.Errorf("find desktop %s: %w", desktopID, ErrNotFound)
@@ -730,6 +1018,12 @@ func (m *Manager) Get(ctx context.Context, id string) (Desktop, error) {
 		found.Status = "running"
 		found.StartedAt = inspect.State.StartedAt
 	}
+
+	m.provisioningMu.RLock()
+	if prov, ok := m.provisioning[desktopID]; ok && prov.Status == "provisioning" {
+		found.Status = "provisioning"
+	}
+	m.provisioningMu.RUnlock()
 
 	return found, nil
 }

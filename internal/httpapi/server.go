@@ -88,6 +88,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/agent/", s.agentProxyHandler)
 	mux.HandleFunc("/api/desktops", s.desktopsAPIHandler)
 	mux.HandleFunc("/api/desktops/create", s.createDesktopHandler)
+	mux.HandleFunc("/api/desktops/status", s.desktopStatusHandler)
 	mux.HandleFunc("/api/desktops/start", s.startDesktopHandler)
 	mux.HandleFunc("/api/desktops/stop", s.stopDesktopHandler)
 	mux.HandleFunc("/api/desktops/pause", s.pauseDesktopHandler)

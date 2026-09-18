@@ -29,7 +29,29 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// If the desktop is actively provisioning and not yet ready for GUI connections,
+	// display a sleek launch progress screen rather than connection failures or 404s.
+	if prov, ok := s.Desktops.GetProvisioning(parts[0]); ok && !prov.Ready {
+		if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			http.Error(w, "desktop is still provisioning", http.StatusServiceUnavailable)
+			return
+		}
+		s.renderProvisioningLaunchScreen(w, r, prov)
+		return
+	}
+
 	proxyURL, desktopID, err := s.Desktops.ProxyTarget(r.Context(), parts[0])
+
+	if err != nil {
+		if prov, ok := s.Desktops.GetProvisioning(parts[0]); ok && !prov.Ready {
+			if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+				http.Error(w, "desktop is still provisioning", http.StatusServiceUnavailable)
+				return
+			}
+			s.renderProvisioningLaunchScreen(w, r, prov)
+			return
+		}
+	}
 
 	switch {
 	case errors.Is(err, desktop.ErrNotFound):
@@ -1370,3 +1392,243 @@ func (s *Server) agentProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	reverseProxy.ServeHTTP(w, r)
 }
+
+func (s *Server) renderProvisioningLaunchScreen(w http.ResponseWriter, r *http.Request, prov *desktop.ProvisioningDesktop) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.WriteHeader(http.StatusOK)
+
+	name := htmlEscape(prov.Name)
+	if name == "" {
+		name = htmlEscape(prov.ID)
+	}
+
+	progress := prov.Progress
+	if progress < 10 {
+		progress = 10
+	}
+	message := htmlEscape(prov.Message)
+	if message == "" {
+		message = "Spinning up desktop environment..."
+	}
+
+	fmt.Fprintf(w, launchScreenHTML, name, name, progress, message, prov.ID)
+}
+
+func htmlEscape(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	s = strings.ReplaceAll(s, `"`, "&quot;")
+	return s
+}
+
+const launchScreenHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Starting %s - Flowera</title>
+<style>
+  :root {
+    --bg: #090d16;
+    --card: rgba(18, 24, 38, 0.75);
+    --border: rgba(255, 255, 255, 0.08);
+    --primary: #3b82f6;
+    --accent: #60a5fa;
+    --text: #f3f4f6;
+    --text-muted: #9ca3af;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: radial-gradient(circle at top center, #1e293b 0%%, var(--bg) 70%%);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+  }
+  .card {
+    background: var(--card);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid var(--border);
+    border-radius: 1.25rem;
+    padding: 2.5rem 2rem;
+    max-width: 480px;
+    width: 100%%;
+    text-align: center;
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5), 0 0 40px rgba(59, 130, 246, 0.1);
+    animation: fadeIn 0.4s ease-out;
+  }
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  .icon-wrap {
+    width: 64px;
+    height: 64px;
+    border-radius: 1rem;
+    background: linear-gradient(135deg, rgba(59, 130, 246, 0.2), rgba(96, 165, 250, 0.05));
+    border: 1px solid rgba(59, 130, 246, 0.3);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 1.5rem;
+    position: relative;
+  }
+  .spinner {
+    position: absolute;
+    inset: -4px;
+    border: 2px solid transparent;
+    border-top-color: var(--accent);
+    border-right-color: rgba(96, 165, 250, 0.4);
+    border-radius: 1.25rem;
+    animation: spin 1.2s cubic-bezier(0.5, 0, 0.5, 1) infinite;
+  }
+  @keyframes spin {
+    0%% { transform: rotate(0deg); }
+    100%% { transform: rotate(360deg); }
+  }
+  h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; letter-spacing: -0.02em; }
+  .name-badge {
+    display: inline-block;
+    padding: 0.25rem 0.75rem;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid var(--border);
+    border-radius: 9999px;
+    font-size: 0.85rem;
+    color: var(--accent);
+    margin-bottom: 1.5rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+  .progress-track {
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 9999px;
+    height: 8px;
+    overflow: hidden;
+    position: relative;
+    margin-bottom: 1rem;
+    border: 1px solid rgba(255, 255, 255, 0.04);
+  }
+  .progress-bar {
+    height: 100%%;
+    background: linear-gradient(90deg, #3b82f6, #60a5fa, #93c5fd);
+    border-radius: 9999px;
+    transition: width 0.4s ease;
+    box-shadow: 0 0 12px rgba(96, 165, 250, 0.6);
+  }
+  .status-msg {
+    font-size: 0.95rem;
+    color: var(--text-muted);
+    min-height: 1.5rem;
+    transition: all 0.2s;
+  }
+  .hint {
+    margin-top: 1.5rem;
+    font-size: 0.8rem;
+    color: rgba(156, 163, 175, 0.6);
+  }
+  .error-box {
+    display: none;
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    color: #fca5a5;
+    padding: 1rem;
+    border-radius: 0.75rem;
+    margin-top: 1rem;
+    font-size: 0.9rem;
+    text-align: left;
+  }
+  .back-btn {
+    display: inline-block;
+    margin-top: 1rem;
+    padding: 0.5rem 1.25rem;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid var(--border);
+    color: #fff;
+    border-radius: 0.5rem;
+    text-decoration: none;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+  .back-btn:hover { background: rgba(255, 255, 255, 0.15); }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="icon-wrap">
+    <div class="spinner"></div>
+    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+      <line x1="8" y1="21" x2="16" y2="21"></line>
+      <line x1="12" y1="17" x2="12" y2="21"></line>
+    </svg>
+  </div>
+  <h1>Spinning Up Desktop</h1>
+  <div class="name-badge">%s</div>
+  <div class="progress-track">
+    <div class="progress-bar" id="pbar" style="width: %d%%;"></div>
+  </div>
+  <div class="status-msg" id="statusMsg">%s</div>
+  <div class="error-box" id="errorBox"></div>
+  <div class="hint" id="hint">Flowera is provisioning your container and copying desktop apps. The GUI will connect automatically as soon as it's ready.</div>
+</div>
+<script>
+(function() {
+  const desktopID = %q;
+  const targetURL = window.location.href;
+  const pbar = document.getElementById('pbar');
+  const statusMsg = document.getElementById('statusMsg');
+  const errorBox = document.getElementById('errorBox');
+  const hint = document.getElementById('hint');
+
+  let pollCount = 0;
+  const poll = async () => {
+    pollCount++;
+    try {
+      const res = await fetch('/api/desktops/status?id=' + encodeURIComponent(desktopID));
+      if (!res.ok) {
+        if (pollCount > 10) throw new Error('Status poll returned ' + res.status);
+        setTimeout(poll, 800);
+        return;
+      }
+      const data = await res.json();
+      if (data.status === 'failed') {
+        errorBox.style.display = 'block';
+        errorBox.innerHTML = '<strong>Creation Error:</strong><br>' + (data.error || data.message || 'Unknown error') +
+          '<br><a href="/" class="back-btn">&larr; Return to Dashboard</a>';
+        statusMsg.textContent = 'Provisioning Failed';
+        statusMsg.style.color = '#ef4444';
+        pbar.style.background = '#ef4444';
+        return;
+      }
+      if (data.ready || (data.status === 'running' && data.stage === 'ready')) {
+        pbar.style.width = '100%%';
+        statusMsg.textContent = 'Ready! Connecting to GUI...';
+        statusMsg.style.color = '#10b981';
+        setTimeout(() => {
+          window.location.replace(targetURL);
+        }, 500);
+        return;
+      }
+      if (data.progress) {
+        pbar.style.width = Math.max(15, data.progress) + '%%';
+      }
+      if (data.message) {
+        statusMsg.textContent = data.message;
+      }
+    } catch (e) {
+      console.warn('Status poll warning:', e);
+    }
+    setTimeout(poll, 600);
+  };
+  setTimeout(poll, 600);
+})();
+</script>
+</body>
+</html>
+`
+
