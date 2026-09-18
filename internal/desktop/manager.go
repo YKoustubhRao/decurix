@@ -890,11 +890,24 @@ func (m *Manager) Delete(
 	m.InvalidateProxyTarget(sanitizedID)
 	name := "desktop_" + sanitizedID
 
+	m.provisioningMu.Lock()
+	_, isProvisioning := m.provisioning[sanitizedID]
+	if isProvisioning {
+		delete(m.provisioning, sanitizedID)
+	}
+	m.provisioningMu.Unlock()
+
 	inspect, err := m.client.ContainerInspect(
 		ctx,
 		name,
 	)
 	if err != nil {
+		if isProvisioning {
+			// Container was not yet created or partially created; clean up volume if any
+			volumeName := "flowera_home_" + sanitizedID
+			_ = m.client.VolumeRemove(ctx, volumeName, true)
+			return nil
+		}
 		return err
 	}
 

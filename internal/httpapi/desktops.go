@@ -90,20 +90,10 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	specialization := strings.Join(strings.Fields(r.FormValue("specialization")), " ")
 	parentID := strings.TrimSpace(r.FormValue("parent_id"))
 
-	cpus := int64(2)
+	cpus := int64(1)
 	if envCpus := os.Getenv("FLOWERA_DEFAULT_DESKTOP_CPUS"); envCpus != "" {
 		if parsed, err := strconv.ParseInt(envCpus, 10, 64); err == nil && parsed > 0 {
 			cpus = parsed
-		}
-	} else {
-		// Adaptively scale default CPUs to keep host system and desktop UI responsive:
-		numCPU := runtime.NumCPU()
-		if numCPU > 4 {
-			cpus = int64(min(2, numCPU-2))
-		} else if numCPU > 2 {
-			cpus = int64(min(2, numCPU-1))
-		} else {
-			cpus = 1
 		}
 	}
 

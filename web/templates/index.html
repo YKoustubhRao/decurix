@@ -71,6 +71,36 @@
   background:var(--surface-2);
 }
 
+.dcard-preview-placeholder.provisioning-placeholder{
+  flex-direction:column;
+  padding:16px;
+  text-align:center;
+  color:var(--text);
+  gap:4px;
+}
+.prov-text{
+  font-size:12px;
+  color:var(--text);
+  font-weight:500;
+  max-width:90%;
+  line-height:1.4;
+}
+.prov-bar-container{
+  width:75%;
+  max-width:180px;
+  height:4px;
+  background:rgba(255,255,255,0.08);
+  border-radius:2px;
+  margin:8px auto 0;
+  overflow:hidden;
+}
+.prov-bar{
+  width:15%;
+  height:100%;
+  background:var(--accent);
+  transition:width .4s ease;
+}
+
 .dcard-paused-overlay{
   position:absolute;
   bottom:8px;
@@ -820,6 +850,14 @@
               </span>
             </div>
           {{end}}
+        {{else if eq .Status "provisioning"}}
+          <div class="dcard-preview-placeholder provisioning-placeholder" data-prov-msg="{{.ID}}">
+            <svg class="spin" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-bottom:8px; display:inline-block; color:var(--accent);"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"/></svg>
+            <div class="prov-text" data-prov-text="{{.ID}}">Spinning up desktop…</div>
+            <div class="prov-bar-container">
+              <div class="prov-bar" data-prov-bar="{{.ID}}" style="width:15%;"></div>
+            </div>
+          </div>
         {{else}}
           <div class="dcard-preview-placeholder">
             Desktop is {{.Status}}
@@ -1135,8 +1173,8 @@
       <div class="field">
         <span class="field-label">CPU</span>
         <div class="segmented" role="radiogroup" aria-label="CPU cores">
-          <label class="seg"><input type="radio" name="cpus" value="1"><span>1</span></label>
-          <label class="seg"><input type="radio" name="cpus" value="2" checked><span>2</span></label>
+          <label class="seg"><input type="radio" name="cpus" value="1" checked><span>1</span></label>
+          <label class="seg"><input type="radio" name="cpus" value="2"><span>2</span></label>
           <label class="seg"><input type="radio" name="cpus" value="4"><span>4</span></label>
           <label class="seg"><input type="radio" name="cpus" value="8"><span>8</span></label>
         </div>
@@ -1264,7 +1302,6 @@
 
     return "/api/desktops/screenshot?id=" + encodeURIComponent(img.dataset.shot) +
       "&w=" + width + "&t=" + Date.now();
-      "&w=" + width;
   }
 
   function loadShot(img){
@@ -1440,8 +1477,10 @@
   });
 
   var activeCreateController = null;
+  var isSubmittingCreate = false;
 
   function cancelCreateAction(){
+    if(isSubmittingCreate){ return; }
     if(activeCreateController){
       try{ activeCreateController.abort(); }catch(e){}
       activeCreateController = null;
@@ -1865,12 +1904,113 @@
     }
   });
 
+  function insertProvisioningCard(info){
+    var grid = document.querySelector(".dash .grid");
+    if(!grid){ return null; }
+
+    var empty = grid.querySelector(".empty");
+    if(empty){
+      empty.style.display = "none";
+    }
+
+    var existing = grid.querySelector('.dcard[data-desktop-id="' + info.id + '"]');
+    if(existing){ return existing; }
+
+    var card = document.createElement("article");
+    card.className = "dcard";
+    card.dataset.desktopId = info.id;
+
+    var profileLabel = info.profile === "ai" ? "AI Developer" : (info.profile === "developer" ? "Developer" : "Basic");
+    var harnessLabel = info.harness === "claude" ? "Claude Code" : (info.harness === "thebot" ? "TheBot" : "Ollama");
+    var cpusLabel = info.cpus == 1 ? "1 core" : (info.cpus + " cores");
+    var url = "/desktop/" + encodeURIComponent(info.id) + "/";
+
+    var specHtml = "";
+    if(info.specialization){
+      specHtml += '<div class="dcard-spec"><svg width="13" height="13"><use href="#i-fork"/></svg><span>Specialized for: ' + escapeHTML(info.specialization) + '</span></div>';
+    }
+    if(info.parentId){
+      specHtml += '<div class="dcard-spec"><svg width="13" height="13"><use href="#i-fork"/></svg><span>Child of <span class="mono">' + escapeHTML(info.parentId) + '</span></span></div>';
+    }
+
+    card.innerHTML =
+      '<div class="dcard-preview">' +
+        '<div class="dcard-preview-placeholder provisioning-placeholder" data-prov-msg="' + escapeHTML(info.id) + '">' +
+          '<svg class="spin" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-bottom:8px; display:inline-block; color:var(--accent);"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"/></svg>' +
+          '<div class="prov-text" data-prov-text="' + escapeHTML(info.id) + '">Spinning up desktop…</div>' +
+          '<div class="prov-bar-container">' +
+            '<div class="prov-bar" data-prov-bar="' + escapeHTML(info.id) + '" style="width:15%;"></div>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="dcard-head">' +
+        '<div style="min-width:0">' +
+          '<h2 class="dcard-name trunc" title="' + escapeHTML(info.name) + '">' + escapeHTML(info.name) + '</h2>' +
+          '<div class="dcard-tags">' +
+            '<span class="chip">' + escapeHTML(profileLabel) + '</span>' +
+            '<span class="chip">' + escapeHTML(harnessLabel) + '</span>' +
+          '</div>' +
+        '</div>' +
+        '<span class="status provisioning" data-status-pill data-base-status="provisioning">' +
+          '<span class="dot"></span><span data-status-label>provisioning</span>' +
+        '</span>' +
+        '<details class="dcard-info">' +
+          '<summary title="Desktop info" aria-label="Desktop info">' +
+            '<svg class="dcard-info-icon"><use href="#i-info"/></svg>' +
+          '</summary>' +
+          '<div class="dcard-info-body">' +
+            '<div class="dcard-info-title">' +
+              '<span>Desktop details</span>' +
+              '<span class="status provisioning" data-status-pill data-base-status="provisioning">' +
+                '<span class="dot"></span><span data-status-label>provisioning</span>' +
+              '</span>' +
+            '</div>' +
+            '<dl class="specs">' +
+              '<div><dt>CPU</dt><dd data-cpu-val="' + escapeHTML(info.id) + '">' + escapeHTML(cpusLabel) + '</dd></div>' +
+              '<div><dt>Memory</dt><dd data-mb="' + info.memoryMb + '" data-mem-val="' + escapeHTML(info.id) + '">' + info.memoryMb + ' MB</dd></div>' +
+              '<div><dt>Created</dt><dd>Just now</dd></div>' +
+            '</dl>' +
+            specHtml +
+            '<div class="dcard-url">' +
+              '<svg width="13" height="13"><use href="#i-monitor"/></svg>' +
+              '<span class="mono trunc" title="' + escapeHTML(url) + '">' + escapeHTML(url) + '</span>' +
+              '<button class="icon-btn copy-btn" data-copy="' + escapeHTML(url) + '" aria-label="Copy desktop URL">' +
+                '<svg width="13" height="13"><use href="#i-copy"/></svg>' +
+              '</button>' +
+            '</div>' +
+          '</div>' +
+        '</details>' +
+      '</div>' +
+      '<div class="dcard-actions">' +
+        '<button class="btn btn-default btn-sm" disabled style="opacity:0.85; cursor:wait;">' +
+          '<svg class="spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"/></svg>' +
+          'Spinning up…' +
+        '</button>' +
+        '<button class="btn btn-default btn-sm action-icon" data-open="' + escapeHTML(url) + '?autoconnect=true&resize=remote&ui=touch" title="Open launch screen" aria-label="Open launch screen">' +
+          '<svg width="14" height="14"><use href="#i-external"/></svg>' +
+        '</button>' +
+        '<span class="spacer"></span>' +
+        '<button class="btn btn-danger btn-sm action-icon" data-act="delete" data-id="' + escapeHTML(info.id) + '" data-name="' + escapeHTML(info.name) + '" title="Delete" aria-label="Delete desktop">' +
+          '<svg width="15" height="15"><use href="#i-trash"/></svg>' +
+        '</button>' +
+      '</div>';
+
+    grid.insertBefore(card, grid.firstChild);
+
+    var infoEl = card.querySelector(".dcard-info");
+    if(infoEl){ attachInfoHover(infoEl); }
+
+    var monoEl = card.querySelector(".dcard-url .mono");
+    if(monoEl){ monoEl.textContent = monoEl.title = absoluteURL(monoEl.textContent); }
+
+    return card;
+  }
+
   /* The actual POST /api/desktops/create - split out so a Claude sign-in
      triggered by Create desktop (see the submit handler below) can finish
      the create itself once the login succeeds. */
   async function performCreate(){
     var data = new FormData(createForm);
-    var name = (data.get("name") || "").trim();
     var rawName = (data.get("name") || "").trim();
     var finalName = rawName || ("desktop-" + Math.floor(Date.now() / 1000));
     var sanitizedID = finalName.toLowerCase().replace(/[^a-z0-9_-]/g, "-").replace(/^-+|-+$/g, "");
@@ -1883,8 +2023,12 @@
     submit.textContent = "Creating…";
     busy(true);
 
-    activeCreateController = new AbortController();
-    var signal = activeCreateController.signal;
+    var profile = data.get("profile") || "basic";
+    var harness = data.get("harness") || "ollama";
+    var cpus = parseInt(data.get("cpus") || "1", 10);
+    var memoryMb = parseInt(data.get("memory_mb") || "2048", 10);
+    var specialization = (data.get("specialization") || "").trim();
+    var parentId = (data.get("parent_id") || "").trim();
 
     var copyHostApps = dCopyHostApps && dCopyHostApps.checked;
     var selectedApps = [];
@@ -1894,20 +2038,25 @@
       });
     }
 
-    // 1. Immediately open desktop tab synchronously to prevent browser popup blockers.
-    // The opened tab loads /desktop/<id>/ which renders the live launch screen while provisioning.
-    var targetURL = "/desktop/" + encodeURIComponent(sanitizedID) + "/?autoconnect=true&resize=remote&ui=touch";
-    var guiWin = null;
-    try{
-      guiWin = window.open(targetURL, "_blank");
-    }catch(err){
-      console.warn("Could not open desktop tab directly:", err);
-    }
+    // Immediately insert spinning VM card into the dashboard grid
+    var card = insertProvisioningCard({
+      id: sanitizedID,
+      name: finalName,
+      profile: profile,
+      harness: harness,
+      cpus: cpus,
+      memoryMb: memoryMb,
+      specialization: specialization,
+      parentId: parentId
+    });
 
-    // 2. Immediately close the creation dialog - user never hangs!
+    // Close the creation dialog without triggering abort
+    isSubmittingCreate = true;
     if(createDialog && createDialog.open){
       createDialog.close();
     }
+    isSubmittingCreate = false;
+
     toast("Desktop '" + sanitizedID + "' accepted. Spinning up in background…", "info");
 
     activeCreateController = new AbortController();
@@ -1915,37 +2064,40 @@
 
     try{
       await post("/api/desktops/create", {
-        name: name || ("desktop-" + Date.now()),
         name: sanitizedID,
-        profile: data.get("profile"),
-        harness: data.get("harness"),
-        cpus: data.get("cpus"),
-        memory_mb: data.get("memory_mb"),
-        specialization: data.get("specialization") || "",
-        parent_id: data.get("parent_id") || "",
+        profile: profile,
+        harness: harness,
+        cpus: cpus,
+        memory_mb: memoryMb,
+        specialization: specialization,
+        parent_id: parentId,
         copy_host_apps: copyHostApps ? "1" : "0",
         host_apps: selectedApps.join(",")
       }, { signal: signal });
 
       activeCreateController = null;
-      location.reload();
-      setTimeout(function(){
-        location.reload();
-      }, 400);
+      busy(false);
+      submit.disabled = false;
+      submit.textContent = "Create desktop";
+
+      // Trigger status check immediately to pick up in-flight provisioning state
+      checkProvisioningDesktops();
     }catch(e){
       busy(false);
       submit.disabled = false;
       submit.textContent = "Create desktop";
-      if(guiWin && !guiWin.closed){
-        try{ guiWin.close(); }catch(err){}
+      if(card){
+        card.remove();
+        var grid = document.querySelector(".dash .grid");
+        if(grid && !grid.querySelector(".dcard")){
+          var empty = grid.querySelector(".empty");
+          if(empty){ empty.style.display = ""; }
+        }
       }
       activeCreateController = null;
       if(e.name === "AbortError" || (signal && signal.aborted)){
-        // Aborted intentionally by Cancel button or closing modal
-        activeCreateController = null;
         return;
       }
-      activeCreateController = null;
       toast(e.message, "error");
     }
   }
@@ -2022,16 +2174,18 @@
     }
   });
 
-  document.querySelectorAll("[data-open]").forEach(function(button){
-    button.addEventListener("click", function(){
+  document.addEventListener("click", function(event){
+    var button = event.target.closest("[data-open]");
+    if(button){
       window.open(button.dataset.open, "_blank", "noopener");
-    });
+    }
   });
 
   /* ---------------- desktop info popovers ----------------
    Hover the info button/card to keep it open.
    Moving completely away from both closes it automatically. */
-  document.querySelectorAll(".dcard-info").forEach(function(info){
+  function attachInfoHover(info){
+    if(!info){ return; }
     var closeTimer = null;
 
     function cancelClose(){
@@ -2071,18 +2225,22 @@
       }
     });
 
-    info.querySelector("summary").addEventListener("click", function(event){
-      event.preventDefault();
+    var summary = info.querySelector("summary");
+    if(summary){
+      summary.addEventListener("click", function(event){
+        event.preventDefault();
 
-      cancelClose();
+        cancelClose();
 
-      if(info.hasAttribute("open")){
-        info.removeAttribute("open");
-      }else{
-        info.setAttribute("open", "");
-      }
-    });
-  });
+        if(info.hasAttribute("open")){
+          info.removeAttribute("open");
+        }else{
+          info.setAttribute("open", "");
+        }
+      });
+    }
+  }
+  document.querySelectorAll(".dcard-info").forEach(attachInfoHover);
 
   /* ---------------- copy URL ----------------
    Desktop URLs are root-relative so the preview and "open" button work from
@@ -2097,22 +2255,23 @@
     el.textContent = el.title = absoluteURL(el.textContent);
   });
 
-  document.querySelectorAll("[data-copy]").forEach(function(button){
-    button.addEventListener("click", async function(){
-      try{
-        await navigator.clipboard.writeText(absoluteURL(button.dataset.copy));
+  document.addEventListener("click", async function(event){
+    var button = event.target.closest("[data-copy]");
+    if(!button){ return; }
+    try{
+      await navigator.clipboard.writeText(absoluteURL(button.dataset.copy));
 
-        button.classList.add("done");
-        button.querySelector("use").setAttribute("href", "#i-check");
+      button.classList.add("done");
+      var use = button.querySelector("use");
+      if(use){ use.setAttribute("href", "#i-check"); }
 
-        setTimeout(function(){
-          button.classList.remove("done");
-          button.querySelector("use").setAttribute("href", "#i-copy");
-        }, 1400);
-      }catch(e){
-        toast("Couldn't copy to the clipboard.", "error");
-      }
-    });
+      setTimeout(function(){
+        button.classList.remove("done");
+        if(use){ use.setAttribute("href", "#i-copy"); }
+      }, 1400);
+    }catch(e){
+      toast("Couldn't copy to the clipboard.", "error");
+    }
   });
 
   /* ---------------- learned memory ---------------- */
@@ -2432,16 +2591,40 @@
       if(!card || !card.dataset.desktopId){ return; }
       var id = card.dataset.desktopId;
       fetch("/api/desktops/status?id=" + encodeURIComponent(id))
-        .then(function(res){ return res.json(); })
+        .then(function(res){
+          if(!res.ok){ return null; }
+          return res.json();
+        })
         .then(function(data){
-          if(data && (data.ready || data.status === "running")){
+          if(!data){ return; }
+          if(data.ready || (data.status === "running" && data.stage === "ready")){
             location.reload();
+            return;
+          }
+          if(data.status === "failed"){
+            var txt = card.querySelector("[data-prov-text]");
+            if(txt){
+              txt.textContent = "Failed: " + (data.error || data.message || "Unknown error");
+              txt.style.color = "#ef4444";
+            }
+            var bar = card.querySelector("[data-prov-bar]");
+            if(bar){ bar.style.background = "#ef4444"; }
+            return;
+          }
+          var txt = card.querySelector("[data-prov-text]");
+          if(txt && data.message){
+            txt.textContent = data.message;
+          }
+          var bar = card.querySelector("[data-prov-bar]");
+          if(bar && typeof data.progress === "number"){
+            bar.style.width = Math.max(10, Math.min(100, data.progress)) + "%";
           }
         })
         .catch(function(){});
     });
   }
-  setInterval(checkProvisioningDesktops, 2000);
+  checkProvisioningDesktops();
+  setInterval(checkProvisioningDesktops, 1500);
 
   /* ---------------- shortcuts ---------------- */
 
