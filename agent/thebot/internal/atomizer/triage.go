@@ -27,6 +27,15 @@ const (
 	// RoutePlan is several genuinely different jobs ("find out X on the web
 	// and write it to Y"). The only route that asks a model to plan.
 	RoutePlan RouteKind = "plan"
+	// RouteBrowser is one interactive session in a real, live web page -
+	// "Open google.com. Search for this. Do that." - handed whole to the
+	// browser skill, which drives it through the browser-agent Chrome
+	// extension (agent/browser-agent/extension) rather than the operator's
+	// coordinate/xdotool loop. Like RouteOperate, it deliberately skips
+	// planning: the extension's own atomize -> act -> verify loop already
+	// decides its next action from what the last one actually did to the
+	// page, which a plan written before the first page load cannot.
+	RouteBrowser RouteKind = "browser"
 )
 
 // Route is Triage's decision, with the reason it gives in the live log.
@@ -89,6 +98,36 @@ func wantsScreen(prompt string) bool {
 	return screenSurfaceRe.MatchString(prompt) && screenActionRe.MatchString(prompt)
 }
 
+var (
+	// The explicit ask, in the user's own words: "browse the web", "browse
+	// to X". Deliberately claimed here rather than left to webRe's
+	// "browse ... web/internet/online/for" pattern (which would otherwise
+	// send it to the read-only web-fetch skill) - saying "browse" at all is
+	// asking for a real, interactive session in the browser, not a fetch.
+	browsePhraseRe = regexp.MustCompile(`(?i)\bbrowse\s+(the\s+)?(web|internet)\b|\bbrowse\s+to\b`)
+	// A concrete place on the web: a URL, a www./bare domain, or a "go to/
+	// visit/open ... website/page/site" phrase.
+	webDestinationRe = regexp.MustCompile(`(?i)https?://\S+|\bwww\.\S+|\b[a-z0-9][a-z0-9-]*\.(com|org|net|io|co|dev|app|gov|edu|ai)\b|\b(go\s+to|visit|navigate\s+to|open)\b[\s\S]{0,40}?\b(website|web\s?page|webpage|site)\b`)
+	// Doing something there, not just reading it - the same distinction
+	// wantsScreen draws with screenActionRe, but for a page named by
+	// address rather than by the word "browser"/"tab".
+	webInteractionRe = regexp.MustCompile(`(?i)\b(search|type|fill|click|log\s?in|sign\s?in|submit|select|choose|buy|add\b[\s\S]{0,20}?\bto\s+(the\s+)?cart|\bcart\b|checkout|scroll|do\s+(that|this)|then\b)`)
+)
+
+// wantsBrowser reports whether a request is an interactive job in a real,
+// live web page - opening a site and then doing something on it - as
+// opposed to reading the web at large (the web skill) or working some other
+// app on the screen (the operator, via wantsScreen). Checked before both:
+// a named destination plus an action on it is squarely what the
+// browser-agent extension exists for, and it drives the actual DOM through
+// selector-grounded actions rather than the operator's coordinates/xdotool.
+func wantsBrowser(prompt string) bool {
+	if browsePhraseRe.MatchString(prompt) {
+		return true
+	}
+	return webDestinationRe.MatchString(prompt) && webInteractionRe.MatchString(prompt)
+}
+
 // greetingLeadRe strips the greeting off the front of a turn, so what
 // follows it can be judged on its own.
 var greetingLeadRe = regexp.MustCompile(`(?i)^\s*(hi+|hello+|hey+|yo|hiya|howdy|greetings|good\s+(morning|afternoon|evening|night)|thanks?|thank\s+you|thx|ok(ay)?)\b[\s,.!-]*(there\b[\s,.!-]*)?`)
@@ -127,6 +166,16 @@ func Triage(prompt string) Route {
 
 	if matched == "coding" {
 		return Route{Kind: RouteSkill, TaskType: matched, Reason: "a request to build software - the coding harness takes it whole"}
+	}
+
+	// Before wantsScreen and the compound check, for the same reason
+	// wantsScreen already goes first: "Open google.com. Search for this.
+	// Do that." is one goal on one page, worked through by the extension's
+	// own loop - not a plan written before the first page has even loaded,
+	// and not the operator's generic, coordinate-driven screen loop when a
+	// page-aware, selector-grounded tool is exactly what this is.
+	if wantsBrowser(p) {
+		return Route{Kind: RouteBrowser, TaskType: "browser", Reason: "an interactive task in a real web page - handing it to the browser extension"}
 	}
 
 	// Before the compound check: "fill in the name, then press Save" is one
