@@ -4,7 +4,7 @@ import sys
 import traceback
 
 from flowera_agent import logging_utils, progress
-from flowera_agent.computer import core, replay
+from flowera_agent.computer import core, replay, skill_engine, skills
 from flowera_agent.computer import elements as el
 from flowera_agent.computer.errors import ComputerError
 
@@ -113,6 +113,37 @@ TOOLS = [
                 "from": {"type": "integer", "minimum": 1, "description": "Step to start at, to continue a paused run."},
             },
             "required": ["id"],
+        },
+    },
+    {
+        "name": "skills",
+        "description": (
+            "Tasks this desktop was taught by a person's demonstration and their answers to its questions. Without "
+            "name, lists the skills matching query, best first. With name, returns that skill's steps, what it needs "
+            "and how it is run. When a skill matches your task, run it with run_skill instead of working the task "
+            "out yourself: it is faster, and it has already been confirmed by the person who taught it."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}, "name": {"type": "string"}},
+        },
+    },
+    {
+        "name": "run_skill",
+        "description": (
+            "Do a taught task with no model. Same outcomes and approval rules as replay. If it needs a value it was "
+            "not given (params lists them by name), it does nothing and says which: ask the human for it, then call "
+            "again. A list parameter takes its items separated by ';'. It does not stop to ask on its own - when it "
+            "halts, tell the human what it says."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "params": {"type": "object", "additionalProperties": {"type": "string"}},
+                "from": {"type": "integer", "minimum": 1, "description": "Step to start at, to continue a paused run."},
+            },
+            "required": ["name"],
         },
     },
     {
@@ -240,6 +271,39 @@ def call_tool(name, arguments):
 
         if result.get("resume_from") and result["outcome"] in (replay.HALTED, replay.NEEDS_HUMAN):
             text += f"\n\nTo carry on from there later, call replay with from={result['resume_from']}."
+
+        return [_text(text)], result["outcome"] not in replay.SUCCESS
+
+    if name in ("skills", "run_skill"):
+        wanted = arguments.get("name") or ("" if name == "skills" else None)
+
+        if name == "skills" and not wanted:
+            found = skills.search(arguments.get("query") or "")
+            if not found:
+                return [_text("No skills on this desktop match that.")], False
+            return [_text("\n".join(skill_engine.summary_line(s) for s in found))], False
+
+        skill, candidates = skills.find(wanted or "")
+        if skill is None:
+            names = ", ".join(s["name"] for s in candidates)
+            return [_text(f"more than one skill fits {wanted!r}: {names}. Use its exact name." if candidates
+                          else f"there is no skill {wanted!r} on this desktop")], True
+
+        if name == "skills":
+            return [_text(skill_engine.render_text(skill, budget=TREE_BUDGET))], False
+
+        result = skill_engine.run(skill, params=arguments.get("params") or {}, start=arguments.get("from") or 1)
+        text = f"outcome: {result['outcome']}\n{result['text']}"
+
+        if result["outcome"] == replay.NEEDS_APPROVAL:
+            return [_text(
+                "NEEDS_APPROVAL: " + result["text"]
+                + "\n\nStop here. End your turn with a reply that begins NEEDS_APPROVAL: saying what the skill "
+                f"wants to do. When the human approves, call run_skill again with from={result['resume_from']}."
+            )], False
+
+        if result.get("resume_from") and result["outcome"] in (replay.HALTED, replay.NEEDS_HUMAN):
+            text += f"\n\nTo carry on from there later, call run_skill with from={result['resume_from']}."
 
         return [_text(text)], result["outcome"] not in replay.SUCCESS
 

@@ -179,6 +179,20 @@ func TestRenderEveryPage(t *testing.T) {
 		}
 	}
 
+	// The skills page, for a running desktop (the list is read by the page's
+	// own JS) and a stopped one (only the "start it" state).
+	for _, d := range []desktop.Desktop{running, stopped} {
+		var out bytes.Buffer
+		if err := renderer.RenderSkills(&out, SkillsPageData{Desktop: d}); err != nil {
+			t.Fatalf("RenderSkills(%s): %v", d.Status, err)
+		}
+		// The page's script reads the list into #loading's place, and only a
+		// running desktop has one to read.
+		if hasList := strings.Contains(out.String(), `id="loading"`); hasList != (d.Status == "running") {
+			t.Fatalf("the skills page of a %s desktop has its list: %v", d.Status, hasList)
+		}
+	}
+
 	// The DAGs list, empty and with one entry that has already run.
 	if err := renderer.RenderDags(io.Discard, DagsPageData{}); err != nil {
 		t.Fatalf("RenderDags (empty): %v", err)

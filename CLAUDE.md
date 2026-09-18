@@ -82,8 +82,10 @@ internal/tasks     — the task records: Task → Execution → Steps → Interv
                       reply to an open intervention, or retry of a failed task), attributes
                       steps and outcomes (by echoed task ID, else the worker's live
                       execution), verdicts, CloseOpen on stop/restart/delete. classify.go:
-                      deterministic task type and intervention reason. report.go: autonomy
-                      by engine/worker/type and the reasons people stepped in
+                      deterministic task type and intervention reason ("/learn" is type
+                      `teaching`, kept out of autonomy like a demonstration; "/skill" is
+                      `screen`). report.go: autonomy by engine/worker/type and the
+                      reasons people stepped in
 internal/tunnel    — in-memory store of the addresses scripts/linux/build.sh
                       (or rebuild.sh, or their Windows twins) discovers and
                       reports via POST /api/tunnel: a Cloudflare quick tunnel
@@ -182,7 +184,12 @@ internal/httpapi   — the only package touching net/http; all HTTP handlers,
                       as a task (Busy check, Plan/Commit, parameters never recorded), and the
                       ticket API (/api/desktops/record opens one, /api/desktops/ticket* drives
                       it - the GUI screen's own toolbar). proxy.go: desktopProxyHandler's
-                      injectTicketToolbar splices that toolbar into every load of the screen
+                      injectTicketToolbar splices that toolbar into every load of the screen.
+                      skills.go: the skills page and its API (/skills/<id>, /api/desktops/skills*,
+                      /api/desktops/recordings/learn) - list/show/delete proxied to the desktop's
+                      :8081, and "teach" and "run" as tasks (Busy check, Plan, the desktop's own
+                      endpoint, Commit) exactly like a replay, with skillContent/learnContent
+                      building the "/skill ..." and "/learn ..." request the chat shows
 internal/webui     — html/template rendering (PageData, dashboard/requests/desktop-view
                       pages); parses out of web.TemplatesFS, never off disk.
                       render_test.go executes every page, so a broken template fails
@@ -202,8 +209,11 @@ web/templates/     — theme.html (shared design tokens + icon sprite + top bar 
                       nothing else on the page; the screen opens in its own tab),
                       tasks.html (the autonomy dashboard, /tasks), task.html (one
                       task record with its steps, screenshots, interventions, verdict)
-                      and recordings.html (/recordings/<id>: record a demonstration,
-                      browse recordings step by step, replay, export)
+                      recordings.html (/recordings/<id>: record a demonstration,
+                      browse recordings step by step, replay, export, and Teach - which
+                      starts a lesson from it and any other demonstrations picked) and
+                      skills.html (/skills/<id>: what the desktop was taught - run one
+                      with its values, see its steps, delete it, finish an unfinished lesson)
 
 desktop container (flowera-desktop:{basic,developer,ai})
   ├─ base image: accetto/ubuntu-vnc-xfce-chromium-g3 (XFCE + VNC + Chromium)
@@ -283,7 +293,10 @@ desktop container (flowera-desktop:{basic,developer,ai})
         │                     privacy.py (what is never kept), volatility.py (text a replay
         │                     must not check), processing.py (raw input -> actions),
         │                     demonstration.py (a person's input over VNC, via XInput2),
-        │                     replay.py (compile + run a recording with no model)
+        │                     replay.py (compile + run a recording with no model), and the
+        │                     skills (see "Skills" below): learning.py (demonstrations ->
+        │                     a draft skill, its questions, reading the answers), skills.py
+        │                     (the store, ~/.flowera/skills/<name>.json)
         ├─ record_task.py  — "/record <task>" opens a ticket: dispatched by the watcher instead
         │                     of the harness, holds the task open (module-private state, the way
         │                     replay_task.py holds its params) until end() finishes it, reports as
@@ -293,6 +306,14 @@ desktop container (flowera-desktop:{basic,developer,ai})
         ├─ replay_task.py  — "/replay <recording>" as a task: dispatched by the watcher instead
         │                     of the harness, reports through messaging as engine "replay",
         │                     pauses/resumes on approval or a private step
+        ├─ skill_task.py   — "/learn <recording>" asks a person what a recording cannot say and
+        │                     saves a skill; "/skill <name> [param=value]" runs one with no model,
+        │                     stopping to ask when unsure. Dispatched by the watcher instead of the
+        │                     harness, reports as engines "learn" / "skill", pauses through
+        │                     state.paused_skill the way replay_task uses state.paused_replay
+        │                     (computer/skill_engine.py is the same for an *engine*: gui skills /
+        │                     gui skill / gui do and the MCP tools skills / run_skill - it refuses
+        │                     and says what is missing where skill_task would ask a person)
         ├─ watchers.py     — command_watcher (polls COMMAND_DIR, dispatches through harness.py;
         │                     leaves a request queued in COMMAND_DIR while state.backend_ready
         │                     is False, rather than failing it)
@@ -404,6 +425,37 @@ Built on OpenAdapt's design (openadapt-capture's recorder and secret exclusion, 
 - **Privacy is applied at the source** (`privacy.py`): a value typed into a password field (AT-SPI `password text`, `input[type=password]`, a secret `autocomplete`, a field labelled for a secret) or text shaped like a credential (API keys, tokens, private keys, Luhn-valid card numbers) is withheld with a reason, never rewritten; secret fields' boxes are painted over in saved frames; URLs lose userinfo and secret-named parameter values; a value over 512 characters is omitted, not cut. The engine is handed `[text withheld: password field]` too.
 - The control plane never copies recordings: `desktop.Manager.AgentRequest` proxies `/api/desktops/recordings*` and `/api/desktops/demonstration` to the desktop's `:8081` (the page is `/recordings/<id>`, linked from each dashboard card and from a task that acted on screen). Recordings of tasks and hand-run actions are pruned oldest first past `FLOWERA_RECORDINGS_MB` (default 1024); demonstrations are never pruned.
 
+### Skills: learning a task from demonstrations, asking what is unclear, then doing it
+
+Modelled on Orby's public description of its Large Action Model — "observe, learn and automate": watch a person do the work (screen, page, actions), generalise it into a workflow, show it to that person to approve, run it. Orby's internals are proprietary (only the loop, a planner/grounder split and "SAIL" interface learning are public), so this is that loop on Flowera's existing parts, not a port of their code. **No model is involved**, in the spirit of soul's "deterministic before clever": what can be worked out from recordings is, and what cannot is asked.
+
+```
+person records (a ticket, or several)        the recordings the desktop already makes
+  → /learn <recording> [<recording> ...]     learning.build: compile each, align them, generalise
+      → one question at a time (ask_for_query) goal / start / variable / optional /
+                                               coordinates / unsupported / confirm
+      → yes  → ~/.flowera/skills/<name>.json  (status "ready"; a draft is saved after every answer)
+  → /skill <name> [param=value ...]          skills.program → replay.run, no model
+      → asks: a missing value, a screen that is not where the task began, a step that is stuck
+      → a correction that then worked is written back into the skill
+```
+
+- **Generalising (`learning.build`).** Several demonstrations are aligned step by step (`difflib` over each step's kind and target, never its typed text). What differs between them is the task's shape: text typed differently is a variable that changes every run (no question needed), a step only some demonstrations have is asked about as optional, and a step's expected result shrinks to the checks *every* demonstration agrees on. One demonstration can only ever be one instance, so its typed text is asked about. A person's `note` (the ticket toolbar's Reason) rides along and is shown back in the first question.
+- **Questions are derived from the skill's own state, with stable IDs** (`goal`, `start`, `loop:<loop id>`, `variable:<step id>`, `optional:<step id>`, `coordinates:<step id>`, `unsupported:<step id>`, `confirm`). A step has an `id` that never changes and an `n` that does (a skipped step renumbers the rest, `skills.renumber`) — a question and its saved answer name the *id*. That is what lets an interrupted lesson be resumed by `/learn` on the same recordings (`skills.draft_for`) and ask only what is left.
+- **An unclear answer is never guessed.** `learning.answer` asks again once, then takes `CAUTIOUS[kind]` and says so: typed text *changes* (asked for each run), an uncertain step is *always* required (halts rather than skips), a coordinate click goes to *manual*, an unconfirmed skill stays a *draft*. Nothing runs until a person has said yes to the whole skill (`status: "ready"`).
+- **A secret is never a parameter.** A typed step whose value the recording withheld becomes a `manual` step (the run stops with `needs_human` and a person types it on the screen) — a skill must not need a password in the chat, the command file or the task record, the same rule `/replay` keeps.
+- **The approval gate is not the skill's to switch off.** A step gated when it was recorded is `consequential` and stops for approval every run; the confirm question *tells* the person this, it does not ask. `skill_task` runs everything through `replay.run` → `core.act`, so `approval.check` and the audit trail apply exactly as they do to an engine.
+- **Optional steps step over one thing only** (`replay._Halt.missing`): a target that is not on the screen. A target that is *ambiguous* (two candidates), an action that fails, or an expected result that never appears still halts an optional step — the run never guesses between candidates.
+- **Running asks instead of failing.** Before the first step: any value the skill learned changes every run and was not given (`/skill x name="Acme"`, or just the value when one is missing), and — if a person said to — that the screen looks like where the recording began (`learning.start_checks`, using `replay.unmet`). When replay halts, `skill_task` asks: `retry` / `skip` / `stop` / `use "<control>"` for a step that did not run, `continue` / `stop` for one that *did* run but whose result never showed (never a retry — that could act twice, the same reasoning as `reconciliation_required`, which is final and never asks). Two replies it cannot read in a row end the run rather than guess, and `MAX_STUCK_ASKS` bounds the questions per run.
+- **What a person answers is learned only if it worked.** `use "Save as"` re-targets that step (`_retarget`: same role, new name, the recorded path dropped) on the run's in-memory copy, and `_finish` writes it into the skill (and bumps `version`, appends to `learned`) only when the run then ended `verified` / `completed_unverified`. A `skip` is this-run-only and changes nothing on disk. Carrying on past the last step (skipped, or done by hand) finishes the task as such, not as a halt at a step that does not exist.
+- **Loops** (`learning._find_loops`): a block of 2-12 steps repeated back to back with *different text typed each time* (and every step seen in every demonstration, no manual or `open` step in it) is a candidate, asked about as `loop:<id>`. `each` keeps one repetition and makes what it types a **list parameter** (`param["list"]`, `examples` holds what the demonstration typed), the extra repetitions' steps dropped; `fixed` (also the cautious default, and a no-op) leaves every step and asks about each typed field as usual. The typed fields of an undecided loop are *not* asked about individually — the loop answer decides what they are. At run time `skills.expand` writes the block out once per item, naming each typed field `<param>__<n>` (and renaming the recorded value check to follow it), keeping every step's `id`; a list is items separated by `;` or a new line, all lists the same length (`skills.list_problem`, asked again whole rather than guessed at), at most `MAX_LOOP_ITEMS`. The run's step numbers are the *expanded* program's, which is why `skill_task._retarget` maps a step number back to the skill's own step by `id`: a correction made in item 2 holds for every item.
+- **Resuming needs only what is still to run** (`skills.needed_from`): `gui do NAME --from 4` does not ask again for a value only step 2 typed, the way `replay.run` already skips parameters before its start step — except with a loop, whose steps are numbered again per item, where everything is needed.
+- **An engine cannot answer a question, so `skill_engine.run` refuses instead**: a missing value, unusable lists, a draft, or a screen that is not where the task began (only when a person said to check) return `halted_before_effect` with what to do, and nothing happens. It never rewrites a skill — a correction is a person's, made in the chat — and only counts a successful run (`skills.note_run`). `gui do`'s hint for carrying on is `gui do NAME --from N`, not `gui replay` (`cli._print_replay(result, command=...)`). The three engines are told skills exist in their own prompts (`ollama_client.SYSTEM_PROMPT`, `operator.go`'s prompt, `claude_harness.SCREEN_SYSTEM_PROMPT`).
+- **The control plane teaches and runs through the same door as a replay** (`httpapi/skills.go`'s `sendTaught`): refused with 409 while the desktop's agent has a task running or paused (a lesson or a skill run sent to a paused agent would be taken as the reply), otherwise Plan → the desktop's `POST /recordings/<id>/learn` or `POST /skills/<name>/run` → Commit. Unlike a replay's, a skill's parameters *are* in the request the chat shows (`/skill add-a-customer customer_name="Acme"`), because a skill has no secret parameter — a secret is a step a person does by hand. `skillContent` (Go) and `skill_task.request_text` (Python) build the same string and are each tested against the same expected value; change one and the other's test says so. A value holding both kinds of quote cannot be written into a request and is refused (400), not bent.
+- **A `/learn` conversation is a task that is not an attempt**: `tasks.Classify` types it `teaching` and `tasks.Report` skips it like a demonstration, because every question it asks is the point and not a person stepping in. A `/skill` run is `screen` and *is* counted: a skill that had to ask something is, correctly, not autonomous.
+- **Verified live, not just in tests** (`bench/skills/e2e.py`): a real `flowera-desktop:basic` container running this tree's agent, a mock control plane on the host catching its questions, and real Chromium on a local form. The agent records two demonstrations of a task through `gui`; `/learn` on both asks two questions (when it is finished, and whether to save — it learned from the two demonstrations that the name changes, and dropped the "Saved <name>" check that differed between them); `/skill` asks for the value and the page really shows it; after the form's button is renamed the skill stops and asks, `use "Save changes"` finishes the run, and the correction is in the saved skill. Run it after touching the agent side; it needs Docker and a built image and takes about two minutes.
+- Not built, on purpose: pulling a parameter's value out of a chat sentence ("pay the invoice for Globex"). Without a model that is a guess, and with one it would still have to be confirmed with the person — one round trip, the same as just asking — so a skill asks (`param="value"` skips the question). Also not built: a dashboard-card entry point (the Skills page is reached from the Recordings page, and the chat commands work everywhere).
+
 The benchmark is `bench/gui/`: 20 tasks (12 in a web admin panel, 5 in LibreOffice, 3 in GTK apps, 3 of them approval checks), fixtures and outcome checks that run inside a desktop (`fixtures/bench.py`), and `run.py`, which drives each engine through the control plane's chat API on a fresh desktop and reports success rate per engine. `--engine oracle --container <desktop>` runs each task's scripted `gui` solution with no model — the proof that a task is solvable and its check is right. Results go to `bench/gui/results/` (gitignored).
 
 ## Running it
@@ -437,7 +489,11 @@ go build ./... && go vet ./... && go test ./...   # compile, lint, unit tests
                                   #  internal/desktop, cmd/flowera's --cli)
 PYTHONPATH=agent python3 -m unittest discover -s agent/tests   # computer-use gate/refs/rendering,
                                   # task IDs and usage totals, recordings (input merging,
-                                  # privacy, volatility, the store, replay against a fake screen)
+                                  # privacy, volatility, the store, replay against a fake screen),
+                                  # skills (generalising demos, loops, the questions and answers,
+                                  # running a skill and asking when stuck, the gui/MCP tools and the
+                                  # agent's /skills endpoints)
+python3 bench/skills/e2e.py         # teach + run a skill on a real desktop (Docker, ~2 min)
 python3 bench/gui/run.py --engine oracle --container desktop_<id>   # GUI benchmark, no model
 python3 bench/gui/run.py --engine ollama --engine thebot --engine claude  # per-engine success rate
 ```
@@ -499,6 +555,7 @@ See [README.md](README.md#-getting-started-running-it-locally) for full step-by-
 | `FLOWERA_RECORDINGS_MB` | `computer/recording.py` | `1024` | Disk budget; task and hand-run recordings are pruned oldest first past it, demonstrations never. |
 | `FLOWERA_REPLAY_FIND_SECONDS` | `computer/replay.py` | `12` | How long a replay step looks for its target before halting. |
 | `FLOWERA_REPLAY_EXPECT_SECONDS` | `computer/replay.py` | `10` | How long a replay step waits for its expected result. |
+| `FLOWERA_SKILLS_DIR` | `computer/skills.py` | `~/.flowera/skills` | Where taught skills live (one JSON file each; a skill carries its own steps, so it outlives the recordings it came from). |
 
 ## Conventions / gotchas
 

@@ -4,8 +4,8 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler
 
-from flowera_agent import record_task, replay_task
-from flowera_agent.computer import demonstration, recording, replay
+from flowera_agent import record_task, replay_task, skill_task
+from flowera_agent.computer import demonstration, recording, replay, skills
 from flowera_agent.computer.errors import ComputerError
 from flowera_agent.logging_utils import log
 from flowera_agent.messaging import save_request
@@ -30,6 +30,14 @@ from flowera_agent.messaging import save_request
 #   POST /recordings/<id>/update         {title, description}
 #   POST /recordings/<id>/delete
 #   POST /recordings/<id>/replay         {task_id, from, params}: run it as a task
+#   POST /recordings/<id>/learn          {task_id, sessions}: teach a skill from
+#                                        it (and any others named) as a task -
+#                                        the desktop then asks its questions in
+#                                        the chat
+#   GET  /skills                         every skill taught on this desktop
+#   GET  /skills/<name>                  one skill, with its steps
+#   POST /skills/<name>/delete
+#   POST /skills/<name>/run              {task_id, params}: do it as a task
 #   POST /demonstration/start            {title, description}: an ad-hoc
 #                                        recording, no ticket - the recordings
 #                                        page's own "Record a demonstration"
@@ -135,6 +143,12 @@ class Handler(BaseHTTPRequestHandler):
                     "demonstration": demonstration.status(),
                 })
 
+            if parts == ["skills"]:
+                return self._json(200, {"skills": [skills.summary(s) for s in skills.all_skills()]})
+
+            if len(parts) == 2 and parts[0] == "skills":
+                return self._json(200, {"skill": skills.summary(skills.load(parts[1]), detail=True)})
+
             if len(parts) == 4 and parts[0] == "recordings" and parts[2] == "frames":
                 return self._frame(parts[1], parts[3])
 
@@ -215,6 +229,18 @@ class Handler(BaseHTTPRequestHandler):
                 if action == "replay":
                     return self._replay(session_id, data)
 
+                if action == "learn":
+                    return self._learn(session_id, data)
+
+            if len(parts) == 3 and parts[0] == "skills":
+                if parts[2] == "delete":
+                    skills.load(parts[1])
+                    skills.delete(parts[1])
+                    return self._json(200, {"status": "deleted"})
+
+                if parts[2] == "run":
+                    return self._run_skill(parts[1], data)
+
             return False
 
         self._guarded(route)
@@ -264,6 +290,37 @@ class Handler(BaseHTTPRequestHandler):
         # stay in this process's memory until the replay takes them.
         replay_task.hold_params(task_id, params)
         path = save_request(content, task_id)
+
+        return self._json(200, {"status": "received", "file": path.name, "content": content})
+
+    def _learn(self, session_id, data):
+        recording.load(session_id)
+
+        also = data.get("sessions") or []
+        if not isinstance(also, list) or not all(recording.valid(str(s)) for s in also):
+            raise ValueError("sessions must be a list of recording ids")
+
+        sessions = [session_id] + [str(s) for s in also if str(s) != session_id]
+        for other in sessions[1:]:
+            recording.load(other)
+
+        content = "/learn " + " ".join(sessions)
+        path = save_request(content, _text(data.get("task_id"), 64))
+
+        return self._json(200, {"status": "received", "file": path.name, "content": content})
+
+    def _run_skill(self, name, data):
+        skill = skills.load(name)
+
+        if skill.get("status") != skills.READY:
+            raise ComputerError("that skill was never finished being taught")
+
+        params = data.get("params") or {}
+        if not isinstance(params, dict):
+            raise ValueError("params must be an object of name: value")
+
+        content = skill_task.request_text(name, params)
+        path = save_request(content, _text(data.get("task_id"), 64))
 
         return self._json(200, {"status": "received", "file": path.name, "content": content})
 

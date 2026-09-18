@@ -290,6 +290,8 @@ gui select e12 "High"   picks a dropdown option
 gui open <url|file|app> opens it
 gui recordings <words>  finds a recorded demonstration of a task
 gui replay <id>         runs that recording again, step by step
+gui skills <words>      finds a task this desktop was taught
+gui do <name> --param k=v   does it with no model (gui skill <name> says what it needs)
 Observe first and use refs from the latest output, just the ref: gui click
 e12, not the whole line. Every gui action tells you what changed. A button that sends, pays or publishes pauses for
 approval on its own.

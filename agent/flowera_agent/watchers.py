@@ -1,7 +1,7 @@
 import threading
 import time
 
-from flowera_agent import config, progress, record_task, replay_task, state, task_context, usage
+from flowera_agent import config, progress, record_task, replay_task, skill_task, state, task_context, usage
 from flowera_agent.computer import approval
 from flowera_agent.harness import continue_after_query, perform_task
 from flowera_agent.logging_utils import log
@@ -58,9 +58,9 @@ def _report_queued(name):
 
 
 def _needs_no_backend(content):
-    """Whether a request is handled without the reasoning backend ("/replay", "/record")."""
+    """Whether a request is handled without the reasoning backend ("/replay", "/record", "/learn", "/skill")."""
 
-    return bool(replay_task.parse(content)) or record_task.parse(content) is not None
+    return bool(replay_task.parse(content)) or record_task.parse(content) is not None or skill_task.handles(content)
 
 
 HANDLED_SUFFIX = ".done"
@@ -183,10 +183,13 @@ def command_watcher():
 
                     _mark_handled(path)
 
-                    # A paused replay takes its own reply; it is still a
-                    # reply either way, which is all tasks.Plan mirrors.
+                    # A paused replay, or a taught skill's question, takes its
+                    # own reply; it is still a reply either way, which is all
+                    # tasks.Plan mirrors.
                     if state.paused_replay is not None:
                         target, args = replay_task.resume, (content, outcome)
+                    elif state.paused_skill is not None:
+                        target, args = skill_task.resume, (content, outcome)
                     else:
                         target, args = continue_after_query, (content,)
 
@@ -248,12 +251,16 @@ def command_watcher():
                 except OSError as exc:
                     log(f"Could not clear on-screen approvals: {exc}")
 
-                # "/replay <recording>" runs a recording and "/record <task>"
-                # records a person doing it; neither goes to an engine.
+                # "/replay <recording>" runs a recording, "/record <task>"
+                # records a person doing it, "/learn <recording>" teaches a
+                # skill from one and "/skill <name>" runs it; none of them
+                # goes to an engine.
                 if replay_task.parse(content):
                     target = replay_task.perform
                 elif record_task.parse(content) is not None:
                     target = record_task.perform
+                elif skill_task.handles(content):
+                    target = skill_task.perform
                 else:
                     target = perform_task
 

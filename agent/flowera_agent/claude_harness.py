@@ -97,7 +97,10 @@ mcp__computer__observe (screenshot + elements with refs), mcp__computer__act
 (click/type/key/scroll/select on a ref; coordinates only when no element
 fits), mcp__computer__verify (confirm the result), mcp__computer__open
 (a URL, file or app). Act on refs from your latest observation, and verify
-before reporting that something on screen is done.
+before reporting that something on screen is done. If a person has taught
+this desktop the task, mcp__computer__skills finds it and
+mcp__computer__run_skill does it with no model: prefer that to working the
+task out yourself.
 
 You do not need to ask before clicking an on-screen control: the act tool
 itself stops before anything that sends, pays, buys or publishes. When it

@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
+<title>Skills · {{.Desktop.Name}} · Flowera</title>
+
+{{template "theme"}}
+
+<style>
+[hidden]{display:none!important}
+
+.head-actions{display:flex;gap:8px;flex-wrap:wrap}
+.page-head .page-sub{max-width:64ch}
+
+/* ---------- how it works ---------- */
+
+.how{padding:16px 18px;margin-bottom:22px;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px 22px}
+.how-step{display:grid;gap:3px;align-content:start}
+.how-step b{font-size:13px}
+.how-step span{font-size:12.5px;color:var(--text-2);line-height:1.5}
+.how-num{font-family:var(--mono);font-size:11px;color:var(--accent);font-weight:650}
+
+.notice{padding:12px 16px;margin-bottom:18px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;border-color:var(--accent);background:var(--accent-soft)}
+.notice strong{font-size:13.5px}
+.notice .spacer{flex:1}
+
+/* ---------- skills ---------- */
+
+.section-title{font-size:12px;font-weight:650;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);margin:0 0 10px}
+.section{margin-bottom:28px}
+.cards{display:grid;gap:12px}
+
+.skill{overflow:hidden}
+.skill-head{padding:15px 18px;display:grid;gap:9px}
+.skill-title{font-size:16px;line-height:1.35;overflow-wrap:anywhere}
+.skill-name{font-family:var(--mono);font-size:11.5px;color:var(--text-3)}
+.skill-meta{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12.5px;color:var(--text-2)}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip.warn{background:var(--accent-soft);color:var(--accent)}
+.done-when{font-size:13px;color:var(--text-2);overflow-wrap:anywhere}
+.done-when b{color:var(--text);font-weight:600}
+.skill-actions{display:flex;gap:8px;flex-wrap:wrap}
+
+.run{padding:14px 18px;border-top:1px solid var(--line);background:var(--surface-2);display:grid;gap:12px}
+.run-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px 14px}
+.run label{display:grid;gap:4px;font-size:12px;font-weight:600;color:var(--text-2)}
+.run textarea.input{min-height:74px;resize:vertical;font-family:inherit}
+.run .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.run .row .hint{flex:1;min-width:200px}
+
+.outline{padding:8px 18px 14px;border-top:1px solid var(--line);display:grid;gap:0;margin:0;list-style:none}
+.outline li{display:grid;grid-template-columns:34px minmax(0,1fr);gap:8px;padding:7px 0;border-bottom:1px dashed var(--line);font-size:13px}
+.outline li:last-child{border-bottom:0}
+.outline .n{font-family:var(--mono);font-size:11px;color:var(--text-3);padding-top:2px}
+.outline .tag{display:inline-block;margin-left:6px;font-size:10.5px;font-weight:650;letter-spacing:.03em;text-transform:uppercase;color:var(--accent)}
+.notes,.learned{padding:12px 18px;border-top:1px solid var(--line);font-size:12.5px;color:var(--text-2);display:grid;gap:4px}
+.notes b,.learned b{color:var(--text);font-size:12px}
+
+.placeholder{padding:48px 24px;text-align:center;color:var(--text-3);font-size:13px}
+
+@media (max-width:520px){
+  .skill-head,.run,.outline,.notes,.learned{padding-left:14px;padding-right:14px}
+}
+</style>
+</head>
+
+<body data-desktop="{{.Desktop.ID}}">
+
+{{template "sprite"}}
+
+<div id="progress"></div>
+<div id="toasts"></div>
+
+{{template "topbar" "desktops"}}
+
+<main class="wrap">
+
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">Skills</div>
+      <h1>{{.Desktop.Name}}</h1>
+      <p class="page-sub">Tasks this desktop was taught by watching you. It does them with no model, stops to ask when it is unsure, and always stops for your approval before anything that sends, pays or publishes.</p>
+    </div>
+    <div class="head-actions">
+      <a class="btn btn-default btn-sm" href="/recordings/{{.Desktop.ID}}">
+        <svg width="14" height="14"><use href="#i-record"/></svg>Recordings
+      </a>
+      {{if eq .Desktop.Status "running"}}
+      <a class="btn btn-default btn-sm" href="/view/{{.Desktop.ID}}">
+        <svg width="14" height="14"><use href="#i-blossom"/></svg>Chat
+      </a>
+      {{end}}
+    </div>
+  </div>
+
+  {{if ne .Desktop.Status "running"}}
+  <div class="empty">
+    <div class="empty-mark"><svg width="18" height="18"><use href="#i-blossom"/></svg></div>
+    <h3>This desktop is stopped</h3>
+    <p>Its skills are kept on the desktop itself. <strong>Start it</strong> from the dashboard to see them.</p>
+  </div>
+  {{else}}
+
+  <section class="panel notice" id="notice" hidden aria-live="polite">
+    <strong id="noticeText"></strong>
+    <span class="spacer"></span>
+    <a class="btn btn-primary btn-sm" href="/view/{{.Desktop.ID}}">
+      <svg width="14" height="14"><use href="#i-blossom"/></svg>Open the chat
+    </a>
+  </section>
+
+  <section class="panel how" id="how" hidden>
+    <div class="how-step"><span class="how-num">1</span><b>Show it</b><span>Record yourself doing the task from the desktop's screen. Two or three demonstrations with different details teach it what changes.</span></div>
+    <div class="how-step"><span class="how-num">2</span><b>Teach it</b><span>On the Recordings page, press <em>Teach</em> on a demonstration. The desktop asks in the chat what a recording cannot say.</span></div>
+    <div class="how-step"><span class="how-num">3</span><b>Ask for it</b><span>Run the skill here or type <code>/skill name</code> in the chat. Anything it is unsure of, it asks.</span></div>
+  </section>
+
+  <div id="ready" class="section" hidden>
+    <h2 class="section-title">Ready</h2>
+    <div class="cards" id="readyCards"></div>
+  </div>
+
+  <div id="drafts" class="section" hidden>
+    <h2 class="section-title">Unfinished lessons</h2>
+    <div class="cards" id="draftCards"></div>
+  </div>
+
+  <div class="placeholder" id="loading">Loading…</div>
+  {{end}}
+
+</main>
+
+{{template "chrome-js"}}
+
+<script>
+(function(){
+  "use strict";
+
+  var loading = document.getElementById("loading");
+  if(!loading){ return; }
+
+  var toast = Flowera.toast, post = Flowera.post;
+  var desktopID = document.body.dataset.desktop;
+
+  /* ---- helpers ---- */
+
+  function node(tag, className, text){
+    var el = document.createElement(tag);
+    if(className){ el.className = className; }
+    if(text !== undefined && text !== null){ el.textContent = text; }
+    return el;
+  }
+
+  function icon(name, size){
+    var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("width", size || 14);
+    svg.setAttribute("height", size || 14);
+    svg.setAttribute("aria-hidden", "true");
+    var use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+    use.setAttribute("href", "#i-" + name);
+    svg.appendChild(use);
+    return svg;
+  }
+
+  function button(label, className, iconName){
+    var b = node("button", "btn btn-sm " + className);
+    b.type = "button";
+    if(iconName){ b.appendChild(icon(iconName)); }
+    b.appendChild(document.createTextNode(label));
+    return b;
+  }
+
+  function query(params){
+    return new URLSearchParams(Object.assign({id: desktopID}, params)).toString();
+  }
+
+  async function getJSON(url){
+    var response = await fetch(url, {headers: {"Accept": "application/json"}});
+    var data = await response.json().catch(function(){ return {}; });
+    if(!response.ok){ throw new Error(data.error || "Request failed"); }
+    return data;
+  }
+
+  function when(seconds){
+    if(!seconds){ return ""; }
+    return new Date(seconds * 1000).toLocaleDateString([], {dateStyle: "medium"});
+  }
+
+  function plural(n, one, many){ return n + " " + (n === 1 ? one : many); }
+
+  function started(text){
+    document.getElementById("noticeText").textContent = text;
+    document.getElementById("notice").hidden = false;
+    window.scrollTo({top: 0, behavior: "smooth"});
+  }
+
+  /* ---- a skill ---- */
+
+  function chips(skill){
+    var row = node("div", "chips");
+    row.appendChild(node("span", "chip", plural(skill.steps, "step", "steps")));
+    if(skill.gated){ row.appendChild(node("span", "chip warn", "asks approval at " + plural(skill.gated, "step", "steps"))); }
+    if(skill.by_hand){ row.appendChild(node("span", "chip warn", plural(skill.by_hand, "step", "steps") + " done by you")); }
+    return row;
+  }
+
+  function readyCard(skill){
+    var card = node("article", "panel skill");
+    var head = node("div", "skill-head");
+
+    head.appendChild(node("div", "skill-name", skill.name));
+    head.appendChild(node("h3", "skill-title", skill.title));
+
+    var meta = node("div", "skill-meta");
+    meta.appendChild(node("span", "", "Run " + plural(skill.runs, "time", "times")));
+    meta.appendChild(node("span", "", "Taught from " + plural(skill.demos, "demonstration", "demonstrations")));
+    if(skill.version > 1){ meta.appendChild(node("span", "", "Corrected " + (skill.version - 1) + "×")); }
+    if(skill.learned_at){ meta.appendChild(node("span", "", when(skill.learned_at))); }
+    head.appendChild(meta);
+    head.appendChild(chips(skill));
+
+    if(skill.done_when){
+      var done = node("div", "done-when");
+      done.append(node("b", "", "Finished when: "), document.createTextNode(skill.done_when));
+      head.appendChild(done);
+    }
+
+    var actions = node("div", "skill-actions");
+    var runBtn = button("Run", "btn-primary", "play");
+    var stepsBtn = button("Steps", "btn-default");
+    var deleteBtn = button("Delete", "btn-danger", "trash");
+    actions.append(runBtn, stepsBtn, deleteBtn);
+    head.appendChild(actions);
+    card.appendChild(head);
+
+    /* run form */
+    var form = node("form", "run");
+    form.hidden = true;
+    var inputs = {};
+    var grid = node("div", "run-grid");
+
+    skill.params.forEach(function(param){
+      var label = node("label", "", param.label);
+      var input = param.list ? node("textarea", "input") : node("input", "input");
+      input.name = param.name;
+      input.required = true;
+      input.placeholder = param.list ? "One per line" : (param.example || "");
+      input.setAttribute("aria-label", param.label);
+      label.appendChild(input);
+      if(param.list){ label.appendChild(node("span", "hint", "One item per line. The task is done once for each.")); }
+      grid.appendChild(label);
+      inputs[param.name] = input;
+    });
+
+    if(skill.params.length){ form.appendChild(grid); }
+
+    var row = node("div", "row");
+    var go = node("button", "btn btn-primary btn-sm", "Start");
+    go.type = "submit";
+    row.append(go, node("span", "hint",
+      skill.params.length ? "It asks in the chat if anything is not as it was when you showed it."
+                          : "Nothing to fill in. It asks in the chat if anything is not as it was when you showed it."));
+    form.appendChild(row);
+    card.appendChild(form);
+
+    runBtn.addEventListener("click", function(){ form.hidden = !form.hidden; });
+
+    form.addEventListener("submit", async function(e){
+      e.preventDefault();
+      var params = {};
+      Object.keys(inputs).forEach(function(name){ params[name] = inputs[name].value; });
+
+      Flowera.busy(true);
+      try{
+        await post("/api/desktops/skills/run", {id: desktopID, name: skill.name, params: JSON.stringify(params)});
+        form.hidden = true;
+        toast("Started.");
+        started("Started “" + skill.title + "”. Follow it, and answer anything it asks, in the chat.");
+        refresh();
+      }catch(err){
+        toast(err.message, "error");
+      }finally{
+        Flowera.busy(false);
+      }
+    });
+
+    /* steps, read when first asked for */
+    var outline = null;
+    stepsBtn.addEventListener("click", async function(){
+      if(outline){ outline.hidden = !outline.hidden; return; }
+
+      Flowera.busy(true);
+      try{
+        var data = await getJSON("/api/desktops/skills/get?" + query({name: skill.name}));
+        outline = node("ol", "outline");
+        data.skill.outline.forEach(function(step){
+          var li = node("li");
+          li.appendChild(node("span", "n", String(step.n)));
+          var text = node("span", "", step.summary);
+          if(step.consequential){ text.appendChild(node("span", "tag", "asks approval")); }
+          if(step.optional){ text.appendChild(node("span", "tag", "only if it is there")); }
+          if(step.repeat){ text.appendChild(node("span", "tag", "for each item")); }
+          if(step.kind === "manual"){ text.appendChild(node("span", "tag", "you do this")); }
+          li.appendChild(text);
+          outline.appendChild(li);
+        });
+        card.appendChild(outline);
+
+        if(data.skill.notes.length){
+          var notes = node("div", "notes");
+          notes.appendChild(node("b", "", "Your notes while showing it"));
+          data.skill.notes.forEach(function(t){ notes.appendChild(node("span", "", t)); });
+          card.appendChild(notes);
+        }
+      }catch(err){
+        toast(err.message, "error");
+      }finally{
+        Flowera.busy(false);
+      }
+    });
+
+    if(skill.learned && skill.learned.length){
+      var learned = node("div", "learned");
+      learned.appendChild(node("b", "", "Corrections it remembers"));
+      skill.learned.forEach(function(t){ learned.appendChild(node("span", "", t)); });
+      card.appendChild(learned);
+    }
+
+    deleteBtn.addEventListener("click", async function(){
+      if(!window.confirm("Forget “" + skill.title + "”? The recordings it was taught from are kept.")){ return; }
+      Flowera.busy(true);
+      try{
+        await post("/api/desktops/skills/delete", {id: desktopID, name: skill.name});
+        toast("Forgotten.");
+        refresh();
+      }catch(err){
+        toast(err.message, "error");
+      }finally{
+        Flowera.busy(false);
+      }
+    });
+
+    return card;
+  }
+
+  function draftCard(skill){
+    var card = node("article", "panel skill");
+    var head = node("div", "skill-head");
+
+    head.appendChild(node("div", "skill-name", skill.name));
+    head.appendChild(node("h3", "skill-title", skill.title));
+    head.appendChild(node("p", "hint", "Its questions were not all answered, so it cannot be run yet. What you have told it is kept."));
+
+    var actions = node("div", "skill-actions");
+    var resume = button("Finish teaching", "btn-primary", "blossom");
+    var deleteBtn = button("Delete", "btn-danger", "trash");
+    actions.append(resume, deleteBtn);
+    head.appendChild(actions);
+    card.appendChild(head);
+
+    resume.addEventListener("click", async function(){
+      var sources = skill.sources || [];
+      if(!sources.length){ return; }
+
+      Flowera.busy(true);
+      try{
+        await post("/api/desktops/recordings/learn", {id: desktopID, session: sources[0], sessions: sources.slice(1).join(",")});
+        started("Picking up “" + skill.title + "” where you left off. Its next question is in the chat.");
+      }catch(err){
+        toast(err.message, "error");
+      }finally{
+        Flowera.busy(false);
+      }
+    });
+
+    deleteBtn.addEventListener("click", async function(){
+      if(!window.confirm("Throw away this unfinished lesson?")){ return; }
+      Flowera.busy(true);
+      try{
+        await post("/api/desktops/skills/delete", {id: desktopID, name: skill.name});
+        refresh();
+      }catch(err){
+        toast(err.message, "error");
+      }finally{
+        Flowera.busy(false);
+      }
+    });
+
+    return card;
+  }
+
+  /* ---- the page ---- */
+
+  async function refresh(){
+    try{
+      var data = await getJSON("/api/desktops/skills?" + query({}));
+      var ready = data.skills.filter(function(s){ return s.status === "ready"; });
+      var drafts = data.skills.filter(function(s){ return s.status !== "ready"; });
+
+      loading.hidden = true;
+      document.getElementById("how").hidden = ready.length > 0 || drafts.length > 0;
+
+      document.getElementById("ready").hidden = !ready.length;
+      document.getElementById("readyCards").replaceChildren.apply(document.getElementById("readyCards"), ready.map(readyCard));
+
+      document.getElementById("drafts").hidden = !drafts.length;
+      document.getElementById("draftCards").replaceChildren.apply(document.getElementById("draftCards"), drafts.map(draftCard));
+    }catch(err){
+      loading.hidden = false;
+      loading.textContent = "Could not read this desktop's skills: " + err.message;
+    }
+  }
+
+  refresh();
+})();
+</script>
+</body>
+</html>
