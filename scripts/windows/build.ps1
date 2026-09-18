@@ -271,24 +271,28 @@ try {
     # display in the dashboard's Mobile dropdown. "$_" rather than $_: in
     # Windows PowerShell 5.1 a redirected stderr line arrives as an
     # ErrorRecord, and only its string form is the line itself.
-    cloudflared tunnel --protocol http2 --url "http://127.0.0.1:8080" 2>&1 | ForEach-Object {
-        $line = "$_"
-        Write-Host $line
+    while ($true) {
+        cloudflared tunnel --protocol http2 --url "http://127.0.0.1:8080" 2>&1 | ForEach-Object {
+            $line = "$_"
+            Write-Host $line
 
-        if ($line -match 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com') {
-            $tunnelUrl = $Matches[0]
-            try {
-                Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8080/api/tunnel" `
-                    -ContentType "application/json" `
-                    -Body (@{ url = $tunnelUrl } | ConvertTo-Json -Compress) `
-                    -TimeoutSec 5 | Out-Null
-            } catch {
-                # Best effort: the tunnel works whether or not the dashboard
-                # shows it.
+            if ($line -match 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com') {
+                $tunnelUrl = $Matches[0]
+                try {
+                    Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8080/api/tunnel" `
+                        -ContentType "application/json" `
+                        -Body (@{ url = $tunnelUrl } | ConvertTo-Json -Compress) `
+                        -TimeoutSec 5 | Out-Null
+                } catch {
+                    # Best effort: the tunnel works whether or not the dashboard
+                    # shows it.
+                }
+
+                Write-Host "(No access code needed for this URL - full control of this machine. Keep it to yourself.)"
             }
-
-            Write-Host "(No access code needed for this URL - full control of this machine. Keep it to yourself.)"
         }
+        Write-Host "Cloudflare tunnel disconnected. Reconnecting in 3s..."
+        Start-Sleep -Seconds 3
     }
 }
 finally {

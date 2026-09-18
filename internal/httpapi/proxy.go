@@ -80,9 +80,20 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 		r.URL.Path = "/vnc.html"
 	}
 
+	if r.URL.Path == "/vnc.html" {
+		query := r.URL.Query()
+		if query.Get("autoconnect") == "" {
+			query.Set("autoconnect", "true")
+			r.URL.RawQuery = query.Encode()
+		}
+	}
+
 	// Query parameters (e.g. index.html's open-in-a-new-tab resize=remote&ui=touch)
 	// are preserved automatically since only r.URL.Path was rewritten above.
 	reverseProxy.ModifyResponse = func(resp *http.Response) error {
+		if !strings.Contains(resp.Header.Get("Content-Type"), "text/html") && resp.StatusCode == http.StatusOK {
+			resp.Header.Set("Cache-Control", "public, max-age=86400, stale-while-revalidate=3600")
+		}
 		return rewriteDesktopHTML(resp, desktopID)
 	}
 	reverseProxy.ErrorHandler = func(
@@ -90,6 +101,7 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 		req *http.Request,
 		err error,
 	) {
+		s.Desktops.InvalidateProxyTarget(desktopID)
 		log.Printf(
 			"desktop proxy error for %s: %v",
 			desktopID,
@@ -165,6 +177,7 @@ func rewriteDesktopHTML(resp *http.Response, desktopID string) error {
 		injections.WriteString(strings.ReplaceAll(titleOverrideScript, "__DESKTOP_ID__", desktopID))
 		injections.WriteString(strings.ReplaceAll(ticketToolbar, "__DESKTOP_ID__", desktopID))
 		injections.WriteString(strings.ReplaceAll(resourceAlertPopup, "__DESKTOP_ID__", desktopID))
+		injections.WriteString(autoConnectHelper)
 		if resp.Request != nil && resp.Request.URL != nil && resp.Request.URL.Query().Get("ui") == "touch" {
 			injections.WriteString(mobileViewerEnhancements)
 		}
@@ -794,6 +807,52 @@ Object.defineProperty(document, "title", {
   set: function(){ titleEl.textContent = desiredTitle; }
 });
 document.title = desiredTitle;
+})();
+</script>
+`
+
+// autoConnectHelper ensures the user connects directly into the VM GUI
+// without stalling on noVNC's manual connect button or VNC password dialog.
+const autoConnectHelper = `
+<script>
+(function(){
+  "use strict";
+  function autoFillAndConnect(){
+    var pwdInput = document.getElementById('noVNC_password_input');
+    var pwdDlg = document.getElementById('noVNC_password_dlg');
+    var pwdBtn = document.getElementById('noVNC_password_button');
+    if (pwdDlg && pwdDlg.classList.contains('noVNC_open') && pwdInput && pwdBtn) {
+      if (!pwdInput.value) {
+        pwdInput.value = "admin";
+      }
+      pwdBtn.click();
+    }
+
+    var connBtn = document.getElementById('noVNC_connect_button');
+    var connDlg = document.getElementById('noVNC_connect_dlg');
+    if (connDlg && connDlg.classList.contains('noVNC_open') && connBtn) {
+      connBtn.click();
+    }
+  }
+
+  if (window.MutationObserver && document.documentElement) {
+    var observer = new MutationObserver(function() {
+      autoFillAndConnect();
+    });
+    observer.observe(document.documentElement, { attributes: true, subtree: true, attributeFilter: ['class', 'style'] });
+  }
+
+  var attempts = 0;
+  var interval = setInterval(function(){
+    attempts++;
+    autoFillAndConnect();
+    if (attempts > 30) {
+      clearInterval(interval);
+    }
+  }, 300);
+
+  window.addEventListener('DOMContentLoaded', autoFillAndConnect);
+  window.addEventListener('load', autoFillAndConnect);
 })();
 </script>
 `
