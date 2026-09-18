@@ -241,8 +241,6 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	created, err := s.Desktops.Create(
-		r.Context(),
 	if r.Context().Err() != nil {
 		log.Printf("createDesktop: client canceled before creation for %s", name)
 		return
@@ -288,10 +286,6 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Clean up immediately if client aborted while Create was finishing
-	if r.Context().Err() != nil {
-		log.Printf("createDesktop: client canceled after container creation, deleting %s", created.ID)
-		_ = s.Desktops.Delete(context.Background(), created.ID)
 	w.WriteHeader(http.StatusAccepted)
 	jsonResponse(w, prov)
 }
@@ -304,16 +298,6 @@ func (s *Server) desktopStatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A child worker starts out sharing L1 memory with the parent it was
-	// specialized from, so a focused worker still knows what the original
-	// one had already learned. Best-effort: the desktop itself is already
-	// created and usable without this.
-	if parentID != "" {
-		if err := s.Memory.Link(parentID, created.ID); err != nil {
-			log.Printf("createDesktop: link child %s to parent %s: %v", created.ID, parentID, err)
-		} else {
-			s.backfillSharedMemory(r.Context(), parentID, created.ID)
-		}
 	// 1. Check in-flight provisioning state
 	if prov, ok := s.Desktops.GetProvisioning(desktopID); ok {
 		jsonResponse(w, map[string]any{
@@ -330,19 +314,6 @@ func (s *Server) desktopStatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.Tasks.UpsertWorker(tasks.Worker{
-		ID:      created.ID,
-		Name:    created.Name,
-		Engine:  created.Harness,
-		Profile: created.Profile,
-		Model:   created.Model,
-	}); err != nil {
-		log.Printf("createDesktop: %v", err)
-	}
-
-	if r.Context().Err() != nil {
-		log.Printf("createDesktop: client canceled, deleting %s", created.ID)
-		_ = s.Desktops.Delete(context.Background(), created.ID)
 	// 2. Otherwise inspect the desktop
 	d, err := s.Desktops.Get(r.Context(), desktopID)
 	if err != nil {
@@ -354,7 +325,6 @@ func (s *Server) desktopStatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jsonResponse(w, created)
 	isReady := d.Status == "running"
 	jsonResponse(w, map[string]any{
 		"id":       d.ID,

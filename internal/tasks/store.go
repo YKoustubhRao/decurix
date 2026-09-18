@@ -1040,6 +1040,7 @@ func (s *Store) CloseOpen(workerID, why string) error {
 	if err != nil {
 		return err
 	}
+	defer rows.Close()
 
 	var open []executionRef
 
@@ -1179,6 +1180,7 @@ func (s *Store) Get(taskID string) (Detail, error) {
 	if err != nil {
 		return Detail{}, fmt.Errorf("tasks: reading steps: %w", err)
 	}
+	defer steps.Close()
 
 	for steps.Next() {
 		var step Step

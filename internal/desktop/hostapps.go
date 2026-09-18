@@ -192,9 +192,6 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 	// Always include host_bridge when apps are being migrated
 	selectedMap["host_bridge"] = true
 
-	// Build tar archive buffer
-	tarBuf := new(bytes.Buffer)
-	tw := tar.NewWriter(tarBuf)
 	// Stream archive directly into container at /home/headless via pipe (zero RAM duplication)
 	pr, pw := io.Pipe()
 	copyOpts := container.CopyToContainerOptions{
@@ -257,17 +254,6 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 	}
 	_ = pw.Close()
 
-	if tarBuf.Len() == 0 {
-		return nil
-	}
-
-	// Stream archive directly into container at /home/headless
-	copyOpts := container.CopyToContainerOptions{
-		AllowOverwriteDirWithFile: false,
-		CopyUIDGID:                false,
-	}
-
-	if err := m.client.CopyToContainer(ctx, inspect.ID, "/home/headless", tarBuf, copyOpts); err != nil {
 	if err := <-copyErrCh; err != nil {
 		return fmt.Errorf("copy host apps to %s: %w", containerName, err)
 	}
@@ -1928,22 +1914,18 @@ func isCacheOrTransient(name, fullPath string, isDir bool) bool {
 	if strings.HasPrefix(lower, "cached") {
 		return true
 	}
-	if lower == "gpu-cache" || lower == "gpucache" || lower == "code cache" || lower == "codecache" || lower == "dawncache" {
 	if lower == "gpu-cache" || lower == "gpucache" || lower == "code cache" || lower == "codecache" || lower == "dawncache" || lower == "grshadercache" {
 		return true
 	}
-	if lower == "crashpad" || lower == "crash reports" || strings.HasPrefix(lower, "browsermetrics") {
 	if lower == "crashpad" || lower == "crash reports" || strings.HasPrefix(lower, "browsermetrics") || lower == "minidumps" {
 		return true
 	}
-	if strings.HasSuffix(lower, ".tmp") || strings.HasSuffix(lower, ".log") || strings.HasSuffix(lower, ".dmp") {
 	if strings.HasSuffix(lower, ".tmp") || strings.HasSuffix(lower, ".log") || strings.HasSuffix(lower, ".dmp") || strings.HasSuffix(lower, ".swp") {
 		return true
 	}
 	if isDir && (lower == "logs" || lower == "node_modules" || lower == "pkg" || lower == "temp" ||
 		lower == "indexeddb" || lower == "service worker" || lower == "blob_storage" || lower == "file system" ||
 		lower == "storage" || lower == "extensions" || lower == "dictionaries" || lower == "media cache" ||
-		lower == "optimizationguide" || lower == "hyphenation-data" || lower == "variations" || lower == "webrtc_event_logs") {
 		lower == "optimizationguide" || lower == "hyphenation-data" || lower == "variations" || lower == "webrtc_event_logs" ||
 		lower == ".git" || lower == "__pycache__" || lower == ".pytest_cache" || lower == ".mypy_cache" || lower == ".cache") {
 		return true
