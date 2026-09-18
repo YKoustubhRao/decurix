@@ -208,7 +208,7 @@ func runCLI(baseURL string) int {
 func printCLIHelp() {
 	fmt.Println(`Commands:
   list | ls                          list desktops
-  create <name> [--profile basic|developer|ai] [--harness ollama|claude|thebot] [--cpus N] [--memory-mb N]
+  create <name> [--profile basic|developer|ai] [--harness ollama|claude|thebot] [--cpus N] [--memory-mb N] [--copy-apps] [--apps chrome,gh,ssh]
   start <id>
   pause <id>                         freeze container CPU (0% CPU)
   unpause | wake <id>                thaw frozen container (< 1ms)
@@ -279,11 +279,12 @@ var createFlags = map[string]string{
 	"--harness":   "harness",
 	"--cpus":      "cpus",
 	"--memory-mb": "memory_mb",
+	"--apps":      "host_apps",
 }
 
 func cliCreate(ctx context.Context, c *apiClient, args []string) {
 	if len(args) == 0 {
-		fmt.Println("usage: create <name> [--profile basic|developer|ai] [--harness ollama|claude|thebot] [--cpus N] [--memory-mb N]")
+		fmt.Println("usage: create <name> [--profile basic|developer|ai] [--harness ollama|claude|thebot] [--cpus N] [--memory-mb N] [--copy-apps] [--apps chrome,gh,ssh]")
 		return
 	}
 
@@ -291,6 +292,11 @@ func cliCreate(ctx context.Context, c *apiClient, args []string) {
 
 	rest := args[1:]
 	for i := 0; i < len(rest); i++ {
+		if rest[i] == "--copy-apps" || rest[i] == "--copy-host-apps" {
+			form.Set("copy_host_apps", "1")
+			continue
+		}
+
 		field, ok := createFlags[rest[i]]
 		if !ok {
 			fmt.Println("unknown flag:", rest[i])
@@ -304,6 +310,9 @@ func cliCreate(ctx context.Context, c *apiClient, args []string) {
 		}
 
 		form.Set(field, rest[i])
+		if field == "host_apps" {
+			form.Set("copy_host_apps", "1")
+		}
 	}
 
 	created, err := c.createDesktop(ctx, form)
