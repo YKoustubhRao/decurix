@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Local Browser Agent</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f7f8; --panel: #ffffff; --border: #e0e0e3; --text: #1c1c1f;
+    --muted: #6b6b73; --accent: #3b5bdb; --ok: #2f9e44; --err: #e03131;
+    --warn: #b45309; --code-bg: #f1f2f6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16171a; --panel: #1e1f23; --border: #2f3036; --text: #eaeaec;
+      --muted: #9a9aa2; --accent: #6f8bff; --ok: #51cf66; --err: #ff6b6b;
+      --warn: #ffa94d; --code-bg: #141518;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    width: 400px; margin: 0; padding: 12px; background: var(--bg); color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif; font-size: 13px;
+    max-height: 600px; overflow-y: auto;
+  }
+  h1 { font-size: 15px; margin: 0 0 2px; display: flex; align-items: center; gap: 6px; }
+  .sub { color: var(--muted); margin: 0 0 10px; font-size: 11px; }
+
+  #statsBar {
+    font-size: 10.5px; color: var(--muted); background: var(--panel); border: 1px solid var(--border);
+    border-radius: 6px; padding: 5px 8px; margin-bottom: 10px;
+  }
+  #statsBar b { color: var(--text); }
+
+  .panel {
+    border: 1px solid var(--border); background: var(--panel); border-radius: 8px;
+    padding: 10px; margin-bottom: 10px;
+  }
+  .panel h2 {
+    font-size: 10.5px; margin: 0 0 6px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600;
+  }
+  details.panel summary {
+    cursor: pointer; font-size: 10.5px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .04em; font-weight: 600;
+  }
+  details.panel[open] summary { margin-bottom: 6px; }
+
+  textarea, input[type="text"], select {
+    width: 100%; padding: 7px 9px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); font-family: inherit; font-size: 12.5px;
+  }
+  textarea { resize: vertical; min-height: 56px; }
+  textarea:focus, input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+  .row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+  .row.tight { margin-top: 6px; }
+  label.inline { display: flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--muted); cursor: pointer; }
+
+  button {
+    padding: 6px 14px; border-radius: 6px; border: none; background: var(--accent);
+    color: white; font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+  button.secondary { background: var(--border); color: var(--text); }
+  button.warn { background: var(--warn); }
+  button.danger { background: var(--err); }
+  button.small { padding: 4px 9px; font-size: 11px; }
+  button.icon { padding: 3px 7px; font-size: 11px; background: transparent; color: var(--muted); }
+  button.icon:hover { color: var(--err); }
+  button:disabled { opacity: 0.45; cursor: default; }
+  .hidden { display: none !important; }
+
+  .status-line { font-size: 11.5px; color: var(--muted); }
+  .status-line.running { color: var(--accent); }
+  .status-line.paused { color: var(--warn); }
+  .status-line.err { color: var(--err); }
+
+  .stage-line { font-size: 11.5px; color: var(--accent); margin-top: 7px; }
+  .stage-line::before { content: "\25CF "; }
+
+  .lock-note {
+    font-size: 10.5px; color: var(--muted); margin-top: 7px;
+    background: var(--code-bg); border-radius: 6px; padding: 5px 8px;
+  }
+
+  #steps { display: flex; flex-direction: column; gap: 6px; max-height: 240px; overflow-y: auto; }
+  .step-card {
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; background: var(--bg);
+    font-size: 11.5px;
+  }
+  .step-head { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+  .step-instr { font-weight: 600; flex: 1; }
+  .badge {
+    font-size: 10px; padding: 1px 7px; border-radius: 999px; font-weight: 700;
+    white-space: nowrap; background: var(--border); color: var(--muted);
+  }
+  .badge.running { background: var(--accent); color: white; }
+  .badge.ok { background: var(--ok); color: white; }
+  .badge.failed, .badge.not_met { background: var(--err); color: white; }
+  .step-detail { color: var(--muted); margin-top: 3px; font-size: 11px; }
+  .step-action {
+    font: 10.5px ui-monospace, Consolas, monospace; background: var(--code-bg); border-radius: 4px;
+    padding: 3px 6px; margin-top: 3px; word-break: break-all;
+  }
+  .step-verify { margin-top: 3px; font-size: 11px; }
+  .step-verify.ok { color: var(--ok); }
+  .step-verify.bad { color: var(--err); }
+
+  #log {
+    height: 160px; overflow-y: auto; background: var(--code-bg); color: var(--text);
+    font: 11px/1.5 ui-monospace, Consolas, monospace; padding: 8px; white-space: pre-wrap;
+    border-radius: 6px; border: 1px solid var(--border);
+  }
+  #log .step { color: var(--accent); font-weight: 600; }
+  #log .err { color: var(--err); }
+  #log .ok { color: var(--ok); }
+  #log .warn { color: var(--warn); }
+  #log .muted { color: var(--muted); }
+
+  #answerBox { margin-top: 6px; font-size: 12px; }
+
+  .saved-item {
+    display: flex; align-items: center; gap: 6px; padding: 6px 0;
+    border-bottom: 1px solid var(--border); font-size: 11.5px;
+  }
+  .saved-item:last-child { border-bottom: none; }
+  .saved-item .info { flex: 1; min-width: 0; }
+  .saved-item .name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .saved-item .meta { color: var(--muted); font-size: 10.5px; }
+  .empty-note { color: var(--muted); font-size: 11px; padding: 4px 0; }
+
+  .rec-indicator { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--err); font-weight: 600; }
+  .rec-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--err); animation: blink 1s step-start infinite; }
+  @keyframes blink { 50% { opacity: 0.2; } }
+</style>
+</head>
+<body>
+  <h1>🤖 Local Browser Agent</h1>
+  <p class="sub">Screenshot + HTML each step, sent to the local research server.</p>
+
+  <div id="statsBar">loading stats...</div>
+
+  <div class="panel">
+    <h2>Task</h2>
+    <textarea id="task" rows="3" placeholder="e.g. search for RTX 5080 laptop reviews"></textarea>
+    <div class="row">
+      <select id="model"></select>
+      <select id="flavour" title="Live: decide one step at a time, no upfront plan. Stack: plan the whole task once up front, then execute it step by step.">
+        <option value="live">Live atomizer</option>
+        <option value="stack">Stack atomizer</option>
+      </select>
+      <label class="inline"><input type="checkbox" id="vision"> vision</label>
+      <label class="inline"><input type="checkbox" id="verify"> verify</label>
+    </div>
+    <div class="row">
+      <button id="run">Run</button>
+      <button id="stop" class="secondary">Stop</button>
+      <button id="retry" class="warn hidden">Retry</button>
+      <button id="saveRunBtn" class="secondary small hidden">Save run</button>
+      <span class="status-line" id="status"></span>
+    </div>
+    <div class="row tight hidden" id="saveRunRow">
+      <input type="text" id="saveRunName" placeholder="Name this run" style="flex:1">
+      <button id="saveRunConfirm" class="small">Save</button>
+      <button id="saveRunCancel" class="secondary small">Cancel</button>
+    </div>
+    <div class="stage-line hidden" id="stageLine"></div>
+    <div class="lock-note hidden" id="lockNote">
+      🔒 This tab and any it opens are locked while the agent works. A live panel on the page shows
+      what it's doing — you can stop from there or here, and it keeps running with this popup closed.
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Steps</h2>
+    <div id="steps"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Listener</h2>
+    <p class="sub" style="margin:0 0 6px">
+      Waits for requests sent to the local server and carries each one out here — either a
+      written instruction or one of your saved programs, each in its own new tab. On by default
+      and keeps working with this popup closed, across browser restarts, until you stop it.
+    </p>
+    <div class="row" style="margin-top:0">
+      <button id="startListening">Start listening</button>
+      <button id="stopListening" class="danger hidden">Stop listening</button>
+      <label class="inline">cap <input type="text" id="listenCap" value="900" style="width:46px;padding:3px 5px"> s/request</label>
+    </div>
+    <div class="row tight">
+      <div class="rec-indicator hidden" id="listenIndicator"><span class="rec-dot" style="background:var(--accent)"></span><span id="listenCount"></span></div>
+      <span class="status-line" id="listenStatus"></span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Record mode</h2>
+    <p class="sub" style="margin:0 0 6px">
+      Records your own clicks, typing and page navigation, then replays them — no model involved.
+      A panel on the page shows what's captured, with its own Stop button.
+    </p>
+    <div class="row" style="margin-top:0">
+      <button id="startRecord">Start recording</button>
+      <button id="stopRecord" class="danger hidden">Stop recording</button>
+      <div class="rec-indicator hidden" id="recIndicator"><span class="rec-dot"></span><span id="recCount"></span></div>
+    </div>
+    <div class="row tight hidden" id="recordSaveRow">
+      <input type="text" id="recordName" placeholder="Name this recording" style="flex:1">
+      <button id="saveRecordBtn" class="small">Save</button>
+      <button id="discardRecordBtn" class="secondary small">Discard</button>
+    </div>
+    <div class="status-line" id="recordStatus"></div>
+  </div>
+
+  <details class="panel">
+    <summary>Saved recordings</summary>
+    <div id="recordingsList"><div class="empty-note">None yet.</div></div>
+  </details>
+
+  <details class="panel">
+    <summary>Saved runs</summary>
+    <div id="runsList"><div class="empty-note">None yet.</div></div>
+  </details>
+
+  <details class="panel">
+    <summary>Raw log</summary>
+    <div id="log"></div>
+  </details>
+
+  <div class="panel">
+    <h2>Ask about this page</h2>
+    <div class="row" style="margin-top:0">
+      <input type="text" id="question" placeholder="e.g. is there a login form here?" style="flex:1">
+      <button id="ask" class="secondary">Ask</button>
+    </div>
+    <div id="answerBox"></div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

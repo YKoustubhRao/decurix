@@ -62,6 +62,7 @@ const toolList = `[do] a goal on this computer - the agent chooses and runs the 
 [shell] one exact shell command
 [web] a web search query - the agent searches and reads the top pages
 [read] one web page URL to read
+[browser] an interactive job in a real web page - open a site, search, click, fill in a form
 [download] what to download, and from which URL (or "the search results")
 [write] what to write, and the file path to write it to
 [code] a program to design, build and test
@@ -76,7 +77,7 @@ const toolList = `[do] a goal on this computer - the agent chooses and runs the 
 const planRules = `Rules:
 - Use the fewest steps that do the job, at most 10. Writing a file already saves it.
 - Never write facts into a step that earlier steps are meant to find out. Say what to write ("a note about the newest Go version"), not what it will say.
-- Never plan GUI actions (opening a browser, an editor, clicking).
+- Never plan GUI actions on the desktop itself (opening an editor, clicking a window). A step that needs an actual website opened and worked (search it, click something on it, fill in a form) is [browser], not [do].
 - When a step uses the result of earlier steps, end it with (after N) or (after N, M).
 - Do not add a last step that reports back - that happens automatically.
 - Reply with the numbered steps only.`
@@ -149,7 +150,8 @@ var (
 var toolTypes = map[string]string{
 	"do": "operator", "operate": "operator", "task": "operator", "computer": "operator",
 	"shell": "terminal", "run": "terminal", "command": "terminal", "cmd": "terminal", "terminal": "terminal", "bash": "terminal",
-	"web": "web", "search": "web", "read": "web", "browse": "web", "url": "web", "fetch": "web",
+	"web": "web", "search": "web", "read": "web", "url": "web", "fetch": "web",
+	"browser": "browser", "browse": "browser", "site": "browser",
 	"download": "download",
 	"write":    "file-write", "file": "file-write", "save": "file-write",
 	"code": "coding", "build": "coding", "coding": "coding",
@@ -544,6 +546,8 @@ func (p Planner) Atomize(ctx context.Context, prompt string) Plan {
 		return single(prompt, route.TaskType, true, route)
 	case RouteOperate:
 		return single(prompt, "operator", true, route)
+	case RouteBrowser:
+		return single(prompt, "browser", true, route)
 	}
 
 	// Planning failed or produced nothing: run the whole request as one
