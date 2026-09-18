@@ -135,20 +135,23 @@ def chat_stream(model_key, messages, images=None, num_ctx=DEFAULT_NUM_CTX, tempe
     )
     resp.raise_for_status()
 
-    full = ""
-    for line in resp.iter_lines():
-        if not line:
-            continue
-        data = json.loads(line)
-        piece = data.get("message", {}).get("content", "")
-        if piece:
-            full += piece
-            yield {"type": "chunk", "text": piece}
-        if data.get("done"):
-            LAST_USAGE.update({
-                "model": cfg["name"],
-                "prompt_tokens": data.get("prompt_eval_count"),
-                "completion_tokens": data.get("eval_count"),
-                "num_ctx": num_ctx,
-            })
-            yield {"type": "final", "text": full}
+    try:
+        full = ""
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            data = json.loads(line)
+            piece = data.get("message", {}).get("content", "")
+            if piece:
+                full += piece
+                yield {"type": "chunk", "text": piece}
+            if data.get("done"):
+                LAST_USAGE.update({
+                    "model": cfg["name"],
+                    "prompt_tokens": data.get("prompt_eval_count"),
+                    "completion_tokens": data.get("eval_count"),
+                    "num_ctx": num_ctx,
+                })
+                yield {"type": "final", "text": full}
+    finally:
+        resp.close()

@@ -156,20 +156,23 @@ def chat_stream(messages, max_tokens=400, temperature=0, response_format=None):
                           timeout=180, stream=True)
     resp.raise_for_status()
 
-    full = ""
-    usage = {}
-    for line in resp.iter_lines():
-        if not line or not line.startswith(b"data: "):
-            continue
-        payload = line[len(b"data: "):]
-        if payload.strip() == b"[DONE]":
-            break
-        data = json.loads(payload)
-        if data.get("usage"):
-            usage = data["usage"]
-        for choice in data.get("choices", []):
-            piece = choice.get("delta", {}).get("content") or ""
-            if piece:
-                full += piece
-                yield {"type": "chunk", "text": piece}
-    yield {"type": "final", "text": full, "usage": usage}
+    try:
+        full = ""
+        usage = {}
+        for line in resp.iter_lines():
+            if not line or not line.startswith(b"data: "):
+                continue
+            payload = line[len(b"data: "):]
+            if payload.strip() == b"[DONE]":
+                break
+            data = json.loads(payload)
+            if data.get("usage"):
+                usage = data["usage"]
+            for choice in data.get("choices", []):
+                piece = choice.get("delta", {}).get("content") or ""
+                if piece:
+                    full += piece
+                    yield {"type": "chunk", "text": piece}
+        yield {"type": "final", "text": full, "usage": usage}
+    finally:
+        resp.close()

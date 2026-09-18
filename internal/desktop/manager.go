@@ -814,7 +814,6 @@ func (m *Manager) Stop(
 	}
 
 	timeoutEnv := os.Getenv("DESKTOP_STOP_TIMEOUT_SECONDS")
-	timeout := 10
 	timeout := 3
 	if timeoutEnv != "" {
 		if parsedTimeout, err := strconv.Atoi(timeoutEnv); err == nil && parsedTimeout > 0 {

@@ -455,6 +455,9 @@ func TestHarnessBuildsAndTestsARealPythonProject(t *testing.T) {
 // failure. "It wrote some files" is not success - reporting it as success
 // is the exact failure this whole harness exists to eliminate.
 func TestHarnessReportsFailureWhenTestsNeverPass(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping real python build test in short mode")
+	}
 	if _, err := os.Stat("/usr/bin/python3"); err != nil {
 		t.Skip("no python3 on this machine - this test runs a real test suite")
 	}
@@ -492,6 +495,9 @@ func TestHarnessReportsFailureWhenTestsNeverPass(t *testing.T) {
 // ("../escape" becomes "<root>/escape") rather than erroring, which keeps
 // a slightly odd design building while making an escape impossible.
 func TestHarnessNeverBuildsOutsideTheWorkspace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping real python build test in short mode")
+	}
 	design := `{"project_name":"x","language":"python","kind":"library","dir":"../../escape","summary":"x",
 	  "dependencies":[],"files":[{"path":"a.py","purpose":"p","symbols":[{"name":"f","signature":"def f()","purpose":"p"}]}]}`
 	h, root := newTestHarness(t, &scriptedProvider{responses: []string{design, "def f():\n    return 1\n"}})
@@ -515,6 +521,9 @@ func TestHarnessNeverBuildsOutsideTheWorkspace(t *testing.T) {
 }
 
 func TestHarnessStopsAtItsBudget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping real python build test in short mode")
+	}
 	// "Until it works" has to terminate: a model that cannot fix a bug on
 	// attempt 3 will not fix it on attempt 500 either.
 	design := `{"project_name":"x","language":"python","kind":"library","dir":"x","summary":"x",
@@ -545,6 +554,9 @@ func TestHarnessStopsAtItsBudget(t *testing.T) {
 // This is the real failure that cost nine attempts on the harness's first
 // live build against a VM.
 func TestHarnessTreatsATruncatedResponseAsTruncationNotBadCode(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping real python build test in short mode")
+	}
 	if _, err := os.Stat("/usr/bin/python3"); err != nil {
 		t.Skip("no python3 on this machine - this test runs a real compile")
 	}
@@ -652,6 +664,9 @@ func TestDiagnoseNeverInstallsTheProjectsOwnModules(t *testing.T) {
 // Every source file must exist before ANY of them is tested, because a
 // file legitimately imports its siblings. This pins the two-pass order.
 func TestHarnessWritesEveryFileBeforeTestingAnyOfThem(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping real python build test in short mode")
+	}
 	if _, err := os.Stat("/usr/bin/python3"); err != nil {
 		t.Skip("no python3 on this machine - this test runs a real build")
 	}
