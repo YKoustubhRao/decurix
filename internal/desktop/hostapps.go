@@ -2,15 +2,21 @@ package desktop
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
@@ -25,6 +31,10 @@ type HostAppItem struct {
 	Detected        bool     `json:"detected"`
 	DetectedPaths   []string `json:"detected_paths,omitempty"`
 	DefaultSelected bool     `json:"default_selected"`
+	AppType         string   `json:"app_type,omitempty"`
+	HostCmd         string   `json:"host_cmd,omitempty"`
+	Icon            string   `json:"icon,omitempty"`
+	TargetConfigDir string   `json:"target_config_dir,omitempty"`
 }
 
 // knownAppDef defines how to probe and migrate a specific application or session.
@@ -38,27 +48,119 @@ type knownAppDef struct {
 	packFn          func(tw *tar.Writer, paths []string) error
 }
 
+var (
+	hostAppsCacheMu sync.RWMutex
+	cachedHostApps  []HostAppItem
+	cachedHostTime  time.Time
+)
+
+// InitHostAppsScan starts an asynchronous scan of the host environment at startup
+// so that the first user request is answered immediately from cache.
+func InitHostAppsScan() {
+	go func() {
+		_ = DetectHostAppsForce(true)
+	}()
+}
+
+// DetectHostAppsForce scans host applications, optionally bypassing the in-memory cache.
+func DetectHostAppsForce(force bool) []HostAppItem {
+	if !force {
+		hostAppsCacheMu.RLock()
+		if len(cachedHostApps) > 0 && time.Since(cachedHostTime) < 3*time.Minute {
+			res := make([]HostAppItem, len(cachedHostApps))
+			copy(res, cachedHostApps)
+			hostAppsCacheMu.RUnlock()
+			return res
+		}
+		hostAppsCacheMu.RUnlock()
+	}
+
+	hostAppsCacheMu.Lock()
+	defer hostAppsCacheMu.Unlock()
+
+	if !force && len(cachedHostApps) > 0 && time.Since(cachedHostTime) < 3*time.Minute {
+		res := make([]HostAppItem, len(cachedHostApps))
+		copy(res, cachedHostApps)
+		return res
+	}
+
+	results := runDetectHostApps()
+	cachedHostApps = results
+	cachedHostTime = time.Now()
+
+	res := make([]HostAppItem, len(results))
+	copy(res, results)
+	return res
+}
+
 // DetectHostApps scans the host machine for installed applications, session tokens,
-// and configurations across Linux, macOS, and Windows WSL.
+// and configurations across Linux, macOS, and Windows WSL without a fixed ceiling.
+// It actively explores Windows Start Menu / StartApps, Linux .desktop files, and macOS apps.
+// Only applications and sessions that were actually found on the host machine are returned.
+// Results are cached in memory for sub-millisecond retrieval.
 func DetectHostApps() []HostAppItem {
+	return DetectHostAppsForce(false)
+}
+
+func runDetectHostApps() []HostAppItem {
 	defs := getKnownAppDefs()
-	items := make([]HostAppItem, 0, len(defs))
+	items := make([]HostAppItem, 0, len(defs)+40)
+	seen := make(map[string]bool)
 
 	for _, def := range defs {
 		paths := def.probeFn()
 		detected := len(paths) > 0 || def.id == "host_bridge"
+		if !detected {
+			// User directive: show ONLY apps you found!
+			continue
+		}
+		seen[strings.ToLower(def.name)] = true
+		seen[strings.ToLower(def.id)] = true
+
+		appType := "app_session"
+		if def.id == "edge" || def.id == "chrome" || def.id == "firefox" {
+			appType = "browser_session"
+		} else if def.id == "youtube" {
+			appType = "web_app"
+		} else if def.id == "ssh" || def.id == "gh" || def.id == "docker" || def.id == "gcloud" || def.id == "azure" {
+			appType = "credential"
+		}
+
 		items = append(items, HostAppItem{
 			ID:              def.id,
 			Name:            def.name,
 			Category:        def.category,
 			Description:     def.description,
-			Detected:        detected,
+			Detected:        true,
 			DetectedPaths:   paths,
-			DefaultSelected: detected && def.defaultSelected,
+			DefaultSelected: false,
+			AppType:         appType,
+			Icon:            pickAppIcon(def.name),
 		})
 	}
 
-	return items
+	// Dynamically explore all other apps installed on Windows, Linux, or macOS
+	dynamicApps := exploreDynamicApps(seen)
+	for _, dapp := range dynamicApps {
+		if dapp.Detected {
+			items = append(items, dapp)
+		}
+	}
+
+	// Filter strictly for detected items only
+	detectedOnly := make([]HostAppItem, 0, len(items))
+	for _, it := range items {
+		if it.Detected {
+			detectedOnly = append(detectedOnly, it)
+		}
+	}
+
+	// Sort items alphabetically by Name
+	sort.SliceStable(detectedOnly, func(i, j int) bool {
+		return strings.ToLower(detectedOnly[i].Name) < strings.ToLower(detectedOnly[j].Name)
+	})
+
+	return detectedOnly
 }
 
 // MigrateHostApps packages selected host application sessions, tokens, and configurations,
@@ -91,23 +193,38 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 	tw := tar.NewWriter(tarBuf)
 
 	defs := getKnownAppDefs()
+	defMap := make(map[string]knownAppDef)
+	for _, def := range defs {
+		defMap[strings.ToLower(def.id)] = def
+	}
+
+	// Index all detected apps (including dynamic Windows and desktop apps)
+	allDetected := DetectHostApps()
+	appMap := make(map[string]HostAppItem)
+	for _, app := range allDetected {
+		appMap[strings.ToLower(app.ID)] = app
+	}
+
 	migratedCount := 0
 
-	for _, def := range defs {
-		if !selectedMap[def.id] {
-			continue
+	for id := range selectedMap {
+		if def, ok := defMap[id]; ok {
+			paths := def.probeFn()
+			if len(paths) == 0 && def.id != "host_bridge" {
+				continue
+			}
+			if err := def.packFn(tw, paths); err != nil {
+				log.Printf("hostapps: packing %s for %s: %v", def.id, desktopID, err)
+				continue
+			}
+			migratedCount++
+		} else if app, ok := appMap[id]; ok {
+			if err := packDynamicApp(tw, app); err != nil {
+				log.Printf("hostapps: packing dynamic app %s for %s: %v", app.ID, desktopID, err)
+				continue
+			}
+			migratedCount++
 		}
-
-		paths := def.probeFn()
-		if len(paths) == 0 && def.id != "host_bridge" {
-			continue
-		}
-
-		if err := def.packFn(tw, paths); err != nil {
-			log.Printf("hostapps: packing %s for %s: %v", def.id, desktopID, err)
-			continue
-		}
-		migratedCount++
 	}
 
 	if err := tw.Close(); err != nil {
@@ -171,49 +288,264 @@ fi
 // Known Application Definitions & Packaging
 // -----------------------------------------------------------------------------
 
+// getHostHomeCandidates returns all candidate user home directories across native OS,
+// WSL, and container mount paths (e.g. /host-home, /home/*).
+func getHostHomeCandidates() []string {
+	var homes []string
+	seen := make(map[string]bool)
+
+	add := func(p string) {
+		if p == "" || seen[p] {
+			return
+		}
+		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+			seen[p] = true
+			homes = append(homes, p)
+		}
+	}
+
+	if h, err := os.UserHomeDir(); err == nil {
+		add(h)
+	}
+	if envHome := os.Getenv("FLOWERA_HOST_HOME"); envHome != "" {
+		add(envHome)
+	}
+	if envHostHome := os.Getenv("HOST_HOME"); envHostHome != "" {
+		add(envHostHome)
+	}
+
+	for _, base := range []string{"/host-home", "/home"} {
+		if entries, err := os.ReadDir(base); err == nil {
+			for _, e := range entries {
+				if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
+					add(filepath.Join(base, e.Name()))
+				}
+			}
+		}
+	}
+	return homes
+}
+
+// getWindowsCDriveCandidates returns all accessible root paths for Windows C: drive
+// across native Windows, WSL mounts (/mnt/c), container mounts, and environment variables.
+func getWindowsCDriveCandidates() []string {
+	var drives []string
+	seen := make(map[string]bool)
+
+	add := func(d string) {
+		if d == "" || seen[d] {
+			return
+		}
+		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
+			seen[d] = true
+			drives = append(drives, d)
+		}
+	}
+
+	if d := os.Getenv("FLOWERA_HOST_MNT_C"); d != "" {
+		add(d)
+	}
+	add("/mnt/c")
+	add("/c")
+	add("/mnt/host_c")
+	if runtime.GOOS == "windows" {
+		add("C:\\")
+	}
+
+	return drives
+}
+
 func getKnownAppDefs() []knownAppDef {
-	home, _ := os.UserHomeDir()
+	homes := getHostHomeCandidates()
+	cDrives := getWindowsCDriveCandidates()
 
 	return []knownAppDef{
 		{
-			id:              "chrome",
-			name:            "Google Chrome / Chromium",
-			category:        "Apps & Sessions",
+			id:              "edge",
+			name:            "Microsoft Edge",
+			category:        "Browsers & Web",
 			description:     "Profile, active cookies, sessions, login data (Cache stripped to save RAM)",
-			defaultSelected: true,
+			defaultSelected: false,
 			probeFn: func() []string {
-				candidates := []string{
-					filepath.Join(home, ".config", "google-chrome-for-testing"),
-					filepath.Join(home, ".config", "google-chrome"),
-					filepath.Join(home, ".config", "chromium"),
-					filepath.Join(home, "Library", "Application Support", "Google", "Chrome"),
-				}
-				// Windows WSL candidate paths
-				for _, cDrive := range []string{"/mnt/c", "/c"} {
-					pattern := filepath.Join(cDrive, "Users", "*", "AppData", "Local", "Google", "Chrome", "User Data")
-					if matches, err := filepath.Glob(pattern); err == nil && len(matches) > 0 {
-						candidates = append(candidates, matches...)
+				var found []string
+				// Linux Edge config across all host user home candidates
+				for _, h := range homes {
+					for _, c := range []string{
+						filepath.Join(h, ".config", "microsoft-edge"),
+						filepath.Join(h, "Library", "Application Support", "Microsoft Edge"),
+					} {
+						if fi, err := os.Stat(c); err == nil && fi.IsDir() {
+							found = append(found, c)
+						}
 					}
 				}
-				var found []string
-				for _, p := range candidates {
+				// Windows WSL candidate paths
+				for _, cDrive := range cDrives {
+					pattern := filepath.Join(cDrive, "Users", "*", "AppData", "Local", "Microsoft", "Edge", "User Data")
+					if matches, err := filepath.Glob(pattern); err == nil {
+						found = append(found, matches...)
+					}
+					for _, edgeExe := range []string{
+						filepath.Join(cDrive, "Program Files (x86)", "Microsoft", "Edge", "Application", "msedge.exe"),
+						filepath.Join(cDrive, "Program Files", "Microsoft", "Edge", "Application", "msedge.exe"),
+					} {
+						if fi, err := os.Stat(edgeExe); err == nil && !fi.IsDir() {
+							found = append(found, edgeExe)
+							break
+						}
+					}
+				}
+				for _, app := range queryWindowsStartApps() {
+					if strings.Contains(strings.ToLower(app.Name), "edge") {
+						found = append(found, "windows_app:"+app.AppID)
+						break
+					}
+				}
+				return found
+			},
+			packFn: func(tw *tar.Writer, paths []string) error {
+				for _, p := range paths {
 					if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+						_ = writeDirToTar(tw, p, ".config/microsoft-edge", isCacheOrTransient)
+						break
+					}
+				}
+				var hostCmd string
+				if IsWSLOrWindows() {
+					hostCmd = "cmd.exe /c start msedge"
+				} else {
+					hostCmd = "microsoft-edge"
+				}
+				edgeDesktop := fmt.Sprintf(`[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Microsoft Edge (Host)
+Comment=Run Microsoft Edge on host desktop with active login session
+Exec=/home/headless/.local/bin/host-run %s
+Icon=microsoft-edge
+Terminal=false
+Categories=Network;WebBrowser;
+`, hostCmd)
+				if err := writeStringToTar(tw, "Desktop/edge-host.desktop", edgeDesktop, 0755); err != nil {
+					return err
+				}
+				return writeStringToTar(tw, ".local/share/applications/edge-host.desktop", edgeDesktop, 0755)
+			},
+		},
+		{
+			id:              "youtube",
+			name:            "YouTube",
+			category:        "Media & Web Apps",
+			description:     "Launch YouTube on host desktop with active Google sign-in session",
+			defaultSelected: false,
+			probeFn: func() []string {
+				var found []string
+				for _, cDrive := range cDrives {
+					pwaPattern := filepath.Join(cDrive, "Users", "*", "AppData", "Roaming", "Microsoft", "Windows", "Start Menu", "Programs", "*", "*YouTube*.lnk")
+					if matches, err := filepath.Glob(pwaPattern); err == nil && len(matches) > 0 {
+						found = append(found, matches...)
+					}
+					for _, edgeExe := range []string{
+						filepath.Join(cDrive, "Program Files (x86)", "Microsoft", "Edge", "Application", "msedge.exe"),
+						filepath.Join(cDrive, "Program Files", "Microsoft", "Edge", "Application", "msedge.exe"),
+					} {
+						if fi, err := os.Stat(edgeExe); err == nil && !fi.IsDir() {
+							found = append(found, edgeExe)
+							break
+						}
+					}
+					for _, chromeExe := range []string{
+						filepath.Join(cDrive, "Program Files", "Google", "Chrome", "Application", "chrome.exe"),
+						filepath.Join(cDrive, "Program Files (x86)", "Google", "Chrome", "Application", "chrome.exe"),
+					} {
+						if fi, err := os.Stat(chromeExe); err == nil && !fi.IsDir() {
+							found = append(found, chromeExe)
+							break
+						}
+					}
+					braveExe := filepath.Join(cDrive, "Program Files", "BraveSoftware", "Brave-Browser", "Application", "brave.exe")
+					if fi, err := os.Stat(braveExe); err == nil && !fi.IsDir() {
+						found = append(found, braveExe)
+					}
+				}
+				for _, app := range queryWindowsStartApps() {
+					if strings.Contains(strings.ToLower(app.Name), "youtube") {
+						found = append(found, "windows_app:"+app.AppID)
+						break
+					}
+				}
+				for _, bin := range []string{"google-chrome", "chromium", "microsoft-edge", "brave-browser"} {
+					if p, err := exec.LookPath(bin); err == nil {
 						found = append(found, p)
 					}
 				}
 				return found
 			},
 			packFn: func(tw *tar.Writer, paths []string) error {
-				if len(paths) == 0 {
-					return nil
+				var hostCmd string
+				if IsWSLOrWindows() {
+					hostCmd = "cmd.exe /c start msedge --app=https://www.youtube.com"
+				} else {
+					hostCmd = "xdg-open https://www.youtube.com"
 				}
-				// Use first valid profile found
-				src := paths[0]
-				// Copy to .config/google-chrome
-				if err := writeDirToTar(tw, src, ".config/google-chrome", isCacheOrTransient); err != nil {
+				ytDesktop := fmt.Sprintf(`[Desktop Entry]
+Version=1.0
+Type=Application
+Name=YouTube (Host)
+Comment=Watch YouTube on host desktop with active account session
+Exec=/home/headless/.local/bin/host-run %s
+Icon=video-display
+Terminal=false
+Categories=AudioVideo;Network;
+`, hostCmd)
+				if err := writeStringToTar(tw, "Desktop/youtube-host.desktop", ytDesktop, 0755); err != nil {
 					return err
 				}
-				// Also add symlink .config/chromium -> google-chrome so Chromium in the VM picks up the profile
+				return writeStringToTar(tw, ".local/share/applications/youtube-host.desktop", ytDesktop, 0755)
+			},
+		},
+		{
+			id:              "chrome",
+			name:            "Google Chrome / Chromium",
+			category:        "Browsers & Web",
+			description:     "Profile, active cookies, sessions, login data (Cache stripped to save RAM)",
+			defaultSelected: false,
+			probeFn: func() []string {
+				var candidates []string
+				for _, h := range homes {
+					candidates = append(candidates,
+						filepath.Join(h, ".config", "google-chrome-for-testing"),
+						filepath.Join(h, ".config", "google-chrome"),
+						filepath.Join(h, ".config", "chromium"),
+						filepath.Join(h, "Library", "Application Support", "Google", "Chrome"),
+					)
+				}
+				// Windows WSL candidate paths
+				for _, cDrive := range cDrives {
+					pattern := filepath.Join(cDrive, "Users", "*", "AppData", "Local", "Google", "Chrome", "User Data")
+					if matches, err := filepath.Glob(pattern); err == nil && len(matches) > 0 {
+						candidates = append(candidates, matches...)
+					}
+					chromeExe := filepath.Join(cDrive, "Program Files", "Google", "Chrome", "Application", "chrome.exe")
+					if fi, err := os.Stat(chromeExe); err == nil && !fi.IsDir() {
+						candidates = append(candidates, chromeExe)
+					}
+				}
+				var found []string
+				for _, p := range candidates {
+					if _, err := os.Stat(p); err == nil {
+						found = append(found, p)
+					}
+				}
+				return found
+			},
+			packFn: func(tw *tar.Writer, paths []string) error {
+				for _, p := range paths {
+					if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+						_ = writeDirToTar(tw, p, ".config/google-chrome", isCacheOrTransient)
+						break
+					}
+				}
 				header := &tar.Header{
 					Name:     ".config/chromium",
 					Linkname: "google-chrome",
@@ -229,15 +561,18 @@ func getKnownAppDefs() []knownAppDef {
 		{
 			id:              "firefox",
 			name:            "Mozilla Firefox",
-			category:        "Apps & Sessions",
+			category:        "Browsers & Web",
 			description:     "Profiles, saved logins, cookies, tabs (Cache stripped)",
-			defaultSelected: true,
+			defaultSelected: false,
 			probeFn: func() []string {
-				candidates := []string{
-					filepath.Join(home, ".mozilla", "firefox"),
-					filepath.Join(home, "Library", "Application Support", "Firefox"),
+				var candidates []string
+				for _, h := range homes {
+					candidates = append(candidates,
+						filepath.Join(h, ".mozilla", "firefox"),
+						filepath.Join(h, "Library", "Application Support", "Firefox"),
+					)
 				}
-				for _, cDrive := range []string{"/mnt/c", "/c"} {
+				for _, cDrive := range cDrives {
 					pattern := filepath.Join(cDrive, "Users", "*", "AppData", "Roaming", "Mozilla", "Firefox", "Profiles")
 					if matches, err := filepath.Glob(pattern); err == nil && len(matches) > 0 {
 						candidates = append(candidates, matches...)
@@ -261,18 +596,30 @@ func getKnownAppDefs() []knownAppDef {
 		{
 			id:              "gh",
 			name:            "GitHub CLI & Git Config",
-			category:        "Apps & Sessions",
+			category:        "Development",
 			description:     "Logged-in GitHub token, credentials, and ~/.gitconfig",
-			defaultSelected: true,
+			defaultSelected: false,
 			probeFn: func() []string {
 				var found []string
-				ghConfig := filepath.Join(home, ".config", "gh")
-				if fi, err := os.Stat(ghConfig); err == nil && fi.IsDir() {
-					found = append(found, ghConfig)
+				for _, h := range homes {
+					ghConfig := filepath.Join(h, ".config", "gh")
+					if fi, err := os.Stat(ghConfig); err == nil && fi.IsDir() {
+						found = append(found, ghConfig)
+					}
+					gitConfig := filepath.Join(h, ".gitconfig")
+					if fi, err := os.Stat(gitConfig); err == nil && !fi.IsDir() {
+						found = append(found, gitConfig)
+					}
 				}
-				gitConfig := filepath.Join(home, ".gitconfig")
-				if fi, err := os.Stat(gitConfig); err == nil && !fi.IsDir() {
-					found = append(found, gitConfig)
+				for _, cDrive := range cDrives {
+					winGH := filepath.Join(cDrive, "Users", "*", "AppData", "Roaming", "GitHub CLI")
+					if matches, err := filepath.Glob(winGH); err == nil {
+						found = append(found, matches...)
+					}
+					winGit := filepath.Join(cDrive, "Users", "*", ".gitconfig")
+					if matches, err := filepath.Glob(winGit); err == nil {
+						found = append(found, matches...)
+					}
 				}
 				return found
 			},
@@ -294,37 +641,57 @@ func getKnownAppDefs() []knownAppDef {
 		{
 			id:              "docker",
 			name:            "Docker Hub & Engine Config",
-			category:        "Apps & Sessions",
+			category:        "Development",
 			description:     "Docker credentials, contexts, and client config",
-			defaultSelected: true,
+			defaultSelected: false,
 			probeFn: func() []string {
-				dockerDir := filepath.Join(home, ".docker")
-				if fi, err := os.Stat(dockerDir); err == nil && fi.IsDir() {
-					return []string{dockerDir}
+				var found []string
+				for _, h := range homes {
+					cfg := filepath.Join(h, ".docker")
+					if fi, err := os.Stat(cfg); err == nil && fi.IsDir() {
+						found = append(found, cfg)
+					}
 				}
-				return nil
+				for _, cDrive := range cDrives {
+					winCfg := filepath.Join(cDrive, "Users", "*", ".docker")
+					if matches, err := filepath.Glob(winCfg); err == nil {
+						found = append(found, matches...)
+					}
+				}
+				return found
 			},
 			packFn: func(tw *tar.Writer, paths []string) error {
 				if len(paths) == 0 {
 					return nil
 				}
-				return writeDirToTar(tw, paths[0], ".docker", func(name, fullPath string, isDir bool) bool {
-					// exclude docker.sock or socket files
-					return strings.HasSuffix(name, ".sock")
-				})
+				return writeDirToTar(tw, paths[0], ".docker", isCacheOrTransient)
 			},
 		},
 		{
 			id:              "vscode",
-			name:            "OpenCode / VS Code Editor",
-			category:        "Apps & Sessions",
-			description:     "Editor state, settings, keybindings, and extensions",
-			defaultSelected: true,
+			name:            "VS Code / OpenCode Settings",
+			category:        "Development",
+			description:     "Extensions, keybindings, settings, workspace storage",
+			defaultSelected: false,
 			probeFn: func() []string {
-				candidates := []string{
-					filepath.Join(home, ".config", "Code"),
-					filepath.Join(home, ".config", "opencode"),
-					filepath.Join(home, ".vscode"),
+				var candidates []string
+				for _, h := range homes {
+					candidates = append(candidates,
+						filepath.Join(h, ".config", "Code", "User"),
+						filepath.Join(h, ".vscode", "extensions"),
+						filepath.Join(h, ".opencode"),
+						filepath.Join(h, "Library", "Application Support", "Code", "User"),
+					)
+				}
+				for _, cDrive := range cDrives {
+					winCode := filepath.Join(cDrive, "Users", "*", "AppData", "Roaming", "Code", "User")
+					if matches, err := filepath.Glob(winCode); err == nil {
+						candidates = append(candidates, matches...)
+					}
+					winExt := filepath.Join(cDrive, "Users", "*", ".vscode", "extensions")
+					if matches, err := filepath.Glob(winExt); err == nil {
+						candidates = append(candidates, matches...)
+					}
 				}
 				var found []string
 				for _, p := range candidates {
@@ -336,12 +703,13 @@ func getKnownAppDefs() []knownAppDef {
 			},
 			packFn: func(tw *tar.Writer, paths []string) error {
 				for _, p := range paths {
-					base := filepath.Base(p)
-					destDir := ".config/" + base
-					if base == ".vscode" {
-						destDir = ".vscode"
+					dest := ".config/Code/User"
+					if strings.Contains(p, ".vscode") {
+						dest = ".vscode/extensions"
+					} else if strings.Contains(p, ".opencode") {
+						dest = ".opencode"
 					}
-					if err := writeDirToTar(tw, p, destDir, isCacheOrTransient); err != nil {
+					if err := writeDirToTar(tw, p, dest, isCacheOrTransient); err != nil {
 						return err
 					}
 				}
@@ -350,36 +718,57 @@ func getKnownAppDefs() []knownAppDef {
 		},
 		{
 			id:              "ssh",
-			name:            "SSH Client Keys & Config",
-			category:        "Apps & Sessions",
-			description:     "SSH identity keys, configs, and known hosts (strict 600 permissions)",
-			defaultSelected: true,
+			name:            "SSH Keys & Known Hosts",
+			category:        "Development",
+			description:     "Private keys, public keys, config (strictly chmod 0600)",
+			defaultSelected: false,
 			probeFn: func() []string {
-				sshDir := filepath.Join(home, ".ssh")
-				if fi, err := os.Stat(sshDir); err == nil && fi.IsDir() {
-					return []string{sshDir}
+				var found []string
+				for _, h := range homes {
+					sshDir := filepath.Join(h, ".ssh")
+					if fi, err := os.Stat(sshDir); err == nil && fi.IsDir() {
+						found = append(found, sshDir)
+					}
 				}
-				return nil
+				for _, cDrive := range cDrives {
+					winSSH := filepath.Join(cDrive, "Users", "*", ".ssh")
+					if matches, err := filepath.Glob(winSSH); err == nil {
+						found = append(found, matches...)
+					}
+				}
+				return found
 			},
 			packFn: func(tw *tar.Writer, paths []string) error {
 				if len(paths) == 0 {
 					return nil
 				}
-				return writeDirToTar(tw, paths[0], ".ssh", nil)
+				return writeDirToTar(tw, paths[0], ".ssh", func(name, fullPath string, isDir bool) bool {
+					lower := strings.ToLower(name)
+					return strings.HasSuffix(lower, ".old") || strings.HasSuffix(lower, ".bak")
+				})
 			},
 		},
 		{
 			id:              "gcloud",
-			name:            "Google Cloud SDK (gcloud)",
-			category:        "Apps & Sessions",
-			description:     "Active GCP accounts, credentials, and application default tokens",
-			defaultSelected: true,
+			name:            "Google Cloud CLI (gcloud)",
+			category:        "Development",
+			description:     "Active GCP credentials, default project, configurations",
+			defaultSelected: false,
 			probeFn: func() []string {
-				gcloudDir := filepath.Join(home, ".config", "gcloud")
-				if fi, err := os.Stat(gcloudDir); err == nil && fi.IsDir() {
-					return []string{gcloudDir}
+				var found []string
+				for _, h := range homes {
+					cfg := filepath.Join(h, ".config", "gcloud")
+					if fi, err := os.Stat(cfg); err == nil && fi.IsDir() {
+						found = append(found, cfg)
+					}
 				}
-				return nil
+				for _, cDrive := range cDrives {
+					winCfg := filepath.Join(cDrive, "Users", "*", "AppData", "Roaming", "gcloud")
+					if matches, err := filepath.Glob(winCfg); err == nil {
+						found = append(found, matches...)
+					}
+				}
+				return found
 			},
 			packFn: func(tw *tar.Writer, paths []string) error {
 				if len(paths) == 0 {
@@ -391,15 +780,24 @@ func getKnownAppDefs() []knownAppDef {
 		{
 			id:              "azure",
 			name:            "Azure CLI (az)",
-			category:        "Apps & Sessions",
-			description:     "Active Azure subscriptions, tokens, and tenant configurations",
+			category:        "Development",
+			description:     "Active Azure login tokens, subscriptions, profile",
 			defaultSelected: false,
 			probeFn: func() []string {
-				azDir := filepath.Join(home, ".azure")
-				if fi, err := os.Stat(azDir); err == nil && fi.IsDir() {
-					return []string{azDir}
+				var found []string
+				for _, h := range homes {
+					cfg := filepath.Join(h, ".azure")
+					if fi, err := os.Stat(cfg); err == nil && fi.IsDir() {
+						found = append(found, cfg)
+					}
 				}
-				return nil
+				for _, cDrive := range cDrives {
+					winCfg := filepath.Join(cDrive, "Users", "*", ".azure")
+					if matches, err := filepath.Glob(winCfg); err == nil {
+						found = append(found, matches...)
+					}
+				}
+				return found
 			},
 			packFn: func(tw *tar.Writer, paths []string) error {
 				if len(paths) == 0 {
@@ -409,56 +807,61 @@ func getKnownAppDefs() []knownAppDef {
 			},
 		},
 		{
-			id:              "keyring",
-			name:            "GNOME Keyring Secrets",
-			category:        "Apps & Sessions",
-			description:     "OS encrypted secrets database for browser/app passwords",
-			defaultSelected: true,
-			probeFn: func() []string {
-				keyringDir := filepath.Join(home, ".local", "share", "keyrings")
-				if fi, err := os.Stat(keyringDir); err == nil && fi.IsDir() {
-					return []string{keyringDir}
-				}
-				return nil
-			},
-			packFn: func(tw *tar.Writer, paths []string) error {
-				if len(paths) == 0 {
-					return nil
-				}
-				return writeDirToTar(tw, paths[0], ".local/share/keyrings", nil)
-			},
-		},
-		{
-			id:              "dotfiles",
-			name:            "Shell & Environment Dotfiles",
-			category:        "Environment",
-			description:     "Shell startup scripts (~/.bashrc, ~/.profile, ~/.zshrc, fish)",
-			defaultSelected: true,
+			id:              "keyrings",
+			name:            "System Keyrings & PKI",
+			category:        "Development",
+			description:     "Secret Service keyrings and local certificates",
+			defaultSelected: false,
 			probeFn: func() []string {
 				var found []string
-				for _, name := range []string{".bashrc", ".profile", ".bash_aliases", ".zshrc"} {
-					p := filepath.Join(home, name)
-					if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
-						found = append(found, p)
+				for _, h := range homes {
+					for _, p := range []string{
+						filepath.Join(h, ".local", "share", "keyrings"),
+						filepath.Join(h, ".pki"),
+					} {
+						if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+							found = append(found, p)
+						}
 					}
-				}
-				fishDir := filepath.Join(home, ".config", "fish")
-				if fi, err := os.Stat(fishDir); err == nil && fi.IsDir() {
-					found = append(found, fishDir)
 				}
 				return found
 			},
 			packFn: func(tw *tar.Writer, paths []string) error {
 				for _, p := range paths {
-					base := filepath.Base(p)
-					if fi, err := os.Stat(p); err == nil && fi.IsDir() {
-						if err := writeDirToTar(tw, p, ".config/fish", nil); err != nil {
-							return err
+					dest := ".local/share/keyrings"
+					if strings.Contains(p, ".pki") {
+						dest = ".pki"
+					}
+					if err := writeDirToTar(tw, p, dest, nil); err != nil {
+						return err
+					}
+				}
+				return nil
+			},
+		},
+		{
+			id:              "dotfiles",
+			name:            "Shell Profiles & Dotfiles",
+			category:        "Development",
+			description:     "~/.bashrc, ~/.profile, ~/.zshrc shell environment",
+			defaultSelected: false,
+			probeFn: func() []string {
+				var found []string
+				for _, h := range homes {
+					for _, f := range []string{".bashrc", ".profile", ".zshrc", ".bash_aliases"} {
+						p := filepath.Join(h, f)
+						if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+							found = append(found, p)
 						}
-					} else {
-						if err := writeFileToTar(tw, p, base, 0644); err != nil {
-							return err
-						}
+					}
+				}
+				return found
+			},
+			packFn: func(tw *tar.Writer, paths []string) error {
+				for _, p := range paths {
+					name := filepath.Base(p)
+					if err := writeFileToTar(tw, p, name, 0644); err != nil {
+						return err
 					}
 				}
 				return nil
@@ -466,12 +869,11 @@ func getKnownAppDefs() []knownAppDef {
 		},
 		{
 			id:              "host_bridge",
-			name:            "Universal Host Bridge (Zero-RAM Emulation)",
-			category:        "Execution Bridge",
-			description:     "Runs host apps directly on your local host with zero duplicate RAM, lightly emulated on VM",
-			defaultSelected: true,
+			name:            "Host Execution Bridge (Zero-Memory Launcher)",
+			category:        "Host Bridge",
+			description:     "Light emulation scripts and desktop launchers to execute apps natively on host",
+			defaultSelected: false,
 			probeFn: func() []string {
-				// Always available
 				return []string{"host_bridge"}
 			},
 			packFn: func(tw *tar.Writer, paths []string) error {
@@ -482,20 +884,619 @@ func getKnownAppDefs() []knownAppDef {
 }
 
 // -----------------------------------------------------------------------------
-// Host Bridge Launchers & CLI Wrappers
+// Dynamic Discovery Providers (Windows/WSL, Linux, macOS)
+// -----------------------------------------------------------------------------
+
+// IsWSLOrWindows returns true if running directly on Windows or inside a WSL environment.
+func IsWSLOrWindows() bool {
+	if runtime.GOOS == "windows" {
+		return true
+	}
+	if os.Getenv("WSLENV") != "" || os.Getenv("WSL_DISTRO_NAME") != "" {
+		return true
+	}
+	for _, drive := range getWindowsCDriveCandidates() {
+		if fi, err := os.Stat(drive); err == nil && fi.IsDir() {
+			return true
+		}
+	}
+	if data, err := os.ReadFile("/proc/version"); err == nil {
+		lower := strings.ToLower(string(data))
+		if strings.Contains(lower, "microsoft") || strings.Contains(lower, "wsl") {
+			return true
+		}
+	}
+	return false
+}
+
+type rawStartApp struct {
+	Name  string `json:"Name"`
+	AppID string `json:"AppID"`
+}
+
+func parseGetStartAppsJSON(data []byte) []rawStartApp {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return nil
+	}
+	var list []rawStartApp
+	if err := json.Unmarshal(data, &list); err == nil {
+		return list
+	}
+	var single rawStartApp
+	if err := json.Unmarshal(data, &single); err == nil && single.Name != "" {
+		return []rawStartApp{single}
+	}
+	return nil
+}
+
+func findPowershellExe() string {
+	if p, err := exec.LookPath("powershell.exe"); err == nil {
+		return p
+	}
+	for _, drive := range getWindowsCDriveCandidates() {
+		for _, winDir := range []string{"WINDOWS", "Windows", "windows"} {
+			for _, sysDir := range []string{"System32", "system32"} {
+				p := filepath.Join(drive, winDir, sysDir, "WindowsPowerShell", "v1.0", "powershell.exe")
+				if _, err := os.Stat(p); err == nil {
+					return p
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func queryWindowsStartApps() []rawStartApp {
+	// 1. Check pre-cached file generated by rebuild.sh / build.sh
+	for _, cachePath := range []string{"/tmp/flowera_host_apps.json", "/data/flowera_host_apps.json"} {
+		if data, err := os.ReadFile(cachePath); err == nil && len(data) > 0 {
+			if apps := parseGetStartAppsJSON(data); len(apps) > 0 {
+				return apps
+			}
+		}
+	}
+
+	// 2. Direct execution of powershell.exe with -InputFormat None and empty stdin
+	psExe := findPowershellExe()
+	if psExe != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+
+		cmd := exec.CommandContext(ctx, psExe, "-NoProfile", "-NonInteractive", "-InputFormat", "None", "-Command", "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress")
+		cmd.Stdin = strings.NewReader("")
+		if output, err := cmd.Output(); err == nil && len(output) > 0 {
+			if apps := parseGetStartAppsJSON(output); len(apps) > 0 {
+				return apps
+			}
+		}
+	}
+
+	// 3. Containerized host execution via Docker socket if running inside container
+	if _, err := os.Stat("/var/run/docker.sock"); err == nil {
+		if _, err := exec.LookPath("docker"); err == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			psCmd := "PATH=$PATH:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0:/mnt/c/Windows/System32/WindowsPowerShell/v1.0:/mnt/c/WINDOWS/system32:/mnt/c/Windows/system32 powershell.exe -NoProfile -NonInteractive -InputFormat None -Command 'Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress' < /dev/null"
+			cmd := exec.CommandContext(ctx, "docker", "run", "--rm", "--privileged", "--pid=host", "alpine", "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "bash", "-c", psCmd)
+			cmd.Stdin = strings.NewReader("")
+			if output, err := cmd.Output(); err == nil && len(output) > 0 {
+				if apps := parseGetStartAppsJSON(output); len(apps) > 0 {
+					return apps
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+func wslToWindowsPath(wslPath string) string {
+	if strings.HasPrefix(wslPath, "/mnt/") && len(wslPath) > 6 && wslPath[6] == '/' {
+		drive := strings.ToUpper(string(wslPath[5]))
+		rest := strings.ReplaceAll(wslPath[6:], "/", "\\")
+		return drive + ":" + rest
+	}
+	if strings.HasPrefix(wslPath, "/") && len(wslPath) > 2 && wslPath[2] == '/' {
+		drive := strings.ToUpper(string(wslPath[1]))
+		rest := strings.ReplaceAll(wslPath[2:], "/", "\\")
+		return drive + ":" + rest
+	}
+	return strings.ReplaceAll(wslPath, "/", "\\")
+}
+
+func cleanAppShortcutName(raw string) string {
+	name := strings.TrimSpace(raw)
+	name = regexp.MustCompile(`\s*\((?:64|32)-bit\)`).ReplaceAllString(name, "")
+	name = regexp.MustCompile(`\s*-\s*Shortcut$`).ReplaceAllString(name, "")
+	return strings.TrimSpace(name)
+}
+
+func isIgnoredWindowsApp(name string) bool {
+	lower := strings.ToLower(name)
+	ignoreKeywords := []string{
+		"uninstall", "remove", "help", "readme", "documentation",
+		"license", "manual", "release notes", "configure", "setup wizard",
+		"website", "check for updates", "about",
+	}
+	for _, kw := range ignoreKeywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+func categorizeAppName(name string) string {
+	lower := strings.ToLower(name)
+	switch {
+	case strings.Contains(lower, "chrome") || strings.Contains(lower, "edge") ||
+		strings.Contains(lower, "firefox") || strings.Contains(lower, "brave") ||
+		strings.Contains(lower, "opera") || strings.Contains(lower, "browser") ||
+		strings.Contains(lower, "vivaldi") || strings.Contains(lower, "arc"):
+		return "Browsers & Web"
+	case strings.Contains(lower, "youtube") || strings.Contains(lower, "spotify") ||
+		strings.Contains(lower, "music") || strings.Contains(lower, "video") ||
+		strings.Contains(lower, "vlc") || strings.Contains(lower, "media") ||
+		strings.Contains(lower, "netflix") || strings.Contains(lower, "twitch"):
+		return "Media & Entertainment"
+	case strings.Contains(lower, "code") || strings.Contains(lower, "visual studio") ||
+		strings.Contains(lower, "git") || strings.Contains(lower, "terminal") ||
+		strings.Contains(lower, "powershell") || strings.Contains(lower, "bash") ||
+		strings.Contains(lower, "sublime") || strings.Contains(lower, "intellij") ||
+		strings.Contains(lower, "pycharm") || strings.Contains(lower, "docker"):
+		return "Development"
+	case strings.Contains(lower, "discord") || strings.Contains(lower, "slack") ||
+		strings.Contains(lower, "teams") || strings.Contains(lower, "telegram") ||
+		strings.Contains(lower, "whatsapp") || strings.Contains(lower, "zoom"):
+		return "Communication"
+	case strings.Contains(lower, "word") || strings.Contains(lower, "excel") ||
+		strings.Contains(lower, "powerpoint") || strings.Contains(lower, "office") ||
+		strings.Contains(lower, "notion") || strings.Contains(lower, "obsidian") ||
+		strings.Contains(lower, "notes") || strings.Contains(lower, "calc"):
+		return "Productivity"
+	default:
+		return "Desktop Apps"
+	}
+}
+
+func isPopularApp(name string) bool {
+	lower := strings.ToLower(name)
+	popular := []string{
+		"edge", "chrome", "firefox", "brave", "youtube",
+		"spotify", "discord", "slack", "visual studio code", "code",
+	}
+	for _, p := range popular {
+		if strings.Contains(lower, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func pickAppIcon(name string) string {
+	lower := strings.ToLower(name)
+	switch {
+	case strings.Contains(lower, "edge"):
+		return "microsoft-edge"
+	case strings.Contains(lower, "chrome"):
+		return "google-chrome"
+	case strings.Contains(lower, "firefox"):
+		return "firefox"
+	case strings.Contains(lower, "browser"):
+		return "web-browser"
+	case strings.Contains(lower, "youtube"):
+		return "video-display"
+	case strings.Contains(lower, "spotify") || strings.Contains(lower, "music"):
+		return "audio-x-generic"
+	case strings.Contains(lower, "code") || strings.Contains(lower, "studio"):
+		return "code"
+	case strings.Contains(lower, "terminal") || strings.Contains(lower, "powershell"):
+		return "utilities-terminal"
+	case strings.Contains(lower, "discord") || strings.Contains(lower, "slack") || strings.Contains(lower, "chat"):
+		return "user-available"
+	case strings.Contains(lower, "calc"):
+		return "accessories-calculator"
+	case strings.Contains(lower, "note") || strings.Contains(lower, "text"):
+		return "text-editor"
+	default:
+		return "application-x-executable"
+	}
+}
+
+func sanitizeAppSlug(name string) string {
+	slug := strings.ToLower(name)
+	slug = regexp.MustCompile(`[^a-z0-9]+`).ReplaceAllString(slug, "-")
+	return strings.Trim(slug, "-")
+}
+
+func getCategoriesForApp(cat string) string {
+	switch cat {
+	case "Browsers & Web":
+		return "Network;WebBrowser;"
+	case "Media & Entertainment":
+		return "AudioVideo;Audio;Video;"
+	case "Development":
+		return "Development;IDE;Utility;"
+	case "Communication":
+		return "Network;Chat;InstantMessaging;"
+	case "Productivity":
+		return "Office;Utility;"
+	default:
+		return "Utility;Application;"
+	}
+}
+
+func scanWindowsStartMenu(seen map[string]bool) []HostAppItem {
+	var items []HostAppItem
+
+	var roots []string
+	for _, drive := range getWindowsCDriveCandidates() {
+		// ProgramData start menu
+		for _, progData := range []string{
+			filepath.Join(drive, "ProgramData", "Microsoft", "Windows", "Start Menu", "Programs"),
+			filepath.Join(drive, "ProgramData", "Microsoft", "WINDOWS", "Start Menu", "Programs"),
+		} {
+			if fi, err := os.Stat(progData); err == nil && fi.IsDir() {
+				roots = append(roots, progData)
+			}
+		}
+
+		// User Roaming start menu
+		for _, userPattern := range []string{
+			filepath.Join(drive, "Users", "*", "AppData", "Roaming", "Microsoft", "Windows", "Start Menu", "Programs"),
+			filepath.Join(drive, "Users", "*", "AppData", "Roaming", "Microsoft", "WINDOWS", "Start Menu", "Programs"),
+		} {
+			if matches, err := filepath.Glob(userPattern); err == nil {
+				roots = append(roots, matches...)
+			}
+		}
+
+		// User Local Programs (e.g. Cursor, VS Code, Bruno, agent-orchestrator)
+		localProgPattern := filepath.Join(drive, "Users", "*", "AppData", "Local", "Programs")
+		if matches, err := filepath.Glob(localProgPattern); err == nil {
+			roots = append(roots, matches...)
+		}
+
+		// User Desktop shortcuts
+		desktopPattern := filepath.Join(drive, "Users", "*", "Desktop")
+		if matches, err := filepath.Glob(desktopPattern); err == nil {
+			roots = append(roots, matches...)
+		}
+	}
+
+	for _, root := range roots {
+		_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			if err != nil || info == nil {
+				return nil
+			}
+			if info.IsDir() {
+				rel, err := filepath.Rel(root, path)
+				if err != nil || rel == "." {
+					return nil
+				}
+				// Limit recursion depth to 2 levels maximum (e.g. Programs / App / App.exe or Programs / Category / App.lnk)
+				if strings.Count(rel, string(filepath.Separator)) >= 2 {
+					return filepath.SkipDir
+				}
+				nameLower := strings.ToLower(info.Name())
+				if nameLower == "node_modules" || nameLower == "resources" || nameLower == "locales" ||
+					nameLower == "cache" || nameLower == ".git" || nameLower == "logs" || nameLower == "temp" {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			ext := strings.ToLower(filepath.Ext(path))
+			if ext != ".lnk" && ext != ".exe" {
+				return nil
+			}
+			if ext == ".exe" {
+				base := strings.ToLower(filepath.Base(path))
+				if strings.Contains(base, "unins") || strings.Contains(base, "update") || strings.Contains(base, "crash") || strings.Contains(base, "helper") {
+					return nil
+				}
+			}
+
+			rawName := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+			cleanName := cleanAppShortcutName(rawName)
+			if cleanName == "" || isIgnoredWindowsApp(cleanName) {
+				return nil
+			}
+
+			normKey := strings.ToLower(cleanName)
+			if seen[normKey] {
+				return nil
+			}
+			seen[normKey] = true
+
+			winPath := wslToWindowsPath(path)
+			hostCmd := fmt.Sprintf(`cmd.exe /c start "" "%s"`, winPath)
+
+			id := "win_" + sanitizeAppSlug(cleanName)
+			if seen[id] {
+				return nil
+			}
+			seen[id] = true
+
+			items = append(items, HostAppItem{
+				ID:              id,
+				Name:            cleanName,
+				Category:        categorizeAppName(cleanName),
+				Description:     "Windows desktop application (runs on host desktop)",
+				Detected:        true,
+				DetectedPaths:   []string{path},
+				DefaultSelected: false,
+				AppType:         "windows_app",
+				HostCmd:         hostCmd,
+				Icon:            pickAppIcon(cleanName),
+			})
+			return nil
+		})
+	}
+
+	return items
+}
+
+type desktopMeta struct {
+	Name      string
+	Exec      string
+	Icon      string
+	Comment   string
+	NoDisplay bool
+}
+
+func parseDesktopFile(path string) desktopMeta {
+	f, err := os.Open(path)
+	if err != nil {
+		return desktopMeta{}
+	}
+	defer f.Close()
+
+	var meta desktopMeta
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "Name=") && meta.Name == "" {
+			meta.Name = strings.TrimPrefix(line, "Name=")
+		} else if strings.HasPrefix(line, "Exec=") && meta.Exec == "" {
+			meta.Exec = strings.TrimPrefix(line, "Exec=")
+		} else if strings.HasPrefix(line, "Icon=") && meta.Icon == "" {
+			meta.Icon = strings.TrimPrefix(line, "Icon=")
+		} else if strings.HasPrefix(line, "Comment=") && meta.Comment == "" {
+			meta.Comment = strings.TrimPrefix(line, "Comment=")
+		} else if strings.HasPrefix(line, "NoDisplay=true") {
+			meta.NoDisplay = true
+		}
+	}
+	return meta
+}
+
+func scanLinuxDesktopFiles(seen map[string]bool) []HostAppItem {
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+
+	dirs := []string{
+		"/usr/share/applications",
+		"/usr/local/share/applications",
+	}
+	for _, h := range getHostHomeCandidates() {
+		dirs = append(dirs, filepath.Join(h, ".local", "share", "applications"))
+	}
+
+	var items []HostAppItem
+
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".desktop") {
+				continue
+			}
+
+			// Don't re-scan flowera host bridge desktop files
+			if strings.HasSuffix(e.Name(), "-host.desktop") {
+				continue
+			}
+
+			fullPath := filepath.Join(dir, e.Name())
+			meta := parseDesktopFile(fullPath)
+			if meta.Name == "" || meta.NoDisplay {
+				continue
+			}
+
+			normKey := strings.ToLower(meta.Name)
+			if seen[normKey] {
+				continue
+			}
+			seen[normKey] = true
+
+			id := "linux_" + sanitizeAppSlug(meta.Name)
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+
+			cleanExec := strings.Split(meta.Exec, " %")[0]
+			hostCmd := fmt.Sprintf("/usr/bin/env %s", cleanExec)
+
+			items = append(items, HostAppItem{
+				ID:              id,
+				Name:            meta.Name,
+				Category:        categorizeAppName(meta.Name),
+				Description:     meta.Comment,
+				Detected:        true,
+				DetectedPaths:   []string{fullPath},
+				DefaultSelected: false,
+				AppType:         "desktop_app",
+				HostCmd:         hostCmd,
+				Icon:            meta.Icon,
+			})
+		}
+	}
+
+	return items
+}
+
+func scanMacAppBundles(seen map[string]bool) []HostAppItem {
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+	home, _ := os.UserHomeDir()
+	dirs := []string{"/Applications", filepath.Join(home, "Applications")}
+
+	var items []HostAppItem
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if !e.IsDir() || !strings.HasSuffix(e.Name(), ".app") {
+				continue
+			}
+			appName := strings.TrimSuffix(e.Name(), ".app")
+			normKey := strings.ToLower(appName)
+			if seen[normKey] {
+				continue
+			}
+			seen[normKey] = true
+
+			fullPath := filepath.Join(dir, e.Name())
+			id := "mac_" + sanitizeAppSlug(appName)
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+
+			items = append(items, HostAppItem{
+				ID:              id,
+				Name:            appName,
+				Category:        categorizeAppName(appName),
+				Description:     "macOS application bundle",
+				Detected:        true,
+				DetectedPaths:   []string{fullPath},
+				DefaultSelected: false,
+				AppType:         "desktop_app",
+				HostCmd:         fmt.Sprintf(`open -a "%s"`, fullPath),
+				Icon:            pickAppIcon(appName),
+			})
+		}
+	}
+	return items
+}
+
+func exploreDynamicApps(seen map[string]bool) []HostAppItem {
+	var items []HostAppItem
+
+	// 1. If in WSL or Windows, explore Windows StartApps and Start Menu shortcuts
+	if IsWSLOrWindows() {
+		// PowerShell StartApps (Win32, UWP, Chrome/Edge PWAs)
+		startApps := queryWindowsStartApps()
+		for _, app := range startApps {
+			if app.Name == "" || isIgnoredWindowsApp(app.Name) {
+				continue
+			}
+			normKey := strings.ToLower(app.Name)
+			if seen[normKey] {
+				continue
+			}
+			seen[normKey] = true
+
+			id := "win_" + sanitizeAppSlug(app.Name)
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+
+			hostCmd := fmt.Sprintf(`cmd.exe /c start "" "shell:AppsFolder\%s"`, app.AppID)
+			items = append(items, HostAppItem{
+				ID:              id,
+				Name:            app.Name,
+				Category:        categorizeAppName(app.Name),
+				Description:     "Windows application (runs on host desktop)",
+				Detected:        true,
+				DefaultSelected: false,
+				AppType:         "windows_app",
+				HostCmd:         hostCmd,
+				Icon:            pickAppIcon(app.Name),
+			})
+		}
+
+		// Windows Start Menu (.lnk shortcuts including Chrome Apps & Edge Apps)
+		menuApps := scanWindowsStartMenu(seen)
+		items = append(items, menuApps...)
+	}
+
+	// 2. Linux desktop applications
+	linuxApps := scanLinuxDesktopFiles(seen)
+	items = append(items, linuxApps...)
+
+	// 3. macOS applications
+	macApps := scanMacAppBundles(seen)
+	items = append(items, macApps...)
+
+	return items
+}
+
+func packDynamicApp(tw *tar.Writer, app HostAppItem) error {
+	if len(app.DetectedPaths) > 0 && app.TargetConfigDir != "" {
+		for _, p := range app.DetectedPaths {
+			if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+				_ = writeDirToTar(tw, p, app.TargetConfigDir, isCacheOrTransient)
+				break
+			}
+		}
+	}
+
+	if app.HostCmd != "" {
+		slug := sanitizeAppSlug(app.Name)
+		if slug == "" {
+			slug = app.ID
+		}
+		icon := app.Icon
+		if icon == "" {
+			icon = pickAppIcon(app.Name)
+		}
+		cat := getCategoriesForApp(app.Category)
+
+		launcherContent := fmt.Sprintf(`[Desktop Entry]
+Version=1.0
+Type=Application
+Name=%s (Host)
+Comment=%s
+Exec=/home/headless/.local/bin/host-run %s
+Icon=%s
+Terminal=false
+Categories=%s
+`, app.Name, app.Description, app.HostCmd, icon, cat)
+
+		if err := writeStringToTar(tw, "Desktop/"+slug+"-host.desktop", launcherContent, 0755); err != nil {
+			return err
+		}
+		if err := writeStringToTar(tw, ".local/share/applications/"+slug+"-host.desktop", launcherContent, 0755); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// -----------------------------------------------------------------------------
+// Host Execution Bridge Packaging & Scripts
 // -----------------------------------------------------------------------------
 
 func packHostBridgeLaunchers(tw *tar.Writer) error {
-	// 1. host-run wrapper
 	hostRunScript := `#!/usr/bin/env bash
-# ==============================================================================
-# host-run: Universal Host Execution Bridge
-# Executes commands on your local host machine from inside the VM with zero duplicate RAM.
-# ==============================================================================
-set -euo pipefail
+# host-run: Dispatches command execution directly to the host desktop machine.
+set -e
 
-CP_URL="${CONTROL_PLANE_URL:-http://host.docker.internal:8080}"
-TUNNEL_PORT="${HOST_TUNNEL_PORT:-2222}"
+CP_URL="${FLOWERA_CONTROL_PLANE:-http://host.docker.internal:8080}"
+TUNNEL_PORT="${FLOWERA_HOST_PORT:-2222}"
 
 usage() {
     cat << EOF
@@ -516,12 +1517,10 @@ case "$subcmd" in
     open)
         shift
         target="${1:-.}"
-        # Try HTTP bridge to control plane first
         if curl -s -f -X POST "${CP_URL}/api/host-bridge/open" -H "Content-Type: application/json" -d "{\"target\": \"${target}\"}" >/dev/null 2>&1; then
             echo "Opened on host desktop: ${target}"
             exit 0
         fi
-        # Fallback to SSH tunnel if active
         if timeout 1 bash -c "cat < /dev/null > /dev/tcp/127.0.0.1/${TUNNEL_PORT}" 2>/dev/null; then
             ssh -F /dev/null -p "${TUNNEL_PORT}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 127.0.0.1 "xdg-open '${target}' 2>/dev/null || open '${target}' 2>/dev/null || cmd.exe /c start '' '${target}'" 2>/dev/null || true
             exit 0
@@ -552,7 +1551,6 @@ case "$subcmd" in
         usage
         ;;
     *)
-        # Generic command execution on host desktop
         cmd="$1"
         shift
         args_json="[]"
@@ -567,7 +1565,6 @@ case "$subcmd" in
             exit $?
         fi
 
-        # Fallback to SSH tunnel if active
         if timeout 1 bash -c "cat < /dev/null > /dev/tcp/127.0.0.1/${TUNNEL_PORT}" 2>/dev/null; then
             ssh -F /dev/null -p "${TUNNEL_PORT}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 127.0.0.1 "$cmd" "$@"
             exit $?
@@ -607,6 +1604,26 @@ esac
 	if err := writeStringToTar(tw, ".local/bin/terminal-host", termWrapper, 0755); err != nil {
 		return err
 	}
+	edgeWrapper := `#!/usr/bin/env bash
+if command -v cmd.exe >/dev/null 2>&1 || [ -e /mnt/c ]; then
+    exec host-run cmd.exe /c start msedge "$@"
+else
+    exec host-run microsoft-edge "$@"
+fi
+`
+	if err := writeStringToTar(tw, ".local/bin/edge-host", edgeWrapper, 0755); err != nil {
+		return err
+	}
+	youtubeWrapper := `#!/usr/bin/env bash
+if command -v cmd.exe >/dev/null 2>&1 || [ -e /mnt/c ]; then
+    exec host-run cmd.exe /c start msedge --app=https://www.youtube.com
+else
+    exec host-run host-open https://www.youtube.com
+fi
+`
+	if err := writeStringToTar(tw, ".local/bin/youtube-host", youtubeWrapper, 0755); err != nil {
+		return err
+	}
 
 	// 3. Desktop launchers in Desktop/ and .local/share/applications/
 	chromeDesktop := `[Desktop Entry]
@@ -618,6 +1635,26 @@ Exec=/home/headless/.local/bin/chrome-host %U
 Icon=google-chrome
 Terminal=false
 Categories=Network;WebBrowser;
+`
+	edgeDesktop := `[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Microsoft Edge (Host)
+Comment=Run Microsoft Edge on host desktop with zero duplicate VM RAM
+Exec=/home/headless/.local/bin/edge-host %U
+Icon=microsoft-edge
+Terminal=false
+Categories=Network;WebBrowser;
+`
+	youtubeDesktop := `[Desktop Entry]
+Version=1.0
+Type=Application
+Name=YouTube (Host)
+Comment=Watch YouTube on host desktop with active account session
+Exec=/home/headless/.local/bin/youtube-host
+Icon=video-display
+Terminal=false
+Categories=AudioVideo;Network;
 `
 	codeDesktop := `[Desktop Entry]
 Version=1.0
@@ -645,6 +1682,8 @@ Categories=Utility;TerminalEmulator;
 		content  string
 	}{
 		{"chrome-host.desktop", chromeDesktop},
+		{"edge-host.desktop", edgeDesktop},
+		{"youtube-host.desktop", youtubeDesktop},
 		{"code-host.desktop", codeDesktop},
 		{"terminal-host.desktop", termDesktop},
 	}
@@ -692,7 +1731,10 @@ func isCacheOrTransient(name, fullPath string, isDir bool) bool {
 	if strings.HasSuffix(lower, ".tmp") || strings.HasSuffix(lower, ".log") || strings.HasSuffix(lower, ".dmp") {
 		return true
 	}
-	if isDir && (lower == "logs" || lower == "node_modules" || lower == "pkg" || lower == "temp") {
+	if isDir && (lower == "logs" || lower == "node_modules" || lower == "pkg" || lower == "temp" ||
+		lower == "indexeddb" || lower == "service worker" || lower == "blob_storage" || lower == "file system" ||
+		lower == "storage" || lower == "extensions" || lower == "dictionaries" || lower == "media cache" ||
+		lower == "optimizationguide" || lower == "hyphenation-data" || lower == "variations" || lower == "webrtc_event_logs") {
 		return true
 	}
 
@@ -701,12 +1743,15 @@ func isCacheOrTransient(name, fullPath string, isDir bool) bool {
 
 // writeDirToTar recursively walks a source directory on the host and writes its
 // contents to the tar archive under destPrefix, filtering through excludeFilter.
+// It limits directory depth to 3 levels and caps total transferred bytes to 35MB
+// to keep desktop creation instantaneous.
 func writeDirToTar(tw *tar.Writer, srcDir, destPrefix string, excludeFilter func(name, fullPath string, isDir bool) bool) error {
 	srcClean := filepath.Clean(srcDir)
+	var totalWritten int64
+	const maxArchiveBytes = 35 * 1024 * 1024
 
 	return filepath.Walk(srcClean, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			// Skip unreadable files gracefully
+		if err != nil || info == nil {
 			return nil
 		}
 
@@ -716,6 +1761,13 @@ func writeDirToTar(tw *tar.Writer, srcDir, destPrefix string, excludeFilter func
 		}
 
 		isDir := info.IsDir()
+		if isDir {
+			// Limit depth to avoid recursing deeply into huge trees
+			if strings.Count(rel, string(filepath.Separator)) >= 3 {
+				return filepath.SkipDir
+			}
+		}
+
 		if excludeFilter != nil && excludeFilter(info.Name(), path, isDir) {
 			if isDir {
 				return filepath.SkipDir
@@ -723,8 +1775,12 @@ func writeDirToTar(tw *tar.Writer, srcDir, destPrefix string, excludeFilter func
 			return nil
 		}
 
-		// Enforce size safety limit (skip individual files > 100MB to avoid OOM)
-		if !isDir && info.Size() > 100*1024*1024 {
+		if totalWritten > maxArchiveBytes {
+			return filepath.SkipAll
+		}
+
+		// Enforce size safety limit (skip individual files > 10MB to avoid sluggish transfers)
+		if !isDir && info.Size() > 10*1024*1024 {
 			return nil
 		}
 
@@ -748,7 +1804,6 @@ func writeDirToTar(tw *tar.Writer, srcDir, destPrefix string, excludeFilter func
 		header.Uname = "headless"
 		header.Gname = "headless"
 
-		// Normalize permissions
 		if isDir {
 			header.Mode = 0755
 		} else if info.Mode().IsRegular() {
@@ -768,11 +1823,12 @@ func writeDirToTar(tw *tar.Writer, srcDir, destPrefix string, excludeFilter func
 			if err != nil {
 				return nil
 			}
-			defer f.Close()
-
-			if _, err := io.Copy(tw, f); err != nil {
-				return err
+			n, errCopy := io.Copy(tw, f)
+			_ = f.Close()
+			if errCopy != nil {
+				return errCopy
 			}
+			totalWritten += n
 		}
 
 		return nil

@@ -59,6 +59,9 @@ type Server struct {
 
 // NewServer creates a Server from its component stores/managers.
 func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memoryStore *memory.Store, chat *conversation.Store, stepImages *stepimages.Store, taskRecords *tasks.Store, tunnelStore *tunnel.Store, claudeAuth *claudeauth.Store, lanAccess *lanaccess.Store, schedules *schedule.Store, dags *dag.Store, suggestions *suggest.Store, web *webui.Renderer) *Server {
+	// Pre-warm host apps discovery in background so desktop creation and scanning UI are instant
+	desktop.InitHostAppsScan()
+
 	return &Server{
 		Desktops:         desktops,
 		QueryNotes:       queryNotes,

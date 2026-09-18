@@ -86,6 +86,22 @@ echo "=== Ensuring the desktops can reach Ollama ==="
 ensure_ollama_ready
 
 echo ""
+echo "=== Configuring host filesystem integration ==="
+if [ -d /mnt/c ]; then
+    export FLOWERA_HOST_MNT_C="/mnt/c"
+    if [ -x "/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe" ]; then
+        /mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -NonInteractive -InputFormat None -Command "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress" < /dev/null > /tmp/flowera_host_apps.json 2>/dev/null || true
+    elif [ -x "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe" ]; then
+        /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -NonInteractive -InputFormat None -Command "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress" < /dev/null > /tmp/flowera_host_apps.json 2>/dev/null || true
+    elif command -v powershell.exe >/dev/null 2>&1; then
+        powershell.exe -NoProfile -NonInteractive -InputFormat None -Command "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress" < /dev/null > /tmp/flowera_host_apps.json 2>/dev/null || true
+    fi
+else
+    export FLOWERA_HOST_MNT_C="/"
+fi
+export FLOWERA_HOST_HOME="${HOME:-/home}"
+
+echo ""
 echo "=== Starting Flowera ==="
 
 # No --build: an already-built control plane image starts as-is. Existing

@@ -156,6 +156,24 @@ echo "=== Ensuring the desktops can reach Ollama ==="
 ensure_ollama_ready
 
 echo ""
+echo "=== Configuring host filesystem integration ==="
+if [ -d /mnt/c ]; then
+    export FLOWERA_HOST_MNT_C="/mnt/c"
+    echo "Discovered Windows filesystem at /mnt/c (WSL environment)"
+    # Pre-cache Windows applications list to /tmp/flowera_host_apps.json
+    if [ -x "/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe" ]; then
+        /mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -NonInteractive -InputFormat None -Command "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress" < /dev/null > /tmp/flowera_host_apps.json 2>/dev/null && echo "Pre-cached Windows applications via PowerShell." || true
+    elif [ -x "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe" ]; then
+        /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -NonInteractive -InputFormat None -Command "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress" < /dev/null > /tmp/flowera_host_apps.json 2>/dev/null && echo "Pre-cached Windows applications via PowerShell." || true
+    elif command -v powershell.exe >/dev/null 2>&1; then
+        powershell.exe -NoProfile -NonInteractive -InputFormat None -Command "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress" < /dev/null > /tmp/flowera_host_apps.json 2>/dev/null && echo "Pre-cached Windows applications via PowerShell." || true
+    fi
+else
+    export FLOWERA_HOST_MNT_C="/"
+fi
+export FLOWERA_HOST_HOME="${HOME:-/home}"
+
+echo ""
 echo "=== Starting Flowera ==="
 
 docker compose up -d --build

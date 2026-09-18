@@ -666,6 +666,14 @@
   color:var(--text-3);
   border:1px solid rgba(148, 163, 184, 0.2);
 }
+.host-app-cat{
+  font-size:10px;
+  color:var(--text-3);
+  background:var(--surface-2);
+  border:1px solid var(--line);
+  padding:1px 5px;
+  border-radius:4px;
+}
 .host-app-desc{
   font-size:11.5px;
   color:var(--text-3);
@@ -1148,12 +1156,15 @@
         </div>
 
         <div class="host-apps-panel" id="hostAppsPanel" style="display:none">
+          <div style="margin-bottom:8px">
+            <input type="search" class="input input-sm" id="hostAppsSearch" placeholder="Search apps (e.g. Edge, YouTube, Spotify, Code)..." style="width:100%;font-size:12px;padding:5px 10px;height:28px;border-radius:var(--r-md);" autocomplete="off">
+          </div>
           <div class="host-apps-toolbar">
             <span class="host-apps-status" id="hostAppsStatusText">Detecting desktop apps…</span>
             <div class="host-apps-btn-group">
-              <button type="button" class="btn btn-quiet btn-xs" id="hostAppsBtnAll">All</button>
-              <button type="button" class="btn btn-quiet btn-xs" id="hostAppsBtnDetected">Detected</button>
-              <button type="button" class="btn btn-quiet btn-xs" id="hostAppsBtnNone">None</button>
+              <button type="button" class="btn btn-quiet btn-xs" id="hostAppsBtnRescan" title="Rescan host applications">Rescan</button>
+              <button type="button" class="btn btn-quiet btn-xs" id="hostAppsBtnAll">Select All</button>
+              <button type="button" class="btn btn-quiet btn-xs" id="hostAppsBtnNone">Select None</button>
             </div>
           </div>
           <div class="host-apps-list" id="hostAppsList">
@@ -1419,9 +1430,42 @@
     });
   });
 
+  var activeCreateController = null;
+
+  function cancelCreateAction(){
+    if(activeCreateController){
+      try{ activeCreateController.abort(); }catch(e){}
+      activeCreateController = null;
+    }
+    busy(false);
+    var submit = document.getElementById("createSubmit");
+    if(submit){
+      submit.disabled = false;
+      submit.textContent = "Create desktop";
+    }
+    if(createDialog && createDialog.open){
+      createDialog.close();
+    }
+  }
+
   document.querySelectorAll("[data-close-dialog]").forEach(function(button){
-    button.addEventListener("click", function(){ createDialog.close(); });
+    button.addEventListener("click", function(e){
+      e.preventDefault();
+      cancelCreateAction();
+    });
   });
+
+  if(createDialog){
+    createDialog.addEventListener("cancel", function(e){
+      e.preventDefault();
+      cancelCreateAction();
+    });
+    createDialog.addEventListener("close", function(){
+      if(activeCreateController){
+        cancelCreateAction();
+      }
+    });
+  }
 
   /* The claude harness needs the developer or ai profile - it is the only
      one with the claude binary installed. */
@@ -1456,6 +1500,7 @@
   var hostAppsPanel = document.getElementById("hostAppsPanel");
   var hostAppsList = document.getElementById("hostAppsList");
   var hostAppsStatusText = document.getElementById("hostAppsStatusText");
+  var hostAppsSearch = document.getElementById("hostAppsSearch");
 
   function escapeHTML(s){
     return String(s || "").replace(/[&<>"']/g, function(m){
@@ -1466,81 +1511,162 @@
   function resetHostAppsSection(){
     if(dCopyHostApps){
       dCopyHostApps.checked = false;
-      hostAppsPanel.style.display = "none";
+      hostAppsPanel.style.display = "";
+    }
+    if(hostAppsSearch){
+      hostAppsSearch.value = "";
+    }
+    if(hostAppsList){
+      hostAppsList.querySelectorAll("input[name=host_app_choice]").forEach(function(cb){ cb.checked = false; });
     }
     if(!hostAppsData){
       loadHostApps();
+    } else {
+      filterHostAppsList();
+      updateHostAppsSelectionSummary();
     }
   }
 
-  async function loadHostApps(){
-    if(!hostAppsStatusText || !hostAppsList){ return; }
-    hostAppsStatusText.textContent = "Scanning host machine for apps and sessions…";
-    try{
-      var res = await fetch("/api/host-apps/detect");
-      if(!res.ok){ throw new Error("status " + res.status); }
-      hostAppsData = await res.json();
+  function updateHostAppsSelectionSummary(){
+    if(!hostAppsList){ return; }
+    var selected = hostAppsList.querySelectorAll("input[name=host_app_choice]:checked").length;
+    var total = hostAppsList.querySelectorAll(".host-app-row").length;
+    if(dCopyHostApps){
+      dCopyHostApps.checked = selected > 0;
+    }
+    var q = (hostAppsSearch && hostAppsSearch.value || "").trim().toLowerCase();
+    if(hostAppsStatusText){
+      if(q){
+        var visible = hostAppsList.querySelectorAll(".host-app-row:not([style*='display: none'])").length;
+        hostAppsStatusText.textContent = visible + " matching '" + q + "' (" + selected + " selected)";
+      } else {
+        hostAppsStatusText.textContent = total + " apps discovered (" + selected + " selected)";
+      }
+    }
+  }
 
-      var detectedCount = 0;
+  function filterHostAppsList(){
+    if(!hostAppsList || !hostAppsData){ return; }
+    var q = (hostAppsSearch && hostAppsSearch.value || "").trim().toLowerCase();
+    var rows = hostAppsList.querySelectorAll(".host-app-row");
+    var visible = 0;
+    rows.forEach(function(row){
+      var text = (row.dataset.searchText || "").toLowerCase();
+      var match = !q || text.indexOf(q) !== -1;
+      row.style.display = match ? "" : "none";
+      if(match){ visible++; }
+    });
+    updateHostAppsSelectionSummary();
+  }
+
+  if(hostAppsSearch){
+    hostAppsSearch.addEventListener("input", filterHostAppsList);
+  }
+
+  var hostAppsLoading = false;
+
+  async function loadHostApps(refresh){
+    if(hostAppsLoading){ return; }
+    if(!hostAppsStatusText || !hostAppsList){ return; }
+    hostAppsLoading = true;
+    hostAppsStatusText.textContent = "Scanning host machine for apps and sessions…";
+
+    if(!hostAppsData || refresh){
+      hostAppsList.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-3);font-size:12.5px;">Discovering installed desktop apps and sessions…</div>';
+    }
+
+    try{
+      var url = "/api/host-apps/detect" + (refresh ? "?refresh=1" : "");
+      var res = await fetch(url);
+      if(!res.ok){ throw new Error("status " + res.status); }
+      var rawData = await res.json();
+
+      // Show ONLY apps that were found on the host system
+      hostAppsData = (rawData || []).filter(function(item){
+        return item.detected;
+      });
+
       hostAppsList.innerHTML = "";
-      (hostAppsData || []).forEach(function(item){
-        if(item.detected){ detectedCount++; }
+      if(hostAppsData.length === 0){
+        hostAppsList.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-3);font-size:12.5px;">No applications or sessions were detected on your host machine.</div>';
+        hostAppsStatusText.textContent = "0 apps detected";
+        return;
+      }
+
+      hostAppsData.forEach(function(item){
         var row = document.createElement("label");
-        row.className = "host-app-row" + (item.detected ? " is-detected" : "");
+        row.className = "host-app-row is-detected";
+        row.dataset.searchText = (item.name + " " + (item.category || "") + " " + (item.description || "")).toLowerCase();
         row.innerHTML =
           '<input type="checkbox" name="host_app_choice" value="' + escapeHTML(item.id) + '" ' +
-          (item.default_selected ? 'checked ' : '') +
-          'data-detected="' + (item.detected ? 'true' : 'false') + '">' +
+          'data-detected="true">' +
           '<div class="host-app-info">' +
             '<div class="host-app-title-line">' +
               '<span>' + escapeHTML(item.name) + '</span>' +
-              '<span class="host-app-badge ' + (item.detected ? 'detected' : 'missing') + '">' +
-                (item.detected ? 'Detected' : 'Not found') +
-              '</span>' +
+              (item.category ? '<span class="host-app-cat">' + escapeHTML(item.category) + '</span>' : '') +
+              '<span class="host-app-badge detected">Found</span>' +
             '</div>' +
             '<div class="host-app-desc">' + escapeHTML(item.description) + '</div>' +
           '</div>';
         hostAppsList.appendChild(row);
       });
 
-      hostAppsStatusText.textContent = detectedCount + " apps & sessions detected on your desktop";
+      filterHostAppsList();
+      updateHostAppsSelectionSummary();
     }catch(err){
       hostAppsStatusText.textContent = "Failed to detect host apps: " + err.message;
+    }finally{
+      hostAppsLoading = false;
     }
+  }
+
+  if(hostAppsList){
+    hostAppsList.addEventListener("change", function(e){
+      if(e.target && e.target.name === "host_app_choice"){
+        updateHostAppsSelectionSummary();
+      }
+    });
   }
 
   if(dCopyHostApps){
     dCopyHostApps.addEventListener("change", function(){
       var active = dCopyHostApps.checked;
-      hostAppsPanel.style.display = active ? "" : "none";
+      hostAppsPanel.style.display = "";
+      if(!active){
+        hostAppsList.querySelectorAll("input[name=host_app_choice]").forEach(function(cb){ cb.checked = false; });
+        updateHostAppsSelectionSummary();
+      }
       if(active && !hostAppsData){
         loadHostApps();
       }
     });
   }
 
-  var btnAll = document.getElementById("hostAppsBtnAll");
-  if(btnAll){
-    btnAll.addEventListener("click", function(){
-      hostAppsList.querySelectorAll("input[type=checkbox]").forEach(function(cb){ cb.checked = true; });
+  var btnRescan = document.getElementById("hostAppsBtnRescan");
+  if(btnRescan){
+    btnRescan.addEventListener("click", function(){
+      loadHostApps(true);
     });
   }
 
-  var btnDetected = document.getElementById("hostAppsBtnDetected");
-  if(btnDetected){
-    btnDetected.addEventListener("click", function(){
-      hostAppsList.querySelectorAll("input[type=checkbox]").forEach(function(cb){
-        cb.checked = cb.dataset.detected === "true";
-      });
+  var btnAll = document.getElementById("hostAppsBtnAll");
+  if(btnAll){
+    btnAll.addEventListener("click", function(){
+      hostAppsList.querySelectorAll("input[name=host_app_choice]").forEach(function(cb){ cb.checked = true; });
+      updateHostAppsSelectionSummary();
     });
   }
 
   var btnNone = document.getElementById("hostAppsBtnNone");
   if(btnNone){
     btnNone.addEventListener("click", function(){
-      hostAppsList.querySelectorAll("input[type=checkbox]").forEach(function(cb){ cb.checked = false; });
+      hostAppsList.querySelectorAll("input[name=host_app_choice]").forEach(function(cb){ cb.checked = false; });
+      updateHostAppsSelectionSummary();
     });
   }
+
+  // Pre-load host apps eagerly in background on page load
+  loadHostApps();
 
   /* ---------------- claude login ---------------- */
 
@@ -1685,6 +1811,9 @@
     submit.textContent = "Creating…";
     busy(true);
 
+    activeCreateController = new AbortController();
+    var signal = activeCreateController.signal;
+
     var copyHostApps = dCopyHostApps && dCopyHostApps.checked;
     var selectedApps = [];
     if(copyHostApps && hostAppsList){
@@ -1704,13 +1833,20 @@
         parent_id: data.get("parent_id") || "",
         copy_host_apps: copyHostApps ? "1" : "0",
         host_apps: selectedApps.join(",")
-      });
+      }, { signal: signal });
 
+      activeCreateController = null;
       location.reload();
     }catch(e){
       busy(false);
       submit.disabled = false;
       submit.textContent = "Create desktop";
+      if(e.name === "AbortError" || (signal && signal.aborted)){
+        // Aborted intentionally by Cancel button or closing modal
+        activeCreateController = null;
+        return;
+      }
+      activeCreateController = null;
       toast(e.message, "error");
     }
   }

@@ -24,7 +24,8 @@ func (s *Server) detectHostAppsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items := desktop.DetectHostApps()
+	force := r.URL.Query().Get("refresh") == "1" || r.URL.Query().Get("refresh") == "true"
+	items := desktop.DetectHostAppsForce(force)
 	jsonResponse(w, items)
 }
 
@@ -73,7 +74,11 @@ func (s *Server) hostBridgeExecHandler(w http.ResponseWriter, r *http.Request) {
 	// Determine if this is a GUI app that should be launched asynchronously
 	isGUIApp := false
 	cmdLower := strings.ToLower(req.Cmd)
-	for _, guiPrefix := range []string{"google-chrome", "chromium", "firefox", "code", "x-terminal-emulator", "xdg-open", "open"} {
+	for _, guiPrefix := range []string{
+		"google-chrome", "chromium", "firefox", "msedge", "code",
+		"x-terminal-emulator", "xdg-open", "open", "cmd.exe", "powershell.exe",
+		"start", "spotify", "discord", "slack",
+	} {
 		if strings.Contains(cmdLower, guiPrefix) {
 			isGUIApp = true
 			break
@@ -82,12 +87,7 @@ func (s *Server) hostBridgeExecHandler(w http.ResponseWriter, r *http.Request) {
 
 	if isGUIApp {
 		// Launch detached GUI process on the host desktop
-		cmd := exec.Command(req.Cmd, req.Args...)
-		cmd.Env = os.Environ()
-		// Ensure DISPLAY is set for Linux desktop GUI apps
-		if runtime.GOOS == "linux" && os.Getenv("DISPLAY") == "" {
-			cmd.Env = append(cmd.Env, "DISPLAY=:0")
-		}
+		cmd := createHostCmd(nil, req.Cmd, req.Args...)
 
 		if err := cmd.Start(); err != nil {
 			log.Printf("host-bridge: failed to launch GUI app %s: %v", req.Cmd, err)
@@ -115,8 +115,7 @@ func (s *Server) hostBridgeExecHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, req.Cmd, req.Args...)
-	cmd.Env = os.Environ()
+	cmd := createHostCmd(ctx, req.Cmd, req.Args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -138,6 +137,53 @@ func (s *Server) hostBridgeExecHandler(w http.ResponseWriter, r *http.Request) {
 		ExitCode: exitCode,
 		Error:    errString(err),
 	})
+}
+
+// createHostCmd constructs an exec.Cmd that can execute on the real host machine,
+// falling back to Docker socket nsenter if running inside an unprivileged/isolated container.
+func createHostCmd(ctx context.Context, cmdStr string, args ...string) *exec.Cmd {
+	fullCmd := strings.TrimSpace(cmdStr)
+	if len(args) > 0 {
+		var quoted []string
+		for _, a := range args {
+			quoted = append(quoted, fmt.Sprintf("%q", a))
+		}
+		fullCmd = fullCmd + " " + strings.Join(quoted, " ")
+	}
+
+	isWinCmd := strings.HasPrefix(fullCmd, "cmd.exe") || strings.HasPrefix(fullCmd, "powershell.exe")
+
+	// If it's a Windows command and cmd.exe is not directly executable in PATH (e.g. inside Docker container)
+	if isWinCmd && desktop.IsWSLOrWindows() {
+		if _, err := exec.LookPath("cmd.exe"); err != nil {
+			if _, err := os.Stat("/var/run/docker.sock"); err == nil {
+				if _, err := exec.LookPath("docker"); err == nil {
+					nsCmd := fmt.Sprintf("PATH=$PATH:/mnt/c/WINDOWS/system32:/mnt/c/Windows/system32:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0 %s", fullCmd)
+					var cmd *exec.Cmd
+					if ctx != nil {
+						cmd = exec.CommandContext(ctx, "docker", "run", "--rm", "--privileged", "--pid=host", "alpine", "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "bash", "-c", nsCmd)
+					} else {
+						cmd = exec.Command("docker", "run", "--rm", "--privileged", "--pid=host", "alpine", "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "bash", "-c", nsCmd)
+					}
+					cmd.Stdin = strings.NewReader("")
+					return cmd
+				}
+			}
+		}
+	}
+
+	var cmd *exec.Cmd
+	if ctx != nil {
+		cmd = exec.CommandContext(ctx, "bash", "-c", fullCmd)
+	} else {
+		cmd = exec.Command("bash", "-c", fullCmd)
+	}
+	cmd.Stdin = strings.NewReader("")
+	cmd.Env = os.Environ()
+	if runtime.GOOS == "linux" && os.Getenv("DISPLAY") == "" {
+		cmd.Env = append(cmd.Env, "DISPLAY=:0")
+	}
+	return cmd
 }
 
 // hostBridgeOpenRequest represents a request to open a URL or file on the host desktop screen.
@@ -168,19 +214,17 @@ func (s *Server) hostBridgeOpenHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", target)
-	case "windows":
-		cmd = exec.Command("cmd.exe", "/c", "start", "", target)
+	var openCmd string
+	switch {
+	case runtime.GOOS == "darwin":
+		openCmd = fmt.Sprintf("open %q", target)
+	case runtime.GOOS == "windows" || desktop.IsWSLOrWindows():
+		openCmd = fmt.Sprintf(`cmd.exe /c start "" %q`, target)
 	default:
-		// Linux
-		cmd = exec.Command("xdg-open", target)
-		if os.Getenv("DISPLAY") == "" {
-			cmd.Env = append(os.Environ(), "DISPLAY=:0")
-		}
+		openCmd = fmt.Sprintf("xdg-open %q", target)
 	}
+
+	cmd := createHostCmd(nil, openCmd)
 
 	if err := cmd.Start(); err != nil {
 		log.Printf("host-bridge: open %s failed: %v", target, err)
