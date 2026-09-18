@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -47,8 +48,9 @@ func (s *Server) detectHostAppsHandler(w http.ResponseWriter, r *http.Request) {
 // hostBridgeExecRequest represents a command execution request sent from inside
 // the VM container to be executed on the normal host desktop.
 type hostBridgeExecRequest struct {
-	Cmd  string   `json:"cmd"`
-	Args []string `json:"args"`
+	Cmd     string   `json:"cmd"`
+	Args    []string `json:"args"`
+	Display string   `json:"display,omitempty"`
 }
 
 // hostBridgeExecResponse represents the result of the host command execution.
@@ -76,6 +78,7 @@ func (s *Server) hostBridgeExecHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		req.Cmd = r.FormValue("cmd")
+		req.Display = r.FormValue("display")
 		if argsVal := r.FormValue("args"); argsVal != "" {
 			_ = json.Unmarshal([]byte(argsVal), &req.Args)
 		}
@@ -84,6 +87,17 @@ func (s *Server) hostBridgeExecHandler(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.Cmd) == "" {
 		http.Error(w, "cmd cannot be empty", http.StatusBadRequest)
 		return
+	}
+
+	// Resolve target display for display tunneling:
+	// Direct GUI rendering back to the requesting desktop container instead of the host desktop.
+	targetDisplay := strings.TrimSpace(req.Display)
+	if targetDisplay == "" {
+		if clientHost, _, err := net.SplitHostPort(r.RemoteAddr); err == nil && clientHost != "" {
+			if clientHost != "127.0.0.1" && clientHost != "::1" && clientHost != "localhost" {
+				targetDisplay = clientHost + ":1"
+			}
+		}
 	}
 
 	// Determine if this is a GUI app that should be launched asynchronously
@@ -101,8 +115,8 @@ func (s *Server) hostBridgeExecHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if isGUIApp {
-		// Launch detached GUI process on the host desktop
-		cmd := createHostCmd(nil, req.Cmd, req.Args...)
+		// Launch detached GUI process on the host desktop with tunneled display
+		cmd := createHostCmd(nil, targetDisplay, req.Cmd, req.Args...)
 		var stderrBuf bytes.Buffer
 		cmd.Stderr = &stderrBuf
 
@@ -136,7 +150,7 @@ func (s *Server) hostBridgeExecHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	cmd := createHostCmd(ctx, req.Cmd, req.Args...)
+	cmd := createHostCmd(ctx, targetDisplay, req.Cmd, req.Args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -162,7 +176,9 @@ func (s *Server) hostBridgeExecHandler(w http.ResponseWriter, r *http.Request) {
 
 // createHostCmd constructs an exec.Cmd that can execute on the real host machine,
 // falling back to Docker socket nsenter if running inside an unprivileged/isolated container.
-func createHostCmd(ctx context.Context, cmdStr string, args ...string) *exec.Cmd {
+// If display is non-empty, the command is configured to direct its GUI/X11 rendering to that display
+// (e.g. tunneling display back to the desktop container's X11 server).
+func createHostCmd(ctx context.Context, display, cmdStr string, args ...string) *exec.Cmd {
 	fullCmd := strings.TrimSpace(cmdStr)
 	if len(args) > 0 {
 		var quoted []string
@@ -187,7 +203,11 @@ func createHostCmd(ctx context.Context, cmdStr string, args ...string) *exec.Cmd
 		if _, err := exec.LookPath("cmd.exe"); err != nil {
 			if _, err := os.Stat("/var/run/docker.sock"); err == nil {
 				if dockerBin := findDockerBinary(); dockerBin != "" {
-					nsCmd := fmt.Sprintf("PATH=$PATH:/mnt/c/WINDOWS/system32:/mnt/c/Windows/system32:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0:/mnt/c/Windows/System32/WindowsPowerShell/v1.0:/mnt/c/Windows %s", fullCmd)
+					displayEnv := ""
+					if display != "" {
+						displayEnv = fmt.Sprintf("DISPLAY=%s ", display)
+					}
+					nsCmd := fmt.Sprintf("%sPATH=$PATH:/mnt/c/WINDOWS/system32:/mnt/c/Windows/system32:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0:/mnt/c/Windows/System32/WindowsPowerShell/v1.0:/mnt/c/Windows %s", displayEnv, fullCmd)
 					var cmd *exec.Cmd
 					if ctx != nil {
 						cmd = exec.CommandContext(ctx, dockerBin, "run", "--rm", "--privileged", "--pid=host", "alpine", "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "bash", "-c", nsCmd)
@@ -214,8 +234,10 @@ func createHostCmd(ctx context.Context, cmdStr string, args ...string) *exec.Cmd
 		winPaths := "/mnt/c/WINDOWS/system32:/mnt/c/Windows/system32:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0:/mnt/c/Windows/System32/WindowsPowerShell/v1.0:/mnt/c/Windows"
 		cmd.Env = append(cmd.Env, fmt.Sprintf("PATH=%s:%s", currPath, winPaths))
 	}
-	if runtime.GOOS == "linux" && os.Getenv("DISPLAY") == "" {
-		cmd.Env = append(cmd.Env, "DISPLAY=:0")
+	if display != "" {
+		cmd.Env = append(cmd.Env, "DISPLAY="+display)
+	} else if runtime.GOOS == "linux" && os.Getenv("DISPLAY") != "" {
+		cmd.Env = append(cmd.Env, "DISPLAY="+os.Getenv("DISPLAY"))
 	}
 	return cmd
 }
@@ -258,7 +280,7 @@ func (s *Server) hostBridgeOpenHandler(w http.ResponseWriter, r *http.Request) {
 		openCmd = fmt.Sprintf("xdg-open %q", target)
 	}
 
-	cmd := createHostCmd(nil, openCmd)
+	cmd := createHostCmd(nil, "", openCmd)
 
 	if err := cmd.Start(); err != nil {
 		log.Printf("host-bridge: open %s failed: %v", target, err)
