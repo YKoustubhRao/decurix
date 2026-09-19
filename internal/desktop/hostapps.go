@@ -871,7 +871,8 @@ Categories=Office;Utility;Network;
 // Dynamic Discovery Providers (Windows/WSL, Linux, macOS)
 // -----------------------------------------------------------------------------
 
-// IsWSLOrWindows returns true if running directly on Windows or inside a WSL environment.
+// IsWSLOrWindows returns true if running directly on Windows or inside a WSL environment, or inside a container on such
+// a host (the kernel it shares says so, or a mounted drive really holds Windows).
 func IsWSLOrWindows() bool {
 	if runtime.GOOS == "windows" {
 		return true
@@ -879,18 +880,32 @@ func IsWSLOrWindows() bool {
 	if os.Getenv("WSLENV") != "" || os.Getenv("WSL_DISTRO_NAME") != "" {
 		return true
 	}
-	for _, drive := range getWindowsCDriveCandidates() {
-		if fi, err := os.Stat(drive); err == nil && fi.IsDir() {
-			return true
-		}
-	}
 	if data, err := os.ReadFile("/proc/version"); err == nil {
 		lower := strings.ToLower(string(data))
 		if strings.Contains(lower, "microsoft") || strings.Contains(lower, "wsl") {
 			return true
 		}
 	}
+	return hasWindowsInstall(getWindowsCDriveCandidates())
+}
+
+// hasWindowsInstall reports whether any of the drive roots holds a Windows installation. A folder merely existing at
+// /mnt/c is no evidence of one: docker-compose.yaml always creates that mount, and on a Mac or a Linux machine it is an
+// empty folder (or the host's own root), which used to make those hosts believe they were Windows.
+func hasWindowsInstall(drives []string) bool {
+	for _, drive := range drives {
+		for _, name := range []string{"Windows", "WINDOWS", "windows"} {
+			if fi, err := os.Stat(filepath.Join(drive, name)); err == nil && fi.IsDir() {
+				return true
+			}
+		}
+	}
 	return false
+}
+
+// PowershellExe returns the path of Windows PowerShell, or "" when this host has none.
+func PowershellExe() string {
+	return findPowershellExe()
 }
 
 type rawStartApp struct {
@@ -945,6 +960,10 @@ func findDockerBinary() string {
 }
 
 func queryWindowsStartApps() []rawStartApp {
+	// Nothing to ask on a Mac or a Linux machine - and the last resort below starts a container.
+	if !IsWSLOrWindows() {
+		return nil
+	}
 	startAppsMu.RLock()
 	if startAppsQueried {
 		cached := startAppsCached

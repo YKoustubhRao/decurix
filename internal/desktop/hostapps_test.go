@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -645,12 +646,22 @@ func TestShellWordsKeepsWindowsBackslashes(t *testing.T) {
 	}
 }
 
-// TestDynamicAppWrapperRunsUnderBashWithBackslashesIntact runs the generated wrapper with a stub
-// host-run and checks the argument the bridge would send, byte for byte.
-func TestDynamicAppWrapperRunsUnderBashWithBackslashesIntact(t *testing.T) {
+// requireBash skips a test that runs one of the launcher scripts. Those are bash scripts for the Linux desktop they are
+// copied into; there is nothing to run them with on a Windows machine, whatever bash WSL puts on its PATH.
+func requireBash(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("launchers are bash scripts for the Linux VM")
+	}
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not available")
 	}
+}
+
+// TestDynamicAppWrapperRunsUnderBashWithBackslashesIntact runs the generated wrapper with a stub
+// host-run and checks the argument the bridge would send, byte for byte.
+func TestDynamicAppWrapperRunsUnderBashWithBackslashesIntact(t *testing.T) {
+	requireBash(t)
 	dir := t.TempDir()
 	buf := new(bytes.Buffer)
 	tw := tar.NewWriter(buf)
@@ -716,6 +727,7 @@ func TestWindowsTarget(t *testing.T) {
 // TestHostGUIWrapperOpensTheViewerForThisDesktop runs the generated launcher with a stand-in browser first on PATH
 // (never a real one: a test must not open windows) and checks the URL it would open.
 func TestHostGUIWrapperOpensTheViewerForThisDesktop(t *testing.T) {
+	requireBash(t)
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "chromium-browser"), []byte("#!/usr/bin/env bash\nprintf '%s\\n' \"$@\"\n"), 0755); err != nil {
 		t.Fatal(err)
@@ -750,6 +762,7 @@ func TestHostGUIWrapperOpensTheViewerForThisDesktop(t *testing.T) {
 }
 
 func TestHostGUIWrapperTellsYouWhenThereIsNoBrowser(t *testing.T) {
+	requireBash(t)
 	dir := t.TempDir()
 	wrapper := filepath.Join(dir, "w")
 	os.WriteFile(wrapper, []byte(hostGUIWrapper(testPack, "x", "X", `C:\x.exe`, "")), 0755)
@@ -870,9 +883,7 @@ func TestTheHostIsOnlyAskedAboutAnAppOnce(t *testing.T) {
 // host-run can only open links, set the clipboard and run a signed launcher command. The old generic form
 // ("host-run rm -rf ...", and win-run/mac-run which wrapped it) is what let a desktop's agent run anything on the host.
 func TestHostRunRefusesToRunAnUnsignedCommand(t *testing.T) {
-	if _, err := exec.LookPath("bash"); err != nil {
-		t.Skip("bash not available")
-	}
+	requireBash(t)
 	buf := new(bytes.Buffer)
 	tw := tar.NewWriter(buf)
 	if err := packHostBridgeLaunchers(tw); err != nil {
@@ -921,5 +932,28 @@ func TestStaticLaunchersOpenALinkInsteadOfRunningCmd(t *testing.T) {
 		if strings.Contains(buf.String(), "host-run cmd.exe") {
 			t.Errorf("%s launcher still asks the host to run cmd.exe", def.id)
 		}
+	}
+}
+
+// A folder at /mnt/c is not a Windows install: compose always creates that mount, so on a Mac or a Linux machine it is
+// an empty folder (or the host's own root) and used to make the control plane believe it ran on Windows.
+func TestHasWindowsInstallNeedsWindowsInsideTheDrive(t *testing.T) {
+	empty := t.TempDir()
+	hostRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(hostRoot, "usr", "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if hasWindowsInstall([]string{empty, hostRoot}) {
+		t.Fatal("an empty folder and a Linux root were taken for a Windows drive")
+	}
+	if hasWindowsInstall(nil) {
+		t.Fatal("no drives at all were taken for a Windows drive")
+	}
+	drive := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(drive, "Windows", "System32"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !hasWindowsInstall([]string{empty, drive}) {
+		t.Fatal("a drive holding a Windows folder was not recognised")
 	}
 }

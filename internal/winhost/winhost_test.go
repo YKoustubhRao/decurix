@@ -3,6 +3,7 @@ package winhost
 import (
 	"context"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,6 +18,15 @@ type fakeOpts struct {
 	moved  bool   // a launchr of an already-resolved program says it is no longer there
 }
 
+// requireBash skips a test that stands a bash script in for the Windows helper. The protocol is the same on every OS, but
+// a Windows machine has no bash to answer it (or, with WSL installed, one that runs inside Linux).
+func requireBash(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the helper is faked with bash")
+	}
+}
+
 // fakeHelper stands in for bridge.ps1: the same line protocol, answered by a bash loop, and pictures sent the way the real
 // one sends them (a header line, then the JPEG bytes). Every line it receives is appended to the file named by log, so a
 // test can see exactly what reached the host. Besides the real verbs it understands two for tests:
@@ -25,6 +35,7 @@ type fakeOpts struct {
 //	close                                       reply OK, then say the app has no window left
 func fakeHelper(t *testing.T, o fakeOpts) (Starter, *int32) {
 	t.Helper()
+	requireBash(t)
 	if o.launch == "" {
 		o.launch = "OK pid=42"
 	}
@@ -637,6 +648,7 @@ func TestCheckAnswersTargetsTheProtocolCannotCarryItself(t *testing.T) {
 }
 
 func TestCheckKeepsWhatWasAnsweredWhenTheHelperDies(t *testing.T) {
+	requireBash(t)
 	m := NewManager(func(context.Context, string) (*exec.Cmd, error) {
 		// Answers the readiness ping and one check, then exits.
 		return exec.Command("bash", "-c", `read -r l; echo OK; read -r l; echo OK`), nil

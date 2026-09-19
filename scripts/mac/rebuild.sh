@@ -23,6 +23,8 @@ cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source ./scripts/mac/lib/ollama-setup.sh
 # shellcheck source=lib/lan-tunnel.sh
 source ./scripts/mac/lib/lan-tunnel.sh
+# shellcheck source=lib/host-mounts.sh
+source ./scripts/mac/lib/host-mounts.sh
 
 SKIP_CONFIRM=""
 CLI_MODE=""
@@ -136,6 +138,7 @@ ensure_ollama_ready
 echo ""
 echo "=== Starting Flowera ==="
 
+export_host_mounts
 docker compose up -d --build
 
 echo ""

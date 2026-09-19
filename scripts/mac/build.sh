@@ -21,6 +21,8 @@ cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source ./scripts/mac/lib/ollama-setup.sh
 # shellcheck source=lib/lan-tunnel.sh
 source ./scripts/mac/lib/lan-tunnel.sh
+# shellcheck source=lib/host-mounts.sh
+source ./scripts/mac/lib/host-mounts.sh
 
 CLI_MODE=""
 
@@ -67,6 +69,8 @@ ensure_ollama_ready
 
 echo ""
 echo "=== Starting Flowera ==="
+
+export_host_mounts
 
 # No --build: existing desktop_* containers and volumes, and the flowera-data
 # volume (task history, chats, worker memory), are untouched.
