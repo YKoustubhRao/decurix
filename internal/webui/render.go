@@ -175,6 +175,7 @@ type Renderer struct {
 	skillsTmpl     *template.Template
 	dagsTmpl       *template.Template
 	dagTmpl        *template.Template
+	hostGUITmpl    *template.Template
 }
 
 // NewRenderer parses all templates once at startup.
@@ -209,6 +210,9 @@ func NewRenderer() *Renderer {
 		),
 		dagTmpl: template.Must(
 			template.New("dag.html").Funcs(taskFuncs).ParseFS(web.TemplatesFS, templatePaths("dag.html")...),
+		),
+		hostGUITmpl: template.Must(
+			template.ParseFS(web.TemplatesFS, templatePaths("hostgui.html")...),
 		),
 	}
 }
@@ -262,6 +266,23 @@ func (rd *Renderer) RenderDags(w io.Writer, data DagsPageData) error {
 // RenderDag renders one DAG's editor page.
 func (rd *Renderer) RenderDag(w io.Writer, data DagPageData) error {
 	return rd.dagTmpl.ExecuteTemplate(w, "dag.html", data)
+}
+
+// HostGUIPageData is the template data for the window a desktop opens to show and drive an app running on the host.
+type HostGUIPageData struct {
+	// Token is the launch token signed for this app; the viewer presents it on every request it makes.
+	Token string
+	ID    string
+	// Desktop is the VM showing this window, so it can be kept from idle-pausing while the window is open.
+	Desktop string
+	Title   string
+	Target  string
+	Args    string
+}
+
+// RenderHostGUI renders the viewer for one app running on a private host desktop.
+func (rd *Renderer) RenderHostGUI(w io.Writer, data HostGUIPageData) error {
+	return rd.hostGUITmpl.ExecuteTemplate(w, "hostgui.html", data)
 }
 
 // FaviconSVG is the Flowera brand mark, served as the control plane's favicon.

@@ -1,11 +1,17 @@
 package httpapi
 
 import (
+	"archive/tar"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/client"
 
 	"github.com/YKoustubhRao/flowera/internal/desktop"
 )
@@ -127,5 +133,88 @@ func TestCreateHostCmdWindowsCommand(t *testing.T) {
 	}
 	if len(cmd.Args) == 0 {
 		t.Fatal("expected cmd to have args")
+	}
+}
+
+// archiveDocker is a stand-in Docker daemon that reports one desktop and keeps the tar it is asked to extract into it.
+func archiveDocker(t *testing.T, desktopID string) (*desktop.Manager, func() map[string]string) {
+	t.Helper()
+	var mu sync.Mutex
+	files := map[string]string{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/containers/desktop_"+desktopID+"/json"):
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(container.InspectResponse{ContainerJSONBase: &container.ContainerJSONBase{ID: desktopID}})
+		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/containers/"+desktopID+"/archive"):
+			tr := tar.NewReader(r.Body)
+			for {
+				hdr, err := tr.Next()
+				if err != nil {
+					break
+				}
+				data, _ := io.ReadAll(tr)
+				mu.Lock()
+				files[hdr.Name] = string(data)
+				mu.Unlock()
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(ts.Close)
+	cli, err := client.NewClientWithOpts(client.WithHTTPClient(ts.Client()), client.WithHost("tcp://"+strings.TrimPrefix(ts.URL, "http://")), client.WithVersion("1.43"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return desktop.NewManager(cli), func() map[string]string {
+		mu.Lock()
+		defer mu.Unlock()
+		out := map[string]string{}
+		for k, v := range files {
+			out[k] = v
+		}
+		return out
+	}
+}
+
+func TestCopyHostAppsIntoAnExistingDesktop(t *testing.T) {
+	mgr, written := archiveDocker(t, "work")
+	srv := &Server{Desktops: mgr}
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	post := func(form string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/desktops/host-apps/copy", strings.NewReader(form))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec
+	}
+
+	if rec := post("id=work&host_apps=host_bridge"); rec.Code != http.StatusOK {
+		t.Fatalf("copy = %d: %s", rec.Code, rec.Body.String())
+	}
+	hostRun, ok := written()[".local/bin/host-run"]
+	if !ok {
+		t.Fatalf("the desktop was not sent host-run; it got %v", written())
+	}
+	if strings.Contains(hostRun, "curl -s") {
+		t.Fatal("the refreshed host-run still calls curl")
+	}
+
+	if rec := post("id=nope&host_apps=host_bridge"); rec.Code != http.StatusNotFound {
+		t.Errorf("unknown desktop = %d, want 404", rec.Code)
+	}
+	if rec := post("id=work"); rec.Code != http.StatusBadRequest {
+		t.Errorf("no apps = %d, want 400", rec.Code)
+	}
+	if rec := post("host_apps=host_bridge"); rec.Code != http.StatusBadRequest {
+		t.Errorf("no id = %d, want 400", rec.Code)
+	}
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/desktops/host-apps/copy", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET = %d, want 405", rec.Code)
 	}
 }

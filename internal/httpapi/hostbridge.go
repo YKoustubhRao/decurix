@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -43,6 +44,42 @@ func (s *Server) detectHostAppsHandler(w http.ResponseWriter, r *http.Request) {
 	force := r.URL.Query().Get("refresh") == "1" || r.URL.Query().Get("refresh") == "true"
 	items := desktop.DetectHostAppsForce(force)
 	jsonResponse(w, items)
+}
+
+// copyHostAppsHandler copies host apps into a desktop that already exists - the same copy desktop creation does - so apps
+// can be added later, and launchers written by an older build (which stop working when the launch mechanism changes) can
+// be refreshed without recreating the desktop. Form fields: id, and host_apps as a comma-separated list of IDs from
+// /api/host-apps/detect.
+func (s *Server) copyHostAppsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id := strings.TrimSpace(r.FormValue("id"))
+	var apps []string
+	for _, part := range strings.Split(r.FormValue("host_apps"), ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			apps = append(apps, part)
+		}
+	}
+	if id == "" || len(apps) == 0 {
+		http.Error(w, "id and host_apps are required", http.StatusBadRequest)
+		return
+	}
+	d, err := s.Desktops.Get(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, desktop.ErrNotFound) {
+			http.Error(w, "desktop not found", http.StatusNotFound)
+			return
+		}
+		jsonError(w, err)
+		return
+	}
+	if err := s.Desktops.MigrateHostApps(r.Context(), d.ID, apps); err != nil {
+		jsonError(w, err)
+		return
+	}
+	jsonResponse(w, map[string]any{"id": d.ID, "host_apps": apps})
 }
 
 // hostBridgeExecRequest represents a command execution request sent from inside

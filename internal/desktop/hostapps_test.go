@@ -4,11 +4,18 @@ import (
 	"archive/tar"
 	"bytes"
 	"io"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/YKoustubhRao/flowera/internal/winhost"
 )
+
+// testPack is the desktop the launcher tests write into.
+var testPack = packContext{DesktopID: "work-vm", Secret: []byte("0123456789abcdef0123456789abcdef")}
 
 func TestDetectHostApps(t *testing.T) {
 	items := DetectHostApps()
@@ -123,7 +130,7 @@ func TestPackDynamicApp(t *testing.T) {
 		Icon:        "audio-x-generic",
 	}
 
-	if err := packDynamicApp(tw, app); err != nil {
+	if err := packDynamicApp(tw, app, testPack); err != nil {
 		t.Fatalf("packDynamicApp failed: %v", err)
 	}
 	if err := tw.Close(); err != nil {
@@ -166,8 +173,13 @@ func TestPackDynamicApp(t *testing.T) {
 	if !strings.Contains(desktopContent, "Exec=/home/headless/.local/bin/spotify-music-host %U") {
 		t.Errorf("unexpected desktop content: %s", desktopContent)
 	}
-	if !strings.Contains(wrapperContent, "exec host-run cmd.exe /c start explorer.exe shell:AppsFolder\\Spotify.exe") {
-		t.Errorf("unexpected wrapper script content: %s", wrapperContent)
+	if !strings.Contains(wrapperContent, "/host-gui/view?") || !strings.Contains(wrapperContent, "id=work-vm-spotify-music") ||
+		!strings.Contains(wrapperContent, "token=") ||
+		!strings.Contains(wrapperContent, "target=shell%3AAppsFolder%5CSpotify.exe") {
+		t.Errorf("a Windows app must open the host-gui viewer with its target, got: %s", wrapperContent)
+	}
+	if strings.Contains(wrapperContent, "host-run") {
+		t.Errorf("a Windows app must not be launched visibly on the host through host-run: %s", wrapperContent)
 	}
 }
 
@@ -411,7 +423,7 @@ func TestPackDynamicAppWebAppMode(t *testing.T) {
 	buf := new(bytes.Buffer)
 	tw := tar.NewWriter(buf)
 
-	if err := packDynamicApp(tw, app); err != nil {
+	if err := packDynamicApp(tw, app, testPack); err != nil {
 		t.Fatalf("packDynamicApp: %v", err)
 	}
 	if err := tw.Close(); err != nil {
@@ -460,7 +472,7 @@ func TestPackDynamicAppSVGIcon(t *testing.T) {
 	buf := new(bytes.Buffer)
 	tw := tar.NewWriter(buf)
 
-	if err := packDynamicApp(tw, app); err != nil {
+	if err := packDynamicApp(tw, app, testPack); err != nil {
 		t.Fatalf("packDynamicApp: %v", err)
 	}
 	if err := tw.Close(); err != nil {
@@ -543,10 +555,204 @@ func TestPackHostBridgeLaunchersIncludesDisplay(t *testing.T) {
 		}
 	}
 
-	if !strings.Contains(hostRunContent, "'display': os.environ.get('DISPLAY', ':1')") {
+	if !strings.Contains(hostRunContent, `body["display"] = os.environ.get("DISPLAY", ":1")`) {
 		t.Errorf("expected host-run to send container DISPLAY in payload, got:\n%s", hostRunContent)
 	}
 	if !strings.Contains(hostRunContent, "DISPLAY=${DISPLAY:-:1}") {
 		t.Errorf("expected host-run SSH fallback to forward DISPLAY, got:\n%s", hostRunContent)
+	}
+}
+
+// TestHostRunWorksOnAnImageWithoutCurlOrLocalBinOnPath pins the two things that made a copied
+// desktop app do nothing when clicked: the wrappers ran "host-run" by bare name (~/.local/bin is
+// not on the basic image's PATH, so the shell said "host-run: not found"), and host-run itself
+// posted with curl, which the desktop images do not all ship.
+func TestHostRunWorksOnAnImageWithoutCurlOrLocalBinOnPath(t *testing.T) {
+	buf := new(bytes.Buffer)
+	tw := tar.NewWriter(buf)
+	if err := packHostBridgeLaunchers(tw); err != nil {
+		t.Fatal(err)
+	}
+	app := HostAppItem{ID: "win_notepad", Name: "Notepad", HostCmd: `cmd.exe /c start "" "C:\Notepad.lnk"`}
+	if err := packDynamicApp(tw, app, testPack); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tr := tar.NewReader(buf)
+	scripts := 0
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(hdr.Name, ".local/bin/") {
+			continue
+		}
+		data, _ := io.ReadAll(tr)
+		content := string(data)
+		scripts++
+		if strings.Contains(content, "curl") && !strings.Contains(content, "python3 rather than curl") {
+			t.Errorf("%s calls curl, which the desktop images do not all have:\n%s", hdr.Name, content)
+		}
+		for _, line := range strings.Split(content, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "exec host-run") {
+				t.Errorf("%s runs host-run by bare name, which is not on PATH in the basic image: %q", hdr.Name, line)
+			}
+		}
+	}
+	if scripts == 0 {
+		t.Fatal("no scripts packed")
+	}
+}
+
+// TestShellWordsKeepsWindowsBackslashes pins the bug where bash ate the backslash in
+// shell:AppsFolder\<AppUserModelID>, so a copied Store app asked the host for a name that does not exist.
+func TestShellWordsKeepsWindowsBackslashes(t *testing.T) {
+	cases := map[string]string{
+		`cmd.exe /c start explorer.exe shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App`: `cmd.exe /c start explorer.exe 'shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App'`,
+		`cmd.exe /c start "" "C:\Users\me\My Apps\Code.exe"`:                                           `cmd.exe /c start '' 'C:\Users\me\My Apps\Code.exe'`,
+		`open -a "Google Chrome"`:                  `open -a 'Google Chrome'`,
+		`cmd.exe /c start "" "C:\it's here\a.exe"`: `cmd.exe /c start '' 'C:\it'\''s here\a.exe'`,
+	}
+	for in, want := range cases {
+		if got := shellWords(in); got != want {
+			t.Errorf("shellWords(%q)\n got  %s\n want %s", in, got, want)
+		}
+	}
+}
+
+// TestDynamicAppWrapperRunsUnderBashWithBackslashesIntact runs the generated wrapper with a stub
+// host-run and checks the argument the bridge would send, byte for byte.
+func TestDynamicAppWrapperRunsUnderBashWithBackslashesIntact(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	dir := t.TempDir()
+	buf := new(bytes.Buffer)
+	tw := tar.NewWriter(buf)
+	app := HostAppItem{ID: "win_calc", Name: "Calc", HostCmd: `winapp --profile "C:\Program Files\App" --name "it's"`}
+	if err := packDynamicApp(tw, app, testPack); err != nil {
+		t.Fatal(err)
+	}
+	tw.Close()
+	tr := tar.NewReader(buf)
+	var wrapper string
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hdr.Name == ".local/bin/calc-host" {
+			data, _ := io.ReadAll(tr)
+			wrapper = strings.ReplaceAll(string(data), "/home/headless/.local/bin/host-run", filepath.Join(dir, "host-run"))
+		}
+	}
+	stub := "#!/usr/bin/env bash\nfor a in \"$@\"; do printf '[%s]' \"$a\"; done\n"
+	if err := os.WriteFile(filepath.Join(dir, "host-run"), []byte(stub), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "calc-host"), []byte(wrapper), 0755); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command(filepath.Join(dir, "calc-host")).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `[winapp][--profile][C:\Program Files\App][--name][it's]`
+	if string(out) != want {
+		t.Errorf("host-run received %s, want %s", out, want)
+	}
+}
+
+func TestWindowsTarget(t *testing.T) {
+	cases := []struct {
+		in, target, args string
+		ok               bool
+	}{
+		{`cmd.exe /c start "" "C:\Users\me\AppData\Local\Programs\Microsoft VS Code\Code.exe"`, `C:\Users\me\AppData\Local\Programs\Microsoft VS Code\Code.exe`, "", true},
+		{`cmd.exe /c start "" "C:\Users\me\Desktop\Chrome.lnk"`, `C:\Users\me\Desktop\Chrome.lnk`, "", true},
+		{`cmd.exe /c start explorer.exe shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App`, `shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App`, "", true},
+		{`cmd.exe /c start "" "C:\a.exe" --flag value`, `C:\a.exe`, "--flag value", true},
+		{`open -a "Google Chrome"`, "", "", false},
+		{`cmd.exe /c dir`, "", "", false},
+		{``, "", "", false},
+	}
+	for _, c := range cases {
+		target, args, ok := windowsTarget(c.in)
+		if target != c.target || args != c.args || ok != c.ok {
+			t.Errorf("windowsTarget(%q) = (%q, %q, %v), want (%q, %q, %v)", c.in, target, args, ok, c.target, c.args, c.ok)
+		}
+	}
+}
+
+// TestHostGUIWrapperOpensTheViewerForThisDesktop runs the generated launcher with a stand-in browser first on PATH
+// (never a real one: a test must not open windows) and checks the URL it would open.
+func TestHostGUIWrapperOpensTheViewerForThisDesktop(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "chromium-browser"), []byte("#!/usr/bin/env bash\nprintf '%s\\n' \"$@\"\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	script := hostGUIWrapper(testPack, "vs-code", "Visual Studio Code", `C:\Program Files\Code.exe`, `--folder "a b"`)
+	wrapper := filepath.Join(dir, "vs-code-host")
+	if err := os.WriteFile(wrapper, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(wrapper)
+	cmd.Env = []string{"PATH=" + dir + ":/usr/bin:/bin", "CONTROL_PLANE_URL=http://cp.test:8080"}
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("wrapper failed: %v\n%s", err, script)
+	}
+	arg := strings.TrimSpace(string(out))
+	raw, ok := strings.CutPrefix(arg, "--app=")
+	if !ok {
+		t.Fatalf("browser was given %q, want an --app= window", arg)
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := u.Query()
+	if u.Host != "cp.test:8080" || u.Path != "/host-gui/view" ||
+		q.Get("id") != "work-vm-vs-code" || q.Get("desktop") != "work-vm" ||
+		q.Get("token") != winhost.Token(testPack.Secret, "work-vm-vs-code", `C:\Program Files\Code.exe`, `--folder "a b"`) || q.Get("title") != "Visual Studio Code" ||
+		q.Get("target") != `C:\Program Files\Code.exe` || q.Get("args") != `--folder "a b"` {
+		t.Fatalf("viewer URL %s carries the wrong values: %v", raw, q)
+	}
+}
+
+func TestHostGUIWrapperTellsYouWhenThereIsNoBrowser(t *testing.T) {
+	dir := t.TempDir()
+	wrapper := filepath.Join(dir, "w")
+	os.WriteFile(wrapper, []byte(hostGUIWrapper(testPack, "x", "X", `C:\x.exe`, "")), 0755)
+	cmd := exec.Command("/bin/bash", wrapper)
+	cmd.Env = []string{"PATH=" + dir} // nothing on it, so no browser is found
+	if err := cmd.Run(); err == nil {
+		t.Fatal("wrapper reported success with no browser to show the app in")
+	}
+}
+
+func TestLauncherTokenIsBoundToTheAppItLaunches(t *testing.T) {
+	script := hostGUIWrapper(testPack, "chrome", "Chrome", `C:\Program Files\Google\Chrome\chrome.exe`, "")
+	other := hostGUIWrapper(testPack, "chrome", "Chrome", `C:\Windows\System32\cmd.exe`, "")
+	tokenOf := func(s string) string {
+		i := strings.Index(s, "token=")
+		return s[i+len("token=") : i+len("token=")+32]
+	}
+	if tokenOf(script) == tokenOf(other) {
+		t.Fatal("two different programs share a launch token: a launcher could be edited to run something else")
+	}
+	unsigned := hostGUIWrapper(packContext{DesktopID: "work-vm"}, "chrome", "Chrome", `C:\a.exe`, "")
+	if strings.Contains(unsigned, "token=") {
+		t.Fatal("a launcher written with no secret carries a token")
 	}
 }

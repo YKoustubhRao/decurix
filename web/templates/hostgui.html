@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{.Title}}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body { margin: 0; height: 100%; background: #1b1b1b; overflow: hidden; }
+  #screen { display: none; margin: 0 auto; max-width: 100%; max-height: 100vh; width: auto; height: auto; user-select: none; outline: none; }
+  #msg { color: #d8d8d8; font: 15px/1.5 system-ui, sans-serif; padding: 28px; max-width: 560px; }
+  #msg.error { color: #ffb4a8; }
+  #msg small { display: block; margin-top: 10px; color: #8a8a8a; }
+</style>
+</head>
+<body>
+<div id="msg">Starting {{.Title}} on the host&hellip;</div>
+<canvas id="screen" tabindex="0"></canvas>
+<script>
+(function () {
+  var ID = {{.ID}}, TOKEN = {{.Token}}, DESKTOP = {{.Desktop}}, TARGET = {{.Target}}, ARGS = {{.Args}};
+  var msg = document.getElementById('msg'), img = document.getElementById('screen'), gfx = img.getContext('2d');
+  var live = false;
+
+  function post(path, body) {
+    body.id = ID; body.token = TOKEN;
+    return fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), keepalive: true });
+  }
+  function fail(text) {
+    msg.className = 'error'; msg.textContent = text; msg.style.display = 'block'; img.style.display = 'none';
+  }
+
+  // Position in the app's own pixels: the picture is scaled to fit this window, so undo that scale.
+  function pos(e) {
+    var r = img.getBoundingClientRect();
+    return { x: Math.round((e.clientX - r.left) * img.width / r.width), y: Math.round((e.clientY - r.top) * img.height / r.height) };
+  }
+
+  // Every input goes through one ordered queue with a single request in flight. Separate requests can overtake each
+  // other on the way to the host (typed text would arrive scrambled), and each is a round trip, so consecutive typed
+  // characters are merged into one message and only the latest of a run of mouse moves is kept.
+  var queue = [], sending = false;
+  function send(ev, done) {
+    var last = queue[queue.length - 1];
+    if (ev.kind === 'type' && last && last.kind === 'type' && !last.done) last.text += ev.text;
+    else if (ev.kind === 'move' && last && last.kind === 'move') queue[queue.length - 1] = ev;
+    else { ev.done = done; queue.push(ev); }
+    drain();
+  }
+  function drain() {
+    if (sending || !queue.length) return;
+    sending = true;
+    var ev = queue.shift(), done = ev.done; delete ev.done;
+    post('/api/host-gui/input', ev).then(function (r) { return done && r.ok ? r.json().then(done) : null; }).catch(function () {}).then(function () { sending = false; drain(); });
+  }
+
+  // The VM's clipboard, set from a hidden text box: navigator.clipboard needs a secure origin and this page is plain http.
+  function setLocalClipboard(text) {
+    var box = document.createElement('textarea');
+    box.value = text; box.style.cssText = 'position:fixed;left:-1000px;top:0;opacity:0';
+    document.body.appendChild(box); box.select();
+    try { document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(box); img.focus();
+  }
+
+  // Which of Ctrl, Shift and Alt are held: the letters c, s, a the host expects.
+  function mods(e) { return (e.ctrlKey ? 'c' : '') + (e.shiftKey ? 's' : '') + (e.altKey ? 'a' : ''); }
+
+  var down = false;
+  img.addEventListener('mousedown', function (e) {
+    e.preventDefault(); img.focus(); down = true;
+    var p = pos(e); send({ kind: 'down', x: p.x, y: p.y, right: e.button === 2, mods: mods(e) });
+  });
+  window.addEventListener('mouseup', function (e) {
+    if (!down) return; down = false;
+    var p = pos(e); send({ kind: 'up', x: p.x, y: p.y, right: e.button === 2, mods: mods(e) });
+  });
+  img.addEventListener('mousemove', function (e) { if (down) { var p = pos(e); send({ kind: 'move', x: p.x, y: p.y, right: e.buttons === 2, mods: mods(e) }); } });
+  img.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  img.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    var p = pos(e); send({ kind: 'wheel', x: p.x, y: p.y, delta: e.deltaY > 0 ? -1 : 1 });
+  }, { passive: false });
+
+  // A key that is not simply a character (Enter, arrows, F-keys) or that is held with Ctrl or Alt (a shortcut) is sent as a
+  // virtual-key code with its modifiers; the browser's keyCode is the Windows virtual-key code. A plain character, or one
+  // typed with Shift or AltGr (which a keyboard reports as Ctrl+Alt), is sent as the text it produces.
+  var NAMED = { Backspace: 1, Tab: 1, Enter: 1, Escape: 1, PageUp: 1, PageDown: 1, End: 1, Home: 1, ArrowLeft: 1, ArrowUp: 1, ArrowRight: 1, ArrowDown: 1, Insert: 1, Delete: 1 };
+  window.addEventListener('keydown', function (e) {
+    if (!live) return;
+    if (e.key === 'Control' || e.key === 'Shift' || e.key === 'Alt' || e.key === 'Meta' || e.key === 'CapsLock' || e.isComposing) return;
+    var text = e.key.length === 1;
+    var altGr = e.ctrlKey && e.altKey && text; // AltGr on many layouts
+    var shortcut = (e.ctrlKey || e.altKey) && !altGr;
+    var k = e.key.toLowerCase();
+    // Copy and cut are done in the app, then what it copied is brought back into this desktop's clipboard. Paste is the
+    // browser's own paste event (below), typed into the app: the host's clipboard is the person's, and never goes in.
+    if (e.ctrlKey && !e.altKey && !e.shiftKey && (k === 'c' || k === 'x')) {
+      e.preventDefault();
+      send({ kind: 'copy', vk: k === 'c' ? 67 : 88 }, function (r) { if (r && r.text) setLocalClipboard(r.text); });
+      return;
+    }
+    if ((e.ctrlKey && !e.altKey && k === 'v') || (e.shiftKey && e.key === 'Insert')) return; // handled by the paste event
+    if (NAMED[e.key] || /^F([1-9]|1[0-2])$/.test(e.key) || (shortcut && e.keyCode > 0)) {
+      e.preventDefault(); send({ kind: 'key', vk: e.keyCode, mods: mods(e) }); return;
+    }
+    if (text && !e.metaKey) { e.preventDefault(); send({ kind: 'type', text: e.key }); }
+  });
+
+  window.addEventListener('paste', function (e) {
+    if (!live) return;
+    var text = e.clipboardData ? e.clipboardData.getData('text') : '';
+    e.preventDefault();
+    if (text) send({ kind: 'paste', text: text });
+  });
+
+  // Closing this window closes the app on the host: it has no window of its own to close.
+  window.addEventListener('pagehide', function () { if (live) navigator.sendBeacon('/api/host-gui/stop', new Blob([JSON.stringify({ id: ID })], { type: 'application/json' })); });
+
+  // Follow the app: ask for the next picture newer than the last one seen, draw it, ask again. Drawing explicitly onto a
+  // canvas (rather than leaving a streamed <img> to repaint itself) is what makes the first picture actually appear.
+  var seq = 0;
+  function follow() {
+    fetch('/api/host-gui/frame?id=' + encodeURIComponent(ID) + '&token=' + encodeURIComponent(TOKEN) + '&desktop=' + encodeURIComponent(DESKTOP) + '&after=' + seq, { cache: 'no-store' }).then(function (r) {
+      if (r.status === 204) return null;
+      if (r.status === 404) { live = false; fail('The app was closed.'); throw 'gone'; }
+      seq = parseInt(r.headers.get('X-Seq'), 10) || seq;
+      return r.blob().then(createImageBitmap);
+    }).then(function (bmp) {
+      if (bmp) {
+        if (img.width !== bmp.width || img.height !== bmp.height) { img.width = bmp.width; img.height = bmp.height; }
+        gfx.drawImage(bmp, 0, 0);
+      }
+      follow();
+    }).catch(function (e) { if (e !== 'gone') setTimeout(follow, 1000); });
+  }
+
+  post('/api/host-gui/start', { target: TARGET, args: ARGS }).then(function (r) {
+    return r.json().then(function (j) { return { ok: r.ok, body: j }; });
+  }).then(function (res) {
+    if (!res.ok) { fail(res.body && res.body.error ? res.body.error : 'Could not start the app.'); return; }
+    live = true; msg.style.display = 'none';
+    img.style.display = 'block';
+    img.focus();
+    follow();
+    // Fit the window to the app, as far as the browser lets an app window be resized.
+    try { window.resizeTo(res.body.w + (window.outerWidth - window.innerWidth), res.body.h + (window.outerHeight - window.innerHeight)); } catch (e) {}
+  }).catch(function () { fail('Could not reach the Flowera control plane.'); });
+})();
+</script>
+</body>
+</html>
