@@ -211,6 +211,19 @@ def ollama_request(messages):
         )
 
 
+def ask_once(system, prompt):
+    """
+    One question to the model, with no loop and no history: what the
+    computer layer's grounder and judge (computer/escalation.py) use. Keep the
+    system text fixed from call to call - Ollama's prompt cache carries it.
+    """
+
+    return ollama_request([
+        {"role": "system", "content": system},
+        {"role": "user", "content": prompt},
+    ])
+
+
 def wait_for_ollama():
     """
     Wait until Ollama or the configured inference server becomes available.

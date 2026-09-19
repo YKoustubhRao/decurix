@@ -161,7 +161,16 @@ def compile_program(meta, events):
         step["window"] = event.get("window") or ""
         step["summary"] = _summary(step)
 
+        # Where the control was on the screen, kept beside the target rather
+        # than in it so nothing that compares targets changes. It is what lets
+        # healing.py tell a control that moved from a different one (the
+        # containers and the name it also has from the target's path).
+        if element.get("box"):
+            step["locate"] = {"box": element["box"], "screen": step["screen"], "anchors": []}
+
         steps.append(step)
+
+    _phases(steps)
 
     return {
         "schema": "flowera.replay-program/v1",
@@ -171,6 +180,39 @@ def compile_program(meta, events):
         "params": params,
         "steps": steps,
     }
+
+
+def _phases(steps):
+    """
+    Divide a program into phases: a run of steps in one place (one site or one
+    window), numbered from 1 and named for it. Not used to run anything - it is
+    what lets a question or a halt say "step 6, in Customers" rather than only
+    "step 6", and what a person is shown when something needs deciding.
+    """
+
+    phase, place, seen = 0, None, {}
+
+    for step in steps:
+        here = _place(step)
+
+        if here != place or not phase:
+            phase, place = phase + 1, here
+
+        seen.setdefault(phase, here)
+        step["phase"] = phase
+        step["phase_label"] = seen[phase]
+
+
+def _place(step):
+    """Where a step happened: the stable part of its window title, else its site."""
+
+    title = _stable_title(step.get("window"))
+    if title:
+        return title
+
+    target = step.get("target") or {}
+    site = (target.get("path") or "").split(" > ")[0]
+    return site or (step.get("window") or "").strip() or "the screen"
 
 
 def _param_name(label, used):
@@ -405,10 +447,14 @@ def _screen_brief(observation):
 
 class _Halt(Exception):
 
-    def __init__(self, reason, evidence="", missing=False):
+    def __init__(self, reason, evidence="", missing=False, options=None):
         super().__init__(reason)
         self.reason = reason
         self.evidence = evidence
+        # The controls on the screen closest to the one wanted, when an
+        # escalation ladder (escalation.py) looked and was not sure: what a
+        # person is offered instead of a bare "not found".
+        self.options = options or []
         # The step's target was not on the screen (or was not one element) -
         # as opposed to the action itself failing. It is the only halt an
         # optional step is allowed to step over.
@@ -468,8 +514,13 @@ def resolve(step, observation):
     return None, None, "the recording has nothing to find this step's target by"
 
 
-def _find(step):
-    """Look until the step's target is on the screen, for up to FIND_SECONDS."""
+def _find(step, ladder=None):
+    """
+    Look until the step's target is on the screen, for up to FIND_SECONDS:
+    (element, point, observation, repair). With a ladder, a target that never
+    turns up as recorded is taken up its rungs before the step halts; `repair`
+    is the ladder's answer when that is how it was found.
+    """
 
     deadline = time.monotonic() + FIND_SECONDS
 
@@ -478,17 +529,25 @@ def _find(step):
         element, point, reason = resolve(step, observation)
 
         if element is not None or point is not None:
-            return element, point
+            return element, point, observation, None
 
         if time.monotonic() >= deadline:
             # Two candidates is not "not there": a replay does not guess
             # between them, and neither may an optional step.
-            raise _Halt(reason, _screen_brief(observation), missing="elements match" not in reason)
+            missing = "elements match" not in reason
+
+            if ladder is not None:
+                repair = ladder.recover(step, observation, reason)
+                if repair["element"] is not None:
+                    return repair["element"], None, observation, repair
+                raise _Halt(reason, _screen_brief(observation), missing=missing, options=repair["options"])
+
+            raise _Halt(reason, _screen_brief(observation), missing=missing)
 
         time.sleep(POLL_SECONDS)
 
 
-def _run_step(step, values):
+def _run_step(step, values, ladder=None):
     kind = step["kind"]
 
     if kind not in REPLAYABLE:
@@ -501,8 +560,14 @@ def _run_step(step, values):
 
         target = {}
         if step.get("target") or step.get("point"):
-            element, point = _find(step)
+            element, point, seen, repair = _find(step, ladder)
             target = {"path": element["path"]} if element is not None else {"point": tuple(point)}
+
+            if ladder is not None and element is not None:
+                if repair:
+                    ladder.repair(step, element, seen, repair["how"], repair["confidence"])
+                else:
+                    ladder.found(step, element, seen)
 
         return core.act(
             kind,
@@ -534,14 +599,22 @@ def _await_checks(checks, observation, values):
     return missing, observation
 
 
-def run(program, params=None, start=1, report=None):
+def run(program, params=None, start=1, report=None, ladder=None):
     """
     Run a program from step `start` and say how it ended: {"outcome",
     "text", "step", "resume_from", "reason", "evidence", "done",
-    "verified", "unverified", "total", "missing", "session"}.
+    "verified", "unverified", "total", "missing", "session", "options",
+    "healed", "judged"}.
+
+    With a `ladder` (escalation.Ladder) a control that is not where it was
+    recorded is healed, grounded by the engine or offered to a person as
+    numbered `options`, and a result that is not there exactly may be judged
+    by the engine; without one, it halts, as it always has.
     """
 
     report = report or progress.emit
+    if ladder is not None:
+        ladder.attach(report)
     steps = program.get("steps") or []
     total = len(steps)
     given = {name: str(value) for name, value in (params or {}).items()}
@@ -560,11 +633,14 @@ def run(program, params=None, start=1, report=None):
 
     counts = {"done": 0, "verified": 0, "unverified": 0, "skipped": 0}
 
-    def finish(outcome, step=None, reason="", resume_from=None, evidence=""):
+    def finish(outcome, step=None, reason="", resume_from=None, evidence="", options=None):
         result = dict(
             counts, outcome=outcome, total=total, step=step["n"] if step else None,
             reason=reason, resume_from=resume_from, evidence=evidence,
             missing=[p["name"] for p in absent], session=program.get("session"),
+            options=options or [], healed=len(ladder.healed) if ladder else 0,
+            judged=len(ladder.judged) if ladder else 0, trail=list(ladder.trail) if ladder else [],
+            repairs=ladder.summary() if ladder else "", model_calls=ladder.model_calls if ladder else 0,
         )
         result["text"] = _summary_text(program, result, step)
         return result
@@ -591,7 +667,7 @@ def run(program, params=None, start=1, report=None):
 
         audit.origin = {"session": program.get("session"), "step": step["n"]}
         try:
-            result = _run_step(step, values)
+            result = _run_step(step, values, ladder)
         except _Halt as halt:
             # An optional step (a skill learned that it only sometimes
             # happens) that is not on the screen simply did not happen this
@@ -603,7 +679,8 @@ def run(program, params=None, start=1, report=None):
                 continue
 
             outcome = HALTED if counts["done"] else HALTED_BEFORE_EFFECT
-            return finish(outcome, step, reason=halt.reason, resume_from=step["n"], evidence=halt.evidence)
+            return finish(outcome, step, reason=halt.reason, resume_from=step["n"], evidence=halt.evidence,
+                          options=halt.options)
         finally:
             audit.origin = None
 
@@ -622,13 +699,25 @@ def run(program, params=None, start=1, report=None):
         missing, observation = _await_checks(step["expect"], result.get("observation"), values)
 
         if missing:
-            reason = "expected " + " and ".join(describe_check(c) for c in missing) + ", which never appeared"
+            described = [describe_check(c) for c in missing]
+
+            # The screen may show the step did what it was for without showing
+            # exactly what was recorded. An engine's yes is a judgement, not a
+            # check: the step counts as one the run could not verify.
+            if ladder is not None and ladder.judge(step, observation, described):
+                counts["unverified"] += 1
+                report(f"Step {step['n']}: its recorded result is not there exactly, but the screen shows it did its job")
+                continue
+
+            reason = "expected " + " and ".join(described) + ", which never appeared"
             evidence = _screen_brief(observation)
             if step.get("consequential"):
                 return finish(RECONCILIATION_REQUIRED, step, reason=reason, evidence=evidence)
             return finish(HALTED, step, reason=reason, resume_from=step["n"] + 1, evidence=evidence)
 
         counts["verified"] += 1
+        if ladder is not None:
+            ladder.confirm(step)
 
     return finish(VERIFIED if counts["unverified"] == 0 else COMPLETED_UNVERIFIED)
 
@@ -645,12 +734,15 @@ def _summary_text(program, result, step):
     else:
         ran = f"all {total} steps ran" if result["done"] == total else f"steps {total - result['done'] + 1}-{total} ran"
 
+    repairs = f" {result['repairs']}" if result.get("repairs") else ""
+
     if outcome == VERIFIED:
-        return f"Replayed {name}: {ran}, and every step's expected result was on the screen. No model was used."
+        used = "" if result.get("model_calls") else " No model was used."
+        return f"Replayed {name}: {ran}, and every step's expected result was on the screen.{repairs}{used}"
 
     if outcome == COMPLETED_UNVERIFIED:
         return (f"Replayed {name}: {ran}. {result['verified']} were confirmed on the screen; "
-                f"{result['unverified']} left nothing a replay can check, so look at the result before relying on it.")
+                f"{result['unverified']} left nothing a replay can check, so look at the result before relying on it.{repairs}")
 
     if outcome == HALTED_BEFORE_EFFECT:
         return f"Did not replay {name}: stopped at {where} before doing anything, because {result['reason']}.{evidence}"

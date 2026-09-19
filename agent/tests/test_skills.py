@@ -476,7 +476,7 @@ class Teaching(TeachingBase):
     def stuck(self):
         name = self.taught_button()
         fake = self.screen()
-        fake.elements[:] = [field("button", "Save as")]
+        fake.elements[:] = [field("button", "Archive")]
         self.asked.clear()
 
         skill_task.perform(f"/skill {name}")
@@ -488,12 +488,12 @@ class Teaching(TeachingBase):
         self.assertIn("is not on the screen", self.asked[-1][0])
         self.assertIn("`retry`", self.asked[-1][0])
 
-        skill_task.resume('use "Save as" instead')
+        skill_task.resume('use "Archive" instead')
 
         self.assertEqual(self.finals[-1][1], "final", self.finals[-1][0])
         self.assertIn("remembered", self.finals[-1][0])
         learned = skills.load(name)
-        self.assertEqual(learned["steps"][0]["target"]["name"], "Save as")
+        self.assertEqual(learned["steps"][0]["target"]["name"], "Archive")
         self.assertEqual(learned["version"], 2)
 
     def test_skipping_a_step_is_this_run_only_and_teaches_nothing(self):
@@ -683,18 +683,18 @@ class LoopFlow(TeachingBase):
 
     def test_a_correction_made_in_one_item_holds_for_every_item(self):
         self.taught()
-        fake = self.screen_of_rows(add="Add rows")
+        fake = self.screen_of_rows(add="Add line")
         self.asked.clear()
 
         skill_task.perform('/skill fill-an-order item="Tea;Milk"')
         self.assertIn("is not on the screen", self.asked[-1][0])
 
-        skill_task.resume('use "Add rows"')
+        skill_task.resume('use "Add line"')
 
         self.assertEqual(self.finals[-1][1], "final", self.finals[-1][0])
         self.assertEqual([kw["text"] for kind, kw in fake.acted if kind == "type"], ["Tea", "Milk"])
         learned = skills.load("fill-an-order")
-        self.assertEqual(len([s for s in learned["steps"] if s.get("target", {}).get("name") == "Add rows"]), 1)
+        self.assertEqual(len([s for s in learned["steps"] if s.get("target", {}).get("name") == "Add line"]), 1)
 
 
 class EngineAccess(unittest.TestCase):

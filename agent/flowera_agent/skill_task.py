@@ -2,7 +2,7 @@ import re
 import traceback
 
 from flowera_agent import state, usage
-from flowera_agent.computer import approval, core, learning, recording, replay, skills
+from flowera_agent.computer import approval, core, escalation, experience, learning, recording, replay, skills
 from flowera_agent.computer import elements as el
 from flowera_agent.computer.errors import ComputerError
 from flowera_agent.logging_utils import log
@@ -48,6 +48,7 @@ CARRY_ON_RE = re.compile(
     r"^\W*(skip|leave (?:it )?out|continue|carry on|go on|move on|done|it worked|i did (?:it|that)|looks (?:right|fine|good))\b",
     re.IGNORECASE,
 )
+NUMBER_RE = re.compile(r"^\W*(?:option\s*|number\s*|#)?(\d{1,2})\W*$", re.IGNORECASE)
 USE_RE = re.compile(r"^\W*(?:use|try|click|press|select|choose)\b\s*(.+?)\s*$", re.IGNORECASE | re.DOTALL)
 
 MAX_STUCK_ASKS = 3
@@ -55,6 +56,29 @@ MAX_STUCK_ASKS = 3
 
 class _Refused(Exception):
     """A request that cannot be carried out, in words a person can act on."""
+
+
+def _ask_model(system, prompt):
+    """
+    One question to this desktop's own engine, for the escalation ladder. The
+    import is here, not at the top, because harness.py reads the configured
+    engine at import and this module must load without one (and be testable).
+    """
+
+    from flowera_agent import harness
+
+    return harness.ask_model(system, prompt)
+
+
+def _ladder(skill):
+    """
+    The escalation ladder for one run: healing always, the engine as second
+    opinion only when it is up (a run must not wait on a backend that is still
+    starting - the person is a better rung than a stalled request).
+    """
+
+    ready = getattr(state, "backend_ready", False) and escalation.MODEL_CALLS > 0
+    return escalation.Ladder(ask_model=_ask_model if ready else None, goal=skill.get("title") or skill.get("name") or "")
 
 
 # ============================================================
@@ -324,7 +348,8 @@ def _run_request(query, given):
             raise _Refused(f"More than one skill fits \"{query}\": {names}. Say which, by its name.")
         raise _Refused(f"I do not know a skill like \"{query}\". " + _listing())
 
-    run = {"skill": skill, "values": skills.initial_values(skill, given), "start": 1, "checked": False, "patches": [], "asked": 0, "stuck": 0}
+    run = {"skill": skill, "values": skills.initial_values(skill, given), "start": 1, "checked": False, "patches": [],
+           "asked": 0, "stuck": 0, "ladder": _ladder(skill), "asked_ids": []}
     _prepare(run)
 
 
@@ -398,7 +423,10 @@ def _execute(run):
                               "A step that was skipped or done by hand was not checked."})
         return
 
-    result = replay.run(program, params=values, start=run["start"])
+    ladder = run["ladder"]
+    ladder.total = len(program["steps"])
+
+    result = replay.run(program, params=values, start=run["start"], ladder=ladder)
     outcome = result["outcome"]
 
     log(f"Skill {skill['name']} ended {outcome}: {result['text']}")
@@ -407,26 +435,88 @@ def _execute(run):
         _finish(run, result)
     elif outcome in (replay.NEEDS_APPROVAL, replay.NEEDS_HUMAN):
         kind = "approval" if outcome == replay.NEEDS_APPROVAL else "human"
-        _pause(run, kind, result["text"], "approval" if kind == "approval" else "query",
+        text = _approval_text(run, result, values) if kind == "approval" else result["text"]
+        _pause(run, kind, text, "approval" if kind == "approval" else "query",
                step=result["step"], resume_from=result["resume_from"])
     elif outcome == replay.RECONCILIATION_REQUIRED or result["resume_from"] is None or run["stuck"] >= MAX_STUCK_ASKS:
+        _settle(run, outcome)
         write_final_reply(result["text"], kind="error", engine=SKILL_ENGINE)
     else:
         run["stuck"] += 1
         _ask_stuck(run, result)
 
 
+def _approval_text(run, result, values):
+    """
+    What a person is shown before saying yes: the gate's own words, then what
+    this step does, what it would type, what it led to when it was recorded, and
+    - if this desktop found the control itself - how, so nothing is approved
+    blind. A yes is still one action's; the gate is not this module's to open.
+    """
+
+    step = run["expanded"]["steps"][result["step"] - 1]
+    lines = [result["text"], f"This is step {step['n']} of {result['total']}: {step['summary']}."]
+
+    if step["kind"] == "type" and values.get(step.get("param")):
+        lines.append(f"It would type {el._quote(values[step['param']], 80)}.")
+
+    if step.get("expect"):
+        lines.append("When this was recorded it led to " + " and ".join(replay.describe_check(c) for c in step["expect"]) + ".")
+
+    healed = next((h for h in run["ladder"].healed if h["n"] == step["n"]), None)
+    if healed:
+        lines.append(f"I found this control myself: it was \"{healed['was']}\" and is now \"{healed['now']}\".")
+
+    lines.append("Reply `yes` to allow this one action, or `no` to stop here.")
+    return " ".join(lines)
+
+
+def _settle(run, outcome):
+    """
+    Record how a run that did not succeed went, on a fresh copy of the skill: a
+    run's own copy holds corrections that have not been shown to work, and
+    only a success keeps those (_finish).
+    """
+
+    try:
+        fresh = skills.load(run["skill"]["name"])
+    except FileNotFoundError:
+        return
+
+    experience.commit(fresh, run["ladder"], outcome, False, asked=run["asked_ids"])
+    skills.save(fresh)
+
+
 def _ask_stuck(run, result, preface="", unclear=0):
     ran = result["resume_from"] == result["step"] + 1
+    found = result.get("options") or []
+    step = run["expanded"]["steps"][result["step"] - 1]
 
     if ran:
-        options = "Reply `continue` if the screen looks right and I should carry on, or `stop`."
+        choices = "Reply `continue` if the screen looks right and I should carry on, or `stop`."
+    elif found:
+        choices = ("Reply the number to use one of those, `retry` to look again, `skip` to leave this step out and carry on, "
+                   "`stop`, or name the control - for example `use \"Save as\"`.")
     else:
-        options = ("Reply `retry` to look again, `skip` to leave this step out and carry on, `stop`, or tell me which "
+        choices = ("Reply `retry` to look again, `skip` to leave this step out and carry on, `stop`, or tell me which "
                    "control to use instead - for example `use \"Save as\"`.")
 
-    _pause(run, "stuck", f"{preface} {result['text']} {options}".strip(), step=result["step"],
-           resume_from=result["resume_from"], ran=ran, why=result["text"], unclear=unclear)
+    detail = ""
+    if result.get("trail"):
+        detail += " I tried: " + "; ".join(result["trail"][:4]) + "."
+    if found and not ran:
+        detail += " Closest on the screen: " + "; ".join(f"{o['n']}) {o['role']} {el._quote(o['name'] or '', 50)}" for o in found) + "."
+
+    phases = max((s.get("phase", 1) for s in run["expanded"]["steps"]), default=1)
+    if phases > 1 and step.get("phase_label"):
+        detail += f" (Part {step['phase']} of {phases}: {step['phase_label']}.)"
+
+    if step.get("id") is not None and step["id"] not in run["asked_ids"]:
+        run["asked_ids"].append(step["id"])
+
+    _pause(run, "stuck", f"{preface} {result['text']}{detail} {choices}".strip(), step=result["step"],
+           resume_from=result["resume_from"], ran=ran, why=result["text"], unclear=unclear, options=found,
+           trail=result.get("trail") or [])
 
 
 def _finish(run, result):
@@ -439,8 +529,14 @@ def _finish(run, result):
         skill["version"] = skill.get("version", 1) + 1
         text += " I have remembered " + "; ".join(f"the control you named ({p['to']})" for p in run["patches"]) + " for next time."
 
+    learned = experience.commit(skill, run["ladder"], result.get("outcome", replay.COMPLETED_UNVERIFIED), True,
+                                asked=run["asked_ids"])
+    if learned:
+        text += " I have learned from this run: " + "; ".join(learned) + "."
+
     skill["runs"] = skill.get("runs", 0) + 1
     skills.save(skill)
+    text += experience.advice(skill)
 
     if skill.get("done_when"):
         text += f" You said it is finished when: {el._quote(skill['done_when'], 200)} - worth a look."
@@ -448,7 +544,10 @@ def _finish(run, result):
     write_final_reply(text, kind="final", engine=SKILL_ENGINE)
 
 
-def _stop(step):
+def _stop(step, run=None):
+    if run is not None:
+        _settle(run, "stopped")
+
     write_final_reply(f"Stopped before step {step}, as you asked. Nothing from that step on was done.",
                       kind="final", engine=SKILL_ENGINE)
 
@@ -473,7 +572,7 @@ def _run_reply(paused, reply, approval_outcome):
         return _stuck_reply(paused, reply)
 
     if stop:
-        return _stop(paused["step"])
+        return _stop(paused["step"], run)
 
     run["start"] = paused["resume_from"]
     _execute(run)
@@ -506,7 +605,7 @@ def _stuck_reply(paused, reply):
     reply = reply or ""
 
     if STOP_RE.match(reply) or ABANDON_RE.match(reply):
-        return _stop(step_n)
+        return _stop(step_n, run)
 
     if CARRY_ON_RE.match(reply):
         run["start"] = step_n + 1
@@ -517,6 +616,14 @@ def _stuck_reply(paused, reply):
             run["start"] = step_n
             return _execute(run)
 
+        # A number picks one of the candidates the desktop offered.
+        number = NUMBER_RE.match(reply)
+        if number:
+            option = next((o for o in paused.get("options") or [] if o["n"] == int(number.group(1))), None)
+            if option and _retarget(run, step_n, option["name"], role=option["role"]):
+                run["start"] = step_n
+                return _execute(run)
+
         hint = USE_RE.match(reply)
         if hint and _retarget(run, step_n, hint.group(1)):
             run["start"] = step_n
@@ -524,14 +631,16 @@ def _stuck_reply(paused, reply):
 
     # Neither understood nor guessed at: one more try to be told, then stop.
     if paused["unclear"] < 1:
-        result = {"step": step_n, "resume_from": paused["resume_from"], "text": paused["why"]}
+        result = {"step": step_n, "resume_from": paused["resume_from"], "text": paused["why"],
+                  "options": paused.get("options"), "trail": paused.get("trail")}
         return _ask_stuck(run, result, "I did not catch that.", unclear=1)
 
+    _settle(run, "halted")
     write_final_reply(f"I could not tell what to do at step {step_n} and would rather not guess, so I stopped there. "
                       "Nothing after it was done.", kind="error", engine=SKILL_ENGINE)
 
 
-def _retarget(run, step_n, wanted):
+def _retarget(run, step_n, wanted, role=None):
     """
     Point a step at the control a person named instead: True when it had a named
     control to change. Held on this run's copy of the skill and saved only if
@@ -554,7 +663,9 @@ def _retarget(run, step_n, wanted):
         return False
 
     run["patches"].append({"n": step["n"], "from": target.get("name"), "to": name})
-    step["target"] = {key: value for key, value in dict(target, name=name).items() if key != "path"}
+    step["target"] = {key: value for key, value in dict(target, name=name, role=role or target["role"]).items() if key != "path"}
+    # The name it had stays known, in case the screen goes back.
+    experience._promote(step, target.get("role"), target.get("name"))
     step["summary"] = replay._summary(step)
 
     return True
