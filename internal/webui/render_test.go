@@ -193,6 +193,20 @@ func TestRenderEveryPage(t *testing.T) {
 		}
 	}
 
+	// The viewer a desktop opens for an app running on the host. Its values are
+	// handed to the page's script, so they must arrive as quoted JS strings and
+	// never as markup or script the URL's author wrote.
+	var view bytes.Buffer
+	if err := renderer.RenderHostGUI(&view, HostGUIPageData{ID: "vm1-code", Title: "Code </title><script>alert(1)</script>", Target: `C:\Program Files\App\a.exe`, Args: `"x"</script>`}); err != nil {
+		t.Fatalf("RenderHostGUI: %v", err)
+	}
+	if strings.Contains(view.String(), "<script>alert(1)") || strings.Contains(view.String(), `"x"</script>`) {
+		t.Fatalf("the host app viewer let a value break out of its context:\n%s", view.String())
+	}
+	if !strings.Contains(view.String(), `TARGET = "C:\\Program Files\\App\\a.exe"`) {
+		t.Fatalf("the launch target did not reach the page's script as a JS string:\n%s", view.String())
+	}
+
 	// The DAGs list, empty and with one entry that has already run.
 	if err := renderer.RenderDags(io.Discard, DagsPageData{}); err != nil {
 		t.Fatalf("RenderDags (empty): %v", err)

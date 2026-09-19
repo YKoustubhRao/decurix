@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/YKoustubhRao/flowera/internal/desktop"
 )
 
 func TestCreateDesktopAsyncAndStatusPoll(t *testing.T) {
@@ -111,5 +113,33 @@ func TestCreateDesktopDefaultCPU(t *testing.T) {
 	}
 	if prov.CPUs != 1 {
 		t.Errorf("expected default CPU count to be 1, got %d", prov.CPUs)
+	}
+}
+
+// TestBeginProvisioningReturnsASnapshotNotTheLiveRecord pins the data race the -race run of the test above used to
+// report: runProvisioning keeps rewriting its record for the whole creation, so what the create handler is handed (and
+// serialises without any lock) must be a copy. Run without -race it still fails if the live record is returned, because
+// the value it holds then moves on by itself.
+func TestBeginProvisioningReturnsASnapshotNotTheLiveRecord(t *testing.T) {
+	mgr := fakeDesktopManager(t)
+	prov, err := mgr.BeginProvisioning("snap-1", "basic", "ollama", 1, 2048, "", "", "", nil, func(*desktop.Desktop) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := *prov
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		cur, ok := mgr.GetProvisioning("snap-1")
+		if !ok || cur.Stage != first.Stage || cur.Progress != first.Progress || cur.Status != first.Status {
+			break // the manager's own record has moved on
+		}
+		if time.Now().After(deadline) {
+			t.Skip("provisioning never advanced in the fake, so there is nothing to compare against")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if *prov != first {
+		t.Fatalf("the record BeginProvisioning returned changed after it was returned: %+v -> %+v", first, *prov)
 	}
 }

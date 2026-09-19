@@ -24,6 +24,10 @@ import (
 type Manager struct {
 	client *client.Client
 
+	// HostGUISecret signs the launch tokens written into launchers for Windows apps that run on the host (see
+	// internal/winhost); set by main before any desktop is created.
+	HostGUISecret []byte
+
 	// shots caches the dashboard's desktop thumbnails, keyed by desktop ID.
 	// Guarded by shotMu, which covers the map alone - each entry carries its
 	// own lock for the capture itself (see screenshot.go), so one slow
@@ -330,13 +334,17 @@ func (m *Manager) BeginProvisioning(
 		Ready:          false,
 	}
 
+	// The caller gets a snapshot, never prov itself: runProvisioning keeps updating prov from its own goroutine (under
+	// provisioningMu) for the whole creation, and the caller serialises what it is given without holding that lock -
+	// returning the live pointer let the two run at once, a data race on every field of the record.
 	m.provisioningMu.Lock()
 	m.provisioning[sanitizedID] = prov
+	snapshot := *prov
 	m.provisioningMu.Unlock()
 
 	go m.runProvisioning(prov, claudeCredentialsJSON, selectedApps, onStarted)
 
-	return prov, nil
+	return &snapshot, nil
 }
 
 func (m *Manager) runProvisioning(
@@ -1053,6 +1061,12 @@ func (m *Manager) touchViewed(sanitizedID string) {
 	}
 
 	m.viewed[sanitizedID] = time.Now()
+}
+
+// MarkViewed records that a desktop is being used through something other than its thumbnail or proxied screen - an
+// app it is showing from the host, say - so idle-pause does not freeze it out from under whoever is using that.
+func (m *Manager) MarkViewed(id string) {
+	m.touchViewed(sanitizeName(id))
 }
 
 // LastViewed returns when a desktop's thumbnail was last fetched or its

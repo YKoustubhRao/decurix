@@ -33,6 +33,7 @@ import (
 	"github.com/YKoustubhRao/flowera/internal/tasks"
 	"github.com/YKoustubhRao/flowera/internal/tunnel"
 	"github.com/YKoustubhRao/flowera/internal/webui"
+	"github.com/YKoustubhRao/flowera/internal/winhost"
 )
 
 const (
@@ -188,6 +189,13 @@ func main() {
 	defer cli.Close()
 
 	desktops := desktop.NewManager(cli)
+	// The key that signs the launch tokens in a desktop's host-app launchers (internal/winhost). It lives in the data
+	// directory so launchers already written keep working across restarts; a failure only disables those apps.
+	hostGUISecret, err := winhost.LoadSecret(sqlitedb.DataDir())
+	if err != nil {
+		log.Printf("host apps: %v - Windows apps shown from the host are disabled", err)
+	}
+	desktops.HostGUISecret = hostGUISecret
 	desktop.OptimizeHostKSM()
 	ollamaManager := ollama.NewManager(cli, desktop.NetworkName)
 
@@ -254,6 +262,8 @@ func main() {
 		suggestions,
 		webui.NewRenderer(),
 	)
+
+	server.HostGUISecret = hostGUISecret
 
 	resMon := resourcemon.NewMonitor(desktops)
 	server.ResourceMon = resMon

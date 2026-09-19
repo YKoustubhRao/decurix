@@ -23,6 +23,7 @@ import (
 	"github.com/YKoustubhRao/flowera/internal/tasks"
 	"github.com/YKoustubhRao/flowera/internal/tunnel"
 	"github.com/YKoustubhRao/flowera/internal/webui"
+	"github.com/YKoustubhRao/flowera/internal/winhost"
 )
 
 // Server wires the desktop manager, query-notes store, memory store, chat
@@ -55,6 +56,15 @@ type Server struct {
 
 	stepImagesMu     sync.Mutex
 	recentStepImages map[string]string
+
+	// hostGUI runs Windows apps on a private desktop of the host and streams them to a VM; created on first use.
+	hostGUIOnce sync.Once
+	hostGUIMgr  *winhost.Manager
+	// HostGUISecret signs the launch tokens a launcher carries (winhost.Token); main.go loads it from the data
+	// directory so tokens survive a restart. hostGUIAuth holds, per running session, the token it was started with.
+	HostGUISecret []byte
+	hostGUIAuthMu sync.Mutex
+	hostGUIAuth   map[string]string
 }
 
 // NewServer creates a Server from its component stores/managers.
@@ -103,9 +113,16 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/desktops/send", s.sendRequestHandler)
 	mux.HandleFunc("/api/desktops/suggest", s.suggestDesktopHandler)
 	mux.HandleFunc("/api/host-apps/detect", s.detectHostAppsHandler)
+	mux.HandleFunc("/api/desktops/host-apps/copy", s.copyHostAppsHandler)
 	mux.HandleFunc("/api/host-bridge/exec", s.hostBridgeExecHandler)
 	mux.HandleFunc("/api/host-bridge/open", s.hostBridgeOpenHandler)
 	mux.HandleFunc("/api/host-bridge/clip", s.hostBridgeClipHandler)
+	mux.HandleFunc("/api/host-gui/start", hostGUIDirectOnly(s.hostGUIStartHandler))
+	mux.HandleFunc("/api/host-gui/stream", hostGUIDirectOnly(s.hostGUIStreamHandler))
+	mux.HandleFunc("/api/host-gui/frame", hostGUIDirectOnly(s.hostGUIFrameHandler))
+	mux.HandleFunc("/api/host-gui/input", hostGUIDirectOnly(s.hostGUIInputHandler))
+	mux.HandleFunc("/api/host-gui/stop", hostGUIDirectOnly(s.hostGUIStopHandler))
+	mux.HandleFunc("/host-gui/view", hostGUIDirectOnly(s.hostGUIViewHandler))
 	mux.HandleFunc("/api/schedules", s.schedulesHandler)
 	mux.HandleFunc("/api/schedules/create", s.createScheduleHandler)
 	mux.HandleFunc("/api/schedules/delete", s.deleteScheduleHandler)

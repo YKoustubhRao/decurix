@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/YKoustubhRao/flowera/internal/winhost"
 	"github.com/docker/docker/api/types/container"
 )
 
@@ -239,7 +241,7 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 			}
 			migratedCount++
 		} else if app, ok := appMap[id]; ok {
-			if err := packDynamicApp(tw, app); err != nil {
+			if err := packDynamicApp(tw, app, packContext{DesktopID: sanitizedID, Secret: m.HostGUISecret}); err != nil {
 				log.Printf("hostapps: packing dynamic app %s for %s: %v", app.ID, desktopID, err)
 				continue
 			}
@@ -390,9 +392,9 @@ func getKnownAppDefs() []knownAppDef {
 				}
 				edgeWrapper := `#!/usr/bin/env bash
 if command -v cmd.exe >/dev/null 2>&1 || [ -e /mnt/c ]; then
-    exec host-run cmd.exe /c start msedge "$@"
+    exec /home/headless/.local/bin/host-run cmd.exe /c start msedge "$@"
 else
-    exec host-run microsoft-edge "$@"
+    exec /home/headless/.local/bin/host-run microsoft-edge "$@"
 fi
 `
 				if err := writeStringToTar(tw, ".local/bin/edge-host", edgeWrapper, 0755); err != nil {
@@ -451,9 +453,9 @@ Categories=Network;WebBrowser;
 			packFn: func(tw *tar.Writer, paths []string) error {
 				youtubeWrapper := `#!/usr/bin/env bash
 if command -v cmd.exe >/dev/null 2>&1 || [ -e /mnt/c ]; then
-    exec host-run cmd.exe /c start msedge --app=https://www.youtube.com
+    exec /home/headless/.local/bin/host-run cmd.exe /c start msedge --app=https://www.youtube.com
 else
-    exec host-run host-open https://www.youtube.com
+    exec /home/headless/.local/bin/host-run open https://www.youtube.com
 fi
 `
 				if err := writeStringToTar(tw, ".local/bin/youtube-host", youtubeWrapper, 0755); err != nil {
@@ -532,7 +534,7 @@ Categories=AudioVideo;Network;
 				if err := tw.WriteHeader(header); err != nil {
 					return err
 				}
-				chromeWrapper := "#!/usr/bin/env bash\nexec host-run google-chrome \"$@\"\n"
+				chromeWrapper := "#!/usr/bin/env bash\nexec /home/headless/.local/bin/host-run google-chrome \"$@\"\n"
 				if err := writeStringToTar(tw, ".local/bin/chrome-host", chromeWrapper, 0755); err != nil {
 					return err
 				}
@@ -632,7 +634,7 @@ elif command -v google-chrome >/dev/null 2>&1; then
 elif command -v chromium >/dev/null 2>&1; then
     exec chromium --app="https://claude.ai" "$@"
 fi
-exec host-run cmd.exe /c start https://claude.ai "$@"
+exec /home/headless/.local/bin/host-run cmd.exe /c start https://claude.ai "$@"
 `
 				if err := writeStringToTar(tw, ".local/bin/claude-host", claudeWrapper, 0755); err != nil {
 					return err
@@ -688,7 +690,7 @@ elif command -v google-chrome >/dev/null 2>&1; then
 elif command -v chromium >/dev/null 2>&1; then
     exec chromium --app="https://chatgpt.com" "$@"
 fi
-exec host-run cmd.exe /c start https://chatgpt.com "$@"
+exec /home/headless/.local/bin/host-run cmd.exe /c start https://chatgpt.com "$@"
 `
 				if err := writeStringToTar(tw, ".local/bin/chatgpt-host", chatgptWrapper, 0755); err != nil {
 					return err
@@ -832,7 +834,7 @@ Categories=Office;Utility;Network;
 						return err
 					}
 				}
-				codeWrapper := "#!/usr/bin/env bash\nexec host-run code \"$@\"\n"
+				codeWrapper := "#!/usr/bin/env bash\nexec /home/headless/.local/bin/host-run code \"$@\"\n"
 				if err := writeStringToTar(tw, ".local/bin/code-host", codeWrapper, 0755); err != nil {
 					return err
 				}
@@ -1698,7 +1700,128 @@ func exploreDynamicApps(seen map[string]bool) []HostAppItem {
 	return items
 }
 
-func packDynamicApp(tw *tar.Writer, app HostAppItem) error {
+// splitWords splits a host command line the way Windows does: whitespace separates words, a double quote groups
+// them (an empty pair is an empty word), and a backslash is just a character.
+func splitWords(cmd string) []string {
+	var words []string
+	var cur strings.Builder
+	inQuotes, started := false, false
+	flush := func() {
+		if started {
+			words = append(words, cur.String())
+		}
+		cur.Reset()
+		started = false
+	}
+	for _, r := range cmd {
+		switch {
+		case r == '"':
+			inQuotes, started = !inQuotes, true
+		case !inQuotes && (r == ' ' || r == '\t'):
+			flush()
+		default:
+			cur.WriteRune(r)
+			started = true
+		}
+	}
+	flush()
+	return words
+}
+
+var shellSafeWord = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,./-]+$`)
+
+// shellWords returns a host command line's words single-quoted for a bash wrapper. Pasting the raw line into the
+// wrapper let bash eat the backslash in `shell:AppsFolder\Microsoft.WindowsCalculator...`, so the host was asked to
+// open a name that does not exist and silently did nothing.
+func shellWords(cmd string) string {
+	words := splitWords(cmd)
+	for i, w := range words {
+		if !shellSafeWord.MatchString(w) {
+			words[i] = "'" + strings.ReplaceAll(w, "'", `'\''`) + "'"
+		}
+	}
+	return strings.Join(words, " ")
+}
+
+// windowsTarget extracts what a "cmd.exe /c start ..." host command runs: the program, shortcut or shell: address, and
+// its arguments.
+func windowsTarget(hostCmd string) (target, args string, ok bool) {
+	w := splitWords(hostCmd)
+	if len(w) < 4 || !strings.EqualFold(w[0], "cmd.exe") || w[1] != "/c" || !strings.EqualFold(w[2], "start") {
+		return "", "", false
+	}
+	rest := w[3:]
+	if len(rest) > 0 && rest[0] == "" { // start's optional window-title argument
+		rest = rest[1:]
+	}
+	if len(rest) > 0 && strings.EqualFold(rest[0], "explorer.exe") {
+		rest = rest[1:]
+	}
+	if len(rest) == 0 {
+		return "", "", false
+	}
+	return rest[0], strings.Join(rest[1:], " "), true
+}
+
+// packContext is what a launcher needs to know about the desktop it is being written into.
+type packContext struct {
+	DesktopID string
+	// Secret signs the launch token (winhost.Token); empty leaves the launcher unsigned, which the control plane refuses.
+	Secret []byte
+}
+
+// sessionID names the host session for an app on this desktop, so two desktops never share one app.
+func (pc packContext) sessionID(slug string) string {
+	id := pc.DesktopID
+	if id == "" {
+		id = "vm"
+	}
+	if len(slug) > 24 {
+		slug = slug[:24]
+	}
+	if id = id + "-" + slug; len(id) > 64 {
+		id = id[:64]
+	}
+	return id
+}
+
+// hostGUILauncher is the shell that shows a Windows app which runs on the host with no window there: it opens the
+// control plane's viewer in an app window of the VM's own browser, and the viewer shows the app and sends input back.
+// The URL is fixed when the launcher is written and carries a token signed for exactly this app, so the control plane
+// will start it and nothing else.
+func hostGUILauncher(pc packContext, slug, title, target, args string) string {
+	id := pc.sessionID(slug)
+	q := url.Values{"id": {id}, "desktop": {pc.DesktopID}, "title": {title}, "target": {target}, "args": {args}}
+	if len(pc.Secret) > 0 {
+		q.Set("token", winhost.Token(pc.Secret, id, target, args))
+	}
+	return fmt.Sprintf(`CP="${CONTROL_PLANE_URL:-http://host.docker.internal:8080}"
+VIEW="$CP/host-gui/view?%s"
+for browser in chromium-browser google-chrome chromium; do
+    if command -v "$browser" >/dev/null 2>&1; then
+        exec "$browser" --app="$VIEW"
+    fi
+done
+echo "No browser is installed in this desktop to show the app in." >&2
+exit 1
+`, q.Encode())
+}
+
+// hostGUIWrapper is a complete launcher script around hostGUILauncher.
+func hostGUIWrapper(pc packContext, slug, title, target, args string) string {
+	return "#!/usr/bin/env bash\n" + hostGUILauncher(pc, slug, title, target, args)
+}
+
+// hostFallback is what a launcher runs after its in-VM options: the hidden host viewer for a Windows app (which must
+// never open a window on the host itself), host-run for anything else.
+func hostFallback(pc packContext, slug string, app HostAppItem) string {
+	if target, args, ok := windowsTarget(app.HostCmd); ok {
+		return hostGUILauncher(pc, slug, app.Name, target, args)
+	}
+	return fmt.Sprintf("exec /home/headless/.local/bin/host-run %s \"$@\"\n", shellWords(app.HostCmd))
+}
+
+func packDynamicApp(tw *tar.Writer, app HostAppItem, pc packContext) error {
 	if len(app.DetectedPaths) > 0 && app.TargetConfigDir != "" {
 		for _, p := range app.DetectedPaths {
 			if fi, err := os.Stat(p); err == nil && fi.IsDir() {
@@ -1756,10 +1879,9 @@ elif command -v google-chrome >/dev/null 2>&1; then
 elif command -v chromium >/dev/null 2>&1; then
     exec chromium --app=%q "$@"
 fi
-exec host-run %s "$@"
-`, webURL, webURL, webURL, app.HostCmd)
+%s`, webURL, webURL, webURL, hostFallback(pc, slug, app))
 		} else {
-			wrapperScript = fmt.Sprintf("#!/usr/bin/env bash\nexec host-run %s \"$@\"\n", app.HostCmd)
+			wrapperScript = "#!/usr/bin/env bash\n" + hostFallback(pc, slug, app)
 		}
 
 		if err := writeStringToTar(tw, ".local/bin/"+slug+"-host", wrapperScript, 0755); err != nil {
@@ -1800,6 +1922,22 @@ set -e
 CP_URL="${CONTROL_PLANE_URL:-${FLOWERA_CONTROL_PLANE:-http://host.docker.internal:8080}}"
 TUNNEL_PORT="${FLOWERA_HOST_PORT:-2222}"
 
+# bridge_post <path> <key> <value> [args-json]: POSTs a small JSON object to the control plane and
+# prints the response body. python3 rather than curl: the desktop images do not all ship curl, and
+# a missing curl made every launcher fail as "host bridge not reachable" without ever sending a request.
+bridge_post() {
+    python3 - "${CP_URL}$1" "$2" "$3" "${4:-}" <<'PY'
+import json, os, sys, urllib.request
+url, key, value, args = sys.argv[1:5]
+body = {key: value}
+if args:
+    body["args"] = json.loads(args)
+    body["display"] = os.environ.get("DISPLAY", ":1")
+req = urllib.request.Request(url, json.dumps(body).encode(), {"Content-Type": "application/json"})
+sys.stdout.write(urllib.request.urlopen(req, timeout=60).read().decode())
+PY
+}
+
 usage() {
     cat << EOF
 Usage: host-run <command> [args...]
@@ -1819,7 +1957,7 @@ case "$subcmd" in
     open)
         shift
         target="${1:-.}"
-        if curl -s -f -X POST "${CP_URL}/api/host-bridge/open" -H "Content-Type: application/json" -d "{\"target\": \"${target}\"}" >/dev/null 2>&1; then
+        if bridge_post /api/host-bridge/open target "${target}" >/dev/null 2>&1; then
             echo "Opened on host desktop: ${target}"
             exit 0
         fi
@@ -1837,7 +1975,7 @@ case "$subcmd" in
         else
             text=$(cat)
         fi
-        if curl -s -f -X POST "${CP_URL}/api/host-bridge/clip" -H "Content-Type: application/json" -d "{\"text\": $(printf '%s' "$text" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')}" >/dev/null 2>&1; then
+        if bridge_post /api/host-bridge/clip text "${text}" >/dev/null 2>&1; then
             echo "Copied to host clipboard!"
             exit 0
         fi
@@ -1859,9 +1997,7 @@ case "$subcmd" in
         if [ $# -gt 0 ]; then
             args_json=$(python3 -c "import json,sys; print(json.dumps(sys.argv[1:]))" "$@")
         fi
-        payload=$(python3 -c "import json,sys,os; print(json.dumps({'cmd': sys.argv[1], 'args': json.loads(sys.argv[2]), 'display': os.environ.get('DISPLAY', ':1')}))" "$cmd" "$args_json")
-
-        response=$(curl -s -f -X POST "${CP_URL}/api/host-bridge/exec" -H "Content-Type: application/json" -d "$payload" 2>/dev/null || true)
+        response=$(bridge_post /api/host-bridge/exec cmd "$cmd" "$args_json" 2>/dev/null || true)
         if [ -n "$response" ]; then
             python3 -c "import json,sys; res=json.loads(sys.argv[1]); sys.stdout.write(res.get('stdout','')); sys.stderr.write(res.get('stderr','')); sys.exit(res.get('exit_code',0))" "$response"
             exit $?
@@ -1880,16 +2016,16 @@ esac
 	if err := writeStringToTar(tw, ".local/bin/host-run", hostRunScript, 0755); err != nil {
 		return err
 	}
-	if err := writeStringToTar(tw, ".local/bin/host-open", "#!/usr/bin/env bash\nexec host-run open \"$@\"\n", 0755); err != nil {
+	if err := writeStringToTar(tw, ".local/bin/host-open", "#!/usr/bin/env bash\nexec /home/headless/.local/bin/host-run open \"$@\"\n", 0755); err != nil {
 		return err
 	}
-	if err := writeStringToTar(tw, ".local/bin/host-clip", "#!/usr/bin/env bash\nexec host-run clip \"$@\"\n", 0755); err != nil {
+	if err := writeStringToTar(tw, ".local/bin/host-clip", "#!/usr/bin/env bash\nexec /home/headless/.local/bin/host-run clip \"$@\"\n", 0755); err != nil {
 		return err
 	}
-	if err := writeStringToTar(tw, ".local/bin/win-run", "#!/usr/bin/env bash\nexec host-run \"$@\"\n", 0755); err != nil {
+	if err := writeStringToTar(tw, ".local/bin/win-run", "#!/usr/bin/env bash\nexec /home/headless/.local/bin/host-run \"$@\"\n", 0755); err != nil {
 		return err
 	}
-	return writeStringToTar(tw, ".local/bin/mac-run", "#!/usr/bin/env bash\nexec host-run \"$@\"\n", 0755)
+	return writeStringToTar(tw, ".local/bin/mac-run", "#!/usr/bin/env bash\nexec /home/headless/.local/bin/host-run \"$@\"\n", 0755)
 }
 
 // -----------------------------------------------------------------------------
