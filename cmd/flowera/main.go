@@ -6,10 +6,12 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/docker/docker/client"
@@ -37,11 +39,10 @@ import (
 )
 
 const (
-	// listenAddr is the primary listener: unauthenticated, same as always.
-	// Desktop agents call back into it (CONTROL_PLANE_URL) and a human at the
-	// control plane's own machine uses it directly - see internal/lanaccess's
-	// package doc for why it stays exactly as it was.
-	listenAddr = ":8080"
+	// primaryPort is the primary listener's port: unauthenticated, for this
+	// machine and its own desktops only. Which addresses it binds is
+	// primaryListenAddrs' decision.
+	primaryPort = "8080"
 
 	// defaultLANAddr is the second listener, gated by internal/lanaccess -
 	// the one a Cloudflare tunnel or a direct LAN address should point at.
@@ -109,6 +110,46 @@ func stepImagesMaxBytes() int {
 	}
 
 	return megabytes << 20
+}
+
+// inContainer reports whether this process runs inside a Docker container.
+func inContainer() bool {
+	_, err := os.Stat("/.dockerenv")
+	return err == nil
+}
+
+// primaryListenAddrs is where the unauthenticated primary listener binds.
+//
+//   - FLOWERA_ADMIN_ADDR (comma-separated host:port list) overrides everything.
+//   - In a container, every interface: the container is only as reachable as
+//     what docker-compose.yaml publishes (loopback), and desktops reach it
+//     over flowera-network.
+//   - On the host, loopback plus the Docker bridge gateways, so desktops can
+//     still call back through host.docker.internal but the LAN cannot reach
+//     it. (On Docker Desktop host.docker.internal already lands on loopback;
+//     a gateway address that cannot be bound there is skipped.)
+//
+// The first address is required; the rest are best effort.
+func primaryListenAddrs(gateways func() []string) []string {
+	if v := strings.TrimSpace(os.Getenv("FLOWERA_ADMIN_ADDR")); v != "" {
+		var addrs []string
+		for _, a := range strings.Split(v, ",") {
+			if a = strings.TrimSpace(a); a != "" {
+				addrs = append(addrs, a)
+			}
+		}
+		if len(addrs) > 0 {
+			return addrs
+		}
+	}
+	if inContainer() {
+		return []string{":" + primaryPort}
+	}
+	addrs := []string{"127.0.0.1:" + primaryPort}
+	for _, ip := range gateways() {
+		addrs = append(addrs, net.JoinHostPort(ip, primaryPort))
+	}
+	return addrs
 }
 
 // lanListenAddr reads FLOWERA_LAN_PORT, the port internal/lanaccess's gated
@@ -230,6 +271,16 @@ func main() {
 		}
 	}()
 
+	// Desktops created before the control plane moved off the LAN-facing
+	// address keep calling it (see Manager.StaleControlPlane): say so once,
+	// with what to do, rather than leaving them to fail silently.
+	go func() {
+		if stale := desktops.StaleControlPlane(context.Background()); len(stale) > 0 {
+			log.Printf("warning: desktops %s call the control plane at an address it no longer serves them on; "+
+				"recreate them (their environment is fixed when they are created)", strings.Join(stale, ", "))
+		}
+	}()
+
 	dbPath := filepath.Join(sqlitedb.DataDir(), sqlitedb.FileName)
 
 	db, err := sqlitedb.Open(dbPath)
@@ -345,16 +396,28 @@ func main() {
 	scheduler := &schedule.Runner{Store: schedules, Submitter: server}
 	go scheduler.Run(context.Background())
 
-	log.Printf("Desktop manager listening on %s", listenAddr)
+	addrs := primaryListenAddrs(func() []string { return desktops.GatewayIPs(context.Background()) })
+	log.Printf("Desktop manager listening on %s", strings.Join(addrs, ", "))
 
-	httpServer := &http.Server{
-		Addr:              listenAddr,
-		Handler:           httpapi.GzipMiddleware(mux),
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       60 * time.Second,
+	handler := httpapi.RefuseForwarded(httpapi.GzipMiddleware(mux))
+	newServer := func(addr string) *http.Server {
+		return &http.Server{
+			Addr:              addr,
+			Handler:           handler,
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       60 * time.Second,
+		}
 	}
 
-	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	for _, addr := range addrs[1:] {
+		go func(addr string) {
+			if err := newServer(addr).ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("warning: primary listener on %s failed: %v", addr, err)
+			}
+		}(addr)
+	}
+
+	if err := newServer(addrs[0]).ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
 }

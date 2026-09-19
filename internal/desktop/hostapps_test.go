@@ -266,8 +266,6 @@ func TestPackHostBridgeLaunchers(t *testing.T) {
 		".local/bin/host-run",
 		".local/bin/host-open",
 		".local/bin/host-clip",
-		".local/bin/win-run",
-		".local/bin/mac-run",
 	}
 
 	for _, exp := range expected {
@@ -277,6 +275,9 @@ func TestPackHostBridgeLaunchers(t *testing.T) {
 	}
 
 	unexpected := []string{
+		// generic "run anything on the host" wrappers: host commands are signed into launchers now
+		".local/bin/win-run",
+		".local/bin/mac-run",
 		".local/bin/chrome-host",
 		".local/bin/edge-host",
 		".local/bin/youtube-host",
@@ -575,8 +576,8 @@ func TestPackHostBridgeLaunchersIncludesDisplay(t *testing.T) {
 	if !strings.Contains(hostRunContent, `body["display"] = os.environ.get("DISPLAY", ":1")`) {
 		t.Errorf("expected host-run to send container DISPLAY in payload, got:\n%s", hostRunContent)
 	}
-	if !strings.Contains(hostRunContent, "DISPLAY=${DISPLAY:-:1}") {
-		t.Errorf("expected host-run SSH fallback to forward DISPLAY, got:\n%s", hostRunContent)
+	if strings.Contains(hostRunContent, "ssh ") {
+		t.Errorf("host-run must not have an unsigned ssh fallback, got:\n%s", hostRunContent)
 	}
 }
 
@@ -684,7 +685,8 @@ func TestDynamicAppWrapperRunsUnderBashWithBackslashesIntact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `[winapp][--profile][C:\Program Files\App][--name][it's]`
+	tok := winhost.ExecToken(testPack.Secret, testPack.DesktopID, "winapp", []string{"--profile", `C:\Program Files\App`, "--name", "it's"})
+	want := `[signed][` + tok + `][winapp][--profile][C:\Program Files\App][--name][it's]`
 	if string(out) != want {
 		t.Errorf("host-run received %s, want %s", out, want)
 	}
@@ -862,5 +864,62 @@ func TestTheHostIsOnlyAskedAboutAnAppOnce(t *testing.T) {
 	vetHostApps(apps)
 	if calls != 2 {
 		t.Errorf("after a rescan host asked %d times in all, want 2", calls)
+	}
+}
+
+// host-run can only open links, set the clipboard and run a signed launcher command. The old generic form
+// ("host-run rm -rf ...", and win-run/mac-run which wrapped it) is what let a desktop's agent run anything on the host.
+func TestHostRunRefusesToRunAnUnsignedCommand(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	buf := new(bytes.Buffer)
+	tw := tar.NewWriter(buf)
+	if err := packHostBridgeLaunchers(tw); err != nil {
+		t.Fatal(err)
+	}
+	tw.Close()
+	tr := tar.NewReader(buf)
+	var script string
+	for {
+		hdr, err := tr.Next()
+		if err != nil {
+			break
+		}
+		if hdr.Name == ".local/bin/host-run" {
+			b, _ := io.ReadAll(tr)
+			script = string(b)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "host-run")
+	if err := os.WriteFile(path, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Nothing listens on this address, so if the script tried to post anything it would fail differently.
+	cmd := exec.Command("bash", path, "cmd.exe", "/c", "calc")
+	cmd.Env = append(os.Environ(), "CONTROL_PLANE_URL=http://127.0.0.1:1")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("host-run ran an unsigned command: %s", out)
+	}
+	if !strings.Contains(string(out), "cannot run 'cmd.exe' on the host") {
+		t.Errorf("unexpected refusal: %s", out)
+	}
+}
+
+func TestStaticLaunchersOpenALinkInsteadOfRunningCmd(t *testing.T) {
+	for _, def := range getKnownAppDefs() {
+		if def.id != "claude" && def.id != "chatgpt" {
+			continue
+		}
+		buf := new(bytes.Buffer)
+		tw := tar.NewWriter(buf)
+		if err := def.packFn(tw, nil); err != nil {
+			t.Fatal(err)
+		}
+		tw.Close()
+		if strings.Contains(buf.String(), "host-run cmd.exe") {
+			t.Errorf("%s launcher still asks the host to run cmd.exe", def.id)
+		}
 	}
 }

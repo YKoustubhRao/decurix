@@ -954,10 +954,9 @@ body.busy{cursor:progress}
       panel.appendChild(rotateBtn);
     }
 
-    /* -- the unauthenticated addresses: the local admin address and the
-       Cloudflare tunnel (which now points at the same, unauthenticated
-       listener) - kept visually separate and clearly labelled so neither
-       reads as safe to hand out casually -- */
+    /* -- the unauthenticated addresses. Current scripts report neither (the
+       admin listener is loopback-only and never tunnelled); this only shows
+       what an older script may still have reported, clearly labelled -- */
     addSectionTitle(panel, "Admin access", true);
 
     if(lastAdminURL || lastTunnelURL){
@@ -965,7 +964,7 @@ body.busy{cursor:progress}
       if(lastAdminURL){ addLinkRow(panel, lastAdminURL, "Copy admin link"); }
       if(lastTunnelURL){ addLinkRow(panel, lastTunnelURL, "Copy tunnel link"); }
     }else{
-      addNote(panel, "Not known yet - start Flowera with scripts/build.sh.");
+      addNote(panel, "Only reachable from this machine (http://localhost:8080) and its own desktops. It is never put on a tunnel or the network - use the code-gated addresses above to reach Flowera from another device.");
     }
   }
 

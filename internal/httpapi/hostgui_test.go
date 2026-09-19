@@ -198,6 +198,7 @@ func TestHostGUIStartStreamInputAndStop(t *testing.T) {
 	srv, log := hostGUIServer(t, "OK pid=9")
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
+	srv.RegisterLocalRoutes(mux)
 	tok := startHostGUI(t, srv, mux, "vm1-code", `C:\Apps\code.exe`, "--x")
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
@@ -273,6 +274,7 @@ func TestHostGUIStartShowsTheReasonAnAppCannotBeHidden(t *testing.T) {
 	srv, _ := hostGUIServer(t, "ERR This is a Microsoft Store app. Windows only runs those on the visible desktop, so it cannot be hidden.")
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
+	srv.RegisterLocalRoutes(mux)
 
 	target := `shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App`
 	rec := hostGUIPost(t, mux, "/api/host-gui/start", map[string]string{"id": "vm1-calc", "target": target, "token": srv.hostGUIToken("vm1-calc", target, "")})
@@ -290,6 +292,7 @@ func TestHostGUIRejectsBadRequests(t *testing.T) {
 	srv, _ := hostGUIServer(t, "OK pid=1")
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
+	srv.RegisterLocalRoutes(mux)
 
 	for _, id := range []string{"", "../x", "a b", strings.Repeat("a", 65), "a;b"} {
 		if rec := hostGUIPost(t, mux, "/api/host-gui/start", map[string]string{"id": id, "target": "a.exe", "token": srv.hostGUIToken(id, "a.exe", "")}); rec.Code != http.StatusBadRequest {
@@ -307,6 +310,7 @@ func TestHostGUIIgnoresInputItDoesNotUnderstandAndKeepsGoing(t *testing.T) {
 	srv, log := hostGUIServer(t, "OK pid=1")
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
+	srv.RegisterLocalRoutes(mux)
 	tok := startHostGUI(t, srv, mux, "ok1", "a.exe", "")
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
@@ -333,6 +337,7 @@ func TestHostGUIViewPage(t *testing.T) {
 	srv, _ := hostGUIServer(t, "OK pid=1")
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
+	srv.RegisterLocalRoutes(mux)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/host-gui/view?id=vm1-code&title=Code&target=C%3A%5CApps%5Ccode.exe", nil))
@@ -351,6 +356,7 @@ func TestAnOpenViewerKeepsItsDesktopFromIdlePausing(t *testing.T) {
 	srv.Desktops = &desktop.Manager{}
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
+	srv.RegisterLocalRoutes(mux)
 	tok := startHostGUI(t, srv, mux, "work-vm-code", "a.exe", "")
 
 	if _, ok := srv.Desktops.LastViewed("work-vm"); ok {
@@ -370,6 +376,7 @@ func TestHostGUIRefusesACallerWithoutTheLaunchToken(t *testing.T) {
 	srv, log := hostGUIServer(t, "OK pid=1")
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
+	srv.RegisterLocalRoutes(mux)
 
 	target := `C:\Program Files\App\app.exe`
 	good := srv.hostGUIToken("vm1-app", target, "")
@@ -413,6 +420,7 @@ func TestHostGUIRefusesAPageFromAnotherOrigin(t *testing.T) {
 	srv, _ := hostGUIServer(t, "OK pid=1")
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
+	srv.RegisterLocalRoutes(mux)
 	tok := startHostGUI(t, srv, mux, "vm1-app", "a.exe", "")
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
@@ -426,6 +434,7 @@ func TestHostGUIRefusesRequestsThatCameThroughATunnelOrProxy(t *testing.T) {
 	srv, _ := hostGUIServer(t, "OK pid=1")
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
+	srv.RegisterLocalRoutes(mux)
 	tok := startHostGUI(t, srv, mux, "vm1-app", "a.exe", "")
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
@@ -448,6 +457,7 @@ func TestHostGUICopyReturnsWhatTheAppCopiedAndPasteTypesIt(t *testing.T) {
 	srv, log := hostGUIServer(t, "OK pid=1")
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
+	srv.RegisterLocalRoutes(mux)
 	tok := startHostGUI(t, srv, mux, "clip1", "a.exe", "")
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
