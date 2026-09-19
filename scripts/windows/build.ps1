@@ -184,7 +184,6 @@ try {
     }
 
     if ($lanIP) {
-        $adminUrl = "http://${lanIP}:8080"
         $lanUrl = "http://${lanIP}:$lanPort"
 
         # Reported once here, separately from the tunnel URL below (which is
@@ -193,14 +192,13 @@ try {
         try {
             Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8080/api/tunnel" `
                 -ContentType "application/json" `
-                -Body (@{ admin_url = $adminUrl; lan_url = $lanUrl } | ConvertTo-Json -Compress) `
+                -Body (@{ lan_url = $lanUrl } | ConvertTo-Json -Compress) `
                 -TimeoutSec 5 | Out-Null
         } catch {
             # Best effort - the dashboard's Mobile menu is the fallback.
         }
 
         Write-Host ""
-        Write-Host "Admin URL (full control, no code - keep this to yourself): $adminUrl"
         Write-Host "LAN access URL (needs the code below, works without the tunnel): $lanUrl"
     }
 
@@ -254,45 +252,18 @@ try {
     # A second tunnel, to the access-code-gated listener - so the
     # code-protected URL works from anywhere, not just $lanUrl above on this
     # machine's own network. Backgrounded (see lib/Lan-Tunnel.ps1), so it
-    # doesn't block the primary tunnel's own foreground loop just below.
+    # the loop below only keeps this script in the foreground.
     Start-LanTunnel -LanPort $lanPort
 
     Write-Host ""
 
-    # Points at the primary listener (:8080), not the access-code-gated one -
-    # so this URL is full, unauthenticated control of the machine, reachable
-    # by anyone who has the link, the same as sitting at the machine itself.
-    # The gated URL printed above ($lanUrl, over $lanPort) and its own tunnel
-    # link just above are still there for anyone who wants the code-gated
-    # option instead.
-
-    # cloudflared logs to stderr, hence 2>&1. Echo every line while watching
-    # for the trycloudflare.com URL, and report it to the control plane for
-    # display in the dashboard's Mobile dropdown. "$_" rather than $_: in
-    # Windows PowerShell 5.1 a redirected stderr line arrives as an
-    # ErrorRecord, and only its string form is the line itself.
+    # The primary listener (:8080) is deliberately never tunnelled: it has no
+    # login and can create desktops and run commands on this machine. Only
+    # the access-code-gated listener is reachable from off this machine. Its
+    # tunnel runs in the background (lib/Lan-Tunnel.ps1); this just keeps the
+    # script - and so its Ctrl+C handling - in the foreground.
     while ($true) {
-        cloudflared tunnel --protocol http2 --url "http://127.0.0.1:8080" 2>&1 | ForEach-Object {
-            $line = "$_"
-            Write-Host $line
-
-            if ($line -match 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com') {
-                $tunnelUrl = $Matches[0]
-                try {
-                    Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8080/api/tunnel" `
-                        -ContentType "application/json" `
-                        -Body (@{ url = $tunnelUrl } | ConvertTo-Json -Compress) `
-                        -TimeoutSec 5 | Out-Null
-                } catch {
-                    # Best effort: the tunnel works whether or not the dashboard
-                    # shows it.
-                }
-
-                Write-Host "(No access code needed for this URL - full control of this machine. Keep it to yourself.)"
-            }
-        }
-        Write-Host "Cloudflare tunnel disconnected. Reconnecting in 3s..."
-        Start-Sleep -Seconds 3
+        Start-Sleep -Seconds 5
     }
 }
 finally {

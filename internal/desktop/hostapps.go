@@ -546,7 +546,7 @@ elif command -v google-chrome >/dev/null 2>&1; then
 elif command -v chromium >/dev/null 2>&1; then
     exec chromium --app="https://claude.ai" "$@"
 fi
-exec /home/headless/.local/bin/host-run cmd.exe /c start https://claude.ai "$@"
+exec /home/headless/.local/bin/host-run open https://claude.ai
 `
 				if err := writeStringToTar(tw, ".local/bin/claude-host", claudeWrapper, 0755); err != nil {
 					return err
@@ -602,7 +602,7 @@ elif command -v google-chrome >/dev/null 2>&1; then
 elif command -v chromium >/dev/null 2>&1; then
     exec chromium --app="https://chatgpt.com" "$@"
 fi
-exec /home/headless/.local/bin/host-run cmd.exe /c start https://chatgpt.com "$@"
+exec /home/headless/.local/bin/host-run open https://chatgpt.com
 `
 				if err := writeStringToTar(tw, ".local/bin/chatgpt-host", chatgptWrapper, 0755); err != nil {
 					return err
@@ -1503,7 +1503,14 @@ func hostFallback(pc packContext, slug string, app HostAppItem) string {
 	if target, args, ok := windowsTarget(app.HostCmd); ok {
 		return hostGUILauncher(pc, slug, app.Name, target, args)
 	}
-	return fmt.Sprintf("exec /home/headless/.local/bin/host-run %s \"$@\"\n", shellWords(app.HostCmd))
+	// Signed for exactly this command line: the control plane runs it as written and refuses anything else, so a
+	// launcher's own arguments ($@) are not passed on.
+	words := splitWords(app.HostCmd)
+	if len(words) == 0 || len(pc.Secret) == 0 {
+		return "echo \"This app cannot be started from here.\" >&2\nexit 1\n"
+	}
+	token := winhost.ExecToken(pc.Secret, pc.DesktopID, words[0], words[1:])
+	return fmt.Sprintf("exec /home/headless/.local/bin/host-run signed %s %s\n", token, shellWords(app.HostCmd))
 }
 
 func packDynamicApp(tw *tar.Writer, app HostAppItem, pc packContext) error {
@@ -1601,15 +1608,16 @@ Categories=%s
 
 func packHostBridgeLaunchers(tw *tar.Writer) error {
 	hostRunScript := `#!/usr/bin/env bash
-# host-run: Dispatches command execution directly to the host desktop machine.
+# host-run: asks the control plane to open a link, set the clipboard, or run one command a launcher was written for on
+# the host. It cannot run anything else: the control plane only runs a command it signed into a launcher.
 set -e
 
 CP_URL="${CONTROL_PLANE_URL:-${FLOWERA_CONTROL_PLANE:-http://host.docker.internal:8080}}"
-TUNNEL_PORT="${FLOWERA_HOST_PORT:-2222}"
 
 # bridge_post <path> <key> <value> [args-json]: POSTs a small JSON object to the control plane and
 # prints the response body. python3 rather than curl: the desktop images do not all ship curl, and
 # a missing curl made every launcher fail as "host bridge not reachable" without ever sending a request.
+# FLOWERA_BRIDGE_TOKEN, when set, is the launcher's signature for the command being run.
 bridge_post() {
     python3 - "${CP_URL}$1" "$2" "$3" "${4:-}" <<'PY'
 import json, os, sys, urllib.request
@@ -1618,6 +1626,8 @@ body = {key: value}
 if args:
     body["args"] = json.loads(args)
     body["display"] = os.environ.get("DISPLAY", ":1")
+    body["desktop"] = os.environ.get("DESKTOP_ID", "")
+    body["token"] = os.environ.get("FLOWERA_BRIDGE_TOKEN", "")
 req = urllib.request.Request(url, json.dumps(body).encode(), {"Content-Type": "application/json"})
 sys.stdout.write(urllib.request.urlopen(req, timeout=60).read().decode())
 PY
@@ -1625,11 +1635,11 @@ PY
 
 usage() {
     cat << EOF
-Usage: host-run <command> [args...]
-       host-run open <file-or-url>
+Usage: host-run open <http(s)-link>
        host-run clip <text or pipe from stdin>
+       host-run signed <token> <command> [args...]   (what a copied app's launcher runs)
 
-Runs apps directly on the host machine with zero duplicate VM RAM.
+Opens links and sets the clipboard on the host. Running other programs on the host is not possible from here.
 EOF
     exit 0
 }
@@ -1641,16 +1651,12 @@ subcmd="$1"
 case "$subcmd" in
     open)
         shift
-        target="${1:-.}"
+        target="${1:-}"
         if bridge_post /api/host-bridge/open target "${target}" >/dev/null 2>&1; then
             echo "Opened on host desktop: ${target}"
             exit 0
         fi
-        if timeout 1 bash -c "cat < /dev/null > /dev/tcp/127.0.0.1/${TUNNEL_PORT}" 2>/dev/null; then
-            ssh -F /dev/null -p "${TUNNEL_PORT}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 127.0.0.1 "xdg-open '${target}' 2>/dev/null || open '${target}' 2>/dev/null || cmd.exe /c start '' '${target}'" 2>/dev/null || true
-            exit 0
-        fi
-        echo "Error: Host bridge not reachable at ${CP_URL} or tunnel port ${TUNNEL_PORT}."
+        echo "Error: could not open ${target} on the host (only plain http(s) links can be opened; is ${CP_URL} reachable?)."
         exit 1
         ;;
     clip)
@@ -1664,35 +1670,29 @@ case "$subcmd" in
             echo "Copied to host clipboard!"
             exit 0
         fi
-        if timeout 1 bash -c "cat < /dev/null > /dev/tcp/127.0.0.1/${TUNNEL_PORT}" 2>/dev/null; then
-            echo -n "$text" | ssh -F /dev/null -p "${TUNNEL_PORT}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 127.0.0.1 "pbcopy 2>/dev/null || clip.exe 2>/dev/null || xclip -selection clipboard 2>/dev/null || wl-copy 2>/dev/null" 2>/dev/null || true
-            echo "Copied to host clipboard via tunnel!"
-            exit 0
+        echo "Error: could not reach the host bridge at ${CP_URL} (or the text is over 64 KB)."
+        exit 1
+        ;;
+    signed)
+        [ $# -ge 3 ] || usage
+        FLOWERA_BRIDGE_TOKEN="$2"
+        export FLOWERA_BRIDGE_TOKEN
+        cmd="$3"
+        shift 3
+        args_json=$(python3 -c "import json,sys; print(json.dumps(sys.argv[1:]))" "$@")
+        response=$(bridge_post /api/host-bridge/exec cmd "$cmd" "$args_json" 2>/dev/null || true)
+        if [ -n "$response" ]; then
+            python3 -c "import json,sys; res=json.loads(sys.argv[1]); sys.stdout.write(res.get('stdout','')); sys.stderr.write(res.get('stderr','')); sys.exit(res.get('exit_code',0))" "$response"
+            exit $?
         fi
-        echo "Error: Host bridge not reachable."
+        echo "Error: the host bridge at ${CP_URL} did not run '${cmd}'. If this app was copied before host commands were signed, copy it into this desktop again."
         exit 1
         ;;
     -h|--help)
         usage
         ;;
     *)
-        cmd="$1"
-        shift
-        args_json="[]"
-        if [ $# -gt 0 ]; then
-            args_json=$(python3 -c "import json,sys; print(json.dumps(sys.argv[1:]))" "$@")
-        fi
-        response=$(bridge_post /api/host-bridge/exec cmd "$cmd" "$args_json" 2>/dev/null || true)
-        if [ -n "$response" ]; then
-            python3 -c "import json,sys; res=json.loads(sys.argv[1]); sys.stdout.write(res.get('stdout','')); sys.stderr.write(res.get('stderr','')); sys.exit(res.get('exit_code',0))" "$response"
-            exit $?
-        fi
-
-        if timeout 1 bash -c "cat < /dev/null > /dev/tcp/127.0.0.1/${TUNNEL_PORT}" 2>/dev/null; then
-            ssh -F /dev/null -p "${TUNNEL_PORT}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 127.0.0.1 "DISPLAY=${DISPLAY:-:1} $cmd" "$@"
-            exit $?
-        fi
-        echo "Error: Could not reach host bridge at ${CP_URL} to execute '${cmd}'."
+        echo "Error: host-run cannot run '${subcmd}' on the host. It only opens http(s) links, sets the clipboard, and runs commands from the launchers Flowera wrote." >&2
         exit 1
         ;;
 esac
@@ -1704,13 +1704,7 @@ esac
 	if err := writeStringToTar(tw, ".local/bin/host-open", "#!/usr/bin/env bash\nexec /home/headless/.local/bin/host-run open \"$@\"\n", 0755); err != nil {
 		return err
 	}
-	if err := writeStringToTar(tw, ".local/bin/host-clip", "#!/usr/bin/env bash\nexec /home/headless/.local/bin/host-run clip \"$@\"\n", 0755); err != nil {
-		return err
-	}
-	if err := writeStringToTar(tw, ".local/bin/win-run", "#!/usr/bin/env bash\nexec /home/headless/.local/bin/host-run \"$@\"\n", 0755); err != nil {
-		return err
-	}
-	return writeStringToTar(tw, ".local/bin/mac-run", "#!/usr/bin/env bash\nexec /home/headless/.local/bin/host-run \"$@\"\n", 0755)
+	return writeStringToTar(tw, ".local/bin/host-clip", "#!/usr/bin/env bash\nexec /home/headless/.local/bin/host-run clip \"$@\"\n", 0755)
 }
 
 // -----------------------------------------------------------------------------

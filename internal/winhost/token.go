@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -52,4 +53,28 @@ func ValidToken(secret []byte, id, target, args, token string) bool {
 		return false
 	}
 	return hmac.Equal([]byte(Token(secret, id, target, args)), []byte(token))
+}
+
+// execParts turns a host command into the fields Token signs. Arguments are JSON-encoded so ["a b"] and ["a","b"]
+// differ, and the "exec:" prefix keeps an exec token from ever being valid as a launch token for the same strings.
+func execParts(desktopID string, args []string) (id, joined string) {
+	if args == nil {
+		args = []string{}
+	}
+	b, _ := json.Marshal(args)
+	return "exec:" + desktopID, string(b)
+}
+
+// ExecToken authorises one host command from one desktop: exactly this program with exactly these arguments. A launcher
+// carries it for the command it was written to run, so the control plane runs that and nothing else - a desktop's own
+// agent cannot ask the host to run anything a launcher was not written for.
+func ExecToken(secret []byte, desktopID, cmd string, args []string) string {
+	id, joined := execParts(desktopID, args)
+	return Token(secret, id, cmd, joined)
+}
+
+// ValidExecToken reports whether token is the exec token for exactly this desktop, program and arguments.
+func ValidExecToken(secret []byte, desktopID, cmd string, args []string, token string) bool {
+	id, joined := execParts(desktopID, args)
+	return ValidToken(secret, id, cmd, joined, token)
 }

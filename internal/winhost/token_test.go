@@ -48,3 +48,29 @@ func TestSecretIsCreatedOnceAndKeptPrivate(t *testing.T) {
 		t.Fatal("two installs share a key")
 	}
 }
+
+func TestExecTokenBindsDesktopProgramAndEveryArgument(t *testing.T) {
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	tok := ExecToken(secret, "vm1", "echo", []string{"a b"})
+	if !ValidExecToken(secret, "vm1", "echo", []string{"a b"}, tok) {
+		t.Fatal("the token for a command does not validate that command")
+	}
+	for name, ok := range map[string]bool{
+		"another desktop":       ValidExecToken(secret, "vm2", "echo", []string{"a b"}, tok),
+		"another program":       ValidExecToken(secret, "vm1", "cat", []string{"a b"}, tok),
+		"split arguments":       ValidExecToken(secret, "vm1", "echo", []string{"a", "b"}, tok),
+		"an appended argument":  ValidExecToken(secret, "vm1", "echo", []string{"a b", "; id"}, tok),
+		"no arguments":          ValidExecToken(secret, "vm1", "echo", nil, tok),
+		"an empty token":        ValidExecToken(secret, "vm1", "echo", []string{"a b"}, ""),
+		"another secret":        ValidExecToken([]byte("ffffffffffffffffffffffffffffffff"), "vm1", "echo", []string{"a b"}, tok),
+		"a host-gui launch tok": ValidToken(secret, "vm1", "echo", `["a b"]`, tok),
+	} {
+		if ok {
+			t.Errorf("a token was accepted for %s", name)
+		}
+	}
+	if !ValidExecToken(secret, "vm1", "echo", nil, ExecToken(secret, "vm1", "echo", nil)) ||
+		!ValidExecToken(secret, "vm1", "echo", []string{}, ExecToken(secret, "vm1", "echo", nil)) {
+		t.Error("no arguments should sign the same whether nil or empty")
+	}
+}

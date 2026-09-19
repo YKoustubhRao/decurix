@@ -12,11 +12,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/YKoustubhRao/flowera/internal/desktop"
+	"github.com/YKoustubhRao/flowera/internal/winhost"
 )
 
 // findDockerBinary locates an available docker binary on the host or in standard container paths.
@@ -90,6 +92,10 @@ type hostBridgeExecRequest struct {
 	Cmd     string   `json:"cmd"`
 	Args    []string `json:"args"`
 	Display string   `json:"display,omitempty"`
+	// Desktop and Token authorise the command: Token is winhost.ExecToken for this desktop, Cmd and Args, which a
+	// launcher was written with. Nothing else is run.
+	Desktop string `json:"desktop,omitempty"`
+	Token   string `json:"token,omitempty"`
 }
 
 // hostBridgeExecResponse represents the result of the host command execution.
@@ -118,6 +124,8 @@ func (s *Server) hostBridgeExecHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		req.Cmd = r.FormValue("cmd")
 		req.Display = r.FormValue("display")
+		req.Desktop = r.FormValue("desktop")
+		req.Token = r.FormValue("token")
 		if argsVal := r.FormValue("args"); argsVal != "" {
 			_ = json.Unmarshal([]byte(argsVal), &req.Args)
 		}
@@ -125,6 +133,14 @@ func (s *Server) hostBridgeExecHandler(w http.ResponseWriter, r *http.Request) {
 
 	if strings.TrimSpace(req.Cmd) == "" {
 		http.Error(w, "cmd cannot be empty", http.StatusBadRequest)
+		return
+	}
+
+	// This runs a program on the host, and the caller may be a desktop whose agent takes instructions from web pages.
+	// It only ever runs what a launcher Flowera wrote was signed for - exactly that program and those arguments.
+	if !winhost.ValidExecToken(s.hostGUISecretKey(), req.Desktop, req.Cmd, req.Args, req.Token) {
+		log.Printf("host-bridge: refused an unsigned or altered command from %s", r.RemoteAddr)
+		http.Error(w, "this command is not one a launcher was written to run", http.StatusForbidden)
 		return
 	}
 
@@ -281,6 +297,16 @@ func createHostCmd(ctx context.Context, display, cmdStr string, args ...string) 
 	return cmd
 }
 
+// openURLPattern is what may be opened on the host: an http(s) link with nothing a shell or cmd.exe would act on. The
+// target is spliced into a shell command line, so quotes, backslashes, $, backticks, ^, <, >, | and ; are refused
+// rather than escaped, and so are spaces and control characters. (& and % are fine inside the quotes it is given.)
+var openURLPattern = regexp.MustCompile(`^https?://[A-Za-z0-9._~:/?#@!*+,=&%\[\]()-]+$`)
+
+// safeOpenURL reports whether target is a link hostBridgeOpenHandler will open.
+func safeOpenURL(target string) bool {
+	return len(target) <= 2048 && openURLPattern.MatchString(target)
+}
+
 // hostBridgeOpenRequest represents a request to open a URL or file on the host desktop screen.
 type hostBridgeOpenRequest struct {
 	Target string `json:"target"`
@@ -306,6 +332,10 @@ func (s *Server) hostBridgeOpenHandler(w http.ResponseWriter, r *http.Request) {
 	target := strings.TrimSpace(req.Target)
 	if target == "" {
 		http.Error(w, "target cannot be empty", http.StatusBadRequest)
+		return
+	}
+	if !safeOpenURL(target) {
+		http.Error(w, "only plain http(s) links can be opened on the host", http.StatusBadRequest)
 		return
 	}
 
@@ -337,6 +367,9 @@ func (s *Server) hostBridgeOpenHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// maxHostClipBytes bounds what a desktop can put on the host's clipboard in one request.
+const maxHostClipBytes = 64 << 10
+
 // hostBridgeClipRequest represents a request to copy text into the host OS clipboard.
 type hostBridgeClipRequest struct {
 	Text string `json:"text"`
@@ -348,6 +381,8 @@ func (s *Server) hostBridgeClipHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxHostClipBytes)
 
 	var req hostBridgeClipRequest
 	if strings.Contains(r.Header.Get("Content-Type"), "application/json") {

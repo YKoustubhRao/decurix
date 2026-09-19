@@ -3,9 +3,12 @@ package httpapi
 import (
 	"archive/tar"
 	"encoding/json"
+	"github.com/YKoustubhRao/flowera/internal/winhost"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -65,9 +68,9 @@ func TestDetectHostAppsHandler(t *testing.T) {
 func TestHostBridgeExecHandlerCLI(t *testing.T) {
 	srv := &Server{}
 	mux := http.NewServeMux()
-	srv.RegisterRoutes(mux)
+	srv.RegisterLocalRoutes(mux)
 
-	payload := `{"cmd": "echo", "args": ["hello-from-host-bridge"]}`
+	payload := signedExecPayload(srv, "vm1", "echo", "hello-from-host-bridge")
 	req := httptest.NewRequest(http.MethodPost, "/api/host-bridge/exec", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -94,7 +97,7 @@ func TestHostBridgeExecHandlerCLI(t *testing.T) {
 func TestHostBridgeExecHandlerValidation(t *testing.T) {
 	srv := &Server{}
 	mux := http.NewServeMux()
-	srv.RegisterRoutes(mux)
+	srv.RegisterLocalRoutes(mux)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/host-bridge/exec", strings.NewReader(`{"cmd": ""}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -110,7 +113,7 @@ func TestHostBridgeExecHandlerValidation(t *testing.T) {
 func TestHostBridgeOpenHandlerValidation(t *testing.T) {
 	srv := &Server{}
 	mux := http.NewServeMux()
-	srv.RegisterRoutes(mux)
+	srv.RegisterLocalRoutes(mux)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/host-bridge/open", strings.NewReader(`{"target": ""}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -243,5 +246,127 @@ func TestTheHostIsWarmedWhileSomeoneChoosesAppsAndWhileTheyAreCopied(t *testing.
 	mux.ServeHTTP(httptest.NewRecorder(), req)
 	if atomic.LoadInt32(&warmed) == before {
 		t.Error("copying host apps did not warm the host")
+	}
+}
+
+// The gated (LAN/tunnel) listener is built from RegisterRoutes alone, so
+// nothing that runs a command on the host or shows a host program may be
+// registered there - holding the access code must not be host code execution.
+func TestHostRoutesAreOnlyOnThePrimaryListener(t *testing.T) {
+	hostRoutes := []string{
+		"/api/host-bridge/exec", "/api/host-bridge/open", "/api/host-bridge/clip",
+		"/api/host-gui/start", "/api/host-gui/ws", "/api/host-gui/stop", "/host-gui/view",
+	}
+	srv := &Server{}
+	gated := http.NewServeMux()
+	srv.RegisterRoutes(gated)
+	primary := http.NewServeMux()
+	srv.RegisterRoutes(primary)
+	srv.RegisterLocalRoutes(primary)
+
+	for _, path := range hostRoutes {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		if _, pattern := gated.Handler(req); pattern == path {
+			t.Errorf("%s is registered on the gated listener", path)
+		}
+		if _, pattern := primary.Handler(req); pattern != path {
+			t.Errorf("%s is missing from the primary listener (matched %q)", path, pattern)
+		}
+	}
+}
+
+// signedExecPayload is what a launcher's host-run sends: the command with the token it was written with.
+func signedExecPayload(srv *Server, desktop, cmd string, args ...string) string {
+	b, _ := json.Marshal(hostBridgeExecRequest{
+		Cmd: cmd, Args: args, Desktop: desktop,
+		Token: winhost.ExecToken(srv.hostGUISecretKey(), desktop, cmd, args),
+	})
+	return string(b)
+}
+
+func execStatus(t *testing.T, srv *Server, body string) int {
+	t.Helper()
+	mux := http.NewServeMux()
+	srv.RegisterLocalRoutes(mux)
+	req := httptest.NewRequest(http.MethodPost, "/api/host-bridge/exec", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	return rec.Code
+}
+
+// A desktop's agent can call this endpoint over the Docker network, so nothing but a command a launcher was signed
+// for may run - not an unsigned one, not a signed one with an argument added, not another desktop's.
+func TestHostBridgeExecRefusesAnythingNotSigned(t *testing.T) {
+	srv := &Server{}
+	marker := filepath.Join(t.TempDir(), "ran")
+
+	signed := signedExecPayload(srv, "vm1", "touch", marker)
+	var good hostBridgeExecRequest
+	_ = json.Unmarshal([]byte(signed), &good)
+
+	altered := good
+	altered.Args = append(append([]string{}, good.Args...), "extra")
+	otherDesktop := good
+	otherDesktop.Desktop = "vm2"
+	unsigned := good
+	unsigned.Token = ""
+	guiToken := good
+	guiToken.Token = winhost.Token(srv.hostGUISecretKey(), "vm1", "touch", "")
+
+	for name, req := range map[string]hostBridgeExecRequest{
+		"unsigned": unsigned, "an added argument": altered, "another desktop": otherDesktop, "a host-gui launch token": guiToken,
+	} {
+		b, _ := json.Marshal(req)
+		if code := execStatus(t, srv, string(b)); code != http.StatusForbidden {
+			t.Errorf("%s: got %d, want 403", name, code)
+		}
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("a refused command ran anyway")
+	}
+	if code := execStatus(t, srv, signed); code != http.StatusOK {
+		t.Fatalf("the signed command: got %d, want 200", code)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("the signed command did not run: %v", err)
+	}
+}
+
+func TestSafeOpenURL(t *testing.T) {
+	for _, ok := range []string{"https://claude.ai", "http://localhost:3000/a?b=1&c=2#x", "https://x.com/a%20b"} {
+		if !safeOpenURL(ok) {
+			t.Errorf("%q refused", ok)
+		}
+	}
+	for _, bad := range []string{
+		"", "file:///etc/passwd", "C:\\Windows\\System32\\calc.exe", "/usr/bin/xterm", "javascript:alert(1)",
+		"https://x.com/$(id)", "https://x.com/`id`", "https://x.com/\"; calc", "https://x.com/ a", "https://x.com/a\nb",
+		"https://x.com/a|b", "https://x.com/a;b", "https://x.com/a^b", "https://x.com/<a>", "https://x.com/'a",
+		"https://x.com/" + strings.Repeat("a", 3000),
+	} {
+		if safeOpenURL(bad) {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}
+
+func TestHostBridgeOpenAndClipLimits(t *testing.T) {
+	srv := &Server{}
+	mux := http.NewServeMux()
+	srv.RegisterLocalRoutes(mux)
+	post := func(path, body string) int {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := post("/api/host-bridge/open", `{"target":"C:\\Windows\\System32\\calc.exe"}`); code != http.StatusBadRequest {
+		t.Errorf("open of a program path: got %d, want 400", code)
+	}
+	big := `{"text":"` + strings.Repeat("a", maxHostClipBytes+10) + `"}`
+	if code := post("/api/host-bridge/clip", big); code != http.StatusBadRequest {
+		t.Errorf("an oversized clipboard write: got %d, want 400", code)
 	}
 }

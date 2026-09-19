@@ -119,13 +119,6 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/desktops/suggest", s.suggestDesktopHandler)
 	mux.HandleFunc("/api/host-apps/detect", s.detectHostAppsHandler)
 	mux.HandleFunc("/api/desktops/host-apps/copy", s.copyHostAppsHandler)
-	mux.HandleFunc("/api/host-bridge/exec", s.hostBridgeExecHandler)
-	mux.HandleFunc("/api/host-bridge/open", s.hostBridgeOpenHandler)
-	mux.HandleFunc("/api/host-bridge/clip", s.hostBridgeClipHandler)
-	mux.HandleFunc("/api/host-gui/start", hostGUIDirectOnly(s.hostGUIStartHandler))
-	mux.HandleFunc("/api/host-gui/ws", hostGUIDirectOnly(s.hostGUIWSHandler))
-	mux.HandleFunc("/api/host-gui/stop", hostGUIDirectOnly(s.hostGUIStopHandler))
-	mux.HandleFunc("/host-gui/view", hostGUIDirectOnly(s.hostGUIViewHandler))
 	mux.HandleFunc("/api/schedules", s.schedulesHandler)
 	mux.HandleFunc("/api/schedules/create", s.createScheduleHandler)
 	mux.HandleFunc("/api/schedules/delete", s.deleteScheduleHandler)
@@ -192,13 +185,26 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/favicon.svg", s.faviconHandler)
 }
 
-// RegisterLocalRoutes registers the handful of routes that must only ever be
-// reachable on the primary listener, never on the LAN/tunnel-facing one a
-// phone reaches: the current LAN access code and the button that rotates it.
+// RegisterLocalRoutes registers the routes that must only ever be reachable
+// on the primary listener, never on the LAN/tunnel-facing one a phone
+// reaches: the current LAN access code and the button that rotates it, and
+// the host bridge (below).
 // Serving the code back over the very listener it gates would make it
 // pointless the moment someone else on that listener asked for it, so
 // cmd/flowera/main.go calls this only for the primary mux.
 func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
+	// Everything that runs something on the host or shows a host program
+	// is for a desktop's own launchers, which reach the primary listener
+	// over the Docker network. No phone or tunnel visitor needs any of it,
+	// so the gated listener never serves it: a leaked or brute-forced
+	// access code must not become command execution on the host.
+	mux.HandleFunc("/api/host-bridge/exec", s.hostBridgeExecHandler)
+	mux.HandleFunc("/api/host-bridge/open", s.hostBridgeOpenHandler)
+	mux.HandleFunc("/api/host-bridge/clip", s.hostBridgeClipHandler)
+	mux.HandleFunc("/api/host-gui/start", hostGUIDirectOnly(s.hostGUIStartHandler))
+	mux.HandleFunc("/api/host-gui/ws", hostGUIDirectOnly(s.hostGUIWSHandler))
+	mux.HandleFunc("/api/host-gui/stop", hostGUIDirectOnly(s.hostGUIStopHandler))
+	mux.HandleFunc("/host-gui/view", hostGUIDirectOnly(s.hostGUIViewHandler))
 	mux.HandleFunc("/api/lan-access/status", s.lanAccessStatusHandler)
 	mux.HandleFunc("/api/lan-access/rotate", s.lanAccessRotateHandler)
 }
