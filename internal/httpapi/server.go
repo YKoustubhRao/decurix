@@ -69,10 +69,7 @@ type Server struct {
 
 // NewServer creates a Server from its component stores/managers.
 func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memoryStore *memory.Store, chat *conversation.Store, stepImages *stepimages.Store, taskRecords *tasks.Store, tunnelStore *tunnel.Store, claudeAuth *claudeauth.Store, lanAccess *lanaccess.Store, schedules *schedule.Store, dags *dag.Store, suggestions *suggest.Store, web *webui.Renderer) *Server {
-	// Pre-warm host apps discovery in background so desktop creation and scanning UI are instant
-	desktop.InitHostAppsScan()
-
-	return &Server{
+	srv := &Server{
 		Desktops:         desktops,
 		QueryNotes:       queryNotes,
 		Memory:           memoryStore,
@@ -88,6 +85,14 @@ func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memorySt
 		Web:              web,
 		recentStepImages: make(map[string]string),
 	}
+
+	// Pre-warm host apps discovery in background so desktop creation and scanning UI are instant. The scan only offers
+	// a Windows program once the host has confirmed it can run hidden, so the way to ask must be in place first.
+	desktop.SetHostAppChecker(srv.checkHostApps)
+	desktop.SetHostAppWarmer(srv.warmHostGUI)
+	desktop.WarmHostApps() // compile and load now, long before the first desktop exists
+	desktop.InitHostAppsScan()
+	return srv
 }
 
 // RegisterRoutes registers every HTTP route the control plane serves.
@@ -118,9 +123,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/host-bridge/open", s.hostBridgeOpenHandler)
 	mux.HandleFunc("/api/host-bridge/clip", s.hostBridgeClipHandler)
 	mux.HandleFunc("/api/host-gui/start", hostGUIDirectOnly(s.hostGUIStartHandler))
-	mux.HandleFunc("/api/host-gui/stream", hostGUIDirectOnly(s.hostGUIStreamHandler))
-	mux.HandleFunc("/api/host-gui/frame", hostGUIDirectOnly(s.hostGUIFrameHandler))
-	mux.HandleFunc("/api/host-gui/input", hostGUIDirectOnly(s.hostGUIInputHandler))
+	mux.HandleFunc("/api/host-gui/ws", hostGUIDirectOnly(s.hostGUIWSHandler))
 	mux.HandleFunc("/api/host-gui/stop", hostGUIDirectOnly(s.hostGUIStopHandler))
 	mux.HandleFunc("/host-gui/view", hostGUIDirectOnly(s.hostGUIViewHandler))
 	mux.HandleFunc("/api/schedules", s.schedulesHandler)

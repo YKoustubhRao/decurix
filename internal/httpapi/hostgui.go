@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,7 +16,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
@@ -113,6 +113,21 @@ func hostGUIStarter(ctx context.Context, desktopName string) (*exec.Cmd, error) 
 	return hostShellCmd(ctx, shell), nil
 }
 
+// warmHostGUI starts (or keeps) the helper the next host app will run in. It only makes sense where host apps can run at
+// all, which is Windows through WSL.
+func (s *Server) warmHostGUI() {
+	if runtime.GOOS == "windows" || !desktop.IsWSLOrWindows() {
+		return
+	}
+	s.hostGUI().Warm()
+}
+
+// checkHostApps asks the Windows helper which programs it can run on a private desktop, without starting any of them. It
+// uses the same warm helper an app is launched into, so what it learns about the Start menu is not learned twice.
+func (s *Server) checkHostApps(ctx context.Context, targets []winhost.Target) (map[winhost.Target]string, error) {
+	return s.hostGUI().Check(ctx, targets)
+}
+
 // hostShellCmd builds a command that runs a shell script on the host with stdin left open for the caller: directly when
 // the control plane is on the host itself, through the same docker/nsenter hop createHostCmd uses when it is in a container.
 func hostShellCmd(ctx context.Context, script string) *exec.Cmd {
@@ -142,6 +157,8 @@ type hostGUIRequest struct {
 	Delta int    `json:"delta"`
 	Text  string `json:"text"`
 	VK    int    `json:"vk"`
+	// Seq names a request that is answered (a copy), so the viewer can match the answer to it.
+	Seq int `json:"seq,omitempty"`
 	// Mods is any of c, s, a: Ctrl, Shift and Alt held during a key or mouse event.
 	Mods string `json:"mods"`
 }
@@ -183,53 +200,8 @@ func (s *Server) hostGUIStartHandler(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, map[string]string{"error": err.Error()})
 		return
 	}
-	f, _ := sess.Latest()
-	jsonResponse(w, map[string]any{"id": req.ID, "w": f.W, "h": f.H})
-}
-
-// hostGUIStreamHandler streams the app's window as motion JPEG (multipart/x-mixed-replace), which a plain <img> plays.
-// Frames are sent when the picture changes, so an idle app costs nothing.
-func (s *Server) hostGUIStreamHandler(w http.ResponseWriter, r *http.Request) {
-	if !s.hostGUIAuthorised(r.URL.Query().Get("id"), r.URL.Query().Get("token")) {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
-	sess, ok := s.hostGUI().Get(r.URL.Query().Get("id"))
-	if !ok {
-		http.Error(w, "no such session", http.StatusNotFound)
-		return
-	}
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
-		return
-	}
-	sess.Watch(r.Context())
-	s.markDesktopViewed(r.Context(), r.URL.Query().Get("desktop"))
-	const boundary = "floweraframe"
-	w.Header().Set("Content-Type", "multipart/x-mixed-replace; boundary="+boundary)
-	w.Header().Set("Cache-Control", "no-store")
-
-	// The boundary follows each frame's data rather than preceding the next frame's headers, so a part is complete
-	// (and can be drawn) the moment it is sent - an app that stops changing must not leave its last picture unfinished.
-	fmt.Fprintf(w, "--%s\r\n", boundary)
-	flusher.Flush()
-
-	var seq uint64
-	for {
-		sess.Touch()
-		f, err := sess.WaitFrame(r.Context(), seq)
-		if err != nil {
-			return
-		}
-		seq = f.Seq
-		fmt.Fprintf(w, "Content-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n", len(f.JPEG))
-		if _, err := w.Write(f.JPEG); err != nil {
-			return
-		}
-		fmt.Fprintf(w, "\r\n--%s\r\n", boundary)
-		flusher.Flush()
-	}
+	width, height := sess.Size()
+	jsonResponse(w, map[string]any{"id": req.ID, "w": width, "h": height})
 }
 
 // markDesktopViewed tells idle-pause that a desktop is in use for as long as ctx lasts. The desktop is showing a host app
@@ -253,12 +225,15 @@ func (s *Server) markDesktopViewed(ctx context.Context, desktopID string) {
 	}()
 }
 
-// hostGUIPollWait is how long a frame request waits for the picture to change before answering "nothing new".
-var hostGUIPollWait = 25 * time.Second
-
-// hostGUIFrameHandler returns a JPEG of the app. With ?after=<seq> it waits until the picture is newer than that
-// (answering 204 if it is not within hostGUIPollWait), which is how the viewer follows the app without polling blind.
-func (s *Server) hostGUIFrameHandler(w http.ResponseWriter, r *http.Request) {
+// hostGUIWSHandler is the viewer's one connection to a running app: pictures flow out as the app changes, and input
+// flows in as the person makes it. Both directions are ordered and neither waits for the other, which is why a keystroke
+// does not sit behind a picture (and a picture is never requested - the host sends one when something has changed).
+//
+// Server to viewer, binary: one flags byte (bit 0: the rectangle is the whole picture), then six big-endian uint16 - the
+// picture's width and height and the rectangle's x, y, width and height - then the rectangle as a JPEG. Text messages
+// out are JSON: {"closed":true} once the app has no window left, and {"id":n,"text":"..."} answering a copy.
+// Viewer to server, text JSON, one input each (see applyInput); a copy carries an "id" to be answered under.
+func (s *Server) hostGUIWSHandler(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	if !s.hostGUIAuthorised(q.Get("id"), q.Get("token")) {
 		http.Error(w, "forbidden", http.StatusForbidden)
@@ -269,51 +244,93 @@ func (s *Server) hostGUIFrameHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no such session", http.StatusNotFound)
 		return
 	}
-	sess.Touch()
-	ctx := r.Context()
-	sess.Watch(ctx)
-	s.markDesktopViewed(ctx, q.Get("desktop"))
+	c, err := upgradeWebSocket(w, r)
+	if err != nil {
+		return
+	}
+	defer c.close()
 
-	var f winhost.Frame
-	if after, err := strconv.ParseUint(q.Get("after"), 10, 64); err == nil {
-		waitCtx, cancel := context.WithTimeout(ctx, hostGUIPollWait)
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	s.markDesktopViewed(ctx, q.Get("desktop"))
+	v := sess.Watch()
+	defer v.Close()
+
+	// Everything written goes through this one goroutine's loop plus the copy answers, which share the connection's lock.
+	go func() {
 		defer cancel()
-		if f, err = sess.WaitFrame(waitCtx, after); err != nil {
-			if ctx.Err() == nil && sess.Alive() {
-				w.WriteHeader(http.StatusNoContent) // nothing changed yet; ask again
+		ping := time.NewTicker(25 * time.Second)
+		defer ping.Stop()
+		for {
+			select {
+			case u, ok := <-v.C:
+				if !ok {
+					return
+				}
+				if c.write(wsBinary, encodePatch(u)) != nil {
+					return
+				}
+			case <-sess.AppClosed():
+				c.write(wsText, []byte(`{"closed":true}`))
+				return
+			case <-sess.Done():
+				c.write(wsText, []byte(`{"closed":true}`))
+				return
+			case <-ping.C:
+				if c.write(wsPing, nil) != nil {
+					return
+				}
+			case <-ctx.Done():
 				return
 			}
-			http.Error(w, "no such session", http.StatusNotFound)
+		}
+	}()
+	go func() {
+		<-ctx.Done()
+		c.close() // unblocks the read below
+	}()
+
+	for {
+		op, msg, err := c.read(70 * time.Second) // the viewer answers pings, so a quiet line is a dead one
+		if err != nil {
 			return
 		}
-	} else if f, ok = sess.Latest(); !ok {
-		w.WriteHeader(http.StatusNoContent)
-		return
+		if op != wsText {
+			continue
+		}
+		var req hostGUIRequest
+		if json.Unmarshal(msg, &req) != nil {
+			continue
+		}
+		text, wantsText, err := applyInput(sess, req)
+		if err != nil {
+			log.Printf("host-gui: input %s on %s: %v", req.Kind, q.Get("id"), err)
+			continue
+		}
+		if wantsText {
+			out, _ := json.Marshal(map[string]any{"id": req.Seq, "text": text})
+			if c.write(wsText, out) != nil {
+				return
+			}
+		}
 	}
-	w.Header().Set("Content-Type", "image/jpeg")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Seq", strconv.FormatUint(f.Seq, 10))
-	w.Header().Set("X-Width", strconv.Itoa(f.W))
-	w.Header().Set("X-Height", strconv.Itoa(f.H))
-	w.Write(f.JPEG)
 }
 
-// hostGUIInputHandler forwards one mouse or keyboard event to the app.
-func (s *Server) hostGUIInputHandler(w http.ResponseWriter, r *http.Request) {
-	req, ok := readHostGUIRequest(w, r)
-	if !ok {
-		return
+// encodePatch is the binary form of an Update the viewer receives.
+func encodePatch(u winhost.Update) []byte {
+	b := make([]byte, 13, 13+len(u.JPEG))
+	if u.Whole {
+		b[0] = 1
 	}
-	if !s.hostGUIAuthorised(req.ID, req.Token) {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
+	for i, v := range []int{u.W, u.H, u.X, u.Y, u.Rw, u.Rh} {
+		binary.BigEndian.PutUint16(b[1+2*i:], uint16(v))
 	}
-	sess, found := s.hostGUI().Get(req.ID)
-	if !found {
-		http.Error(w, "no such session", http.StatusNotFound)
-		return
-	}
-	var err error
+	return append(b, u.JPEG...)
+}
+
+// applyInput carries out one input from the viewer on the app. wantsText is set for a copy, whose answer is the text
+// the app put on the clipboard.
+func applyInput(sess *winhost.Session, req hostGUIRequest) (text string, wantsText bool, err error) {
 	switch req.Kind {
 	case "move", "down", "up":
 		err = sess.Mouse(req.Kind, req.X, req.Y, req.Right, req.Mods)
@@ -324,26 +341,14 @@ func (s *Server) hostGUIInputHandler(w http.ResponseWriter, r *http.Request) {
 	case "paste":
 		err = sess.Paste(req.Text)
 	case "copy":
-		text, cerr := sess.Copy(req.VK)
-		if cerr != nil {
-			log.Printf("host-gui: copy on %s: %v", req.ID, cerr)
-			http.Error(w, "copy failed", http.StatusBadGateway)
-			return
-		}
-		jsonResponse(w, map[string]string{"text": text})
-		return
+		text, err = sess.Copy(req.VK)
+		return text, err == nil, err
 	case "key":
 		err = sess.Key(req.VK, req.Mods)
 	default:
-		http.Error(w, "unknown input kind", http.StatusBadRequest)
-		return
+		err = errors.New("unknown input kind")
 	}
-	if err != nil {
-		log.Printf("host-gui: input %s on %s: %v", req.Kind, req.ID, err)
-		http.Error(w, "input failed", http.StatusBadGateway)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	return "", false, err
 }
 
 // hostGUIStopHandler ends the session, closing the app on the host.

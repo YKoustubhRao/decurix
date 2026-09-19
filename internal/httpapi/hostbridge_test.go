@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/docker/docker/api/types/container"
@@ -216,5 +217,31 @@ func TestCopyHostAppsIntoAnExistingDesktop(t *testing.T) {
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/desktops/host-apps/copy", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("GET = %d, want 405", rec.Code)
+	}
+}
+
+func TestTheHostIsWarmedWhileSomeoneChoosesAppsAndWhileTheyAreCopied(t *testing.T) {
+	var warmed int32
+	desktop.SetHostAppWarmer(func() { atomic.AddInt32(&warmed, 1) })
+	defer desktop.SetHostAppWarmer(nil)
+
+	mgr, _ := archiveDocker(t, "work")
+	srv := &Server{Desktops: mgr}
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	// Opening the list of apps to copy means a desktop is about to be created: the helper should be started meanwhile.
+	mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/host-apps/detect", nil))
+	if atomic.LoadInt32(&warmed) == 0 {
+		t.Error("listing the host apps did not warm the host")
+	}
+
+	// And so does copying them, which is what happens while the desktop itself is still starting.
+	before := atomic.LoadInt32(&warmed)
+	req := httptest.NewRequest(http.MethodPost, "/api/desktops/host-apps/copy", strings.NewReader("id=work&host_apps=host_bridge"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	mux.ServeHTTP(httptest.NewRecorder(), req)
+	if atomic.LoadInt32(&warmed) == before {
+		t.Error("copying host apps did not warm the host")
 	}
 }

@@ -2,20 +2,31 @@
 # no window on the person's own desktop, and lets Flowera see and drive it over stdin/stdout.
 # There is deliberately no network listener: only the process that started this script can reach the app.
 #
-# stdin, one command per line (fields separated by TAB where a line has more than one):
+# stdin, one command per line (fields separated by TAB where a line has more than one). Each command is answered by
+# exactly one line on stdout, in order:
+#   desktop <name>           name the private desktop this helper will create (before launch)
 #   launch <target> <args>   start the app; "OK pid=<n>" or "ERR <reason>"
-#   frame                    "FRAME <w> <h> <base64 jpeg>" or "NOFRAME"
+#   check <target> <args>    what launch would decide, without starting anything: "OK<TAB>exe<TAB>args<TAB>dir<TAB>own<TAB>base"
+#                            (the program it resolved to, for launchr) or "ERR <reason>"
+#   launchr <exe> <args> <dir> <own 0|1> <base>   launch what a check resolved, with nothing left to look up
+#   viewers <n>              how many people are watching; the picture is only captured while n > 0
+#   keyframe                 the next picture sent is a whole one
 #   move|down|up <x> <y> [right] [+mods]   mouse, in frame pixels; mods is any of c s a (Ctrl, Shift, Alt) held during it
 #   click <x> <y>            down + up
 #   wheel <x> <y> <delta>    scroll (positive is up)
 #   copy <vk>                press Ctrl+<vk> (C or X) and answer "CLIP <base64 utf-8 text>" if the clipboard changed
 #   type <text>              characters, to whatever was clicked last
 #   key <vk> [mods]          one virtual key (Enter 13, Backspace 8, ...), with modifiers held (c s a)
-#   windows                  "WINDOWS pid:class:V|h:WxH ..." what exists on the private desktop
+#   status | focus | windows what is going on, for saying why nothing showed up
 #   quit                     end the app and exit (also happens when stdin closes)
+#
+# Between answers the helper also says, on its own:
+#   FRAME <W> <H> <x> <y> <w> <h> <whole 0|1> <n>   then n raw JPEG bytes: the picture is W x H and this JPEG is its
+#                            rectangle x,y,w,h (the whole picture when <whole> is 1). Sent only when something changed.
+#   EVENT closed             the app has no window left
 param([Parameter(Mandatory = $true)][string]$DesktopName)
 
-Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @'
+$NativeSource = @'
 using System;
 using System.Collections.Generic;
 using System.Drawing;
@@ -23,6 +34,8 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
+using System.Diagnostics;
 
 public class Native {
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -87,6 +100,8 @@ public class Native {
     [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint acc, bool inh, int pid);
     [DllImport("kernel32.dll")] static extern bool TerminateProcess(IntPtr p, uint code);
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+    [DllImport("msvcrt.dll")] static extern int memcmp(IntPtr a, IntPtr b, UIntPtr n);
+    [DllImport("kernel32.dll", EntryPoint = "RtlMoveMemory")] static extern void CopyMemory(IntPtr dst, IntPtr src, UIntPtr n);
 
     const uint WM_MOUSEMOVE = 0x0200, WM_LBUTTONDOWN = 0x0201, WM_LBUTTONUP = 0x0202,
                WM_RBUTTONDOWN = 0x0204, WM_RBUTTONUP = 0x0205, WM_MOUSEWHEEL = 0x020A,
@@ -97,6 +112,8 @@ public class Native {
     static IntPtr desktop, job, mainWindow, lastTarget, captured, launched;
     // Where the last picture sat on the private desktop: its top-left corner (physical pixels) and its scale, so a click
     // in the picture that was shown is mapped back to the place it was drawn from even if windows have moved since.
+    // Written by the capture thread, read by whichever thread handles an input, so always under geo.
+    static readonly object geo = new object();
     static int frameL, frameT;
     static double frameScale = 1.0;
     static bool haveFrame;
@@ -114,6 +131,20 @@ public class Native {
         foreach (var c in ImageCodecInfo.GetImageEncoders()) if (c.MimeType == "image/jpeg") jpeg = c;
         jpegQuality = new EncoderParameters(1);
         jpegQuality.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 80L);
+        stdout = Console.OpenStandardOutput();
+        capThread = new Thread(CaptureLoop) { IsBackground = true, Name = "capture" };
+        capThread.Start();
+    }
+
+    // ---- Output. Everything this helper says goes through here, under one lock: answers to commands come from the main
+    // thread and pictures from the capture thread, and a picture is a header line followed by raw bytes that nothing may
+    // be written into the middle of.
+    static System.IO.Stream stdout;
+    static readonly object outLock = new object();
+
+    public static void Reply(string line) {
+        byte[] b = Encoding.UTF8.GetBytes(line + "\n");
+        lock (outLock) { stdout.Write(b, 0, b.Length); stdout.Flush(); }
     }
 
     // The environment the app starts with: ours, minus what only makes sense for the process that launched us. An Electron
@@ -170,6 +201,8 @@ public class Native {
     // prompt that swallows the keyboard). Whatever is still there after that is terminated, including anything the app
     // handed off to.
     public static void Shutdown() {
+        stopCapture = true; wake.Set();
+        if (capThread != null && capThread.IsAlive) capThread.Join(1000);
         if (desktop != IntPtr.Zero) {
             foreach (var w in AppWindows()) PostMessage(w.H, 0x0010 /* WM_CLOSE */, IntPtr.Zero, IntPtr.Zero);
             for (int i = 0; i < 25 && AppWindows().Count > 0; i++) System.Threading.Thread.Sleep(100);
@@ -256,47 +289,174 @@ public class Native {
 
     // One picture of everything the app has on screen: every window, painted bottom to top at its own position, over
     // the smallest rectangle that holds them all. A menu or dialog is therefore visible, and clickable, like the rest.
-    public static string Frame() {
+    // The caller disposes it; null when the app has no window.
+    static Bitmap Compose() {
         var ws = AppWindows();
-        if (ws.Count == 0) return "NOFRAME";
+        if (ws.Count == 0) return null;
         LocateWindow();
         int l = int.MaxValue, t = int.MaxValue, r = int.MinValue, b = int.MinValue;
         foreach (var w in ws) { l = Math.Min(l, w.V.L); t = Math.Min(t, w.V.T); r = Math.Max(r, w.V.R); b = Math.Max(b, w.V.B); }
         double sc = Scale(mainWindow); // the main window's scale is the picture's, so a DPI-unaware app stays crisp
         int pw = (int)Math.Round((r - l) * sc), ph = (int)Math.Round((b - t) * sc);
-        if (pw <= 0 || ph <= 0 || pw > 8192 || ph > 8192) return "NOFRAME";
-        using (var bmp = new Bitmap(pw, ph, PixelFormat.Format24bppRgb))
-        using (var g = Graphics.FromImage(bmp)) {
-            g.Clear(Color.FromArgb(0x1b, 0x1b, 0x1b));
-            g.InterpolationMode = InterpolationMode.HighQualityBilinear;
-            // A popup's drop shadow and rounded corners capture as black; over the window beneath them they should show it.
-            var seeThrough = new ImageAttributes();
-            seeThrough.SetColorKey(Color.FromArgb(0, 0, 0), Color.FromArgb(4, 4, 4));
-            for (int i = ws.Count - 1; i >= 0; i--) {
-                var w = ws[i];
-                int bw = (int)Math.Round((w.R.R - w.R.L) * w.Sc), bh = (int)Math.Round((w.R.B - w.R.T) * w.Sc);
-                if (bw <= 0 || bh <= 0) continue;
-                using (var wb = new Bitmap(bw, bh, PixelFormat.Format24bppRgb)) {
-                    using (var wg = Graphics.FromImage(wb)) {
-                        IntPtr dc = wg.GetHdc();
-                        PrintWindow(w.H, dc, 2 /* PW_RENDERFULLCONTENT */);
-                        wg.ReleaseHdc(dc);
+        if (pw <= 0 || ph <= 0 || pw > 8192 || ph > 8192) return null;
+        var bmp = new Bitmap(pw, ph, PixelFormat.Format24bppRgb);
+        try {
+            using (var g = Graphics.FromImage(bmp)) {
+                g.Clear(Color.FromArgb(0x1b, 0x1b, 0x1b));
+                g.InterpolationMode = InterpolationMode.HighQualityBilinear;
+                // A popup's drop shadow and rounded corners capture as black; over the window beneath them they should show it.
+                var seeThrough = new ImageAttributes();
+                seeThrough.SetColorKey(Color.FromArgb(0, 0, 0), Color.FromArgb(4, 4, 4));
+                for (int i = ws.Count - 1; i >= 0; i--) {
+                    var w = ws[i];
+                    int bw = (int)Math.Round((w.R.R - w.R.L) * w.Sc), bh = (int)Math.Round((w.R.B - w.R.T) * w.Sc);
+                    if (bw <= 0 || bh <= 0) continue;
+                    using (var wb = new Bitmap(bw, bh, PixelFormat.Format24bppRgb)) {
+                        using (var wg = Graphics.FromImage(wb)) {
+                            IntPtr dc = wg.GetHdc();
+                            PrintWindow(w.H, dc, 2 /* PW_RENDERFULLCONTENT */);
+                            wg.ReleaseHdc(dc);
+                        }
+                        int sx = Math.Max(0, (int)Math.Round((w.V.L - w.R.L) * w.Sc)), sy = Math.Max(0, (int)Math.Round((w.V.T - w.R.T) * w.Sc));
+                        int sw = Math.Min(bw - sx, (int)Math.Round((w.V.R - w.V.L) * w.Sc)), sh = Math.Min(bh - sy, (int)Math.Round((w.V.B - w.V.T) * w.Sc));
+                        if (sw <= 0 || sh <= 0) continue;
+                        var dest = new Rectangle((int)Math.Round((w.V.L - l) * sc), (int)Math.Round((w.V.T - t) * sc),
+                                                 (int)Math.Round((w.V.R - w.V.L) * sc), (int)Math.Round((w.V.B - w.V.T) * sc));
+                        if (i == ws.Count - 1) g.DrawImage(wb, dest, sx, sy, sw, sh, GraphicsUnit.Pixel);
+                        else g.DrawImage(wb, dest, sx, sy, sw, sh, GraphicsUnit.Pixel, seeThrough);
                     }
-                    int sx = Math.Max(0, (int)Math.Round((w.V.L - w.R.L) * w.Sc)), sy = Math.Max(0, (int)Math.Round((w.V.T - w.R.T) * w.Sc));
-                    int sw = Math.Min(bw - sx, (int)Math.Round((w.V.R - w.V.L) * w.Sc)), sh = Math.Min(bh - sy, (int)Math.Round((w.V.B - w.V.T) * w.Sc));
-                    if (sw <= 0 || sh <= 0) continue;
-                    var dest = new Rectangle((int)Math.Round((w.V.L - l) * sc), (int)Math.Round((w.V.T - t) * sc),
-                                             (int)Math.Round((w.V.R - w.V.L) * sc), (int)Math.Round((w.V.B - w.V.T) * sc));
-                    if (i == ws.Count - 1) g.DrawImage(wb, dest, sx, sy, sw, sh, GraphicsUnit.Pixel);
-                    else g.DrawImage(wb, dest, sx, sy, sw, sh, GraphicsUnit.Pixel, seeThrough);
                 }
             }
-            frameL = l; frameT = t; frameScale = sc; haveFrame = true;
-            using (var ms = new System.IO.MemoryStream()) {
-                bmp.Save(ms, jpeg, jpegQuality);
-                return "FRAME " + pw + " " + ph + " " + Convert.ToBase64String(ms.ToArray());
+            lock (geo) { frameL = l; frameT = t; frameScale = sc; haveFrame = true; }
+            return bmp;
+        } catch { bmp.Dispose(); throw; }
+    }
+
+    // A click needs to know where the picture sat, so an input that arrives before the first capture takes one itself.
+    static void EnsureGeometry() {
+        bool have; lock (geo) have = haveFrame;
+        if (have) return;
+        using (var b = Compose()) { }
+    }
+
+    // ---- Capturing. A thread of its own looks at the app and says what changed, so nothing waits on it and a picture is
+    // never asked for: it is sent when, and only when, it differs from the last one sent - and then only the part that differs.
+
+    static volatile int viewers;
+    static volatile bool wantKey, stopCapture;
+    static long boostUntil, lastChange; // Stopwatch ticks
+    static readonly AutoResetEvent wake = new AutoResetEvent(false);
+    static Thread capThread;
+    static IntPtr prev; static int prevBytes, prevW, prevH;
+    static bool everHadWindow, closedSent; static long noWindowSince;
+
+    public static void SetViewers(int n) {
+        int old = viewers; viewers = n;
+        if (n > 0 && old == 0) wantKey = true; // somebody who has nothing on screen yet needs the whole picture
+        wake.Set();
+    }
+
+    public static void KeyFrame() { wantKey = true; wake.Set(); }
+
+    // Something was just sent to the app: look at the screen again at once, and often for a moment, so its reaction shows quickly.
+    public static void Kick() {
+        Interlocked.Exchange(ref boostUntil, Stopwatch.GetTimestamp() + Stopwatch.Frequency * 7 / 10);
+        wake.Set();
+    }
+
+    static void CaptureLoop() {
+        int delay = 50;
+        while (!stopCapture) {
+            bool woken = wake.WaitOne(delay);
+            if (stopCapture) break;
+            if (desktop == IntPtr.Zero || viewers <= 0) { delay = 200; continue; }
+            if (woken) Thread.Sleep(12); // whatever woke us was only just posted to the app; let it react before looking
+            bool sent;
+            try { sent = CaptureOnce(); } catch (Exception) { delay = 250; continue; }
+            long now = Stopwatch.GetTimestamp();
+            if (sent) { Interlocked.Exchange(ref lastChange, now); delay = 5; }
+            else if (now < Interlocked.Read(ref boostUntil)) delay = 15;
+            else {
+                double idle = (now - Interlocked.Read(ref lastChange)) / (double)Stopwatch.Frequency;
+                delay = idle < 0.6 ? 40 : (idle < 4 ? 100 : 250);
             }
         }
+    }
+
+    // Looks at the app once and sends what changed. False when nothing did.
+    static bool CaptureOnce() {
+        Bitmap bmp = Compose();
+        if (bmp == null) {
+            long now = Stopwatch.GetTimestamp();
+            if (everHadWindow && !closedSent) {
+                if (noWindowSince == 0) noWindowSince = now;
+                else if (now - noWindowSince > 2 * Stopwatch.Frequency) { closedSent = true; Reply("EVENT closed"); }
+            }
+            return false;
+        }
+        noWindowSince = 0; everHadWindow = true; closedSent = false;
+        using (bmp) {
+            int w = bmp.Width, h = bmp.Height;
+            bool full = wantKey || prev == IntPtr.Zero || prevW != w || prevH != h;
+            Rectangle r = new Rectangle(0, 0, w, h);
+            var bd = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
+            try {
+                if (!full) {
+                    if (!Diff(bd, w, h, out r)) return false;
+                    // A change over most of the picture is cheaper and cleaner to send whole than as one big patch.
+                    if ((long)r.Width * r.Height * 100 > (long)w * h * 55) { full = true; r = new Rectangle(0, 0, w, h); }
+                }
+                int need = bd.Stride * h;
+                if (prev == IntPtr.Zero || prevBytes != need) {
+                    if (prev != IntPtr.Zero) Marshal.FreeHGlobal(prev);
+                    prev = Marshal.AllocHGlobal(need); prevBytes = need;
+                }
+                CopyMemory(prev, bd.Scan0, (UIntPtr)need);
+                prevW = w; prevH = h;
+            } finally { bmp.UnlockBits(bd); }
+            wantKey = false;
+
+            byte[] data;
+            using (var ms = new System.IO.MemoryStream()) {
+                if (full) bmp.Save(ms, jpeg, jpegQuality);
+                else using (var part = bmp.Clone(r, PixelFormat.Format24bppRgb)) part.Save(ms, jpeg, jpegQuality);
+                data = ms.ToArray();
+            }
+            byte[] head = Encoding.ASCII.GetBytes("FRAME " + w + " " + h + " " + r.X + " " + r.Y + " " + r.Width + " " + r.Height + " " + (full ? 1 : 0) + " " + data.Length + "\n");
+            lock (outLock) { stdout.Write(head, 0, head.Length); stdout.Write(data, 0, data.Length); stdout.Flush(); }
+            return true;
+        }
+    }
+
+    // The rectangle of the picture that differs from the last one sent, grown to whole 16-pixel blocks so a JPEG patch
+    // has no seam where it meets what is already on the viewer's screen. False if nothing differs.
+    static bool Diff(BitmapData bd, int w, int h, out Rectangle dirty) {
+        int stride = bd.Stride, row = w * 3;
+        dirty = Rectangle.Empty;
+        int top = -1;
+        for (int y = 0; y < h; y++)
+            if (memcmp(IntPtr.Add(bd.Scan0, y * stride), IntPtr.Add(prev, y * stride), (UIntPtr)row) != 0) { top = y; break; }
+        if (top < 0) return false;
+        int bottom = top;
+        for (int y = h - 1; y > top; y--)
+            if (memcmp(IntPtr.Add(bd.Scan0, y * stride), IntPtr.Add(prev, y * stride), (UIntPtr)row) != 0) { bottom = y; break; }
+        int chunks = (w + 15) / 16, minC = chunks, maxC = -1;
+        for (int y = top; y <= bottom; y++) {
+            IntPtr a = IntPtr.Add(bd.Scan0, y * stride), b = IntPtr.Add(prev, y * stride);
+            for (int c = 0; c < minC; c++) {
+                int off = c * 48, n = Math.Min(48, row - off);
+                if (memcmp(IntPtr.Add(a, off), IntPtr.Add(b, off), (UIntPtr)n) != 0) { minC = c; break; }
+            }
+            for (int c = chunks - 1; c > maxC; c--) {
+                int off = c * 48, n = Math.Min(48, row - off);
+                if (memcmp(IntPtr.Add(a, off), IntPtr.Add(b, off), (UIntPtr)n) != 0) { maxC = c; break; }
+            }
+        }
+        if (maxC < 0) return false;
+        int x0 = minC * 16, x1 = Math.Min(w, (maxC + 1) * 16);
+        int y0 = top & ~15, y1 = Math.Min(h, (bottom | 15) + 1);
+        dirty = new Rectangle(x0, y0, x1 - x0, y1 - y0);
+        return true;
     }
 
     // Walks down to the innermost visible, enabled child under a screen point.
@@ -312,7 +472,7 @@ public class Native {
 
     // A position in the picture last shown, as a point on the private desktop.
     static POINT ScreenPoint(int x, int y) {
-        return new POINT { X = frameL + (int)Math.Round(x / frameScale), Y = frameT + (int)Math.Round(y / frameScale) };
+        lock (geo) return new POINT { X = frameL + (int)Math.Round(x / frameScale), Y = frameT + (int)Math.Round(y / frameScale) };
     }
 
     // The topmost of the app's windows that shows this point.
@@ -364,7 +524,7 @@ public class Native {
     // While a button is held, moves and the release go to the control that got the press, like mouse capture. mods is
     // any of c, s, a (Ctrl, Shift, Alt) held during this event.
     public static string Mouse(string kind, int x, int y, bool right, string mods) {
-        if (!haveFrame) Frame();
+        EnsureGeometry();
         POINT screen = ScreenPoint(x, y);
         IntPtr target = captured;
         if (target == IntPtr.Zero) {
@@ -393,7 +553,7 @@ public class Native {
     }
 
     public static string Wheel(int x, int y, int delta) {
-        if (!haveFrame) Frame();
+        EnsureGeometry();
         POINT screen = ScreenPoint(x, y);
         IntPtr top = WindowAt(screen);
         if (top == IntPtr.Zero) return "OK";
@@ -513,6 +673,29 @@ public class Native {
 }
 '@
 
+# Compiling the C# above takes seconds every time a helper starts, which is most of what starting an app used to cost. It is
+# compiled once, to a DLL named for a hash of the source (so a changed source is never mistaken for an old build), and loaded
+# from there afterwards. Two helpers starting together may both compile; each writes its own temporary file and the last
+# move wins, which is harmless because the contents are identical.
+if (-not ('Native' -as [type])) {
+    $bridgeDir = Join-Path $env:LOCALAPPDATA 'Flowera\bridge'
+    $hash = [BitConverter]::ToString([Security.Cryptography.SHA1]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($NativeSource))).Replace('-', '').Substring(0, 12)
+    $dll = Join-Path $bridgeDir "Native-$hash.dll"
+    if (-not (Test-Path -LiteralPath $dll)) {
+        try {
+            New-Item -ItemType Directory -Force -Path $bridgeDir | Out-Null
+            $tmp = "$dll.$PID.tmp"
+            Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition $NativeSource -OutputAssembly $tmp -OutputType Library
+            Move-Item -LiteralPath $tmp -Destination $dll -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        } catch { }
+    }
+    if (-not ('Native' -as [type])) {
+        if (Test-Path -LiteralPath $dll) { try { Add-Type -Path $dll } catch { } }
+        if (-not ('Native' -as [type])) { Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition $NativeSource }
+    }
+}
+
 # Apps that hand a second launch to the copy already running would open on the person's own desktop, which is exactly what
 # this bridge exists to avoid, so they get a profile of their own. That is every Chromium browser and every Electron app,
 # recognised by the runtime files that sit beside their executable (a versioned Chrome keeps them one folder down, so the
@@ -570,7 +753,9 @@ function Resolve-Packaged([string]$family, [string]$appId) {
 # A classic program registered under an explicit app model ID (Chrome, Brave, Discord) shows up as shell:AppsFolder\<id>
 # but is only a Start menu shortcut to an ordinary executable: find that shortcut by the name Windows lists it under.
 function Resolve-StartMenuShortcut([string]$appModelId) {
-    $entry = Get-StartApps | Where-Object { $_.AppID -eq $appModelId } | Select-Object -First 1
+    # Listed once per helper: a check asks about every app in the Start menu, and Get-StartApps is slow.
+    if ($null -eq $script:StartApps) { $script:StartApps = @(Get-StartApps) }
+    $entry = $script:StartApps | Where-Object { $_.AppID -eq $appModelId } | Select-Object -First 1
     if (-not $entry) { return $null }
     foreach ($root in @("$env:ProgramData\Microsoft\Windows\Start Menu\Programs", "$env:APPDATA\Microsoft\Windows\Start Menu\Programs")) {
         $found = Get-ChildItem -LiteralPath $root -Recurse -Filter ($entry.Name + '.lnk') -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -579,7 +764,51 @@ function Resolve-StartMenuShortcut([string]$appModelId) {
     return $null
 }
 
-function Resolve-Launch([string]$target, [string]$argLine) {
+# Whether a program that exists is nevertheless one that cannot be run on a private desktop, as text for the person; "" if it can.
+# Each of these was found to fail or to leak a window onto the visible desktop, so they are refused rather than offered.
+function Get-CannotRunHidden([string]$target) {
+    if (Test-Path -LiteralPath $target -PathType Container) { return 'This opens a folder, not a program.' }
+    $leaf = [IO.Path]::GetFileName($target).ToLower()
+    if ($leaf -eq 'wsl.exe' -or $leaf -eq 'wslg.exe') {
+        return 'This is a Linux app running in WSL. Windows shows those itself, on the visible desktop, so they cannot be hidden.'
+    }
+    # These only pass their work on - to the shell, which shows it on the visible desktop, or to a script with no window - so
+    # there is no app of their own to show.
+    if (@('control.exe', 'explorer.exe', 'rundll32.exe', 'cscript.exe', 'wscript.exe', 'msiexec.exe') -contains $leaf) {
+        return 'This only hands its work to Windows or a script host, which would show it on the visible desktop or not at all.'
+    }
+    $ext = [IO.Path]::GetExtension($target).ToLower()
+    if ($ext -ne '.exe' -and $ext -ne '.com' -and $ext -ne '.bat' -and $ext -ne '.cmd') {
+        return 'This is a document or a control-panel item, not a program that runs by itself.'
+    }
+    # A manifest that asks for administrator rights makes Windows show a prompt, which nobody can answer on a hidden desktop.
+    if ($ext -eq '.exe') {
+        try {
+            if ((Get-Item -LiteralPath $target -ErrorAction Stop).Length -le 64MB) {
+                $manifest = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($target))
+                if ($manifest.Contains('requireAdministrator') -or $manifest.Contains('highestAvailable')) {
+                    return 'This program asks Windows for administrator rights, and that prompt cannot be answered on a hidden desktop.'
+                }
+            }
+        } catch { }
+    }
+    return ''
+}
+
+# What a target really is: the program, its arguments and folder, or why it cannot run hidden. This is the slow part of a launch
+# (Get-StartApps, the Start menu, an app package's manifest, the program's own manifest), and it depends only on the target, so
+# it is worked out once per helper: checking every app in the Start menu warms it, and the launch that follows is instant.
+$ResolveCache = @{}
+
+function Resolve-Program([string]$target, [string]$argLine) {
+    $key = $target + "`t" + $argLine
+    if ($ResolveCache.ContainsKey($key)) { return $ResolveCache[$key] }
+    $r = Resolve-ProgramUncached $target $argLine
+    $ResolveCache[$key] = $r
+    return $r
+}
+
+function Resolve-ProgramUncached([string]$target, [string]$argLine) {
     if ($target -match '^shell:AppsFolder\\(\{[0-9A-Fa-f-]+\})\\(.+)$' -and $KnownFolders.ContainsKey($Matches[1].ToUpper())) {
         $target = Join-Path $KnownFolders[$Matches[1].ToUpper()] $Matches[2]
     }
@@ -603,15 +832,48 @@ function Resolve-Launch([string]$target, [string]$argLine) {
         if (-not $argLine) { $argLine = $s.Arguments }
     }
     if (-not (Test-Path -LiteralPath $target)) { return @{ Error = "Not found on this computer: $target" } }
+    $refusal = Get-CannotRunHidden $target
+    if ($refusal) { return @{ Error = $refusal } }
     # Never inherit our own working directory: it can be a \\wsl.localhost UNC path, which Electron apps reject.
     if (-not $workDir) { $workDir = [IO.Path]::GetDirectoryName($target) }
-    if ((Test-SingleInstanceApp $target) -and ($argLine -notlike '*user-data-dir*')) {
-        $base = [IO.Path]::GetFileNameWithoutExtension($target).ToLower()
-        $dir = Join-Path $ProfileRoot "$DesktopName-$base"
-        $argLine = (($argLine + " --user-data-dir=`"$dir`"").Trim())
-        if ($Browsers -contains $base -and $argLine -notlike '*no-first-run*') { $argLine += ' --no-first-run --no-default-browser-check' }
+    $base = [IO.Path]::GetFileNameWithoutExtension($target).ToLower()
+    return @{ Target = $target; Args = $argLine; WorkDir = $workDir; Base = $base; OwnProfile = ((Test-SingleInstanceApp $target) -and ($argLine -notlike '*user-data-dir*')) }
+}
+
+# Chromium keeps a "the last session did not end cleanly" mark in its profile, and shows a Restore bubble that takes the
+# keyboard for the whole window. A hidden app is ended by the control plane, sometimes without ceremony (a control plane that
+# restarts, a helper that dies), so the mark is cleared before each start rather than trusting the last one to have ended well.
+function Clear-CrashMark([string]$dir) {
+    foreach ($f in @((Join-Path $dir 'Default\Preferences'), (Join-Path $dir 'Local State'))) {
+        if (-not (Test-Path -LiteralPath $f)) { continue }
+        try {
+            $text = [IO.File]::ReadAllText($f)
+            $fixed = $text -replace '"exit_type"\s*:\s*"(Crashed|SessionEnded)"', '"exit_type":"Normal"' -replace '"exited_cleanly"\s*:\s*false', '"exited_cleanly":true'
+            if ($fixed -ne $text) { [IO.File]::WriteAllText($f, $fixed, (New-Object Text.UTF8Encoding($false))) }
+        } catch { }
     }
-    return @{ Target = $target; Args = $argLine; WorkDir = $workDir }
+}
+
+# The command line a resolved program is started with: its own profile for a browser or Electron app (per desktop), and the
+# flags that keep a first-run or restore prompt from taking the keyboard.
+function Complete-Launch($p) {
+    $argLine = $p.Args
+    if ($p.OwnProfile) {
+        $dir = Join-Path $ProfileRoot "$DesktopName-$($p.Base)"
+        $argLine = (($argLine + " --user-data-dir=`"$dir`"").Trim())
+        if ($Browsers -contains $p.Base) {
+            if ($argLine -notlike '*no-first-run*') { $argLine += ' --no-first-run --no-default-browser-check' }
+            $argLine += ' --disable-session-crashed-bubble --hide-crash-restore-bubble'
+        }
+        Clear-CrashMark $dir
+    }
+    return @{ Target = $p.Target; Args = $argLine; WorkDir = $p.WorkDir }
+}
+
+function Resolve-Launch([string]$target, [string]$argLine) {
+    $p = Resolve-Program $target $argLine
+    if ($p.Error) { return $p }
+    return Complete-Launch $p
 }
 
 # "<x> <y> [right] [+<mods>]", mods being any of c (Ctrl), s (Shift), a (Alt).
@@ -622,37 +884,59 @@ function Read-MouseArgs([string]$rest) {
     return @{ X = [int]$p[0]; Y = [int]$p[1]; Right = ($p -contains 'right'); Mods = $mods }
 }
 
+# Everything said to Flowera goes through Native.Reply, which keeps an answer from landing in the middle of a picture.
+function Reply([string]$text) { [Native]::Reply($text) }
+
 [Native]::Init()
 $stdin = [Console]::In
-$launched = $false
 try {
     while (($line = $stdin.ReadLine()) -ne $null) {
         $verb, $rest = $line.Split([char[]]@(" ", "`t"), 2)
         try {
             switch ($verb) {
+                "desktop" {
+                    if ($rest -match '^[A-Za-z0-9_]{1,48}$') { $script:DesktopName = $rest; Reply "OK" } else { Reply "ERR invalid desktop name" }
+                }
                 "launch" {
                     $f = $rest.Split("`t")
                     $r = Resolve-Launch $f[0] $(if ($f.Count -gt 1) { $f[1] } else { '' })
-                    if ($r.Error) { Write-Output "ERR $($r.Error)" }
-                    else { Write-Output ([Native]::Launch($DesktopName, $r.Target, $r.Args, $r.WorkDir)); $launched = $true }
+                    if ($r.Error) { Reply "ERR $($r.Error)" }
+                    else { Reply ([Native]::Launch($DesktopName, $r.Target, $r.Args, $r.WorkDir)) }
                 }
-                "frame" { Write-Output ([Native]::Frame()) }
-                "status" { Write-Output ("STATUS " + [Native]::Status()) }
-                "focus" { Write-Output ("FOCUS " + [Native]::FocusInfo()) }
-                "windows" { Write-Output ("WINDOWS " + [Native]::Windows()) }
-                "move"  { $m = Read-MouseArgs $rest; Write-Output ([Native]::Mouse("move", $m.X, $m.Y, $m.Right, $m.Mods)) }
-                "down"  { $m = Read-MouseArgs $rest; Write-Output ([Native]::Mouse("down", $m.X, $m.Y, $m.Right, $m.Mods)) }
-                "up"    { $m = Read-MouseArgs $rest; Write-Output ([Native]::Mouse("up", $m.X, $m.Y, $m.Right, $m.Mods)) }
-                "click" { $m = Read-MouseArgs $rest; [Native]::Mouse("down", $m.X, $m.Y, $false, $m.Mods) | Out-Null; Start-Sleep -Milliseconds 30; Write-Output ([Native]::Mouse("up", $m.X, $m.Y, $false, $m.Mods)) }
-                "wheel" { $p = $rest.Split(" "); Write-Output ([Native]::Wheel([int]$p[0], [int]$p[1], [int]$p[2])) }
-                "type"  { foreach ($c in $rest.ToCharArray()) { [Native]::TypeChar($c) }; Write-Output "OK" }
-                "copy"  { Write-Output ([Native]::Copy([int]$rest)) }
-                "key"   { $p = $rest.Split(" "); Write-Output ([Native]::Key([int]$p[0], $(if ($p.Count -gt 1) { $p[1] } else { "" }))) }
+                "check" {
+                    $f = $rest.Split("`t")
+                    $r = Resolve-Program $f[0] $(if ($f.Count -gt 1) { $f[1] } else { '' })
+                    if ($r.Error) { Reply "ERR $($r.Error)" }
+                    else { Reply ("OK`t" + $r.Target + "`t" + $r.Args + "`t" + $r.WorkDir + "`t" + [int]$r.OwnProfile + "`t" + $r.Base) }
+                }
+                "launchr" {
+                    # What a check already worked out: nothing is looked up, so this is as fast as starting the program.
+                    $f = $rest.Split("`t")
+                    if ($f.Count -lt 5) { Reply "ERR malformed launchr" }
+                    elseif (-not (Test-Path -LiteralPath $f[0] -PathType Leaf)) { Reply "ERR Not found on this computer: $($f[0])" }
+                    else {
+                        $l = Complete-Launch @{ Target = $f[0]; Args = $f[1]; WorkDir = $f[2]; OwnProfile = ($f[3] -eq '1'); Base = $f[4] }
+                        Reply ([Native]::Launch($DesktopName, $l.Target, $l.Args, $l.WorkDir))
+                    }
+                }
+                "viewers" { [Native]::SetViewers([int]$rest); Reply "OK" }
+                "keyframe" { [Native]::KeyFrame(); Reply "OK" }
+                "status" { Reply ("STATUS " + [Native]::Status()) }
+                "focus" { Reply ("FOCUS " + [Native]::FocusInfo()) }
+                "windows" { Reply ("WINDOWS " + [Native]::Windows()) }
+                "move"  { $m = Read-MouseArgs $rest; Reply ([Native]::Mouse("move", $m.X, $m.Y, $m.Right, $m.Mods)) }
+                "down"  { $m = Read-MouseArgs $rest; Reply ([Native]::Mouse("down", $m.X, $m.Y, $m.Right, $m.Mods)) }
+                "up"    { $m = Read-MouseArgs $rest; Reply ([Native]::Mouse("up", $m.X, $m.Y, $m.Right, $m.Mods)) }
+                "click" { $m = Read-MouseArgs $rest; [Native]::Mouse("down", $m.X, $m.Y, $false, $m.Mods) | Out-Null; Start-Sleep -Milliseconds 30; Reply ([Native]::Mouse("up", $m.X, $m.Y, $false, $m.Mods)) }
+                "wheel" { $p = $rest.Split(" "); Reply ([Native]::Wheel([int]$p[0], [int]$p[1], [int]$p[2])) }
+                "type"  { foreach ($c in $rest.ToCharArray()) { [Native]::TypeChar($c) }; Reply "OK" }
+                "copy"  { Reply ([Native]::Copy([int]$rest)) }
+                "key"   { $p = $rest.Split(" "); Reply ([Native]::Key([int]$p[0], $(if ($p.Count -gt 1) { $p[1] } else { "" }))) }
                 "quit"  { }
-                default { Write-Output "ERR unknown command" }
+                default { Reply "ERR unknown command" }
             }
-        } catch { Write-Output ("ERR " + $_.Exception.Message) }
-        [Console]::Out.Flush()
+        } catch { Reply ("ERR " + $_.Exception.Message) }
+        if ($verb -in @("move", "down", "up", "click", "wheel", "type", "key", "copy")) { [Native]::Kick() }
         if ($verb -eq "quit") { break }
     }
 } finally {

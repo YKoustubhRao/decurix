@@ -3,6 +3,8 @@ package desktop
 import (
 	"archive/tar"
 	"bytes"
+	"context"
+	"errors"
 	"io"
 	"net/url"
 	"os"
@@ -17,8 +19,25 @@ import (
 // testPack is the desktop the launcher tests write into.
 var testPack = packContext{DesktopID: "work-vm", Secret: []byte("0123456789abcdef0123456789abcdef")}
 
+// useHostChecker installs check as the host's verdict for the length of a test.
+func useHostChecker(t *testing.T, check HostAppChecker) {
+	t.Helper()
+	SetHostAppChecker(check)
+	t.Cleanup(func() { SetHostAppChecker(nil) })
+}
+
+// allowEverything is a host that says every program can run hidden.
+func allowEverything(_ context.Context, targets []winhost.Target) (map[winhost.Target]string, error) {
+	out := make(map[winhost.Target]string, len(targets))
+	for _, t := range targets {
+		out[t] = ""
+	}
+	return out, nil
+}
+
 func TestDetectHostApps(t *testing.T) {
-	items := DetectHostApps()
+	useHostChecker(t, allowEverything)
+	items := DetectHostAppsForce(true)
 	if len(items) == 0 {
 		t.Fatal("expected non-empty host app list")
 	}
@@ -293,10 +312,8 @@ func TestSelectedAppsPackaging(t *testing.T) {
 		id           string
 		expectedFile string
 	}{
-		{"chrome", "Desktop/chrome-host.desktop"},
-		{"edge", "Desktop/edge-host.desktop"},
-		{"youtube", "Desktop/youtube-host.desktop"},
-		{"vscode", "Desktop/code-host.desktop"},
+		{"claude", "Desktop/claude-host.desktop"},
+		{"chatgpt", "Desktop/chatgpt-host.desktop"},
 	}
 
 	for _, tc := range testCases {
@@ -754,5 +771,96 @@ func TestLauncherTokenIsBoundToTheAppItLaunches(t *testing.T) {
 	unsigned := hostGUIWrapper(packContext{DesktopID: "work-vm"}, "chrome", "Chrome", `C:\a.exe`, "")
 	if strings.Contains(unsigned, "token=") {
 		t.Fatal("a launcher written with no secret carries a token")
+	}
+}
+
+func windowsApp(name, hostCmd string) HostAppItem {
+	return HostAppItem{ID: "win_" + sanitizeAppSlug(name), Name: name, Detected: true, AppType: "windows_app", HostCmd: hostCmd}
+}
+
+func TestOnlyAppsTheHostCanRunHiddenAreOffered(t *testing.T) {
+	const uwp = `cmd.exe /c start explorer.exe shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App`
+	const paint = `cmd.exe /c start "" "C:\Windows\System32\mspaint.exe"`
+	useHostChecker(t, func(_ context.Context, targets []winhost.Target) (map[winhost.Target]string, error) {
+		out := map[winhost.Target]string{}
+		for _, tg := range targets {
+			if strings.Contains(tg.Target, "Calculator") {
+				out[tg] = "This is a Universal Windows (UWP) app"
+			} else {
+				out[tg] = ""
+			}
+		}
+		return out, nil
+	})
+
+	got := vetHostApps([]HostAppItem{
+		windowsApp("Calculator", uwp),
+		windowsApp("Paint", paint),
+	})
+	if len(got) != 1 || got[0].Name != "Paint" || got[0].Mode != ModeHostGUI {
+		t.Fatalf("offered %+v, want only Paint, run on the host", got)
+	}
+}
+
+func TestAnAppTheHostWasNeverAskedAboutIsNotOffered(t *testing.T) {
+	const paint = `cmd.exe /c start "" "C:\Windows\System32\mspaint.exe"`
+	apps := []HostAppItem{windowsApp("Paint", paint)}
+
+	useHostChecker(t, nil)
+	if got := vetHostApps(apps); len(got) != 0 {
+		t.Errorf("with no way to ask the host, offered %+v", got)
+	}
+
+	// A helper that dies partway keeps what it answered; the rest are not promised.
+	useHostChecker(t, func(context.Context, []winhost.Target) (map[winhost.Target]string, error) {
+		return nil, errors.New("the host helper ended")
+	})
+	if got := vetHostApps(apps); len(got) != 0 {
+		t.Errorf("after the host helper failed, offered %+v", got)
+	}
+}
+
+func TestAWebServiceOpensInTheVMWithoutAskingTheHost(t *testing.T) {
+	asked := false
+	useHostChecker(t, func(context.Context, []winhost.Target) (map[winhost.Target]string, error) {
+		asked = true
+		return nil, nil
+	})
+	got := vetHostApps([]HostAppItem{windowsApp("Claude", `cmd.exe /c start explorer.exe shell:AppsFolder\Anthropic.Claude_x!Claude`)})
+	if len(got) != 1 || got[0].Mode != ModeWeb {
+		t.Fatalf("offered %+v, want Claude opened as its web version", got)
+	}
+	if asked {
+		t.Error("the host was asked about an app that never runs there")
+	}
+}
+
+func TestAppsThatNeedSoundAreNotOffered(t *testing.T) {
+	useHostChecker(t, allowEverything)
+	got := vetHostApps([]HostAppItem{
+		windowsApp("Spotify", `cmd.exe /c start "" "C:\Users\a\AppData\Roaming\Spotify\Spotify.exe"`),
+		windowsApp("VLC media player", `cmd.exe /c start "" "C:\Program Files\VideoLAN\VLC\vlc.exe"`),
+	})
+	if len(got) != 0 {
+		t.Errorf("the VMs have no sound device, yet offered %+v", got)
+	}
+}
+
+func TestTheHostIsOnlyAskedAboutAnAppOnce(t *testing.T) {
+	calls := 0
+	useHostChecker(t, func(ctx context.Context, targets []winhost.Target) (map[winhost.Target]string, error) {
+		calls++
+		return allowEverything(ctx, targets)
+	})
+	apps := []HostAppItem{windowsApp("Paint", `cmd.exe /c start "" "C:\Windows\System32\mspaint.exe"`)}
+	vetHostApps(apps)
+	vetHostApps(apps)
+	if calls != 1 {
+		t.Errorf("host asked %d times for the same app, want 1", calls)
+	}
+	forgetHostVerdicts()
+	vetHostApps(apps)
+	if calls != 2 {
+		t.Errorf("after a rescan host asked %d times in all, want 2", calls)
 	}
 }
