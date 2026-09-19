@@ -8,11 +8,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
@@ -70,7 +73,13 @@ func TestHostBridgeExecHandlerCLI(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterLocalRoutes(mux)
 
-	payload := signedExecPayload(srv, "vm1", "echo", "hello-from-host-bridge")
+	// Windows has no echo program (it is a cmd.exe built-in, and cmd.exe is run detached as a GUI launcher), so there
+	// the check is that a plain program's output comes back.
+	cmd, args, want := "echo", []string{"hello-from-host-bridge"}, "hello-from-host-bridge"
+	if runtime.GOOS == "windows" {
+		cmd, args, want = "hostname", nil, ""
+	}
+	payload := signedExecPayload(srv, "vm1", cmd, args...)
 	req := httptest.NewRequest(http.MethodPost, "/api/host-bridge/exec", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -89,8 +98,8 @@ func TestHostBridgeExecHandlerCLI(t *testing.T) {
 	if !resp.Success {
 		t.Errorf("expected success=true, got error=%s", resp.Error)
 	}
-	if !strings.Contains(resp.Stdout, "hello-from-host-bridge") {
-		t.Errorf("expected output to contain hello-from-host-bridge, got %q", resp.Stdout)
+	if !strings.Contains(resp.Stdout, want) || strings.TrimSpace(resp.Stdout) == "" {
+		t.Errorf("expected output to contain %q, got %q", want, resp.Stdout)
 	}
 }
 
@@ -298,6 +307,9 @@ func execStatus(t *testing.T, srv *Server, body string) int {
 // A desktop's agent can call this endpoint over the Docker network, so nothing but a command a launcher was signed
 // for may run - not an unsigned one, not a signed one with an argument added, not another desktop's.
 func TestHostBridgeExecRefusesAnythingNotSigned(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("runs touch, which Windows does not have")
+	}
 	srv := &Server{}
 	marker := filepath.Join(t.TempDir(), "ran")
 
@@ -368,5 +380,27 @@ func TestHostBridgeOpenAndClipLimits(t *testing.T) {
 	big := `{"text":"` + strings.Repeat("a", maxHostClipBytes+10) + `"}`
 	if code := post("/api/host-bridge/clip", big); code != http.StatusBadRequest {
 		t.Errorf("an oversized clipboard write: got %d, want 400", code)
+	}
+}
+
+// An opener that fails must be reported as a failure: a control plane in a container has no xdg-open, and it used to
+// answer success for a link that was never opened.
+func TestStartAndWatchReportsAnOpenerThatFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses bash")
+	}
+	if err := startAndWatch(exec.Command("bash", "-c", "echo no opener here >&2; exit 3"), 5*time.Second); err == nil ||
+		!strings.Contains(err.Error(), "no opener here") {
+		t.Fatalf("a failing opener gave %v, want its error with what it printed", err)
+	}
+	if err := startAndWatch(exec.Command("bash", "-c", "exit 0"), 5*time.Second); err != nil {
+		t.Fatalf("an opener that worked gave %v", err)
+	}
+	// One still running after the wait is a browser that stays attached, not a failure.
+	if err := startAndWatch(exec.Command("bash", "-c", "sleep 5"), 100*time.Millisecond); err != nil {
+		t.Fatalf("an opener still running gave %v", err)
+	}
+	if err := startAndWatch(exec.Command("/no/such/opener"), time.Second); err == nil {
+		t.Fatal("an opener that could not be started was reported as working")
 	}
 }

@@ -234,6 +234,19 @@ func (s *Server) hostBridgeExecHandler(w http.ResponseWriter, r *http.Request) {
 // If display is non-empty, the command is configured to direct its GUI/X11 rendering to that display
 // (e.g. tunneling display back to the desktop container's X11 server).
 func createHostCmd(ctx context.Context, display, cmdStr string, args ...string) *exec.Cmd {
+	// A Windows program is on the host already: run the program itself. There is no bash to wrap it in (and a bash
+	// that a WSL install puts on PATH would run it inside Linux), and going without a shell means no quoting to get wrong.
+	if runtime.GOOS == "windows" {
+		var cmd *exec.Cmd
+		if ctx != nil {
+			cmd = exec.CommandContext(ctx, cmdStr, args...)
+		} else {
+			cmd = exec.Command(cmdStr, args...)
+		}
+		cmd.Stdin = strings.NewReader("")
+		return cmd
+	}
+
 	fullCmd := strings.TrimSpace(cmdStr)
 	if len(args) > 0 {
 		var quoted []string
@@ -339,32 +352,58 @@ func (s *Server) hostBridgeOpenHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var openCmd string
+	var cmd *exec.Cmd
 	switch {
+	case runtime.GOOS == "windows":
+		// The URL protocol handler, not cmd.exe's start: no shell parses the link, so the & of a query string stays one.
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
 	case runtime.GOOS == "darwin":
-		openCmd = fmt.Sprintf("open %q", target)
-	case runtime.GOOS == "windows" || desktop.IsWSLOrWindows():
-		openCmd = fmt.Sprintf(`cmd.exe /c start "" %q`, target)
+		cmd = createHostCmd(nil, "", fmt.Sprintf("open %q", target))
+	case desktop.IsWSLOrWindows():
+		cmd = createHostCmd(nil, "", fmt.Sprintf(`cmd.exe /c start "" %q`, target))
 	default:
-		openCmd = fmt.Sprintf("xdg-open %q", target)
+		cmd = createHostCmd(nil, "", fmt.Sprintf("xdg-open %q", target))
 	}
 
-	cmd := createHostCmd(nil, "", openCmd)
-
-	if err := cmd.Start(); err != nil {
+	if err := startAndWatch(cmd, hostOpenWait); err != nil {
 		log.Printf("host-bridge: open %s failed: %v", target, err)
 		http.Error(w, "could not open target on host: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	go func() {
-		_ = cmd.Wait()
-	}()
-
 	jsonResponse(w, map[string]interface{}{
 		"success": true,
 		"target":  target,
 	})
+}
+
+// hostOpenWait is how long an opener gets to fail before it is taken to have worked. Openers hand the link to a browser
+// and return at once, so one that has not finished by then is a browser that is staying attached, not a failure.
+const hostOpenWait = 3 * time.Second
+
+// startAndWatch starts cmd and reports a failure that shows up within wait: it could not be started, or it exited with an
+// error (a control plane in a container has no xdg-open, which used to be answered with success). A command still running
+// after wait is left to finish on its own.
+func startAndWatch(cmd *exec.Cmd, wait time.Duration) error {
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			if msg := strings.TrimSpace(stderr.String()); msg != "" {
+				return fmt.Errorf("%w: %s", err, msg)
+			}
+			return err
+		}
+		return nil
+	case <-time.After(wait):
+		return nil
+	}
 }
 
 // maxHostClipBytes bounds what a desktop can put on the host's clipboard in one request.

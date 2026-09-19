@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -27,7 +28,16 @@ import (
 // it appends every received line to.
 func hostGUIServer(t *testing.T, launchReply string) (*Server, string) {
 	t.Helper()
-	log := t.TempDir() + "/received.log"
+	if runtime.GOOS == "windows" {
+		t.Skip("the helper is faked with bash")
+	}
+	// Not t.TempDir(): the fake helper can still be appending a line when the test ends, and the harness's own removal of
+	// a folder that is being written into fails the test. Removing it here, after the helper is stopped, does not care.
+	dir, err := os.MkdirTemp("", "hostgui")
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := dir + "/received.log"
 	script := `while IFS= read -r l; do
   printf '%s\n' "$l" >> '` + log + `'
   case "$l" in
@@ -46,7 +56,11 @@ done`
 			return exec.Command("bash", "-c", script), nil
 		})
 	})
-	t.Cleanup(srv.StopHostGUI)
+	t.Cleanup(func() {
+		srv.StopHostGUI()
+		time.Sleep(50 * time.Millisecond)
+		os.RemoveAll(dir)
+	})
 	return srv, log
 }
 

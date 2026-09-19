@@ -3,6 +3,7 @@ package winhost
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -40,8 +41,12 @@ func TestSecretIsCreatedOnceAndKeptPrivate(t *testing.T) {
 	if err != nil || string(again) != string(first) {
 		t.Fatal("the key changed between loads: every launcher already written would stop working")
 	}
-	if fi, err := os.Stat(filepath.Join(dir, secretFile)); err != nil || fi.Mode().Perm() != 0o600 {
-		t.Fatalf("key file mode = %v (%v), want 0600", fi.Mode().Perm(), err)
+	// Windows has no mode bits to check: there a file is private through the ACL its folder gives it (the data
+	// folder is under the user's own profile), not through 0600.
+	if fi, err := os.Stat(filepath.Join(dir, secretFile)); err != nil {
+		t.Fatal(err)
+	} else if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
+		t.Fatalf("key file mode = %v, want 0600", fi.Mode().Perm())
 	}
 	other, _ := LoadSecret(t.TempDir())
 	if string(other) == string(first) {

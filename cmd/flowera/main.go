@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -396,7 +397,15 @@ func main() {
 	scheduler := &schedule.Runner{Store: schedules, Submitter: server}
 	go scheduler.Run(context.Background())
 
-	addrs := primaryListenAddrs(func() []string { return desktops.GatewayIPs(context.Background()) })
+	addrs := primaryListenAddrs(func() []string {
+		// Only Linux has Docker's bridge gateways as addresses of its own to bind. On macOS and Windows Docker runs in
+		// a VM: those addresses exist only inside it, binding them fails, and host.docker.internal already lands on
+		// loopback there.
+		if runtime.GOOS != "linux" {
+			return nil
+		}
+		return desktops.GatewayIPs(context.Background())
+	})
 	log.Printf("Desktop manager listening on %s", strings.Join(addrs, ", "))
 
 	handler := httpapi.RefuseForwarded(httpapi.GzipMiddleware(mux))

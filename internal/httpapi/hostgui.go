@@ -92,20 +92,38 @@ func (s *Server) StopHostGUI() {
 	s.hostGUI().StopAll()
 }
 
+// hostGUISupported reports whether this control plane can run the Windows helper at all: on Windows itself, or on
+// Linux reaching Windows through WSL. A Mac or an ordinary Linux machine has no private Win32 desktop to run an app on.
+func hostGUISupported() bool {
+	return desktop.IsWSLOrWindows()
+}
+
+// writeHostGUIScript puts bridge.ps1 in dir (unless it is already there, unchanged) and returns its path.
+func writeHostGUIScript(dir string) (string, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("prepare host helper: %w", err)
+	}
+	script := filepath.Join(dir, "bridge.ps1")
+	if old, err := os.ReadFile(script); err != nil || !bytes.Equal(old, winhost.Script) {
+		if err := os.WriteFile(script, winhost.Script, 0o644); err != nil {
+			return "", fmt.Errorf("write host helper: %w", err)
+		}
+	}
+	return script, nil
+}
+
 // hostGUIStarter returns the command that runs the Windows helper script on the host, keeping its stdin open so the
 // control plane can drive it.
 func hostGUIStarter(ctx context.Context, desktopName string) (*exec.Cmd, error) {
-	if runtime.GOOS == "windows" || !desktop.IsWSLOrWindows() {
-		return nil, errors.New("Windows apps can only be shown when Flowera runs on Windows (through WSL)")
+	if !hostGUISupported() {
+		return nil, errors.New("Windows apps can only be shown when Flowera runs on a Windows computer")
 	}
-	if err := os.MkdirAll(hostGUIDir, 0o755); err != nil {
-		return nil, fmt.Errorf("prepare host helper: %w", err)
+	if runtime.GOOS == "windows" {
+		return nativeHostGUICmd(ctx, desktopName)
 	}
-	script := filepath.Join(hostGUIDir, "bridge.ps1")
-	if old, err := os.ReadFile(script); err != nil || !bytes.Equal(old, winhost.Script) {
-		if err := os.WriteFile(script, winhost.Script, 0o644); err != nil {
-			return nil, fmt.Errorf("write host helper: %w", err)
-		}
+	script, err := writeHostGUIScript(hostGUIDir)
+	if err != nil {
+		return nil, err
 	}
 	// desktopName is already reduced to [A-Za-z0-9_] by winhost, so it is safe in a shell word.
 	shell := fmt.Sprintf(`PATH="$PATH:/mnt/c/Windows/System32:/mnt/c/Windows/System32/WindowsPowerShell/v1.0" `+
@@ -113,10 +131,24 @@ func hostGUIStarter(ctx context.Context, desktopName string) (*exec.Cmd, error) 
 	return hostShellCmd(ctx, shell), nil
 }
 
+// nativeHostGUICmd runs the helper directly, for a control plane that is itself a Windows program: no shell and no
+// path translation, just Windows PowerShell 5.1 (the one every Windows machine has) on a script in the temp folder.
+func nativeHostGUICmd(ctx context.Context, desktopName string) (*exec.Cmd, error) {
+	ps := desktop.PowershellExe()
+	if ps == "" {
+		return nil, errors.New("Windows PowerShell was not found on this computer")
+	}
+	script, err := writeHostGUIScript(filepath.Join(os.TempDir(), "flowera-winhost"))
+	if err != nil {
+		return nil, err
+	}
+	return exec.CommandContext(ctx, ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-DesktopName", desktopName), nil
+}
+
 // warmHostGUI starts (or keeps) the helper the next host app will run in. It only makes sense where host apps can run at
-// all, which is Windows through WSL.
+// all: on Windows, or on Linux reaching Windows through WSL.
 func (s *Server) warmHostGUI() {
-	if runtime.GOOS == "windows" || !desktop.IsWSLOrWindows() {
+	if !hostGUISupported() {
 		return
 	}
 	s.hostGUI().Warm()
