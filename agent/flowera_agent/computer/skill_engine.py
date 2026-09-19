@@ -1,4 +1,4 @@
-from flowera_agent.computer import core, learning, replay, skills
+from flowera_agent.computer import escalation, core, learning, replay, skills
 from flowera_agent.computer import elements as el
 from flowera_agent.computer.errors import ComputerError
 
@@ -105,8 +105,14 @@ def run(skill, params=None, start=1):
             return _refusal(skill, f"it begins from {', '.join(replay.describe_check(c) for c in checks)}, but "
                                    f"{replay._screen_brief(observation)}. Put the screen where it begins, or ask the human")
 
+    # The engine running this is itself the model, and there is no person to
+    # ask - so only healing's own rung: a control that has plainly been
+    # renamed is found, and anything less halts as it always did. Nothing is
+    # kept from it: a skill is rewritten by a person's correction or by a run
+    # skill_task did, never by an engine's.
     program, expanded = skills.expand(skill, values)
-    result = replay.run(program, params=expanded, start=start)
+    result = replay.run(program, params=expanded, start=start,
+                        ladder=escalation.Ladder(ask_model=None, goal=skill.get("title") or "", total=len(program["steps"])))
 
     if result["outcome"] in replay.SUCCESS:
         skills.note_run(skill["name"])

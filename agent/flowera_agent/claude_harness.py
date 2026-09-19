@@ -336,6 +336,35 @@ def _run_claude(prompt, resume_session_id=None):
     return result, None
 
 
+def ask_once(system, prompt):
+    """
+    One question to Claude with every tool switched off: what the computer
+    layer's grounder and judge (computer/escalation.py) use. Answers with the
+    reply text, or raises RuntimeError - a caller treats "could not ask" as
+    "not sure", never as a yes.
+    """
+
+    cmd = ["claude", "-p", prompt, "--output-format", "json", "--tools", "",
+           "--max-budget-usd", "0.25", "--append-system-prompt", system]
+
+    try:
+        done = subprocess.run(cmd, cwd=str(config.WORK_DIR), capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"could not ask claude: {exc}")
+
+    try:
+        result = json.loads(done.stdout)
+    except ValueError:
+        raise RuntimeError((done.stderr or done.stdout or f"claude exited with code {done.returncode}").strip()[:300])
+
+    _record_usage(result)
+
+    if result.get("is_error") or not isinstance(result.get("result"), str):
+        raise RuntimeError(str(result.get("result") or "claude returned no answer")[:300])
+
+    return result["result"]
+
+
 def _record_usage(result):
     """
     Add one Claude Code run's spend to the task's totals. Each run - the

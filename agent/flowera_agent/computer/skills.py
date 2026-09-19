@@ -4,7 +4,7 @@ import os
 import re
 from pathlib import Path
 
-from flowera_agent.computer import replay
+from flowera_agent.computer import experience, replay
 
 
 # ============================================================
@@ -351,6 +351,7 @@ def summary(skill, detail=False):
         "learned_at": skill.get("learned_at"),
         "steps": len(steps),
         "gated": sum(1 for s in steps if s.get("consequential")),
+        "health": experience.health(skill),
         "by_hand": sum(1 for s in steps if s["kind"] == "manual"),
         "params": [{"name": p["name"], "label": p["label"], "list": bool(p.get("list")), "example": p.get("example")}
                    for p in required(skill)],

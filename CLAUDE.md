@@ -315,7 +315,11 @@ desktop container (flowera-desktop:{basic,developer,ai})
         │                     replay.py (compile + run a recording with no model), and the
         │                     skills (see "Skills" below): learning.py (demonstrations ->
         │                     a draft skill, its questions, reading the answers), skills.py
-        │                     (the store, ~/.flowera/skills/<name>.json)
+        │                     (the store, ~/.flowera/skills/<name>.json), and what runs
+        │                     teach it (see "Skills that heal, escalate and learn" below):
+        │                     healing.py (re-find a control that was renamed or moved),
+        │                     escalation.py (the ladder: heal, ask the engine, ask a person),
+        │                     experience.py (what a successful run keeps)
         ├─ record_task.py  — "/record <task>" opens a ticket: dispatched by the watcher instead
         │                     of the harness, holds the task open (module-private state, the way
         │                     replay_task.py holds its params) until end() finishes it, reports as
@@ -474,6 +478,29 @@ person records (a ticket, or several)        the recordings the desktop already 
 - **A `/learn` conversation is a task that is not an attempt**: `tasks.Classify` types it `teaching` and `tasks.Report` skips it like a demonstration, because every question it asks is the point and not a person stepping in. A `/skill` run is `screen` and *is* counted: a skill that had to ask something is, correctly, not autonomous.
 - **Verified live, not just in tests** (`bench/skills/e2e.py`): a real `flowera-desktop:basic` container running this tree's agent, a mock control plane on the host catching its questions, and real Chromium on a local form. The agent records two demonstrations of a task through `gui`; `/learn` on both asks two questions (when it is finished, and whether to save — it learned from the two demonstrations that the name changes, and dropped the "Saved <name>" check that differed between them); `/skill` asks for the value and the page really shows it; after the form's button is renamed the skill stops and asks, `use "Save changes"` finishes the run, and the correction is in the saved skill. Run it after touching the agent side; it needs Docker and a built image and takes about two minutes.
 - Not built, on purpose: pulling a parameter's value out of a chat sentence ("pay the invoice for Globex"). Without a model that is a guess, and with one it would still have to be confirmed with the person — one round trip, the same as just asking — so a skill asks (`param="value"` skips the question). Also not built: a dashboard-card entry point (the Skills page is reached from the Recordings page, and the chat commands work everywhere).
+
+### Skills that heal, escalate and learn
+
+Exact replay halts the moment a control is not where it was recorded. A skill run (`/skill`, skill_task) now has a ladder in front of that halt, and a memory behind it - Orby's planner/grounder split and "observe, learn, automate" loop on the parts above. Opt-in per `replay.run(..., ladder=)`: `/replay` and a bare `replay.run` still halt exactly as before, so a recording replays *as recorded* and only a taught skill adapts.
+
+```
+step's target not found as recorded
+  1. heal    healing.rank/decide  score each candidate on name, container, neighbours, position, role;
+                                  take one only if it clears ACCEPT *and* leads the runner-up by MARGIN
+  2. ground  escalation.Ladder    ask this desktop's own engine (harness.ask_model) to choose among
+                                  the numbered candidates, or say 0
+  3. ask     skill_task           the candidates numbered, what was tried, "reply 1"; one word answers it
+```
+
+- **A guess never passes for a match.** Confident needs the score, the label similarity and the lead to each clear a bar. A containing label scores 0.75 on purpose ("Delete" vs "Delete all" are different actions), so a name alone never suffices; position, container and neighbours have to agree. Letter-overlap only counts for near-typos (ratio >= 0.8) - `save` vs `archive` reaches 0.6 otherwise, found by a test that "healed" it.
+- **A step that could do harm is strict** (`healing.strict`: approval-gated, or optional): needs 0.85 with a label of 0.85+, so a synonym rename can never heal it, and it **never reaches the engine**. The approval gate in `core.act` is not on the ladder and nothing here can grant one; a yes is still one action's. `_approval_text` only tells the person more (what the step does, what it would type, what it led to when recorded, whether the control was found by a repair).
+- **The engine is a grounder, not an agent.** `harness.ask_model(system, prompt)` is one question, no history, no tools (`claude -p --tools ""`, or Ollama `/api/chat`; TheBot has no single-question endpoint so it asks the Ollama it already uses) - and `harness.py` is still the only file that branches on the engine. It picks from the list the screen actually has; a choice outside it, prose instead of JSON, confidence under 0.75, a timeout or no engine at all is "not sure" and drops to the person. `FLOWERA_ESCALATION_MODEL_CALLS` (default 3 per run, 0 disables) bounds it - on a CPU host an abandoned request keeps evaluating (see the Ollama gotcha), so a run must not fire an unbounded chain. It is only offered while `state.backend_ready`. The two system prompts are constants so Ollama's prefix cache carries.
+- **A result that is not there exactly can be *judged*.** `Ladder.judge` asks the engine whether the screen shows the step did its job (needs 0.85). That is a judgement, not a check: such a step counts as unverified, so the run ends `completed_unverified` and says "took the screen's word for step N" - `replay.py` still never reports a success it did not see. Never for a `consequential` step, whose missing result stays `reconciliation_required`.
+- **Learning (`experience.commit`) keeps a lesson only if the run then succeeded** - the rule `_retarget` already had, made general. A repair the screen confirmed (the step's expected result appeared) becomes an `alternates` entry at once; one nothing confirmed must repeat `PROMOTE_AFTER` (2) times; a control a person picked is kept by `_retarget`, which now files the old name as an alternate too. `locate` (box + neighbours) is refreshed only from a step found as recorded or a repair the screen confirmed. A run that stopped or failed records history *on a fresh copy read from disk* (`skill_task._settle`) - the run's own copy holds corrections not yet shown to work.
+- **A skill reports its own wear.** `experience.health`: a step that needed a repair or a person in 3 of its last 5 runs is *fragile*; `_finish` appends "record it again and `/learn` it", and `skills.summary` carries `health`.
+- **Ingestion keeps what healing needs.** `compile_program` adds `step["locate"]` (the recorded box and screen size, beside the target so nothing comparing targets changes) and `phase`/`phase_label` (a change of window starts a phase), which a question shows as "Part 2 of 3: Customers". The container names come from the target's own path.
+- **An engine running `gui do` gets healing only** (`skill_engine.run`, no model, no person) and keeps nothing: a skill is rewritten by a person's correction or by a `skill_task` run, never by an engine's.
+- **Not built, on purpose: a standing approval** ("always allow this"). It would be the skill switching off the gate, which the section above forbids; the richer approval text is the safe half of it. **Not verified live:** the engine calls (`ask_once` for Claude in particular) and the ladder against a real desktop - the unit tests script the engine and the screen, `bench/skills/e2e.py` has not been extended to a renamed control. Do that before relying on the model rungs.
 
 The benchmark is `bench/gui/`: 20 tasks (12 in a web admin panel, 5 in LibreOffice, 3 in GTK apps, 3 of them approval checks), fixtures and outcome checks that run inside a desktop (`fixtures/bench.py`), and `run.py`, which drives each engine through the control plane's chat API on a fresh desktop and reports success rate per engine. `--engine oracle --container <desktop>` runs each task's scripted `gui` solution with no model — the proof that a task is solvable and its check is right. Results go to `bench/gui/results/` (gitignored).
 
