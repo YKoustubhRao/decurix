@@ -1,10 +1,14 @@
 // Package winhost runs a Windows application on a private desktop of the host machine, so it has no window on
-// the person's own screen, and lets the control plane see it (a stream of JPEG frames) and drive it (mouse and
+// the person's own screen, and lets the control plane see it (a stream of JPEG patches) and drive it (mouse and
 // keyboard) - which is how a desktop VM can show and operate an app that is really running on the host.
 //
 // The Windows half is bridge.ps1, embedded here. It is spoken to over the stdin/stdout of the process that runs
 // it and listens on no port, so nothing but the Manager that started it can reach the app. The package depends
 // on nothing else in Flowera: how the script is run on the host is the Starter's business.
+//
+// Starting an app is fast because nothing slow happens after the person asks for it: a helper is kept running and
+// warm (compiled, with what it learned about the Start menu), an app is launched into it, and the helper - not a
+// request/response loop - pushes what changes on screen as it changes, only the part of the picture that differs.
 package winhost
 
 import (
@@ -33,41 +37,70 @@ var Script []byte
 // desktopName, with stdin and stdout left free for the Manager to wire up.
 type Starter func(ctx context.Context, desktopName string) (*exec.Cmd, error)
 
-// Frame is one capture of the app's window.
-type Frame struct {
-	JPEG []byte
-	W, H int
-	// Seq grows by one each time the picture actually changes.
-	Seq uint64
+// Update is one thing the app's window did: the picture is W x H, and JPEG is its rectangle X,Y,Rw x Rh. When Whole is
+// set that rectangle is the entire picture, so a viewer that has it needs nothing before it.
+type Update struct {
+	W, H   int
+	X, Y   int
+	Rw, Rh int
+	Whole  bool
+	JPEG   []byte
 }
 
 // Timings, variables so tests can shorten them.
 var (
 	requestTimeout = 20 * time.Second
 	launchTimeout  = 30 * time.Second
-	frameInterval  = 120 * time.Millisecond
-	// A session is only captured while somebody has touched it this recently...
-	activeWindow = 8 * time.Second
-	// ...and is ended, taking the app with it, once nobody has for this long.
+	// A session nobody is watching or driving is ended, taking the app with it, once this long has passed.
 	idleStop = 90 * time.Second
+	// A warm helper that nobody has asked for is let go after this long, so a feature nobody uses holds no memory. Anything
+	// that suggests an app is about to be wanted (the create dialog, a copy) starts the clock again.
+	spareTTL = 2 * time.Hour
+	// How often an app that has not shown a window yet is asked whether it is still running.
+	statusPoll = 700 * time.Millisecond
 )
 
 var unsafeName = regexp.MustCompile(`[^a-zA-Z0-9_]`)
 
-// Manager owns the running sessions, one per id.
+// Manager owns the running sessions, one per id, and one warm helper for the next.
 type Manager struct {
 	start Starter
 
 	mu       sync.Mutex
 	sessions map[string]*Session
+	starting map[string]*startCall
+	spare    *Session
+	spareTmr *time.Timer
+	helpers  int
+	closed   bool
+	warming  sync.WaitGroup // background helper starts still in flight
+	// resolved remembers what a check found each program to be, so a launch never has to look it up (the slow part), and
+	// stays valid when the helper that did the looking is replaced.
+	resolved map[Target]resolvedProgram
+}
+
+// resolvedProgram is what the helper's check worked out for a target.
+type resolvedProgram struct {
+	exe, args, dir, own, base string
+}
+
+func (r resolvedProgram) line() string {
+	return "launchr\t" + r.exe + "\t" + r.args + "\t" + r.dir + "\t" + r.own + "\t" + r.base
+}
+
+// startCall is a Start in progress, so a second request for the same app waits for it instead of launching another.
+type startCall struct {
+	done chan struct{}
+	s    *Session
+	err  error
 }
 
 // NewManager returns a Manager that runs its helper processes through start.
 func NewManager(start Starter) *Manager {
-	return &Manager{start: start, sessions: make(map[string]*Session)}
+	return &Manager{start: start, sessions: make(map[string]*Session), starting: make(map[string]*startCall), resolved: make(map[Target]resolvedProgram)}
 }
 
-// Get returns the live session with this id.
+// Get returns the running session for id.
 func (m *Manager) Get(id string) (*Session, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -79,15 +112,108 @@ func (m *Manager) Get(id string) (*Session, bool) {
 	return s, ok
 }
 
-// Alive reports whether a session with this id is running.
+// Alive reports whether session id is running.
 func (m *Manager) Alive(id string) bool {
 	_, ok := m.Get(id)
 	return ok
 }
 
-// Start launches target (with args) as session id, or returns the one already running under that id. It waits
-// for the app's first window, so a returned session always has a frame; an app that exits or never opens one
-// is an error rather than a blank screen.
+// helper returns a helper process that is up and answering and has no app: the warm spare if there is one, otherwise a
+// new one. Whoever takes it owns it.
+func (m *Manager) helper(ctx context.Context) (*Session, error) {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return nil, errors.New("the host app manager has been shut down")
+	}
+	h := m.spare
+	m.spare = nil
+	if m.spareTmr != nil {
+		m.spareTmr.Stop()
+		m.spareTmr = nil
+	}
+	m.helpers++
+	n := m.helpers
+	m.mu.Unlock()
+	if h != nil && h.Alive() {
+		return h, nil
+	}
+	if h != nil {
+		h.Stop()
+	}
+
+	// The helper outlives this request, so it must not be tied to the request's context.
+	cmd, err := m.start(context.Background(), fmt.Sprintf("flowera_helper_%d", n))
+	if err != nil {
+		return nil, err
+	}
+	s, err := newSession("helper", cmd)
+	if err != nil {
+		return nil, err
+	}
+	// The first answer only comes once the script has loaded and is listening.
+	if _, err := s.Do("viewers 0"); err != nil {
+		s.Stop()
+		return nil, err
+	}
+	return s, nil
+}
+
+// keepWarm puts an unused helper back to wait for the next app, or ends it if one is already waiting.
+func (m *Manager) keepWarm(h *Session) {
+	if h == nil || !h.Alive() {
+		return
+	}
+	m.mu.Lock()
+	if m.closed || m.spare != nil { // shut down meanwhile, or one is already waiting: this one would only hold memory
+		m.mu.Unlock()
+		h.Stop()
+		return
+	}
+	m.spare = h
+	m.spareTmr = time.AfterFunc(spareTTL, func() {
+		m.mu.Lock()
+		if m.spare != h {
+			m.mu.Unlock()
+			return
+		}
+		m.spare, m.spareTmr = nil, nil
+		m.mu.Unlock()
+		h.Stop()
+	})
+	m.mu.Unlock()
+}
+
+// Warm makes sure a helper is up and waiting for the next app, so nobody waits for one: it starts one in the background if
+// there is none, and if there is one it keeps it another spareTTL. Call it whenever an app is likely to be wanted soon - the
+// control plane starting, someone choosing apps to copy, a desktop being created - and it returns at once.
+func (m *Manager) Warm() {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	if m.spare != nil {
+		if m.spareTmr != nil {
+			m.spareTmr.Reset(spareTTL)
+		}
+		m.mu.Unlock()
+		return
+	}
+	m.warming.Add(1)
+	m.mu.Unlock()
+	go func() {
+		defer m.warming.Done()
+		h, err := m.helper(context.Background())
+		if err != nil {
+			return
+		}
+		m.keepWarm(h)
+	}()
+}
+
+// Start launches an app on its own private desktop under session id and returns once its window has shown, or joins the
+// session already running under that id.
 func (m *Manager) Start(ctx context.Context, id, target, args string) (*Session, error) {
 	if strings.ContainsAny(target+args, "\r\n") || strings.Contains(target, "\t") || strings.TrimSpace(target) == "" {
 		return nil, errors.New("invalid application to start")
@@ -99,42 +225,162 @@ func (m *Manager) Start(ctx context.Context, id, target, args string) (*Session,
 		m.mu.Unlock()
 		return s, nil
 	}
+	// A viewer that loads twice, or two windows opened at once, must not launch the app twice on one desktop.
+	if c, ok := m.starting[id]; ok {
+		m.mu.Unlock()
+		select {
+		case <-c.done:
+			return c.s, c.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	c := &startCall{done: make(chan struct{})}
+	m.starting[id] = c
 	m.mu.Unlock()
 
+	s, err := m.launch(ctx, id, target, args)
+
+	m.mu.Lock()
+	delete(m.starting, id)
+	if err == nil {
+		m.sessions[id] = s
+	}
+	m.mu.Unlock()
+	c.s, c.err = s, err
+	close(c.done)
+	if err == nil {
+		m.Warm() // the next app should find a helper waiting, as this one did
+	}
+	return s, err
+}
+
+func (m *Manager) launch(ctx context.Context, id, target, args string) (*Session, error) {
+	s, err := m.helper(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.id = id
 	name := "flowera_" + unsafeName.ReplaceAllString(id, "_")
 	if len(name) > 48 {
 		name = name[:48]
 	}
-	// The helper outlives this request, so it must not be tied to the request's context.
-	cmd, err := m.start(context.Background(), name)
-	if err != nil {
-		return nil, err
+	for _, line := range []string{"desktop " + name, "viewers 1"} {
+		if resp, err := s.Do(line); err != nil || !strings.HasPrefix(resp, "OK") {
+			s.Stop()
+			return nil, firstErr(err, errors.New("the host helper refused to start"))
+		}
 	}
-	s, err := newSession(id, cmd)
-	if err != nil {
-		return nil, err
-	}
+	s.holdWatching(true) // the picture is captured from the moment the window exists, before anybody has connected
 
-	resp, err := s.Do("launch\t" + target + "\t" + args)
+	resp, err := m.launchLine(s, target, args)
 	if err != nil {
 		s.Stop()
 		return nil, err
 	}
 	if !strings.HasPrefix(resp, "OK") {
-		s.Stop()
+		// Refused before anything ran (a Store app, a missing program): the helper is as clean as it was, and now knows
+		// the answer for that program, so it is kept for the next app.
+		s.holdWatching(false)
+		m.keepWarm(s)
 		return nil, errors.New(strings.TrimSpace(strings.TrimPrefix(resp, "ERR")))
 	}
 	if err := s.awaitFirstFrame(ctx); err != nil {
 		s.Stop()
 		return nil, err
 	}
-
-	m.mu.Lock()
-	m.sessions[id] = s
-	m.mu.Unlock()
-	go s.pump()
+	s.holdWatching(false)
+	go s.reap()
 	return s, nil
 }
+
+// launchLine starts the program in helper s. If a check has already resolved it the helper is told exactly what to run;
+// if that program has since moved, or was never checked, the helper looks it up itself.
+func (m *Manager) launchLine(s *Session, target, args string) (string, error) {
+	t := Target{target, args}
+	m.mu.Lock()
+	r, known := m.resolved[t]
+	m.mu.Unlock()
+	if known {
+		resp, err := s.Do(r.line())
+		if err != nil || !strings.HasPrefix(resp, "ERR Not found") {
+			return resp, err
+		}
+		m.mu.Lock()
+		delete(m.resolved, t) // moved or uninstalled since the check; do not trust it again
+		m.mu.Unlock()
+	}
+	return s.Do("launch\t" + target + "\t" + args)
+}
+
+func firstErr(errs ...error) error {
+	for _, e := range errs {
+		if e != nil {
+			return e
+		}
+	}
+	return nil
+}
+
+// Check asks the host - without starting anything - which of targets Start would be able to run on a private desktop,
+// using the same decision the helper's launch makes. The result maps each target it got an answer for to why it cannot
+// run ("" when it can). A target the line protocol cannot carry is answered here, with no round trip. If the helper
+// stops answering partway, what was learned so far is returned along with the error, so a caller can keep it. The
+// helper it used stays warm, and what it worked out makes the launch that follows instant.
+func (m *Manager) Check(ctx context.Context, targets []Target) (map[Target]string, error) {
+	verdicts := make(map[Target]string, len(targets))
+	var ask []Target
+	for _, t := range targets {
+		if strings.ContainsAny(t.Target+t.Args, "\r\n") || strings.Contains(t.Target, "\t") || strings.TrimSpace(t.Target) == "" {
+			verdicts[t] = "invalid application"
+			continue
+		}
+		ask = append(ask, t)
+	}
+	if len(ask) == 0 {
+		return verdicts, nil
+	}
+
+	h, err := m.helper(ctx)
+	if err != nil {
+		return verdicts, err
+	}
+	for _, t := range ask {
+		if err := ctx.Err(); err != nil {
+			h.Stop()
+			return verdicts, err
+		}
+		resp, err := h.Do("check\t" + t.Target + "\t" + t.Args)
+		if err != nil {
+			h.Stop()
+			return verdicts, err
+		}
+		if strings.HasPrefix(resp, "OK") {
+			verdicts[t] = ""
+			if f := strings.Split(resp, "\t"); len(f) == 6 && f[1] != "" {
+				m.mu.Lock()
+				m.resolved[t] = resolvedProgram{exe: f[1], args: f[2], dir: f[3], own: f[4], base: f[5]}
+				m.mu.Unlock()
+			}
+			continue
+		}
+		reason := strings.TrimSpace(strings.TrimPrefix(resp, "ERR"))
+		if reason == "" {
+			reason = "the host could not run it"
+		}
+		verdicts[t] = reason
+	}
+	m.keepWarm(h)
+	return verdicts, nil
+}
+
+// Target is one program a launcher would ask the host to run.
+type Target struct {
+	Target, Args string
+}
+
+// waitIdle returns once no helper is still being started in the background, for tests that change the timings.
+func (m *Manager) waitIdle() { m.warming.Wait() }
 
 // Stop ends session id and the app in it.
 func (m *Manager) Stop(id string) {
@@ -147,37 +393,50 @@ func (m *Manager) Stop(id string) {
 	}
 }
 
-// StopAll ends every session, for shutdown: an app on a private desktop is invisible, so it must never be left behind.
+// StopAll ends every session and the warm helper, for shutdown: an app on a private desktop is invisible, so it must
+// never be left behind.
 func (m *Manager) StopAll() {
 	m.mu.Lock()
+	m.closed = true
 	all := m.sessions
 	m.sessions = make(map[string]*Session)
+	spare := m.spare
+	m.spare = nil
+	if m.spareTmr != nil {
+		m.spareTmr.Stop()
+		m.spareTmr = nil
+	}
 	m.mu.Unlock()
 	for _, s := range all {
 		s.Stop()
 	}
+	if spare != nil {
+		spare.Stop()
+	}
 }
 
-// Session is one app running on its own private desktop.
+// Session is one helper process, and - once an app is launched into it - that app on its own private desktop.
 type Session struct {
 	id    string
 	cmd   *exec.Cmd
 	stdin io.WriteCloser
-	lines chan string
-	done  chan struct{}
+	// replies carries the helper's one-line answers to commands, in order; pictures and events never appear on it.
+	replies chan string
+	done    chan struct{}
 
-	ioMu sync.Mutex // one request in flight at a time: the protocol is strictly request/response
+	ioMu sync.Mutex // one command in flight at a time: answers are matched to commands by order
 
-	// The timings this session runs by, fixed when it is created.
-	interval, active, idle time.Duration
-
-	mu      sync.Mutex
-	err     error
-	touched time.Time
-	frame   Frame
-	updated chan struct{}
-	stderr  bytes.Buffer
-
+	mu       sync.Mutex
+	err      error
+	touched  time.Time
+	stderr   bytes.Buffer
+	viewers  map[*Viewer]struct{}
+	holding  bool
+	w, h     int
+	first    chan struct{}
+	gotFirst bool
+	appGone  chan struct{}
+	goneOnce sync.Once
 	stopOnce sync.Once
 }
 
@@ -194,43 +453,97 @@ func newSession(id string, cmd *exec.Cmd) (*Session, error) {
 		id:      id,
 		cmd:     cmd,
 		stdin:   stdin,
-		lines:   make(chan string, 4),
+		replies: make(chan string, 4),
 		done:    make(chan struct{}),
 		touched: time.Now(),
-		updated: make(chan struct{}),
-
-		interval: frameInterval,
-		active:   activeWindow,
-		idle:     idleStop,
+		viewers: make(map[*Viewer]struct{}),
+		first:   make(chan struct{}),
+		appGone: make(chan struct{}),
 	}
 	cmd.Stderr = &lockedWriter{mu: &s.mu, buf: &s.stderr}
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start host helper: %w", err)
 	}
 
-	go func() {
-		r := bufio.NewReaderSize(stdout, 1<<20)
-		for {
-			line, err := r.ReadString('\n')
-			if line = strings.TrimSpace(line); line != "" {
-				select {
-				case s.lines <- line:
-				case <-s.done:
-					return
-				}
-			}
-			if err != nil {
-				close(s.lines)
-				return
-			}
-		}
-	}()
+	go s.read(bufio.NewReaderSize(stdout, 1<<20))
 	go func() {
 		err := cmd.Wait()
 		s.fail(fmt.Errorf("host helper ended: %v", err))
 		close(s.done)
 	}()
 	return s, nil
+}
+
+// read splits what the helper says into answers (lines, in order), pictures (a header line and the JPEG bytes that follow it)
+// and events (a line that starts with EVENT).
+func (s *Session) read(r *bufio.Reader) {
+	defer close(s.replies)
+	for {
+		line, err := r.ReadString('\n')
+		if line = strings.TrimSpace(line); line != "" {
+			switch {
+			case strings.HasPrefix(line, "FRAME "):
+				u, ok := parseFrameHeader(line)
+				if !ok {
+					s.fail(fmt.Errorf("the host helper sent a picture header the control plane could not read: %q", truncate(line, 80)))
+					go s.Stop() // the stream cannot be trusted from here on, and a helper writing into a pipe nobody reads would block forever
+					return
+				}
+				u.JPEG = make([]byte, u.n)
+				if _, err := io.ReadFull(r, u.JPEG); err != nil {
+					return
+				}
+				s.publish(u.Update)
+			case strings.HasPrefix(line, "EVENT "):
+				if strings.TrimPrefix(line, "EVENT ") == "closed" {
+					s.markAppGone()
+				}
+			default:
+				select {
+				case s.replies <- line:
+				case <-s.done:
+					return
+				}
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+type frameHeader struct {
+	Update
+	n int
+}
+
+// parseFrameHeader reads "FRAME <W> <H> <x> <y> <w> <h> <whole> <n>".
+func parseFrameHeader(line string) (frameHeader, bool) {
+	f := strings.Fields(line)
+	if len(f) != 9 || f[0] != "FRAME" {
+		return frameHeader{}, false
+	}
+	var v [8]int
+	for i := range v {
+		n, err := strconv.Atoi(f[i+1])
+		if err != nil || n < 0 {
+			return frameHeader{}, false
+		}
+		v[i] = n
+	}
+	h := frameHeader{Update: Update{W: v[0], H: v[1], X: v[2], Y: v[3], Rw: v[4], Rh: v[5], Whole: v[6] == 1}, n: v[7]}
+	const maxJPEG = 32 << 20
+	if h.n <= 0 || h.n > maxJPEG || h.W <= 0 || h.H <= 0 || h.X+h.Rw > h.W || h.Y+h.Rh > h.H || h.Rw <= 0 || h.Rh <= 0 {
+		return frameHeader{}, false
+	}
+	return h, true
+}
+
+func truncate(s string, n int) string {
+	if len(s) > n {
+		return s[:n] + "..."
+	}
+	return s
 }
 
 // lockedWriter keeps the tail of the helper's stderr for error messages.
@@ -261,6 +574,19 @@ func (s *Session) Alive() bool {
 	}
 }
 
+// Done is closed when the helper has ended.
+func (s *Session) Done() <-chan struct{} { return s.done }
+
+// AppClosed is closed when the app has no window left, which is how a viewer learns the person closed it from inside.
+func (s *Session) AppClosed() <-chan struct{} { return s.appGone }
+
+func (s *Session) markAppGone() {
+	s.goneOnce.Do(func() {
+		close(s.appGone)
+		go s.Stop() // there is nothing left to show, and the helper has nothing left to do
+	})
+}
+
 func (s *Session) fail(err error) {
 	s.mu.Lock()
 	if s.err == nil {
@@ -276,36 +602,52 @@ func (s *Session) Err() error {
 	return s.err
 }
 
-// Touch records that somebody is looking at the session, which keeps it capturing and keeps it alive.
+// Size is the size of the app's picture as last shown, or 0, 0 before anything has been.
+func (s *Session) Size() (w, h int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w, s.h
+}
+
+// Touch records that somebody is using the session, which keeps it alive.
 func (s *Session) Touch() {
 	s.mu.Lock()
 	s.touched = time.Now()
 	s.mu.Unlock()
 }
 
-// Watch keeps the session alive and capturing until ctx is done, for a viewer that stays connected while what it is
-// showing does not change: without it a static app would look unwatched and be ended under someone's eyes.
-func (s *Session) Watch(ctx context.Context) {
-	go func() {
-		t := time.NewTicker(s.active / 2)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-s.done:
-				return
-			case <-t.C:
-				s.Touch()
-			}
+// reap ends the session when nobody has watched or driven it for idleStop.
+func (s *Session) reap() {
+	t := time.NewTicker(time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-s.done:
+			return
+		case <-t.C:
 		}
-	}()
+		s.mu.Lock()
+		unwatched := len(s.viewers) == 0 && !s.holding
+		idle := time.Since(s.touched)
+		s.mu.Unlock()
+		if unwatched && idle > idleStop {
+			s.Stop()
+			return
+		}
+	}
 }
 
-func (s *Session) idleFor() time.Duration {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return time.Since(s.touched)
+func (s *Session) deadErr() error {
+	if err := s.Err(); err != nil {
+		s.mu.Lock()
+		tail := strings.TrimSpace(s.stderr.String())
+		s.mu.Unlock()
+		if tail != "" {
+			return fmt.Errorf("%w (%s)", err, truncate(tail, 300))
+		}
+		return err
+	}
+	return errors.New("the host helper is not running")
 }
 
 // Do sends one protocol line and returns the helper's one-line answer.
@@ -320,7 +662,7 @@ func (s *Session) Do(line string) (string, error) {
 		return "", s.deadErr()
 	}
 	select {
-	case resp, ok := <-s.lines:
+	case resp, ok := <-s.replies:
 		if !ok {
 			return "", s.deadErr()
 		}
@@ -334,116 +676,135 @@ func (s *Session) Do(line string) (string, error) {
 	}
 }
 
-func (s *Session) deadErr() error {
-	if err := s.Err(); err != nil {
-		return err
-	}
-	return errors.New("the host helper is not running")
-}
-
-func parseFrame(resp string) (Frame, bool) {
-	f := strings.SplitN(resp, " ", 4)
-	if len(f) != 4 || f[0] != "FRAME" {
-		return Frame{}, false
-	}
-	w, err1 := strconv.Atoi(f[1])
-	h, err2 := strconv.Atoi(f[2])
-	jpeg, err3 := base64.StdEncoding.DecodeString(f[3])
-	if err1 != nil || err2 != nil || err3 != nil || len(jpeg) == 0 {
-		return Frame{}, false
-	}
-	return Frame{JPEG: jpeg, W: w, H: h}, true
-}
-
-// publish stores a new capture and wakes anyone waiting for one, unless the picture has not changed.
-func (s *Session) publish(f Frame) {
+// holdWatching asks the helper to capture while the app starts, before any viewer has connected to it.
+func (s *Session) holdWatching(on bool) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.frame.Seq > 0 && bytes.Equal(s.frame.JPEG, f.JPEG) {
-		return
+	s.holding = on
+	s.mu.Unlock()
+	s.syncViewers()
+}
+
+// syncViewers tells the helper how many people are watching, which is all it needs to know to capture or to rest.
+func (s *Session) syncViewers() {
+	s.mu.Lock()
+	n := len(s.viewers)
+	if s.holding {
+		n++
 	}
-	f.Seq = s.frame.Seq + 1
-	s.frame = f
-	close(s.updated)
-	s.updated = make(chan struct{})
+	s.mu.Unlock()
+	s.Do("viewers " + strconv.Itoa(n))
 }
 
 func (s *Session) awaitFirstFrame(ctx context.Context) error {
-	deadline := time.Now().Add(launchTimeout)
+	deadline := time.NewTimer(launchTimeout)
+	defer deadline.Stop()
+	poll := time.NewTicker(statusPoll)
+	defer poll.Stop()
 	for {
-		resp, err := s.Do("frame")
-		if err != nil {
-			return err
-		}
-		if f, ok := parseFrame(resp); ok {
-			s.publish(f)
-			return nil
-		}
-		if st, err := s.Do("status"); err == nil && strings.HasPrefix(st, "STATUS exited") {
-			return fmt.Errorf("the app closed straight away (%s) without opening a window", strings.TrimPrefix(st, "STATUS "))
-		}
-		if time.Now().After(deadline) {
-			return errors.New("the app did not open a window in time")
-		}
 		select {
+		case <-s.first:
+			return nil
+		case <-s.appGone:
+			return errors.New("the app closed without showing a window")
+		case <-s.done:
+			return s.deadErr()
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(400 * time.Millisecond):
+		case <-deadline.C:
+			return errors.New("the app did not open a window in time")
+		case <-poll.C:
+			// An app that dies on start never gets a window; say so instead of waiting out the clock.
+			if st, err := s.Do("status"); err == nil && strings.HasPrefix(st, "STATUS exited") {
+				select {
+				case <-s.first:
+					return nil
+				default:
+				}
+				return fmt.Errorf("the app closed straight away (%s) without opening a window", strings.TrimPrefix(st, "STATUS "))
+			}
 		}
 	}
 }
 
-// pump keeps the latest frame fresh while somebody is watching, and ends the session when nobody has for a while.
-func (s *Session) pump() {
-	t := time.NewTicker(s.interval)
-	defer t.Stop()
-	for {
-		select {
-		case <-s.done:
-			return
-		case <-t.C:
+// Viewer is somebody watching the app: it receives every Update from a whole picture onwards.
+type Viewer struct {
+	// C carries the app's pictures. It is closed when the viewer is.
+	C <-chan Update
+
+	s       *Session
+	ch      chan Update
+	waiting bool // has not yet had a whole picture, so patches are of no use to it
+	once    sync.Once
+}
+
+// Watch adds a viewer. Its first Update is a whole picture; the helper is asked for one now, so it arrives at once even
+// if the app is not changing. Close it when the viewer goes away.
+func (s *Session) Watch() *Viewer {
+	ch := make(chan Update, 32)
+	v := &Viewer{C: ch, s: s, ch: ch, waiting: true}
+	s.mu.Lock()
+	s.viewers[v] = struct{}{}
+	s.touched = time.Now()
+	s.mu.Unlock()
+	s.syncViewers()
+	go s.Do("keyframe")
+	return v
+}
+
+// Close removes the viewer.
+func (v *Viewer) Close() {
+	v.once.Do(func() {
+		v.s.mu.Lock()
+		delete(v.s.viewers, v)
+		v.s.touched = time.Now()
+		v.s.mu.Unlock()
+		close(v.ch)
+		if v.s.Alive() {
+			v.s.syncViewers()
 		}
-		idleFor := s.idleFor()
-		if idleFor > s.idle {
-			s.Stop()
-			return
+	})
+}
+
+// publish hands an Update to every viewer. A viewer that cannot keep up loses its backlog and waits for the next whole
+// picture (asked for at once), rather than drawing patches on top of a picture it never got.
+func (s *Session) publish(u Update) {
+	s.mu.Lock()
+	if u.Whole {
+		s.w, s.h = u.W, u.H
+		if !s.gotFirst {
+			s.gotFirst = true
+			close(s.first)
 		}
-		if idleFor > s.active {
+	}
+	resync := false
+	for v := range s.viewers {
+		if v.waiting && !u.Whole {
 			continue
 		}
-		resp, err := s.Do("frame")
-		if err != nil {
-			return
-		}
-		if f, ok := parseFrame(resp); ok {
-			s.publish(f)
+		select {
+		case v.ch <- u:
+			if u.Whole {
+				v.waiting = false
+			}
+		default:
+			if u.Whole {
+				for len(v.ch) > 0 {
+					<-v.ch
+				}
+				v.ch <- u
+				v.waiting = false
+			} else {
+				for len(v.ch) > 0 {
+					<-v.ch
+				}
+				v.waiting = true
+				resync = true
+			}
 		}
 	}
-}
-
-// Latest is the newest frame, and whether there is one.
-func (s *Session) Latest() (Frame, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.frame, s.frame.Seq > 0
-}
-
-// WaitFrame blocks until a frame newer than after exists, the session ends, or ctx is done.
-func (s *Session) WaitFrame(ctx context.Context, after uint64) (Frame, error) {
-	for {
-		s.mu.Lock()
-		f, ch := s.frame, s.updated
-		s.mu.Unlock()
-		if f.Seq > after {
-			return f, nil
-		}
-		select {
-		case <-ch:
-		case <-s.done:
-			return Frame{}, s.deadErr()
-		case <-ctx.Done():
-			return Frame{}, ctx.Err()
-		}
+	s.mu.Unlock()
+	if resync {
+		go s.Do("keyframe") // never from the reader: Do waits for answers that only the reader can deliver
 	}
 }
 
@@ -582,7 +943,7 @@ func (s *Session) Stop() {
 		}()
 		select {
 		case <-s.done:
-		case <-time.After(2 * time.Second):
+		case <-time.After(6 * time.Second):
 			s.stdin.Close()
 			select {
 			case <-s.done:

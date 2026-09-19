@@ -1658,6 +1658,14 @@
 
   var hostAppsLoading = false;
 
+  // How each kind of entry shows up in the VM, so the list never suggests more than it delivers.
+  var HOST_APP_MODES = {
+    web: "Web version",
+    host_gui: "Runs on host",
+    data: "Files copied",
+    helper: "Always installed"
+  };
+
   async function loadHostApps(refresh){
     if(hostAppsLoading){ return; }
     if(!hostAppsStatusText || !hostAppsList){ return; }
@@ -1681,7 +1689,7 @@
 
       hostAppsList.innerHTML = "";
       if(hostAppsData.length === 0){
-        hostAppsList.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-3);font-size:12.5px;">No applications or sessions were detected on your host machine.</div>';
+        hostAppsList.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-3);font-size:12.5px;">Nothing on your host machine can be brought into a VM properly.</div>';
         hostAppsStatusText.textContent = "0 apps detected";
         return;
       }
@@ -1705,7 +1713,7 @@
             '<div class="host-app-title-line">' +
               '<span>' + escapeHTML(item.name) + '</span>' +
               (item.category ? '<span class="host-app-cat">' + escapeHTML(item.category) + '</span>' : '') +
-              '<span class="host-app-badge detected">Found</span>' +
+              '<span class="host-app-badge detected">' + escapeHTML(HOST_APP_MODES[item.mode] || "Found") + '</span>' +
             '</div>' +
             '<div class="host-app-desc">' + escapeHTML(item.description) + '</div>' +
           '</div>';
