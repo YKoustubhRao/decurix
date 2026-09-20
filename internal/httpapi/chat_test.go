@@ -350,3 +350,82 @@ func TestStepImageURLDeduplicatesIdenticalScreenshots(t *testing.T) {
 		t.Fatalf("expected identical screenshot to reuse URL, got %s vs %s", url1, url2)
 	}
 }
+
+// A quiet callback (a finished recording) still answers in the chat but puts
+// nothing on the Query rail.
+func TestQuietQueryTextSkipsTheQueryRail(t *testing.T) {
+	s := chatServer(t)
+
+	postJSON(t, s.queryTextHandler, "/api/querytext",
+		`{"desktop_id":"research-box","vm_name":"research-box","filename":"a.txt",
+		  "kind":"final","reply":"Recorded 3 steps.","quiet":true,
+		  "content":"FLOWERA TASK COMPLETED\n\nFinal reply:\nRecorded 3 steps."}`)
+
+	if notes := s.QueryNotes.List(); len(notes) != 0 {
+		t.Fatalf("expected no query note for a quiet callback, got %d", len(notes))
+	}
+
+	thread := readThread(t, s, "research-box")
+	if len(thread.Entries) != 1 || thread.Entries[0].Content != "Recorded 3 steps." {
+		t.Fatalf("expected the chat to still show the reply, got %+v", thread.Entries)
+	}
+}
+
+// Answering a desktop's query - in the chat, or anywhere else a request reaches
+// it as the reply - resolves that query's note out of the open list and into
+// the history. A finished task's report is not a query, so a reply leaves it.
+func TestReplyResolvesTheQueryNote(t *testing.T) {
+	s := chatServer(t)
+
+	route := deliver(t, s, "claude-box", "pay invoice INV-1042")
+
+	postJSON(t, s.queryTextHandler, "/api/querytext",
+		`{"desktop_id":"claude-box","task_id":"`+route.TaskID+`","content":"FLOWERA QUERY REQUEST",
+		  "kind":"approval","reply":"Approve paying INV-1042?"}`)
+	postJSON(t, s.queryTextHandler, "/api/querytext",
+		`{"desktop_id":"other-box","content":"FLOWERA TASK COMPLETED","kind":"final","reply":"Done."}`)
+
+	if open := s.QueryNotes.List(); len(open) != 2 {
+		t.Fatalf("expected both notes open before any reply, got %d", len(open))
+	}
+
+	if reply := deliver(t, s, "claude-box", "yes"); reply.Kind != tasks.RouteReply {
+		t.Fatalf("the reply routed as %+v", reply)
+	}
+
+	open := s.QueryNotes.List()
+	if len(open) != 1 || open[0].DesktopID != "other-box" {
+		t.Fatalf("expected only the other desktop's report to stay open, got %+v", open)
+	}
+
+	resolved := s.QueryNotes.ListResolved()
+	if len(resolved) != 1 || resolved[0].DesktopID != "claude-box" {
+		t.Fatalf("expected the answered query in the history, got %+v", resolved)
+	}
+
+	if resolved[0].Resolution != querynotes.ResolutionAnswered || resolved[0].ResolvedAt == nil {
+		t.Fatalf("expected it resolved as answered, with a time, got %+v", resolved[0])
+	}
+}
+
+// A person resolving a note by hand moves it to the history too, instead of
+// deleting it.
+func TestManualResolveKeepsTheNoteInTheHistory(t *testing.T) {
+	s := chatServer(t)
+
+	postJSON(t, s.queryTextHandler, "/api/querytext",
+		`{"desktop_id":"research-box","content":"FLOWERA QUERY REQUEST","kind":"query","reply":"Which account?"}`)
+
+	id := s.QueryNotes.List()[0].ID
+
+	postForm(t, s.closeQueryNoteHandler, "/api/querynotes/close", "id="+id)
+
+	if open := s.QueryNotes.List(); len(open) != 0 {
+		t.Fatalf("expected nothing open, got %d", len(open))
+	}
+
+	resolved := s.QueryNotes.ListResolved()
+	if len(resolved) != 1 || resolved[0].ID != id || resolved[0].Resolution != querynotes.ResolutionManual {
+		t.Fatalf("expected the note in the history as manual, got %+v", resolved)
+	}
+}

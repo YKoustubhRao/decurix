@@ -244,6 +244,27 @@ def _common_checks(first, second):
     return [c for c in first if _check_key(c) in theirs]
 
 
+def _follow_param(skill, param):
+    """
+    Make a result check follow a value that changes every run. What a
+    demonstration typed often comes back in what the screen then says ("Saved
+    Initech"); left as it was recorded, every run with another value would be
+    told its result never appeared. The example becomes `{name}`, filled in from
+    the run's own value (replay.fill_name).
+    """
+
+    example = " ".join((param.get("example") or "").split())
+    if len(example) < 2:
+        return
+
+    pattern = re.compile(re.escape(example), re.IGNORECASE)
+
+    for step in skill["steps"]:
+        for check in step.get("expect") or []:
+            if check["type"] == "element" and pattern.search(check.get("name") or ""):
+                check["name"] = pattern.sub("{" + param["name"] + "}", check["name"])
+
+
 def _generalise(steps, demos):
     """
     Turn typed text into parameters, in step order, and return them. A secret
@@ -696,6 +717,9 @@ def _apply(skill, question, choice):
         param = next(p for p in skill["params"] if p["name"] == step["param"])
         param["varies"] = choice == "changes"
         param["default"] = param["example"] if choice == "same" else None
+
+        if param["varies"]:
+            _follow_param(skill, param)
 
     elif kind == "optional":
         step["optional"] = choice == "sometimes"

@@ -225,9 +225,6 @@ def _report(ticket):
 
     count = meta.get("event_count", 0)
     steps = "1 step" if count == 1 else f"{count} steps"
-    replay = (f"Replay it with `/replay {session_id}`, or teach me to do it myself with `/learn {session_id}` "
-              "(I will ask what I need to know), or download it from the desktop's recordings.")
-
     if meta.get("status") != "complete":
         reason = meta.get("reason") or "the recorder stopped before it finished"
         kept = f" The {steps} recorded before that are kept as {session_id}." if count else ""
@@ -241,4 +238,11 @@ def _report(ticket):
         )
         return
 
-    write_final_reply(f"Recorded {steps} of \"{title}\" as {session_id}. {replay}", kind="final", engine=ENGINE)
+    # Quiet: the recording is not something to page anyone about. It is in the
+    # desktop card's recordings list, where it can be replayed, learned from
+    # or downloaded, so no note goes to the Query rail.
+    write_final_reply(
+        f"Recorded {steps} of \"{title}\" as {session_id}. "
+        "Replay it, teach me from it or download it from Recordings on the desktop's card.",
+        kind="final", engine=ENGINE, quiet=True,
+    )

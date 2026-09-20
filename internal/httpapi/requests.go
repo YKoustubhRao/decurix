@@ -202,6 +202,14 @@ func (s *Server) recordDelivered(ctx context.Context, desktopID, content string,
 
 	s.Chat.AppendUserRequest(desktopID, route.TaskID, content)
 
+	// A request that reached the desktop as the reply to its open query is
+	// the answer: the Queries tab should not go on asking for it. This is the
+	// one place every door (chat, requests page, a query's own reply box)
+	// passes through.
+	if route.Kind == tasks.RouteReply && s.QueryNotes != nil {
+		s.QueryNotes.ResolveAnswered(desktopID)
+	}
+
 	return route
 }
 
