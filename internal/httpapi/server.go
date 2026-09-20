@@ -179,6 +179,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/desktops/ticket", s.ticketStatusHandler)
 	mux.HandleFunc("/api/desktops/ticket/action", s.ticketActionHandler)
 	mux.HandleFunc("/api/tunnel", s.tunnelHandler)
+	mux.HandleFunc("/api/model", s.modelHandler)
 	mux.HandleFunc("/api/claude-auth/status", s.claudeAuthStatusHandler)
 	mux.HandleFunc("/api/claude-auth/login/start", s.claudeAuthLoginStartHandler)
 	mux.HandleFunc("/api/claude-auth/login/code", s.claudeAuthLoginCodeHandler)

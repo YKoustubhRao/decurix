@@ -237,6 +237,12 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The chat model is baked into a desktop when it is created. With no
+	// desktop yet, choose it against the machine as it is now; with any,
+	// keep the model they already run (see ollama.Reselect).
+	existing, listErr := s.Desktops.List(r.Context())
+	ollama.Reselect(r.Context(), listErr != nil || len(existing) > 0)
+
 	prov, err := s.Desktops.BeginProvisioning(
 		name,
 		profile,
