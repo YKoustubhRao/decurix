@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
@@ -87,7 +88,22 @@ const (
 	// concurrent multi-gigabyte runner allocation and memory thrashing.
 	// Override with OLLAMA_MAX_LOADED_MODELS in .env if desired.
 	maxLoadedModels = "1"
+
+	// DefaultKeepAlive is how long every caller asks Ollama to hold the
+	// model after its last request (OLLAMA_KEEP_ALIVE overrides it in each
+	// of them). Measured on this repo's own 8 GB Windows host, where the
+	// WSL VM is sized to all of it: memory a VM has not touched recently
+	// comes back from Windows at ~16 MB/s, so loading the 1.9 GB model
+	// cold took 170-230 s (the "runner started in 166 seconds" line in
+	// Ollama's log) against 2 s when it was still resident. An hour of
+	// 2.2 GB is a better trade than a four-minute first answer.
+	DefaultKeepAlive = "60m"
 )
+
+// KeepAlive is the keep_alive value every caller sends with a request.
+func KeepAlive() string {
+	return getenvDefault("OLLAMA_KEEP_ALIVE", DefaultKeepAlive)
+}
 
 func defaultMaxLoadedModels() string {
 	if v := os.Getenv("OLLAMA_MAX_LOADED_MODELS"); v != "" {
@@ -146,9 +162,13 @@ func DesktopURL() string {
 }
 
 // DesktopModel returns the chat model every new desktop is given:
-// OLLAMA_MODEL from the control plane's environment, otherwise Model.
+// OLLAMA_MODEL from the control plane's environment; when that is unset or
+// "auto", the model chosen for this machine (see SelectModel); otherwise Model.
 func DesktopModel() string {
-	if m := os.Getenv("OLLAMA_MODEL"); m != "" {
+	if m := pinnedModel(); m != "" {
+		return m
+	}
+	if m, ok := autoModel(); ok {
 		return m
 	}
 	return Model
@@ -184,6 +204,8 @@ func (m *Manager) EnsureReady(ctx context.Context) error {
 			containerName,
 		)
 
+		// Choose before preloading: this is the model the preload loads.
+		SelectModel(ctx)
 		m.preloadModel(ctx, dialableURL(ctx, url), DesktopModel())
 
 		return nil
@@ -370,6 +392,10 @@ func (m *Manager) EnsureReady(ctx context.Context) error {
 	// Pull model
 	// ------------------------------------------------------------
 
+	// The container is up and can say what it has, so this is the moment to
+	// choose which chat model it should hold.
+	SelectModel(ctx)
+
 	// Both models, not just the chat one - see EmbedModel's comment for
 	// what silently breaks when the second is missing.
 	log.Printf(
@@ -460,6 +486,12 @@ func answers(ctx context.Context, baseURL string) bool {
 // Best-effort: a failure here only costs the warm start it was trying to
 // buy.
 func (m *Manager) preloadModel(ctx context.Context, baseURL, model string) {
+	preloadModel(ctx, baseURL, model)
+}
+
+// preloadModel is the body of Manager.preloadModel; WarmAsync uses it too,
+// where there is no Manager to hang it on.
+func preloadModel(ctx context.Context, baseURL, model string) {
 	log.Printf("Preloading Ollama model %s at %s...", model, baseURL)
 
 	// An empty prompt is Ollama's documented way to load a model without
@@ -478,7 +510,7 @@ func (m *Manager) preloadModel(ctx context.Context, baseURL, model string) {
 	body, err := json.Marshal(map[string]any{
 		"model":      model,
 		"prompt":     "",
-		"keep_alive": "30m",
+		"keep_alive": KeepAlive(),
 		"options":    preloadOpts,
 	})
 
@@ -720,4 +752,111 @@ func (m *Manager) ensureModel(ctx context.Context, name string) error {
 	)
 
 	return nil
+}
+
+// warmState guards WarmAsync: at most one warm-up in flight, and at most one
+// attempt per warmMinGap however many requests arrive.
+var warmState struct {
+	mu       sync.Mutex
+	enabled  bool
+	inflight bool
+	last     time.Time
+}
+
+// warmMinGap is the shortest time between two warm-up attempts. A load that
+// takes minutes must not be started again by the next click.
+const warmMinGap = 90 * time.Second
+
+// EnableWarm turns WarmAsync on. It is off until main calls this, so a test
+// that reaches a handler which warms the model never dials an Ollama.
+func EnableWarm() {
+	warmState.mu.Lock()
+	warmState.enabled = true
+	warmState.mu.Unlock()
+}
+
+// WarmAsync makes sure the model desktops use is resident in Ollama, without
+// making the caller wait: if it is not loaded, a background load is started
+// so that it overlaps with whatever the person is already waiting for - a
+// desktop starting (~20 s), the chat opening, a request being delivered.
+// Debounced, single-flight and best-effort; a machine with no reachable
+// Ollama just logs once per attempt.
+func WarmAsync() {
+	warmState.mu.Lock()
+	if !warmState.enabled || warmState.inflight || time.Since(warmState.last) < warmMinGap {
+		warmState.mu.Unlock()
+		return
+	}
+	warmState.inflight = true
+	warmState.last = time.Now()
+	warmState.mu.Unlock()
+
+	go func() {
+		defer func() {
+			warmState.mu.Lock()
+			warmState.inflight = false
+			warmState.mu.Unlock()
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
+		defer cancel()
+
+		base, model := DesktopURL(), DesktopModel()
+		// A resident model is left strictly alone. An earlier version sent
+		// it a one-token "touch" to page its weights back in, and measured
+		// on the real thing: five chats took 1-4 s each, the touch took 3 s,
+		// and the very next chat spent 199 s evaluating its prompt - the
+		// touch's two-token prompt had replaced the cached prefix, and
+		// re-reading the ~900-token system prompt from scratch costs
+		// 75-200 s on this host against ~1 s when cached. Anything that
+		// sends the model a request other than an agent's own must not
+		// disturb that cache.
+		if resident(ctx, base, model) {
+			return
+		}
+
+		preloadModel(ctx, base, model)
+	}()
+}
+
+// resident reports whether model is already loaded in the Ollama at baseURL
+// at the context size the agents ask for (GET /api/ps). Anything unreadable
+// counts as "not resident": loading a model that is already there is
+// harmless, skipping one that is not is the cold start this exists to avoid.
+func resident(ctx context.Context, baseURL, model string) bool {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/ps", nil)
+	if err != nil {
+		return false
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	var ps struct {
+		Models []struct {
+			Name          string `json:"name"`
+			Model         string `json:"model"`
+			ContextLength int    `json:"context_length"`
+		} `json:"models"`
+	}
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&ps) != nil {
+		return false
+	}
+
+	want := strings.TrimSuffix(model, ":latest")
+	for _, m := range ps.Models {
+		got := strings.TrimSuffix(m.Name, ":latest")
+		if got != want && strings.TrimSuffix(m.Model, ":latest") != want {
+			continue
+		}
+		return m.ContextLength == 0 || m.ContextLength == NumCtx
+	}
+
+	return false
 }

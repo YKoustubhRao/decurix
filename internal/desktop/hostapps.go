@@ -2,13 +2,13 @@ package desktop
 
 import (
 	"archive/tar"
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/YKoustubhRao/flowera/internal/winhost"
 	"github.com/docker/docker/api/types/container"
 )
 
@@ -32,9 +33,11 @@ type HostAppItem struct {
 	DetectedPaths   []string `json:"detected_paths,omitempty"`
 	DefaultSelected bool     `json:"default_selected"`
 	AppType         string   `json:"app_type,omitempty"`
-	HostCmd         string   `json:"host_cmd,omitempty"`
-	Icon            string   `json:"icon,omitempty"`
-	TargetConfigDir string   `json:"target_config_dir,omitempty"`
+	// Mode says how the app is shown in a VM: ModeWeb, ModeHostGUI, ModeData or ModeHelper.
+	Mode            string `json:"mode,omitempty"`
+	HostCmd         string `json:"host_cmd,omitempty"`
+	Icon            string `json:"icon,omitempty"`
+	TargetConfigDir string `json:"target_config_dir,omitempty"`
 }
 
 // knownAppDef defines how to probe and migrate a specific application or session.
@@ -88,6 +91,9 @@ func DetectHostAppsForce(force bool) []HostAppItem {
 		return res
 	}
 
+	if force {
+		forgetHostVerdicts()
+	}
 	results := runDetectHostApps()
 	cachedHostApps = results
 	cachedHostTime = time.Now()
@@ -97,10 +103,9 @@ func DetectHostAppsForce(force bool) []HostAppItem {
 	return res
 }
 
-// DetectHostApps scans the host machine for installed applications, session tokens,
-// and configurations across Linux, macOS, and Windows WSL without a fixed ceiling.
-// It actively explores Windows Start Menu / StartApps, Linux .desktop files, and macOS apps.
-// Only applications and sessions that were actually found on the host machine are returned.
+// DetectHostApps scans the host machine for what can be brought into a VM: credentials and settings that are copied as
+// files, web apps that open in the VM's own browser, and Windows programs that run hidden on the host and are shown in
+// the VM. An app the VM could not really show is left out rather than offered (see vetHostApps).
 // Results are cached in memory for sub-millisecond retrieval.
 func DetectHostApps() []HostAppItem {
 	return DetectHostAppsForce(false)
@@ -121,13 +126,14 @@ func runDetectHostApps() []HostAppItem {
 		seen[strings.ToLower(def.name)] = true
 		seen[strings.ToLower(def.id)] = true
 
-		appType := "app_session"
-		if def.id == "edge" || def.id == "chrome" || def.id == "firefox" {
-			appType = "browser_session"
-		} else if def.id == "youtube" {
-			appType = "web_app"
-		} else if def.id == "ssh" || def.id == "gh" || def.id == "docker" || def.id == "gcloud" || def.id == "azure" {
+		appType, mode := "app_session", ModeData
+		switch def.id {
+		case "claude", "chatgpt":
+			mode = ModeWeb
+		case "ssh", "gh", "docker", "gcloud", "azure":
 			appType = "credential"
+		case "host_bridge":
+			mode = ModeHelper
 		}
 
 		items = append(items, HostAppItem{
@@ -139,6 +145,7 @@ func runDetectHostApps() []HostAppItem {
 			DetectedPaths:   paths,
 			DefaultSelected: false,
 			AppType:         appType,
+			Mode:            mode,
 			Icon:            pickAppIcon(def.name),
 		})
 	}
@@ -167,6 +174,163 @@ func runDetectHostApps() []HostAppItem {
 	return detectedOnly
 }
 
+// How an app that was copied into a VM shows up there.
+const (
+	// ModeWeb opens the service's web version in the VM's own browser; nothing runs on the host.
+	ModeWeb = "web"
+	// ModeHostGUI runs the program on a private desktop of the host and shows and drives it from the VM.
+	ModeHostGUI = "host_gui"
+	// ModeData copies credentials or settings as files; there is nothing to launch.
+	ModeData = "data"
+	// ModeHelper is the command-line bridge every copy installs.
+	ModeHelper = "helper"
+)
+
+// HostAppChecker asks the host which Windows launch targets can run on a private desktop, and why not for the rest.
+type HostAppChecker func(ctx context.Context, targets []winhost.Target) (map[winhost.Target]string, error)
+
+var (
+	hostAppCheckerMu sync.RWMutex
+	hostAppChecker   HostAppChecker
+
+	// hostVerdicts remembers what the host said about each target until a rescan, so the periodic refresh of the list
+	// does not start the helper again for apps it already knows.
+	hostVerdictsMu sync.Mutex
+	hostVerdicts   = map[winhost.Target]string{}
+)
+
+// hostAppWarmer, when set, gets the host ready to show an app before anyone has asked for one.
+var (
+	hostAppWarmerMu sync.RWMutex
+	hostAppWarmer   func()
+)
+
+// SetHostAppWarmer installs what WarmHostApps calls.
+func SetHostAppWarmer(f func()) {
+	hostAppWarmerMu.Lock()
+	hostAppWarmer = f
+	hostAppWarmerMu.Unlock()
+}
+
+// WarmHostApps gets the host ready to run an app hidden - starting the helper and everything it has to compile or load -
+// so that nobody waits for it when they open one. It returns at once; call it when an app is likely to be wanted soon,
+// such as while a desktop that will show host apps is still starting up.
+func WarmHostApps() {
+	hostAppWarmerMu.RLock()
+	f := hostAppWarmer
+	hostAppWarmerMu.RUnlock()
+	if f != nil {
+		f()
+	}
+}
+
+// SetHostAppChecker installs the way Windows apps are checked. Without one, no Windows program is offered - one that
+// cannot be checked is not one that can be promised.
+func SetHostAppChecker(c HostAppChecker) {
+	hostAppCheckerMu.Lock()
+	hostAppChecker = c
+	hostAppCheckerMu.Unlock()
+	forgetHostVerdicts()
+}
+
+func forgetHostVerdicts() {
+	hostVerdictsMu.Lock()
+	hostVerdicts = map[winhost.Target]string{}
+	hostVerdictsMu.Unlock()
+}
+
+// checkHostTargets returns the host's verdict for each target: "" when it can run on a private desktop, otherwise why
+// not. A target the host could not be asked about is absent from the result.
+func checkHostTargets(targets []winhost.Target) map[winhost.Target]string {
+	out := make(map[winhost.Target]string, len(targets))
+	var unknown []winhost.Target
+	hostVerdictsMu.Lock()
+	for _, t := range targets {
+		if v, ok := hostVerdicts[t]; ok {
+			out[t] = v
+		} else {
+			unknown = append(unknown, t)
+		}
+	}
+	hostVerdictsMu.Unlock()
+	if len(unknown) == 0 {
+		return out
+	}
+
+	hostAppCheckerMu.RLock()
+	check := hostAppChecker
+	hostAppCheckerMu.RUnlock()
+	if check == nil {
+		return out
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	got, err := check(ctx, unknown)
+	if err != nil {
+		log.Printf("hostapps: could not check Windows apps on the host (%d of %d checked): %v", len(got), len(unknown), err)
+	}
+	hostVerdictsMu.Lock()
+	for t, v := range got {
+		hostVerdicts[t] = v
+		out[t] = v
+	}
+	hostVerdictsMu.Unlock()
+	return out
+}
+
+// needsSound reports whether an app is mainly for playing audio or video. The desktop VMs have no sound device, so such
+// an app would open, look right and say nothing.
+func needsSound(name string) bool {
+	return categorizeAppName(name) == "Media & Entertainment"
+}
+
+// vetHostApps keeps only the Windows apps that will really work in a VM, and says how. A service with a web version opens
+// that in the VM's browser; anything else must be a program the host confirms it can run on a private desktop (a Store
+// app that Windows only activates on the visible desktop cannot, nor can a shortcut that opens a folder). Apps that need
+// sound are dropped, and so is anything the host could not be asked about.
+func vetHostApps(apps []HostAppItem) []HostAppItem {
+	var kept []HostAppItem
+	var pending []HostAppItem
+	var targets []winhost.Target
+	for _, app := range apps {
+		if needsSound(app.Name) {
+			continue
+		}
+		if getWebAppURLForApp(app.Name, app.HostCmd) != "" {
+			app.Mode = ModeWeb
+			app.Description = "Opens the web version in the VM's browser; you sign in there"
+			kept = append(kept, app)
+			continue
+		}
+		target, args, ok := windowsTarget(app.HostCmd)
+		if !ok {
+			continue
+		}
+		pending = append(pending, app)
+		targets = append(targets, winhost.Target{Target: target, Args: args})
+	}
+	if len(pending) == 0 {
+		return kept
+	}
+
+	verdicts := checkHostTargets(targets)
+	skipped := 0
+	for i, app := range pending {
+		reason, checked := verdicts[targets[i]]
+		if !checked || reason != "" {
+			skipped++
+			continue
+		}
+		app.Mode = ModeHostGUI
+		app.Description = "Runs on this computer on a hidden desktop; you see and use it in the VM"
+		kept = append(kept, app)
+	}
+	if skipped > 0 {
+		log.Printf("hostapps: %d of %d Windows apps left out because they cannot run hidden on the host", skipped, len(pending))
+	}
+	return kept
+}
+
 // MigrateHostApps packages selected host application sessions, tokens, and configurations,
 // strips cache bloat to maintain zero redundant memory, streams them into the container's
 // /home/headless volume, and installs the host execution bridge launchers.
@@ -174,6 +338,8 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 	if len(selectedIDs) == 0 {
 		return nil
 	}
+	// The desktop is about to (re)start and show these apps; whatever the host has to build for them can happen meanwhile.
+	WarmHostApps()
 
 	sanitizedID := sanitizeName(desktopID)
 	containerName := "desktop_" + sanitizedID
@@ -192,9 +358,6 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 	// Always include host_bridge when apps are being migrated
 	selectedMap["host_bridge"] = true
 
-	// Build tar archive buffer
-	tarBuf := new(bytes.Buffer)
-	tw := tar.NewWriter(tarBuf)
 	// Stream archive directly into container at /home/headless via pipe (zero RAM duplication)
 	pr, pw := io.Pipe()
 	copyOpts := container.CopyToContainerOptions{
@@ -242,7 +405,7 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 			}
 			migratedCount++
 		} else if app, ok := appMap[id]; ok {
-			if err := packDynamicApp(tw, app); err != nil {
+			if err := packDynamicApp(tw, app, packContext{DesktopID: sanitizedID, Secret: m.HostGUISecret}); err != nil {
 				log.Printf("hostapps: packing dynamic app %s for %s: %v", app.ID, desktopID, err)
 				continue
 			}
@@ -257,17 +420,6 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 	}
 	_ = pw.Close()
 
-	if tarBuf.Len() == 0 {
-		return nil
-	}
-
-	// Stream archive directly into container at /home/headless
-	copyOpts := container.CopyToContainerOptions{
-		AllowOverwriteDirWithFile: false,
-		CopyUIDGID:                false,
-	}
-
-	if err := m.client.CopyToContainer(ctx, inspect.ID, "/home/headless", tarBuf, copyOpts); err != nil {
 	if err := <-copyErrCh; err != nil {
 		return fmt.Errorf("copy host apps to %s: %w", containerName, err)
 	}
@@ -353,258 +505,6 @@ func getKnownAppDefs() []knownAppDef {
 
 	return []knownAppDef{
 		{
-			id:              "edge",
-			name:            "Microsoft Edge",
-			category:        "Browsers & Web",
-			description:     "Profile, active cookies, sessions, login data (Cache stripped to save RAM)",
-			defaultSelected: false,
-			probeFn: func() []string {
-				var found []string
-				// Linux Edge config across all host user home candidates
-				for _, h := range homes {
-					for _, c := range []string{
-						filepath.Join(h, ".config", "microsoft-edge"),
-						filepath.Join(h, "Library", "Application Support", "Microsoft Edge"),
-					} {
-						if fi, err := os.Stat(c); err == nil && fi.IsDir() {
-							found = append(found, c)
-						}
-					}
-				}
-				// Windows WSL candidate paths
-				for _, cDrive := range cDrives {
-					pattern := filepath.Join(cDrive, "Users", "*", "AppData", "Local", "Microsoft", "Edge", "User Data")
-					if matches, err := filepath.Glob(pattern); err == nil {
-						found = append(found, matches...)
-					}
-					for _, edgeExe := range []string{
-						filepath.Join(cDrive, "Program Files (x86)", "Microsoft", "Edge", "Application", "msedge.exe"),
-						filepath.Join(cDrive, "Program Files", "Microsoft", "Edge", "Application", "msedge.exe"),
-					} {
-						if fi, err := os.Stat(edgeExe); err == nil && !fi.IsDir() {
-							found = append(found, edgeExe)
-							break
-						}
-					}
-				}
-				for _, app := range queryWindowsStartApps() {
-					if strings.Contains(strings.ToLower(app.Name), "edge") {
-						found = append(found, "windows_app:"+app.AppID)
-						break
-					}
-				}
-				return found
-			},
-			packFn: func(tw *tar.Writer, paths []string) error {
-				for _, p := range paths {
-					if fi, err := os.Stat(p); err == nil && fi.IsDir() {
-						_ = writeDirToTar(tw, p, ".config/microsoft-edge", isCacheOrTransient)
-						break
-					}
-				}
-				edgeWrapper := `#!/usr/bin/env bash
-if command -v cmd.exe >/dev/null 2>&1 || [ -e /mnt/c ]; then
-    exec host-run cmd.exe /c start msedge "$@"
-else
-    exec host-run microsoft-edge "$@"
-fi
-`
-				if err := writeStringToTar(tw, ".local/bin/edge-host", edgeWrapper, 0755); err != nil {
-					return err
-				}
-				if iconSlug, svg := getAppSVGIcon("edge"); svg != "" {
-					_ = writeStringToTar(tw, ".local/share/icons/hicolor/scalable/apps/"+iconSlug+".svg", svg, 0644)
-				}
-				edgeDesktop := `[Desktop Entry]
-Version=1.0
-Type=Application
-Name=Microsoft Edge (Host)
-Comment=Run Microsoft Edge on host desktop with active login session
-Exec=/home/headless/.local/bin/edge-host %U
-Icon=/home/headless/.local/share/icons/hicolor/scalable/apps/microsoft-edge.svg
-Terminal=false
-Categories=Network;WebBrowser;
-`
-				if err := writeStringToTar(tw, "Desktop/edge-host.desktop", edgeDesktop, 0755); err != nil {
-					return err
-				}
-				return writeStringToTar(tw, ".local/share/applications/edge-host.desktop", edgeDesktop, 0755)
-			},
-		},
-		{
-			id:              "youtube",
-			name:            "YouTube",
-			category:        "Media & Web Apps",
-			description:     "Launch YouTube on host desktop with active Google sign-in session",
-			defaultSelected: false,
-			probeFn: func() []string {
-				var found []string
-				for _, cDrive := range cDrives {
-					pwaPattern := filepath.Join(cDrive, "Users", "*", "AppData", "Roaming", "Microsoft", "Windows", "Start Menu", "Programs", "*", "*YouTube*.lnk")
-					if matches, err := filepath.Glob(pwaPattern); err == nil && len(matches) > 0 {
-						found = append(found, matches...)
-					}
-				}
-				for _, app := range queryWindowsStartApps() {
-					if strings.Contains(strings.ToLower(app.Name), "youtube") {
-						found = append(found, "windows_app:"+app.AppID)
-						break
-					}
-				}
-				for _, h := range homes {
-					linuxDesktopPattern := filepath.Join(h, ".local", "share", "applications", "*youtube*.desktop")
-					if matches, err := filepath.Glob(linuxDesktopPattern); err == nil && len(matches) > 0 {
-						found = append(found, matches...)
-					}
-				}
-				if matches, err := filepath.Glob("/usr/share/applications/*youtube*.desktop"); err == nil && len(matches) > 0 {
-					found = append(found, matches...)
-				}
-				return found
-			},
-			packFn: func(tw *tar.Writer, paths []string) error {
-				youtubeWrapper := `#!/usr/bin/env bash
-if command -v cmd.exe >/dev/null 2>&1 || [ -e /mnt/c ]; then
-    exec host-run cmd.exe /c start msedge --app=https://www.youtube.com
-else
-    exec host-run host-open https://www.youtube.com
-fi
-`
-				if err := writeStringToTar(tw, ".local/bin/youtube-host", youtubeWrapper, 0755); err != nil {
-					return err
-				}
-				if iconSlug, svg := getAppSVGIcon("youtube"); svg != "" {
-					_ = writeStringToTar(tw, ".local/share/icons/hicolor/scalable/apps/"+iconSlug+".svg", svg, 0644)
-				}
-				ytDesktop := `[Desktop Entry]
-Version=1.0
-Type=Application
-Name=YouTube (Host)
-Comment=Watch YouTube on host desktop with active account session
-Exec=/home/headless/.local/bin/youtube-host
-Icon=/home/headless/.local/share/icons/hicolor/scalable/apps/youtube.svg
-Terminal=false
-Categories=AudioVideo;Network;
-`
-				if err := writeStringToTar(tw, "Desktop/youtube-host.desktop", ytDesktop, 0755); err != nil {
-					return err
-				}
-				return writeStringToTar(tw, ".local/share/applications/youtube-host.desktop", ytDesktop, 0755)
-			},
-		},
-		{
-			id:              "chrome",
-			name:            "Google Chrome / Chromium",
-			category:        "Browsers & Web",
-			description:     "Profile, active cookies, sessions, login data (Cache stripped to save RAM)",
-			defaultSelected: false,
-			probeFn: func() []string {
-				var candidates []string
-				for _, h := range homes {
-					candidates = append(candidates,
-						filepath.Join(h, ".config", "google-chrome-for-testing"),
-						filepath.Join(h, ".config", "google-chrome"),
-						filepath.Join(h, ".config", "chromium"),
-						filepath.Join(h, "Library", "Application Support", "Google", "Chrome"),
-					)
-				}
-				// Windows WSL candidate paths
-				for _, cDrive := range cDrives {
-					pattern := filepath.Join(cDrive, "Users", "*", "AppData", "Local", "Google", "Chrome", "User Data")
-					if matches, err := filepath.Glob(pattern); err == nil && len(matches) > 0 {
-						candidates = append(candidates, matches...)
-					}
-					chromeExe := filepath.Join(cDrive, "Program Files", "Google", "Chrome", "Application", "chrome.exe")
-					if fi, err := os.Stat(chromeExe); err == nil && !fi.IsDir() {
-						candidates = append(candidates, chromeExe)
-					}
-				}
-				var found []string
-				for _, p := range candidates {
-					if _, err := os.Stat(p); err == nil {
-						found = append(found, p)
-					}
-				}
-				return found
-			},
-			packFn: func(tw *tar.Writer, paths []string) error {
-				for _, p := range paths {
-					if fi, err := os.Stat(p); err == nil && fi.IsDir() {
-						_ = writeDirToTar(tw, p, ".config/google-chrome", isCacheOrTransient)
-						break
-					}
-				}
-				header := &tar.Header{
-					Name:     ".config/chromium",
-					Linkname: "google-chrome",
-					Typeflag: tar.TypeSymlink,
-					Mode:     0755,
-					ModTime:  time.Now(),
-					Uid:      1000,
-					Gid:      1000,
-				}
-				if err := tw.WriteHeader(header); err != nil {
-					return err
-				}
-				chromeWrapper := "#!/usr/bin/env bash\nexec host-run google-chrome \"$@\"\n"
-				if err := writeStringToTar(tw, ".local/bin/chrome-host", chromeWrapper, 0755); err != nil {
-					return err
-				}
-				if iconSlug, svg := getAppSVGIcon("chrome"); svg != "" {
-					_ = writeStringToTar(tw, ".local/share/icons/hicolor/scalable/apps/"+iconSlug+".svg", svg, 0644)
-				}
-				chromeDesktop := `[Desktop Entry]
-Version=1.0
-Type=Application
-Name=Google Chrome (Host)
-Comment=Run Google Chrome on host desktop with zero duplicate VM RAM
-Exec=/home/headless/.local/bin/chrome-host %U
-Icon=/home/headless/.local/share/icons/hicolor/scalable/apps/google-chrome.svg
-Terminal=false
-Categories=Network;WebBrowser;
-`
-				if err := writeStringToTar(tw, "Desktop/chrome-host.desktop", chromeDesktop, 0755); err != nil {
-					return err
-				}
-				return writeStringToTar(tw, ".local/share/applications/chrome-host.desktop", chromeDesktop, 0755)
-			},
-		},
-		{
-			id:              "firefox",
-			name:            "Mozilla Firefox",
-			category:        "Browsers & Web",
-			description:     "Profiles, saved logins, cookies, tabs (Cache stripped)",
-			defaultSelected: false,
-			probeFn: func() []string {
-				var candidates []string
-				for _, h := range homes {
-					candidates = append(candidates,
-						filepath.Join(h, ".mozilla", "firefox"),
-						filepath.Join(h, "Library", "Application Support", "Firefox"),
-					)
-				}
-				for _, cDrive := range cDrives {
-					pattern := filepath.Join(cDrive, "Users", "*", "AppData", "Roaming", "Mozilla", "Firefox", "Profiles")
-					if matches, err := filepath.Glob(pattern); err == nil && len(matches) > 0 {
-						candidates = append(candidates, matches...)
-					}
-				}
-				var found []string
-				for _, p := range candidates {
-					if fi, err := os.Stat(p); err == nil && fi.IsDir() {
-						found = append(found, p)
-					}
-				}
-				return found
-			},
-			packFn: func(tw *tar.Writer, paths []string) error {
-				if len(paths) == 0 {
-					return nil
-				}
-				return writeDirToTar(tw, paths[0], ".mozilla/firefox", isCacheOrTransient)
-			},
-		},
-		{
 			id:              "claude",
 			name:            "Claude",
 			category:        "Productivity",
@@ -646,7 +546,7 @@ elif command -v google-chrome >/dev/null 2>&1; then
 elif command -v chromium >/dev/null 2>&1; then
     exec chromium --app="https://claude.ai" "$@"
 fi
-exec host-run cmd.exe /c start https://claude.ai "$@"
+exec /home/headless/.local/bin/host-run open https://claude.ai
 `
 				if err := writeStringToTar(tw, ".local/bin/claude-host", claudeWrapper, 0755); err != nil {
 					return err
@@ -702,7 +602,7 @@ elif command -v google-chrome >/dev/null 2>&1; then
 elif command -v chromium >/dev/null 2>&1; then
     exec chromium --app="https://chatgpt.com" "$@"
 fi
-exec host-run cmd.exe /c start https://chatgpt.com "$@"
+exec /home/headless/.local/bin/host-run open https://chatgpt.com
 `
 				if err := writeStringToTar(tw, ".local/bin/chatgpt-host", chatgptWrapper, 0755); err != nil {
 					return err
@@ -798,75 +698,6 @@ Categories=Office;Utility;Network;
 					return nil
 				}
 				return writeDirToTar(tw, paths[0], ".docker", isCacheOrTransient)
-			},
-		},
-		{
-			id:              "vscode",
-			name:            "VS Code / OpenCode Settings",
-			category:        "Development",
-			description:     "Extensions, keybindings, settings, workspace storage",
-			defaultSelected: false,
-			probeFn: func() []string {
-				var candidates []string
-				for _, h := range homes {
-					candidates = append(candidates,
-						filepath.Join(h, ".config", "Code", "User"),
-						filepath.Join(h, ".vscode", "extensions"),
-						filepath.Join(h, ".opencode"),
-						filepath.Join(h, "Library", "Application Support", "Code", "User"),
-					)
-				}
-				for _, cDrive := range cDrives {
-					winCode := filepath.Join(cDrive, "Users", "*", "AppData", "Roaming", "Code", "User")
-					if matches, err := filepath.Glob(winCode); err == nil {
-						candidates = append(candidates, matches...)
-					}
-					winExt := filepath.Join(cDrive, "Users", "*", ".vscode", "extensions")
-					if matches, err := filepath.Glob(winExt); err == nil {
-						candidates = append(candidates, matches...)
-					}
-				}
-				var found []string
-				for _, p := range candidates {
-					if fi, err := os.Stat(p); err == nil && fi.IsDir() {
-						found = append(found, p)
-					}
-				}
-				return found
-			},
-			packFn: func(tw *tar.Writer, paths []string) error {
-				for _, p := range paths {
-					dest := ".config/Code/User"
-					if strings.Contains(p, ".vscode") {
-						dest = ".vscode/extensions"
-					} else if strings.Contains(p, ".opencode") {
-						dest = ".opencode"
-					}
-					if err := writeDirToTar(tw, p, dest, isCacheOrTransient); err != nil {
-						return err
-					}
-				}
-				codeWrapper := "#!/usr/bin/env bash\nexec host-run code \"$@\"\n"
-				if err := writeStringToTar(tw, ".local/bin/code-host", codeWrapper, 0755); err != nil {
-					return err
-				}
-				if iconSlug, svg := getAppSVGIcon("vscode"); svg != "" {
-					_ = writeStringToTar(tw, ".local/share/icons/hicolor/scalable/apps/"+iconSlug+".svg", svg, 0644)
-				}
-				codeDesktop := `[Desktop Entry]
-Version=1.0
-Type=Application
-Name=VS Code (Host)
-Comment=Run Visual Studio Code on host desktop with zero duplicate VM RAM
-Exec=/home/headless/.local/bin/code-host %F
-Icon=/home/headless/.local/share/icons/hicolor/scalable/apps/vscode.svg
-Terminal=false
-Categories=Development;IDE;
-`
-				if err := writeStringToTar(tw, "Desktop/code-host.desktop", codeDesktop, 0755); err != nil {
-					return err
-				}
-				return writeStringToTar(tw, ".local/share/applications/code-host.desktop", codeDesktop, 0755)
 			},
 		},
 		{
@@ -1040,7 +871,8 @@ Categories=Development;IDE;
 // Dynamic Discovery Providers (Windows/WSL, Linux, macOS)
 // -----------------------------------------------------------------------------
 
-// IsWSLOrWindows returns true if running directly on Windows or inside a WSL environment.
+// IsWSLOrWindows returns true if running directly on Windows or inside a WSL environment, or inside a container on such
+// a host (the kernel it shares says so, or a mounted drive really holds Windows).
 func IsWSLOrWindows() bool {
 	if runtime.GOOS == "windows" {
 		return true
@@ -1048,18 +880,32 @@ func IsWSLOrWindows() bool {
 	if os.Getenv("WSLENV") != "" || os.Getenv("WSL_DISTRO_NAME") != "" {
 		return true
 	}
-	for _, drive := range getWindowsCDriveCandidates() {
-		if fi, err := os.Stat(drive); err == nil && fi.IsDir() {
-			return true
-		}
-	}
 	if data, err := os.ReadFile("/proc/version"); err == nil {
 		lower := strings.ToLower(string(data))
 		if strings.Contains(lower, "microsoft") || strings.Contains(lower, "wsl") {
 			return true
 		}
 	}
+	return hasWindowsInstall(getWindowsCDriveCandidates())
+}
+
+// hasWindowsInstall reports whether any of the drive roots holds a Windows installation. A folder merely existing at
+// /mnt/c is no evidence of one: docker-compose.yaml always creates that mount, and on a Mac or a Linux machine it is an
+// empty folder (or the host's own root), which used to make those hosts believe they were Windows.
+func hasWindowsInstall(drives []string) bool {
+	for _, drive := range drives {
+		for _, name := range []string{"Windows", "WINDOWS", "windows"} {
+			if fi, err := os.Stat(filepath.Join(drive, name)); err == nil && fi.IsDir() {
+				return true
+			}
+		}
+	}
 	return false
+}
+
+// PowershellExe returns the path of Windows PowerShell, or "" when this host has none.
+func PowershellExe() string {
+	return findPowershellExe()
 }
 
 type rawStartApp struct {
@@ -1114,6 +960,10 @@ func findDockerBinary() string {
 }
 
 func queryWindowsStartApps() []rawStartApp {
+	// Nothing to ask on a Mac or a Linux machine - and the last resort below starts a container.
+	if !IsWSLOrWindows() {
+		return nil
+	}
 	startAppsMu.RLock()
 	if startAppsQueried {
 		cached := startAppsCached
@@ -1503,158 +1353,6 @@ func scanWindowsStartMenu(seen map[string]bool) []HostAppItem {
 	return items
 }
 
-type desktopMeta struct {
-	Name      string
-	Exec      string
-	Icon      string
-	Comment   string
-	NoDisplay bool
-}
-
-func parseDesktopFile(path string) desktopMeta {
-	f, err := os.Open(path)
-	if err != nil {
-		return desktopMeta{}
-	}
-	defer f.Close()
-
-	var meta desktopMeta
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, "Name=") && meta.Name == "" {
-			meta.Name = strings.TrimPrefix(line, "Name=")
-		} else if strings.HasPrefix(line, "Exec=") && meta.Exec == "" {
-			meta.Exec = strings.TrimPrefix(line, "Exec=")
-		} else if strings.HasPrefix(line, "Icon=") && meta.Icon == "" {
-			meta.Icon = strings.TrimPrefix(line, "Icon=")
-		} else if strings.HasPrefix(line, "Comment=") && meta.Comment == "" {
-			meta.Comment = strings.TrimPrefix(line, "Comment=")
-		} else if strings.HasPrefix(line, "NoDisplay=true") {
-			meta.NoDisplay = true
-		}
-	}
-	return meta
-}
-
-func scanLinuxDesktopFiles(seen map[string]bool) []HostAppItem {
-	if runtime.GOOS != "linux" {
-		return nil
-	}
-
-	dirs := []string{
-		"/usr/share/applications",
-		"/usr/local/share/applications",
-	}
-	for _, h := range getHostHomeCandidates() {
-		dirs = append(dirs, filepath.Join(h, ".local", "share", "applications"))
-	}
-
-	var items []HostAppItem
-
-	for _, dir := range dirs {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-
-		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".desktop") {
-				continue
-			}
-
-			// Don't re-scan flowera host bridge desktop files
-			if strings.HasSuffix(e.Name(), "-host.desktop") {
-				continue
-			}
-
-			fullPath := filepath.Join(dir, e.Name())
-			meta := parseDesktopFile(fullPath)
-			if meta.Name == "" || meta.NoDisplay {
-				continue
-			}
-
-			normKey := strings.ToLower(meta.Name)
-			if seen[normKey] {
-				continue
-			}
-			seen[normKey] = true
-
-			id := "linux_" + sanitizeAppSlug(meta.Name)
-			if seen[id] {
-				continue
-			}
-			seen[id] = true
-
-			cleanExec := strings.Split(meta.Exec, " %")[0]
-			hostCmd := fmt.Sprintf("/usr/bin/env %s", cleanExec)
-
-			items = append(items, HostAppItem{
-				ID:              id,
-				Name:            meta.Name,
-				Category:        categorizeAppName(meta.Name),
-				Description:     meta.Comment,
-				Detected:        true,
-				DetectedPaths:   []string{fullPath},
-				DefaultSelected: false,
-				AppType:         "desktop_app",
-				HostCmd:         hostCmd,
-				Icon:            meta.Icon,
-			})
-		}
-	}
-
-	return items
-}
-
-func scanMacAppBundles(seen map[string]bool) []HostAppItem {
-	if runtime.GOOS != "darwin" {
-		return nil
-	}
-	home, _ := os.UserHomeDir()
-	dirs := []string{"/Applications", filepath.Join(home, "Applications")}
-
-	var items []HostAppItem
-	for _, dir := range dirs {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			if !e.IsDir() || !strings.HasSuffix(e.Name(), ".app") {
-				continue
-			}
-			appName := strings.TrimSuffix(e.Name(), ".app")
-			normKey := strings.ToLower(appName)
-			if seen[normKey] {
-				continue
-			}
-			seen[normKey] = true
-
-			fullPath := filepath.Join(dir, e.Name())
-			id := "mac_" + sanitizeAppSlug(appName)
-			if seen[id] {
-				continue
-			}
-			seen[id] = true
-
-			items = append(items, HostAppItem{
-				ID:              id,
-				Name:            appName,
-				Category:        categorizeAppName(appName),
-				Description:     "macOS application bundle",
-				Detected:        true,
-				DetectedPaths:   []string{fullPath},
-				DefaultSelected: false,
-				AppType:         "desktop_app",
-				HostCmd:         fmt.Sprintf(`open -a "%s"`, fullPath),
-				Icon:            pickAppIcon(appName),
-			})
-		}
-	}
-	return items
-}
-
 func exploreDynamicApps(seen map[string]bool) []HostAppItem {
 	var items []HostAppItem
 
@@ -1701,18 +1399,140 @@ func exploreDynamicApps(seen map[string]bool) []HostAppItem {
 		items = append(items, menuApps...)
 	}
 
-	// 2. Linux desktop applications
-	linuxApps := scanLinuxDesktopFiles(seen)
-	items = append(items, linuxApps...)
-
-	// 3. macOS applications
-	macApps := scanMacAppBundles(seen)
-	items = append(items, macApps...)
-
-	return items
+	// Only Windows apps are offered: a Linux or macOS app could only be started on the host's own screen, which is not
+	// the VM, so listing it would promise something the VM cannot show.
+	return vetHostApps(items)
 }
 
-func packDynamicApp(tw *tar.Writer, app HostAppItem) error {
+// splitWords splits a host command line the way Windows does: whitespace separates words, a double quote groups
+// them (an empty pair is an empty word), and a backslash is just a character.
+func splitWords(cmd string) []string {
+	var words []string
+	var cur strings.Builder
+	inQuotes, started := false, false
+	flush := func() {
+		if started {
+			words = append(words, cur.String())
+		}
+		cur.Reset()
+		started = false
+	}
+	for _, r := range cmd {
+		switch {
+		case r == '"':
+			inQuotes, started = !inQuotes, true
+		case !inQuotes && (r == ' ' || r == '\t'):
+			flush()
+		default:
+			cur.WriteRune(r)
+			started = true
+		}
+	}
+	flush()
+	return words
+}
+
+var shellSafeWord = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,./-]+$`)
+
+// shellWords returns a host command line's words single-quoted for a bash wrapper. Pasting the raw line into the
+// wrapper let bash eat the backslash in `shell:AppsFolder\Microsoft.WindowsCalculator...`, so the host was asked to
+// open a name that does not exist and silently did nothing.
+func shellWords(cmd string) string {
+	words := splitWords(cmd)
+	for i, w := range words {
+		if !shellSafeWord.MatchString(w) {
+			words[i] = "'" + strings.ReplaceAll(w, "'", `'\''`) + "'"
+		}
+	}
+	return strings.Join(words, " ")
+}
+
+// windowsTarget extracts what a "cmd.exe /c start ..." host command runs: the program, shortcut or shell: address, and
+// its arguments.
+func windowsTarget(hostCmd string) (target, args string, ok bool) {
+	w := splitWords(hostCmd)
+	if len(w) < 4 || !strings.EqualFold(w[0], "cmd.exe") || w[1] != "/c" || !strings.EqualFold(w[2], "start") {
+		return "", "", false
+	}
+	rest := w[3:]
+	if len(rest) > 0 && rest[0] == "" { // start's optional window-title argument
+		rest = rest[1:]
+	}
+	if len(rest) > 0 && strings.EqualFold(rest[0], "explorer.exe") {
+		rest = rest[1:]
+	}
+	if len(rest) == 0 {
+		return "", "", false
+	}
+	return rest[0], strings.Join(rest[1:], " "), true
+}
+
+// packContext is what a launcher needs to know about the desktop it is being written into.
+type packContext struct {
+	DesktopID string
+	// Secret signs the launch token (winhost.Token); empty leaves the launcher unsigned, which the control plane refuses.
+	Secret []byte
+}
+
+// sessionID names the host session for an app on this desktop, so two desktops never share one app.
+func (pc packContext) sessionID(slug string) string {
+	id := pc.DesktopID
+	if id == "" {
+		id = "vm"
+	}
+	if len(slug) > 24 {
+		slug = slug[:24]
+	}
+	if id = id + "-" + slug; len(id) > 64 {
+		id = id[:64]
+	}
+	return id
+}
+
+// hostGUILauncher is the shell that shows a Windows app which runs on the host with no window there: it opens the
+// control plane's viewer in an app window of the VM's own browser, and the viewer shows the app and sends input back.
+// The URL is fixed when the launcher is written and carries a token signed for exactly this app, so the control plane
+// will start it and nothing else.
+func hostGUILauncher(pc packContext, slug, title, target, args string) string {
+	id := pc.sessionID(slug)
+	q := url.Values{"id": {id}, "desktop": {pc.DesktopID}, "title": {title}, "target": {target}, "args": {args}}
+	if len(pc.Secret) > 0 {
+		q.Set("token", winhost.Token(pc.Secret, id, target, args))
+	}
+	return fmt.Sprintf(`CP="${CONTROL_PLANE_URL:-http://host.docker.internal:8080}"
+VIEW="$CP/host-gui/view?%s"
+for browser in chromium-browser google-chrome chromium; do
+    if command -v "$browser" >/dev/null 2>&1; then
+        exec "$browser" --app="$VIEW"
+    fi
+done
+echo "No browser is installed in this desktop to show the app in." >&2
+exit 1
+`, q.Encode())
+}
+
+// hostGUIWrapper is a complete launcher script around hostGUILauncher.
+func hostGUIWrapper(pc packContext, slug, title, target, args string) string {
+	return "#!/usr/bin/env bash\n" + hostGUILauncher(pc, slug, title, target, args)
+}
+
+// hostFallback is what a launcher runs after its in-VM options: the hidden host viewer for a Windows app (which must
+// never open a window on the host itself), host-run for anything else.
+func hostFallback(pc packContext, slug string, app HostAppItem) string {
+	if target, args, ok := windowsTarget(app.HostCmd); ok {
+		return hostGUILauncher(pc, slug, app.Name, target, args)
+	}
+	// Signed for exactly this command line: the control plane runs it as written and refuses anything else, so a
+	// launcher's own arguments ($@) are not passed on.
+	words := splitWords(app.HostCmd)
+	if len(words) == 0 || len(pc.Secret) == 0 {
+		return "echo \"This app cannot be started from here.\" >&2\nexit 1\n"
+	}
+	token := winhost.ExecToken(pc.Secret, pc.DesktopID, words[0], words[1:])
+	return fmt.Sprintf("exec /home/headless/.local/bin/host-run signed %s %s\n", token, shellWords(app.HostCmd))
+}
+
+func packDynamicApp(tw *tar.Writer, app HostAppItem, pc packContext) error {
 	if len(app.DetectedPaths) > 0 && app.TargetConfigDir != "" {
 		for _, p := range app.DetectedPaths {
 			if fi, err := os.Stat(p); err == nil && fi.IsDir() {
@@ -1770,10 +1590,9 @@ elif command -v google-chrome >/dev/null 2>&1; then
 elif command -v chromium >/dev/null 2>&1; then
     exec chromium --app=%q "$@"
 fi
-exec host-run %s "$@"
-`, webURL, webURL, webURL, app.HostCmd)
+%s`, webURL, webURL, webURL, hostFallback(pc, slug, app))
 		} else {
-			wrapperScript = fmt.Sprintf("#!/usr/bin/env bash\nexec host-run %s \"$@\"\n", app.HostCmd)
+			wrapperScript = "#!/usr/bin/env bash\n" + hostFallback(pc, slug, app)
 		}
 
 		if err := writeStringToTar(tw, ".local/bin/"+slug+"-host", wrapperScript, 0755); err != nil {
@@ -1808,19 +1627,38 @@ Categories=%s
 
 func packHostBridgeLaunchers(tw *tar.Writer) error {
 	hostRunScript := `#!/usr/bin/env bash
-# host-run: Dispatches command execution directly to the host desktop machine.
+# host-run: asks the control plane to open a link, set the clipboard, or run one command a launcher was written for on
+# the host. It cannot run anything else: the control plane only runs a command it signed into a launcher.
 set -e
 
 CP_URL="${CONTROL_PLANE_URL:-${FLOWERA_CONTROL_PLANE:-http://host.docker.internal:8080}}"
-TUNNEL_PORT="${FLOWERA_HOST_PORT:-2222}"
+
+# bridge_post <path> <key> <value> [args-json]: POSTs a small JSON object to the control plane and
+# prints the response body. python3 rather than curl: the desktop images do not all ship curl, and
+# a missing curl made every launcher fail as "host bridge not reachable" without ever sending a request.
+# FLOWERA_BRIDGE_TOKEN, when set, is the launcher's signature for the command being run.
+bridge_post() {
+    python3 - "${CP_URL}$1" "$2" "$3" "${4:-}" <<'PY'
+import json, os, sys, urllib.request
+url, key, value, args = sys.argv[1:5]
+body = {key: value}
+if args:
+    body["args"] = json.loads(args)
+    body["display"] = os.environ.get("DISPLAY", ":1")
+    body["desktop"] = os.environ.get("DESKTOP_ID", "")
+    body["token"] = os.environ.get("FLOWERA_BRIDGE_TOKEN", "")
+req = urllib.request.Request(url, json.dumps(body).encode(), {"Content-Type": "application/json"})
+sys.stdout.write(urllib.request.urlopen(req, timeout=60).read().decode())
+PY
+}
 
 usage() {
     cat << EOF
-Usage: host-run <command> [args...]
-       host-run open <file-or-url>
+Usage: host-run open <http(s)-link>
        host-run clip <text or pipe from stdin>
+       host-run signed <token> <command> [args...]   (what a copied app's launcher runs)
 
-Runs apps directly on the host machine with zero duplicate VM RAM.
+Opens links and sets the clipboard on the host. Running other programs on the host is not possible from here.
 EOF
     exit 0
 }
@@ -1832,16 +1670,12 @@ subcmd="$1"
 case "$subcmd" in
     open)
         shift
-        target="${1:-.}"
-        if curl -s -f -X POST "${CP_URL}/api/host-bridge/open" -H "Content-Type: application/json" -d "{\"target\": \"${target}\"}" >/dev/null 2>&1; then
+        target="${1:-}"
+        if bridge_post /api/host-bridge/open target "${target}" >/dev/null 2>&1; then
             echo "Opened on host desktop: ${target}"
             exit 0
         fi
-        if timeout 1 bash -c "cat < /dev/null > /dev/tcp/127.0.0.1/${TUNNEL_PORT}" 2>/dev/null; then
-            ssh -F /dev/null -p "${TUNNEL_PORT}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 127.0.0.1 "xdg-open '${target}' 2>/dev/null || open '${target}' 2>/dev/null || cmd.exe /c start '' '${target}'" 2>/dev/null || true
-            exit 0
-        fi
-        echo "Error: Host bridge not reachable at ${CP_URL} or tunnel port ${TUNNEL_PORT}."
+        echo "Error: could not open ${target} on the host (only plain http(s) links can be opened; is ${CP_URL} reachable?)."
         exit 1
         ;;
     clip)
@@ -1851,41 +1685,33 @@ case "$subcmd" in
         else
             text=$(cat)
         fi
-        if curl -s -f -X POST "${CP_URL}/api/host-bridge/clip" -H "Content-Type: application/json" -d "{\"text\": $(printf '%s' "$text" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')}" >/dev/null 2>&1; then
+        if bridge_post /api/host-bridge/clip text "${text}" >/dev/null 2>&1; then
             echo "Copied to host clipboard!"
             exit 0
         fi
-        if timeout 1 bash -c "cat < /dev/null > /dev/tcp/127.0.0.1/${TUNNEL_PORT}" 2>/dev/null; then
-            echo -n "$text" | ssh -F /dev/null -p "${TUNNEL_PORT}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 127.0.0.1 "pbcopy 2>/dev/null || clip.exe 2>/dev/null || xclip -selection clipboard 2>/dev/null || wl-copy 2>/dev/null" 2>/dev/null || true
-            echo "Copied to host clipboard via tunnel!"
-            exit 0
+        echo "Error: could not reach the host bridge at ${CP_URL} (or the text is over 64 KB)."
+        exit 1
+        ;;
+    signed)
+        [ $# -ge 3 ] || usage
+        FLOWERA_BRIDGE_TOKEN="$2"
+        export FLOWERA_BRIDGE_TOKEN
+        cmd="$3"
+        shift 3
+        args_json=$(python3 -c "import json,sys; print(json.dumps(sys.argv[1:]))" "$@")
+        response=$(bridge_post /api/host-bridge/exec cmd "$cmd" "$args_json" 2>/dev/null || true)
+        if [ -n "$response" ]; then
+            python3 -c "import json,sys; res=json.loads(sys.argv[1]); sys.stdout.write(res.get('stdout','')); sys.stderr.write(res.get('stderr','')); sys.exit(res.get('exit_code',0))" "$response"
+            exit $?
         fi
-        echo "Error: Host bridge not reachable."
+        echo "Error: the host bridge at ${CP_URL} did not run '${cmd}'. If this app was copied before host commands were signed, copy it into this desktop again."
         exit 1
         ;;
     -h|--help)
         usage
         ;;
     *)
-        cmd="$1"
-        shift
-        args_json="[]"
-        if [ $# -gt 0 ]; then
-            args_json=$(python3 -c "import json,sys; print(json.dumps(sys.argv[1:]))" "$@")
-        fi
-        payload=$(python3 -c "import json,sys,os; print(json.dumps({'cmd': sys.argv[1], 'args': json.loads(sys.argv[2]), 'display': os.environ.get('DISPLAY', ':1')}))" "$cmd" "$args_json")
-
-        response=$(curl -s -f -X POST "${CP_URL}/api/host-bridge/exec" -H "Content-Type: application/json" -d "$payload" 2>/dev/null || true)
-        if [ -n "$response" ]; then
-            python3 -c "import json,sys; res=json.loads(sys.argv[1]); sys.stdout.write(res.get('stdout','')); sys.stderr.write(res.get('stderr','')); sys.exit(res.get('exit_code',0))" "$response"
-            exit $?
-        fi
-
-        if timeout 1 bash -c "cat < /dev/null > /dev/tcp/127.0.0.1/${TUNNEL_PORT}" 2>/dev/null; then
-            ssh -F /dev/null -p "${TUNNEL_PORT}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 127.0.0.1 "DISPLAY=${DISPLAY:-:1} $cmd" "$@"
-            exit $?
-        fi
-        echo "Error: Could not reach host bridge at ${CP_URL} to execute '${cmd}'."
+        echo "Error: host-run cannot run '${subcmd}' on the host. It only opens http(s) links, sets the clipboard, and runs commands from the launchers Flowera wrote." >&2
         exit 1
         ;;
 esac
@@ -1894,16 +1720,10 @@ esac
 	if err := writeStringToTar(tw, ".local/bin/host-run", hostRunScript, 0755); err != nil {
 		return err
 	}
-	if err := writeStringToTar(tw, ".local/bin/host-open", "#!/usr/bin/env bash\nexec host-run open \"$@\"\n", 0755); err != nil {
+	if err := writeStringToTar(tw, ".local/bin/host-open", "#!/usr/bin/env bash\nexec /home/headless/.local/bin/host-run open \"$@\"\n", 0755); err != nil {
 		return err
 	}
-	if err := writeStringToTar(tw, ".local/bin/host-clip", "#!/usr/bin/env bash\nexec host-run clip \"$@\"\n", 0755); err != nil {
-		return err
-	}
-	if err := writeStringToTar(tw, ".local/bin/win-run", "#!/usr/bin/env bash\nexec host-run \"$@\"\n", 0755); err != nil {
-		return err
-	}
-	return writeStringToTar(tw, ".local/bin/mac-run", "#!/usr/bin/env bash\nexec host-run \"$@\"\n", 0755)
+	return writeStringToTar(tw, ".local/bin/host-clip", "#!/usr/bin/env bash\nexec /home/headless/.local/bin/host-run clip \"$@\"\n", 0755)
 }
 
 // -----------------------------------------------------------------------------
@@ -1928,22 +1748,18 @@ func isCacheOrTransient(name, fullPath string, isDir bool) bool {
 	if strings.HasPrefix(lower, "cached") {
 		return true
 	}
-	if lower == "gpu-cache" || lower == "gpucache" || lower == "code cache" || lower == "codecache" || lower == "dawncache" {
 	if lower == "gpu-cache" || lower == "gpucache" || lower == "code cache" || lower == "codecache" || lower == "dawncache" || lower == "grshadercache" {
 		return true
 	}
-	if lower == "crashpad" || lower == "crash reports" || strings.HasPrefix(lower, "browsermetrics") {
 	if lower == "crashpad" || lower == "crash reports" || strings.HasPrefix(lower, "browsermetrics") || lower == "minidumps" {
 		return true
 	}
-	if strings.HasSuffix(lower, ".tmp") || strings.HasSuffix(lower, ".log") || strings.HasSuffix(lower, ".dmp") {
 	if strings.HasSuffix(lower, ".tmp") || strings.HasSuffix(lower, ".log") || strings.HasSuffix(lower, ".dmp") || strings.HasSuffix(lower, ".swp") {
 		return true
 	}
 	if isDir && (lower == "logs" || lower == "node_modules" || lower == "pkg" || lower == "temp" ||
 		lower == "indexeddb" || lower == "service worker" || lower == "blob_storage" || lower == "file system" ||
 		lower == "storage" || lower == "extensions" || lower == "dictionaries" || lower == "media cache" ||
-		lower == "optimizationguide" || lower == "hyphenation-data" || lower == "variations" || lower == "webrtc_event_logs") {
 		lower == "optimizationguide" || lower == "hyphenation-data" || lower == "variations" || lower == "webrtc_event_logs" ||
 		lower == ".git" || lower == "__pycache__" || lower == ".pytest_cache" || lower == ".mypy_cache" || lower == ".cache") {
 		return true

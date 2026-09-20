@@ -729,8 +729,15 @@ class Recorder:
         if kind == "type":
             # What a person types goes in at the caret. Replayed, it replaces
             # the field only where that is the same thing: a field that was empty.
+            #
+            # The element comes from the last settled look at the screen, which
+            # is usually taken after the typing: the field then reads as exactly
+            # what was typed, and that is an empty field that has been typed
+            # into, not one that had something in it (which reads as more).
+            value = " ".join((element.get("value") or "").split()) if element is not None else ""
+            typed = " ".join((action.get("text") or "").split())
             empty_field = element is not None and element["role"] in ("textbox", "combobox", "spinbutton") \
-                and not (element.get("value") or "")
+                and (not value or value == typed)
             entry["append"] = not empty_field
 
         if withheld:

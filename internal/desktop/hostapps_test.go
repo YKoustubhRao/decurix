@@ -3,15 +3,42 @@ package desktop
 import (
 	"archive/tar"
 	"bytes"
+	"context"
+	"errors"
 	"io"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/YKoustubhRao/flowera/internal/winhost"
 )
 
+// testPack is the desktop the launcher tests write into.
+var testPack = packContext{DesktopID: "work-vm", Secret: []byte("0123456789abcdef0123456789abcdef")}
+
+// useHostChecker installs check as the host's verdict for the length of a test.
+func useHostChecker(t *testing.T, check HostAppChecker) {
+	t.Helper()
+	SetHostAppChecker(check)
+	t.Cleanup(func() { SetHostAppChecker(nil) })
+}
+
+// allowEverything is a host that says every program can run hidden.
+func allowEverything(_ context.Context, targets []winhost.Target) (map[winhost.Target]string, error) {
+	out := make(map[winhost.Target]string, len(targets))
+	for _, t := range targets {
+		out[t] = ""
+	}
+	return out, nil
+}
+
 func TestDetectHostApps(t *testing.T) {
-	items := DetectHostApps()
+	useHostChecker(t, allowEverything)
+	items := DetectHostAppsForce(true)
 	if len(items) == 0 {
 		t.Fatal("expected non-empty host app list")
 	}
@@ -123,7 +150,7 @@ func TestPackDynamicApp(t *testing.T) {
 		Icon:        "audio-x-generic",
 	}
 
-	if err := packDynamicApp(tw, app); err != nil {
+	if err := packDynamicApp(tw, app, testPack); err != nil {
 		t.Fatalf("packDynamicApp failed: %v", err)
 	}
 	if err := tw.Close(); err != nil {
@@ -166,8 +193,13 @@ func TestPackDynamicApp(t *testing.T) {
 	if !strings.Contains(desktopContent, "Exec=/home/headless/.local/bin/spotify-music-host %U") {
 		t.Errorf("unexpected desktop content: %s", desktopContent)
 	}
-	if !strings.Contains(wrapperContent, "exec host-run cmd.exe /c start explorer.exe shell:AppsFolder\\Spotify.exe") {
-		t.Errorf("unexpected wrapper script content: %s", wrapperContent)
+	if !strings.Contains(wrapperContent, "/host-gui/view?") || !strings.Contains(wrapperContent, "id=work-vm-spotify-music") ||
+		!strings.Contains(wrapperContent, "token=") ||
+		!strings.Contains(wrapperContent, "target=shell%3AAppsFolder%5CSpotify.exe") {
+		t.Errorf("a Windows app must open the host-gui viewer with its target, got: %s", wrapperContent)
+	}
+	if strings.Contains(wrapperContent, "host-run") {
+		t.Errorf("a Windows app must not be launched visibly on the host through host-run: %s", wrapperContent)
 	}
 }
 
@@ -235,8 +267,6 @@ func TestPackHostBridgeLaunchers(t *testing.T) {
 		".local/bin/host-run",
 		".local/bin/host-open",
 		".local/bin/host-clip",
-		".local/bin/win-run",
-		".local/bin/mac-run",
 	}
 
 	for _, exp := range expected {
@@ -246,6 +276,9 @@ func TestPackHostBridgeLaunchers(t *testing.T) {
 	}
 
 	unexpected := []string{
+		// generic "run anything on the host" wrappers: host commands are signed into launchers now
+		".local/bin/win-run",
+		".local/bin/mac-run",
 		".local/bin/chrome-host",
 		".local/bin/edge-host",
 		".local/bin/youtube-host",
@@ -281,10 +314,8 @@ func TestSelectedAppsPackaging(t *testing.T) {
 		id           string
 		expectedFile string
 	}{
-		{"chrome", "Desktop/chrome-host.desktop"},
-		{"edge", "Desktop/edge-host.desktop"},
-		{"youtube", "Desktop/youtube-host.desktop"},
-		{"vscode", "Desktop/code-host.desktop"},
+		{"claude", "Desktop/claude-host.desktop"},
+		{"chatgpt", "Desktop/chatgpt-host.desktop"},
 	}
 
 	for _, tc := range testCases {
@@ -411,7 +442,7 @@ func TestPackDynamicAppWebAppMode(t *testing.T) {
 	buf := new(bytes.Buffer)
 	tw := tar.NewWriter(buf)
 
-	if err := packDynamicApp(tw, app); err != nil {
+	if err := packDynamicApp(tw, app, testPack); err != nil {
 		t.Fatalf("packDynamicApp: %v", err)
 	}
 	if err := tw.Close(); err != nil {
@@ -460,7 +491,7 @@ func TestPackDynamicAppSVGIcon(t *testing.T) {
 	buf := new(bytes.Buffer)
 	tw := tar.NewWriter(buf)
 
-	if err := packDynamicApp(tw, app); err != nil {
+	if err := packDynamicApp(tw, app, testPack); err != nil {
 		t.Fatalf("packDynamicApp: %v", err)
 	}
 	if err := tw.Close(); err != nil {
@@ -543,10 +574,386 @@ func TestPackHostBridgeLaunchersIncludesDisplay(t *testing.T) {
 		}
 	}
 
-	if !strings.Contains(hostRunContent, "'display': os.environ.get('DISPLAY', ':1')") {
+	if !strings.Contains(hostRunContent, `body["display"] = os.environ.get("DISPLAY", ":1")`) {
 		t.Errorf("expected host-run to send container DISPLAY in payload, got:\n%s", hostRunContent)
 	}
-	if !strings.Contains(hostRunContent, "DISPLAY=${DISPLAY:-:1}") {
-		t.Errorf("expected host-run SSH fallback to forward DISPLAY, got:\n%s", hostRunContent)
+	if strings.Contains(hostRunContent, "ssh ") {
+		t.Errorf("host-run must not have an unsigned ssh fallback, got:\n%s", hostRunContent)
+	}
+}
+
+// TestHostRunWorksOnAnImageWithoutCurlOrLocalBinOnPath pins the two things that made a copied
+// desktop app do nothing when clicked: the wrappers ran "host-run" by bare name (~/.local/bin is
+// not on the basic image's PATH, so the shell said "host-run: not found"), and host-run itself
+// posted with curl, which the desktop images do not all ship.
+func TestHostRunWorksOnAnImageWithoutCurlOrLocalBinOnPath(t *testing.T) {
+	buf := new(bytes.Buffer)
+	tw := tar.NewWriter(buf)
+	if err := packHostBridgeLaunchers(tw); err != nil {
+		t.Fatal(err)
+	}
+	app := HostAppItem{ID: "win_notepad", Name: "Notepad", HostCmd: `cmd.exe /c start "" "C:\Notepad.lnk"`}
+	if err := packDynamicApp(tw, app, testPack); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tr := tar.NewReader(buf)
+	scripts := 0
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(hdr.Name, ".local/bin/") {
+			continue
+		}
+		data, _ := io.ReadAll(tr)
+		content := string(data)
+		scripts++
+		if strings.Contains(content, "curl") && !strings.Contains(content, "python3 rather than curl") {
+			t.Errorf("%s calls curl, which the desktop images do not all have:\n%s", hdr.Name, content)
+		}
+		for _, line := range strings.Split(content, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "exec host-run") {
+				t.Errorf("%s runs host-run by bare name, which is not on PATH in the basic image: %q", hdr.Name, line)
+			}
+		}
+	}
+	if scripts == 0 {
+		t.Fatal("no scripts packed")
+	}
+}
+
+// TestShellWordsKeepsWindowsBackslashes pins the bug where bash ate the backslash in
+// shell:AppsFolder\<AppUserModelID>, so a copied Store app asked the host for a name that does not exist.
+func TestShellWordsKeepsWindowsBackslashes(t *testing.T) {
+	cases := map[string]string{
+		`cmd.exe /c start explorer.exe shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App`: `cmd.exe /c start explorer.exe 'shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App'`,
+		`cmd.exe /c start "" "C:\Users\me\My Apps\Code.exe"`:                                           `cmd.exe /c start '' 'C:\Users\me\My Apps\Code.exe'`,
+		`open -a "Google Chrome"`:                  `open -a 'Google Chrome'`,
+		`cmd.exe /c start "" "C:\it's here\a.exe"`: `cmd.exe /c start '' 'C:\it'\''s here\a.exe'`,
+	}
+	for in, want := range cases {
+		if got := shellWords(in); got != want {
+			t.Errorf("shellWords(%q)\n got  %s\n want %s", in, got, want)
+		}
+	}
+}
+
+// requireBash skips a test that runs one of the launcher scripts. Those are bash scripts for the Linux desktop they are
+// copied into; there is nothing to run them with on a Windows machine, whatever bash WSL puts on its PATH.
+func requireBash(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("launchers are bash scripts for the Linux VM")
+	}
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+}
+
+// TestDynamicAppWrapperRunsUnderBashWithBackslashesIntact runs the generated wrapper with a stub
+// host-run and checks the argument the bridge would send, byte for byte.
+func TestDynamicAppWrapperRunsUnderBashWithBackslashesIntact(t *testing.T) {
+	requireBash(t)
+	dir := t.TempDir()
+	buf := new(bytes.Buffer)
+	tw := tar.NewWriter(buf)
+	app := HostAppItem{ID: "win_calc", Name: "Calc", HostCmd: `winapp --profile "C:\Program Files\App" --name "it's"`}
+	if err := packDynamicApp(tw, app, testPack); err != nil {
+		t.Fatal(err)
+	}
+	tw.Close()
+	tr := tar.NewReader(buf)
+	var wrapper string
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hdr.Name == ".local/bin/calc-host" {
+			data, _ := io.ReadAll(tr)
+			wrapper = strings.ReplaceAll(string(data), "/home/headless/.local/bin/host-run", filepath.Join(dir, "host-run"))
+		}
+	}
+	stub := "#!/usr/bin/env bash\nfor a in \"$@\"; do printf '[%s]' \"$a\"; done\n"
+	if err := os.WriteFile(filepath.Join(dir, "host-run"), []byte(stub), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "calc-host"), []byte(wrapper), 0755); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command(filepath.Join(dir, "calc-host")).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := winhost.ExecToken(testPack.Secret, testPack.DesktopID, "winapp", []string{"--profile", `C:\Program Files\App`, "--name", "it's"})
+	want := `[signed][` + tok + `][winapp][--profile][C:\Program Files\App][--name][it's]`
+	if string(out) != want {
+		t.Errorf("host-run received %s, want %s", out, want)
+	}
+}
+
+func TestWindowsTarget(t *testing.T) {
+	cases := []struct {
+		in, target, args string
+		ok               bool
+	}{
+		{`cmd.exe /c start "" "C:\Users\me\AppData\Local\Programs\Microsoft VS Code\Code.exe"`, `C:\Users\me\AppData\Local\Programs\Microsoft VS Code\Code.exe`, "", true},
+		{`cmd.exe /c start "" "C:\Users\me\Desktop\Chrome.lnk"`, `C:\Users\me\Desktop\Chrome.lnk`, "", true},
+		{`cmd.exe /c start explorer.exe shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App`, `shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App`, "", true},
+		{`cmd.exe /c start "" "C:\a.exe" --flag value`, `C:\a.exe`, "--flag value", true},
+		{`open -a "Google Chrome"`, "", "", false},
+		{`cmd.exe /c dir`, "", "", false},
+		{``, "", "", false},
+	}
+	for _, c := range cases {
+		target, args, ok := windowsTarget(c.in)
+		if target != c.target || args != c.args || ok != c.ok {
+			t.Errorf("windowsTarget(%q) = (%q, %q, %v), want (%q, %q, %v)", c.in, target, args, ok, c.target, c.args, c.ok)
+		}
+	}
+}
+
+// TestHostGUIWrapperOpensTheViewerForThisDesktop runs the generated launcher with a stand-in browser first on PATH
+// (never a real one: a test must not open windows) and checks the URL it would open.
+func TestHostGUIWrapperOpensTheViewerForThisDesktop(t *testing.T) {
+	requireBash(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "chromium-browser"), []byte("#!/usr/bin/env bash\nprintf '%s\\n' \"$@\"\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	script := hostGUIWrapper(testPack, "vs-code", "Visual Studio Code", `C:\Program Files\Code.exe`, `--folder "a b"`)
+	wrapper := filepath.Join(dir, "vs-code-host")
+	if err := os.WriteFile(wrapper, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(wrapper)
+	cmd.Env = []string{"PATH=" + dir + ":/usr/bin:/bin", "CONTROL_PLANE_URL=http://cp.test:8080"}
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("wrapper failed: %v\n%s", err, script)
+	}
+	arg := strings.TrimSpace(string(out))
+	raw, ok := strings.CutPrefix(arg, "--app=")
+	if !ok {
+		t.Fatalf("browser was given %q, want an --app= window", arg)
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := u.Query()
+	if u.Host != "cp.test:8080" || u.Path != "/host-gui/view" ||
+		q.Get("id") != "work-vm-vs-code" || q.Get("desktop") != "work-vm" ||
+		q.Get("token") != winhost.Token(testPack.Secret, "work-vm-vs-code", `C:\Program Files\Code.exe`, `--folder "a b"`) || q.Get("title") != "Visual Studio Code" ||
+		q.Get("target") != `C:\Program Files\Code.exe` || q.Get("args") != `--folder "a b"` {
+		t.Fatalf("viewer URL %s carries the wrong values: %v", raw, q)
+	}
+}
+
+func TestHostGUIWrapperTellsYouWhenThereIsNoBrowser(t *testing.T) {
+	requireBash(t)
+	dir := t.TempDir()
+	wrapper := filepath.Join(dir, "w")
+	os.WriteFile(wrapper, []byte(hostGUIWrapper(testPack, "x", "X", `C:\x.exe`, "")), 0755)
+	cmd := exec.Command("/bin/bash", wrapper)
+	cmd.Env = []string{"PATH=" + dir} // nothing on it, so no browser is found
+	if err := cmd.Run(); err == nil {
+		t.Fatal("wrapper reported success with no browser to show the app in")
+	}
+}
+
+func TestLauncherTokenIsBoundToTheAppItLaunches(t *testing.T) {
+	script := hostGUIWrapper(testPack, "chrome", "Chrome", `C:\Program Files\Google\Chrome\chrome.exe`, "")
+	other := hostGUIWrapper(testPack, "chrome", "Chrome", `C:\Windows\System32\cmd.exe`, "")
+	tokenOf := func(s string) string {
+		i := strings.Index(s, "token=")
+		return s[i+len("token=") : i+len("token=")+32]
+	}
+	if tokenOf(script) == tokenOf(other) {
+		t.Fatal("two different programs share a launch token: a launcher could be edited to run something else")
+	}
+	unsigned := hostGUIWrapper(packContext{DesktopID: "work-vm"}, "chrome", "Chrome", `C:\a.exe`, "")
+	if strings.Contains(unsigned, "token=") {
+		t.Fatal("a launcher written with no secret carries a token")
+	}
+}
+
+func windowsApp(name, hostCmd string) HostAppItem {
+	return HostAppItem{ID: "win_" + sanitizeAppSlug(name), Name: name, Detected: true, AppType: "windows_app", HostCmd: hostCmd}
+}
+
+func TestOnlyAppsTheHostCanRunHiddenAreOffered(t *testing.T) {
+	const uwp = `cmd.exe /c start explorer.exe shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App`
+	const paint = `cmd.exe /c start "" "C:\Windows\System32\mspaint.exe"`
+	useHostChecker(t, func(_ context.Context, targets []winhost.Target) (map[winhost.Target]string, error) {
+		out := map[winhost.Target]string{}
+		for _, tg := range targets {
+			if strings.Contains(tg.Target, "Calculator") {
+				out[tg] = "This is a Universal Windows (UWP) app"
+			} else {
+				out[tg] = ""
+			}
+		}
+		return out, nil
+	})
+
+	got := vetHostApps([]HostAppItem{
+		windowsApp("Calculator", uwp),
+		windowsApp("Paint", paint),
+	})
+	if len(got) != 1 || got[0].Name != "Paint" || got[0].Mode != ModeHostGUI {
+		t.Fatalf("offered %+v, want only Paint, run on the host", got)
+	}
+}
+
+func TestAnAppTheHostWasNeverAskedAboutIsNotOffered(t *testing.T) {
+	const paint = `cmd.exe /c start "" "C:\Windows\System32\mspaint.exe"`
+	apps := []HostAppItem{windowsApp("Paint", paint)}
+
+	useHostChecker(t, nil)
+	if got := vetHostApps(apps); len(got) != 0 {
+		t.Errorf("with no way to ask the host, offered %+v", got)
+	}
+
+	// A helper that dies partway keeps what it answered; the rest are not promised.
+	useHostChecker(t, func(context.Context, []winhost.Target) (map[winhost.Target]string, error) {
+		return nil, errors.New("the host helper ended")
+	})
+	if got := vetHostApps(apps); len(got) != 0 {
+		t.Errorf("after the host helper failed, offered %+v", got)
+	}
+}
+
+func TestAWebServiceOpensInTheVMWithoutAskingTheHost(t *testing.T) {
+	asked := false
+	useHostChecker(t, func(context.Context, []winhost.Target) (map[winhost.Target]string, error) {
+		asked = true
+		return nil, nil
+	})
+	got := vetHostApps([]HostAppItem{windowsApp("Claude", `cmd.exe /c start explorer.exe shell:AppsFolder\Anthropic.Claude_x!Claude`)})
+	if len(got) != 1 || got[0].Mode != ModeWeb {
+		t.Fatalf("offered %+v, want Claude opened as its web version", got)
+	}
+	if asked {
+		t.Error("the host was asked about an app that never runs there")
+	}
+}
+
+func TestAppsThatNeedSoundAreNotOffered(t *testing.T) {
+	useHostChecker(t, allowEverything)
+	got := vetHostApps([]HostAppItem{
+		windowsApp("Spotify", `cmd.exe /c start "" "C:\Users\a\AppData\Roaming\Spotify\Spotify.exe"`),
+		windowsApp("VLC media player", `cmd.exe /c start "" "C:\Program Files\VideoLAN\VLC\vlc.exe"`),
+	})
+	if len(got) != 0 {
+		t.Errorf("the VMs have no sound device, yet offered %+v", got)
+	}
+}
+
+func TestTheHostIsOnlyAskedAboutAnAppOnce(t *testing.T) {
+	calls := 0
+	useHostChecker(t, func(ctx context.Context, targets []winhost.Target) (map[winhost.Target]string, error) {
+		calls++
+		return allowEverything(ctx, targets)
+	})
+	apps := []HostAppItem{windowsApp("Paint", `cmd.exe /c start "" "C:\Windows\System32\mspaint.exe"`)}
+	vetHostApps(apps)
+	vetHostApps(apps)
+	if calls != 1 {
+		t.Errorf("host asked %d times for the same app, want 1", calls)
+	}
+	forgetHostVerdicts()
+	vetHostApps(apps)
+	if calls != 2 {
+		t.Errorf("after a rescan host asked %d times in all, want 2", calls)
+	}
+}
+
+// host-run can only open links, set the clipboard and run a signed launcher command. The old generic form
+// ("host-run rm -rf ...", and win-run/mac-run which wrapped it) is what let a desktop's agent run anything on the host.
+func TestHostRunRefusesToRunAnUnsignedCommand(t *testing.T) {
+	requireBash(t)
+	buf := new(bytes.Buffer)
+	tw := tar.NewWriter(buf)
+	if err := packHostBridgeLaunchers(tw); err != nil {
+		t.Fatal(err)
+	}
+	tw.Close()
+	tr := tar.NewReader(buf)
+	var script string
+	for {
+		hdr, err := tr.Next()
+		if err != nil {
+			break
+		}
+		if hdr.Name == ".local/bin/host-run" {
+			b, _ := io.ReadAll(tr)
+			script = string(b)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "host-run")
+	if err := os.WriteFile(path, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Nothing listens on this address, so if the script tried to post anything it would fail differently.
+	cmd := exec.Command("bash", path, "cmd.exe", "/c", "calc")
+	cmd.Env = append(os.Environ(), "CONTROL_PLANE_URL=http://127.0.0.1:1")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("host-run ran an unsigned command: %s", out)
+	}
+	if !strings.Contains(string(out), "cannot run 'cmd.exe' on the host") {
+		t.Errorf("unexpected refusal: %s", out)
+	}
+}
+
+func TestStaticLaunchersOpenALinkInsteadOfRunningCmd(t *testing.T) {
+	for _, def := range getKnownAppDefs() {
+		if def.id != "claude" && def.id != "chatgpt" {
+			continue
+		}
+		buf := new(bytes.Buffer)
+		tw := tar.NewWriter(buf)
+		if err := def.packFn(tw, nil); err != nil {
+			t.Fatal(err)
+		}
+		tw.Close()
+		if strings.Contains(buf.String(), "host-run cmd.exe") {
+			t.Errorf("%s launcher still asks the host to run cmd.exe", def.id)
+		}
+	}
+}
+
+// A folder at /mnt/c is not a Windows install: compose always creates that mount, so on a Mac or a Linux machine it is
+// an empty folder (or the host's own root) and used to make the control plane believe it ran on Windows.
+func TestHasWindowsInstallNeedsWindowsInsideTheDrive(t *testing.T) {
+	empty := t.TempDir()
+	hostRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(hostRoot, "usr", "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if hasWindowsInstall([]string{empty, hostRoot}) {
+		t.Fatal("an empty folder and a Linux root were taken for a Windows drive")
+	}
+	if hasWindowsInstall(nil) {
+		t.Fatal("no drives at all were taken for a Windows drive")
+	}
+	drive := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(drive, "Windows", "System32"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !hasWindowsInstall([]string{empty, drive}) {
+		t.Fatal("a drive holding a Windows folder was not recognised")
 	}
 }

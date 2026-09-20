@@ -43,6 +43,11 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		Kind  string `json:"kind"`
 		Reply string `json:"reply"`
 
+		// Quiet asks for no Query rail entry: the callback still closes the
+		// task and answers in the chat. Sent for a result nobody needs paging
+		// about, such as a finished recording, which the desktop card lists.
+		Quiet bool `json:"quiet"`
+
 		// What the task records need from the end of a turn: which task it
 		// was, and what the desktop knows about the model and the spend so
 		// far. All optional, and absent from older images.
@@ -79,8 +84,6 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: time.Now(),
 	}
 
-	s.QueryNotes.Add(note)
-
 	// The same callback feeds two surfaces: the Query rail keeps the whole
 	// formatted note, while the chat shows only the agent's actual words.
 	chatText, notedKind := agentReplyFromNote(req.Content)
@@ -95,6 +98,14 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	desktopID := desktop.SanitizeID(req.DesktopID)
+
+	// The kind is what lets a later reply resolve this note: only a query or
+	// an approval is answered by one.
+	note.Kind = outcomeKindFor(req.Kind, chatKind)
+
+	if !req.Quiet {
+		s.QueryNotes.Add(note)
+	}
 
 	taskID, err := s.Tasks.RecordOutcome(desktopID, reportedTaskID(req.TaskID), tasks.Outcome{
 		Kind:         outcomeKindFor(req.Kind, chatKind),
@@ -170,12 +181,18 @@ func nonNegativeInt(value *int64) *int64 {
 	return value
 }
 
-// queryNotesHandler returns all recorded query notes as JSON.
+// queryNotesHandler returns the query notes still open as JSON.
 func (s *Server) queryNotesHandler(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, s.QueryNotes.List())
 }
 
-// closeQueryNoteHandler deletes a query note by ID.
+// resolvedQueryNotesHandler returns the resolved query notes as JSON, most
+// recently resolved first - the Queries page's history.
+func (s *Server) resolvedQueryNotesHandler(w http.ResponseWriter, r *http.Request) {
+	jsonResponse(w, s.QueryNotes.ListResolved())
+}
+
+// closeQueryNoteHandler resolves a query note by ID; it stays in the history.
 func (s *Server) closeQueryNoteHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)

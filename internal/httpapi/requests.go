@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/YKoustubhRao/flowera/internal/desktop"
+	"github.com/YKoustubhRao/flowera/internal/ollama"
 	"github.com/YKoustubhRao/flowera/internal/tasks"
 	"github.com/YKoustubhRao/flowera/internal/webui"
 )
@@ -24,8 +25,12 @@ const maxRequestBytes = 8192
 // behavior depends on.
 const autoStartTimeout = 90 * time.Second
 
+// errStillProvisioning is what a request to a desktop that is still being
+// created fails with.
+var errStillProvisioning = errors.New("desktop is still being created")
+
 // autoStartPoll is how often deliverRequest retries while waiting.
-const autoStartPoll = 2 * time.Second
+const autoStartPoll = time.Second
 
 // requestsDashboardHandler renders the requests dashboard page for sending requests to desktops.
 func (s *Server) requestsDashboardHandler(w http.ResponseWriter, r *http.Request) {
@@ -94,6 +99,17 @@ func (s *Server) sendRequestHandler(w http.ResponseWriter, r *http.Request) {
 // the task records and chat exactly the way a typed one does.
 func (s *Server) submitRequest(ctx context.Context, desktopID, content string) (tasks.Route, error) {
 	id := desktop.SanitizeID(desktopID)
+
+	// A desktop still being created has no container yet, which would read
+	// as "no longer exists" below - say what is actually happening.
+	if prov, ok := s.Desktops.GetProvisioning(id); ok && prov.Status == "provisioning" {
+		return tasks.Route{}, errStillProvisioning
+	}
+
+	// A request to a stopped desktop waits for it to boot; load the model
+	// during that wait rather than after it.
+	ollama.WarmAsync()
+
 	route := s.routeRequest(id, content)
 
 	if err := s.deliverRequest(ctx, desktopID, content, route.TaskID); err != nil {
@@ -147,17 +163,30 @@ func (s *Server) routeRequest(desktopID, content string) tasks.Route {
 // nothing better to do while it boots than wait for it.
 func (s *Server) deliverRequest(ctx context.Context, desktopID, content, taskID string) error {
 	err := s.Desktops.SendRequest(ctx, desktopID, content, taskID)
-	if err == nil || !errors.Is(err, desktop.ErrNotRunning) {
+
+	switch {
+	case err == nil:
+		return nil
+
+	case errors.Is(err, desktop.ErrNotRunning):
+		if startErr := s.Desktops.Start(ctx, desktopID); startErr != nil {
+			return startErr
+		}
+
+		log.Printf("deliverRequest: %s was stopped - starting it and waiting up to %s for its agent", desktopID, autoStartTimeout)
+
+	case errors.Is(err, desktop.ErrAgentUnreachable) && s.recentlyStarted(ctx, desktopID):
+		// Running, but its agent has not bound :8081 yet - a desktop that
+		// was just created, restarted or unpaused. Answering 503 here made a
+		// request typed the moment a desktop turned green fail for no reason
+		// a person could act on.
+		log.Printf("deliverRequest: %s only just started - waiting up to %s for its agent", desktopID, autoStartTimeout)
+
+	default:
 		return err
 	}
 
-	if startErr := s.Desktops.Start(ctx, desktopID); startErr != nil {
-		return startErr
-	}
-
 	started := time.Now()
-	log.Printf("deliverRequest: %s was stopped - starting it and waiting up to %s for its agent", desktopID, autoStartTimeout)
-
 	deadline := started.Add(autoStartTimeout)
 
 	for {
@@ -184,6 +213,25 @@ func (s *Server) deliverRequest(ctx context.Context, desktopID, content, taskID 
 	}
 }
 
+// recentlyStarted reports whether the desktop's container started within
+// autoStartTimeout, i.e. whether an agent that is not answering yet is more
+// likely still booting than dead. An unreadable start time is "no": a
+// desktop whose agent really is down must fail fast, not make a person wait
+// a minute and a half to be told so.
+func (s *Server) recentlyStarted(ctx context.Context, desktopID string) bool {
+	d, err := s.Desktops.Get(ctx, desktopID)
+	if err != nil {
+		return false
+	}
+
+	startedAt, err := time.Parse(time.RFC3339Nano, d.StartedAt)
+	if err != nil {
+		return false
+	}
+
+	return time.Since(startedAt) < autoStartTimeout
+}
+
 // recordDelivered records a request the desktop has accepted, in the task
 // records and in the chat, and returns the route it was recorded under.
 //
@@ -201,6 +249,14 @@ func (s *Server) recordDelivered(ctx context.Context, desktopID, content string,
 	}
 
 	s.Chat.AppendUserRequest(desktopID, route.TaskID, content)
+
+	// A request that reached the desktop as the reply to its open query is
+	// the answer: the Queries tab should not go on asking for it. This is the
+	// one place every door (chat, requests page, a query's own reply box)
+	// passes through.
+	if route.Kind == tasks.RouteReply && s.QueryNotes != nil {
+		s.QueryNotes.ResolveAnswered(desktopID)
+	}
 
 	return route
 }
@@ -232,6 +288,13 @@ func (s *Server) workerFor(ctx context.Context, desktopID string) tasks.Worker {
 // error: it is a "not ready yet, try again" the chat can show as-is.
 func sendRequestError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, errStillProvisioning):
+		jsonStatusError(
+			w,
+			http.StatusServiceUnavailable,
+			"that desktop is still being created - try again in a few seconds",
+		)
+
 	case errors.Is(err, desktop.ErrNotFound):
 		jsonStatusError(
 			w,

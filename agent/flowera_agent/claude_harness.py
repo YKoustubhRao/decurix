@@ -97,7 +97,10 @@ mcp__computer__observe (screenshot + elements with refs), mcp__computer__act
 (click/type/key/scroll/select on a ref; coordinates only when no element
 fits), mcp__computer__verify (confirm the result), mcp__computer__open
 (a URL, file or app). Act on refs from your latest observation, and verify
-before reporting that something on screen is done.
+before reporting that something on screen is done. If a person has taught
+this desktop the task, mcp__computer__skills finds it and
+mcp__computer__run_skill does it with no model: prefer that to working the
+task out yourself.
 
 You do not need to ask before clicking an on-screen control: the act tool
 itself stops before anything that sends, pays, buys or publishes. When it
@@ -331,6 +334,35 @@ def _run_claude(prompt, resume_session_id=None):
         ).strip()
 
     return result, None
+
+
+def ask_once(system, prompt):
+    """
+    One question to Claude with every tool switched off: what the computer
+    layer's grounder and judge (computer/escalation.py) use. Answers with the
+    reply text, or raises RuntimeError - a caller treats "could not ask" as
+    "not sure", never as a yes.
+    """
+
+    cmd = ["claude", "-p", prompt, "--output-format", "json", "--tools", "",
+           "--max-budget-usd", "0.25", "--append-system-prompt", system]
+
+    try:
+        done = subprocess.run(cmd, cwd=str(config.WORK_DIR), capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"could not ask claude: {exc}")
+
+    try:
+        result = json.loads(done.stdout)
+    except ValueError:
+        raise RuntimeError((done.stderr or done.stdout or f"claude exited with code {done.returncode}").strip()[:300])
+
+    _record_usage(result)
+
+    if result.get("is_error") or not isinstance(result.get("result"), str):
+        raise RuntimeError(str(result.get("result") or "claude returned no answer")[:300])
+
+    return result["result"]
 
 
 def _record_usage(result):

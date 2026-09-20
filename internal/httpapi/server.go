@@ -23,6 +23,7 @@ import (
 	"github.com/YKoustubhRao/flowera/internal/tasks"
 	"github.com/YKoustubhRao/flowera/internal/tunnel"
 	"github.com/YKoustubhRao/flowera/internal/webui"
+	"github.com/YKoustubhRao/flowera/internal/winhost"
 )
 
 // Server wires the desktop manager, query-notes store, memory store, chat
@@ -55,14 +56,20 @@ type Server struct {
 
 	stepImagesMu     sync.Mutex
 	recentStepImages map[string]string
+
+	// hostGUI runs Windows apps on a private desktop of the host and streams them to a VM; created on first use.
+	hostGUIOnce sync.Once
+	hostGUIMgr  *winhost.Manager
+	// HostGUISecret signs the launch tokens a launcher carries (winhost.Token); main.go loads it from the data
+	// directory so tokens survive a restart. hostGUIAuth holds, per running session, the token it was started with.
+	HostGUISecret []byte
+	hostGUIAuthMu sync.Mutex
+	hostGUIAuth   map[string]string
 }
 
 // NewServer creates a Server from its component stores/managers.
 func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memoryStore *memory.Store, chat *conversation.Store, stepImages *stepimages.Store, taskRecords *tasks.Store, tunnelStore *tunnel.Store, claudeAuth *claudeauth.Store, lanAccess *lanaccess.Store, schedules *schedule.Store, dags *dag.Store, suggestions *suggest.Store, web *webui.Renderer) *Server {
-	// Pre-warm host apps discovery in background so desktop creation and scanning UI are instant
-	desktop.InitHostAppsScan()
-
-	return &Server{
+	srv := &Server{
 		Desktops:         desktops,
 		QueryNotes:       queryNotes,
 		Memory:           memoryStore,
@@ -78,6 +85,14 @@ func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memorySt
 		Web:              web,
 		recentStepImages: make(map[string]string),
 	}
+
+	// Pre-warm host apps discovery in background so desktop creation and scanning UI are instant. The scan only offers
+	// a Windows program once the host has confirmed it can run hidden, so the way to ask must be in place first.
+	desktop.SetHostAppChecker(srv.checkHostApps)
+	desktop.SetHostAppWarmer(srv.warmHostGUI)
+	desktop.WarmHostApps() // compile and load now, long before the first desktop exists
+	desktop.InitHostAppsScan()
+	return srv
 }
 
 // RegisterRoutes registers every HTTP route the control plane serves.
@@ -103,9 +118,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/desktops/send", s.sendRequestHandler)
 	mux.HandleFunc("/api/desktops/suggest", s.suggestDesktopHandler)
 	mux.HandleFunc("/api/host-apps/detect", s.detectHostAppsHandler)
-	mux.HandleFunc("/api/host-bridge/exec", s.hostBridgeExecHandler)
-	mux.HandleFunc("/api/host-bridge/open", s.hostBridgeOpenHandler)
-	mux.HandleFunc("/api/host-bridge/clip", s.hostBridgeClipHandler)
+	mux.HandleFunc("/api/desktops/host-apps/copy", s.copyHostAppsHandler)
 	mux.HandleFunc("/api/schedules", s.schedulesHandler)
 	mux.HandleFunc("/api/schedules/create", s.createScheduleHandler)
 	mux.HandleFunc("/api/schedules/delete", s.deleteScheduleHandler)
@@ -139,6 +152,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/querytext", s.queryTextHandler)
 	mux.HandleFunc("/api/querynotes", s.queryNotesHandler)
 	mux.HandleFunc("/api/querynotes/close", s.closeQueryNoteHandler)
+	mux.HandleFunc("/api/querynotes/resolved", s.resolvedQueryNotesHandler)
 	mux.HandleFunc("/dashboard", s.dashboardPostsHandler)
 	mux.HandleFunc("/tasks", s.tasksPageHandler)
 	mux.HandleFunc("/tasks/", s.taskPageHandler)
@@ -154,11 +168,18 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/desktops/recordings/update", s.recordingUpdateHandler)
 	mux.HandleFunc("/api/desktops/recordings/delete", s.recordingDeleteHandler)
 	mux.HandleFunc("/api/desktops/recordings/replay", s.replayRecordingHandler)
+	mux.HandleFunc("/api/desktops/recordings/learn", s.learnRecordingHandler)
+	mux.HandleFunc("/skills/", s.skillsPageHandler)
+	mux.HandleFunc("/api/desktops/skills", s.skillsAPIHandler)
+	mux.HandleFunc("/api/desktops/skills/get", s.skillAPIHandler)
+	mux.HandleFunc("/api/desktops/skills/run", s.runSkillHandler)
+	mux.HandleFunc("/api/desktops/skills/delete", s.skillDeleteHandler)
 	mux.HandleFunc("/api/desktops/demonstration", s.demonstrationHandler)
 	mux.HandleFunc("/api/desktops/record", s.recordTaskHandler)
 	mux.HandleFunc("/api/desktops/ticket", s.ticketStatusHandler)
 	mux.HandleFunc("/api/desktops/ticket/action", s.ticketActionHandler)
 	mux.HandleFunc("/api/tunnel", s.tunnelHandler)
+	mux.HandleFunc("/api/model", s.modelHandler)
 	mux.HandleFunc("/api/claude-auth/status", s.claudeAuthStatusHandler)
 	mux.HandleFunc("/api/claude-auth/login/start", s.claudeAuthLoginStartHandler)
 	mux.HandleFunc("/api/claude-auth/login/code", s.claudeAuthLoginCodeHandler)
@@ -166,13 +187,26 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/favicon.svg", s.faviconHandler)
 }
 
-// RegisterLocalRoutes registers the handful of routes that must only ever be
-// reachable on the primary listener, never on the LAN/tunnel-facing one a
-// phone reaches: the current LAN access code and the button that rotates it.
+// RegisterLocalRoutes registers the routes that must only ever be reachable
+// on the primary listener, never on the LAN/tunnel-facing one a phone
+// reaches: the current LAN access code and the button that rotates it, and
+// the host bridge (below).
 // Serving the code back over the very listener it gates would make it
 // pointless the moment someone else on that listener asked for it, so
 // cmd/flowera/main.go calls this only for the primary mux.
 func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
+	// Everything that runs something on the host or shows a host program
+	// is for a desktop's own launchers, which reach the primary listener
+	// over the Docker network. No phone or tunnel visitor needs any of it,
+	// so the gated listener never serves it: a leaked or brute-forced
+	// access code must not become command execution on the host.
+	mux.HandleFunc("/api/host-bridge/exec", s.hostBridgeExecHandler)
+	mux.HandleFunc("/api/host-bridge/open", s.hostBridgeOpenHandler)
+	mux.HandleFunc("/api/host-bridge/clip", s.hostBridgeClipHandler)
+	mux.HandleFunc("/api/host-gui/start", hostGUIDirectOnly(s.hostGUIStartHandler))
+	mux.HandleFunc("/api/host-gui/ws", hostGUIDirectOnly(s.hostGUIWSHandler))
+	mux.HandleFunc("/api/host-gui/stop", hostGUIDirectOnly(s.hostGUIStopHandler))
+	mux.HandleFunc("/host-gui/view", hostGUIDirectOnly(s.hostGUIViewHandler))
 	mux.HandleFunc("/api/lan-access/status", s.lanAccessStatusHandler)
 	mux.HandleFunc("/api/lan-access/rotate", s.lanAccessRotateHandler)
 }

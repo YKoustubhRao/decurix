@@ -153,7 +153,6 @@ if [ -z "$lan_ip" ]; then
 fi
 
 if [ -n "$lan_ip" ]; then
-    admin_url="http://$lan_ip:8080"
     lan_url="http://$lan_ip:$lan_port"
 
     # Reported once here, separately from the tunnel URL below (which is
@@ -161,11 +160,10 @@ if [ -n "$lan_ip" ]; then
     # which never lets one blank out the other.
     curl -fsS -X POST http://127.0.0.1:8080/api/tunnel \
         -H "Content-Type: application/json" \
-        -d "{\"admin_url\":\"$admin_url\",\"lan_url\":\"$lan_url\"}" \
+        -d "{\"lan_url\":\"$lan_url\"}" \
         >/dev/null 2>&1 || true
 
     echo ""
-    echo "Admin URL (full control, no code - keep this to yourself): $admin_url"
     echo "LAN access URL (needs the code below, works without the tunnel):  $lan_url"
 fi
 
@@ -216,38 +214,19 @@ fi
 
 # A second tunnel, to the access-code-gated listener - so the code-protected
 # URL works from anywhere, not just $lan_url above on this machine's own
-# network. Backgrounded (see lib/lan-tunnel.sh), so it doesn't block the
-# primary tunnel's own foreground loop just below.
+# network. Backgrounded (see lib/lan-tunnel.sh); the loop below only keeps
+# this script in the foreground.
 start_lan_tunnel "$lan_port"
 
 echo ""
 
-# Points at the primary listener (:8080), not the access-code-gated one -
-# so this URL is full, unauthenticated control of the machine, reachable by
-# anyone who has the link, the same as sitting at the machine itself. The
-# gated URL printed above ($lan_url, over $lan_port) and its own tunnel link
-# just above are still there for anyone who wants the code-gated option
-# instead.
-#
-# Start Cloudflare tunnel, echoing its logs while watching for the
-# trycloudflare.com URL so it can be reported to the control plane for
-# display in the dashboard's Mobile dropdown.
+# The primary listener (:8080) is deliberately never tunnelled: it has no
+# login and can create desktops and run commands on this machine. Only the
+# access-code-gated listener above is reachable from off this machine. The
+# tunnel to it runs in the background (lib/lan-tunnel.sh, which restarts it
+# if it drops); this just keeps the script - and so Ctrl+C handling - in the
+# foreground. "sleep & wait" so the trap runs at once, not after the sleep.
 while true; do
-    cloudflared tunnel --protocol http2 --url "http://127.0.0.1:8080" 2>&1 | while IFS= read -r line; do
-        echo "$line"
-
-        url=$(echo "$line" | grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' || true)
-
-        if [ -n "$url" ]; then
-            curl -fsS -X POST http://127.0.0.1:8080/api/tunnel \
-                -H "Content-Type: application/json" \
-                -d "{\"url\":\"$url\"}" \
-                >/dev/null 2>&1 || true
-
-            echo "(No access code needed for this URL - full control of this machine. Keep it to yourself.)"
-        fi
-    done
-
-    echo "Cloudflare tunnel disconnected. Reconnecting in 3s..."
-    sleep 3
+    sleep 5 &
+    wait $!
 done

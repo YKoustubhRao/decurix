@@ -23,6 +23,8 @@ cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source ./scripts/mac/lib/ollama-setup.sh
 # shellcheck source=lib/lan-tunnel.sh
 source ./scripts/mac/lib/lan-tunnel.sh
+# shellcheck source=lib/host-mounts.sh
+source ./scripts/mac/lib/host-mounts.sh
 
 SKIP_CONFIRM=""
 CLI_MODE=""
@@ -136,6 +138,7 @@ ensure_ollama_ready
 echo ""
 echo "=== Starting Flowera ==="
 
+export_host_mounts
 docker compose up -d --build
 
 echo ""
@@ -173,16 +176,14 @@ if [ -z "$lan_ip" ]; then
 fi
 
 if [ -n "$lan_ip" ]; then
-    admin_url="http://$lan_ip:8080"
     lan_url="http://$lan_ip:$lan_port"
 
     curl -fsS -X POST http://127.0.0.1:8080/api/tunnel \
         -H "Content-Type: application/json" \
-        -d "{\"admin_url\":\"$admin_url\",\"lan_url\":\"$lan_url\"}" \
+        -d "{\"lan_url\":\"$lan_url\"}" \
         >/dev/null 2>&1 || true
 
     echo ""
-    echo "Admin URL (full control, no code - keep this to yourself): $admin_url"
     echo "LAN access URL (needs the code below, works without the tunnel):  $lan_url"
 fi
 
@@ -227,23 +228,14 @@ start_lan_tunnel "$lan_port"
 
 echo ""
 
+# The primary listener (:8080) is deliberately never tunnelled: it has no
+# login and can create desktops and run commands on this machine. Only the
+# access-code-gated listener above is reachable from off this machine. The
+# tunnel to it runs in the background (lib/lan-tunnel.sh, which restarts it
+# if it drops); this just keeps the script - and so Ctrl+C handling - in the
+# foreground. "sleep & wait" so the trap runs at once, not after the sleep.
 while true; do
-    cloudflared tunnel --protocol http2 --url "http://127.0.0.1:8080" 2>&1 | while IFS= read -r line; do
-        echo "$line"
-
-        url=$(echo "$line" | grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' || true)
-
-        if [ -n "$url" ]; then
-            curl -fsS -X POST http://127.0.0.1:8080/api/tunnel \
-                -H "Content-Type: application/json" \
-                -d "{\"url\":\"$url\"}" \
-                >/dev/null 2>&1 || true
-
-            echo "(No access code needed for this URL - full control of this machine. Keep it to yourself.)"
-        fi
-    done
-
-    echo "Cloudflare tunnel disconnected. Reconnecting in 3s..."
-    sleep 3
+    sleep 5 &
+    wait $!
 done
 

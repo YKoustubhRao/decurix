@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{.Title}}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body { margin: 0; height: 100%; background: #1b1b1b; overflow: hidden; }
+  #screen { display: none; margin: 0 auto; max-width: 100%; max-height: 100vh; width: auto; height: auto; user-select: none; outline: none; }
+  #msg { color: #d8d8d8; font: 15px/1.5 system-ui, sans-serif; padding: 28px; max-width: 560px; }
+  #msg.error { color: #ffb4a8; }
+  #msg small { display: block; margin-top: 10px; color: #8a8a8a; }
+</style>
+</head>
+<body>
+<div id="msg">Starting {{.Title}} on the host&hellip;</div>
+<canvas id="screen" tabindex="0"></canvas>
+<script>
+(function () {
+  var ID = {{.ID}}, TOKEN = {{.Token}}, DESKTOP = {{.Desktop}}, TARGET = {{.Target}}, ARGS = {{.Args}};
+  var msg = document.getElementById('msg'), img = document.getElementById('screen');
+  // No alpha and no synchronisation with the page's own paint: the picture is opaque and only ever replaced, and this runs in
+  // a desktop with little CPU to spare.
+  var gfx = img.getContext('2d', { alpha: false, desynchronized: true });
+  var live = false;
+
+  function post(path, body) {
+    body.id = ID; body.token = TOKEN;
+    return fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), keepalive: true });
+  }
+  function fail(text) {
+    live = false; msg.className = 'error'; msg.textContent = text; msg.style.display = 'block'; img.style.display = 'none';
+  }
+
+  // Position in the app's own pixels: the picture is scaled to fit this window, so undo that scale.
+  function pos(e) {
+    var r = img.getBoundingClientRect();
+    return { x: Math.round((e.clientX - r.left) * img.width / r.width), y: Math.round((e.clientY - r.top) * img.height / r.height) };
+  }
+
+  // ---- The connection. One WebSocket carries the picture down and the person's input up, both in order, so nothing is
+  // requested and nothing overtakes anything: a typed word arrives as typed, and a picture is drawn when the host has one.
+  var ws = null, closedByApp = false, retries = 0, seqOut = 0, answers = {};
+  var outbox = [], pendingMove = null, moveFrame = 0;
+
+  function wsURL() {
+    return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/api/host-gui/ws?id=' + encodeURIComponent(ID) +
+      '&token=' + encodeURIComponent(TOKEN) + '&desktop=' + encodeURIComponent(DESKTOP);
+  }
+  function flush() {
+    if (!ws || ws.readyState !== 1) return;
+    while (outbox.length) ws.send(outbox.shift());
+  }
+  function emit(ev) {
+    // Only the latest of a run of mouse moves matters; anything else is sent after it, in order.
+    if (ev.kind === 'move') {
+      pendingMove = ev;
+      if (!moveFrame) moveFrame = requestAnimationFrame(function () { moveFrame = 0; if (pendingMove) { outbox.push(JSON.stringify(pendingMove)); pendingMove = null; flush(); } });
+      return;
+    }
+    if (pendingMove) { outbox.push(JSON.stringify(pendingMove)); pendingMove = null; }
+    outbox.push(JSON.stringify(ev));
+    flush();
+  }
+
+  // ---- Drawing. A patch is decoded off the main thread and drawn where it belongs. Decodes finish in any order, so they are
+  // chained to draw in the order they arrived; and a whole picture makes everything queued before it pointless, so under load
+  // (a busy VM) the queue is dropped rather than worked through.
+  var chain = Promise.resolve(), epoch = 0;
+  function onPatch(buf) {
+    var v = new DataView(buf), whole = v.getUint8(0) & 1;
+    var W = v.getUint16(1), H = v.getUint16(3), x = v.getUint16(5), y = v.getUint16(7);
+    var blob = new Blob([new Uint8Array(buf, 13)], { type: 'image/jpeg' });
+    if (whole) epoch++;
+    var mine = epoch;
+    var decoded = createImageBitmap(blob);
+    chain = chain.then(function () { return decoded; }).then(function (bmp) {
+      if (mine !== epoch) { bmp.close(); return; } // a newer whole picture has been received since
+      if (whole) {
+        if (img.width !== W || img.height !== H) { img.width = W; img.height = H; }
+      } else if (img.width !== W || img.height !== H) { bmp.close(); return; } // a patch of a picture that has since been resized
+      gfx.drawImage(bmp, x, y);
+      bmp.close();
+    }).catch(function () {});
+  }
+
+  function connect() {
+    ws = new WebSocket(wsURL());
+    ws.binaryType = 'arraybuffer';
+    ws.onopen = function () { retries = 0; flush(); };
+    ws.onmessage = function (e) {
+      if (typeof e.data !== 'string') { onPatch(e.data); return; }
+      var m; try { m = JSON.parse(e.data); } catch (x) { return; }
+      if (m.closed) { closedByApp = true; fail('The app was closed.'); return; }
+      if (m.id && answers[m.id]) { var cb = answers[m.id]; delete answers[m.id]; cb(m); }
+    };
+    ws.onclose = function () {
+      if (closedByApp || !live) return;
+      // The connection dropped but the app is still running on the host: reconnect, and the host sends the whole picture again.
+      if (retries++ > 8) { fail('Lost the connection to the Flowera control plane.'); return; }
+      setTimeout(connect, Math.min(3000, 250 * retries));
+    };
+  }
+
+  // The VM's clipboard, set from a hidden text box: navigator.clipboard needs a secure origin and this page is plain http.
+  function setLocalClipboard(text) {
+    var box = document.createElement('textarea');
+    box.value = text; box.style.cssText = 'position:fixed;left:-1000px;top:0;opacity:0';
+    document.body.appendChild(box); box.select();
+    try { document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(box); img.focus();
+  }
+
+  // Which of Ctrl, Shift and Alt are held: the letters c, s, a the host expects.
+  function mods(e) { return (e.ctrlKey ? 'c' : '') + (e.shiftKey ? 's' : '') + (e.altKey ? 'a' : ''); }
+
+  var down = false;
+  img.addEventListener('mousedown', function (e) {
+    e.preventDefault(); img.focus(); down = true;
+    var p = pos(e); emit({ kind: 'down', x: p.x, y: p.y, right: e.button === 2, mods: mods(e) });
+  });
+  window.addEventListener('mouseup', function (e) {
+    if (!down) return; down = false;
+    var p = pos(e); emit({ kind: 'up', x: p.x, y: p.y, right: e.button === 2, mods: mods(e) });
+  });
+  img.addEventListener('mousemove', function (e) { if (down) { var p = pos(e); emit({ kind: 'move', x: p.x, y: p.y, right: e.buttons === 2, mods: mods(e) }); } });
+  img.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  img.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    var p = pos(e); emit({ kind: 'wheel', x: p.x, y: p.y, delta: e.deltaY > 0 ? -1 : 1 });
+  }, { passive: false });
+
+  // A key that is not simply a character (Enter, arrows, F-keys) or that is held with Ctrl or Alt (a shortcut) is sent as a
+  // virtual-key code with its modifiers; the browser's keyCode is the Windows virtual-key code. A plain character, or one
+  // typed with Shift or AltGr (which a keyboard reports as Ctrl+Alt), is sent as the text it produces.
+  var NAMED = { Backspace: 1, Tab: 1, Enter: 1, Escape: 1, PageUp: 1, PageDown: 1, End: 1, Home: 1, ArrowLeft: 1, ArrowUp: 1, ArrowRight: 1, ArrowDown: 1, Insert: 1, Delete: 1 };
+  window.addEventListener('keydown', function (e) {
+    if (!live) return;
+    if (e.key === 'Control' || e.key === 'Shift' || e.key === 'Alt' || e.key === 'Meta' || e.key === 'CapsLock' || e.isComposing) return;
+    var text = e.key.length === 1;
+    var altGr = e.ctrlKey && e.altKey && text; // AltGr on many layouts
+    var shortcut = (e.ctrlKey || e.altKey) && !altGr;
+    var k = e.key.toLowerCase();
+    // Copy and cut are done in the app, then what it copied is brought back into this desktop's clipboard. Paste is the
+    // browser's own paste event (below), typed into the app: the host's clipboard is the person's, and never goes in.
+    if (e.ctrlKey && !e.altKey && !e.shiftKey && (k === 'c' || k === 'x')) {
+      e.preventDefault();
+      var id = ++seqOut;
+      answers[id] = function (r) { if (r && r.text) setLocalClipboard(r.text); };
+      emit({ kind: 'copy', vk: k === 'c' ? 67 : 88, seq: id });
+      return;
+    }
+    if ((e.ctrlKey && !e.altKey && k === 'v') || (e.shiftKey && e.key === 'Insert')) return; // handled by the paste event
+    if (NAMED[e.key] || /^F([1-9]|1[0-2])$/.test(e.key) || (shortcut && e.keyCode > 0)) {
+      e.preventDefault(); emit({ kind: 'key', vk: e.keyCode, mods: mods(e) }); return;
+    }
+    if (text && !e.metaKey) { e.preventDefault(); emit({ kind: 'type', text: e.key }); }
+  });
+
+  window.addEventListener('paste', function (e) {
+    if (!live) return;
+    var text = e.clipboardData ? e.clipboardData.getData('text') : '';
+    e.preventDefault();
+    if (text) emit({ kind: 'paste', text: text });
+  });
+
+  // Closing this window closes the app on the host: it has no window of its own to close.
+  window.addEventListener('pagehide', function () { if (live) navigator.sendBeacon('/api/host-gui/stop', new Blob([JSON.stringify({ id: ID, token: TOKEN })], { type: 'application/json' })); });
+
+  post('/api/host-gui/start', { target: TARGET, args: ARGS }).then(function (r) {
+    return r.json().then(function (j) { return { ok: r.ok, body: j }; });
+  }).then(function (res) {
+    if (!res.ok) { fail(res.body && res.body.error ? res.body.error : 'Could not start the app.'); return; }
+    live = true; msg.style.display = 'none';
+    img.style.display = 'block';
+    img.width = res.body.w || img.width; img.height = res.body.h || img.height;
+    img.focus();
+    connect();
+    // Fit the window to the app, as far as the browser lets an app window be resized.
+    try { window.resizeTo(res.body.w + (window.outerWidth - window.innerWidth), res.body.h + (window.outerHeight - window.innerHeight)); } catch (e) {}
+  }).catch(function () { fail('Could not reach the Flowera control plane.'); });
+})();
+</script>
+</body>
+</html>

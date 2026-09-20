@@ -207,6 +207,7 @@ func (s *Store) StartRun(dagID, trigger string, now time.Time) (Run, error) {
 	if err != nil {
 		return Run{}, fmt.Errorf("dag: start run: %w", err)
 	}
+	defer rows.Close()
 
 	children := make(map[string][]string)
 
@@ -214,14 +215,11 @@ func (s *Store) StartRun(dagID, trigger string, now time.Time) (Run, error) {
 		var from, to string
 
 		if err := rows.Scan(&from, &to); err != nil {
-			rows.Close()
 			return Run{}, fmt.Errorf("dag: start run: %w", err)
 		}
 
 		children[from] = append(children[from], to)
 	}
-
-	rows.Close()
 
 	if err := rows.Err(); err != nil {
 		return Run{}, fmt.Errorf("dag: start run: %w", err)

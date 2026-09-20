@@ -410,6 +410,8 @@ var userToggled = false;  // once a person opens/closes the panel by hand, stop 
 var draftTask = "";       // the create-ticket input's text, kept across re-renders (see renderCreate)
 var reasonOpen = false;   // the Reason box is expanded
 var draftReason = "";     // its text, kept across re-renders the same way draftTask is
+var endedStarted = "";    // "replay" or "learn" once one was started from the saved-recording view
+var endedStarting = "";   // which of them is being started right now
 var reasonAutoPaused = false; // opening the Reason box is what paused recording, so closing
                                // it without submitting should undo that pause (see startReason)
 
@@ -420,7 +422,11 @@ function api(path, fields){
   return fetch(path, {method: "POST", headers: {"Content-Type": "application/x-www-form-urlencoded"}, body: body})
     .then(function(r){
       return r.json().catch(function(){ return {}; }).then(function(data){
-        if(!r.ok){ throw new Error(data.error || "that didn't work"); }
+        if(!r.ok){
+          var failure = new Error(data.error || "that didn't work");
+          failure.status = r.status;
+          throw failure;
+        }
         return data;
       });
     });
@@ -459,6 +465,7 @@ function act(action, fields){
 
 function setTicket(next){
   if(next && next.session_id){ lastSession = next.session_id; }
+  if(next){ endedStarted = ""; }   // a new ticket: the last recording's replay/lesson is history
 
   // A ticket ending - however that happens, not just through this tab's own
   // End - leaves nothing for an open Reason box to attach to.
@@ -752,6 +759,42 @@ function reasonBox(){
   return wrap;
 }
 
+// What the "Recording saved" view can do with the recording it just made. Replay
+// and Learn are the same two calls the recordings page makes - a task like any
+// other, refused while the desktop has one running - and Download is the
+// export. Neither Replay nor Learn is given a value to type, so a recording
+// that typed something secret halts and asks: the recordings page is where
+// values are given.
+function startFromRecording(kind){
+  if(busy || !lastSession){ return; }
+
+  busy = true;
+  error = "";
+  endedStarting = kind;
+  render();
+
+  // End answers before the ticket's own task has finished closing, and a replay
+  // or a lesson is refused (409) while one is still open. That is a moment, not
+  // a real conflict, so give it a few tries before showing the reason.
+  var tries = 0;
+
+  (function attempt(){
+    api("/api/desktops/recordings/" + kind, {session: lastSession}).then(function(){
+      busy = false;
+      endedStarting = "";
+      endedStarted = kind;
+      render();
+    }, function(e){
+      if(e.status === 409 && ++tries < 6){ setTimeout(attempt, 1000); return; }
+
+      busy = false;
+      endedStarting = "";
+      error = e.message;
+      render();
+    });
+  })();
+}
+
 function renderJustEnded(){
   panel.innerHTML = "";
 
@@ -760,6 +803,31 @@ function renderJustEnded(){
   title.textContent = "Recording saved";
   panel.appendChild(title);
 
+  if(endedStarted){
+    var started = document.createElement("div");
+    started.id = "flowera-ticket-state";
+    started.style.marginTop = "8px";
+    started.textContent = endedStarted === "replay"
+      ? "Replay started. It runs on this screen; follow it in the chat."
+      : "Teaching started. It asks its questions in the chat.";
+    panel.appendChild(started);
+
+    var chat = document.createElement("a");
+    chat.className = "flowera-download";
+    chat.href = "/view/" + encodeURIComponent(DESKTOP_ID);
+    chat.target = "_blank";
+    chat.rel = "noopener";
+    chat.textContent = "Open the chat ↗";
+    panel.appendChild(chat);
+  }else{
+    var actions = row(false);
+    actions.appendChild(button(endedStarting === "replay" ? "Starting…" : "Replay",
+      function(){ startFromRecording("replay"); }, "flowera-primary"));
+    actions.appendChild(button(endedStarting === "learn" ? "Starting…" : "Learn",
+      function(){ startFromRecording("learn"); }));
+    panel.appendChild(actions);
+  }
+
   var link = document.createElement("a");
   link.className = "flowera-download";
   link.href = downloadUrl(lastSession);
@@ -767,7 +835,7 @@ function renderJustEnded(){
   panel.appendChild(link);
 
   var r = row(false);
-  r.appendChild(button("New ticket", function(){ lastSession = null; render(); }));
+  r.appendChild(button("New ticket", function(){ lastSession = null; endedStarted = ""; render(); }));
   panel.appendChild(r);
 }
 
@@ -1631,4 +1699,3 @@ const launchScreenHTML = `<!DOCTYPE html>
 </body>
 </html>
 `
-
