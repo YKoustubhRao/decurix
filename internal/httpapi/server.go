@@ -152,6 +152,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/querytext", s.queryTextHandler)
 	mux.HandleFunc("/api/querynotes", s.queryNotesHandler)
 	mux.HandleFunc("/api/querynotes/close", s.closeQueryNoteHandler)
+	mux.HandleFunc("/api/querynotes/resolved", s.resolvedQueryNotesHandler)
 	mux.HandleFunc("/dashboard", s.dashboardPostsHandler)
 	mux.HandleFunc("/tasks", s.tasksPageHandler)
 	mux.HandleFunc("/tasks/", s.taskPageHandler)

@@ -538,6 +538,21 @@
 
 /* ---------- card actions ---------- */
 
+/* ---------- recordings dropdown ---------- */
+
+.rec-list{display:grid;gap:7px;margin:0;padding:0;list-style:none}
+.rec-item{
+  display:grid;
+  gap:6px;
+  padding:9px 11px;
+  background:var(--surface-2);
+  border:1px solid var(--line);
+  border-radius:var(--r-lg);
+}
+.rec-title{font-weight:600;font-size:13px;overflow-wrap:anywhere}
+.rec-meta{font-size:11.5px;color:var(--text-3)}
+.rec-actions{display:flex;flex-wrap:wrap;gap:6px}
+
 .dcard-actions{
   display:flex;
   align-items:center;
@@ -1027,6 +1042,23 @@
           </details>
         </div>
       </details>
+
+      {{if eq .Status "running"}}
+      {{/* What a person recorded on this desktop, oldest first, each with
+           Replay / Learn / Download. Filled in when the list is opened
+           (initRecordings below) - the recordings live on the desktop, so
+           rendering the page never has to wait on each one. */}}
+      <details class="mem rec" data-rec-list data-id="{{.ID}}">
+        <summary class="mem-summary">
+          <svg class="mem-chevron" width="15" height="15"><use href="#i-chevron"/></svg>
+          Recordings
+          <span class="mem-count" data-rec-count hidden></span>
+        </summary>
+        <div class="mem-body" data-rec-body>
+          <div class="mem-none">Loading…</div>
+        </div>
+      </details>
+      {{end}}
 
       <div class="dcard-actions">
         {{if eq .Status "running"}}
@@ -2181,6 +2213,108 @@
     if(button){
       window.open(button.dataset.open, "_blank", "noopener");
     }
+  });
+
+  /* ---------------- recordings dropdown ----------------
+   Each running card lists the demonstrations recorded on that desktop, oldest
+   first, with Replay / Learn / Download. Read from the desktop when the list
+   is opened, so what is shown is what is there now. Built from text nodes
+   only: a title is whatever a person typed. */
+  function recNode(tag, className, text){
+    var n = document.createElement(tag);
+    if(className){ n.className = className; }
+    if(text !== undefined){ n.textContent = text; }
+    return n;
+  }
+
+  function recButton(label, className){
+    var b = recNode("button", "btn btn-sm " + className, label);
+    b.type = "button";
+    return b;
+  }
+
+  function recWhen(seconds){
+    if(!seconds){ return ""; }
+    return new Date(seconds * 1000).toLocaleString([], {dateStyle: "medium", timeStyle: "short"});
+  }
+
+  function renderRecordings(details, desktopID, recordings){
+    var body = details.querySelector("[data-rec-body]");
+    var count = details.querySelector("[data-rec-count]");
+
+    var shown = recordings.filter(function(r){
+      return r.kind === "demonstration" && r.status === "complete" && r.event_count;
+    }).sort(function(a, b){ return (a.started_at || 0) - (b.started_at || 0); });
+
+    count.hidden = false;
+    count.textContent = String(shown.length);
+    count.classList.toggle("filled", shown.length > 0);
+    body.textContent = "";
+
+    if(!shown.length){
+      body.appendChild(recNode("div", "mem-none", "Nothing recorded yet. Record a demonstration from the desktop's screen."));
+      return;
+    }
+
+    var list = recNode("ul", "rec-list");
+
+    shown.forEach(function(r){
+      var item = recNode("li", "rec-item");
+      item.appendChild(recNode("div", "rec-title", r.title || "Untitled"));
+      item.appendChild(recNode("div", "rec-meta",
+        [recWhen(r.started_at), r.event_count + (r.event_count === 1 ? " step" : " steps")].filter(Boolean).join(" · ")));
+
+      var actions = recNode("div", "rec-actions");
+
+      var replay = recButton("Replay", "btn-default");
+      var learn = recButton("Learn", "btn-default");
+      var download = recNode("a", "btn btn-sm btn-default", "Download");
+      download.href = "/api/desktops/recordings/export?" + new URLSearchParams({id: desktopID, session: r.id});
+
+      function start(button, url, started){
+        button.addEventListener("click", async function(){
+          actions.querySelectorAll("button").forEach(function(b){ b.disabled = true; });
+          try{
+            await post(url, {id: desktopID, session: r.id});
+            toast(started);
+            window.setTimeout(function(){ window.location.href = "/view/" + encodeURIComponent(desktopID); }, 900);
+          }catch(e){
+            toast(e.message, "error");
+            actions.querySelectorAll("button").forEach(function(b){ b.disabled = false; });
+          }
+        });
+      }
+
+      start(replay, "/api/desktops/recordings/replay", "Replay started. Follow it in the chat.");
+      start(learn, "/api/desktops/recordings/learn", "Teaching started. It asks its questions in the chat.");
+
+      actions.append(replay, learn, download);
+      item.appendChild(actions);
+      list.appendChild(item);
+    });
+
+    body.appendChild(list);
+  }
+
+  async function loadRecordings(details){
+    var desktopID = details.dataset.id;
+    var body = details.querySelector("[data-rec-body]");
+
+    try{
+      var response = await fetch("/api/desktops/recordings?" + new URLSearchParams({id: desktopID}), {headers: {"Accept": "application/json"}});
+      var data = await response.json().catch(function(){ return {}; });
+      if(!response.ok){ throw new Error(data.error || "Request failed"); }
+      renderRecordings(details, desktopID, data.recordings || []);
+    }catch(e){
+      body.textContent = "";
+      body.appendChild(recNode("div", "mem-none", "Couldn't read this desktop's recordings: " + e.message));
+    }
+  }
+
+  document.querySelectorAll("[data-rec-list]").forEach(function(details){
+    details.addEventListener("toggle", function(){
+      if(details.open){ loadRecordings(details); }
+    });
   });
 
   /* ---------------- desktop info popovers ----------------

@@ -457,6 +457,33 @@ class Replay(unittest.TestCase):
         self.assertIsNone(replay_task.parse("please replay demo-x"))
 
 
+class TypingIntoAField(unittest.TestCase):
+    """Whether a demonstration's typing replaces the field on replay, or adds to what is in it."""
+
+    def entry(self, value, typed="Initech", role="textbox"):
+        from flowera_agent.computer import demonstration
+
+        element = {"ref": "e2", "role": role, "name": "Customer name", "value": value, "states": ["focused"],
+                   "box": [1, 1, 10, 10], "path": 'site file > textbox "Customer name"', "source": "cdp"}
+        action = {"kind": "type", "text": typed, "t": 1.0, "t_end": 2.0}
+        return demonstration.Recorder.__new__(demonstration.Recorder)._entry(action, element, None, None)
+
+    def test_a_field_that_reads_as_what_was_typed_was_empty_before(self):
+        # The look at the screen came after the typing: the field holds exactly the text.
+        self.assertFalse(self.entry("Initech")["append"])
+        self.assertFalse(self.entry("  Initech ")["append"])
+
+    def test_a_field_seen_empty_was_empty(self):
+        self.assertFalse(self.entry("")["append"])
+
+    def test_a_field_that_already_had_something_is_added_to(self):
+        self.assertTrue(self.entry("Acme Initech")["append"])
+        self.assertTrue(self.entry("Init", typed="ech")["append"])
+
+    def test_something_that_is_not_a_text_field_is_never_treated_as_empty(self):
+        self.assertTrue(self.entry("Initech", role="paragraph")["append"])
+
+
 class FakeRecorder:
     """
     A minimal stand-in for computer/demonstration.py's start/status/pause/
@@ -676,7 +703,8 @@ class RecordTask(unittest.TestCase):
         with mock.patch.object(record_task, "POLL_SECONDS", 0.02), \
                 mock.patch.object(record_task.progress, "emit"), \
                 mock.patch.object(record_task, "write_final_reply",
-                                  lambda reply, kind="final", engine=None: finals.append((reply, kind, engine))):
+                                  lambda reply, kind="final", engine=None, quiet=False:
+                                  finals.append((reply, kind, engine, quiet))):
             thread = threading.Thread(target=record_task.perform, args=(content,))
             thread.start()
 
@@ -708,7 +736,7 @@ class RecordTask(unittest.TestCase):
         self.assertIsNone(record_task.status(), "the ticket outlived end()")
 
         self.assertEqual(len(finals), 1)
-        reply, kind, engine = finals[0]
+        reply, kind, engine, _ = finals[0]
         self.assertEqual((kind, engine), ("error", "human"))
         self.assertIn("nothing was recorded", reply)
 
@@ -737,10 +765,11 @@ class RecordTask(unittest.TestCase):
         self.assertIsNone(record_task.status())
 
         self.assertEqual(len(finals), 1)
-        reply, kind, engine = finals[0]
+        reply, kind, engine, quiet = finals[0]
         self.assertEqual((kind, engine), ("final", "human"))
         self.assertIn("Recorded 2 steps", reply)
-        self.assertIn(f"/replay {fake.session_id}", reply)
+        self.assertIn(fake.session_id, reply)
+        self.assertTrue(quiet, "a finished recording must not put a note on the Query rail")
 
     def test_note_is_added_at_this_moment_while_recording(self):
         # record_task.note()'s own gate is the same "has recording started"
@@ -778,6 +807,7 @@ class RecordTask(unittest.TestCase):
         finals = self.run_ticket(drive)
         self.assertEqual(finals[0][1], "error")
         self.assertIn("nothing in it", finals[0][0])
+        self.assertFalse(finals[0][3], "a failed recording still tells the Query rail")
 
     def test_a_recording_that_ends_outside_end_is_still_reported(self):
         # The recordings page's own Stop, or a crashed recorder - either way

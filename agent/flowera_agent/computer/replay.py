@@ -385,6 +385,20 @@ def title_matches(wanted, title):
     return True
 
 
+PLACEHOLDER = re.compile(r"\{(\w+)\}")
+
+
+def fill_name(name, values):
+    """
+    A check's element name with its `{param}` placeholders filled in from the
+    run's values (a result like "Saved Initech" that follows the customer typed).
+    A placeholder with no value stays as written, so it fails to match rather
+    than passing on something that was not seen.
+    """
+
+    return PLACEHOLDER.sub(lambda m: str((values or {}).get(m.group(1), m.group(0))), name or "")
+
+
 def unmet(checks, observation, values=None):
     """The checks an observation does not satisfy. `values` are the run's parameters."""
 
@@ -402,7 +416,7 @@ def unmet(checks, observation, values=None):
         elif kind == "active_window":
             ok = title_matches(check["value"], active)
         elif kind == "element":
-            want = _norm(check["name"])
+            want = _norm(fill_name(check["name"], values))
             ok = any(e.get("role") == check["role"] and _norm(e.get("name")) == want
                      for e in observation.get("elements") or [])
         elif kind == "value":

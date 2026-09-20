@@ -303,6 +303,7 @@ def expand(skill, values):
 
         block = [s for s in skill["steps"] if block_of.get(s["id"]) == loop_id]
         count = max(len(items[s["param"]]) for s in block if s.get("param"))
+        block_params = {s["param"] for s in block if s.get("param")}
 
         for n in range(count):
             for original in block:
@@ -319,6 +320,13 @@ def expand(skill, values):
                     each["param"] = renamed
                     flat[renamed] = items[name][n]
                     params.append(dict(lists[name], name=renamed, list=False, default=None))
+
+                # A result check that follows a list parameter follows this
+                # item's copy of it.
+                for name in block_params:
+                    for check in each.get("expect") or []:
+                        if check["type"] == "element":
+                            check["name"] = check["name"].replace("{" + name + "}", "{" + f"{name}__{n + 1}" + "}")
 
                 each["summary"] = f"{replay._summary(each)} (item {n + 1} of {count})"
                 steps.append(each)

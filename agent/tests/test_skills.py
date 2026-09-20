@@ -162,6 +162,35 @@ class Answering(unittest.TestCase):
         self.assertIn("cautious", second["note"])
         self.assertTrue(self.skill["params"][0]["varies"])
 
+    def test_a_result_that_echoes_a_changing_value_follows_it_instead_of_being_baked_in(self):
+        # What the page said after the demonstration typed "Acme". Left as recorded,
+        # every run with another customer would be told its result never appeared.
+        save = next(s for s in self.skill["steps"] if s["kind"] == "click" and "Save" in s["summary"])
+        save["expect"] = [{"type": "element", "role": "status", "name": "Saved Acme"},
+                          {"type": "element", "role": "heading", "name": "Customers"}]
+
+        learning.answer(self.skill, self.ask("variable"), "changes")
+
+        self.assertEqual([c["name"] for c in save["expect"]], ["Saved {customer_name}", "Customers"])
+
+        shown = {"elements": [{"role": "status", "name": "Saved Globex Corp"}, {"role": "heading", "name": "Customers"}]}
+        self.assertEqual(replay.unmet(save["expect"], shown, {"customer_name": "Globex Corp"}), [])
+
+        wrong = {"elements": [{"role": "status", "name": "Saved Acme"}, {"role": "heading", "name": "Customers"}]}
+        self.assertEqual([c["name"] for c in replay.unmet(save["expect"], wrong, {"customer_name": "Globex Corp"})],
+                         ["Saved {customer_name}"])
+
+        # No value for the placeholder: it must not pass on something never seen.
+        self.assertEqual(len(replay.unmet(save["expect"], shown, {})), 1)
+
+    def test_a_value_said_to_stay_the_same_leaves_the_result_check_alone(self):
+        save = next(s for s in self.skill["steps"] if s["kind"] == "click" and "Save" in s["summary"])
+        save["expect"] = [{"type": "element", "role": "status", "name": "Saved Acme"}]
+
+        learning.answer(self.skill, self.ask("variable"), "same")
+
+        self.assertEqual(save["expect"][0]["name"], "Saved Acme")
+
     def test_the_goal_is_kept_in_words_and_can_be_skipped(self):
         learning.answer(self.skill, self.ask("goal"), "the customer is in the list")
         self.assertEqual(self.skill["done_when"], "the customer is in the list")
@@ -330,8 +359,9 @@ class TeachingBase(unittest.TestCase):
         replay.FIND_SECONDS = replay.EXPECT_SECONDS = replay.POLL_SECONDS = 0
         state.paused_skill = None
 
-        self.asked, self.finals = [], []
+        self.asked, self.finals, self.remembered = [], [], []
         patches = [
+            mock.patch.object(skill_task, "remember", lambda title, summary, category="workflow": self.remembered.append((title, summary, category))),
             mock.patch.object(skill_task, "ask_for_query", lambda text, kind="query", engine=None: self.asked.append((text, kind))),
             mock.patch.object(skill_task, "write_final_reply", lambda text, kind="final", engine=None: self.finals.append((text, kind))),
             mock.patch.object(skill_task.usage, "add"),
@@ -383,6 +413,25 @@ class Teaching(TeachingBase):
         self.assertEqual(self.finals[-1][1], "final")
         self.assertIn("/skill add-a-customer customer_name=", self.finals[-1][0])
         self.assertEqual(skills.load("add-a-customer")["status"], skills.READY)
+
+    def test_a_saved_skill_lands_in_the_desktops_learned_memory_and_a_draft_does_not(self):
+        self.teach("the customer is in the list", "yes", "changes")
+
+        self.assertEqual(self.remembered, [])
+
+        skill_task.resume("yes")
+
+        self.assertEqual(len(self.remembered), 1)
+        title, summary, category = self.remembered[0]
+        self.assertEqual((title, category), ("Skill: Add a customer", "skill"))
+        self.assertIn("/skill add-a-customer customer_name=", summary)
+        self.assertIn("Stops for approval", summary)
+
+    def test_a_discarded_lesson_is_not_remembered(self):
+        self.teach("the customer is in the list", "yes", "changes")
+        skill_task.resume("no, throw it away")
+
+        self.assertEqual(self.remembered, [])
 
     def test_an_interrupted_lesson_picks_up_with_what_is_left(self):
         self.teach("the customer is in the list", "yes")
@@ -616,6 +665,18 @@ class Loops(unittest.TestCase):
                          ["item__1", "item__2", "item__3"])
         # The skill itself is untouched by being expanded.
         self.assertEqual(len(skill["steps"]), 4)
+
+    def test_a_result_check_that_follows_a_list_value_follows_each_items_copy(self):
+        skill = self.looped()
+        in_block = set(skill["loops"][0]["blocks"][0])
+        add = next(s for s in skill["steps"] if s["id"] in in_block and s["kind"] == "click")
+        add["expect"] = [{"type": "element", "role": "status", "name": "Added {item}"}]
+
+        program, _ = skills.expand(skill, {"item": "Tea; Milk"})
+
+        names = [c["name"] for s in program["steps"] for c in s["expect"] if c["type"] == "element" and "{" in c["name"]]
+        self.assertEqual(names, ["Added {item__1}", "Added {item__2}"])
+        self.assertEqual(add["expect"][0]["name"], "Added {item}")   # the skill itself is untouched
 
     def test_carrying_on_needs_only_what_is_still_to_run_except_with_a_loop(self):
         plain = learning.build([demo("demo-20260914T101500-aaaaaa", "Acme")])

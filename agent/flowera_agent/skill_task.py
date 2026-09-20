@@ -6,7 +6,7 @@ from flowera_agent.computer import approval, core, escalation, experience, learn
 from flowera_agent.computer import elements as el
 from flowera_agent.computer.errors import ComputerError
 from flowera_agent.logging_utils import log
-from flowera_agent.messaging import ask_for_query, write_final_reply
+from flowera_agent.messaging import ask_for_query, remember, write_final_reply
 from flowera_agent.replay_task import OPTION_RE, STOP_RE
 
 
@@ -287,6 +287,7 @@ def _learn_reply(paused, reply):
 
     if decision == "save":
         skills.save(skill)
+        _remember(skill)
         write_final_reply(_learned_text(skill), kind="final", engine=LEARN_ENGINE)
     elif decision == "discard":
         skills.delete(skill["name"])
@@ -299,6 +300,35 @@ def _learn_reply(paused, reply):
                           kind="final", engine=LEARN_ENGINE)
     else:
         _ask(skill, result["note"])
+
+
+def _remember(skill):
+    """Put what was just learned into the desktop's worker memory (its card's "learned memory")."""
+
+    steps = skill["steps"]
+    params = skills.required(skill)
+    gated = sum(1 for s in steps if s.get("consequential"))
+    by_hand = sum(1 for s in steps if s["kind"] == "manual")
+
+    lines = [f"Taught by demonstration ({len(skill.get('sources') or [])} recording(s), {len(steps)} steps)."]
+
+    if skill.get("done_when"):
+        lines.append(f"Done when: {skill['done_when'].rstrip('. ')}.")
+
+    if params:
+        wanted = ", ".join(f'{p["name"]} ({p["label"]})' for p in params)
+        lines.append(f"Needs a value for: {wanted}.")
+
+    if gated:
+        lines.append(f"Stops for approval before {gated} step(s), every run.")
+
+    if by_hand:
+        lines.append(f"{by_hand} step(s) are left to a person, such as a sign-in.")
+
+    example = "".join(f' {p["name"]}="..."' for p in params)
+    lines.append(f"Run it with `/skill {skill['name']}{example}`, or `gui do {skill['name']}` from a shell.")
+
+    remember(f"Skill: {skill.get('title') or skill['name']}", " ".join(lines), category="skill")
 
 
 def _learned_text(skill):
