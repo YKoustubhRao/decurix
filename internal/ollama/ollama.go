@@ -162,9 +162,13 @@ func DesktopURL() string {
 }
 
 // DesktopModel returns the chat model every new desktop is given:
-// OLLAMA_MODEL from the control plane's environment, otherwise Model.
+// OLLAMA_MODEL from the control plane's environment; when that is unset or
+// "auto", the model chosen for this machine (see SelectModel); otherwise Model.
 func DesktopModel() string {
-	if m := os.Getenv("OLLAMA_MODEL"); m != "" {
+	if m := pinnedModel(); m != "" {
+		return m
+	}
+	if m, ok := autoModel(); ok {
 		return m
 	}
 	return Model
@@ -200,6 +204,8 @@ func (m *Manager) EnsureReady(ctx context.Context) error {
 			containerName,
 		)
 
+		// Choose before preloading: this is the model the preload loads.
+		SelectModel(ctx)
 		m.preloadModel(ctx, dialableURL(ctx, url), DesktopModel())
 
 		return nil
@@ -385,6 +391,10 @@ func (m *Manager) EnsureReady(ctx context.Context) error {
 	// ------------------------------------------------------------
 	// Pull model
 	// ------------------------------------------------------------
+
+	// The container is up and can say what it has, so this is the moment to
+	// choose which chat model it should hold.
+	SelectModel(ctx)
 
 	// Both models, not just the chat one - see EmbedModel's comment for
 	// what silently breaks when the second is missing.

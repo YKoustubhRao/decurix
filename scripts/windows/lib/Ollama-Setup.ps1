@@ -275,7 +275,10 @@ function Invoke-EnsureOllamaReady {
         Write-Host ""
         Write-Host "Falling back to the bundled flowera-ollama container."
         $ollamaUrl = $bundledOllamaUrl
-        Set-EnvVar "OLLAMA_MODEL" "qwen2.5-coder:3b"
+        # A pinned model is replaced by a small one that always works; "auto"
+        # stays auto - the control plane pulls what fits into the container.
+        $pinned = Read-EnvVar "OLLAMA_MODEL"
+        if ($pinned -and ($pinned -ne "auto")) { Set-EnvVar "OLLAMA_MODEL" "qwen2.5-coder:3b" }
     }
 
     Set-EnvVar "OLLAMA_URL" $ollamaUrl
@@ -287,12 +290,26 @@ function Invoke-EnsureOllamaReady {
         # swapped out; only if that pull fails does OLLAMA_MODEL fall back
         # to a model the server already has.
         $wantedModel = Read-EnvVar "OLLAMA_MODEL"
-        if (-not $wantedModel) { $wantedModel = "qwen2.5-coder:3b" }
         # @(): a function's output is unrolled, so one model would come back
         # as a bare string and [0] would be its first character.
         $availableModels = @(Get-OllamaModels $ollamaUrl)
 
-        if (Test-ModelPresent $availableModels $wantedModel) {
+        if ((-not $wantedModel) -or ($wantedModel -eq "auto")) {
+            # "auto" (or unset): the control plane chooses the chat model for
+            # this machine from what the server has (internal/ollama,
+            # SelectModel), so .env is left alone rather than pinned. A server
+            # with no chat model at all gets a small one to start from.
+            $chatModels = @($availableModels | Where-Object { $_ -and -not $_.StartsWith($embedModel) })
+            if ($chatModels.Count -gt 0) {
+                Write-Host "Chat model: chosen automatically for this machine from what the server has."
+            } else {
+                Write-Host ""
+                Write-Host "That server has no chat model; pulling qwen2.5-coder:3b (~2GB) as a starting point."
+                if (-not (Invoke-OllamaPull $ollamaUrl "qwen2.5-coder:3b")) {
+                    Write-Host "WARNING: could not pull it. Run: ollama pull qwen2.5-coder:3b"
+                }
+            }
+        } elseif (Test-ModelPresent $availableModels $wantedModel) {
             Write-Host "Chat model $wantedModel is present."
             Set-EnvVar "OLLAMA_MODEL" $wantedModel
         } else {

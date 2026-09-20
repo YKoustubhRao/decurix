@@ -241,6 +241,8 @@ func main() {
 	desktop.OptimizeHostKSM()
 	ollamaManager := ollama.NewManager(cli, desktop.NetworkName)
 	ollama.EnableWarm()
+	// Chooses the chat model for this machine unless OLLAMA_MODEL names one.
+	ollama.EnableAutoSelect()
 
 	// Building all three images takes a long time and a lot of disk, so it is
 	// an explicit request rather than something startup does on its own.

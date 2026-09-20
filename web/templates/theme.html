@@ -246,6 +246,30 @@ svg{display:block;flex:none}
 
 .topbar-right{display:flex;align-items:center;gap:4px;margin-left:auto}
 
+/* the model chosen for this computer, beside the brand */
+.model-menu .menu-panel{left:0;right:auto;width:320px}
+.model-chip{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  height:28px;
+  max-width:210px;
+  padding:0 10px 0 8px;
+  border-radius:999px;
+  background:var(--accent-soft);
+  color:var(--accent);
+  font-family:var(--mono);
+  font-size:11.5px;
+  font-weight:550;
+  transition:background .12s ease
+}
+.model-chip:hover,.model-menu.open .model-chip{background:var(--surface-2);color:var(--text)}
+.model-chip svg{flex:none}
+.model-chip-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.model-name{font-family:var(--mono);font-size:13px;font-weight:600;color:var(--accent);word-break:break-all}
+.model-kv{display:flex;justify-content:space-between;gap:12px;margin-top:5px;font-size:12px;color:var(--text-2)}
+.model-kv span:last-child{color:var(--text);text-align:right}
+
 .icon-btn{
   width:31px;height:31px;
   display:grid;place-items:center;
@@ -630,6 +654,9 @@ body.busy{cursor:progress}
 @media (max-width:720px){
   .topbar{gap:8px;padding:0 13px}
   .brand-name,.brand-sub{display:none}
+  .model-chip{padding:0 7px}
+  .model-chip-name{display:none}
+  .model-menu .menu-panel{width:min(320px,calc(100vw - 26px))}
   .nav{margin-left:0}
   .nav a{padding:0 9px;font-size:13px}
   .wrap{padding:24px 14px 72px}
@@ -665,6 +692,7 @@ body.busy{cursor:progress}
 <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
 <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2.6v2.2M12 19.2v2.2M2.6 12h2.2M19.2 12h2.2M5.4 5.4l1.5 1.5M17.1 17.1l1.5 1.5M18.6 5.4l-1.5 1.5M6.9 17.1l-1.5 1.5"/></symbol>
 <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13.4A8.4 8.4 0 0 1 10.6 4a8.4 8.4 0 1 0 9.4 9.4z"/></symbol>
+<symbol id="i-chip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/><rect x="9.6" y="9.6" width="4.8" height="4.8" rx=".8"/><path d="M9.5 3v3.5M14.5 3v3.5M9.5 17.5V21M14.5 17.5V21M3 9.5h3.5M3 14.5h3.5M17.5 9.5H21M17.5 14.5H21"/></symbol>
 <symbol id="i-phone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2.6" width="12" height="18.8" rx="2.6"/><path d="M10.8 18.4h2.4"/></symbol>
 <symbol id="i-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10l5 5 5-5"/></symbol>
 <symbol id="i-inbox" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 13.5h4l1.4 2.6h6.2l1.4-2.6h4"/><path d="M6.2 4.5h11.6l2.7 9v4.4a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2v-4.4z"/></symbol>
@@ -988,6 +1016,79 @@ body.busy{cursor:progress}
     renderMobilePanel();
   }
 
+
+  /* ---- the model chosen for this computer (top left) ---- */
+
+  function gbText(n){ return (Math.round(n * 10) / 10) + " GB"; }
+
+  function addModelRow(panel, label, value){
+    var row = document.createElement("div");
+    row.className = "model-kv";
+    var a = document.createElement("span");
+    a.textContent = label;
+    var b = document.createElement("span");
+    b.textContent = value;
+    row.appendChild(a);
+    row.appendChild(b);
+    panel.appendChild(row);
+  }
+
+  function renderModel(m){
+    var menu = document.getElementById("modelMenu");
+    var chip = document.getElementById("modelChipName");
+    var panel = document.getElementById("modelPanel");
+    if(!menu || !chip || !panel || !m || !m.model){ return; }
+
+    menu.hidden = false;
+    chip.textContent = m.model;
+
+    var how = {auto: "Chosen for this computer", pinned: "Pinned by OLLAMA_MODEL", remote: "Set for a remote server"}[m.mode] || "";
+
+    panel.innerHTML = "";
+    addSectionTitle(panel, "Model for this computer");
+
+    var name = document.createElement("div");
+    name.className = "model-name";
+    name.textContent = m.model;
+    panel.appendChild(name);
+    addNote(panel, how + (m.reason ? ". " + m.reason : ""));
+
+    if(m.mode === "auto" && m.model && m.installed === false){
+      addNote(panel, "Not installed on the Ollama server yet.");
+    }
+
+    if(m.best && m.best !== m.model){
+      addSectionTitle(panel, "Fits best right now", true);
+      addNote(panel, m.best + " (" + gbText(m.best_size_gb) + "). It replaces the current pick when a desktop is created and none exist; running desktops keep their model.");
+    }
+    if(m.pull){
+      addSectionTitle(panel, "Better, but not installed", true);
+      addNote(panel, "ollama pull " + m.pull);
+    }
+    if(m.also_fits && m.also_fits.length){
+      addSectionTitle(panel, "Also fits", true);
+      addNote(panel, m.also_fits.map(function(c){ return c.name; }).join(", "));
+    }
+
+    var r = m.resources, b = m.budget;
+    if(r && r.ram_total_gb){
+      addSectionTitle(panel, "Free right now", true);
+      addModelRow(panel, "Memory", gbText(r.ram_free_gb) + " of " + gbText(r.ram_total_gb));
+      addModelRow(panel, "CPU", r.cores + " cores, " + Math.round((r.cpu_busy || 0) * 100) + "% busy");
+      addModelRow(panel, "GPU", r.gpu_name ? r.gpu_name + ", " + gbText(r.vram_free_gb) + " free" : "none detected");
+      if(b){
+        addModelRow(panel, "Budget (80%)", (b.basis === "gpu" ? gbText(b.vram_gb) + " VRAM" : gbText(b.ram_gb) + " memory, " + (Math.round(b.cores * 10) / 10) + " cores"));
+      }
+    }
+  }
+
+  async function refreshModel(){
+    try{
+      var response = await fetch("/api/model", {cache: "no-store"});
+      if(response.ok){ renderModel(await response.json()); }
+    }catch(e){ /* leave the chip as it is */ }
+  }
+
   /* ---- open query count in the nav ---- */
 
   function setQueryBadge(count){
@@ -1119,6 +1220,9 @@ body.busy{cursor:progress}
     refreshTunnel();
     setInterval(refreshTunnel, 15000);
 
+    refreshModel();
+    setInterval(refreshModel, 60000);
+
     /* Pages that poll query notes themselves feed the badge directly. */
     if(document.body.dataset.queryPoll !== "own"){
       refreshQueryBadge();
@@ -1146,6 +1250,14 @@ body.busy{cursor:progress}
     <span class="brand-mark"><svg width="40" height="40"><use href="#i-blossom"/></svg></span>
     <span class="brand-name">Flowera<span class="brand-sub"> Workspaces</span></span>
   </a>
+
+  <div class="menu model-menu" id="modelMenu" hidden>
+    <button type="button" class="model-chip" data-menu-toggle aria-expanded="false" aria-label="Model chosen for this computer">
+      <svg width="15" height="15"><use href="#i-chip"/></svg>
+      <span class="model-chip-name" id="modelChipName"></span>
+    </button>
+    <div class="menu-panel" id="modelPanel"></div>
+  </div>
 
   <nav class="nav">
     <a href="/"{{if eq . "desktops"}} class="active" aria-current="page"{{end}}>Desktops</a>
