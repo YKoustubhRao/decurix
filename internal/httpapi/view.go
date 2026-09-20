@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/YKoustubhRao/flowera/internal/desktop"
+	"github.com/YKoustubhRao/flowera/internal/ollama"
 	"github.com/YKoustubhRao/flowera/internal/webui"
 )
 
@@ -23,6 +24,10 @@ func (s *Server) desktopViewHandler(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+
+	// Someone opening a chat is about to ask for something: have the model
+	// resident by the time they have typed it.
+	ollama.WarmAsync()
 
 	d, err := s.Desktops.Get(r.Context(), id)
 	if errors.Is(err, desktop.ErrNotFound) {

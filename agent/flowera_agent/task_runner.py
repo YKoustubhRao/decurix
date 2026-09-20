@@ -1,7 +1,8 @@
 import os
+import re
 
 from flowera_agent import config, progress, state
-from flowera_agent.commands import run_command
+from flowera_agent.commands import dangerous_reason, run_command
 from flowera_agent.computer import approval
 from flowera_agent.logging_utils import log
 from flowera_agent.messaging import (
@@ -62,6 +63,114 @@ request, and it will be sent to the human.
 """.strip()
 
 
+# What a HELP gets answered with, once, when it arrives straight after a
+# command that SUCCEEDED (exit 0).
+#
+# Measured live on qwen2.5-coder:3b: asked "how many files are in /etc?",
+# it ran `ls -la /etc | wc -l`, got exit 0 and "123", and replied
+# HELP "It seems there was an error with the command" - paging a human
+# about a task that was already finished. A HELP that follows a success
+# and asks for nothing only a person can give is a mislabelled answer far
+# more often than a real block, so it is shown the output again, once.
+SUCCESS_QUERY_NUDGE = """
+Nothing failed: your last command finished with exit code 0 and printed:
+
+{output}
+
+If that answers the task, reply now with DONE: followed by the answer.
+If there is more to do, send the next COMMAND.
+Only reply HELP again if the human really has to act - to choose between
+options, give you something only they have, or approve a consequential
+action.
+""".strip()
+
+
+# What a HELP gets answered with when it arrives straight after a command
+# that FAILED, and the agent has not yet tried another way.
+#
+# Measured live: "how much free disk space do I have?" became
+# `df -h | grep "root"`, which matched nothing (exit 1, no output), and the
+# next reply was HELP "The command failed to execute. Please check the path
+# or permissions" - a person paged because a filter was too narrow. One
+# failed command is information, not a blocker: the agent gets two more
+# tries with the failure in front of it before a human is asked.
+FAILURE_QUERY_NUDGE = """
+Your last command did not work: it finished with exit code {code} and
+printed:
+
+{output}
+
+Do not ask the human yet. Try a DIFFERENT command that gets the same
+information - a simpler one, without the filter or pipe that may have
+hidden the output, or a different tool. Send it now with COMMAND.
+Only reply HELP if the human really has to act.
+""".strip()
+
+# How many failure pushbacks one task gets.
+MAX_FAILURE_NUDGES = 2
+
+
+# A HELP that is genuinely asking for something only a person can give.
+# Such a HELP is always delivered, never pushed back on (same list as
+# TheBot's operator, so the two harnesses escalate the same things).
+# Approval, secrets and payments: only a person can give these, and asking for
+# them before touching anything is what the safety rules require.
+APPROVAL_RE = re.compile(
+    r"\b(approv|(your|need(ed)?|ask(ing)?|grant(ing)?|without)\s+permission"
+    r"|permission\s+to|consent|confirm|authori[sz]|password|passphrase"
+    r"|token|api[ -]?key|credential|secret|log ?in|sign ?in|2fa|otp"
+    r"|payment|pay\b|purchase|send(ing)?\s+(an?\s+)?(e-?mail|message|sms)"
+    r"|publish|push)",
+    re.IGNORECASE,
+)
+
+# Choices between alternatives - also only a person's to make, but a HELP of
+# this kind is only credible once the agent has looked at something.
+CHOICE_RE = re.compile(
+    r"\b(which\s+(one|of)|choose|pick|prefer|decide|should\s+i|do\s+you\s+want)",
+    re.IGNORECASE,
+)
+
+
+class _Either:
+    """A pattern that matches when any of its parts does."""
+
+    def __init__(self, *patterns):
+        self.patterns = patterns
+
+    def search(self, text):
+        for pattern in self.patterns:
+            found = pattern.search(text)
+            if found:
+                return found
+        return None
+
+
+# What after-a-command pushbacks leave alone: approvals and choices.
+HUMAN_ONLY_RE = _Either(APPROVAL_RE, CHOICE_RE)
+
+
+# A HELP that is the agent's own safety brake on something destructive or
+# irreversible. Never argued with either: measured live, "delete every file in
+# /etc" drew the correct HELP "Are you sure you want to delete all files in
+# /etc?", the premature-query pushback then talked the model out of it, and
+# what came back was `DONE: I am ready to proceed.` - the question that
+# protects the machine was thrown away.
+CONSEQUENTIAL_RE = re.compile(
+    r"\b(are\s+you\s+sure|irreversible|permanent(ly)?|destructive|"
+    r"delet(e|ing)|remov(e|ing)|erase|wipe|overwrit(e|ing)|format(ting)?\s+(the\s+)?(disk|drive|partition)|"
+    r"drop\s+(the\s+)?(table|database)|shut\s?down|reboot|"
+    r"cannot\s+be\s+undone|can'?t\s+be\s+undone)",
+    re.IGNORECASE,
+)
+
+
+def is_safety_brake(text):
+    """Whether a HELP is asking a human for something only a human can give."""
+
+    return bool(APPROVAL_RE.search(text or "") or CONSEQUENTIAL_RE.search(text or ""))
+
+
 # How many replies in a row may miss the output contract before the loop
 # stops arguing about format and just uses what it was given.
 MAX_INVALID_RESPONSES = 3
@@ -82,6 +191,25 @@ def invalid_format_nudge(response):
 
     opening = " ".join((response or "").split())[:60]
 
+    if "```" in (response or ""):
+        return f"""
+Your last reply was code with no marker in front of it, so nothing has
+been written or run yet.
+
+If the human wanted a file created or a program run, do it with COMMAND -
+for example:
+
+COMMAND:
+cat > hello.py <<'EOF'
+print("hello")
+EOF
+
+then run it with your next COMMAND (python3 hello.py) and answer with DONE
+once you have seen its real output.
+
+If the human only wanted to see the code, reply DONE: followed by it.
+""".strip()
+
     return f"""
 Your last reply started with "{opening}", which is not one of the three
 markers, so it could not be used.
@@ -92,6 +220,48 @@ If that was your final answer to the human, prefix it with DONE:
 If it was a shell command to run, prefix it with COMMAND:
 If you need the human before you can continue, prefix it with HELP:
 """.strip()
+
+
+def failure_nudge(result):
+    """The pushback for a HELP that follows a failed command."""
+
+    output = (result["output"] or "").strip()[:MAX_COMMAND_OUTPUT_CHARS]
+
+    nudge = FAILURE_QUERY_NUDGE.format(
+        code=result["exit_code"],
+        output=output or "(no output)",
+    )
+
+    # "python3 fib.py" failing with "No such file" means the file was never
+    # written - the model described a script and then ran it. Say so, with
+    # the way to write one (measured: it otherwise asked the human where the
+    # script was, three times running).
+    if re.search(r"no such file|can't open file|cannot open|not found", output, re.IGNORECASE):
+        nudge += (
+            "\n\nThe file it needs does not exist yet. Create it first with a "
+            "COMMAND that writes it, for example:\n"
+            "COMMAND:\ncat > name.py <<'EOF'\nprint('hello')\nEOF\n"
+            "and only then run it."
+        )
+
+    return nudge
+
+
+def command_only(command):
+    """
+    The transcript's record of a COMMAND turn: the command, and nothing
+    the model wrote beside it.
+
+    A small model writes `COMMAND: df -h` and, underneath, the `DONE:` it
+    expects the command to produce - before anything has run.
+    parse_agent_response rightly takes only the command, but if the raw
+    reply stays in history the model reads its own guess back on the next
+    turn and reports it (measured against TheBot's operator: a real `df`
+    of 1007G/121G/835G was answered "1.8T total, 20G used", word for word
+    the guess written beside the command).
+    """
+
+    return f"COMMAND:\n{command}"
 
 
 def repeated_command_nudge(command, result):
@@ -171,6 +341,13 @@ def salvage_unmarked_response(response):
     if not text:
         return False
 
+    # A bare "HELP" / "DONE" / "COMMAND" is a marker with nothing after it,
+    # not an answer: measured live, a model that could not think of a
+    # command replied "HELP" four times in a row and the human was handed
+    # the single word "HELP" as the result of their request.
+    if re.fullmatch(r"[\s*_`#>-]*(COMMAND|DONE|HELP)\s*:?[\s*_`]*", text, re.IGNORECASE):
+        return False
+
     log(
         "Agent never produced a control signal - taking its last reply "
         "as the final answer."
@@ -197,9 +374,21 @@ def format_command_result(result):
             + f"\n... [{omitted} more characters truncated]"
         )
 
+    # Say what an exit code and an empty output mean. Measured live on the
+    # 3B model: `echo banana > hello.txt` succeeded silently (exit 0, no
+    # output) and the next reply was the system prompt's own HELP example,
+    # "There is more than one project directory here" - to a model reading
+    # a blank, silence looks like failure.
+    verdict = "succeeded" if result["exit_code"] == 0 else "failed"
+
+    if not output.strip():
+        output = "(no output)" + (
+            " - this is normal, the command succeeded" if result["exit_code"] == 0 else ""
+        )
+
     return (
         "Command execution result:\n\n"
-        f"exit_code: {result['exit_code']}\n\n"
+        f"exit_code: {result['exit_code']} ({verdict})\n\n"
         f"output:\n{output}"
     )
 
@@ -307,6 +496,70 @@ def pause_for_screen_approval(command, result):
     return True
 
 
+# A shell command stopped by commands.dangerous_reason, waiting on a person:
+# run once if they say yes, dropped if they do not.
+_pending_dangerous_command = None
+
+
+def pause_for_dangerous_command(command, reason):
+    """
+    Stop the task before a catastrophic command runs, and ask a person.
+
+    Decided here from the command itself, not left to the model, for the same
+    reason the screen gate is: a pause that depends on the model choosing to
+    ask is not a pause.
+    """
+
+    global _pending_dangerous_command
+
+    log(f"Command held for approval ({reason}): {command}")
+
+    _pending_dangerous_command = command
+    progress.emit(f"Held for approval: {command}")
+    ask_for_query(
+        f"""
+I was about to run this command, and I stopped because {reason}:
+
+$ {command}
+
+Reply "yes" to let me run exactly that, or tell me what to do instead.
+""".strip(),
+        kind="approval",
+    )
+
+
+def resume_approved_dangerous_command(history, reply):
+    """
+    After a person answered a held command: run it if they approved.
+    Returns (command, result), or (None, None) when nothing was run.
+    """
+
+    global _pending_dangerous_command
+
+    command = _pending_dangerous_command
+    _pending_dangerous_command = None
+
+    # A catastrophic command is released only by a clean yes: "yes but not
+    # that one" is a person changing their mind, not permission.
+    if (
+        not command
+        or not approval.is_approval(reply)
+        or re.search(r"\b(but|except|instead|not|however|though|unless|only|rather)\b", reply or "", re.IGNORECASE)
+    ):
+        return None, None
+
+    log("Human approved the held command - running it now.")
+
+    progress.emit(f"$ {command}")
+    result = run_command(command)
+    progress.emit(describe_result(result))
+
+    history.append({"role": "assistant", "content": f"COMMAND:\n{command}"})
+    history.append({"role": "user", "content": format_command_result(result)})
+
+    return command, result
+
+
 def resume_approved_screen_action(history):
     """
     After a human replied to a screen approval: if they approved, run the
@@ -338,12 +591,13 @@ def resume_approved_screen_action(history):
 
 
 def perform_task(task, task_file):
-    global _pending_gui_command
+    global _pending_gui_command, _pending_dangerous_command
 
     state.current_task = task
     state.current_task_file = task_file
     state.waiting_for_query = False
     _pending_gui_command = None
+    _pending_dangerous_command = None
 
     log("========================================")
     log("STARTING TASK")
@@ -358,6 +612,8 @@ def perform_task(task, task_file):
     # once per task.
     commands_run = 0
     nudged = False
+    success_nudged = False
+    failure_nudges = 0
     invalid_in_a_row = 0
 
     # The last command actually executed and what it produced, so an
@@ -422,7 +678,7 @@ def perform_task(task, task_file):
 
         if action == "query":
 
-            if commands_run == 0 and not nudged:
+            if commands_run == 0 and not nudged and not is_safety_brake(value):
 
                 nudged = True
 
@@ -442,6 +698,69 @@ def perform_task(task, task_file):
                     {
                         "role": "user",
                         "content": PREMATURE_QUERY_NUDGE,
+                    }
+                )
+
+                continue
+
+            if (
+                last_result is not None
+                and last_result["exit_code"] == 0
+                and not success_nudged
+                and not HUMAN_ONLY_RE.search(value or "")
+            ):
+
+                success_nudged = True
+
+                log(
+                    "Agent had a query right after a command succeeded - "
+                    "showing it the output again."
+                )
+
+                history.append(
+                    {
+                        "role": "assistant",
+                        "content": response,
+                    }
+                )
+
+                history.append(
+                    {
+                        "role": "user",
+                        "content": SUCCESS_QUERY_NUDGE.format(
+                            output=(
+                                (last_result["output"] or "").strip()[
+                                    :MAX_COMMAND_OUTPUT_CHARS
+                                ]
+                                or "(no output)"
+                            )
+                        ),
+                    }
+                )
+
+                continue
+
+            if (
+                last_result is not None
+                and last_result["exit_code"] != 0
+                and failure_nudges < MAX_FAILURE_NUDGES
+                and not HUMAN_ONLY_RE.search(value or "")
+            ):
+
+                failure_nudges += 1
+
+                log(
+                    "Agent had a query right after a command failed - "
+                    "asking it to try another way first "
+                    f"({failure_nudges}/{MAX_FAILURE_NUDGES})."
+                )
+
+                history.append({"role": "assistant", "content": response})
+
+                history.append(
+                    {
+                        "role": "user",
+                        "content": failure_nudge(last_result),
                     }
                 )
 
@@ -475,7 +794,7 @@ def perform_task(task, task_file):
                     history.append(
                         {
                             "role": "assistant",
-                            "content": response,
+                            "content": command_only(command),
                         }
                     )
 
@@ -520,6 +839,12 @@ It is not going to get past this on its own.
 
                 return
 
+            danger = dangerous_reason(command)
+
+            if danger:
+                pause_for_dangerous_command(command, danger)
+                return
+
             progress.emit(f"$ {command}")
 
             commands_run += 1
@@ -541,7 +866,7 @@ It is not going to get past this on its own.
             history.append(
                 {
                     "role": "assistant",
-                    "content": response,
+                    "content": command_only(command),
                 }
             )
 
@@ -670,6 +995,8 @@ def continue_after_query(query_response):
     system_messages = build_system_messages()
 
     invalid_in_a_row = 0
+    success_nudged = False
+    failure_nudges = 0
 
     # Same guard as perform_task, for the same reason: the loop below is
     # just as capable of re-running one command until the step budget is
@@ -684,6 +1011,12 @@ def continue_after_query(query_response):
 
     if last_result is not None and pause_for_screen_approval(last_command, last_result):
         return
+
+    # Likewise a shell command held as catastrophic, if the person said yes.
+    held_command, held_result = resume_approved_dangerous_command(history, query_response)
+
+    if held_result is not None:
+        last_command, last_result = held_command, held_result
 
     max_steps = 50
 
@@ -735,6 +1068,60 @@ def continue_after_query(query_response):
 
         if action == "query":
 
+            if (
+                last_result is not None
+                and last_result["exit_code"] == 0
+                and not success_nudged
+                and not HUMAN_ONLY_RE.search(value or "")
+            ):
+
+                success_nudged = True
+
+                log(
+                    "Agent had a query right after a command succeeded - "
+                    "showing it the output again."
+                )
+
+                history.append({"role": "assistant", "content": response})
+
+                history.append(
+                    {
+                        "role": "user",
+                        "content": SUCCESS_QUERY_NUDGE.format(
+                            output=(
+                                (last_result["output"] or "").strip()[
+                                    :MAX_COMMAND_OUTPUT_CHARS
+                                ]
+                                or "(no output)"
+                            )
+                        ),
+                    }
+                )
+
+                continue
+
+            if (
+                last_result is not None
+                and last_result["exit_code"] != 0
+                and failure_nudges < MAX_FAILURE_NUDGES
+                and not HUMAN_ONLY_RE.search(value or "")
+            ):
+
+                failure_nudges += 1
+
+                log(
+                    "Agent had a query right after a command failed - "
+                    "asking it to try another way first "
+                    f"({failure_nudges}/{MAX_FAILURE_NUDGES})."
+                )
+
+                history.append({"role": "assistant", "content": response})
+                history.append(
+                    {"role": "user", "content": failure_nudge(last_result)}
+                )
+
+                continue
+
             ask_for_query(value)
             return
 
@@ -754,7 +1141,7 @@ def continue_after_query(query_response):
                     history.append(
                         {
                             "role": "assistant",
-                            "content": response,
+                            "content": command_only(value),
                         }
                     )
 
@@ -794,6 +1181,12 @@ $ {value}
 
                 return
 
+            danger = dangerous_reason(value)
+
+            if danger:
+                pause_for_dangerous_command(value, danger)
+                return
+
             progress.emit(f"$ {value}")
 
             invalid_in_a_row = 0
@@ -812,7 +1205,7 @@ $ {value}
             history.append(
                 {
                     "role": "assistant",
-                    "content": response,
+                    "content": command_only(value),
                 }
             )
 

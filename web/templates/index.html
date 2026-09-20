@@ -71,6 +71,36 @@
   background:var(--surface-2);
 }
 
+.dcard-preview-placeholder.provisioning-placeholder{
+  flex-direction:column;
+  padding:16px;
+  text-align:center;
+  color:var(--text);
+  gap:4px;
+}
+.prov-text{
+  font-size:12px;
+  color:var(--text);
+  font-weight:500;
+  max-width:90%;
+  line-height:1.4;
+}
+.prov-bar-container{
+  width:75%;
+  max-width:180px;
+  height:4px;
+  background:rgba(255,255,255,0.08);
+  border-radius:2px;
+  margin:8px auto 0;
+  overflow:hidden;
+}
+.prov-bar{
+  width:15%;
+  height:100%;
+  background:var(--accent);
+  transition:width .4s ease;
+}
+
 .dcard-paused-overlay{
   position:absolute;
   bottom:8px;
@@ -508,6 +538,21 @@
 
 /* ---------- card actions ---------- */
 
+/* ---------- recordings dropdown ---------- */
+
+.rec-list{display:grid;gap:7px;margin:0;padding:0;list-style:none}
+.rec-item{
+  display:grid;
+  gap:6px;
+  padding:9px 11px;
+  background:var(--surface-2);
+  border:1px solid var(--line);
+  border-radius:var(--r-lg);
+}
+.rec-title{font-weight:600;font-size:13px;overflow-wrap:anywhere}
+.rec-meta{font-size:11.5px;color:var(--text-3)}
+.rec-actions{display:flex;flex-wrap:wrap;gap:6px}
+
 .dcard-actions{
   display:flex;
   align-items:center;
@@ -820,6 +865,14 @@
               </span>
             </div>
           {{end}}
+        {{else if eq .Status "provisioning"}}
+          <div class="dcard-preview-placeholder provisioning-placeholder" data-prov-msg="{{.ID}}">
+            <svg class="spin" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-bottom:8px; display:inline-block; color:var(--accent);"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"/></svg>
+            <div class="prov-text" data-prov-text="{{.ID}}">Spinning up desktop…</div>
+            <div class="prov-bar-container">
+              <div class="prov-bar" data-prov-bar="{{.ID}}" style="width:15%;"></div>
+            </div>
+          </div>
         {{else}}
           <div class="dcard-preview-placeholder">
             Desktop is {{.Status}}
@@ -990,6 +1043,23 @@
         </div>
       </details>
 
+      {{if eq .Status "running"}}
+      {{/* What a person recorded on this desktop, oldest first, each with
+           Replay / Learn / Download. Filled in when the list is opened
+           (initRecordings below) - the recordings live on the desktop, so
+           rendering the page never has to wait on each one. */}}
+      <details class="mem rec" data-rec-list data-id="{{.ID}}">
+        <summary class="mem-summary">
+          <svg class="mem-chevron" width="15" height="15"><use href="#i-chevron"/></svg>
+          Recordings
+          <span class="mem-count" data-rec-count hidden></span>
+        </summary>
+        <div class="mem-body" data-rec-body>
+          <div class="mem-none">Loading…</div>
+        </div>
+      </details>
+      {{end}}
+
       <div class="dcard-actions">
         {{if eq .Status "running"}}
         <a class="btn btn-primary btn-sm" href="/view/{{.ID}}">
@@ -1135,8 +1205,8 @@
       <div class="field">
         <span class="field-label">CPU</span>
         <div class="segmented" role="radiogroup" aria-label="CPU cores">
-          <label class="seg"><input type="radio" name="cpus" value="1"><span>1</span></label>
-          <label class="seg"><input type="radio" name="cpus" value="2" checked><span>2</span></label>
+          <label class="seg"><input type="radio" name="cpus" value="1" checked><span>1</span></label>
+          <label class="seg"><input type="radio" name="cpus" value="2"><span>2</span></label>
           <label class="seg"><input type="radio" name="cpus" value="4"><span>4</span></label>
           <label class="seg"><input type="radio" name="cpus" value="8"><span>8</span></label>
         </div>
@@ -1264,7 +1334,6 @@
 
     return "/api/desktops/screenshot?id=" + encodeURIComponent(img.dataset.shot) +
       "&w=" + width + "&t=" + Date.now();
-      "&w=" + width;
   }
 
   function loadShot(img){
@@ -1440,8 +1509,10 @@
   });
 
   var activeCreateController = null;
+  var isSubmittingCreate = false;
 
   function cancelCreateAction(){
+    if(isSubmittingCreate){ return; }
     if(activeCreateController){
       try{ activeCreateController.abort(); }catch(e){}
       activeCreateController = null;
@@ -1619,6 +1690,14 @@
 
   var hostAppsLoading = false;
 
+  // How each kind of entry shows up in the VM, so the list never suggests more than it delivers.
+  var HOST_APP_MODES = {
+    web: "Web version",
+    host_gui: "Runs on host",
+    data: "Files copied",
+    helper: "Always installed"
+  };
+
   async function loadHostApps(refresh){
     if(hostAppsLoading){ return; }
     if(!hostAppsStatusText || !hostAppsList){ return; }
@@ -1642,7 +1721,7 @@
 
       hostAppsList.innerHTML = "";
       if(hostAppsData.length === 0){
-        hostAppsList.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-3);font-size:12.5px;">No applications or sessions were detected on your host machine.</div>';
+        hostAppsList.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-3);font-size:12.5px;">Nothing on your host machine can be brought into a VM properly.</div>';
         hostAppsStatusText.textContent = "0 apps detected";
         return;
       }
@@ -1666,7 +1745,7 @@
             '<div class="host-app-title-line">' +
               '<span>' + escapeHTML(item.name) + '</span>' +
               (item.category ? '<span class="host-app-cat">' + escapeHTML(item.category) + '</span>' : '') +
-              '<span class="host-app-badge detected">Found</span>' +
+              '<span class="host-app-badge detected">' + escapeHTML(HOST_APP_MODES[item.mode] || "Found") + '</span>' +
             '</div>' +
             '<div class="host-app-desc">' + escapeHTML(item.description) + '</div>' +
           '</div>';
@@ -1865,12 +1944,113 @@
     }
   });
 
+  function insertProvisioningCard(info){
+    var grid = document.querySelector(".grid");
+    if(!grid){ return null; }
+
+    var empty = grid.querySelector(".empty");
+    if(empty){
+      empty.style.display = "none";
+    }
+
+    var existing = grid.querySelector('.dcard[data-desktop-id="' + info.id + '"]');
+    if(existing){ return existing; }
+
+    var card = document.createElement("article");
+    card.className = "dcard";
+    card.dataset.desktopId = info.id;
+
+    var profileLabel = info.profile === "ai" ? "AI Developer" : (info.profile === "developer" ? "Developer" : "Basic");
+    var harnessLabel = info.harness === "claude" ? "Claude Code" : (info.harness === "thebot" ? "TheBot" : "Ollama");
+    var cpusLabel = info.cpus == 1 ? "1 core" : (info.cpus + " cores");
+    var url = "/desktop/" + encodeURIComponent(info.id) + "/";
+
+    var specHtml = "";
+    if(info.specialization){
+      specHtml += '<div class="dcard-spec"><svg width="13" height="13"><use href="#i-fork"/></svg><span>Specialized for: ' + escapeHTML(info.specialization) + '</span></div>';
+    }
+    if(info.parentId){
+      specHtml += '<div class="dcard-spec"><svg width="13" height="13"><use href="#i-fork"/></svg><span>Child of <span class="mono">' + escapeHTML(info.parentId) + '</span></span></div>';
+    }
+
+    card.innerHTML =
+      '<div class="dcard-preview">' +
+        '<div class="dcard-preview-placeholder provisioning-placeholder" data-prov-msg="' + escapeHTML(info.id) + '">' +
+          '<svg class="spin" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-bottom:8px; display:inline-block; color:var(--accent);"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"/></svg>' +
+          '<div class="prov-text" data-prov-text="' + escapeHTML(info.id) + '">Spinning up desktop…</div>' +
+          '<div class="prov-bar-container">' +
+            '<div class="prov-bar" data-prov-bar="' + escapeHTML(info.id) + '" style="width:15%;"></div>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="dcard-head">' +
+        '<div style="min-width:0">' +
+          '<h2 class="dcard-name trunc" title="' + escapeHTML(info.name) + '">' + escapeHTML(info.name) + '</h2>' +
+          '<div class="dcard-tags">' +
+            '<span class="chip">' + escapeHTML(profileLabel) + '</span>' +
+            '<span class="chip">' + escapeHTML(harnessLabel) + '</span>' +
+          '</div>' +
+        '</div>' +
+        '<span class="status provisioning" data-status-pill data-base-status="provisioning">' +
+          '<span class="dot"></span><span data-status-label>provisioning</span>' +
+        '</span>' +
+        '<details class="dcard-info">' +
+          '<summary title="Desktop info" aria-label="Desktop info">' +
+            '<svg class="dcard-info-icon"><use href="#i-info"/></svg>' +
+          '</summary>' +
+          '<div class="dcard-info-body">' +
+            '<div class="dcard-info-title">' +
+              '<span>Desktop details</span>' +
+              '<span class="status provisioning" data-status-pill data-base-status="provisioning">' +
+                '<span class="dot"></span><span data-status-label>provisioning</span>' +
+              '</span>' +
+            '</div>' +
+            '<dl class="specs">' +
+              '<div><dt>CPU</dt><dd data-cpu-val="' + escapeHTML(info.id) + '">' + escapeHTML(cpusLabel) + '</dd></div>' +
+              '<div><dt>Memory</dt><dd data-mb="' + info.memoryMb + '" data-mem-val="' + escapeHTML(info.id) + '">' + info.memoryMb + ' MB</dd></div>' +
+              '<div><dt>Created</dt><dd>Just now</dd></div>' +
+            '</dl>' +
+            specHtml +
+            '<div class="dcard-url">' +
+              '<svg width="13" height="13"><use href="#i-monitor"/></svg>' +
+              '<span class="mono trunc" title="' + escapeHTML(url) + '">' + escapeHTML(url) + '</span>' +
+              '<button class="icon-btn copy-btn" data-copy="' + escapeHTML(url) + '" aria-label="Copy desktop URL">' +
+                '<svg width="13" height="13"><use href="#i-copy"/></svg>' +
+              '</button>' +
+            '</div>' +
+          '</div>' +
+        '</details>' +
+      '</div>' +
+      '<div class="dcard-actions">' +
+        '<button class="btn btn-default btn-sm" disabled style="opacity:0.85; cursor:wait;">' +
+          '<svg class="spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"/></svg>' +
+          'Spinning up…' +
+        '</button>' +
+        '<button class="btn btn-default btn-sm action-icon" data-open="' + escapeHTML(url) + '?autoconnect=true&resize=remote&ui=touch" title="Open launch screen" aria-label="Open launch screen">' +
+          '<svg width="14" height="14"><use href="#i-external"/></svg>' +
+        '</button>' +
+        '<span class="spacer"></span>' +
+        '<button class="btn btn-danger btn-sm action-icon" data-act="delete" data-id="' + escapeHTML(info.id) + '" data-name="' + escapeHTML(info.name) + '" title="Delete" aria-label="Delete desktop">' +
+          '<svg width="15" height="15"><use href="#i-trash"/></svg>' +
+        '</button>' +
+      '</div>';
+
+    grid.insertBefore(card, grid.firstChild);
+
+    var infoEl = card.querySelector(".dcard-info");
+    if(infoEl){ attachInfoHover(infoEl); }
+
+    var monoEl = card.querySelector(".dcard-url .mono");
+    if(monoEl){ monoEl.textContent = monoEl.title = absoluteURL(monoEl.textContent); }
+
+    return card;
+  }
+
   /* The actual POST /api/desktops/create - split out so a Claude sign-in
      triggered by Create desktop (see the submit handler below) can finish
      the create itself once the login succeeds. */
   async function performCreate(){
     var data = new FormData(createForm);
-    var name = (data.get("name") || "").trim();
     var rawName = (data.get("name") || "").trim();
     var finalName = rawName || ("desktop-" + Math.floor(Date.now() / 1000));
     var sanitizedID = finalName.toLowerCase().replace(/[^a-z0-9_-]/g, "-").replace(/^-+|-+$/g, "");
@@ -1883,8 +2063,12 @@
     submit.textContent = "Creating…";
     busy(true);
 
-    activeCreateController = new AbortController();
-    var signal = activeCreateController.signal;
+    var profile = data.get("profile") || "basic";
+    var harness = data.get("harness") || "ollama";
+    var cpus = parseInt(data.get("cpus") || "1", 10);
+    var memoryMb = parseInt(data.get("memory_mb") || "2048", 10);
+    var specialization = (data.get("specialization") || "").trim();
+    var parentId = (data.get("parent_id") || "").trim();
 
     var copyHostApps = dCopyHostApps && dCopyHostApps.checked;
     var selectedApps = [];
@@ -1894,58 +2078,60 @@
       });
     }
 
-    // 1. Immediately open desktop tab synchronously to prevent browser popup blockers.
-    // The opened tab loads /desktop/<id>/ which renders the live launch screen while provisioning.
-    var targetURL = "/desktop/" + encodeURIComponent(sanitizedID) + "/?autoconnect=true&resize=remote&ui=touch";
-    var guiWin = null;
-    try{
-      guiWin = window.open(targetURL, "_blank");
-    }catch(err){
-      console.warn("Could not open desktop tab directly:", err);
-    }
+    // Immediately insert spinning VM card into the dashboard grid
+    var card = insertProvisioningCard({
+      id: sanitizedID,
+      name: finalName,
+      profile: profile,
+      harness: harness,
+      cpus: cpus,
+      memoryMb: memoryMb,
+      specialization: specialization,
+      parentId: parentId
+    });
 
-    // 2. Immediately close the creation dialog - user never hangs!
+    /* The dialog is closed before the request goes out, so there is nothing
+       left to cancel: no AbortController here. The dialog's "close" event is
+       queued, not synchronous - it fires after this function has moved on, so
+       a controller created below would be aborted by that handler and take
+       the card down with it. */
     if(createDialog && createDialog.open){
       createDialog.close();
     }
-    toast("Desktop '" + sanitizedID + "' accepted. Spinning up in background…", "info");
 
-    activeCreateController = new AbortController();
-    var signal = activeCreateController.signal;
+    toast("Desktop '" + sanitizedID + "' accepted. Spinning up in background…", "info");
 
     try{
       await post("/api/desktops/create", {
-        name: name || ("desktop-" + Date.now()),
         name: sanitizedID,
-        profile: data.get("profile"),
-        harness: data.get("harness"),
-        cpus: data.get("cpus"),
-        memory_mb: data.get("memory_mb"),
-        specialization: data.get("specialization") || "",
-        parent_id: data.get("parent_id") || "",
+        profile: profile,
+        harness: harness,
+        cpus: cpus,
+        memory_mb: memoryMb,
+        specialization: specialization,
+        parent_id: parentId,
         copy_host_apps: copyHostApps ? "1" : "0",
         host_apps: selectedApps.join(",")
-      }, { signal: signal });
+      });
 
-      activeCreateController = null;
-      location.reload();
-      setTimeout(function(){
-        location.reload();
-      }, 400);
+      busy(false);
+      submit.disabled = false;
+      submit.textContent = "Create desktop";
+
+      // Trigger status check immediately to pick up in-flight provisioning state
+      checkProvisioningDesktops();
     }catch(e){
       busy(false);
       submit.disabled = false;
       submit.textContent = "Create desktop";
-      if(guiWin && !guiWin.closed){
-        try{ guiWin.close(); }catch(err){}
+      if(card){
+        card.remove();
+        var grid = document.querySelector(".grid");
+        if(grid && !grid.querySelector(".dcard")){
+          var empty = grid.querySelector(".empty");
+          if(empty){ empty.style.display = ""; }
+        }
       }
-      activeCreateController = null;
-      if(e.name === "AbortError" || (signal && signal.aborted)){
-        // Aborted intentionally by Cancel button or closing modal
-        activeCreateController = null;
-        return;
-      }
-      activeCreateController = null;
       toast(e.message, "error");
     }
   }
@@ -2022,16 +2208,120 @@
     }
   });
 
-  document.querySelectorAll("[data-open]").forEach(function(button){
-    button.addEventListener("click", function(){
+  document.addEventListener("click", function(event){
+    var button = event.target.closest("[data-open]");
+    if(button){
       window.open(button.dataset.open, "_blank", "noopener");
+    }
+  });
+
+  /* ---------------- recordings dropdown ----------------
+   Each running card lists the demonstrations recorded on that desktop, oldest
+   first, with Replay / Learn / Download. Read from the desktop when the list
+   is opened, so what is shown is what is there now. Built from text nodes
+   only: a title is whatever a person typed. */
+  function recNode(tag, className, text){
+    var n = document.createElement(tag);
+    if(className){ n.className = className; }
+    if(text !== undefined){ n.textContent = text; }
+    return n;
+  }
+
+  function recButton(label, className){
+    var b = recNode("button", "btn btn-sm " + className, label);
+    b.type = "button";
+    return b;
+  }
+
+  function recWhen(seconds){
+    if(!seconds){ return ""; }
+    return new Date(seconds * 1000).toLocaleString([], {dateStyle: "medium", timeStyle: "short"});
+  }
+
+  function renderRecordings(details, desktopID, recordings){
+    var body = details.querySelector("[data-rec-body]");
+    var count = details.querySelector("[data-rec-count]");
+
+    var shown = recordings.filter(function(r){
+      return r.kind === "demonstration" && r.status === "complete" && r.event_count;
+    }).sort(function(a, b){ return (a.started_at || 0) - (b.started_at || 0); });
+
+    count.hidden = false;
+    count.textContent = String(shown.length);
+    count.classList.toggle("filled", shown.length > 0);
+    body.textContent = "";
+
+    if(!shown.length){
+      body.appendChild(recNode("div", "mem-none", "Nothing recorded yet. Record a demonstration from the desktop's screen."));
+      return;
+    }
+
+    var list = recNode("ul", "rec-list");
+
+    shown.forEach(function(r){
+      var item = recNode("li", "rec-item");
+      item.appendChild(recNode("div", "rec-title", r.title || "Untitled"));
+      item.appendChild(recNode("div", "rec-meta",
+        [recWhen(r.started_at), r.event_count + (r.event_count === 1 ? " step" : " steps")].filter(Boolean).join(" · ")));
+
+      var actions = recNode("div", "rec-actions");
+
+      var replay = recButton("Replay", "btn-default");
+      var learn = recButton("Learn", "btn-default");
+      var download = recNode("a", "btn btn-sm btn-default", "Download");
+      download.href = "/api/desktops/recordings/export?" + new URLSearchParams({id: desktopID, session: r.id});
+
+      function start(button, url, started){
+        button.addEventListener("click", async function(){
+          actions.querySelectorAll("button").forEach(function(b){ b.disabled = true; });
+          try{
+            await post(url, {id: desktopID, session: r.id});
+            toast(started);
+            window.setTimeout(function(){ window.location.href = "/view/" + encodeURIComponent(desktopID); }, 900);
+          }catch(e){
+            toast(e.message, "error");
+            actions.querySelectorAll("button").forEach(function(b){ b.disabled = false; });
+          }
+        });
+      }
+
+      start(replay, "/api/desktops/recordings/replay", "Replay started. Follow it in the chat.");
+      start(learn, "/api/desktops/recordings/learn", "Teaching started. It asks its questions in the chat.");
+
+      actions.append(replay, learn, download);
+      item.appendChild(actions);
+      list.appendChild(item);
+    });
+
+    body.appendChild(list);
+  }
+
+  async function loadRecordings(details){
+    var desktopID = details.dataset.id;
+    var body = details.querySelector("[data-rec-body]");
+
+    try{
+      var response = await fetch("/api/desktops/recordings?" + new URLSearchParams({id: desktopID}), {headers: {"Accept": "application/json"}});
+      var data = await response.json().catch(function(){ return {}; });
+      if(!response.ok){ throw new Error(data.error || "Request failed"); }
+      renderRecordings(details, desktopID, data.recordings || []);
+    }catch(e){
+      body.textContent = "";
+      body.appendChild(recNode("div", "mem-none", "Couldn't read this desktop's recordings: " + e.message));
+    }
+  }
+
+  document.querySelectorAll("[data-rec-list]").forEach(function(details){
+    details.addEventListener("toggle", function(){
+      if(details.open){ loadRecordings(details); }
     });
   });
 
   /* ---------------- desktop info popovers ----------------
    Hover the info button/card to keep it open.
    Moving completely away from both closes it automatically. */
-  document.querySelectorAll(".dcard-info").forEach(function(info){
+  function attachInfoHover(info){
+    if(!info){ return; }
     var closeTimer = null;
 
     function cancelClose(){
@@ -2071,18 +2361,22 @@
       }
     });
 
-    info.querySelector("summary").addEventListener("click", function(event){
-      event.preventDefault();
+    var summary = info.querySelector("summary");
+    if(summary){
+      summary.addEventListener("click", function(event){
+        event.preventDefault();
 
-      cancelClose();
+        cancelClose();
 
-      if(info.hasAttribute("open")){
-        info.removeAttribute("open");
-      }else{
-        info.setAttribute("open", "");
-      }
-    });
-  });
+        if(info.hasAttribute("open")){
+          info.removeAttribute("open");
+        }else{
+          info.setAttribute("open", "");
+        }
+      });
+    }
+  }
+  document.querySelectorAll(".dcard-info").forEach(attachInfoHover);
 
   /* ---------------- copy URL ----------------
    Desktop URLs are root-relative so the preview and "open" button work from
@@ -2097,22 +2391,23 @@
     el.textContent = el.title = absoluteURL(el.textContent);
   });
 
-  document.querySelectorAll("[data-copy]").forEach(function(button){
-    button.addEventListener("click", async function(){
-      try{
-        await navigator.clipboard.writeText(absoluteURL(button.dataset.copy));
+  document.addEventListener("click", async function(event){
+    var button = event.target.closest("[data-copy]");
+    if(!button){ return; }
+    try{
+      await navigator.clipboard.writeText(absoluteURL(button.dataset.copy));
 
-        button.classList.add("done");
-        button.querySelector("use").setAttribute("href", "#i-check");
+      button.classList.add("done");
+      var use = button.querySelector("use");
+      if(use){ use.setAttribute("href", "#i-check"); }
 
-        setTimeout(function(){
-          button.classList.remove("done");
-          button.querySelector("use").setAttribute("href", "#i-copy");
-        }, 1400);
-      }catch(e){
-        toast("Couldn't copy to the clipboard.", "error");
-      }
-    });
+      setTimeout(function(){
+        button.classList.remove("done");
+        if(use){ use.setAttribute("href", "#i-copy"); }
+      }, 1400);
+    }catch(e){
+      toast("Couldn't copy to the clipboard.", "error");
+    }
   });
 
   /* ---------------- learned memory ---------------- */
@@ -2432,16 +2727,40 @@
       if(!card || !card.dataset.desktopId){ return; }
       var id = card.dataset.desktopId;
       fetch("/api/desktops/status?id=" + encodeURIComponent(id))
-        .then(function(res){ return res.json(); })
+        .then(function(res){
+          if(!res.ok){ return null; }
+          return res.json();
+        })
         .then(function(data){
-          if(data && (data.ready || data.status === "running")){
+          if(!data){ return; }
+          if(data.ready || (data.status === "running" && data.stage === "ready")){
             location.reload();
+            return;
+          }
+          if(data.status === "failed"){
+            var txt = card.querySelector("[data-prov-text]");
+            if(txt){
+              txt.textContent = "Failed: " + (data.error || data.message || "Unknown error");
+              txt.style.color = "#ef4444";
+            }
+            var bar = card.querySelector("[data-prov-bar]");
+            if(bar){ bar.style.background = "#ef4444"; }
+            return;
+          }
+          var txt = card.querySelector("[data-prov-text]");
+          if(txt && data.message){
+            txt.textContent = data.message;
+          }
+          var bar = card.querySelector("[data-prov-bar]");
+          if(bar && typeof data.progress === "number"){
+            bar.style.width = Math.max(10, Math.min(100, data.progress)) + "%";
           }
         })
         .catch(function(){});
     });
   }
-  setInterval(checkProvisioningDesktops, 2000);
+  checkProvisioningDesktops();
+  setInterval(checkProvisioningDesktops, 1500);
 
   /* ---------------- shortcuts ---------------- */
 

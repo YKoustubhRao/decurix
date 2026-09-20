@@ -823,8 +823,8 @@ func (s *Store) AddStep(workerID, taskID string, step Step) (bool, error) {
 	// screen.
 	if step.Action != nil {
 		if _, err := tx.Exec(
-			`UPDATE tasks SET task_type = ? WHERE id = ? AND task_type NOT IN (?, ?)`,
-			TypeScreen, ref.taskID, TypeConsequential, TypeDemonstration,
+			`UPDATE tasks SET task_type = ? WHERE id = ? AND task_type NOT IN (?, ?, ?)`,
+			TypeScreen, ref.taskID, TypeConsequential, TypeDemonstration, TypeTeaching,
 		); err != nil {
 			return false, fmt.Errorf("tasks: recording step: %w", err)
 		}
@@ -1040,6 +1040,7 @@ func (s *Store) CloseOpen(workerID, why string) error {
 	if err != nil {
 		return err
 	}
+	defer rows.Close()
 
 	var open []executionRef
 
@@ -1179,6 +1180,7 @@ func (s *Store) Get(taskID string) (Detail, error) {
 	if err != nil {
 		return Detail{}, fmt.Errorf("tasks: reading steps: %w", err)
 	}
+	defer steps.Close()
 
 	for steps.Next() {
 		var step Step

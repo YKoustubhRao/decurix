@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"strconv"
 	"strings"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/network"
 
 	"github.com/YKoustubhRao/flowera/internal/ollama"
@@ -74,6 +76,29 @@ func (m *Manager) EnsureImages(ctx context.Context) error {
 	)
 }
 
+// GatewayIPs returns the IPv4 gateway addresses of the networks a desktop can reach the host through (flowera-network
+// and Docker's default bridge, which is what host.docker.internal resolves to on Linux) - the addresses a control plane
+// running on the host must listen on, besides loopback, for its desktops to call back without opening a port to the LAN.
+func (m *Manager) GatewayIPs(ctx context.Context) []string {
+	var ips []string
+	seen := map[string]bool{}
+	for _, name := range []string{NetworkName, "bridge"} {
+		info, err := m.client.NetworkInspect(ctx, name, network.InspectOptions{})
+		if err != nil {
+			continue
+		}
+		for _, cfg := range info.IPAM.Config {
+			ip := net.ParseIP(cfg.Gateway)
+			if ip == nil || ip.To4() == nil || seen[cfg.Gateway] {
+				continue
+			}
+			seen[cfg.Gateway] = true
+			ips = append(ips, cfg.Gateway)
+		}
+	}
+	return ips
+}
+
 // EnsureNetwork creates the shared Docker network used by desktops if it does not already exist.
 func (m *Manager) EnsureNetwork(ctx context.Context) error {
 	_, err := m.client.NetworkInspect(
@@ -126,6 +151,19 @@ func resolveDesktopImage(profile string) (string, error) {
 	}
 }
 
+// controlPlaneURL is where a desktop's agent and launchers call back to. A
+// control plane running in Docker (docker-compose.yaml) sets
+// FLOWERA_CONTROL_PLANE_URL to its own name on flowera-network, so callbacks
+// travel container to container and the host's published :8080 can stay
+// bound to loopback. Anything else - the released binary on the host - is
+// reached through host.docker.internal, as before.
+func controlPlaneURL() string {
+	if u := strings.TrimSpace(os.Getenv("FLOWERA_CONTROL_PLANE_URL")); u != "" {
+		return u
+	}
+	return "http://host.docker.internal:8080"
+}
+
 // buildDesktopEnv builds the container environment variables (VNC, desktop identity, control-plane/Ollama URLs, agent harness) for a desktop by name.
 func buildDesktopEnv(name, harness, specialization, parentID string) []string {
 	defaultPassword := os.Getenv("DEFAULT_PASSWORD")
@@ -170,7 +208,7 @@ func buildDesktopEnv(name, harness, specialization, parentID string) []string {
 		// notes and chat entries matched no desktop the dashboard knew.
 		"DESKTOP_ID=" + sanitizeName(name),
 		"DESKTOP_NAME=" + name,
-		"CONTROL_PLANE_URL=http://host.docker.internal:8080",
+		"CONTROL_PLANE_URL=" + controlPlaneURL(),
 		"OLLAMA_URL=" + ollamaURL,
 		"OLLAMA_MODEL=" + ollamaModel,
 		"AGENT_HARNESS=" + harness,
@@ -342,4 +380,29 @@ func sanitizeName(s string) string {
 // https page never embeds an http:// iframe.
 func desktopURL(id string) string {
 	return "/desktop/" + id + "/"
+}
+
+// StaleControlPlane returns the IDs of desktops whose baked-in CONTROL_PLANE_URL is not the one new desktops get now.
+// A container's environment is fixed when it is created, so such a desktop keeps calling the old address - which no
+// longer works once the control plane stops listening on the LAN-facing one. It is a one-off startup report, not a
+// per-request check.
+func (m *Manager) StaleControlPlane(ctx context.Context) []string {
+	args := filters.NewArgs()
+	args.Add("label", "desktop-manager=true")
+	containers, err := m.client.ContainerList(ctx, container.ListOptions{All: true, Filters: args})
+	if err != nil {
+		return nil
+	}
+	want := controlPlaneURL()
+	var stale []string
+	for _, c := range containers {
+		inspect, err := m.client.ContainerInspect(ctx, c.ID)
+		if err != nil || inspect.Config == nil {
+			continue
+		}
+		if have := envValue(inspect.Config.Env, "CONTROL_PLANE_URL"); have != "" && have != want {
+			stale = append(stale, strings.TrimPrefix(strings.TrimPrefix(inspect.Name, "/"), "desktop_"))
+		}
+	}
+	return stale
 }

@@ -70,6 +70,11 @@
 .replay .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .replay .row .hint{flex:1;min-width:200px}
 .from{width:90px}
+.teach{padding:14px 18px;border-bottom:1px solid var(--line);background:var(--surface-2);display:grid;gap:12px}
+.teach-list{display:grid;gap:6px;max-height:190px;overflow:auto}
+.teach-list label{display:flex;gap:8px;align-items:baseline;font-size:13px;overflow-wrap:anywhere}
+.teach .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.teach .row .hint{flex:1;min-width:200px}
 .secret-tag{font-weight:500;color:var(--accent)}
 
 .steps{padding:6px 18px 16px}
@@ -100,7 +105,7 @@
 @media (max-width:520px){
   .recorder-form{flex-direction:column}
   .step{grid-template-columns:minmax(0,1fr);gap:3px}
-  .detail-head,.replay,.steps{padding-left:14px;padding-right:14px}
+  .detail-head,.replay,.teach,.steps{padding-left:14px;padding-right:14px}
 }
 </style>
 </head>
@@ -129,6 +134,9 @@
       <button type="button" class="btn btn-default btn-sm" data-open-screen>
         <svg width="14" height="14"><use href="#i-external"/></svg>Open the screen
       </button>
+      <a class="btn btn-default btn-sm" href="/skills/{{.Desktop.ID}}">
+        <svg width="14" height="14"><use href="#i-check"/></svg>Skills
+      </a>
       <a class="btn btn-default btn-sm" href="/view/{{.Desktop.ID}}">
         <svg width="14" height="14"><use href="#i-blossom"/></svg>Chat
       </a>
@@ -451,6 +459,7 @@
 
     var actions = node("div", "detail-actions");
     var replayBtn = button("Replay", "btn-primary", "play");
+    var teachBtn = button("Teach", "btn-default", "blossom");
     var editBtn = button("Rename", "btn-default");
     var exportLink = node("a", "btn btn-sm btn-default");
     exportLink.href = "/api/desktops/recordings/export?" + query({session: meta.id});
@@ -460,8 +469,9 @@
     var deleteBtn = button("Delete", "btn-danger", "trash");
 
     replayBtn.disabled = recordingNow || !program.steps.length;
+    teachBtn.disabled = recordingNow || !program.steps.length;
     deleteBtn.disabled = recordingNow;
-    actions.append(replayBtn, editBtn, exportLink, deleteBtn);
+    actions.append(replayBtn, teachBtn, editBtn, exportLink, deleteBtn);
     head.appendChild(actions);
 
     /* rename */
@@ -574,6 +584,59 @@
     });
 
     detail.appendChild(form);
+
+    /* teach form: the desktop asks what it needs to know, in the chat */
+    var teach = node("form", "teach");
+    teach.hidden = true;
+    teach.appendChild(node("div", "eyebrow", "Teach the desktop to do this itself"));
+
+    var others = state.recordings.filter(function(r){
+      return r.id !== meta.id && r.kind === "demonstration" && r.status === "complete" && r.event_count;
+    });
+    var picked = {};
+
+    if(others.length){
+      teach.appendChild(node("div", "hint", "Also learn from other demonstrations of the same task. What differs between them is what changes each time; a step only some have is optional."));
+      var pickList = node("div", "teach-list");
+      others.slice(0, 12).forEach(function(r){
+        var label = node("label");
+        var box = node("input");
+        box.type = "checkbox";
+        box.addEventListener("change", function(){ picked[r.id] = box.checked; });
+        label.append(box, document.createTextNode((r.title || "Untitled") + " · " + when(r.started_at)));
+        pickList.appendChild(label);
+      });
+      teach.appendChild(pickList);
+    }
+
+    var teachRow = node("div", "row");
+    teachRow.appendChild(node("span", "hint",
+      "The desktop works out what it can from the recording and asks about the rest in the chat, one question at a time. Nothing is saved until you say yes, and it still stops for approval before anything that sends, pays or publishes."));
+    var teachGo = node("button", "btn btn-primary btn-sm");
+    teachGo.type = "submit";
+    teachGo.appendChild(icon("blossom"));
+    teachGo.appendChild(document.createTextNode("Start teaching"));
+    teachRow.appendChild(teachGo);
+    teach.appendChild(teachRow);
+
+    teachBtn.addEventListener("click", function(){ teach.hidden = !teach.hidden; });
+
+    teach.addEventListener("submit", async function(e){
+      e.preventDefault();
+      var also = Object.keys(picked).filter(function(id){ return picked[id]; });
+      teachGo.disabled = true;
+      try{
+        await post("/api/desktops/recordings/learn", {id: desktopID, session: meta.id, sessions: also.join(",")});
+        toast("Teaching started. It asks its questions in the chat.");
+        teach.hidden = true;
+        window.setTimeout(function(){ window.location.href = "/view/" + encodeURIComponent(desktopID); }, 900);
+      }catch(err){
+        toast(err.message, "error");
+        teachGo.disabled = false;
+      }
+    });
+
+    detail.appendChild(teach);
 
     /* steps */
     var byEvent = {};

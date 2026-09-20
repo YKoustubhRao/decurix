@@ -104,3 +104,21 @@ func TestResolveDesktopImageSupportsProfiles(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildDesktopEnvControlPlaneURL(t *testing.T) {
+	want := func(env []string, v string) {
+		t.Helper()
+		for _, e := range env {
+			if e == "CONTROL_PLANE_URL="+v {
+				return
+			}
+		}
+		t.Fatalf("CONTROL_PLANE_URL=%s not in %v", v, env)
+	}
+
+	t.Setenv("FLOWERA_CONTROL_PLANE_URL", "")
+	want(buildDesktopEnv("box1", "ollama", "dev", ""), "http://host.docker.internal:8080")
+
+	t.Setenv("FLOWERA_CONTROL_PLANE_URL", "http://flowera:8080")
+	want(buildDesktopEnv("box1", "ollama", "dev", ""), "http://flowera:8080")
+}

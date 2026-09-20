@@ -6,6 +6,7 @@ package memory
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -60,12 +61,24 @@ func NewStore(db *sql.DB) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
+// ErrInvalid marks input Record refused - the caller's mistake, which the
+// HTTP layer answers with a 400 rather than an internal error.
+var ErrInvalid = errors.New("invalid memory entry")
+
+// Length caps. A worker's memory is read back into every prompt its desktop
+// builds, so an entry that is not bounded is a tax on every later task.
+const (
+	maxDesktopIDLen = 128
+	maxTitleLen     = 200
+	maxSummaryLen   = 4000
+)
+
 // Record validates and stores a new worker memory entry. It does not persist
 // the entry to a desktop container — callers that need that should follow up
 // with FormatForDesktopFile and the desktop package's PersistMemoryFile.
 func (s *Store) Record(desktopID, title, summary, category string) (WorkerMemoryEntry, error) {
 	if strings.TrimSpace(desktopID) == "" {
-		return WorkerMemoryEntry{}, fmt.Errorf("desktop_id is required")
+		return WorkerMemoryEntry{}, fmt.Errorf("%w: desktop_id is required", ErrInvalid)
 	}
 
 	title = strings.TrimSpace(title)
@@ -73,11 +86,15 @@ func (s *Store) Record(desktopID, title, summary, category string) (WorkerMemory
 	category = strings.TrimSpace(category)
 
 	if title == "" {
-		return WorkerMemoryEntry{}, fmt.Errorf("title is required")
+		return WorkerMemoryEntry{}, fmt.Errorf("%w: title is required", ErrInvalid)
 	}
 
 	if summary == "" {
-		return WorkerMemoryEntry{}, fmt.Errorf("summary is required")
+		return WorkerMemoryEntry{}, fmt.Errorf("%w: summary is required", ErrInvalid)
+	}
+
+	if len(desktopID) > maxDesktopIDLen || len(title) > maxTitleLen || len(summary) > maxSummaryLen {
+		return WorkerMemoryEntry{}, fmt.Errorf("%w: field too long", ErrInvalid)
 	}
 
 	if category == "" {

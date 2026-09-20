@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -11,11 +12,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/YKoustubhRao/flowera/internal/desktop"
+	"github.com/YKoustubhRao/flowera/internal/winhost"
 )
 
 // findDockerBinary locates an available docker binary on the host or in standard container paths.
@@ -41,8 +44,46 @@ func (s *Server) detectHostAppsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	force := r.URL.Query().Get("refresh") == "1" || r.URL.Query().Get("refresh") == "true"
+	// Somebody looking at the apps they can copy is about to create a desktop: get the host ready while they choose.
+	desktop.WarmHostApps()
 	items := desktop.DetectHostAppsForce(force)
 	jsonResponse(w, items)
+}
+
+// copyHostAppsHandler copies host apps into a desktop that already exists - the same copy desktop creation does - so apps
+// can be added later, and launchers written by an older build (which stop working when the launch mechanism changes) can
+// be refreshed without recreating the desktop. Form fields: id, and host_apps as a comma-separated list of IDs from
+// /api/host-apps/detect.
+func (s *Server) copyHostAppsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id := strings.TrimSpace(r.FormValue("id"))
+	var apps []string
+	for _, part := range strings.Split(r.FormValue("host_apps"), ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			apps = append(apps, part)
+		}
+	}
+	if id == "" || len(apps) == 0 {
+		http.Error(w, "id and host_apps are required", http.StatusBadRequest)
+		return
+	}
+	d, err := s.Desktops.Get(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, desktop.ErrNotFound) {
+			http.Error(w, "desktop not found", http.StatusNotFound)
+			return
+		}
+		jsonError(w, err)
+		return
+	}
+	if err := s.Desktops.MigrateHostApps(r.Context(), d.ID, apps); err != nil {
+		jsonError(w, err)
+		return
+	}
+	jsonResponse(w, map[string]any{"id": d.ID, "host_apps": apps})
 }
 
 // hostBridgeExecRequest represents a command execution request sent from inside
@@ -51,6 +92,10 @@ type hostBridgeExecRequest struct {
 	Cmd     string   `json:"cmd"`
 	Args    []string `json:"args"`
 	Display string   `json:"display,omitempty"`
+	// Desktop and Token authorise the command: Token is winhost.ExecToken for this desktop, Cmd and Args, which a
+	// launcher was written with. Nothing else is run.
+	Desktop string `json:"desktop,omitempty"`
+	Token   string `json:"token,omitempty"`
 }
 
 // hostBridgeExecResponse represents the result of the host command execution.
@@ -79,6 +124,8 @@ func (s *Server) hostBridgeExecHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		req.Cmd = r.FormValue("cmd")
 		req.Display = r.FormValue("display")
+		req.Desktop = r.FormValue("desktop")
+		req.Token = r.FormValue("token")
 		if argsVal := r.FormValue("args"); argsVal != "" {
 			_ = json.Unmarshal([]byte(argsVal), &req.Args)
 		}
@@ -86,6 +133,14 @@ func (s *Server) hostBridgeExecHandler(w http.ResponseWriter, r *http.Request) {
 
 	if strings.TrimSpace(req.Cmd) == "" {
 		http.Error(w, "cmd cannot be empty", http.StatusBadRequest)
+		return
+	}
+
+	// This runs a program on the host, and the caller may be a desktop whose agent takes instructions from web pages.
+	// It only ever runs what a launcher Flowera wrote was signed for - exactly that program and those arguments.
+	if !winhost.ValidExecToken(s.hostGUISecretKey(), req.Desktop, req.Cmd, req.Args, req.Token) {
+		log.Printf("host-bridge: refused an unsigned or altered command from %s", r.RemoteAddr)
+		http.Error(w, "this command is not one a launcher was written to run", http.StatusForbidden)
 		return
 	}
 
@@ -179,6 +234,19 @@ func (s *Server) hostBridgeExecHandler(w http.ResponseWriter, r *http.Request) {
 // If display is non-empty, the command is configured to direct its GUI/X11 rendering to that display
 // (e.g. tunneling display back to the desktop container's X11 server).
 func createHostCmd(ctx context.Context, display, cmdStr string, args ...string) *exec.Cmd {
+	// A Windows program is on the host already: run the program itself. There is no bash to wrap it in (and a bash
+	// that a WSL install puts on PATH would run it inside Linux), and going without a shell means no quoting to get wrong.
+	if runtime.GOOS == "windows" {
+		var cmd *exec.Cmd
+		if ctx != nil {
+			cmd = exec.CommandContext(ctx, cmdStr, args...)
+		} else {
+			cmd = exec.Command(cmdStr, args...)
+		}
+		cmd.Stdin = strings.NewReader("")
+		return cmd
+	}
+
 	fullCmd := strings.TrimSpace(cmdStr)
 	if len(args) > 0 {
 		var quoted []string
@@ -242,6 +310,16 @@ func createHostCmd(ctx context.Context, display, cmdStr string, args ...string) 
 	return cmd
 }
 
+// openURLPattern is what may be opened on the host: an http(s) link with nothing a shell or cmd.exe would act on. The
+// target is spliced into a shell command line, so quotes, backslashes, $, backticks, ^, <, >, | and ; are refused
+// rather than escaped, and so are spaces and control characters. (& and % are fine inside the quotes it is given.)
+var openURLPattern = regexp.MustCompile(`^https?://[A-Za-z0-9._~:/?#@!*+,=&%\[\]()-]+$`)
+
+// safeOpenURL reports whether target is a link hostBridgeOpenHandler will open.
+func safeOpenURL(target string) bool {
+	return len(target) <= 2048 && openURLPattern.MatchString(target)
+}
+
 // hostBridgeOpenRequest represents a request to open a URL or file on the host desktop screen.
 type hostBridgeOpenRequest struct {
 	Target string `json:"target"`
@@ -269,34 +347,67 @@ func (s *Server) hostBridgeOpenHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "target cannot be empty", http.StatusBadRequest)
 		return
 	}
-
-	var openCmd string
-	switch {
-	case runtime.GOOS == "darwin":
-		openCmd = fmt.Sprintf("open %q", target)
-	case runtime.GOOS == "windows" || desktop.IsWSLOrWindows():
-		openCmd = fmt.Sprintf(`cmd.exe /c start "" %q`, target)
-	default:
-		openCmd = fmt.Sprintf("xdg-open %q", target)
+	if !safeOpenURL(target) {
+		http.Error(w, "only plain http(s) links can be opened on the host", http.StatusBadRequest)
+		return
 	}
 
-	cmd := createHostCmd(nil, "", openCmd)
+	var cmd *exec.Cmd
+	switch {
+	case runtime.GOOS == "windows":
+		// The URL protocol handler, not cmd.exe's start: no shell parses the link, so the & of a query string stays one.
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
+	case runtime.GOOS == "darwin":
+		cmd = createHostCmd(nil, "", fmt.Sprintf("open %q", target))
+	case desktop.IsWSLOrWindows():
+		cmd = createHostCmd(nil, "", fmt.Sprintf(`cmd.exe /c start "" %q`, target))
+	default:
+		cmd = createHostCmd(nil, "", fmt.Sprintf("xdg-open %q", target))
+	}
 
-	if err := cmd.Start(); err != nil {
+	if err := startAndWatch(cmd, hostOpenWait); err != nil {
 		log.Printf("host-bridge: open %s failed: %v", target, err)
 		http.Error(w, "could not open target on host: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	go func() {
-		_ = cmd.Wait()
-	}()
 
 	jsonResponse(w, map[string]interface{}{
 		"success": true,
 		"target":  target,
 	})
 }
+
+// hostOpenWait is how long an opener gets to fail before it is taken to have worked. Openers hand the link to a browser
+// and return at once, so one that has not finished by then is a browser that is staying attached, not a failure.
+const hostOpenWait = 3 * time.Second
+
+// startAndWatch starts cmd and reports a failure that shows up within wait: it could not be started, or it exited with an
+// error (a control plane in a container has no xdg-open, which used to be answered with success). A command still running
+// after wait is left to finish on its own.
+func startAndWatch(cmd *exec.Cmd, wait time.Duration) error {
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			if msg := strings.TrimSpace(stderr.String()); msg != "" {
+				return fmt.Errorf("%w: %s", err, msg)
+			}
+			return err
+		}
+		return nil
+	case <-time.After(wait):
+		return nil
+	}
+}
+
+// maxHostClipBytes bounds what a desktop can put on the host's clipboard in one request.
+const maxHostClipBytes = 64 << 10
 
 // hostBridgeClipRequest represents a request to copy text into the host OS clipboard.
 type hostBridgeClipRequest struct {
@@ -309,6 +420,8 @@ func (s *Server) hostBridgeClipHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxHostClipBytes)
 
 	var req hostBridgeClipRequest
 	if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
@@ -343,7 +456,15 @@ func (s *Server) hostBridgeClipHandler(w http.ResponseWriter, r *http.Request) {
 	cmd.Stdin = strings.NewReader(req.Text)
 	if err := cmd.Run(); err != nil {
 		log.Printf("host-bridge: clip failed: %v", err)
-		http.Error(w, "clipboard copy failed: "+err.Error(), http.StatusInternalServerError)
+
+		// No clipboard tool on this host (a control plane in a container, say)
+		// is "not available here", not a server fault.
+		if errors.Is(err, exec.ErrNotFound) {
+			http.Error(w, "the host clipboard is not available here", http.StatusNotImplemented)
+			return
+		}
+
+		http.Error(w, "clipboard copy failed", http.StatusInternalServerError)
 		return
 	}
 

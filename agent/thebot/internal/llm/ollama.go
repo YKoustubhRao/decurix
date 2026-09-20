@@ -21,7 +21,7 @@ const defaultTimeoutFloor = 300 * time.Second
 
 // defaultKeepAlive is how long Ollama is asked to hold the model in
 // memory after answering. Override with OLLAMA_KEEP_ALIVE.
-const defaultKeepAlive = "30m"
+const defaultKeepAlive = "60m"
 
 type OllamaProvider struct {
 	Host   string

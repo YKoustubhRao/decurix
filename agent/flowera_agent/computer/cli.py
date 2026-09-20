@@ -3,7 +3,7 @@ import os
 import sys
 
 from flowera_agent import logging_utils, progress
-from flowera_agent.computer import approval, core, replay
+from flowera_agent.computer import approval, core, replay, skill_engine, skills
 from flowera_agent.computer import elements as el
 from flowera_agent.computer.errors import ComputerError
 
@@ -48,6 +48,11 @@ USAGE = """gui - see and use this desktop's screen
   gui recording ID               one recording's steps and parameters
   gui replay ID [--param NAME=VALUE]... [--from N]
                                  run a recording again, with no model
+
+  gui skills [WORDS]             tasks this desktop was taught, best match first
+  gui skill NAME                 one skill's steps and what it needs
+  gui do NAME [--param NAME=VALUE]... [--from N]
+                                 do a taught task, with no model
 
 TARGET is a ref from observe (e12), a role and name ('button "Save"'),
 a name ("Save"), or screen coordinates (640,360) as a last resort.
@@ -231,7 +236,31 @@ def build_parser():
     replayer.add_argument("--param", action="append", default=[])
     replayer.add_argument("--from", dest="start", type=int, default=1)
 
+    listed = sub.add_parser("skills", add_help=False)
+    listed.add_argument("words", nargs="*")
+
+    described = sub.add_parser("skill", add_help=False)
+    described.add_argument("name")
+
+    doer = sub.add_parser("do", add_help=False)
+    doer.add_argument("name")
+    doer.add_argument("--param", action="append", default=[])
+    doer.add_argument("--from", dest="start", type=int, default=1)
+
     return parser
+
+
+def _params(items):
+    """--param NAME=VALUE arguments as {name: value}."""
+
+    params = {}
+    for item in items:
+        name, sep, value = item.partition("=")
+        if not sep or not name.strip():
+            raise ComputerError(f"--param takes NAME=VALUE, not {item!r}")
+        params[name.strip()] = _unescape(value)
+
+    return params
 
 
 def _load_program(session_id):
@@ -241,11 +270,11 @@ def _load_program(session_id):
         raise ComputerError(f"there is no recording {session_id!r} here. Run `gui recordings` to list them.")
 
 
-def _print_replay(result):
-    """Print how a replay ended, and exit with what `gui` exit codes mean."""
+def _print_replay(result, command=None):
+    """Print how a replay ended, and exit with what `gui` exit codes mean. `command` is what runs it again."""
 
     outcome = result["outcome"]
-    again = f"gui replay {result['session']} --from {result['resume_from']}"
+    again = f"{command or 'gui replay ' + result['session']} --from {result['resume_from']}"
 
     if outcome == replay.NEEDS_APPROVAL:
         print(f"{approval.MARKER} {result['text']}")
@@ -335,14 +364,32 @@ def run(argv):
         return EXIT_OK
 
     if command == "replay":
-        params = {}
-        for item in args.param:
-            name, sep, value = item.partition("=")
-            if not sep or not name.strip():
-                raise ComputerError(f"--param takes NAME=VALUE, not {item!r}")
-            params[name.strip()] = _unescape(value)
         _, program = _load_program(args.session)
-        return _print_replay(replay.run(program, params=params, start=args.start))
+        return _print_replay(replay.run(program, params=_params(args.param), start=args.start))
+
+    if command == "skills":
+        found = skills.search(" ".join(args.words))
+        if not found:
+            print("No skills on this desktop" + (" match that." if args.words else " yet - a person teaches one with /learn in the chat."))
+            return EXIT_OK
+        for skill in found:
+            print(skill_engine.summary_line(skill))
+        print("`gui skill NAME` shows one's steps; `gui do NAME` does it with no model.")
+        return EXIT_OK
+
+    if command in ("skill", "do"):
+        skill, candidates = skills.find(args.name)
+        if skill is None:
+            names = ", ".join(s["name"] for s in candidates)
+            raise ComputerError((f"more than one skill fits {args.name!r}: {names}. Use its exact name."
+                                 if candidates else f"there is no skill {args.name!r} here. Run `gui skills` to list them."))
+
+        if command == "skill":
+            print(skill_engine.render_text(skill, budget=TEXT_BUDGET))
+            return EXIT_OK
+
+        return _print_replay(skill_engine.run(skill, params=_params(args.param), start=args.start),
+                             command=f"gui do {skill['name']}")
 
     if command in ("click", "double-click", "right-click"):
         words = _strip_descriptor(list(args.target))

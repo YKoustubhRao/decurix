@@ -1,6 +1,7 @@
 import json
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -42,7 +43,7 @@ def save_request(request, task_id=""):
 # Control plane communication
 # ============================================================
 
-def send_query(filename, content, kind="", reply="", engine=None):
+def send_query(filename, content, kind="", reply="", engine=None, quiet=False):
     """
     Send a query to the Flowera control plane.
 
@@ -59,6 +60,8 @@ def send_query(filename, content, kind="", reply="", engine=None):
         task_id   - the control plane's task this ends or pauses
         engine, model, input_tokens, output_tokens, cost_usd
                   - what the task records keep about the execution
+        quiet     - true when the note is only the chat's reply and the task's
+                    outcome, and the Query rail should not get an entry
 
     `content` is the whole formatted note, which the dashboard's Query rail
     still shows verbatim. `kind`/`reply` are what the chat renders: the
@@ -85,6 +88,9 @@ def send_query(filename, content, kind="", reply="", engine=None):
         # all, and says so.
         "engine": engine or config.AGENT_HARNESS,
     }
+
+    if quiet:
+        payload["quiet"] = True
 
     payload.update(usage.snapshot())
 
@@ -119,6 +125,44 @@ def send_query(filename, content, kind="", reply="", engine=None):
         return False
 
 
+def remember(title, summary, category="workflow"):
+    """
+    Add an entry to this desktop's worker memory on the control plane - the
+    "learned memory" list on its dashboard card - which then writes it back
+    into ~/.flowera/memory, where every harness reads it on its next task.
+
+    Best-effort and never raises: a lesson that could not be recorded must not
+    fail the task that produced it. Returns whether it was recorded.
+    """
+
+    body = urllib.parse.urlencode({
+        "desktop_id": config.DESKTOP_ID,
+        "title": title,
+        "summary": summary,
+        "category": category,
+    }).encode("utf-8")
+
+    request = urllib.request.Request(
+        config.CONTROL_PLANE_URL.rstrip("/") + "/api/desktops/memory",
+        data=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            return 200 <= response.status < 300
+    except Exception as exc:
+        log(f"Failed to record learned memory: {exc}")
+        return False
+
+
+BLANK_PROBLEM = (
+    "I stopped without saying why, so I do not know what is in the way. "
+    "Tell me what to try next, or send the request again with more detail."
+)
+
+
 def ask_for_query(problem, kind="query", engine=None):
     """
     Ask the human/control plane a query.
@@ -129,6 +173,11 @@ def ask_for_query(problem, kind="query", engine=None):
     the task records count them separately, since one is the agent doing
     its job and the other is the agent failing to.
     """
+
+    # A model that answers `HELP:` with nothing after it has still stopped the
+    # task. The chat shows only the reply text, so an empty one would leave a
+    # blocked desktop with no visible question at all.
+    problem = (problem or "").strip() or BLANK_PROBLEM
 
     query_id = uuid.uuid4().hex
 
@@ -267,7 +316,7 @@ def backend_failure_note(what, url, error):
 # Final task reply
 # ============================================================
 
-def write_final_reply(reply, kind="final", engine=None):
+def write_final_reply(reply, kind="final", engine=None, quiet=False):
     """
     Write the final result into querytext/ so the existing
     querytext watcher sends it to the Flowera control plane.
@@ -276,6 +325,11 @@ def write_final_reply(reply, kind="final", engine=None):
     the end without managing it - the chat flags the latter as failed
     rather than presenting it as an ordinary answer. Either way the task is
     over and nothing is waiting on the human.
+
+    `quiet` finishes the task and answers in the chat without a note for the
+    Query rail (nor a file in querytext/, which its watcher would send as
+    one): for a result nobody needs paging about, such as a finished
+    recording that now sits in the desktop card's recordings list.
     """
 
     # ddmmyyyyhhmmss.txt
@@ -305,17 +359,20 @@ Completed at:
 {timestamp()}
 """.strip()
 
-    path = config.QUERYTEXT_DIR / filename
-
-    path.write_text(
-        final_note,
-        encoding="utf-8"
-    )
-
     log("========================================")
     log("TASK COMPLETED")
     log(final_note)
-    log(f"Final reply written to: {path}")
+
+    if not quiet:
+        path = config.QUERYTEXT_DIR / filename
+
+        path.write_text(
+            final_note,
+            encoding="utf-8"
+        )
+
+        log(f"Final reply written to: {path}")
+
     log("========================================")
 
     sent = send_query(
@@ -324,6 +381,7 @@ Completed at:
         kind=kind,
         reply=reply,
         engine=engine,
+        quiet=quiet,
     )
 
     if sent:

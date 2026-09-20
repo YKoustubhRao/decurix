@@ -141,7 +141,12 @@ ensure_ollama_ready() {
         echo ""
         echo "Falling back to the bundled flowera-ollama container."
         ollama_url_ok="$bundled_ollama_url"
-        set_env_var OLLAMA_MODEL "qwen2.5-coder:3b"
+        # A pinned model is replaced by a small one that always works; "auto"
+        # stays auto - the control plane pulls what fits into the container.
+        case "$(read_env_var OLLAMA_MODEL)" in
+            ""|auto) ;;
+            *) set_env_var OLLAMA_MODEL "qwen2.5-coder:3b" ;;
+        esac
     fi
 
     set_env_var OLLAMA_URL "$ollama_url_ok"
@@ -149,10 +154,24 @@ ensure_ollama_ready() {
     if [ "$ollama_url_ok" != "$bundled_ollama_url" ]; then
         local wanted_model available_models
         wanted_model="$(read_env_var OLLAMA_MODEL)"
-        wanted_model="${wanted_model:-qwen2.5-coder:3b}"
         available_models="$(list_ollama_models "$ollama_url_ok")"
 
-        if echo "$available_models" | grep -qE "^$wanted_model(:latest)?$"; then
+        # "auto" (or unset): the control plane chooses the chat model for this
+        # machine from what the server has (internal/ollama, SelectModel), so
+        # .env is left alone rather than pinned. A server with no chat model
+        # at all gets a small one to start from.
+        if [ -z "$wanted_model" ] || [ "$wanted_model" = "auto" ]; then
+            local chat_models
+            chat_models="$(echo "$available_models" | grep -v "^$embed_model" || true)"
+            if [ -n "$chat_models" ]; then
+                echo "Chat model: chosen automatically for this machine from what the server has."
+            else
+                echo ""
+                echo "That server has no chat model; pulling qwen2.5-coder:3b (~2GB) as a starting point."
+                pull_ollama_model "$ollama_url_ok" "qwen2.5-coder:3b" \
+                    || echo "WARNING: could not pull it. Run: ollama pull qwen2.5-coder:3b"
+            fi
+        elif echo "$available_models" | grep -qE "^$wanted_model(:latest)?$"; then
             echo "Chat model $wanted_model is present."
             set_env_var OLLAMA_MODEL "$wanted_model"
         else

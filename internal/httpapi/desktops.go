@@ -15,6 +15,7 @@ import (
 
 	"github.com/YKoustubhRao/flowera/internal/desktop"
 	"github.com/YKoustubhRao/flowera/internal/memory"
+	"github.com/YKoustubhRao/flowera/internal/ollama"
 	"github.com/YKoustubhRao/flowera/internal/tasks"
 	"github.com/YKoustubhRao/flowera/internal/webui"
 )
@@ -90,20 +91,10 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	specialization := strings.Join(strings.Fields(r.FormValue("specialization")), " ")
 	parentID := strings.TrimSpace(r.FormValue("parent_id"))
 
-	cpus := int64(2)
+	cpus := int64(1)
 	if envCpus := os.Getenv("FLOWERA_DEFAULT_DESKTOP_CPUS"); envCpus != "" {
 		if parsed, err := strconv.ParseInt(envCpus, 10, 64); err == nil && parsed > 0 {
 			cpus = parsed
-		}
-	} else {
-		// Adaptively scale default CPUs to keep host system and desktop UI responsive:
-		numCPU := runtime.NumCPU()
-		if numCPU > 4 {
-			cpus = int64(min(2, numCPU-2))
-		} else if numCPU > 2 {
-			cpus = int64(min(2, numCPU-1))
-		} else {
-			cpus = 1
 		}
 	}
 
@@ -241,12 +232,16 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	created, err := s.Desktops.Create(
-		r.Context(),
 	if r.Context().Err() != nil {
 		log.Printf("createDesktop: client canceled before creation for %s", name)
 		return
 	}
+
+	// The chat model is baked into a desktop when it is created. With no
+	// desktop yet, choose it against the machine as it is now; with any,
+	// keep the model they already run (see ollama.Reselect).
+	existing, listErr := s.Desktops.List(r.Context())
+	ollama.Reselect(r.Context(), listErr != nil || len(existing) > 0)
 
 	prov, err := s.Desktops.BeginProvisioning(
 		name,
@@ -288,10 +283,6 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Clean up immediately if client aborted while Create was finishing
-	if r.Context().Err() != nil {
-		log.Printf("createDesktop: client canceled after container creation, deleting %s", created.ID)
-		_ = s.Desktops.Delete(context.Background(), created.ID)
 	w.WriteHeader(http.StatusAccepted)
 	jsonResponse(w, prov)
 }
@@ -304,16 +295,6 @@ func (s *Server) desktopStatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A child worker starts out sharing L1 memory with the parent it was
-	// specialized from, so a focused worker still knows what the original
-	// one had already learned. Best-effort: the desktop itself is already
-	// created and usable without this.
-	if parentID != "" {
-		if err := s.Memory.Link(parentID, created.ID); err != nil {
-			log.Printf("createDesktop: link child %s to parent %s: %v", created.ID, parentID, err)
-		} else {
-			s.backfillSharedMemory(r.Context(), parentID, created.ID)
-		}
 	// 1. Check in-flight provisioning state
 	if prov, ok := s.Desktops.GetProvisioning(desktopID); ok {
 		jsonResponse(w, map[string]any{
@@ -330,19 +311,6 @@ func (s *Server) desktopStatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.Tasks.UpsertWorker(tasks.Worker{
-		ID:      created.ID,
-		Name:    created.Name,
-		Engine:  created.Harness,
-		Profile: created.Profile,
-		Model:   created.Model,
-	}); err != nil {
-		log.Printf("createDesktop: %v", err)
-	}
-
-	if r.Context().Err() != nil {
-		log.Printf("createDesktop: client canceled, deleting %s", created.ID)
-		_ = s.Desktops.Delete(context.Background(), created.ID)
 	// 2. Otherwise inspect the desktop
 	d, err := s.Desktops.Get(r.Context(), desktopID)
 	if err != nil {
@@ -354,7 +322,6 @@ func (s *Server) desktopStatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jsonResponse(w, created)
 	isReady := d.Status == "running"
 	jsonResponse(w, map[string]any{
 		"id":       d.ID,
@@ -374,6 +341,10 @@ func (s *Server) startDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// The model takes minutes to load cold and the desktop seconds to
+	// start: begin loading it now so the two overlap.
+	ollama.WarmAsync()
 
 	id := r.FormValue("id")
 
@@ -449,6 +420,10 @@ func (s *Server) unpauseDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The model takes minutes to load cold and the desktop seconds to
+	// start: begin loading it now so the two overlap.
+	ollama.WarmAsync()
+
 	id := r.FormValue("id")
 
 	if id == "" {
@@ -472,6 +447,10 @@ func (s *Server) restartDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// The model takes minutes to load cold and the desktop seconds to
+	// start: begin loading it now so the two overlap.
+	ollama.WarmAsync()
 
 	id := r.FormValue("id")
 

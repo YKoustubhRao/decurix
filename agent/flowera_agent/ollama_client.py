@@ -1,10 +1,13 @@
 import json
 import os
+import threading
+import time
 import urllib.error
 import urllib.request
 
 from flowera_agent import config, usage
 from flowera_agent.identity import get_identity_context
+from flowera_agent.logging_utils import log
 from flowera_agent.memory_context import get_memory_context
 from flowera_agent.readiness import wait_for_http_ok
 
@@ -30,7 +33,7 @@ REQUEST_TIMEOUT_SECONDS = int(
 # ordinary laptop, which is ~45 seconds before the model has read anything
 # new. Staying resident means every step after the first only evaluates
 # the tokens that were actually added.
-KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "30m")
+KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "60m")
 STOP_SEQUENCES = ["\nCommand execution result:"]
 NUM_PREDICT = int(os.environ.get("OLLAMA_NUM_PREDICT", "1024"))
 NUM_BATCH = int(os.environ.get("OLLAMA_NUM_BATCH", "512"))
@@ -86,9 +89,192 @@ def is_openai_endpoint(url):
     return u.endswith("/v1") or os.environ.get("INFERENCE_FORMAT", "").lower() in ("openai", "vllm")
 
 
-def ollama_request(messages):
+NUM_CTX = 8192
+
+
+def model_options():
+    """
+    The options every request to the model carries.
+
+    Ollama treats a change in num_ctx, num_thread or num_batch as a
+    different runner and reloads the model - minutes on a CPU host. The
+    preload in ensure_model_resident must therefore send exactly what a real
+    request does, which is why both build it here.
+    """
+
+    return {
+        # Caps the KV-cache Ollama allocates for this model.
+        "num_ctx": NUM_CTX,
+        # Structured marker generation temperature
+        "temperature": 0.2,
+        # Pin threads to physical cores to avoid cache thrashing on CPU
+        "num_thread": get_optimal_threads(),
+        # Prevent hallucinated chattering across turns
+        "num_predict": NUM_PREDICT,
+        # AVX2 batch processing size
+        "num_batch": NUM_BATCH,
+        # Stop sequence so the model stops immediately after its turn
+        "stop": STOP_SEQUENCES,
+    }
+
+
+# How long a cold model load may take before the request gives up. Measured
+# on the 8 GB Windows host this ships on: 170-310 s, because memory the VM
+# has not touched recently comes back from Windows at 4-16 MB/s. It is a
+# wait for a machine, not an error - so it gets its own generous budget
+# instead of eating into the request's.
+LOAD_WAIT_SECONDS = int(os.environ.get("OLLAMA_LOAD_WAIT_SECONDS", "900"))
+
+# How often a wait for the model says so in the chat.
+LOAD_ANNOUNCE_SECONDS = 30
+
+# A model seen resident this recently is not asked about again.
+_RESIDENT_RECHECK_SECONDS = 20
+_resident_at = 0.0
+
+
+def _get_json(path, timeout=5):
+    request = urllib.request.Request(config.OLLAMA_URL.rstrip("/") + path)
+
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def model_resident():
+    """
+    Whether the model is loaded in Ollama at the context size requests use
+    (GET /api/ps). Unreadable counts as not resident: preloading a model
+    that is already there is harmless.
+    """
+
+    try:
+        models = _get_json("/api/ps").get("models") or []
+    except Exception:
+        return False
+
+    want = config.OLLAMA_MODEL.removesuffix(":latest")
+
+    for entry in models:
+        names = {
+            (entry.get("name") or "").removesuffix(":latest"),
+            (entry.get("model") or "").removesuffix(":latest"),
+        }
+
+        if want in names:
+            return entry.get("context_length") in (None, 0, NUM_CTX)
+
+    return False
+
+
+def ensure_model_resident():
+    """
+    Block until the model is loaded, telling the human why if it takes a
+    while.
+
+    The first request after the model was evicted (or after the machine
+    was left alone for a long time) used to fail: Ollama queues it behind
+    a load that takes minutes, and the request's 300 s timeout expired
+    before a single token existed - "accepted the request but did not
+    finish answering in time" - for a model that was simply still loading.
+    The load is asked for here with an empty prompt, exactly as the control
+    plane's own warm-up does, and waited for with its own budget.
+
+    Raises RuntimeError if the model cannot be loaded at all (missing,
+    server unreachable), which the caller reports like any other backend
+    failure. Does nothing for an OpenAI-style endpoint, which has no
+    notion of residency.
+    """
+
+    global _resident_at
+
+    if is_openai_endpoint(config.OLLAMA_URL):
+        return
+
+    if time.monotonic() - _resident_at < _RESIDENT_RECHECK_SECONDS:
+        return
+
+    if model_resident():
+        _resident_at = time.monotonic()
+        return
+
+    from flowera_agent import progress
+
+    started = time.monotonic()
+    log(f"Model {config.OLLAMA_MODEL} is not loaded - loading it.")
+    progress.emit(
+        "Loading the model into memory - the first request after a quiet "
+        "spell takes a few minutes on this machine"
+    )
+
+    outcome = {}
+
+    def load():
+        body = json.dumps(
+            {
+                "model": config.OLLAMA_MODEL,
+                "prompt": "",
+                "keep_alive": KEEP_ALIVE,
+                "stream": False,
+                "options": {
+                    "num_ctx": NUM_CTX,
+                    "num_thread": get_optimal_threads(),
+                    "num_batch": NUM_BATCH,
+                },
+            }
+        ).encode("utf-8")
+
+        request = urllib.request.Request(
+            config.OLLAMA_URL.rstrip("/") + "/api/generate",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(request, timeout=LOAD_WAIT_SECONDS):
+                pass
+            outcome["ok"] = True
+        except Exception as exc:
+            outcome["error"] = exc
+
+    loader = threading.Thread(target=load, daemon=True, name="model-load")
+    loader.start()
+
+    announced = started
+
+    while loader.is_alive():
+        loader.join(timeout=2)
+
+        now = time.monotonic()
+
+        if now - announced >= LOAD_ANNOUNCE_SECONDS:
+            announced = now
+            progress.emit(
+                f"Still loading the model ({int(now - started)}s)..."
+            )
+
+        if now - started > LOAD_WAIT_SECONDS:
+            raise RuntimeError(
+                f"The model {config.OLLAMA_MODEL} did not finish loading "
+                f"within {LOAD_WAIT_SECONDS} s"
+            )
+
+    if "error" in outcome:
+        raise RuntimeError(
+            f"Could not load {config.OLLAMA_MODEL} at "
+            f"{config.OLLAMA_URL}: {outcome['error']}"
+        )
+
+    log(f"Model loaded after {int(time.monotonic() - started)}s.")
+    _resident_at = time.monotonic()
+
+
+def ollama_request(messages, num_predict=None):
     """
     Call the local Ollama server or configured OpenAI-compatible inference server.
+
+    num_predict caps the reply for callers that only want the prompt read
+    (see prime_prompt_cache).
     """
 
     if is_openai_endpoint(config.OLLAMA_URL):
@@ -127,25 +313,20 @@ def ollama_request(messages):
                 f"Inference request failed: {exc}"
             )
 
-    # Native Ollama endpoint (/api/chat) with streaming and CPU thread tuning
+    # Native Ollama endpoint (/api/chat) with streaming and CPU thread tuning.
+    #
+    # A cold model is loaded first, patiently and out loud, so a slow load
+    # is never mistaken for a slow answer by the timeout below.
+    ensure_model_resident()
+
     payload = {
         "model": config.OLLAMA_MODEL,
         "messages": messages,
         "stream": True,
         "keep_alive": KEEP_ALIVE,
         "options": {
-            # Caps the KV-cache Ollama allocates for this model.
-            "num_ctx": 8192,
-            # Structured marker generation temperature
-            "temperature": 0.2,
-            # Pin threads to physical cores to avoid cache thrashing on CPU
-            "num_thread": get_optimal_threads(),
-            # Prevent hallucinated chattering across turns
-            "num_predict": NUM_PREDICT,
-            # AVX2 batch processing size
-            "num_batch": NUM_BATCH,
-            # Stop sequence so the model stops immediately after its turn
-            "stop": STOP_SEQUENCES,
+            **model_options(),
+            **({"num_predict": num_predict} if num_predict else {}),
         },
     }
 
@@ -209,6 +390,58 @@ def ollama_request(messages):
         raise RuntimeError(
             f"Ollama request failed: {exc}"
         )
+
+
+def prime_prompt_cache():
+    """
+    Have Ollama read this desktop's real system prompt now, while nobody is
+    waiting, so the first request a person sends finds it cached.
+
+    Measured on the host this ships on: the ~900-token prompt costs 75-200 s
+    to evaluate from scratch and ~1 s once cached, and the cache survives
+    exactly as long as nothing else replaces it. Reading it at startup moves
+    that cost from the person's first request to the desktop's boot. It only
+    ever sends the agent's own system messages - the same prefix every
+    request starts with - and skips if a task is already running, so it can
+    never replace the cache under one. Best-effort: never raises.
+    """
+
+    if is_openai_endpoint(config.OLLAMA_URL):
+        return
+
+    try:
+        started = time.monotonic()
+        ensure_model_resident()
+
+        from flowera_agent import state
+
+        if state.current_task:
+            return
+
+        ollama_request(
+            [
+                *build_system_messages(),
+                {"role": "user", "content": "Reply with DONE: ready"},
+            ],
+            num_predict=4,
+        )
+        log(f"Prompt cache primed in {int(time.monotonic() - started)}s.")
+
+    except Exception as exc:
+        log(f"Could not prime the prompt cache (harmless): {exc}")
+
+
+def ask_once(system, prompt):
+    """
+    One question to the model, with no loop and no history: what the
+    computer layer's grounder and judge (computer/escalation.py) use. Keep the
+    system text fixed from call to call - Ollama's prompt cache carries it.
+    """
+
+    return ollama_request([
+        {"role": "system", "content": system},
+        {"role": "user", "content": prompt},
+    ])
 
 
 def wait_for_ollama():
@@ -280,6 +513,20 @@ outside this machine. Not knowing the answer yet is not being blocked -
 run a command and find out. A question is never a reason to ask for
 help, and never ask the human why they want something.
 
+HABITS THAT KEEP COMMANDS WORKING. Keep a command simple, and read-only
+when you are only looking. Do not add a grep or awk filter you have to
+guess at: one that matches nothing makes the command fail with no output.
+Never write DONE beside a COMMAND - you have not seen its output yet. When
+the output answers the question, reply DONE with the answer in plain words,
+taken from the output, in one or two short sentences. Never tell the human
+to run a command or to change directory: run it yourself. To make a file,
+write it with a COMMAND (cat > name <<'EOF' ... EOF), then run it.
+
+Reliable commands: free disk space: df -h /   (read the Avail column of the
+line for /). Files in a folder: ls -A DIR | wc -l. Largest file: ls -S DIR |
+head -1. Public IP: curl -s ifconfig.me. Make a small file in one command:
+printf 'line1\nline2\n' > name  or  python3 -c "..." for a one-off script.
+
 THE SCREEN. This desktop also has windows: Chromium, LibreOffice, a text
 editor. Work in them with the gui command, one per COMMAND:
 gui observe             lists windows and elements, each with a ref like e12
@@ -290,6 +537,8 @@ gui select e12 "High"   picks a dropdown option
 gui open <url|file|app> opens it
 gui recordings <words>  finds a recorded demonstration of a task
 gui replay <id>         runs that recording again, step by step
+gui skills <words>      finds a task this desktop was taught
+gui do <name> --param k=v   does it with no model (gui skill <name> says what it needs)
 Observe first and use refs from the latest output, just the ref: gui click
 e12, not the whole line. Every gui action tells you what changed. A button that sends, pays or publishes pauses for
 approval on its own.

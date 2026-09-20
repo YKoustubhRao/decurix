@@ -6,10 +6,13 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/docker/docker/client"
@@ -33,14 +36,14 @@ import (
 	"github.com/YKoustubhRao/flowera/internal/tasks"
 	"github.com/YKoustubhRao/flowera/internal/tunnel"
 	"github.com/YKoustubhRao/flowera/internal/webui"
+	"github.com/YKoustubhRao/flowera/internal/winhost"
 )
 
 const (
-	// listenAddr is the primary listener: unauthenticated, same as always.
-	// Desktop agents call back into it (CONTROL_PLANE_URL) and a human at the
-	// control plane's own machine uses it directly - see internal/lanaccess's
-	// package doc for why it stays exactly as it was.
-	listenAddr = ":8080"
+	// primaryPort is the primary listener's port: unauthenticated, for this
+	// machine and its own desktops only. Which addresses it binds is
+	// primaryListenAddrs' decision.
+	primaryPort = "8080"
 
 	// defaultLANAddr is the second listener, gated by internal/lanaccess -
 	// the one a Cloudflare tunnel or a direct LAN address should point at.
@@ -108,6 +111,46 @@ func stepImagesMaxBytes() int {
 	}
 
 	return megabytes << 20
+}
+
+// inContainer reports whether this process runs inside a Docker container.
+func inContainer() bool {
+	_, err := os.Stat("/.dockerenv")
+	return err == nil
+}
+
+// primaryListenAddrs is where the unauthenticated primary listener binds.
+//
+//   - FLOWERA_ADMIN_ADDR (comma-separated host:port list) overrides everything.
+//   - In a container, every interface: the container is only as reachable as
+//     what docker-compose.yaml publishes (loopback), and desktops reach it
+//     over flowera-network.
+//   - On the host, loopback plus the Docker bridge gateways, so desktops can
+//     still call back through host.docker.internal but the LAN cannot reach
+//     it. (On Docker Desktop host.docker.internal already lands on loopback;
+//     a gateway address that cannot be bound there is skipped.)
+//
+// The first address is required; the rest are best effort.
+func primaryListenAddrs(gateways func() []string) []string {
+	if v := strings.TrimSpace(os.Getenv("FLOWERA_ADMIN_ADDR")); v != "" {
+		var addrs []string
+		for _, a := range strings.Split(v, ",") {
+			if a = strings.TrimSpace(a); a != "" {
+				addrs = append(addrs, a)
+			}
+		}
+		if len(addrs) > 0 {
+			return addrs
+		}
+	}
+	if inContainer() {
+		return []string{":" + primaryPort}
+	}
+	addrs := []string{"127.0.0.1:" + primaryPort}
+	for _, ip := range gateways() {
+		addrs = append(addrs, net.JoinHostPort(ip, primaryPort))
+	}
+	return addrs
 }
 
 // lanListenAddr reads FLOWERA_LAN_PORT, the port internal/lanaccess's gated
@@ -188,8 +231,18 @@ func main() {
 	defer cli.Close()
 
 	desktops := desktop.NewManager(cli)
+	// The key that signs the launch tokens in a desktop's host-app launchers (internal/winhost). It lives in the data
+	// directory so launchers already written keep working across restarts; a failure only disables those apps.
+	hostGUISecret, err := winhost.LoadSecret(sqlitedb.DataDir())
+	if err != nil {
+		log.Printf("host apps: %v - Windows apps shown from the host are disabled", err)
+	}
+	desktops.HostGUISecret = hostGUISecret
 	desktop.OptimizeHostKSM()
 	ollamaManager := ollama.NewManager(cli, desktop.NetworkName)
+	ollama.EnableWarm()
+	// Chooses the chat model for this machine unless OLLAMA_MODEL names one.
+	ollama.EnableAutoSelect()
 
 	// Building all three images takes a long time and a lot of disk, so it is
 	// an explicit request rather than something startup does on its own.
@@ -219,6 +272,16 @@ func main() {
 	go func() {
 		if err := desktops.EnsureToolsVolume(context.Background()); err != nil {
 			log.Printf("background tools volume: %v", err)
+		}
+	}()
+
+	// Desktops created before the control plane moved off the LAN-facing
+	// address keep calling it (see Manager.StaleControlPlane): say so once,
+	// with what to do, rather than leaving them to fail silently.
+	go func() {
+		if stale := desktops.StaleControlPlane(context.Background()); len(stale) > 0 {
+			log.Printf("warning: desktops %s call the control plane at an address it no longer serves them on; "+
+				"recreate them (their environment is fixed when they are created)", strings.Join(stale, ", "))
 		}
 	}()
 
@@ -254,6 +317,8 @@ func main() {
 		suggestions,
 		webui.NewRenderer(),
 	)
+
+	server.HostGUISecret = hostGUISecret
 
 	resMon := resourcemon.NewMonitor(desktops)
 	server.ResourceMon = resMon
@@ -335,16 +400,36 @@ func main() {
 	scheduler := &schedule.Runner{Store: schedules, Submitter: server}
 	go scheduler.Run(context.Background())
 
-	log.Printf("Desktop manager listening on %s", listenAddr)
+	addrs := primaryListenAddrs(func() []string {
+		// Only Linux has Docker's bridge gateways as addresses of its own to bind. On macOS and Windows Docker runs in
+		// a VM: those addresses exist only inside it, binding them fails, and host.docker.internal already lands on
+		// loopback there.
+		if runtime.GOOS != "linux" {
+			return nil
+		}
+		return desktops.GatewayIPs(context.Background())
+	})
+	log.Printf("Desktop manager listening on %s", strings.Join(addrs, ", "))
 
-	httpServer := &http.Server{
-		Addr:              listenAddr,
-		Handler:           httpapi.GzipMiddleware(mux),
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       60 * time.Second,
+	handler := httpapi.RefuseForwarded(httpapi.GzipMiddleware(mux))
+	newServer := func(addr string) *http.Server {
+		return &http.Server{
+			Addr:              addr,
+			Handler:           handler,
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       60 * time.Second,
+		}
 	}
 
-	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	for _, addr := range addrs[1:] {
+		go func(addr string) {
+			if err := newServer(addr).ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("warning: primary listener on %s failed: %v", addr, err)
+			}
+		}(addr)
+	}
+
+	if err := newServer(addrs[0]).ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
 }

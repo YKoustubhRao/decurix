@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"image"
 	"image/jpeg"
-	"image/png"
+	_ "image/png"
 	"strings"
 	"sync"
 	"time"
@@ -90,25 +90,25 @@ func NewStore(db *sql.DB, maxBytes int) (*Store, error) {
 	return store, nil
 }
 
-// Put decodes a PNG screenshot, re-encodes it as JPEG, stores it for a desktop
+// Put decodes an incoming screenshot (PNG or JPEG), re-encodes it as JPEG, stores it for a desktop
 // and returns its ID.
-func (s *Store) Put(desktopID string, pngData []byte) (string, error) {
-	if len(pngData) > maxInputBytes {
+func (s *Store) Put(desktopID string, data []byte) (string, error) {
+	if len(data) > maxInputBytes {
 		return "", ErrTooLarge
 	}
 
-	config, err := png.DecodeConfig(bytes.NewReader(pngData))
+	config, _, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
-		return "", fmt.Errorf("stepimages: not a PNG: %w", err)
+		return "", fmt.Errorf("stepimages: decoding image config: %w", err)
 	}
 
 	if config.Width*config.Height > maxPixels {
 		return "", ErrTooLarge
 	}
 
-	img, err := png.Decode(bytes.NewReader(pngData))
+	img, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
-		return "", fmt.Errorf("stepimages: decoding PNG: %w", err)
+		return "", fmt.Errorf("stepimages: decoding image: %w", err)
 	}
 
 	return s.put(desktopID, img)

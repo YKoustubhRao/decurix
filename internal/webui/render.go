@@ -109,6 +109,12 @@ type RecordingsPageData struct {
 	Session string
 }
 
+// SkillsPageData is the template data for one desktop's skills page. The
+// skills are not in it: the page reads them from the desktop, which keeps them.
+type SkillsPageData struct {
+	Desktop desktop.Desktop
+}
+
 // taskFuncs are the formatting helpers the task pages need, which are about
 // presenting records rather than anything a page should compute itself.
 var taskFuncs = template.FuncMap{
@@ -166,8 +172,10 @@ type Renderer struct {
 	tasksTmpl      *template.Template
 	taskTmpl       *template.Template
 	recordingsTmpl *template.Template
+	skillsTmpl     *template.Template
 	dagsTmpl       *template.Template
 	dagTmpl        *template.Template
+	hostGUITmpl    *template.Template
 }
 
 // NewRenderer parses all templates once at startup.
@@ -194,11 +202,17 @@ func NewRenderer() *Renderer {
 		recordingsTmpl: template.Must(
 			template.ParseFS(web.TemplatesFS, templatePaths("recordings.html")...),
 		),
+		skillsTmpl: template.Must(
+			template.ParseFS(web.TemplatesFS, templatePaths("skills.html")...),
+		),
 		dagsTmpl: template.Must(
 			template.New("dags.html").Funcs(taskFuncs).ParseFS(web.TemplatesFS, templatePaths("dags.html")...),
 		),
 		dagTmpl: template.Must(
 			template.New("dag.html").Funcs(taskFuncs).ParseFS(web.TemplatesFS, templatePaths("dag.html")...),
+		),
+		hostGUITmpl: template.Must(
+			template.ParseFS(web.TemplatesFS, templatePaths("hostgui.html")...),
 		),
 	}
 }
@@ -239,6 +253,11 @@ func (rd *Renderer) RenderRecordings(w io.Writer, data RecordingsPageData) error
 	return rd.recordingsTmpl.ExecuteTemplate(w, "recordings.html", data)
 }
 
+// RenderSkills renders one desktop's skills page.
+func (rd *Renderer) RenderSkills(w io.Writer, data SkillsPageData) error {
+	return rd.skillsTmpl.ExecuteTemplate(w, "skills.html", data)
+}
+
 // RenderDags renders the DAGs list page.
 func (rd *Renderer) RenderDags(w io.Writer, data DagsPageData) error {
 	return rd.dagsTmpl.ExecuteTemplate(w, "dags.html", data)
@@ -247,6 +266,23 @@ func (rd *Renderer) RenderDags(w io.Writer, data DagsPageData) error {
 // RenderDag renders one DAG's editor page.
 func (rd *Renderer) RenderDag(w io.Writer, data DagPageData) error {
 	return rd.dagTmpl.ExecuteTemplate(w, "dag.html", data)
+}
+
+// HostGUIPageData is the template data for the window a desktop opens to show and drive an app running on the host.
+type HostGUIPageData struct {
+	// Token is the launch token signed for this app; the viewer presents it on every request it makes.
+	Token string
+	ID    string
+	// Desktop is the VM showing this window, so it can be kept from idle-pausing while the window is open.
+	Desktop string
+	Title   string
+	Target  string
+	Args    string
+}
+
+// RenderHostGUI renders the viewer for one app running on a private host desktop.
+func (rd *Renderer) RenderHostGUI(w io.Writer, data HostGUIPageData) error {
+	return rd.hostGUITmpl.ExecuteTemplate(w, "hostgui.html", data)
 }
 
 // FaviconSVG is the Flowera brand mark, served as the control plane's favicon.

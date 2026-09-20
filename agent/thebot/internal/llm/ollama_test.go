@@ -156,10 +156,17 @@ func TestOllamaIsReachable(t *testing.T) {
 }
 
 // TestOllamaChatAgainstRealServer is a real integration test against an
-// actual local Ollama - skipped unless one is reachable, so `go test`
-// still passes in CI/containers with no GPU/Ollama available, but proves
-// genuine end-to-end connectivity whenever this dev environment has one.
+// actual local Ollama - opt-in: set TEST_OLLAMA_MODEL to a model that server
+// has. It used to run whenever an Ollama answered, with a default model that
+// is usually not installed, and worse: a chat with different options makes
+// Ollama evict the model every desktop is using and load another runner -
+// minutes on a CPU host - so a plain `go test` could freeze the agents.
 func TestOllamaChatAgainstRealServer(t *testing.T) {
+	model := os.Getenv("TEST_OLLAMA_MODEL")
+	if model == "" {
+		t.Skip("set TEST_OLLAMA_MODEL to run the live Ollama integration test")
+	}
+
 	host := os.Getenv("OLLAMA_HOST")
 	if host == "" {
 		host = "http://127.0.0.1:11434"
@@ -169,10 +176,6 @@ func TestOllamaChatAgainstRealServer(t *testing.T) {
 		t.Skipf("no real Ollama reachable at %s - skipping live integration test", host)
 	}
 
-	model := os.Getenv("TEST_OLLAMA_MODEL")
-	if model == "" {
-		model = "qwen2.5-coder:14b"
-	}
 	result, err := provider.Chat(context.Background(), model, []Message{{Role: "user", Content: "Reply with exactly the word: PONG"}}, Options{TimeoutMs: 60000})
 	if err != nil {
 		t.Fatalf("real Chat() call failed: %v", err)

@@ -1,4 +1,5 @@
 import json
+import os
 import time
 import urllib.error
 import urllib.request
@@ -12,7 +13,11 @@ from flowera_agent.messaging import (
     backend_failure_note,
     write_final_reply,
 )
+from flowera_agent.ollama_client import ensure_model_resident
 from flowera_agent.readiness import wait_for_http_ok
+
+# The embedding model soul uses (ollama.EmbedModel on the Go side).
+EMBED_MODEL = os.environ.get("EMBED_MODEL", "nomic-embed-text")
 
 
 # ============================================================
@@ -395,6 +400,39 @@ def wait_for_backend():
         config.THEBOT_URL.rstrip("/") + "/api/health",
         f"TheBot soul at {config.THEBOT_URL}",
     )
+
+    # Reachable is not loaded. A cold model takes minutes on a small host,
+    # longer than soul's own per-call budgets, so a job dispatched into it
+    # failed as "could not reason" rather than waiting. Waiting here keeps
+    # the request queued (watchers.py holds it while backend_ready is False)
+    # and puts the load behind a visible chat step instead of a timeout.
+    try:
+        ensure_model_resident()
+    except Exception as exc:
+        log(f"Could not confirm the model is loaded (continuing): {exc}")
+
+
+def warm_after_ready():
+    """
+    Load the embedding model too, in the background: soul embeds every
+    memory read and write, and its first embed otherwise pays a cold load
+    inside the first job.
+    """
+
+    try:
+        body = json.dumps(
+            {"model": EMBED_MODEL, "input": "warm", "keep_alive": "60m"}
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            config.OLLAMA_URL.rstrip("/") + "/api/embed",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=600):
+            pass
+    except Exception as exc:
+        log(f"Could not warm the embedding model (harmless): {exc}")
 
 
 def perform_task(task, task_file):

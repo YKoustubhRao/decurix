@@ -34,4 +34,8 @@ backend_ready = False
 # watcher routes to a waiting agent goes to the replay rather than the engine.
 paused_replay = None
 
+# The same for a question skill_task.py asked (teaching a skill, or a skill
+# that stopped to ask): what to resume when the reply arrives.
+paused_skill = None
+
 processed_commands = set()
