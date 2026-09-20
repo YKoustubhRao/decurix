@@ -2,8 +2,12 @@ package httpapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
+
+	"github.com/YKoustubhRao/flowera/internal/desktop"
+	"github.com/docker/docker/client"
 )
 
 // resourceAlertsHandler returns active resource alerts.
@@ -96,7 +100,11 @@ func (s *Server) resourceIncreaseHandler(w http.ResponseWriter, r *http.Request)
 
 	res, err := s.ResourceMon.Increase(r.Context(), desktopID, reqCPUs, reqMemMB)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		// Never echo the Docker daemon's own words back to a client.
+		if client.IsErrNotFound(err) {
+			err = fmt.Errorf("increase resources for %s: %w", desktopID, desktop.ErrNotFound)
+		}
+		jsonError(w, err)
 		return
 	}
 

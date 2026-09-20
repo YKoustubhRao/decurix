@@ -1,3 +1,5 @@
+import threading
+
 from flowera_agent import config, state
 
 # The only place that branches on which reasoning engine drives tasks.
@@ -15,11 +17,15 @@ if config.AGENT_HARNESS == "claude":
         """
         return
 
+    def _after_ready():
+        return
+
 elif config.AGENT_HARNESS == "thebot":
     from flowera_agent.thebot_harness import (
         perform_task,
         continue_after_query,
         wait_for_backend as _wait_for_backend,
+        warm_after_ready as _after_ready,
     )
     from flowera_agent.ollama_client import ask_once as _ask_once
 
@@ -27,6 +33,7 @@ else:
     from flowera_agent.task_runner import perform_task, continue_after_query
     from flowera_agent.ollama_client import ask_once as _ask_once
     from flowera_agent.ollama_client import wait_for_ollama as _wait_for_backend
+    from flowera_agent.ollama_client import prime_prompt_cache as _after_ready
 
 
 def wait_for_backend():
@@ -42,6 +49,10 @@ def wait_for_backend():
     _wait_for_backend()
 
     state.backend_ready = True
+
+    # Whatever the engine wants done once it is up, off this thread's path:
+    # a request that arrives meanwhile is already free to run.
+    threading.Thread(target=_after_ready, daemon=True, name="after-ready").start()
 
 
 def ask_model(system, prompt):

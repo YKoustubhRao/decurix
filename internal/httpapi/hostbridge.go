@@ -456,7 +456,15 @@ func (s *Server) hostBridgeClipHandler(w http.ResponseWriter, r *http.Request) {
 	cmd.Stdin = strings.NewReader(req.Text)
 	if err := cmd.Run(); err != nil {
 		log.Printf("host-bridge: clip failed: %v", err)
-		http.Error(w, "clipboard copy failed: "+err.Error(), http.StatusInternalServerError)
+
+		// No clipboard tool on this host (a control plane in a container, say)
+		// is "not available here", not a server fault.
+		if errors.Is(err, exec.ErrNotFound) {
+			http.Error(w, "the host clipboard is not available here", http.StatusNotImplemented)
+			return
+		}
+
+		http.Error(w, "clipboard copy failed", http.StatusInternalServerError)
 		return
 	}
 
