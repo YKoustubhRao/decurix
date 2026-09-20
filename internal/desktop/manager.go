@@ -28,6 +28,18 @@ type Manager struct {
 	// internal/winhost); set by main before any desktop is created.
 	HostGUISecret []byte
 
+	// listMu guards the List result cache: one Docker round trip answers every
+	// List call inside listCacheTTL, and concurrent callers share the one in
+	// flight. Measured: 20 dashboards polling /api/desktops at once made the
+	// tail 31 s with ten timeouts on a host under memory pressure, all for a
+	// list of two desktops. listGen is bumped by every lifecycle change so a
+	// result computed before it is never cached over it.
+	listMu     sync.Mutex
+	listAt     time.Time
+	listVal    []Desktop
+	listGen    uint64
+	listFlight *listCall
+
 	// shots caches the dashboard's desktop thumbnails, keyed by desktop ID.
 	// Guarded by shotMu, which covers the map alone - each entry carries its
 	// own lock for the capture itself (see screenshot.go), so one slow
@@ -150,6 +162,7 @@ func (m *Manager) Create(
 	parentID string,
 	hostApps ...[]string,
 ) (*Desktop, error) {
+	defer m.invalidateList()
 
 	imageName, err := resolveDesktopImage(profile)
 	if err != nil {
@@ -353,6 +366,8 @@ func (m *Manager) runProvisioning(
 	selectedApps []string,
 	onStarted func(d *Desktop) error,
 ) {
+	defer m.invalidateList()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -535,8 +550,76 @@ func (m *Manager) WaitForGUIReady(ctx context.Context, rawID string, timeout tim
 // just move the bottleneck onto the Docker daemon instead.
 const listInspectConcurrency = 8
 
+// listCacheTTL is how long a List result is reused. Short enough that a
+// change made outside Flowera shows up on the next dashboard poll, long
+// enough that a burst of pollers costs one Docker call.
+const listCacheTTL = 500 * time.Millisecond
+
+// listCall is one List in flight, shared by everyone who asks meanwhile.
+type listCall struct {
+	done chan struct{}
+	val  []Desktop
+	err  error
+}
+
+// invalidateList drops the cached List result. Every lifecycle change calls
+// it (see the deferred calls in Create/Start/Stop/...), so a caller that acts
+// and then lists never reads the state from before its own action.
+func (m *Manager) invalidateList() {
+	m.listMu.Lock()
+	m.listGen++
+	m.listVal = nil
+	m.listMu.Unlock()
+}
+
+// List returns every desktop container plus the ones still being provisioned.
+// Cached for listCacheTTL and collapsed across concurrent callers; the
+// callers get their own copy of the slice.
+func (m *Manager) List(ctx context.Context) ([]Desktop, error) {
+	m.listMu.Lock()
+
+	if m.listVal != nil && time.Since(m.listAt) < listCacheTTL {
+		out := append([]Desktop(nil), m.listVal...)
+		m.listMu.Unlock()
+		return out, nil
+	}
+
+	if call := m.listFlight; call != nil {
+		m.listMu.Unlock()
+
+		select {
+		case <-call.done:
+			return append([]Desktop(nil), call.val...), call.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	call := &listCall{done: make(chan struct{})}
+	m.listFlight = call
+	gen := m.listGen
+	m.listMu.Unlock()
+
+	// Detached from this caller's context: the answer is shared, so one
+	// impatient client hanging up must not fail everyone waiting on it.
+	shared, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	call.val, call.err = m.listUncached(shared)
+	cancel()
+
+	m.listMu.Lock()
+	m.listFlight = nil
+	if call.err == nil && gen == m.listGen {
+		m.listVal = call.val
+		m.listAt = time.Now()
+	}
+	m.listMu.Unlock()
+	close(call.done)
+
+	return append([]Desktop(nil), call.val...), call.err
+}
+
 // List returns all desktop containers managed by this instance, read from their Docker labels and inspect data.
-func (m *Manager) List(
+func (m *Manager) listUncached(
 	ctx context.Context,
 ) ([]Desktop, error) {
 
@@ -756,23 +839,34 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 	}
 }
 
+// notFound turns Docker's "no such container" into ErrNotFound, so a request
+// for a desktop that does not exist is a 404 and not an internal error.
+func notFound(id string, err error) error {
+	if err != nil && client.IsErrNotFound(err) {
+		return fmt.Errorf("find desktop %s: %w", sanitizeName(id), ErrNotFound)
+	}
+	return err
+}
+
 // Start starts or unpauses the Docker container backing the given desktop ID.
 func (m *Manager) Start(
 	ctx context.Context,
 	id string,
 ) error {
+	defer m.invalidateList()
+
 	name := "desktop_" + sanitizeName(id)
 
 	inspect, err := m.client.ContainerInspect(ctx, name)
 	if err == nil && inspect.State != nil && inspect.State.Paused {
-		return m.client.ContainerUnpause(ctx, name)
+		return notFound(id, m.client.ContainerUnpause(ctx, name))
 	}
 
-	return m.client.ContainerStart(
+	return notFound(id, m.client.ContainerStart(
 		ctx,
 		name,
 		container.StartOptions{},
-	)
+	))
 }
 
 // Pause pauses the Docker container processes backing the given desktop ID using the cgroup freezer.
@@ -782,6 +876,8 @@ func (m *Manager) Pause(
 	ctx context.Context,
 	id string,
 ) error {
+	defer m.invalidateList()
+
 	sanitizedID := sanitizeName(id)
 	m.InvalidateProxyTarget(sanitizedID)
 	name := "desktop_" + sanitizedID
@@ -794,7 +890,7 @@ func (m *Manager) Pause(
 	}
 	cancel()
 
-	return m.client.ContainerPause(ctx, name)
+	return notFound(id, m.client.ContainerPause(ctx, name))
 }
 
 // Unpause unpauses the Docker container processes backing the given desktop ID.
@@ -802,8 +898,10 @@ func (m *Manager) Unpause(
 	ctx context.Context,
 	id string,
 ) error {
+	defer m.invalidateList()
+
 	name := "desktop_" + sanitizeName(id)
-	return m.client.ContainerUnpause(ctx, name)
+	return notFound(id, m.client.ContainerUnpause(ctx, name))
 }
 
 // Stop stops the Docker container backing the given desktop ID.
@@ -811,6 +909,7 @@ func (m *Manager) Stop(
 	ctx context.Context,
 	id string,
 ) error {
+	defer m.invalidateList()
 
 	sanitizedID := sanitizeName(id)
 	m.InvalidateProxyTarget(sanitizedID)
@@ -844,7 +943,7 @@ func (m *Manager) Stop(
 	delete(m.startedCache, name)
 	m.startedMu.Unlock()
 
-	return err
+	return notFound(id, err)
 }
 
 // Restart stops and restarts the Docker container backing the given desktop ID.
@@ -852,6 +951,7 @@ func (m *Manager) Restart(
 	ctx context.Context,
 	id string,
 ) error {
+	defer m.invalidateList()
 
 	sanitizedID := sanitizeName(id)
 	m.InvalidateProxyTarget(sanitizedID)
@@ -881,11 +981,11 @@ func (m *Manager) Restart(
 	delete(m.startedCache, name)
 	m.startedMu.Unlock()
 
-	return m.client.ContainerStart(
+	return notFound(id, m.client.ContainerStart(
 		ctx,
 		name,
 		container.StartOptions{},
-	)
+	))
 }
 
 // Delete removes the Docker container and persistent volume backing the given desktop ID.
@@ -893,6 +993,7 @@ func (m *Manager) Delete(
 	ctx context.Context,
 	id string,
 ) error {
+	defer m.invalidateList()
 
 	sanitizedID := sanitizeName(id)
 	m.InvalidateProxyTarget(sanitizedID)
@@ -916,7 +1017,7 @@ func (m *Manager) Delete(
 			_ = m.client.VolumeRemove(ctx, volumeName, true)
 			return nil
 		}
-		return err
+		return notFound(id, err)
 	}
 
 	if inspect.State != nil && inspect.State.Paused {
@@ -1277,6 +1378,7 @@ func (m *Manager) UpdateResources(
 	cpus int64,
 	memoryMB int64,
 ) error {
+	defer m.invalidateList()
 	sanitizedID := sanitizeName(id)
 	name := "desktop_" + sanitizedID
 

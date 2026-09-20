@@ -15,6 +15,7 @@ import (
 
 	"github.com/YKoustubhRao/flowera/internal/desktop"
 	"github.com/YKoustubhRao/flowera/internal/memory"
+	"github.com/YKoustubhRao/flowera/internal/ollama"
 	"github.com/YKoustubhRao/flowera/internal/tasks"
 	"github.com/YKoustubhRao/flowera/internal/webui"
 )
@@ -335,6 +336,10 @@ func (s *Server) startDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The model takes minutes to load cold and the desktop seconds to
+	// start: begin loading it now so the two overlap.
+	ollama.WarmAsync()
+
 	id := r.FormValue("id")
 
 	if id == "" {
@@ -409,6 +414,10 @@ func (s *Server) unpauseDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The model takes minutes to load cold and the desktop seconds to
+	// start: begin loading it now so the two overlap.
+	ollama.WarmAsync()
+
 	id := r.FormValue("id")
 
 	if id == "" {
@@ -432,6 +441,10 @@ func (s *Server) restartDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// The model takes minutes to load cold and the desktop seconds to
+	// start: begin loading it now so the two overlap.
+	ollama.WarmAsync()
 
 	id := r.FormValue("id")
 
