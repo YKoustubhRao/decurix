@@ -14,7 +14,7 @@ func TestBuildContainerConfigsMountsSharedToolsAndCacheVolume(t *testing.T) {
 		if b == ToolsVolumeName+":/opt/tools:ro" {
 			toolsMounted = true
 		}
-		if b == CacheVolumeName+":/var/cache/flowera:rw" {
+		if b == CacheVolumeName+":/var/cache/decurix:rw" {
 			cacheMounted = true
 		}
 	}
@@ -23,7 +23,7 @@ func TestBuildContainerConfigsMountsSharedToolsAndCacheVolume(t *testing.T) {
 		t.Fatalf("expected host binds to contain %s:/opt/tools:ro, got: %v", ToolsVolumeName, host.Binds)
 	}
 	if !cacheMounted {
-		t.Fatalf("expected host binds to contain %s:/var/cache/flowera:rw, got: %v", CacheVolumeName, host.Binds)
+		t.Fatalf("expected host binds to contain %s:/var/cache/decurix:rw, got: %v", CacheVolumeName, host.Binds)
 	}
 	if host.Resources.CPUShares != 2*1024 {
 		t.Errorf("expected CPUShares to be 2048, got: %d", host.Resources.CPUShares)
@@ -73,17 +73,17 @@ func TestBuildDesktopEnvIncludesToolsAndCachePaths(t *testing.T) {
 	if gorootVal != "/opt/tools/go" {
 		t.Errorf("expected GOROOT to be /opt/tools/go, got %s", gorootVal)
 	}
-	if gomodVal != "/var/cache/flowera/go" {
-		t.Errorf("expected GOMODCACHE to be /var/cache/flowera/go, got %s", gomodVal)
+	if gomodVal != "/var/cache/decurix/go" {
+		t.Errorf("expected GOMODCACHE to be /var/cache/decurix/go, got %s", gomodVal)
 	}
-	if npmVal != "/var/cache/flowera/npm" {
-		t.Errorf("expected NPM_CONFIG_CACHE to be /var/cache/flowera/npm, got %s", npmVal)
+	if npmVal != "/var/cache/decurix/npm" {
+		t.Errorf("expected NPM_CONFIG_CACHE to be /var/cache/decurix/npm, got %s", npmVal)
 	}
-	if pipVal != "/var/cache/flowera/pip" {
-		t.Errorf("expected PIP_CACHE_DIR to be /var/cache/flowera/pip, got %s", pipVal)
+	if pipVal != "/var/cache/decurix/pip" {
+		t.Errorf("expected PIP_CACHE_DIR to be /var/cache/decurix/pip, got %s", pipVal)
 	}
-	if hfVal != "/var/cache/flowera/huggingface" {
-		t.Errorf("expected HF_HOME to be /var/cache/flowera/huggingface, got %s", hfVal)
+	if hfVal != "/var/cache/decurix/huggingface" {
+		t.Errorf("expected HF_HOME to be /var/cache/decurix/huggingface, got %s", hfVal)
 	}
 }
 
@@ -116,9 +116,9 @@ func TestBuildDesktopEnvControlPlaneURL(t *testing.T) {
 		t.Fatalf("CONTROL_PLANE_URL=%s not in %v", v, env)
 	}
 
-	t.Setenv("FLOWERA_CONTROL_PLANE_URL", "")
+	t.Setenv("DECURIX_CONTROL_PLANE_URL", "")
 	want(buildDesktopEnv("box1", "ollama", "dev", ""), "http://host.docker.internal:8080")
 
-	t.Setenv("FLOWERA_CONTROL_PLANE_URL", "http://flowera:8080")
-	want(buildDesktopEnv("box1", "ollama", "dev", ""), "http://flowera:8080")
+	t.Setenv("DECURIX_CONTROL_PLANE_URL", "http://decurix:8080")
+	want(buildDesktopEnv("box1", "ollama", "dev", ""), "http://decurix:8080")
 }

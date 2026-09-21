@@ -50,8 +50,8 @@ SSH_CFG_OPT="-F /dev/null"
 [ -f "${HOME}/.ssh/config" ] && SSH_CFG_OPT="-F ${HOME}/.ssh/config"
 
 RSYNC_BASE=(-avzP --hard-links -e "ssh ${SSH_CFG_OPT} -p ${VM_PORT}" \
-    --exclude=.flowera \
-    --exclude=flowera \
+    --exclude=.decurix \
+    --exclude=decurix \
     --exclude=migration-toolkit \
     --exclude=*.qcow2 \
     --exclude=*.vmdk \
@@ -362,7 +362,7 @@ if [[ "${WANT_CUSTOM^^}" =~ ^[Y] ]]; then
         app_dir=$(realpath "${SCRIPT_DIR}/.." 2>/dev/null || echo "")
 
         # Anti-recursion: Never copy our app or the migration-toolkit again
-        if [ "$real_cpath" == "$SCRIPT_DIR" ] || [ "$real_cpath" == "$app_dir" ] || [[ "$real_cpath" =~ flowera ]] || [[ "$real_cpath" =~ migration-toolkit ]]; then
+        if [ "$real_cpath" == "$SCRIPT_DIR" ] || [ "$real_cpath" == "$app_dir" ] || [[ "$real_cpath" =~ decurix ]] || [[ "$real_cpath" =~ migration-toolkit ]]; then
             echo -e "  ${YELLOW}! Anti-recursion guard: Skipping our app/migration-toolkit to prevent duplicate or recursive copying.${RESET}"
             continue
         fi

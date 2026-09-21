@@ -1,11 +1,11 @@
 <#
 .SYNOPSIS
-    Builds the three Flowera desktop images (basic / developer / ai).
+    Builds the three Decurix desktop images (basic / developer / ai).
 .DESCRIPTION
     Called by scripts/windows/build.ps1 and scripts/windows/rebuild.ps1. This
     is the repo-checkout path; a downloaded release executable does not need
     it, because it embeds the same build context and builds the images
-    itself via `flowera --build-images`.
+    itself via `decurix --build-images`.
 .PARAMETER OnlyMissing
     Skip an image whose tag already exists (build.ps1's "just open the app" -
     don't pay for a rebuild nobody asked for).
@@ -31,7 +31,7 @@ if (-not $root) {
 Set-Location $root
 
 Write-Host "========================================"
-Write-Host " Building Flowera desktop images"
+Write-Host " Building Decurix desktop images"
 Write-Host "========================================"
 Write-Host ""
 
@@ -60,18 +60,18 @@ function Build-DesktopImage {
     Write-Host ""
 }
 
-Build-DesktopImage -Tag "flowera-desktop:basic" -Dockerfile "docker/desktop.basic.Dockerfile" -Label "Unified Desktop Base"
-Build-DesktopImage -Tag "flowera-tools:latest" -Dockerfile "docker/tools.Dockerfile" -Label "Shared Tools Runtime"
+Build-DesktopImage -Tag "decurix-desktop:basic" -Dockerfile "docker/desktop.basic.Dockerfile" -Label "Unified Desktop Base"
+Build-DesktopImage -Tag "decurix-tools:latest" -Dockerfile "docker/tools.Dockerfile" -Label "Shared Tools Runtime"
 
 Write-Host "=== Aliasing desktop profiles (developer / ai) to unified base ==="
-docker tag flowera-desktop:basic flowera-desktop:developer
-docker tag flowera-desktop:basic flowera-desktop:ai
+docker tag decurix-desktop:basic decurix-desktop:developer
+docker tag decurix-desktop:basic decurix-desktop:ai
 
 Write-Host ""
-Write-Host "=== Populating shared tools volume (flowera-tools) ==="
-docker volume create flowera-tools *>$null
-docker run --rm -v flowera-tools:/target flowera-tools:latest
-docker volume create flowera-cache *>$null
+Write-Host "=== Populating shared tools volume (decurix-tools) ==="
+docker volume create decurix-tools *>$null
+docker run --rm -v decurix-tools:/target decurix-tools:latest
+docker volume create decurix-cache *>$null
 
 Write-Host ""
 Write-Host "=== Pruning dangling build layers to reclaim disk space ==="
@@ -79,6 +79,6 @@ docker image prune -f *>$null
 
 Write-Host ""
 Write-Host "=== Desktop and tools images ready ==="
-docker images --filter "reference=flowera-*"
+docker images --filter "reference=decurix-*"
 Write-Host ""
 

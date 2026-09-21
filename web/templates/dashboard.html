@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="color-scheme" content="light dark">
-<title>Queries · Flowera</title>
+<title>Queries · Decurix</title>
 
 {{template "theme"}}
 
@@ -241,7 +241,7 @@
 (function(){
   "use strict";
 
-  var toast = Flowera.toast, post = Flowera.post;
+  var toast = Decurix.toast, post = Decurix.post;
 
   /* ---------------- relative timestamps ---------------- */
 
@@ -298,7 +298,7 @@
       }
 
       submit.disabled = true;
-      Flowera.busy(true);
+      Decurix.busy(true);
 
       try{
         await post("/api/desktops/send", {id: form.dataset.desktop, content: content});
@@ -310,7 +310,7 @@
       }catch(e){
         toast(e.message, "error");
       }finally{
-        Flowera.busy(false);
+        Decurix.busy(false);
         submit.disabled = false;
       }
     });

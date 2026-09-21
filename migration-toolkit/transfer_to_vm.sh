@@ -270,7 +270,7 @@ fi
 # Module: Project Workspaces (Guarded against recursion)
 # ------------------------------------------------------------------------------
 if [[ ",${CHOSEN_MODULES}," =~ ,workspaces, ]]; then
-    echo -e "\n${BOLD}${YELLOW}>>> Anti-Recursion Check: Skipping our own app repository (~/flowera).${RESET}"
+    echo -e "\n${BOLD}${YELLOW}>>> Anti-Recursion Check: Skipping our own app repository (~/decurix).${RESET}"
     echo -e "  To prevent duplicate copies and recursion, our app and migration-toolkit are not copied."
 fi
 

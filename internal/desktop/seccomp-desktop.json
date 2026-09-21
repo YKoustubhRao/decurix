@@ -432,7 +432,7 @@
 				"unshare"
 			],
 			"action": "SCMP_ACT_ALLOW",
-			"comment": "Flowera: lets an unprivileged process create user/pid/net namespaces, which is what Chromium's namespace sandbox is built from. Docker's default only allows these with CAP_SYS_ADMIN."
+			"comment": "Decurix: lets an unprivileged process create user/pid/net namespaces, which is what Chromium's namespace sandbox is built from. Docker's default only allows these with CAP_SYS_ADMIN."
 		},
 		{
 			"names": [

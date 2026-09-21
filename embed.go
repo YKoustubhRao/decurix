@@ -1,11 +1,11 @@
-// Package flowera holds the build context for the desktop images, embedded
+// Package decurix holds the build context for the desktop images, embedded
 // into the control-plane binary.
 //
 // This lives at the module root because go:embed can only reach files at or
 // below its own directory, and the build context spans both docker/ and
-// agent/. Embedding it is what lets a downloaded flowera executable build its
+// agent/. Embedding it is what lets a downloaded decurix executable build its
 // own desktop images with no repo checkout and no bundled scripts.
-package flowera
+package decurix
 
 import "embed"
 

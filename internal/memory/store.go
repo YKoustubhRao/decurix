@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/sqlitedb"
+	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
 
 // WorkerMemoryEntry stores a reusable workflow or decision learned while a desktop worker was operating.

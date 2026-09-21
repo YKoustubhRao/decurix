@@ -5,8 +5,8 @@
 # Ollama the desktop containers can actually reach, pulls the chat and
 # embedding models onto it, and records OLLAMA_URL/OLLAMA_MODEL in .env.
 #
-# Requires: flowera-desktop:basic already built (the probes run inside it),
-# flowera-network already created, and .env already existing. The caller is
+# Requires: decurix-desktop:basic already built (the probes run inside it),
+# decurix-network already created, and .env already existing. The caller is
 # responsible for all three - this file only does the Ollama part, so build.sh
 # and rebuild.sh don't each carry their own copy of it.
 
@@ -16,10 +16,10 @@
 # leaves every desktop unable to reach anything.
 probe_ollama() {
     docker run --rm \
-        --network flowera-network \
+        --network decurix-network \
         --add-host host.docker.internal:host-gateway \
         --entrypoint python3 \
-        flowera-desktop:basic \
+        decurix-desktop:basic \
         -c "
 import sys, urllib.request
 try:
@@ -31,10 +31,10 @@ except Exception:
 
 list_ollama_models() {
     docker run --rm \
-        --network flowera-network \
+        --network decurix-network \
         --add-host host.docker.internal:host-gateway \
         --entrypoint python3 \
-        flowera-desktop:basic \
+        decurix-desktop:basic \
         -c "
 import json, urllib.request
 try:
@@ -48,10 +48,10 @@ except Exception:
 
 pull_ollama_model() {
     docker run --rm \
-        --network flowera-network \
+        --network decurix-network \
         --add-host host.docker.internal:host-gateway \
         --entrypoint python3 \
-        flowera-desktop:basic \
+        decurix-desktop:basic \
         -c "
 import json, sys, urllib.request
 req = urllib.request.Request(
@@ -100,7 +100,7 @@ read_env_var() {
 # build"/"up --build", not after.
 ensure_ollama_ready() {
     local default_ollama_url="http://host.docker.internal:11434"
-    local bundled_ollama_url="http://flowera-ollama:11434"
+    local bundled_ollama_url="http://decurix-ollama:11434"
     # The chat model is not the only model. TheBot's harness embeds every
     # fact it learns, every document it indexes and every failure it
     # records, and Ollama refuses to embed with a chat model - so a server
@@ -110,8 +110,8 @@ ensure_ollama_ready() {
     local embed_model="nomic-embed-text"
     local ollama_url_ok=""
 
-    docker network inspect flowera-network >/dev/null 2>&1 \
-        || docker network create flowera-network >/dev/null
+    docker network inspect decurix-network >/dev/null 2>&1 \
+        || docker network create decurix-network >/dev/null
 
     # Whatever is already in .env wins, as long as it actually works.
     local configured_ollama_url
@@ -163,7 +163,7 @@ ensure_ollama_ready() {
 
             if sudo mkdir -p /etc/systemd/system/ollama.service.d \
                 && printf '[Service]\nEnvironment="OLLAMA_HOST=0.0.0.0"\nEnvironment="OLLAMA_FLASH_ATTENTION=1"\nEnvironment="OLLAMA_KV_CACHE_TYPE=q8_0"\nEnvironment="OLLAMA_NUM_PARALLEL=1"\nEnvironment="OLLAMA_NUM_THREAD=%d"\nNice=10\nCPUShares=512\nCPUQuota=%d%%\n' "$threads" "$quota_pct" \
-                    | sudo tee /etc/systemd/system/ollama.service.d/flowera.conf >/dev/null \
+                    | sudo tee /etc/systemd/system/ollama.service.d/decurix.conf >/dev/null \
                 && sudo systemctl daemon-reload \
                 && sudo systemctl restart ollama; then
 
@@ -187,14 +187,14 @@ ensure_ollama_ready() {
         fi
     fi
 
-    # Last resort: the container Flowera manages itself. Small model, but it
+    # Last resort: the container Decurix manages itself. Small model, but it
     # needs nothing from the host and always works, which beats handing every
     # desktop a URL that answers nowhere. qwen2.5-coder:3b, not qwen3:0.6b -
     # the 0.6b model was too weak to reliably follow the agent's own
     # COMMAND/DONE/HELP contract (see internal/ollama.Model's comment).
     if [ -z "$ollama_url_ok" ]; then
         echo ""
-        echo "Falling back to the bundled flowera-ollama container."
+        echo "Falling back to the bundled decurix-ollama container."
         ollama_url_ok="$bundled_ollama_url"
         # A pinned model is replaced by a small one that always works; "auto"
         # stays auto - the control plane pulls what fits into the container.

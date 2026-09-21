@@ -9,7 +9,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/sqlitedb"
+	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
 
 // QueryNote is a support note submitted from inside a running desktop, tied to a specific desktop and VM.

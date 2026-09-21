@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/desktop"
 )
 
 // fakeDesktops is a DesktopLister a test can script without Docker. sweep

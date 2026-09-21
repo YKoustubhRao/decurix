@@ -8,7 +8,7 @@ RUN go mod download
 COPY . .
 
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -o flowera ./cmd/flowera
+    go build -o decurix ./cmd/decurix
 
 
 FROM debian:bookworm-slim
@@ -23,15 +23,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # The templates are embedded in the binary (web/embed.go), so only .env has
 # to come along.
-COPY --from=builder /app/flowera .
+COPY --from=builder /app/decurix .
 COPY .env ./
 
-# The records database (flowera.db). docker-compose.yaml mounts a named volume
+# The records database (decurix.db). docker-compose.yaml mounts a named volume
 # here; the VOLUME line keeps a plain `docker run` from writing it into the
 # container's own layer, where a rebuild would discard it.
-ENV FLOWERA_DATA_DIR=/data
+ENV DECURIX_DATA_DIR=/data
 VOLUME /data
 
 EXPOSE 8080
 
-CMD ["./flowera"]
+CMD ["./decurix"]

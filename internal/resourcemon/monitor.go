@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/desktop"
 )
 
 const (
@@ -40,14 +40,14 @@ type Monitor struct {
 // NewMonitor creates a new resource monitor backed by the given DesktopManager.
 func NewMonitor(desktops DesktopManager) *Monitor {
 	cpuThresh := defaultCPUThreshold
-	if env := os.Getenv("FLOWERA_RESOURCE_CPU_THRESHOLD"); env != "" {
+	if env := os.Getenv("DECURIX_RESOURCE_CPU_THRESHOLD"); env != "" {
 		if v, err := strconv.ParseFloat(env, 64); err == nil && v > 0 {
 			cpuThresh = v
 		}
 	}
 
 	memThresh := defaultMemThreshold
-	if env := os.Getenv("FLOWERA_RESOURCE_MEM_THRESHOLD"); env != "" {
+	if env := os.Getenv("DECURIX_RESOURCE_MEM_THRESHOLD"); env != "" {
 		if v, err := strconv.ParseFloat(env, 64); err == nil && v > 0 {
 			memThresh = v
 		}

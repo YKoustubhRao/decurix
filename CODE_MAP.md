@@ -20,11 +20,11 @@ Manually regenerated after the `cmd/`+`internal/` reorg (the `update-file-docs.j
 
 ## Funcs
 
-### `cmd/flowera`
+### `cmd/decurix`
 
 | Name | File:Line | Summary |
 |---|---|---|
-| `main` | `cmd/flowera/main.go:22-71` | Loads `.env`, builds the Docker client, constructs `desktop.Manager`/`ollama.Manager`/`httpapi.Server`, ensures desktop images/network exist, registers HTTP routes, kicks off Ollama readiness in the background, and starts `http.ListenAndServe(:8080)`. |
+| `main` | `cmd/decurix/main.go:22-71` | Loads `.env`, builds the Docker client, constructs `desktop.Manager`/`ollama.Manager`/`httpapi.Server`, ensures desktop images/network exist, registers HTTP routes, kicks off Ollama readiness in the background, and starts `http.ListenAndServe(:8080)`. |
 
 ### `internal/desktop`
 
@@ -41,7 +41,7 @@ Manually regenerated after the `cmd/`+`internal/` reorg (the `update-file-docs.j
 | `PersistMemoryFile` | `internal/desktop/manager.go:481-527` | Docker-execs a heredoc write of pre-formatted memory content into a desktop container's `/home/headless/memory` directory. |
 | `ProxyTarget` | `internal/desktop/proxy.go:23-58` | Resolves the internal VNC address for a desktop ID, returning sentinel errors (`ErrNotFound`/`ErrNotRunning`/`ErrNoNetwork`/`ErrNoAddress`) so `httpapi` can reproduce the original 404/503 messages without this package touching `net/http`. |
 | `EnsureImages` | `internal/desktop/docker.go:30-79` | Pulls any required desktop Docker images that are not already present locally. |
-| `EnsureNetwork` | `internal/desktop/docker.go:81-114` | Creates the shared `flowera-network` Docker network if it does not already exist. |
+| `EnsureNetwork` | `internal/desktop/docker.go:81-114` | Creates the shared `decurix-network` Docker network if it does not already exist. |
 | `resolveDesktopImage` | `internal/desktop/docker.go:116-131` | Maps a desktop profile (basic/developer/ai) to its corresponding Docker image. |
 | `buildDesktopEnv` | `internal/desktop/docker.go:137-161` | Builds the container environment variables (VNC, desktop identity, control-plane/Ollama URLs, `AGENT_HARNESS`, and `ANTHROPIC_API_KEY` when set) for a desktop by name and harness. |
 | `buildContainerConfigs` | `internal/desktop/docker.go:164-200` | Builds the Docker container, host, and network configuration for a desktop from its resolved image, resources, profile, and harness (labels both `desktop-profile` and `desktop-harness`). |

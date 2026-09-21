@@ -1,4 +1,4 @@
-module github.com/YKoustubhRao/flowera
+module github.com/YKoustubhRao/decurix
 
 go 1.26.5
 

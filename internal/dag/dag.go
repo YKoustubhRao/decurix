@@ -25,8 +25,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/schedule"
-	"github.com/YKoustubhRao/flowera/internal/sqlitedb"
+	"github.com/YKoustubhRao/decurix/internal/schedule"
+	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
 
 // Run statuses.

@@ -1,6 +1,6 @@
 {
-  "about": "Flowera GUI benchmark: real tasks in graphical apps, judged on the outcome (admin panel state, saved documents, files on disk), never on the agent's own report. Run with bench/gui/run.py. `oracle` is a scripted solution through the same gui command the engines use - it proves each task is solvable and each check is correct, without a model.",
-  "credentials": "The admin panel is http://127.0.0.1:8765, username admin, password flowera-bench.",
+  "about": "Decurix GUI benchmark: real tasks in graphical apps, judged on the outcome (admin panel state, saved documents, files on disk), never on the agent's own report. Run with bench/gui/run.py. `oracle` is a scripted solution through the same gui command the engines use - it proves each task is solvable and each check is correct, without a model.",
+  "credentials": "The admin panel is http://127.0.0.1:8765, username admin, password decurix-bench.",
   "tasks": [
     {
       "id": "web-login",
@@ -8,7 +8,7 @@
       "start": {
         "browser": "/login"
       },
-      "prompt": "Chromium is open on the Flowera Admin sign-in page. Sign in with username admin and password flowera-bench.",
+      "prompt": "Chromium is open on the Decurix Admin sign-in page. Sign in with username admin and password decurix-bench.",
       "expect": "done",
       "check": {
         "type": "logins_at_least",
@@ -16,7 +16,7 @@
       },
       "oracle": [
         "gui type 'textbox \"Username\"' admin",
-        "gui type 'textbox \"Password\"' flowera-bench",
+        "gui type 'textbox \"Password\"' decurix-bench",
         "gui click 'button \"Sign in\"'"
       ]
     },
@@ -26,7 +26,7 @@
       "start": {
         "browser": "/users"
       },
-      "prompt": "In the Flowera Admin panel open in Chromium, add a new user: name Dana Scott, email dana@example.com, role Editor.",
+      "prompt": "In the Decurix Admin panel open in Chromium, add a new user: name Dana Scott, email dana@example.com, role Editor.",
       "expect": "done",
       "check": {
         "type": "user_exists",
@@ -48,7 +48,7 @@
       "start": {
         "browser": "/users"
       },
-      "prompt": "In the Flowera Admin panel open in Chromium, change Bob Lee's email address to bob.lee@example.org and save.",
+      "prompt": "In the Decurix Admin panel open in Chromium, change Bob Lee's email address to bob.lee@example.org and save.",
       "expect": "done",
       "check": {
         "type": "user_email",
@@ -67,7 +67,7 @@
       "start": {
         "browser": "/users"
       },
-      "prompt": "In the Flowera Admin panel open in Chromium, delete the user named Temp Account.",
+      "prompt": "In the Decurix Admin panel open in Chromium, delete the user named Temp Account.",
       "expect": "done",
       "check": {
         "type": "user_absent",
@@ -85,18 +85,18 @@
       "start": {
         "browser": "/settings"
       },
-      "prompt": "In the Flowera Admin settings page open in Chromium, set the site title to Flowera Test Site, turn on maintenance mode, and save the settings.",
+      "prompt": "In the Decurix Admin settings page open in Chromium, set the site title to Decurix Test Site, turn on maintenance mode, and save the settings.",
       "expect": "done",
       "check": {
         "type": "settings",
         "values": {
-          "site_title": "Flowera Test Site",
+          "site_title": "Decurix Test Site",
           "maintenance_mode": true,
           "allow_signups": true
         }
       },
       "oracle": [
-        "gui type 'textbox \"Site title\"' 'Flowera Test Site'",
+        "gui type 'textbox \"Site title\"' 'Decurix Test Site'",
         "gui click 'checkbox \"Maintenance mode\"'",
         "gui click 'button \"Save settings\"'"
       ]
@@ -147,7 +147,7 @@
       "start": {
         "browser": "/users"
       },
-      "prompt": "In the Flowera Admin panel open in Chromium, Zara Quinn is on the second page of users. Change her role to Admin and save.",
+      "prompt": "In the Decurix Admin panel open in Chromium, Zara Quinn is on the second page of users. Change her role to Admin and save.",
       "expect": "done",
       "check": {
         "type": "user_role",

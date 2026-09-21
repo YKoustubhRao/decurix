@@ -5,13 +5,13 @@
 <script>
 /* Applied before first paint so a stored theme never flashes the other palette. */
 try{
-  var t = localStorage.getItem("flowera-theme");
+  var t = localStorage.getItem("decurix-theme");
   if(t === "dark" || t === "light"){ document.documentElement.setAttribute("data-theme", t); }
 }catch(e){}
 </script>
 <style>
 /* ------------------------------------------------------------------ *
- * Flowera design tokens.
+ * Decurix design tokens.
  *
  * Light is the base palette on bare :root; the dark palette is defined
  * twice - once behind prefers-color-scheme (so "system" works) and once
@@ -444,7 +444,7 @@ svg{display:block;flex:none}
 
 /* A desktop with an open query note takes this over its own "running" pill -
    one status slot, not a second competing badge - using the same accent
-   already used for the nav's query count rather than a new hue: Flowera's
+   already used for the nav's query count rather than a new hue: Decurix's
    palette is deliberately three semantic colors (live/idle/danger) plus
    accent, not a wider status-color system. */
 .status.needs-you{background:var(--accent-soft);color:var(--accent)}
@@ -714,7 +714,7 @@ body.busy{cursor:progress}
 (function(){
   "use strict";
 
-  var THEME_KEY = "flowera-theme";
+  var THEME_KEY = "decurix-theme";
 
   /* ---- theme ---- */
 
@@ -846,7 +846,7 @@ body.busy{cursor:progress}
   /* ---- addresses to reach this control plane from elsewhere ----
      Everything here is either reported by build.sh (or rebuild.sh, per OS)
      via POST /api/tunnel - a Cloudflare tunnel URL and the machine's own LAN
-     address for each of the two listeners cmd/flowera/main.go starts - or,
+     address for each of the two listeners cmd/decurix/main.go starts - or,
      for the access code the gated ones need, read from internal/lanaccess
      via /api/lan-access/status. One panel, one source of truth for all of
      it, rather than the code living only in a terminal a person has since
@@ -928,7 +928,7 @@ body.busy{cursor:progress}
         addLinkRow(panel, lastLANURL, "Copy LAN link");
       }
     }else{
-      addNote(panel, "No address known yet. Start Flowera with scripts/build.sh.");
+      addNote(panel, "No address known yet. Start Decurix with scripts/build.sh.");
     }
 
     /* -- the code the LAN address above needs -- */
@@ -992,7 +992,7 @@ body.busy{cursor:progress}
       if(lastAdminURL){ addLinkRow(panel, lastAdminURL, "Copy admin link"); }
       if(lastTunnelURL){ addLinkRow(panel, lastTunnelURL, "Copy tunnel link"); }
     }else{
-      addNote(panel, "Only reachable from this machine (http://localhost:8080) and its own desktops. It is never put on a tunnel or the network - use the code-gated addresses above to reach Flowera from another device.");
+      addNote(panel, "Only reachable from this machine (http://localhost:8080) and its own desktops. It is never put on a tunnel or the network - use the code-gated addresses above to reach Decurix from another device.");
     }
   }
 
@@ -1120,7 +1120,7 @@ body.busy{cursor:progress}
      popup on top would just be noise (see the design system's "no fake
      urgency" rule this borrows from). */
 
-  var NOTIFY_KEY = "flowera-notify";
+  var NOTIFY_KEY = "decurix-notify";
   var notifiedIds = null;
 
   function notifySupported(){
@@ -1163,7 +1163,7 @@ body.busy{cursor:progress}
       try{
         var n = new Notification((note.vm_name || note.filename || "A desktop") + " needs you", {
           body: (note.content || "").slice(0, 180),
-          tag: "flowera-query-" + note.id
+          tag: "decurix-query-" + note.id
         });
         n.onclick = function(){ window.focus(); n.close(); };
       }catch(e){ /* notifications unavailable or blocked mid-session */ }
@@ -1230,7 +1230,7 @@ body.busy{cursor:progress}
     }
   });
 
-  window.Flowera = {
+  window.Decurix = {
     toast: toast,
     busy: busy,
     post: post,
@@ -1248,7 +1248,7 @@ body.busy{cursor:progress}
 <header class="topbar">
   <a class="brand" href="/">
     <span class="brand-mark"><svg width="40" height="40"><use href="#i-blossom"/></svg></span>
-    <span class="brand-name">Flowera<span class="brand-sub"> Workspaces</span></span>
+    <span class="brand-name">Decurix<span class="brand-sub"> Workspaces</span></span>
   </a>
 
   <div class="menu model-menu" id="modelMenu" hidden>

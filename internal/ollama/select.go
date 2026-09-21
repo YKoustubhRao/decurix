@@ -16,7 +16,7 @@ const (
 	// defaultBudgetFraction is how much of what is free a model may take by
 	// default: (total - used by everything else) * 0.5. The rest stays with
 	// the desktops, the browser and the OS, so spinning up the app doesn't
-	// starve them the moment a model is selected. FLOWERA_MODEL_BUDGET_FRACTION
+	// starve them the moment a model is selected. DECURIX_MODEL_BUDGET_FRACTION
 	// overrides it.
 	defaultBudgetFraction = 0.5
 
@@ -52,16 +52,16 @@ const (
 
 // perCoreGBps and minTokensPerSecond are the two speed estimates above, which
 // a machine that decodes faster or slower than assumed can correct without a
-// rebuild: FLOWERA_MODEL_CORE_GBPS and FLOWERA_MODEL_MIN_TPS.
-func perCoreGBps() float64 { return envFloat("FLOWERA_MODEL_CORE_GBPS", defaultPerCoreGBps) }
+// rebuild: DECURIX_MODEL_CORE_GBPS and DECURIX_MODEL_MIN_TPS.
+func perCoreGBps() float64 { return envFloat("DECURIX_MODEL_CORE_GBPS", defaultPerCoreGBps) }
 
 func minTokensPerSecond() float64 {
-	return envFloat("FLOWERA_MODEL_MIN_TPS", defaultMinTokensPerSecond)
+	return envFloat("DECURIX_MODEL_MIN_TPS", defaultMinTokensPerSecond)
 }
 
 // BudgetFraction is how much of what is free a model may take.
 func BudgetFraction() float64 {
-	f := envFloat("FLOWERA_MODEL_BUDGET_FRACTION", defaultBudgetFraction)
+	f := envFloat("DECURIX_MODEL_BUDGET_FRACTION", defaultBudgetFraction)
 	return math.Min(1, math.Max(0, f))
 }
 

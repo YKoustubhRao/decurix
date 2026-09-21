@@ -2,7 +2,7 @@
 #
 # Spins up ONE throwaway desktop container standalone, for quickly testing a
 # desktop image or the agent harness without building/running the whole
-# flowera control plane. Pairs with scripts/testing/dummy_control_plane.py,
+# decurix control plane. Pairs with scripts/testing/dummy_control_plane.py,
 # a stdlib-only stub that accepts the desktop's query/completion callbacks
 # and prints them live, so you can watch the agent work.
 #
@@ -42,7 +42,7 @@ while [ $# -gt 0 ]; do
 done
 
 DESKTOP_CONTAINER="desktop_${NAME}"
-DUMMY_CP="flowera-dummy-cp"
+DUMMY_CP="decurix-dummy-cp"
 
 # Same default as internal/desktop/docker.go's buildDesktopEnv - the host
 # running the control plane, reached over the ExtraHosts entry every desktop
@@ -61,7 +61,7 @@ if [ "$TEARDOWN" = true ]; then
     docker rm -f "$DESKTOP_CONTAINER" 2>/dev/null || true
 
     # The dummy control plane is only ever used by test-vm's own desktop
-    # containers (never by real flowera-managed ones), so it's always safe
+    # containers (never by real decurix-managed ones), so it's always safe
     # to remove here - it's a cheap stub, re-created instantly next run.
     echo "=== Removing dummy control plane ==="
     docker rm -f "$DUMMY_CP" 2>/dev/null || true
@@ -80,20 +80,20 @@ case "$HARNESS" in
 esac
 
 echo "========================================"
-echo " Flowera standalone VM test"
+echo " Decurix standalone VM test"
 echo "========================================"
 echo "profile=${PROFILE} harness=${HARNESS} name=${NAME}"
 echo "chat model=${OLLAMA_MODEL}${CODING_MODEL:+ | coding model=${CODING_MODEL}}"
 echo ""
 
-echo "=== Ensuring flowera-network ==="
-docker network inspect flowera-network >/dev/null 2>&1 || docker network create flowera-network >/dev/null
+echo "=== Ensuring decurix-network ==="
+docker network inspect decurix-network >/dev/null 2>&1 || docker network create decurix-network >/dev/null
 
 echo ""
-echo "=== Ensuring image flowera-desktop:${PROFILE} ==="
-if ! docker image inspect "flowera-desktop:${PROFILE}" >/dev/null 2>&1; then
+echo "=== Ensuring image decurix-desktop:${PROFILE} ==="
+if ! docker image inspect "decurix-desktop:${PROFILE}" >/dev/null 2>&1; then
     echo "Image not found locally - building it (this can take a while)..."
-    docker build -f "docker/desktop.${PROFILE}.Dockerfile" -t "flowera-desktop:${PROFILE}" .
+    docker build -f "docker/desktop.${PROFILE}.Dockerfile" -t "decurix-desktop:${PROFILE}" .
 fi
 
 echo ""
@@ -102,7 +102,7 @@ if ! docker ps --filter "name=^${DUMMY_CP}\$" --format '{{.Names}}' | grep -q "^
     docker rm -f "$DUMMY_CP" >/dev/null 2>&1 || true
     docker run -d \
         --name "$DUMMY_CP" \
-        --network flowera-network \
+        --network decurix-network \
         --network-alias "$DUMMY_CP" \
         -v "$(pwd)/scripts/testing:/srv:ro" \
         -w /srv \
@@ -119,7 +119,7 @@ docker rm -f "$DESKTOP_CONTAINER" >/dev/null 2>&1 || true
 
 docker run -d \
     --name "$DESKTOP_CONTAINER" \
-    --network flowera-network \
+    --network decurix-network \
     --shm-size=512m \
     -p 16901:6901 \
     -p 14900:4900 \
@@ -134,7 +134,7 @@ docker run -d \
     -e OLLAMA_MODEL="$OLLAMA_MODEL" \
     -e AGENT_HARNESS="$HARNESS" \
     -e CODING_MODEL="$CODING_MODEL" \
-    "flowera-desktop:${PROFILE}" >/dev/null
+    "decurix-desktop:${PROFILE}" >/dev/null
 
 echo ""
 echo "=== Waiting for the agent to come up (vm_server.py:8081) ==="
@@ -146,7 +146,7 @@ echo "=== Waiting for the agent to come up (vm_server.py:8081) ==="
 # though the container was already serving requests.
 ready=false
 for i in $(seq 1 60); do
-    if docker exec "$DESKTOP_CONTAINER" grep -q "VM agent listening" /tmp/flowera-startup.log 2>/dev/null; then
+    if docker exec "$DESKTOP_CONTAINER" grep -q "VM agent listening" /tmp/decurix-startup.log 2>/dev/null; then
         ready=true
         break
     fi
@@ -177,5 +177,5 @@ echo "Agent chat UI:     http://localhost:14900/"
 fi
 echo "Send a task:       curl -X POST http://localhost:18081/request -H 'Content-Type: application/json' -d '{\"content\":\"...\"}'"
 echo "Watch callbacks:    docker logs -f ${DUMMY_CP}"
-echo "Watch agent logs:   docker exec ${DESKTOP_CONTAINER} tail -f /tmp/flowera-startup.log"
+echo "Watch agent logs:   docker exec ${DESKTOP_CONTAINER} tail -f /tmp/decurix-startup.log"
 echo "Tear down:          ./scripts/linux/test-vm.sh --name ${NAME} --down"

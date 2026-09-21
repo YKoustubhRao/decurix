@@ -1,5 +1,5 @@
 """
-Flowera Admin - the web admin panel the GUI benchmark's browser tasks run
+Decurix Admin - the web admin panel the GUI benchmark's browser tasks run
 against.
 
 A deliberately ordinary server-rendered app: a sign-in form, a paginated
@@ -23,7 +23,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 USERNAME = "admin"
-PASSWORD = "flowera-bench"
+PASSWORD = "decurix-bench"
 PAGE_SIZE = 8
 
 AUTOLOGIN_TOKEN = "bench-autologin"
@@ -77,7 +77,7 @@ def initial_state():
             for o, c, s, t in orders
         ],
         "settings": {
-            "site_title": "Flowera Admin",
+            "site_title": "Decurix Admin",
             "maintenance_mode": False,
             "allow_signups": True,
             "weekly_report": False,

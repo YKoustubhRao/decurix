@@ -283,7 +283,7 @@ def reset(task):
 
     # Whatever the last task left in the agent's own screen state (element
     # refs, a pending approval) belongs to that task.
-    shutil.rmtree("/home/headless/.flowera/computer", ignore_errors=True)
+    shutil.rmtree("/home/headless/.decurix/computer", ignore_errors=True)
 
 
 # ============================================================

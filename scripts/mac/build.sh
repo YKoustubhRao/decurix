@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Opens Flowera on macOS: builds whichever desktop images don't exist yet,
+# Opens Decurix on macOS: builds whichever desktop images don't exist yet,
 # makes sure a desktop can reach Ollama, starts the control plane if it
 # isn't already running, and opens a Cloudflare tunnel to it. Existing
 # desktops, their volumes and the app database are left exactly as they
@@ -39,14 +39,14 @@ done
 cleanup() {
     echo ""
     stop_lan_tunnel
-    echo "=== Tunnel stopped. Flowera is still running: http://127.0.0.1:8080 ==="
-    echo "(Run this script again for a new tunnel, or 'docker compose down' to stop Flowera.)"
+    echo "=== Tunnel stopped. Decurix is still running: http://127.0.0.1:8080 ==="
+    echo "(Run this script again for a new tunnel, or 'docker compose down' to stop Decurix.)"
 }
 
 trap 'cleanup; exit 130' INT TERM
 
 echo "========================================"
-echo " Opening Flowera (macOS)"
+echo " Opening Decurix (macOS)"
 echo "========================================"
 
 if [ ! -f .env ]; then
@@ -68,11 +68,11 @@ echo "=== Ensuring the desktops can reach Ollama ==="
 ensure_ollama_ready
 
 echo ""
-echo "=== Starting Flowera ==="
+echo "=== Starting Decurix ==="
 
 export_host_mounts
 
-# No --build: existing desktop_* containers and volumes, and the flowera-data
+# No --build: existing desktop_* containers and volumes, and the decurix-data
 # volume (task history, chats, worker memory), are untouched.
 docker compose up -d
 
@@ -81,28 +81,28 @@ echo "=== Waiting for dashboard ==="
 
 for i in {1..60}; do
     if curl -fsS http://127.0.0.1:8080/ >/dev/null 2>&1; then
-        echo "Flowera dashboard is running."
+        echo "Decurix dashboard is running."
         break
     fi
 
-    echo "Waiting for Flowera... ($i/60)"
+    echo "Waiting for Decurix... ($i/60)"
     sleep 2
 done
 
 if ! curl -fsS http://127.0.0.1:8080/ >/dev/null 2>&1; then
-    echo "ERROR: Flowera dashboard is not responding on port 8080."
+    echo "ERROR: Decurix dashboard is not responding on port 8080."
     docker compose logs --tail=100
     exit 1
 fi
 
 echo ""
 echo "========================================"
-echo " Flowera is running"
+echo " Decurix is running"
 echo "========================================"
 echo ""
-echo "Idle desktops stop automatically after 5 minutes (set FLOWERA_IDLE_STOP_MINUTES=0 in .env to disable, or to another number of minutes)."
+echo "Idle desktops stop automatically after 5 minutes (set DECURIX_IDLE_STOP_MINUTES=0 in .env to disable, or to another number of minutes)."
 
-lan_port="$(read_env_var FLOWERA_LAN_PORT)"
+lan_port="$(read_env_var DECURIX_LAN_PORT)"
 lan_port="${lan_port:-8090}"
 
 lan_ip="$(python3 -c 'import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(("1.1.1.1", 80)); print(s.getsockname()[0]); s.close()' 2>/dev/null || true)"
@@ -132,7 +132,7 @@ if command -v jq >/dev/null 2>&1; then
 
         if [ -n "$lan_url" ]; then
             echo ""
-            echo "Open it yourself without typing the code: $lan_url/__flowera_access/authenticate?code=$lan_code"
+            echo "Open it yourself without typing the code: $lan_url/__decurix_access/authenticate?code=$lan_code"
         fi
     fi
 fi
@@ -141,11 +141,11 @@ if [ -n "$CLI_MODE" ]; then
     trap - INT TERM
 
     echo ""
-    echo "=== Opening the Flowera CLI ==="
-    echo "(Flowera keeps running after you exit; 'exit' or Ctrl+D to leave.)"
+    echo "=== Opening the Decurix CLI ==="
+    echo "(Decurix keeps running after you exit; 'exit' or Ctrl+D to leave.)"
     echo ""
 
-    docker compose exec desktop-manager ./flowera --cli
+    docker compose exec desktop-manager ./decurix --cli
     exit $?
 fi
 
@@ -154,9 +154,9 @@ echo "=== Starting Cloudflare Tunnel ==="
 
 if ! command -v cloudflared >/dev/null 2>&1; then
     echo "cloudflared is not installed (optional quick tunnel skipped)."
-    echo "Flowera is still running locally at http://127.0.0.1:8080."
+    echo "Decurix is still running locally at http://127.0.0.1:8080."
     echo "Install via: brew install cloudflared"
-    echo "Press Ctrl+C to stop Flowera."
+    echo "Press Ctrl+C to stop Decurix."
     while true; do sleep 3600; done
 fi
 

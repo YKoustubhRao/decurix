@@ -18,12 +18,12 @@ const (
 // OptimizeHostKSM inspects and enables Linux Kernel Samepage Merging (KSM)
 // if supported by the host kernel, deduplicating identical physical memory
 // pages across container processes.
-// pages across container processes. If FLOWERA_DISABLE_KSM is set, it explicitly disables KSM.
+// pages across container processes. If DECURIX_DISABLE_KSM is set, it explicitly disables KSM.
 func OptimizeHostKSM() {
-	if os.Getenv("FLOWERA_DISABLE_KSM") == "1" ||
-		os.Getenv("FLOWERA_DISABLE_KSM") == "true" ||
-		os.Getenv("FLOWERA_ENABLE_KSM") == "0" ||
-		os.Getenv("FLOWERA_ENABLE_KSM") == "false" {
+	if os.Getenv("DECURIX_DISABLE_KSM") == "1" ||
+		os.Getenv("DECURIX_DISABLE_KSM") == "true" ||
+		os.Getenv("DECURIX_ENABLE_KSM") == "0" ||
+		os.Getenv("DECURIX_ENABLE_KSM") == "false" {
 		DisableHostKSM()
 		return
 	}

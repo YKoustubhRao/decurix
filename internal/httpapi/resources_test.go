@@ -11,8 +11,8 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 
-	"github.com/YKoustubhRao/flowera/internal/desktop"
-	"github.com/YKoustubhRao/flowera/internal/resourcemon"
+	"github.com/YKoustubhRao/decurix/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/resourcemon"
 )
 
 type mockResourceDesktopManager struct {

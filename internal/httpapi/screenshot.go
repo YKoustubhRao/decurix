@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/YKoustubhRao/flowera/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/desktop"
 )
 
 // Thumbnail width bounds. defaultShotWidth matches the dashboard card at a
