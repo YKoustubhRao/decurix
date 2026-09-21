@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/sqlitedb"
+	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
 
 // vncPort is the desktop's raw RFB port - the one Xvnc itself listens on
@@ -130,7 +130,7 @@ func loadShotFromDisk(sanitizedID string) ([]byte, error) {
 // Screenshot returns a JPEG thumbnail of a desktop's current screen, scaled
 // so its longest edge is at most maxWidth pixels wide.
 //
-// It reads the framebuffer straight off the desktop's Xvnc over the Flowera
+// It reads the framebuffer straight off the desktop's Xvnc over the Decurix
 // bridge network, which is what lets the dashboard show what a desktop is
 // actually doing without embedding a noVNC client per card. Frames are cached
 // for screenshotTTL and captured one-at-a-time per desktop.

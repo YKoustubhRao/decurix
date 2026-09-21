@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/YKoustubhRao/flowera/internal/desktop"
-	"github.com/YKoustubhRao/flowera/internal/memory"
+	"github.com/YKoustubhRao/decurix/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/memory"
 )
 
 // desktopMemoryHandler stores a new worker memory entry or returns all remembered workflows.

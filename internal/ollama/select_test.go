@@ -17,24 +17,26 @@ func inst(name string, sizeGB, paramsB float64) Candidate {
 	return Candidate{Name: name, SizeGB: sizeGB, ParamsB: paramsB, Installed: true}
 }
 
-// The budget is exactly the user's rule: 80% of what is free.
-func TestBudgetIsEightyPercentOfWhatIsFree(t *testing.T) {
+// The budget is exactly the user's rule: BudgetFraction() of what is free.
+func TestBudgetIsFiftyPercentOfWhatIsFree(t *testing.T) {
 	b := BudgetFor(Resources{RAMFreeGB: 10, Cores: 10, CPUBusy: 0.5, VRAMFreeGB: 20})
 
-	if want := 10*BudgetFraction - embedReserveGB; math.Abs(b.RAMGB-want) > 1e-9 {
+	frac := BudgetFraction()
+	if want := 10*frac - embedReserveGB; math.Abs(b.RAMGB-want) > 1e-9 {
 		t.Errorf("RAM budget = %.3f, want %.3f", b.RAMGB, want)
 	}
-	if want := 20*BudgetFraction - embedReserveGB; math.Abs(b.VRAMGB-want) > 1e-9 {
+	if want := 20*frac - embedReserveGB; math.Abs(b.VRAMGB-want) > 1e-9 {
 		t.Errorf("VRAM budget = %.3f, want %.3f", b.VRAMGB, want)
 	}
-	// 10 cores, half of them busy elsewhere, 80% of the rest.
-	if want := 4.0; math.Abs(b.Cores-want) > 1e-9 {
+	// 10 cores, half of them busy elsewhere, frac of the rest.
+	if want := 5 * frac; math.Abs(b.Cores-want) > 1e-9 {
 		t.Errorf("cores budget = %.3f, want %.3f", b.Cores, want)
 	}
 }
 
 // A machine with a big free GPU takes the biggest dense model that fits it.
 func TestBigGPUPicksTheSmartestThatFitsVRAM(t *testing.T) {
+	t.Setenv("DECURIX_MODEL_BUDGET_FRACTION", "0.8")
 	sel := Choose(Resources{RAMTotalGB: 32, RAMFreeGB: 24, Cores: 8, VRAMTotalGB: 24, VRAMFreeGB: 24, GPUName: "RTX"}, nil, true, "")
 
 	if sel.Model.Name != "devstral-small-2:24b" || !sel.OnGPU || !sel.Fits {
@@ -65,6 +67,7 @@ func TestPickFollowsCurrentUsage(t *testing.T) {
 // An installed model nearly as good as the best wins over a download; a much
 // worse one does not.
 func TestInstalledPreferredUnlessMuchWorse(t *testing.T) {
+	t.Setenv("DECURIX_MODEL_BUDGET_FRACTION", "0.8")
 	// 16 cores: an 8B model decodes at ~3.7 tokens/s, above the floor.
 	res := Resources{RAMTotalGB: 16, RAMFreeGB: 12, Cores: 16}
 
@@ -107,6 +110,7 @@ func TestNothingFitsFallsBackToSmallest(t *testing.T) {
 
 // A small change in load must not swap the model in use.
 func TestCurrentModelIsKeptUnlessClearlyBetter(t *testing.T) {
+	t.Setenv("DECURIX_MODEL_BUDGET_FRACTION", "0.8")
 	res := Resources{RAMTotalGB: 16, RAMFreeGB: 12, Cores: 16}
 	installed := []Candidate{inst("qwen2.5-coder:7b", 4.7, 7.6), inst("qwen3:8b", 5.2, 8.2)}
 
@@ -186,7 +190,7 @@ func TestIsLocalURL(t *testing.T) {
 		"http://host.docker.internal:11434": true,
 		"http://localhost:11434":            true,
 		"http://127.0.0.1:11434":            true,
-		"http://flowera-ollama:11434":       true,
+		"http://decurix-ollama:11434":       true,
 		"http://gpu-box.example.com:11434":  false,
 		"http://203.0.113.9:11434":          false,
 	} {
@@ -227,6 +231,7 @@ func TestDesktopModelPinnedAutoAndDefault(t *testing.T) {
 
 // A machine that decodes faster than assumed can say so without a rebuild.
 func TestSpeedEstimatesCanBeCorrectedFromTheEnvironment(t *testing.T) {
+	t.Setenv("DECURIX_MODEL_BUDGET_FRACTION", "0.8")
 	res := Resources{RAMTotalGB: 16, RAMFreeGB: 12, Cores: 8}
 	m := Candidate{Name: "qwen3:8b", SizeGB: 5.2, ParamsB: 8.2}
 
@@ -234,13 +239,13 @@ func TestSpeedEstimatesCanBeCorrectedFromTheEnvironment(t *testing.T) {
 		t.Fatal("an 8B model on 8 cores should be too slow at the default estimate")
 	}
 
-	t.Setenv("FLOWERA_MODEL_CORE_GBPS", "4")
+	t.Setenv("DECURIX_MODEL_CORE_GBPS", "4")
 	if !FitFor(m, BudgetFor(res)).OK {
-		t.Error("FLOWERA_MODEL_CORE_GBPS=4 did not let the 8B model through")
+		t.Error("DECURIX_MODEL_CORE_GBPS=4 did not let the 8B model through")
 	}
 
-	t.Setenv("FLOWERA_MODEL_MIN_TPS", "100")
+	t.Setenv("DECURIX_MODEL_MIN_TPS", "100")
 	if FitFor(m, BudgetFor(res)).OK {
-		t.Error("FLOWERA_MODEL_MIN_TPS=100 did not tighten the floor")
+		t.Error("DECURIX_MODEL_MIN_TPS=100 did not tighten the floor")
 	}
 }

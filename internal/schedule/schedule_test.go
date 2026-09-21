@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/sqlitedb"
+	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
 
 func newTestStore(t *testing.T, now time.Time) *Store {
@@ -399,7 +399,7 @@ func TestConcurrentMarkRunAndSetEnabledDoNotLoseAnUpdate(t *testing.T) {
 	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
 	runAt := now.Add(time.Hour)
 
-	db, err := sqlitedb.Open(filepath.Join(t.TempDir(), "flowera.db"))
+	db, err := sqlitedb.Open(filepath.Join(t.TempDir(), "decurix.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

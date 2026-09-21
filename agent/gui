@@ -1,5 +1,5 @@
 #!/bin/sh
-# The `gui` command: see and use this desktop's screen (flowera_agent/computer).
+# The `gui` command: see and use this desktop's screen (decurix_agent/computer).
 # Installed as /usr/local/bin/gui by the desktop Dockerfiles, so every engine's
 # shell commands reach the same action layer the agent itself uses.
-PYTHONPATH="/opt${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m flowera_agent.computer "$@"
+PYTHONPATH="/opt${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m decurix_agent.computer "$@"

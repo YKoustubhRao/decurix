@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/tasks"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
 )
 
 // fakeSubmitter is a Submitter a test can script and inspect.

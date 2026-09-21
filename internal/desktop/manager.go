@@ -71,7 +71,7 @@ type Manager struct {
 	secOpt         []string
 	secOptResolved bool
 
-	// toolsMu/toolsPopulated ensure the shared flowera-tools volume is
+	// toolsMu/toolsPopulated ensure the shared decurix-tools volume is
 	// populated at most once in-process, preventing redundant init containers
 	// and disk I/O on every VM creation.
 	toolsMu        sync.Mutex
@@ -551,7 +551,7 @@ func (m *Manager) WaitForGUIReady(ctx context.Context, rawID string, timeout tim
 const listInspectConcurrency = 8
 
 // listCacheTTL is how long a List result is reused. Short enough that a
-// change made outside Flowera shows up on the next dashboard poll, long
+// change made outside Decurix shows up on the next dashboard poll, long
 // enough that a burst of pollers costs one Docker call.
 const listCacheTTL = 500 * time.Millisecond
 
@@ -1013,7 +1013,7 @@ func (m *Manager) Delete(
 	if err != nil {
 		if isProvisioning {
 			// Container was not yet created or partially created; clean up volume if any
-			volumeName := "flowera_home_" + sanitizedID
+			volumeName := "decurix_home_" + sanitizedID
 			_ = m.client.VolumeRemove(ctx, volumeName, true)
 			return nil
 		}
@@ -1311,12 +1311,12 @@ func (m *Manager) PersistMemoryFile(
 
 	containerName := "desktop_" + sanitizeName(desktopID)
 	// A container keeps the image it was created from, so a desktop created
-	// before the agent's directories moved under ~/.flowera still runs an
+	// before the agent's directories moved under ~/.decurix still runs an
 	// agent that reads ~/memory. Write there while it is the only memory
 	// directory the desktop has; a newer agent moves it in when it starts.
-	memoryDir := "/home/headless/.flowera/memory"
+	memoryDir := "/home/headless/.decurix/memory"
 	legacyMemoryDir := "/home/headless/memory"
-	delimiter := fmt.Sprintf("FLOWERA_MEMORY_%d", time.Now().UnixNano())
+	delimiter := fmt.Sprintf("DECURIX_MEMORY_%d", time.Now().UnixNano())
 
 	cmd := fmt.Sprintf(`dir=%s; if [ -d %s ] && [ ! -d "$dir" ]; then dir=%s; fi
 mkdir -p "$dir" && cat <<'%s' > "$dir/%s"

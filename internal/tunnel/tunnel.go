@@ -1,7 +1,7 @@
 // Package tunnel holds the in-memory record of the addresses a host-side
 // script (scripts/*/build.sh, rebuild.sh) discovers and reports back for the
 // dashboard's Mobile menu to display: the current Cloudflare quick tunnel
-// URL for each of the two listeners cmd/flowera/main.go starts - the primary
+// URL for each of the two listeners cmd/decurix/main.go starts - the primary
 // one (full, unauthenticated control) and the internal/lanaccess-gated one -
 // and the machine's own LAN address for each of them too. All four are "how
 // do I reach this control plane from somewhere else", discovered outside the

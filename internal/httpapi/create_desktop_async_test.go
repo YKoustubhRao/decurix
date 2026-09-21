@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/desktop"
 )
 
 func TestCreateDesktopAsyncAndStatusPoll(t *testing.T) {

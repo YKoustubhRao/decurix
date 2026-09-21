@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/sqlitedb"
+	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
 
 // How autonomy is counted. It is stated once, here, and the dashboard repeats

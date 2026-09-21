@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/YKoustubhRao/flowera/internal/conversation"
-	"github.com/YKoustubhRao/flowera/internal/tasks"
-	"github.com/YKoustubhRao/flowera/internal/webui"
+	"github.com/YKoustubhRao/decurix/internal/conversation"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
+	"github.com/YKoustubhRao/decurix/internal/webui"
 )
 
 func postForm(t *testing.T, handler http.HandlerFunc, path, body string) *httptest.ResponseRecorder {
@@ -55,7 +55,7 @@ func TestTaskRecordEndToEnd(t *testing.T) {
 		  "action":{"kind":"click","outcome":"needs_approval","target":"button \"Pay now\""},"before_png":"`+shot+`"}`)
 
 	postJSON(t, s.queryTextHandler, "/api/querytext",
-		`{"desktop_id":"claude-box","task_id":"`+route.TaskID+`","content":"FLOWERA QUERY REQUEST","kind":"approval",
+		`{"desktop_id":"claude-box","task_id":"`+route.TaskID+`","content":"DECURIX QUERY REQUEST","kind":"approval",
 		  "reply":"Approval needed before I click button \"Pay now\": looks like a payment.","engine":"claude","model":"claude-opus-5","cost_usd":0.04}`)
 
 	reply := deliver(t, s, "claude-box", "yes")
@@ -64,7 +64,7 @@ func TestTaskRecordEndToEnd(t *testing.T) {
 	}
 
 	postJSON(t, s.queryTextHandler, "/api/querytext",
-		`{"desktop_id":"claude-box","task_id":"`+route.TaskID+`","content":"FLOWERA TASK COMPLETED","kind":"final",
+		`{"desktop_id":"claude-box","task_id":"`+route.TaskID+`","content":"DECURIX TASK COMPLETED","kind":"final",
 		  "reply":"Paid INV-1042.","cost_usd":0.09,"input_tokens":12000,"output_tokens":800}`)
 
 	rec := postForm(t, s.taskVerdictHandler, "/api/tasks/verdict", "task_id="+route.TaskID+"&verdict=correct")

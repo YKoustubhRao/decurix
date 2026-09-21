@@ -1,5 +1,5 @@
-# Flowera host GUI bridge (Windows). Runs ONE application on a private Win32 desktop object, so it has
-# no window on the person's own desktop, and lets Flowera see and drive it over stdin/stdout.
+# Decurix host GUI bridge (Windows). Runs ONE application on a private Win32 desktop object, so it has
+# no window on the person's own desktop, and lets Decurix see and drive it over stdin/stdout.
 # There is deliberately no network listener: only the process that started this script can reach the app.
 #
 # stdin, one command per line (fields separated by TAB where a line has more than one). Each command is answered by
@@ -678,7 +678,7 @@ public class Native {
 # from there afterwards. Two helpers starting together may both compile; each writes its own temporary file and the last
 # move wins, which is harmless because the contents are identical.
 if (-not ('Native' -as [type])) {
-    $bridgeDir = Join-Path $env:LOCALAPPDATA 'Flowera\bridge'
+    $bridgeDir = Join-Path $env:LOCALAPPDATA 'Decurix\bridge'
     $hash = [BitConverter]::ToString([Security.Cryptography.SHA1]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($NativeSource))).Replace('-', '').Substring(0, 12)
     $dll = Join-Path $bridgeDir "Native-$hash.dll"
     if (-not (Test-Path -LiteralPath $dll)) {
@@ -705,7 +705,7 @@ $SingleInstanceByName = @('chrome', 'msedge', 'brave', 'vivaldi', 'opera', 'chro
 # Browsers additionally skip their first-run and "make me your default" flows: on a private desktop nobody is there to answer
 # them, and a modal one blocks the keyboard for the whole window.
 $Browsers = @('chrome', 'msedge', 'brave', 'vivaldi', 'opera', 'chromium')
-$ProfileRoot = Join-Path $env:LOCALAPPDATA 'Flowera\hidden-profiles'
+$ProfileRoot = Join-Path $env:LOCALAPPDATA 'Decurix\hidden-profiles'
 
 function Test-SingleInstanceApp([string]$exe) {
     $base = [IO.Path]::GetFileNameWithoutExtension($exe).ToLower()
@@ -884,7 +884,7 @@ function Read-MouseArgs([string]$rest) {
     return @{ X = [int]$p[0]; Y = [int]$p[1]; Right = ($p -contains 'right'); Mods = $mods }
 }
 
-# Everything said to Flowera goes through Native.Reply, which keeps an answer from landing in the middle of a picture.
+# Everything said to Decurix goes through Native.Reply, which keeps an answer from landing in the middle of a picture.
 function Reply([string]$text) { [Native]::Reply($text) }
 
 [Native]::Init()

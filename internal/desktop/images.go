@@ -12,7 +12,7 @@ import (
 	"github.com/docker/docker/api/types/build"
 	"github.com/docker/docker/api/types/filters"
 
-	"github.com/YKoustubhRao/flowera"
+	"github.com/YKoustubhRao/decurix"
 )
 
 // desktopImage pairs an image tag with the Dockerfile that produces it.
@@ -21,7 +21,7 @@ type desktopImage struct {
 	Dockerfile string
 }
 
-// desktopImages lists the images built by Flowera: the unified base desktop
+// desktopImages lists the images built by Decurix: the unified base desktop
 // and the shared tools runtime image.
 var desktopImages = []desktopImage{
 	{Tag: desktopImageBasic, Dockerfile: "docker/desktop.basic.Dockerfile"},
@@ -44,7 +44,7 @@ func (m *Manager) MissingImages(ctx context.Context) []string {
 // BuildImages builds the unified desktop and shared tools images from the build
 // context embedded in the binary, streaming the daemon's progress to out.
 // It also tags the base image for developer and ai profiles, and populates
-// the shared flowera-tools volume.
+// the shared decurix-tools volume.
 func (m *Manager) BuildImages(ctx context.Context, out io.Writer, onlyMissing bool) error {
 	for _, img := range desktopImages {
 		if onlyMissing {
@@ -127,7 +127,7 @@ func (m *Manager) buildImage(ctx context.Context, out io.Writer, img desktopImag
 func writeBuildContext(w io.Writer) error {
 	tw := tar.NewWriter(w)
 
-	err := fs.WalkDir(flowera.DesktopBuildContext, ".", func(path string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(decurix.DesktopBuildContext, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -136,7 +136,7 @@ func writeBuildContext(w io.Writer) error {
 			return nil
 		}
 
-		data, err := flowera.DesktopBuildContext.ReadFile(path)
+		data, err := decurix.DesktopBuildContext.ReadFile(path)
 		if err != nil {
 			return err
 		}

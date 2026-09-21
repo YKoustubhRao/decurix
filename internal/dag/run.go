@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/sqlitedb"
+	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
 
 // recentRunsLimit bounds how many past runs Detail embeds for the editor

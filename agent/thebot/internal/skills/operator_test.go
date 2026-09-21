@@ -193,7 +193,7 @@ func TestOperatorPausesForApprovalAndResumes(t *testing.T) {
 	}
 }
 
-// "gui click e35" gives internal/safety nothing to match; only Flowera's
+// "gui click e35" gives internal/safety nothing to match; only Decurix's
 // screen gate knows e35 is a Send button. Its exit code must pause the job
 // exactly like a gated shell command, and an approval must run it again.
 func TestOperatorPausesWhenTheScreenGateStopsAGuiAction(t *testing.T) {

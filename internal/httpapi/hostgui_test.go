@@ -19,9 +19,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/desktop"
-	"github.com/YKoustubhRao/flowera/internal/webui"
-	"github.com/YKoustubhRao/flowera/internal/winhost"
+	"github.com/YKoustubhRao/decurix/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/webui"
+	"github.com/YKoustubhRao/decurix/internal/winhost"
 )
 
 // hostGUIServer returns a Server whose host helper is a bash loop speaking bridge.ps1's line protocol, plus the file

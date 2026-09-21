@@ -1,12 +1,12 @@
 #!/bin/bash
 #
-# Flowera macOS Setup: installs prerequisites (Homebrew, Docker Desktop,
+# Decurix macOS Setup: installs prerequisites (Homebrew, Docker Desktop,
 # Ollama, cloudflared, QEMU, jq, git) and configures host bindings.
 
 set -e
 
 echo "========================================"
-echo "        Flowera macOS Setup"
+echo "        Decurix macOS Setup"
 echo "========================================"
 echo ""
 
@@ -113,7 +113,7 @@ echo "Next steps:"
 echo "  - For a full clean-slate build (clears old desktops & database):"
 echo "      ./scripts/mac/rebuild.sh"
 echo ""
-echo "  - To open Flowera (retaining existing desktops and data):"
+echo "  - To open Decurix (retaining existing desktops and data):"
 echo "      ./scripts/mac/build.sh"
 echo ""
 echo "========================================"

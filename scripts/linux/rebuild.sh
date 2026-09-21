@@ -1,7 +1,7 @@
 #!/bin/bash
 #
-# Rebuilds Flowera from a clean slate: no leftover desktop_* containers or
-# volumes, and an EMPTY app database (flowera-data: task history, chat
+# Rebuilds Decurix from a clean slate: no leftover desktop_* containers or
+# volumes, and an EMPTY app database (decurix-data: task history, chat
 # transcripts, query notes, worker memory). Images are still rebuilt (so a
 # change to agent/ or a Dockerfile is picked up), but with Docker's normal
 # build cache, not --no-cache - a rebuild should be thorough about clearing
@@ -10,13 +10,13 @@
 #
 # What is deliberately NOT wiped:
 #   - .env (your configuration - API keys, OLLAMA_URL/MODEL, etc.)
-#   - the flowera_ollama volume (downloaded models - re-pulling a chat model
+#   - the decurix_ollama volume (downloaded models - re-pulling a chat model
 #     is a multi-GB download nobody wants on every rebuild)
 #
 # Flags:
 #   -y, --yes   skip the confirmation prompt (for scripted/CI use)
 #   --cli       skip the tunnel and open the terminal CLI instead (see
-#               `docker compose exec desktop-manager ./flowera --cli`, below)
+#               `docker compose exec desktop-manager ./decurix --cli`, below)
 
 set -e
 
@@ -43,15 +43,15 @@ for arg in "$@"; do
 done
 
 echo "========================================"
-echo " Flowera rebuild (clean slate)"
+echo " Decurix rebuild (clean slate)"
 echo "========================================"
 echo ""
 echo "This will permanently delete:"
 echo "  - every desktop_* container and volume"
-echo "  - the flowera-data volume: ALL task history, chats, query notes and"
+echo "  - the decurix-data volume: ALL task history, chats, query notes and"
 echo "    worker memory - this cannot be undone"
 echo ""
-echo "Kept as-is: .env, and the flowera_ollama volume (your pulled models)."
+echo "Kept as-is: .env, and the decurix_ollama volume (your pulled models)."
 echo ""
 
 if [ -z "$SKIP_CONFIRM" ]; then
@@ -73,7 +73,7 @@ fi
 cleanup() {
     echo ""
     stop_lan_tunnel
-    echo "=== Interrupted: stopping Flowera and its containers ==="
+    echo "=== Interrupted: stopping Decurix and its containers ==="
 
     docker compose down || true
 
@@ -82,7 +82,7 @@ cleanup() {
         --format "{{.ID}}" \
         | xargs -r docker rm -f
 
-    docker rm -f flowera-ollama >/dev/null 2>&1 || true
+    docker rm -f decurix-ollama >/dev/null 2>&1 || true
 }
 
 trap 'cleanup; exit 130' INT TERM
@@ -101,7 +101,7 @@ if [ ! -f .env ]; then
 fi
 
 echo ""
-echo "=== Stopping Flowera ==="
+echo "=== Stopping Decurix ==="
 
 docker compose down
 
@@ -122,15 +122,15 @@ docker volume ls \
     | xargs -r docker volume rm
 
 echo ""
-echo "=== Wiping the app database (flowera-data) ==="
+echo "=== Wiping the app database (decurix-data) ==="
 
-docker volume rm flowera-data >/dev/null 2>&1 \
+docker volume rm decurix-data >/dev/null 2>&1 \
     || echo "(nothing to remove)"
 
 echo ""
 echo "=== Removing the bundled Ollama container (keeping its model volume) ==="
 
-docker rm -f flowera-ollama >/dev/null 2>&1 \
+docker rm -f decurix-ollama >/dev/null 2>&1 \
     || echo "(nothing to remove)"
 
 export DOCKER_BUILDKIT=1
@@ -158,23 +158,23 @@ ensure_ollama_ready
 echo ""
 echo "=== Configuring host filesystem integration ==="
 if [ -d /mnt/c ]; then
-    export FLOWERA_HOST_MNT_C="/mnt/c"
+    export DECURIX_HOST_MNT_C="/mnt/c"
     echo "Discovered Windows filesystem at /mnt/c (WSL environment)"
-    # Pre-cache Windows applications list to /tmp/flowera_host_apps.json
+    # Pre-cache Windows applications list to /tmp/decurix_host_apps.json
     if [ -x "/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe" ]; then
-        /mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -NonInteractive -InputFormat None -Command "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress" < /dev/null > /tmp/flowera_host_apps.json 2>/dev/null && echo "Pre-cached Windows applications via PowerShell." || true
+        /mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -NonInteractive -InputFormat None -Command "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress" < /dev/null > /tmp/decurix_host_apps.json 2>/dev/null && echo "Pre-cached Windows applications via PowerShell." || true
     elif [ -x "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe" ]; then
-        /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -NonInteractive -InputFormat None -Command "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress" < /dev/null > /tmp/flowera_host_apps.json 2>/dev/null && echo "Pre-cached Windows applications via PowerShell." || true
+        /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -NonInteractive -InputFormat None -Command "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress" < /dev/null > /tmp/decurix_host_apps.json 2>/dev/null && echo "Pre-cached Windows applications via PowerShell." || true
     elif command -v powershell.exe >/dev/null 2>&1; then
-        powershell.exe -NoProfile -NonInteractive -InputFormat None -Command "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress" < /dev/null > /tmp/flowera_host_apps.json 2>/dev/null && echo "Pre-cached Windows applications via PowerShell." || true
+        powershell.exe -NoProfile -NonInteractive -InputFormat None -Command "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress" < /dev/null > /tmp/decurix_host_apps.json 2>/dev/null && echo "Pre-cached Windows applications via PowerShell." || true
     fi
 else
-    export FLOWERA_HOST_MNT_C="/"
+    export DECURIX_HOST_MNT_C="/"
 fi
-export FLOWERA_HOST_HOME="${HOME:-/home}"
+export DECURIX_HOST_HOME="${HOME:-/home}"
 
 echo ""
-echo "=== Starting Flowera ==="
+echo "=== Starting Decurix ==="
 
 docker compose up -d --build
 
@@ -183,30 +183,30 @@ echo "=== Waiting for dashboard ==="
 
 for i in {1..60}; do
     if curl -fsS http://127.0.0.1:8080/ >/dev/null 2>&1; then
-        echo "Flowera dashboard is running."
+        echo "Decurix dashboard is running."
         break
     fi
 
-    echo "Waiting for Flowera... ($i/60)"
+    echo "Waiting for Decurix... ($i/60)"
     sleep 2
 done
 
 if ! curl -fsS http://127.0.0.1:8080/ >/dev/null 2>&1; then
-    echo "ERROR: Flowera dashboard is not responding on port 8080."
+    echo "ERROR: Decurix dashboard is not responding on port 8080."
     docker compose logs --tail=100
     exit 1
 fi
 
 echo ""
 echo "========================================"
-echo " Flowera is running (clean slate)"
+echo " Decurix is running (clean slate)"
 echo "========================================"
 echo ""
-echo "Idle desktops stop automatically after 5 minutes (set FLOWERA_IDLE_STOP_MINUTES=0 in .env to disable, or to another number of minutes)."
+echo "Idle desktops stop automatically after 5 minutes (set DECURIX_IDLE_STOP_MINUTES=0 in .env to disable, or to another number of minutes)."
 
-# FLOWERA_LAN_PORT in .env changes which port the access-code-gated listener
+# DECURIX_LAN_PORT in .env changes which port the access-code-gated listener
 # binds; read_env_var comes from lib/ollama-setup.sh, already sourced above.
-lan_port="$(read_env_var FLOWERA_LAN_PORT)"
+lan_port="$(read_env_var DECURIX_LAN_PORT)"
 lan_port="${lan_port:-8090}"
 
 # The machine's own address on whatever network it's on, so both the admin
@@ -252,7 +252,7 @@ if command -v jq >/dev/null 2>&1; then
         # instead of asking them to type it into the gate's form.
         if [ -n "$lan_url" ]; then
             echo ""
-            echo "Open it yourself without typing the code: $lan_url/__flowera_access/authenticate?code=$lan_code"
+            echo "Open it yourself without typing the code: $lan_url/__decurix_access/authenticate?code=$lan_code"
         fi
     fi
 fi
@@ -260,17 +260,17 @@ fi
 # The rebuild itself is done at this point (fresh images, fresh desktops,
 # empty database, dashboard responding) - clear the interrupt trap before
 # handing off to the CLI so leaving it (however that happens) just leaves
-# Flowera running, the same as leaving build.sh's CLI does, rather than
+# Decurix running, the same as leaving build.sh's CLI does, rather than
 # tearing down the stack this script just finished rebuilding.
 if [ -n "$CLI_MODE" ]; then
     trap - INT TERM
 
     echo ""
-    echo "=== Opening the Flowera CLI ==="
-    echo "(Flowera keeps running after you exit; 'exit' or Ctrl+D to leave.)"
+    echo "=== Opening the Decurix CLI ==="
+    echo "(Decurix keeps running after you exit; 'exit' or Ctrl+D to leave.)"
     echo ""
 
-    docker compose exec desktop-manager ./flowera --cli
+    docker compose exec desktop-manager ./decurix --cli
     exit $?
 fi
 

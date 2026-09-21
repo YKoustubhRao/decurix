@@ -1,12 +1,12 @@
 #!/bin/bash
 #
-# Cross-compiles the Flowera control plane into standalone executables and
+# Cross-compiles the Decurix control plane into standalone executables and
 # packages each one as a downloadable archive.
 #
 # The web templates (web/embed.go) and the desktop image build context
 # (embed.go) are compiled into the binary, so each executable is fully
 # self-contained: it needs only Docker on the host, and builds its own desktop
-# images via `flowera --build-images`. The archives add nothing it depends on,
+# images via `decurix --build-images`. The archives add nothing it depends on,
 # just a README and an example config.
 #
 # Usage:
@@ -86,7 +86,7 @@ if [ -z "$VERSION" ]; then
 fi
 
 echo "========================================"
-echo " Building Flowera $VERSION"
+echo " Building Decurix $VERSION"
 echo "========================================"
 echo ""
 echo "Go:      $(go version)"
@@ -106,31 +106,31 @@ trap 'rm -rf "$STAGE_ROOT"' EXIT
 stageBundle() {
     local dest="$1"
     local goos="$2"
-    local run="./flowera"
+    local run="./decurix"
     local copyEnv="cp .env.example .env"
-    local dataDir="~/.config/flowera"
+    local dataDir="~/.config/decurix"
 
     if [ "$goos" = "windows" ]; then
-        run=".\\flowera.exe"
+        run=".\\decurix.exe"
         copyEnv="copy .env.example .env"
-        dataDir="%AppData%\\flowera"
+        dataDir="%AppData%\\decurix"
     elif [ "$goos" = "darwin" ]; then
-        dataDir="~/Library/Application Support/flowera"
+        dataDir="~/Library/Application Support/decurix"
     fi
 
     cp .env.example "$dest/.env.example"
 
     cat > "$dest/README.txt" <<EOF
-Flowera $VERSION
+Decurix $VERSION
 ================
 
-This bundle is the Flowera control plane as a single self-contained
+This bundle is the Decurix control plane as a single self-contained
 executable. It needs no runtime, no repo checkout and no files beside it --
 the dashboard and the desktop image build context are compiled in.
 
 Requirements
 ------------
-  * Docker (running, and reachable by the user running Flowera)
+  * Docker (running, and reachable by the user running Decurix)
   * ~15 GB of disk for the three desktop images
 
 Setup
@@ -139,7 +139,7 @@ Setup
 
          $run --build-images
 
-     This builds flowera-desktop:basic, :developer and :ai straight from the
+     This builds decurix-desktop:basic, :developer and :ai straight from the
      executable. It takes a while the first time. Add --rebuild to rebuild
      images that already exist.
 
@@ -148,7 +148,7 @@ Setup
          $copyEnv
 
      Edit .env -- set DEFAULT_PASSWORD (the VNC password for new desktops).
-     Flowera reads .env from the working directory, or from the folder the
+     Decurix reads .env from the working directory, or from the folder the
      executable lives in. Plain environment variables work too. The Claude
      harness needs no .env entry -- log in from the dashboard instead, next
      to the "Claude Code" option when creating a desktop.
@@ -171,14 +171,14 @@ Setup
 
 Notes
 -----
-  * Flowera listens on port 8080 and talks to Docker through the local Docker
+  * Decurix listens on port 8080 and talks to Docker through the local Docker
     socket / named pipe. On Linux the user must be able to reach
     /var/run/docker.sock (usually: be in the "docker" group).
   * Task records, chats, queries, worker memory and action screenshots
-    are kept in flowera.db under $dataDir, so they survive a
-    restart. Set FLOWERA_DATA_DIR to keep them somewhere else.
+    are kept in decurix.db under $dataDir, so they survive a
+    restart. Set DECURIX_DATA_DIR to keep them somewhere else.
   * $run --version prints the build this bundle was cut from.
-  * Full docs: https://github.com/YKoustubhRao/flowera
+  * Full docs: https://github.com/YKoustubhRao/decurix
 EOF
 }
 
@@ -214,7 +214,7 @@ for target in "${TARGETS[@]}"; do
         exit 1
     fi
 
-    name="flowera_${VERSION}_${goos}_${goarch}"
+    name="decurix_${VERSION}_${goos}_${goarch}"
     ext=""
 
     if [ "$goos" = "windows" ]; then
@@ -232,7 +232,7 @@ for target in "${TARGETS[@]}"; do
         -trimpath \
         -ldflags "-s -w -X main.version=$VERSION" \
         -o "$OUTPUT_DIR/${name}${ext}" \
-        ./cmd/flowera
+        ./cmd/decurix
 
     echo "  binary:  $OUTPUT_DIR/${name}${ext}"
 
@@ -243,8 +243,8 @@ for target in "${TARGETS[@]}"; do
     stage="$STAGE_ROOT/$name"
     mkdir -p "$stage"
 
-    cp "$OUTPUT_DIR/${name}${ext}" "$stage/flowera${ext}"
-    chmod +x "$stage/flowera${ext}"
+    cp "$OUTPUT_DIR/${name}${ext}" "$stage/decurix${ext}"
+    chmod +x "$stage/decurix${ext}"
     stageBundle "$stage" "$goos"
     archiveBundle "$name" "$stage" "$goos"
 done
@@ -256,9 +256,9 @@ echo "=== Checksums ==="
     cd "$OUTPUT_DIR"
 
     if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum flowera_* > SHA256SUMS
+        sha256sum decurix_* > SHA256SUMS
     elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 flowera_* > SHA256SUMS
+        shasum -a 256 decurix_* > SHA256SUMS
     else
         echo "warning: no sha256sum/shasum found, skipping SHA256SUMS" >&2
     fi
@@ -266,7 +266,7 @@ echo "=== Checksums ==="
 
 echo ""
 echo "========================================"
-echo " Flowera $VERSION built"
+echo " Decurix $VERSION built"
 echo "========================================"
 echo ""
 

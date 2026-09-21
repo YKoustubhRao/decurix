@@ -109,7 +109,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 
 ENV PATH="/home/headless/.cargo/bin:${PATH}"
 
-# Computer use: what flowera_agent/computer needs to see and work the screen.
+# Computer use: what decurix_agent/computer needs to see and work the screen.
 # xdotool sends real input (XTEST); python3-xlib reads the framebuffer and the
 # window list; at-spi2-core, libatk-adaptor and the Atspi bindings expose GTK,
 # XFCE and LibreOffice widgets by role and name. ~3 MB in all. Chromium is read
@@ -132,13 +132,13 @@ RUN apt-get update && \
 ENV NO_AT_BRIDGE=0
 
 # A modern look for the desktop a human actually opens: Ubuntu's own Yaru
-# theme (GTK + xfwm4, in a red accent to match Flowera's own palette),
+# theme (GTK + xfwm4, in a red accent to match Decurix's own palette),
 # Papirus icons (colorful, actively maintained, much clearer at a glance
 # than the base image's flat default set) and the Breeze cursor. Inter is
 # a screen-tuned UI font, used in place of the base image's plain "Sans".
 # Verified live over VNC: this alone takes the desktop from stock
 # Xubuntu-grey to something that looks intentionally designed - see
-# flowera-xsettings.xml/flowera-xfwm4.xml below for where it's applied.
+# decurix-xsettings.xml/decurix-xfwm4.xml below for where it's applied.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         yaru-theme-gtk \
@@ -149,12 +149,12 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Flowera agent
+# Decurix agent
 COPY agent/vm_server.py /opt/vm_server.py
-COPY agent/flowera_agent /opt/flowera_agent
+COPY agent/decurix_agent /opt/decurix_agent
 COPY agent/start_agent_terminal.sh /opt/start_agent_terminal.sh
 # The `gui` command: the screen as a shell command, for the engines that
-# work through shell commands (flowera_agent/computer/cli.py).
+# work through shell commands (decurix_agent/computer/cli.py).
 COPY agent/gui /usr/local/bin/gui
 # TheBot harness's soul binary - built above from real source, started
 # conditionally by start_agent_terminal.sh only when AGENT_HARNESS=thebot.
@@ -177,18 +177,18 @@ COPY agent/browser-agent/requirements.txt /opt/browser-agent/requirements.txt
 RUN python3 -m venv /opt/browser-agent-venv && \
     /opt/browser-agent-venv/bin/pip install --no-cache-dir -r /opt/browser-agent/requirements.txt
 # Default desktop wallpaper, replacing the base image's stock XFCE one -
-# end users should see Flowera branding, not generic XFCE art, the moment
+# end users should see Decurix branding, not generic XFCE art, the moment
 # a desktop opens.
-COPY agent/flowera-wallpaper.svg /opt/flowera-wallpaper.svg
-# The taskbar's Start button icon (flowera-panel.xml's whiskermenu plugin) -
+COPY agent/decurix-wallpaper.svg /opt/decurix-wallpaper.svg
+# The taskbar's Start button icon (decurix-panel.xml's whiskermenu plugin) -
 # an absolute path rather than an icon-theme name, so it renders regardless
 # of which icon theme is active.
-COPY agent/flowera-start-icon.svg /opt/flowera-start-icon.svg
+COPY agent/decurix-start-icon.svg /opt/decurix-start-icon.svg
 # Chromium's launch flags, without the base image's hardcoded --no-sandbox
 # (see agent/chromium-browser.init). Seeded into /home/headless for new
 # desktops, and kept in /opt for start_agent_terminal.sh to reinstall into
 # existing ones, whose home is a volume this layer never reaches.
-COPY agent/chromium-browser.init /opt/flowera-chromium.init
+COPY agent/chromium-browser.init /opt/decurix-chromium.init
 COPY agent/chromium-browser.init /home/headless/.chromium-browser.init
 
 RUN chmod +x /opt/vm_server.py /opt/start_agent_terminal.sh /opt/soul /usr/local/bin/gui
@@ -201,50 +201,50 @@ RUN mkdir -p /home/headless/.config/autostart \
     && chown -R headless:headless /home/headless/.config \
     && chown headless:headless /home/headless
 
-COPY agent/flowera-agent.desktop /home/headless/.config/autostart/flowera-agent.desktop
+COPY agent/decurix-agent.desktop /home/headless/.config/autostart/decurix-agent.desktop
 # Pre-seeds four xfconf channels so XFCE starts already looking like
-# Flowera instead of generating the base image's own defaults on first
-# launch: the wallpaper (flowera-desktop-wallpaper.xml), the GTK
-# theme/icons/font/cursor (flowera-xsettings.xml), the matching
-# window-manager theme (flowera-xfwm4.xml) and a single bottom taskbar in
+# Decurix instead of generating the base image's own defaults on first
+# launch: the wallpaper (decurix-desktop-wallpaper.xml), the GTK
+# theme/icons/font/cursor (decurix-xsettings.xml), the matching
+# window-manager theme (decurix-xfwm4.xml) and a single bottom taskbar in
 # place of the base image's own top-menu-bar-plus-autohide-dock layout
-# (flowera-panel.xml) - a Start button (whiskermenu) with pinned launchers
+# (decurix-panel.xml) - a Start button (whiskermenu) with pinned launchers
 # at the left, running windows centered, and the system tray/clock at the
 # right, the layout a Windows user already knows. Each file only sets the
 # properties it cares about - everything else still falls back to
 # xfwm4/xfsettingsd's own defaults, verified live by diffing a fresh
 # session's full property dump against one seeded with just these.
-COPY agent/flowera-desktop-wallpaper.xml /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml
-COPY agent/flowera-xsettings.xml /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml
-COPY agent/flowera-xfwm4.xml /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml
-COPY agent/flowera-panel.xml /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml
+COPY agent/decurix-desktop-wallpaper.xml /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml
+COPY agent/decurix-xsettings.xml /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml
+COPY agent/decurix-xfwm4.xml /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml
+COPY agent/decurix-panel.xml /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml
 # The taskbar's three pinned launchers (Files/Browser/Terminal) - each
 # xfce4-panel launcher plugin keeps its own desktop-entry under
 # launcher-<plugin-id>/, keyed by the plugin ID hardcoded in
-# flowera-panel.xml's own plugin-3/4/5, not by the desktop file's name.
-COPY agent/flowera-launcher-files.desktop /home/headless/.config/xfce4/panel/launcher-3/flowera-files.desktop
-COPY agent/flowera-launcher-browser.desktop /home/headless/.config/xfce4/panel/launcher-4/flowera-browser.desktop
-COPY agent/flowera-launcher-terminal.desktop /home/headless/.config/xfce4/panel/launcher-5/flowera-terminal.desktop
+# decurix-panel.xml's own plugin-3/4/5, not by the desktop file's name.
+COPY agent/decurix-launcher-files.desktop /home/headless/.config/xfce4/panel/launcher-3/decurix-files.desktop
+COPY agent/decurix-launcher-browser.desktop /home/headless/.config/xfce4/panel/launcher-4/decurix-browser.desktop
+COPY agent/decurix-launcher-terminal.desktop /home/headless/.config/xfce4/panel/launcher-5/decurix-terminal.desktop
 
-RUN chmod 644 /home/headless/.config/autostart/flowera-agent.desktop \
+RUN chmod 644 /home/headless/.config/autostart/decurix-agent.desktop \
     /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml \
     /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml \
     /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml \
     /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml \
-    /home/headless/.config/xfce4/panel/launcher-3/flowera-files.desktop \
-    /home/headless/.config/xfce4/panel/launcher-4/flowera-browser.desktop \
-    /home/headless/.config/xfce4/panel/launcher-5/flowera-terminal.desktop \
-    /home/headless/.chromium-browser.init /opt/flowera-chromium.init /opt/flowera-start-icon.svg \
+    /home/headless/.config/xfce4/panel/launcher-3/decurix-files.desktop \
+    /home/headless/.config/xfce4/panel/launcher-4/decurix-browser.desktop \
+    /home/headless/.config/xfce4/panel/launcher-5/decurix-terminal.desktop \
+    /home/headless/.chromium-browser.init /opt/decurix-chromium.init /opt/decurix-start-icon.svg \
     && chown headless:headless \
-    /home/headless/.config/autostart/flowera-agent.desktop \
+    /home/headless/.config/autostart/decurix-agent.desktop \
     /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml \
     /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml \
     /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml \
     /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml \
-    /home/headless/.config/xfce4/panel/launcher-3/flowera-files.desktop \
-    /home/headless/.config/xfce4/panel/launcher-4/flowera-browser.desktop \
-    /home/headless/.config/xfce4/panel/launcher-5/flowera-terminal.desktop \
-    /home/headless/.chromium-browser.init /opt/flowera-start-icon.svg
+    /home/headless/.config/xfce4/panel/launcher-3/decurix-files.desktop \
+    /home/headless/.config/xfce4/panel/launcher-4/decurix-browser.desktop \
+    /home/headless/.config/xfce4/panel/launcher-5/decurix-terminal.desktop \
+    /home/headless/.chromium-browser.init /opt/decurix-start-icon.svg
 
 # Restore the base image's own permissions on /etc/passwd and /etc/group.
 #

@@ -5,51 +5,51 @@ services:
       context: .
       dockerfile: docker/Dockerfile
 
-    container_name: flowera
+    container_name: decurix
 
     ports:
       # The primary listener has no login: it can create desktops and run
       # commands on the host. Published on loopback only, so nothing else on
-      # the network can reach it (FLOWERA_ADMIN_BIND=0.0.0.0 undoes that).
+      # the network can reach it (DECURIX_ADMIN_BIND=0.0.0.0 undoes that).
       # Desktops don't use this mapping - they call back over
-      # flowera-network (FLOWERA_CONTROL_PLANE_URL below).
-      - "${FLOWERA_ADMIN_BIND:-127.0.0.1}:8080:8080"
+      # decurix-network (DECURIX_CONTROL_PLANE_URL below).
+      - "${DECURIX_ADMIN_BIND:-127.0.0.1}:8080:8080"
       # The LAN/tunnel-facing listener (internal/lanaccess) - gated by an
       # access code, unlike 8080 above. What a Cloudflare tunnel or a direct
-      # LAN address should be pointed at. FLOWERA_LAN_PORT in .env changes
+      # LAN address should be pointed at. DECURIX_LAN_PORT in .env changes
       # the port on both sides at once (compose's own variable substitution
       # here; the binary reads the same .env, copied into the image).
-      - "${FLOWERA_LAN_PORT:-8090}:${FLOWERA_LAN_PORT:-8090}"
+      - "${DECURIX_LAN_PORT:-8090}:${DECURIX_LAN_PORT:-8090}"
 
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       # Task records, chats, help requests, worker memory and action
-      # screenshots (flowera.db). Without a volume, every rebuild of this
+      # screenshots (decurix.db). Without a volume, every rebuild of this
       # container would start the records from nothing.
-      - flowera-data:/data
+      - decurix-data:/data
       # Mount host Windows C: drive and Linux user home for host apps and session discovery
-      - ${FLOWERA_HOST_MNT_C:-/mnt/c}:/mnt/c:ro
-      - ${FLOWERA_HOST_HOME:-/home}:/host-home:ro
+      - ${DECURIX_HOST_MNT_C:-/mnt/c}:/mnt/c:ro
+      - ${DECURIX_HOST_HOME:-/home}:/host-home:ro
       - /tmp:/tmp
 
     environment:
-      - FLOWERA_DATA_DIR=/data
-      - FLOWERA_CONTROL_PLANE_URL=http://flowera:8080
-      - FLOWERA_HOST_MNT_C=/mnt/c
-      - FLOWERA_HOST_HOME=/host-home
+      - DECURIX_DATA_DIR=/data
+      - DECURIX_CONTROL_PLANE_URL=http://decurix:8080
+      - DECURIX_HOST_MNT_C=/mnt/c
+      - DECURIX_HOST_HOME=/host-home
 
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
     networks:
-      - flowera-network
+      - decurix-network
 
     restart: unless-stopped
 
 networks:
-  flowera-network:
-    name: flowera-network
+  decurix-network:
+    name: decurix-network
 
 volumes:
-  flowera-data:
-    name: flowera-data
+  decurix-data:
+    name: decurix-data

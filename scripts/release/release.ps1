@@ -1,12 +1,12 @@
 <#
 .SYNOPSIS
-    Cross-compiles the Flowera control plane into standalone executables and
+    Cross-compiles the Decurix control plane into standalone executables and
     packages each one as a downloadable archive.
 .DESCRIPTION
     The web templates (web/embed.go) and the desktop image build context
     (embed.go) are compiled into the binary, so each executable is fully
     self-contained: it needs only Docker on the host, and builds its own
-    desktop images via `flowera --build-images`. The archives add nothing it
+    desktop images via `decurix --build-images`. The archives add nothing it
     depends on, just a README and an example config.
 .PARAMETER Version
     Version string stamped into the binary. Defaults to `git describe`.
@@ -64,7 +64,7 @@ if ([string]::IsNullOrWhiteSpace($Output)) {
 }
 
 Write-Host "========================================"
-Write-Host " Building Flowera $Version"
+Write-Host " Building Decurix $Version"
 Write-Host "========================================"
 Write-Host ""
 Write-Host "Go:      $(go version)"
@@ -76,7 +76,7 @@ if (Test-Path $Output) {
 }
 
 $outDir = (New-Item -ItemType Directory -Force -Path $Output).FullName
-$stageRoot = (New-Item -ItemType Directory -Force -Path (Join-Path ([System.IO.Path]::GetTempPath()) ("flowera-release-" + [guid]::NewGuid()))).FullName
+$stageRoot = (New-Item -ItemType Directory -Force -Path (Join-Path ([System.IO.Path]::GetTempPath()) ("decurix-release-" + [guid]::NewGuid()))).FullName
 
 # Writes the human-facing extras that sit next to the binary in an archive: an
 # example config and a README for this OS ($Goos). The binary needs neither --
@@ -86,32 +86,32 @@ function Copy-Bundle {
     param([string]$Dest, [string]$Goos)
 
     if ($Goos -eq "windows") {
-        $run = ".\flowera.exe"
+        $run = ".\decurix.exe"
         $copyEnv = "copy .env.example .env"
-        $dataDir = "%AppData%\flowera"
+        $dataDir = "%AppData%\decurix"
     } else {
-        $run = "./flowera"
+        $run = "./decurix"
         $copyEnv = "cp .env.example .env"
-        $dataDir = "~/.config/flowera"
+        $dataDir = "~/.config/decurix"
     }
 
     if ($Goos -eq "darwin") {
-        $dataDir = "~/Library/Application Support/flowera"
+        $dataDir = "~/Library/Application Support/decurix"
     }
 
     Copy-Item ".env.example" (Join-Path $Dest ".env.example")
 
     $readme = @"
-Flowera $Version
+Decurix $Version
 ================
 
-This bundle is the Flowera control plane as a single self-contained
+This bundle is the Decurix control plane as a single self-contained
 executable. It needs no runtime, no repo checkout and no files beside it --
 the dashboard and the desktop image build context are compiled in.
 
 Requirements
 ------------
-  * Docker (running, and reachable by the user running Flowera)
+  * Docker (running, and reachable by the user running Decurix)
   * ~15 GB of disk for the three desktop images
 
 Setup
@@ -120,7 +120,7 @@ Setup
 
          $run --build-images
 
-     This builds flowera-desktop:basic, :developer and :ai straight from the
+     This builds decurix-desktop:basic, :developer and :ai straight from the
      executable. It takes a while the first time. Add --rebuild to rebuild
      images that already exist.
 
@@ -129,7 +129,7 @@ Setup
          $copyEnv
 
      Edit .env -- set DEFAULT_PASSWORD (the VNC password for new desktops).
-     Flowera reads .env from the working directory, or from the folder the
+     Decurix reads .env from the working directory, or from the folder the
      executable lives in. Plain environment variables work too. The Claude
      harness needs no .env entry -- log in from the dashboard instead, next
      to the "Claude Code" option when creating a desktop.
@@ -152,14 +152,14 @@ Setup
 
 Notes
 -----
-  * Flowera listens on port 8080 and talks to Docker through the local Docker
+  * Decurix listens on port 8080 and talks to Docker through the local Docker
     socket / named pipe. On Linux the user must be able to reach
     /var/run/docker.sock (usually: be in the "docker" group).
   * Task records, chats, queries, worker memory and action screenshots
-    are kept in flowera.db under $dataDir, so they survive a
-    restart. Set FLOWERA_DATA_DIR to keep them somewhere else.
+    are kept in decurix.db under $dataDir, so they survive a
+    restart. Set DECURIX_DATA_DIR to keep them somewhere else.
   * $run --version prints the build this bundle was cut from.
-  * Full docs: https://github.com/YKoustubhRao/flowera
+  * Full docs: https://github.com/YKoustubhRao/decurix
 "@
 
     Set-Content -Path (Join-Path $Dest "README.txt") -Value $readme
@@ -175,7 +175,7 @@ foreach ($target in $Targets) {
 
     $goos = $parts[0]
     $goarch = $parts[1]
-    $name = "flowera_${Version}_${goos}_${goarch}"
+    $name = "decurix_${Version}_${goos}_${goarch}"
     $ext = if ($goos -eq "windows") { ".exe" } else { "" }
     $binaryPath = Join-Path $outDir "$name$ext"
 
@@ -189,7 +189,7 @@ foreach ($target in $Targets) {
     $env:GOOS = $goos
     $env:GOARCH = $goarch
 
-    go build -trimpath -ldflags "-s -w -X main.version=$Version" -o $binaryPath ./cmd/flowera
+    go build -trimpath -ldflags "-s -w -X main.version=$Version" -o $binaryPath ./cmd/decurix
 
     Remove-Item Env:CGO_ENABLED, Env:GOOS, Env:GOARCH
 
@@ -201,7 +201,7 @@ foreach ($target in $Targets) {
 
     $stage = (New-Item -ItemType Directory -Force -Path (Join-Path $stageRoot $name)).FullName
 
-    Copy-Item $binaryPath (Join-Path $stage "flowera$ext")
+    Copy-Item $binaryPath (Join-Path $stage "decurix$ext")
     Copy-Bundle -Dest $stage -Goos $goos
 
     # Zip everywhere: it is what Compress-Archive gives us natively, and
@@ -215,7 +215,7 @@ foreach ($target in $Targets) {
 Write-Host ""
 Write-Host "=== Checksums ==="
 
-$sums = Get-ChildItem -Path $outDir -File -Filter "flowera_*" | ForEach-Object {
+$sums = Get-ChildItem -Path $outDir -File -Filter "decurix_*" | ForEach-Object {
     $hash = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower()
     "$hash  $($_.Name)"
 }
@@ -226,7 +226,7 @@ Remove-Item -Recurse -Force $stageRoot
 
 Write-Host ""
 Write-Host "========================================"
-Write-Host " Flowera $Version built"
+Write-Host " Decurix $Version built"
 Write-Host "========================================"
 Write-Host ""
 

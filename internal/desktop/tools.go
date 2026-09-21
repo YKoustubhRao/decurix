@@ -9,8 +9,8 @@ import (
 	"github.com/docker/docker/api/types/volume"
 )
 
-// EnsureToolsVolume ensures the shared flowera-tools volume exists and is populated
-// with the executables from flowera-tools:latest.
+// EnsureToolsVolume ensures the shared decurix-tools volume exists and is populated
+// with the executables from decurix-tools:latest.
 func (m *Manager) EnsureToolsVolume(ctx context.Context) error {
 	m.toolsMu.Lock()
 	defer m.toolsMu.Unlock()
@@ -27,7 +27,7 @@ func (m *Manager) EnsureToolsVolume(ctx context.Context) error {
 		_, err = m.client.VolumeCreate(ctx, volume.CreateOptions{
 			Name: ToolsVolumeName,
 			Labels: map[string]string{
-				"flowera": "true",
+				"decurix": "true",
 			},
 		})
 		if err != nil {
@@ -48,16 +48,16 @@ func (m *Manager) EnsureToolsVolume(ctx context.Context) error {
 	return nil
 }
 
-// PopulateToolsVolume populates the flowera-tools volume using the tools image.
+// PopulateToolsVolume populates the decurix-tools volume using the tools image.
 func (m *Manager) PopulateToolsVolume(ctx context.Context) error {
 	log.Printf("Populating %s from %s...", ToolsVolumeName, ToolsImage)
 
-	containerName := fmt.Sprintf("flowera_tools_init_%s", randomHex(4))
+	containerName := fmt.Sprintf("decurix_tools_init_%s", randomHex(4))
 	resp, err := m.client.ContainerCreate(
 		ctx,
 		&container.Config{
 			Image: ToolsImage,
-			Cmd:   []string{"sh", "-c", "if [ ! -f /target/.flowera-tools-ready ]; then cp -a /opt/tools/. /target/ && touch /target/.flowera-tools-ready && sync; fi"},
+			Cmd:   []string{"sh", "-c", "if [ ! -f /target/.decurix-tools-ready ]; then cp -a /opt/tools/. /target/ && touch /target/.decurix-tools-ready && sync; fi"},
 		},
 		&container.HostConfig{
 			Binds: []string{
@@ -95,7 +95,7 @@ func (m *Manager) PopulateToolsVolume(ctx context.Context) error {
 	return nil
 }
 
-// EnsureCacheVolume ensures the shared flowera-cache volume exists and is writable
+// EnsureCacheVolume ensures the shared decurix-cache volume exists and is writable
 // by desktop containers to deduplicate package caches across desktops.
 func (m *Manager) EnsureCacheVolume(ctx context.Context) error {
 	vol, err := m.client.VolumeInspect(ctx, CacheVolumeName)
@@ -107,7 +107,7 @@ func (m *Manager) EnsureCacheVolume(ctx context.Context) error {
 	_, err = m.client.VolumeCreate(ctx, volume.CreateOptions{
 		Name: CacheVolumeName,
 		Labels: map[string]string{
-			"flowera": "true",
+			"decurix": "true",
 		},
 	})
 	if err != nil {

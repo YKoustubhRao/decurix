@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/YKoustubhRao/flowera/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/desktop"
 )
 
 // TestSendRequestError covers the mapping a human actually sees in the chat's

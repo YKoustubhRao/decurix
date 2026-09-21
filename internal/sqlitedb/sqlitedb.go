@@ -20,22 +20,22 @@ import (
 )
 
 // FileName is the database file inside the data directory.
-const FileName = "flowera.db"
+const FileName = "decurix.db"
 
 // DataDirEnv names the directory the database lives in.
-const DataDirEnv = "FLOWERA_DATA_DIR"
+const DataDirEnv = "DECURIX_DATA_DIR"
 
-// DataDir returns where the control plane keeps its records: FLOWERA_DATA_DIR
-// when set, otherwise a "flowera" directory under the user's config directory,
+// DataDir returns where the control plane keeps its records: DECURIX_DATA_DIR
+// when set, otherwise a "decurix" directory under the user's config directory,
 // so a downloaded binary finds the same records whichever directory it is
-// started from. The Docker image sets FLOWERA_DATA_DIR to its /data volume.
+// started from. The Docker image sets DECURIX_DATA_DIR to its /data volume.
 func DataDir() string {
 	if dir := strings.TrimSpace(os.Getenv(DataDirEnv)); dir != "" {
 		return dir
 	}
 
 	if base, err := os.UserConfigDir(); err == nil {
-		return filepath.Join(base, "flowera")
+		return filepath.Join(base, "decurix")
 	}
 
 	return "data"

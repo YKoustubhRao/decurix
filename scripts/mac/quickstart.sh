@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# One-shot script: takes a fresh macOS checkout all the way to a running Flowera
+# One-shot script: takes a fresh macOS checkout all the way to a running Decurix
 # dashboard. Runs scripts/mac/setup.sh (if prerequisites are missing) and then
 # scripts/mac/build.sh.
 
@@ -10,7 +10,7 @@ set -e
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 echo "========================================"
-echo " Flowera macOS quickstart"
+echo " Decurix macOS quickstart"
 echo "========================================"
 echo ""
 
