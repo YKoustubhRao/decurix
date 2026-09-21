@@ -13,10 +13,12 @@ import (
 // They are here so the choice is explainable and testable; the comments say
 // what each one stands for.
 const (
-	// BudgetFraction is how much of what is free a model may take: the user's
-	// own rule, (total - used by everything else) * 0.8. The rest stays with
-	// the desktops, the browser and the OS.
-	BudgetFraction = 0.8
+	// defaultBudgetFraction is how much of what is free a model may take by
+	// default: (total - used by everything else) * 0.5. The rest stays with
+	// the desktops, the browser and the OS, so spinning up the app doesn't
+	// starve them the moment a model is selected. FLOWERA_MODEL_BUDGET_FRACTION
+	// overrides it.
+	defaultBudgetFraction = 0.5
 
 	// embedReserveGB is held back for the embedding model the thebot harness
 	// loads next to the chat model.
@@ -55,6 +57,12 @@ func perCoreGBps() float64 { return envFloat("FLOWERA_MODEL_CORE_GBPS", defaultP
 
 func minTokensPerSecond() float64 {
 	return envFloat("FLOWERA_MODEL_MIN_TPS", defaultMinTokensPerSecond)
+}
+
+// BudgetFraction is how much of what is free a model may take.
+func BudgetFraction() float64 {
+	f := envFloat("FLOWERA_MODEL_BUDGET_FRACTION", defaultBudgetFraction)
+	return math.Min(1, math.Max(0, f))
 }
 
 func envFloat(key string, fallback float64) float64 {
@@ -142,7 +150,7 @@ func (m Candidate) NeedGB() float64 {
 	return m.SizeGB + 0.5 + 0.06*m.ParamsB
 }
 
-// Budget is what the model may use: BudgetFraction of the free resources.
+// Budget is what the model may use: BudgetFraction() of the free resources.
 type Budget struct {
 	RAMGB  float64 `json:"ram_gb"`
 	VRAMGB float64 `json:"vram_gb,omitempty"`
@@ -150,17 +158,18 @@ type Budget struct {
 	Basis  string  `json:"basis"` // "gpu" or "cpu": what the pick runs on
 }
 
-// BudgetFor applies BudgetFraction to the free resources.
+// BudgetFor applies BudgetFraction() to the free resources.
 func BudgetFor(r Resources) Budget {
+	frac := BudgetFraction()
 	freeCores := float64(r.Cores) * (1 - r.CPUBusy)
 	b := Budget{
-		RAMGB: math.Max(0, r.RAMFreeGB*BudgetFraction-embedReserveGB),
-		Cores: math.Max(1, freeCores*BudgetFraction),
+		RAMGB: math.Max(0, r.RAMFreeGB*frac-embedReserveGB),
+		Cores: math.Max(1, freeCores*frac),
 		Basis: "cpu",
 	}
 
 	if r.HasGPU() {
-		b.VRAMGB = math.Max(0, r.VRAMFreeGB*BudgetFraction-embedReserveGB)
+		b.VRAMGB = math.Max(0, r.VRAMFreeGB*frac-embedReserveGB)
 	}
 
 	return b
