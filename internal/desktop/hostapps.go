@@ -1532,6 +1532,73 @@ func hostFallback(pc packContext, slug string, app HostAppItem) string {
 	return fmt.Sprintf("exec /home/headless/.local/bin/host-run signed %s %s\n", token, shellWords(app.HostCmd))
 }
 
+// webAppHost is the window class Chromium gives an --app window for rawURL: the URL's host.
+func webAppHost(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
+}
+
+// startupNotifyEntries are the .desktop keys that make XFCE show a busy cursor from the click until the app's window
+// (Chromium's class for it is the URL's host) appears, so a slow start does not look like a click that did nothing.
+func startupNotifyEntries(webURL string) string {
+	host := webAppHost(webURL)
+	if host == "" {
+		return ""
+	}
+	return "StartupNotify=true\nStartupWMClass=" + host + "\n"
+}
+
+// webAppWrapper is the launcher script for an app that is really a website, shown in the VM's own Chromium in app
+// mode. Starting a browser takes seconds on a small host and shows nothing until its window exists, so people clicked
+// the icon again and again and got a window for every click. The script therefore raises the app's window if it is
+// already open, ignores clicks while a launch is in flight (flock), and keeps the launch in flight until the window
+// has appeared. fallback runs only when no browser is installed.
+func webAppWrapper(slug, webURL, fallback string) string {
+	host := webAppHost(webURL)
+	return fmt.Sprintf(`#!/usr/bin/env bash
+export DISPLAY="${DISPLAY:-:1}"
+APP=%s
+HOST_RE=%s
+
+app_window() {
+    command -v xdotool >/dev/null 2>&1 || return 1
+    xdotool search --classname "$HOST_RE" 2>/dev/null | head -1
+}
+
+# Already open (possibly minimized): bring it forward instead of opening a second one.
+if win=$(app_window) && [ -n "$win" ]; then
+    xdotool windowactivate "$win" >/dev/null 2>&1
+    exit 0
+fi
+
+# A launch is already in flight: this click is a repeat of it.
+exec 9>/tmp/flowera-launch-%s.lock
+flock -n 9 || exit 0
+
+# First preference: Render directly inside the VM desktop using Chromium standalone app mode.
+for browser in chromium-browser google-chrome chromium; do
+    if command -v "$browser" >/dev/null 2>&1; then
+        # 9>&- : the browser must not inherit the lock, or a cold start would hold it for as long as it runs.
+        "$browser" --app="$APP" "$@" >/dev/null 2>&1 9>&- &
+        # Hold the lock until the window is up (bounded), so clicks in the meantime are ignored.
+        for _ in $(seq 1 900); do
+            [ -n "$(app_window)" ] && break
+            sleep 0.1
+        done
+        exit 0
+    fi
+done
+%s`, shellQuote(webURL), shellQuote("^"+regexp.QuoteMeta(host)), slug, fallback)
+}
+
+// shellQuote single-quotes s for a bash script.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 func packDynamicApp(tw *tar.Writer, app HostAppItem, pc packContext) error {
 	if len(app.DetectedPaths) > 0 && app.TargetConfigDir != "" {
 		for _, p := range app.DetectedPaths {
@@ -1581,16 +1648,7 @@ func packDynamicApp(tw *tar.Writer, app HostAppItem, pc packContext) error {
 		var wrapperScript string
 		webURL := getWebAppURLForApp(app.Name, app.HostCmd)
 		if webURL != "" {
-			wrapperScript = fmt.Sprintf(`#!/usr/bin/env bash
-# First preference: Render directly inside the VM desktop using Chromium standalone app mode
-if command -v chromium-browser >/dev/null 2>&1; then
-    exec chromium-browser --app=%q "$@"
-elif command -v google-chrome >/dev/null 2>&1; then
-    exec google-chrome --app=%q "$@"
-elif command -v chromium >/dev/null 2>&1; then
-    exec chromium --app=%q "$@"
-fi
-%s`, webURL, webURL, webURL, hostFallback(pc, slug, app))
+			wrapperScript = webAppWrapper(slug, webURL, hostFallback(pc, slug, app))
 		} else {
 			wrapperScript = "#!/usr/bin/env bash\n" + hostFallback(pc, slug, app)
 		}
@@ -1608,7 +1666,7 @@ Exec=/home/headless/.local/bin/%s-host %%U
 Icon=%s
 Terminal=false
 Categories=%s
-`, app.Name, app.Description, slug, icon, cat)
+%s`, app.Name, app.Description, slug, icon, cat, startupNotifyEntries(webURL))
 
 		if err := writeStringToTar(tw, "Desktop/"+slug+"-host.desktop", launcherContent, 0755); err != nil {
 			return err
