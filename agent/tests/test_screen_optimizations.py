@@ -1,8 +1,8 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from flowera_agent.computer import screen, core, cdp
-from flowera_agent.computer.screen import Frame, changed_fraction
+from decurix_agent.computer import screen, core, cdp
+from decurix_agent.computer.screen import Frame, changed_fraction
 
 
 class TestScreenOptimizations(unittest.TestCase):
@@ -68,11 +68,11 @@ class TestCoreObserveFrameDeduplication(unittest.TestCase):
         core.STATE_FILE = self.saved_state_file
         self.tmp.cleanup()
 
-    @patch("flowera_agent.computer.atspi.observe", return_value=([], []))
-    @patch("flowera_agent.computer.screen.grab")
-    @patch("flowera_agent.computer.screen.windows")
-    @patch("flowera_agent.computer.session.ensure")
-    @patch("flowera_agent.computer.cdp.available")
+    @patch("decurix_agent.computer.atspi.observe", return_value=([], []))
+    @patch("decurix_agent.computer.screen.grab")
+    @patch("decurix_agent.computer.screen.windows")
+    @patch("decurix_agent.computer.session.ensure")
+    @patch("decurix_agent.computer.cdp.available")
     def test_observe_reuses_provided_frame(self, mock_cdp_avail, mock_ensure, mock_windows, mock_grab, mock_atspi):
         mock_cdp_avail.return_value = False
         mock_windows.return_value = []
@@ -83,11 +83,11 @@ class TestCoreObserveFrameDeduplication(unittest.TestCase):
         self.assertFalse(mock_grab.called)
         self.assertIs(obs["frame"], custom_frame)
 
-    @patch("flowera_agent.computer.atspi.observe", return_value=([], []))
-    @patch("flowera_agent.computer.screen.grab")
-    @patch("flowera_agent.computer.screen.windows")
-    @patch("flowera_agent.computer.session.ensure")
-    @patch("flowera_agent.computer.cdp.available")
+    @patch("decurix_agent.computer.atspi.observe", return_value=([], []))
+    @patch("decurix_agent.computer.screen.grab")
+    @patch("decurix_agent.computer.screen.windows")
+    @patch("decurix_agent.computer.session.ensure")
+    @patch("decurix_agent.computer.cdp.available")
     def test_observe_grabs_when_frame_is_none(self, mock_cdp_avail, mock_ensure, mock_windows, mock_grab, mock_atspi):
         mock_cdp_avail.return_value = False
         mock_windows.return_value = []
@@ -102,18 +102,18 @@ class TestCoreObserveFrameDeduplication(unittest.TestCase):
 
 class TestCdpWaitReady(unittest.TestCase):
 
-    @patch("flowera_agent.computer.cdp.active_page")
+    @patch("decurix_agent.computer.cdp.active_page")
     def test_wait_ready_returns_title_without_navigate(self, mock_active):
         mock_page = MagicMock()
         mock_page.evaluate.side_effect = lambda expr: {
             "document.readyState": "complete",
-            "document.title": "Flowera Dashboard",
+            "document.title": "Decurix Dashboard",
         }.get(expr, "")
         mock_active.return_value = mock_page
 
         title = cdp.wait_ready(timeout=1, default_title="Fallback")
 
-        self.assertEqual(title, "Flowera Dashboard")
+        self.assertEqual(title, "Decurix Dashboard")
         self.assertFalse(any(call[0] == "Page.navigate" for call in mock_page.call.call_args_list))
         self.assertTrue(mock_page.close.called)
 

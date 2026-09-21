@@ -97,7 +97,7 @@
     ws.onclose = function () {
       if (closedByApp || !live) return;
       // The connection dropped but the app is still running on the host: reconnect, and the host sends the whole picture again.
-      if (retries++ > 8) { fail('Lost the connection to the Flowera control plane.'); return; }
+      if (retries++ > 8) { fail('Lost the connection to the Decurix control plane.'); return; }
       setTimeout(connect, Math.min(3000, 250 * retries));
     };
   }
@@ -178,7 +178,7 @@
     connect();
     // Fit the window to the app, as far as the browser lets an app window be resized.
     try { window.resizeTo(res.body.w + (window.outerWidth - window.innerWidth), res.body.h + (window.outerHeight - window.innerHeight)); } catch (e) {}
-  }).catch(function () { fail('Could not reach the Flowera control plane.'); });
+  }).catch(function () { fail('Could not reach the Decurix control plane.'); });
 })();
 </script>
 </body>

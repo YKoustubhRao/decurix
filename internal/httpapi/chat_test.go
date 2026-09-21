@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/conversation"
-	"github.com/YKoustubhRao/flowera/internal/querynotes"
-	"github.com/YKoustubhRao/flowera/internal/sqlitedb"
-	"github.com/YKoustubhRao/flowera/internal/stepimages"
-	"github.com/YKoustubhRao/flowera/internal/tasks"
+	"github.com/YKoustubhRao/decurix/internal/conversation"
+	"github.com/YKoustubhRao/decurix/internal/querynotes"
+	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
+	"github.com/YKoustubhRao/decurix/internal/stepimages"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
 )
 
 // chatServer builds the slice of Server the chat handlers actually use. They
@@ -110,7 +110,7 @@ func TestAgentTurnBuildsTranscript(t *testing.T) {
 	postJSON(t, s.queryTextHandler, "/api/querytext",
 		`{"desktop_id":"research-box","vm_name":"research-box","filename":"a.txt",
 		  "kind":"final","reply":"Cleaned up /work.",
-		  "content":"FLOWERA TASK COMPLETED\n\nFinal reply:\nCleaned up /work.\n\nCompleted at:\nnow"}`)
+		  "content":"DECURIX TASK COMPLETED\n\nFinal reply:\nCleaned up /work.\n\nCompleted at:\nnow"}`)
 
 	thread = readThread(t, s, "research-box")
 
@@ -213,7 +213,7 @@ func TestLegacyCallbackIsParsed(t *testing.T) {
 
 	postJSON(t, s.queryTextHandler, "/api/querytext",
 		`{"desktop_id":"research-box","vm_name":"research-box","filename":"b.txt",
-		  "content":"FLOWERA QUERY REQUEST\n\nTask:\nwire money\n\nProblem:\nMay I send the payment?\n\nQuery ID:\nabc"}`)
+		  "content":"DECURIX QUERY REQUEST\n\nTask:\nwire money\n\nProblem:\nMay I send the payment?\n\nQuery ID:\nabc"}`)
 
 	thread := readThread(t, s, "research-box")
 
@@ -359,7 +359,7 @@ func TestQuietQueryTextSkipsTheQueryRail(t *testing.T) {
 	postJSON(t, s.queryTextHandler, "/api/querytext",
 		`{"desktop_id":"research-box","vm_name":"research-box","filename":"a.txt",
 		  "kind":"final","reply":"Recorded 3 steps.","quiet":true,
-		  "content":"FLOWERA TASK COMPLETED\n\nFinal reply:\nRecorded 3 steps."}`)
+		  "content":"DECURIX TASK COMPLETED\n\nFinal reply:\nRecorded 3 steps."}`)
 
 	if notes := s.QueryNotes.List(); len(notes) != 0 {
 		t.Fatalf("expected no query note for a quiet callback, got %d", len(notes))
@@ -380,10 +380,10 @@ func TestReplyResolvesTheQueryNote(t *testing.T) {
 	route := deliver(t, s, "claude-box", "pay invoice INV-1042")
 
 	postJSON(t, s.queryTextHandler, "/api/querytext",
-		`{"desktop_id":"claude-box","task_id":"`+route.TaskID+`","content":"FLOWERA QUERY REQUEST",
+		`{"desktop_id":"claude-box","task_id":"`+route.TaskID+`","content":"DECURIX QUERY REQUEST",
 		  "kind":"approval","reply":"Approve paying INV-1042?"}`)
 	postJSON(t, s.queryTextHandler, "/api/querytext",
-		`{"desktop_id":"other-box","content":"FLOWERA TASK COMPLETED","kind":"final","reply":"Done."}`)
+		`{"desktop_id":"other-box","content":"DECURIX TASK COMPLETED","kind":"final","reply":"Done."}`)
 
 	if open := s.QueryNotes.List(); len(open) != 2 {
 		t.Fatalf("expected both notes open before any reply, got %d", len(open))
@@ -414,7 +414,7 @@ func TestManualResolveKeepsTheNoteInTheHistory(t *testing.T) {
 	s := chatServer(t)
 
 	postJSON(t, s.queryTextHandler, "/api/querytext",
-		`{"desktop_id":"research-box","content":"FLOWERA QUERY REQUEST","kind":"query","reply":"Which account?"}`)
+		`{"desktop_id":"research-box","content":"DECURIX QUERY REQUEST","kind":"query","reply":"Which account?"}`)
 
 	id := s.QueryNotes.List()[0].ID
 

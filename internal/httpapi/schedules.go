@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/desktop"
-	"github.com/YKoustubhRao/flowera/internal/schedule"
+	"github.com/YKoustubhRao/decurix/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/schedule"
 )
 
 // schedulesHandler returns the recurring requests set up from the requests

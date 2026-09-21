@@ -185,7 +185,7 @@ func (f *FileWriteSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 // resolveWritePath decides where a file actually lands.
 //
 // A relative path is relative to the step's working directory, which is
-// where the human expects it: a Flowera desktop asked to "create notes.txt
+// where the human expects it: a Decurix desktop asked to "create notes.txt
 // in the work directory" means /home/headless/work, not TheBot's own
 // workspace root, where every such file used to end up. An absolute path
 // (or ~/...) is honoured when it stays inside the workspace, the working

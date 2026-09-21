@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/desktop"
-	"github.com/YKoustubhRao/flowera/internal/tasks"
-	"github.com/YKoustubhRao/flowera/internal/webui"
+	"github.com/YKoustubhRao/decurix/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
+	"github.com/YKoustubhRao/decurix/internal/webui"
 )
 
 // A recording's ID and a frame's name are checked here, before either goes
@@ -484,7 +484,7 @@ func recordingsError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, desktop.ErrNoNetwork), errors.Is(err, desktop.ErrNoAddress):
 		log.Printf("recordings: %v", err)
-		jsonStatusError(w, http.StatusServiceUnavailable, "the desktop is not reachable on the Flowera network")
+		jsonStatusError(w, http.StatusServiceUnavailable, "the desktop is not reachable on the Decurix network")
 	case errors.Is(err, context.DeadlineExceeded):
 		jsonStatusError(w, http.StatusGatewayTimeout, "the desktop took too long to answer")
 	default:

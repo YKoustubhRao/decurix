@@ -19,26 +19,26 @@ import zipfile
 from datetime import date
 from pathlib import Path
 
-# flowera_agent.config creates the desktop's directories under /home/headless
+# decurix_agent.config creates the desktop's directories under /home/headless
 # when imported, which a development machine does not have.
 try:
-    from flowera_agent import config  # noqa: F401
+    from decurix_agent import config  # noqa: F401
 except OSError:
-    import flowera_agent
+    import decurix_agent
 
-    stub = types.ModuleType("flowera_agent.config")
+    stub = types.ModuleType("decurix_agent.config")
     stub.DESKTOP_ID = "test-box"
     stub.DESKTOP_NAME = "test-box"
     stub.CONTROL_PLANE_URL = "http://127.0.0.1:9"
     stub.AGENT_HARNESS = "ollama"
-    sys.modules["flowera_agent.config"] = stub
-    flowera_agent.config = stub
+    sys.modules["decurix_agent.config"] = stub
+    decurix_agent.config = stub
 
 from unittest import mock
 
-from flowera_agent import record_task, replay_task, state
-from flowera_agent.computer import approval, core, privacy, processing, recording, replay, screen, volatility
-from flowera_agent.computer.errors import ComputerError
+from decurix_agent import record_task, replay_task, state
+from decurix_agent.computer import approval, core, privacy, processing, recording, replay, screen, volatility
+from decurix_agent.computer.errors import ComputerError
 
 
 def press(t, x, y, button=1):
@@ -461,7 +461,7 @@ class TypingIntoAField(unittest.TestCase):
     """Whether a demonstration's typing replaces the field on replay, or adds to what is in it."""
 
     def entry(self, value, typed="Initech", role="textbox"):
-        from flowera_agent.computer import demonstration
+        from decurix_agent.computer import demonstration
 
         element = {"ref": "e2", "role": role, "name": "Customer name", "value": value, "states": ["focused"],
                    "box": [1, 1, 10, 10], "path": 'site file > textbox "Customer name"', "source": "cdp"}

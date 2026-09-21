@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/YKoustubhRao/flowera/internal/lanaccess"
+	"github.com/YKoustubhRao/decurix/internal/lanaccess"
 )
 
 func TestLANAccessStatusHandler(t *testing.T) {

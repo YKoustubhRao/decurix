@@ -12,8 +12,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/YKoustubhRao/flowera/internal/desktop"
-	"github.com/YKoustubhRao/flowera/internal/webui"
+	"github.com/YKoustubhRao/decurix/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/webui"
 )
 
 // desktopProxyHandler reverse-proxies HTTP requests to the desktop container's internal address.
@@ -69,7 +69,7 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, desktop.ErrNoNetwork):
 		http.Error(
 			w,
-			"desktop is not connected to Flowera network",
+			"desktop is not connected to Decurix network",
 			http.StatusServiceUnavailable,
 		)
 		return
@@ -143,8 +143,8 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 	reverseProxy.ServeHTTP(w, r)
 }
 
-// floweraBrandingRewrites are the literal noVNC markup fragments swapped for
-// Flowera's own branding by rewriteFloweraBranding, in order: the page
+// decurixBrandingRewrites are the literal noVNC markup fragments swapped for
+// Decurix's own branding by rewriteDecurixBranding, in order: the page
 // title, the browser tab favicon, the small logo noVNC shows in its
 // control-bar sidebar once connected, and the large logo on its pre-connect
 // screen (the first thing a user actually sees when opening a desktop). Each
@@ -155,10 +155,10 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 // mark, resolved against the control plane's origin (not the desktop
 // container's) since this page is only ever reached through the
 // /desktop/<id>/ proxy.
-var floweraBrandingRewrites = [][2][]byte{
+var decurixBrandingRewrites = [][2][]byte{
 	{
 		[]byte(`<title>noVNC</title>`),
-		[]byte(`<title>Flowera</title>`),
+		[]byte(`<title>Decurix</title>`),
 	},
 	{
 		[]byte(`<link rel="icon" type="image/x-icon" href="app/images/icons/novnc.ico">`),
@@ -166,11 +166,11 @@ var floweraBrandingRewrites = [][2][]byte{
 	},
 	{
 		[]byte(`<h1 class="noVNC_logo" translate="no"><span>no</span><br>VNC</h1>`),
-		[]byte(`<h1 class="noVNC_logo flowera-logo" translate="no" style="font-size:13px;line-height:1.2;display:flex;align-items:center;gap:8px;text-shadow:none;color:#f2f0ea;font-family:ui-sans-serif,system-ui,sans-serif"><img src="/favicon.svg" alt="" width="20" height="20" style="display:block;border-radius:4px"><span style="color:inherit;font-weight:700">Flowera</span></h1>`),
+		[]byte(`<h1 class="noVNC_logo decurix-logo" translate="no" style="font-size:13px;line-height:1.2;display:flex;align-items:center;gap:8px;text-shadow:none;color:#f2f0ea;font-family:ui-sans-serif,system-ui,sans-serif"><img src="/favicon.svg" alt="" width="20" height="20" style="display:block;border-radius:4px"><span style="color:inherit;font-weight:700">Decurix</span></h1>`),
 	},
 	{
 		[]byte(`<p class="noVNC_logo" translate="no"><span>no</span>VNC</p>`),
-		[]byte(`<p class="noVNC_logo flowera-logo" translate="no" style="font-size:20px;line-height:1.2;display:flex;flex-direction:column;align-items:center;gap:10px;text-shadow:none;color:#f2f0ea;font-family:ui-sans-serif,system-ui,sans-serif"><img src="/favicon.svg" alt="" width="56" height="56" style="display:block;border-radius:12px"><span style="color:inherit;font-weight:700;letter-spacing:.02em">Flowera</span></p>`),
+		[]byte(`<p class="noVNC_logo decurix-logo" translate="no" style="font-size:20px;line-height:1.2;display:flex;flex-direction:column;align-items:center;gap:10px;text-shadow:none;color:#f2f0ea;font-family:ui-sans-serif,system-ui,sans-serif"><img src="/favicon.svg" alt="" width="56" height="56" style="display:block;border-radius:12px"><span style="color:inherit;font-weight:700;letter-spacing:.02em">Decurix</span></p>`),
 	},
 }
 
@@ -178,18 +178,18 @@ func init() {
 	if len(webui.FaviconSVG) > 0 {
 		dataURI := "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString(webui.FaviconSVG)
 		faviconLink := fmt.Sprintf(`<link rel="icon" type="image/svg+xml" href="%s">`, dataURI)
-		smallLogo := fmt.Sprintf(`<h1 class="noVNC_logo flowera-logo" translate="no" style="font-size:13px;line-height:1.2;display:flex;align-items:center;gap:8px;text-shadow:none;color:#f2f0ea;font-family:ui-sans-serif,system-ui,sans-serif"><img src="%s" alt="" width="20" height="20" style="display:block;border-radius:4px"><span style="color:inherit;font-weight:700">Flowera</span></h1>`, dataURI)
-		largeLogo := fmt.Sprintf(`<p class="noVNC_logo flowera-logo" translate="no" style="font-size:20px;line-height:1.2;display:flex;flex-direction:column;align-items:center;gap:10px;text-shadow:none;color:#f2f0ea;font-family:ui-sans-serif,system-ui,sans-serif"><img src="%s" alt="" width="56" height="56" style="display:block;border-radius:12px"><span style="color:inherit;font-weight:700;letter-spacing:.02em">Flowera</span></p>`, dataURI)
+		smallLogo := fmt.Sprintf(`<h1 class="noVNC_logo decurix-logo" translate="no" style="font-size:13px;line-height:1.2;display:flex;align-items:center;gap:8px;text-shadow:none;color:#f2f0ea;font-family:ui-sans-serif,system-ui,sans-serif"><img src="%s" alt="" width="20" height="20" style="display:block;border-radius:4px"><span style="color:inherit;font-weight:700">Decurix</span></h1>`, dataURI)
+		largeLogo := fmt.Sprintf(`<p class="noVNC_logo decurix-logo" translate="no" style="font-size:20px;line-height:1.2;display:flex;flex-direction:column;align-items:center;gap:10px;text-shadow:none;color:#f2f0ea;font-family:ui-sans-serif,system-ui,sans-serif"><img src="%s" alt="" width="56" height="56" style="display:block;border-radius:12px"><span style="color:inherit;font-weight:700;letter-spacing:.02em">Decurix</span></p>`, dataURI)
 
-		floweraBrandingRewrites[1][1] = []byte(faviconLink)
-		floweraBrandingRewrites[2][1] = []byte(smallLogo)
-		floweraBrandingRewrites[3][1] = []byte(largeLogo)
+		decurixBrandingRewrites[1][1] = []byte(faviconLink)
+		decurixBrandingRewrites[2][1] = []byte(smallLogo)
+		decurixBrandingRewrites[3][1] = []byte(largeLogo)
 	}
 }
 
 // rewriteDesktopHTML executes all desktop HTML modifications in a single pass
 // over the response body, avoiding multiple read/re-wrap cycles: replacing
-// noVNC's own "noVNC" branding with Flowera's (per floweraBrandingRewrites,
+// noVNC's own "noVNC" branding with Decurix's (per decurixBrandingRewrites,
 // applied to every load so a user is never shown that a desktop's screen is
 // noVNC/VNC under the hood - the control plane presents it purely as "your
 // desktop"), splicing in the ticket toolbar, and - only for requests carrying
@@ -205,7 +205,7 @@ func rewriteDesktopHTML(resp *http.Response, desktopID string) error {
 		return err
 	}
 
-	for _, rewrite := range floweraBrandingRewrites {
+	for _, rewrite := range decurixBrandingRewrites {
 		body = bytes.Replace(body, rewrite[0], rewrite[1], 1)
 	}
 
@@ -260,7 +260,7 @@ func rewriteDesktopHTML(resp *http.Response, desktopID string) error {
 // demonstration, so the two controls can never fight over the same session.
 const ticketToolbar = `
 <style>
-#flowera-ticket{
+#decurix-ticket{
   position:fixed;
   top:0;left:50%;
   transform:translateX(-50%);
@@ -276,10 +276,10 @@ const ticketToolbar = `
    centered/top-docked default (above) to an explicit pixel left/top set by
    the drag handler - this just has to stop fighting that with its own
    centering transform. */
-#flowera-ticket.flowera-pinned{
+#decurix-ticket.decurix-pinned{
   transform:none;
 }
-#flowera-ticket-tab{
+#decurix-ticket-tab{
   display:flex;
   align-items:center;
   gap:5px;
@@ -292,19 +292,19 @@ const ticketToolbar = `
   touch-action:none;
   box-shadow:0 2px 8px rgba(0,0,0,.3);
 }
-#flowera-ticket-tab:active{cursor:grabbing}
-#flowera-ticket-tab svg{transition:transform .15s ease;flex:none}
-#flowera-ticket.flowera-open #flowera-ticket-tab svg{transform:rotate(180deg)}
-#flowera-ticket-dot{
+#decurix-ticket-tab:active{cursor:grabbing}
+#decurix-ticket-tab svg{transition:transform .15s ease;flex:none}
+#decurix-ticket.decurix-open #decurix-ticket-tab svg{transform:rotate(180deg)}
+#decurix-ticket-dot{
   width:7px;height:7px;border-radius:50%;
   background:#8a8578;flex:none;
 }
-#flowera-ticket-dot.flowera-armed{background:#e8b13a}
-#flowera-ticket-dot.flowera-rec{background:#e8503a;animation:flowera-pulse 1.4s ease-in-out infinite}
-#flowera-ticket-dot.flowera-paused{background:#8a8578}
-@keyframes flowera-pulse{50%{opacity:.35}}
+#decurix-ticket-dot.decurix-armed{background:#e8b13a}
+#decurix-ticket-dot.decurix-rec{background:#e8503a;animation:decurix-pulse 1.4s ease-in-out infinite}
+#decurix-ticket-dot.decurix-paused{background:#8a8578}
+@keyframes decurix-pulse{50%{opacity:.35}}
 
-#flowera-ticket-panel{
+#decurix-ticket-panel{
   display:none;
   width:min(320px,92vw);
   margin-top:2px;
@@ -313,10 +313,10 @@ const ticketToolbar = `
   background:rgba(24,22,20,.94);
   box-shadow:0 6px 20px rgba(0,0,0,.35);
 }
-#flowera-ticket.flowera-open #flowera-ticket-panel{display:block}
+#decurix-ticket.decurix-open #decurix-ticket-panel{display:block}
 
-#flowera-ticket-panel input[type=text],
-#flowera-ticket-panel textarea{
+#decurix-ticket-panel input[type=text],
+#decurix-ticket-panel textarea{
   width:100%;
   box-sizing:border-box;
   padding:8px 10px;
@@ -327,25 +327,25 @@ const ticketToolbar = `
   font:inherit;
   outline:none;
 }
-#flowera-ticket-panel textarea{resize:vertical;min-height:44px}
-#flowera-ticket-panel input[type=text]:focus,
-#flowera-ticket-panel textarea:focus{border-color:rgba(255,255,255,.5)}
-#flowera-ticket-panel input[type=text]::placeholder,
-#flowera-ticket-panel textarea::placeholder{color:rgba(242,240,234,.5)}
+#decurix-ticket-panel textarea{resize:vertical;min-height:44px}
+#decurix-ticket-panel input[type=text]:focus,
+#decurix-ticket-panel textarea:focus{border-color:rgba(255,255,255,.5)}
+#decurix-ticket-panel input[type=text]::placeholder,
+#decurix-ticket-panel textarea::placeholder{color:rgba(242,240,234,.5)}
 
-.flowera-reason{margin-top:10px}
-.flowera-reason-hint{font-size:11px;color:rgba(242,240,234,.6);margin-bottom:6px}
+.decurix-reason{margin-top:10px}
+.decurix-reason-hint{font-size:11px;color:rgba(242,240,234,.6);margin-bottom:6px}
 
-#flowera-ticket-title{
+#decurix-ticket-title{
   font-weight:650;
   margin-bottom:2px;
   overflow-wrap:anywhere;
 }
-#flowera-ticket-state{color:rgba(242,240,234,.65);font-size:11.5px;margin-bottom:10px}
+#decurix-ticket-state{color:rgba(242,240,234,.65);font-size:11.5px;margin-bottom:10px}
 
-.flowera-ticket-row{display:flex;gap:7px;margin-top:10px}
-.flowera-ticket-row.flowera-first{margin-top:0}
-#flowera-ticket-panel button{
+.decurix-ticket-row{display:flex;gap:7px;margin-top:10px}
+.decurix-ticket-row.decurix-first{margin-top:0}
+#decurix-ticket-panel button{
   flex:1;
   display:flex;align-items:center;justify-content:center;gap:6px;
   padding:8px 10px;
@@ -356,38 +356,38 @@ const ticketToolbar = `
   font:inherit;font-weight:600;
   cursor:pointer;
 }
-#flowera-ticket-panel button:hover:not(:disabled){background:rgba(255,255,255,.16)}
-#flowera-ticket-panel button:disabled{opacity:.5;cursor:default}
-#flowera-ticket-panel button.flowera-primary{background:#c2410c;border-color:#c2410c}
-#flowera-ticket-panel button.flowera-primary:hover:not(:disabled){background:#dd4f14}
-#flowera-ticket-panel button.flowera-danger{color:#f5b3a3}
-#flowera-ticket-panel button.flowera-active{background:rgba(255,255,255,.22);border-color:rgba(255,255,255,.42)}
-#flowera-ticket-panel a.flowera-download{
+#decurix-ticket-panel button:hover:not(:disabled){background:rgba(255,255,255,.16)}
+#decurix-ticket-panel button:disabled{opacity:.5;cursor:default}
+#decurix-ticket-panel button.decurix-primary{background:#c2410c;border-color:#c2410c}
+#decurix-ticket-panel button.decurix-primary:hover:not(:disabled){background:#dd4f14}
+#decurix-ticket-panel button.decurix-danger{color:#f5b3a3}
+#decurix-ticket-panel button.decurix-active{background:rgba(255,255,255,.22);border-color:rgba(255,255,255,.42)}
+#decurix-ticket-panel a.decurix-download{
   display:flex;align-items:center;justify-content:center;gap:6px;
   padding:9px 10px;margin-top:10px;
   border-radius:7px;
   background:#2f7d55;
   color:#fff;text-decoration:none;font-weight:650;
 }
-#flowera-ticket-error{color:#f5a793;font-size:11.5px;margin-top:8px;display:none}
-#flowera-ticket-error.flowera-visible{display:block}
+#decurix-ticket-error{color:#f5a793;font-size:11.5px;margin-top:8px;display:none}
+#decurix-ticket-error.decurix-visible{display:block}
 
-#flowera-ticket-browse{
+#decurix-ticket-browse{
   display:block;
   margin-top:10px;
   font-size:11.5px;
   color:rgba(242,240,234,.6);
   text-decoration:none;
 }
-#flowera-ticket-browse:hover{color:rgba(242,240,234,.9)}
+#decurix-ticket-browse:hover{color:rgba(242,240,234,.9)}
 </style>
-<div id="flowera-ticket">
-  <button type="button" id="flowera-ticket-tab" aria-label="Recording ticket">
-    <span id="flowera-ticket-dot"></span>
-    <span id="flowera-ticket-label">Record</span>
+<div id="decurix-ticket">
+  <button type="button" id="decurix-ticket-tab" aria-label="Recording ticket">
+    <span id="decurix-ticket-dot"></span>
+    <span id="decurix-ticket-label">Record</span>
     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
   </button>
-  <div id="flowera-ticket-panel"></div>
+  <div id="decurix-ticket-panel"></div>
 </div>
 <script>
 (function(){
@@ -396,11 +396,11 @@ const ticketToolbar = `
 var DESKTOP_ID = "__DESKTOP_ID__";
 var POLL_MS = 2500;
 
-var root = document.getElementById("flowera-ticket");
-var tab = document.getElementById("flowera-ticket-tab");
-var dot = document.getElementById("flowera-ticket-dot");
-var label = document.getElementById("flowera-ticket-label");
-var panel = document.getElementById("flowera-ticket-panel");
+var root = document.getElementById("decurix-ticket");
+var tab = document.getElementById("decurix-ticket-tab");
+var dot = document.getElementById("decurix-ticket-dot");
+var label = document.getElementById("decurix-ticket-label");
+var panel = document.getElementById("decurix-ticket-panel");
 
 var ticket = null;        // last known {task_id, title, session_id, recording, paused, events}, or null
 var lastSession = null;   // the most recent session_id seen, kept after End clears the ticket - for the download link
@@ -489,7 +489,7 @@ function setTicket(next){
 }
 
 function open(state){
-  root.classList.toggle("flowera-open", state);
+  root.classList.toggle("decurix-open", state);
 }
 
 // --- dragging: the tab doubles as a handle for the whole toolbar ----------
@@ -515,9 +515,9 @@ function placeAt(left, top){
 }
 
 function pinToCurrentPosition(){
-  if(root.classList.contains("flowera-pinned")){ return; }
+  if(root.classList.contains("decurix-pinned")){ return; }
   var r = root.getBoundingClientRect();
-  root.classList.add("flowera-pinned");
+  root.classList.add("decurix-pinned");
   placeAt(r.left, r.top);
 }
 
@@ -546,7 +546,7 @@ tab.addEventListener("pointerup", endDrag);
 tab.addEventListener("pointercancel", endDrag);
 
 window.addEventListener("resize", function(){
-  if(!root.classList.contains("flowera-pinned")){ return; }
+  if(!root.classList.contains("decurix-pinned")){ return; }
   var r = root.getBoundingClientRect();
   placeAt(r.left, r.top);
 });
@@ -585,7 +585,7 @@ function button(text, handler, cls, disabled){
 
 function row(first){
   var r = document.createElement("div");
-  r.className = "flowera-ticket-row" + (first ? " flowera-first" : "");
+  r.className = "decurix-ticket-row" + (first ? " decurix-first" : "");
   return r;
 }
 
@@ -624,7 +624,7 @@ function renderCreate(){
 
   var r = row(true);
   r.appendChild(input);
-  r.appendChild(button("+", submit, "flowera-primary"));
+  r.appendChild(button("+", submit, "decurix-primary"));
   panel.appendChild(r);
 }
 
@@ -632,12 +632,12 @@ function renderTicket(){
   panel.innerHTML = "";
 
   var title = document.createElement("div");
-  title.id = "flowera-ticket-title";
+  title.id = "decurix-ticket-title";
   title.textContent = ticket.title || "Untitled";
   panel.appendChild(title);
 
   var state = document.createElement("div");
-  state.id = "flowera-ticket-state";
+  state.id = "decurix-ticket-state";
   state.textContent = !ticket.session_id ? "Ready to record — open the app you'll use, then press Record."
     : ticket.paused ? "Paused — nothing is being recorded"
     : ticket.recording ? (ticket.events === 1 ? "Recording — 1 action" : "Recording — " + ticket.events + " actions")
@@ -647,9 +647,9 @@ function renderTicket(){
   var r = row(true);
 
   if(!ticket.session_id){
-    r.appendChild(button("● Record", function(){ act("begin"); }, "flowera-primary"));
+    r.appendChild(button("● Record", function(){ act("begin"); }, "decurix-primary"));
   }else if(ticket.paused){
-    r.appendChild(button("▶ Continue", function(){ act("resume"); }, "flowera-primary"));
+    r.appendChild(button("▶ Continue", function(){ act("resume"); }, "decurix-primary"));
   }else{
     r.appendChild(button("■ Stop", function(){ act("pause", {reason: "paused from the screen toolbar"}); }));
   }
@@ -658,10 +658,10 @@ function renderTicket(){
   // works either way (demonstration.note()) - just not before recording has
   // started, when there is no timeline yet for it to sit on.
   if(ticket.session_id){
-    r.appendChild(button("Reason", startReason, reasonOpen ? "flowera-active" : ""));
+    r.appendChild(button("Reason", startReason, reasonOpen ? "decurix-active" : ""));
   }
 
-  r.appendChild(button("End", function(){ act("end"); }, "flowera-danger"));
+  r.appendChild(button("End", function(){ act("end"); }, "decurix-danger"));
   panel.appendChild(r);
 
   if(reasonOpen){ panel.appendChild(reasonBox()); }
@@ -695,10 +695,10 @@ function startReason(){
 
 function reasonBox(){
   var wrap = document.createElement("div");
-  wrap.className = "flowera-reason";
+  wrap.className = "decurix-reason";
 
   var hint = document.createElement("div");
-  hint.className = "flowera-reason-hint";
+  hint.className = "decurix-reason-hint";
   hint.textContent = "Recording is paused while you write this - submitting continues it.";
   wrap.appendChild(hint);
 
@@ -751,7 +751,7 @@ function reasonBox(){
   wrap.appendChild(textarea);
 
   var submitRow = row(false);
-  submitRow.appendChild(button("Add & continue", submit, "flowera-primary"));
+  submitRow.appendChild(button("Add & continue", submit, "decurix-primary"));
   wrap.appendChild(submitRow);
 
   if(!busy){ textarea.focus(); }
@@ -799,13 +799,13 @@ function renderJustEnded(){
   panel.innerHTML = "";
 
   var title = document.createElement("div");
-  title.id = "flowera-ticket-title";
+  title.id = "decurix-ticket-title";
   title.textContent = "Recording saved";
   panel.appendChild(title);
 
   if(endedStarted){
     var started = document.createElement("div");
-    started.id = "flowera-ticket-state";
+    started.id = "decurix-ticket-state";
     started.style.marginTop = "8px";
     started.textContent = endedStarted === "replay"
       ? "Replay started. It runs on this screen; follow it in the chat."
@@ -813,7 +813,7 @@ function renderJustEnded(){
     panel.appendChild(started);
 
     var chat = document.createElement("a");
-    chat.className = "flowera-download";
+    chat.className = "decurix-download";
     chat.href = "/view/" + encodeURIComponent(DESKTOP_ID);
     chat.target = "_blank";
     chat.rel = "noopener";
@@ -822,14 +822,14 @@ function renderJustEnded(){
   }else{
     var actions = row(false);
     actions.appendChild(button(endedStarting === "replay" ? "Starting…" : "Replay",
-      function(){ startFromRecording("replay"); }, "flowera-primary"));
+      function(){ startFromRecording("replay"); }, "decurix-primary"));
     actions.appendChild(button(endedStarting === "learn" ? "Starting…" : "Learn",
       function(){ startFromRecording("learn"); }));
     panel.appendChild(actions);
   }
 
   var link = document.createElement("a");
-  link.className = "flowera-download";
+  link.className = "decurix-download";
   link.href = downloadUrl(lastSession);
   link.textContent = "Download recording";
   panel.appendChild(link);
@@ -841,7 +841,7 @@ function renderJustEnded(){
 
 function render(){
   if(ticket){
-    dot.className = !ticket.session_id ? "flowera-armed" : ticket.paused ? "flowera-paused" : "flowera-rec";
+    dot.className = !ticket.session_id ? "decurix-armed" : ticket.paused ? "decurix-paused" : "decurix-rec";
     label.textContent = !ticket.session_id ? "Ticket open" : ticket.paused ? "Paused" : "Recording";
     renderTicket();
   }else if(lastSession){
@@ -854,20 +854,20 @@ function render(){
     renderCreate();
   }
 
-  var err = document.getElementById("flowera-ticket-error");
+  var err = document.getElementById("decurix-ticket-error");
   if(!err){
     err = document.createElement("div");
-    err.id = "flowera-ticket-error";
+    err.id = "decurix-ticket-error";
     panel.appendChild(err);
   }
   err.textContent = error;
-  err.classList.toggle("flowera-visible", !!error);
+  err.classList.toggle("decurix-visible", !!error);
 
   // Browsing/replaying/exporting past recordings used to be a second icon on
   // the dashboard card; it lives only here now, so it needs to stay reachable
   // from every state of this panel, not just when a ticket is open.
   var browse = document.createElement("a");
-  browse.id = "flowera-ticket-browse";
+  browse.id = "decurix-ticket-browse";
   browse.href = "/recordings/" + encodeURIComponent(DESKTOP_ID);
   browse.textContent = "Browse recordings ↗";
   panel.appendChild(browse);
@@ -878,7 +878,7 @@ tab.addEventListener("click", function(){
   // fires a click, which must not also toggle the panel open/closed.
   if(dragged){ dragged = false; return; }
   userToggled = true;
-  open(!root.classList.contains("flowera-open"));
+  open(!root.classList.contains("decurix-open"));
 });
 
 render();
@@ -890,7 +890,7 @@ setInterval(refresh, POLL_MS);
 
 // titleOverrideScript pins the browser tab's title to the desktop's own
 // assigned name (e.g. "burga"). The static <title> swap in
-// floweraBrandingRewrites only lasts until noVNC's own JS runs: once the RFB
+// decurixBrandingRewrites only lasts until noVNC's own JS runs: once the RFB
 // connection reports the container's X11 desktop name - built from the
 // container hostname, "desktop_<id>:1 (headless) - noVNC" - noVNC overwrites
 // document.title with it asynchronously, after this page has already loaded.
@@ -969,7 +969,7 @@ const autoConnectHelper = `
 // and "No" (to dismiss).
 const resourceAlertPopup = `
 <style>
-#flowera-res-alert-wrap {
+#decurix-res-alert-wrap {
   position: fixed;
   top: 18px;
   right: 18px;
@@ -978,7 +978,7 @@ const resourceAlertPopup = `
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   display: none;
 }
-#flowera-res-alert-box {
+#decurix-res-alert-box {
   background: rgba(28, 25, 23, 0.95);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
@@ -987,9 +987,9 @@ const resourceAlertPopup = `
   border-radius: 10px;
   padding: 14px 16px;
   color: #fef3c7;
-  animation: flowera-slide-down 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: decurix-slide-down 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
-@keyframes flowera-slide-down {
+@keyframes decurix-slide-down {
   from { opacity: 0; transform: translateY(-10px); }
   to { opacity: 1; transform: translateY(0); }
 }
@@ -1054,8 +1054,8 @@ const resourceAlertPopup = `
   color: #fafaf9;
 }
 </style>
-<div id="flowera-res-alert-wrap">
-  <div id="flowera-res-alert-box">
+<div id="decurix-res-alert-wrap">
+  <div id="decurix-res-alert-box">
     <div class="fra-header">
       <div class="fra-title">⚠️ Resource Warning</div>
       <button class="fra-close" id="fra-close-btn">&times;</button>
@@ -1070,7 +1070,7 @@ const resourceAlertPopup = `
 <script>
 (function() {
   var desktopID = "__DESKTOP_ID__";
-  var wrap = document.getElementById("flowera-res-alert-wrap");
+  var wrap = document.getElementById("decurix-res-alert-wrap");
   var bodyText = document.getElementById("fra-body-text");
   var yesBtn = document.getElementById("fra-yes-btn");
   var noBtn = document.getElementById("fra-no-btn");
@@ -1189,10 +1189,10 @@ const resourceAlertPopup = `
 const mobileViewerEnhancements = `
 <style>
 #noVNC_container{transform-origin:0 0}
-#noVNC_container.flowera-panning{transition:none}
-#noVNC_container:not(.flowera-panning){transition:transform .12s ease-out}
+#noVNC_container.decurix-panning{transition:none}
+#noVNC_container:not(.decurix-panning){transition:transform .12s ease-out}
 
-.flowera-touch-btn{
+.decurix-touch-btn{
   position:fixed;
   z-index:60;
   bottom:calc(14px + env(safe-area-inset-bottom, 0px));
@@ -1204,11 +1204,11 @@ const mobileViewerEnhancements = `
   -webkit-tap-highlight-color:transparent;
   touch-action:manipulation;
 }
-.flowera-touch-btn img{width:24px;height:24px;filter:invert(1)}
-#flowera-kb-btn{left:calc(14px + env(safe-area-inset-left, 0px))}
-#flowera-kb-btn.flowera-active{background:rgba(74,144,255,.92)}
+.decurix-touch-btn img{width:24px;height:24px;filter:invert(1)}
+#decurix-kb-btn{left:calc(14px + env(safe-area-inset-left, 0px))}
+#decurix-kb-btn.decurix-active{background:rgba(74,144,255,.92)}
 
-#flowera-reset-btn{
+#decurix-reset-btn{
   right:calc(14px + env(safe-area-inset-right, 0px));
   width:auto;
   padding:0 16px;
@@ -1218,7 +1218,7 @@ const mobileViewerEnhancements = `
   pointer-events:none;
   transition:opacity .15s ease-out;
 }
-#flowera-reset-btn.flowera-visible{opacity:1;pointer-events:auto}
+#decurix-reset-btn.decurix-visible{opacity:1;pointer-events:auto}
 </style>
 <script>
 (function(){
@@ -1231,9 +1231,9 @@ if (!container || !nativeKbBtn) return;
 
 // --- persistent keyboard button -------------------------------------
 var kbBtn = document.createElement("button");
-kbBtn.id = "flowera-kb-btn";
+kbBtn.id = "decurix-kb-btn";
 kbBtn.type = "button";
-kbBtn.className = "flowera-touch-btn";
+kbBtn.className = "decurix-touch-btn";
 kbBtn.setAttribute("aria-label", "Show keyboard");
 kbBtn.innerHTML = '<img src="app/images/keyboard.svg" alt="">';
 kbBtn.addEventListener("click", function(e){
@@ -1243,14 +1243,14 @@ kbBtn.addEventListener("click", function(e){
 document.body.appendChild(kbBtn);
 
 new MutationObserver(function(){
-  kbBtn.classList.toggle("flowera-active", nativeKbBtn.classList.contains("noVNC_selected"));
+  kbBtn.classList.toggle("decurix-active", nativeKbBtn.classList.contains("noVNC_selected"));
 }).observe(nativeKbBtn, {attributes: true, attributeFilter: ["class"]});
 
 // --- two-finger pinch-to-zoom + pan ----------------------------------
 var resetBtn = document.createElement("button");
-resetBtn.id = "flowera-reset-btn";
+resetBtn.id = "decurix-reset-btn";
 resetBtn.type = "button";
-resetBtn.className = "flowera-touch-btn";
+resetBtn.className = "decurix-touch-btn";
 resetBtn.textContent = "Reset zoom";
 resetBtn.addEventListener("click", function(e){
   e.preventDefault();
@@ -1262,12 +1262,12 @@ var scale = 1, tx = 0, ty = 0, pinch = null;
 
 function apply(){
   container.style.transform = "translate(" + tx + "px," + ty + "px) scale(" + scale + ")";
-  resetBtn.classList.toggle("flowera-visible", scale > 1.01);
+  resetBtn.classList.toggle("decurix-visible", scale > 1.01);
 }
 
 function resetTransform(){
   scale = 1; tx = 0; ty = 0;
-  container.classList.remove("flowera-panning");
+  container.classList.remove("decurix-panning");
   apply();
 }
 
@@ -1297,7 +1297,7 @@ document.addEventListener("touchstart", function(e){
     tx: tx,
     ty: ty
   };
-  container.classList.add("flowera-panning");
+  container.classList.add("decurix-panning");
   e.preventDefault();
   e.stopPropagation();
 }, {capture: true, passive: false});
@@ -1321,7 +1321,7 @@ function endPinch(e){
   if (!pinch) return;
   if (e.touches.length >= 2) return;
   pinch = null;
-  container.classList.remove("flowera-panning");
+  container.classList.remove("decurix-panning");
   if (scale <= 1.02) {
     resetTransform();
   } else {
@@ -1383,7 +1383,7 @@ func (s *Server) agentProxyHandler(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, desktop.ErrNoNetwork):
 		http.Error(
 			w,
-			"desktop is not connected to Flowera network",
+			"desktop is not connected to Decurix network",
 			http.StatusServiceUnavailable,
 		)
 		return
@@ -1496,7 +1496,7 @@ const launchScreenHTML = `<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Starting %s - Flowera</title>
+<title>Starting %s - Decurix</title>
 <style>
   :root {
     --bg: #090d16;
@@ -1642,7 +1642,7 @@ const launchScreenHTML = `<!DOCTYPE html>
   </div>
   <div class="status-msg" id="statusMsg">%s</div>
   <div class="error-box" id="errorBox"></div>
-  <div class="hint" id="hint">Flowera is provisioning your container and copying desktop apps. The GUI will connect automatically as soon as it's ready.</div>
+  <div class="hint" id="hint">Decurix is provisioning your container and copying desktop apps. The GUI will connect automatically as soon as it's ready.</div>
 </div>
 <script>
 (function() {

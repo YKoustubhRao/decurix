@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from flowera_agent import state, task_runner
+from decurix_agent import state, task_runner
 
 
 def _run(replies, results):
@@ -161,7 +161,7 @@ class TestSafetyAndFormatEdges(unittest.TestCase):
 
 class TestDangerousCommandGate(unittest.TestCase):
     def test_detector_flags_the_catastrophic_and_only_that(self):
-        from flowera_agent.commands import dangerous_reason as d
+        from decurix_agent.commands import dangerous_reason as d
 
         for cmd in ["rm -rf /", "rm -rf /etc/*", "rm -fr ~", "rm -rf $HOME", "sudo rm -rf /usr",
                     "cd /tmp && rm -rf /", "rm -rf /home/headless/*", "mkfs.ext4 /dev/sda1",

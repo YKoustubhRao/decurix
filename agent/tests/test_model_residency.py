@@ -4,7 +4,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
 
-from flowera_agent import config, ollama_client
+from decurix_agent import config, ollama_client
 
 
 class FakeOllama:
@@ -63,7 +63,7 @@ class TestModelResidency(unittest.TestCase):
         self.addCleanup(fake.close)
 
         with patch.object(config, "OLLAMA_URL", fake.url), \
-             patch("flowera_agent.progress.emit") as emit:
+             patch("decurix_agent.progress.emit") as emit:
             ollama_client.ensure_model_resident()
 
         self.assertEqual(len(fake.generates), 1)
@@ -88,12 +88,12 @@ class TestModelResidency(unittest.TestCase):
         self.addCleanup(fake.close)
 
         with patch.object(config, "OLLAMA_URL", fake.url), \
-             patch("flowera_agent.progress.emit"):
+             patch("decurix_agent.progress.emit"):
             with self.assertRaises(RuntimeError):
                 ollama_client.ensure_model_resident()
 
     def test_priming_sends_the_real_system_prompt_once_and_only_that(self):
-        from flowera_agent import state
+        from decurix_agent import state
 
         fake = FakeOllama(resident=True)
         self.addCleanup(fake.close)
@@ -112,7 +112,7 @@ class TestModelResidency(unittest.TestCase):
             self.assertEqual(chats[0]["options"][key], real[key])
 
     def test_priming_never_replaces_the_cache_under_a_running_task(self):
-        from flowera_agent import state
+        from decurix_agent import state
 
         fake = FakeOllama(resident=True)
         self.addCleanup(fake.close)

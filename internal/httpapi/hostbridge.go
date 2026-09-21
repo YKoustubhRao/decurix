@@ -17,8 +17,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/desktop"
-	"github.com/YKoustubhRao/flowera/internal/winhost"
+	"github.com/YKoustubhRao/decurix/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/winhost"
 )
 
 // findDockerBinary locates an available docker binary on the host or in standard container paths.
@@ -137,7 +137,7 @@ func (s *Server) hostBridgeExecHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// This runs a program on the host, and the caller may be a desktop whose agent takes instructions from web pages.
-	// It only ever runs what a launcher Flowera wrote was signed for - exactly that program and those arguments.
+	// It only ever runs what a launcher Decurix wrote was signed for - exactly that program and those arguments.
 	if !winhost.ValidExecToken(s.hostGUISecretKey(), req.Desktop, req.Cmd, req.Args, req.Token) {
 		log.Printf("host-bridge: refused an unsigned or altered command from %s", r.RemoteAddr)
 		http.Error(w, "this command is not one a launcher was written to run", http.StatusForbidden)

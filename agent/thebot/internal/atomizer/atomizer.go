@@ -14,7 +14,7 @@
 //
 // The layer that used to sit where Triage is now was a model call asking
 // "is this a task or a question?" for every request no classifier claimed.
-// On the CPU-only hosts Flowera desktops run against, that single call took
+// On the CPU-only hosts Decurix desktops run against, that single call took
 // 60-100 seconds for "hello" - and on "what is the current kernel
 // version?" it produced a one-step plan to search the web for the weather
 // in New York.

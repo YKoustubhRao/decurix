@@ -19,14 +19,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/desktop"
-	"github.com/YKoustubhRao/flowera/internal/webui"
-	"github.com/YKoustubhRao/flowera/internal/winhost"
+	"github.com/YKoustubhRao/decurix/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/webui"
+	"github.com/YKoustubhRao/decurix/internal/winhost"
 )
 
 // hostGUIDir is where the Windows helper script is written. It has to be somewhere the host can read: docker-compose.yaml
 // mounts the host's /tmp at the same path, so writing here from the control plane's container lands it on the host.
-const hostGUIDir = "/tmp/flowera-winhost"
+const hostGUIDir = "/tmp/decurix-winhost"
 
 var hostGUIID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
@@ -116,7 +116,7 @@ func writeHostGUIScript(dir string) (string, error) {
 // control plane can drive it.
 func hostGUIStarter(ctx context.Context, desktopName string) (*exec.Cmd, error) {
 	if !hostGUISupported() {
-		return nil, errors.New("Windows apps can only be shown when Flowera runs on a Windows computer")
+		return nil, errors.New("Windows apps can only be shown when Decurix runs on a Windows computer")
 	}
 	if runtime.GOOS == "windows" {
 		return nativeHostGUICmd(ctx, desktopName)
@@ -138,7 +138,7 @@ func nativeHostGUICmd(ctx context.Context, desktopName string) (*exec.Cmd, error
 	if ps == "" {
 		return nil, errors.New("Windows PowerShell was not found on this computer")
 	}
-	script, err := writeHostGUIScript(filepath.Join(os.TempDir(), "flowera-winhost"))
+	script, err := writeHostGUIScript(filepath.Join(os.TempDir(), "decurix-winhost"))
 	if err != nil {
 		return nil, err
 	}

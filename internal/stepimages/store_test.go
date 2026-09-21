@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/YKoustubhRao/flowera/internal/sqlitedb"
+	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
 
 func newStore(t *testing.T, maxBytes int) *Store {

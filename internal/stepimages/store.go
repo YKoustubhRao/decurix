@@ -7,7 +7,7 @@
 // screenshots survive a restart. Screenshots are still the heaviest thing kept,
 // so the store is bounded by total bytes and forgets the oldest images first.
 // The full-resolution originals are not lost when that happens: every desktop
-// keeps them on its own persistent volume (flowera_agent/computer/audit.py).
+// keeps them on its own persistent volume (decurix_agent/computer/audit.py).
 package stepimages
 
 import (
@@ -24,7 +24,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/sqlitedb"
+	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
 
 // DefaultMaxBytes bounds the whole store. At ~25 KB per half-size JPEG this is

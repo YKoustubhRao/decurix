@@ -4,11 +4,11 @@ Live end-to-end check of teaching and running a skill on a real desktop.
 
     python3 bench/skills/e2e.py [--keep]
 
-Needs Docker and a built flowera-desktop:basic (scripts/*/build-images.sh).
+Needs Docker and a built decurix-desktop:basic (scripts/*/build-images.sh).
 Takes about two minutes and leaves nothing behind unless --keep is given.
 
-A real flowera-desktop container (real Xvnc, XFCE, Chromium) runs this
-working tree's agent (bind-mounted over /opt/flowera_agent). A mock control
+A real decurix-desktop container (real Xvnc, XFCE, Chromium) runs this
+working tree's agent (bind-mounted over /opt/decurix_agent). A mock control
 plane on the host catches what the agent posts (its questions and replies).
 Recordings are made by the agent driving real Chromium through `gui`; /learn
 and /skill are then sent to the agent's real HTTP API and the questions are
@@ -24,9 +24,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 REPO = str(Path(__file__).resolve().parents[2])
-NAME = "flowera-e2e"
+NAME = "decurix-e2e"
 PORT = 18080
-IMAGE = "flowera-desktop:basic"
+IMAGE = "decurix-desktop:basic"
 
 posts = []
 
@@ -115,8 +115,8 @@ def main():
         "--security-opt", f"seccomp={REPO}/internal/desktop/seccomp-desktop.json", "--ulimit", "core=0",
         "-e", "VNC_PW=admin", "-e", "VNC_RESOLUTION=1280x720", "-e", "DESKTOP_ID=e2e", "-e", "DESKTOP_NAME=e2e",
         "-e", f"CONTROL_PLANE_URL=http://host.docker.internal:{PORT}", "-e", "AGENT_HARNESS=ollama",
-        "-e", "OLLAMA_URL=http://host.docker.internal:11434", "-e", "FLOWERA_REPLAY_FIND_SECONDS=6",
-        "-v", f"{REPO}/agent/flowera_agent:/opt/flowera_agent:ro", IMAGE,
+        "-e", "OLLAMA_URL=http://host.docker.internal:11434", "-e", "DECURIX_REPLAY_FIND_SECONDS=6",
+        "-v", f"{REPO}/agent/decurix_agent:/opt/decurix_agent:ro", IMAGE,
     ], check=True)
 
     try:
@@ -135,7 +135,7 @@ def run():
             break
         time.sleep(3)
     else:
-        print(subprocess.run(["docker", "exec", NAME, "tail", "-30", "/tmp/flowera-startup.log"], capture_output=True, text=True).stdout)
+        print(subprocess.run(["docker", "exec", NAME, "tail", "-30", "/tmp/decurix-startup.log"], capture_output=True, text=True).stdout)
         raise SystemExit("agent never came up")
     print("agent is up:", out)
 
@@ -143,7 +143,7 @@ def run():
 
     # Two demonstrations of the same task, each its own recording.
     for n, (task_id, customer) in enumerate((("t00000000000000a1", "Acme"), ("t00000000000000a2", "Globex")), 1):
-        bash(f"printf %s {task_id} > /tmp/flowera-current-task; printf %s 'Add a customer' > /tmp/flowera-current-task.request")
+        bash(f"printf %s {task_id} > /tmp/decurix-current-task; printf %s 'Add a customer' > /tmp/decurix-current-task.request")
         print(f"\n== demonstration {n}: {customer}")
         for cmd in ('gui open file:///home/headless/work/form.html',
                     f'gui type "Customer name" "{customer}"',
@@ -152,7 +152,7 @@ def run():
             print(f"$ {cmd}\n{r.stdout.strip()[:300]}{r.stderr.strip()[:300]}")
             if r.returncode:
                 raise SystemExit(f"gui failed rc={r.returncode}")
-        bash("printf %s '' > /tmp/flowera-current-task")
+        bash("printf %s '' > /tmp/decurix-current-task")
 
     listing = json.loads(agent("/recordings"))
     print("\nrecordings:", [(m["id"], m["event_count"]) for m in listing["recordings"]])
@@ -190,7 +190,7 @@ def run():
 
     print("\nteaching ended:", last.get("kind"))
     assert last.get("kind") == "final", "teaching did not finish"
-    skill = json.loads(subprocess.run(["docker", "exec", NAME, "cat", "/home/headless/.flowera/skills/add-a-customer.json"],
+    skill = json.loads(subprocess.run(["docker", "exec", NAME, "cat", "/home/headless/.decurix/skills/add-a-customer.json"],
                                       capture_output=True, text=True).stdout)
     print("skill status:", skill["status"], "| steps:", [s["summary"] for s in skill["steps"]],
           "| params:", [(p["name"], p["varies"]) for p in skill["params"]])
@@ -231,7 +231,7 @@ def run():
     print("$ gui verify --text 'Saved Umbrella' ->", v.returncode)
     assert v.returncode == 0
 
-    skill = json.loads(subprocess.run(["docker", "exec", NAME, "cat", "/home/headless/.flowera/skills/add-a-customer.json"],
+    skill = json.loads(subprocess.run(["docker", "exec", NAME, "cat", "/home/headless/.decurix/skills/add-a-customer.json"],
                                       capture_output=True, text=True).stdout)
     save = [s for s in skill["steps"] if s.get("target", {}).get("role") == "button"][0]
     print("skill now: version", skill["version"], "| runs", skill["runs"], "| button:", save["target"]["name"], "| learned:", skill["learned"])

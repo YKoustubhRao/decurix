@@ -11,7 +11,7 @@ import (
 
 // synthesisInstruction closes the final call of a multi-step job. The old
 // "final answer" for such a job was every step's raw output under a
-// "Subtask N (...)" heading - a transcript, not a reply, and on a Flowera
+// "Subtask N (...)" heading - a transcript, not a reply, and on a Decurix
 // desktop the only thing the human reads.
 const synthesisInstruction = `Write your reply to the request now, speaking directly to the human.
 - Use only what the steps above actually produced. Give the answer itself, not a description of the steps.

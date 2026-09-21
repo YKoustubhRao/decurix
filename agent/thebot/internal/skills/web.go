@@ -41,7 +41,7 @@ const reportDir = "web-reports"
 // characters is ~5500 tokens, which a 3B model on an ordinary laptop took
 // more than six minutes to get through before writing a word. A GPU reads
 // the same prompt in seconds, so the defaults stay generous here and a host
-// that knows it is CPU-bound turns them down (Flowera's start script does).
+// that knows it is CPU-bound turns them down (Decurix's start script does).
 var (
 	deepReadCount    = envPositive("THEBOT_WEB_PAGES", 3)
 	deepReadMaxChars = envPositive("THEBOT_WEB_PAGE_CHARS", 6000)

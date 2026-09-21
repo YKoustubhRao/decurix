@@ -1,5 +1,5 @@
 // Package ollama warms the Ollama server every desktop's agent talks to for
-// inference, and manages the bundled flowera-ollama container used as a
+// inference, and manages the bundled decurix-ollama container used as a
 // fallback when no other server is reachable.
 package ollama
 
@@ -28,9 +28,9 @@ import (
 )
 
 const (
-	containerName  = "flowera-ollama"
+	containerName  = "decurix-ollama"
 	containerImage = "ollama/ollama:latest"
-	volumeName     = "flowera_ollama"
+	volumeName     = "decurix_ollama"
 
 	// Model is the Ollama model every desktop agent is configured to use.
 	//
@@ -69,10 +69,10 @@ const (
 	// and repeats the same failure on the next task.
 	EmbedModel = "nomic-embed-text"
 
-	// BundledURL is where the flowera-ollama container answers from
-	// anything on flowera-network. scripts/linux/build.sh writes it into
+	// BundledURL is where the decurix-ollama container answers from
+	// anything on decurix-network. scripts/linux/build.sh writes it into
 	// OLLAMA_URL only when no other Ollama is reachable from a container.
-	BundledURL = "http://flowera-ollama:11434"
+	BundledURL = "http://decurix-ollama:11434"
 
 	// defaultURL is the Ollama on the host running the control plane, as a
 	// desktop container reaches it. See buildDesktopEnv in internal/desktop.
@@ -324,8 +324,8 @@ func (m *Manager) EnsureReady(ctx context.Context) error {
 			},
 
 			Labels: map[string]string{
-				"flowera":        "true",
-				"flowera-ollama": "true",
+				"decurix":        "true",
+				"decurix-ollama": "true",
 			},
 		}
 

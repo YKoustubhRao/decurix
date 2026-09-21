@@ -19,11 +19,11 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
-# Imported first: it stubs flowera_agent.config on a machine with no desktop.
+# Imported first: it stubs decurix_agent.config on a machine with no desktop.
 from test_recordings import FakeScreen, event, field
 
-from flowera_agent import http_api, skill_task, state
-from flowera_agent.computer import cli, learning, mcp_server, recording, replay, skill_engine, skills
+from decurix_agent import http_api, skill_task, state
+from decurix_agent.computer import cli, learning, mcp_server, recording, replay, skill_engine, skills
 
 
 def demo(session, customer, banner=False, title="Add a customer"):

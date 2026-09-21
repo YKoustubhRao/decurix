@@ -13,7 +13,7 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/network"
 
-	"github.com/YKoustubhRao/flowera/internal/ollama"
+	"github.com/YKoustubhRao/decurix/internal/ollama"
 )
 
 const (
@@ -26,24 +26,24 @@ const (
 	// UI can offer a real "talk to the agent" tab instead of only VNC.
 	agentPort = "4900/tcp"
 
-	desktopImageBasic     = "flowera-desktop:basic"
-	desktopImageDeveloper = "flowera-desktop:developer"
-	desktopImageAI        = "flowera-desktop:ai"
+	desktopImageBasic     = "decurix-desktop:basic"
+	desktopImageDeveloper = "decurix-desktop:developer"
+	desktopImageAI        = "decurix-desktop:ai"
 
 	// ToolsImage is the lightweight container that builds and populates the shared tools volume.
-	ToolsImage = "flowera-tools:latest"
+	ToolsImage = "decurix-tools:latest"
 
 	// ToolsVolumeName is the single shared Docker volume mounted read-only (:ro)
 	// into desktop containers at /opt/tools.
-	ToolsVolumeName = "flowera-tools"
+	ToolsVolumeName = "decurix-tools"
 
 	// CacheVolumeName is the shared writable volume mounted into desktop containers
-	// at /var/cache/flowera to deduplicate Go modules, npm downloads, and cargo registries.
-	CacheVolumeName = "flowera-cache"
+	// at /var/cache/decurix to deduplicate Go modules, npm downloads, and cargo registries.
+	CacheVolumeName = "decurix-cache"
 
 	// NetworkName is the shared Docker bridge network desktop containers
 	// (and the shared Ollama container) are attached to.
-	NetworkName = "flowera-network"
+	NetworkName = "decurix-network"
 
 	// Agent harnesses: which reasoning engine drives a desktop's tasks.
 	HarnessOllama = "ollama"
@@ -56,7 +56,7 @@ const (
 )
 
 // EnsureImages reports whether every desktop image is present locally. It
-// deliberately does not pull: flowera-desktop:* are local-only tags that exist
+// deliberately does not pull: decurix-desktop:* are local-only tags that exist
 // in no registry, so a pull can only ever fail. Missing images are built from
 // the embedded build context by BuildImages.
 func (m *Manager) EnsureImages(ctx context.Context) error {
@@ -76,7 +76,7 @@ func (m *Manager) EnsureImages(ctx context.Context) error {
 	)
 }
 
-// GatewayIPs returns the IPv4 gateway addresses of the networks a desktop can reach the host through (flowera-network
+// GatewayIPs returns the IPv4 gateway addresses of the networks a desktop can reach the host through (decurix-network
 // and Docker's default bridge, which is what host.docker.internal resolves to on Linux) - the addresses a control plane
 // running on the host must listen on, besides loopback, for its desktops to call back without opening a port to the LAN.
 func (m *Manager) GatewayIPs(ctx context.Context) []string {
@@ -119,14 +119,14 @@ func (m *Manager) EnsureNetwork(ctx context.Context) error {
 		network.CreateOptions{
 			Driver: "bridge",
 			Labels: map[string]string{
-				"flowera": "true",
+				"decurix": "true",
 			},
 		},
 	)
 
 	if err != nil {
 		return fmt.Errorf(
-			"create Flowera network: %w",
+			"create Decurix network: %w",
 			err,
 		)
 	}
@@ -153,12 +153,12 @@ func resolveDesktopImage(profile string) (string, error) {
 
 // controlPlaneURL is where a desktop's agent and launchers call back to. A
 // control plane running in Docker (docker-compose.yaml) sets
-// FLOWERA_CONTROL_PLANE_URL to its own name on flowera-network, so callbacks
+// DECURIX_CONTROL_PLANE_URL to its own name on decurix-network, so callbacks
 // travel container to container and the host's published :8080 can stay
 // bound to loopback. Anything else - the released binary on the host - is
 // reached through host.docker.internal, as before.
 func controlPlaneURL() string {
-	if u := strings.TrimSpace(os.Getenv("FLOWERA_CONTROL_PLANE_URL")); u != "" {
+	if u := strings.TrimSpace(os.Getenv("DECURIX_CONTROL_PLANE_URL")); u != "" {
 		return u
 	}
 	return "http://host.docker.internal:8080"
@@ -257,11 +257,11 @@ func buildDesktopEnv(name, harness, specialization, parentID string) []string {
 		"GOROOT=/opt/tools/go",
 		"RUSTUP_HOME=/opt/tools/rust",
 		"CARGO_HOME=/home/headless/.cargo",
-		"NPM_CONFIG_CACHE=/var/cache/flowera/npm",
+		"NPM_CONFIG_CACHE=/var/cache/decurix/npm",
 		"GOPATH=/home/headless/go",
-		"GOMODCACHE=/var/cache/flowera/go",
-		"PIP_CACHE_DIR=/var/cache/flowera/pip",
-		"HF_HOME=/var/cache/flowera/huggingface",
+		"GOMODCACHE=/var/cache/decurix/go",
+		"PIP_CACHE_DIR=/var/cache/decurix/pip",
+		"HF_HOME=/var/cache/decurix/huggingface",
 		"PYTHONDONTWRITEBYTECODE=1",
 		"PYTHONUNBUFFERED=1",
 	)
@@ -291,7 +291,7 @@ func buildContainerConfigs(imageName, containerName, profile, harness string, cp
 
 	swappinessZero := int64(0)
 	shmBytes := int64(512 * 1024 * 1024)
-	if shmEnv := os.Getenv("FLOWERA_DESKTOP_SHM_MB"); shmEnv != "" {
+	if shmEnv := os.Getenv("DECURIX_DESKTOP_SHM_MB"); shmEnv != "" {
 		if parsed, err := strconv.ParseInt(shmEnv, 10, 64); err == nil && parsed > 0 {
 			shmBytes = parsed * 1024 * 1024
 		}
@@ -314,7 +314,7 @@ func buildContainerConfigs(imageName, containerName, profile, harness string, cp
 		Binds: []string{
 			volumeName + ":/home/headless",
 			ToolsVolumeName + ":/opt/tools:ro",
-			CacheVolumeName + ":/var/cache/flowera:rw",
+			CacheVolumeName + ":/var/cache/decurix:rw",
 		},
 		LogConfig: container.LogConfig{
 			Type: "json-file",

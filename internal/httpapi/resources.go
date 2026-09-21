@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/YKoustubhRao/flowera/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/docker/docker/client"
 )
 

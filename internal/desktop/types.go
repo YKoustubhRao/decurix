@@ -26,7 +26,7 @@ type Desktop struct {
 
 	// Specialization is a one-line description of what this desktop was
 	// created to focus on, set at creation time and injected into the
-	// agent's identity context (see agent/flowera_agent/identity.py). "" for
+	// agent's identity context (see agent/decurix_agent/identity.py). "" for
 	// a desktop with no particular focus.
 	Specialization string `json:"specialization,omitempty"`
 

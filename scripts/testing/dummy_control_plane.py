@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-Dummy control plane: a stdlib-only stand-in for the real Flowera Go control
+Dummy control plane: a stdlib-only stand-in for the real Decurix Go control
 plane, used only by scripts/*/test-vm.* to test one desktop image quickly
-without building/running the whole flowera stack.
+without building/running the whole decurix stack.
 
 A desktop's agent makes two kinds of outbound call to CONTROL_PLANE_URL:
 
-  POST /api/querytext    (agent/flowera_agent/messaging.py) - sent both for a
+  POST /api/querytext    (agent/decurix_agent/messaging.py) - sent both for a
                          genuine query and for the final "task
                          completed" reply (ask_for_query/write_final_reply)
-  POST /api/agent/events (agent/flowera_agent/progress.py) - one line per step
+  POST /api/agent/events (agent/decurix_agent/progress.py) - one line per step
                          while a task runs, whichever harness is driving it
 
 This server accepts both, prints them to the console so you can watch a test

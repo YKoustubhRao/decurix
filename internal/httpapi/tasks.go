@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/desktop"
-	"github.com/YKoustubhRao/flowera/internal/tasks"
-	"github.com/YKoustubhRao/flowera/internal/webui"
+	"github.com/YKoustubhRao/decurix/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
+	"github.com/YKoustubhRao/decurix/internal/webui"
 )
 
 // maxVerdictNoteBytes bounds what a human can attach to a "wrong" verdict.

@@ -6,7 +6,7 @@ import requests
 
 import models
 
-OLLAMA = models.OLLAMA  # single source of truth (models.py is also OLLAMA_URL-driven in the flowera deployment)
+OLLAMA = models.OLLAMA  # single source of truth (models.py is also OLLAMA_URL-driven in the decurix deployment)
 
 
 def gpu_vram():

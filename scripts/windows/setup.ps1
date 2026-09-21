@@ -1,8 +1,8 @@
 <#
 .SYNOPSIS
-    Flowera Setup Script for Windows
+    Decurix Setup Script for Windows
 .DESCRIPTION
-    Installs and configures required components for Flowera on Windows.
+    Installs and configures required components for Decurix on Windows.
     This includes Docker, QEMU, Git, Ollama, Cloudflare Tunnel, and other dependencies.
 .NOTES
     Requires administrative privileges.
@@ -11,7 +11,7 @@
 #Requires -RunAsAdministrator
 
 Write-Host "========================================"
-Write-Host "        Flowera Setup"
+Write-Host "        Decurix Setup"
 Write-Host "========================================"
 Write-Host ""
 
@@ -161,7 +161,7 @@ Write-Host "Next steps:"
 Write-Host "  - For a full clean-slate build (clears old desktops & database):"
 Write-Host "      .\scripts\windows\rebuild.ps1"
 Write-Host ""
-Write-Host "  - To open Flowera (retaining existing desktops and data):"
+Write-Host "  - To open Decurix (retaining existing desktops and data):"
 Write-Host "      .\scripts\windows\build.ps1"
 Write-Host ""
 Write-Host "========================================"

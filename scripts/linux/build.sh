@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Opens Flowera: builds whichever desktop images don't exist yet, makes sure
+# Opens Decurix: builds whichever desktop images don't exist yet, makes sure
 # a desktop can reach Ollama, starts the control plane if it isn't already
 # running, and opens a Cloudflare tunnel to it. Existing desktops, their
 # volumes and the app database are left exactly as they are - this is meant
@@ -11,7 +11,7 @@
 #
 # Flags:
 #   --cli   skip the tunnel and open the terminal CLI instead (see
-#           `docker compose exec desktop-manager ./flowera --cli`, below)
+#           `docker compose exec desktop-manager ./decurix --cli`, below)
 
 set -e
 
@@ -37,19 +37,19 @@ done
 
 # Ctrl+C lands here while the script is tailing the tunnel's logs, which run
 # forever until interrupted. Unlike rebuild.sh, this script's whole point is
-# to leave Flowera running - so interrupting it just stops watching the
+# to leave Decurix running - so interrupting it just stops watching the
 # tunnel, it does not tear anything down.
 cleanup() {
     echo ""
     stop_lan_tunnel
-    echo "=== Tunnel stopped. Flowera is still running: http://127.0.0.1:8080 ==="
-    echo "(Run this script again for a new tunnel, or 'docker compose down' to stop Flowera.)"
+    echo "=== Tunnel stopped. Decurix is still running: http://127.0.0.1:8080 ==="
+    echo "(Run this script again for a new tunnel, or 'docker compose down' to stop Decurix.)"
 }
 
 trap 'cleanup; exit 130' INT TERM
 
 echo "========================================"
-echo " Opening Flowera"
+echo " Opening Decurix"
 echo "========================================"
 
 # A fresh clone has no .env at all, and "docker compose up" fails without
@@ -88,24 +88,24 @@ ensure_ollama_ready
 echo ""
 echo "=== Configuring host filesystem integration ==="
 if [ -d /mnt/c ]; then
-    export FLOWERA_HOST_MNT_C="/mnt/c"
+    export DECURIX_HOST_MNT_C="/mnt/c"
     if [ -x "/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe" ]; then
-        /mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -NonInteractive -InputFormat None -Command "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress" < /dev/null > /tmp/flowera_host_apps.json 2>/dev/null || true
+        /mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -NonInteractive -InputFormat None -Command "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress" < /dev/null > /tmp/decurix_host_apps.json 2>/dev/null || true
     elif [ -x "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe" ]; then
-        /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -NonInteractive -InputFormat None -Command "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress" < /dev/null > /tmp/flowera_host_apps.json 2>/dev/null || true
+        /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -NonInteractive -InputFormat None -Command "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress" < /dev/null > /tmp/decurix_host_apps.json 2>/dev/null || true
     elif command -v powershell.exe >/dev/null 2>&1; then
-        powershell.exe -NoProfile -NonInteractive -InputFormat None -Command "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress" < /dev/null > /tmp/flowera_host_apps.json 2>/dev/null || true
+        powershell.exe -NoProfile -NonInteractive -InputFormat None -Command "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress" < /dev/null > /tmp/decurix_host_apps.json 2>/dev/null || true
     fi
 else
-    export FLOWERA_HOST_MNT_C="/"
+    export DECURIX_HOST_MNT_C="/"
 fi
-export FLOWERA_HOST_HOME="${HOME:-/home}"
+export DECURIX_HOST_HOME="${HOME:-/home}"
 
 echo ""
-echo "=== Starting Flowera ==="
+echo "=== Starting Decurix ==="
 
 # No --build: an already-built control plane image starts as-is. Existing
-# desktop_* containers and volumes, and the flowera-data volume (task
+# desktop_* containers and volumes, and the decurix-data volume (task
 # history, chats, worker memory), are untouched.
 docker compose up -d
 
@@ -114,30 +114,30 @@ echo "=== Waiting for dashboard ==="
 
 for i in {1..60}; do
     if curl -fsS http://127.0.0.1:8080/ >/dev/null 2>&1; then
-        echo "Flowera dashboard is running."
+        echo "Decurix dashboard is running."
         break
     fi
 
-    echo "Waiting for Flowera... ($i/60)"
+    echo "Waiting for Decurix... ($i/60)"
     sleep 2
 done
 
 if ! curl -fsS http://127.0.0.1:8080/ >/dev/null 2>&1; then
-    echo "ERROR: Flowera dashboard is not responding on port 8080."
+    echo "ERROR: Decurix dashboard is not responding on port 8080."
     docker compose logs --tail=100
     exit 1
 fi
 
 echo ""
 echo "========================================"
-echo " Flowera is running"
+echo " Decurix is running"
 echo "========================================"
 echo ""
-echo "Idle desktops stop automatically after 5 minutes (set FLOWERA_IDLE_STOP_MINUTES=0 in .env to disable, or to another number of minutes)."
+echo "Idle desktops stop automatically after 5 minutes (set DECURIX_IDLE_STOP_MINUTES=0 in .env to disable, or to another number of minutes)."
 
-# FLOWERA_LAN_PORT in .env changes which port the access-code-gated listener
+# DECURIX_LAN_PORT in .env changes which port the access-code-gated listener
 # binds; read_env_var comes from lib/ollama-setup.sh, already sourced above.
-lan_port="$(read_env_var FLOWERA_LAN_PORT)"
+lan_port="$(read_env_var DECURIX_LAN_PORT)"
 lan_port="${lan_port:-8090}"
 
 # The machine's own address on whatever network it's on, so both the admin
@@ -183,7 +183,7 @@ if command -v jq >/dev/null 2>&1; then
         # instead of asking them to type it into the gate's form.
         if [ -n "$lan_url" ]; then
             echo ""
-            echo "Open it yourself without typing the code: $lan_url/__flowera_access/authenticate?code=$lan_code"
+            echo "Open it yourself without typing the code: $lan_url/__decurix_access/authenticate?code=$lan_code"
         fi
     fi
 fi
@@ -195,11 +195,11 @@ if [ -n "$CLI_MODE" ]; then
     trap - INT TERM
 
     echo ""
-    echo "=== Opening the Flowera CLI ==="
-    echo "(Flowera keeps running after you exit; 'exit' or Ctrl+D to leave.)"
+    echo "=== Opening the Decurix CLI ==="
+    echo "(Decurix keeps running after you exit; 'exit' or Ctrl+D to leave.)"
     echo ""
 
-    docker compose exec desktop-manager ./flowera --cli
+    docker compose exec desktop-manager ./decurix --cli
     exit $?
 fi
 
@@ -208,7 +208,7 @@ echo "=== Starting Cloudflare Tunnel ==="
 
 if ! command -v cloudflared >/dev/null 2>&1; then
     echo "ERROR: cloudflared is not installed."
-    echo "Flowera is still running locally at http://127.0.0.1:8080."
+    echo "Decurix is still running locally at http://127.0.0.1:8080."
     exit 1
 fi
 

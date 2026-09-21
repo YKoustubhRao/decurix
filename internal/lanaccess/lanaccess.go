@@ -1,14 +1,14 @@
 // Package lanaccess gates the second, LAN/tunnel-facing HTTP listener behind
 // a rotating access code - AO (agent-orchestrator)'s "Connect Mobile" design,
-// adapted to Flowera's shape: a phone reaches the control plane by opening a
+// adapted to Decurix's shape: a phone reaches the control plane by opening a
 // page and typing a code shown in the dashboard's Mobile menu, rather than a
 // native app pairing over a QR code.
 //
-// This package knows nothing about the rest of Flowera on purpose: it never
+// This package knows nothing about the rest of Decurix on purpose: it never
 // touches the primary :8080 listener, which desktop agents call back into and
 // which a human on the control plane's own machine uses directly. Gating that
 // one risks silently breaking every desktop's callback path; this package is
-// only ever wired onto a second, separate port (see cmd/flowera/main.go),
+// only ever wired onto a second, separate port (see cmd/decurix/main.go),
 // exactly the surface a Cloudflare tunnel or a LAN address is pointed at.
 package lanaccess
 
@@ -33,11 +33,11 @@ const (
 	passwordChars = "23456789ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz"
 	passwordLen   = 10
 
-	sessionCookie = "flowera_lan_session"
+	sessionCookie = "decurix_lan_session"
 	sessionTTL    = 30 * 24 * time.Hour
 
 	// loginPath is the path the gate's own form POSTs a typed code to.
-	loginPath = "/__flowera_access/login"
+	loginPath = "/__decurix_access/login"
 
 	// authPath grants a session from a code carried in the URL itself
 	// (?code=...&next=...) instead of typed into the gate's form - what lets
@@ -46,7 +46,7 @@ const (
 	// has the code printed in their own terminal a moment earlier. It goes
 	// through the exact same verify as a typed code, so a link is not a way
 	// around the lockout.
-	authPath = "/__flowera_access/authenticate"
+	authPath = "/__decurix_access/authenticate"
 
 	maxAttempts   = 5
 	lockoutWindow = 5 * time.Minute
@@ -136,7 +136,7 @@ func (s *Store) Rotate() string {
 // yet), and an interval of zero or less disables it, same as
 // idlepause.Checker's non-positive Threshold - so a caller can always start
 // it unconditionally and let the interval decide. Meant to be run in its own
-// goroutine (see cmd/flowera/main.go).
+// goroutine (see cmd/decurix/main.go).
 func (s *Store) RunAutoRotate(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		return
@@ -338,7 +338,7 @@ func (s *Store) grantSession(w http.ResponseWriter) {
 		Path:     "/",
 		HttpOnly: true,
 		// Not Secure: this listener is plain HTTP by design (see the package
-		// doc and cmd/flowera/main.go) so a direct LAN address works too, not
+		// doc and cmd/decurix/main.go) so a direct LAN address works too, not
 		// only the tunnel's https:// origin. Traffic through the tunnel is
 		// still encrypted end-to-end by cloudflared's own protocol; only a
 		// genuine direct-LAN connection is plaintext, the same deliberate
@@ -436,7 +436,7 @@ type gateData struct {
 }
 
 // renderGate writes the "enter the access code" page. It carries no
-// dependency on web.TemplatesFS or Flowera's shared theme on purpose - this
+// dependency on web.TemplatesFS or Decurix's shared theme on purpose - this
 // package depends on nothing internal (see the package doc) - so its palette
 // is a small, hand-kept copy of the dashboard's own tokens rather than a
 // shared one; the two are expected to drift a little rather than pull this
@@ -456,7 +456,7 @@ var gateTmpl = template.Must(template.New("gate").Parse(`<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <meta name="robots" content="noindex">
-<title>Flowera - Access code</title>
+<title>Decurix - Access code</title>
 <style>
 :root{--paper:#f6f5f2;--surface:#fffefc;--line:#e1dfd8;--text:#1a1917;--text-2:#5b584f;--accent:#136c4b;--accent-hover:#0f5a3e;--danger:#a03528}
 @media (prefers-color-scheme:dark){:root{--paper:#100f0e;--surface:#191817;--line:#2c2a26;--text:#f2f0ea;--text-2:#a9a59a;--accent:#4fbd8b;--accent-hover:#6ad0a1;--danger:#e8836f}}
@@ -474,7 +474,7 @@ button:hover{background:var(--accent-hover)}
 </head><body>
 <form class="card" method="POST" action="{{.Action}}" autocomplete="off">
   <h1>Enter the access code</h1>
-  <p>Read it off the Flowera dashboard's Mobile menu, on the machine running your control plane.</p>
+  <p>Read it off the Decurix dashboard's Mobile menu, on the machine running your control plane.</p>
   {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
   <input type="text" name="code" placeholder="Access code" autocapitalize="off" autocomplete="off" spellcheck="false" autofocus required>
   <input type="hidden" name="next" value="{{.Next}}">

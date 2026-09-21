@@ -13,7 +13,7 @@ This toolkit allows you to migrate your local desktop configurations, developer 
    - Google Chrome profiles are transferred **without** the multi-gigabyte `Cache/`, `Code Cache/`, and `GPUCache/` directories.
    - All login sessions, cookies, localStorage, extensions, and preferences are preserved intact, while avoiding loading gigabytes of stale cache into Linux page cache.
 3. **Strict Anti-Recursion & Self-Exclusion**:
-   - The current application directory (`flowera`) and `migration-toolkit` are explicitly excluded from replication.
+   - The current application directory (`decurix`) and `migration-toolkit` are explicitly excluded from replication.
    - Prevents recursive nested copies, redundant duplicates, and circular transfers.
 4. **Linux Kernel Samepage Merging (KSM)**:
    - Configures the kernel's KSM engine (`/sys/kernel/mm/ksm/run = 1`).
@@ -42,13 +42,13 @@ This toolkit allows you to migrate your local desktop configurations, developer 
 Instead of copying bloated executables across machines, the host bridge enables the Linux VM to execute and control apps directly on your local host with **zero duplicate memory**:
 
 1. **Activate Host OpenSSH Server (once on your local machine)**:
-   - **macOS**: `bash ~/flowera/migration-toolkit/host-bridge/enable_mac_remote_login.sh`
-   - **Windows**: `powershell -ExecutionPolicy Bypass -File ~/flowera/migration-toolkit/host-bridge/enable_windows_ssh_server.ps1`
-   - **Linux**: `bash ~/flowera/migration-toolkit/host-bridge/enable_linux_sshd.sh`
+   - **macOS**: `bash ~/decurix/migration-toolkit/host-bridge/enable_mac_remote_login.sh`
+   - **Windows**: `powershell -ExecutionPolicy Bypass -File ~/decurix/migration-toolkit/host-bridge/enable_windows_ssh_server.ps1`
+   - **Linux**: `bash ~/decurix/migration-toolkit/host-bridge/enable_linux_sshd.sh`
 
 2. **Connect from Host to Linux VM with the Bridge Tunnel**:
    ```bash
-   ~/flowera/migration-toolkit/host-bridge/connect-to-vm-with-bridge.sh user@<linux-vm-ip>
+   ~/decurix/migration-toolkit/host-bridge/connect-to-vm-with-bridge.sh user@<linux-vm-ip>
    ```
 
 3. **Use Host apps, clipboard & files from the Linux VM**:
@@ -71,7 +71,7 @@ Instead of copying bloated executables across machines, the host bridge enables 
 ### Quick Start (Granular Choice-by-Choice Wizard)
 Run the wizard from your local terminal:
 ```bash
-cd ~/flowera/migration-toolkit
+cd ~/decurix/migration-toolkit
 ./choice_migration.sh
 ```
 Or run `./migrate.sh` and select Mode 1.

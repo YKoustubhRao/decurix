@@ -7,8 +7,8 @@
     the chat and embedding models onto it, and records OLLAMA_URL/
     OLLAMA_MODEL in .env.
 
-    Requires: flowera-desktop:basic already built (the probes run inside
-    it), flowera-network already created, and the current directory being
+    Requires: decurix-desktop:basic already built (the probes run inside
+    it), decurix-network already created, and the current directory being
     the repo root. The caller is responsible for all three - this file only
     does the Ollama part, so build.ps1 and rebuild.ps1 don't each carry
     their own copy of it.
@@ -62,8 +62,8 @@ function Set-EnvVar {
     )
 }
 
-# Invoke-InDesktopImage runs a Python snippet inside flowera-desktop:basic, on
-# flowera-network, with the same host.docker.internal mapping every desktop
+# Invoke-InDesktopImage runs a Python snippet inside decurix-desktop:basic, on
+# decurix-network, with the same host.docker.internal mapping every desktop
 # gets. That is the only place "can a desktop reach Ollama?" is answered
 # honestly: this shell can always reach its own 127.0.0.1, which is exactly
 # the configuration that leaves every desktop unable to reach anything.
@@ -75,10 +75,10 @@ function Invoke-InDesktopImage {
     param([string]$Code, [string[]]$Arguments)
 
     $Code | docker run --rm -i `
-        --network flowera-network `
+        --network decurix-network `
         --add-host host.docker.internal:host-gateway `
         --entrypoint python3 `
-        flowera-desktop:basic `
+        decurix-desktop:basic `
         - @Arguments
 }
 
@@ -206,16 +206,16 @@ function Enable-OllamaListenAll {
 function Invoke-EnsureOllamaReady {
     $script:EnvFile = Join-Path (Get-Location).Path ".env"
     $defaultOllamaUrl = "http://host.docker.internal:11434"
-    $bundledOllamaUrl = "http://flowera-ollama:11434"
+    $bundledOllamaUrl = "http://decurix-ollama:11434"
     # The chat model is not the only model. TheBot's harness embeds every
     # fact it learns, every document it indexes and every failure it
     # records, and Ollama refuses to embed with a chat model. See
     # internal/ollama.EmbedModel.
     $embedModel = "nomic-embed-text"
 
-    docker network inspect flowera-network *>$null
+    docker network inspect decurix-network *>$null
     if ($LASTEXITCODE -ne 0) {
-        docker network create flowera-network | Out-Null
+        docker network create decurix-network | Out-Null
     }
 
     $ollamaUrl = ""
@@ -266,14 +266,14 @@ function Invoke-EnsureOllamaReady {
         }
     }
 
-    # Last resort: the container Flowera manages itself. Small model, but it
+    # Last resort: the container Decurix manages itself. Small model, but it
     # needs nothing from the host and always works, which beats handing every
     # desktop a URL that answers nowhere. qwen2.5-coder:3b, not qwen3:0.6b -
     # the 0.6b model was too weak to reliably follow the agent's own
     # COMMAND/DONE/HELP contract (see internal/ollama.Model's comment).
     if (-not $ollamaUrl) {
         Write-Host ""
-        Write-Host "Falling back to the bundled flowera-ollama container."
+        Write-Host "Falling back to the bundled decurix-ollama container."
         $ollamaUrl = $bundledOllamaUrl
         # A pinned model is replaced by a small one that always works; "auto"
         # stays auto - the control plane pulls what fits into the container.

@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/conversation"
-	"github.com/YKoustubhRao/flowera/internal/desktop"
-	"github.com/YKoustubhRao/flowera/internal/querynotes"
-	"github.com/YKoustubhRao/flowera/internal/tasks"
-	"github.com/YKoustubhRao/flowera/internal/webui"
+	"github.com/YKoustubhRao/decurix/internal/conversation"
+	"github.com/YKoustubhRao/decurix/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/querynotes"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
+	"github.com/YKoustubhRao/decurix/internal/webui"
 )
 
 // maxQueryTextRequestBytes bounds one POST /api/querytext body. Content
