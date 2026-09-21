@@ -12,8 +12,8 @@ func TestLoadDefaults(t *testing.T) {
 
 	cfg := Load()
 
-	if cfg.WorkspaceRoot != "/home/headless/.flowera/ai" {
-		t.Errorf("WorkspaceRoot default = %q, want /home/headless/.flowera/ai", cfg.WorkspaceRoot)
+	if cfg.WorkspaceRoot != "/home/headless/.decurix/ai" {
+		t.Errorf("WorkspaceRoot default = %q, want /home/headless/.decurix/ai", cfg.WorkspaceRoot)
 	}
 	if cfg.OllamaHost != "http://127.0.0.1:11434" {
 		t.Errorf("OllamaHost default = %q, want http://127.0.0.1:11434", cfg.OllamaHost)

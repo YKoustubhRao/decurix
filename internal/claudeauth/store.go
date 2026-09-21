@@ -3,7 +3,7 @@
 // ANTHROPIC_API_KEY that used to be copied into a new desktop's environment.
 // The session lives in the control plane's SQLite database, so it survives a
 // restart the same way task records and chats do, build.sh leaves it alone
-// the same way it leaves flowera-data alone, and rebuild.sh wipes it for free
+// the same way it leaves decurix-data alone, and rebuild.sh wipes it for free
 // as part of wiping that same volume - no script changes needed for either
 // half of that.
 package claudeauth
@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/sqlitedb"
+	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
 
 // Session is the shared Claude Code login: the raw ~/.claude/.credentials.json

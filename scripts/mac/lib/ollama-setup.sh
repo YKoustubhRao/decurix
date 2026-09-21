@@ -7,10 +7,10 @@
 
 probe_ollama() {
     docker run --rm \
-        --network flowera-network \
+        --network decurix-network \
         --add-host host.docker.internal:host-gateway \
         --entrypoint python3 \
-        flowera-desktop:basic \
+        decurix-desktop:basic \
         -c "
 import sys, urllib.request
 try:
@@ -22,10 +22,10 @@ except Exception:
 
 list_ollama_models() {
     docker run --rm \
-        --network flowera-network \
+        --network decurix-network \
         --add-host host.docker.internal:host-gateway \
         --entrypoint python3 \
-        flowera-desktop:basic \
+        decurix-desktop:basic \
         -c "
 import json, urllib.request
 try:
@@ -39,10 +39,10 @@ except Exception:
 
 pull_ollama_model() {
     docker run --rm \
-        --network flowera-network \
+        --network decurix-network \
         --add-host host.docker.internal:host-gateway \
         --entrypoint python3 \
-        flowera-desktop:basic \
+        decurix-desktop:basic \
         -c "
 import json, sys, urllib.request
 req = urllib.request.Request(
@@ -86,12 +86,12 @@ read_env_var() {
 
 ensure_ollama_ready() {
     local default_ollama_url="http://host.docker.internal:11434"
-    local bundled_ollama_url="http://flowera-ollama:11434"
+    local bundled_ollama_url="http://decurix-ollama:11434"
     local embed_model="nomic-embed-text"
     local ollama_url_ok=""
 
-    docker network inspect flowera-network >/dev/null 2>&1 \
-        || docker network create flowera-network >/dev/null
+    docker network inspect decurix-network >/dev/null 2>&1 \
+        || docker network create decurix-network >/dev/null
 
     local configured_ollama_url
     configured_ollama_url="$(read_env_var OLLAMA_URL)"
@@ -139,7 +139,7 @@ ensure_ollama_ready() {
 
     if [ -z "$ollama_url_ok" ]; then
         echo ""
-        echo "Falling back to the bundled flowera-ollama container."
+        echo "Falling back to the bundled decurix-ollama container."
         ollama_url_ok="$bundled_ollama_url"
         # A pinned model is replaced by a small one that always works; "auto"
         # stays auto - the control plane pulls what fits into the container.

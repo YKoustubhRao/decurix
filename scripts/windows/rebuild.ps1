@@ -1,9 +1,9 @@
 <#
 .SYNOPSIS
-    Rebuilds Flowera from a clean slate.
+    Rebuilds Decurix from a clean slate.
 .DESCRIPTION
     The Windows twin of scripts/linux/rebuild.sh: no leftover desktop_*
-    containers or volumes, and an EMPTY app database (flowera-data: task
+    containers or volumes, and an EMPTY app database (decurix-data: task
     history, chat transcripts, query notes, worker memory). Images are still
     rebuilt (so a change to agent/ or a Dockerfile is picked up), but with
     Docker's normal build cache, not --no-cache - a rebuild should be
@@ -13,7 +13,7 @@
 
     What is deliberately NOT wiped:
       - .env (your configuration - API keys, OLLAMA_URL/MODEL, etc.)
-      - the flowera_ollama volume (downloaded models - re-pulling a chat
+      - the decurix_ollama volume (downloaded models - re-pulling a chat
         model is a multi-GB download nobody wants on every rebuild)
 
     Needs Docker Desktop running. Does not need Administrator.
@@ -21,7 +21,7 @@
     Skip the confirmation prompt (for scripted/CI use).
 .PARAMETER Cli
     Skip the tunnel and open the terminal CLI instead (docker compose exec
-    desktop-manager ./flowera --cli), a text alternative to the dashboard.
+    desktop-manager ./decurix --cli), a text alternative to the dashboard.
 #>
 
 param(
@@ -37,7 +37,7 @@ function Test-CommandAvailable {
 
 # Exit-Build is how every deliberate exit leaves the script. It marks the
 # exit as intentional so the `finally` below leaves the stack alone once a
-# rebuild has actually finished starting Flowera back up - only Ctrl+C
+# rebuild has actually finished starting Decurix back up - only Ctrl+C
 # during the confirm/rebuild/tunnel phases should trigger the teardown.
 function Exit-Build {
     param([int]$Code)
@@ -53,14 +53,14 @@ function Wait-ForDashboard {
             $response = Invoke-WebRequest -Uri "http://127.0.0.1:8080/" `
                 -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
             if ($response.StatusCode -eq 200) {
-                Write-Host "Flowera dashboard is running."
+                Write-Host "Decurix dashboard is running."
                 return $true
             }
         } catch {
             # Not up yet.
         }
 
-        Write-Host "Waiting for Flowera... ($attempt/$MaxAttempts)"
+        Write-Host "Waiting for Decurix... ($attempt/$MaxAttempts)"
         Start-Sleep -Seconds $DelaySeconds
     }
 
@@ -74,7 +74,7 @@ function Wait-ForDashboard {
 function Invoke-Cleanup {
     Write-Host ""
     Stop-LanTunnel
-    Write-Host "=== Interrupted: stopping Flowera and its containers ==="
+    Write-Host "=== Interrupted: stopping Decurix and its containers ==="
 
     docker compose down
 
@@ -83,7 +83,7 @@ function Invoke-Cleanup {
         docker rm -f $containers
     }
 
-    docker rm -f flowera-ollama 2>$null | Out-Null
+    docker rm -f decurix-ollama 2>$null | Out-Null
 }
 #endregion
 
@@ -97,15 +97,15 @@ Set-Location (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
 $script:IntentionalExit = $false
 
 Write-Host "========================================"
-Write-Host " Flowera rebuild (clean slate)"
+Write-Host " Decurix rebuild (clean slate)"
 Write-Host "========================================"
 Write-Host ""
 Write-Host "This will permanently delete:"
 Write-Host "  - every desktop_* container and volume"
-Write-Host "  - the flowera-data volume: ALL task history, chats, query notes and"
+Write-Host "  - the decurix-data volume: ALL task history, chats, query notes and"
 Write-Host "    worker memory - this cannot be undone"
 Write-Host ""
-Write-Host "Kept as-is: .env, and the flowera_ollama volume (your pulled models)."
+Write-Host "Kept as-is: .env, and the decurix_ollama volume (your pulled models)."
 Write-Host ""
 
 if (-not $Yes) {
@@ -153,7 +153,7 @@ try {
     }
 
     Write-Host ""
-    Write-Host "=== Stopping Flowera ==="
+    Write-Host "=== Stopping Decurix ==="
     docker compose down
     if ($LASTEXITCODE -ne 0) { Exit-Build $LASTEXITCODE }
 
@@ -174,12 +174,12 @@ try {
     }
 
     Write-Host ""
-    Write-Host "=== Wiping the app database (flowera-data) ==="
-    docker volume rm flowera-data 2>$null | Out-Null
+    Write-Host "=== Wiping the app database (decurix-data) ==="
+    docker volume rm decurix-data 2>$null | Out-Null
 
     Write-Host ""
     Write-Host "=== Removing the bundled Ollama container (keeping its model volume) ==="
-    docker rm -f flowera-ollama 2>$null | Out-Null
+    docker rm -f decurix-ollama 2>$null | Out-Null
 
     & "$PSScriptRoot/build-images.ps1"
     if ($LASTEXITCODE -ne 0) { Exit-Build $LASTEXITCODE }
@@ -190,7 +190,7 @@ try {
     Invoke-EnsureOllamaReady
 
     Write-Host ""
-    Write-Host "=== Starting Flowera ==="
+    Write-Host "=== Starting Decurix ==="
     docker compose up -d --build
     if ($LASTEXITCODE -ne 0) { Exit-Build $LASTEXITCODE }
 
@@ -198,22 +198,22 @@ try {
     Write-Host "=== Waiting for dashboard ==="
 
     if (-not (Wait-ForDashboard -MaxAttempts 60 -DelaySeconds 2)) {
-        Write-Host "ERROR: Flowera dashboard is not responding on port 8080."
+        Write-Host "ERROR: Decurix dashboard is not responding on port 8080."
         docker compose logs --tail=100
         Exit-Build 1
     }
 
     Write-Host ""
     Write-Host "========================================"
-    Write-Host " Flowera is running (clean slate)"
+    Write-Host " Decurix is running (clean slate)"
     Write-Host "========================================"
     Write-Host ""
     Write-Host "Dashboard: http://localhost:8080"
-    Write-Host "Idle desktops stop automatically after 5 minutes (set FLOWERA_IDLE_STOP_MINUTES=0 in .env to disable, or to another number of minutes)."
+    Write-Host "Idle desktops stop automatically after 5 minutes (set DECURIX_IDLE_STOP_MINUTES=0 in .env to disable, or to another number of minutes)."
 
-    # FLOWERA_LAN_PORT in .env changes which port the access-code-gated
+    # DECURIX_LAN_PORT in .env changes which port the access-code-gated
     # listener binds.
-    $lanPort = Read-EnvVar -Name "FLOWERA_LAN_PORT"
+    $lanPort = Read-EnvVar -Name "DECURIX_LAN_PORT"
     if (-not $lanPort) { $lanPort = "8090" }
 
     # The machine's own address on whatever network it's on, so both the
@@ -271,7 +271,7 @@ try {
             # on click instead of asking them to type it into the gate's form.
             if ($lanUrl) {
                 Write-Host ""
-                Write-Host "Open it yourself without typing the code: $lanUrl/__flowera_access/authenticate?code=$lanCode"
+                Write-Host "Open it yourself without typing the code: $lanUrl/__decurix_access/authenticate?code=$lanCode"
             }
         }
     } catch {
@@ -282,15 +282,15 @@ try {
     # desktops, empty database, dashboard responding). Exit-Build marks this
     # as intentional so finally{}'s Invoke-Cleanup - which tears the whole
     # stack back down, for an interrupted *rebuild* - is skipped: leaving the
-    # CLI should just leave Flowera running, not undo the rebuild that just
+    # CLI should just leave Decurix running, not undo the rebuild that just
     # finished.
     if ($Cli) {
         Write-Host ""
-        Write-Host "=== Opening the Flowera CLI ==="
-        Write-Host "(Flowera keeps running after you exit; 'exit' or Ctrl+D to leave.)"
+        Write-Host "=== Opening the Decurix CLI ==="
+        Write-Host "(Decurix keeps running after you exit; 'exit' or Ctrl+D to leave.)"
         Write-Host ""
 
-        docker compose exec desktop-manager ./flowera --cli
+        docker compose exec desktop-manager ./decurix --cli
         Exit-Build $LASTEXITCODE
     }
 

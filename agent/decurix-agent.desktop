@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Decurix Agent
+Comment=Decurix autonomous agent
+Exec=/opt/start_agent_terminal.sh
+Terminal=false
+StartupNotify=false
+X-GNOME-Autostart-enabled=true

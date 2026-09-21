@@ -158,7 +158,7 @@ type Scheduler struct {
 	// THEBOT_MAX_PARALLEL_STEPS, else 3.
 	MaxParallel int
 	// JobTimeout bounds a whole job. Zero reads THEBOT_JOB_TIMEOUT_SECONDS,
-	// else 25 minutes - under the Flowera harness's own 30, so a job that
+	// else 25 minutes - under the Decurix harness's own 30, so a job that
 	// runs long is reported by TheBot with what it finished, rather than
 	// abandoned by the harness with nothing.
 	JobTimeout time.Duration

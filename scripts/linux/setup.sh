@@ -3,7 +3,7 @@
 set -e
 
 echo "========================================"
-echo "        Flowera Setup"
+echo "        Decurix Setup"
 echo "========================================"
 
 if [ "$EUID" -ne 0 ]; then
@@ -149,7 +149,7 @@ echo "Next steps:"
 echo "  - For a full clean-slate build (clears old desktops & database):"
 echo "      ./scripts/linux/rebuild.sh"
 echo ""
-echo "  - To open Flowera (retaining existing desktops and data):"
+echo "  - To open Decurix (retaining existing desktops and data):"
 echo "      ./scripts/linux/build.sh"
 echo ""
 echo "========================================"

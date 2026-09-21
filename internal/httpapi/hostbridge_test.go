@@ -3,7 +3,7 @@ package httpapi
 import (
 	"archive/tar"
 	"encoding/json"
-	"github.com/YKoustubhRao/flowera/internal/winhost"
+	"github.com/YKoustubhRao/decurix/internal/winhost"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -20,7 +20,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 
-	"github.com/YKoustubhRao/flowera/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/desktop"
 )
 
 func TestDetectHostAppsHandler(t *testing.T) {

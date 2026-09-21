@@ -12,9 +12,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/YKoustubhRao/flowera/internal/conversation"
-	"github.com/YKoustubhRao/flowera/internal/desktop"
-	"github.com/YKoustubhRao/flowera/internal/tasks"
+	"github.com/YKoustubhRao/decurix/internal/conversation"
+	"github.com/YKoustubhRao/decurix/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
 )
 
 // maxStepTextBytes bounds one live activity line. Agents report real command
@@ -151,7 +151,7 @@ func (s *Server) clearChatHandler(w http.ResponseWriter, r *http.Request) {
 
 // agentEventHandler records one line of live activity reported from inside a
 // desktop while it works. Every harness posts here through the agent's shared
-// progress.emit (flowera_agent/progress.py), which is what lets the chat show
+// progress.emit (decurix_agent/progress.py), which is what lets the chat show
 // the same step-by-step view for Ollama, Claude Code and TheBot alike.
 //
 // Best-effort by design: a desktop reporting progress must never be able to
@@ -348,7 +348,7 @@ func chatKindFor(reported string) string {
 }
 
 // queryNoteHeadings are the boilerplate section headings a desktop agent wraps
-// its callbacks in (see flowera_agent/messaging.py), paired with the chat kind
+// its callbacks in (see decurix_agent/messaging.py), paired with the chat kind
 // each one implies.
 var queryNoteHeadings = []struct {
 	Heading string

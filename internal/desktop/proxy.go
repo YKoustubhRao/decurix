@@ -15,7 +15,7 @@ var (
 	ErrNotFound   = errors.New("desktop not found")
 	ErrNotRunning = errors.New("desktop is not running")
 	ErrPaused     = errors.New("desktop is paused")
-	ErrNoNetwork  = errors.New("desktop is not connected to Flowera network")
+	ErrNoNetwork  = errors.New("desktop is not connected to Decurix network")
 	ErrNoAddress  = errors.New("desktop has no network IP")
 
 	// ErrAgentUnreachable means the desktop container is up but nothing

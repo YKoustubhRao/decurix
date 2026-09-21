@@ -7,7 +7,7 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 
-	"github.com/YKoustubhRao/flowera/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/desktop"
 )
 
 type mockDesktopManager struct {

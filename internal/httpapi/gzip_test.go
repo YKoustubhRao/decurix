@@ -13,7 +13,7 @@ import (
 func TestGzipMiddlewareCompressesText(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte(strings.Repeat("Hello Flowera Desktop World! ", 100)))
+		_, _ = w.Write([]byte(strings.Repeat("Hello Decurix Desktop World! ", 100)))
 	})
 
 	wrapped := GzipMiddleware(handler)
@@ -40,7 +40,7 @@ func TestGzipMiddlewareCompressesText(t *testing.T) {
 		t.Fatalf("failed to read decompressed body: %v", err)
 	}
 
-	if !bytes.Contains(decompressed, []byte("Hello Flowera Desktop World!")) {
+	if !bytes.Contains(decompressed, []byte("Hello Decurix Desktop World!")) {
 		t.Errorf("decompressed content mismatch")
 	}
 }

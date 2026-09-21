@@ -1,4 +1,4 @@
-// Package httpapi implements the Flowera control-plane HTTP API and
+// Package httpapi implements the Decurix control-plane HTTP API and
 // dashboard: it is the only package that touches net/http request/response
 // objects, composing the desktop, querynotes, memory, conversation,
 // stepimages, tasks, tunnel, suggest, and webui packages.
@@ -8,28 +8,28 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/YKoustubhRao/flowera/internal/claudeauth"
-	"github.com/YKoustubhRao/flowera/internal/conversation"
-	"github.com/YKoustubhRao/flowera/internal/dag"
-	"github.com/YKoustubhRao/flowera/internal/desktop"
-	"github.com/YKoustubhRao/flowera/internal/idlepause"
-	"github.com/YKoustubhRao/flowera/internal/lanaccess"
-	"github.com/YKoustubhRao/flowera/internal/memory"
-	"github.com/YKoustubhRao/flowera/internal/querynotes"
-	"github.com/YKoustubhRao/flowera/internal/resourcemon"
-	"github.com/YKoustubhRao/flowera/internal/schedule"
-	"github.com/YKoustubhRao/flowera/internal/stepimages"
-	"github.com/YKoustubhRao/flowera/internal/suggest"
-	"github.com/YKoustubhRao/flowera/internal/tasks"
-	"github.com/YKoustubhRao/flowera/internal/tunnel"
-	"github.com/YKoustubhRao/flowera/internal/webui"
-	"github.com/YKoustubhRao/flowera/internal/winhost"
+	"github.com/YKoustubhRao/decurix/internal/claudeauth"
+	"github.com/YKoustubhRao/decurix/internal/conversation"
+	"github.com/YKoustubhRao/decurix/internal/dag"
+	"github.com/YKoustubhRao/decurix/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/idlepause"
+	"github.com/YKoustubhRao/decurix/internal/lanaccess"
+	"github.com/YKoustubhRao/decurix/internal/memory"
+	"github.com/YKoustubhRao/decurix/internal/querynotes"
+	"github.com/YKoustubhRao/decurix/internal/resourcemon"
+	"github.com/YKoustubhRao/decurix/internal/schedule"
+	"github.com/YKoustubhRao/decurix/internal/stepimages"
+	"github.com/YKoustubhRao/decurix/internal/suggest"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
+	"github.com/YKoustubhRao/decurix/internal/tunnel"
+	"github.com/YKoustubhRao/decurix/internal/webui"
+	"github.com/YKoustubhRao/decurix/internal/winhost"
 )
 
 // Server wires the desktop manager, query-notes store, memory store, chat
 // store, action-step screenshot store, task records, tunnel store, shared
 // Claude session store, LAN-access store, scheduled-request store, DAG
-// store, and web UI renderer together to serve the Flowera control plane.
+// store, and web UI renderer together to serve the Decurix control plane.
 type Server struct {
 	Desktops   *desktop.Manager
 	QueryNotes *querynotes.Store
@@ -42,11 +42,11 @@ type Server struct {
 	LANAccess  *lanaccess.Store
 	Schedules  *schedule.Store
 	Dags       *dag.Store
-	// DagRunner is assigned by cmd/flowera/main.go after construction, not
+	// DagRunner is assigned by cmd/decurix/main.go after construction, not
 	// through NewServer: it holds this *Server itself as its Submitter
 	// (SubmitTracked), so it cannot be built before the Server exists.
 	DagRunner *dag.Runner
-	// IdleChecker is optionally assigned by cmd/flowera/main.go after construction,
+	// IdleChecker is optionally assigned by cmd/decurix/main.go after construction,
 	// allowing task completion events to request fast-idle transitions.
 	IdleChecker *idlepause.Checker
 	// ResourceMon monitors container resource usage and handles autoscaling alerts.
@@ -193,7 +193,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 // the host bridge (below).
 // Serving the code back over the very listener it gates would make it
 // pointless the moment someone else on that listener asked for it, so
-// cmd/flowera/main.go calls this only for the primary mux.
+// cmd/decurix/main.go calls this only for the primary mux.
 func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	// Everything that runs something on the host or shows a host program
 	// is for a desktop's own launchers, which reach the primary listener

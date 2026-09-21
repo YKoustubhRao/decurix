@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/sqlitedb"
+	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
 
 // Roles an entry can come from.
@@ -68,7 +68,7 @@ type Step struct {
 
 // Action is what makes a step part of the audit trail: one thing an agent did
 // on its desktop's screen, reported by the shared action layer inside the
-// desktop (flowera_agent/computer) whichever engine asked for it. Before and
+// desktop (decurix_agent/computer) whichever engine asked for it. Before and
 // After are URLs of the screenshots either side of it; a stopped action
 // (Outcome "needs_approval") has only a Before.
 type Action struct {

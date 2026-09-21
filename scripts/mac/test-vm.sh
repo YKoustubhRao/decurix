@@ -30,7 +30,7 @@ while [ $# -gt 0 ]; do
 done
 
 DESKTOP_CONTAINER="desktop_${NAME}"
-DUMMY_CP="flowera-dummy-cp"
+DUMMY_CP="decurix-dummy-cp"
 
 OLLAMA_URL="${OLLAMA_URL:-http://host.docker.internal:11434}"
 OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5-coder:3b}"
@@ -55,20 +55,20 @@ case "$HARNESS" in
 esac
 
 echo "========================================"
-echo " Flowera standalone VM test (macOS)"
+echo " Decurix standalone VM test (macOS)"
 echo "========================================"
 echo "profile=${PROFILE} harness=${HARNESS} name=${NAME}"
 echo "chat model=${OLLAMA_MODEL}${CODING_MODEL:+ | coding model=${CODING_MODEL}}"
 echo ""
 
-echo "=== Ensuring flowera-network ==="
-docker network inspect flowera-network >/dev/null 2>&1 || docker network create flowera-network >/dev/null
+echo "=== Ensuring decurix-network ==="
+docker network inspect decurix-network >/dev/null 2>&1 || docker network create decurix-network >/dev/null
 
 echo ""
-echo "=== Ensuring image flowera-desktop:${PROFILE} ==="
-if ! docker image inspect "flowera-desktop:${PROFILE}" >/dev/null 2>&1; then
+echo "=== Ensuring image decurix-desktop:${PROFILE} ==="
+if ! docker image inspect "decurix-desktop:${PROFILE}" >/dev/null 2>&1; then
     echo "Image not found locally - building it (this can take a while)..."
-    docker build --platform linux/amd64 -f "docker/desktop.${PROFILE}.Dockerfile" -t "flowera-desktop:${PROFILE}" .
+    docker build --platform linux/amd64 -f "docker/desktop.${PROFILE}.Dockerfile" -t "decurix-desktop:${PROFILE}" .
 fi
 
 echo ""
@@ -77,7 +77,7 @@ if ! docker ps --filter "name=^${DUMMY_CP}\$" --format '{{.Names}}' | grep -q "^
     docker rm -f "$DUMMY_CP" >/dev/null 2>&1 || true
     docker run -d \
         --name "$DUMMY_CP" \
-        --network flowera-network \
+        --network decurix-network \
         --network-alias "$DUMMY_CP" \
         -v "$(pwd)/scripts/testing:/srv:ro" \
         -w /srv \
@@ -95,7 +95,7 @@ docker rm -f "$DESKTOP_CONTAINER" >/dev/null 2>&1 || true
 docker run -d \
     --name "$DESKTOP_CONTAINER" \
     --platform linux/amd64 \
-    --network flowera-network \
+    --network decurix-network \
     --shm-size=512m \
     -p 16901:6901 \
     -p 14900:4900 \
@@ -110,13 +110,13 @@ docker run -d \
     -e OLLAMA_MODEL="$OLLAMA_MODEL" \
     -e AGENT_HARNESS="$HARNESS" \
     -e CODING_MODEL="$CODING_MODEL" \
-    "flowera-desktop:${PROFILE}" >/dev/null
+    "decurix-desktop:${PROFILE}" >/dev/null
 
 echo ""
 echo "=== Waiting for the agent to come up (vm_server.py:8081) ==="
 ready=false
 for i in $(seq 1 60); do
-    if docker exec "$DESKTOP_CONTAINER" grep -q "VM agent listening" /tmp/flowera-startup.log 2>/dev/null; then
+    if docker exec "$DESKTOP_CONTAINER" grep -q "VM agent listening" /tmp/decurix-startup.log 2>/dev/null; then
         ready=true
         break
     fi
@@ -147,5 +147,5 @@ echo "Agent chat UI:     http://localhost:14900/"
 fi
 echo "Send a task:       curl -X POST http://localhost:18081/message -H 'Content-Type: application/json' -d '{\"content\":\"...\"}'"
 echo "Watch callbacks:    docker logs -f ${DUMMY_CP}"
-echo "Watch agent logs:   docker exec ${DESKTOP_CONTAINER} tail -f /tmp/flowera-startup.log"
+echo "Watch agent logs:   docker exec ${DESKTOP_CONTAINER} tail -f /tmp/decurix-startup.log"
 echo "Tear down:          ./scripts/mac/test-vm.sh --name ${NAME} --down"

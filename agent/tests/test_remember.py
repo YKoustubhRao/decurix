@@ -4,7 +4,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest import mock
 
-from flowera_agent import config, messaging
+from decurix_agent import config, messaging
 
 
 class Recorder(BaseHTTPRequestHandler):

@@ -6,8 +6,8 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/YKoustubhRao/flowera/internal/desktop"
-	"github.com/YKoustubhRao/flowera/internal/memory"
+	"github.com/YKoustubhRao/decurix/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/memory"
 )
 
 // jsonResponse writes a value to the response writer as JSON.

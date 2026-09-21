@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/YKoustubhRao/flowera/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/desktop"
 )
 
 // claudeAuthStatusHandler reports whether a shared Claude session exists -

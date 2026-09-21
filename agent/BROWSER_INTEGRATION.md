@@ -25,7 +25,7 @@ pipelines** that share the same `core/` LLM plumbing:
 - `playwright_pipeline/` — a throwaway Chromium instance Playwright owns
   outright. **Not part of this integration.** A desktop already has a real,
   persistent Chromium that the human and the agent's own computer-use layer
-  (`flowera_agent/computer/cdp.py`) both use — spinning up a second, separate
+  (`decurix_agent/computer/cdp.py`) both use — spinning up a second, separate
   browser just for this tool would mean two logged-out browsers with no
   shared cookies, doubling the thing we already have. Kept in the copy for
   reference (it's a fine tool on its own, e.g. for disposable scriptable
@@ -94,14 +94,14 @@ Dockerfile from `browser-agent/requirements.txt`: fastapi, uvicorn, pydantic,
 playwright — the package only, never `playwright install`, since
 `core/worker.py`'s HTML-cleaning helper imports it but the extension pipeline
 never launches a Playwright browser — beautifulsoup4, psutil, requests),
-logging to `/tmp/flowera-ext-server.log`. No readiness gate yet (see the
+logging to `/tmp/decurix-ext-server.log`. No readiness gate yet (see the
 checklist) — it just starts and is reachable within a second or two.
 
 The correctness fix this needed first: `core/models.py` used to hardcode
 `OLLAMA = "http://127.0.0.1:11434"` — fine on the researcher's own machine,
 wrong inside a desktop container, where Ollama is only reachable at
 `OLLAMA_URL` (`http://host.docker.internal:11434`, same convention every
-other harness already follows — see `flowera_agent/ollama_client.py`).
+other harness already follows — see `decurix_agent/ollama_client.py`).
 **Done** — it now reads `os.environ.get("OLLAMA_URL", ...)` the same way.
 Verified live: `ext_server`'s `/stats` from inside a running desktop reported
 the real host Ollama's resident models, and a full run (below) got a real
@@ -122,7 +122,7 @@ CDP/xdotool code path here — it needs a **skill** that:
    skill already reports a `gui` command's outcome.
 
 This slots into the step graph the same way `[web]`/`[code]` do today
-(`internal/atomizer`'s planner tags, per the main flowera README) — most
+(`internal/atomizer`'s planner tags, per the main decurix README) — most
 likely as a new `[browser]` tag, since today's only "acts on the screen" path
 is the operator's `gui` command loop (xdotool/AT-SPI/CDP), and this is a
 genuinely different, better-grounded way to drive a *web page* specifically
@@ -166,7 +166,7 @@ the main CLAUDE.md, or the operator skill has to the `gui` command.
    `agent/chromium-browser.init`.
 3. ✅ Start `ext_server.py` as a background daemon from
    `start_agent_terminal.sh`. **Still open**: no readiness gate (the
-   `flowera_agent/readiness.py`'s `wait_for_http_ok` pattern) — it's a minor
+   `decurix_agent/readiness.py`'s `wait_for_http_ok` pattern) — it's a minor
    gap since nothing currently depends on it being up by a specific time.
 4. ⬜ Add the approval-gate bridge for the extension pipeline's actions before
    trusting it with anything consequential.
@@ -183,14 +183,14 @@ the main CLAUDE.md, or the operator skill has to the `gui` command.
    `ensureListening`; superseded (see "Upstream rewrite" below) by a
    better, first-party version from `research/experiments/browser-agent`
    that makes always-on listening the extension's own default behavior,
-   with no Flowera-specific code needed for it at all.
+   with no Decurix-specific code needed for it at all.
 8. ✅ Chromium logins (Google's included) persist across a desktop restart —
    confirmed to already work via the default profile location, not a new
    mechanism. See "Logins persist, and that's why it matters" above.
 
 ### How 1–3 were verified
 
-Built `flowera-desktop:basic` with the changes above, ran a throwaway
+Built `decurix-desktop:basic` with the changes above, ran a throwaway
 container from it (no control plane involved), and:
 
 - Confirmed `ext_server.py` was running and `/stats` showed the real host
@@ -270,7 +270,7 @@ this repo's own `OLLAMA_URL` patch on top, since the source's copy had
 reverted to a hardcoded address). The parts that matter here:
 
 - **Always-on listening is now the extension's own default, not something
-  Flowera bolted on.** A global `LISTENER` (not tied to any tab) persists
+  Decurix bolted on.** A global `LISTENER` (not tied to any tab) persists
   its enabled/settings state via `chrome.storage.local`, and with no stored
   state at all (a fresh profile) it starts itself with
   `DEFAULT_LISTENER_SETTINGS` rather than sitting idle until a popup click.
@@ -342,7 +342,7 @@ watching real browsing runs:
   same-approach retry would fix.
 - **TheBot can actually cancel a browsing run, and the extension really
   stops.** `POST /api/jobs/{id}/cancel` (already existed - `cmd/soul`'s
-  own job cancellation, and already called by `flowera_agent/
+  own job cancellation, and already called by `decurix_agent/
   thebot_harness.py._cancel_job` when the harness gives up waiting on a
   job) used to only ever stop TheBot's own side; the browser extension had
   no way to hear about it and kept running against the real page, orphaned.

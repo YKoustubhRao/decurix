@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/sqlitedb"
+	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
 
 // clock is a settable time source, so durations and windows are exact.

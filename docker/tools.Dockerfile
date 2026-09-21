@@ -95,10 +95,10 @@ RUN echo '#!/bin/sh' > /opt/tools/env.sh && \
     echo 'export NPM_CONFIG_CACHE="${HOME:-/home/headless}/.npm"' >> /opt/tools/env.sh && \
     echo 'export GOPATH="${HOME:-/home/headless}/go"' >> /opt/tools/env.sh && \
     chmod 755 /opt/tools/env.sh && \
-    touch /opt/tools/.flowera-tools-ready && \
+    touch /opt/tools/.decurix-tools-ready && \
     chmod -R 755 /opt/tools
 # Final stage: minimal populator
 FROM alpine:latest
 COPY --from=builder /opt/tools /opt/tools
-CMD ["sh", "-c", "if [ ! -f /target/.flowera-tools-ready ]; then cp -a /opt/tools/. /target/ && sync; fi"]
+CMD ["sh", "-c", "if [ ! -f /target/.decurix-tools-ready ]; then cp -a /opt/tools/. /target/ && sync; fi"]
 
