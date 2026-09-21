@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/sqlitedb"
+	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
 
 // Execution statuses. queued, running and waiting are live; the rest are how

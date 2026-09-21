@@ -37,7 +37,7 @@ for arg in "$@"; do
 done
 
 echo "========================================"
-echo " Building Flowera desktop images (macOS)"
+echo " Building Decurix desktop images (macOS)"
 echo "========================================"
 
 export DOCKER_BUILDKIT=1
@@ -64,21 +64,21 @@ build_one() {
 }
 
 # 1. Build Base and Tools
-build_one "flowera-desktop:basic" "docker/desktop.basic.Dockerfile" "Unified Desktop Base"
-build_one "flowera-tools:latest" "docker/tools.Dockerfile" "Shared Tools Runtime"
+build_one "decurix-desktop:basic" "docker/desktop.basic.Dockerfile" "Unified Desktop Base"
+build_one "decurix-tools:latest" "docker/tools.Dockerfile" "Shared Tools Runtime"
 
 # 2. Tag Developer & AI profiles directly to basic (0 disk, 0 build time)
 echo ""
 echo "=== Aliasing desktop profiles (developer / ai) to unified base ==="
-docker tag "flowera-desktop:basic" "flowera-desktop:developer"
-docker tag "flowera-desktop:basic" "flowera-desktop:ai"
+docker tag "decurix-desktop:basic" "decurix-desktop:developer"
+docker tag "decurix-desktop:basic" "decurix-desktop:ai"
 
 # 3. Populate shared tools volume
 echo ""
-echo "=== Populating shared tools volume (flowera-tools) ==="
-docker volume create flowera-tools >/dev/null
-docker run --rm -v flowera-tools:/target flowera-tools:latest
-docker volume create flowera-cache >/dev/null
+echo "=== Populating shared tools volume (decurix-tools) ==="
+docker volume create decurix-tools >/dev/null
+docker run --rm -v decurix-tools:/target decurix-tools:latest
+docker volume create decurix-cache >/dev/null
 
 # 4. Prune dangling build layers
 echo ""
@@ -87,4 +87,4 @@ docker image prune -f >/dev/null 2>&1 || true
 
 echo ""
 echo "=== Desktop and tools images ready ==="
-docker images --filter "reference=flowera-*"
+docker images --filter "reference=decurix-*"

@@ -1,5 +1,5 @@
 // Package web embeds the control plane's HTML assets into the binary so a
-// compiled flowera executable can be copied to another machine and run on its
+// compiled decurix executable can be copied to another machine and run on its
 // own, with no repo checkout sitting next to it.
 package web
 
@@ -11,7 +11,7 @@ import "embed"
 //go:embed templates/*.html
 var TemplatesFS embed.FS
 
-// FaviconSVG holds the Flowera brand mark served as the site favicon. It is
+// FaviconSVG holds the Decurix brand mark served as the site favicon. It is
 // embedded rather than read from disk for the same reason the templates are:
 // the compiled binary is the whole product.
 //

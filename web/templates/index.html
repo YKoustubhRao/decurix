@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="color-scheme" content="light dark">
-<title>Desktops · Flowera</title>
+<title>Desktops · Decurix</title>
 
 {{template "theme"}}
 
@@ -1195,7 +1195,7 @@
           <label class="seg"><input type="radio" name="harness" value="thebot"><span>TheBot</span></label>
         </div>
         <div class="hint claude-hint" id="claudeHint">Claude Code needs the Developer or AI Developer profile — the <code class="mono">claude</code> binary isn't in the Basic image.</div>
-        <div class="hint">TheBot uses the same shared Ollama flowera already runs for every desktop — no separate URL to set up. PDF/HTML/Office-format document parsing isn't available yet in this harness; plain text/code files and real terminal execution both work fully.</div>
+        <div class="hint">TheBot uses the same shared Ollama decurix already runs for every desktop — no separate URL to set up. PDF/HTML/Office-format document parsing isn't available yet in this harness; plain text/code files and real terminal execution both work fully.</div>
         <div class="claude-auth-row" id="claudeAuthRow">
           <span id="claudeAuthText">Checking Claude sign-in…</span>
           <button type="button" class="btn btn-quiet btn-sm" id="claudeAuthBtn">Log in to Claude</button>
@@ -1386,7 +1386,7 @@
 
   if(document.querySelector("[data-shot]")){ shotLoop(); }
 
-  var toast = Flowera.toast, busy = Flowera.busy, post = Flowera.post;
+  var toast = Decurix.toast, busy = Decurix.busy, post = Decurix.post;
 
   /* ---------------- formatting ---------------- */
 
@@ -2559,7 +2559,7 @@
 
     railCount.textContent = String(notes.length);
     rail.classList.toggle("on", notes.length > 0);
-    Flowera.setQueryBadge(notes.length);
+    Decurix.setQueryBadge(notes.length);
     applyCardAttention(notes);
   }
 
@@ -2594,7 +2594,7 @@
       var notes = await response.json();
       notes = Array.isArray(notes) ? notes : [];
       renderNotes(notes);
-      Flowera.notifyNewQueries(notes);
+      Decurix.notifyNewQueries(notes);
     }catch(e){ /* keep the current rail contents */ }
   }
 

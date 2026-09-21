@@ -186,7 +186,7 @@ func TestIsLocalURL(t *testing.T) {
 		"http://host.docker.internal:11434": true,
 		"http://localhost:11434":            true,
 		"http://127.0.0.1:11434":            true,
-		"http://flowera-ollama:11434":       true,
+		"http://decurix-ollama:11434":       true,
 		"http://gpu-box.example.com:11434":  false,
 		"http://203.0.113.9:11434":          false,
 	} {
@@ -234,13 +234,13 @@ func TestSpeedEstimatesCanBeCorrectedFromTheEnvironment(t *testing.T) {
 		t.Fatal("an 8B model on 8 cores should be too slow at the default estimate")
 	}
 
-	t.Setenv("FLOWERA_MODEL_CORE_GBPS", "4")
+	t.Setenv("DECURIX_MODEL_CORE_GBPS", "4")
 	if !FitFor(m, BudgetFor(res)).OK {
-		t.Error("FLOWERA_MODEL_CORE_GBPS=4 did not let the 8B model through")
+		t.Error("DECURIX_MODEL_CORE_GBPS=4 did not let the 8B model through")
 	}
 
-	t.Setenv("FLOWERA_MODEL_MIN_TPS", "100")
+	t.Setenv("DECURIX_MODEL_MIN_TPS", "100")
 	if FitFor(m, BudgetFor(res)).OK {
-		t.Error("FLOWERA_MODEL_MIN_TPS=100 did not tighten the floor")
+		t.Error("DECURIX_MODEL_MIN_TPS=100 did not tighten the floor")
 	}
 }

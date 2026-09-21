@@ -100,7 +100,7 @@ func evaluate(ctx context.Context, current string) (sel Selection, res Resources
 	}
 
 	installed, _ := listInstalled(ctx, base)
-	canPull := bundled || os.Getenv("FLOWERA_MODEL_AUTOPULL") == "1"
+	canPull := bundled || os.Getenv("DECURIX_MODEL_AUTOPULL") == "1"
 
 	return Choose(res, installed, canPull, current), res, "auto", nil
 }
@@ -232,7 +232,7 @@ func CurrentStatus(ctx context.Context) Status {
 
 	if pinnedModel() != "" {
 		st.Mode = "pinned"
-		st.Reason = "Set by OLLAMA_MODEL. Set it to \"auto\" to let Flowera choose."
+		st.Reason = "Set by OLLAMA_MODEL. Set it to \"auto\" to let Decurix choose."
 		return st
 	}
 
@@ -385,7 +385,7 @@ func isLocalURL(raw string) bool {
 	}
 
 	host := strings.ToLower(u.Hostname())
-	if host == "localhost" || host == "host.docker.internal" || host == "flowera-ollama" {
+	if host == "localhost" || host == "host.docker.internal" || host == "decurix-ollama" {
 		return true
 	}
 

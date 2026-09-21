@@ -147,7 +147,7 @@ func TestStartWaitsForFirstPictureAndForwardsInputVerbatim(t *testing.T) {
 	}
 
 	got := strings.Join(received(t), "|")
-	for _, w := range []string{"desktop flowera_vm1_app", "viewers 1", "launch\tC:\\Program Files\\App\\app.exe\t--flag", "down 10 20", "up 10 20 right +cs", "type hello world", "key 13 c", "wheel 1 2 -3"} {
+	for _, w := range []string{"desktop decurix_vm1_app", "viewers 1", "launch\tC:\\Program Files\\App\\app.exe\t--flag", "down 10 20", "up 10 20 right +cs", "type hello world", "key 13 c", "wheel 1 2 -3"} {
 		if !strings.Contains(got, w) {
 			t.Errorf("helper never received %q; got %q", w, got)
 		}

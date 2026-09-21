@@ -249,7 +249,7 @@ if [[ "${USER_SELECTION^^}" =~ C ]]; then
         app_dir=$(realpath "${SCRIPT_DIR}/.." 2>/dev/null || echo "")
 
         # Anti-recursion guard: Never copy our app or migration-toolkit again
-        if [ "$real_cpath" == "$SCRIPT_DIR" ] || [ "$real_cpath" == "$app_dir" ] || [[ "$real_cpath" =~ flowera ]] || [[ "$real_cpath" =~ migration-toolkit ]]; then
+        if [ "$real_cpath" == "$SCRIPT_DIR" ] || [ "$real_cpath" == "$app_dir" ] || [[ "$real_cpath" =~ decurix ]] || [[ "$real_cpath" =~ migration-toolkit ]]; then
             echo -e "  ${YELLOW}! Anti-recursion guard: Skipping our app/migration-toolkit to avoid recursive duplicate copies.${RESET}"
             continue
         fi

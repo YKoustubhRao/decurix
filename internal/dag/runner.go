@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/tasks"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
 )
 
 // Submitter dispatches a (placeholder-substituted) node's request to a

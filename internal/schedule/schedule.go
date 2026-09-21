@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/sqlitedb"
+	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
 
 // Schedule is a recurring request, or a one-time request held for a single

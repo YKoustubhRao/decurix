@@ -8,9 +8,9 @@ for i in $(seq 1 150); do
     sleep 0.1
 done
 
-LOG=/tmp/flowera-startup.log
+LOG=/tmp/decurix-startup.log
 
-echo "[$(date)] Starting Flowera agent" >> "$LOG"
+echo "[$(date)] Starting Decurix agent" >> "$LOG"
 
 export DISPLAY=:1
 
@@ -33,14 +33,14 @@ fi
 # Chromium's launch flags live in $HOME, which is this desktop's persistent
 # volume - so an image rebuild alone never replaces the base image's copy
 # with its hardcoded --no-sandbox. Reinstall ours on every start.
-if [ -f /opt/flowera-chromium.init ]; then
-    cp /opt/flowera-chromium.init "$HOME/.chromium-browser.init" 2>> "$LOG" \
+if [ -f /opt/decurix-chromium.init ]; then
+    cp /opt/decurix-chromium.init "$HOME/.chromium-browser.init" 2>> "$LOG" \
         || echo "[$(date)] could not install Chromium launch flags" >> "$LOG"
 fi
 
 # Pre-warm Chromium in the background only if explicitly requested, saving
 # ~300MB RAM and boot CPU on lightweight containers.
-if [ "$FLOWERA_PREWARM_CHROMIUM" = "1" ] && which chromium-browser >/dev/null 2>&1; then
+if [ "$DECURIX_PREWARM_CHROMIUM" = "1" ] && which chromium-browser >/dev/null 2>&1; then
     setsid chromium-browser --no-startup-window >> /tmp/chromium-prewarm.log 2>&1 < /dev/null &
     echo "[$(date)] Chromium pre-warmed in background (pid $!)" >> "$LOG"
 fi
@@ -77,7 +77,7 @@ if removed:
 PY
 fi
 
-# The agent's own directories live under ~/.flowera, so ~/work is the only
+# The agent's own directories live under ~/.decurix, so ~/work is the only
 # one it adds to the home a human browses. A volume from before that still
 # has them at the top level: move them in before anything that uses them
 # starts, so worker memory, the audit trail and TheBot's stores carry over.
@@ -95,13 +95,13 @@ python3 - "$HOME" $legacy_dirs >> "$LOG" 2>&1 <<'PY'
 import os, sys
 
 home, names = sys.argv[1], sys.argv[2:]
-flowera = os.path.join(home, ".flowera")
+decurix = os.path.join(home, ".decurix")
 for name in names:
-    old, new = os.path.join(home, name), os.path.join(flowera, name)
+    old, new = os.path.join(home, name), os.path.join(decurix, name)
     if os.path.islink(old) or not os.path.isdir(old):
         continue
     try:
-        os.makedirs(flowera, exist_ok=True)
+        os.makedirs(decurix, exist_ok=True)
         if not os.path.exists(new):
             os.rename(old, new)
         else:
@@ -109,9 +109,9 @@ for name in names:
                 if not os.path.lexists(os.path.join(new, entry)):
                     os.rename(os.path.join(old, entry), os.path.join(new, entry))
             os.rmdir(old)
-        print(f"moved ~/{name} to ~/.flowera/{name}")
+        print(f"moved ~/{name} to ~/.decurix/{name}")
     except OSError as e:
-        print(f"could not move ~/{name} to ~/.flowera/{name}: {e}")
+        print(f"could not move ~/{name} to ~/.decurix/{name}: {e}")
 PY
 fi
 
@@ -119,12 +119,12 @@ fi
 # terminology became "query" throughout the app. A volume that still has
 # the old name - including one that just landed there from the legacy move
 # above - gets it renamed in place, merged the same non-destructive way.
-if [ -d "$HOME/.flowera/helptext" ] && [ ! -L "$HOME/.flowera/helptext" ]; then
-python3 - "$HOME/.flowera" >> "$LOG" 2>&1 <<'PY'
+if [ -d "$HOME/.decurix/helptext" ] && [ ! -L "$HOME/.decurix/helptext" ]; then
+python3 - "$HOME/.decurix" >> "$LOG" 2>&1 <<'PY'
 import os, sys
 
-flowera = sys.argv[1]
-old, new = os.path.join(flowera, "helptext"), os.path.join(flowera, "querytext")
+decurix = sys.argv[1]
+old, new = os.path.join(decurix, "helptext"), os.path.join(decurix, "querytext")
 if os.path.isdir(old) and not os.path.islink(old):
     try:
         if not os.path.exists(new):
@@ -134,9 +134,9 @@ if os.path.isdir(old) and not os.path.islink(old):
                 if not os.path.lexists(os.path.join(new, entry)):
                     os.rename(os.path.join(old, entry), os.path.join(new, entry))
             os.rmdir(old)
-        print("moved ~/.flowera/helptext to ~/.flowera/querytext")
+        print("moved ~/.decurix/helptext to ~/.decurix/querytext")
     except OSError as e:
-        print(f"could not move ~/.flowera/helptext to ~/.flowera/querytext: {e}")
+        print(f"could not move ~/.decurix/helptext to ~/.decurix/querytext: {e}")
 PY
 fi
 
@@ -153,20 +153,20 @@ echo "[$(date)] vm_server.py started as background daemon (pid $!)" >> "$LOG"
 # running - so it starts unconditionally, the same way vm_server.py does.
 if [ -x /opt/browser-agent-venv/bin/python3 ]; then
     setsid /opt/browser-agent-venv/bin/python3 /opt/browser-agent/extension_pipeline/ext_server.py \
-        >> /tmp/flowera-ext-server.log 2>&1 < /dev/null &
+        >> /tmp/decurix-ext-server.log 2>&1 < /dev/null &
     echo "[$(date)] ext_server.py started as background daemon (pid $!)" >> "$LOG"
 fi
 
 # TheBot harness only - its soul binary is a persistent HTTP server
-# thebot_harness.py talks to (see flowera_agent/thebot_harness.py), not a
+# thebot_harness.py talks to (see decurix_agent/thebot_harness.py), not a
 # per-task CLI like claude, so it needs to already be running before any
 # task arrives. Harmless to skip entirely for the other two harnesses -
 # no point paying its startup cost when nothing will ever talk to it.
 if [ "$AGENT_HARNESS" = "thebot" ] && [ -x /opt/soul ]; then
-    # /home/headless/.flowera/ai is TheBot's fixed default AI workdirectory -
+    # /home/headless/.decurix/ai is TheBot's fixed default AI workdirectory -
     # every agent run cds here and works here, regardless of which real
     # folder a task happens to be scoped to; L1/L2/the Data RAG stay global.
-    export WORKSPACE_ROOT="/home/headless/.flowera/ai"
+    export WORKSPACE_ROOT="/home/headless/.decurix/ai"
     mkdir -p "$WORKSPACE_ROOT"
     export LLM_PROVIDER="${LLM_PROVIDER:-ollama}"
     # Mirrors buildDesktopEnv's defaults in internal/desktop/docker.go -

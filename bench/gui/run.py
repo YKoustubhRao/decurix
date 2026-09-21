@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Flowera GUI benchmark runner: success rate per engine on real tasks in
+Decurix GUI benchmark runner: success rate per engine on real tasks in
 graphical apps (bench/gui/tasks.json).
 
 Every engine is driven exactly the way a person drives it - a message sent
@@ -205,7 +205,7 @@ def run_oracle(container, task):
             # Exactly what the agent's command watcher does with a human reply.
             code = (
                 "import sys; sys.path.insert(0, '/opt')\n"
-                "from flowera_agent.computer import approval\n"
+                "from decurix_agent.computer import approval\n"
                 "print(approval.resolve_reply(sys.argv[1]))\n"
             )
             process = docker(container, "python3", "-c", code, step["approve"])
@@ -319,7 +319,7 @@ def main():
     parser.add_argument("--engine", action="append", choices=ENGINES, required=True)
     parser.add_argument("--tasks", help="comma-separated task ids (default: all)")
     parser.add_argument("--container", help="oracle only: the desktop container to run in")
-    parser.add_argument("--control-plane", default=os.environ.get("FLOWERA_URL", "http://localhost:8080"))
+    parser.add_argument("--control-plane", default=os.environ.get("DECURIX_URL", "http://localhost:8080"))
     parser.add_argument("--profile", default="developer", choices=["basic", "developer", "ai"])
     parser.add_argument("--timeout", type=int, default=900, help="seconds to wait for one reply")
     parser.add_argument("--keep", action="store_true", help="keep the desktops created for real engines")

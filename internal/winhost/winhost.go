@@ -4,7 +4,7 @@
 //
 // The Windows half is bridge.ps1, embedded here. It is spoken to over the stdin/stdout of the process that runs
 // it and listens on no port, so nothing but the Manager that started it can reach the app. The package depends
-// on nothing else in Flowera: how the script is run on the host is the Starter's business.
+// on nothing else in Decurix: how the script is run on the host is the Starter's business.
 //
 // Starting an app is fast because nothing slow happens after the person asks for it: a helper is kept running and
 // warm (compiled, with what it learned about the Start menu), an app is launched into it, and the helper - not a
@@ -143,7 +143,7 @@ func (m *Manager) helper(ctx context.Context) (*Session, error) {
 	}
 
 	// The helper outlives this request, so it must not be tied to the request's context.
-	cmd, err := m.start(context.Background(), fmt.Sprintf("flowera_helper_%d", n))
+	cmd, err := m.start(context.Background(), fmt.Sprintf("decurix_helper_%d", n))
 	if err != nil {
 		return nil, err
 	}
@@ -261,7 +261,7 @@ func (m *Manager) launch(ctx context.Context, id, target, args string) (*Session
 		return nil, err
 	}
 	s.id = id
-	name := "flowera_" + unsafeName.ReplaceAllString(id, "_")
+	name := "decurix_" + unsafeName.ReplaceAllString(id, "_")
 	if len(name) > 48 {
 		name = name[:48]
 	}

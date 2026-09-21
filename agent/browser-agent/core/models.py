@@ -13,7 +13,7 @@ import requests
 
 import spec_backend
 
-# Same convention as flowera_agent/ollama_client.py: OLLAMA_URL is set on
+# Same convention as decurix_agent/ollama_client.py: OLLAMA_URL is set on
 # every desktop container to the control plane's host
 # (http://host.docker.internal:11434); outside a container (e.g. running
 # this standalone for research) it falls back to the local machine's own

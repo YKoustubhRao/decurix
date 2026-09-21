@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/YKoustubhRao/flowera/internal/winhost"
+	"github.com/YKoustubhRao/decurix/internal/winhost"
 )
 
 // testPack is the desktop the launcher tests write into.
@@ -217,7 +217,7 @@ func TestCacheExclusion(t *testing.T) {
 		{"Crashpad", "/home/user/.config/google-chrome/Crashpad", true, true},
 		{"Temporary file", "/home/user/.config/google-chrome/Default/file.tmp", false, true},
 		{"Log file", "/home/user/.config/google-chrome/Default/debug.log", false, true},
-		{"Flowera repo recursion", "/home/user/flowera/cmd/flowera", true, true},
+		{"Decurix repo recursion", "/home/user/decurix/cmd/decurix", true, true},
 		{"Migration toolkit recursion", "/home/user/migration-toolkit", true, true},
 		{"Node modules", "/home/user/.config/Code/node_modules", true, true},
 		{"Cookies DB", "/home/user/.config/google-chrome/Default/Cookies", false, false},

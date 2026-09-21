@@ -12,8 +12,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/YKoustubhRao/flowera/internal/desktop"
-	"github.com/YKoustubhRao/flowera/internal/webui"
+	"github.com/YKoustubhRao/decurix/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/webui"
 )
 
 // A skill's name is checked here before it goes into a URL path on the

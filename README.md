@@ -1,10 +1,10 @@
-# Flowera 🌸
+# Decurix 🌸
 
 ### AI workers that learn to do your work.
 
-Flowera is a platform for creating **AI-powered workers that can actually operate a computer and get work done**.
+Decurix is a platform for creating **AI-powered workers that can actually operate a computer and get work done**.
 
-Give a worker its own computer. Teach it how you work. Flowera watches, learns, and gradually takes over the task — allowing your workers to operate independently whenever you assign them work.
+Give a worker its own computer. Teach it how you work. Decurix watches, learns, and gradually takes over the task — allowing your workers to operate independently whenever you assign them work.
 
 When a worker reaches something that requires human judgment, it doesn't just fail. **It asks you.** Approve a payment, merge a pull request, send a message, make a decision — you stay in control. The worker learns from your response and becomes better at handling similar situations in the future.
 
@@ -12,7 +12,7 @@ The goal is simple:
 
 > **Teach once. Delegate forever.**
 
-Flowera is built around a fundamentally different way of working with AI: **continuous learning with humans in the loop.**
+Decurix is built around a fundamentally different way of working with AI: **continuous learning with humans in the loop.**
 
 Instead of asking AI to answer questions, we're building AI that can **take responsibility for tasks**.
 
@@ -24,7 +24,7 @@ We believe the next generation of AI won't just live inside chat boxes.
 
 It will have **computers, tools, responsibilities, and the ability to learn.**
 
-A Flowera worker should be able to join your team, learn how a particular job is done, execute it thousands of times, raise a query when necessary, and continuously improve through real-world experience.
+A Decurix worker should be able to join your team, learn how a particular job is done, execute it thousands of times, raise a query when necessary, and continuously improve through real-world experience.
 
 Imagine creating workers for:
 
@@ -46,7 +46,7 @@ You shouldn't have to explain the same process to an AI every time.
 
 ## 🧠 Human-in-the-Loop, Not Human-Out-of-the-Loop
 
-Flowera isn't trying to remove humans from the system.
+Decurix isn't trying to remove humans from the system.
 
 It's trying to make humans **10× more capable**.
 
@@ -60,7 +60,7 @@ Over time, the boundary between what requires you and what your workers can hand
 
 ## 🌱 From One Worker to a Workforce
 
-Flowera starts with a single worker.
+Decurix starts with a single worker.
 
 But the long-term vision is much bigger.
 
@@ -74,7 +74,7 @@ A company where **AI workers execute the work and humans direct the organization
 
 ## 🛠️ What's Here Today
 
-Flowera currently provides the foundation for:
+Decurix currently provides the foundation for:
 
 * Creating and managing AI workers
 * Giving each worker its own computer
@@ -139,7 +139,7 @@ A rundown of what's actually built and working, grouped by area. See [`CLAUDE.md
 * A worker-recommender that suggests the best desktop for a newly typed request, based on which worker is most recently active or whose past memory most closely matches the request (embedding similarity), with recency as the always-available fallback
 
 **Access & connectivity**
-* An always-on primary listener for local/dashboard use and desktop callbacks, plus a second, access-code-gated listener for exposing Flowera safely off-network — the code rotates on demand and automatically every 48 hours
+* An always-on primary listener for local/dashboard use and desktop callbacks, plus a second, access-code-gated listener for exposing Decurix safely off-network — the code rotates on demand and automatically every 48 hours
 * Cloudflare quick tunnels (one per listener) plus direct LAN URLs, all surfaced together in the dashboard's Mobile menu
 * An interactive `--cli` terminal client for driving a running control plane without a browser
 
@@ -151,7 +151,7 @@ A rundown of what's actually built and working, grouped by area. See [`CLAUDE.md
 
 ## 🗺️ What's Next
 
-Flowera is being built toward a world where AI workers can:
+Decurix is being built toward a world where AI workers can:
 
 * Learn complex workflows from demonstration
 * Work autonomously for long periods
@@ -170,7 +170,7 @@ Flowera is being built toward a world where AI workers can:
 * [ ] Long-term worker memory
 * [ ] More AI agent harnesses
 * [ ] Worker-to-worker collaboration
-* [ ] AI assistant for managing Flowera
+* [ ] AI assistant for managing Decurix
 * [ ] Documentation understanding and search
 * [ ] Better worker observability
 * [ ] Significantly improved UI
@@ -182,7 +182,7 @@ Flowera is being built toward a world where AI workers can:
 
 ## ⚙️ Getting Started (running it locally)
 
-Flowera has two moving pieces: a Go **control plane** (the dashboard + Docker orchestration) and per-worker **desktop images** (disposable VNC desktops the control plane spins up). Both run in Docker.
+Decurix has two moving pieces: a Go **control plane** (the dashboard + Docker orchestration) and per-worker **desktop images** (disposable VNC desktops the control plane spins up). Both run in Docker.
 
 ### Prerequisites
 
@@ -190,7 +190,7 @@ Flowera has two moving pieces: a Go **control plane** (the dashboard + Docker or
   * Linux: run `sudo ./scripts/linux/setup.sh` once if you don't already have Docker (also installs `cloudflared` and QEMU) — or just install Docker yourself.
   * macOS: Docker Desktop (run `./scripts/mac/setup.sh` to check prerequisites, configure Ollama, and verify Docker).
   * Windows: Docker Desktop (`scripts\windows\setup.ps1`).
-* [Ollama](https://ollama.com/download), the local model server the workers think with. You can skip it and Flowera will run its own Ollama in a container, but a native install is faster, and it's the only way to use a GPU. See [Setting up Ollama](#-setting-up-ollama).
+* [Ollama](https://ollama.com/download), the local model server the workers think with. You can skip it and Decurix will run its own Ollama in a container, but a native install is faster, and it's the only way to use a GPU. See [Setting up Ollama](#-setting-up-ollama).
 * Optional: Go 1.26+, needed only to run the control plane directly with `go run` while developing it, or to build the standalone executables with `scripts/release/release.sh` (step 5).
 
 ### The scripts
@@ -201,10 +201,10 @@ Everything scripted lives under [`scripts/`](scripts/), split by who runs it. `l
 |---|---|---|---|---|
 | **One-shot** | `scripts/linux/quickstart.sh` | `scripts/mac/quickstart.sh` | `scripts\windows\quickstart.ps1` | Fresh machine to running dashboard in one command: host setup (if Docker's missing) then Start, below. |
 | **Host setup** | `scripts/linux/setup.sh` | `scripts/mac/setup.sh` | `scripts\windows\setup.ps1` | One-time: Docker, `cloudflared`, Ollama / QEMU. |
-| **Desktop images** | `scripts/linux/build-images.sh` | `scripts/mac/build-images.sh` | `scripts\windows\build-images.ps1` | Builds `flowera-desktop:{basic,developer,ai}`. |
+| **Desktop images** | `scripts/linux/build-images.sh` | `scripts/mac/build-images.sh` | `scripts\windows\build-images.ps1` | Builds `decurix-desktop:{basic,developer,ai}`. |
 | **Start** | `scripts/linux/build.sh` | `scripts/mac/build.sh` | `scripts\windows\build.ps1` | Like opening the app: builds only missing images, starts the control plane if it isn't already running, opens a tunnel. Leaves existing desktops and the database untouched. |
 | **Rebuild** | `scripts/linux/rebuild.sh` | `scripts/mac/rebuild.sh` | `scripts\windows\rebuild.ps1` | Like reinstalling: rebuilds every image and the control plane (still cached, so it's fast), every `desktop_*` container/volume removed, and (after a confirmation prompt) the app database wiped. |
-| **Standalone VM test** | `scripts/linux/test-vm.sh` | `scripts/mac/test-vm.sh` | `scripts\windows\test-vm.ps1` | One throwaway desktop container + a dummy control-plane stub, no full Flowera stack needed. See below. |
+| **Standalone VM test** | `scripts/linux/test-vm.sh` | `scripts/mac/test-vm.sh` | `scripts\windows\test-vm.ps1` | One throwaway desktop container + a dummy control-plane stub, no full Decurix stack needed. See below. |
 | **Release** | `scripts/release/release.sh` | `scripts/release/release.sh` | `scripts\release\release.ps1` | Cross-compiles the downloadable executables into `dist/`. |
 
 Starting from nothing?
@@ -232,7 +232,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 ```bash
 git clone <this repo>
-cd flowera
+cd decurix
 cp .env.example .env        # Windows: copy .env.example .env
 ```
 
@@ -245,7 +245,7 @@ Open `.env` and fill in what you need. See [Environment variables](#-environment
 Workers on the `ollama` and `thebot` harnesses reason with a model served by [Ollama](https://ollama.com). Two settings in `.env` pick which one:
 
 ```bash
-OLLAMA_URL=http://host.docker.internal:11434   # the machine running Flowera, as a desktop container sees it
+OLLAMA_URL=http://host.docker.internal:11434   # the machine running Decurix, as a desktop container sees it
 OLLAMA_MODEL=qwen2.5-coder:3b                  # the chat model every new desktop uses
 ```
 
@@ -278,7 +278,7 @@ This should print JSON listing the models you pulled.
 
 1. Use `OLLAMA_URL` from `.env` if a container can reach it; otherwise try the host's Ollama.
 2. If Ollama is running on the host but only on loopback, make it listen on all interfaces. On Linux that means `OLLAMA_HOST=0.0.0.0` on its systemd service (with `sudo`). On Windows it means `OLLAMA_HOST` in your user environment, followed by a restart of the Ollama app.
-3. If no Ollama is reachable at all, point `OLLAMA_URL` at a bundled `flowera-ollama` container that the control plane starts and fills with models itself.
+3. If no Ollama is reachable at all, point `OLLAMA_URL` at a bundled `decurix-ollama` container that the control plane starts and fills with models itself.
 4. Pull `OLLAMA_MODEL` and `nomic-embed-text` if they're missing, then write the result back into `.env` and print the URL and model the desktops will use.
 
 `OLLAMA_URL` can also point at an Ollama on another machine, e.g. `http://10.0.0.5:11434`. At startup the control plane loads `OLLAMA_MODEL` into memory on that server, so the first request doesn't wait for it.
@@ -293,7 +293,7 @@ The `claude` harness authenticates with a real Claude Code login instead of an A
 2. Pick **Claude Code** as the agent harness. If nobody has signed in yet, you'll see a **Log in to Claude** prompt there.
 3. Click it: a popup opens with a sign-in link and a box for a verification code — the same flow as running `claude auth login` yourself. Open the link, sign in, and paste the code it gives you back into the popup.
 
-That's it — the popup calls the control plane, which runs the login in a throwaway container and stores the resulting session in `flowera.db`. Every claude-harness desktop created from then on is seeded with it automatically; you only do this again if you want to switch which account desktops sign in as. `build.sh`/`rebuild.sh` treat it exactly like the rest of `flowera.db`: `build.sh` never touches it, `rebuild.sh` wipes it along with everything else in that database.
+That's it — the popup calls the control plane, which runs the login in a throwaway container and stores the resulting session in `decurix.db`. Every claude-harness desktop created from then on is seeded with it automatically; you only do this again if you want to switch which account desktops sign in as. `build.sh`/`rebuild.sh` treat it exactly like the rest of `decurix.db`: `build.sh` never touches it, `rebuild.sh` wipes it along with everything else in that database.
 
 ### 2. Build the desktop images
 
@@ -306,9 +306,9 @@ That's it — the popup calls the control plane, which runs the login in a throw
 which is a wrapper around:
 
 ```bash
-docker build --platform linux/amd64 -f docker/desktop.basic.Dockerfile     -t flowera-desktop:basic     .
-docker build --platform linux/amd64 -f docker/desktop.developer.Dockerfile -t flowera-desktop:developer .
-docker build --platform linux/amd64 -f docker/desktop.ai.Dockerfile        -t flowera-desktop:ai        .
+docker build --platform linux/amd64 -f docker/desktop.basic.Dockerfile     -t decurix-desktop:basic     .
+docker build --platform linux/amd64 -f docker/desktop.developer.Dockerfile -t decurix-desktop:developer .
+docker build --platform linux/amd64 -f docker/desktop.ai.Dockerfile        -t decurix-desktop:ai        .
 ```
 
 Re-run whichever of these changed whenever you edit `agent/` or a `docker/desktop.*.Dockerfile` — the control plane doesn't rebuild them for you.
@@ -331,13 +331,13 @@ Hit **Chat** on a desktop to talk to its agent: one conversation per worker, wit
 .\scripts\windows\build.ps1     # Windows (PowerShell)
 ```
 
-This is the "open the app" script: it builds only whichever desktop images don't exist yet, [sets up Ollama](#-setting-up-ollama) (creating `.env` if needed), starts the control plane if it isn't already running, and waits for the dashboard to respond. It does **not** touch any existing `desktop_*` container/volume or the app database — running it again is like reopening an app, not reinstalling it. If `cloudflared` is installed, it opens a public tunnel at the end and shows the tunnel's URL in the dashboard's Mobile menu. Without `cloudflared` the script stops with an error at that last step, but the dashboard is already running on `:8080`. Install `cloudflared` (via `setup.sh` / `setup.ps1`), or ignore the error if you only want local access. Ctrl+C stops watching the tunnel; Flowera keeps running (`docker compose down` to stop it).
+This is the "open the app" script: it builds only whichever desktop images don't exist yet, [sets up Ollama](#-setting-up-ollama) (creating `.env` if needed), starts the control plane if it isn't already running, and waits for the dashboard to respond. It does **not** touch any existing `desktop_*` container/volume or the app database — running it again is like reopening an app, not reinstalling it. If `cloudflared` is installed, it opens a public tunnel at the end and shows the tunnel's URL in the dashboard's Mobile menu. Without `cloudflared` the script stops with an error at that last step, but the dashboard is already running on `:8080`. Install `cloudflared` (via `setup.sh` / `setup.ps1`), or ignore the error if you only want local access. Ctrl+C stops watching the tunnel; Decurix keeps running (`docker compose down` to stop it).
 
-The tunnel link points at the same unauthenticated listener as `localhost:8080` — full control of this machine to whoever has the link, so treat it like a password and don't post it anywhere public. If you'd rather hand out a link that needs a one-time code instead, the script also opens a *second* Cloudflare tunnel to a gated listener on `:8090` and shows that one in the Mobile menu too, right above the code — so the code-protected link works from anywhere, not only your own network. The code itself is always in the dashboard's Mobile menu, next to a button to generate a new one on demand (which signs out anything already connected); it also rotates itself automatically every 48 hours, so a code that leaked doesn't stay valid indefinitely. See [Environment variables](#-environment-variables) for `FLOWERA_LAN_PORT` if `:8090` collides with something else on your machine.
+The tunnel link points at the same unauthenticated listener as `localhost:8080` — full control of this machine to whoever has the link, so treat it like a password and don't post it anywhere public. If you'd rather hand out a link that needs a one-time code instead, the script also opens a *second* Cloudflare tunnel to a gated listener on `:8090` and shows that one in the Mobile menu too, right above the code — so the code-protected link works from anywhere, not only your own network. The code itself is always in the dashboard's Mobile menu, next to a button to generate a new one on demand (which signs out anything already connected); it also rotates itself automatically every 48 hours, so a code that leaked doesn't stay valid indefinitely. See [Environment variables](#-environment-variables) for `DECURIX_LAN_PORT` if `:8090` collides with something else on your machine.
 
 The script also prints (and the Mobile menu also shows) two more addresses built from the machine's own network IP: an **Admin URL** (`:8080`, no code — full control, same as sitting at this machine, so keep it to yourself) and a **LAN access URL** (the gated `:8090` — needs the code, like its tunnel link above — reachable on your own network without going through either Cloudflare tunnel at all). All four — the two tunnel links, LAN, and admin — live in the one Mobile menu, kept current if the code is ever rotated.
 
-Idle desktops stop themselves automatically after 5 minutes with no task running and no screen open (`FLOWERA_IDLE_STOP_MINUTES`, on by default) — it only ever does what the dashboard's own Stop button does. Set it to `0` in `.env` to turn that off. Sending a stopped desktop a request starts it back up and waits for it automatically, so this is meant to be the normal state for a desktop between tasks, not something you have to work around — this is what makes running many desktops practical: a stopped container costs Flowera (and your machine) essentially nothing, and each one only actually runs while it has something to do.
+Idle desktops stop themselves automatically after 5 minutes with no task running and no screen open (`DECURIX_IDLE_STOP_MINUTES`, on by default) — it only ever does what the dashboard's own Stop button does. Set it to `0` in `.env` to turn that off. Sending a stopped desktop a request starts it back up and waits for it automatically, so this is meant to be the normal state for a desktop between tasks, not something you have to work around — this is what makes running many desktops practical: a stopped container costs Decurix (and your machine) essentially nothing, and each one only actually runs while it has something to do.
 
 Want a clean slate instead — fresh images, no leftover desktops, an empty dashboard?
 
@@ -347,7 +347,7 @@ Want a clean slate instead — fresh images, no leftover desktops, an empty dash
 .\scripts\windows\rebuild.ps1     # Windows (PowerShell)
 ```
 
-This is the "reinstall" script. After a confirmation prompt (`-y`/`-Yes` to skip it), it removes every `desktop_*` container and volume, removes the bundled `flowera-ollama` container (its pulled-models volume is kept — no reason to redownload gigabytes of models), and **permanently deletes the `flowera-data` volume**, so all task history, chat transcripts, query notes and worker memory are gone. It also rebuilds every desktop image and the control plane image — so a change to `agent/` or a Dockerfile is picked up — but with Docker's normal build cache rather than `--no-cache`, so it's just as fast as `build.sh` when nothing actually changed. `.env` is left as it is. Ctrl+C during a rebuild tears the whole stack down rather than leaving it half old, half fresh.
+This is the "reinstall" script. After a confirmation prompt (`-y`/`-Yes` to skip it), it removes every `desktop_*` container and volume, removes the bundled `decurix-ollama` container (its pulled-models volume is kept — no reason to redownload gigabytes of models), and **permanently deletes the `decurix-data` volume**, so all task history, chat transcripts, query notes and worker memory are gone. It also rebuilds every desktop image and the control plane image — so a change to `agent/` or a Dockerfile is picked up — but with Docker's normal build cache rather than `--no-cache`, so it's just as fast as `build.sh` when nothing actually changed. `.env` is left as it is. Ctrl+C during a rebuild tears the whole stack down rather than leaving it half old, half fresh.
 
 ### Testing one desktop image standalone
 
@@ -359,7 +359,7 @@ Iterating on `agent/` or a `docker/desktop.*.Dockerfile` doesn't need the whole 
 .\scripts\windows\test-vm.ps1 -DesktopProfile basic -Harness thebot -Task "say hi"   # Windows
 ```
 
-VNC comes up at `http://localhost:16901/vnc.html` and, for the `thebot` harness, TheBot's own built-in UI directly at `http://localhost:14900/` — both published straight to the host, bypassing the control plane's proxy entirely. That UI is a debugging surface here, not the normal way to use a worker: it talks to TheBot's engine directly, so it skips the Flowera agent and with it worker memory and the approval path. The dashboard's **Chat** is the real path. Watch the agent's progress and query/completion callbacks with `docker logs -f flowera-dummy-cp`. Tear down with `./scripts/linux/test-vm.sh --down` (or the Windows equivalent) once you're done; it only ever removes containers this script created.
+VNC comes up at `http://localhost:16901/vnc.html` and, for the `thebot` harness, TheBot's own built-in UI directly at `http://localhost:14900/` — both published straight to the host, bypassing the control plane's proxy entirely. That UI is a debugging surface here, not the normal way to use a worker: it talks to TheBot's engine directly, so it skips the Decurix agent and with it worker memory and the approval path. The dashboard's **Chat** is the real path. Watch the agent's progress and query/completion callbacks with `docker logs -f decurix-dummy-cp`. Tear down with `./scripts/linux/test-vm.sh --down` (or the Windows equivalent) once you're done; it only ever removes containers this script created.
 
 ### 5. Or: run a prebuilt executable (no Go, no repo)
 
@@ -374,9 +374,9 @@ Both cross-compile from a single machine (Go's cross-compilation needs no target
 
 | Target | Binary | Archive |
 |---|---|---|
-| `linux/amd64`, `linux/arm64` | `flowera_<version>_linux_<arch>` | `.tar.gz` |
-| `windows/amd64`, `windows/arm64` | `flowera_<version>_windows_<arch>.exe` | `.zip` |
-| `darwin/amd64`, `darwin/arm64` | `flowera_<version>_darwin_<arch>` | `.tar.gz` |
+| `linux/amd64`, `linux/arm64` | `decurix_<version>_linux_<arch>` | `.tar.gz` |
+| `windows/amd64`, `windows/arm64` | `decurix_<version>_windows_<arch>.exe` | `.zip` |
+| `darwin/amd64`, `darwin/arm64` | `decurix_<version>_darwin_<arch>` | `.tar.gz` |
 
 plus a `SHA256SUMS` file. Useful flags:
 
@@ -390,14 +390,14 @@ plus a `SHA256SUMS` file. Useful flags:
 An archive is just the binary plus a `README.txt` written for that OS and an optional `.env.example` — nothing the binary actually depends on. On the target machine:
 
 ```bash
-tar -xzf flowera_<version>_linux_amd64.tar.gz && cd flowera_<version>_linux_amd64
-./flowera --build-images     # build the three desktop images (one time, slow)
-./flowera                    # dashboard on http://localhost:8080
+tar -xzf decurix_<version>_linux_amd64.tar.gz && cd decurix_<version>_linux_amd64
+./decurix --build-images     # build the three desktop images (one time, slow)
+./decurix                    # dashboard on http://localhost:8080
 ```
 
-`--build-images` builds `flowera-desktop:{basic,developer,ai}` straight out of the executable, streaming Docker's output; it skips images that already exist unless you add `--rebuild`. Until they exist the dashboard still starts, and says which ones are missing.
+`--build-images` builds `decurix-desktop:{basic,developer,ai}` straight out of the executable, streaming Docker's output; it skips images that already exist unless you add `--rebuild`. Until they exist the dashboard still starts, and says which ones are missing.
 
-Configuration is optional — every setting has a working default, and `.env` is read from the working directory or from the folder the executable sits in (plain environment variables work too). `./flowera --version` prints the build it came from.
+Configuration is optional — every setting has a working default, and `.env` is read from the working directory or from the folder the executable sits in (plain environment variables work too). `./decurix --version` prints the build it came from.
 
 The only thing the executable needs from the host is a reachable Docker daemon.
 
@@ -405,14 +405,14 @@ The only thing the executable needs from the host is a reachable Docker daemon.
 
 ```bash
 go build ./... && go vet ./... && go test ./...   # compile, lint, unit tests
-go run ./cmd/flowera                                # run it directly (needs Docker + the images from step 2)
+go run ./cmd/decurix                                # run it directly (needs Docker + the images from step 2)
 ```
 
 The templates in `web/templates/` are embedded into the binary with `go:embed` (see [`web/embed.go`](web/embed.go)), so editing one needs a rebuild — `go run` does that for you, but a binary you already built won't pick the change up.
 
 ### 🍎 macOS Special Steps & Notes
 
-If you are running Flowera on macOS (especially Apple Silicon M-series):
+If you are running Decurix on macOS (especially Apple Silicon M-series):
 
 1. **Architecture Emulation (Rosetta 2):**
    * The desktop images and Docker containers run with `--platform linux/amd64`.
@@ -435,7 +435,7 @@ If you are running Flowera on macOS (especially Apple Silicon M-series):
      ```
 
 3. **Docker Socket Access:**
-   * Flowera mounts `/var/run/docker.sock` to orchestrate desktop containers.
+   * Decurix mounts `/var/run/docker.sock` to orchestrate desktop containers.
    * In Docker Desktop **Settings > Advanced**, ensure *"Allow the default Docker socket to be used"* is enabled.
 
 4. **Remote Access / Mobile Tunnel (Optional):**
@@ -451,13 +451,13 @@ Set these in your own `.env` (copied from `.env.example`) — the control plane 
 | Variable | Required? | Default | Purpose |
 |---|---|---|---|
 | `DEFAULT_PASSWORD` | No | `admin` | VNC login password baked into every new desktop. |
-| `OLLAMA_URL` | No | `http://host.docker.internal:11434` | The Ollama server every new desktop reasons with. The default is the host running Flowera. See [Setting up Ollama](#-setting-up-ollama). |
+| `OLLAMA_URL` | No | `http://host.docker.internal:11434` | The Ollama server every new desktop reasons with. The default is the host running Decurix. See [Setting up Ollama](#-setting-up-ollama). |
 | `OLLAMA_MODEL` | No | `qwen2.5-coder:3b` | The chat model every new desktop uses. It must already be pulled on `OLLAMA_URL`'s server (`build.sh` pulls it for you). |
 | `DESKTOP_STOP_TIMEOUT_SECONDS` | No | `10` | Seconds to wait for a desktop container to stop gracefully before force-killing it. |
-| `FLOWERA_DATA_DIR` | No | your user config dir + `/flowera` (`/data` in the Docker image) | Where `flowera.db` lives: task records, chats, queries, worker memory, action screenshots, and the shared Claude session (see [Setting up the Claude harness](#-setting-up-the-claude-harness)). `docker compose` keeps it on the `flowera-data` volume. |
-| `FLOWERA_STEP_IMAGES_MB` | No | `1024` | Disk budget for the before/after screenshots of on-screen actions. The oldest are dropped first. A desktop keeps its full-size originals regardless. |
-| `FLOWERA_LAN_PORT` | No | `8090` | Port of the second, access-code-gated listener — the **LAN access URL**, reachable directly on your own network. Changes which host port `docker compose` publishes it on too. `build.sh`/`rebuild.sh` open their primary tunnel against `:8080` instead, but also open a second tunnel against this port for the gated URL. |
-| `FLOWERA_IDLE_STOP_MINUTES` | No | `5` (on) | Stop a desktop automatically once it's sat idle — no task running, queued, or waiting on a reply, and no screen/thumbnail open — for this many minutes. Set to `0` to turn it off. It only ever does what the dashboard's own Stop button does. |
+| `DECURIX_DATA_DIR` | No | your user config dir + `/decurix` (`/data` in the Docker image) | Where `decurix.db` lives: task records, chats, queries, worker memory, action screenshots, and the shared Claude session (see [Setting up the Claude harness](#-setting-up-the-claude-harness)). `docker compose` keeps it on the `decurix-data` volume. |
+| `DECURIX_STEP_IMAGES_MB` | No | `1024` | Disk budget for the before/after screenshots of on-screen actions. The oldest are dropped first. A desktop keeps its full-size originals regardless. |
+| `DECURIX_LAN_PORT` | No | `8090` | Port of the second, access-code-gated listener — the **LAN access URL**, reachable directly on your own network. Changes which host port `docker compose` publishes it on too. `build.sh`/`rebuild.sh` open their primary tunnel against `:8080` instead, but also open a second tunnel against this port for the gated URL. |
+| `DECURIX_IDLE_STOP_MINUTES` | No | `5` (on) | Stop a desktop automatically once it's sat idle — no task running, queued, or waiting on a reply, and no screen/thumbnail open — for this many minutes. Set to `0` to turn it off. It only ever does what the dashboard's own Stop button does. |
 
 Every other setting (the agent harness, the control-plane URL a desktop calls home to, etc.) is set up for each desktop when you create it. See [`CLAUDE.md`](CLAUDE.md) if you're changing that wiring.
 
@@ -465,9 +465,9 @@ Every other setting (the agent harness, the control-plane URL a desktop calls ho
 
 ## 🏗️ Project
 
-Flowera is being built from the ground up around the idea that **AI should be able to do things, not just talk about them.**
+Decurix is being built from the ground up around the idea that **AI should be able to do things, not just talk about them.**
 
-The infrastructure underneath Flowera is intentionally modular and designed to support increasingly capable workers as the system evolves.
+The infrastructure underneath Decurix is intentionally modular and designed to support increasingly capable workers as the system evolves.
 
 For developers interested in the current implementation, see:
 
@@ -483,6 +483,6 @@ Today, software gives you tools.
 
 Tomorrow, software will give you **workers**.
 
-Flowera is building toward that future.
+Decurix is building toward that future.
 
 **Give AI a computer. Give it a job. Let it learn.**

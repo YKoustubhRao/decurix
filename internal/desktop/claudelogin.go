@@ -177,7 +177,7 @@ func (m *Manager) StartClaudeLogin(ctx context.Context) (loginID string, signInU
 		log.Printf("warning: ensure tools volume: %v", err)
 	}
 
-	containerName := "flowera-claude-login-" + randomHex(4)
+	containerName := "decurix-claude-login-" + randomHex(4)
 
 	resp, err := m.client.ContainerCreate(
 		ctx,
@@ -505,7 +505,7 @@ func (m *Manager) execCaptured(ctx context.Context, containerID string, cmd []st
 // OAuth round trip.
 func (m *Manager) PersistClaudeCredentials(ctx context.Context, desktopID, credentialsJSON string) error {
 	containerName := "desktop_" + sanitizeName(desktopID)
-	delimiter := fmt.Sprintf("FLOWERA_CLAUDE_CREDENTIALS_%d", time.Now().UnixNano())
+	delimiter := fmt.Sprintf("DECURIX_CLAUDE_CREDENTIALS_%d", time.Now().UnixNano())
 
 	cmd := fmt.Sprintf(`mkdir -p "$(dirname %s)" && cat <<'%s' > %s
 %s

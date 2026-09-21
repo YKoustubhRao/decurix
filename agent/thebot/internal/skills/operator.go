@@ -25,8 +25,8 @@ import (
 // current weather in New York City". A plan written before the first
 // observation cannot adapt to it. A loop can.
 //
-// The loop's rules are Flowera's own Ollama harness's rules, measured there
-// against the same model (flowera_agent/task_runner.py): one marker per
+// The loop's rules are Decurix's own Ollama harness's rules, measured there
+// against the same model (decurix_agent/task_runner.py): one marker per
 // reply, one push back on a HELP before anything was tried, a repeated
 // command answered with its own output instead of being run again, and a
 // reply with no marker taken as the answer it almost always is. The
@@ -269,7 +269,7 @@ func (o *OperatorSkill) resume(rc RunContext, subtask Subtask, st *operatorState
 
 // execute runs one command and records it in the transcript. It returns a
 // non-empty reason, and records nothing, when the command was an on-screen
-// action that Flowera's approval gate stopped - the caller pauses for
+// action that Decurix's approval gate stopped - the caller pauses for
 // approval exactly as it does for a command internal/safety stops.
 func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string) string {
 	rc.Logf("operator", "$ %s", command)
@@ -287,9 +287,9 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 	return ""
 }
 
-// guiApprovalExit and guiApprovalMarker are how Flowera's `gui` command says
+// guiApprovalExit and guiApprovalMarker are how Decurix's `gui` command says
 // its approval gate stopped an on-screen action and nothing happened
-// (flowera_agent/computer/approval.py). internal/safety cannot see this one
+// (decurix_agent/computer/approval.py). internal/safety cannot see this one
 // coming: "gui click e35" says nothing about what e35 is. Only the gate,
 // which resolves e35 to a "Send newsletter" button, knows - so the operator
 // takes the command's own word for it.

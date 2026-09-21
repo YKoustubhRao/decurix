@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/YKoustubhRao/flowera/internal/tunnel"
+	"github.com/YKoustubhRao/decurix/internal/tunnel"
 )
 
 func TestTunnelHandlerPostThenGet(t *testing.T) {

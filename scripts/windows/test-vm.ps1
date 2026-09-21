@@ -2,7 +2,7 @@
 .SYNOPSIS
     Spins up ONE throwaway desktop container standalone, for quickly testing
     a desktop image or the agent harness without building/running the whole
-    flowera control plane.
+    decurix control plane.
 .DESCRIPTION
     Pairs with scripts/testing/dummy_control_plane.py, a stdlib-only stub
     that accepts the desktop's query/completion callbacks and prints them
@@ -40,7 +40,7 @@ $ErrorActionPreference = "Stop"
 Set-Location (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
 
 $DesktopContainer = "desktop_$Name"
-$DummyCP = "flowera-dummy-cp"
+$DummyCP = "decurix-dummy-cp"
 
 # Same default as internal/desktop/docker.go's buildDesktopEnv - the host
 # running the control plane, reached over the ExtraHosts entry every desktop
@@ -56,7 +56,7 @@ if ($Down) {
     docker rm -f $DesktopContainer 2>$null | Out-Null
 
     # The dummy control plane is only ever used by test-vm's own desktop
-    # containers (never by real flowera-managed ones), so it's always safe
+    # containers (never by real decurix-managed ones), so it's always safe
     # to remove here - it's a cheap stub, re-created instantly next run.
     Write-Host "=== Removing dummy control plane ==="
     docker rm -f $DummyCP 2>$null | Out-Null
@@ -65,23 +65,23 @@ if ($Down) {
 }
 
 Write-Host "========================================"
-Write-Host " Flowera standalone VM test"
+Write-Host " Decurix standalone VM test"
 Write-Host "========================================"
 Write-Host "profile=$DesktopProfile harness=$Harness name=$Name"
 Write-Host ""
 
-Write-Host "=== Ensuring flowera-network ==="
-docker network inspect flowera-network *>$null
+Write-Host "=== Ensuring decurix-network ==="
+docker network inspect decurix-network *>$null
 if ($LASTEXITCODE -ne 0) {
-    docker network create flowera-network | Out-Null
+    docker network create decurix-network | Out-Null
 }
 
 Write-Host ""
-Write-Host "=== Ensuring image flowera-desktop:$DesktopProfile ==="
-docker image inspect "flowera-desktop:$DesktopProfile" *>$null
+Write-Host "=== Ensuring image decurix-desktop:$DesktopProfile ==="
+docker image inspect "decurix-desktop:$DesktopProfile" *>$null
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Image not found locally - building it (this can take a while)..."
-    docker build -f "docker/desktop.$DesktopProfile.Dockerfile" -t "flowera-desktop:$DesktopProfile" .
+    docker build -f "docker/desktop.$DesktopProfile.Dockerfile" -t "decurix-desktop:$DesktopProfile" .
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
@@ -92,7 +92,7 @@ if ($running -ne $DummyCP) {
     docker rm -f $DummyCP 2>$null | Out-Null
     docker run -d `
         --name $DummyCP `
-        --network flowera-network `
+        --network decurix-network `
         --network-alias $DummyCP `
         -v "${PWD}/scripts/testing:/srv:ro" `
         -w /srv `
@@ -109,7 +109,7 @@ docker rm -f $DesktopContainer 2>$null | Out-Null
 
 docker run -d `
     --name $DesktopContainer `
-    --network flowera-network `
+    --network decurix-network `
     --shm-size=512m `
     -p 16901:6901 `
     -p 14900:4900 `
@@ -124,7 +124,7 @@ docker run -d `
     -e OLLAMA_MODEL=$OllamaModel `
     -e AGENT_HARNESS=$Harness `
     -e CODING_MODEL=$CodingModel `
-    "flowera-desktop:$DesktopProfile" | Out-Null
+    "decurix-desktop:$DesktopProfile" | Out-Null
 
 Write-Host ""
 Write-Host "=== Waiting for the agent to come up (vm_server.py:8081) ==="
@@ -136,7 +136,7 @@ Write-Host "=== Waiting for the agent to come up (vm_server.py:8081) ==="
 # though the container was already serving requests.
 $ready = $false
 for ($i = 1; $i -le 60; $i++) {
-    docker exec $DesktopContainer grep -q "VM agent listening" /tmp/flowera-startup.log 2>$null
+    docker exec $DesktopContainer grep -q "VM agent listening" /tmp/decurix-startup.log 2>$null
     if ($LASTEXITCODE -eq 0) {
         $ready = $true
         break
@@ -170,5 +170,5 @@ Write-Host "Agent chat UI:      http://localhost:14900/"
 }
 Write-Host "Send a task:        Invoke-RestMethod http://localhost:18081/request -Method Post -ContentType application/json -Body '{\"content\":\"...\"}'"
 Write-Host "Watch callbacks:    docker logs -f $DummyCP"
-Write-Host "Watch agent logs:   docker exec $DesktopContainer tail -f /tmp/flowera-startup.log"
+Write-Host "Watch agent logs:   docker exec $DesktopContainer tail -f /tmp/decurix-startup.log"
 Write-Host "Tear down:          .\scripts\windows\test-vm.ps1 -Name $Name -Down"

@@ -1,9 +1,9 @@
 import unittest
 from unittest.mock import patch
 
-from flowera_agent.parser import clean_command, parse_agent_response
-from flowera_agent.ollama_client import ask_agent
-from flowera_agent.task_runner import compact_history, format_command_result
+from decurix_agent.parser import clean_command, parse_agent_response
+from decurix_agent.ollama_client import ask_agent
+from decurix_agent.task_runner import compact_history, format_command_result
 
 
 class TestAgentParserOptimizations(unittest.TestCase):
@@ -39,7 +39,7 @@ class TestAgentParserOptimizations(unittest.TestCase):
 
 
 class TestOllamaClientMessageOrdering(unittest.TestCase):
-    @patch("flowera_agent.ollama_client.ollama_request")
+    @patch("decurix_agent.ollama_client.ollama_request")
     def test_ask_agent_puts_task_before_history(self, mock_ollama):
         mock_ollama.return_value = "DONE: all set"
 
@@ -116,13 +116,13 @@ class TestTaskRunnerContextCompaction(unittest.TestCase):
 
 class TestInferenceEndpointSelection(unittest.TestCase):
     def test_is_openai_endpoint(self):
-        from flowera_agent.ollama_client import is_openai_endpoint
+        from decurix_agent.ollama_client import is_openai_endpoint
         self.assertTrue(is_openai_endpoint("http://vllm-server:8000/v1"))
         self.assertTrue(is_openai_endpoint("http://vllm-server:8000/v1/"))
         self.assertFalse(is_openai_endpoint("http://localhost:11434"))
 
     def test_get_optimal_threads(self):
-        from flowera_agent.ollama_client import get_optimal_threads
+        from decurix_agent.ollama_client import get_optimal_threads
         threads = get_optimal_threads()
         self.assertIsInstance(threads, int)
         self.assertGreater(threads, 0)

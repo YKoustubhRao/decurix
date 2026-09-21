@@ -11,7 +11,7 @@ const maxTunnelRequestBytes = 8192
 
 // tunnelHandler records the addresses scripts/*/build.sh (or rebuild.sh)
 // discovers for this machine (POST, one call for the admin/LAN URLs once
-// Flowera is up, and one call per line each time either Cloudflare tunnel -
+// Decurix is up, and one call per line each time either Cloudflare tunnel -
 // the unauthenticated one at :8080 or the access-code-gated one - prints a
 // new URL) or returns all of them (GET, used by the dashboard's Mobile
 // menu). A field left out of a POST body leaves that address unchanged -

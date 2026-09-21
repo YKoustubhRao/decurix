@@ -6,7 +6,7 @@
 #
 # This is the repo-checkout path. A downloaded release binary does not need it:
 # it embeds the same build context and builds the images itself via
-# `flowera --build-images`.
+# `decurix --build-images`.
 #
 # Flags:
 #   --only-missing  skip an image whose tag already exists (build.sh's "just
@@ -42,7 +42,7 @@ fi
 cd "$root"
 
 echo "========================================"
-echo " Building Flowera desktop images"
+echo " Building Decurix desktop images"
 echo "========================================"
 
 if [ ! -f ~/.docker/cli-plugins/docker-buildx ] && [ -f /usr/libexec/docker/cli-plugins/docker-buildx ]; then
@@ -77,19 +77,19 @@ build_one() {
         .
 }
 
-build_one flowera-desktop:basic docker/desktop.basic.Dockerfile "Unified Desktop Base"
-build_one flowera-tools:latest docker/tools.Dockerfile "Shared Tools Runtime"
+build_one decurix-desktop:basic docker/desktop.basic.Dockerfile "Unified Desktop Base"
+build_one decurix-tools:latest docker/tools.Dockerfile "Shared Tools Runtime"
 
 echo ""
 echo "=== Aliasing desktop profiles (developer / ai) to unified base ==="
-docker tag flowera-desktop:basic flowera-desktop:developer
-docker tag flowera-desktop:basic flowera-desktop:ai
+docker tag decurix-desktop:basic decurix-desktop:developer
+docker tag decurix-desktop:basic decurix-desktop:ai
 
 echo ""
-echo "=== Populating shared tools volume (flowera-tools) ==="
-docker volume create flowera-tools >/dev/null
-docker run --rm -v flowera-tools:/target flowera-tools:latest
-docker volume create flowera-cache >/dev/null
+echo "=== Populating shared tools volume (decurix-tools) ==="
+docker volume create decurix-tools >/dev/null
+docker run --rm -v decurix-tools:/target decurix-tools:latest
+docker volume create decurix-cache >/dev/null
 
 echo ""
 echo "=== Pruning dangling build layers to reclaim disk space ==="
@@ -98,5 +98,5 @@ docker image prune -f >/dev/null 2>&1 || true
 echo ""
 echo "=== Desktop and tools images ready ==="
 
-docker images --filter "reference=flowera-*"
+docker images --filter "reference=decurix-*"
 

@@ -72,7 +72,7 @@ func TestAuthenticateLinkGrantsASessionAndRedirectsOn(t *testing.T) {
 
 	var cookie *http.Cookie
 	for _, c := range resp.Cookies() {
-		if c.Name == "flowera_lan_session" {
+		if c.Name == "decurix_lan_session" {
 			cookie = c
 		}
 	}
@@ -110,7 +110,7 @@ func TestAuthenticateLinkWithWrongCodeDoesNotGrantASession(t *testing.T) {
 	}
 
 	for _, c := range resp.Cookies() {
-		if c.Name == "flowera_lan_session" {
+		if c.Name == "decurix_lan_session" {
 			t.Fatal("a wrong code must not set a session cookie")
 		}
 	}
@@ -193,7 +193,7 @@ func TestCorrectCodeGrantsASessionAndRedirectsOn(t *testing.T) {
 
 	var cookie *http.Cookie
 	for _, c := range resp.Cookies() {
-		if c.Name == "flowera_lan_session" {
+		if c.Name == "decurix_lan_session" {
 			cookie = c
 		}
 	}
@@ -231,7 +231,7 @@ func TestWrongCodeDoesNotGrantASession(t *testing.T) {
 	}
 
 	for _, c := range resp.Cookies() {
-		if c.Name == "flowera_lan_session" {
+		if c.Name == "decurix_lan_session" {
 			t.Fatal("a wrong code must not set a session cookie")
 		}
 	}
@@ -261,7 +261,7 @@ func TestLockoutAfterRepeatedFailures(t *testing.T) {
 	}
 
 	for _, c := range resp.Cookies() {
-		if c.Name == "flowera_lan_session" {
+		if c.Name == "decurix_lan_session" {
 			t.Fatal("a locked-out request must not grant a session even with the right code")
 		}
 	}
@@ -299,7 +299,7 @@ func TestRotateDropsExistingSessions(t *testing.T) {
 	resp := login(t, srv, store.Password(), "/")
 	var cookie *http.Cookie
 	for _, c := range resp.Cookies() {
-		if c.Name == "flowera_lan_session" {
+		if c.Name == "decurix_lan_session" {
 			cookie = c
 		}
 	}

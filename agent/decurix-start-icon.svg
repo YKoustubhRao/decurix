@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Decurix">
+  <!-- The taskbar Start button (decurix-panel.xml's whiskermenu plugin), so
+       the bottom-left corner reads as "click here to launch things" the way
+       a Windows Start button does - the same blossom mark as the control
+       plane's own topbar (web/favicon.svg) on a filled tile, in the desktop
+       theme's own red accent (decurix-xsettings.xml/decurix-xfwm4.xml)
+       rather than the control plane's green, since this lives inside the
+       desktop itself. -->
+  <rect width="32" height="32" rx="7.5" fill="#c21f0c"/>
+  <g fill="#ffffff" transform="translate(16 16) scale(1.28) translate(-12 -12)">
+    <g opacity=".78">
+      <circle cx="12" cy="7.25" r="2.85"/>
+      <circle cx="16.52" cy="10.53" r="2.85"/>
+      <circle cx="14.79" cy="15.84" r="2.85"/>
+      <circle cx="9.21" cy="15.84" r="2.85"/>
+      <circle cx="7.48" cy="10.53" r="2.85"/>
+    </g>
+    <circle cx="12" cy="12" r="2.2"/>
+  </g>
+</svg>
