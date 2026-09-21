@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/winhost"
+	"github.com/YKoustubhRao/decurix/internal/winhost"
 )
 
 // On Windows itself the helper is Windows PowerShell run directly on a script in the temp folder - no shell, no wslpath,

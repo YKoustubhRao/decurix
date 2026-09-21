@@ -1,4 +1,4 @@
-# Flowera's Chromium launch flags. Sourced by the base image's own launcher
+# Decurix's Chromium launch flags. Sourced by the base image's own launcher
 # (/usr/bin/chromium-browser) every time the browser starts, from
 # ~/.chromium-browser.init - agent/start_agent_terminal.sh reinstalls it
 # there on every desktop start, because /home/headless is a persistent
@@ -15,7 +15,7 @@
 # the browser would otherwise refuse to start at all.
 
 # --remote-debugging-port is how the agent's action layer reads and works
-# web pages (flowera_agent/computer/cdp.py): Chromium's own accessibility tree
+# web pages (decurix_agent/computer/cdp.py): Chromium's own accessibility tree
 # and input events over DevTools. It binds 127.0.0.1 only, inside a container
 # that publishes no ports - but any process in this desktop can drive the
 # browser through it, the same trust the agent's shell already has.

@@ -6,9 +6,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/YKoustubhRao/flowera/internal/dag"
-	"github.com/YKoustubhRao/flowera/internal/desktop"
-	"github.com/YKoustubhRao/flowera/internal/webui"
+	"github.com/YKoustubhRao/decurix/internal/dag"
+	"github.com/YKoustubhRao/decurix/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/webui"
 )
 
 // maxDagRunsListed bounds how many past runs the run-history list returns.

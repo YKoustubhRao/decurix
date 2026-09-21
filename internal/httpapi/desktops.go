@@ -13,11 +13,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/desktop"
-	"github.com/YKoustubhRao/flowera/internal/memory"
-	"github.com/YKoustubhRao/flowera/internal/ollama"
-	"github.com/YKoustubhRao/flowera/internal/tasks"
-	"github.com/YKoustubhRao/flowera/internal/webui"
+	"github.com/YKoustubhRao/decurix/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/memory"
+	"github.com/YKoustubhRao/decurix/internal/ollama"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
+	"github.com/YKoustubhRao/decurix/internal/webui"
 )
 
 var validDesktopNameRe = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
@@ -92,14 +92,14 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	parentID := strings.TrimSpace(r.FormValue("parent_id"))
 
 	cpus := int64(1)
-	if envCpus := os.Getenv("FLOWERA_DEFAULT_DESKTOP_CPUS"); envCpus != "" {
+	if envCpus := os.Getenv("DECURIX_DEFAULT_DESKTOP_CPUS"); envCpus != "" {
 		if parsed, err := strconv.ParseInt(envCpus, 10, 64); err == nil && parsed > 0 {
 			cpus = parsed
 		}
 	}
 
 	memoryMB := int64(2048)
-	if envMem := os.Getenv("FLOWERA_DEFAULT_DESKTOP_MEMORY_MB"); envMem != "" {
+	if envMem := os.Getenv("DECURIX_DEFAULT_DESKTOP_MEMORY_MB"); envMem != "" {
 		if parsed, err := strconv.ParseInt(envMem, 10, 64); err == nil && parsed > 0 {
 			memoryMB = parsed
 		}

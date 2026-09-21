@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Opens Flowera: builds whichever desktop images don't exist yet, makes
+    Opens Decurix: builds whichever desktop images don't exist yet, makes
     sure a desktop can reach Ollama, starts the control plane if it isn't
     already running, and opens a Cloudflare tunnel to it.
 .DESCRIPTION
@@ -14,10 +14,10 @@
     Needs Docker Desktop running. Does not need Administrator.
 
     Ctrl+C while it runs (including while the tunnel is up) just stops
-    watching the tunnel - it does not tear Flowera down.
+    watching the tunnel - it does not tear Decurix down.
 .PARAMETER Cli
     Skip the tunnel and open the terminal CLI instead (docker compose exec
-    desktop-manager ./flowera --cli), a text alternative to the dashboard.
+    desktop-manager ./decurix --cli), a text alternative to the dashboard.
 #>
 
 param(
@@ -51,14 +51,14 @@ function Wait-ForDashboard {
             $response = Invoke-WebRequest -Uri "http://127.0.0.1:8080/" `
                 -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
             if ($response.StatusCode -eq 200) {
-                Write-Host "Flowera dashboard is running."
+                Write-Host "Decurix dashboard is running."
                 return $true
             }
         } catch {
             # Not up yet.
         }
 
-        Write-Host "Waiting for Flowera... ($attempt/$MaxAttempts)"
+        Write-Host "Waiting for Decurix... ($attempt/$MaxAttempts)"
         Start-Sleep -Seconds $DelaySeconds
     }
 
@@ -67,15 +67,15 @@ function Wait-ForDashboard {
 
 # Ctrl+C lands here while the script is blocked on the tunnel command, which
 # runs forever until interrupted. Unlike rebuild.ps1, this script's whole
-# point is to leave Flowera running, so interrupting it does not tear
+# point is to leave Decurix running, so interrupting it does not tear
 # anything down - it only stops watching the tunnel. Runs from a `finally`
 # because PowerShell has no INT-only trap; it also covers the tunnel exiting
 # on its own.
 function Invoke-Cleanup {
     Write-Host ""
     Stop-LanTunnel
-    Write-Host "=== Tunnel stopped. Flowera is still running: http://127.0.0.1:8080 ==="
-    Write-Host "(Run this script again for a new tunnel, or 'docker compose down' to stop Flowera.)"
+    Write-Host "=== Tunnel stopped. Decurix is still running: http://127.0.0.1:8080 ==="
+    Write-Host "(Run this script again for a new tunnel, or 'docker compose down' to stop Decurix.)"
 }
 #endregion
 
@@ -90,7 +90,7 @@ $script:IntentionalExit = $false
 
 try {
     Write-Host "========================================"
-    Write-Host " Opening Flowera"
+    Write-Host " Opening Decurix"
     Write-Host "========================================"
     Write-Host ""
 
@@ -135,9 +135,9 @@ try {
     Invoke-EnsureOllamaReady
 
     Write-Host ""
-    Write-Host "=== Starting Flowera ==="
+    Write-Host "=== Starting Decurix ==="
     # No --build: an already-built control plane image starts as-is.
-    # Existing desktop_* containers and volumes, and the flowera-data
+    # Existing desktop_* containers and volumes, and the decurix-data
     # volume (task history, chats, worker memory), are untouched.
     docker compose up -d
     if ($LASTEXITCODE -ne 0) { Exit-Build $LASTEXITCODE }
@@ -146,22 +146,22 @@ try {
     Write-Host "=== Waiting for dashboard ==="
 
     if (-not (Wait-ForDashboard -MaxAttempts 60 -DelaySeconds 2)) {
-        Write-Host "ERROR: Flowera dashboard is not responding on port 8080."
+        Write-Host "ERROR: Decurix dashboard is not responding on port 8080."
         docker compose logs --tail=100
         Exit-Build 1
     }
 
     Write-Host ""
     Write-Host "========================================"
-    Write-Host " Flowera is running"
+    Write-Host " Decurix is running"
     Write-Host "========================================"
     Write-Host ""
     Write-Host "Dashboard: http://localhost:8080"
-    Write-Host "Idle desktops stop automatically after 5 minutes (set FLOWERA_IDLE_STOP_MINUTES=0 in .env to disable, or to another number of minutes)."
+    Write-Host "Idle desktops stop automatically after 5 minutes (set DECURIX_IDLE_STOP_MINUTES=0 in .env to disable, or to another number of minutes)."
 
-    # FLOWERA_LAN_PORT in .env changes which port the access-code-gated
+    # DECURIX_LAN_PORT in .env changes which port the access-code-gated
     # listener binds.
-    $lanPort = Read-EnvVar -Name "FLOWERA_LAN_PORT"
+    $lanPort = Read-EnvVar -Name "DECURIX_LAN_PORT"
     if (-not $lanPort) { $lanPort = "8090" }
 
     # The machine's own address on whatever network it's on, so both the
@@ -219,7 +219,7 @@ try {
             # on click instead of asking them to type it into the gate's form.
             if ($lanUrl) {
                 Write-Host ""
-                Write-Host "Open it yourself without typing the code: $lanUrl/__flowera_access/authenticate?code=$lanCode"
+                Write-Host "Open it yourself without typing the code: $lanUrl/__decurix_access/authenticate?code=$lanCode"
             }
         }
     } catch {
@@ -232,18 +232,18 @@ try {
     # finally{} skips it, same as every other deliberate exit.
     if ($Cli) {
         Write-Host ""
-        Write-Host "=== Opening the Flowera CLI ==="
-        Write-Host "(Flowera keeps running after you exit; 'exit' or Ctrl+D to leave.)"
+        Write-Host "=== Opening the Decurix CLI ==="
+        Write-Host "(Decurix keeps running after you exit; 'exit' or Ctrl+D to leave.)"
         Write-Host ""
 
-        docker compose exec desktop-manager ./flowera --cli
+        docker compose exec desktop-manager ./decurix --cli
         Exit-Build $LASTEXITCODE
     }
 
     Write-Host ""
     Write-Host "=== Starting Cloudflare Tunnel ==="
     if (-not (Test-CommandAvailable "cloudflared")) {
-        Write-Host "ERROR: cloudflared is not installed. Flowera is still running"
+        Write-Host "ERROR: cloudflared is not installed. Decurix is still running"
         Write-Host "locally; install cloudflared (.\scripts\windows\setup.ps1) for"
         Write-Host "access from other devices."
         Exit-Build 1

@@ -3,8 +3,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from flowera_agent import config
-from flowera_agent.memory_context import get_memory_context
+from decurix_agent import config
+from decurix_agent.memory_context import get_memory_context
 
 
 class TestMemoryContextBudget(unittest.TestCase):

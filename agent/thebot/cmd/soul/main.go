@@ -735,7 +735,7 @@ func main() {
 	// interface, not its loopback. This does NOT weaken "embedded, not an
 	// external API" - reachability is still entirely gated by whether
 	// whoever runs the container chooses to publish this port (or proxies
-	// it internally, as flowera's own control plane does), never by a
+	// it internally, as decurix's own control plane does), never by a
 	// public listener outside the VM.
 	addr := "0.0.0.0:" + cfg.Port
 	log.Printf("[soul] listening on http://%s", addr)

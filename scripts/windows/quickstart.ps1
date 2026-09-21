@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     One-shot: takes a fresh Windows checkout all the way to a running
-    Flowera dashboard.
+    Decurix dashboard.
 .DESCRIPTION
     Chains the two steps README.md documents as separate manual steps -
     scripts/windows/setup.ps1 (host dependencies, needs Administrator,
@@ -21,7 +21,7 @@ $ErrorActionPreference = "Stop"
 Set-Location (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
 
 Write-Host "========================================"
-Write-Host " Flowera quickstart"
+Write-Host " Decurix quickstart"
 Write-Host "========================================"
 Write-Host ""
 

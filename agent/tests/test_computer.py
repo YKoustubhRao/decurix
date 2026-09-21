@@ -1,5 +1,5 @@
 """
-Unit tests for the parts of flowera_agent.computer that need no screen: the
+Unit tests for the parts of decurix_agent.computer that need no screen: the
 approval gate's rules and its pending/grant store, and element refs and
 rendering. The screen-facing parts are exercised end to end by the GUI
 benchmark's oracle run (bench/gui/run.py --engine oracle).
@@ -11,8 +11,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from flowera_agent.computer import approval
-from flowera_agent.computer import elements as el
+from decurix_agent.computer import approval
+from decurix_agent.computer import elements as el
 
 
 def element(role, name, **extra):

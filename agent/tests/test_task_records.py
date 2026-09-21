@@ -10,7 +10,7 @@ import os
 import tempfile
 import unittest
 
-from flowera_agent import state, task_context, usage
+from decurix_agent import state, task_context, usage
 
 TASK = "t0123456789abcdef"
 

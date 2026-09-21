@@ -92,7 +92,7 @@ type RunContext struct {
 	// SelfStats and RecalledFacts.
 	System llm.Message
 	// WorkDir is where commands run and where a relative file path lands.
-	// The embedding host chooses it per request (a Flowera desktop's is
+	// The embedding host chooses it per request (a Decurix desktop's is
 	// /home/headless/work); empty means the workspace root.
 	WorkDir string
 	// Approved reports whether a human has already approved this exact

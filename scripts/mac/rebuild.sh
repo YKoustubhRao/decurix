@@ -1,14 +1,14 @@
 #!/bin/bash
 #
-# Rebuilds Flowera from a clean slate on macOS: no leftover desktop_*
-# containers or volumes, and an EMPTY app database (flowera-data: task
+# Rebuilds Decurix from a clean slate on macOS: no leftover desktop_*
+# containers or volumes, and an EMPTY app database (decurix-data: task
 # history, chat transcripts, query notes, worker memory). Images are
 # rebuilt with Docker's build cache. This is the "reinstall" script -
 # for "just start what I already have", use scripts/mac/build.sh instead.
 #
 # What is deliberately NOT wiped:
 #   - .env (your configuration - API keys, OLLAMA_URL/MODEL, etc.)
-#   - the flowera_ollama volume (downloaded models)
+#   - the decurix_ollama volume (downloaded models)
 #
 # Flags:
 #   -y, --yes   skip the confirmation prompt (for scripted/CI use)
@@ -41,15 +41,15 @@ for arg in "$@"; do
 done
 
 echo "========================================"
-echo " Flowera rebuild (clean slate)"
+echo " Decurix rebuild (clean slate)"
 echo "========================================"
 echo ""
 echo "This will permanently delete:"
 echo "  - every desktop_* container and volume"
-echo "  - the flowera-data volume: ALL task history, chats, query notes and"
+echo "  - the decurix-data volume: ALL task history, chats, query notes and"
 echo "    worker memory - this cannot be undone"
 echo ""
-echo "Kept as-is: .env, and the flowera_ollama volume (your pulled models)."
+echo "Kept as-is: .env, and the decurix_ollama volume (your pulled models)."
 echo ""
 
 if [ -z "$SKIP_CONFIRM" ]; then
@@ -68,7 +68,7 @@ fi
 cleanup() {
     echo ""
     stop_lan_tunnel
-    echo "=== Interrupted: stopping Flowera and its containers ==="
+    echo "=== Interrupted: stopping Decurix and its containers ==="
 
     docker compose down || true
 
@@ -78,7 +78,7 @@ cleanup() {
         echo "$containers" | xargs docker rm -f 2>/dev/null || true
     fi
 
-    docker rm -f flowera-ollama >/dev/null 2>&1 || true
+    docker rm -f decurix-ollama >/dev/null 2>&1 || true
 }
 
 trap 'cleanup; exit 130' INT TERM
@@ -93,7 +93,7 @@ if [ ! -f .env ]; then
 fi
 
 echo ""
-echo "=== Stopping Flowera ==="
+echo "=== Stopping Decurix ==="
 
 docker compose down
 
@@ -114,15 +114,15 @@ if [ -n "$vols" ]; then
 fi
 
 echo ""
-echo "=== Wiping the app database (flowera-data) ==="
+echo "=== Wiping the app database (decurix-data) ==="
 
-docker volume rm flowera-data >/dev/null 2>&1 \
+docker volume rm decurix-data >/dev/null 2>&1 \
     || echo "(nothing to remove)"
 
 echo ""
 echo "=== Removing the bundled Ollama container (keeping its model volume) ==="
 
-docker rm -f flowera-ollama >/dev/null 2>&1 \
+docker rm -f decurix-ollama >/dev/null 2>&1 \
     || echo "(nothing to remove)"
 
 export DOCKER_BUILDKIT=1
@@ -136,7 +136,7 @@ echo "=== Ensuring the desktops can reach Ollama ==="
 ensure_ollama_ready
 
 echo ""
-echo "=== Starting Flowera ==="
+echo "=== Starting Decurix ==="
 
 export_host_mounts
 docker compose up -d --build
@@ -146,28 +146,28 @@ echo "=== Waiting for dashboard ==="
 
 for i in {1..60}; do
     if curl -fsS http://127.0.0.1:8080/ >/dev/null 2>&1; then
-        echo "Flowera dashboard is running."
+        echo "Decurix dashboard is running."
         break
     fi
 
-    echo "Waiting for Flowera... ($i/60)"
+    echo "Waiting for Decurix... ($i/60)"
     sleep 2
 done
 
 if ! curl -fsS http://127.0.0.1:8080/ >/dev/null 2>&1; then
-    echo "ERROR: Flowera dashboard is not responding on port 8080."
+    echo "ERROR: Decurix dashboard is not responding on port 8080."
     docker compose logs --tail=100
     exit 1
 fi
 
 echo ""
 echo "========================================"
-echo " Flowera is running (clean slate)"
+echo " Decurix is running (clean slate)"
 echo "========================================"
 echo ""
-echo "Idle desktops stop automatically after 5 minutes (set FLOWERA_IDLE_STOP_MINUTES=0 in .env to disable, or to another number of minutes)."
+echo "Idle desktops stop automatically after 5 minutes (set DECURIX_IDLE_STOP_MINUTES=0 in .env to disable, or to another number of minutes)."
 
-lan_port="$(read_env_var FLOWERA_LAN_PORT)"
+lan_port="$(read_env_var DECURIX_LAN_PORT)"
 lan_port="${lan_port:-8090}"
 
 lan_ip="$(python3 -c 'import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(("1.1.1.1", 80)); print(s.getsockname()[0]); s.close()' 2>/dev/null || true)"
@@ -197,7 +197,7 @@ if command -v jq >/dev/null 2>&1; then
 
         if [ -n "$lan_url" ]; then
             echo ""
-            echo "Open it yourself without typing the code: $lan_url/__flowera_access/authenticate?code=$lan_code"
+            echo "Open it yourself without typing the code: $lan_url/__decurix_access/authenticate?code=$lan_code"
         fi
     fi
 fi
@@ -206,11 +206,11 @@ if [ -n "$CLI_MODE" ]; then
     trap - INT TERM
 
     echo ""
-    echo "=== Opening the Flowera CLI ==="
-    echo "(Flowera keeps running after you exit; 'exit' or Ctrl+D to leave.)"
+    echo "=== Opening the Decurix CLI ==="
+    echo "(Decurix keeps running after you exit; 'exit' or Ctrl+D to leave.)"
     echo ""
 
-    docker compose exec desktop-manager ./flowera --cli
+    docker compose exec desktop-manager ./decurix --cli
     exit $?
 fi
 
@@ -219,7 +219,7 @@ echo "=== Starting Cloudflare Tunnel ==="
 
 if ! command -v cloudflared >/dev/null 2>&1; then
     echo "cloudflared is not installed (tunnel skipped)."
-    echo "Flowera is still running locally at http://127.0.0.1:8080."
+    echo "Decurix is still running locally at http://127.0.0.1:8080."
     echo "Install via: brew install cloudflared"
     while true; do sleep 3600; done
 fi

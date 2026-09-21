@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="color-scheme" content="light dark">
-<title>Requests · Flowera</title>
+<title>Requests · Decurix</title>
 
 {{template "theme"}}
 
@@ -239,7 +239,7 @@
   var form = document.getElementById("composeForm");
   if(!form){ return; }
 
-  var toast = Flowera.toast, post = Flowera.post;
+  var toast = Decurix.toast, post = Decurix.post;
 
   var select = document.getElementById("desktop");
   var content = document.getElementById("content");
@@ -425,7 +425,7 @@
     }
 
     sendButton.disabled = true;
-    Flowera.busy(true);
+    Decurix.busy(true);
 
     try{
       if(repeating){
@@ -459,7 +459,7 @@
     }catch(e){
       toast(e.message, "error");
     }finally{
-      Flowera.busy(false);
+      Decurix.busy(false);
       sendButton.disabled = false;
     }
   });

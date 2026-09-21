@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/dag"
-	"github.com/YKoustubhRao/flowera/internal/desktop"
-	"github.com/YKoustubhRao/flowera/internal/memory"
-	"github.com/YKoustubhRao/flowera/internal/querynotes"
-	"github.com/YKoustubhRao/flowera/internal/tasks"
+	"github.com/YKoustubhRao/decurix/internal/dag"
+	"github.com/YKoustubhRao/decurix/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/memory"
+	"github.com/YKoustubhRao/decurix/internal/querynotes"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
 )
 
 // Every page is parsed out of the embedded FS and executed here so a broken
@@ -95,7 +95,7 @@ func TestRenderEveryPage(t *testing.T) {
 			DesktopID: running.ID,
 			VMName:    running.Name,
 			Filename:  "11092026120000.txt",
-			Content:   "FLOWERA QUERY REQUEST",
+			Content:   "DECURIX QUERY REQUEST",
 			CreatedAt: time.Now(),
 		}},
 	}

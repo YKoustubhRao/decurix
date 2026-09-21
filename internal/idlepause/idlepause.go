@@ -4,13 +4,13 @@
 // does the same for its sandboxes, for the same reason: a full desktop VM
 // costs real CPU and memory whether or not anyone is using it.
 //
-// On by default at a 5-minute threshold (see cmd/flowera/main.go's
-// idleStopThreshold, FLOWERA_IDLE_STOP_MINUTES); a non-positive Threshold -
+// On by default at a 5-minute threshold (see cmd/decurix/main.go's
+// idleStopThreshold, DECURIX_IDLE_STOP_MINUTES); a non-positive Threshold -
 // the explicit opt-out - makes Run a no-op. Even on, this package only ever
 // takes the same Stop a human could click themselves - never delete, never
 // anything a manual Stop does not already do (tasks.CloseOpen runs exactly
 // as it would for a manual stop, since it is the same desktop.Manager.Stop
-// call) - Flowera desktops are otherwise entirely user-managed
+// call) - Decurix desktops are otherwise entirely user-managed
 // (start/stop/restart/delete are the only other lifecycle transitions).
 package idlepause
 
@@ -20,7 +20,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/desktop"
 )
 
 // DesktopLister is what this package needs from desktop.Manager: list

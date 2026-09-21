@@ -8,12 +8,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/YKoustubhRao/flowera/internal/dag"
-	"github.com/YKoustubhRao/flowera/internal/desktop"
-	"github.com/YKoustubhRao/flowera/internal/memory"
-	"github.com/YKoustubhRao/flowera/internal/querynotes"
-	"github.com/YKoustubhRao/flowera/internal/tasks"
-	"github.com/YKoustubhRao/flowera/web"
+	"github.com/YKoustubhRao/decurix/internal/dag"
+	"github.com/YKoustubhRao/decurix/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/memory"
+	"github.com/YKoustubhRao/decurix/internal/querynotes"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
+	"github.com/YKoustubhRao/decurix/web"
 )
 
 // templatesDir is the directory inside web.TemplatesFS, not a host path — the
@@ -285,6 +285,6 @@ func (rd *Renderer) RenderHostGUI(w io.Writer, data HostGUIPageData) error {
 	return rd.hostGUITmpl.ExecuteTemplate(w, "hostgui.html", data)
 }
 
-// FaviconSVG is the Flowera brand mark, served as the control plane's favicon.
+// FaviconSVG is the Decurix brand mark, served as the control plane's favicon.
 // It is re-exported here so httpapi keeps reaching web assets through webui.
 var FaviconSVG = web.FaviconSVG

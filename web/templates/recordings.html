@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="color-scheme" content="light dark">
-<title>Recordings · {{.Desktop.Name}} · Flowera</title>
+<title>Recordings · {{.Desktop.Name}} · Decurix</title>
 
 {{template "theme"}}
 
@@ -211,7 +211,7 @@
   var list = document.getElementById("list");
   if(!list){ return; }
 
-  var toast = Flowera.toast, post = Flowera.post;
+  var toast = Decurix.toast, post = Decurix.post;
   var body = document.body;
   var desktopID = body.dataset.desktop;
   var detail = document.getElementById("detail");
@@ -304,13 +304,13 @@
   }
 
   async function demonstration(action, fields){
-    Flowera.busy(true);
+    Decurix.busy(true);
     try{
       var data = await post("/api/desktops/demonstration", Object.assign({id: desktopID, action: action}, fields || {}));
       showRecorder(data.demonstration);
       return data;
     }finally{
-      Flowera.busy(false);
+      Decurix.busy(false);
     }
   }
 

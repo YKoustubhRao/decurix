@@ -50,11 +50,11 @@ const (
 
 // perCoreGBps and minTokensPerSecond are the two speed estimates above, which
 // a machine that decodes faster or slower than assumed can correct without a
-// rebuild: FLOWERA_MODEL_CORE_GBPS and FLOWERA_MODEL_MIN_TPS.
-func perCoreGBps() float64 { return envFloat("FLOWERA_MODEL_CORE_GBPS", defaultPerCoreGBps) }
+// rebuild: DECURIX_MODEL_CORE_GBPS and DECURIX_MODEL_MIN_TPS.
+func perCoreGBps() float64 { return envFloat("DECURIX_MODEL_CORE_GBPS", defaultPerCoreGBps) }
 
 func minTokensPerSecond() float64 {
-	return envFloat("FLOWERA_MODEL_MIN_TPS", defaultMinTokensPerSecond)
+	return envFloat("DECURIX_MODEL_MIN_TPS", defaultMinTokensPerSecond)
 }
 
 func envFloat(key string, fallback float64) float64 {

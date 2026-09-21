@@ -10,12 +10,12 @@ it needs a display or a model - the engine is a function the test writes.
 import unittest
 from unittest import mock
 
-# Imported first: it stubs flowera_agent.config on a machine with no desktop.
+# Imported first: it stubs decurix_agent.config on a machine with no desktop.
 import test_skills as ts
 from test_recordings import FakeScreen, META, EVENTS, event, field
 
-from flowera_agent import skill_task, state
-from flowera_agent.computer import escalation, experience, healing, learning, replay, skills
+from decurix_agent import skill_task, state
+from decurix_agent.computer import escalation, experience, healing, learning, replay, skills
 
 PATH = 'site x > form "Order" > button "{}"'
 

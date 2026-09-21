@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# One-shot: takes a fresh Linux checkout all the way to a running Flowera
+# One-shot: takes a fresh Linux checkout all the way to a running Decurix
 # dashboard. Chains the two steps README.md documents as separate manual
 # steps - scripts/linux/setup.sh (host dependencies, needs root, skipped if
 # Docker is already installed) and scripts/linux/build.sh (build any missing
@@ -17,7 +17,7 @@ set -e
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 echo "========================================"
-echo " Flowera quickstart"
+echo " Decurix quickstart"
 echo "========================================"
 echo ""
 

@@ -3,7 +3,7 @@ package httpapi
 import (
 	"net/http"
 
-	"github.com/YKoustubhRao/flowera/internal/ollama"
+	"github.com/YKoustubhRao/decurix/internal/ollama"
 )
 
 // modelHandler serves GET /api/model: the chat model new desktops get, the

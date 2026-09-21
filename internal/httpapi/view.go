@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/YKoustubhRao/flowera/internal/desktop"
-	"github.com/YKoustubhRao/flowera/internal/ollama"
-	"github.com/YKoustubhRao/flowera/internal/webui"
+	"github.com/YKoustubhRao/decurix/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/ollama"
+	"github.com/YKoustubhRao/decurix/internal/webui"
 )
 
 // desktopViewHandler renders a single desktop's detail page: a Desktop/Agent

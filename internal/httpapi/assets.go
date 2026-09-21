@@ -3,10 +3,10 @@ package httpapi
 import (
 	"net/http"
 
-	"github.com/YKoustubhRao/flowera/internal/webui"
+	"github.com/YKoustubhRao/decurix/internal/webui"
 )
 
-// faviconHandler serves the embedded Flowera mark as the site favicon, which
+// faviconHandler serves the embedded Decurix mark as the site favicon, which
 // every page points at with <link rel="icon"> in the shared "theme" template.
 func (s *Server) faviconHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "image/svg+xml")
