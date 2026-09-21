@@ -38,9 +38,18 @@ if [ -f /opt/flowera-chromium.init ]; then
         || echo "[$(date)] could not install Chromium launch flags" >> "$LOG"
 fi
 
-# Pre-warm Chromium in the background only if explicitly requested, saving
-# ~300MB RAM and boot CPU on lightweight containers.
-if [ "$FLOWERA_PREWARM_CHROMIUM" = "1" ] && which chromium-browser >/dev/null 2>&1; then
+# Pre-warm Chromium: a browser that is already running opens an app window in
+# about a second instead of several, which is what a copied web app's icon
+# (ChatGPT, Claude, ...) needs - people click it again and again while nothing
+# seems to happen. Idle it costs ~170MB, so it is on when this desktop has such
+# icons (~/.local/share/applications/*-host.desktop, written before the
+# container starts) and off on a plain desktop. FLOWERA_PREWARM_CHROMIUM=1
+# forces it on, =0 forces it off. No window: the browser just waits.
+prewarm="${FLOWERA_PREWARM_CHROMIUM:-}"
+if [ -z "$prewarm" ] && ls "$HOME"/.local/share/applications/*-host.desktop >/dev/null 2>&1; then
+    prewarm=1
+fi
+if [ "$prewarm" = "1" ] && which chromium-browser >/dev/null 2>&1; then
     setsid chromium-browser --no-startup-window >> /tmp/chromium-prewarm.log 2>&1 < /dev/null &
     echo "[$(date)] Chromium pre-warmed in background (pid $!)" >> "$LOG"
 fi

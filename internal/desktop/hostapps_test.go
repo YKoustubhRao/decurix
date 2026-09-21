@@ -474,7 +474,7 @@ func TestPackDynamicAppWebAppMode(t *testing.T) {
 	if !foundWrapper {
 		t.Fatal("expected .local/bin/claude-host to be packed")
 	}
-	if !strings.Contains(wrapperContent, `chromium-browser --app="https://claude.ai"`) {
+	if !strings.Contains(wrapperContent, `APP='https://claude.ai'`) || !strings.Contains(wrapperContent, `--app="$APP"`) {
 		t.Errorf("expected wrapper to use chromium-browser --app mode for Claude, got:\n%s", wrapperContent)
 	}
 }
