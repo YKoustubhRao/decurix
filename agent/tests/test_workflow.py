@@ -135,6 +135,11 @@ def front_matter(markdown):
 class SkillMarkdown(unittest.TestCase):
 
     def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        previous_root = skills.ROOT
+        self.addCleanup(setattr, skills, "ROOT", previous_root)
+        skills.ROOT = Path(tmp.name)
         self.skill = learning.build([demo("demo-20260914T101500-aaaaaa", "Acme", banner=True),
                                      demo("demo-20260914T101600-bbbbbb", "Globex")])
         self.skill["status"] = "ready"

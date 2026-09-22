@@ -118,6 +118,25 @@ func TestStoreEvictsTheOldestImagesPastItsBound(t *testing.T) {
 	}
 }
 
+func TestImageLargerThanBudgetDoesNotEvictExistingImages(t *testing.T) {
+	small, large := testPNG(t, 1, 1), testPNG(t, 256, 256)
+	probe := newStore(t, 0)
+	if _, err := probe.Put("box", small); err != nil {
+		t.Fatal(err)
+	}
+	store := newStore(t, probe.size)
+	id, err := store.Put("box", small)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Put("box", large); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("got %v, want ErrTooLarge", err)
+	}
+	if _, ok := store.Get(id); !ok {
+		t.Fatal("oversized image evicted the existing screenshot")
+	}
+}
+
 // A task record's screenshots are its evidence; they must outlive a restart,
 // and the byte bound must still hold across one.
 func TestImagesSurviveReopen(t *testing.T) {

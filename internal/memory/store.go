@@ -45,6 +45,7 @@ var schema = []string{
 		created_ns INTEGER NOT NULL,
 		PRIMARY KEY (worker_a, worker_b)
 	)`,
+	`CREATE INDEX IF NOT EXISTS worker_memory_desktop_title ON worker_memory (desktop_id, title)`,
 }
 
 // Store is a SQLite-backed collection of WorkerMemoryEntry, keyed by desktop ID.
@@ -76,6 +77,8 @@ const (
 // Record validates and stores a new worker memory entry. It does not persist
 // the entry to a desktop container — callers that need that should follow up
 // with FormatForDesktopFile and the desktop package's PersistMemoryFile.
+// If an identical (desktop_id, title, summary) entry already exists, its timestamp
+// and category are refreshed and the existing entry is returned to prevent prompt bloat.
 func (s *Store) Record(desktopID, title, summary, category string) (WorkerMemoryEntry, error) {
 	if strings.TrimSpace(desktopID) == "" {
 		return WorkerMemoryEntry{}, fmt.Errorf("%w: desktop_id is required", ErrInvalid)
@@ -108,6 +111,35 @@ func (s *Store) Record(desktopID, title, summary, category string) (WorkerMemory
 		Summary:   summary,
 		Category:  category,
 		CreatedAt: time.Now().UTC(),
+	}
+
+	// Deduplicate: if an entry with identical desktop_id, title, and summary already exists,
+	// refresh its timestamp and category instead of creating a duplicate row and token tax.
+	var existing WorkerMemoryEntry
+	var createdNS int64
+	err := s.db.QueryRow(
+		`SELECT id, category, created_ns FROM worker_memory
+		 WHERE desktop_id = ? AND title = ? AND summary = ?
+		 LIMIT 1`,
+		entry.DesktopID, entry.Title, entry.Summary,
+	).Scan(&existing.ID, &existing.Category, &createdNS)
+
+	if err == nil {
+		existing.DesktopID = entry.DesktopID
+		existing.Title = entry.Title
+		existing.Summary = entry.Summary
+		existing.Category = entry.Category
+		existing.CreatedAt = entry.CreatedAt
+
+		if _, updateErr := s.db.Exec(
+			`UPDATE worker_memory SET created_ns = ?, category = ? WHERE id = ?`,
+			sqlitedb.ToNS(existing.CreatedAt), existing.Category, existing.ID,
+		); updateErr != nil {
+			return WorkerMemoryEntry{}, fmt.Errorf("memory: updating existing entry: %w", updateErr)
+		}
+		return existing, nil
+	} else if err != sql.ErrNoRows {
+		return WorkerMemoryEntry{}, fmt.Errorf("memory: checking existing entry: %w", err)
 	}
 
 	if _, err := s.db.Exec(

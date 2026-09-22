@@ -133,3 +133,40 @@ func TestStoreLinkRejectsSelfAndEmpty(t *testing.T) {
 		t.Fatal("expected an error linking to an empty desktop ID")
 	}
 }
+
+func TestStoreRecordDeduplication(t *testing.T) {
+	db, err := sqlitedb.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	s, err := NewStore(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entry1, err := s.Record("desktop-1", "Deploy Script", "Run ./deploy.sh to push production code.", "workflow")
+	if err != nil {
+		t.Fatalf("first Record failed: %v", err)
+	}
+
+	// Record exact duplicate
+	entry2, err := s.Record("desktop-1", "Deploy Script", "Run ./deploy.sh to push production code.", "decision")
+	if err != nil {
+		t.Fatalf("second Record failed: %v", err)
+	}
+
+	if entry1.ID != entry2.ID {
+		t.Fatalf("expected duplicate record to reuse ID %q, got %q", entry1.ID, entry2.ID)
+	}
+
+	if entry2.Category != "decision" {
+		t.Fatalf("expected category to update to %q, got %q", "decision", entry2.Category)
+	}
+
+	list := s.List("desktop-1")
+	if len(list) != 1 {
+		t.Fatalf("expected exactly 1 record after deduplication, got %d", len(list))
+	}
+}
