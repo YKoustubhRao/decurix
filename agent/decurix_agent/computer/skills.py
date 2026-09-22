@@ -181,7 +181,7 @@ def _program(skill, steps, params):
         "kind": "skill",
         "params": [
             {"name": p["name"], "label": p["label"], "default": p.get("default"), "secret": False,
-             "reason": None, "step": p["step"]}
+             "reason": None, "step": p["step"], "constraint": p.get("constraint"), "example": p.get("example")}
             for p in params
         ],
         "steps": steps,

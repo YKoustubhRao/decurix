@@ -69,6 +69,18 @@ func (s *Server) skillAPIHandler(w http.ResponseWriter, r *http.Request) {
 	s.callAgent(w, r, id, http.MethodGet, "/skills/"+name, nil, true)
 }
 
+// skillExportHandler hands out a skill as a SKILL.md - the Agent Skills format, with
+// the taught task's intent, its routes and its GUI replay hints - which any agent
+// that reads skills can be given.
+func (s *Server) skillExportHandler(w http.ResponseWriter, r *http.Request) {
+	id, name, ok := requireSkill(w, r, http.MethodGet)
+	if !ok {
+		return
+	}
+
+	s.callAgent(w, r, id, http.MethodGet, "/skills/"+name+"/skill.md", nil, true)
+}
+
 // skillDeleteHandler forgets a skill. The recordings it was taught from are
 // untouched.
 func (s *Server) skillDeleteHandler(w http.ResponseWriter, r *http.Request) {

@@ -45,6 +45,12 @@ func TestRecordingsRejectBadRequestsBeforeReachingADesktop(t *testing.T) {
 		{"ticket action by get", get(s.ticketActionHandler, "id=box&action=begin"), http.StatusMethodNotAllowed},
 		{"ticket note with no text", postForm(t, s.ticketActionHandler, "/x", "id=box&action=note"), http.StatusBadRequest},
 		{"ticket note with blank text", postForm(t, s.ticketActionHandler, "/x", "id=box&action=note&text=+++"), http.StatusBadRequest},
+		{"import with no file", postForm(t, s.recordingImportHandler, "/x", "id=box"), http.StatusBadRequest},
+		{"import that is not JSON", postForm(t, s.recordingImportHandler, "/x", "id=box&data=not+json"), http.StatusBadRequest},
+		{"import that is a bare number", postForm(t, s.recordingImportHandler, "/x", "id=box&data=1"), http.StatusBadRequest},
+		{"import too large", postForm(t, s.recordingImportHandler, "/x", "id=box&data=%7B%22a%22%3A%22"+strings.Repeat("x", maxImportBytes)+"%22%7D"), http.StatusBadRequest},
+		{"import by get", get(s.recordingImportHandler, "id=box&data=%7B%7D"), http.StatusMethodNotAllowed},
+		{"import with no desktop", postForm(t, s.recordingImportHandler, "/x", "data=%7B%7D"), http.StatusBadRequest},
 	}
 
 	for _, c := range cases {

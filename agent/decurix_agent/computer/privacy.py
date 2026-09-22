@@ -130,6 +130,24 @@ def credential_in(text):
     return None
 
 
+# A credential written out in a sentence: `the password "Ttlh"`, `pin: '1234'`. A task's
+# own words often carry one, and a recording's title and description are shown to
+# anyone who opens the page and exported with it.
+SPOKEN_SECRET = re.compile(
+    r"(?i)\b(?:pass(?:word|code|phrase)|secret|token|api[ _-]?key|pin|otp|cvv2?)\b[^\"'\u201c\u2018\n]{0,20}?"
+    r"[\"'\u201c\u2018]([^\"'\u201d\u2019\n]{1,200})[\"'\u201d\u2019]"
+)
+
+
+def withhold_spoken_secrets(text):
+    """`text` with any credential it spells out replaced by [withheld]."""
+
+    if not text:
+        return text
+
+    return SPOKEN_SECRET.sub(lambda m: m.group(0).replace(m.group(1), "[withheld]"), text)
+
+
 def withhold_text(element, text):
     """
     What of typed text may be kept: (text, None), or (None, why not) when it
