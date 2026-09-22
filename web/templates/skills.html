@@ -231,7 +231,13 @@
     var runBtn = button("Run", "btn-primary", "play");
     var stepsBtn = button("Steps", "btn-default");
     var deleteBtn = button("Delete", "btn-danger", "trash");
-    actions.append(runBtn, stepsBtn, deleteBtn);
+    var exportLink = node("a", "btn btn-sm btn-default");
+    exportLink.href = "/api/desktops/skills/export?" + query({name: skill.name});
+    exportLink.setAttribute("download", skill.name + "-SKILL.md");
+    exportLink.title = "A SKILL.md any agent that reads skills can be given: what is done, the routes, and how each step is found again";
+    exportLink.appendChild(icon("download"));
+    exportLink.appendChild(document.createTextNode("SKILL.md"));
+    actions.append(runBtn, stepsBtn, exportLink, deleteBtn);
     head.appendChild(actions);
     card.appendChild(head);
 

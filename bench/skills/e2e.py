@@ -213,29 +213,45 @@ def run():
     print("$ gui verify --text 'Saved Initech' ->", v.returncode, v.stdout.strip()[:200])
     assert v.returncode == 0, "the real page does not show what the skill typed"
 
-    # ---- the form changed: it must ask, and remember the correction ----
-    print("\n== the Save button is renamed; the skill must ask instead of guessing")
+    # ---- the form changed ----
+    # A rename the healing ladder is sure of ("Save" -> "Save changes": same words, same
+    # place, same neighbours) is repaired without a question, and says so.
+    print("\n== the Save button is renamed to something plainly the same; the skill heals it and says so")
     bash("sed -i 's/>Save</>Save changes</' ~/work/form.html")
     before = len(replies())
     send('/skill add-a-customer customer_name="Umbrella"', "t00000000000000d1")
+    healed = wait_reply(before + 1, timeout=180)
+    show("result", healed)
+    assert healed["kind"] == "final" and "repaired step 3" in healed["reply"], "the rename was not healed"
+
+    v = bash("gui verify --text 'Saved Umbrella'", check=False)
+    print("$ gui verify --text 'Saved Umbrella' ->", v.returncode)
+    assert v.returncode == 0
+
+    # One it cannot be sure of ("Save changes" -> "Go": nothing in common) is a question,
+    # not a guess - and what the person answers is remembered only because it then worked.
+    print("\n== the button is renamed to something it cannot recognise; the skill must ask instead of guessing")
+    bash("sed -i 's/>Save changes</>Go</' ~/work/form.html")
+    before = len(replies())
+    send('/skill add-a-customer customer_name="Wayne"', "t00000000000000e1")
     stuck = wait_reply(before + 1, timeout=180)
     show("it asks", stuck)
     assert stuck["kind"] == "query" and "is not on the screen" in stuck["reply"]
 
-    send('use "Save changes"', "t00000000000000d2")
+    send('use "Go"', "t00000000000000e2")
     fixed = wait_reply(before + 2, timeout=180)
     show("result", fixed)
     assert fixed["kind"] == "final" and "remembered" in fixed["reply"]
 
-    v = bash("gui verify --text 'Saved Umbrella'", check=False)
-    print("$ gui verify --text 'Saved Umbrella' ->", v.returncode)
+    v = bash("gui verify --text 'Saved Wayne'", check=False)
+    print("$ gui verify --text 'Saved Wayne' ->", v.returncode)
     assert v.returncode == 0
 
     skill = json.loads(subprocess.run(["docker", "exec", NAME, "cat", "/home/headless/.decurix/skills/add-a-customer.json"],
                                       capture_output=True, text=True).stdout)
     save = [s for s in skill["steps"] if s.get("target", {}).get("role") == "button"][0]
     print("skill now: version", skill["version"], "| runs", skill["runs"], "| button:", save["target"]["name"], "| learned:", skill["learned"])
-    assert save["target"]["name"] == "Save changes" and skill["version"] == 2
+    assert save["target"]["name"] == "Go" and skill["version"] >= 2
 
     # ---- what an engine sees ----
     print("\n== gui skills / gui skill")

@@ -4,7 +4,7 @@ import re
 import time
 
 from decurix_agent.computer import elements as el
-from decurix_agent.computer import replay, skills
+from decurix_agent.computer import constraints, replay, skills
 
 
 # ============================================================
@@ -308,6 +308,7 @@ def _generalise(steps, demos):
             # None: not asked yet.
             "varies": varies,
             "step": step["n"],
+            "constraint": constraints.infer(step["label"], (step.get("target") or {}).get("role"), samples[0]),
         })
         step["summary"] = replay._summary(step)
 

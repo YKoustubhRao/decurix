@@ -141,6 +141,47 @@ func (s *Server) recordingUpdateHandler(w http.ResponseWriter, r *http.Request) 
 	s.callAgent(w, r, id, http.MethodPost, "/recordings/"+session+"/update", payload, true)
 }
 
+// maxImportBytes bounds a recording uploaded to be imported: the desktop's
+// agent reads one request body of at most a mebibyte, and the export is only
+// part of it.
+const maxImportBytes = 900 * 1024
+
+// recordingImportHandler saves a recording made somewhere else (a Chrome
+// DevTools Recorder export, a BrowserGym trajectory or an OpenHands event list, as JSON) on a desktop as a demonstration of its
+// own, which it can then replay, teach from and lint like one recorded there.
+// The file is only checked for being a JSON object here; what is in it is the
+// agent's to read (computer/ingest.py), and its reasons for refusing one reach
+// the person as they are.
+func (s *Server) recordingImportHandler(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireDesktop(w, r, http.MethodPost)
+	if !ok {
+		return
+	}
+
+	raw := strings.TrimSpace(r.FormValue("data"))
+
+	switch {
+	case raw == "":
+		jsonStatusError(w, http.StatusBadRequest, "choose a recording to import")
+		return
+	case len(raw) > maxImportBytes:
+		jsonStatusError(w, http.StatusBadRequest, "that recording is too large to import")
+		return
+	case (raw[0] != '{' && raw[0] != '[') || !json.Valid([]byte(raw)):
+		// An object (a Chrome Recorder export, a BrowserGym trajectory) or a list (an
+		// OpenHands trajectory's events); which one it is is the agent's to say.
+		jsonStatusError(w, http.StatusBadRequest, "that is not a JSON recording")
+		return
+	}
+
+	title := strings.TrimSpace(r.FormValue("title"))
+	if len(title) > 200 {
+		title = title[:200]
+	}
+
+	s.callAgent(w, r, id, http.MethodPost, "/recordings/import", map[string]any{"title": title, "data": json.RawMessage(raw)}, true)
+}
+
 // recordingDeleteHandler deletes a recording from its desktop.
 func (s *Server) recordingDeleteHandler(w http.ResponseWriter, r *http.Request) {
 	id, session, ok := requireRecording(w, r, http.MethodPost)

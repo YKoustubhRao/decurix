@@ -5,7 +5,7 @@ import urllib.parse
 from datetime import date
 
 from decurix_agent import progress
-from decurix_agent.computer import approval, audit, core, privacy, recording, volatility
+from decurix_agent.computer import approval, audit, constraints, core, privacy, recording, visual, volatility
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 
@@ -25,7 +25,10 @@ from decurix_agent.computer.errors import ComputerError
 # - a step's target is found again as an element - by its path, then by role
 #   and name - and never guessed: no candidate, or two, halts the run
 # - coordinates are used only for a step recorded without an element, on a
-#   screen of the same size, in the same window
+#   screen of the same size, in the same window - and, when the recording kept
+#   a picture of what was around the click (a "look", visual.py), only where
+#   that picture still is: found again nearby it is clicked there, and not
+#   found, or found in two places, it halts
 # - after each step, what it left on the screen when it was recorded (a page,
 #   a window, a dialog) has to appear; text that names a moment or a count is
 #   never checked (volatility.py)
@@ -60,6 +63,16 @@ REPLAYABLE = {"click", "double_click", "right_click", "type", "key", "scroll", "
 CHECKED_ROLES = {"dialog": 0, "alert": 0, "heading": 1, "status": 2,
                  "tab": 3, "button": 4, "link": 4, "textbox": 4, "menuitem": 4}
 MAX_ELEMENT_CHECKS = 2
+
+# The clicks a picture of the surroundings is kept for.
+LOOK_KINDS = {"click", "double_click", "right_click"}
+
+# Steps that act on a control, as opposed to typing into whatever has focus or pressing a key.
+NEEDS_TARGET = {"click", "double_click", "right_click", "select", "drag"}
+
+# What a control known only by its label may be: things a person acts on.
+ACTIVATING_ROLES = {"button", "link", "menuitem", "tab", "checkbox", "radio", "switch", "combobox",
+                    "textbox", "searchbox", "spinbutton", "option", "listitem", "treeitem", "cell"}
 MAX_WINDOW_CHECKS = 2
 
 TITLE_SPLIT = re.compile(r"\s[-–—|]\s")
@@ -79,7 +92,29 @@ def load_program(session_id):
     return meta, compile_program(meta, events)
 
 
-def compile_program(meta, events):
+class _Frames:
+    """A recording's saved frames, read as PNG bytes (each one once)."""
+
+    def __init__(self, session_id):
+        self.session_id = session_id
+        self._seen = {}
+
+    def png(self, ref):
+        name = str(ref or "").rsplit("/", 1)[-1]
+
+        if name not in self._seen:
+            data = None
+            try:
+                path = recording.frame_file(self.session_id, name)
+                data = path.read_bytes() if path else None
+            except (OSError, ValueError):
+                pass
+            self._seen[name] = data
+
+        return self._seen[name]
+
+
+def compile_program(meta, events, frames=None):
     """
     A recording as a program: {"session", "title", "kind", "params", "steps"}.
 
@@ -92,6 +127,7 @@ def compile_program(meta, events):
     """
 
     reference = date.fromtimestamp(meta.get("started_at") or time.time())
+    frames = frames or _Frames(meta.get("id"))
     steps = []
     params = []
     used = set()
@@ -111,13 +147,32 @@ def compile_program(meta, events):
         element = event.get("element") or {}
         step = {"n": len(steps) + 1, "event": event.get("i"), "kind": kind, "actor": event.get("actor") or "agent"}
 
-        if element.get("role") or element.get("path"):
-            step["target"] = {key: element[key] for key in ("role", "name", "path", "window_title", "source")
+        # A control a recording knew only by its label (one imported from a
+        # tool that saw the page's accessible names, ingest.py) is still a target:
+        # it is found by that name alone, and never guessed between.
+        if element.get("role") or element.get("path") or element.get("name"):
+            step["target"] = {key: element[key] for key in ("role", "name", "path", "window_title", "source", "nth")
                               if element.get(key) is not None}
 
         for key in ("point", "end", "keys", "option", "direction", "amount", "append"):
             if event.get(key) not in (None, [], ""):
                 step[key] = event[key]
+
+        # A click on something the screen exposed no element for is a
+        # coordinate, and a coordinate alone says nothing about what is there
+        # now. A picture of what was around it, taken from the frame it was
+        # made on, lets the replay check.
+        if kind in LOOK_KINDS and step.get("point") and "target" not in step and event.get("before"):
+            png = frames.png(event["before"])
+            look = visual.make_look(png, step["point"], event.get("screen") or meta.get("screen")) if png else None
+            if look:
+                step["look"] = look
+
+        # A step an importer could not tie to a control (it named one by a number, or a CSS
+        # selector, and nothing said what that was). It is not "type into whatever has
+        # focus": that is a different step, and this one meant a particular field.
+        if (event.get("imported") or {}).get("why"):
+            step["unresolved"] = event["imported"]["why"]
 
         if kind == "open":
             step["open"] = event.get("target") or ""
@@ -127,7 +182,9 @@ def compile_program(meta, events):
             step["reason"] = event.get("reason") or "a private step"
 
         if kind == "type":
-            label = element.get("name") or ""
+            # A field with no name (a login form's two boxes) is called by the label
+            # beside it, as a person would: "Username".
+            label = element.get("name") or element.get("hint") or ""
             withheld = (event.get("withheld") or {}).get("text")
             secret = bool(withheld or element.get("secret"))
             step["param"] = _param_name(label, used)
@@ -138,10 +195,17 @@ def compile_program(meta, events):
                 "secret": secret,
                 "reason": withheld or element.get("secret"),
                 "step": step["n"],
+                # What the field takes, checked against the value a run is given.
+                "constraint": None if secret else constraints.infer(label, element.get("role"), event.get("text")),
             })
 
         context = {"window": event.get("window") or "", "url": event.get("url") or ""}
-        gated = approval.assess(kind, element if element.get("role") else None, text=event.get("text"),
+        gate_element = element if element.get("role") else None
+        if gate_element is None and kind in LOOK_KINDS and element.get("name"):
+            # Known by its label only: judged as the button it is almost always.
+            gate_element = {"role": "button", "name": element["name"]}
+
+        gated = approval.assess(kind, gate_element, text=event.get("text"),
                                 keys=event.get("keys"), context=context)
         step["consequential"] = bool(event.get("approved")) or gated is not None
 
@@ -492,10 +556,24 @@ def resolve(step, observation):
                 return exact[0], None, None
 
         role, name = target.get("role"), target.get("name")
-        what = f"{role or 'element'} {el._quote(name or '')}"
+        nth = target.get("nth")
+        what = f"{role or 'element'} {el._quote(name or '')}" + (f" (#{nth})" if nth else "")
 
-        if role:
-            matches = [e for e in elements if e.get("role") == role and _norm(e.get("name")) == _norm(name)]
+        if role or name:
+            matches = [e for e in elements
+                       if (not role or e.get("role") == role) and _norm(e.get("name")) == _norm(name)]
+
+            # By its label alone, a heading or a paragraph reading the same is
+            # not the control that was meant - not merely a worse candidate.
+            if not role:
+                matches = [e for e in matches if e.get("role") in ACTIVATING_ROLES]
+
+            # A recording that could not name a control (two `textbox ''` in a login
+            # form) says which one it was by its place among those that look the
+            # same. That is a rule of the target, not a guess of the replay's - and
+            # it is exactly as good as the page's order staying as it was.
+            if nth:
+                matches = matches[nth - 1:nth] if isinstance(nth, int) and nth >= 1 else []
 
             narrowers = [
                 lambda e: "offscreen" not in (e.get("states") or []),
@@ -523,6 +601,20 @@ def resolve(step, observation):
         window = _stable_title(step.get("window"))
         if window and not title_matches(window, observation.get("active_title") or ""):
             return None, None, f"the step was recorded as a point in {el._quote(window, 60)}, which is not in front"
+
+        if step.get("look") and observation.get("frame") is not None:
+            seen = visual.find(step["look"], observation["frame"])
+            observation.setdefault("visual", {})[step.get("n")] = seen
+
+            if seen["status"] == visual.MISSING:
+                return None, None, ("what was around the click when it was recorded is not on the screen "
+                                    "(it looks different, or has moved too far), so a replay does not click there")
+            if seen["status"] == visual.AMBIGUOUS:
+                return None, None, (f"{seen['matches']} places on the screen look like what was clicked, "
+                                    "and a replay does not guess which")
+            if seen["status"] == visual.FOUND:
+                return None, seen["point"], None
+
         return None, point, None
 
     return None, None, "the recording has nothing to find this step's target by"
@@ -548,7 +640,7 @@ def _find(step, ladder=None):
         if time.monotonic() >= deadline:
             # Two candidates is not "not there": a replay does not guess
             # between them, and neither may an optional step.
-            missing = "elements match" not in reason
+            missing = "does not guess" not in reason
 
             if ladder is not None:
                 repair = ladder.recover(step, observation, reason)
@@ -561,11 +653,14 @@ def _find(step, ladder=None):
         time.sleep(POLL_SECONDS)
 
 
-def _run_step(step, values, ladder=None):
+def _run_step(step, values, ladder=None, report=None):
     kind = step["kind"]
 
     if kind not in REPLAYABLE:
         raise _Halt(f"a replay cannot {kind.replace('_', ' ')}")
+
+    if step.get("unresolved"):
+        raise _Halt(f"the recording names a control it cannot identify: {step['unresolved']}")
 
     try:
         if kind == "open":
@@ -573,9 +668,20 @@ def _run_step(step, values, ladder=None):
             return {"status": "done", "observation": None}
 
         target = {}
+        if kind in NEEDS_TARGET and not (step.get("target") or step.get("point")):
+            # Nothing is clicked on a hope: a step recorded with neither a
+            # control nor a position (an import that only had a CSS selector)
+            # stops the run before it acts.
+            raise _Halt("the recording has nothing to find this step's target by")
+
         if step.get("target") or step.get("point"):
             element, point, seen, repair = _find(step, ladder)
             target = {"path": element["path"]} if element is not None else {"point": tuple(point)}
+
+            seen_look = (seen.get("visual") or {}).get(step.get("n")) if element is None else None
+            if seen_look and seen_look["status"] == visual.FOUND and seen_look["offset"] != (0, 0):
+                (report or progress.emit)(f"Step {step['n']}: what was clicked has moved {seen_look['offset'][0]:+d},"
+                              f"{seen_look['offset'][1]:+d} px since it was recorded - clicking where it is now")
 
             if ladder is not None and element is not None:
                 if repair:
@@ -670,6 +776,15 @@ def run(program, params=None, start=1, report=None, ladder=None):
         return finish(HALTED_BEFORE_EFFECT, first, resume_from=start,
                       reason=f"it needs {needed}, which the recording did not keep - give it when starting the replay")
 
+    # A value the field cannot take is refused now, not typed into it.
+    wrong = constraints.violations([p for p in program.get("params") or [] if p["step"] >= start and p["name"] in given],
+                                   given)
+    if wrong:
+        param, why = wrong[0]
+        first = next(s for s in steps if s["n"] == param["step"])
+        return finish(HALTED_BEFORE_EFFECT, first, resume_from=start,
+                      reason=f"the value for {param['label']} ({param['name']}) is wrong: {why}")
+
     for step in steps:
         if step["n"] < start:
             continue
@@ -681,7 +796,7 @@ def run(program, params=None, start=1, report=None, ladder=None):
 
         audit.origin = {"session": program.get("session"), "step": step["n"]}
         try:
-            result = _run_step(step, values, ladder)
+            result = _run_step(step, values, ladder, report)
         except _Halt as halt:
             # An optional step (a skill learned that it only sometimes
             # happens) that is not on the screen simply did not happen this
@@ -828,6 +943,20 @@ def render_text(meta, program, budget=3500):
             else:
                 described.append(f"{param['name']} (recorded as {el._quote(param['default'] or '', 40)})")
         lines.append("Parameters: " + ", ".join(described))
+
+    # What an engine should know before it chooses to replay this (lint.py and
+    # workflow.py read this module, so they are imported here rather than above).
+    from decurix_agent.computer import lint, workflow
+
+    parts = workflow.build(program)
+    if len(parts) > 1:
+        lines.append("Parts: " + " | ".join(
+            f"{p['n']}. {p['place']} (steps {p['first']}-{p['last']})"
+            + (f", done when {p['done_when'][0]}" if p["done_when"] else "") for p in parts))
+
+    verdict = lint.lint(program)
+    if verdict["grade"] != lint.READY:
+        lines.append(el._quote(f"Readiness: {verdict['grade']}. {verdict['summary']}", 320))
 
     secrets = "".join(f' --param {p["name"]}="..."' for p in program["params"] if p["secret"])
     footer = f"Run it with no model: gui replay {program['session']}{secrets} [--param name=value] [--from N]"
