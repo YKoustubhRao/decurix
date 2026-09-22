@@ -9,10 +9,13 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/docker/docker/client"
@@ -320,9 +323,12 @@ func main() {
 
 	server.HostGUISecret = hostGUISecret
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	resMon := resourcemon.NewMonitor(desktops)
 	server.ResourceMon = resMon
-	go resMon.Run(context.Background())
+	go resMon.Run(ctx)
 
 	// internal/dag's Runner needs Server itself as its Submitter
 	// (SubmitTracked, which - unlike Submit - hands back the task ID a node's
@@ -330,7 +336,7 @@ func main() {
 	// it rather than passed through NewServer.
 	dagRunner := &dag.Runner{Store: dags, Submitter: server, Tasks: tasksStore}
 	server.DagRunner = dagRunner
-	go dagRunner.Run(context.Background())
+	go dagRunner.Run(ctx)
 
 	mux := http.NewServeMux()
 	server.RegisterRoutes(mux)
@@ -348,10 +354,23 @@ func main() {
 
 	lanAddr := lanListenAddr()
 
+	var srvMu sync.Mutex
+	var activeServers []*http.Server
+
+	lanServer := &http.Server{
+		Addr:              lanAddr,
+		Handler:           lanAccess.Middleware(httpapi.GzipMiddleware(lanMux)),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	srvMu.Lock()
+	activeServers = append(activeServers, lanServer)
+	srvMu.Unlock()
+
 	go func() {
 		log.Printf("LAN/tunnel listener on %s (access code: %s)", lanAddr, lanAccess.Password())
 
-		if err := http.ListenAndServe(lanAddr, lanAccess.Middleware(httpapi.GzipMiddleware(lanMux))); err != nil {
+		if err := lanServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("warning: LAN/tunnel listener failed: %v", err)
 		}
 	}()
@@ -360,12 +379,12 @@ func main() {
 	// the same drop-every-session rotation the Mobile menu's "New code"
 	// button triggers by hand - see RunAutoRotate's doc for why it waits out
 	// the first interval rather than rotating immediately.
-	go lanAccess.RunAutoRotate(context.Background(), lanaccess.AutoRotateInterval)
+	go lanAccess.RunAutoRotate(ctx, lanaccess.AutoRotateInterval)
 
 	// IMPORTANT:
 	// Ollama initialization must not block the HTTP server.
 	go func() {
-		if err := ollamaManager.EnsureReady(context.Background()); err != nil {
+		if err := ollamaManager.EnsureReady(ctx); err != nil {
 			log.Printf("warning: Ollama initialization failed: %v", err)
 			return
 		}
@@ -392,13 +411,13 @@ func main() {
 
 	checker := &idlepause.Checker{Desktops: desktops, Tasks: tasksStore, Threshold: idleThreshold, Action: idleAction}
 	server.IdleChecker = checker
-	go checker.Run(context.Background())
+	go checker.Run(ctx)
 
 	// Fires each recurring request set up on the requests page when its cron
 	// expression next matches, through the same path a one-off Send takes
 	// (Server.Submit). See internal/schedule's package doc.
 	scheduler := &schedule.Runner{Store: schedules, Submitter: server}
-	go scheduler.Run(context.Background())
+	go scheduler.Run(ctx)
 
 	addrs := primaryListenAddrs(func() []string {
 		// Only Linux has Docker's bridge gateways as addresses of its own to bind. On macOS and Windows Docker runs in
@@ -407,7 +426,7 @@ func main() {
 		if runtime.GOOS != "linux" {
 			return nil
 		}
-		return desktops.GatewayIPs(context.Background())
+		return desktops.GatewayIPs(ctx)
 	})
 	log.Printf("Desktop manager listening on %s", strings.Join(addrs, ", "))
 
@@ -422,14 +441,43 @@ func main() {
 	}
 
 	for _, addr := range addrs[1:] {
-		go func(addr string) {
-			if err := newServer(addr).ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				log.Printf("warning: primary listener on %s failed: %v", addr, err)
+		s := newServer(addr)
+		srvMu.Lock()
+		activeServers = append(activeServers, s)
+		srvMu.Unlock()
+		go func(srv *http.Server, a string) {
+			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("warning: primary listener on %s failed: %v", a, err)
 			}
-		}(addr)
+		}(s, addr)
 	}
 
-	if err := newServer(addrs[0]).ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	primarySrv := newServer(addrs[0])
+	srvMu.Lock()
+	activeServers = append(activeServers, primarySrv)
+	srvMu.Unlock()
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		var wg sync.WaitGroup
+		srvMu.Lock()
+		toShutdown := append([]*http.Server(nil), activeServers...)
+		srvMu.Unlock()
+
+		for _, s := range toShutdown {
+			wg.Add(1)
+			go func(srv *http.Server) {
+				defer wg.Done()
+				_ = srv.Shutdown(shutdownCtx)
+			}(s)
+		}
+		wg.Wait()
+	}()
+
+	if err := primarySrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
 }

@@ -90,6 +90,9 @@ class Handler(BaseHTTPRequestHandler):
     def _body(self):
         length = int(self.headers.get("Content-Length", "0") or "0")
 
+        if length < 0:
+            raise ValueError("invalid content length")
+
         if length > MAX_BODY:
             raise ValueError("request too large")
 

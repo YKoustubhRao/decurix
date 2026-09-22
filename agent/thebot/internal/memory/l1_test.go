@@ -4,10 +4,58 @@ import (
 	"context"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"thebot/internal/llm"
 )
+
+type countingEmbedder struct{ calls atomic.Int32 }
+
+func (e *countingEmbedder) Embed(context.Context, string, string) ([]float32, error) {
+	e.calls.Add(1)
+	return []float32{1, 0}, nil
+}
+
+func TestConcurrentExactFactsOnlyEmbedAndStoreOnce(t *testing.T) {
+	embedder := &countingEmbedder{}
+	l1, err := NewL1(t.TempDir(), &judgeStub{}, embedder, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l1.Close()
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := l1.Store(t.Context(), "The user prefers Go.", "inferred"); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if err := l1.Store(t.Context(), "The user prefers Go.", "explicit"); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := l1.Count(t.Context()); err != nil || n != 1 {
+		t.Fatalf("count %d, err %v", n, err)
+	}
+	if n := embedder.calls.Load(); n != 1 {
+		t.Fatalf("embedding calls %d, want 1", n)
+	}
+	entries, err := l1.ListRecent(t.Context(), 1)
+	if err != nil || len(entries) != 1 || entries[0].Source != "explicit" {
+		t.Fatalf("entries %+v, err %v", entries, err)
+	}
+	if _, err := l1.Recall(t.Context(), "anything", -1); err != nil {
+		t.Fatal(err)
+	}
+	if n := embedder.calls.Load(); n != 1 {
+		t.Fatalf("nonpositive recall limit embedded query: %d calls", n)
+	}
+}
 
 // judgeStub returns a canned judgement so the store/recall behaviour can
 // be tested deterministically. Embeddings still come from a real Ollama
