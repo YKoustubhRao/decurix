@@ -2,7 +2,7 @@ import re
 import traceback
 
 from decurix_agent import state, usage
-from decurix_agent.computer import approval, core, escalation, experience, learning, recording, replay, skills
+from decurix_agent.computer import approval, constraints, core, escalation, experience, learning, recording, replay, skills
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 from decurix_agent.logging_utils import log
@@ -403,6 +403,16 @@ def _prepare(run):
         for param in missing:
             run["values"].pop(param["name"], None)
 
+    # A value the field cannot take is asked for again, saying why, rather
+    # than typed into it.
+    wrong = [] if missing else constraints.violations(skills.required(skill), run["values"])
+    if wrong:
+        why = " ".join(f"{param['label']}: {reason}." for param, reason in wrong)
+        missing = [param for param, _ in wrong]
+        for param in missing:
+            run["values"].pop(param["name"], None)
+        problem = why
+
     if missing:
         _pause(run, "values", (problem + " " if problem else "") + _need_text(skill, missing),
                missing=[p["name"] for p in missing])
@@ -623,7 +633,8 @@ def _values_reply(paused, reply):
     run["asked"] += 1
 
     left = [name for name in missing if not run["values"].get(name)]
-    if run["asked"] >= 2 and (left or skills.list_problem(run["skill"], run["values"])):
+    if run["asked"] >= 2 and (left or skills.list_problem(run["skill"], run["values"])
+                              or constraints.violations(skills.required(run["skill"]), run["values"])):
         raise _Refused(f"I still do not have usable values for {', '.join(missing)}, so I did not start.")
 
     _prepare(run)

@@ -1,0 +1,26 @@
+{
+ "format": "browsergym",
+ "goal": "Enter the username \"kenda\" and the password \"Ttlh\" into the text fields and press login.",
+ "task": "login-user",
+ "miniwob_seed": 71530,
+ "steps": [
+  {
+   "action": "fill('16', 'kenda')",
+   "axtree_txt": "RootWebArea 'Login User Task', focused\n\t[14] paragraph ''\n\t\t[15] LabelText ''\n\t\t\tStaticText 'Username'\n\t\t[16] textbox ''\n\t[17] paragraph ''\n\t\t[18] LabelText ''\n\t\t\tStaticText 'Password'\n\t\t[19] textbox ''\n\t[20] button 'Login'",
+   "url": "file:///miniwob/login-user.html"
+  },
+  {
+   "action": "fill('19', 'Ttlh')",
+   "axtree_txt": "RootWebArea 'Login User Task', focused\n\t[14] paragraph ''\n\t\t[15] LabelText ''\n\t\t\tStaticText 'Username'\n\t\t[16] textbox '' value='kenda', focused\n\t\t\tStaticText 'kenda'\n\t[17] paragraph ''\n\t\t[18] LabelText ''\n\t\t\tStaticText 'Password'\n\t\t[19] textbox ''\n\t[20] button 'Login'",
+   "url": "file:///miniwob/login-user.html"
+  },
+  {
+   "action": "click('20')",
+   "axtree_txt": "RootWebArea 'Login User Task', focused\n\t[14] paragraph ''\n\t\t[15] LabelText ''\n\t\t\tStaticText 'Username'\n\t\t[16] textbox '' value='kenda'\n\t\t\tStaticText 'kenda'\n\t[17] paragraph ''\n\t\t[18] LabelText ''\n\t\t\tStaticText 'Password'\n\t\t[19] textbox '' value='\u2022\u2022\u2022\u2022', focused\n\t\t\tStaticText '\u2022\u2022\u2022\u2022'\n\t[20] button 'Login'",
+   "url": "file:///miniwob/login-user.html"
+  }
+ ],
+ "final": {
+  "axtree_txt": "RootWebArea 'Login User Task', focused\n\t[14] paragraph ''\n\t\t[15] LabelText ''\n\t\t\tStaticText 'Username'\n\t\t[16] textbox '' value='kenda'\n\t\t\tStaticText 'kenda'\n\t[17] paragraph ''\n\t\t[18] LabelText ''\n\t\t\tStaticText 'Password'\n\t\t[19] textbox '' value='\u2022\u2022\u2022\u2022'\n\t\t\tStaticText '\u2022\u2022\u2022\u2022'\n\t[20] button 'Login', focused"
+ }
+}

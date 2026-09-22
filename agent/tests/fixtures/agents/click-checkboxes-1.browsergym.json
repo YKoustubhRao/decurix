@@ -1,0 +1,36 @@
+{
+ "format": "browsergym",
+ "goal": "Select Jc, s6WcI, XMHY, HJ6c and click Submit.",
+ "task": "click-checkboxes",
+ "miniwob_seed": 128037,
+ "steps": [
+  {
+   "action": "click('18')",
+   "axtree_txt": "RootWebArea 'Click Checkboxes Task', focused\n\t[17] LabelText ''\n\t\t[18] checkbox 'Jc', checked='false'\n\t\tStaticText 'Jc'\n\t[20] LabelText ''\n\t\t[21] checkbox 's6WcI', checked='false'\n\t\tStaticText 's6WcI'\n\t[23] LabelText ''\n\t\t[24] checkbox 'XMHY', checked='false'\n\t\tStaticText 'XMHY'\n\t[26] LabelText ''\n\t\t[27] checkbox '0QW', checked='false'\n\t\tStaticText '0QW'\n\t[29] LabelText ''\n\t\t[30] checkbox 'Mtb', checked='false'\n\t\tStaticText 'Mtb'\n\t[32] LabelText ''\n\t\t[33] checkbox 'HJ6c', checked='false'\n\t\tStaticText 'HJ6c'\n\t[36] button 'Submit'",
+   "url": "file:///miniwob/click-checkboxes.html"
+  },
+  {
+   "action": "click('21')",
+   "axtree_txt": "RootWebArea 'Click Checkboxes Task', focused\n\t[17] LabelText ''\n\t\t[18] checkbox 'Jc', focused, checked='true'\n\t\tStaticText 'Jc'\n\t[20] LabelText ''\n\t\t[21] checkbox 's6WcI', checked='false'\n\t\tStaticText 's6WcI'\n\t[23] LabelText ''\n\t\t[24] checkbox 'XMHY', checked='false'\n\t\tStaticText 'XMHY'\n\t[26] LabelText ''\n\t\t[27] checkbox '0QW', checked='false'\n\t\tStaticText '0QW'\n\t[29] LabelText ''\n\t\t[30] checkbox 'Mtb', checked='false'\n\t\tStaticText 'Mtb'\n\t[32] LabelText ''\n\t\t[33] checkbox 'HJ6c', checked='false'\n\t\tStaticText 'HJ6c'\n\t[36] button 'Submit'",
+   "url": "file:///miniwob/click-checkboxes.html"
+  },
+  {
+   "action": "click('24')",
+   "axtree_txt": "RootWebArea 'Click Checkboxes Task', focused\n\t[17] LabelText ''\n\t\t[18] checkbox 'Jc', checked='true'\n\t\tStaticText 'Jc'\n\t[20] LabelText ''\n\t\t[21] checkbox 's6WcI', focused, checked='true'\n\t\tStaticText 's6WcI'\n\t[23] LabelText ''\n\t\t[24] checkbox 'XMHY', checked='false'\n\t\tStaticText 'XMHY'\n\t[26] LabelText ''\n\t\t[27] checkbox '0QW', checked='false'\n\t\tStaticText '0QW'\n\t[29] LabelText ''\n\t\t[30] checkbox 'Mtb', checked='false'\n\t\tStaticText 'Mtb'\n\t[32] LabelText ''\n\t\t[33] checkbox 'HJ6c', checked='false'\n\t\tStaticText 'HJ6c'\n\t[36] button 'Submit'",
+   "url": "file:///miniwob/click-checkboxes.html"
+  },
+  {
+   "action": "click('33')",
+   "axtree_txt": "RootWebArea 'Click Checkboxes Task', focused\n\t[17] LabelText ''\n\t\t[18] checkbox 'Jc', checked='true'\n\t\tStaticText 'Jc'\n\t[20] LabelText ''\n\t\t[21] checkbox 's6WcI', checked='true'\n\t\tStaticText 's6WcI'\n\t[23] LabelText ''\n\t\t[24] checkbox 'XMHY', focused, checked='true'\n\t\tStaticText 'XMHY'\n\t[26] LabelText ''\n\t\t[27] checkbox '0QW', checked='false'\n\t\tStaticText '0QW'\n\t[29] LabelText ''\n\t\t[30] checkbox 'Mtb', checked='false'\n\t\tStaticText 'Mtb'\n\t[32] LabelText ''\n\t\t[33] checkbox 'HJ6c', checked='false'\n\t\tStaticText 'HJ6c'\n\t[36] button 'Submit'",
+   "url": "file:///miniwob/click-checkboxes.html"
+  },
+  {
+   "action": "click('36')",
+   "axtree_txt": "RootWebArea 'Click Checkboxes Task', focused\n\t[17] LabelText ''\n\t\t[18] checkbox 'Jc', checked='true'\n\t\tStaticText 'Jc'\n\t[20] LabelText ''\n\t\t[21] checkbox 's6WcI', checked='true'\n\t\tStaticText 's6WcI'\n\t[23] LabelText ''\n\t\t[24] checkbox 'XMHY', checked='true'\n\t\tStaticText 'XMHY'\n\t[26] LabelText ''\n\t\t[27] checkbox '0QW', checked='false'\n\t\tStaticText '0QW'\n\t[29] LabelText ''\n\t\t[30] checkbox 'Mtb', checked='false'\n\t\tStaticText 'Mtb'\n\t[32] LabelText ''\n\t\t[33] checkbox 'HJ6c', focused, checked='true'\n\t\tStaticText 'HJ6c'\n\t[36] button 'Submit'",
+   "url": "file:///miniwob/click-checkboxes.html"
+  }
+ ],
+ "final": {
+  "axtree_txt": "RootWebArea 'Click Checkboxes Task', focused\n\t[17] LabelText ''\n\t\t[18] checkbox 'Jc', checked='true'\n\t\tStaticText 'Jc'\n\t[20] LabelText ''\n\t\t[21] checkbox 's6WcI', checked='true'\n\t\tStaticText 's6WcI'\n\t[23] LabelText ''\n\t\t[24] checkbox 'XMHY', checked='true'\n\t\tStaticText 'XMHY'\n\t[26] LabelText ''\n\t\t[27] checkbox '0QW', checked='false'\n\t\tStaticText '0QW'\n\t[29] LabelText ''\n\t\t[30] checkbox 'Mtb', checked='false'\n\t\tStaticText 'Mtb'\n\t[32] LabelText ''\n\t\t[33] checkbox 'HJ6c', checked='true'\n\t\tStaticText 'HJ6c'\n\t[36] button 'Submit', focused"
+ }
+}

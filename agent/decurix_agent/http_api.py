@@ -5,7 +5,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler
 
 from decurix_agent import record_task, replay_task, skill_task
-from decurix_agent.computer import demonstration, recording, replay, skills
+from decurix_agent.computer import demonstration, ingest, lint, recording, replay, skillmd, skills, workflow
 from decurix_agent.computer.errors import ComputerError
 from decurix_agent.logging_utils import log
 from decurix_agent.messaging import save_request
@@ -23,10 +23,20 @@ from decurix_agent.messaging import save_request
 #                                        request reaches its harness
 #   GET  /recordings                     every recording's meta, and the
 #                                        demonstration being recorded
-#   GET  /recordings/<id>                one recording: meta, events, and the
-#                                        program a replay of it would run
+#   GET  /recordings/<id>                one recording: meta, events, the
+#                                        program a replay of it would run, and
+#                                        its lint (lint.py: how far to trust it)
 #   GET  /recordings/<id>/frames/<name>  one of its screenshots
 #   GET  /recordings/<id>/export         the whole recording, as a zip
+#   GET  /recordings/<id>/workflow       its subtasks with their completion
+#                                        criteria (workflow.py), as data and as
+#                                        the text a model is given
+#   GET  /skills/<name>/skill.md         a skill as a SKILL.md (skillmd.py)
+#   POST /recordings/import              {title, data}: a Chrome DevTools Recorder
+#                                        export, a BrowserGym / AgentLab trajectory
+#                                        or an OpenHands event list saved as a
+#                                        recording (ingest.py, ingest_agents.py);
+#                                        what it skipped and any warnings come back
 #   POST /recordings/<id>/update         {title, description}
 #   POST /recordings/<id>/delete
 #   POST /recordings/<id>/replay         {task_id, from, params}: run it as a task
@@ -136,10 +146,12 @@ class Handler(BaseHTTPRequestHandler):
 
             if len(parts) == 2 and parts[0] == "recordings":
                 meta, events = recording.load(parts[1])
+                program = replay.compile_program(meta, events)
                 return self._json(200, {
                     "meta": meta,
                     "events": events,
-                    "program": replay.compile_program(meta, events),
+                    "program": program,
+                    "lint": lint.lint(program),
                     "demonstration": demonstration.status(),
                 })
 
@@ -148,6 +160,14 @@ class Handler(BaseHTTPRequestHandler):
 
             if len(parts) == 2 and parts[0] == "skills":
                 return self._json(200, {"skill": skills.summary(skills.load(parts[1]), detail=True)})
+
+            if len(parts) == 3 and parts[0] == "skills" and parts[2] == "skill.md":
+                return self._skill_md(parts[1])
+
+            if len(parts) == 3 and parts[0] == "recordings" and parts[2] == "workflow":
+                meta, events = recording.load(parts[1])
+                program = replay.compile_program(meta, events)
+                return self._json(200, {"workflow": workflow.build(program), "text": workflow.render(program)})
 
             if len(parts) == 4 and parts[0] == "recordings" and parts[2] == "frames":
                 return self._frame(parts[1], parts[3])
@@ -158,6 +178,17 @@ class Handler(BaseHTTPRequestHandler):
             return False
 
         self._guarded(route)
+
+    def _skill_md(self, name):
+        # The skill as a SKILL.md (skillmd.py): what any agent that reads skills can be handed.
+        body = skillmd.render(skills.load(name)).encode("utf-8")
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/markdown; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Disposition", f'attachment; filename="{name}-SKILL.md"')
+        self.end_headers()
+        self.wfile.write(body)
 
     def _frame(self, session_id, name):
         path = recording.frame_file(session_id, name)
@@ -206,6 +237,9 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 2 and parts[0] == "demonstration":
                 return self._demonstration(parts[1], data)
 
+            if parts == ["recordings", "import"]:
+                return self._import(data)
+
             if len(parts) == 2 and parts[0] == "ticket":
                 return self._ticket(parts[1], data)
 
@@ -244,6 +278,28 @@ class Handler(BaseHTTPRequestHandler):
             return False
 
         self._guarded(route)
+
+    def _import(self, data):
+        payload = data.get("data")
+
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except ValueError:
+                raise ValueError("that is not a JSON recording")
+
+        # A Chrome Recorder export and a BrowserGym trajectory are objects; an OpenHands
+        # trajectory is a list of events.
+        if not isinstance(payload, (dict, list)):
+            raise ValueError("data must be the recording's JSON")
+
+        try:
+            result = ingest.import_recording(payload, title=_text(data.get("title"), 200))
+        except ingest.IngestError as exc:
+            # Words written for a person: what to export, or what was in the way.
+            raise ValueError(str(exc))
+
+        return self._json(200, dict(result, status="ok"))
 
     def _demonstration(self, action, data):
         if action == "start":

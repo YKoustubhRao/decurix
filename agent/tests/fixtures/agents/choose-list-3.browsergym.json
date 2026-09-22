@@ -1,0 +1,21 @@
+{
+ "format": "browsergym",
+ "goal": "Select Arielle from the list and click Submit.",
+ "task": "choose-list",
+ "miniwob_seed": 71530,
+ "steps": [
+  {
+   "action": "select_option('13', 'Arielle')",
+   "axtree_txt": "RootWebArea 'Choose List Task', focused\n\t[13] combobox '' value='Arielle', hasPopup='menu', expanded=False\n\t\t[14] option 'Arielle', selected=True\n\t\t[15] option 'Brunhilde', selected=False\n\t\t[16] option 'Deonne', selected=False\n\t\t[17] option 'Audra', selected=False\n\t\t[18] option 'Allison', selected=False\n\t\t[19] option 'Saidee', selected=False\n\t\t[20] option 'Candy', selected=False\n\t[21] button 'Submit'",
+   "url": "file:///miniwob/choose-list.html"
+  },
+  {
+   "action": "click('21')",
+   "axtree_txt": "RootWebArea 'Choose List Task', focused\n\t[13] combobox '' value='Arielle', hasPopup='menu', expanded=False\n\t\t[14] option 'Arielle', selected=True\n\t\t[15] option 'Brunhilde', selected=False\n\t\t[16] option 'Deonne', selected=False\n\t\t[17] option 'Audra', selected=False\n\t\t[18] option 'Allison', selected=False\n\t\t[19] option 'Saidee', selected=False\n\t\t[20] option 'Candy', selected=False\n\t[21] button 'Submit'",
+   "url": "file:///miniwob/choose-list.html"
+  }
+ ],
+ "final": {
+  "axtree_txt": "RootWebArea 'Choose List Task', focused\n\t[13] combobox '' value='Arielle', hasPopup='menu', expanded=False\n\t\t[14] option 'Arielle', selected=True\n\t\t[15] option 'Brunhilde', selected=False\n\t\t[16] option 'Deonne', selected=False\n\t\t[17] option 'Audra', selected=False\n\t\t[18] option 'Allison', selected=False\n\t\t[19] option 'Saidee', selected=False\n\t\t[20] option 'Candy', selected=False\n\t[21] button 'Submit', focused"
+ }
+}

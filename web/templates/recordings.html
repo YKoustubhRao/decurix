@@ -77,6 +77,22 @@
 .teach .row .hint{flex:1;min-width:200px}
 .secret-tag{font-weight:500;color:var(--accent)}
 
+.readiness{border:1px solid var(--line);border-radius:var(--r-md);background:var(--surface-2);padding:10px 12px;display:grid;gap:6px;font-size:13px}
+.readiness-head{display:flex;gap:4px 10px;align-items:baseline;flex-wrap:wrap}
+.readiness-head strong{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase}
+.readiness.ready strong{color:var(--live)}
+.readiness.rehearse strong{color:var(--text-2)}
+.readiness.risky strong{color:var(--danger)}
+.readiness-head span{color:var(--text-2);overflow-wrap:anywhere}
+.readiness details summary{cursor:pointer;color:var(--text-2);font-size:12px}
+.finding{display:grid;grid-template-columns:48px minmax(0,1fr);gap:8px;padding:6px 0;border-bottom:1px dashed var(--line);font-size:12.5px;overflow-wrap:anywhere}
+.finding:last-child{border-bottom:0}
+.finding-level{font-size:10.5px;font-weight:650;letter-spacing:.03em;text-transform:uppercase;color:var(--text-3)}
+.finding.risk .finding-level{color:var(--danger)}
+.finding-fix{color:var(--text-3);margin-top:2px}
+.left-out{font-size:12.5px;color:var(--text-2)}
+.left-out summary{cursor:pointer}
+.left-out li{margin:3px 0 0 18px;overflow-wrap:anywhere}
 .steps{padding:6px 18px 16px}
 .step{display:grid;grid-template-columns:52px minmax(0,1fr);gap:12px;padding:11px 0;border-bottom:1px dashed var(--line)}
 .step:last-child{border-bottom:0}
@@ -134,6 +150,10 @@
       <button type="button" class="btn btn-default btn-sm" data-open-screen>
         <svg width="14" height="14"><use href="#i-external"/></svg>Open the screen
       </button>
+      <label class="btn btn-default btn-sm" title="Import a recording: a Chrome DevTools Recorder export, a BrowserGym / AgentLab trajectory or an OpenHands trajectory (JSON)">
+        <svg width="14" height="14"><use href="#i-download"/></svg>Import
+        <input type="file" id="importFile" accept=".json,application/json" hidden>
+      </label>
       <a class="btn btn-default btn-sm" href="/skills/{{.Desktop.ID}}">
         <svg width="14" height="14"><use href="#i-check"/></svg>Skills
       </a>
@@ -216,7 +236,7 @@
   var desktopID = body.dataset.desktop;
   var detail = document.getElementById("detail");
 
-  var state = {recordings: [], demonstration: null, filter: "all", selected: body.dataset.session || "", loaded: null};
+  var state = {recordings: [], demonstration: null, filter: "all", selected: body.dataset.session || "", loaded: null, imported: null};
 
   var KIND = {demonstration: "Demonstration", task: "Task", adhoc: "Run by hand"};
   var ACTOR = {human: "Person", agent: "Agent"};
@@ -408,6 +428,67 @@
     }
   }
 
+  /* ---- what an import left out ---- */
+
+  var importFile = document.getElementById("importFile");
+
+  if(importFile){
+    importFile.addEventListener("change", async function(){
+      var file = importFile.files && importFile.files[0];
+      importFile.value = "";
+      if(!file){ return; }
+
+      try{
+        var text = await file.text();
+        var result = await post("/api/desktops/recordings/import", {id: desktopID, data: text});
+        state.imported = {session: result.session, skipped: result.skipped || [], warnings: result.warnings || []};
+        var left = state.imported.skipped.length;
+        toast("Imported " + result.imported + (result.imported === 1 ? " step" : " steps")
+          + (left ? " - " + left + " left out, listed below." : "."));
+        await refresh();
+        open(result.session);
+      }catch(err){ toast(err.message, "error"); }
+    });
+  }
+
+  function leftOut(skipped){
+    var box = node("details", "left-out");
+    box.appendChild(node("summary", "", skipped.length + (skipped.length === 1 ? " step" : " steps") + " of the import a replay does not take"));
+    var items = node("ul");
+    skipped.forEach(function(s){ items.appendChild(node("li", "", "Step " + s.step + " (" + s.type + "): " + s.why)); });
+    box.appendChild(items);
+    return box;
+  }
+
+  /* ---- how far to trust a recording ---- */
+
+  var GRADE = {ready: "Ready to replay", rehearse: "Rehearse first", risky: "Risky"};
+
+  function readiness(lint){
+    var box = node("div", "readiness " + lint.grade);
+    var head = node("div", "readiness-head");
+    head.appendChild(node("strong", "", GRADE[lint.grade] || lint.grade));
+    head.appendChild(node("span", "", lint.summary));
+    box.appendChild(head);
+
+    var findings = lint.findings || [];
+    if(findings.length){
+      var concerns = findings.filter(function(f){ return f.level !== "info"; }).length;
+      var more = node("details");
+      more.appendChild(node("summary", "", concerns ? "What to know (" + findings.length + ")" : "Notes (" + findings.length + ")"));
+      findings.forEach(function(f){
+        var row = node("div", "finding " + f.level);
+        row.appendChild(node("span", "finding-level", f.level));
+        var text = node("div", "", f.message);
+        if(f.fix){ text.appendChild(node("div", "finding-fix", f.fix)); }
+        row.appendChild(text);
+        more.appendChild(row);
+      });
+      box.appendChild(more);
+    }
+    return box;
+  }
+
   /* ---- one recording ---- */
 
   async function open(session){
@@ -448,6 +529,7 @@
     if(meta.ended_at){ info.appendChild(node("span", "", clock(meta.ended_at - meta.started_at) + " long")); }
     info.appendChild(node("span", "", events.length + (events.length === 1 ? " action" : " actions") + " · " + program.steps.length + " replayable"));
     if(meta.withheld_count){ info.appendChild(node("span", "", meta.withheld_count + " kept private")); }
+    if(meta.source && meta.source.format){ info.appendChild(node("span", "", "Imported from " + meta.source.format)); }
     if(meta.task_id){
       var taskLink = node("a", "", "Task record");
       taskLink.href = "/tasks/" + encodeURIComponent(meta.task_id);
@@ -456,6 +538,11 @@
     head.appendChild(info);
 
     if(meta.description){ head.appendChild(node("p", "detail-desc", meta.description)); }
+    if(data.lint){ head.appendChild(readiness(data.lint)); }
+    if(state.imported && state.imported.session === meta.id){
+      (state.imported.warnings || []).forEach(function(w){ head.appendChild(node("p", "detail-desc", "Note: " + w)); });
+      if(state.imported.skipped.length){ head.appendChild(leftOut(state.imported.skipped)); }
+    }
 
     var actions = node("div", "detail-actions");
     var replayBtn = button("Replay", "btn-primary", "play");
