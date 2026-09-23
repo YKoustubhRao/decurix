@@ -676,6 +676,15 @@
 .host-app-row.is-detected{
   border-color:color-mix(in srgb,var(--line-2) 65%,#10b981 35%);
 }
+.host-app-row.is-unavailable{
+  cursor:default;
+  opacity:.68;
+  border-color:var(--line);
+}
+.host-app-row.is-unavailable:hover{
+  border-color:var(--line);
+  background:var(--surface);
+}
 .host-app-row input[type="checkbox"]{
   margin-top:2px;
   cursor:pointer;
@@ -1695,7 +1704,8 @@
     web: "Web version",
     host_gui: "Runs on host",
     data: "Files copied",
-    helper: "Always installed"
+    helper: "Always installed",
+    unavailable: "Unavailable"
   };
 
   async function loadHostApps(refresh){
@@ -1727,8 +1737,9 @@
       }
 
       hostAppsData.forEach(function(item){
+        var unavailable = item.mode === "unavailable" || !!item.unavailable_reason;
         var row = document.createElement("label");
-        row.className = "host-app-row is-detected";
+        row.className = "host-app-row " + (unavailable ? "is-unavailable" : "is-detected");
         var paths = Array.isArray(item.detected_paths) ? item.detected_paths.join(" ") : "";
         row.dataset.searchText = [
           item.name || "",
@@ -1736,18 +1747,19 @@
           item.category || "",
           item.description || "",
           item.host_cmd || "",
+          item.unavailable_reason || "",
           paths
         ].join(" ").toLowerCase();
         row.innerHTML =
           '<input type="checkbox" name="host_app_choice" value="' + escapeHTML(item.id) + '" ' +
-          'data-detected="true">' +
+          'data-detected="true"' + (unavailable ? ' disabled' : '') + '>' +
           '<div class="host-app-info">' +
             '<div class="host-app-title-line">' +
               '<span>' + escapeHTML(item.name) + '</span>' +
               (item.category ? '<span class="host-app-cat">' + escapeHTML(item.category) + '</span>' : '') +
-              '<span class="host-app-badge detected">' + escapeHTML(HOST_APP_MODES[item.mode] || "Found") + '</span>' +
+              '<span class="host-app-badge ' + (unavailable ? 'missing' : 'detected') + '">' + escapeHTML(HOST_APP_MODES[item.mode] || "Found") + '</span>' +
             '</div>' +
-            '<div class="host-app-desc">' + escapeHTML(item.description) + '</div>' +
+            '<div class="host-app-desc">' + escapeHTML(item.unavailable_reason || item.description) + '</div>' +
           '</div>';
         hostAppsList.appendChild(row);
       });
@@ -1800,7 +1812,7 @@
   var btnAll = document.getElementById("hostAppsBtnAll");
   if(btnAll){
     btnAll.addEventListener("click", function(){
-      hostAppsList.querySelectorAll("input[name=host_app_choice]").forEach(function(cb){ cb.checked = true; });
+      hostAppsList.querySelectorAll("input[name=host_app_choice]:not(:disabled)").forEach(function(cb){ cb.checked = true; });
       updateHostAppsSelectionSummary();
     });
   }
@@ -2073,7 +2085,7 @@
     var copyHostApps = dCopyHostApps && dCopyHostApps.checked;
     var selectedApps = [];
     if(copyHostApps && hostAppsList){
-      hostAppsList.querySelectorAll("input[name=host_app_choice]:checked").forEach(function(cb){
+      hostAppsList.querySelectorAll("input[name=host_app_choice]:checked:not(:disabled)").forEach(function(cb){
         selectedApps.push(cb.value);
       });
     }

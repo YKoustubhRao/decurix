@@ -854,16 +854,92 @@ function Clear-CrashMark([string]$dir) {
     }
 }
 
+# A browser on the private desktop needs its own user-data directory so it cannot hand the launch to the copy already
+# open on the person's visible desktop. On the first launch only, initialize that private directory from the person's
+# real profile. This keeps their chosen Chrome profile and signed-in account while preserving the private desktop's
+# independent lifetime afterward. robocopy tolerates files held open by a running browser; caches and crash data are
+# deliberately omitted, and a later launch never overwrites changes made in the private profile.
+function Get-BrowserProfileSource([string]$base) {
+    switch ($base) {
+        'chrome'   { return (Join-Path $env:LOCALAPPDATA 'Google\Chrome\User Data') }
+        'msedge'   { return (Join-Path $env:LOCALAPPDATA 'Microsoft\Edge\User Data') }
+        'brave'    { return (Join-Path $env:LOCALAPPDATA 'BraveSoftware\Brave-Browser\User Data') }
+        'vivaldi'  { return (Join-Path $env:LOCALAPPDATA 'Vivaldi\User Data') }
+        'chromium' { return (Join-Path $env:LOCALAPPDATA 'Chromium\User Data') }
+        default    { return '' }
+    }
+}
+
+function Get-ActiveBrowserProfile([string]$dir) {
+    $lsPath = Join-Path $dir 'Local State'
+    if (-not (Test-Path -LiteralPath $lsPath)) { return '' }
+    try {
+        $content = Get-Content -LiteralPath $lsPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+        if (-not $content) { return '' }
+        $json = ConvertFrom-Json $content -ErrorAction SilentlyContinue
+        if (-not $json) { return '' }
+        # Check profile.info_cache for any profile with a signed-in email
+        if ($json.profile -and $json.profile.info_cache) {
+            foreach ($prop in $json.profile.info_cache.PSObject.Properties) {
+                $pData = $prop.Value
+                if ($pData -and $pData.user_name) {
+                    return $prop.Name
+                }
+            }
+        }
+        # Fall back to profile.last_used
+        if ($json.profile -and $json.profile.last_used) {
+            return $json.profile.last_used
+        }
+    } catch {}
+    return ''
+}
+
+function Initialize-PrivateBrowserProfile([string]$base, [string]$dir) {
+    if (-not ($Browsers -contains $base)) { return }
+    # A Decurix marker, rather than Chromium's Local State, lets profiles created by an older build receive this one-time
+    # import too. Once imported, later launches never overwrite work or sign-ins added inside the private profile.
+    $marker = Join-Path $dir '.decurix-host-profile-imported'
+    if (Test-Path -LiteralPath $marker) { return }
+    $source = Get-BrowserProfileSource $base
+    if (-not $source -or -not (Test-Path -LiteralPath $source -PathType Container)) { return }
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $copyArgs = @(
+        $source, $dir, '/E', '/XJ', '/R:0', '/W:0', '/NFL', '/NDL', '/NJH', '/NJS', '/NP',
+        '/XD', 'Cache', 'Code Cache', 'GPUCache', 'GrShaderCache', 'ShaderCache', 'DawnCache',
+        'Media Cache', 'CacheStorage', 'Crashpad', 'BrowserMetrics',
+        '/XF', 'Singleton*', '*lock*', '*.tmp', 'Lock*', 'Parent.lock'
+    )
+    & robocopy @copyArgs | Out-Null
+    # If robocopy skipped locked critical files like Local State, copy them with FileShare.ReadWrite fallback:
+    $localStateDest = Join-Path $dir 'Local State'
+    $localStateSrc = Join-Path $source 'Local State'
+    if (-not (Test-Path -LiteralPath $localStateDest) -and (Test-Path -LiteralPath $localStateSrc)) {
+        try {
+            $inStream = [System.IO.File]::Open($localStateSrc, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+            $outStream = [System.IO.File]::Create($localStateDest)
+            $inStream.CopyTo($outStream)
+            $inStream.Close(); $outStream.Close()
+        } catch {}
+    }
+    if ($LASTEXITCODE -le 8 -and (Test-Path -LiteralPath $dir)) { Set-Content -LiteralPath $marker -Value '1' -Encoding ASCII }
+}
+
 # The command line a resolved program is started with: its own profile for a browser or Electron app (per desktop), and the
 # flags that keep a first-run or restore prompt from taking the keyboard.
 function Complete-Launch($p) {
     $argLine = $p.Args
     if ($p.OwnProfile) {
         $dir = Join-Path $ProfileRoot "$DesktopName-$($p.Base)"
+        Initialize-PrivateBrowserProfile $p.Base $dir
         $argLine = (($argLine + " --user-data-dir=`"$dir`"").Trim())
         if ($Browsers -contains $p.Base) {
             if ($argLine -notlike '*no-first-run*') { $argLine += ' --no-first-run --no-default-browser-check' }
             $argLine += ' --disable-session-crashed-bubble --hide-crash-restore-bubble'
+            if ($argLine -notlike '*--profile-directory*') {
+                $chosenProfile = Get-ActiveBrowserProfile $dir
+                if ($chosenProfile) { $argLine += " --profile-directory=`"$chosenProfile`"" }
+            }
         }
         Clear-CrashMark $dir
     }

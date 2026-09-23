@@ -137,6 +137,29 @@ func TestCleanAppShortcutName(t *testing.T) {
 	}
 }
 
+func TestChromeIsDiscoveredWithoutAStartMenuEntry(t *testing.T) {
+	drive := t.TempDir()
+	exe := filepath.Join(drive, "Program Files", "Google", "Chrome", "Application", "chrome.exe")
+	if err := os.MkdirAll(filepath.Dir(exe), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(exe, []byte("test"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DECURIX_HOST_MNT_C", drive)
+
+	apps := scanInstalledWindowsBrowsers(map[string]bool{})
+	found := false
+	for _, app := range apps {
+		if app.Name == "Google Chrome" && strings.Contains(app.HostCmd, `Google\Chrome\Application\chrome.exe`) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("standard Chrome install was not discovered: %+v", apps)
+	}
+}
+
 func TestPackDynamicApp(t *testing.T) {
 	buf := new(bytes.Buffer)
 	tw := tar.NewWriter(buf)
@@ -793,7 +816,7 @@ func windowsApp(name, hostCmd string) HostAppItem {
 	return HostAppItem{ID: "win_" + sanitizeAppSlug(name), Name: name, Detected: true, AppType: "windows_app", HostCmd: hostCmd}
 }
 
-func TestOnlyAppsTheHostCanRunHiddenAreOffered(t *testing.T) {
+func TestEveryDiscoveredAppIsShownAndOnlyRunnableAppsAreEnabled(t *testing.T) {
 	const uwp = `cmd.exe /c start explorer.exe shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App`
 	const paint = `cmd.exe /c start "" "C:\Windows\System32\mspaint.exe"`
 	useHostChecker(t, func(_ context.Context, targets []winhost.Target) (map[winhost.Target]string, error) {
@@ -812,26 +835,28 @@ func TestOnlyAppsTheHostCanRunHiddenAreOffered(t *testing.T) {
 		windowsApp("Calculator", uwp),
 		windowsApp("Paint", paint),
 	})
-	if len(got) != 1 || got[0].Name != "Paint" || got[0].Mode != ModeHostGUI {
-		t.Fatalf("offered %+v, want only Paint, run on the host", got)
+	if len(got) != 2 || got[0].Name != "Calculator" || got[0].Mode != ModeUnavailable ||
+		!strings.Contains(got[0].UnavailableReason, "Universal Windows") ||
+		got[1].Name != "Paint" || got[1].Mode != ModeHostGUI {
+		t.Fatalf("discovered %+v, want unavailable Calculator and runnable Paint", got)
 	}
 }
 
-func TestAnAppTheHostWasNeverAskedAboutIsNotOffered(t *testing.T) {
+func TestAnUnverifiedAppStaysVisibleButDisabled(t *testing.T) {
 	const paint = `cmd.exe /c start "" "C:\Windows\System32\mspaint.exe"`
 	apps := []HostAppItem{windowsApp("Paint", paint)}
 
 	useHostChecker(t, nil)
-	if got := vetHostApps(apps); len(got) != 0 {
-		t.Errorf("with no way to ask the host, offered %+v", got)
+	if got := vetHostApps(apps); len(got) != 1 || got[0].Mode != ModeUnavailable || got[0].UnavailableReason == "" {
+		t.Errorf("with no way to ask the host, discovery returned %+v", got)
 	}
 
 	// A helper that dies partway keeps what it answered; the rest are not promised.
 	useHostChecker(t, func(context.Context, []winhost.Target) (map[winhost.Target]string, error) {
 		return nil, errors.New("the host helper ended")
 	})
-	if got := vetHostApps(apps); len(got) != 0 {
-		t.Errorf("after the host helper failed, offered %+v", got)
+	if got := vetHostApps(apps); len(got) != 1 || got[0].Mode != ModeUnavailable {
+		t.Errorf("after the host helper failed, discovery returned %+v", got)
 	}
 }
 
@@ -850,14 +875,35 @@ func TestAWebServiceOpensInTheVMWithoutAskingTheHost(t *testing.T) {
 	}
 }
 
-func TestAppsThatNeedSoundAreNotOffered(t *testing.T) {
+func TestAppsThatNeedSoundAreShownButDisabled(t *testing.T) {
 	useHostChecker(t, allowEverything)
 	got := vetHostApps([]HostAppItem{
 		windowsApp("Spotify", `cmd.exe /c start "" "C:\Users\a\AppData\Roaming\Spotify\Spotify.exe"`),
 		windowsApp("VLC media player", `cmd.exe /c start "" "C:\Program Files\VideoLAN\VLC\vlc.exe"`),
 	})
-	if len(got) != 0 {
-		t.Errorf("the VMs have no sound device, yet offered %+v", got)
+	if len(got) != 2 || got[0].Mode != ModeUnavailable || got[1].Mode != ModeUnavailable {
+		t.Errorf("audio-only apps should remain visible but disabled: %+v", got)
+	}
+}
+
+func TestBrowserDescriptionPromisesTheSeededSignedInProfile(t *testing.T) {
+	useHostChecker(t, allowEverything)
+	got := vetHostApps([]HostAppItem{windowsApp("Google Chrome", `cmd.exe /c start "" "C:\Program Files\Google\Chrome\chrome.exe"`)})
+	if len(got) != 1 || got[0].Mode != ModeHostGUI || !strings.Contains(got[0].Description, "signed-in browser profile") {
+		t.Fatalf("Chrome discovery did not describe its profile import: %+v", got)
+	}
+}
+
+func TestForcingDiscoveryForgetsTheWindowsStartAppsSnapshot(t *testing.T) {
+	startAppsMu.Lock()
+	startAppsCached = []rawStartApp{{Name: "Old App", AppID: "old"}}
+	startAppsQueried = true
+	startAppsMu.Unlock()
+	forgetStartApps()
+	startAppsMu.RLock()
+	defer startAppsMu.RUnlock()
+	if startAppsQueried || startAppsCached != nil {
+		t.Fatalf("cached Start Apps survived a forced refresh: queried=%v apps=%+v", startAppsQueried, startAppsCached)
 	}
 }
 

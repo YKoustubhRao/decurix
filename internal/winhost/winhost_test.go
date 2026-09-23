@@ -523,6 +523,11 @@ func TestScriptIsEmbedded(t *testing.T) {
 	if !strings.Contains(string(Script), "CreateDesktop") || strings.Contains(string(Script), "HttpListener") {
 		t.Fatal("bridge.ps1 must create a private desktop and must not open a network listener")
 	}
+	if !strings.Contains(string(Script), "Initialize-PrivateBrowserProfile") ||
+		!strings.Contains(string(Script), `Google\Chrome\User Data`) ||
+		!strings.Contains(string(Script), ".decurix-host-profile-imported") {
+		t.Fatal("bridge.ps1 must seed a private Chrome profile from the host user's signed-in profile")
+	}
 }
 
 func TestModifiersAreValidatedBeforeTheyReachTheHost(t *testing.T) {

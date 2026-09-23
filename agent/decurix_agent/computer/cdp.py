@@ -465,6 +465,107 @@ def observe():
     return found, group
 
 
+def element_at_screen_point(x, y, known_elements=()):
+    """
+    Find the named browser control under a real screen point.
+
+    The DOM snapshot used by observe() is deliberately cheap and normally
+    gives every control a screen box. A browser can nevertheless report a
+    box that is a few pixels out of sync with X11 while it is being resized,
+    scaled, or composited by VNC. Recording must not turn that brief mapping
+    problem into a coordinate-only step when Chromium itself can still tell
+    us which DOM control received the click.
+
+    known_elements is the observation that was used for the recording. If the
+    hit is a descendant (for example, the SVG inside a Submit button), the
+    accessibility tree is walked to its named interactive ancestor and the
+    already-observed element is returned. That keeps the recording's normal
+    path, role, name, and handle intact.
+    """
+
+    page = None
+
+    try:
+        page = active_page()
+        metrics = json.loads(page.evaluate(_METRICS))
+        dpr = metrics["dpr"] or 1
+        origin_x = metrics["sx"] + (metrics["ow"] - metrics["iw"])
+        origin_y = metrics["sy"] + (metrics["oh"] - metrics["ih"])
+        viewport_x = (x - origin_x) / dpr + metrics["scx"]
+        viewport_y = (y - origin_y) / dpr + metrics["scy"]
+
+        if not (0 <= viewport_x < metrics["iw"] and 0 <= viewport_y < metrics["ih"]):
+            return None
+
+        hit = page.call("DOM.getNodeForLocation", {
+            "x": max(0, int(viewport_x)),
+            "y": max(0, int(viewport_y)),
+            "includeUserAgentShadowDOM": True,
+        })
+        backend_id = hit.get("backendNodeId")
+        if backend_id is None:
+            return None
+
+        accessibility = page.call("Accessibility.getPartialAXTree", {
+            "backendNodeId": backend_id,
+            "fetchRelatives": True,
+        }).get("nodes", [])
+
+        by_node_id = {node.get("nodeId"): node for node in accessibility}
+        current = next(
+            (node for node in accessibility if node.get("backendDOMNodeId") == backend_id),
+            None,
+        )
+        known_by_backend = {
+            element.get("handle", {}).get("backend_id"): element
+            for element in known_elements
+            if element.get("source") == "cdp"
+            and element.get("handle", {}).get("backend_id") is not None
+        }
+
+        while current is not None:
+            role = ((current.get("role") or {}).get("value") or "").lower()
+            if role in INTERACTIVE:
+                current_backend_id = current.get("backendDOMNodeId")
+                known = known_by_backend.get(current_backend_id)
+                if known is not None and known.get("name"):
+                    return known
+
+                name = " ".join(((current.get("name") or {}).get("value") or "").split())
+                if name:
+                    norm = el.normalize_role(role)
+                    return {
+                        "role": norm,
+                        "name": name[:200],
+                        "value": str((current.get("value") or {}).get("value") or ""),
+                        "states": [],
+                        "box": None,
+                        "path": f"site browser > {norm} {el._quote(name, 40)}",
+                        "source": "cdp",
+                        "group": f"cdp:{page.target.get('id')}",
+                        "window_title": f"{metrics.get('title') or page.target.get('title') or ''} - Chromium",
+                        "app": "chromium",
+                        "bar": None,
+                        "handle": {
+                            "backend_id": current_backend_id,
+                            "target_id": page.target.get("id"),
+                            "dom_role": role,
+                            "input_type": "",
+                            "autocomplete": "",
+                        },
+                    }
+
+            parent_id = current.get("parentId")
+            current = by_node_id.get(parent_id)
+
+        return None
+    except (ComputerError, KeyError, TypeError, ValueError):
+        return None
+    finally:
+        if page is not None:
+            page.close()
+
+
 # ============================================================
 # Acting
 # ============================================================

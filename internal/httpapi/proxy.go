@@ -371,6 +371,17 @@ const ticketToolbar = `
 }
 #decurix-ticket-error{color:#f5a793;font-size:11.5px;margin-top:8px;display:none}
 #decurix-ticket-error.decurix-visible{display:block}
+.decurix-ticket-loading{
+  display:flex;align-items:center;gap:9px;
+  padding:4px 0 2px;
+  color:rgba(242,240,234,.82);font-size:12px;
+}
+.decurix-ticket-spinner{
+  width:14px;height:14px;box-sizing:border-box;flex:none;
+  border:2px solid rgba(255,255,255,.24);border-top-color:#fff;border-radius:50%;
+  animation:decurix-spin .75s linear infinite;
+}
+@keyframes decurix-spin{to{transform:rotate(360deg)}}
 
 #decurix-ticket-browse{
   display:block;
@@ -405,7 +416,16 @@ var panel = document.getElementById("decurix-ticket-panel");
 var ticket = null;        // last known {task_id, title, session_id, recording, paused, events}, or null
 var lastSession = null;   // the most recent session_id seen, kept after End clears the ticket - for the download link
 var busy = false;         // an action is in flight - buttons disabled meanwhile
+var ticketPending = false; // create was accepted/in flight, but the agent has not exposed the ticket yet
+var pendingTimer = null;
+var pendingTimeout = null;
 var error = "";
+
+function clearPendingState(){
+  if(pendingTimer){ clearInterval(pendingTimer); pendingTimer = null; }
+  if(pendingTimeout){ clearTimeout(pendingTimeout); pendingTimeout = null; }
+  ticketPending = false;
+}
 var userToggled = false;  // once a person opens/closes the panel by hand, stop auto-opening it for them
 var draftTask = "";       // the create-ticket input's text, kept across re-renders (see renderCreate)
 var reasonOpen = false;   // the Reason box is expanded
@@ -464,6 +484,7 @@ function act(action, fields){
 }
 
 function setTicket(next){
+  if(next){ clearPendingState(); }
   if(next && next.session_id){ lastSession = next.session_id; }
   if(next){ endedStarted = ""; }   // a new ticket: the last recording's replay/lesson is history
 
@@ -559,10 +580,12 @@ function refresh(){
 
       var next = data.ticket || null;
 
+      // When waiting for a new ticket, skip re-render if the ticket hasn't appeared yet.
+      if(ticketPending && !next){ return; }
       // Rebuilding the panel on every poll would wipe out a task name being
       // typed into the create-ticket input mid-keystroke (and drop focus
       // generally); skip it when nothing actually changed.
-      if(JSON.stringify(next) === JSON.stringify(ticket)){ return; }
+      if(!ticketPending && JSON.stringify(next) === JSON.stringify(ticket)){ return; }
 
       setTicket(next);
     })
@@ -597,7 +620,7 @@ function renderCreate(){
   input.placeholder = "What are you about to do?";
   input.maxLength = 300;
   input.autocomplete = "off";
-  input.disabled = busy;
+  input.disabled = busy || ticketPending;
   // Carried across re-renders (an error re-render included) so a failed
   // submit - "a task is still running", a dropped request - does not make
   // someone retype what they had already written.
@@ -606,15 +629,34 @@ function renderCreate(){
 
   function submit(){
     var task = input.value.trim();
-    if(!task || busy){ return; }
-    busy = true; error = ""; render();
+    if(!task || busy || ticketPending){ return; }
+    busy = true; ticketPending = true; error = ""; render();
+
+    if(pendingTimer){ clearInterval(pendingTimer); }
+    if(pendingTimeout){ clearTimeout(pendingTimeout); }
+
+    // Fast poll every 250ms while ticket is pending so it appears immediately
+    pendingTimer = setInterval(function(){
+      if(!ticketPending){ clearInterval(pendingTimer); pendingTimer = null; return; }
+      refresh();
+    }, 250);
+
+    // Timeout safety: if the ticket has not appeared after 25s, abort pending state
+    pendingTimeout = setTimeout(function(){
+      if(ticketPending){
+        clearPendingState();
+        error = "Opening ticket timed out. Please try again.";
+        render();
+      }
+    }, 25000);
 
     api("/api/desktops/record", {task: task}).then(function(){
       draftTask = "";
       busy = false;
+      render();
       refresh();
     }, function(e){
-      busy = false;
+      busy = false; clearPendingState();
       error = e.message;
       render();
     });
@@ -624,8 +666,28 @@ function renderCreate(){
 
   var r = row(true);
   r.appendChild(input);
-  r.appendChild(button("+", submit, "decurix-primary"));
+  r.appendChild(button("+", submit, "decurix-primary", ticketPending));
   panel.appendChild(r);
+}
+
+function renderPending(){
+  panel.innerHTML = "";
+  var loading = document.createElement("div");
+  loading.className = "decurix-ticket-loading";
+  loading.innerHTML = '<span class="decurix-ticket-spinner" aria-hidden="true"></span><span style="flex:1">Opening ticket…<br><small>Starting the desktop if needed</small></span>';
+
+  function cancelPending(){
+    clearPendingState();
+    busy = false;
+    render();
+  }
+
+  var cancelBtn = button("Cancel", cancelPending, "decurix-action");
+  cancelBtn.style.padding = "3px 8px";
+  cancelBtn.style.fontSize = "11px";
+  loading.appendChild(cancelBtn);
+
+  panel.appendChild(loading);
 }
 
 function renderTicket(){
@@ -844,6 +906,10 @@ function render(){
     dot.className = !ticket.session_id ? "decurix-armed" : ticket.paused ? "decurix-paused" : "decurix-rec";
     label.textContent = !ticket.session_id ? "Ticket open" : ticket.paused ? "Paused" : "Recording";
     renderTicket();
+  }else if(ticketPending){
+    dot.className = "decurix-armed";
+    label.textContent = "Opening…";
+    renderPending();
   }else if(lastSession){
     dot.className = "";
     label.textContent = "Record";

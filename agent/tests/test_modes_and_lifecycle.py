@@ -4,8 +4,38 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from decurix_agent import commands
+from decurix_agent import commands, state, watchers
 from decurix_agent.computer import approval, catalog, context_tracker, modes, optimizer, shadowing, skills
+
+
+class WatcherDispatch(unittest.TestCase):
+    def setUp(self):
+        self.waiting = state.waiting_for_query
+        self.backend_ready = state.backend_ready
+        self.paused_replay = state.paused_replay
+        self.paused_skill = state.paused_skill
+        state.backend_ready = False
+
+    def tearDown(self):
+        state.waiting_for_query = self.waiting
+        state.backend_ready = self.backend_ready
+        state.paused_replay = self.paused_replay
+        state.paused_skill = self.paused_skill
+
+    def test_learn_answer_does_not_wait_for_the_model(self):
+        state.waiting_for_query = True
+        state.paused_skill = {"mode": "learn"}
+        self.assertTrue(watchers._can_run_without_backend("yes"))
+
+    def test_an_agent_answer_still_waits_for_its_model(self):
+        state.waiting_for_query = True
+        state.paused_skill = None
+        state.paused_replay = None
+        self.assertFalse(watchers._can_run_without_backend("yes"))
+
+    def test_a_new_learn_request_never_needs_the_model(self):
+        state.waiting_for_query = False
+        self.assertTrue(watchers._can_run_without_backend("/learn demo-20260923T010203-abcdef"))
 
 
 class TestModesAndLifecycle(unittest.TestCase):

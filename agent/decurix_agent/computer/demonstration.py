@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from decurix_agent import logging_utils, progress
-from decurix_agent.computer import approval, audit, core, privacy, processing, recording, screen, session
+from decurix_agent.computer import approval, audit, cdp, core, privacy, processing, recording, screen, session
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 from decurix_agent.logging_utils import log
@@ -693,7 +693,23 @@ class Recorder:
         if not fresh:
             return None, "the screen was still changing when this happened"
 
-        return el.at_point(observation["elements"], *action["point"]), None
+        element = el.at_point(observation["elements"], *action["point"])
+        if element is not None:
+            return element, None
+
+        # The browser's DOM hit-test is authoritative when a VNC/window-scale
+        # mismatch makes its cached accessibility box miss the raw X11 point.
+        # It still returns a normal named element, so the recording remains
+        # replayable by role/name and the browser stays fully visible.
+        browser_visible = any(
+            element.get("source") == "cdp" for element in observation["elements"]
+        ) or "chromium" in (observation.get("active_title") or "").lower()
+        if browser_visible and cdp.available():
+            element = cdp.element_at_screen_point(*action["point"], observation["elements"])
+            if element is not None:
+                return element, None
+
+        return None, None
 
     def _entry(self, action, element, note, observation):
         kind = action["kind"]

@@ -86,8 +86,8 @@ func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memorySt
 		recentStepImages: make(map[string]string),
 	}
 
-	// Pre-warm host apps discovery in background so desktop creation and scanning UI are instant. The scan only offers
-	// a Windows program once the host has confirmed it can run hidden, so the way to ask must be in place first.
+	// Pre-warm host apps discovery in background so desktop creation and scanning UI are instant. The scan marks apps the
+	// host helper cannot safely run as unavailable, while keeping them visible in the complete discovery list.
 	desktop.SetHostAppChecker(srv.checkHostApps)
 	desktop.SetHostAppWarmer(srv.warmHostGUI)
 	desktop.WarmHostApps() // compile and load now, long before the first desktop exists

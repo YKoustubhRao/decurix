@@ -346,6 +346,31 @@ class Requests(unittest.TestCase):
         self.assertFalse(skill_task.handles("/replay x"))
 
 
+class LearnedMemoryDispatch(unittest.TestCase):
+    def test_optional_memory_write_does_not_block_skill_completion(self):
+        started = threading.Event()
+        release = threading.Event()
+        returned = threading.Event()
+
+        def slow_memory(_skill):
+            started.set()
+            release.wait(timeout=2)
+
+        def launch():
+            skill_task._remember_async({"name": "saved-skill"})
+            returned.set()
+
+        with mock.patch.object(skill_task, "_remember", slow_memory):
+            caller = threading.Thread(target=launch)
+            caller.start()
+            try:
+                self.assertTrue(started.wait(timeout=0.2))
+                self.assertTrue(returned.wait(timeout=0.2))
+            finally:
+                release.set()
+                caller.join(timeout=1)
+
+
 class TeachingBase(unittest.TestCase):
     """A desktop with a recordings store, a skills store and a scripted screen, and messaging caught."""
 
@@ -362,6 +387,7 @@ class TeachingBase(unittest.TestCase):
         self.asked, self.finals, self.remembered = [], [], []
         patches = [
             mock.patch.object(skill_task, "remember", lambda title, summary, category="workflow": self.remembered.append((title, summary, category))),
+            mock.patch.object(skill_task, "_remember_async", lambda skill: skill_task._remember(skill)),
             mock.patch.object(skill_task, "ask_for_query", lambda text, kind="query", engine=None: self.asked.append((text, kind))),
             mock.patch.object(skill_task, "write_final_reply", lambda text, kind="final", engine=None: self.finals.append((text, kind))),
             mock.patch.object(skill_task.usage, "add"),
