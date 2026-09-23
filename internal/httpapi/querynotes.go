@@ -156,7 +156,7 @@ func outcomeKindFor(reported, chatKind string) string {
 	}
 
 	switch chatKind {
-	case conversation.KindApproval:
+	case conversation.KindApproval, conversation.KindQuery:
 		return tasks.OutcomeQuery
 	case conversation.KindError:
 		return tasks.OutcomeError

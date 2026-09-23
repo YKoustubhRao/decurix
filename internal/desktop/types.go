@@ -21,6 +21,13 @@ type Desktop struct {
 	// been idle since some old task, whatever its task history says.
 	StartedAt string `json:"started_at,omitempty"`
 
+	// Crash says why a desktop that is not running stopped on its own ("it
+	// exited with code 1", "it ran out of memory"), or "" when it is running,
+	// paused, or was stopped the way Stop stops it. Status stays "stopped"
+	// for a crashed desktop, so nothing that reads Status changes meaning;
+	// the dashboard shows this as the red light on its card.
+	Crash string `json:"crash,omitempty"`
+
 	CPUs     int64 `json:"cpus"`
 	MemoryMB int64 `json:"memory_mb"`
 

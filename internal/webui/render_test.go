@@ -44,6 +44,16 @@ func TestRenderEveryPage(t *testing.T) {
 		ParentID: running.ID,
 	}
 
+	crashed := desktop.Desktop{
+		ID:      "broken-box",
+		Name:    "broken-box",
+		Profile: "basic",
+		Harness: desktop.HarnessOllama,
+		Status:  "stopped",
+		URL:     "/desktop/broken-box/",
+		Crash:   "it exited with code 1",
+	}
+
 	entry := memory.WorkerMemoryEntry{
 		ID:        "memory-1",
 		DesktopID: running.ID,
@@ -54,7 +64,7 @@ func TestRenderEveryPage(t *testing.T) {
 	}
 
 	page := PageData{
-		Desktops:     []desktop.Desktop{running, stopped},
+		Desktops:     []desktop.Desktop{running, stopped, crashed},
 		WorkerMemory: []memory.WorkerMemoryEntry{entry},
 		MemoryByDesktop: map[string][]memory.WorkerMemoryEntry{
 			running.ID: {entry},
@@ -83,6 +93,11 @@ func TestRenderEveryPage(t *testing.T) {
 	// so it is asserted here rather than trusted.
 	if !strings.Contains(index.String(), "ui=touch") {
 		t.Fatal("the dashboard no longer opens a desktop screen with ?ui=touch; mobile keyboard and pinch-zoom will not be injected")
+	}
+
+	// A crashed desktop's card is red and says why, not just "stopped".
+	if !strings.Contains(index.String(), `class="status crashed"`) || !strings.Contains(index.String(), "Desktop crashed: it exited with code 1") {
+		t.Fatal("a crashed desktop's card does not show that it crashed")
 	}
 
 	if err := renderer.RenderRequests(io.Discard, page); err != nil {

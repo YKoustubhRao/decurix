@@ -29,6 +29,12 @@ type Activity struct {
 	Request   string    `json:"request,omitempty"`
 	Step      string    `json:"step,omitempty"`
 	StartedAt time.Time `json:"started_at,omitempty"`
+
+	// Status and Crash are the desktop's own (desktop.Desktop's), so a card
+	// rendered before its desktop crashed or was started turns the right
+	// colour on the next poll instead of on the next page load.
+	Status string `json:"status,omitempty"`
+	Crash  string `json:"crash,omitempty"`
 }
 
 // activityHandler answers GET /api/desktops/activity?ids=a,b,c with each
@@ -42,6 +48,17 @@ func (s *Server) activityHandler(w http.ResponseWriter, r *http.Request) {
 
 	out := map[string]Activity{}
 
+	// List is cached and shared across callers, so this poll does not add a
+	// Docker call per card. A failure only leaves the cards' own status.
+	known := map[string]desktop.Desktop{}
+	if s.Desktops != nil {
+		if list, err := s.Desktops.List(r.Context()); err == nil {
+			for _, d := range list {
+				known[d.ID] = d
+			}
+		}
+	}
+
 	for i, raw := range strings.Split(r.URL.Query().Get("ids"), ",") {
 		if i >= maxActivityIDs {
 			break
@@ -52,7 +69,11 @@ func (s *Server) activityHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		out[id] = activityOf(s.Chat.Snapshot(id))
+		a := activityOf(s.Chat.Snapshot(id))
+		if d, ok := known[id]; ok {
+			a.Status, a.Crash = d.Status, d.Crash
+		}
+		out[id] = a
 	}
 
 	jsonResponse(w, out)

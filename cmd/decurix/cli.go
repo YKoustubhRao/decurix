@@ -513,6 +513,8 @@ func printChatEntry(e conversation.Entry) {
 		switch e.Kind {
 		case conversation.KindApproval:
 			label = "Agent (needs approval)"
+		case conversation.KindQuery:
+			label = "Agent (needs your answer)"
 		case conversation.KindError:
 			label = "Agent (error)"
 		default:

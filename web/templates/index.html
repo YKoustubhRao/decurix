@@ -71,6 +71,13 @@
   background:var(--surface-2);
 }
 
+.dcard-preview-placeholder.is-crashed{
+  padding:16px;
+  text-align:center;
+  color:var(--danger);
+  background:linear-gradient(var(--danger-soft),var(--danger-soft)),var(--surface-2);
+}
+
 .dcard-preview-placeholder.provisioning-placeholder{
   flex-direction:column;
   padding:16px;
@@ -158,7 +165,7 @@
   margin:0 15px 10px;
   padding:9px 11px;
   border-radius:10px;
-  background:var(--live-soft);
+  background:var(--busy-soft);
   color:var(--text);
   text-decoration:none;
   font-size:12.5px;
@@ -166,23 +173,18 @@
   min-width:0;
 }
 .dcard-activity[hidden]{display:none}
-.dcard-activity.is-ticket{background:var(--danger-soft)}
 .dcard-activity .act-dot{
   flex:none;
   width:8px;height:8px;margin-top:5px;border-radius:50%;
-  background:var(--live);
+  background:var(--busy);
   animation:pulse 1.4s ease-in-out infinite;
 }
-.dcard-activity.is-ticket .act-dot{background:var(--danger)}
 .dcard-activity .act-body{min-width:0;flex:1}
 .dcard-activity .act-head{display:flex;gap:6px;align-items:baseline;min-width:0}
 .dcard-activity .act-label{flex:none;font-weight:600}
 .dcard-activity .act-request{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dcard-activity .act-elapsed{flex:none;margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--text-3)}
 .dcard-activity .act-step{color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px}
-.status.working{background:var(--live-soft);color:var(--live)}
-.status.recording{background:var(--danger-soft);color:var(--danger)}
-.status.recording .dot{animation:pulse 1.2s ease-in-out infinite}
 
 /* ---------- compact desktop info ---------- */
 
@@ -927,8 +929,8 @@
             </div>
           </div>
         {{else}}
-          <div class="dcard-preview-placeholder">
-            Desktop is {{.Status}}
+          <div class="dcard-preview-placeholder{{if .Crash}} is-crashed{{end}}">
+            {{if .Crash}}Desktop crashed: {{.Crash}}. Start it again to carry on.{{else}}Desktop is {{.Status}}{{end}}
           </div>
         {{end}}
       </div>
@@ -960,8 +962,8 @@
           </div>
         </div>
 
-        <span class="status {{.Status}}" data-status-pill data-base-status="{{.Status}}">
-          <span class="dot"></span><span data-status-label>{{.Status}}</span>
+        <span class="status {{if .Crash}}crashed{{else}}{{.Status}}{{end}}" data-status-pill data-base-status="{{.Status}}"{{if .Crash}} data-crash="{{.Crash}}" title="Crashed: {{.Crash}}"{{end}}>
+          <span class="dot"></span><span data-status-label>{{if .Crash}}crashed{{else}}{{.Status}}{{end}}</span>
         </span>
       <details class="dcard-info">
         <summary title="Desktop info" aria-label="Desktop info">
@@ -973,8 +975,8 @@
         <div class="dcard-info-body">
           <div class="dcard-info-title">
             <span>Desktop details</span>
-            <span class="status {{.Status}}" data-status-pill data-base-status="{{.Status}}">
-              <span class="dot"></span><span data-status-label>{{.Status}}</span>
+            <span class="status {{if .Crash}}crashed{{else}}{{.Status}}{{end}}" data-status-pill data-base-status="{{.Status}}"{{if .Crash}} data-crash="{{.Crash}}" title="Crashed: {{.Crash}}"{{end}}>
+              <span class="dot"></span><span data-status-label>{{if .Crash}}crashed{{else}}{{.Status}}{{end}}</span>
             </span>
           </div>
           <dl class="specs">
@@ -2689,9 +2691,12 @@
     paintPills();
   }
 
-  /* A running desktop's pill says, in order of what matters to a person:
-     needs you (an open query), recording (a ticket), working (a task), or
-     just running. */
+  /* A desktop's pill is a traffic light. Running, it says, in order of what
+     matters to a person: needs you (an open query), recording (a ticket),
+     working (a task) - all yellow - or just running (green). Stopped on its
+     own, it is crashed (red). */
+  var PILL_STATES = ["running", "paused", "stopped", "crashed", "needs-you", "recording", "working"];
+
   function paintPills(){
     document.querySelectorAll(".dcard[data-desktop-id]").forEach(function(card){
       var id = card.dataset.desktopId;
@@ -2701,8 +2706,25 @@
       if(overlay){ overlay.hidden = !!now.running; }
 
       card.querySelectorAll("[data-status-pill]").forEach(function(pill){
-        var base = pill.dataset.baseStatus;
+        // The poll carries the desktop's own status, so a card rendered
+        // before its desktop crashed (or was started) follows it.
+        var base = now.status || pill.dataset.baseStatus;
+        var crash = now.status ? now.crash : pill.dataset.crash;
+
+        // A turn in progress means the desktop is up again, whatever the
+        // (cached) list last said about it.
+        var crashed = !!crash && !now.running;
+        if(crashed || (base === "stopped" && !now.running)){
+          var state = crashed ? "crashed" : "stopped";
+          PILL_STATES.forEach(function(c){ pill.classList.toggle(c, c === state); });
+          pill.title = crashed ? "Crashed: " + crash : "";
+          pill.querySelector("[data-status-label]").textContent = state;
+          return;
+        }
+        if(base === "stopped" || crash){ base = "running"; }
         if(base !== "running" && base !== "paused"){ return; }
+        pill.classList.remove("crashed", "stopped");
+        pill.title = "";
 
         // A card rendered while its desktop was paused (idle-pause) keeps
         // that status until the page reloads, but a request wakes the

@@ -336,8 +336,12 @@ func truncateUTF8(value string, limit int) string {
 // caller falls back to reading it off the note's own text.
 func chatKindFor(reported string) string {
 	switch strings.ToLower(strings.TrimSpace(reported)) {
-	case "query", "approval":
+	case "approval":
 		return conversation.KindApproval
+	case "query":
+		// A question is not a request for approval: "What should I call
+		// it?" labelled "Needs your approval" read as a safety pause.
+		return conversation.KindQuery
 	case "error":
 		return conversation.KindError
 	case "final", "message":
