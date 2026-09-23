@@ -160,22 +160,123 @@ func (s *Server) checkHostApps(ctx context.Context, targets []winhost.Target) (m
 	return s.hostGUI().Check(ctx, targets)
 }
 
-// startHostGUIAppAhead launches a host_gui app on the host in the background, under the same session id its packaged
-// launcher will ask for, the moment that launcher is written into a VM - at desktop creation or a later app copy -
-// rather than the moment a person actually opens it. winhost.Manager.Start keys its session by id, so the viewer's own
-// POST to /api/host-gui/start (once someone clicks the copied app) finds the app already running and joins it at
-// once instead of paying for the launch - and its own 20s-per-step timeouts - on that click.
-func (s *Server) startHostGUIAppAhead(id, target, args string) {
+// keptHostApp is one app kept running and ready on the host (winhost.Manager.Keep), as saved in the data directory so a
+// restart of the control plane keeps it ready too.
+type keptHostApp struct {
+	Desktop string `json:"desktop"`
+	ID      string `json:"id"`
+	Target  string `json:"target"`
+	Args    string `json:"args"`
+}
+
+// keptHostAppsFile is where the apps kept ready are saved, in HostGUIDataDir.
+const keptHostAppsFile = "hostgui-apps.json"
+
+// startHostGUIAppAhead keeps a host_gui app running on the host, under the same session id its packaged launcher will
+// ask for, from the moment that launcher is written into a VM - at desktop creation or a later app copy - rather than
+// the moment a person opens it. winhost.Manager.Start keys its session by id, so the viewer's own POST to
+// /api/host-gui/start finds the app already running and joins it at once; and when the person closes it, a fresh one
+// is started for next time.
+func (s *Server) startHostGUIAppAhead(desktopID, id, target, args string) {
 	if !hostGUIID.MatchString(id) || !hostGUISupported() {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-		defer cancel()
-		if _, err := s.hostGUI().Start(ctx, id, target, args); err != nil {
-			log.Printf("host-gui: could not start %s ahead of time: %v", id, err)
+	s.hostGUI().Keep(desktopID, id, target, args)
+
+	s.keptHostAppsMu.Lock()
+	defer s.keptHostAppsMu.Unlock()
+	if s.keptHostApps == nil {
+		s.keptHostApps = make(map[string]keptHostApp)
+	}
+	s.keptHostApps[id] = keptHostApp{Desktop: desktopID, ID: id, Target: target, Args: args}
+	s.saveKeptHostAppsLocked()
+}
+
+// forgetHostApps ends the apps kept ready for a VM that is being deleted: nobody can open them any more, and an app on a
+// private desktop is invisible to the person who would otherwise close it.
+func (s *Server) forgetHostApps(desktopID string) {
+	if hostGUISupported() {
+		s.hostGUI().ForgetDesktop(desktopID)
+	}
+	s.keptHostAppsMu.Lock()
+	defer s.keptHostAppsMu.Unlock()
+	changed := false
+	for id, app := range s.keptHostApps {
+		if app.Desktop == desktopID {
+			delete(s.keptHostApps, id)
+			changed = true
 		}
-	}()
+	}
+	if changed {
+		s.saveKeptHostAppsLocked()
+	}
+}
+
+// saveKeptHostAppsLocked writes the apps kept ready to the data directory; keptHostAppsMu must be held. Best-effort: a
+// failure only means a restart starts them when they are first opened instead of ahead of time.
+func (s *Server) saveKeptHostAppsLocked() {
+	if s.HostGUIDataDir == "" {
+		return
+	}
+	apps := make([]keptHostApp, 0, len(s.keptHostApps))
+	for _, app := range s.keptHostApps {
+		apps = append(apps, app)
+	}
+	data, err := json.MarshalIndent(apps, "", "  ")
+	if err != nil {
+		return
+	}
+	path := filepath.Join(s.HostGUIDataDir, keptHostAppsFile)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		log.Printf("host apps: could not save the apps kept ready: %v", err)
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		log.Printf("host apps: could not save the apps kept ready: %v", err)
+	}
+}
+
+// RestoreHostApps starts again, in the background, every app that was kept ready when the control plane last ran, for
+// the VMs that still exist. main calls it once HostGUIDataDir is set.
+func (s *Server) RestoreHostApps(ctx context.Context) {
+	if s.HostGUIDataDir == "" || !hostGUISupported() {
+		return
+	}
+	data, err := os.ReadFile(filepath.Join(s.HostGUIDataDir, keptHostAppsFile))
+	if err != nil {
+		return
+	}
+	var apps []keptHostApp
+	if err := json.Unmarshal(data, &apps); err != nil {
+		log.Printf("host apps: could not read the apps kept ready: %v", err)
+		return
+	}
+
+	exists := map[string]bool{}
+	listed := false
+	if s.Desktops != nil {
+		if desktops, err := s.Desktops.List(ctx); err == nil {
+			listed = true
+			for _, d := range desktops {
+				exists[d.ID] = true
+			}
+		}
+	}
+
+	s.keptHostAppsMu.Lock()
+	defer s.keptHostAppsMu.Unlock()
+	if s.keptHostApps == nil {
+		s.keptHostApps = make(map[string]keptHostApp)
+	}
+	for _, app := range apps {
+		if !hostGUIID.MatchString(app.ID) || (listed && !exists[app.Desktop]) {
+			continue
+		}
+		s.keptHostApps[app.ID] = app
+		s.hostGUI().Keep(app.Desktop, app.ID, app.Target, app.Args)
+	}
+	s.saveKeptHostAppsLocked() // drops the apps of VMs deleted while the control plane was down
 }
 
 // hostShellCmd builds a command that runs a shell script on the host with stdin left open for the caller: directly when

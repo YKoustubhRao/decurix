@@ -42,16 +42,27 @@ fi
 # about a second instead of several, which is what a copied web app's icon
 # (ChatGPT, Claude, ...) needs - people click it again and again while nothing
 # seems to happen. Idle it costs ~170MB, so it is on when this desktop has such
-# icons (~/.local/share/applications/*-host.desktop, written before the
-# container starts) and off on a plain desktop. DECURIX_PREWARM_CHROMIUM=1
-# forces it on, =0 forces it off. No window: the browser just waits.
+# icons (~/.local/share/applications/*-host.desktop) and off on a plain
+# desktop. DECURIX_PREWARM_CHROMIUM=1 forces it on, =0 forces it off. No
+# window: the browser just waits. A new desktop's apps are copied in while it
+# boots, so they may land after this runs: it keeps looking for them for a few
+# minutes rather than deciding from the first glance.
 prewarm="${DECURIX_PREWARM_CHROMIUM:-}"
-if [ -z "$prewarm" ] && ls "$HOME"/.local/share/applications/*-host.desktop >/dev/null 2>&1; then
-    prewarm=1
-fi
-if [ "$prewarm" = "1" ] && which chromium-browser >/dev/null 2>&1; then
+prewarm_chromium() {
+    which chromium-browser >/dev/null 2>&1 || return
     setsid chromium-browser --no-startup-window >> /tmp/chromium-prewarm.log 2>&1 < /dev/null &
     echo "[$(date)] Chromium pre-warmed in background (pid $!)" >> "$LOG"
+}
+has_host_apps() { ls "$HOME"/.local/share/applications/*-host.desktop >/dev/null 2>&1; }
+if [ "$prewarm" = "1" ] || { [ -z "$prewarm" ] && has_host_apps; }; then
+    prewarm_chromium
+elif [ -z "$prewarm" ]; then
+    (
+        for _ in $(seq 1 60); do
+            sleep 5
+            if has_host_apps; then prewarm_chromium; break; fi
+        done
+    ) &
 fi
 
 # Clear out core dumps a crashing Chromium already left behind, before core

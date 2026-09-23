@@ -236,16 +236,17 @@ func WarmHostApps() {
 	}
 }
 
-// hostAppStarter, when set, launches one app on a private host desktop ahead of time - under the same session id its
-// packaged launcher will ask for - so the window, and everything a cold start on the host costs (a browser's first
-// paint, a hidden profile's own first run), is already paid for before a person ever opens it.
+// hostAppStarter, when set, keeps one app running on a private host desktop ahead of time - under the same session id
+// its packaged launcher will ask for - so the window, and everything a cold start on the host costs (a browser's first
+// paint, a hidden profile's own first run), is already paid for before a person ever opens it. desktopID is the VM the
+// app was copied to, so its apps can be let go when it is deleted.
 var (
 	hostAppStarterMu sync.RWMutex
-	hostAppStarter   func(id, target, args string)
+	hostAppStarter   func(desktopID, id, target, args string)
 )
 
 // SetHostAppStarter installs what packDynamicApp calls, in the background, for every host_gui app it packages.
-func SetHostAppStarter(f func(id, target, args string)) {
+func SetHostAppStarter(f func(desktopID, id, target, args string)) {
 	hostAppStarterMu.Lock()
 	hostAppStarter = f
 	hostAppStarterMu.Unlock()
@@ -253,12 +254,12 @@ func SetHostAppStarter(f func(id, target, args string)) {
 
 // startHostAppAhead fires the installed starter, if any, and never blocks: packaging a launcher must not wait on the
 // app it names actually opening on the host.
-func startHostAppAhead(id, target, args string) {
+func startHostAppAhead(desktopID, id, target, args string) {
 	hostAppStarterMu.RLock()
 	f := hostAppStarter
 	hostAppStarterMu.RUnlock()
 	if f != nil {
-		f(id, target, args)
+		f(desktopID, id, target, args)
 	}
 }
 
@@ -2093,7 +2094,7 @@ func packDynamicApp(tw *tar.Writer, app HostAppItem, pc packContext) error {
 			// instead of waiting for that click, under the same session id the launcher itself will ask for, so
 			// Start finds it already running and joins it at once (see winhost.Manager.Start).
 			if target, args, ok := windowsTarget(app.HostCmd); ok {
-				startHostAppAhead(pc.sessionID(slug), target, args)
+				startHostAppAhead(pc.DesktopID, pc.sessionID(slug), target, args)
 			}
 		}
 

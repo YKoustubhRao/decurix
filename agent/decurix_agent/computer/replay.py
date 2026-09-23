@@ -633,6 +633,7 @@ def _find(step, ladder=None):
     """
 
     deadline = time.monotonic() + FIND_SECONDS
+    last_kin = None
 
     while True:
         observation = core.observe()
@@ -640,6 +641,18 @@ def _find(step, ladder=None):
 
         if element is not None or point is not None:
             return element, point, observation, None
+
+        # What was clicked reads differently because this run typed something
+        # else (the first result of another search): the same kind of thing in
+        # the same place in order is what the person clicked. Only once two
+        # looks at the screen agree on it, so a page still loading is not clicked.
+        if reason == LOOK_MISSING and step.get("follows_change") and not step.get("consequential"):
+            kin = _kin(step)
+            seen = visual.find_kin(kin, observation.get("frame")) if kin else None
+            if seen and seen["point"] == last_kin:
+                observation["kin"] = seen
+                return None, seen["point"], observation, None
+            last_kin = seen["point"] if seen else None
 
         if time.monotonic() >= deadline:
             # Two candidates is not "not there": a replay does not guess
@@ -681,6 +694,13 @@ def _run_step(step, values, ladder=None, report=None):
         if step.get("target") or step.get("point"):
             element, point, seen, repair = _find(step, ladder)
             target = {"path": element["path"]} if element is not None else {"point": tuple(point)}
+
+            if element is None and seen.get("kin"):
+                kin = seen["kin"]
+                (report or progress.emit)(
+                    f"Step {step['n']}: what was clicked reads differently now that the typed text has changed - "
+                    f"clicking the {_ordinal(kin['ordinal'])} line of text in its colour and size in that column, "
+                    f"as recorded, at {kin['point'][0]},{kin['point'][1]}")
 
             seen_look = (seen.get("visual") or {}).get(step.get("n")) if element is None else None
             if seen_look and seen_look["status"] == visual.FOUND and seen_look["offset"] != (0, 0):
@@ -731,6 +751,59 @@ def _await_checks(checks, observation, values):
 
 # Why a point click did not run when its picture was not found (resolve). A
 # person may still say the spot is right (skill_task's "click anyway").
+def _kin(step):
+    """
+    What kind of thing a point step clicked (visual.make_kin), read from the
+    frame its recording kept; None when there is no such frame any more. Read
+    once per run and kept on the run's copy of the step.
+    """
+
+    if "kin" in step:
+        return step["kin"]
+
+    kin = None
+    session, index = step.get("session"), step.get("event")
+    if session and index is not None:
+        try:
+            _, events = recording.load(session)
+            event = next((e for e in events if e.get("i") == index), None)
+            png = _Frames(session).png(event.get("before")) if event else None
+            if png:
+                width, height, rgb = visual.decode_png(png)
+                kin = visual.make_kin(rgb, width, height, step.get("point"))
+        except Exception as exc:  # best effort: without it the step halts, as it always has
+            log(f"replay: could not read what step {step.get('n')} clicked: {exc}")
+            kin = None
+
+    step["kin"] = kin
+    return kin
+
+
+def _ordinal(n):
+    n = int(n)
+    if 10 <= n % 100 <= 20:
+        return f"{n}th"
+    return f"{n}{ {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th') }"
+
+
+def _first_change(program, values):
+    """
+    The first step that types something other than what was recorded, or
+    None. After it, what the screen shows may read differently (the results of
+    another search), and a point click's look is not expected to match.
+    """
+
+    steps = []
+    for param in program.get("params") or []:
+        recorded = param.get("example") if param.get("example") is not None else param.get("default")
+        value = values.get(param["name"])
+        if recorded is None or value is None or isinstance(recorded, list) or isinstance(value, list):
+            continue
+        if str(value) != str(recorded):
+            steps.append(param["step"])
+    return min(steps) if steps else None
+
+
 LOOK_MISSING = ("what was around the click when it was recorded is not on the screen "
                 "(it looks different, or has moved too far), so a replay does not click there")
 
@@ -836,10 +909,14 @@ def run(program, params=None, start=1, report=None, ladder=None):
                       reason=f"the value for {param['label']} ({param['name']}) is wrong: {why}")
 
     _fit_screen([s for s in steps if s["n"] >= start], report)
+    changed_at = _first_change(program, values)
 
     for step in steps:
         if step["n"] < start:
             continue
+
+        if changed_at is not None and step["n"] > changed_at and step.get("look"):
+            step = dict(step, follows_change=True, session=step.get("session") or program.get("session"))
 
         report(f"Replay step {step['n']}/{total}: {step['summary']}")
 

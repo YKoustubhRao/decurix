@@ -322,6 +322,9 @@ func main() {
 	)
 
 	server.HostGUISecret = hostGUISecret
+	// The Windows apps copied into VMs are kept running on the host, ready to show the moment one is opened.
+	server.HostGUIDataDir = sqlitedb.DataDir()
+	go server.RestoreHostApps(context.Background())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
