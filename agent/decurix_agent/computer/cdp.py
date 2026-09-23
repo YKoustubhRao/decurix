@@ -610,6 +610,81 @@ def select_option(element, option):
     return result["label"]
 
 
+def set_file_input_files(element, files):
+    """
+    Set files on a file input element (<input type="file">), or an element wrapping/referencing one.
+    Uses Chrome DevTools Protocol DOM.setFileInputFiles.
+    """
+    if isinstance(files, (str, bytes)):
+        files = [files]
+    abs_files = [str(os.path.abspath(os.path.expanduser(f))) for f in files]
+    for f in abs_files:
+        if not os.path.exists(f):
+            raise ComputerError(f"file to upload does not exist: {f}")
+
+    page = _page_for(element)
+    try:
+        backend_id = element["handle"]["backend_id"]
+        object_id = _object(page, backend_id)
+        target_info = page.call("Runtime.callFunctionOn", {
+            "objectId": object_id,
+            "returnByValue": True,
+            "functionDeclaration": """function() {
+                if (this.tagName === 'INPUT' && (this.type || '').toLowerCase() === 'file') {
+                    return {found: true, is_self: true};
+                }
+                const input = this.querySelector('input[type="file"]');
+                if (input) return {found: true, is_child: true};
+                if (this.htmlFor) {
+                    const el = document.getElementById(this.htmlFor);
+                    if (el && el.tagName === 'INPUT' && (el.type || '').toLowerCase() === 'file') {
+                        return {found: true, is_for: true, id: this.htmlFor};
+                    }
+                }
+                return {found: false, tag: this.tagName};
+            }"""
+        }).get("result", {}).get("value") or {}
+
+        target_object_id = object_id
+        if target_info.get("is_child"):
+            resolved = page.call("Runtime.callFunctionOn", {
+                "objectId": object_id,
+                "functionDeclaration": "function() { return this.querySelector('input[type=\"file\"]'); }"
+            })
+            target_object_id = resolved.get("result", {}).get("objectId") or object_id
+        elif target_info.get("is_for"):
+            resolved = page.call("Runtime.callFunctionOn", {
+                "objectId": object_id,
+                "arguments": [{"value": target_info["id"]}],
+                "functionDeclaration": "function(id) { return document.getElementById(id); }"
+            })
+            target_object_id = resolved.get("result", {}).get("objectId") or object_id
+
+        try:
+            page.call("DOM.setFileInputFiles", {
+                "files": abs_files,
+                "objectId": target_object_id,
+            })
+        except Exception:
+            page.call("DOM.setFileInputFiles", {
+                "files": abs_files,
+                "backendNodeId": backend_id,
+            })
+
+        page.call("Runtime.callFunctionOn", {
+            "objectId": target_object_id,
+            "returnByValue": True,
+            "functionDeclaration": """function() {
+                this.dispatchEvent(new Event('input', {bubbles: true}));
+                this.dispatchEvent(new Event('change', {bubbles: true}));
+                return true;
+            }"""
+        })
+        return f"Uploaded {len(abs_files)} file(s): " + ", ".join(os.path.basename(f) for f in abs_files)
+    finally:
+        page.close()
+
+
 def scroll(element, direction, amount=3):
     delta = {"up": (0, -120), "down": (0, 120), "left": (-120, 0), "right": (120, 0)}.get(direction)
     if delta is None:

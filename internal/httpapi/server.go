@@ -186,6 +186,17 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/claude-auth/login/start", s.claudeAuthLoginStartHandler)
 	mux.HandleFunc("/api/claude-auth/login/code", s.claudeAuthLoginCodeHandler)
 	mux.HandleFunc("/api/claude-auth/login/cancel", s.claudeAuthLoginCancelHandler)
+	mux.HandleFunc("/api/personas", s.personasHandler)
+	mux.HandleFunc("/api/personas/get", s.personaHandler)
+	mux.HandleFunc("/api/personas/create-desktop", s.createPersonaDesktopHandler)
+	mux.HandleFunc("/api/teams", s.teamsHandler)
+	mux.HandleFunc("/api/teams/get", s.teamHandler)
+	mux.HandleFunc("/api/teams/deploy", s.deployTeamHandler)
+	mux.HandleFunc("/api/channels/inbound", s.inboundChannelHandler)
+	mux.HandleFunc("/api/skills/catalog", s.skillsCatalogHandler)
+	mux.HandleFunc("/api/skills/catalog/install", s.installCatalogSkillHandler)
+	mux.HandleFunc("/api/desktops/mode", s.workerModeHandler)
+	mux.HandleFunc("/api/desktops/shadowing", s.shadowingHandler)
 	mux.HandleFunc("/favicon.svg", s.faviconHandler)
 }
 

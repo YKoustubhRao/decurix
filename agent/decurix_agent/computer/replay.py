@@ -57,7 +57,7 @@ SUCCESS = (VERIFIED, COMPLETED_UNVERIFIED)
 
 # What a replay can do. A recorded action outside this (a middle click) is
 # still a step - one the run halts at, rather than skips and calls verified.
-REPLAYABLE = {"click", "double_click", "right_click", "type", "key", "scroll", "select", "drag", "open", "manual"}
+REPLAYABLE = {"click", "double_click", "right_click", "type", "key", "scroll", "select", "drag", "open", "manual", "upload"}
 
 # What a replay waits for when a step made it appear, most telling first.
 CHECKED_ROLES = {"dialog": 0, "alert": 0, "heading": 1, "status": 2,
@@ -68,7 +68,7 @@ MAX_ELEMENT_CHECKS = 2
 LOOK_KINDS = {"click", "double_click", "right_click"}
 
 # Steps that act on a control, as opposed to typing into whatever has focus or pressing a key.
-NEEDS_TARGET = {"click", "double_click", "right_click", "select", "drag"}
+NEEDS_TARGET = {"click", "double_click", "right_click", "select", "drag", "upload"}
 
 # What a control known only by its label may be: things a person acts on.
 ACTIVATING_ROLES = {"button", "link", "menuitem", "tab", "checkbox", "radio", "switch", "combobox",
@@ -154,7 +154,7 @@ def compile_program(meta, events, frames=None):
             step["target"] = {key: element[key] for key in ("role", "name", "path", "window_title", "source", "nth")
                               if element.get(key) is not None}
 
-        for key in ("point", "end", "keys", "option", "direction", "amount", "append"):
+        for key in ("point", "end", "keys", "option", "direction", "amount", "append", "files"):
             if event.get(key) not in (None, [], ""):
                 step[key] = event[key]
 
@@ -418,6 +418,9 @@ def _summary(step):
     if kind == "drag":
         end = step.get("end") or ["?", "?"]
         return f"drag {what} to {end[0]},{end[1]}"
+    if kind == "upload":
+        files_str = ", ".join(step.get("files") or [])
+        return f"upload {files_str} to {what}"
     return f"{kind.replace('_', ' ')} {what}".strip()
 
 
@@ -689,6 +692,11 @@ def _run_step(step, values, ladder=None, report=None):
                 else:
                     ladder.found(step, element, seen)
 
+        files = step.get("files")
+        if step.get("param") and values.get(step["param"]):
+            val = values.get(step["param"])
+            files = val if isinstance(val, list) else [val]
+
         return core.act(
             kind,
             text=values.get(step.get("param")) if kind == "type" else None,
@@ -698,6 +706,7 @@ def _run_step(step, values, ladder=None, report=None):
             option=step.get("option"),
             append=bool(step.get("append")),
             end=tuple(step["end"]) if step.get("end") else None,
+            files=files,
             **target,
         )
     except ComputerError as exc:

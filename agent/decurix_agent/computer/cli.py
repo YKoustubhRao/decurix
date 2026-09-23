@@ -41,6 +41,7 @@ USAGE = """gui - see and use this desktop's screen
   gui scroll [TARGET] down [N]   scroll up/down/left/right
   gui select TARGET "option"     choose an option in a dropdown
   gui open URL|FILE|APP          open a web page, a document, or an app
+  gui upload TARGET FILE...      upload file(s) to a file input element
   gui drag TARGET X,Y            drag an element (or a point) and drop it at X,Y
   gui verify [--text T]          look again: what changed, is T on screen?
 
@@ -210,6 +211,11 @@ def build_parser():
     select.add_argument("words", nargs="+")
     select.add_argument("--role")
     select.add_argument("--name")
+
+    upload = sub.add_parser("upload", add_help=False)
+    upload.add_argument("words", nargs="+")
+    upload.add_argument("--role")
+    upload.add_argument("--name")
 
     opener = sub.add_parser("open", add_help=False)
     opener.add_argument("target", nargs="+")
@@ -452,6 +458,16 @@ def run(argv):
         if not target:
             raise ComputerError("drag what? gui drag e12 640,360, or gui drag 100,200 640,360")
         result = core.act("drag", end=drop, **target)
+
+    elif command == "upload":
+        words = _strip_descriptor(list(args.words))
+        if len(words) < 2 and not (args.role or args.name):
+            raise ComputerError("upload needs a target element and at least one file path: gui upload e12 /path/to/doc.pdf")
+        if args.role or args.name:
+            target, files = _target(None, args), words
+        else:
+            target, files = _target(words[0], args), words[1:]
+        result = core.act("upload", files=files, **target)
 
     else:
         print(USAGE)

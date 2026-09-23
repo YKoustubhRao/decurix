@@ -275,6 +275,23 @@ def _generalise(steps, demos):
     used, params = set(), []
 
     for step in steps:
+        if step["kind"] == "upload" and step.get("files"):
+            label = step.get("label") or "file to upload"
+            name = replay._param_name(label, used)
+            step["param"] = name
+            sample = step["files"][0] if step["files"] else "document.pdf"
+            params.append({
+                "name": name,
+                "label": label,
+                "default": sample,
+                "example": sample,
+                "varies": True,
+                "step": step["n"],
+                "constraint": None,
+            })
+            step["summary"] = replay._summary(step)
+            continue
+
         if step["kind"] != "type":
             continue
 
@@ -363,6 +380,8 @@ def _loops_over_data(steps, start, length, reps, demos):
 
     for position in range(length):
         if blocks[0][position]["kind"] == "type" and len({block[position]["samples"][0] for block in blocks}) > 1:
+            return True
+        if blocks[0][position]["kind"] == "upload" and len({tuple(block[position].get("files", [])) for block in blocks}) > 1:
             return True
 
     return False
