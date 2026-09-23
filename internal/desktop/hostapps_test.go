@@ -1003,3 +1003,113 @@ func TestHasWindowsInstallNeedsWindowsInsideTheDrive(t *testing.T) {
 		t.Fatal("a drive holding a Windows folder was not recognised")
 	}
 }
+
+func TestChromeDiscoveredAndPackaged(t *testing.T) {
+	tempHome := t.TempDir()
+	chromeDir := filepath.Join(tempHome, ".config", "google-chrome")
+	if err := os.MkdirAll(filepath.Join(chromeDir, "Default"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(chromeDir, "Local State"), []byte(`{"profile":{"info_cache":{"Default":{"user_name":"test@example.com"}}}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	defs := getKnownAppDefs()
+	var chromeDef *knownAppDef
+	for i := range defs {
+		if defs[i].id == "chrome" {
+			chromeDef = &defs[i]
+			break
+		}
+	}
+	if chromeDef == nil {
+		t.Fatal("chrome definition not found in getKnownAppDefs")
+	}
+
+	paths := chromeDef.probeFn()
+	if len(paths) == 0 {
+		t.Fatal("expected chrome probeFn to discover profile directory")
+	}
+
+	buf := new(bytes.Buffer)
+	tw := tar.NewWriter(buf)
+	if err := chromeDef.packFn(tw, paths); err != nil {
+		t.Fatalf("chrome packFn failed: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tr := tar.NewReader(buf)
+	foundLocalState := false
+	foundSymlink := false
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hdr.Name == ".config/google-chrome/Local State" {
+			foundLocalState = true
+		}
+		if hdr.Name == ".config/chromium" && hdr.Typeflag == tar.TypeSymlink && hdr.Linkname == "google-chrome" {
+			foundSymlink = true
+		}
+	}
+	if !foundLocalState {
+		t.Error("expected .config/google-chrome/Local State to be packed")
+	}
+	if !foundSymlink {
+		t.Error("expected .config/chromium symlink to google-chrome to be created")
+	}
+}
+
+func TestScanLinuxDesktopFilesAndVet(t *testing.T) {
+	tempDir := t.TempDir()
+	desktopFile := filepath.Join(tempDir, "sample-editor.desktop")
+	content := `[Desktop Entry]
+Name=Sample Editor
+Comment=A sample editor app
+Exec=/usr/bin/sample-editor %F
+Icon=accessories-text-editor
+Terminal=false
+Type=Application
+Categories=Utility;TextEditor;
+`
+	if err := os.WriteFile(desktopFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	meta := parseDesktopFile(desktopFile)
+	if meta.Name != "Sample Editor" {
+		t.Errorf("parseDesktopFile got Name %q, want 'Sample Editor'", meta.Name)
+	}
+	if meta.Exec != "/usr/bin/sample-editor %F" {
+		t.Errorf("parseDesktopFile got Exec %q", meta.Exec)
+	}
+
+	app := HostAppItem{
+		ID:            "linux_sample_editor",
+		Name:          meta.Name,
+		Category:      categorizeAppName(meta.Name),
+		Description:   meta.Comment,
+		Detected:      true,
+		DetectedPaths: []string{desktopFile},
+		AppType:       "desktop_app",
+		HostCmd:       "/usr/bin/env /usr/bin/sample-editor",
+		Icon:          meta.Icon,
+	}
+
+	vetted := vetHostApps([]HostAppItem{app})
+	if len(vetted) != 1 {
+		t.Fatalf("expected 1 vetted app, got %d", len(vetted))
+	}
+	if vetted[0].Mode != ModeHostGUI {
+		t.Errorf("expected ModeHostGUI for desktop_app, got %q (reason: %q)", vetted[0].Mode, vetted[0].UnavailableReason)
+	}
+}

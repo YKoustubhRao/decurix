@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -132,6 +133,10 @@ func runDetectHostApps() []HostAppItem {
 
 		appType, mode := "app_session", ModeData
 		switch def.id {
+		case "chrome", "firefox":
+			appType = "browser_session"
+		case "vscode":
+			appType = "app_session"
 		case "claude", "chatgpt":
 			mode = ModeWeb
 		case "ssh", "gh", "docker", "gcloud", "azure":
@@ -314,6 +319,12 @@ func vetHostApps(apps []HostAppItem) []HostAppItem {
 		}
 		target, args, ok := windowsTarget(app.HostCmd)
 		if !ok {
+			if app.AppType == "desktop_app" {
+				app.Mode = ModeHostGUI
+				app.Description = "Runs on this computer; you see and use it in the VM"
+				kept = append(kept, app)
+				continue
+			}
 			app.Mode = ModeUnavailable
 			app.UnavailableReason = "Decurix could not resolve a safe hidden-host launch command for this app."
 			app.Description = app.UnavailableReason
@@ -539,6 +550,95 @@ func getKnownAppDefs() []knownAppDef {
 
 	return []knownAppDef{
 		{
+			id:              "chrome",
+			name:            "Google Chrome / Chromium",
+			category:        "Browsers & Web",
+			description:     "Profile, active cookies, sessions, login data (Cache stripped to save RAM)",
+			defaultSelected: false,
+			probeFn: func() []string {
+				var candidates []string
+				for _, h := range homes {
+					candidates = append(candidates,
+						filepath.Join(h, ".config", "google-chrome-for-testing"),
+						filepath.Join(h, ".config", "google-chrome"),
+						filepath.Join(h, ".config", "chromium"),
+						filepath.Join(h, "Library", "Application Support", "Google", "Chrome"),
+					)
+				}
+				// Windows WSL candidate paths
+				for _, cDrive := range cDrives {
+					pattern := filepath.Join(cDrive, "Users", "*", "AppData", "Local", "Google", "Chrome", "User Data")
+					if matches, err := filepath.Glob(pattern); err == nil && len(matches) > 0 {
+						candidates = append(candidates, matches...)
+					}
+					chromeExe := filepath.Join(cDrive, "Program Files", "Google", "Chrome", "Application", "chrome.exe")
+					if fi, err := os.Stat(chromeExe); err == nil && !fi.IsDir() {
+						candidates = append(candidates, chromeExe)
+					}
+				}
+				var found []string
+				for _, p := range candidates {
+					if _, err := os.Stat(p); err == nil {
+						found = append(found, p)
+					}
+				}
+				return found
+			},
+			packFn: func(tw *tar.Writer, paths []string) error {
+				for _, p := range paths {
+					if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+						_ = writeDirToTar(tw, p, ".config/google-chrome", isCacheOrTransient)
+						break
+					}
+				}
+				header := &tar.Header{
+					Name:     ".config/chromium",
+					Linkname: "google-chrome",
+					Typeflag: tar.TypeSymlink,
+					Mode:     0755,
+					ModTime:  time.Now(),
+					Uid:      1000,
+					Gid:      1000,
+				}
+				return tw.WriteHeader(header)
+			},
+		},
+		{
+			id:              "firefox",
+			name:            "Mozilla Firefox",
+			category:        "Browsers & Web",
+			description:     "Profiles, saved logins, cookies, tabs (Cache stripped)",
+			defaultSelected: false,
+			probeFn: func() []string {
+				var candidates []string
+				for _, h := range homes {
+					candidates = append(candidates,
+						filepath.Join(h, ".mozilla", "firefox"),
+						filepath.Join(h, "Library", "Application Support", "Firefox"),
+					)
+				}
+				for _, cDrive := range cDrives {
+					pattern := filepath.Join(cDrive, "Users", "*", "AppData", "Roaming", "Mozilla", "Firefox", "Profiles")
+					if matches, err := filepath.Glob(pattern); err == nil && len(matches) > 0 {
+						candidates = append(candidates, matches...)
+					}
+				}
+				var found []string
+				for _, p := range candidates {
+					if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+						found = append(found, p)
+					}
+				}
+				return found
+			},
+			packFn: func(tw *tar.Writer, paths []string) error {
+				if len(paths) == 0 {
+					return nil
+				}
+				return writeDirToTar(tw, paths[0], ".mozilla/firefox", isCacheOrTransient)
+			},
+		},
+		{
 			id:              "claude",
 			name:            "Claude",
 			category:        "Productivity",
@@ -732,6 +832,55 @@ Categories=Office;Utility;Network;
 					return nil
 				}
 				return writeDirToTar(tw, paths[0], ".docker", isCacheOrTransient)
+			},
+		},
+		{
+			id:              "vscode",
+			name:            "VS Code / OpenCode Settings",
+			category:        "Development",
+			description:     "Extensions, keybindings, settings, workspace storage",
+			defaultSelected: false,
+			probeFn: func() []string {
+				var candidates []string
+				for _, h := range homes {
+					candidates = append(candidates,
+						filepath.Join(h, ".config", "Code", "User"),
+						filepath.Join(h, ".vscode", "extensions"),
+						filepath.Join(h, ".opencode"),
+						filepath.Join(h, "Library", "Application Support", "Code", "User"),
+					)
+				}
+				for _, cDrive := range cDrives {
+					winCode := filepath.Join(cDrive, "Users", "*", "AppData", "Roaming", "Code", "User")
+					if matches, err := filepath.Glob(winCode); err == nil {
+						candidates = append(candidates, matches...)
+					}
+					winExt := filepath.Join(cDrive, "Users", "*", ".vscode", "extensions")
+					if matches, err := filepath.Glob(winExt); err == nil {
+						candidates = append(candidates, matches...)
+					}
+				}
+				var found []string
+				for _, p := range candidates {
+					if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+						found = append(found, p)
+					}
+				}
+				return found
+			},
+			packFn: func(tw *tar.Writer, paths []string) error {
+				for _, p := range paths {
+					dest := ".config/Code/User"
+					if strings.Contains(p, ".vscode") {
+						dest = ".vscode/extensions"
+					} else if strings.Contains(p, ".opencode") {
+						dest = ".opencode"
+					}
+					if err := writeDirToTar(tw, p, dest, isCacheOrTransient); err != nil {
+						return err
+					}
+				}
+				return nil
 			},
 		},
 		{
@@ -1457,6 +1606,158 @@ func scanInstalledWindowsBrowsers(seen map[string]bool) []HostAppItem {
 	return items
 }
 
+type desktopMeta struct {
+	Name      string
+	Exec      string
+	Icon      string
+	Comment   string
+	NoDisplay bool
+}
+
+func parseDesktopFile(path string) desktopMeta {
+	f, err := os.Open(path)
+	if err != nil {
+		return desktopMeta{}
+	}
+	defer f.Close()
+
+	var meta desktopMeta
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "Name=") && meta.Name == "" {
+			meta.Name = strings.TrimPrefix(line, "Name=")
+		} else if strings.HasPrefix(line, "Exec=") && meta.Exec == "" {
+			meta.Exec = strings.TrimPrefix(line, "Exec=")
+		} else if strings.HasPrefix(line, "Icon=") && meta.Icon == "" {
+			meta.Icon = strings.TrimPrefix(line, "Icon=")
+		} else if strings.HasPrefix(line, "Comment=") && meta.Comment == "" {
+			meta.Comment = strings.TrimPrefix(line, "Comment=")
+		} else if strings.HasPrefix(line, "NoDisplay=true") {
+			meta.NoDisplay = true
+		}
+	}
+	return meta
+}
+
+func scanLinuxDesktopFiles(seen map[string]bool) []HostAppItem {
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+
+	dirs := []string{
+		"/usr/share/applications",
+		"/usr/local/share/applications",
+	}
+	for _, h := range getHostHomeCandidates() {
+		dirs = append(dirs, filepath.Join(h, ".local", "share", "applications"))
+	}
+
+	var items []HostAppItem
+
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".desktop") {
+				continue
+			}
+
+			// Don't re-scan flowera host bridge desktop files
+			if strings.HasSuffix(e.Name(), "-host.desktop") {
+				continue
+			}
+
+			fullPath := filepath.Join(dir, e.Name())
+			meta := parseDesktopFile(fullPath)
+			if meta.Name == "" || meta.NoDisplay {
+				continue
+			}
+
+			normKey := strings.ToLower(meta.Name)
+			if seen[normKey] {
+				continue
+			}
+			seen[normKey] = true
+
+			id := "linux_" + sanitizeAppSlug(meta.Name)
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+
+			cleanExec := strings.Split(meta.Exec, " %")[0]
+			hostCmd := fmt.Sprintf("/usr/bin/env %s", cleanExec)
+
+			items = append(items, HostAppItem{
+				ID:              id,
+				Name:            meta.Name,
+				Category:        categorizeAppName(meta.Name),
+				Description:     meta.Comment,
+				Detected:        true,
+				DetectedPaths:   []string{fullPath},
+				DefaultSelected: false,
+				AppType:         "desktop_app",
+				HostCmd:         hostCmd,
+				Icon:            meta.Icon,
+			})
+		}
+	}
+
+	return items
+}
+
+func scanMacAppBundles(seen map[string]bool) []HostAppItem {
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+	home, _ := os.UserHomeDir()
+	dirs := []string{"/Applications", filepath.Join(home, "Applications")}
+
+	var items []HostAppItem
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if !e.IsDir() || !strings.HasSuffix(e.Name(), ".app") {
+				continue
+			}
+			appName := strings.TrimSuffix(e.Name(), ".app")
+			normKey := strings.ToLower(appName)
+			if seen[normKey] {
+				continue
+			}
+			seen[normKey] = true
+
+			fullPath := filepath.Join(dir, e.Name())
+			id := "mac_" + sanitizeAppSlug(appName)
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+
+			items = append(items, HostAppItem{
+				ID:              id,
+				Name:            appName,
+				Category:        categorizeAppName(appName),
+				Description:     "macOS application bundle",
+				Detected:        true,
+				DetectedPaths:   []string{fullPath},
+				DefaultSelected: false,
+				AppType:         "desktop_app",
+				HostCmd:         fmt.Sprintf(`open -a "%s"`, fullPath),
+				Icon:            pickAppIcon(appName),
+			})
+		}
+	}
+	return items
+}
+
 func exploreDynamicApps(seen map[string]bool) []HostAppItem {
 	var items []HostAppItem
 
@@ -1506,8 +1807,12 @@ func exploreDynamicApps(seen map[string]bool) []HostAppItem {
 		items = append(items, menuApps...)
 	}
 
-	// Only Windows apps are offered: a Linux or macOS app could only be started on the host's own screen, which is not
-	// the VM, so listing it would promise something the VM cannot show.
+	// 2. Linux Desktop files (.desktop)
+	items = append(items, scanLinuxDesktopFiles(seen)...)
+
+	// 3. macOS App Bundles (.app)
+	items = append(items, scanMacAppBundles(seen)...)
+
 	return vetHostApps(items)
 }
 
