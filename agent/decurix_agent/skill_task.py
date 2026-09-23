@@ -1,4 +1,5 @@
 import re
+import threading
 import traceback
 
 from decurix_agent import state, usage
@@ -287,7 +288,10 @@ def _learn_reply(paused, reply):
 
     if decision == "save":
         skills.save(skill)
-        _remember(skill)
+        # The skill is already durable and ready to run. Sending its optional
+        # summary to the control plane must never leave the teaching UI in
+        # "Processing" behind a slow or unreachable memory endpoint.
+        _remember_async(skill)
         write_final_reply(_learned_text(skill), kind="final", engine=LEARN_ENGINE)
     elif decision == "discard":
         skills.delete(skill["name"])
@@ -300,6 +304,12 @@ def _learn_reply(paused, reply):
                           kind="final", engine=LEARN_ENGINE)
     else:
         _ask(skill, result["note"])
+
+
+def _remember_async(skill):
+    """Record optional learned memory without delaying the completed lesson."""
+
+    threading.Thread(target=_remember, args=(skill,), daemon=True).start()
 
 
 def _remember(skill):

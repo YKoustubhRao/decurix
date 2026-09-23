@@ -38,6 +38,10 @@ type HostAppItem struct {
 	HostCmd         string `json:"host_cmd,omitempty"`
 	Icon            string `json:"icon,omitempty"`
 	TargetConfigDir string `json:"target_config_dir,omitempty"`
+	// UnavailableReason is set when discovery found the app but Decurix cannot
+	// safely show it inside a desktop. Keeping the item in discovery makes the
+	// scan complete without presenting a launcher that cannot work.
+	UnavailableReason string `json:"unavailable_reason,omitempty"`
 }
 
 // knownAppDef defines how to probe and migrate a specific application or session.
@@ -93,6 +97,7 @@ func DetectHostAppsForce(force bool) []HostAppItem {
 
 	if force {
 		forgetHostVerdicts()
+		forgetStartApps()
 	}
 	results := runDetectHostApps()
 	cachedHostApps = results
@@ -103,9 +108,8 @@ func DetectHostAppsForce(force bool) []HostAppItem {
 	return res
 }
 
-// DetectHostApps scans the host machine for what can be brought into a VM: credentials and settings that are copied as
-// files, web apps that open in the VM's own browser, and Windows programs that run hidden on the host and are shown in
-// the VM. An app the VM could not really show is left out rather than offered (see vetHostApps).
+// DetectHostApps scans the host machine for credentials and settings that can be copied, web apps, and Windows programs.
+// Every discovered Windows app is returned; vetHostApps marks the ones that cannot safely run in a VM as unavailable.
 // Results are cached in memory for sub-millisecond retrieval.
 func DetectHostApps() []HostAppItem {
 	return DetectHostAppsForce(false)
@@ -184,6 +188,9 @@ const (
 	ModeData = "data"
 	// ModeHelper is the command-line bridge every copy installs.
 	ModeHelper = "helper"
+	// ModeUnavailable is still a discovered app, but not one the desktop can
+	// launch. The UI shows it disabled together with UnavailableReason.
+	ModeUnavailable = "unavailable"
 )
 
 // HostAppChecker asks the host which Windows launch targets can run on a private desktop, and why not for the rest.
@@ -284,16 +291,19 @@ func needsSound(name string) bool {
 	return categorizeAppName(name) == "Media & Entertainment"
 }
 
-// vetHostApps keeps only the Windows apps that will really work in a VM, and says how. A service with a web version opens
-// that in the VM's browser; anything else must be a program the host confirms it can run on a private desktop (a Store
-// app that Windows only activates on the visible desktop cannot, nor can a shortcut that opens a folder). Apps that need
-// sound are dropped, and so is anything the host could not be asked about.
+// vetHostApps says how each discovered Windows app can be used. A service with a web version opens in the VM's browser;
+// anything else must be a program the host confirms it can run on a private desktop. Apps that cannot be launched remain
+// visible as disabled discovery results, with the reason, instead of silently disappearing from the scan.
 func vetHostApps(apps []HostAppItem) []HostAppItem {
 	var kept []HostAppItem
 	var pending []HostAppItem
 	var targets []winhost.Target
 	for _, app := range apps {
 		if needsSound(app.Name) {
+			app.Mode = ModeUnavailable
+			app.UnavailableReason = "This desktop has no audio device, so this app cannot be used here."
+			app.Description = app.UnavailableReason
+			kept = append(kept, app)
 			continue
 		}
 		if getWebAppURLForApp(app.Name, app.HostCmd) != "" {
@@ -304,6 +314,10 @@ func vetHostApps(apps []HostAppItem) []HostAppItem {
 		}
 		target, args, ok := windowsTarget(app.HostCmd)
 		if !ok {
+			app.Mode = ModeUnavailable
+			app.UnavailableReason = "Decurix could not resolve a safe hidden-host launch command for this app."
+			app.Description = app.UnavailableReason
+			kept = append(kept, app)
 			continue
 		}
 		pending = append(pending, app)
@@ -314,21 +328,37 @@ func vetHostApps(apps []HostAppItem) []HostAppItem {
 	}
 
 	verdicts := checkHostTargets(targets)
-	skipped := 0
 	for i, app := range pending {
 		reason, checked := verdicts[targets[i]]
-		if !checked || reason != "" {
-			skipped++
+		if !checked {
+			reason = "The host-app helper could not verify that this app can run on a hidden desktop."
+		}
+		if reason != "" {
+			app.Mode = ModeUnavailable
+			app.UnavailableReason = reason
+			app.Description = reason
+			kept = append(kept, app)
 			continue
 		}
 		app.Mode = ModeHostGUI
-		app.Description = "Runs on this computer on a hidden desktop; you see and use it in the VM"
+		if isBrowserApp(app.Name) {
+			app.Description = "Runs privately on this computer; your signed-in browser profile is copied the first time it opens"
+		} else {
+			app.Description = "Runs on this computer on a hidden desktop; you see and use it in the VM"
+		}
 		kept = append(kept, app)
 	}
-	if skipped > 0 {
-		log.Printf("hostapps: %d of %d Windows apps left out because they cannot run hidden on the host", skipped, len(pending))
-	}
 	return kept
+}
+
+func isBrowserApp(name string) bool {
+	lower := strings.ToLower(name)
+	for _, browser := range []string{"chrome", "chromium", "edge", "brave", "vivaldi", "opera"} {
+		if strings.Contains(lower, browser) {
+			return true
+		}
+	}
+	return false
 }
 
 // MigrateHostApps packages selected host application sessions, tokens, and configurations,
@@ -405,6 +435,10 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 			}
 			migratedCount++
 		} else if app, ok := appMap[id]; ok {
+			if app.Mode == ModeUnavailable {
+				log.Printf("hostapps: skipping unavailable app %s for %s: %s", app.ID, desktopID, app.UnavailableReason)
+				continue
+			}
 			if err := packDynamicApp(tw, app, packContext{DesktopID: sanitizedID, Secret: m.HostGUISecret}); err != nil {
 				log.Printf("hostapps: packing dynamic app %s for %s: %v", app.ID, desktopID, err)
 				continue
@@ -913,6 +947,13 @@ type rawStartApp struct {
 	AppID string `json:"AppID"`
 }
 
+func forgetStartApps() {
+	startAppsMu.Lock()
+	startAppsCached = nil
+	startAppsQueried = false
+	startAppsMu.Unlock()
+}
+
 func parseGetStartAppsJSON(data []byte) []rawStartApp {
 	data = bytes.TrimSpace(data)
 	if len(data) == 0 {
@@ -1353,6 +1394,69 @@ func scanWindowsStartMenu(seen map[string]bool) []HostAppItem {
 	return items
 }
 
+// scanInstalledWindowsBrowsers is a fallback for machines where Get-StartApps is unavailable or a browser did not add a
+// Start-menu shortcut. Browsers matter especially because the private-host launcher can initialize from the person's
+// signed-in profile; losing Chrome merely because shell discovery failed makes that profile impossible to select.
+func scanInstalledWindowsBrowsers(seen map[string]bool) []HostAppItem {
+	type browserInstall struct {
+		name     string
+		patterns []string
+	}
+	var items []HostAppItem
+	for _, drive := range getWindowsCDriveCandidates() {
+		installs := []browserInstall{
+			{"Google Chrome", []string{
+				filepath.Join(drive, "Program Files", "Google", "Chrome", "Application", "chrome.exe"),
+				filepath.Join(drive, "Program Files (x86)", "Google", "Chrome", "Application", "chrome.exe"),
+				filepath.Join(drive, "Users", "*", "AppData", "Local", "Google", "Chrome", "Application", "chrome.exe"),
+			}},
+			{"Microsoft Edge", []string{
+				filepath.Join(drive, "Program Files (x86)", "Microsoft", "Edge", "Application", "msedge.exe"),
+				filepath.Join(drive, "Program Files", "Microsoft", "Edge", "Application", "msedge.exe"),
+			}},
+			{"Brave", []string{
+				filepath.Join(drive, "Program Files", "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+				filepath.Join(drive, "Users", "*", "AppData", "Local", "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+			}},
+			{"Vivaldi", []string{
+				filepath.Join(drive, "Users", "*", "AppData", "Local", "Vivaldi", "Application", "vivaldi.exe"),
+				filepath.Join(drive, "Program Files", "Vivaldi", "Application", "vivaldi.exe"),
+			}},
+		}
+		for _, install := range installs {
+			key, id := strings.ToLower(install.name), "win_"+sanitizeAppSlug(install.name)
+			if seen[key] || seen[id] {
+				continue
+			}
+			var executable string
+			for _, pattern := range install.patterns {
+				matches, _ := filepath.Glob(pattern)
+				for _, match := range matches {
+					if fi, err := os.Stat(match); err == nil && !fi.IsDir() {
+						executable = match
+						break
+					}
+				}
+				if executable != "" {
+					break
+				}
+			}
+			if executable == "" {
+				continue
+			}
+			seen[key], seen[id] = true, true
+			items = append(items, HostAppItem{
+				ID: id, Name: install.name, Category: "Browsers & Web",
+				Description: "Windows browser", Detected: true,
+				DetectedPaths: []string{executable}, AppType: "windows_app",
+				HostCmd: fmt.Sprintf(`cmd.exe /c start "" "%s"`, wslToWindowsPath(executable)),
+				Icon:    pickAppIcon(install.name),
+			})
+		}
+	}
+	return items
+}
+
 func exploreDynamicApps(seen map[string]bool) []HostAppItem {
 	var items []HostAppItem
 
@@ -1393,6 +1497,9 @@ func exploreDynamicApps(seen map[string]bool) []HostAppItem {
 				Icon:            pickAppIcon(app.Name),
 			})
 		}
+
+		// Get-StartApps can be absent or incomplete; standard browser installs still need to expose the signed-in profile.
+		items = append(items, scanInstalledWindowsBrowsers(seen)...)
 
 		// Windows Start Menu (.lnk shortcuts including Chrome Apps & Edge Apps)
 		menuApps := scanWindowsStartMenu(seen)

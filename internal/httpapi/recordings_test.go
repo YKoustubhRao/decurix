@@ -60,6 +60,22 @@ func TestRecordingsRejectBadRequestsBeforeReachingADesktop(t *testing.T) {
 	}
 }
 
+func TestTicketToolbarKeepsALoadingStateUntilTheTicketAppears(t *testing.T) {
+	for _, want := range []string{
+		"var ticketPending = false",
+		"busy = true; ticketPending = true",
+		"Opening ticket…",
+		"decurix-ticket-spinner",
+		"clearPendingState",
+		"cancelPending",
+		"pendingTimer = setInterval",
+	} {
+		if !strings.Contains(ticketToolbar, want) {
+			t.Errorf("ticket toolbar is missing %q", want)
+		}
+	}
+}
+
 // A replay is refused while the desktop's agent has a task running or paused:
 // the desktop would take it as the reply to the pause, and the records would
 // describe a replay that never ran.

@@ -63,6 +63,19 @@ def _needs_no_backend(content):
     return bool(replay_task.parse(content)) or record_task.parse(content) is not None or skill_task.handles(content)
 
 
+def _can_run_without_backend(content):
+    """Whether this command can run now when the model backend is unavailable."""
+
+    if state.waiting_for_query:
+        # A reply to an ordinary agent question has to resume that agent, but
+        # replay and teaching questions are deterministic. Never leave a
+        # person's Learn answer waiting for Ollama: it only saves the answer
+        # and either asks the next fixed question or writes the skill.
+        return state.paused_replay is not None or state.paused_skill is not None
+
+    return _needs_no_backend(content)
+
+
 HANDLED_SUFFIX = ".done"
 
 
@@ -147,9 +160,9 @@ def command_watcher():
                 # turned into a query asking a human to do something
                 # about a backend that was about to come up on its own.
                 # Waiting costs nothing and needs no one.
-                # A recording or a replay uses no model, so neither waits for
-                # one - unless the agent is paused, when it is a reply.
-                if not state.backend_ready and (state.waiting_for_query or not _needs_no_backend(content)):
+                # Recording, replay and teaching are deterministic. Only a
+                # reply that must resume an ordinary agent needs the model.
+                if not state.backend_ready and not _can_run_without_backend(content):
                     _report_queued(path.name)
                     continue
 
