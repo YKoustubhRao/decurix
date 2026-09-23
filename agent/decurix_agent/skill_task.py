@@ -385,6 +385,8 @@ def _learn_reply(paused, reply):
             "to carry on where we left off.", kind="final", engine=LEARN_ENGINE)
         return
 
+    # The last question takes a name, which moves the skill to another file.
+    drafted_as = skill["name"]
     result = learning.answer(skill, question, reply)
 
     if not result["understood"]:
@@ -395,6 +397,8 @@ def _learn_reply(paused, reply):
 
     if decision == "save":
         skills.save(skill)
+        if skill["name"] != drafted_as:
+            skills.delete(drafted_as)
         # The skill is already durable and ready to run. Sending its optional
         # summary to the control plane must never leave the teaching UI in
         # "Processing" behind a slow or unreachable memory endpoint.

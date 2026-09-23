@@ -204,8 +204,8 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
 .bubble pre code{padding:0;background:none;font-size:12px;line-height:1.6}
 .entry.from-user .bubble pre{background:rgba(0,0,0,.22)}
 
-/* An approval request is the one entry that blocks the agent until a
-   human answers, so it never renders as an ordinary bubble. */
+/* An approval request or a question is the one entry that blocks the agent
+   until a human answers, so it never renders as an ordinary bubble. */
 .entry.is-approval .bubble,
 .entry.is-error .bubble{
   background:var(--surface);
@@ -842,6 +842,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
 
   var FLAGS = {
     approval: {label: "Needs your approval", icon: "#i-alert"},
+    query: {label: "Needs your answer", icon: "#i-alert"},
     error: {label: "Failed", icon: "#i-alert"}
   };
 
@@ -908,7 +909,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
     var row = document.createElement("div");
     row.className = "entry " + (fromUser ? "from-user" : "from-agent");
 
-    if(entry.kind === "approval"){ row.classList.add("is-approval"); }
+    if(entry.kind === "approval" || entry.kind === "query"){ row.classList.add("is-approval"); }
     if(entry.kind === "error"){ row.classList.add("is-error"); }
 
     var avatar = document.createElement("div");

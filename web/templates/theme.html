@@ -44,6 +44,8 @@ try{
   --idle-soft:rgba(139,135,121,.14);
   --danger:#a03528;
   --danger-soft:rgba(160,53,40,.09);
+  --busy:#9a6a00;
+  --busy-soft:rgba(196,140,0,.14);
 
   --btn:#1c1b18;
   --btn-hover:#35322b;
@@ -86,6 +88,8 @@ try{
     --idle-soft:rgba(123,118,107,.16);
     --danger:#e8836f;
     --danger-soft:rgba(232,131,111,.13);
+    --busy:#e0b243;
+    --busy-soft:rgba(224,178,67,.15);
 
     --btn:#f2f0ea;
     --btn-hover:#ffffff;
@@ -120,6 +124,8 @@ try{
   --idle-soft:rgba(123,118,107,.16);
   --danger:#e8836f;
   --danger-soft:rgba(232,131,111,.13);
+  --busy:#e0b243;
+  --busy-soft:rgba(224,178,67,.15);
 
   --btn:#f2f0ea;
   --btn-hover:#ffffff;
@@ -438,21 +444,28 @@ svg{display:block;flex:none}
   text-transform:capitalize
 }
 .status.running{background:var(--live-soft);color:var(--live)}
-.status.provisioning{background:rgba(234, 179, 8, 0.16);color:#eab308}
+.status.provisioning{background:var(--busy-soft);color:var(--busy)}
 .status.paused{background:rgba(56, 189, 248, 0.16);color:#38bdf8}
 .status.stopped{background:var(--idle-soft);color:var(--text-2)}
 
-/* A desktop with an open query note takes this over its own "running" pill -
-   one status slot, not a second competing badge - using the same accent
-   already used for the nav's query count rather than a new hue: Decurix's
-   palette is deliberately three semantic colors (live/idle/danger) plus
-   accent, not a wider status-color system. */
-.status.needs-you{background:var(--accent-soft);color:var(--accent)}
-.status.needs-you .dot{animation:none}
+/* A desktop's pill is a traffic light: green (live) is up and free, yellow
+   (busy) is doing something - working, recording, or waiting on a person
+   mid-task - and red (danger) is crashed. A desktop with an open query note
+   takes the one status slot over from its own "running" state instead of
+   adding a second competing badge. */
+.status.working,
+.status.recording,
+.status.needs-you{background:var(--busy-soft);color:var(--busy)}
+.status.crashed{background:var(--danger-soft);color:var(--danger)}
+.status.needs-you .dot,
+.status.crashed .dot{animation:none}
 .status.paused .dot{animation:none}
 
 .dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
-.status.running .dot{animation:pulse 2.4s ease-in-out infinite}
+.status .dot{width:7px;height:7px;box-shadow:0 0 0 2px color-mix(in srgb, currentColor 22%, transparent)}
+.status.running .dot{animation:none}
+.status.working .dot,
+.status.recording .dot{animation:pulse 1.2s ease-in-out infinite}
 .status.provisioning .dot{animation:pulse 1.2s ease-in-out infinite}
 
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}

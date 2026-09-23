@@ -30,11 +30,12 @@ const (
 	RoleAgent = "agent"
 )
 
-// Kinds an agent entry can be: a normal reply, a request for human approval
-// or a query (the agent is blocked until a reply arrives), or a failure.
+// Kinds an agent entry can be: a normal reply, a request for human approval,
+// a question (both block the agent until a reply arrives), or a failure.
 const (
 	KindEntry    = "entry"
 	KindApproval = "approval"
+	KindQuery    = "query"
 	KindError    = "error"
 )
 
@@ -289,7 +290,7 @@ func (s *Store) AppendAgentReply(desktopID, taskID, kind, content string) Entry 
 	current := s.threadFor(desktopID)
 
 	switch kind {
-	case KindEntry, KindApproval, KindError:
+	case KindEntry, KindApproval, KindQuery, KindError:
 	default:
 		kind = KindEntry
 	}

@@ -72,6 +72,17 @@ NO = re.compile(r"^\W*(no|n|nope|nah|discard|cancel|throw|delete|don'?t|do not)\
 EACH = re.compile(r"\b(each|list|per item|every item|items?|rows?|repeat|loop|yes|y)\b", re.I)
 FIXED = re.compile(r"\b(fixed|once|as recorded|just those|only those|exactly|no|n)\b", re.I)
 NOTHING = re.compile(r"^\W*(skip|none|n/?a|nothing|no|-)\W*$", re.I)
+# The last question takes a name, so a yes or a no there has to be the whole
+# reply: "Save invoice" and "Delete old files" are names, not answers.
+KEEP_NAME = re.compile(
+    r"^\W*(?:(?:yes|y|yeah|yep|ok|okay|sure|confirm|looks good|go ahead)"
+    r"(?:[\s,.!-]+(?:please|thanks?|save(?: it)?|keep(?: it)?))*|(?:save|keep)(?: it| that)?)\W*$", re.I)
+THROW_AWAY = re.compile(
+    r"^\W*(?:(?:no|n|nope|nah)(?:[\s,.!-]+(?:thanks?|throw (?:it )?away|discard(?: it)?|delete(?: it)?|"
+    r"don'?t save(?: it)?))*|discard(?: it)?|cancel|throw (?:it )?away|delete(?: it)?|"
+    r"(?:don'?t|do not) save(?: it)?)\W*$", re.I)
+# The longest skill name a person can give, as build() keeps it.
+MAX_NAME = 80
 
 CHOICES = {
     "variable": [("same", SAME), ("changes", CHANGES)],
@@ -80,7 +91,7 @@ CHOICES = {
     "unsupported": [("skip", SKIP), ("manual", MANUAL)],
     "start": [("yes", YES), ("no", NO)],
     "loop": [("each", EACH), ("fixed", FIXED)],
-    "confirm": [("yes", YES), ("no", NO)],
+    "confirm": [("yes", KEEP_NAME), ("no", THROW_AWAY)],
 }
 
 # What is assumed when a question was not understood twice: the answer that
@@ -144,6 +155,7 @@ def build(sources, name=None):
         "schema": skills.SCHEMA,
         "name": name,
         "title": given or title,
+        "named": bool(given),
         "goal": goal,
         "status": skills.DRAFT,
         "sources": [program["session"] for _, _, program in programs],
@@ -653,7 +665,13 @@ def _confirm(skill):
     if skill.get("done_when"):
         parts.append(f"It is finished when: {el._quote(skill['done_when'], 200)}.")
 
-    parts.append(f"Save it as `{skill['name']}`? Reply `yes` to save it, or `no` to throw it away.")
+    if skill.get("named"):
+        parts.append(f"I will save it as \"{skill['title']}\". Reply `yes` to save it, a different name to call it "
+                     "that instead, or `no` to throw it away.")
+    else:
+        parts.append(f"What should I call it? Reply with a name to save it (`yes` keeps \"{skill['title']}\"), "
+                     "or `no` to throw it away.")
+
     return _question("confirm", "confirm", " ".join(parts))
 
 
@@ -684,6 +702,11 @@ def answer(skill, question, reply):
         skill["answers"][qid] = text[:300]
         return {"understood": True, "note": "", "decision": None}
 
+    # Anything but a yes or a no is the name to save it as; a reply with
+    # nothing to name it by is unclear, like any other.
+    if kind == "confirm" and not KEEP_NAME.match(text) and not THROW_AWAY.match(text) and rename(skill, text):
+        text = "yes"
+
     choice = _choose(kind, text)
     note = ""
 
@@ -707,6 +730,24 @@ def answer(skill, question, reply):
         skill["unclear"].pop(qid, None)
 
     return {"understood": True, "note": note, "decision": decision}
+
+
+def rename(skill, given):
+    """
+    Call a skill what a person named it: its title becomes the name as typed,
+    its file name a free slug of it. The goal (what a request is matched
+    against) stays what was recorded. False when the name has nothing to slug.
+    """
+
+    given = " ".join((given or "").split()).strip("`\"' ")[:MAX_NAME]
+    if not re.search(r"[A-Za-z0-9]", given):
+        return False
+
+    taken = {s["name"] for s in skills.all_skills()} - {skill["name"]}
+    skill["name"] = skills.unique_name(given, taken)
+    skill["title"] = given
+    skill["named"] = True
+    return True
 
 
 def _apply_loop(skill, loop, choice):
