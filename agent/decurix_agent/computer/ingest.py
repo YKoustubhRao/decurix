@@ -33,7 +33,8 @@ from decurix_agent.computer import approval, privacy, recording
 CHROME_RECORDER = "chrome-recorder"
 BROWSERGYM = "browsergym"
 OPENHANDS = "openhands"
-FORMATS = (CHROME_RECORDER, BROWSERGYM, OPENHANDS)
+WORKFLOW_DEMO = "workflow-demo"
+FORMATS = (CHROME_RECORDER, BROWSERGYM, OPENHANDS, WORKFLOW_DEMO)
 
 MAX_STEPS = 2000
 
@@ -68,9 +69,14 @@ def detect(data):
 
     steps = data.get("steps") if isinstance(data, dict) else None
 
+    if isinstance(data, dict) and ("workflow" in data or "apps" in data):
+        return WORKFLOW_DEMO
+
     if isinstance(steps, list) and steps and all(isinstance(s, dict) for s in steps[:50]):
         if all(isinstance(s.get("type"), str) for s in steps[:50]):
             return CHROME_RECORDER
+        if any(s.get("kind") in ("open", "upload", "click", "type", "select", "drag") for s in steps[:50]):
+            return WORKFLOW_DEMO
         # BrowserGym / AgentLab: a step is an action string and what it was chosen from.
         if all(isinstance(s.get("action"), str) for s in steps[:50]):
             return BROWSERGYM
@@ -374,6 +380,9 @@ def import_recording(data, title=None, fmt=None):
     if fmt == CHROME_RECORDER:
         parsed = from_chrome_recorder(data)
         parsed.setdefault("source_steps", len(data["steps"]))
+    elif fmt == WORKFLOW_DEMO:
+        from decurix_agent.computer import ingest_workflows
+        parsed = ingest_workflows.from_workflow_demo(data)
     elif fmt in (BROWSERGYM, OPENHANDS):
         from decurix_agent.computer import ingest_agents
 

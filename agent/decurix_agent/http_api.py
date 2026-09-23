@@ -5,7 +5,19 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler
 
 from decurix_agent import record_task, replay_task, skill_task
-from decurix_agent.computer import demonstration, ingest, lint, recording, replay, skillmd, skills, workflow
+from decurix_agent.computer import (
+    catalog,
+    demonstration,
+    ingest,
+    lint,
+    modes,
+    recording,
+    replay,
+    shadowing,
+    skillmd,
+    skills,
+    workflow,
+)
 from decurix_agent.computer.errors import ComputerError
 from decurix_agent.logging_utils import log
 from decurix_agent.messaging import save_request
@@ -178,6 +190,24 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 3 and parts[0] == "recordings" and parts[2] == "export":
                 return self._export(parts[1])
 
+            if parts == ["mode"]:
+                return self._json(200, modes.stage_summary())
+
+            if parts == ["shadowing", "metrics"]:
+                return self._json(200, shadowing.get_metrics())
+
+            if parts == ["shadowing", "observations"]:
+                return self._json(200, {"observations": shadowing.get_recent_observations()})
+
+            if parts == ["catalog"]:
+                return self._json(200, {"catalog": catalog.get_catalog()})
+
+            if len(parts) == 2 and parts[0] == "catalog":
+                item = catalog.get_catalog_skill(parts[1])
+                if not item:
+                    raise FileNotFoundError(f"no catalog skill {parts[1]}")
+                return self._json(200, {"skill": item})
+
             return False
 
         self._guarded(route)
@@ -277,6 +307,21 @@ class Handler(BaseHTTPRequestHandler):
 
                 if parts[2] == "run":
                     return self._run_skill(parts[1], data)
+
+            if parts == ["mode"]:
+                stage = data.get("stage")
+                if not stage:
+                    raise ValueError("stage is required")
+                modes.set_stage(stage)
+                return self._json(200, modes.stage_summary())
+
+            if parts == ["catalog", "install"]:
+                name = data.get("name")
+                if not name:
+                    raise ValueError("name is required")
+                target_name = data.get("target_name")
+                installed = catalog.install_catalog_skill(name, target_name)
+                return self._json(200, {"status": "ok", "skill": installed})
 
             return False
 
