@@ -501,6 +501,9 @@ func (s *Server) deleteDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	// forever, failing silently every time it fires.
 	s.Schedules.DeleteForDesktop(desktop.SanitizeID(id))
 
+	// Its Windows apps were kept running on the host for it; nobody can open them now.
+	s.forgetHostApps(desktop.SanitizeID(id))
+
 	jsonResponse(w, map[string]string{
 		"status": "deleted",
 	})

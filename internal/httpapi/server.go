@@ -65,6 +65,10 @@ type Server struct {
 	HostGUISecret []byte
 	hostGUIAuthMu sync.Mutex
 	hostGUIAuth   map[string]string
+	// HostGUIDataDir is where the apps kept ready on the host are saved (RestoreHostApps); "" keeps them in memory only.
+	HostGUIDataDir string
+	keptHostAppsMu sync.Mutex
+	keptHostApps   map[string]keptHostApp
 }
 
 // NewServer creates a Server from its component stores/managers.

@@ -818,3 +818,131 @@ func waitUntil(t *testing.T, what string, ok func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// waitFor polls cond for up to 6s.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(6 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal(what)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestAKeptAppIsRunningBeforeAnybodyOpensItAndComesBackAfterItCloses is what makes opening a copied Windows app
+// immediate: it is already running when a VM's viewer asks for it, and closing it (from inside the app, or by closing
+// the viewer) starts a fresh one for next time.
+func TestAKeptAppIsRunningBeforeAnybodyOpensItAndComesBackAfterItCloses(t *testing.T) {
+	old := keepRelaunch
+	keepRelaunch = 50 * time.Millisecond
+	defer func() { keepRelaunch = old }()
+
+	start, starts := fakeHelper(t, fakeOpts{})
+	m := NewManager(start)
+	defer m.waitIdle()
+	defer m.StopAll()
+
+	m.Keep("vm1", "vm1-app", `C:\a.exe`, "")
+	waitFor(t, "a kept app was not started ahead of time", func() bool { return m.Alive("vm1-app") })
+	first, _ := m.Get("vm1-app")
+
+	// The person closes the app from inside it.
+	if _, err := first.Do("close"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "a kept app that was closed was not started again", func() bool {
+		s, ok := m.Get("vm1-app")
+		return ok && s != first
+	})
+
+	// The person closes the window showing it.
+	second, _ := m.Get("vm1-app")
+	m.Stop("vm1-app")
+	waitFor(t, "a kept app whose viewer was closed was not started again", func() bool {
+		s, ok := m.Get("vm1-app")
+		return ok && s != second
+	})
+
+	// Opening it joins the one waiting: no launch while somebody watches.
+	before := atomic.LoadInt32(starts)
+	waiting, _ := m.Get("vm1-app")
+	s, err := m.Start(context.Background(), "vm1-app", `C:\a.exe`, "")
+	if err != nil || s != waiting {
+		t.Fatalf("opening a kept app started another one (%v)", err)
+	}
+	if atomic.LoadInt32(starts) != before {
+		t.Error("opening a kept app started a helper")
+	}
+}
+
+func TestAForgottenAppIsEndedAndNotStartedAgain(t *testing.T) {
+	old := keepRelaunch
+	keepRelaunch = 50 * time.Millisecond
+	defer func() { keepRelaunch = old }()
+
+	start, _ := fakeHelper(t, fakeOpts{})
+	m := NewManager(start)
+	defer m.waitIdle()
+	defer m.StopAll()
+
+	m.Keep("vm1", "vm1-a", `C:\a.exe`, "")
+	m.Keep("vm2", "vm2-a", `C:\a.exe`, "")
+	waitFor(t, "kept apps were not started", func() bool { return m.Alive("vm1-a") && m.Alive("vm2-a") })
+	s, _ := m.Get("vm1-a")
+
+	m.ForgetDesktop("vm1")
+	if s.Alive() {
+		t.Fatal("the app of a deleted VM was left running on the host")
+	}
+	time.Sleep(300 * time.Millisecond)
+	if m.Alive("vm1-a") {
+		t.Error("the app of a deleted VM was started again")
+	}
+	if !m.Alive("vm2-a") {
+		t.Error("forgetting one VM's apps ended another's")
+	}
+}
+
+// TestAKeptAppNobodyHasOpenedIsNotEndedForBeingUnwatched: ending it would only start it again, and the whole point is that
+// it is there when somebody first opens it, however long that takes.
+func TestAKeptAppNobodyHasOpenedIsNotEndedForBeingUnwatched(t *testing.T) {
+	oldIdle, oldPrelaunch := idleStop, prelaunchIdleStop
+	idleStop, prelaunchIdleStop = 100*time.Millisecond, 100*time.Millisecond
+	defer func() { idleStop, prelaunchIdleStop = oldIdle, oldPrelaunch }()
+
+	start, _ := fakeHelper(t, fakeOpts{})
+	m := NewManager(start)
+	defer m.waitIdle()
+	defer m.StopAll()
+
+	m.Keep("vm1", "vm1-a", `C:\a.exe`, "")
+	waitFor(t, "a kept app was not started", func() bool { return m.Alive("vm1-a") })
+	s, _ := m.Get("vm1-a")
+	time.Sleep(1500 * time.Millisecond)
+	if !s.Alive() {
+		t.Fatal("a kept app nobody had opened yet was ended for being unwatched")
+	}
+}
+
+// TestOpeningAnAppThatIsClosingWaitsForTheNextOne: the closing one and a new one would share a private desktop, and the
+// closing one's shutdown ends every window on it.
+func TestOpeningAnAppThatIsClosingWaitsForTheNextOne(t *testing.T) {
+	m, first := startFake(t, "closing")
+	if _, err := first.Do("close"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the app never said it had closed", first.ending)
+
+	s, err := m.Start(context.Background(), "closing", `C:\a.exe`, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s == first {
+		t.Fatal("opening an app that was closing joined the closing one")
+	}
+	if first.Alive() {
+		t.Error("a new app was started on the private desktop of one still closing")
+	}
+}
