@@ -415,6 +415,8 @@ var panel = document.getElementById("decurix-ticket-panel");
 
 var ticket = null;        // last known {task_id, title, session_id, recording, paused, events}, or null
 var lastSession = null;   // the most recent session_id seen, kept after End clears the ticket - for the download link
+var lastTitle = "";       // that ticket's title - what the saved recording is called until someone renames it
+var draftName = null;     // the "Recording saved" view's name box, while it differs from lastTitle
 var busy = false;         // an action is in flight - buttons disabled meanwhile
 var ticketPending = false; // create was accepted/in flight, but the agent has not exposed the ticket yet
 var pendingTimer = null;
@@ -486,6 +488,7 @@ function act(action, fields){
 function setTicket(next){
   if(next){ clearPendingState(); }
   if(next && next.session_id){ lastSession = next.session_id; }
+  if(next){ lastTitle = next.title || ""; draftName = null; }
   if(next){ endedStarted = ""; }   // a new ticket: the last recording's replay/lesson is history
 
   // A ticket ending - however that happens, not just through this tab's own
@@ -840,8 +843,13 @@ function startFromRecording(kind){
   // a real conflict, so give it a few tries before showing the reason.
   var tries = 0;
 
+  // Learn names the skill with whatever the name box says; the recording was
+  // renamed to it already (saveName), or is being now.
+  var fields = {session: lastSession};
+  if(kind === "learn"){ fields.name = currentName(); }
+
   (function attempt(){
-    api("/api/desktops/recordings/" + kind, {session: lastSession}).then(function(){
+    api("/api/desktops/recordings/" + kind, fields).then(function(){
       busy = false;
       endedStarting = "";
       endedStarted = kind;
@@ -857,6 +865,25 @@ function startFromRecording(kind){
   })();
 }
 
+function currentName(){
+  return (draftName === null ? lastTitle : draftName).trim();
+}
+
+// Renames the saved recording to what the name box says. The skill Learn
+// teaches from it is called the same (startFromRecording).
+function saveName(){
+  var wanted = currentName();
+  if(!lastSession || !wanted || wanted === lastTitle){ return; }
+
+  api("/api/desktops/recordings/update", {session: lastSession, title: wanted}).then(function(){
+    lastTitle = wanted;
+    if(draftName !== null && draftName.trim() === wanted){ draftName = null; }
+  }, function(e){
+    error = e.message;
+    render();
+  });
+}
+
 function renderJustEnded(){
   panel.innerHTML = "";
 
@@ -864,6 +891,23 @@ function renderJustEnded(){
   title.id = "decurix-ticket-title";
   title.textContent = "Recording saved";
   panel.appendChild(title);
+
+  // Its name - the ticket's task until someone changes it here. Carried
+  // across re-renders the way draftTask is.
+  var nameRow = row(false);
+  var name = document.createElement("input");
+  name.type = "text";
+  name.maxLength = 80;
+  name.autocomplete = "off";
+  name.placeholder = "Name this recording";
+  name.setAttribute("aria-label", "Name of the recording and the skill taught from it");
+  name.value = draftName === null ? lastTitle : draftName;
+  name.disabled = busy;
+  name.addEventListener("input", function(){ draftName = name.value; });
+  name.addEventListener("change", saveName);
+  name.addEventListener("keydown", function(e){ if(e.key === "Enter"){ e.preventDefault(); name.blur(); } });
+  nameRow.appendChild(name);
+  panel.appendChild(nameRow);
 
   if(endedStarted){
     var started = document.createElement("div");
@@ -897,7 +941,7 @@ function renderJustEnded(){
   panel.appendChild(link);
 
   var r = row(false);
-  r.appendChild(button("New ticket", function(){ lastSession = null; endedStarted = ""; render(); }));
+  r.appendChild(button("New ticket", function(){ lastSession = null; lastTitle = ""; draftName = null; endedStarted = ""; render(); }));
   panel.appendChild(r);
 }
 

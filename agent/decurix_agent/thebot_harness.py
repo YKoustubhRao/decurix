@@ -5,6 +5,7 @@ import urllib.error
 import urllib.request
 
 from decurix_agent import config, progress, state, usage
+from decurix_agent.computer import approval
 from decurix_agent.identity import get_identity_context
 from decurix_agent.logging_utils import log
 from decurix_agent.memory_context import get_memory_context
@@ -63,6 +64,17 @@ about - stop before doing it. Ask for approval with HELP, or begin your
 reply with exactly "{APPROVAL_MARKER}" followed by what you want to do and
 why; a human will review it on the Decurix dashboard.
 """.strip()
+
+
+# A pause the model wrote itself (an answer starting with APPROVAL_MARKER) is
+# a pause here and nowhere else: soul finished that job as "answered" and
+# holds no checkpoint, so a reply sent with reply=True resumes nothing and is
+# run as a request of its own. Measured: `google "sanmayee is great"` came
+# back as "NEEDS_APPROVAL: I want to Google ...", the human said "proceed",
+# and soul answered the single word "proceed" with "I can't assist with that
+# request". So the task and the question are kept here, and the reply goes
+# back as the original task with the human's answer in its context.
+_written_pause = None
 
 
 def _post_json(url, payload):
@@ -161,7 +173,7 @@ def _cancel_job(base, job_id):
         log(f"Could not cancel TheBot job {job_id}: {exc}")
 
 
-def _build_context():
+def _build_context(extra=""):
     """
     The standing context soul folds into every model call's system frame:
     who this desktop is, its persistent worker memory, and the approval
@@ -185,10 +197,33 @@ def _build_context():
 
     parts.append(SAFETY_PREAMBLE)
 
+    if extra:
+        parts.append(extra)
+
     return "\n\n".join(parts)
 
 
-def _run_thebot(request, reply):
+def _answer_context(asked, reply):
+    """
+    What the human said to a pause the model wrote itself, for the context
+    of the task sent again - never glued onto the task, which is what soul
+    triages and plans (see _build_context).
+    """
+
+    if approval.is_approval(reply):
+        return (
+            "Earlier in this task you asked the human for approval: "
+            f"\"{asked}\". They replied \"{reply}\" - that is approval. "
+            "Do the task now, and do not ask for approval for it again."
+        )
+
+    return (
+        f"Earlier in this task you asked the human: \"{asked}\". "
+        f"They replied: \"{reply}\". Do the task with that answer in mind."
+    )
+
+
+def _run_thebot(request, reply, extra_context=""):
     """
     Submit one request to TheBot's /api/chat and follow the job until it
     finishes.
@@ -208,7 +243,7 @@ def _run_thebot(request, reply):
             base + "/api/chat",
             {
                 "prompt": request,
-                "context": _build_context(),
+                "context": _build_context(extra_context),
                 "workdir": str(config.WORK_DIR),
                 # One session per desktop, for the whole life of the
                 # container: soul keeps the conversation's history and the
@@ -373,7 +408,12 @@ def _handle_job(job, error, resuming=False):
     # The model can still pause on its own, in words, with the marker the
     # approval rules above ask for.
     if answer.startswith(APPROVAL_MARKER):
-        ask_for_query(answer[len(APPROVAL_MARKER):].strip(), kind="approval")
+        global _written_pause
+        asked = answer[len(APPROVAL_MARKER):].strip()
+        # state.current_task is still the original request while a reply
+        # is handled, so a second written pause keeps the first task.
+        _written_pause = {"task": state.current_task, "asked": asked}
+        ask_for_query(asked, kind="approval")
         return
 
     write_final_reply(answer or "(no result text)")
@@ -436,6 +476,9 @@ def warm_after_ready():
 
 
 def perform_task(task, task_file):
+    global _written_pause
+    _written_pause = None
+
     state.current_task = task
     state.current_task_file = task_file
     state.waiting_for_query = False
@@ -470,6 +513,19 @@ def continue_after_query(query_response):
     log("RECEIVED HUMAN REPLY TO QUERY (TheBot harness)")
     log(query_response)
     log("========================================")
+
+    global _written_pause
+    written, _written_pause = _written_pause, None
+
+    if written:
+        # soul holds nothing paused for a pause the model only wrote: the
+        # task goes again, with the question and the answer in its context.
+        job, error = _run_thebot(
+            written["task"], reply=False,
+            extra_context=_answer_context(written["asked"], query_response),
+        )
+        _handle_job(job, error, resuming=True)
+        return
 
     # soul resumes the job it paused for this session, with the reply as
     # the answer - approving the exact command it stopped before, or

@@ -101,6 +101,7 @@
   transition:width .4s ease;
 }
 
+.dcard-paused-overlay[hidden]{display:none}
 .dcard-paused-overlay{
   position:absolute;
   bottom:8px;
@@ -147,6 +148,41 @@
 }
 
 .dcard-tags{display:flex;flex-wrap:wrap;gap:5px}
+
+/* ---------- what the desktop is doing right now ----------
+   Filled from /api/desktops/activity (pollActivity below): the request its
+   running turn was opened for and the latest step its chat shows. */
+.dcard-activity{
+  display:flex;
+  gap:9px;
+  margin:0 15px 10px;
+  padding:9px 11px;
+  border-radius:10px;
+  background:var(--live-soft);
+  color:var(--text);
+  text-decoration:none;
+  font-size:12.5px;
+  line-height:1.4;
+  min-width:0;
+}
+.dcard-activity[hidden]{display:none}
+.dcard-activity.is-ticket{background:var(--danger-soft)}
+.dcard-activity .act-dot{
+  flex:none;
+  width:8px;height:8px;margin-top:5px;border-radius:50%;
+  background:var(--live);
+  animation:pulse 1.4s ease-in-out infinite;
+}
+.dcard-activity.is-ticket .act-dot{background:var(--danger)}
+.dcard-activity .act-body{min-width:0;flex:1}
+.dcard-activity .act-head{display:flex;gap:6px;align-items:baseline;min-width:0}
+.dcard-activity .act-label{flex:none;font-weight:600}
+.dcard-activity .act-request{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dcard-activity .act-elapsed{flex:none;margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--text-3)}
+.dcard-activity .act-step{color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px}
+.status.working{background:var(--live-soft);color:var(--live)}
+.status.recording{background:var(--danger-soft);color:var(--danger)}
+.status.recording .dot{animation:pulse 1.2s ease-in-out infinite}
 
 /* ---------- compact desktop info ---------- */
 
@@ -550,6 +586,14 @@
   border-radius:var(--r-lg);
 }
 .rec-title{font-weight:600;font-size:13px;overflow-wrap:anywhere}
+.rec-name{
+  width:100%;
+  font:inherit;font-weight:600;font-size:13px;color:var(--text);
+  background:transparent;border:1px solid transparent;border-radius:6px;
+  padding:2px 5px;margin:-3px -6px 0;
+}
+.rec-name:hover{border-color:var(--line)}
+.rec-name:focus{outline:none;border-color:var(--accent);background:var(--surface)}
 .rec-meta{font-size:11.5px;color:var(--text-3)}
 .rec-actions{display:flex;flex-wrap:wrap;gap:6px}
 
@@ -972,6 +1016,21 @@
         </div>
       </details>
       </div>
+
+      {{/* What the desktop is doing right now - a task an agent is working,
+           or a ticket a person is recording - filled in by pollActivity from
+           the same transcript the chat shows. A link to that chat. */}}
+      <a class="dcard-activity" data-activity="{{.ID}}" href="/view/{{.ID}}" hidden>
+        <span class="act-dot"></span>
+        <span class="act-body">
+          <span class="act-head">
+            <span class="act-label" data-act-label></span>
+            <span class="act-request" data-act-request></span>
+            <span class="act-elapsed" data-act-elapsed></span>
+          </span>
+          <span class="act-step" data-act-step hidden></span>
+        </span>
+      </a>
 
       <details class="mem"{{if index $.MemoryByDesktop .ID}} open{{end}}>
         <summary class="mem-summary">
@@ -2272,7 +2331,30 @@
 
     shown.forEach(function(r){
       var item = recNode("li", "rec-item");
-      item.appendChild(recNode("div", "rec-title", r.title || "Untitled"));
+
+      /* The recording's name, editable in place: what it is listed as, and
+         what the skill Learn teaches from it is called. */
+      var name = recNode("input", "rec-title rec-name");
+      name.type = "text";
+      name.value = r.title || "";
+      name.placeholder = "Name this recording";
+      name.maxLength = 80;
+      name.setAttribute("aria-label", "Recording name");
+      var savedName = name.value;
+      name.addEventListener("keydown", function(e){ if(e.key === "Enter"){ e.preventDefault(); name.blur(); } });
+      name.addEventListener("change", async function(){
+        var wanted = name.value.trim();
+        if(!wanted || wanted === savedName){ name.value = savedName; return; }
+        try{
+          await post("/api/desktops/recordings/update", {id: desktopID, session: r.id, title: wanted});
+          savedName = name.value = wanted;
+          toast("Renamed.");
+        }catch(e){
+          name.value = savedName;
+          toast(e.message, "error");
+        }
+      });
+      item.appendChild(name);
       item.appendChild(recNode("div", "rec-meta",
         [recWhen(r.started_at), r.event_count + (r.event_count === 1 ? " step" : " steps")].filter(Boolean).join(" · ")));
 
@@ -2283,11 +2365,11 @@
       var download = recNode("a", "btn btn-sm btn-default", "Download");
       download.href = "/api/desktops/recordings/export?" + new URLSearchParams({id: desktopID, session: r.id});
 
-      function start(button, url, started){
+      function start(button, url, started, fields){
         button.addEventListener("click", async function(){
           actions.querySelectorAll("button").forEach(function(b){ b.disabled = true; });
           try{
-            await post(url, {id: desktopID, session: r.id});
+            await post(url, Object.assign({id: desktopID, session: r.id}, fields ? fields() : {}));
             toast(started);
             window.setTimeout(function(){ window.location.href = "/view/" + encodeURIComponent(desktopID); }, 900);
           }catch(e){
@@ -2298,7 +2380,9 @@
       }
 
       start(replay, "/api/desktops/recordings/replay", "Replay started. Follow it in the chat.");
-      start(learn, "/api/desktops/recordings/learn", "Teaching started. It asks its questions in the chat.");
+      start(learn, "/api/desktops/recordings/learn", "Teaching started. It asks its questions in the chat.",
+        function(){ return {name: name.value.trim()}; });
+      learn.title = "Teach a skill from this recording, named as above";
 
       actions.append(replay, learn, download);
       item.appendChild(actions);
@@ -2582,21 +2666,115 @@
      the rail shows. Only a *running* desktop's pill is touched: a note left
      over from before a desktop was stopped or restarted is not "needs you
      right now". */
-  function applyCardAttention(notes){
-    var needsYou = new Set();
-    notes.forEach(function(note){ if(note.desktop_id){ needsYou.add(note.desktop_id); } });
+  var needsYou = new Set();
+  var lastReported = new Set();   // desktops with only finished-task reports open
+  var activity = {};
 
+  /* Only a note waiting on an answer makes a desktop "need you" over what it
+     is doing: a finished task's report ("done"/"error") stays in the rail
+     until resolved, but must not hide that the desktop is busy again. A note
+     from before kinds existed still counts. */
+  function waitsOnYou(note){
+    return !note.kind || note.kind === "query" || note.kind === "approval";
+  }
+
+  function applyCardAttention(notes){
+    needsYou = new Set();
+    var reported = new Set();
+    notes.forEach(function(note){
+      if(!note.desktop_id){ return; }
+      (waitsOnYou(note) ? needsYou : reported).add(note.desktop_id);
+    });
+    lastReported = reported;
+    paintPills();
+  }
+
+  /* A running desktop's pill says, in order of what matters to a person:
+     needs you (an open query), recording (a ticket), working (a task), or
+     just running. */
+  function paintPills(){
     document.querySelectorAll(".dcard[data-desktop-id]").forEach(function(card){
-      var attention = needsYou.has(card.dataset.desktopId);
+      var id = card.dataset.desktopId;
+      var now = activity[id] || {};
+
+      var overlay = card.querySelector(".dcard-paused-overlay");
+      if(overlay){ overlay.hidden = !!now.running; }
 
       card.querySelectorAll("[data-status-pill]").forEach(function(pill){
-        if(pill.dataset.baseStatus !== "running"){ return; }
+        var base = pill.dataset.baseStatus;
+        if(base !== "running" && base !== "paused"){ return; }
 
+        // A card rendered while its desktop was paused (idle-pause) keeps
+        // that status until the page reloads, but a request wakes the
+        // desktop: live activity is proof it is running again. Only a
+        // running desktop is "needs you" - a note left from before it was
+        // paused is not "right now".
+        var live = base === "running" || now.running;
+        // A report left open is still worth a look - but not while the
+        // desktop is visibly working on something else.
+        var attention = live && (needsYou.has(id) || (lastReported.has(id) && !now.running));
+        var busy = !attention && now.running;
+        var label = attention ? "needs you" : busy ? (now.ticket ? "recording" : "working") : live ? "running" : "paused";
+
+        pill.classList.toggle("paused", label === "paused");
+        pill.classList.toggle("running", label !== "paused");
         pill.classList.toggle("needs-you", attention);
-        pill.querySelector("[data-status-label]").textContent = attention ? "needs you" : "running";
+        pill.classList.toggle("recording", busy && !!now.ticket);
+        pill.classList.toggle("working", busy && !now.ticket);
+        pill.querySelector("[data-status-label]").textContent = label;
       });
     });
   }
+
+  /* ---------------- what each desktop is doing ----------------
+     One request for every card, on the same cadence as the query rail. The
+     strip shows the task (or the ticket being recorded) and the latest line
+     the chat shows for it; it is hidden the moment the turn ends. */
+  function activityElapsed(startedAt){
+    var started = Date.parse(startedAt || "");
+    if(!started || started < 0){ return ""; }
+    var s = Math.max(0, Math.floor((Date.now() - started) / 1000));
+    return s < 60 ? s + "s" : Math.floor(s / 60) + "m " + String(s % 60).padStart(2, "0") + "s";
+  }
+
+  function paintActivity(){
+    document.querySelectorAll("[data-activity]").forEach(function(strip){
+      var now = activity[strip.dataset.activity];
+
+      if(!now || !now.running){
+        strip.hidden = true;
+        return;
+      }
+
+      strip.hidden = false;
+      strip.classList.toggle("is-ticket", !!now.ticket);
+      strip.querySelector("[data-act-label]").textContent = now.ticket ? "Recording:" : "Working on:";
+      strip.querySelector("[data-act-request]").textContent = now.request || (now.ticket ? "a ticket" : "a task");
+      strip.querySelector("[data-act-elapsed]").textContent = activityElapsed(now.started_at);
+
+      var step = strip.querySelector("[data-act-step]");
+      step.hidden = !now.step;
+      step.textContent = now.step || "";
+      strip.title = [now.request, now.step].filter(Boolean).join("\n");
+    });
+  }
+
+  async function pollActivity(){
+    var ids = Array.prototype.map.call(document.querySelectorAll("[data-activity]"), function(el){ return el.dataset.activity; });
+    if(!ids.length){ return; }
+
+    try{
+      var response = await fetch("/api/desktops/activity?" + new URLSearchParams({ids: ids.join(",")}), {cache: "no-store"});
+      if(!response.ok){ return; }
+      activity = await response.json() || {};
+      paintActivity();
+      paintPills();
+    }catch(e){ /* keep what the cards show */ }
+  }
+
+  pollActivity();
+  setInterval(pollActivity, 2500);
+  setInterval(paintActivity, 1000);
 
   async function loadNotes(){
     try{

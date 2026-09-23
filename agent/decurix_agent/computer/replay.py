@@ -5,9 +5,10 @@ import urllib.parse
 from datetime import date
 
 from decurix_agent import progress
-from decurix_agent.computer import approval, audit, constraints, core, privacy, recording, visual, volatility
+from decurix_agent.computer import approval, audit, constraints, core, privacy, recording, screen, visual, volatility
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
+from decurix_agent.logging_utils import log
 
 
 # ============================================================
@@ -479,9 +480,10 @@ def unmet(checks, observation, values=None):
         if kind == "url":
             ok = url_matches(check["value"], observation.get("page_url") or "")
         elif kind == "window":
-            ok = any(title_matches(check["value"], t) for t in titles + [active])
+            want = fill_name(check["value"], values)
+            ok = any(title_matches(want, t) for t in titles + [active])
         elif kind == "active_window":
-            ok = title_matches(check["value"], active)
+            ok = title_matches(fill_name(check["value"], values), active)
         elif kind == "element":
             want = _norm(fill_name(check["name"], values))
             ok = any(e.get("role") == check["role"] and _norm(e.get("name")) == want
@@ -610,8 +612,7 @@ def resolve(step, observation):
             observation.setdefault("visual", {})[step.get("n")] = seen
 
             if seen["status"] == visual.MISSING:
-                return None, None, ("what was around the click when it was recorded is not on the screen "
-                                    "(it looks different, or has moved too far), so a replay does not click there")
+                return None, None, LOOK_MISSING
             if seen["status"] == visual.AMBIGUOUS:
                 return None, None, (f"{seen['matches']} places on the screen look like what was clicked, "
                                     "and a replay does not guess which")
@@ -728,6 +729,46 @@ def _await_checks(checks, observation, values):
     return missing, observation
 
 
+# Why a point click did not run when its picture was not found (resolve). A
+# person may still say the spot is right (skill_task's "click anyway").
+LOOK_MISSING = ("what was around the click when it was recorded is not on the screen "
+                "(it looks different, or has moved too far), so a replay does not click there")
+
+
+def _fit_screen(steps, report):
+    """
+    Put the screen back to the size the run's coordinate clicks were recorded
+    at, when it is another size now and the display allows it.
+
+    A screen's size follows whoever last viewed it: noVNC's remote resize
+    makes it the size of that person's browser. A demonstration recorded at
+    1527x727 then met a 1280x720 screen after a restart and halted at its
+    first click ("a point on a screen of a different size"), although the
+    same size again lays the same window out pixel for pixel. Only a click
+    recorded as a point needs this; a step found by its control does not,
+    and steps recorded at different sizes are left to halt as before.
+    """
+
+    sizes = {tuple(s["screen"]) for s in steps if s.get("point") and s.get("screen")}
+    if len(sizes) != 1:
+        return
+
+    wanted = sizes.pop()
+    try:
+        if tuple(screen.size()) == wanted:
+            return
+        fitted = screen.set_size(*wanted)
+    except Exception as exc:
+        log(f"Could not check or set the screen size: {exc}")
+        return
+
+    if fitted:
+        report(f"Set the screen to {wanted[0]}x{wanted[1]}, the size this was recorded at, so its clicks land where they did.")
+        # Windows re-lay themselves out after a resize; the first step's own
+        # wait for its target covers the rest.
+        time.sleep(1)
+
+
 def run(program, params=None, start=1, report=None, ladder=None):
     """
     Run a program from step `start` and say how it ended: {"outcome",
@@ -793,6 +834,8 @@ def run(program, params=None, start=1, report=None, ladder=None):
         first = next(s for s in steps if s["n"] == param["step"])
         return finish(HALTED_BEFORE_EFFECT, first, resume_from=start,
                       reason=f"the value for {param['label']} ({param['name']}) is wrong: {why}")
+
+    _fit_screen([s for s in steps if s["n"] >= start], report)
 
     for step in steps:
         if step["n"] < start:

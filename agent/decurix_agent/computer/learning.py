@@ -130,15 +130,21 @@ def build(sources, name=None):
     params = _generalise(steps, len(programs))
     loops = _find_loops(steps, len(programs))
     title = (base_meta.get("title") or base_meta.get("description") or "").strip() or "A recorded task"
+    # What the person asked for when they recorded it, even after a rename.
+    goal = (base_meta.get("task") or "").strip() or title
 
-    if not (name and skills.valid(name)):
-        name = skills.unique_name(title)
+    # A name the person gave is what the skill is called and shown as; the
+    # recording's title stays its goal (what a request is matched against,
+    # mimic.plan). Either way the file name is free: naming a new
+    # skill after one that exists must not overwrite it.
+    given = " ".join((name or "").split())[:80]
+    name = skills.unique_name(given or title)
 
     skill = {
         "schema": skills.SCHEMA,
         "name": name,
-        "title": title,
-        "goal": title,
+        "title": given or title,
+        "goal": goal,
         "status": skills.DRAFT,
         "sources": [program["session"] for _, _, program in programs],
         "demos": len(programs),
@@ -244,6 +250,11 @@ def _common_checks(first, second):
     return [c for c in first if _check_key(c) in theirs]
 
 
+# Which field of each kind of result check holds text a changing value can
+# appear in (see _follow_param; replay.unmet fills it back in).
+CHECK_TEXT = {"element": "name", "window": "value", "active_window": "value"}
+
+
 def _follow_param(skill, param):
     """
     Make a result check follow a value that changes every run. What a
@@ -261,8 +272,13 @@ def _follow_param(skill, param):
 
     for step in skill["steps"]:
         for check in step.get("expect") or []:
-            if check["type"] == "element" and pattern.search(check.get("name") or ""):
-                check["name"] = pattern.sub("{" + param["name"] + "}", check["name"])
+            # The text a check compares: an element's name, or a window's
+            # title - a search typed into a browser comes back as the title
+            # "<what was typed> - Google Search - Chromium", and a run with
+            # another value halted there after the search had worked.
+            key = CHECK_TEXT.get(check["type"])
+            if key and pattern.search(check.get(key) or ""):
+                check[key] = pattern.sub("{" + param["name"] + "}", check[key])
 
 
 def _generalise(steps, demos):

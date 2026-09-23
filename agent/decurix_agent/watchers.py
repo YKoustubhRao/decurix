@@ -58,9 +58,10 @@ def _report_queued(name):
 
 
 def _needs_no_backend(content):
-    """Whether a request is handled without the reasoning backend ("/replay", "/record", "/learn", "/skill")."""
+    """Whether a request is handled without the reasoning backend ("/replay", "/record", "/learn", "/skill", or a recorded task done again)."""
 
-    return bool(replay_task.parse(content)) or record_task.parse(content) is not None or skill_task.handles(content)
+    return (bool(replay_task.parse(content)) or record_task.parse(content) is not None or skill_task.handles(content)
+            or skill_task.mimics(content))
 
 
 def _can_run_without_backend(content):
@@ -274,6 +275,13 @@ def command_watcher():
                     target = record_task.perform
                 elif skill_task.handles(content):
                     target = skill_task.perform
+                elif skill_task.mimics(content):
+                    # A task a person recorded, asked for again with other
+                    # values (`google "x"` after a ticket for `google "y"`),
+                    # is done the way they showed - their steps, with only
+                    # what differs changed - not worked out again by an
+                    # engine (computer/mimic.py).
+                    target = skill_task.perform_mimic
                 else:
                     target = perform_task
 

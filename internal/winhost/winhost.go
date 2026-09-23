@@ -53,6 +53,11 @@ var (
 	launchTimeout  = 30 * time.Second
 	// A session nobody is watching or driving is ended, taking the app with it, once this long has passed.
 	idleStop = 90 * time.Second
+	// A session started ahead of time (Manager.Start called before anyone has ever watched it - see hostAppStarter)
+	// is given longer before the same rule ends it: the person who will open it has not necessarily reached the VM
+	// yet, and killing it the moment idleStop passes would spend the whole point of starting it early. Once it has
+	// been watched at least once, idleStop applies as usual - this only widens the window before the first look.
+	prelaunchIdleStop = 20 * time.Minute
 	// A warm helper that nobody has asked for is let go after this long, so a feature nobody uses holds no memory. Anything
 	// that suggests an app is about to be wanted (the create dialog, a copy) starts the clock again.
 	spareTTL = 2 * time.Hour
@@ -290,6 +295,7 @@ func (m *Manager) launch(ctx context.Context, id, target, args string) (*Session
 		return nil, err
 	}
 	s.holdWatching(false)
+	s.Touch() // start the idle clock from now, not from whenever this helper process was first spawned as a spare
 	go s.reap()
 	return s, nil
 }
@@ -426,18 +432,19 @@ type Session struct {
 
 	ioMu sync.Mutex // one command in flight at a time: answers are matched to commands by order
 
-	mu       sync.Mutex
-	err      error
-	touched  time.Time
-	stderr   bytes.Buffer
-	viewers  map[*Viewer]struct{}
-	holding  bool
-	w, h     int
-	first    chan struct{}
-	gotFirst bool
-	appGone  chan struct{}
-	goneOnce sync.Once
-	stopOnce sync.Once
+	mu          sync.Mutex
+	err         error
+	touched     time.Time
+	everWatched bool
+	stderr      bytes.Buffer
+	viewers     map[*Viewer]struct{}
+	holding     bool
+	w, h        int
+	first       chan struct{}
+	gotFirst    bool
+	appGone     chan struct{}
+	goneOnce    sync.Once
+	stopOnce    sync.Once
 }
 
 func newSession(id string, cmd *exec.Cmd) (*Session, error) {
@@ -629,8 +636,12 @@ func (s *Session) reap() {
 		s.mu.Lock()
 		unwatched := len(s.viewers) == 0 && !s.holding
 		idle := time.Since(s.touched)
+		threshold := idleStop
+		if !s.everWatched {
+			threshold = prelaunchIdleStop
+		}
 		s.mu.Unlock()
-		if unwatched && idle > idleStop {
+		if unwatched && idle > threshold {
 			s.Stop()
 			return
 		}
@@ -745,6 +756,7 @@ func (s *Session) Watch() *Viewer {
 	s.mu.Lock()
 	s.viewers[v] = struct{}{}
 	s.touched = time.Now()
+	s.everWatched = true
 	s.mu.Unlock()
 	s.syncViewers()
 	go s.Do("keyframe")

@@ -414,9 +414,10 @@ func TestAnUnclaimedHelperIsLetGo(t *testing.T) {
 }
 
 func TestIdleSessionEndsItself(t *testing.T) {
-	old := idleStop
+	oldIdle, oldPrelaunch := idleStop, prelaunchIdleStop
 	idleStop = 150 * time.Millisecond
-	defer func() { idleStop = old }()
+	prelaunchIdleStop = 150 * time.Millisecond
+	defer func() { idleStop, prelaunchIdleStop = oldIdle, oldPrelaunch }()
 
 	start, _ := fakeHelper(t, fakeOpts{})
 	m := NewManager(start)
@@ -435,6 +436,41 @@ func TestIdleSessionEndsItself(t *testing.T) {
 	}
 	if _, ok := m.Get("idle"); ok {
 		t.Error("ended session still listed")
+	}
+}
+
+// TestPrelaunchedSessionOutlivesIdleStopUntilWatched is what hostAppStarter (started at VM creation or an app copy,
+// before anyone could possibly have opened the viewer yet) depends on: a session nobody has ever watched must not be
+// judged by the same idleStop that ends a session someone opened and then walked away from - it would defeat the
+// entire point of starting the app ahead of time. It still ends on its own past prelaunchIdleStop, so a desktop
+// nobody ever visits does not run its host apps forever.
+func TestPrelaunchedSessionOutlivesIdleStopUntilWatched(t *testing.T) {
+	oldIdle, oldPrelaunch := idleStop, prelaunchIdleStop
+	idleStop = 150 * time.Millisecond
+	prelaunchIdleStop = 900 * time.Millisecond
+	defer func() { idleStop, prelaunchIdleStop = oldIdle, oldPrelaunch }()
+
+	start, _ := fakeHelper(t, fakeOpts{})
+	m := NewManager(start)
+	defer m.waitIdle()
+	defer m.StopAll()
+	s, err := m.Start(context.Background(), "prelaunch", `C:\a.exe`, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Well past idleStop, with nobody ever having watched it.
+	time.Sleep(500 * time.Millisecond)
+	if !s.Alive() {
+		t.Fatal("a never-watched, ahead-of-time session was ended at idleStop: starting an app early bought nothing")
+	}
+
+	deadline := time.Now().Add(6 * time.Second)
+	for s.Alive() {
+		if time.Now().After(deadline) {
+			t.Fatal("a never-watched session was left running forever: it must still end past prelaunchIdleStop")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

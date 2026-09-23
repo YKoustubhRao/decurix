@@ -151,7 +151,6 @@ def changed_fraction(before, after, tolerance=24):
 
 
 _display = None
-_SCREEN_GEOMETRY = None
 
 
 def _connect():
@@ -186,18 +185,17 @@ def grab(display=None):
 
     from Xlib import X
 
-    global _SCREEN_GEOMETRY
     d = display or _connect()
     root = d.screen().root
 
+    # The size is read every time, never kept: a person's noVNC client resizes
+    # the screen to fit their browser (resize=remote), and a kept size went on
+    # capturing - and reporting - the old one for the life of the process.
     try:
-        if _SCREEN_GEOMETRY is None:
-            g = root.get_geometry()
-            _SCREEN_GEOMETRY = (g.width, g.height)
-        width, height = _SCREEN_GEOMETRY
+        g = root.get_geometry()
+        width, height = g.width, g.height
         image = root.get_image(0, 0, width, height, X.ZPixmap, 0xFFFFFFFF)
     except Exception as exc:
-        _SCREEN_GEOMETRY = None
         raise ComputerError(f"could not read the screen: {exc}")
 
     data = image.data
@@ -216,9 +214,60 @@ def grab(display=None):
 
 
 def size():
-    d = _connect()
-    screen = d.screen()
-    return screen.width_in_pixels, screen.height_in_pixels
+    # Not d.screen().width_in_pixels: that is the size when this process
+    # connected, and the screen is resized under it (see grab).
+    g = _connect().screen().root.get_geometry()
+    return g.width, g.height
+
+
+def set_size(width, height):
+    """
+    Make the screen `width` x `height`, the way a noVNC client's remote resize
+    does (Xvnc accepts any size): add a mode of exactly that size and switch
+    the output to it. Returns whether the screen is that size afterwards -
+    False on a display that will not resize, never an error.
+    """
+
+    import subprocess
+
+    width, height = int(width), int(height)
+    if not (32 <= width <= 8192 and 32 <= height <= 8192):
+        return False
+
+    try:
+        if tuple(size()) == (width, height):
+            return True
+    except Exception:
+        pass
+
+    session.ensure()
+
+    def xrandr(*args):
+        return subprocess.run(["xrandr", *args], capture_output=True, text=True, timeout=10)
+
+    try:
+        listing = xrandr().stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+    output = next((line.split()[0] for line in listing.splitlines() if " connected" in line), None)
+    if output is None:
+        return False
+
+    mode = f"{width}x{height}"
+    try:
+        # A mode that already exists is fine; any real failure shows in the size.
+        xrandr("--newmode", mode, "60", str(width), str(width + 1), str(width + 2), str(width + 3),
+               str(height), str(height + 1), str(height + 2), str(height + 3))
+        xrandr("--addmode", output, mode)
+        xrandr("--output", output, "--mode", mode)
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+    try:
+        return tuple(size()) == (width, height)
+    except Exception:
+        return False
 
 
 def _prop(d, window, name, kind=None):

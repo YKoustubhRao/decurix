@@ -682,6 +682,20 @@
     });
     var picked = {};
 
+    var skillName = node("input", "input");
+    skillName.type = "text";
+    skillName.maxLength = 80;
+    skillName.value = meta.title || "";
+    skillName.placeholder = "e.g. Google a phrase";
+    skillName.setAttribute("aria-label", "Name of the skill");
+    var nameRow = node("label", "row");
+    var nameHint = node("span", "hint", "Call the skill");
+    nameHint.style.flex = "none";
+    nameHint.style.minWidth = "0";
+    skillName.style.flex = "1";
+    nameRow.append(nameHint, skillName);
+    teach.appendChild(nameRow);
+
     if(others.length){
       teach.appendChild(node("div", "hint", "Also learn from other demonstrations of the same task. What differs between them is what changes each time; a step only some have is optional."));
       var pickList = node("div", "teach-list");
@@ -713,7 +727,7 @@
       var also = Object.keys(picked).filter(function(id){ return picked[id]; });
       teachGo.disabled = true;
       try{
-        await post("/api/desktops/recordings/learn", {id: desktopID, session: meta.id, sessions: also.join(",")});
+        await post("/api/desktops/recordings/learn", {id: desktopID, session: meta.id, sessions: also.join(","), name: skillName.value.trim()});
         toast("Teaching started. It asks its questions in the chat.");
         teach.hidden = true;
         window.setTimeout(function(){ window.location.href = "/view/" + encodeURIComponent(desktopID); }, 900);
