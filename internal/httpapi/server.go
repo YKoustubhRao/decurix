@@ -90,6 +90,7 @@ func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memorySt
 	// host helper cannot safely run as unavailable, while keeping them visible in the complete discovery list.
 	desktop.SetHostAppChecker(srv.checkHostApps)
 	desktop.SetHostAppWarmer(srv.warmHostGUI)
+	desktop.SetHostAppStarter(srv.startHostGUIAppAhead)
 	desktop.WarmHostApps() // compile and load now, long before the first desktop exists
 	desktop.InitHostAppsScan()
 	return srv
@@ -146,6 +147,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/desktops/screenshot", s.desktopScreenshotHandler)
 	mux.HandleFunc("/api/desktops/chat", s.chatHandler)
 	mux.HandleFunc("/api/desktops/chat/stream", s.chatStreamHandler)
+	mux.HandleFunc("/api/desktops/activity", s.activityHandler)
 	mux.HandleFunc("/api/desktops/chat/clear", s.clearChatHandler)
 	mux.HandleFunc(stepImagePath, s.stepImageHandler)
 	mux.HandleFunc("/api/agent/events", s.agentEventHandler)

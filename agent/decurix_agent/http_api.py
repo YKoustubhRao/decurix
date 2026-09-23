@@ -52,7 +52,7 @@ from decurix_agent.messaging import save_request
 #   POST /recordings/<id>/update         {title, description}
 #   POST /recordings/<id>/delete
 #   POST /recordings/<id>/replay         {task_id, from, params}: run it as a task
-#   POST /recordings/<id>/learn          {task_id, sessions}: teach a skill from
+#   POST /recordings/<id>/learn          {task_id, sessions, name}: teach a skill from
 #                                        it (and any others named) as a task -
 #                                        the desktop then asks its questions in
 #                                        the chat
@@ -408,7 +408,7 @@ class Handler(BaseHTTPRequestHandler):
         for other in sessions[1:]:
             recording.load(other)
 
-        content = "/learn " + " ".join(sessions)
+        content = skill_task.learn_request(sessions, _text(data.get("name"), 80))
         path = save_request(content, _text(data.get("task_id"), 64))
 
         return self._json(200, {"status": "received", "file": path.name, "content": content})

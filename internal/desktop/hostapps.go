@@ -236,6 +236,32 @@ func WarmHostApps() {
 	}
 }
 
+// hostAppStarter, when set, launches one app on a private host desktop ahead of time - under the same session id its
+// packaged launcher will ask for - so the window, and everything a cold start on the host costs (a browser's first
+// paint, a hidden profile's own first run), is already paid for before a person ever opens it.
+var (
+	hostAppStarterMu sync.RWMutex
+	hostAppStarter   func(id, target, args string)
+)
+
+// SetHostAppStarter installs what packDynamicApp calls, in the background, for every host_gui app it packages.
+func SetHostAppStarter(f func(id, target, args string)) {
+	hostAppStarterMu.Lock()
+	hostAppStarter = f
+	hostAppStarterMu.Unlock()
+}
+
+// startHostAppAhead fires the installed starter, if any, and never blocks: packaging a launcher must not wait on the
+// app it names actually opening on the host.
+func startHostAppAhead(id, target, args string) {
+	hostAppStarterMu.RLock()
+	f := hostAppStarter
+	hostAppStarterMu.RUnlock()
+	if f != nil {
+		f(id, target, args)
+	}
+}
+
 // SetHostAppChecker installs the way Windows apps are checked. Without one, no Windows program is offered - one that
 // cannot be checked is not one that can be promised.
 func SetHostAppChecker(c HostAppChecker) {
@@ -2063,6 +2089,12 @@ func packDynamicApp(tw *tar.Writer, app HostAppItem, pc packContext) error {
 			wrapperScript = webAppWrapper(slug, webURL, hostFallback(pc, slug, app))
 		} else {
 			wrapperScript = "#!/usr/bin/env bash\n" + hostFallback(pc, slug, app)
+			// This is the exact launcher a host_gui app's icon runs the first time someone opens it - start it now
+			// instead of waiting for that click, under the same session id the launcher itself will ask for, so
+			// Start finds it already running and joins it at once (see winhost.Manager.Start).
+			if target, args, ok := windowsTarget(app.HostCmd); ok {
+				startHostAppAhead(pc.sessionID(slug), target, args)
+			}
 		}
 
 		if err := writeStringToTar(tw, ".local/bin/"+slug+"-host", wrapperScript, 0755); err != nil {

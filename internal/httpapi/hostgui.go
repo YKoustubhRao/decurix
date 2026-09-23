@@ -160,6 +160,24 @@ func (s *Server) checkHostApps(ctx context.Context, targets []winhost.Target) (m
 	return s.hostGUI().Check(ctx, targets)
 }
 
+// startHostGUIAppAhead launches a host_gui app on the host in the background, under the same session id its packaged
+// launcher will ask for, the moment that launcher is written into a VM - at desktop creation or a later app copy -
+// rather than the moment a person actually opens it. winhost.Manager.Start keys its session by id, so the viewer's own
+// POST to /api/host-gui/start (once someone clicks the copied app) finds the app already running and joins it at
+// once instead of paying for the launch - and its own 20s-per-step timeouts - on that click.
+func (s *Server) startHostGUIAppAhead(id, target, args string) {
+	if !hostGUIID.MatchString(id) || !hostGUISupported() {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		if _, err := s.hostGUI().Start(ctx, id, target, args); err != nil {
+			log.Printf("host-gui: could not start %s ahead of time: %v", id, err)
+		}
+	}()
+}
+
 // hostShellCmd builds a command that runs a shell script on the host with stdin left open for the caller: directly when
 // the control plane is on the host itself, through the same docker/nsenter hop createHostCmd uses when it is in a container.
 func hostShellCmd(ctx context.Context, script string) *exec.Cmd {

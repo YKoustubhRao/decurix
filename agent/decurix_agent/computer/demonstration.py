@@ -662,7 +662,6 @@ class Recorder:
             return
 
         try:
-            self.latest = core.observe(remember=False)
             self.latest = core.observe(remember=False, frame=frame)
         except ComputerError as exc:
             log(f"Could not read the screen: {exc}")
@@ -771,8 +770,10 @@ class Recorder:
         before = self.latest
         settled = core._wait_for_settle(None)
 
+        # One reading, of the settled frame. It used to read the whole screen
+        # twice and keep only the second: ~10 s per click on a 1-vCPU desktop,
+        # and every action after it waited its turn to reach the chat.
         try:
-            after = core.observe(remember=False)
             after = core.observe(remember=False, frame=settled)
         except ComputerError as exc:
             log(f"Could not read the screen after an action: {exc}")

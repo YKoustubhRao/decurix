@@ -325,8 +325,9 @@ def expand(skill, values):
                 # item's copy of it.
                 for name in block_params:
                     for check in each.get("expect") or []:
-                        if check["type"] == "element":
-                            check["name"] = check["name"].replace("{" + name + "}", "{" + f"{name}__{n + 1}" + "}")
+                        key = {"element": "name", "window": "value", "active_window": "value"}.get(check["type"])
+                        if key:
+                            check[key] = check[key].replace("{" + name + "}", "{" + f"{name}__{n + 1}" + "}")
 
                 each["summary"] = f"{replay._summary(each)} (item {n + 1} of {count})"
                 steps.append(each)
