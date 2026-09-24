@@ -80,6 +80,42 @@ class TestFitScreen(unittest.TestCase):
                                 self.lines.append)
         self.assertEqual(self.sizes, [])
 
+    def test_a_screen_resized_again_during_the_run_is_fitted_back(self):
+        # A viewer that reconnects mid-run resizes the screen to its browser.
+        from unittest.mock import patch
+        step = {"n": 1, "kind": "click", "point": [69, 276], "screen": [1536, 864]}
+        observations = iter([{"size": [1536, 729]}, {"size": [1536, 864]}])
+        with patch.object(self.replay.core, "observe", side_effect=lambda: next(observations)):
+            element, point, _, _ = self.replay._find(step)
+        self.assertEqual((element, point, self.sizes), (None, [69, 276], [(1536, 864)]))
+
+
+class TestSetSize(unittest.TestCase):
+    """xrandr is asked for a mode of exactly the recorded size, under a name it will take."""
+
+    def test_a_name_xvnc_keeps_hidden_is_not_the_end_of_it(self):
+        # Xvnc keeps "1536x864" from an earlier remote resize but xrandr no
+        # longer lists it: --newmode is refused and --addmode cannot find it.
+        import subprocess
+        from unittest.mock import patch
+        from decurix_agent.computer import screen
+
+        state = {"size": (1536, 729)}
+        calls = []
+
+        def run(args, **kwargs):
+            calls.append(args[1:])
+            out = "VNC-0 connected 1536x729+0+0\n" if len(args) == 1 else ""
+            if args[1:2] == ["--output"] and args[-1].startswith("decurix-"):
+                state["size"] = (1536, 864)
+            return subprocess.CompletedProcess(args, 0 if len(args) == 1 else 1, out, "")
+
+        with patch.object(screen, "size", side_effect=lambda: state["size"]), \
+                patch.object(screen.session, "ensure"), patch.object(subprocess, "run", side_effect=run):
+            self.assertTrue(screen.set_size(1536, 864))
+        self.assertIn(["--output", "VNC-0", "--mode", "1536x864"], calls)
+        self.assertIn(["--output", "VNC-0", "--mode", "decurix-1536x864"], calls)
+
 
 class TestClickAnyway(unittest.TestCase):
     """A person can let a point click go without its picture - for one run, never in the saved skill."""

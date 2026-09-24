@@ -196,7 +196,8 @@ func TestSchedulerRetryKeepsOriginalTypeWhenNothingPositivelyReclassifies(t *tes
 	registerTerminalSkill()
 
 	// The ORIGINAL step is genuinely terminal work and fails for real
-	// (the command doesn't exist). The mock's retry step has real shell
+	// (a path that does not exist - not a missing program, which the
+	// terminal hands to the operator instead of retrying). The mock's retry step has real shell
 	// syntax but no "run the command:" lead phrase - Classify() alone
 	// finds nothing for it and would resolve to "general" without the
 	// fix, silently downgrading a real retry into an unverified chat
@@ -204,7 +205,7 @@ func TestSchedulerRetryKeepsOriginalTypeWhenNothingPositivelyReclassifies(t *tes
 	mock := &mockProvider{response: "DECISION: RETRY\nREASON: try a different real command\nRETRY_STEP: python3 -c \"print('reclass-test')\" && echo done"}
 	sched := newTestScheduler(t, mock)
 
-	job, err := sched.Run(context.Background(), "run this command: `this-command-does-not-exist-xyz`", nil, func(string) {})
+	job, err := sched.Run(context.Background(), "run this command: `ls /definitely/missing/path-xyz`", nil, func(string) {})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}

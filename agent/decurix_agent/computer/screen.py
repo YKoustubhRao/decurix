@@ -1,5 +1,7 @@
 import hashlib
+import os
 import struct
+import time
 import zlib
 
 from decurix_agent.computer import session
@@ -254,20 +256,50 @@ def set_size(width, height):
     if output is None:
         return False
 
-    mode = f"{width}x{height}"
-    try:
-        # A mode that already exists is fine; any real failure shows in the size.
-        xrandr("--newmode", mode, "60", str(width), str(width + 1), str(width + 2), str(width + 3),
-               str(height), str(height + 1), str(height + 2), str(height + 3))
-        xrandr("--addmode", output, mode)
-        xrandr("--output", output, "--mode", mode)
-    except (OSError, subprocess.SubprocessError):
-        return False
+    # The plain "WxH" name can be taken by a mode Xvnc made itself for an
+    # earlier remote resize and then dropped from the output: xrandr no longer
+    # lists it, so --addmode cannot find it, and --newmode is refused with
+    # BadName because the name exists. Found live: a 1536x864 demonstration met
+    # a 1536x729 screen and every resize back silently failed. A name of our
+    # own is tried next, and a fresh one after that.
+    base = f"{width}x{height}"
+    for mode in (base, f"decurix-{base}", f"decurix-{base}-{os.getpid()}-{int(time.time())}"):
+        try:
+            # A mode that already exists is fine; any real failure shows in the size.
+            xrandr("--newmode", mode, "60", str(width), str(width + 1), str(width + 2), str(width + 3),
+                   str(height), str(height + 1), str(height + 2), str(height + 3))
+            xrandr("--addmode", output, mode)
+            xrandr("--output", output, "--mode", mode)
+        except (OSError, subprocess.SubprocessError):
+            return False
 
-    try:
-        return tuple(size()) == (width, height)
-    except Exception:
-        return False
+        try:
+            if tuple(size()) == (width, height):
+                return True
+        except Exception:
+            return False
+
+    return False
+
+
+def close_window(window_id):
+    """
+    Ask a window to close, the way its title bar's close button does: the
+    window manager sends it WM_DELETE_WINDOW, so the app closes itself (and
+    can still ask about unsaved work) rather than being destroyed.
+    """
+
+    from Xlib import X, protocol
+
+    d = _connect()
+    root = d.screen().root
+    event = protocol.event.ClientMessage(
+        window=d.create_resource_object("window", int(window_id)),
+        client_type=d.intern_atom("_NET_CLOSE_WINDOW"),
+        data=(32, [int(time.time()) & 0xFFFFFFFF, 2, 0, 0, 0]),
+    )
+    root.send_event(event, event_mask=X.SubstructureRedirectMask | X.SubstructureNotifyMask)
+    d.flush()
 
 
 def _prop(d, window, name, kind=None):

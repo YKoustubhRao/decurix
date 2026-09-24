@@ -199,15 +199,35 @@ func nonNegativeInt(value *int64) *int64 {
 	return value
 }
 
+// queryNoteView is a note as the rail and the Queries page show it: the
+// stored note, plus the two parts of it a person reads - the task it is about
+// and what the agent said. The note itself opens with "DECURIX QUERY REQUEST /
+// Desktop: / Desktop ID:" boilerplate, which is all a card showed of it.
+type queryNoteView struct {
+	querynotes.QueryNote
+	Task    string `json:"task,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// viewQueryNotes adds each note's task and message, read out of its text so
+// notes stored before either was sent separately read the same way.
+func viewQueryNotes(notes []querynotes.QueryNote) []queryNoteView {
+	views := make([]queryNoteView, 0, len(notes))
+	for _, note := range notes {
+		views = append(views, queryNoteView{QueryNote: note, Task: note.Task(), Message: note.Message()})
+	}
+	return views
+}
+
 // queryNotesHandler returns the query notes still open as JSON.
 func (s *Server) queryNotesHandler(w http.ResponseWriter, r *http.Request) {
-	jsonResponse(w, s.QueryNotes.List())
+	jsonResponse(w, viewQueryNotes(s.QueryNotes.List()))
 }
 
 // resolvedQueryNotesHandler returns the resolved query notes as JSON, most
 // recently resolved first - the Queries page's history.
 func (s *Server) resolvedQueryNotesHandler(w http.ResponseWriter, r *http.Request) {
-	jsonResponse(w, s.QueryNotes.ListResolved())
+	jsonResponse(w, viewQueryNotes(s.QueryNotes.ListResolved()))
 }
 
 // closeQueryNoteHandler resolves a query note by ID; it stays in the history.

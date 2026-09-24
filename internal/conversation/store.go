@@ -287,6 +287,31 @@ func (s *Store) AppendAgentReply(desktopID, taskID, kind, content string) Entry 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	return s.appendAgentReplyLocked(desktopID, taskID, kind, content)
+}
+
+// EndTurn closes the running turn, if there is one, with `why` as an error
+// reply, and reports whether there was. For work the desktop can no longer
+// report on: stopping, restarting or deleting a desktop throws away what its
+// agent was doing, and its "interrupted" report is then refused because the
+// task is already closed - so nothing else would ever end the turn, and the
+// chat and the desktop's card said "Working..." over nothing (found live: a
+// card counting "12m" on a task a restart had ended, with the next request's
+// steps added to it).
+func (s *Store) EndTurn(desktopID, why string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.threadFor(desktopID).running {
+		return false
+	}
+
+	s.appendAgentReplyLocked(desktopID, "", KindError, why)
+	return true
+}
+
+// appendAgentReplyLocked is AppendAgentReply with s.mu already held.
+func (s *Store) appendAgentReplyLocked(desktopID, taskID, kind, content string) Entry {
 	current := s.threadFor(desktopID)
 
 	switch kind {

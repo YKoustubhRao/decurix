@@ -14,6 +14,7 @@ import (
 
 	"github.com/YKoustubhRao/decurix/internal/conversation"
 	"github.com/YKoustubhRao/decurix/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/querynotes"
 	"github.com/YKoustubhRao/decurix/internal/tasks"
 )
 
@@ -351,24 +352,6 @@ func chatKindFor(reported string) string {
 	}
 }
 
-// queryNoteHeadings are the boilerplate section headings a desktop agent wraps
-// its callbacks in (see decurix_agent/messaging.py), paired with the chat kind
-// each one implies.
-var queryNoteHeadings = []struct {
-	Heading string
-	Kind    string
-}{
-	{Heading: "\nFinal reply:\n", Kind: conversation.KindEntry},
-	{Heading: "\nProblem:\n", Kind: conversation.KindApproval},
-}
-
-// queryNoteTrailers are the boilerplate sections that follow the part a human
-// actually wants to read, and so mark where to stop.
-var queryNoteTrailers = []string{
-	"\n\nCompleted at:",
-	"\n\nQuery ID:",
-}
-
 // agentReplyFromNote pulls the human-facing sentence out of a query note and
 // reports what kind of entry it is.
 //
@@ -378,21 +361,12 @@ var queryNoteTrailers = []string{
 // rather than a contract, which is exactly why it is parsed here as a
 // compatibility path and not relied on as the primary one.
 func agentReplyFromNote(content string) (text string, kind string) {
-	for _, section := range queryNoteHeadings {
-		start := strings.Index(content, section.Heading)
-		if start == -1 {
-			continue
-		}
-
-		rest := content[start+len(section.Heading):]
-
-		for _, trailer := range queryNoteTrailers {
-			if end := strings.Index(rest, trailer); end != -1 {
-				rest = rest[:end]
-			}
-		}
-
-		return strings.TrimSpace(rest), section.Kind
+	message, heading := querynotes.ParseMessage(content)
+	switch heading {
+	case querynotes.HeadingFinal:
+		return message, conversation.KindEntry
+	case querynotes.HeadingProblem:
+		return message, conversation.KindApproval
 	}
 
 	return strings.TrimSpace(content), conversation.KindEntry

@@ -47,12 +47,19 @@ func (s *Scheduler) runStep(rc skills.RunContext, subtask skills.Subtask, planne
 		return result
 	}
 
-	// Chat discovered it has to look at the machine. Not a failure - the
-	// wrong skill for the question, found out for the price of one short
-	// call. The operator gets the same words.
+	// Chat discovered it has to look at the machine, or the terminal that
+	// the program it was asked to run is not installed. Not a failure - the
+	// wrong skill for the job, found out for the price of one short call or
+	// one command. The operator gets the same words.
 	if reroute, _ := result.Meta["reroute"].(string); reroute != "" && reroute != subtask.Type {
 		onLog(fmt.Sprintf("scheduler: rerouting to the %s", reroute))
-		return s.runStep(rc, skills.Subtask{Step: subtask.Step, Type: reroute}, planner)
+		step := subtask.Step
+		// What the first skill found out that the next one must know
+		// ("curl is not installed here").
+		if note, _ := result.Meta["rerouteNote"].(string); note != "" {
+			step += "\n\n" + note
+		}
+		return s.runStep(rc, skills.Subtask{Step: step, Type: reroute}, planner)
 	}
 
 	skillName := "none"
@@ -366,6 +373,7 @@ func (s *Scheduler) reasonAboutFailure(ctx context.Context, system *llm.Message,
 3. ASK_USER - you genuinely cannot proceed without more information from the user (say what you need)
 
 Never propose a RETRY_STEP that abandons what was actually asked for something unrelated just because it would exit cleanly. Never propose changing permissions or ownership of directories you do not own - a "Permission denied" on a system path means the path was wrong, not that the system needs fixing. A "successful" command that does something different from what was asked is not a real fix, it's a false success.
+Nothing can be installed system-wide here: there is no sudo password, so sudo, apt, apt-get, snap and dnf always fail. A program that is "not found" (exit code 127) is not installed - retry with one that is (python3 is always here: python3 -c "import urllib.request; r = urllib.request.urlopen('https://example.com'); print(r.status, dict(r.headers))" does what curl would), never with an install.
 
 Failed step: %s
 Real failure output:

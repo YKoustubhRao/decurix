@@ -122,7 +122,7 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if harness == "" {
-		harness = desktop.HarnessOllama
+		harness = desktop.HarnessTheBot
 	}
 
 	switch harness {
@@ -509,11 +509,14 @@ func (s *Server) deleteDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// closeOpenTasks ends the task records a desktop's agent can no longer finish:
+// closeOpenTasks ends the task records and the chat turn a desktop's agent can no longer finish:
 // stopping, restarting or deleting a desktop throws away what its agent was
 // in the middle of, including a pause waiting on a human.
 func (s *Server) closeOpenTasks(id, why string) {
 	if err := s.Tasks.CloseOpen(desktop.SanitizeID(id), why); err != nil {
 		log.Printf("closing tasks for %s: %v", id, err)
 	}
+
+	// And the chat's turn for it, which nothing else would close now.
+	s.Chat.EndTurn(desktop.SanitizeID(id), why)
 }

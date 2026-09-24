@@ -122,7 +122,7 @@ func (s *Server) createPersonaDesktopHandler(w http.ResponseWriter, r *http.Requ
 
 	harness := strings.TrimSpace(req.Harness)
 	if harness == "" {
-		harness = desktop.HarnessOllama
+		harness = desktop.HarnessTheBot
 	}
 
 	cpus := req.CPUs
@@ -211,7 +211,7 @@ func (s *Server) deployTeamHandler(w http.ResponseWriter, r *http.Request) {
 
 	harness := strings.TrimSpace(req.Harness)
 	if harness == "" {
-		harness = desktop.HarnessOllama
+		harness = desktop.HarnessTheBot
 	}
 
 	cpus := req.CPUs
