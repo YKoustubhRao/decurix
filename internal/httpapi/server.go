@@ -7,13 +7,16 @@ package httpapi
 import (
 	"net/http"
 	"sync"
+	"sync/atomic"
 
 	"github.com/YKoustubhRao/decurix/internal/claudeauth"
 	"github.com/YKoustubhRao/decurix/internal/conversation"
 	"github.com/YKoustubhRao/decurix/internal/dag"
 	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/idlepause"
+	"github.com/YKoustubhRao/decurix/internal/keepawake"
 	"github.com/YKoustubhRao/decurix/internal/lanaccess"
+	"github.com/YKoustubhRao/decurix/internal/mailtrigger"
 	"github.com/YKoustubhRao/decurix/internal/memory"
 	"github.com/YKoustubhRao/decurix/internal/querynotes"
 	"github.com/YKoustubhRao/decurix/internal/resourcemon"
@@ -49,10 +52,26 @@ type Server struct {
 	// IdleChecker is optionally assigned by cmd/decurix/main.go after construction,
 	// allowing task completion events to request fast-idle transitions.
 	IdleChecker *idlepause.Checker
+	// Mail and MailRunner are the email triggers (internal/mailtrigger);
+	// KeepAwake keeps this machine from idle-sleeping while they or a
+	// schedule need it (internal/keepawake). All three are assigned by
+	// cmd/decurix/main.go after construction, like DagRunner: the runner
+	// holds this *Server as its Submitter.
+	Mail       *mailtrigger.Store
+	MailRunner *mailtrigger.Runner
+	KeepAwake  *keepawake.Keeper
 	// ResourceMon monitors container resource usage and handles autoscaling alerts.
 	ResourceMon *resourcemon.Monitor
 	Suggest     *suggest.Store
 	Web         *webui.Renderer
+
+	// sends serialises every send to one desktop (sendlock.go).
+	sends sendLocks
+	// nets caches the Docker networks' address ranges (humansonly.go).
+	nets containerNets
+	// keepAwakeScriptAt is when a host keep-awake script last asked
+	// (UnixNano; mail.go's keepAwakeHandler).
+	keepAwakeScriptAt atomic.Int64
 
 	stepImagesMu     sync.Mutex
 	recentStepImages map[string]string
@@ -128,6 +147,21 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/schedules/create", s.createScheduleHandler)
 	mux.HandleFunc("/api/schedules/delete", s.deleteScheduleHandler)
 	mux.HandleFunc("/api/schedules/toggle", s.toggleScheduleHandler)
+	// The email triggers: a person's mailbox, never an agent's to read or
+	// change (humansonly.go).
+	mux.HandleFunc("/email", s.humansOnly(s.emailPageHandler))
+	mux.HandleFunc("/api/mail", s.humansOnly(s.mailStateHandler))
+	mux.HandleFunc("/api/mail/accounts/connect", s.humansOnly(s.connectMailHandler))
+	mux.HandleFunc("/api/mail/accounts/password", s.humansOnly(s.mailPasswordHandler))
+	mux.HandleFunc("/api/mail/accounts/toggle", s.humansOnly(s.toggleMailHandler))
+	mux.HandleFunc("/api/mail/accounts/check", s.humansOnly(s.checkMailHandler))
+	mux.HandleFunc("/api/mail/accounts/delete", s.humansOnly(s.deleteMailHandler))
+	mux.HandleFunc("/api/mail/rules/create", s.humansOnly(s.createMailRuleHandler))
+	mux.HandleFunc("/api/mail/rules/toggle", s.humansOnly(s.toggleMailRuleHandler))
+	mux.HandleFunc("/api/mail/rules/delete", s.humansOnly(s.deleteMailRuleHandler))
+	mux.HandleFunc("/api/mail/rules/test", s.humansOnly(s.testMailRuleHandler))
+	mux.HandleFunc("/api/mail/jobs", s.humansOnly(s.mailJobHandler))
+	mux.HandleFunc("/api/keep-awake", s.keepAwakeHandler)
 	mux.HandleFunc("/dags", s.dagsPageHandler)
 	mux.HandleFunc("/dags/", s.dagPageHandler)
 	mux.HandleFunc("/api/dags", s.dagsAPIHandler)

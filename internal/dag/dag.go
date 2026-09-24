@@ -886,6 +886,18 @@ func (s *Store) DeleteEdge(id string) error {
 // Cron
 // ---------------------------------------------------------------------------
 
+// Active reports whether any DAG has a cron trigger still to fire - one of
+// the things that should keep this machine from going to sleep (see
+// internal/keepawake).
+func (s *Store) Active() bool {
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM dags WHERE cron_expr != '' AND next_run_ns > 0`).Scan(&n); err != nil {
+		return false
+	}
+
+	return n > 0
+}
+
 // SetCron sets or clears a DAG's cron trigger. An empty cronExpr clears it -
 // a DAG has no separate enabled/disabled flag, so this is what disables it.
 // A schedule never fires immediately: the first run is the next time the

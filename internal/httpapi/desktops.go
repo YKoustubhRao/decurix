@@ -501,6 +501,12 @@ func (s *Server) deleteDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	// forever, failing silently every time it fires.
 	s.Schedules.DeleteForDesktop(desktop.SanitizeID(id))
 
+	// Likewise an email rule: every matching email would queue a job that
+	// can never be delivered.
+	if s.Mail != nil {
+		s.Mail.DeleteForDesktop(desktop.SanitizeID(id))
+	}
+
 	// Its Windows apps were kept running on the host for it; nobody can open them now.
 	s.forgetHostApps(desktop.SanitizeID(id))
 

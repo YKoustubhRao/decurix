@@ -110,3 +110,58 @@ func TestTickDoesNotFireBeforeDue(t *testing.T) {
 		t.Fatalf("calls = %v, want none yet", submitter.calls)
 	}
 }
+
+type busyErr struct{}
+
+func (busyErr) Error() string       { return "busy" }
+func (busyErr) DesktopBusy() string { return "the agent is waiting for your reply" }
+
+func TestABusyDesktopHoldsTheRunInsteadOfSkippingOrSendingIt(t *testing.T) {
+	now := time.Date(2026, 9, 15, 12, 30, 0, 0, time.UTC)
+	store := newTestStore(t, now)
+
+	sch, err := store.Create("bordu", "check the mail", "*/10 * * * *")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	submitter := &fakeSubmitter{err: busyErr{}}
+	clock := time.Date(2026, 9, 15, 12, 40, 0, 0, time.UTC)
+	runner := &Runner{Store: store, Submitter: submitter, now: func() time.Time { return clock }}
+
+	runner.tick(context.Background())
+
+	got := store.List("")[0]
+	if !got.NextRunAt.Equal(sch.NextRunAt) || !got.LastRunAt.IsZero() {
+		t.Fatalf("a held run was advanced: %+v", got)
+	}
+
+	if got.Waiting != "the agent is waiting for your reply" || !got.WaitingSince.Equal(clock) {
+		t.Fatalf("waiting = %q since %v", got.Waiting, got.WaitingSince)
+	}
+
+	// Still busy a tick later: still held, still waiting since the first time.
+	clock = clock.Add(20 * time.Second)
+	runner.tick(context.Background())
+
+	if got := store.List("")[0]; !got.WaitingSince.Equal(clock.Add(-20 * time.Second)) {
+		t.Fatalf("waiting since moved: %v", got.WaitingSince)
+	}
+
+	// Free: it runs once, advances past now, and stops waiting.
+	submitter.mu.Lock()
+	submitter.err = nil
+	submitter.mu.Unlock()
+
+	clock = time.Date(2026, 9, 15, 13, 5, 0, 0, time.UTC)
+	runner.tick(context.Background())
+
+	got = store.List("")[0]
+	if got.Waiting != "" || !got.LastRunAt.Equal(clock) || !got.NextRunAt.Equal(time.Date(2026, 9, 15, 13, 10, 0, 0, time.UTC)) {
+		t.Fatalf("after the desktop was free: %+v", got)
+	}
+
+	if n := len(submitter.calls); n != 3 {
+		t.Fatalf("submit calls = %d, want 3 (two refused, one sent)", n)
+	}
+}
