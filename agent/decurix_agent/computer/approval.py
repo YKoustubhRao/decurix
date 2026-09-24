@@ -184,12 +184,27 @@ def _fingerprint(kind, element, text, keys, point):
     return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()[:24]
 
 
+# How long anything waits for the approval store. Every holder keeps it for a
+# file read and write, so a wait this long means a holder is stuck (a `gui`
+# process frozen mid-write); the agent's command watcher settles every reply
+# through here and must never wait on that forever.
+LOCK_TIMEOUT_SECONDS = 10
+
+
 @contextmanager
 def _locked():
     STATE_DIR.mkdir(parents=True, exist_ok=True)
 
     with open(STATE_DIR / "approval.lock", "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("the approval store is held by something that is not letting go")
+                time.sleep(0.05)
 
         try:
             state = json.loads(STATE_FILE.read_text(encoding="utf-8"))

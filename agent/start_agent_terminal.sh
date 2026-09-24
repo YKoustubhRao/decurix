@@ -97,6 +97,17 @@ if removed:
 PY
 fi
 
+# The base image puts its own README and "version sticker" on the desktop.
+# They are about the base image, not this product, and sat among the icons a
+# person uses. Only those exact two: the README link into the base image's
+# readme.md and the sticker launcher; anything a person put there stays.
+if [ -L "$HOME/Desktop/README" ] && [ "$(readlink "$HOME/Desktop/README")" = "$HOME/readme.md" ]; then
+    rm -f "$HOME/Desktop/README"
+fi
+if [ -f "$HOME/Desktop/versionsticker.desktop" ] && grep -q "version_sticker" "$HOME/Desktop/versionsticker.desktop" 2>/dev/null; then
+    rm -f "$HOME/Desktop/versionsticker.desktop"
+fi
+
 # The agent's own directories live under ~/.decurix, so ~/work is the only
 # one it adds to the home a human browses. A volume from before that still
 # has them at the top level: move them in before anything that uses them

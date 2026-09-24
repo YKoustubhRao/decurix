@@ -204,6 +204,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/desktops/mode", s.workerModeHandler)
 	mux.HandleFunc("/api/desktops/shadowing", s.shadowingHandler)
 	mux.HandleFunc("/favicon.svg", s.faviconHandler)
+	mux.HandleFunc(noVNCPath, s.noVNCHandler)
 }
 
 // RegisterLocalRoutes registers the routes that must only ever be reachable

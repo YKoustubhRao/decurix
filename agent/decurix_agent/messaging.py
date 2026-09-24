@@ -13,18 +13,24 @@ from decurix_agent.logging_utils import log, timestamp
 # Existing request functionality
 # ============================================================
 
+# In the name of a command file saved while the agent was waiting on a
+# question: it is that question's answer. The mark outlives the process, so an
+# agent that restarted in between can tell an answer to a question it no
+# longer has from a new request (watchers.is_reply_file).
+REPLY_MARK = "-reply"
+
+
 def save_request(request, task_id=""):
     """
     Save an incoming request/task into command/, with the control plane's
     task ID (if it sent one) in the file name for the watcher to pick up.
     """
 
-    filename = task_context.command_filename(
-        time.strftime("%Y%m%d_%H%M%S")
-        + "_"
-        + uuid.uuid4().hex[:8],
-        task_id,
-    )
+    stem = time.strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
+    if state.waiting_for_query:
+        stem += REPLY_MARK
+
+    filename = task_context.command_filename(stem, task_id)
 
     path = config.COMMAND_DIR / filename
 
@@ -43,7 +49,7 @@ def save_request(request, task_id=""):
 # Control plane communication
 # ============================================================
 
-def send_query(filename, content, kind="", reply="", engine=None, quiet=False):
+def send_query(filename, content, kind="", reply="", engine=None, quiet=False, interrupted=False):
     """
     Send a query to the Decurix control plane.
 
@@ -62,6 +68,9 @@ def send_query(filename, content, kind="", reply="", engine=None, quiet=False):
                   - what the task records keep about the execution
         quiet     - true when the note is only the chat's reply and the task's
                     outcome, and the Query rail should not get an entry
+        interrupted - true when this reports a task an earlier life of the
+                    agent never finished; the control plane drops it when that
+                    task was already closed (a restart it was asked for)
 
     `content` is the whole formatted note, which the dashboard's Query rail
     still shows verbatim. `kind`/`reply` are what the chat renders: the
@@ -91,6 +100,8 @@ def send_query(filename, content, kind="", reply="", engine=None, quiet=False):
 
     if quiet:
         payload["quiet"] = True
+    if interrupted:
+        payload["interrupted"] = True
 
     payload.update(usage.snapshot())
 
@@ -222,6 +233,12 @@ Please send instructions through the Decurix control plane.
     log(f"Query written to: {path}")
     log("========================================")
 
+    # Waiting before the question goes out, not after: a person answering
+    # the moment it appears (or a scripted reply) can reach the watcher before
+    # send_query returns, and a reply that finds the agent not waiting is
+    # held behind the paused task as if it were a new one.
+    state.waiting_for_query = True
+
     sent = send_query(
         filename,
         content,
@@ -234,8 +251,6 @@ Please send instructions through the Decurix control plane.
         log("Query sent to control plane.")
     else:
         log("WARNING: could not contact control plane.")
-
-    state.waiting_for_query = True
 
     return query_id
 
@@ -316,7 +331,7 @@ def backend_failure_note(what, url, error):
 # Final task reply
 # ============================================================
 
-def write_final_reply(reply, kind="final", engine=None, quiet=False):
+def write_final_reply(reply, kind="final", engine=None, quiet=False, interrupted=False):
     """
     Write the final result into querytext/ so the existing
     querytext watcher sends it to the Decurix control plane.
@@ -382,6 +397,7 @@ Completed at:
         reply=reply,
         engine=engine,
         quiet=quiet,
+        interrupted=interrupted,
     )
 
     if sent:
@@ -392,3 +408,4 @@ Completed at:
     state.current_task = None
     state.current_task_file = None
     state.waiting_for_query = False
+    task_context.clear_active()
