@@ -105,6 +105,14 @@ func TestRenderEveryPage(t *testing.T) {
 		t.Fatalf("RenderRequests: %v", err)
 	}
 
+	if err := renderer.RenderEmail(io.Discard, page); err != nil {
+		t.Fatalf("RenderEmail: %v", err)
+	}
+
+	if err := renderer.RenderEmail(io.Discard, PageData{}); err != nil {
+		t.Fatalf("RenderEmail with no desktops: %v", err)
+	}
+
 	notes := QueryNotesPageData{
 		Notes: []querynotes.QueryNote{{
 			ID:        "1",

@@ -85,6 +85,7 @@ Set-Location (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
 
 . "$PSScriptRoot/lib/Ollama-Setup.ps1"
 . "$PSScriptRoot/lib/Lan-Tunnel.ps1"
+. "$PSScriptRoot/lib/Keep-Awake.ps1"
 
 $script:IntentionalExit = $false
 
@@ -230,6 +231,14 @@ try {
     # opens a tunnel URL, so Invoke-Cleanup's "tunnel stopped" message would
     # not make sense here. Exit-Build marks this as intentional so that
     # finally{} skips it, same as every other deliberate exit.
+    # Nothing runs while this machine sleeps - no email trigger, no
+    # schedule - and the control plane, in its container, cannot stop
+    # Windows sleeping. Held only while the dashboard has something that
+    # needs it (lib/Keep-Awake.ps1); released in finally{}, however this
+    # script ends.
+    Write-Host ""
+    Start-KeepAwake
+
     if ($Cli) {
         Write-Host ""
         Write-Host "=== Opening the Decurix CLI ==="
@@ -267,6 +276,8 @@ try {
     }
 }
 finally {
+    Stop-KeepAwake
+
     if (-not $script:IntentionalExit) {
         Invoke-Cleanup
     }
