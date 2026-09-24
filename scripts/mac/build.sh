@@ -21,6 +21,8 @@ cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source ./scripts/mac/lib/ollama-setup.sh
 # shellcheck source=lib/lan-tunnel.sh
 source ./scripts/mac/lib/lan-tunnel.sh
+# shellcheck source=lib/keep-awake.sh
+source ./scripts/mac/lib/keep-awake.sh
 # shellcheck source=lib/host-mounts.sh
 source ./scripts/mac/lib/host-mounts.sh
 
@@ -39,6 +41,7 @@ done
 cleanup() {
     echo ""
     stop_lan_tunnel
+    stop_keep_awake
     echo "=== Tunnel stopped. Decurix is still running: http://127.0.0.1:8080 ==="
     echo "(Run this script again for a new tunnel, or 'docker compose down' to stop Decurix.)"
 }
@@ -137,6 +140,12 @@ if command -v jq >/dev/null 2>&1; then
     fi
 fi
 
+# Nothing runs while this machine sleeps - no email trigger, no schedule -
+# and the control plane, in its container, cannot stop the host sleeping.
+# Held only while the dashboard has something that needs it (lib/keep-awake.sh).
+echo ""
+start_keep_awake
+
 if [ -n "$CLI_MODE" ]; then
     trap - INT TERM
 
@@ -146,7 +155,9 @@ if [ -n "$CLI_MODE" ]; then
     echo ""
 
     docker compose exec desktop-manager ./decurix --cli
-    exit $?
+    cli_status=$?
+    stop_keep_awake
+    exit $cli_status
 fi
 
 echo ""

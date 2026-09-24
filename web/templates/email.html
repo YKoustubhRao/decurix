@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
+<title>Email triggers · Decurix</title>
+
+{{template "theme"}}
+
+<style>
+.stack{display:grid;gap:18px}
+
+.panel-head{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:15px 20px;
+  border-bottom:1px solid var(--line);
+  font-size:14px;
+  font-weight:650;
+  color:var(--text)
+}
+.panel-head svg{color:var(--text-3)}
+.panel-head .grow{flex:1}
+
+.awake{display:flex;gap:12px;align-items:flex-start;padding:15px 20px}
+.awake-mark{
+  flex:none;
+  width:30px;height:30px;
+  display:grid;place-items:center;
+  border-radius:var(--r-md);
+  background:var(--surface-2);
+  color:var(--text-3)
+}
+.awake[data-state="held"] .awake-mark{background:var(--live-soft);color:var(--live)}
+.awake[data-state="idle"] .awake-mark{background:var(--surface-2)}
+.awake[data-state="off"] .awake-mark{background:var(--busy-soft);color:var(--busy)}
+.awake-body{display:grid;gap:4px;min-width:0}
+.awake-title{font-size:13.5px;font-weight:600;color:var(--text)}
+
+.row{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:14px;
+  padding:14px 20px;
+  border-bottom:1px solid var(--line)
+}
+.row:last-child{border-bottom:none}
+.row[data-enabled="false"]{opacity:.6}
+.row-main{min-width:0;display:grid;gap:5px}
+.row-title{font-size:13.5px;font-weight:600;color:var(--text);word-break:break-word}
+.row-sub{font-size:12.5px;color:var(--text-2);white-space:pre-wrap;word-break:break-word;max-width:70ch}
+.row-meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;font-size:11.5px;color:var(--text-3)}
+.row-actions{display:flex;flex-wrap:wrap;gap:6px;flex-shrink:0;justify-content:flex-end}
+.row-error{font-size:12px;color:var(--danger);word-break:break-word}
+.row-inline{display:flex;gap:6px;margin-top:4px}
+.row-inline[hidden]{display:none}
+.row-inline .input{max-width:260px}
+.empty-row{padding:22px 20px;color:var(--text-3);font-size:13px;text-align:center}
+
+.state{
+  display:inline-flex;align-items:center;gap:5px;
+  height:21px;padding:0 8px;border-radius:999px;
+  font-size:11.5px;font-weight:600;
+  background:var(--surface-2);color:var(--text-2)
+}
+.state[data-kind="ok"]{background:var(--live-soft);color:var(--live)}
+.state[data-kind="wait"]{background:var(--busy-soft);color:var(--busy)}
+.state[data-kind="bad"]{background:var(--danger-soft);color:var(--danger)}
+
+.form{display:grid;gap:14px;padding:18px 20px;border-top:1px solid var(--line);background:var(--surface-2)}
+.form[hidden]{display:none}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.grid-3{display:grid;grid-template-columns:2fr 1fr 1fr;gap:12px}
+.form .mono,.form .input.mono{font-family:var(--mono)}
+.form-foot{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}
+.check{display:flex;align-items:flex-start;gap:9px;cursor:pointer;font-size:13px;color:var(--text)}
+.check input{width:16px;height:16px;margin-top:1px;accent-color:var(--accent);flex:none}
+.check small{display:block;color:var(--text-3);font-size:12px}
+details.adv summary{cursor:pointer;font-size:12px;color:var(--text-2);font-weight:600}
+details.adv[open] summary{margin-bottom:10px}
+
+.tests{display:grid;gap:0;border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden;background:var(--surface)}
+.test{display:flex;gap:10px;align-items:baseline;padding:8px 12px;border-bottom:1px solid var(--line);font-size:12.5px}
+.test:last-child{border-bottom:none}
+.test[data-match="true"]{background:var(--live-soft)}
+.test-mark{flex:none;width:14px;color:var(--live);font-weight:700}
+.test-main{min-width:0;display:grid;gap:2px}
+.test-subject{color:var(--text);word-break:break-word}
+.test-from{color:var(--text-3);font-size:11.5px;word-break:break-word}
+
+@media (max-width:720px){
+  .grid-2,.grid-3{grid-template-columns:1fr}
+  .row{flex-direction:column}
+  .row-actions{justify-content:flex-start}
+}
+</style>
+</head>
+
+<body>
+
+{{template "sprite"}}
+
+<div id="progress"></div>
+<div id="toasts"></div>
+
+{{template "topbar" "email"}}
+
+<main class="wrap wrap-narrow">
+
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">Triggers</div>
+      <h1>Email triggers</h1>
+      <p class="page-sub">Start a desktop's task when an email arrives - matched by who sent it, its subject, or both.</p>
+    </div>
+  </div>
+
+  <div class="stack">
+
+    <div class="panel">
+      <div class="awake" id="awake" data-state="idle">
+        <div class="awake-mark"><svg width="16" height="16"><use href="#i-clock"/></svg></div>
+        <div class="awake-body">
+          <div class="awake-title" id="awakeTitle">Checking…</div>
+          <div class="hint" id="awakeText"></div>
+          <div class="hint" id="wakeText" hidden></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <svg width="15" height="15"><use href="#i-mail"/></svg>
+        <span class="grow">Mailboxes</span>
+        <button type="button" class="btn btn-quiet btn-sm" id="showConnect">
+          <svg width="14" height="14"><use href="#i-plus"/></svg>
+          Connect a mailbox
+        </button>
+      </div>
+      <div id="accountList"></div>
+
+      <form class="form" id="connectForm" hidden autocomplete="off">
+        <div class="grid-2">
+          <div class="field">
+            <label for="connEmail">Email address</label>
+            <input class="input" id="connEmail" type="email" placeholder="you@gmail.com" required>
+          </div>
+          <div class="field">
+            <label for="connPassword">App password</label>
+            <input class="input mono" id="connPassword" type="password" placeholder="abcd efgh ijkl mnop" required autocomplete="new-password">
+          </div>
+        </div>
+        <div class="hint">
+          For Gmail, an <strong>app password</strong>, not your Google password: turn on 2-Step Verification, then
+          Google Account &rsaquo; Security &rsaquo; App passwords. It is stored on this computer only and never shown again.
+          Decurix only reads (it never marks email as read, moves or sends anything), and only email that arrives
+          <em>after</em> you connect can trigger a task.
+        </div>
+        <details class="adv">
+          <summary>Another provider, or another folder</summary>
+          <div class="grid-3">
+            <div class="field">
+              <label for="connHost">IMAP server</label>
+              <input class="input mono" id="connHost" placeholder="imap.gmail.com">
+            </div>
+            <div class="field">
+              <label for="connPort">Port (TLS)</label>
+              <input class="input mono" id="connPort" inputmode="numeric" placeholder="993">
+            </div>
+            <div class="field">
+              <label for="connFolder">Folder</label>
+              <input class="input mono" id="connFolder" placeholder="INBOX">
+            </div>
+          </div>
+        </details>
+        <div class="form-foot">
+          <button type="button" class="btn btn-quiet" id="cancelConnect">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="connectButton">Test and connect</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <svg width="15" height="15"><use href="#i-fork"/></svg>
+        <span class="grow">Rules</span>
+        <button type="button" class="btn btn-quiet btn-sm" id="showRule">
+          <svg width="14" height="14"><use href="#i-plus"/></svg>
+          New rule
+        </button>
+      </div>
+      <div id="ruleList"></div>
+
+      <form class="form" id="ruleForm" hidden autocomplete="off">
+        <div class="grid-2">
+          <div class="field">
+            <label for="ruleAccount">When email arrives in</label>
+            <select class="select" id="ruleAccount"></select>
+          </div>
+          <div class="field">
+            <label for="ruleDesktop">Send the task to</label>
+            <select class="select" id="ruleDesktop">
+              {{range .Desktops}}
+              <option value="{{.ID}}">{{.Name}}</option>
+              {{end}}
+            </select>
+          </div>
+        </div>
+        <div class="grid-2">
+          <div class="field">
+            <label for="ruleSender">Sender matches <span class="mono">(regex)</span></label>
+            <input class="input mono" id="ruleSender" placeholder="@acme\.com$">
+          </div>
+          <div class="field">
+            <label for="ruleSubject">Subject matches <span class="mono">(regex)</span></label>
+            <input class="input mono" id="ruleSubject" placeholder="^invoice\b">
+          </div>
+        </div>
+        <div class="hint">
+          Case doesn't matter. Leave one empty to match on the other alone; with both, both must match. The sender
+          pattern is tried on the address (<span class="mono">billing@acme.com</span>) and on the whole From line
+          (<span class="mono">Acme Billing &lt;billing@acme.com&gt;</span>).
+        </div>
+        <div class="field">
+          <label for="ruleContent">Request for the desktop</label>
+          <textarea class="textarea" id="ruleContent" rows="4" placeholder="Download the invoice attached to this email from Gmail and save it in ~/work/invoices" required></textarea>
+          <div class="hint">
+            <span class="mono">{subject}</span>, <span class="mono">{sender}</span>, <span class="mono">{from}</span> and
+            <span class="mono">{date}</span> are filled in. The email itself is written out below the request, and the
+            request repeated after it - except for a request that starts with <span class="mono">/</span>
+            (like <span class="mono">/skill name value="{subject}"</span>), which is sent exactly as written.
+          </div>
+        </div>
+        <div class="field">
+          <label for="ruleName">Name <span class="mono">(optional)</span></label>
+          <input class="input" id="ruleName" placeholder="Acme invoices">
+        </div>
+        <label class="check">
+          <input type="checkbox" id="ruleBody" checked>
+          <span>Include the email's text<small>Up to 3,000 characters, marked as written by the sender so the agent treats it as information, not orders.</small></span>
+        </label>
+        <label class="check">
+          <input type="checkbox" id="ruleVerified" checked>
+          <span>Verified senders only<small>Anyone can put any address in a From line. With this on, an email only starts a task if your provider confirmed it really comes from the sender's domain (DMARC or DKIM). Email you send to yourself usually isn't verified.</small></span>
+        </label>
+
+        <div id="testResults" hidden></div>
+
+        <div class="form-foot">
+          <button type="button" class="btn btn-quiet" id="cancelRule">Cancel</button>
+          <button type="button" class="btn btn-default" id="testRule">Test on recent email</button>
+          <button type="submit" class="btn btn-primary" id="saveRule">Save rule</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <svg width="15" height="15"><use href="#i-inbox"/></svg>
+        <span class="grow">Triggered tasks</span>
+      </div>
+      <div id="jobList"></div>
+    </div>
+
+  </div>
+
+</main>
+
+{{template "chrome-js"}}
+
+<script>
+(function(){
+  "use strict";
+
+  var toast = Decurix.toast, post = Decurix.post;
+
+  var state = {accounts: [], rules: [], jobs: []};
+
+  var desktopSelect = document.getElementById("ruleDesktop");
+  var accountSelect = document.getElementById("ruleAccount");
+
+  function el(tag, cls, text){
+    var node = document.createElement(tag);
+    if(cls){ node.className = cls; }
+    if(text !== undefined && text !== null){ node.textContent = text; }
+    return node;
+  }
+
+  function button(label, onClick, cls){
+    var b = el("button", cls || "btn btn-quiet btn-sm", label);
+    b.type = "button";
+    b.addEventListener("click", onClick);
+    return b;
+  }
+
+  function stateChip(text, kind){
+    var chip = el("span", "state");
+    chip.dataset.kind = kind || "";
+    chip.appendChild(el("span", "dot"));
+    chip.appendChild(document.createTextNode(text));
+    return chip;
+  }
+
+  /* Go's zero time means "never". */
+  function when(iso){
+    if(!iso){ return null; }
+    var d = new Date(iso);
+    if(isNaN(d.getTime()) || d.getUTCFullYear() <= 1){ return null; }
+    return d;
+  }
+
+  function ago(iso){
+    var d = when(iso);
+    if(!d){ return null; }
+    var s = Math.max(0, Math.round((Date.now() - d.getTime()) / 1000));
+    if(s < 60){ return "just now"; }
+    if(s < 3600){ return Math.round(s / 60) + " min ago"; }
+    if(s < 86400){ return Math.round(s / 3600) + " h ago"; }
+    return d.toLocaleString(undefined, {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
+  }
+
+  function duration(ns){
+    var s = Math.round(ns / 1e9);
+    if(s < 3600){ return Math.round(s / 60) + " min"; }
+    var h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
+    return h + " h" + (m ? " " + m + " min" : "");
+  }
+
+  function desktopName(id){
+    for(var i = 0; i < desktopSelect.options.length; i++){
+      if(desktopSelect.options[i].value === id){ return desktopSelect.options[i].textContent; }
+    }
+    return id + " (deleted)";
+  }
+
+  function accountEmail(id){
+    for(var i = 0; i < state.accounts.length; i++){
+      if(state.accounts[i].id === id){ return state.accounts[i].email; }
+    }
+    return "a disconnected mailbox";
+  }
+
+  async function act(url, fields, done){
+    Decurix.busy(true);
+    try{
+      await post(url, fields);
+      if(done){ toast(done, "success"); }
+      await load();
+    }catch(e){
+      toast(e.message, "error");
+    }finally{
+      Decurix.busy(false);
+    }
+  }
+
+  /* ---------------- keep awake ---------------- */
+
+  function listing(items){
+    if(items.length < 2){ return items.join(""); }
+    return items.slice(0, -1).join(", ") + " and " + items[items.length - 1];
+  }
+
+  function renderAwake(ka, poller){
+    var box = document.getElementById("awake");
+    var title = document.getElementById("awakeTitle");
+    var text = document.getElementById("awakeText");
+    var wake = document.getElementById("wakeText");
+
+    var caught = "Closing the lid, choosing Sleep, or a flat battery still stop everything - nothing runs on a sleeping computer. " +
+      "Email that arrives meanwhile is not lost: it is picked up the moment the computer wakes.";
+
+    if(!ka.enabled){
+      box.dataset.state = "off";
+      title.textContent = "This computer may go to sleep";
+      text.textContent = "Keep-awake is off (DECURIX_KEEP_AWAKE=0). " + caught;
+    }else if(!ka.wanted){
+      box.dataset.state = "idle";
+      title.textContent = "This computer sleeps as usual";
+      text.textContent = "Nothing is being watched, so it isn't kept awake. Once a mailbox is connected (or a schedule is set), it is kept from going to sleep on its own. " + caught;
+    }else if(ka.held || ka.script){
+      box.dataset.state = "held";
+      title.textContent = "Kept awake: " + listing(ka.reasons);
+      text.textContent = "This computer won't go to sleep on its own" +
+        (ka.held ? "" : " while the script that started Decurix is running") +
+        "; the screen can still turn off. " + caught;
+    }else{
+      box.dataset.state = "off";
+      title.textContent = "Nothing is keeping this computer awake";
+      text.textContent = "Decurix runs in a container, which can't stop the computer sleeping - the script that starts it does, " +
+        "and it isn't running. Start Decurix with scripts/…/build (or rebuild) and leave it open. " + caught;
+    }
+
+    var w = poller && poller.last_wake;
+    if(w && when(w.at)){
+      wake.hidden = false;
+      wake.textContent = "Last woke " + ago(w.at) + " after " + duration(w.slept_ns) + " asleep - every mailbox was checked straight away.";
+    }else{
+      wake.hidden = true;
+    }
+  }
+
+  /* ---------------- mailboxes ---------------- */
+
+  function accountRow(a){
+    var row = el("div", "row");
+    row.dataset.enabled = a.enabled ? "true" : "false";
+
+    var main = el("div", "row-main");
+    main.appendChild(el("div", "row-title", a.email));
+
+    var meta = el("div", "row-meta");
+    var chips = {
+      connected: ["Connected", "ok"], connecting: ["Connecting", "wait"],
+      needs_password: ["Password needed", "bad"], error: ["Can't connect", "bad"], paused: ["Paused", ""]
+    };
+    var c = chips[a.status] || [a.status, ""];
+    meta.appendChild(stateChip(c[0], c[1]));
+    meta.appendChild(el("span", "mono", a.host + (a.folder !== "INBOX" ? " · " + a.folder : "")));
+
+    var checked = ago(a.last_check_at);
+    if(checked){ meta.appendChild(el("span", "", "Checked " + checked)); }
+    meta.appendChild(el("span", "", a.seen + " new email" + (a.seen === 1 ? "" : "s") + " read"));
+    main.appendChild(meta);
+
+    if(a.last_error){
+      main.appendChild(el("div", "row-error", a.last_error));
+    }
+
+    if(a.needs_password && a.enabled){
+      main.appendChild(el("div", "hint", "Not checked until you enter a new app password: logging in again and again with a refused one can get the account locked."));
+    }else if(a.status === "error" && a.failures > 1){
+      main.appendChild(el("div", "hint", "Trying again less often while it keeps failing (" + a.failures + " in a row)."));
+    }
+
+    var pw = el("form", "row-inline");
+    pw.hidden = !a.needs_password;
+    var pwInput = el("input", "input mono");
+    pwInput.type = "password";
+    pwInput.placeholder = "New app password";
+    pwInput.autocomplete = "new-password";
+    pw.appendChild(pwInput);
+    var pwSave = el("button", "btn btn-primary btn-sm", "Save");
+    pwSave.type = "submit";
+    pw.appendChild(pwSave);
+    pw.addEventListener("submit", function(e){
+      e.preventDefault();
+      if(!pwInput.value){ return pwInput.focus(); }
+      act("/api/mail/accounts/password", {id: a.id, password: pwInput.value}, "Password updated");
+    });
+    main.appendChild(pw);
+
+    row.appendChild(main);
+
+    var actions = el("div", "row-actions");
+    actions.appendChild(button("Check now", function(){
+      act("/api/mail/accounts/check", {id: a.id}, "Checked " + a.email);
+    }));
+    actions.appendChild(button(a.enabled ? "Pause" : "Resume", function(){
+      act("/api/mail/accounts/toggle", {id: a.id, enabled: String(!a.enabled)});
+    }));
+    if(!a.needs_password){
+      actions.appendChild(button("Change password", function(){
+        pw.hidden = !pw.hidden;
+        if(!pw.hidden){ pwInput.focus(); }
+      }));
+    }
+    var del = button("", function(){
+      if(!confirm("Disconnect " + a.email + "? Its saved password and its rules are deleted.")){ return; }
+      act("/api/mail/accounts/delete", {id: a.id}, "Disconnected");
+    });
+    del.setAttribute("aria-label", "Disconnect " + a.email);
+    del.innerHTML = '<svg width="14" height="14"><use href="#i-trash"/></svg>';
+    actions.appendChild(del);
+    row.appendChild(actions);
+
+    return row;
+  }
+
+  /* A refresh must not throw away a password being typed into a row. */
+  function editingAccounts(list){
+    if(list.contains(document.activeElement)){ return true; }
+    return Array.prototype.some.call(list.querySelectorAll("input"), function(i){ return i.value !== ""; });
+  }
+
+  function renderAccounts(){
+    var list = document.getElementById("accountList");
+
+    if(!editingAccounts(list)){
+      list.innerHTML = "";
+
+      if(!state.accounts.length){
+        list.appendChild(el("div", "empty-row", "No mailbox connected yet."));
+      }
+
+      state.accounts.forEach(function(a){ list.appendChild(accountRow(a)); });
+    }
+
+    /* Keep the rule form's choice across refreshes. */
+    var chosen = accountSelect.value;
+    accountSelect.innerHTML = "";
+    state.accounts.forEach(function(a){
+      var o = el("option", "", a.email);
+      o.value = a.id;
+      accountSelect.appendChild(o);
+    });
+    if(chosen){ accountSelect.value = chosen; }
+  }
+
+  /* ---------------- rules ---------------- */
+
+  function ruleRow(r){
+    var row = el("div", "row");
+    row.dataset.enabled = r.enabled ? "true" : "false";
+
+    var main = el("div", "row-main");
+    main.appendChild(el("div", "row-title", r.name));
+    main.appendChild(el("div", "row-sub", r.content));
+
+    var meta = el("div", "row-meta");
+    if(!r.enabled){ meta.appendChild(stateChip("Paused", "")); }
+    if(r.sender_re){ meta.appendChild(el("span", "mono", "from /" + r.sender_re + "/")); }
+    if(r.subject_re){ meta.appendChild(el("span", "mono", "subject /" + r.subject_re + "/")); }
+    meta.appendChild(el("span", "", accountEmail(r.account_id) + " → " + desktopName(r.desktop_id)));
+    if(r.verified_only){ meta.appendChild(el("span", "", "verified senders")); }
+    var fired = ago(r.last_fired_at);
+    meta.appendChild(el("span", "", r.fired + " task" + (r.fired === 1 ? "" : "s") + (fired ? ", last " + fired : "")));
+    main.appendChild(meta);
+    row.appendChild(main);
+
+    var actions = el("div", "row-actions");
+    actions.appendChild(button(r.enabled ? "Pause" : "Resume", function(){
+      act("/api/mail/rules/toggle", {id: r.id, enabled: String(!r.enabled)});
+    }));
+    var del = button("", function(){
+      if(!confirm("Delete the rule \"" + r.name + "\"?")){ return; }
+      act("/api/mail/rules/delete", {id: r.id}, "Rule deleted");
+    });
+    del.setAttribute("aria-label", "Delete rule");
+    del.innerHTML = '<svg width="14" height="14"><use href="#i-trash"/></svg>';
+    actions.appendChild(del);
+    row.appendChild(actions);
+
+    return row;
+  }
+
+  function renderRules(){
+    var list = document.getElementById("ruleList");
+    list.innerHTML = "";
+
+    if(!state.rules.length){
+      list.appendChild(el("div", "empty-row", state.accounts.length ? "No rules yet." : "Connect a mailbox first, then add a rule for it."));
+    }
+
+    state.rules.forEach(function(r){ list.appendChild(ruleRow(r)); });
+  }
+
+  /* ---------------- jobs ---------------- */
+
+  var jobChips = {
+    pending: ["Waiting", "wait"], sending: ["Sending", "wait"], sent: ["Sent", "ok"], failed: ["Failed", "bad"],
+    skipped: ["Skipped", "bad"], cancelled: ["Cancelled", ""]
+  };
+
+  function jobRow(j){
+    var row = el("div", "row");
+
+    var main = el("div", "row-main");
+    main.appendChild(el("div", "row-title", j.subject || "(no subject)"));
+
+    var meta = el("div", "row-meta");
+    var c = jobChips[j.status] || [j.status, ""];
+    meta.appendChild(stateChip(c[0], c[1]));
+    meta.appendChild(el("span", "", j.from));
+    meta.appendChild(el("span", "", "→ " + desktopName(j.desktop_id)));
+    meta.appendChild(el("span", "", j.rule_name));
+    var got = ago(j.created_at);
+    if(got){ meta.appendChild(el("span", "", got)); }
+    if(j.task_id){
+      var link = el("a", "", "Open task");
+      link.href = "/tasks/" + encodeURIComponent(j.task_id);
+      meta.appendChild(link);
+    }
+    main.appendChild(meta);
+
+    if(j.note){
+      main.appendChild(el("div", j.status === "pending" && !j.attempts ? "hint" : "row-error", j.note));
+    }
+    row.appendChild(main);
+
+    var actions = el("div", "row-actions");
+    if(j.status === "sending"){
+      /* Being handed to the desktop right now: nothing to cancel or retry. */
+    }else if(j.status === "pending"){
+      actions.appendChild(button("Cancel", function(){ act("/api/mail/jobs", {id: j.id, action: "cancel"}); }));
+    }else{
+      actions.appendChild(button(j.status === "skipped" ? "Send anyway" : "Run again", function(){
+        act("/api/mail/jobs", {id: j.id, action: "retry"}, "Queued");
+      }));
+    }
+    row.appendChild(actions);
+
+    return row;
+  }
+
+  function renderJobs(){
+    var list = document.getElementById("jobList");
+    list.innerHTML = "";
+
+    if(!state.jobs.length){
+      list.appendChild(el("div", "empty-row", "Nothing has been triggered yet."));
+    }
+
+    state.jobs.forEach(function(j){ list.appendChild(jobRow(j)); });
+  }
+
+  /* ---------------- load ---------------- */
+
+  async function load(){
+    var data;
+    try{
+      var response = await fetch("/api/mail", {cache: "no-store"});
+      data = await response.json();
+      if(!response.ok){ throw new Error(data.error || "Could not load"); }
+    }catch(e){
+      return;
+    }
+
+    state = data;
+    renderAwake(data.keep_awake, data.poller);
+    renderAccounts();
+    renderRules();
+    renderJobs();
+  }
+
+  /* ---------------- connect form ---------------- */
+
+  var connectForm = document.getElementById("connectForm");
+
+  document.getElementById("showConnect").addEventListener("click", function(){
+    connectForm.hidden = false;
+    document.getElementById("connEmail").focus();
+  });
+  document.getElementById("cancelConnect").addEventListener("click", function(){
+    connectForm.hidden = true;
+  });
+
+  connectForm.addEventListener("submit", async function(e){
+    e.preventDefault();
+
+    var btn = document.getElementById("connectButton");
+    btn.disabled = true;
+    Decurix.busy(true);
+
+    try{
+      await post("/api/mail/accounts/connect", {
+        email: document.getElementById("connEmail").value,
+        password: document.getElementById("connPassword").value,
+        host: document.getElementById("connHost").value,
+        port: document.getElementById("connPort").value,
+        folder: document.getElementById("connFolder").value
+      });
+      connectForm.reset();
+      connectForm.hidden = true;
+      toast("Mailbox connected", "success");
+      await load();
+    }catch(err){
+      toast(err.message, "error");
+    }finally{
+      btn.disabled = false;
+      Decurix.busy(false);
+    }
+  });
+
+  /* ---------------- rule form ---------------- */
+
+  var ruleForm = document.getElementById("ruleForm");
+  var testResults = document.getElementById("testResults");
+
+  document.getElementById("showRule").addEventListener("click", function(){
+    if(!state.accounts.length){ return toast("Connect a mailbox first.", "error"); }
+    if(!desktopSelect.options.length){ return toast("Create a desktop first.", "error"); }
+    ruleForm.hidden = false;
+    document.getElementById("ruleSender").focus();
+  });
+  document.getElementById("cancelRule").addEventListener("click", function(){
+    ruleForm.hidden = true;
+    testResults.hidden = true;
+  });
+
+  function ruleFields(){
+    return {
+      account_id: accountSelect.value,
+      desktop_id: desktopSelect.value,
+      name: document.getElementById("ruleName").value,
+      sender_re: document.getElementById("ruleSender").value,
+      subject_re: document.getElementById("ruleSubject").value,
+      content: document.getElementById("ruleContent").value,
+      include_body: String(document.getElementById("ruleBody").checked),
+      verified_only: String(document.getElementById("ruleVerified").checked)
+    };
+  }
+
+  document.getElementById("testRule").addEventListener("click", async function(){
+    var f = ruleFields();
+    if(!f.sender_re.trim() && !f.subject_re.trim()){
+      return toast("Give a sender or subject pattern to test.", "error");
+    }
+
+    Decurix.busy(true);
+    try{
+      var results = await post("/api/mail/rules/test", f);
+      testResults.innerHTML = "";
+
+      var matched = results.filter(function(r){ return r.matches; }).length;
+      var head = el("div", "hint", matched + " of the latest " + results.length + " emails match." +
+        (f.verified_only === "true" ? " With \"verified senders only\", those without ✓ verified would be skipped." : ""));
+      head.style.marginBottom = "8px";
+      testResults.appendChild(head);
+
+      var box = el("div", "tests");
+      results.forEach(function(r){
+        var line = el("div", "test");
+        line.dataset.match = String(r.matches);
+        line.appendChild(el("span", "test-mark", r.matches ? "✓" : ""));
+        var main = el("div", "test-main");
+        main.appendChild(el("span", "test-subject", r.subject || "(no subject)"));
+        main.appendChild(el("span", "test-from", r.from + (r.verified ? " · ✓ verified" : " · not verified")));
+        main.title = r.verify_note || "";
+        line.appendChild(main);
+        box.appendChild(line);
+      });
+      testResults.appendChild(box);
+      testResults.hidden = false;
+    }catch(e){
+      toast(e.message, "error");
+    }finally{
+      Decurix.busy(false);
+    }
+  });
+
+  ruleForm.addEventListener("submit", async function(e){
+    e.preventDefault();
+
+    var btn = document.getElementById("saveRule");
+    btn.disabled = true;
+    Decurix.busy(true);
+
+    try{
+      await post("/api/mail/rules/create", ruleFields());
+      ruleForm.reset();
+      document.getElementById("ruleBody").checked = true;
+      document.getElementById("ruleVerified").checked = true;
+      ruleForm.hidden = true;
+      testResults.hidden = true;
+      toast("Rule saved - matching email from now on starts a task", "success");
+      await load();
+    }catch(err){
+      toast(err.message, "error");
+    }finally{
+      btn.disabled = false;
+      Decurix.busy(false);
+    }
+  });
+
+  load();
+  setInterval(load, 5000);
+})();
+</script>
+
+</body>
+</html>

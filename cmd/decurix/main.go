@@ -27,7 +27,9 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/httpapi"
 	"github.com/YKoustubhRao/decurix/internal/idlepause"
+	"github.com/YKoustubhRao/decurix/internal/keepawake"
 	"github.com/YKoustubhRao/decurix/internal/lanaccess"
+	"github.com/YKoustubhRao/decurix/internal/mailtrigger"
 	"github.com/YKoustubhRao/decurix/internal/memory"
 	"github.com/YKoustubhRao/decurix/internal/ollama"
 	"github.com/YKoustubhRao/decurix/internal/querynotes"
@@ -195,6 +197,28 @@ func idleStopThreshold() time.Duration {
 	}
 
 	return time.Duration(minutes) * time.Minute
+}
+
+// mailPollInterval is how often each connected mailbox is checked:
+// DECURIX_MAIL_POLL_SECONDS, at least 15 (a provider rate-limits logins), else
+// mailtrigger.DefaultPollInterval.
+func mailPollInterval() time.Duration {
+	raw := os.Getenv("DECURIX_MAIL_POLL_SECONDS")
+	if raw == "" {
+		return mailtrigger.DefaultPollInterval
+	}
+
+	seconds, err := strconv.Atoi(raw)
+	if err != nil || seconds <= 0 {
+		log.Printf("warning: DECURIX_MAIL_POLL_SECONDS=%q is not a positive number; using %s", raw, mailtrigger.DefaultPollInterval)
+		return mailtrigger.DefaultPollInterval
+	}
+
+	if seconds < 15 {
+		seconds = 15
+	}
+
+	return time.Duration(seconds) * time.Second
 }
 
 // main loads configuration, sets up the Docker client, ensures required images/networks exist, registers HTTP routes, and starts the server.
@@ -421,6 +445,47 @@ func main() {
 	// (Server.Submit). See internal/schedule's package doc.
 	scheduler := &schedule.Runner{Store: schedules, Submitter: server}
 	go scheduler.Run(ctx)
+
+	// Starts a desktop's task when a matching email arrives (the Email page):
+	// polls each connected mailbox, and sends a job only to a desktop that is
+	// free. See internal/mailtrigger's package doc.
+	// Mailbox passwords are encrypted in the database with a key kept beside
+	// it (mailtrigger.KeyFile). Without the key they cannot be stored at all
+	// rather than stored readable.
+	mailKey, err := mailtrigger.LoadKey(sqlitedb.DataDir())
+	if err != nil {
+		log.Fatalf("email triggers: loading the password key: %v", err)
+	}
+
+	mail := must(mailtrigger.NewStore(db, mailKey))
+	mailRunner := &mailtrigger.Runner{Store: mail, Submitter: server, PollInterval: mailPollInterval()}
+	server.Mail = mail
+	server.MailRunner = mailRunner
+	go mailRunner.Run(ctx)
+
+	// Keeps this machine from idle-sleeping while a mailbox is watched or a
+	// schedule is waiting - nothing runs on a sleeping machine. Released the
+	// moment there is nothing, and on the way out. In a container it cannot
+	// reach the host, and the script that started Decurix holds it instead
+	// (GET /api/keep-awake). See internal/keepawake.
+	keeper := &keepawake.Keeper{Wanted: func() []string {
+		var reasons []string
+		if mail.Active() {
+			reasons = append(reasons, "mailboxes are watched")
+		}
+		if mail.Waiting() {
+			reasons = append(reasons, "email-triggered tasks are waiting to be sent")
+		}
+		if schedules.Active() || dags.Active() {
+			reasons = append(reasons, "schedules are waiting to run")
+		}
+		if tasksStore.Working() {
+			reasons = append(reasons, "a desktop is working on a task")
+		}
+		return reasons
+	}}
+	server.KeepAwake = keeper
+	go keeper.Run(ctx)
 
 	addrs := primaryListenAddrs(func() []string {
 		// Only Linux has Docker's bridge gateways as addresses of its own to bind. On macOS and Windows Docker runs in

@@ -88,11 +88,22 @@ def external_command_reason(command):
     return None
 
 
+# Commands run in /bin/sh (dash in the desktop images), not bash - on
+# purpose, measured. Models write bash (`grep ... <<< "$text"`), and in dash
+# that is a syntax error, so running them in bash looks like an obvious fix.
+# On the desktops' model (qwen2.5-coder:3b) it made results worse: with the
+# extraction step working, the model chained more steps, carried shell
+# variables between commands that each run in a fresh shell, and wrote empty
+# lines or stopped after extracting - 2 and 3 of 8 real email-triggered tasks
+# right, against 6 of 8 with dash, where the failing `<<<` pushed it back to
+# a plain `echo ... >> file`. Re-measure before changing it.
+
+
 def run_command(command, timeout=120):
     """
     Execute a shell command inside the desktop container.
 
-    Commands run as the headless user.
+    Commands run as the headless user, in /bin/sh (see above).
     """
 
     log(f"Executing command: {command}")

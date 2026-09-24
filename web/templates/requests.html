@@ -535,6 +535,15 @@
     }
     meta.appendChild(state);
 
+    /* A due run held because its desktop is busy (never sent into a task
+       that is running or waiting on someone's answer). */
+    if(sch.waiting){
+      var held = document.createElement("span");
+      var since = formatWhen(sch.waiting_since);
+      held.textContent = "Held" + (since ? " since " + since + " UTC" : "") + ": " + sch.waiting;
+      meta.appendChild(held);
+    }
+
     if(lastRun){
       var last = document.createElement("span");
       last.textContent = "Last ran " + lastRun + " UTC";

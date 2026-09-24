@@ -489,6 +489,24 @@ func (s *Store) Busy(workerID string) (string, error) {
 	}
 }
 
+// Working reports whether any desktop has a task running or queued - one of
+// the things that should keep this machine from going to sleep (see
+// internal/keepawake): a sleep in the middle of a task freezes it half done.
+// A task waiting on a person is not counted; that can wait for days.
+func (s *Store) Working() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var n int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM executions WHERE status IN (?, ?)`, StatusRunning, StatusQueued,
+	).Scan(&n); err != nil {
+		return false
+	}
+
+	return n > 0
+}
+
 // IsOpen reports whether a task still has a live execution on a worker -
 // queued, running or waiting on a human. A desktop that restarted on its own
 // reports the task it lost; one restarted through the API had that task

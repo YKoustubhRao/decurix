@@ -98,6 +98,15 @@ func (s *Server) sendRequestHandler(w http.ResponseWriter, r *http.Request) {
 // Submit, so a cron-triggered request (internal/schedule's Runner) lands in
 // the task records and chat exactly the way a typed one does.
 func (s *Server) submitRequest(ctx context.Context, desktopID, content string) (tasks.Route, error) {
+	unlock := s.lockDesktop(desktop.SanitizeID(desktopID))
+	defer unlock()
+
+	return s.submitLocked(ctx, desktopID, content)
+}
+
+// submitLocked is submitRequest for a caller already holding the desktop's
+// send lock (lockDesktop).
+func (s *Server) submitLocked(ctx context.Context, desktopID, content string) (tasks.Route, error) {
 	id := desktop.SanitizeID(desktopID)
 
 	// A desktop still being created has no container yet, which would read
@@ -121,18 +130,20 @@ func (s *Server) submitRequest(ctx context.Context, desktopID, content string) (
 
 // Submit implements internal/schedule's Submitter: it is the fourth door
 // onto submitRequest, after the chat, the requests page and a query reply -
-// see that package's Runner for when this is called.
+// see that package's Runner for when this is called. Like every automated
+// door it sends only to a free desktop (submitWhenFree), returning a
+// *DesktopBusyError otherwise.
 func (s *Server) Submit(ctx context.Context, desktopID, content string) error {
-	_, err := s.submitRequest(ctx, desktopID, content)
+	_, err := s.submitWhenFree(ctx, desktopID, content)
 	return err
 }
 
-// SubmitTracked implements internal/dag's Submitter: the same door onto
-// submitRequest that Submit is, but also hands back the task ID the request
-// landed under, since a DAG run has to watch that specific task to know
-// when its node is done.
+// SubmitTracked implements internal/dag's and internal/mailtrigger's
+// Submitter: the same door Submit is, but also hands back the task ID the
+// request landed under, since a DAG run has to watch that specific task to
+// know when its node is done.
 func (s *Server) SubmitTracked(ctx context.Context, desktopID, content string) (string, error) {
-	route, err := s.submitRequest(ctx, desktopID, content)
+	route, err := s.submitWhenFree(ctx, desktopID, content)
 	return route.TaskID, err
 }
 

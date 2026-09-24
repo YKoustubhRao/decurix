@@ -177,6 +177,7 @@ type Renderer struct {
 	dagTmpl        *template.Template
 	hostGUITmpl    *template.Template
 	screenTmpl     *template.Template
+	emailTmpl      *template.Template
 }
 
 // NewRenderer parses all templates once at startup.
@@ -218,6 +219,9 @@ func NewRenderer() *Renderer {
 		screenTmpl: template.Must(
 			template.ParseFS(web.TemplatesFS, templatePaths("screen.html")...),
 		),
+		emailTmpl: template.Must(
+			template.ParseFS(web.TemplatesFS, templatePaths("email.html")...),
+		),
 	}
 }
 
@@ -229,6 +233,11 @@ func (rd *Renderer) RenderIndex(w io.Writer, data PageData) error {
 // RenderRequests renders the requests page.
 func (rd *Renderer) RenderRequests(w io.Writer, data PageData) error {
 	return rd.requestsTmpl.ExecuteTemplate(w, "requests.html", data)
+}
+
+// RenderEmail renders the email-trigger page.
+func (rd *Renderer) RenderEmail(w io.Writer, data PageData) error {
+	return rd.emailTmpl.ExecuteTemplate(w, "email.html", data)
 }
 
 // RenderQueryNotesDashboard renders the query-notes dashboard.
