@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -53,11 +54,22 @@ var (
 	launchTimeout  = 30 * time.Second
 	// A session nobody is watching or driving is ended, taking the app with it, once this long has passed.
 	idleStop = 90 * time.Second
+	// A session started ahead of time (Manager.Start called before anyone has ever watched it - see hostAppStarter)
+	// is given longer before the same rule ends it: the person who will open it has not necessarily reached the VM
+	// yet, and killing it the moment idleStop passes would spend the whole point of starting it early. Once it has
+	// been watched at least once, idleStop applies as usual - this only widens the window before the first look.
+	prelaunchIdleStop = 20 * time.Minute
 	// A warm helper that nobody has asked for is let go after this long, so a feature nobody uses holds no memory. Anything
 	// that suggests an app is about to be wanted (the create dialog, a copy) starts the clock again.
 	spareTTL = 2 * time.Hour
 	// How often an app that has not shown a window yet is asked whether it is still running.
 	statusPoll = 700 * time.Millisecond
+	// A kept app (Keep) that ended is started again after this long, so the next person to open it finds it running.
+	keepRelaunch = 2 * time.Second
+	// A kept app that would not start is tried again after keepRetryMin, doubling up to keepRetryMax: a program that has
+	// been uninstalled must not be launched in a tight loop.
+	keepRetryMin = 30 * time.Second
+	keepRetryMax = 30 * time.Minute
 )
 
 var unsafeName = regexp.MustCompile(`[^a-zA-Z0-9_]`)
@@ -77,6 +89,17 @@ type Manager struct {
 	// resolved remembers what a check found each program to be, so a launch never has to look it up (the slow part), and
 	// stays valid when the helper that did the looking is replaced.
 	resolved map[Target]resolvedProgram
+	// stopping holds sessions Stop has been asked to end and that have not ended yet. A new app under the same id waits
+	// for it: both would use the same private desktop, and the old one's shutdown closes every window on it.
+	stopping map[string]*Session
+	// kept are the apps kept running and ready (Keep), by session id.
+	kept map[string]*keptApp
+}
+
+// keptApp is an app kept open on its private desktop until Forget, so that opening it in a VM shows it at once.
+type keptApp struct {
+	desktop, target, args string
+	stop                  chan struct{}
 }
 
 // resolvedProgram is what the helper's check worked out for a target.
@@ -97,7 +120,8 @@ type startCall struct {
 
 // NewManager returns a Manager that runs its helper processes through start.
 func NewManager(start Starter) *Manager {
-	return &Manager{start: start, sessions: make(map[string]*Session), starting: make(map[string]*startCall), resolved: make(map[Target]resolvedProgram)}
+	return &Manager{start: start, sessions: make(map[string]*Session), starting: make(map[string]*startCall),
+		resolved: make(map[Target]resolvedProgram), stopping: make(map[string]*Session), kept: make(map[string]*keptApp)}
 }
 
 // Get returns the running session for id.
@@ -220,10 +244,28 @@ func (m *Manager) Start(ctx context.Context, id, target, args string) (*Session,
 	}
 
 	m.mu.Lock()
-	if s, ok := m.sessions[id]; ok && s.Alive() {
-		s.Touch()
+	for {
+		// An app that is closing (the person closed it, or its viewer) is not joined: the next one starts once it has
+		// gone, since both would be on the same private desktop.
+		old, ok := m.sessions[id]
+		if ok && old.Alive() && !old.ending() {
+			old.Touch()
+			m.mu.Unlock()
+			return old, nil
+		}
+		if !ok || !old.Alive() {
+			old = m.stopping[id]
+		}
+		if old == nil || !old.Alive() {
+			break
+		}
 		m.mu.Unlock()
-		return s, nil
+		select {
+		case <-old.Done():
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		m.mu.Lock()
 	}
 	// A viewer that loads twice, or two windows opened at once, must not launch the app twice on one desktop.
 	if c, ok := m.starting[id]; ok {
@@ -290,6 +332,7 @@ func (m *Manager) launch(ctx context.Context, id, target, args string) (*Session
 		return nil, err
 	}
 	s.holdWatching(false)
+	s.Touch() // start the idle clock from now, not from whenever this helper process was first spawned as a spare
 	go s.reap()
 	return s, nil
 }
@@ -382,14 +425,123 @@ type Target struct {
 // waitIdle returns once no helper is still being started in the background, for tests that change the timings.
 func (m *Manager) waitIdle() { m.warming.Wait() }
 
-// Stop ends session id and the app in it.
+// Stop ends session id and the app in it. A kept app (Keep) is started again, fresh, a moment later.
 func (m *Manager) Stop(id string) {
 	m.mu.Lock()
 	s := m.sessions[id]
 	delete(m.sessions, id)
+	if s != nil {
+		m.stopping[id] = s
+	}
 	m.mu.Unlock()
 	if s != nil {
 		s.Stop()
+		m.mu.Lock()
+		if m.stopping[id] == s {
+			delete(m.stopping, id)
+		}
+		m.mu.Unlock()
+	}
+}
+
+// Keep keeps an app running and ready under session id until Forget: it is started now if it is not already, and again
+// whenever it ends - the person closed it, closed the window showing it, or it crashed - so opening it in a VM shows it
+// at once instead of starting it on the host while somebody watches. A kept app nobody has looked at yet is never ended
+// for being unwatched. desktop is the VM it was copied to (ForgetDesktop).
+func (m *Manager) Keep(desktop, id, target, args string) {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	if k, ok := m.kept[id]; ok {
+		if k.target == target && k.args == args {
+			m.mu.Unlock()
+			return
+		}
+		close(k.stop) // copied again as another program: keep that one instead
+	}
+	k := &keptApp{desktop: desktop, target: target, args: args, stop: make(chan struct{})}
+	m.kept[id] = k
+	m.mu.Unlock()
+	go m.keepRunning(id, k)
+}
+
+// Forget stops keeping app id ready, and ends it.
+func (m *Manager) Forget(id string) {
+	m.mu.Lock()
+	k, ok := m.kept[id]
+	if ok {
+		delete(m.kept, id)
+		close(k.stop)
+	}
+	m.mu.Unlock()
+	if ok {
+		m.Stop(id)
+	}
+}
+
+// ForgetDesktop forgets every app kept ready for one VM, for when it is deleted.
+func (m *Manager) ForgetDesktop(desktop string) {
+	m.mu.Lock()
+	var ids []string
+	for id, k := range m.kept {
+		if k.desktop == desktop {
+			ids = append(ids, id)
+		}
+	}
+	m.mu.Unlock()
+	for _, id := range ids {
+		m.Forget(id)
+	}
+}
+
+// keepRunning is Keep's loop for one app: start it, wait for it to end, start it again.
+func (m *Manager) keepRunning(id string, k *keptApp) {
+	var backoff time.Duration
+	wait := func(d time.Duration) bool {
+		t := time.NewTimer(d)
+		defer t.Stop()
+		select {
+		case <-k.stop:
+			return false
+		case <-t.C:
+			return true
+		}
+	}
+	for {
+		select {
+		case <-k.stop:
+			return
+		default:
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		s, err := m.Start(ctx, id, k.target, k.args)
+		cancel()
+		if err != nil {
+			m.mu.Lock()
+			closed := m.closed
+			m.mu.Unlock()
+			if closed {
+				return
+			}
+			backoff = min(max(2*backoff, keepRetryMin), keepRetryMax)
+			log.Printf("host apps: could not keep %s ready (trying again in %s): %v", id, backoff, err)
+			if !wait(backoff) {
+				return
+			}
+			continue
+		}
+		backoff = 0
+		s.setKept(true)
+		select {
+		case <-k.stop:
+			return
+		case <-s.Done():
+		}
+		if !wait(keepRelaunch) {
+			return
+		}
 	}
 }
 
@@ -398,6 +550,10 @@ func (m *Manager) Stop(id string) {
 func (m *Manager) StopAll() {
 	m.mu.Lock()
 	m.closed = true
+	for id, k := range m.kept {
+		close(k.stop)
+		delete(m.kept, id)
+	}
 	all := m.sessions
 	m.sessions = make(map[string]*Session)
 	spare := m.spare
@@ -426,18 +582,21 @@ type Session struct {
 
 	ioMu sync.Mutex // one command in flight at a time: answers are matched to commands by order
 
-	mu       sync.Mutex
-	err      error
-	touched  time.Time
-	stderr   bytes.Buffer
-	viewers  map[*Viewer]struct{}
-	holding  bool
-	w, h     int
-	first    chan struct{}
-	gotFirst bool
-	appGone  chan struct{}
-	goneOnce sync.Once
-	stopOnce sync.Once
+	mu          sync.Mutex
+	err         error
+	touched     time.Time
+	everWatched bool
+	kept        bool // kept ready by Manager.Keep: never ended for being unwatched before anybody has looked
+	stopped     bool // Stop has been called
+	stderr      bytes.Buffer
+	viewers     map[*Viewer]struct{}
+	holding     bool
+	w, h        int
+	first       chan struct{}
+	gotFirst    bool
+	appGone     chan struct{}
+	goneOnce    sync.Once
+	stopOnce    sync.Once
 }
 
 func newSession(id string, cmd *exec.Cmd) (*Session, error) {
@@ -609,6 +768,24 @@ func (s *Session) Size() (w, h int) {
 	return s.w, s.h
 }
 
+func (s *Session) setKept(on bool) {
+	s.mu.Lock()
+	s.kept = on
+	s.mu.Unlock()
+}
+
+// ending reports whether the session is on its way out: its app has closed, or Stop has been called.
+func (s *Session) ending() bool {
+	select {
+	case <-s.appGone:
+		return true
+	default:
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stopped
+}
+
 // Touch records that somebody is using the session, which keeps it alive.
 func (s *Session) Touch() {
 	s.mu.Lock()
@@ -629,8 +806,13 @@ func (s *Session) reap() {
 		s.mu.Lock()
 		unwatched := len(s.viewers) == 0 && !s.holding
 		idle := time.Since(s.touched)
+		threshold := idleStop
+		if !s.everWatched {
+			threshold = prelaunchIdleStop
+		}
+		waiting := s.kept && !s.everWatched
 		s.mu.Unlock()
-		if unwatched && idle > idleStop {
+		if unwatched && idle > threshold && !waiting {
 			s.Stop()
 			return
 		}
@@ -745,6 +927,7 @@ func (s *Session) Watch() *Viewer {
 	s.mu.Lock()
 	s.viewers[v] = struct{}{}
 	s.touched = time.Now()
+	s.everWatched = true
 	s.mu.Unlock()
 	s.syncViewers()
 	go s.Do("keyframe")
@@ -934,6 +1117,9 @@ func (s *Session) Copy(vk int) (string, error) {
 
 // Stop ends the session: the helper closes the app and everything it opened, then exits.
 func (s *Session) Stop() {
+	s.mu.Lock()
+	s.stopped = true
+	s.mu.Unlock()
 	s.stopOnce.Do(func() {
 		// Closing stdin is what makes the helper shut the app down; asking politely first is best-effort.
 		go func() {

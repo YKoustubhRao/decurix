@@ -137,6 +137,29 @@ func TestCleanAppShortcutName(t *testing.T) {
 	}
 }
 
+func TestChromeIsDiscoveredWithoutAStartMenuEntry(t *testing.T) {
+	drive := t.TempDir()
+	exe := filepath.Join(drive, "Program Files", "Google", "Chrome", "Application", "chrome.exe")
+	if err := os.MkdirAll(filepath.Dir(exe), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(exe, []byte("test"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DECURIX_HOST_MNT_C", drive)
+
+	apps := scanInstalledWindowsBrowsers(map[string]bool{})
+	found := false
+	for _, app := range apps {
+		if app.Name == "Google Chrome" && strings.Contains(app.HostCmd, `Google\Chrome\Application\chrome.exe`) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("standard Chrome install was not discovered: %+v", apps)
+	}
+}
+
 func TestPackDynamicApp(t *testing.T) {
 	buf := new(bytes.Buffer)
 	tw := tar.NewWriter(buf)
@@ -793,7 +816,7 @@ func windowsApp(name, hostCmd string) HostAppItem {
 	return HostAppItem{ID: "win_" + sanitizeAppSlug(name), Name: name, Detected: true, AppType: "windows_app", HostCmd: hostCmd}
 }
 
-func TestOnlyAppsTheHostCanRunHiddenAreOffered(t *testing.T) {
+func TestEveryDiscoveredAppIsShownAndOnlyRunnableAppsAreEnabled(t *testing.T) {
 	const uwp = `cmd.exe /c start explorer.exe shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App`
 	const paint = `cmd.exe /c start "" "C:\Windows\System32\mspaint.exe"`
 	useHostChecker(t, func(_ context.Context, targets []winhost.Target) (map[winhost.Target]string, error) {
@@ -812,26 +835,28 @@ func TestOnlyAppsTheHostCanRunHiddenAreOffered(t *testing.T) {
 		windowsApp("Calculator", uwp),
 		windowsApp("Paint", paint),
 	})
-	if len(got) != 1 || got[0].Name != "Paint" || got[0].Mode != ModeHostGUI {
-		t.Fatalf("offered %+v, want only Paint, run on the host", got)
+	if len(got) != 2 || got[0].Name != "Calculator" || got[0].Mode != ModeUnavailable ||
+		!strings.Contains(got[0].UnavailableReason, "Universal Windows") ||
+		got[1].Name != "Paint" || got[1].Mode != ModeHostGUI {
+		t.Fatalf("discovered %+v, want unavailable Calculator and runnable Paint", got)
 	}
 }
 
-func TestAnAppTheHostWasNeverAskedAboutIsNotOffered(t *testing.T) {
+func TestAnUnverifiedAppStaysVisibleButDisabled(t *testing.T) {
 	const paint = `cmd.exe /c start "" "C:\Windows\System32\mspaint.exe"`
 	apps := []HostAppItem{windowsApp("Paint", paint)}
 
 	useHostChecker(t, nil)
-	if got := vetHostApps(apps); len(got) != 0 {
-		t.Errorf("with no way to ask the host, offered %+v", got)
+	if got := vetHostApps(apps); len(got) != 1 || got[0].Mode != ModeUnavailable || got[0].UnavailableReason == "" {
+		t.Errorf("with no way to ask the host, discovery returned %+v", got)
 	}
 
 	// A helper that dies partway keeps what it answered; the rest are not promised.
 	useHostChecker(t, func(context.Context, []winhost.Target) (map[winhost.Target]string, error) {
 		return nil, errors.New("the host helper ended")
 	})
-	if got := vetHostApps(apps); len(got) != 0 {
-		t.Errorf("after the host helper failed, offered %+v", got)
+	if got := vetHostApps(apps); len(got) != 1 || got[0].Mode != ModeUnavailable {
+		t.Errorf("after the host helper failed, discovery returned %+v", got)
 	}
 }
 
@@ -850,14 +875,35 @@ func TestAWebServiceOpensInTheVMWithoutAskingTheHost(t *testing.T) {
 	}
 }
 
-func TestAppsThatNeedSoundAreNotOffered(t *testing.T) {
+func TestAppsThatNeedSoundAreShownButDisabled(t *testing.T) {
 	useHostChecker(t, allowEverything)
 	got := vetHostApps([]HostAppItem{
 		windowsApp("Spotify", `cmd.exe /c start "" "C:\Users\a\AppData\Roaming\Spotify\Spotify.exe"`),
 		windowsApp("VLC media player", `cmd.exe /c start "" "C:\Program Files\VideoLAN\VLC\vlc.exe"`),
 	})
-	if len(got) != 0 {
-		t.Errorf("the VMs have no sound device, yet offered %+v", got)
+	if len(got) != 2 || got[0].Mode != ModeUnavailable || got[1].Mode != ModeUnavailable {
+		t.Errorf("audio-only apps should remain visible but disabled: %+v", got)
+	}
+}
+
+func TestBrowserDescriptionPromisesTheSeededSignedInProfile(t *testing.T) {
+	useHostChecker(t, allowEverything)
+	got := vetHostApps([]HostAppItem{windowsApp("Google Chrome", `cmd.exe /c start "" "C:\Program Files\Google\Chrome\chrome.exe"`)})
+	if len(got) != 1 || got[0].Mode != ModeHostGUI || !strings.Contains(got[0].Description, "signed-in browser profile") {
+		t.Fatalf("Chrome discovery did not describe its profile import: %+v", got)
+	}
+}
+
+func TestForcingDiscoveryForgetsTheWindowsStartAppsSnapshot(t *testing.T) {
+	startAppsMu.Lock()
+	startAppsCached = []rawStartApp{{Name: "Old App", AppID: "old"}}
+	startAppsQueried = true
+	startAppsMu.Unlock()
+	forgetStartApps()
+	startAppsMu.RLock()
+	defer startAppsMu.RUnlock()
+	if startAppsQueried || startAppsCached != nil {
+		t.Fatalf("cached Start Apps survived a forced refresh: queried=%v apps=%+v", startAppsQueried, startAppsCached)
 	}
 }
 
@@ -955,5 +1001,115 @@ func TestHasWindowsInstallNeedsWindowsInsideTheDrive(t *testing.T) {
 	}
 	if !hasWindowsInstall([]string{empty, drive}) {
 		t.Fatal("a drive holding a Windows folder was not recognised")
+	}
+}
+
+func TestChromeDiscoveredAndPackaged(t *testing.T) {
+	tempHome := t.TempDir()
+	chromeDir := filepath.Join(tempHome, ".config", "google-chrome")
+	if err := os.MkdirAll(filepath.Join(chromeDir, "Default"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(chromeDir, "Local State"), []byte(`{"profile":{"info_cache":{"Default":{"user_name":"test@example.com"}}}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	defs := getKnownAppDefs()
+	var chromeDef *knownAppDef
+	for i := range defs {
+		if defs[i].id == "chrome" {
+			chromeDef = &defs[i]
+			break
+		}
+	}
+	if chromeDef == nil {
+		t.Fatal("chrome definition not found in getKnownAppDefs")
+	}
+
+	paths := chromeDef.probeFn()
+	if len(paths) == 0 {
+		t.Fatal("expected chrome probeFn to discover profile directory")
+	}
+
+	buf := new(bytes.Buffer)
+	tw := tar.NewWriter(buf)
+	if err := chromeDef.packFn(tw, paths); err != nil {
+		t.Fatalf("chrome packFn failed: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tr := tar.NewReader(buf)
+	foundLocalState := false
+	foundSymlink := false
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hdr.Name == ".config/google-chrome/Local State" {
+			foundLocalState = true
+		}
+		if hdr.Name == ".config/chromium" && hdr.Typeflag == tar.TypeSymlink && hdr.Linkname == "google-chrome" {
+			foundSymlink = true
+		}
+	}
+	if !foundLocalState {
+		t.Error("expected .config/google-chrome/Local State to be packed")
+	}
+	if !foundSymlink {
+		t.Error("expected .config/chromium symlink to google-chrome to be created")
+	}
+}
+
+func TestScanLinuxDesktopFilesAndVet(t *testing.T) {
+	tempDir := t.TempDir()
+	desktopFile := filepath.Join(tempDir, "sample-editor.desktop")
+	content := `[Desktop Entry]
+Name=Sample Editor
+Comment=A sample editor app
+Exec=/usr/bin/sample-editor %F
+Icon=accessories-text-editor
+Terminal=false
+Type=Application
+Categories=Utility;TextEditor;
+`
+	if err := os.WriteFile(desktopFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	meta := parseDesktopFile(desktopFile)
+	if meta.Name != "Sample Editor" {
+		t.Errorf("parseDesktopFile got Name %q, want 'Sample Editor'", meta.Name)
+	}
+	if meta.Exec != "/usr/bin/sample-editor %F" {
+		t.Errorf("parseDesktopFile got Exec %q", meta.Exec)
+	}
+
+	app := HostAppItem{
+		ID:            "linux_sample_editor",
+		Name:          meta.Name,
+		Category:      categorizeAppName(meta.Name),
+		Description:   meta.Comment,
+		Detected:      true,
+		DetectedPaths: []string{desktopFile},
+		AppType:       "desktop_app",
+		HostCmd:       "/usr/bin/env /usr/bin/sample-editor",
+		Icon:          meta.Icon,
+	}
+
+	vetted := vetHostApps([]HostAppItem{app})
+	if len(vetted) != 1 {
+		t.Fatalf("expected 1 vetted app, got %d", len(vetted))
+	}
+	if vetted[0].Mode != ModeHostGUI {
+		t.Errorf("expected ModeHostGUI for desktop_app, got %q (reason: %q)", vetted[0].Mode, vetted[0].UnavailableReason)
 	}
 }

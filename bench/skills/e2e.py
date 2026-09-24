@@ -116,11 +116,21 @@ def main():
         "-e", "VNC_PW=admin", "-e", "VNC_RESOLUTION=1280x720", "-e", "DESKTOP_ID=e2e", "-e", "DESKTOP_NAME=e2e",
         "-e", f"CONTROL_PLANE_URL=http://host.docker.internal:{PORT}", "-e", "AGENT_HARNESS=ollama",
         "-e", "OLLAMA_URL=http://host.docker.internal:11434", "-e", "DECURIX_REPLAY_FIND_SECONDS=6",
+        # This benchmark verifies deterministic healing and human correction.
+        # A live model could choose the renamed button or wait for a cold load,
+        # bypassing the question this scenario is specifically meant to test.
+        "-e", "DECURIX_ESCALATION_MODEL_CALLS=0",
         "-v", f"{REPO}/agent/decurix_agent:/opt/decurix_agent:ro", IMAGE,
     ], check=True)
 
     try:
         run()
+    except BaseException:
+        print("\n== failure diagnostics", flush=True)
+        print(bash("gui observe", check=False).stdout, flush=True)
+        logs = subprocess.run(["docker", "logs", "--tail", "80", NAME], capture_output=True, text=True)
+        print(logs.stdout + logs.stderr, flush=True)
+        raise
     finally:
         if "--keep" not in sys.argv:
             subprocess.run(["docker", "rm", "-f", NAME], capture_output=True)

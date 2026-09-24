@@ -550,3 +550,300 @@ def find(look, frame):
 
     fx, fy = rx0 + x, ry0 + y
     return _result(FOUND, (fx + ax, fy + ay), (fx - ox, fy - oy), round(share, 3), 1)
+
+
+# ============================================================
+# Kin: the same kind of thing, when what it says has changed
+#
+# A look fails, correctly, when what was clicked now reads differently. That
+# is exactly what a search does: recorded as `koustubh is great`, the first
+# result's title was "Kaustubha" at 352,544; searched for `who is rama`, the
+# first result is "Rama", 58 px higher. The person meant "the first result",
+# and nothing in the pixels of "Kaustubha" says so.
+#
+# What the frame does say is what *kind* of thing it was: a line of text in a
+# link's colour, this tall, starting at this column - and which of those it
+# was, counted from the top of the screen. A kin is that description:
+#
+#   {"ink": [r, g, b], "left": x, "top": y, "height": h, "ordinal": k,
+#    "count": n, "at": [dx, dy]}
+#
+# and find_kin() finds the k-th such line on the screen now. Only coloured
+# ink (a link, a highlighted label) is described: body text is black or grey
+# everywhere, and "the third black line" means nothing. The replay only asks
+# for a kin when a value it typed has changed (replay.resolve), so a look that
+# fails for any other reason still halts exactly as before.
+# ============================================================
+
+# The ink must be a colour, not black, grey or white: max - min channel.
+KIN_MIN_CHROMA = 60
+# A pixel of the ink: at least this coloured, within this hue (degrees) and brightness of the ink. JPEG and
+# anti-aliasing smear thin text, so these are loose; what they must not let in is black or grey text.
+KIN_PIXEL_CHROMA = 40
+KIN_HUE = 25
+KIN_LUMA = 70
+# A pixel this far from the background around the click is ink, not the background.
+KIN_CONTRAST = 110
+# Fewer pixels of the ink than this around the click: there is no text of that colour there.
+KIN_MIN_INK = 12
+# How far a kin's left edge may be from the recorded one: the same column.
+KIN_COLUMN = 6
+# A kin's height as a share of the recorded one's: descenders ("gyp") and a bold title change it; another text size does not fit.
+KIN_HEIGHT = (0.7, 1.45)
+# Gaps inside one line of text: between letters and words across, between an accent and its letter down.
+KIN_GAP_X = 12
+KIN_GAP_Y = 2
+# Shorter than this is an icon or a rule, not a line of text.
+KIN_MIN_HEIGHT = 8
+# How far from the text a click may land and still be a click on it.
+KIN_REACH = 8
+# The widest a line of text is followed across.
+KIN_SPAN = 700
+
+
+def _pixel(rgb, width, x, y):
+    i = (y * width + x) * 3
+    return rgb[i], rgb[i + 1], rgb[i + 2]
+
+
+def _near(colour, ink, limit):
+    return (colour[0] - ink[0]) ** 2 + (colour[1] - ink[1]) ** 2 + (colour[2] - ink[2]) ** 2 <= limit * limit
+
+
+def _hue(colour):
+    r, g, b = colour
+    hi, lo = max(colour), min(colour)
+    if hi == lo:
+        return 0.0
+    d = hi - lo
+    if hi == r:
+        return (60.0 * (g - b) / d) % 360
+    if hi == g:
+        return 60.0 * (b - r) / d + 120
+    return 60.0 * (r - g) / d + 240
+
+
+def _luma(colour):
+    return (30 * colour[0] + 59 * colour[1] + 11 * colour[2]) // 100
+
+
+def _inker(ink):
+    """
+    Whether a pixel is the ink: the same hue, still clearly coloured, and about
+    as dark. Hue rather than distance, because anti-aliasing blends a thin
+    letter with the background (a lighter blue is still blue) while dark teal
+    text on a pale highlight is close to a link's blue in RGB and is not one.
+    """
+
+    hue, luma = _hue(ink), _luma(ink)
+
+    def is_ink(r, g, b):
+        hi, lo = max(r, g, b), min(r, g, b)
+        if hi - lo < KIN_PIXEL_CHROMA or abs(_luma((r, g, b)) - luma) > KIN_LUMA:
+            return False
+        d = abs(_hue((r, g, b)) - hue)
+        return min(d, 360 - d) <= KIN_HUE
+
+    return is_ink
+
+
+def _ink_colour(rgb, width, height, px, py):
+    """The colour of the text around a click, when it is a colour (a link): [r, g, b], or None."""
+
+    x0, x1 = max(0, px - 40), min(width, px + 41)
+    y0, y1 = max(0, py - 14), min(height, py + 15)
+
+    counts = {}
+    pixels = []
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            c = _pixel(rgb, width, x, y)
+            pixels.append(c)
+            key = (c[0] >> 3, c[1] >> 3, c[2] >> 3)
+            counts[key] = counts.get(key, 0) + 1
+    if not pixels:
+        return None
+
+    bk = max(counts, key=counts.get)
+    background = (bk[0] * 8 + 4, bk[1] * 8 + 4, bk[2] * 8 + 4)
+
+    # The letters' cores: coloured, and the furthest from the background. Their edges are a blend of the two.
+    ink = [c for c in pixels if not _near(c, background, KIN_CONTRAST) and max(c) - min(c) >= KIN_MIN_CHROMA]
+    if len(ink) < KIN_MIN_INK:
+        return None
+    ink.sort(key=lambda c: -((c[0] - background[0]) ** 2 + (c[1] - background[1]) ** 2 + (c[2] - background[2]) ** 2))
+    core = ink[:max(KIN_MIN_INK, len(ink) // 3)]
+
+    # One colour, not two side by side: most of the ink must be that colour's hue.
+    colour = [sorted(c[i] for c in core)[len(core) // 2] for i in range(3)]
+    is_ink = _inker(colour)
+    if sum(1 for c in ink if is_ink(*c)) < 0.6 * len(ink):
+        return None
+    return colour
+
+
+def _band(rgb, width, x0, x1, y, is_ink):
+    """Whether any pixel of row y between x0 and x1 is the ink."""
+
+    row = y * width
+    for x in range(max(0, x0), min(width, x1)):
+        i = (row + x) * 3
+        if is_ink(rgb[i], rgb[i + 1], rgb[i + 2]):
+            return True
+    return False
+
+
+def _item_at(rgb, width, height, px, py, ink):
+    """The box (left, top, right, bottom) of the line of text in `ink` a click at px,py landed on, or None."""
+
+    is_ink = _inker(ink)
+    rows = [y for y in range(max(0, py - KIN_REACH), min(height, py + KIN_REACH + 1))
+            if _band(rgb, width, px - KIN_REACH, px + KIN_REACH + 1, y, is_ink)]
+    if not rows:
+        return None
+
+    seed = min(rows, key=lambda y: abs(y - py))
+    reach_x0, reach_x1 = px - 40, px + 41
+
+    top = seed
+    gap = 0
+    for y in range(seed - 1, max(-1, seed - 60), -1):
+        if _band(rgb, width, reach_x0, reach_x1, y, is_ink):
+            top, gap = y, 0
+        else:
+            gap += 1
+            if gap > KIN_GAP_Y:
+                break
+    bottom = seed
+    gap = 0
+    for y in range(seed + 1, min(height, seed + 60)):
+        if _band(rgb, width, reach_x0, reach_x1, y, is_ink):
+            bottom, gap = y, 0
+        else:
+            gap += 1
+            if gap > KIN_GAP_Y:
+                break
+
+    def column(x):
+        for y in range(top, bottom + 1):
+            if is_ink(*_pixel(rgb, width, x, y)):
+                return True
+        return False
+
+    left = right = None
+    gap = 0
+    for x in range(px + KIN_REACH, max(-1, px - KIN_SPAN), -1):
+        if x >= width:
+            continue
+        if column(x):
+            left, gap = x, 0
+            if right is None:
+                right = x
+        elif left is not None:
+            gap += 1
+            if gap > KIN_GAP_X:
+                break
+    if left is None:
+        return None
+    gap = 0
+    for x in range(right + 1, min(width, px + KIN_SPAN)):
+        if column(x):
+            right, gap = x, 0
+        else:
+            gap += 1
+            if gap > KIN_GAP_X:
+                break
+
+    if not (left - KIN_REACH <= px <= right + KIN_REACH):
+        return None
+    return left, top, right, bottom
+
+
+def _column_items(rgb, width, height, left, ink):
+    """
+    Every line of text in `ink` that starts at column `left` (within
+    KIN_COLUMN), top to bottom: [(left, top, right_in_strip, bottom)].
+    """
+
+    is_ink = _inker(ink)
+    x0, x1 = max(0, left - KIN_COLUMN - KIN_GAP_X), min(width, left + KIN_COLUMN + 40)
+    items = []
+    top = last = None
+    for y in range(height + KIN_GAP_Y + 1):
+        hit = y < height and _band(rgb, width, x0, x1, y, is_ink)
+        if hit:
+            if top is None:
+                top = y
+            last = y
+        elif top is not None and y - last > KIN_GAP_Y:
+            items.append((top, last))
+            top = None
+
+    out = []
+    for t, b in items:
+        xs = [x for x in range(x0, x1) for y in range(t, b + 1) if is_ink(*_pixel(rgb, width, x, y))]
+        if xs and abs(min(xs) - left) <= KIN_COLUMN:
+            out.append((min(xs), t, max(xs), b))
+    return out
+
+
+def make_kin(rgb, width, height, point):
+    """What kind of thing a click at `point` was on a frame, as a kin (see above), or None."""
+
+    if not point:
+        return None
+    px, py = int(point[0]), int(point[1])
+    if not (0 <= px < width and 0 <= py < height):
+        return None
+
+    ink = _ink_colour(rgb, width, height, px, py)
+    if ink is None:
+        return None
+    item = _item_at(rgb, width, height, px, py, ink)
+    if item is None:
+        return None
+    left, top, right, bottom = item
+    tall = bottom - top + 1
+    if tall < KIN_MIN_HEIGHT or not (left <= px <= right):
+        return None
+
+    kin = [i for i in _column_items(rgb, width, height, left, ink) if _same_height(i, tall)]
+    ordinal = next((n for n, i in enumerate(kin, 1) if abs(i[1] - top) <= KIN_GAP_Y + 1), None)
+    if ordinal is None:
+        return None
+
+    return {"ink": ink, "left": left, "top": top, "height": tall, "width": right - left + 1, "ordinal": ordinal,
+            "count": len(kin), "at": [px - left, py - top], "screen": [width, height]}
+
+
+def _same_height(item, tall):
+    h = item[3] - item[1] + 1
+    return KIN_HEIGHT[0] * tall <= h <= KIN_HEIGHT[1] * tall
+
+
+def find_kin(kin, frame):
+    """
+    Where the thing of the kind a kin describes, in the same place in order,
+    is on `frame` now: {"point", "box", "ordinal", "count"}, or None.
+    """
+
+    try:
+        ink, left, tall, ordinal = list(kin["ink"]), int(kin["left"]), int(kin["height"]), int(kin["ordinal"])
+        ax, ay = kin["at"]
+    except (KeyError, TypeError, ValueError):
+        return None
+    if frame is None or list(kin.get("screen") or []) != [frame.width, frame.height] or ordinal < 1:
+        return None
+
+    rgb, width, height = frame.rgb, frame.width, frame.height
+    items = [i for i in _column_items(rgb, width, height, left, ink) if _same_height(i, tall)]
+    if len(items) < ordinal:
+        return None
+
+    x0, top, _, bottom = items[ordinal - 1]
+    box = _item_at(rgb, width, height, x0 + 1, (top + bottom) // 2, ink) or items[ordinal - 1]
+    bl, bt, br, bb = box
+    # Where on the line it was clicked, kept inside the line: a shorter title is clicked on its middle.
+    x = bl + ax if bl + ax <= br else (bl + br) // 2
+    y = min(max(bt + ay, bt), bb)
+    return {"point": (x, y), "box": [bl, bt, br, bb], "ordinal": ordinal, "count": len(items)}

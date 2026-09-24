@@ -102,7 +102,7 @@ func (s *Store) Put(desktopID string, data []byte) (string, error) {
 		return "", fmt.Errorf("stepimages: decoding image config: %w", err)
 	}
 
-	if config.Width*config.Height > maxPixels {
+	if config.Width <= 0 || config.Height <= 0 || config.Width > maxPixels/config.Height {
 		return "", ErrTooLarge
 	}
 
@@ -120,6 +120,11 @@ func (s *Store) put(desktopID string, img image.Image) (string, error) {
 
 	if err := jpeg.Encode(&encoded, img, &jpeg.Options{Quality: jpegQuality}); err != nil {
 		return "", fmt.Errorf("stepimages: encoding JPEG: %w", err)
+	}
+	// An image that cannot fit would evict every older image and itself,
+	// leaving the caller with an ID that never resolves.
+	if encoded.Len() > s.maxBytes {
+		return "", ErrTooLarge
 	}
 
 	id, err := newID()
@@ -183,6 +188,10 @@ func (s *Store) evict() error {
 				return fmt.Errorf("stepimages: evicting: %w", err)
 			}
 			victims = append(victims, v)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("stepimages: evicting: %w", err)
 		}
 		rows.Close()
 

@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from decurix_agent import logging_utils, progress
-from decurix_agent.computer import approval, audit, core, privacy, processing, recording, screen, session
+from decurix_agent.computer import approval, audit, cdp, core, privacy, processing, recording, screen, session
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 from decurix_agent.logging_utils import log
@@ -70,6 +70,17 @@ STALE_FRACTION = 0.02
 
 START_SECONDS = 10
 STOP_SECONDS = 30
+
+# How long End keeps reading input that was already made before it (see
+# _read_input), at most. The rest of STOP_SECONDS is for writing it down.
+DRAIN_SECONDS = 12
+
+# Keys within this long of the last one are the same burst of typing: only the
+# first of a burst has the screen captured with it. A capture per keystroke
+# (a full-screen grab on the input thread) put the recorder 10-20 s behind a
+# person typing a phrase on a 1-vCPU desktop - measured: End then came before
+# " breeding season" and Enter had been read, and they were lost.
+KEY_BURST_SECONDS = 1.0
 
 TEXT_ENTRY_ROLES = {"textbox", "combobox", "spinbutton", "cell", "document", "paragraph", "terminal"}
 
@@ -475,6 +486,9 @@ class Recorder:
         # is then a step of that task, as an agent's would be.
         self.task_id = (recording.meta(session_id) or {}).get("task_id", "")
         self.raw = queue.Queue()
+        # End asked for (SIGTERM): input already made is still read, then
+        # stopping is set (_read_input).
+        self.stop_requested = threading.Event()
         self.stopping = threading.Event()
         self.paused = False
         self.pause_requested = False
@@ -488,6 +502,7 @@ class Recorder:
         self._keys_held = set()
         self._pause = None
         self._last_look = 0.0
+        self._last_key = 0.0
 
     # ---- X input, on its own thread and its own connections ----
 
@@ -550,11 +565,18 @@ class Recorder:
         from Xlib.ext import ge
 
         root = self.input.screen().root
+        drain_until = None
 
         while not self.stopping.is_set():
             try:
-                select.select([self.input], [], [], 0.3)
+                readable = select.select([self.input], [], [], 0.3)[0]
+                got = False
+                if self.stop_requested.is_set() and drain_until is None:
+                    drain_until = time.monotonic() + DRAIN_SECONDS
                 while self.input.pending_events():
+                    if drain_until is not None and time.monotonic() > drain_until:
+                        break
+                    got = True
                     event = self.input.next_event()
                     # Xvnc maps keysyms a VNC client sends onto spare keycodes
                     # as they arrive, and says so with MappingNotify. With a
@@ -571,6 +593,15 @@ class Recorder:
                     raw = self._raw(event.evtype, event.data, root)
                     if raw is not None and not self.paused:
                         self.raw.put(raw)
+
+                # End: everything the person did before pressing it is already
+                # on this connection, however far behind reading it is. Read it
+                # all, then stop - stopping at once dropped the end of every
+                # recording whose last actions had not been read yet.
+                if drain_until is not None:
+                    if (not got and not readable) or time.monotonic() > drain_until:
+                        self.stopping.set()
+                        return
             except Exception as exc:
                 log(f"Stopped reading input: {exc}")
                 self.stopping.set()
@@ -625,11 +656,12 @@ class Recorder:
         event = {"type": "key_down" if down else "key_up", "t": now, "key": name, "char": char}
 
         if down:
-            if not self._keys_held:
+            if not self._keys_held and now - self._last_key > KEY_BURST_SECONDS:
                 event["frame"] = self._grab()
             self._keys_held.add(name)
         else:
             self._keys_held.discard(name)
+        self._last_key = now
 
         return event
 
@@ -662,7 +694,6 @@ class Recorder:
             return
 
         try:
-            self.latest = core.observe(remember=False)
             self.latest = core.observe(remember=False, frame=frame)
         except ComputerError as exc:
             log(f"Could not read the screen: {exc}")
@@ -693,7 +724,23 @@ class Recorder:
         if not fresh:
             return None, "the screen was still changing when this happened"
 
-        return el.at_point(observation["elements"], *action["point"]), None
+        element = el.at_point(observation["elements"], *action["point"])
+        if element is not None:
+            return element, None
+
+        # The browser's DOM hit-test is authoritative when a VNC/window-scale
+        # mismatch makes its cached accessibility box miss the raw X11 point.
+        # It still returns a normal named element, so the recording remains
+        # replayable by role/name and the browser stays fully visible.
+        browser_visible = any(
+            element.get("source") == "cdp" for element in observation["elements"]
+        ) or "chromium" in (observation.get("active_title") or "").lower()
+        if browser_visible and cdp.available():
+            element = cdp.element_at_screen_point(*action["point"], observation["elements"])
+            if element is not None:
+                return element, None
+
+        return None, None
 
     def _entry(self, action, element, note, observation):
         kind = action["kind"]
@@ -755,8 +802,10 @@ class Recorder:
         before = self.latest
         settled = core._wait_for_settle(None)
 
+        # One reading, of the settled frame. It used to read the whole screen
+        # twice and keep only the second: ~10 s per click on a 1-vCPU desktop,
+        # and every action after it waited its turn to reach the chat.
         try:
-            after = core.observe(remember=False)
             after = core.observe(remember=False, frame=settled)
         except ComputerError as exc:
             log(f"Could not read the screen after an action: {exc}")
@@ -894,6 +943,12 @@ class Recorder:
                 self.resume_requested = False
                 self._resumed()
             elif self.stopping.is_set():
+                # Whatever the reader put in before it said stop.
+                while True:
+                    try:
+                        buffer.append(self.raw.get_nowait())
+                    except queue.Empty:
+                        break
                 self._flush(buffer)
                 return
             elif buffer and processing.idle(buffer) and time.monotonic() - last_input >= QUIET_SECONDS:
@@ -921,7 +976,7 @@ class Recorder:
             log(f"Cannot record: {exc}")
             return 1
 
-        signal.signal(signal.SIGTERM, lambda *_: self.stopping.set())
+        signal.signal(signal.SIGTERM, lambda *_: self.stop_requested.set())
         signal.signal(signal.SIGUSR1, self._on_pause)
         signal.signal(signal.SIGUSR2, self._on_resume)
 

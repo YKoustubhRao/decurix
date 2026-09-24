@@ -58,6 +58,16 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
+# curl, which the developer and ai images already have. It is the first thing
+# a small model reaches for to read a page or an API, and without it a live
+# request (`chatgpt "where is ..."`, via the operator) failed with "xargs:
+# curl: No such file or directory" and a person was asked to install it. A
+# layer of its own so the ones above stay cached.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl ca-certificates && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
 COPY agent/vm_server.py /opt/vm_server.py
 COPY agent/decurix_agent /opt/decurix_agent
 COPY agent/start_agent_terminal.sh /opt/start_agent_terminal.sh

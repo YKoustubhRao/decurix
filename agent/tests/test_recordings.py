@@ -484,6 +484,33 @@ class TypingIntoAField(unittest.TestCase):
         self.assertTrue(self.entry("Initech", role="paragraph")["append"])
 
 
+class RecordingClickTargets(unittest.TestCase):
+    def test_a_browser_hit_test_recovers_a_named_control_when_its_cached_box_misses(self):
+        from decurix_agent.computer import demonstration
+
+        frame = screen.Frame(2, 2, bytes(12))
+        button = {
+            "role": "button", "name": "Submit", "value": "", "states": [],
+            "box": [1200, 370, 80, 40], "source": "cdp", "group": "g",
+            "window_title": "ChatGPT - Chromium", "path": "site chat > button Submit",
+        }
+        recorder = demonstration.Recorder.__new__(demonstration.Recorder)
+        observation = {"frame": frame, "elements": [], "active_title": "ChatGPT - Chromium"}
+        action = {"kind": "click", "point": [1248, 390]}
+
+        with (
+            mock.patch.object(demonstration.cdp, "available", return_value=True),
+            mock.patch.object(
+                demonstration.cdp, "element_at_screen_point", return_value=button
+            ) as hit,
+        ):
+            found, note = recorder._element(action, observation, frame, (False, None))
+
+        self.assertIs(found, button)
+        self.assertIsNone(note)
+        hit.assert_called_once_with(1248, 390, [])
+
+
 class FakeRecorder:
     """
     A minimal stand-in for computer/demonstration.py's start/status/pause/

@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -38,6 +39,10 @@ type HostAppItem struct {
 	HostCmd         string `json:"host_cmd,omitempty"`
 	Icon            string `json:"icon,omitempty"`
 	TargetConfigDir string `json:"target_config_dir,omitempty"`
+	// UnavailableReason is set when discovery found the app but Decurix cannot
+	// safely show it inside a desktop. Keeping the item in discovery makes the
+	// scan complete without presenting a launcher that cannot work.
+	UnavailableReason string `json:"unavailable_reason,omitempty"`
 }
 
 // knownAppDef defines how to probe and migrate a specific application or session.
@@ -93,6 +98,7 @@ func DetectHostAppsForce(force bool) []HostAppItem {
 
 	if force {
 		forgetHostVerdicts()
+		forgetStartApps()
 	}
 	results := runDetectHostApps()
 	cachedHostApps = results
@@ -103,9 +109,8 @@ func DetectHostAppsForce(force bool) []HostAppItem {
 	return res
 }
 
-// DetectHostApps scans the host machine for what can be brought into a VM: credentials and settings that are copied as
-// files, web apps that open in the VM's own browser, and Windows programs that run hidden on the host and are shown in
-// the VM. An app the VM could not really show is left out rather than offered (see vetHostApps).
+// DetectHostApps scans the host machine for credentials and settings that can be copied, web apps, and Windows programs.
+// Every discovered Windows app is returned; vetHostApps marks the ones that cannot safely run in a VM as unavailable.
 // Results are cached in memory for sub-millisecond retrieval.
 func DetectHostApps() []HostAppItem {
 	return DetectHostAppsForce(false)
@@ -128,6 +133,10 @@ func runDetectHostApps() []HostAppItem {
 
 		appType, mode := "app_session", ModeData
 		switch def.id {
+		case "chrome", "firefox":
+			appType = "browser_session"
+		case "vscode":
+			appType = "app_session"
 		case "claude", "chatgpt":
 			mode = ModeWeb
 		case "ssh", "gh", "docker", "gcloud", "azure":
@@ -184,6 +193,9 @@ const (
 	ModeData = "data"
 	// ModeHelper is the command-line bridge every copy installs.
 	ModeHelper = "helper"
+	// ModeUnavailable is still a discovered app, but not one the desktop can
+	// launch. The UI shows it disabled together with UnavailableReason.
+	ModeUnavailable = "unavailable"
 )
 
 // HostAppChecker asks the host which Windows launch targets can run on a private desktop, and why not for the rest.
@@ -221,6 +233,33 @@ func WarmHostApps() {
 	hostAppWarmerMu.RUnlock()
 	if f != nil {
 		f()
+	}
+}
+
+// hostAppStarter, when set, keeps one app running on a private host desktop ahead of time - under the same session id
+// its packaged launcher will ask for - so the window, and everything a cold start on the host costs (a browser's first
+// paint, a hidden profile's own first run), is already paid for before a person ever opens it. desktopID is the VM the
+// app was copied to, so its apps can be let go when it is deleted.
+var (
+	hostAppStarterMu sync.RWMutex
+	hostAppStarter   func(desktopID, id, target, args string)
+)
+
+// SetHostAppStarter installs what packDynamicApp calls, in the background, for every host_gui app it packages.
+func SetHostAppStarter(f func(desktopID, id, target, args string)) {
+	hostAppStarterMu.Lock()
+	hostAppStarter = f
+	hostAppStarterMu.Unlock()
+}
+
+// startHostAppAhead fires the installed starter, if any, and never blocks: packaging a launcher must not wait on the
+// app it names actually opening on the host.
+func startHostAppAhead(desktopID, id, target, args string) {
+	hostAppStarterMu.RLock()
+	f := hostAppStarter
+	hostAppStarterMu.RUnlock()
+	if f != nil {
+		f(desktopID, id, target, args)
 	}
 }
 
@@ -284,16 +323,19 @@ func needsSound(name string) bool {
 	return categorizeAppName(name) == "Media & Entertainment"
 }
 
-// vetHostApps keeps only the Windows apps that will really work in a VM, and says how. A service with a web version opens
-// that in the VM's browser; anything else must be a program the host confirms it can run on a private desktop (a Store
-// app that Windows only activates on the visible desktop cannot, nor can a shortcut that opens a folder). Apps that need
-// sound are dropped, and so is anything the host could not be asked about.
+// vetHostApps says how each discovered Windows app can be used. A service with a web version opens in the VM's browser;
+// anything else must be a program the host confirms it can run on a private desktop. Apps that cannot be launched remain
+// visible as disabled discovery results, with the reason, instead of silently disappearing from the scan.
 func vetHostApps(apps []HostAppItem) []HostAppItem {
 	var kept []HostAppItem
 	var pending []HostAppItem
 	var targets []winhost.Target
 	for _, app := range apps {
 		if needsSound(app.Name) {
+			app.Mode = ModeUnavailable
+			app.UnavailableReason = "This desktop has no audio device, so this app cannot be used here."
+			app.Description = app.UnavailableReason
+			kept = append(kept, app)
 			continue
 		}
 		if getWebAppURLForApp(app.Name, app.HostCmd) != "" {
@@ -304,6 +346,16 @@ func vetHostApps(apps []HostAppItem) []HostAppItem {
 		}
 		target, args, ok := windowsTarget(app.HostCmd)
 		if !ok {
+			if app.AppType == "desktop_app" {
+				app.Mode = ModeHostGUI
+				app.Description = "Runs on this computer; you see and use it in the VM"
+				kept = append(kept, app)
+				continue
+			}
+			app.Mode = ModeUnavailable
+			app.UnavailableReason = "Decurix could not resolve a safe hidden-host launch command for this app."
+			app.Description = app.UnavailableReason
+			kept = append(kept, app)
 			continue
 		}
 		pending = append(pending, app)
@@ -314,21 +366,37 @@ func vetHostApps(apps []HostAppItem) []HostAppItem {
 	}
 
 	verdicts := checkHostTargets(targets)
-	skipped := 0
 	for i, app := range pending {
 		reason, checked := verdicts[targets[i]]
-		if !checked || reason != "" {
-			skipped++
+		if !checked {
+			reason = "The host-app helper could not verify that this app can run on a hidden desktop."
+		}
+		if reason != "" {
+			app.Mode = ModeUnavailable
+			app.UnavailableReason = reason
+			app.Description = reason
+			kept = append(kept, app)
 			continue
 		}
 		app.Mode = ModeHostGUI
-		app.Description = "Runs on this computer on a hidden desktop; you see and use it in the VM"
+		if isBrowserApp(app.Name) {
+			app.Description = "Runs privately on this computer; your signed-in browser profile is copied the first time it opens"
+		} else {
+			app.Description = "Runs on this computer on a hidden desktop; you see and use it in the VM"
+		}
 		kept = append(kept, app)
 	}
-	if skipped > 0 {
-		log.Printf("hostapps: %d of %d Windows apps left out because they cannot run hidden on the host", skipped, len(pending))
-	}
 	return kept
+}
+
+func isBrowserApp(name string) bool {
+	lower := strings.ToLower(name)
+	for _, browser := range []string{"chrome", "chromium", "edge", "brave", "vivaldi", "opera"} {
+		if strings.Contains(lower, browser) {
+			return true
+		}
+	}
+	return false
 }
 
 // MigrateHostApps packages selected host application sessions, tokens, and configurations,
@@ -405,6 +473,10 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 			}
 			migratedCount++
 		} else if app, ok := appMap[id]; ok {
+			if app.Mode == ModeUnavailable {
+				log.Printf("hostapps: skipping unavailable app %s for %s: %s", app.ID, desktopID, app.UnavailableReason)
+				continue
+			}
 			if err := packDynamicApp(tw, app, packContext{DesktopID: sanitizedID, Secret: m.HostGUISecret}); err != nil {
 				log.Printf("hostapps: packing dynamic app %s for %s: %v", app.ID, desktopID, err)
 				continue
@@ -504,6 +576,95 @@ func getKnownAppDefs() []knownAppDef {
 	cDrives := getWindowsCDriveCandidates()
 
 	return []knownAppDef{
+		{
+			id:              "chrome",
+			name:            "Google Chrome / Chromium",
+			category:        "Browsers & Web",
+			description:     "Profile, active cookies, sessions, login data (Cache stripped to save RAM)",
+			defaultSelected: false,
+			probeFn: func() []string {
+				var candidates []string
+				for _, h := range homes {
+					candidates = append(candidates,
+						filepath.Join(h, ".config", "google-chrome-for-testing"),
+						filepath.Join(h, ".config", "google-chrome"),
+						filepath.Join(h, ".config", "chromium"),
+						filepath.Join(h, "Library", "Application Support", "Google", "Chrome"),
+					)
+				}
+				// Windows WSL candidate paths
+				for _, cDrive := range cDrives {
+					pattern := filepath.Join(cDrive, "Users", "*", "AppData", "Local", "Google", "Chrome", "User Data")
+					if matches, err := filepath.Glob(pattern); err == nil && len(matches) > 0 {
+						candidates = append(candidates, matches...)
+					}
+					chromeExe := filepath.Join(cDrive, "Program Files", "Google", "Chrome", "Application", "chrome.exe")
+					if fi, err := os.Stat(chromeExe); err == nil && !fi.IsDir() {
+						candidates = append(candidates, chromeExe)
+					}
+				}
+				var found []string
+				for _, p := range candidates {
+					if _, err := os.Stat(p); err == nil {
+						found = append(found, p)
+					}
+				}
+				return found
+			},
+			packFn: func(tw *tar.Writer, paths []string) error {
+				for _, p := range paths {
+					if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+						_ = writeDirToTar(tw, p, ".config/google-chrome", isCacheOrTransient)
+						break
+					}
+				}
+				header := &tar.Header{
+					Name:     ".config/chromium",
+					Linkname: "google-chrome",
+					Typeflag: tar.TypeSymlink,
+					Mode:     0755,
+					ModTime:  time.Now(),
+					Uid:      1000,
+					Gid:      1000,
+				}
+				return tw.WriteHeader(header)
+			},
+		},
+		{
+			id:              "firefox",
+			name:            "Mozilla Firefox",
+			category:        "Browsers & Web",
+			description:     "Profiles, saved logins, cookies, tabs (Cache stripped)",
+			defaultSelected: false,
+			probeFn: func() []string {
+				var candidates []string
+				for _, h := range homes {
+					candidates = append(candidates,
+						filepath.Join(h, ".mozilla", "firefox"),
+						filepath.Join(h, "Library", "Application Support", "Firefox"),
+					)
+				}
+				for _, cDrive := range cDrives {
+					pattern := filepath.Join(cDrive, "Users", "*", "AppData", "Roaming", "Mozilla", "Firefox", "Profiles")
+					if matches, err := filepath.Glob(pattern); err == nil && len(matches) > 0 {
+						candidates = append(candidates, matches...)
+					}
+				}
+				var found []string
+				for _, p := range candidates {
+					if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+						found = append(found, p)
+					}
+				}
+				return found
+			},
+			packFn: func(tw *tar.Writer, paths []string) error {
+				if len(paths) == 0 {
+					return nil
+				}
+				return writeDirToTar(tw, paths[0], ".mozilla/firefox", isCacheOrTransient)
+			},
+		},
 		{
 			id:              "claude",
 			name:            "Claude",
@@ -698,6 +859,55 @@ Categories=Office;Utility;Network;
 					return nil
 				}
 				return writeDirToTar(tw, paths[0], ".docker", isCacheOrTransient)
+			},
+		},
+		{
+			id:              "vscode",
+			name:            "VS Code / OpenCode Settings",
+			category:        "Development",
+			description:     "Extensions, keybindings, settings, workspace storage",
+			defaultSelected: false,
+			probeFn: func() []string {
+				var candidates []string
+				for _, h := range homes {
+					candidates = append(candidates,
+						filepath.Join(h, ".config", "Code", "User"),
+						filepath.Join(h, ".vscode", "extensions"),
+						filepath.Join(h, ".opencode"),
+						filepath.Join(h, "Library", "Application Support", "Code", "User"),
+					)
+				}
+				for _, cDrive := range cDrives {
+					winCode := filepath.Join(cDrive, "Users", "*", "AppData", "Roaming", "Code", "User")
+					if matches, err := filepath.Glob(winCode); err == nil {
+						candidates = append(candidates, matches...)
+					}
+					winExt := filepath.Join(cDrive, "Users", "*", ".vscode", "extensions")
+					if matches, err := filepath.Glob(winExt); err == nil {
+						candidates = append(candidates, matches...)
+					}
+				}
+				var found []string
+				for _, p := range candidates {
+					if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+						found = append(found, p)
+					}
+				}
+				return found
+			},
+			packFn: func(tw *tar.Writer, paths []string) error {
+				for _, p := range paths {
+					dest := ".config/Code/User"
+					if strings.Contains(p, ".vscode") {
+						dest = ".vscode/extensions"
+					} else if strings.Contains(p, ".opencode") {
+						dest = ".opencode"
+					}
+					if err := writeDirToTar(tw, p, dest, isCacheOrTransient); err != nil {
+						return err
+					}
+				}
+				return nil
 			},
 		},
 		{
@@ -911,6 +1121,13 @@ func PowershellExe() string {
 type rawStartApp struct {
 	Name  string `json:"Name"`
 	AppID string `json:"AppID"`
+}
+
+func forgetStartApps() {
+	startAppsMu.Lock()
+	startAppsCached = nil
+	startAppsQueried = false
+	startAppsMu.Unlock()
 }
 
 func parseGetStartAppsJSON(data []byte) []rawStartApp {
@@ -1353,6 +1570,221 @@ func scanWindowsStartMenu(seen map[string]bool) []HostAppItem {
 	return items
 }
 
+// scanInstalledWindowsBrowsers is a fallback for machines where Get-StartApps is unavailable or a browser did not add a
+// Start-menu shortcut. Browsers matter especially because the private-host launcher can initialize from the person's
+// signed-in profile; losing Chrome merely because shell discovery failed makes that profile impossible to select.
+func scanInstalledWindowsBrowsers(seen map[string]bool) []HostAppItem {
+	type browserInstall struct {
+		name     string
+		patterns []string
+	}
+	var items []HostAppItem
+	for _, drive := range getWindowsCDriveCandidates() {
+		installs := []browserInstall{
+			{"Google Chrome", []string{
+				filepath.Join(drive, "Program Files", "Google", "Chrome", "Application", "chrome.exe"),
+				filepath.Join(drive, "Program Files (x86)", "Google", "Chrome", "Application", "chrome.exe"),
+				filepath.Join(drive, "Users", "*", "AppData", "Local", "Google", "Chrome", "Application", "chrome.exe"),
+			}},
+			{"Microsoft Edge", []string{
+				filepath.Join(drive, "Program Files (x86)", "Microsoft", "Edge", "Application", "msedge.exe"),
+				filepath.Join(drive, "Program Files", "Microsoft", "Edge", "Application", "msedge.exe"),
+			}},
+			{"Brave", []string{
+				filepath.Join(drive, "Program Files", "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+				filepath.Join(drive, "Users", "*", "AppData", "Local", "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+			}},
+			{"Vivaldi", []string{
+				filepath.Join(drive, "Users", "*", "AppData", "Local", "Vivaldi", "Application", "vivaldi.exe"),
+				filepath.Join(drive, "Program Files", "Vivaldi", "Application", "vivaldi.exe"),
+			}},
+		}
+		for _, install := range installs {
+			key, id := strings.ToLower(install.name), "win_"+sanitizeAppSlug(install.name)
+			if seen[key] || seen[id] {
+				continue
+			}
+			var executable string
+			for _, pattern := range install.patterns {
+				matches, _ := filepath.Glob(pattern)
+				for _, match := range matches {
+					if fi, err := os.Stat(match); err == nil && !fi.IsDir() {
+						executable = match
+						break
+					}
+				}
+				if executable != "" {
+					break
+				}
+			}
+			if executable == "" {
+				continue
+			}
+			seen[key], seen[id] = true, true
+			items = append(items, HostAppItem{
+				ID: id, Name: install.name, Category: "Browsers & Web",
+				Description: "Windows browser", Detected: true,
+				DetectedPaths: []string{executable}, AppType: "windows_app",
+				HostCmd: fmt.Sprintf(`cmd.exe /c start "" "%s"`, wslToWindowsPath(executable)),
+				Icon:    pickAppIcon(install.name),
+			})
+		}
+	}
+	return items
+}
+
+type desktopMeta struct {
+	Name      string
+	Exec      string
+	Icon      string
+	Comment   string
+	NoDisplay bool
+}
+
+func parseDesktopFile(path string) desktopMeta {
+	f, err := os.Open(path)
+	if err != nil {
+		return desktopMeta{}
+	}
+	defer f.Close()
+
+	var meta desktopMeta
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "Name=") && meta.Name == "" {
+			meta.Name = strings.TrimPrefix(line, "Name=")
+		} else if strings.HasPrefix(line, "Exec=") && meta.Exec == "" {
+			meta.Exec = strings.TrimPrefix(line, "Exec=")
+		} else if strings.HasPrefix(line, "Icon=") && meta.Icon == "" {
+			meta.Icon = strings.TrimPrefix(line, "Icon=")
+		} else if strings.HasPrefix(line, "Comment=") && meta.Comment == "" {
+			meta.Comment = strings.TrimPrefix(line, "Comment=")
+		} else if strings.HasPrefix(line, "NoDisplay=true") {
+			meta.NoDisplay = true
+		}
+	}
+	return meta
+}
+
+func scanLinuxDesktopFiles(seen map[string]bool) []HostAppItem {
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+
+	dirs := []string{
+		"/usr/share/applications",
+		"/usr/local/share/applications",
+	}
+	for _, h := range getHostHomeCandidates() {
+		dirs = append(dirs, filepath.Join(h, ".local", "share", "applications"))
+	}
+
+	var items []HostAppItem
+
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".desktop") {
+				continue
+			}
+
+			// Don't re-scan flowera host bridge desktop files
+			if strings.HasSuffix(e.Name(), "-host.desktop") {
+				continue
+			}
+
+			fullPath := filepath.Join(dir, e.Name())
+			meta := parseDesktopFile(fullPath)
+			if meta.Name == "" || meta.NoDisplay {
+				continue
+			}
+
+			normKey := strings.ToLower(meta.Name)
+			if seen[normKey] {
+				continue
+			}
+			seen[normKey] = true
+
+			id := "linux_" + sanitizeAppSlug(meta.Name)
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+
+			cleanExec := strings.Split(meta.Exec, " %")[0]
+			hostCmd := fmt.Sprintf("/usr/bin/env %s", cleanExec)
+
+			items = append(items, HostAppItem{
+				ID:              id,
+				Name:            meta.Name,
+				Category:        categorizeAppName(meta.Name),
+				Description:     meta.Comment,
+				Detected:        true,
+				DetectedPaths:   []string{fullPath},
+				DefaultSelected: false,
+				AppType:         "desktop_app",
+				HostCmd:         hostCmd,
+				Icon:            meta.Icon,
+			})
+		}
+	}
+
+	return items
+}
+
+func scanMacAppBundles(seen map[string]bool) []HostAppItem {
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+	home, _ := os.UserHomeDir()
+	dirs := []string{"/Applications", filepath.Join(home, "Applications")}
+
+	var items []HostAppItem
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if !e.IsDir() || !strings.HasSuffix(e.Name(), ".app") {
+				continue
+			}
+			appName := strings.TrimSuffix(e.Name(), ".app")
+			normKey := strings.ToLower(appName)
+			if seen[normKey] {
+				continue
+			}
+			seen[normKey] = true
+
+			fullPath := filepath.Join(dir, e.Name())
+			id := "mac_" + sanitizeAppSlug(appName)
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+
+			items = append(items, HostAppItem{
+				ID:              id,
+				Name:            appName,
+				Category:        categorizeAppName(appName),
+				Description:     "macOS application bundle",
+				Detected:        true,
+				DetectedPaths:   []string{fullPath},
+				DefaultSelected: false,
+				AppType:         "desktop_app",
+				HostCmd:         fmt.Sprintf(`open -a "%s"`, fullPath),
+				Icon:            pickAppIcon(appName),
+			})
+		}
+	}
+	return items
+}
+
 func exploreDynamicApps(seen map[string]bool) []HostAppItem {
 	var items []HostAppItem
 
@@ -1394,13 +1826,20 @@ func exploreDynamicApps(seen map[string]bool) []HostAppItem {
 			})
 		}
 
+		// Get-StartApps can be absent or incomplete; standard browser installs still need to expose the signed-in profile.
+		items = append(items, scanInstalledWindowsBrowsers(seen)...)
+
 		// Windows Start Menu (.lnk shortcuts including Chrome Apps & Edge Apps)
 		menuApps := scanWindowsStartMenu(seen)
 		items = append(items, menuApps...)
 	}
 
-	// Only Windows apps are offered: a Linux or macOS app could only be started on the host's own screen, which is not
-	// the VM, so listing it would promise something the VM cannot show.
+	// 2. Linux Desktop files (.desktop)
+	items = append(items, scanLinuxDesktopFiles(seen)...)
+
+	// 3. macOS App Bundles (.app)
+	items = append(items, scanMacAppBundles(seen)...)
+
 	return vetHostApps(items)
 }
 
@@ -1651,6 +2090,12 @@ func packDynamicApp(tw *tar.Writer, app HostAppItem, pc packContext) error {
 			wrapperScript = webAppWrapper(slug, webURL, hostFallback(pc, slug, app))
 		} else {
 			wrapperScript = "#!/usr/bin/env bash\n" + hostFallback(pc, slug, app)
+			// This is the exact launcher a host_gui app's icon runs the first time someone opens it - start it now
+			// instead of waiting for that click, under the same session id the launcher itself will ask for, so
+			// Start finds it already running and joins it at once (see winhost.Manager.Start).
+			if target, args, ok := windowsTarget(app.HostCmd); ok {
+				startHostAppAhead(pc.DesktopID, pc.sessionID(slug), target, args)
+			}
 		}
 
 		if err := writeStringToTar(tw, ".local/bin/"+slug+"-host", wrapperScript, 0755); err != nil {

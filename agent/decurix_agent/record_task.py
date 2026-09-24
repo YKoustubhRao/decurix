@@ -101,6 +101,11 @@ def begin():
         if _ticket is ticket:
             ticket["session_id"] = meta["id"]
 
+    # The chat (and the desktop's card) say what the ticket is doing at every
+    # turn, not only when an action lands: a person watching from elsewhere
+    # otherwise sees "Ticket open" and then nothing until the first click.
+    progress.emit(f"Recording \"{ticket['title']}\" - every click and keystroke on the screen is being captured.")
+
     return status()
 
 
@@ -109,6 +114,7 @@ def pause(reason=""):
 
     _require_recording()
     demonstration.pause(reason)
+    progress.emit("Recording paused - nothing on the screen is kept until Continue is pressed.")
     return status()
 
 
@@ -117,6 +123,7 @@ def resume():
 
     _require_recording()
     demonstration.resume()
+    progress.emit("Recording again.")
     return status()
 
 
@@ -158,6 +165,8 @@ def end():
         except ComputerError:
             pass  # already stopped - e.g. the recorder had already finished on its own
 
+    progress.emit("Ending the ticket and saving the recording..." if recording_now
+                  else "Ending the ticket - recording was never started.")
     _ended.set()
 
     # perform()'s own thread clears the ticket a moment later, once its wait

@@ -163,6 +163,8 @@ class Ladder(unittest.TestCase):
 
     def test_an_engine_that_is_not_sure_leaves_it_to_a_person(self):
         for reply in ('{"choice": 0, "confidence": 0.9}',                    # none of them
+                      '{"choice": 1, "confidence": NaN}',
+                      '{"choice": 1, "confidence": Infinity}',
                       '{"choice": 1, "confidence": 0.5}',                    # leaning, not sure
                       '{"choice": 7, "confidence": 0.99}',                   # outside the list
                       "I would probably click Store.",                       # prose
@@ -225,6 +227,8 @@ class Judging(unittest.TestCase):
 
     def test_anything_less_is_not(self):
         for reply in ('{"achieved": true, "confidence": 0.6}', '{"achieved": null, "confidence": 0.9}',
+                      '{"achieved": true, "confidence": NaN}',
+                      '{"achieved": true, "confidence": Infinity}',
                       '{"achieved": false, "confidence": 0.99}', "looks fine to me"):
             self.assertFalse(self.judge(reply)[1], reply)
 

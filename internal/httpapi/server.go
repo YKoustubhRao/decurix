@@ -65,6 +65,10 @@ type Server struct {
 	HostGUISecret []byte
 	hostGUIAuthMu sync.Mutex
 	hostGUIAuth   map[string]string
+	// HostGUIDataDir is where the apps kept ready on the host are saved (RestoreHostApps); "" keeps them in memory only.
+	HostGUIDataDir string
+	keptHostAppsMu sync.Mutex
+	keptHostApps   map[string]keptHostApp
 }
 
 // NewServer creates a Server from its component stores/managers.
@@ -86,10 +90,11 @@ func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memorySt
 		recentStepImages: make(map[string]string),
 	}
 
-	// Pre-warm host apps discovery in background so desktop creation and scanning UI are instant. The scan only offers
-	// a Windows program once the host has confirmed it can run hidden, so the way to ask must be in place first.
+	// Pre-warm host apps discovery in background so desktop creation and scanning UI are instant. The scan marks apps the
+	// host helper cannot safely run as unavailable, while keeping them visible in the complete discovery list.
 	desktop.SetHostAppChecker(srv.checkHostApps)
 	desktop.SetHostAppWarmer(srv.warmHostGUI)
+	desktop.SetHostAppStarter(srv.startHostGUIAppAhead)
 	desktop.WarmHostApps() // compile and load now, long before the first desktop exists
 	desktop.InitHostAppsScan()
 	return srv
@@ -146,6 +151,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/desktops/screenshot", s.desktopScreenshotHandler)
 	mux.HandleFunc("/api/desktops/chat", s.chatHandler)
 	mux.HandleFunc("/api/desktops/chat/stream", s.chatStreamHandler)
+	mux.HandleFunc("/api/desktops/activity", s.activityHandler)
 	mux.HandleFunc("/api/desktops/chat/clear", s.clearChatHandler)
 	mux.HandleFunc(stepImagePath, s.stepImageHandler)
 	mux.HandleFunc("/api/agent/events", s.agentEventHandler)
@@ -186,7 +192,19 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/claude-auth/login/start", s.claudeAuthLoginStartHandler)
 	mux.HandleFunc("/api/claude-auth/login/code", s.claudeAuthLoginCodeHandler)
 	mux.HandleFunc("/api/claude-auth/login/cancel", s.claudeAuthLoginCancelHandler)
+	mux.HandleFunc("/api/personas", s.personasHandler)
+	mux.HandleFunc("/api/personas/get", s.personaHandler)
+	mux.HandleFunc("/api/personas/create-desktop", s.createPersonaDesktopHandler)
+	mux.HandleFunc("/api/teams", s.teamsHandler)
+	mux.HandleFunc("/api/teams/get", s.teamHandler)
+	mux.HandleFunc("/api/teams/deploy", s.deployTeamHandler)
+	mux.HandleFunc("/api/channels/inbound", s.inboundChannelHandler)
+	mux.HandleFunc("/api/skills/catalog", s.skillsCatalogHandler)
+	mux.HandleFunc("/api/skills/catalog/install", s.installCatalogSkillHandler)
+	mux.HandleFunc("/api/desktops/mode", s.workerModeHandler)
+	mux.HandleFunc("/api/desktops/shadowing", s.shadowingHandler)
 	mux.HandleFunc("/favicon.svg", s.faviconHandler)
+	mux.HandleFunc(noVNCPath, s.noVNCHandler)
 }
 
 // RegisterLocalRoutes registers the routes that must only ever be reachable

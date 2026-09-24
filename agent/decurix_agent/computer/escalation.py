@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import re
 
@@ -87,7 +88,8 @@ def parse_reply(text):
 
 def _confidence(value):
     try:
-        return max(0.0, min(1.0, float(value)))
+        confidence = float(value)
+        return max(0.0, min(1.0, confidence)) if math.isfinite(confidence) else 0.0
     except (TypeError, ValueError):
         return 0.0
 

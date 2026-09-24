@@ -176,6 +176,7 @@ type Renderer struct {
 	dagsTmpl       *template.Template
 	dagTmpl        *template.Template
 	hostGUITmpl    *template.Template
+	screenTmpl     *template.Template
 }
 
 // NewRenderer parses all templates once at startup.
@@ -213,6 +214,9 @@ func NewRenderer() *Renderer {
 		),
 		hostGUITmpl: template.Must(
 			template.ParseFS(web.TemplatesFS, templatePaths("hostgui.html")...),
+		),
+		screenTmpl: template.Must(
+			template.ParseFS(web.TemplatesFS, templatePaths("screen.html")...),
 		),
 	}
 }
@@ -285,6 +289,30 @@ func (rd *Renderer) RenderHostGUI(w io.Writer, data HostGUIPageData) error {
 	return rd.hostGUITmpl.ExecuteTemplate(w, "hostgui.html", data)
 }
 
+// ScreenPageData is the template data for a desktop's screen viewer (/desktop/<id>/).
+type ScreenPageData struct {
+	ID   string
+	Name string
+	// Password is the desktop's VNC password (desktop.ScreenAccess), put into
+	// the page's script, never its URL.
+	Password string
+	// NoVNC is the path the RFB client module is served at.
+	NoVNC string
+	// Controls is the recording ticket toolbar and resource alert markup the
+	// control plane already injected into noVNC's own page (httpapi), mounted
+	// into the viewer's session bar.
+	Controls template.HTML
+}
+
+// RenderScreen renders the viewer for one desktop's screen.
+func (rd *Renderer) RenderScreen(w io.Writer, data ScreenPageData) error {
+	return rd.screenTmpl.ExecuteTemplate(w, "screen.html", data)
+}
+
 // FaviconSVG is the Decurix brand mark, served as the control plane's favicon.
 // It is re-exported here so httpapi keeps reaching web assets through webui.
 var FaviconSVG = web.FaviconSVG
+
+// NoVNC is the screen viewer's RFB client (web/novnc/rfb.js), re-exported for
+// httpapi the same way.
+var NoVNC = web.NoVNC

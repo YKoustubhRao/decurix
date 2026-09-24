@@ -497,3 +497,30 @@ func TestHostGUICopyReturnsWhatTheAppCopiedAndPasteTypesIt(t *testing.T) {
 		t.Fatal("a 'copy' of Ctrl+V reached the host: only Ctrl+C and Ctrl+X may read the person's clipboard")
 	}
 }
+
+// TestDeletingADesktopForgetsTheHostAppsKeptReadyForIt: an app kept running on the host for a VM that no longer exists
+// could never be opened or closed by anybody, and must not come back when the control plane restarts either.
+func TestDeletingADesktopForgetsTheHostAppsKeptReadyForIt(t *testing.T) {
+	s := &Server{HostGUIDataDir: t.TempDir()}
+	s.keptHostApps = map[string]keptHostApp{
+		"vm1-paint": {Desktop: "vm1", ID: "vm1-paint", Target: `C:\paint.exe`},
+		"vm2-paint": {Desktop: "vm2", ID: "vm2-paint", Target: `C:\paint.exe`},
+	}
+	s.keptHostAppsMu.Lock()
+	s.saveKeptHostAppsLocked()
+	s.keptHostAppsMu.Unlock()
+
+	s.forgetHostApps("vm1")
+
+	data, err := os.ReadFile(s.HostGUIDataDir + "/" + keptHostAppsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved []keptHostApp
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if len(saved) != 1 || saved[0].ID != "vm2-paint" {
+		t.Fatalf("saved after deleting vm1: %+v", saved)
+	}
+}

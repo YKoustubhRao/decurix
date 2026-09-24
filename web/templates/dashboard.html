@@ -50,6 +50,12 @@
   color:var(--text-3)
 }
 .req-meta .mono{font-size:11.5px}
+.req-kind{font-weight:600}
+.req-kind--wait{color:var(--busy)}
+.req-kind--error{color:var(--danger)}
+.req-task{font-size:12.5px;color:var(--text-2);margin:12px 14px -4px}
+.req-task span{font-weight:600;color:var(--text-3);margin-right:4px}
+.done-req .req-task{margin:0 13px 6px}
 .req-meta .sep{width:3px;height:3px;border-radius:50%;background:currentColor;flex:none}
 
 .req-head .btn{margin-left:auto}
@@ -186,8 +192,12 @@
         <div style="min-width:0">
           <div class="req-vm trunc">{{.VMName}}</div>
           <div class="req-meta">
-            <span class="mono trunc">{{.Filename}}</span>
-            <span class="sep"></span>
+            {{- /* What kind of note, in words - the file name it arrived in meant nothing to anyone. */}}
+            {{if eq .Kind "query"}}<span class="req-kind req-kind--wait">Needs your answer</span><span class="sep"></span>
+            {{else if eq .Kind "approval"}}<span class="req-kind req-kind--wait">Needs approval</span><span class="sep"></span>
+            {{else if eq .Kind "error"}}<span class="req-kind req-kind--error">Failed</span><span class="sep"></span>
+            {{else if eq .Kind "done"}}<span class="req-kind">Done</span><span class="sep"></span>
+            {{end}}
             <time data-created="{{.CreatedAt.Format "2006-01-02T15:04:05Z07:00"}}">{{.CreatedAt.Format "02 Jan, 15:04"}}</time>
           </div>
         </div>
@@ -198,7 +208,9 @@
         </button>
       </div>
 
-      <div class="req-body">{{.Content}}</div>
+      {{with .Task}}<div class="req-task trunc" title="{{.}}"><span>Task</span> {{.}}</div>{{end}}
+      {{- /* The agent's own words; the whole note only when it is in no known shape. */}}
+      <div class="req-body">{{or .Message .Content}}</div>
 
       <form class="reply" data-reply data-note="{{.ID}}" data-desktop="{{.DesktopID}}">
         <textarea class="textarea" placeholder="Reply to this desktop…" rows="1" required></textarea>
@@ -398,7 +410,15 @@
         el("span", "when", isNaN(when.getTime()) ? "" : when.toLocaleString([], {dateStyle: "medium", timeStyle: "short"}))
       );
 
-      item.append(head, el("div", "req-body", note.content || ""));
+      if(note.task){
+        var task = el("div", "req-task trunc", "");
+        task.append(el("span", "", "Task"), document.createTextNode(" " + note.task));
+        task.title = note.task;
+        item.append(head, task);
+      }else{
+        item.append(head);
+      }
+      item.append(el("div", "req-body", note.message || note.content || ""));
       resolvedList.appendChild(item);
     });
   }

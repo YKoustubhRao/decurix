@@ -80,7 +80,18 @@ func Open(path string) (*sql.DB, error) {
 	query.Add("_pragma", "cache_size(-16000)")
 	query.Add("_pragma", "mmap_size(67108864)")
 
-	return open("file:"+filepath.ToSlash(path)+"?"+query.Encode(), maxOpenConns)
+	// Escape URI metacharacters in directory and file names; otherwise a '?'
+	// silently becomes driver options and opens a different database.
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("sqlitedb: resolving path: %w", err)
+	}
+	uriPath := filepath.ToSlash(absPath)
+	if !strings.HasPrefix(uriPath, "/") {
+		uriPath = "/" + uriPath // Windows drive letter in a file URI.
+	}
+	dsn := url.URL{Scheme: "file", Path: uriPath, RawQuery: query.Encode()}
+	return open(dsn.String(), maxOpenConns)
 }
 
 // IncrementalVacuum frees up to pages unused database pages back to the host filesystem.

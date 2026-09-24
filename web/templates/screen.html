@@ -1,0 +1,742 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#100f0e">
+<title>{{.Name}}</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="modulepreload" href="{{.NoVNC}}">
+{{/*
+  The screen of one desktop, as a session rather than a web page: the desktop
+  fills the window, a small bar at the top hides itself until the pointer goes
+  there (the way a remote-desktop client's pull-down does), and connecting,
+  waking a paused desktop, starting a stopped one and reconnecting after a drop
+  are each one calm screen saying which - never noVNC's password prompt on a
+  black page, which is where every screen used to stop.
+
+  The RFB client is noVNC's own core (web/novnc), served by the control plane
+  once for every desktop. The WebSocket still goes through /desktop/<id>/
+  websockify, the same proxy as before; noVNC's full page stays reachable at
+  /desktop/<id>/vnc.html.
+*/}}
+<style>
+:root{
+  --bg:#100f0e;
+  --glass:rgba(22,21,19,.86);
+  --glass-2:rgba(34,31,29,.96);
+  --line:rgba(255,255,255,.09);
+  --line-2:rgba(255,255,255,.16);
+  --text:#f2f0ea;
+  --text-2:#a9a59a;
+  --text-3:#7b766b;
+  --accent:#4fbd8b;
+  --busy:#e0b04a;
+  --danger:#e8745f;
+  --sans:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --ease:cubic-bezier(.2,.8,.2,1);
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:13px/1.4 var(--sans);overflow:hidden;
+  -webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}
+button{font:inherit;color:inherit}
+
+/* ---------------- the desktop ---------------- */
+#screen{position:fixed;inset:0;height:100dvh;background:var(--bg);opacity:0;transition:opacity .35s var(--ease)}
+#screen.live{opacity:1}
+#screen canvas{outline:none}
+/* A whole-number device pixel ratio is scaled up pixel for pixel: sharp text
+   instead of a bilinear blur. Fractional ratios keep the browser's smoothing. */
+#screen.crisp canvas{image-rendering:pixelated}
+
+/* ---------------- connecting / waking / reconnecting ---------------- */
+#veil{position:fixed;inset:0;z-index:80;display:flex;align-items:center;justify-content:center;
+  background:var(--bg);transition:opacity .3s var(--ease),background .3s var(--ease)}
+#veil.over{background:rgba(12,11,10,.58);backdrop-filter:blur(3px) saturate(.7);-webkit-backdrop-filter:blur(3px) saturate(.7)}
+#veil.gone{opacity:0;pointer-events:none}
+.veil-card{display:flex;flex-direction:column;align-items:center;gap:14px;padding:28px 32px;min-width:260px;max-width:min(380px,90vw);text-align:center}
+#veil.over .veil-card{background:var(--glass-2);border:1px solid var(--line);border-radius:16px;box-shadow:0 24px 60px -20px rgba(0,0,0,.7)}
+.veil-mark{width:52px;height:52px;border-radius:13px;background:var(--accent);color:var(--bg);display:grid;place-items:center;
+  box-shadow:0 10px 30px -10px rgba(79,189,139,.55)}
+.veil-name{font-size:18px;font-weight:650;letter-spacing:-.01em;overflow-wrap:anywhere}
+.veil-status{color:var(--text-2);min-height:19px}
+.veil-track{width:180px;height:3px;border-radius:3px;background:rgba(255,255,255,.08);overflow:hidden}
+.veil-track i{display:block;width:40%;height:100%;border-radius:3px;background:var(--accent);animation:slide 1.15s var(--ease) infinite}
+#veil.halted .veil-track{visibility:hidden}
+@keyframes slide{from{transform:translateX(-100%)}to{transform:translateX(250%)}}
+.veil-btn{display:none;margin-top:4px;padding:9px 18px;border:0;border-radius:9px;background:var(--accent);color:var(--bg);font-weight:650;cursor:pointer}
+.veil-btn:hover{filter:brightness(1.08)}
+#veil.halted .veil-btn{display:inline-block}
+
+/* ---------------- the session bar ---------------- */
+#session{position:fixed;top:0;left:50%;z-index:70;transform:translate(-50%,calc(-100% + 6px));
+  transition:transform .22s var(--ease);padding-top:max(6px,env(safe-area-inset-top));}
+#session.open{transform:translate(-50%,0)}
+#bar{display:flex;align-items:center;gap:2px;padding:4px;border-radius:12px;background:var(--glass);border:1px solid var(--line);
+  box-shadow:0 10px 30px -12px rgba(0,0,0,.65);backdrop-filter:blur(14px) saturate(1.2);-webkit-backdrop-filter:blur(14px) saturate(1.2);white-space:nowrap}
+#handle{position:absolute;left:50%;bottom:-2px;transform:translateX(-50%);width:46px;height:5px;border-radius:5px;
+  background:rgba(255,255,255,.28);transition:opacity .2s,background .2s;cursor:pointer}
+#handle::before{content:"";position:absolute;inset:-10px -16px}
+#session.open #handle{opacity:0;pointer-events:none}
+#handle.rec{background:#e8503a;animation:pulse 1.4s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.45}}
+.who{display:flex;align-items:center;gap:8px;padding:0 10px 0 8px;font-weight:600;max-width:220px}
+.who span:last-child{overflow:hidden;text-overflow:ellipsis}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--text-3);flex:none;transition:background .2s}
+.dot.on{background:var(--accent);box-shadow:0 0 0 3px rgba(79,189,139,.18)}
+.dot.wait{background:var(--busy)}
+.dot.off{background:var(--danger)}
+.sep{width:1px;height:20px;background:var(--line-2);margin:0 4px;flex:none}
+.tool{position:relative;display:grid;place-items:center;width:32px;height:32px;border:0;border-radius:8px;background:transparent;
+  color:var(--text-2);cursor:pointer;transition:background .12s,color .12s}
+.tool:hover,.tool[aria-expanded="true"]{background:rgba(255,255,255,.09);color:var(--text)}
+.tool svg{width:17px;height:17px}
+.tool[data-tip]:hover::after{content:attr(data-tip);position:absolute;top:calc(100% + 8px);left:50%;transform:translateX(-50%);
+  padding:4px 8px;border-radius:6px;background:#000;color:var(--text);font-size:11.5px;font-weight:500;white-space:nowrap;pointer-events:none}
+
+/* The recording ticket toolbar (httpapi's ticketToolbar), mounted in the bar. */
+#ticket-slot{display:flex;align-items:center}
+#session #decurix-ticket{position:relative!important;top:auto!important;left:auto!important;transform:none!important;z-index:auto;color:var(--text)}
+#session #decurix-ticket-tab{background:transparent;box-shadow:none;border-radius:8px;padding:0 10px;height:32px;cursor:pointer;font-weight:600;touch-action:manipulation}
+#session #decurix-ticket-tab:hover{background:rgba(255,255,255,.09)}
+#session #decurix-ticket-panel{position:absolute;top:calc(100% + 12px);left:50%;transform:translateX(-50%);margin:0;
+  background:var(--glass-2);border:1px solid var(--line);box-shadow:0 18px 40px -16px rgba(0,0,0,.7);white-space:normal}
+
+/* Pop-overs under the bar. */
+.pop{position:absolute;top:calc(100% + 12px);right:0;width:min(320px,92vw);padding:12px;border-radius:12px;background:var(--glass-2);
+  border:1px solid var(--line);box-shadow:0 18px 40px -16px rgba(0,0,0,.7);display:none;white-space:normal}
+.pop.open{display:block}
+.pop h3{margin:0 0 8px;font-size:12px;font-weight:600;color:var(--text-2);text-transform:uppercase;letter-spacing:.05em}
+.pop p{margin:0 0 10px;color:var(--text-2);font-size:12px}
+.pop textarea{width:100%;min-height:74px;max-height:180px;resize:vertical;padding:8px 10px;border-radius:8px;border:1px solid var(--line-2);
+  background:rgba(255,255,255,.05);color:var(--text);font:12.5px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;outline:none}
+.pop textarea:focus{border-color:rgba(79,189,139,.6)}
+.row{display:flex;gap:6px;margin-top:8px}
+.btn{flex:1;padding:7px 10px;border-radius:8px;border:1px solid var(--line-2);background:rgba(255,255,255,.07);cursor:pointer;font-weight:600}
+.btn:hover{background:rgba(255,255,255,.13)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--bg)}
+.keys{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.keys .btn{text-align:left;font-weight:500}
+.keys kbd{font:inherit;font-weight:650}
+
+/* Something happened: copied, pasted, reconnected. */
+#toast{position:fixed;left:50%;bottom:calc(22px + env(safe-area-inset-bottom));z-index:90;transform:translate(-50%,12px);opacity:0;
+  padding:8px 14px;border-radius:10px;background:var(--glass-2);border:1px solid var(--line);box-shadow:0 12px 30px -12px rgba(0,0,0,.7);
+  transition:opacity .2s,transform .2s var(--ease);pointer-events:none}
+#toast.show{opacity:1;transform:translate(-50%,0)}
+
+/* Touch: a keyboard button, and the input it opens. */
+#kbd{position:fixed;left:0;bottom:0;width:1px;height:1px;opacity:0;border:0;padding:0;font-size:16px;resize:none}
+/* Right, above the desktop's own taskbar: bottom-left is its Start button. */
+#kbd-btn{position:fixed;z-index:60;right:calc(12px + env(safe-area-inset-right));bottom:calc(60px + env(safe-area-inset-bottom));
+  width:50px;height:50px;border-radius:50%;border:1px solid var(--line);background:var(--glass);color:var(--text);display:none;
+  place-items:center;box-shadow:0 8px 24px -10px rgba(0,0,0,.7);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+#kbd-btn.on{background:var(--accent);color:var(--bg)}
+@media (pointer:coarse){#kbd-btn{display:grid}}
+@media (max-width:520px){.who{max-width:110px}.hide-narrow{display:none}}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-blossom" viewBox="0 0 24 24"><g fill="currentColor"><g opacity=".78"><circle cx="12" cy="7.25" r="2.85"/><circle cx="16.52" cy="10.53" r="2.85"/><circle cx="14.79" cy="15.84" r="2.85"/><circle cx="9.21" cy="15.84" r="2.85"/><circle cx="7.48" cy="10.53" r="2.85"/></g><circle cx="12" cy="12" r="2.2"/></g></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.5 7.2L4 21l1.8-5.5A8 8 0 1 1 21 12z"/></symbol>
+  <symbol id="i-clip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="3" width="8" height="4" rx="1"/><path d="M16 5h2a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2"/></symbol>
+  <symbol id="i-keys" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></symbol>
+  <symbol id="i-full" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></symbol>
+  <symbol id="i-unfull" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3M21 8h-3a2 2 0 0 1-2-2V3M3 16h3a2 2 0 0 1 2 2v3M16 21v-3a2 2 0 0 1 2-2h3"/></symbol>
+  <symbol id="i-kbd" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 13h.01M18 13h.01M10 13h4M7 16h10"/></symbol>
+</svg>
+
+<div id="screen" aria-label="Desktop screen"></div>
+
+<div id="veil" role="status" aria-live="polite">
+  <div class="veil-card">
+    <div class="veil-mark"><svg width="30" height="30"><use href="#i-blossom"/></svg></div>
+    <div class="veil-name">{{.Name}}</div>
+    <div class="veil-status" id="veil-status">Connecting…</div>
+    <div class="veil-track"><i></i></div>
+    <button type="button" class="veil-btn" id="veil-btn">Start desktop</button>
+  </div>
+</div>
+
+<div id="session">
+  <div id="bar" role="toolbar" aria-label="Session">
+    <div class="who" title="{{.Name}}"><span class="dot wait" id="dot"></span><span>{{.Name}}</span></div>
+    <span class="sep"></span>
+    <div id="ticket-slot"></div>
+    <span class="sep"></span>
+    <button type="button" class="tool" data-act="chat" data-tip="Chat with its agent" aria-label="Open this desktop's chat"><svg><use href="#i-chat"/></svg></button>
+    <button type="button" class="tool" data-act="clipboard" data-tip="Clipboard" aria-label="Clipboard" aria-expanded="false"><svg><use href="#i-clip"/></svg></button>
+    <button type="button" class="tool hide-narrow" data-act="keys" data-tip="Send keys" aria-label="Send keys" aria-expanded="false"><svg><use href="#i-keys"/></svg></button>
+    <button type="button" class="tool" data-act="fullscreen" data-tip="Full screen" aria-label="Full screen"><svg><use href="#i-full" id="full-icon"/></svg></button>
+
+    <div class="pop" id="pop-clipboard" role="dialog" aria-label="Clipboard">
+      <h3>Clipboard</h3>
+      <p id="clip-help">Copy in the desktop and it lands here; Ctrl+V in the desktop pastes what you copied on this computer.</p>
+      <textarea id="clip-text" placeholder="Text to paste into the desktop" spellcheck="false"></textarea>
+      <div class="row">
+        <button type="button" class="btn" id="clip-copy">Copy to this computer</button>
+        <button type="button" class="btn primary" id="clip-send">Paste in desktop</button>
+      </div>
+    </div>
+
+    <div class="pop" id="pop-keys" role="dialog" aria-label="Send keys">
+      <h3>Send keys</h3>
+      <div class="keys">
+        <button type="button" class="btn" data-keys="ctrl-alt-del"><kbd>Ctrl Alt Del</kbd></button>
+        <button type="button" class="btn" data-keys="alt-tab"><kbd>Alt Tab</kbd></button>
+        <button type="button" class="btn" data-keys="alt-f4"><kbd>Alt F4</kbd> close</button>
+        <button type="button" class="btn" data-keys="esc"><kbd>Esc</kbd></button>
+        <button type="button" class="btn" data-keys="super"><kbd>Start</kbd> menu</button>
+        <button type="button" class="btn" data-keys="print"><kbd>Print</kbd> screen</button>
+      </div>
+    </div>
+  </div>
+  <div id="handle" role="button" tabindex="0" aria-label="Show the session bar"></div>
+</div>
+
+<div id="toast" role="status" aria-live="polite"></div>
+<textarea id="kbd" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" aria-hidden="true" tabindex="-1"></textarea>
+<button type="button" id="kbd-btn" aria-label="Show the keyboard"><svg width="22" height="22"><use href="#i-kbd"/></svg></button>
+
+{{.Controls}}
+
+<script type="module">
+import { RFB, KeyTable, keysyms } from {{.NoVNC}};
+
+const ID = {{.ID}};
+const NAME = {{.Name}};
+const PASSWORD = {{.Password}};
+
+const $ = (id) => document.getElementById(id);
+const screenEl = $("screen"), veil = $("veil"), veilStatus = $("veil-status"), veilBtn = $("veil-btn");
+const session = $("session"), bar = $("bar"), handle = $("handle"), dot = $("dot"), toastEl = $("toast");
+
+const params = new URLSearchParams(location.search);
+// resize=remote (the default, what the dashboard asks for) fits the desktop to
+// the window; resize=scale shrinks the picture instead and leaves the desktop's
+// own size alone.
+const SCALE = params.get("resize") === "scale";
+const VIEW_ONLY = params.get("view_only") === "1" || params.get("view_only") === "true";
+const WS_URL = (location.protocol === "https:" ? "wss://" : "ws://") + location.host +
+  "/desktop/" + encodeURIComponent(ID) + "/websockify";
+
+document.title = NAME;
+
+/* ---------------- small helpers ---------------- */
+
+let toastTimer = null;
+function toast(text, ms = 2200){
+  toastEl.textContent = text;
+  toastEl.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove("show"), ms);
+}
+
+function post(path){
+  return fetch(path, {method: "POST", headers: {"Content-Type": "application/x-www-form-urlencoded"},
+    body: new URLSearchParams({id: ID})});
+}
+
+async function desktopStatus(){
+  try{
+    const r = await fetch("/api/desktops/activity?ids=" + encodeURIComponent(ID), {cache: "no-store"});
+    if(!r.ok){ return null; }
+    return (await r.json())[ID] || null;
+  }catch(e){ return null; }
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/* ---------------- the veil ---------------- */
+
+function showVeil(text, {over = false, halted = false, action = ""} = {}){
+  veilStatus.textContent = text;
+  veil.classList.remove("gone");
+  veil.classList.toggle("over", over);
+  veil.classList.toggle("halted", halted);
+  veilBtn.textContent = action || "Start desktop";
+}
+
+function hideVeil(){
+  veil.classList.add("gone");
+}
+
+function setDot(state){
+  dot.className = "dot " + state;
+}
+
+/* ---------------- connecting ---------------- */
+
+let rfb = null;
+let everConnected = false;
+let attempts = 0;
+let retryTimer = null;
+let leaving = false;
+let refused = false;
+
+addEventListener("pagehide", () => { leaving = true; });
+
+async function waitUntilRunning(limitMs){
+  const until = Date.now() + limitMs;
+  while(Date.now() < until){
+    const st = await desktopStatus();
+    if(st && st.status === "running"){ return true; }
+    await sleep(1000);
+  }
+  return false;
+}
+
+async function startDesktop(){
+  showVeil("Starting " + NAME + "…");
+  setDot("wait");
+  try{
+    const r = await post("/api/desktops/start");
+    if(!r.ok){ throw new Error("start refused"); }
+  }catch(e){
+    showVeil("Could not start " + NAME + ". Try again from the dashboard.", {halted: true, action: "Try again"});
+    return false;
+  }
+  if(!await waitUntilRunning(90000)){
+    showVeil(NAME + " is taking too long to start.", {halted: true, action: "Try again"});
+    return false;
+  }
+  // The container is up; its screen server takes a moment more.
+  showVeil("Opening the screen…");
+  return true;
+}
+
+veilBtn.addEventListener("click", async () => {
+  attempts = 0;
+  refused = false;
+  const st = await desktopStatus();
+  if(st && st.status !== "running" && !await startDesktop()){ return; }
+  connect();
+});
+
+async function connect(){
+  clearTimeout(retryTimer);
+  if(rfb){ return; }
+
+  let st = await desktopStatus();
+  if(st && st.status === "provisioning"){
+    showVeil("Setting up " + NAME + "…");
+    await waitUntilRunning(600000);
+    st = await desktopStatus();
+  }
+  if(st && st.status && st.status !== "running" && st.status !== "paused" && everConnected){
+    // It went away under an open screen. A restart (the X session ending
+    // brings the container back on its own) is back in seconds: wait for it.
+    // Still down after that, someone stopped it or it crashed - theirs to
+    // decide, not the screen's to override.
+    showVeil("Reconnecting…", {over: true});
+    if(await waitUntilRunning(20000)){
+      st = {status: "running"};
+    }else{
+      st = await desktopStatus() || st;
+      const why = st.crash ? NAME + " stopped unexpectedly (" + st.crash + ")." : NAME + " was stopped.";
+      showVeil(why, {halted: true, over: true, action: "Start it again"});
+      setDot("off");
+      return;
+    }
+  }
+  if(st && st.status && st.status !== "running" && st.status !== "paused"){
+    // Stopped (idle-stop, or by hand) when the screen is opened: opening it is
+    // asking to use it, so start it.
+    if(!await startDesktop()){ setDot("off"); return; }
+  }else if(st && st.status === "paused"){
+    showVeil("Waking " + NAME + "…", {over: everConnected});
+  }else if(!everConnected){
+    showVeil("Connecting to " + NAME + "…");
+  }
+
+  setDot("wait");
+
+  try{
+    rfb = new RFB(screenEl, WS_URL, {credentials: {password: PASSWORD}, shared: true});
+  }catch(e){
+    scheduleRetry();
+    return;
+  }
+
+  rfb.resizeSession = !SCALE;
+  rfb.scaleViewport = SCALE;
+  rfb.clipViewport = false;
+  rfb.viewOnly = VIEW_ONLY;
+  rfb.focusOnClick = true;
+  rfb.showDotCursor = false;
+  rfb.background = "#100f0e";
+  rfb.qualityLevel = 6;
+  rfb.compressionLevel = 2;
+
+  rfb.addEventListener("connect", onConnect);
+  rfb.addEventListener("disconnect", onDisconnect);
+  rfb.addEventListener("credentialsrequired", () => rfb.sendCredentials({password: PASSWORD}));
+  rfb.addEventListener("securityfailure", () => { refused = true; });
+  rfb.addEventListener("clipboard", onRemoteClipboard);
+}
+
+function onConnect(){
+  const first = !everConnected;
+  everConnected = true;
+  attempts = 0;
+  setDot("on");
+  markCrisp();
+
+  // The first picture takes a moment after the handshake (and a resize to the
+  // window follows it): keep the veil up until the canvas has something on
+  // it, so what fades in is the desktop and not a black rectangle.
+  waitForPicture(2500).then(() => {
+    screenEl.classList.add("live");
+    hideVeil();
+    if(first){
+      peekBar(2600);
+    }else{
+      toast("Reconnected");
+    }
+    if(!VIEW_ONLY && !isTouch){ rfb && rfb.focus(); }
+  });
+}
+
+function onDisconnect(event){
+  const had = rfb;
+  rfb = null;
+  if(had){
+    had.removeEventListener("connect", onConnect);
+    had.removeEventListener("disconnect", onDisconnect);
+  }
+  if(leaving){ return; }
+  setDot("off");
+
+  if(refused){
+    showVeil("The desktop refused the connection's password. Recreate the desktop if this keeps happening.",
+      {halted: true, over: everConnected, action: "Try again"});
+    return;
+  }
+
+  scheduleRetry();
+}
+
+function scheduleRetry(){
+  attempts += 1;
+  // Quick at first (a restart of the screen server takes a second or two),
+  // then backing off, never giving up while the page is open.
+  const delay = Math.min(10000, 400 * Math.pow(2, attempts - 1));
+  const verb = everConnected ? "Reconnecting" : "Connecting";
+  showVeil(delay >= 2000 ? verb + " in " + Math.round(delay / 1000) + " s…" : verb + "…", {over: everConnected});
+  retryTimer = setTimeout(connect, delay);
+}
+
+function canvas(){
+  return screenEl.querySelector("canvas");
+}
+
+function waitForPicture(limitMs){
+  const until = performance.now() + limitMs;
+  return new Promise((resolve) => {
+    const look = () => {
+      const c = canvas();
+      if(c && c.width > 16 && c.height > 16 && hasPicture(c)){ resolve(); return; }
+      if(performance.now() > until){ resolve(); return; }
+      setTimeout(look, 80);
+    };
+    look();
+  });
+}
+
+function hasPicture(c){
+  try{
+    const ctx = c.getContext("2d");
+    const w = c.width, h = c.height;
+    let lit = 0;
+    for(let i = 1; i < 8; i++){
+      for(let j = 1; j < 6; j++){
+        const d = ctx.getImageData(Math.floor(w * i / 8), Math.floor(h * j / 6), 1, 1).data;
+        if(d[0] + d[1] + d[2] > 40){ lit++; }
+      }
+    }
+    return lit >= 6;
+  }catch(e){
+    return true;
+  }
+}
+
+function markCrisp(){
+  const r = window.devicePixelRatio || 1;
+  screenEl.classList.toggle("crisp", !SCALE && r >= 2 && Math.abs(r - Math.round(r)) < 0.01);
+}
+matchMedia("(resolution: 1dppx)").addEventListener?.("change", markCrisp);
+addEventListener("resize", markCrisp);
+
+/* ---------------- the session bar ---------------- */
+
+const isTouch = matchMedia("(pointer:coarse)").matches;
+let barPinned = false;   // opened by a tap (touch) or a peek: stays until told
+let peekTimer = null;
+let hideTimer = null;
+
+function openPops(){
+  return !!document.querySelector(".pop.open");
+}
+
+function ticketOpen(){
+  const t = document.getElementById("decurix-ticket");
+  return !!(t && t.classList.contains("decurix-open"));
+}
+
+function typingInBar(){
+  const a = document.activeElement;
+  return !!(a && session.contains(a) && /^(INPUT|TEXTAREA)$/.test(a.tagName));
+}
+
+function setBar(open){
+  session.classList.toggle("open", open);
+}
+
+function mayHide(){
+  return !openPops() && !ticketOpen() && !typingInBar() && !barPinned;
+}
+
+function peekBar(ms){
+  setBar(true);
+  clearTimeout(peekTimer);
+  peekTimer = setTimeout(() => { if(mayHide() && !overBar){ setBar(false); } }, ms);
+}
+
+let overBar = false;
+// Capture phase: the desktop's canvas stops the events it handles from
+// bubbling, so a listener on the document would never hear the pointer there.
+addEventListener("pointermove", (e) => {
+  const r = bar.getBoundingClientRect();
+  const near = e.clientY <= 6 && Math.abs(e.clientX - (r.left + r.width / 2)) < Math.max(160, r.width / 2 + 40);
+  overBar = session.classList.contains("open") && e.clientY <= r.bottom + 28 &&
+    e.clientX >= r.left - 40 && e.clientX <= r.right + 40;
+  if(near){
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => setBar(true), 120);
+  }else if(!overBar && session.classList.contains("open") && mayHide()){
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => { if(!overBar && mayHide()){ setBar(false); } }, 500);
+  }else if(overBar){
+    clearTimeout(hideTimer);
+  }
+}, true);
+
+handle.addEventListener("click", () => { barPinned = isTouch; setBar(true); });
+handle.addEventListener("keydown", (e) => { if(e.key === "Enter" || e.key === " "){ e.preventDefault(); setBar(true); } });
+
+// A tap on the desktop closes what the bar opened, and on touch, the bar.
+screenEl.addEventListener("pointerdown", () => {
+  closePops();
+  if(isTouch){ barPinned = false; if(mayHide()){ setBar(false); } }
+}, true);
+
+function closePops(except){
+  document.querySelectorAll(".pop.open").forEach((p) => {
+    if(p !== except){
+      p.classList.remove("open");
+      const b = bar.querySelector('[aria-controls="' + p.id + '"], [data-act="' + p.id.replace("pop-", "") + '"]');
+      b && b.setAttribute("aria-expanded", "false");
+    }
+  });
+}
+
+function togglePop(name, button){
+  const pop = $("pop-" + name);
+  const open = !pop.classList.contains("open");
+  closePops(pop);
+  pop.classList.toggle("open", open);
+  button.setAttribute("aria-expanded", String(open));
+  if(open){ setBar(true); }
+  else if(rfb && !isTouch){ rfb.focus(); }
+  return open;
+}
+
+bar.addEventListener("click", (e) => {
+  const button = e.target.closest("[data-act]");
+  if(!button){ return; }
+  const act = button.dataset.act;
+  if(act === "chat"){
+    window.open("/view/" + encodeURIComponent(ID), "decurix-chat-" + ID);
+  }else if(act === "clipboard"){
+    if(togglePop("clipboard", button)){ $("clip-text").focus(); }
+  }else if(act === "keys"){
+    togglePop("keys", button);
+  }else if(act === "fullscreen"){
+    toggleFullscreen();
+  }
+});
+
+document.addEventListener("keydown", (e) => {
+  if(e.key === "Escape" && openPops()){ closePops(); rfb && !isTouch && rfb.focus(); }
+});
+
+// Mount the recording ticket toolbar in the bar, and keep the bar out while a
+// ticket's panel is open or recording is live.
+const ticket = document.getElementById("decurix-ticket");
+if(ticket){
+  $("ticket-slot").appendChild(ticket);
+  const tdot = document.getElementById("decurix-ticket-dot");
+  const sync = () => {
+    handle.classList.toggle("rec", !!(tdot && tdot.classList.contains("decurix-rec")));
+    if(ticketOpen()){ setBar(true); }
+    else if(mayHide() && !overBar){ setBar(false); }
+  };
+  new MutationObserver(sync).observe(ticket, {attributes: true, attributeFilter: ["class"]});
+  tdot && new MutationObserver(sync).observe(tdot, {attributes: true, attributeFilter: ["class"]});
+}
+{
+  const tab = document.getElementById("decurix-ticket-tab");
+  tab && tab.addEventListener("click", () => setBar(true));
+}
+
+/* ---------------- full screen ---------------- */
+
+function toggleFullscreen(){
+  if(document.fullscreenElement){
+    document.exitFullscreen().catch(() => {});
+    return;
+  }
+  document.documentElement.requestFullscreen({navigationUI: "hide"}).then(() => {
+    // Keys the browser would otherwise keep (Esc, Alt+Tab, Ctrl+W) go to the
+    // desktop while full screen, where the browser allows it. Hold Esc to leave.
+    if(navigator.keyboard && navigator.keyboard.lock){ navigator.keyboard.lock().catch(() => {}); }
+    toast("Full screen - hold Esc to leave", 2600);
+  }).catch(() => toast("Full screen is not allowed here"));
+}
+
+document.addEventListener("fullscreenchange", () => {
+  $("full-icon").setAttribute("href", document.fullscreenElement ? "#i-unfull" : "#i-full");
+  if(!document.fullscreenElement && navigator.keyboard && navigator.keyboard.unlock){ navigator.keyboard.unlock(); }
+});
+
+/* ---------------- keys ---------------- */
+
+const K = KeyTable;
+const COMBOS = {
+  "alt-tab": [[K.XK_Alt_L, "AltLeft"], [K.XK_Tab, "Tab"]],
+  "alt-f4": [[K.XK_Alt_L, "AltLeft"], [K.XK_F4, "F4"]],
+  "esc": [[K.XK_Escape, "Escape"]],
+  "super": [[K.XK_Super_L, "MetaLeft"]],
+  "print": [[K.XK_Print, "PrintScreen"]],
+};
+
+function sendCombo(keys){
+  if(!rfb){ return; }
+  keys.forEach(([sym, code]) => rfb.sendKey(sym, code, true));
+  keys.slice().reverse().forEach(([sym, code]) => rfb.sendKey(sym, code, false));
+}
+
+$("pop-keys").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-keys]");
+  if(!b || !rfb){ return; }
+  if(b.dataset.keys === "ctrl-alt-del"){ rfb.sendCtrlAltDel(); }
+  else{ sendCombo(COMBOS[b.dataset.keys]); }
+  closePops();
+  if(!isTouch){ rfb.focus(); }
+});
+
+/* ---------------- clipboard ---------------- */
+
+let remoteClip = "";
+
+function onRemoteClipboard(e){
+  remoteClip = e.detail.text || "";
+  $("clip-text").value = remoteClip;
+  // Straight onto this computer's clipboard when the browser allows it (a
+  // secure page with focus); otherwise it waits in the pop-over.
+  if(remoteClip && navigator.clipboard && window.isSecureContext && document.hasFocus()){
+    navigator.clipboard.writeText(remoteClip).then(() => toast("Copied from the desktop")).catch(() => {});
+  }
+}
+
+$("clip-copy").addEventListener("click", async () => {
+  const text = $("clip-text").value;
+  try{
+    await navigator.clipboard.writeText(text);
+    toast("Copied to this computer");
+  }catch(e){
+    $("clip-text").select();
+    document.execCommand && document.execCommand("copy") ? toast("Copied to this computer") : toast("Select the text and copy it");
+  }
+});
+
+$("clip-send").addEventListener("click", () => {
+  const text = $("clip-text").value;
+  if(!rfb || !text){ return; }
+  rfb.clipboardPasteFrom(text);
+  closePops();
+  rfb.focus();
+  pasteKeys();
+  toast("Pasted in the desktop");
+});
+
+function pasteKeys(){
+  sendCombo([[K.XK_Control_L, "ControlLeft"], [K.XK_v, "KeyV"]]);
+}
+
+// Ctrl+V (Cmd+V on a Mac) in the desktop pastes what was copied on this
+// computer: hand the desktop the text first, then the keystroke. Where the
+// browser will not give the page the clipboard, the keystroke goes through
+// untouched and the desktop pastes its own.
+addEventListener("keydown", (e) => {
+  if(!rfb || e.repeat || e.altKey || e.shiftKey || !(e.ctrlKey || e.metaKey) || e.code !== "KeyV"){ return; }
+  const a = document.activeElement;
+  if(a && a !== document.body && !screenEl.contains(a)){ return; }
+  if(!navigator.clipboard || !navigator.clipboard.readText || !window.isSecureContext){ return; }
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  navigator.clipboard.readText().then((text) => {
+    if(text){ rfb.clipboardPasteFrom(text); }
+    pasteKeys();
+  }).catch(() => pasteKeys());
+}, true);
+
+/* ---------------- touch keyboard ---------------- */
+
+const kbd = $("kbd"), kbdBtn = $("kbd-btn");
+
+kbdBtn.addEventListener("click", (e) => {
+  e.preventDefault();
+  if(document.activeElement === kbd){ kbd.blur(); }
+  else{ kbd.focus({preventScroll: true}); }
+});
+kbd.addEventListener("focus", () => kbdBtn.classList.add("on"));
+kbd.addEventListener("blur", () => kbdBtn.classList.remove("on"));
+
+function typeChar(ch){
+  const cp = ch.codePointAt(0);
+  const sym = ch === "\n" ? K.XK_Return : keysyms.lookup(cp);
+  if(rfb && sym){ rfb.sendKey(sym, null); }
+}
+
+const NAMED = {Enter: K.XK_Return, Backspace: K.XK_BackSpace, Tab: K.XK_Tab, Escape: K.XK_Escape,
+  ArrowLeft: K.XK_Left, ArrowRight: K.XK_Right, ArrowUp: K.XK_Up, ArrowDown: K.XK_Down, Delete: K.XK_Delete};
+
+kbd.addEventListener("beforeinput", (e) => {
+  if(!rfb){ return; }
+  if(e.inputType === "insertText" || e.inputType === "insertReplacementText" || e.inputType === "insertCompositionText"){
+    if(e.inputType !== "insertCompositionText"){ [...(e.data || "")].forEach(typeChar); e.preventDefault(); }
+  }else if(e.inputType === "insertLineBreak" || e.inputType === "insertParagraph"){
+    rfb.sendKey(K.XK_Return, "Enter"); e.preventDefault();
+  }else if(e.inputType === "deleteContentBackward"){
+    rfb.sendKey(K.XK_BackSpace, "Backspace"); e.preventDefault();
+  }
+});
+kbd.addEventListener("compositionend", (e) => { [...(e.data || "")].forEach(typeChar); kbd.value = ""; });
+kbd.addEventListener("keydown", (e) => {
+  const sym = NAMED[e.key];
+  if(rfb && sym && e.key !== "Unidentified"){ rfb.sendKey(sym, e.code || null); e.preventDefault(); }
+});
+
+/* ---------------- go ---------------- */
+
+if(!PASSWORD){
+  showVeil("This desktop has no screen password set, so its screen cannot be opened.", {halted: true, action: "Try again"});
+}else{
+  connect();
+}
+</script>
+</body>
+</html>

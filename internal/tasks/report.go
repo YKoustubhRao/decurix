@@ -32,6 +32,9 @@ var engineLabels = map[string]string{
 	// both with no model.
 	"learn": "Teaching (no model)",
 	"skill": "Skill (no model)",
+	// A question put to a web app (ChatGPT, Google, ...) in the desktop's
+	// browser and its answer read off the page (agent ask_task.py).
+	"web": "Web app (no model)",
 }
 
 // EngineLabel is the human-readable name of an engine.

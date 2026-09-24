@@ -534,11 +534,13 @@ gui click e12           clicks it
 gui type e12 "text"     replaces a field's text
 gui key ctrl+s          presses keys (enter, tab, ctrl+a ...)
 gui select e12 "High"   picks a dropdown option
+gui upload e12 <file>   uploads document(s) to a file input control
 gui open <url|file|app> opens it
 gui recordings <words>  finds a recorded demonstration of a task
 gui replay <id>         runs that recording again, step by step
 gui skills <words>      finds a task this desktop was taught
 gui do <name> --param k=v   does it with no model (gui skill <name> says what it needs)
+For document, spreadsheet, email, and ERP automation, decurix_agent.tools (excel_tool, doc_tool, mail_tool, erp_tool) can be scripted via python3.
 Observe first and use refs from the latest output, just the ref: gui click
 e12, not the whole line. Every gui action tells you what changed. A button that sends, pays or publishes pauses for
 approval on its own.

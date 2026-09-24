@@ -1,8 +1,10 @@
 import re
+import threading
 import traceback
 
-from decurix_agent import state, usage
-from decurix_agent.computer import approval, constraints, core, escalation, experience, learning, recording, replay, skills
+from decurix_agent import progress, state, usage
+from decurix_agent.computer import (approval, constraints, core, escalation, experience, launchers, learning, mimic,
+                                    recording, replay, skills)
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 from decurix_agent.logging_utils import log
@@ -49,6 +51,14 @@ CARRY_ON_RE = re.compile(
     re.IGNORECASE,
 )
 NUMBER_RE = re.compile(r"^\W*(?:option\s*|number\s*|#)?(\d{1,2})\W*$", re.IGNORECASE)
+# A person who can see the screen saying a point click is right where it is:
+# "click anyway", "click it", "click there". Only offered, and only read, for a
+# click recorded as a point whose picture did not match (see _unanchor).
+ANYWAY_RE = re.compile(r"^\W*(click\s+(it\s+)?anyway|click\s+(it|there)|anyway)\W*$", re.IGNORECASE)
+# Close the app a step found already open, and open it fresh (see replay's
+# "reopen"). Only offered, and only read, when that is what stopped the run.
+RESTART_RE = re.compile(r"^\W*(restart|re-?open|re-?start|open it (?:again|fresh)|start it (?:again|fresh)|close it and (?:re-?)?open it)\b",
+                        re.IGNORECASE)
 USE_RE = re.compile(r"^\W*(?:use|try|click|press|select|choose)\b\s*(.+?)\s*$", re.IGNORECASE | re.DOTALL)
 
 MAX_STUCK_ASKS = 3
@@ -92,13 +102,14 @@ def parse_learn(content):
     if not match:
         return None
 
-    ids, name = [], None
+    rest, name = match.group(1) or "", None
 
-    for word in (match.group(1) or "").split():
-        if word.startswith("name="):
-            name = word[len("name="):].strip("\"'")
-        else:
-            ids.append(word)
+    # name="Google a phrase" may have spaces in it, so options are read the
+    # way "/skill" reads its values, before the rest is split into IDs.
+    for option in OPTION_RE.finditer(rest):
+        if option.group(1) == "name":
+            name = next(v for v in option.groups()[1:] if v is not None).strip() or None
+    ids = OPTION_RE.sub(" ", rest).split()
 
     return ids, name
 
@@ -149,10 +160,112 @@ def request_text(name, params=None):
     return " ".join(parts)
 
 
+def learn_request(sessions, name=None):
+    """
+    The "/learn" request that teaches from `sessions`, naming the skill `name` -
+    what the control plane sends and the chat shows (httpapi.learnContent
+    builds the same string). A name holding both kinds of quote is refused.
+    """
+
+    content = "/learn " + " ".join(sessions)
+    name = " ".join((name or "").split())
+    if not name:
+        return content
+
+    if '"' not in name:
+        return f'{content} name="{name}"'
+    if "'" not in name:
+        return f"{content} name='{name}'"
+    raise ValueError("the name has both kinds of quote in it")
+
+
 def handles(content):
     """Whether a request is one of this module's ("/learn", "/skill"), which need no reasoning backend."""
 
     return parse_learn(content) is not None or parse_skill(content) is not None
+
+
+def mimics(content):
+    """
+    Whether a plain request is a recorded task done again with other values
+    (computer/mimic.py): what the command watcher asks before handing a request
+    to the engine. Reads recordings only - no model.
+    """
+
+    try:
+        return mimic.plan(content) is not None
+    except Exception as exc:
+        log(f"Could not compare the request with the recordings: {exc}")
+        return False
+
+
+def _engine(content, task_file):
+    """Hand a request to the engine after all (imported here: harness.py reads the engine at import)."""
+
+    from decurix_agent.harness import perform_task
+    perform_task(content, task_file)
+
+
+def perform_mimic(content, task_file=None):
+    """
+    Do a request the way a person recorded a similar task: the recording's own
+    steps, with only what the request changes put in. The desktop's model is
+    asked only for a value the recording typed in another form, and a person
+    only when the model cannot say.
+    """
+
+    _begin(content, task_file)
+
+    try:
+        found = mimic.plan(content)
+        skill, one_off = mimic.load_skill(found) if found else (None, False)
+    except (FileNotFoundError, ValueError, OSError) as exc:
+        log(f"Could not load what to mimic for {content!r}: {exc}")
+        found, skill = None, None
+
+    if skill is None:
+        # The recording went away, or has nothing a replay can run, between the
+        # watcher's look and now: the engine takes it after all.
+        _engine(content, task_file)
+        return
+
+    try:
+        values, pending, changed = mimic.values_for(skill, found)
+        unplaced = [span for span in found["spans"] if not span["placed"]]
+
+        if unplaced and not pending:
+            # A value changed that nothing typed holds: not something to adapt.
+            log(f"{content!r} differs from {found['text']!r} in a way the recording cannot take - the engine does it")
+            _engine(content, task_file)
+            return
+
+        if pending:
+            progress.emit("The request changes something the recording typed in another form - "
+                          "working out what to type now.")
+            ask = _ask_model if state.backend_ready else None
+            values, adapted = mimic.adapt_values(skill, found, content, values, pending, ask)
+            if values is None:
+                log(f"The model would type {found['text']!r}'s values unchanged for {content!r} - the engine does it")
+                _engine(content, task_file)
+                return
+            changed += adapted
+
+        said = f"Doing this the way you recorded \"{found['text']}\""
+        if changed:
+            said += " - typing " + "; ".join(f"\"{new}\" where you typed \"{old}\"" for _, old, new in changed)
+        elif any(span["placed"] for span in found["spans"]):
+            said += " - with " + "; ".join(f"\"{span['new']}\" for \"{span['old']}\"" for span in found["spans"])
+        progress.emit(said + ".")
+        log(f"Mimicking {found['kind']} {found['id']} for {content!r}: {changed or found['spans']}")
+
+        run = {"skill": skill, "values": values, "start": 1, "checked": False, "patches": [], "asked": 0, "stuck": 0,
+               "ladder": _ladder(skill), "asked_ids": [], "mimic": found, "one_off": one_off}
+        _prepare(run)
+    except _Refused as refusal:
+        write_final_reply(str(refusal), kind="error", engine=SKILL_ENGINE)
+    except Exception as exc:
+        log(traceback.format_exc())
+        write_final_reply(f"That stopped on an internal error: {exc}", kind="error", engine=SKILL_ENGINE)
 
 
 def _begin(content, task_file):
@@ -277,6 +390,8 @@ def _learn_reply(paused, reply):
             "to carry on where we left off.", kind="final", engine=LEARN_ENGINE)
         return
 
+    # The last question takes a name, which moves the skill to another file.
+    drafted_as = skill["name"]
     result = learning.answer(skill, question, reply)
 
     if not result["understood"]:
@@ -287,7 +402,12 @@ def _learn_reply(paused, reply):
 
     if decision == "save":
         skills.save(skill)
-        _remember(skill)
+        if skill["name"] != drafted_as:
+            skills.delete(drafted_as)
+        # The skill is already durable and ready to run. Sending its optional
+        # summary to the control plane must never leave the teaching UI in
+        # "Processing" behind a slow or unreachable memory endpoint.
+        _remember_async(skill)
         write_final_reply(_learned_text(skill), kind="final", engine=LEARN_ENGINE)
     elif decision == "discard":
         skills.delete(skill["name"])
@@ -300,6 +420,12 @@ def _learn_reply(paused, reply):
                           kind="final", engine=LEARN_ENGINE)
     else:
         _ask(skill, result["note"])
+
+
+def _remember_async(skill):
+    """Record optional learned memory without delaying the completed lesson."""
+
+    threading.Thread(target=_remember, args=(skill,), daemon=True).start()
 
 
 def _remember(skill):
@@ -455,6 +581,21 @@ def _execute(run):
     program, values = skills.expand(skill, run["values"])
     run["expanded"] = program
 
+    # A point click a person said to make anyway goes without its picture,
+    # on this run's expanded copy only: the saved skill keeps the check.
+    # (A new dict, not a pop: expand hands back the skill's own step objects.)
+    program["steps"] = [
+        {k: v for k, v in step.items() if k != "look"}
+        if step.get("id") in run.get("unanchored", ()) and step.get("point") else step
+        for step in program["steps"]
+    ]
+
+    # A mimicked request: what it changes goes into this run's copy of the
+    # steps - what they target, open and expect - never into a saved skill.
+    if run.get("mimic"):
+        spans = mimic.step_spans(run["mimic"], skill, run["values"])
+        program["steps"] = [mimic.substitute_step(step, spans) for step in program["steps"]]
+
     # Carrying on past the last step - the person skipped it, or did it by
     # hand - leaves nothing to run. That is the end of the task, and said as
     # what it is: replay.run would call it a halt at a step that does not exist.
@@ -518,6 +659,9 @@ def _settle(run, outcome):
     only a success keeps those (_finish).
     """
 
+    if run.get("one_off"):
+        return
+
     try:
         fresh = skills.load(run["skill"]["name"])
     except FileNotFoundError:
@@ -532,8 +676,32 @@ def _ask_stuck(run, result, preface="", unclear=0):
     found = result.get("options") or []
     step = run["expanded"]["steps"][result["step"] - 1]
 
+    reopen = None if ran else result.get("reopen")
+
     if ran:
         choices = "Reply `continue` if the screen looks right and I should carry on, or `stop`."
+    elif reopen:
+        # Found live: the app the recording opened fresh was already open, on
+        # another page, and every picture of its start page missed.
+        how = ("was already open" if reopen.get("already")
+               else f"opened at step {reopen['step']} where it was last left (it keeps running between uses)")
+        choices = (f"{el._quote(reopen['window'], 60)} {how}, showing something else than when you recorded this, "
+                   "where it had just been opened fresh. Reply `restart` to close it and open it fresh (whatever is "
+                   "open in it now is closed), `retry` to look again, `skip` to leave this step out, or `stop`.")
+    elif _unanchorable(step, result) and result.get("after_change"):
+        # Found live: a skill recorded clicking a search's first result, run
+        # for another search whose page opened with a large overview - the
+        # first result was below the fold. Scrolling and taking the first
+        # thing that looks alike was tried on the real page: it matched a link
+        # inside the overview first. Which result is "the first" is a
+        # person's call; doing that one click and carrying on is one word.
+        choices = ("This run typed something else than the recording, and the page it led to is laid out "
+                   "differently - nothing like what you clicked then is where it was. If it is further down or "
+                   "elsewhere, click it yourself on the screen and reply `done` to carry on; or `click anyway` to "
+                   "click the recorded spot, `retry`, `skip` or `stop`.")
+    elif _unanchorable(step, result):
+        choices = ("Look at the screen: if the spot I would click is the right one, reply `click anyway`. Otherwise "
+                   "`retry` to look again, `skip` to leave this step out, or `stop`.")
     elif found:
         choices = ("Reply the number to use one of those, `retry` to look again, `skip` to leave this step out and carry on, "
                    "`stop`, or name the control - for example `use \"Save as\"`.")
@@ -556,12 +724,19 @@ def _ask_stuck(run, result, preface="", unclear=0):
 
     _pause(run, "stuck", f"{preface} {result['text']}{detail} {choices}".strip(), step=result["step"],
            resume_from=result["resume_from"], ran=ran, why=result["text"], unclear=unclear, options=found,
-           trail=result.get("trail") or [])
+           trail=result.get("trail") or [], reopen=reopen)
 
 
 def _finish(run, result):
     skill = run["skill"]
     text = result["text"]
+
+    if run.get("one_off"):
+        # Built from a recording for this request only: nothing to save, and a
+        # person has not said which parts change - Learn is how they do.
+        write_final_reply(text + f" (Done from your recording of \"{run['mimic']['text']}\". Teach it with Learn "
+                                 "and I will also know which parts change.)", kind="final", engine=SKILL_ENGINE)
+        return
 
     if run["patches"]:
         for patch in run["patches"]:
@@ -657,6 +832,17 @@ def _stuck_reply(paused, reply):
             run["start"] = step_n
             return _execute(run)
 
+        reopen = paused.get("reopen")
+        if reopen and RESTART_RE.match(reply):
+            progress.emit(f"Closing {el._quote(reopen['window'], 60)} to open it fresh")
+            if not launchers.close(reopen["window"], replay.title_matches):
+                return _ask_stuck(run, {"step": step_n, "resume_from": paused["resume_from"], "text": paused["why"],
+                                        "options": paused.get("options"), "trail": paused.get("trail")},
+                                  f"{el._quote(reopen['window'], 60)} did not close (it may be asking something - "
+                                  "look at the screen).")
+            run["start"] = reopen["step"]
+            return _execute(run)
+
         # A number picks one of the candidates the desktop offered.
         number = NUMBER_RE.match(reply)
         if number:
@@ -664,6 +850,10 @@ def _stuck_reply(paused, reply):
             if option and _retarget(run, step_n, option["name"], role=option["role"]):
                 run["start"] = step_n
                 return _execute(run)
+
+        if ANYWAY_RE.match(reply) and _unanchor(run, step_n):
+            run["start"] = step_n
+            return _execute(run)
 
         hint = USE_RE.match(reply)
         if hint and _retarget(run, step_n, hint.group(1)):
@@ -679,6 +869,34 @@ def _stuck_reply(paused, reply):
     _settle(run, "halted")
     write_final_reply(f"I could not tell what to do at step {step_n} and would rather not guess, so I stopped there. "
                       "Nothing after it was done.", kind="error", engine=SKILL_ENGINE)
+
+
+def _unanchorable(step, result):
+    """Whether a halted step is a point click that stopped only because its picture did not match."""
+
+    return bool(step.get("point") and step.get("look") and replay.LOOK_MISSING in (result.get("text") or ""))
+
+
+def _unanchor(run, step_n):
+    """
+    Let a point click go without its picture check, for the rest of this run:
+    True when step `step_n` is one. The person looked at the screen and said the
+    spot is right - a focus ring, an open drop-down or a hover state is enough
+    to make the picture differ. Never written back into the skill.
+    """
+
+    steps = (run.get("expanded") or {}).get("steps") or []
+    if not 1 <= step_n <= len(steps):
+        return False
+
+    step = steps[step_n - 1]
+    if not step.get("point"):
+        return False
+
+    run.setdefault("unanchored", [])
+    if step.get("id") not in run["unanchored"]:
+        run["unanchored"].append(step.get("id"))
+    return True
 
 
 def _retarget(run, step_n, wanted, role=None):

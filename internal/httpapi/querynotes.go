@@ -48,6 +48,13 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		// about, such as a finished recording, which the desktop card lists.
 		Quiet bool `json:"quiet"`
 
+		// Interrupted marks the report a restarted agent makes about the task
+		// its previous process never finished (the desktop's X session ended
+		// and the container came back on its own). It is recorded only while
+		// that task is still open: a restart through the API closed it already
+		// and said so.
+		Interrupted bool `json:"interrupted"`
+
 		// What the task records need from the end of a turn: which task it
 		// was, and what the desktop knows about the model and the spend so
 		// far. All optional, and absent from older images.
@@ -98,6 +105,17 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	desktopID := desktop.SanitizeID(req.DesktopID)
+
+	if req.Interrupted {
+		open, err := s.Tasks.IsOpen(desktopID, reportedTaskID(req.TaskID))
+		if err != nil {
+			log.Printf("querytext from %s: %v", desktopID, err)
+		}
+		if !open {
+			jsonResponse(w, map[string]string{"status": "already closed"})
+			return
+		}
+	}
 
 	// The kind is what lets a later reply resolve this note: only a query or
 	// an approval is answered by one.
@@ -156,7 +174,7 @@ func outcomeKindFor(reported, chatKind string) string {
 	}
 
 	switch chatKind {
-	case conversation.KindApproval:
+	case conversation.KindApproval, conversation.KindQuery:
 		return tasks.OutcomeQuery
 	case conversation.KindError:
 		return tasks.OutcomeError
@@ -181,15 +199,35 @@ func nonNegativeInt(value *int64) *int64 {
 	return value
 }
 
+// queryNoteView is a note as the rail and the Queries page show it: the
+// stored note, plus the two parts of it a person reads - the task it is about
+// and what the agent said. The note itself opens with "DECURIX QUERY REQUEST /
+// Desktop: / Desktop ID:" boilerplate, which is all a card showed of it.
+type queryNoteView struct {
+	querynotes.QueryNote
+	Task    string `json:"task,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// viewQueryNotes adds each note's task and message, read out of its text so
+// notes stored before either was sent separately read the same way.
+func viewQueryNotes(notes []querynotes.QueryNote) []queryNoteView {
+	views := make([]queryNoteView, 0, len(notes))
+	for _, note := range notes {
+		views = append(views, queryNoteView{QueryNote: note, Task: note.Task(), Message: note.Message()})
+	}
+	return views
+}
+
 // queryNotesHandler returns the query notes still open as JSON.
 func (s *Server) queryNotesHandler(w http.ResponseWriter, r *http.Request) {
-	jsonResponse(w, s.QueryNotes.List())
+	jsonResponse(w, viewQueryNotes(s.QueryNotes.List()))
 }
 
 // resolvedQueryNotesHandler returns the resolved query notes as JSON, most
 // recently resolved first - the Queries page's history.
 func (s *Server) resolvedQueryNotesHandler(w http.ResponseWriter, r *http.Request) {
-	jsonResponse(w, s.QueryNotes.ListResolved())
+	jsonResponse(w, viewQueryNotes(s.QueryNotes.ListResolved()))
 }
 
 // closeQueryNoteHandler resolves a query note by ID; it stays in the history.

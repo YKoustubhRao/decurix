@@ -1,8 +1,10 @@
+import json
 import os
 import re
 import threading
+import time
 
-from decurix_agent import state
+from decurix_agent import config, state
 
 
 # ============================================================
@@ -88,6 +90,61 @@ def start(task_id, request=None):
                 # Only the out-of-process reporters lose it, and the control
                 # plane still attributes their steps to the live task.
                 pass
+
+
+# The task this desktop has taken on and not yet finished, kept on the
+# persistent volume (CURRENT_FILE is in /tmp, which a restart empties). A
+# desktop whose X session ended restarts its container on its own; the agent
+# that comes back has no memory of the task, and the control plane - which
+# only closes tasks on a restart it was asked for - kept showing it as running
+# ("Working..." for good) and routed the next message as a reply to a question
+# nobody was waiting on any more. The agent that starts reads this back and
+# reports the task as interrupted (watchers._report_interrupted).
+def _active_path():
+    return config.DECURIX_DIR / "active-task.json"
+
+
+def mark_active(task_id, request=None):
+    """Remember that task_id has been started and not finished."""
+
+    if not valid(task_id):
+        clear_active()
+        return
+
+    try:
+        path = _active_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"task_id": task_id, "request": str(request or "")[:500], "since": time.time()}),
+                       encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        pass
+
+
+def clear_active():
+    """The task this desktop was working on is over."""
+
+    try:
+        _active_path().unlink()
+    except OSError:
+        pass
+
+
+def take_interrupted():
+    """The task a previous life of this agent started and never finished ({task_id, request}), forgotten once read."""
+
+    path = _active_path()
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    finally:
+        clear_active()
+
+    if not isinstance(record, dict) or not valid(record.get("task_id")):
+        return None
+    return record
 
 
 def current_request():

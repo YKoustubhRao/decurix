@@ -6,6 +6,7 @@ made elsewhere, and the readiness (lint) that comes with every recording.
 """
 
 import json
+import http.client
 import tempfile
 import threading
 import unittest
@@ -64,6 +65,16 @@ class RecordingsAPI(unittest.TestCase):
     def test_the_file_may_arrive_as_text_the_way_the_control_plane_sends_it(self):
         status, body = self.call("/recordings/import", {"data": json.dumps(LOGIN)})
         self.assertEqual(status, 200, body)
+
+    def test_negative_content_length_is_rejected_without_reading(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=2)
+        try:
+            conn.request("POST", "/recordings/import", headers={"Content-Length": "-1"})
+            response = conn.getresponse()
+            self.assertEqual(response.status, 400)
+            self.assertIn("invalid content length", response.read().decode())
+        finally:
+            conn.close()
 
     def test_a_file_that_is_not_a_recording_is_a_400_with_words_for_a_person(self):
         for data in ("not json", [1, 2], {"steps": []}, {"nothing": "here"}):
