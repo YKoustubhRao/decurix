@@ -407,7 +407,7 @@ func main() {
 	}
 
 	if idleThreshold > 0 {
-		log.Printf("Idle-pause: %sing desktops idle past %s. Set DECURIX_IDLE_STOP_MINUTES=0 to disable.", idleAction, idleThreshold)
+		log.Printf("Idle-pause: will %s desktops idle past %s. Set DECURIX_IDLE_STOP_MINUTES=0 to disable.", idleAction, idleThreshold)
 	} else {
 		log.Println("Idle-pause: disabled (DECURIX_IDLE_STOP_MINUTES=0).")
 	}

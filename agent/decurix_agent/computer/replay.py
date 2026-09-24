@@ -411,6 +411,8 @@ def _summary(step):
     if kind == "open":
         return f"open {step.get('open')}"
     if kind == "manual":
+        if step.get("by_hand"):
+            return f"you do this by hand: {step['by_hand']}"
         return f"a private step done by hand ({step.get('reason')})"
     if kind == "scroll":
         return f"scroll {step.get('direction', 'down')}" + (f" on {what}" if what else "")
@@ -999,8 +1001,10 @@ def _summary_text(program, result, step):
         return f"Replayed {name}: {ran}, and every step's expected result was on the screen.{repairs}{used}"
 
     if outcome == COMPLETED_UNVERIFIED:
-        return (f"Replayed {name}: {ran}. {result['verified']} were confirmed on the screen; "
-                f"{result['unverified']} left nothing a replay can check, so look at the result before relying on it.{repairs}")
+        verified, unverified = result["verified"], result["unverified"]
+        confirmed = f"{verified} {'was' if verified == 1 else 'were'} confirmed on the screen"
+        return (f"Replayed {name}: {ran}. {confirmed}; {unverified} left nothing a replay can check, "
+                f"so look at the result before relying on it.{repairs}")
 
     if outcome == HALTED_BEFORE_EFFECT:
         return f"Did not replay {name}: stopped at {where} before doing anything, because {result['reason']}.{evidence}"

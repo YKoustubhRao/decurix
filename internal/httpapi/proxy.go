@@ -40,6 +40,16 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	isWebSocket := strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
+
+	// The screen itself is the control plane's page (screen.go); everything
+	// under it - the WebSocket, and noVNC's own vnc.html for anyone who wants
+	// it - is still the desktop's, proxied below.
+	if (len(parts) == 1 || parts[1] == "") && !isWebSocket && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+		s.screenViewerHandler(w, r, parts[0])
+		return
+	}
+
 	proxyURL, desktopID, err := s.Desktops.ProxyTarget(r.Context(), parts[0])
 
 	if err != nil {
@@ -138,6 +148,12 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 			"desktop unavailable",
 			http.StatusBadGateway,
 		)
+	}
+
+	if isWebSocket {
+		done := make(chan struct{})
+		defer close(done)
+		go s.keepScreenViewed(desktopID, done)
 	}
 
 	reverseProxy.ServeHTTP(w, r)
@@ -1034,9 +1050,10 @@ const autoConnectHelper = `
 (function(){
   "use strict";
   function autoFillAndConnect(){
+    // noVNC 1.6 calls the dialog noVNC_credentials_*; older ones noVNC_password_*.
     var pwdInput = document.getElementById('noVNC_password_input');
-    var pwdDlg = document.getElementById('noVNC_password_dlg');
-    var pwdBtn = document.getElementById('noVNC_password_button');
+    var pwdDlg = document.getElementById('noVNC_credentials_dlg') || document.getElementById('noVNC_password_dlg');
+    var pwdBtn = document.getElementById('noVNC_credentials_button') || document.getElementById('noVNC_password_button');
     if (pwdDlg && pwdDlg.classList.contains('noVNC_open') && pwdInput && pwdBtn) {
       if (!pwdInput.value) {
         pwdInput.value = "admin";

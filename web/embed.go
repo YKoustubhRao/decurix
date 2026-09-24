@@ -17,3 +17,11 @@ var TemplatesFS embed.FS
 //
 //go:embed favicon.svg
 var FaviconSVG []byte
+
+// NoVNC is noVNC's RFB client bundled into one ES module (see
+// web/novnc/README.md): what the desktop screen viewer runs. Served by the
+// control plane itself, so a desktop's screen no longer loads noVNC's page
+// file by file from the desktop.
+//
+//go:embed novnc/rfb.js
+var NoVNC []byte

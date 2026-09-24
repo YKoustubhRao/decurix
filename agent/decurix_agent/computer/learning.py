@@ -1,5 +1,6 @@
 import copy
 import difflib
+import math
 import re
 import time
 
@@ -121,8 +122,12 @@ def build(sources, name=None):
     """
 
     programs = []
+    tidied = []
     for meta, events in sources:
         program = replay.compile_program(meta, events)
+        for note in _tidy(program, events):
+            if note not in tidied:
+                tidied.append(note)
         if program["steps"]:
             programs.append((meta, events, program))
 
@@ -170,11 +175,154 @@ def build(sources, name=None):
         "steps": steps,
         "loops": loops,
         "learned": [],
+        "tidied": tidied,
         "answers": {},
         "unclear": {},
     }
 
     return skills.renumber(skill)
+
+
+# How close together presses on one spot must be to count as one attempt to
+# do one thing. Measured on a real demonstration: opening an app from a desktop
+# icon on a 1-vCPU desktop was recorded as click, an 11 px "drag", double
+# click, click, click - 10 s of a person waiting for a slow launch - and the
+# app opened three times.
+REPEAT_PIXELS = 16
+REPEAT_SECONDS = 4.0
+# How far apart two runs of typing into the same field can be and still be one
+# piece of text the recorder happened to split ("fl" + "amingo breeding season").
+SPLIT_TYPING_SECONDS = 10.0
+PRESSES = {"click", "double_click", "drag"}
+
+
+def _when(step, events):
+    i = step.get("event")
+    if isinstance(i, int) and 0 <= i < len(events):
+        return events[i].get("t")
+    return None
+
+
+def _target_key(step):
+    target = step.get("target") or {}
+    return (target.get("role"), replay._norm(target.get("name")), tuple(target.get("path") or ()))
+
+
+def _press_point(step):
+    """Where a press landed, or None when it was not one: a drag counts only when it barely moved."""
+
+    point = step.get("point")
+    if step["kind"] == "drag":
+        end = step.get("end")
+        if not point or not end or math.hypot(end[0] - point[0], end[1] - point[1]) > REPEAT_PIXELS:
+            return None
+    return point
+
+
+def _same_spot(a, b):
+    if _target_key(a) != _target_key(b) or (a.get("window") or "") != (b.get("window") or ""):
+        return False
+    pa, pb = _press_point(a), _press_point(b)
+    if pa is not None and pb is not None:
+        return math.hypot(pa[0] - pb[0], pa[1] - pb[1]) <= REPEAT_PIXELS
+    # Presses on one named control recorded without a position (a drag that
+    # really moved is never one).
+    return bool(a.get("target")) and "drag" not in (a["kind"], b["kind"])
+
+
+def _repeated_presses(steps, events, start):
+    """How many steps from `start` are one burst of presses on one spot that opens something (see _tidy)."""
+
+    end = start + 1
+    while end < len(steps):
+        prev, step = steps[end - 1], steps[end]
+        t0, t1 = _when(prev, events), _when(step, events)
+        # A press whose own result showed is its own step - except a drag that
+        # barely moved, whose only result is a nudged icon (XFCE moves a
+        # desktop icon on an 11 px drag).
+        had_result = bool(prev.get("expect")) and not (prev["kind"] == "drag" and _press_point(prev))
+        if (step["kind"] not in PRESSES or not _same_spot(steps[start], step) or had_result
+                or t0 is None or t1 is None or t1 - t0 > REPEAT_SECONDS):
+            break
+        end += 1
+
+    burst = steps[start:end]
+    if (len(burst) < 2 or burst[0]["kind"] not in PRESSES or not any(s["kind"] == "double_click" for s in burst)
+            or any(s.get("consequential") for s in burst)):
+        return 1
+    return len(burst)
+
+
+def _tidy(program, events):
+    """
+    Take the noise a person makes out of a program, in place, before anything
+    is asked about it; returns what was changed, in words. The recording
+    itself is untouched (a /replay still does exactly what was recorded).
+
+    - A burst of presses on one spot around a double-click - clicks, a press
+      that barely moved, more clicks while a slow app starts - is one attempt
+      to open that thing: it becomes that double-click, expecting what the
+      last press produced. Replaying every press opened the app three times.
+      Only a burst with a double-click in it: two single clicks on one spot
+      can be meant (a counter, a toggle), a double-click already opens.
+    - Two runs of typing into the same field, one straight after the other,
+      are one piece of text the recorder split: "fl" and "amingo breeding
+      season" would otherwise be asked about as two values. Never for a
+      secret.
+    """
+
+    steps = program["steps"]
+    params = {p["name"]: p for p in program["params"]}
+    notes = []
+    tidy = []
+    i = 0
+
+    while i < len(steps):
+        length = _repeated_presses(steps, events, i)
+        if length > 1:
+            burst = steps[i:i + length]
+            # The double-click is what opened it: its position, and the picture
+            # of the screen just before it (what a replay looks for), stand for
+            # the burst.
+            one = copy.deepcopy(next(s for s in burst if s["kind"] == "double_click"))
+            one.pop("end", None)
+            one["expect"] = copy.deepcopy(burst[-1].get("expect") or [])
+            one["summary"] = replay._summary(one)
+            tidy.append(one)
+            notes.append(f"{length} quick presses on the same spot ({', '.join(s['kind'].replace('_', ' ') for s in burst)}) "
+                         "became one double click")
+            i += length
+            continue
+        tidy.append(steps[i])
+        i += 1
+
+    joined = []
+    for step in tidy:
+        prev = joined[-1] if joined else None
+        if (prev and prev["kind"] == "type" and step["kind"] == "type" and not prev.get("expect")
+                and _target_key(prev) == _target_key(step) and (prev.get("window") or "") == (step.get("window") or "")):
+            first, second = params.get(prev.get("param")), params.get(step.get("param"))
+            t0, t1 = _when(prev, events), _when(step, events)
+            if (first and second and not first.get("secret") and not second.get("secret")
+                    and first.get("default") is not None and second.get("default") is not None
+                    and t0 is not None and t1 is not None and t1 - t0 <= SPLIT_TYPING_SECONDS):
+                notes.append(f"typing split in two ({el._quote(first['default'], 30)} + {el._quote(second['default'], 30)}) "
+                             "became one")
+                first["default"] = first["default"] + second["default"]
+                prev["expect"] = copy.deepcopy(step.get("expect") or [])
+                params.pop(second["name"], None)
+                continue
+        joined.append(step)
+
+    if notes:
+        for n, step in enumerate(joined, 1):
+            step["n"] = n
+            if step.get("param") in params:
+                params[step["param"]]["step"] = n
+        program["steps"] = joined
+        program["params"] = [p for p in program["params"] if p["name"] in params]
+
+    return notes
 
 
 def _annotate(program):
@@ -537,6 +685,17 @@ def questions(skill):
     in_loop = {step_id for loop in undecided for block in loop["blocks"] for step_id in block}
     loop_at = {loop["blocks"][0][0]: loop for loop in undecided}
 
+    # Every click recorded only as a position is asked about in one question,
+    # where the first of them would have been: one at a time, a recording of
+    # an app shown as a picture (a host app, a canvas) asked the same thing
+    # six times in a row. An answer is still kept per step, so a lesson taught
+    # before this, half answered, asks only about the rest.
+    positional = [step for step in skill["steps"]
+                  if step["id"] not in in_loop and step["kind"] in replay.REPLAYABLE and step["kind"] in CLICKS
+                  and not step.get("target") and step.get("point")
+                  and f"coordinates:{step['id']}" not in skill["answers"]]
+    first_positional = positional[0]["id"] if positional else None
+
     for step in skill["steps"]:
         if step["id"] in loop_at:
             found.append(_loop(skill, loop_at[step["id"]]))
@@ -552,8 +711,8 @@ def questions(skill):
 
         if step["kind"] not in replay.REPLAYABLE:
             found.append(_unsupported(step))
-        elif step["kind"] in CLICKS and not step.get("target") and step.get("point"):
-            found.append(_coordinates(step))
+        elif step["id"] == first_positional:
+            found.append(_coordinates(positional))
 
     found.append(_confirm(skill))
     return found
@@ -579,6 +738,10 @@ def _goal(skill):
     notes = _notes_text(skill)
     if notes:
         parts.append(notes)
+
+    tidied = skill.get("tidied") or []
+    if tidied:
+        parts.append("I tidied what you did: " + "; ".join(tidied) + ". The recording itself is unchanged.")
 
     learned = [p for p in skill["params"] if p["varies"]]
     if learned:
@@ -634,11 +797,80 @@ def _optional(skill, step):
     return _question(f"optional:{step['id']}", "optional", text, step["id"])
 
 
-def _coordinates(step):
-    text = (f"Step {step['n']} ({step['summary']}) was recorded as a click at a spot on the screen with no named "
-            "control, which only works if the window is exactly where it was. Reply `keep` to try it as recorded, "
-            "`skip` to leave it out, or `manual` to have me stop and let you do it.")
-    return _question(f"coordinates:{step['id']}", "coordinates", text, step["id"])
+def _coordinates(steps):
+    """One question for every step recorded only as a position on the screen."""
+
+    if len(steps) == 1:
+        step = steps[0]
+        text = (f"Step {step['n']} ({step['summary']}) was recorded as a click at a spot on the screen with no named "
+                "control, which only works if the window is exactly where it was. Reply `keep` to try it as recorded, "
+                "`skip` to leave it out, or `manual` to have me stop and let you do it.")
+        return _question(f"coordinates:{step['id']}", "coordinates", text, step["id"])
+
+    listed = "; ".join(f"{s['n']}. {s['summary']}" for s in steps)
+    text = (f"{len(steps)} steps were recorded as clicks at spots on the screen with no named control under them "
+            f"({listed}). I look for what was under each click before clicking, but they only work if the windows "
+            "are laid out as they were. Reply `keep` to try them all as recorded, `manual` to have me stop at each "
+            f"and let you do it, or name the exceptions - for example `skip {steps[-1]['n']}` or "
+            f"`manual {steps[0]['n']}, skip {steps[-1]['n']}` (the rest are kept).")
+    question = _question("coordinates:" + "+".join(s["id"] for s in steps), "coordinates", text)
+    question["steps"] = [{"id": s["id"], "n": s["n"]} for s in steps]
+    return question
+
+
+def _step_numbers(text):
+    """The step numbers a clause names: `2`, `2 4`, `2-4`, `2 to 4`."""
+
+    numbers = []
+    for low, high in re.findall(r"(\d+)(?:\s*(?:-|–|to)\s*(\d+))?", text):
+        low = int(low)
+        high = int(high) if high else low
+        if high < low or high - low > 200:
+            return None
+        numbers.extend(range(low, high + 1))
+    return numbers
+
+
+def _coordinate_choices(question, text):
+    """
+    What a reply to the grouped positional question decides for each step:
+    {step id: keep|skip|manual}, or None when it cannot be read. A verb with
+    no numbers is the choice for every step not named otherwise; a verb with
+    numbers is the choice for those; bare numbers carry the verb before them
+    ("skip 2 and 4"). Anything not named is kept.
+    """
+
+    by_number = {s["n"]: s["id"] for s in question["steps"]}
+    everything, named, last = None, {}, None
+
+    for clause in re.split(r"[;,\n]|\band\b|\bbut\b|\bexcept\b", text):
+        if not clause.strip():
+            continue
+        choice = _choose("coordinates", clause)
+        numbers = _step_numbers(clause)
+        if numbers is None:
+            return None
+
+        if choice is None:
+            if not numbers or last is None:
+                continue
+            choice = last
+
+        if numbers:
+            for n in numbers:
+                if n not in by_number or named.get(by_number[n], choice) != choice:
+                    return None
+                named[by_number[n]] = choice
+            last = choice
+        elif everything not in (None, choice):
+            return None
+        else:
+            everything = choice
+
+    if everything is None and not named:
+        return None
+
+    return {step_id: named.get(step_id, everything or "keep") for step_id in by_number.values()}
 
 
 def _unsupported(step):
@@ -701,6 +933,9 @@ def answer(skill, question, reply):
         skill["done_when"] = None if NOTHING.match(text) else text[:300]
         skill["answers"][qid] = text[:300]
         return {"understood": True, "note": "", "decision": None}
+
+    if question.get("steps"):
+        return _answer_positional(skill, question, text)
 
     # Anything but a yes or a no is the name to save it as; a reply with
     # nothing to name it by is unclear, like any other.
@@ -780,6 +1015,57 @@ def _apply_loop(skill, loop, choice):
     loop["blocks"] = [first]
 
 
+def _apply_step_choice(skill, step, choice):
+    """keep, skip or manual for one step; the caller renumbers."""
+
+    if choice == "skip":
+        skill["steps"].remove(step)
+    elif choice == "manual":
+        what = step["summary"]
+        step["kind"] = "manual"
+        step["reason"] = f"a person does this one ({what})"
+        step["by_hand"] = what
+        step["summary"] = replay._summary(step)
+        step["expect"] = []
+        step["consequential"] = False
+
+
+def _answer_positional(skill, question, text):
+    """The reply to the grouped positional question (see _coordinate_choices), applied to each step it covers."""
+
+    qid = question["id"]
+    choices = _coordinate_choices(question, text)
+    note = ""
+
+    if choices is None:
+        tries = skill["unclear"][qid] = skill["unclear"].get(qid, 0) + 1
+        if tries < MAX_UNCLEAR:
+            return {"understood": False, "note": "I did not catch that - reply `keep`, `manual`, or for example "
+                    f"`skip {question['steps'][-1]['n']}`.", "decision": None}
+        choices = {s["id"]: question["default"] for s in question["steps"]}
+        note = "I could not tell what you meant, so I will stop at each of those and let you do it."
+        text = f"(assumed {question['default']})"
+
+    numbers = {s["id"]: s["n"] for s in question["steps"]}
+    by_choice = {}
+    for step_id, choice in choices.items():
+        step = _step_by_id(skill, step_id)
+        if step is None:
+            continue
+        _apply_step_choice(skill, step, choice)
+        skill["answers"][f"coordinates:{step_id}"] = choice
+        by_choice.setdefault(choice, []).append(str(numbers[step_id]))
+
+    skills.renumber(skill)
+    skill["answers"][qid] = text[:300]
+
+    if not note and len(by_choice) > 1:
+        words = {"keep": "keeping", "skip": "leaving out", "manual": "stopping for you at"}
+        note = "Got it: " + "; ".join(f"{words[c]} {', '.join(ns)}" for c, ns in by_choice.items()) + "."
+
+    return {"understood": True, "note": note, "decision": None}
+
+
 def _apply(skill, question, choice):
     kind = question["kind"]
     step = _step_by_id(skill, question["step"]) if question["step"] else None
@@ -803,16 +1089,8 @@ def _apply(skill, question, choice):
         step["summary"] = replay._summary(step)
 
     elif kind in ("coordinates", "unsupported"):
-        if choice == "skip":
-            skill["steps"].remove(step)
-            skills.renumber(skill)
-        elif choice == "manual":
-            what = step["summary"]
-            step["kind"] = "manual"
-            step["reason"] = f"a person does this one ({what})"
-            step["summary"] = replay._summary(step)
-            step["expect"] = []
-            step["consequential"] = False
+        _apply_step_choice(skill, step, choice)
+        skills.renumber(skill)
 
     elif kind == "confirm":
         if choice == "yes":
