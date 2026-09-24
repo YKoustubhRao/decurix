@@ -3,7 +3,8 @@ import threading
 import traceback
 
 from decurix_agent import progress, state, usage
-from decurix_agent.computer import approval, constraints, core, escalation, experience, learning, mimic, recording, replay, skills
+from decurix_agent.computer import (approval, constraints, core, escalation, experience, launchers, learning, mimic,
+                                    recording, replay, skills)
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 from decurix_agent.logging_utils import log
@@ -54,6 +55,10 @@ NUMBER_RE = re.compile(r"^\W*(?:option\s*|number\s*|#)?(\d{1,2})\W*$", re.IGNORE
 # "click anyway", "click it", "click there". Only offered, and only read, for a
 # click recorded as a point whose picture did not match (see _unanchor).
 ANYWAY_RE = re.compile(r"^\W*(click\s+(it\s+)?anyway|click\s+(it|there)|anyway)\W*$", re.IGNORECASE)
+# Close the app a step found already open, and open it fresh (see replay's
+# "reopen"). Only offered, and only read, when that is what stopped the run.
+RESTART_RE = re.compile(r"^\W*(restart|re-?open|re-?start|open it (?:again|fresh)|start it (?:again|fresh)|close it and (?:re-?)?open it)\b",
+                        re.IGNORECASE)
 USE_RE = re.compile(r"^\W*(?:use|try|click|press|select|choose)\b\s*(.+?)\s*$", re.IGNORECASE | re.DOTALL)
 
 MAX_STUCK_ASKS = 3
@@ -671,8 +676,29 @@ def _ask_stuck(run, result, preface="", unclear=0):
     found = result.get("options") or []
     step = run["expanded"]["steps"][result["step"] - 1]
 
+    reopen = None if ran else result.get("reopen")
+
     if ran:
         choices = "Reply `continue` if the screen looks right and I should carry on, or `stop`."
+    elif reopen:
+        # Found live: the app the recording opened fresh was already open, on
+        # another page, and every picture of its start page missed.
+        how = ("was already open" if reopen.get("already")
+               else f"opened at step {reopen['step']} where it was last left (it keeps running between uses)")
+        choices = (f"{el._quote(reopen['window'], 60)} {how}, showing something else than when you recorded this, "
+                   "where it had just been opened fresh. Reply `restart` to close it and open it fresh (whatever is "
+                   "open in it now is closed), `retry` to look again, `skip` to leave this step out, or `stop`.")
+    elif _unanchorable(step, result) and result.get("after_change"):
+        # Found live: a skill recorded clicking a search's first result, run
+        # for another search whose page opened with a large overview - the
+        # first result was below the fold. Scrolling and taking the first
+        # thing that looks alike was tried on the real page: it matched a link
+        # inside the overview first. Which result is "the first" is a
+        # person's call; doing that one click and carrying on is one word.
+        choices = ("This run typed something else than the recording, and the page it led to is laid out "
+                   "differently - nothing like what you clicked then is where it was. If it is further down or "
+                   "elsewhere, click it yourself on the screen and reply `done` to carry on; or `click anyway` to "
+                   "click the recorded spot, `retry`, `skip` or `stop`.")
     elif _unanchorable(step, result):
         choices = ("Look at the screen: if the spot I would click is the right one, reply `click anyway`. Otherwise "
                    "`retry` to look again, `skip` to leave this step out, or `stop`.")
@@ -698,7 +724,7 @@ def _ask_stuck(run, result, preface="", unclear=0):
 
     _pause(run, "stuck", f"{preface} {result['text']}{detail} {choices}".strip(), step=result["step"],
            resume_from=result["resume_from"], ran=ran, why=result["text"], unclear=unclear, options=found,
-           trail=result.get("trail") or [])
+           trail=result.get("trail") or [], reopen=reopen)
 
 
 def _finish(run, result):
@@ -804,6 +830,17 @@ def _stuck_reply(paused, reply):
     if not ran:
         if RETRY_RE.match(reply):
             run["start"] = step_n
+            return _execute(run)
+
+        reopen = paused.get("reopen")
+        if reopen and RESTART_RE.match(reply):
+            progress.emit(f"Closing {el._quote(reopen['window'], 60)} to open it fresh")
+            if not launchers.close(reopen["window"], replay.title_matches):
+                return _ask_stuck(run, {"step": step_n, "resume_from": paused["resume_from"], "text": paused["why"],
+                                        "options": paused.get("options"), "trail": paused.get("trail")},
+                                  f"{el._quote(reopen['window'], 60)} did not close (it may be asking something - "
+                                  "look at the screen).")
+            run["start"] = reopen["step"]
             return _execute(run)
 
         # A number picks one of the candidates the desktop offered.

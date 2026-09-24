@@ -1,3 +1,4 @@
+import math
 import os
 import re
 import time
@@ -5,7 +6,7 @@ import urllib.parse
 from datetime import date
 
 from decurix_agent import progress
-from decurix_agent.computer import approval, audit, constraints, core, privacy, recording, screen, visual, volatility
+from decurix_agent.computer import approval, audit, constraints, core, launchers, privacy, recording, screen, visual, volatility
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 from decurix_agent.logging_utils import log
@@ -604,10 +605,10 @@ def resolve(step, observation):
     if point:
         size = observation.get("size")
         if step.get("screen") and size and list(step["screen"]) != list(size):
-            return None, None, "the step was recorded as a point on a screen of a different size"
+            return None, None, OTHER_SIZE
         window = _stable_title(step.get("window"))
         if window and not title_matches(window, observation.get("active_title") or ""):
-            return None, None, f"the step was recorded as a point in {el._quote(window, 60)}, which is not in front"
+            return None, None, f"{NOT_IN_FRONT} {el._quote(window, 60)}, which is not in front"
 
         if step.get("look") and observation.get("frame") is not None:
             seen = visual.find(step["look"], observation["frame"])
@@ -626,7 +627,7 @@ def resolve(step, observation):
     return None, None, "the recording has nothing to find this step's target by"
 
 
-def _find(step, ladder=None):
+def _find(step, ladder=None, report=None):
     """
     Look until the step's target is on the screen, for up to FIND_SECONDS:
     (element, point, observation, repair). With a ladder, a target that never
@@ -636,6 +637,8 @@ def _find(step, ladder=None):
 
     deadline = time.monotonic() + FIND_SECONDS
     last_kin = None
+    refitted = False
+    brought = False
 
     while True:
         observation = core.observe()
@@ -643,6 +646,31 @@ def _find(step, ladder=None):
 
         if element is not None or point is not None:
             return element, point, observation, None
+
+        # The screen was put back to the recorded size before the run, and a
+        # viewer that reconnected since resized it to its browser again: fit
+        # it once more rather than halt on a size the run can simply set.
+        if reason == OTHER_SIZE and not refitted:
+            refitted = True
+            try:
+                if screen.set_size(*step["screen"]):
+                    time.sleep(1)
+                    continue
+            except Exception as exc:
+                log(f"Could not set the screen size: {exc}")
+
+        # Recorded in a window that is not in front - behind another, or not
+        # open because the step that opened it was skipped: raise it, or open
+        # it from the launcher that makes it, once. Found live: `skip` on the
+        # double click that opened "Koustubh - Chrome" stopped the very next
+        # step for the window not being there.
+        if reason.startswith(NOT_IN_FRONT) and not brought:
+            brought = True
+            window = _stable_title(step.get("window"))
+            done = launchers.bring_forward(window, title_matches) if window else None
+            if done:
+                (report or progress.emit)(f"Step {step['n']}: {done}")
+                continue
 
         # What was clicked reads differently because this run typed something
         # else (the first result of another search): the same kind of thing in
@@ -672,6 +700,51 @@ def _find(step, ladder=None):
         time.sleep(POLL_SECONDS)
 
 
+def _on_desktop(step):
+    """Whether a step was recorded as a point on the bare desktop, with no app window in front."""
+
+    return bool(step.get("point")) and not step.get("target") and not _stable_title(step.get("window"))
+
+
+def _desktop_nudge(step):
+    point, end = step.get("point"), step.get("end")
+    return (step["kind"] == "drag" and _on_desktop(step) and end is not None
+            and math.hypot(end[0] - point[0], end[1] - point[1]) <= DESKTOP_NUDGE_PIXELS)
+
+
+def _opened_window(step):
+    """The window a step was recorded opening, from its expected result, or None."""
+
+    for check in step.get("expect") or []:
+        if check.get("type") in ("window", "active_window") and check.get("value") and "{" not in check["value"]:
+            return check["value"]
+    return None
+
+
+def _open_desktop_icon(step):
+    """
+    A click or double click on a desktop icon that opened a window is done by
+    opening that window's launcher (computer/launchers.py), not by the picture
+    of the icon: (a sentence saying so, whether the window was open already),
+    or None when there is no launcher that opens it (then the click is
+    replayed as recorded).
+    """
+
+    if step["kind"] not in ("click", "double_click") or not _on_desktop(step) or step.get("consequential"):
+        return None
+
+    window = _opened_window(step)
+    if not window or launchers.for_window(window) is None and launchers.find_window(window, title_matches) is None:
+        return None
+
+    already = launchers.find_window(window, title_matches) is not None
+    done = launchers.bring_forward(window, title_matches)
+    if done is None:
+        raise _Halt(f"the icon opens {el._quote(window, 60)}, and opening it from its launcher showed no such "
+                    f"window within {launchers.LAUNCH_SECONDS} seconds")
+    return done, already
+
+
 def _run_step(step, values, ladder=None, report=None):
     kind = step["kind"]
 
@@ -686,6 +759,22 @@ def _run_step(step, values, ladder=None, report=None):
             core.open_target(step["open"], new_tab=step.get("new_tab", False))
             return {"status": "done", "observation": None}
 
+        if _desktop_nudge(step):
+            (report or progress.emit)(f"Step {step['n']}: a small drag on the desktop only nudged an icon - nothing to do")
+            return {"status": "done", "observation": None}
+
+        opened = _open_desktop_icon(step)
+        if opened:
+            done, already = opened
+            (report or progress.emit)(f"Step {step['n']}: {done} rather than clicking its icon")
+            # Already open, it is in whatever state it was left in - not the
+            # fresh one the recording's next steps were made in. So can be one
+            # opened now: a host app keeps running between uses, and its
+            # launcher reconnects to it where it was left. run() says so if a
+            # later step in it cannot find its target.
+            return {"status": "done", "observation": None,
+                    "raised": {"window": _opened_window(step), "already": already}}
+
         target = {}
         if kind in NEEDS_TARGET and not (step.get("target") or step.get("point")):
             # Nothing is clicked on a hope: a step recorded with neither a
@@ -694,7 +783,7 @@ def _run_step(step, values, ladder=None, report=None):
             raise _Halt("the recording has nothing to find this step's target by")
 
         if step.get("target") or step.get("point"):
-            element, point, seen, repair = _find(step, ladder)
+            element, point, seen, repair = _find(step, ladder, report)
             target = {"path": element["path"]} if element is not None else {"point": tuple(point)}
 
             if element is None and seen.get("kin"):
@@ -806,6 +895,16 @@ def _first_change(program, values):
     return min(steps) if steps else None
 
 
+OTHER_SIZE = "the step was recorded as a point on a screen of a different size"
+NOT_IN_FRONT = "the step was recorded as a point in"
+
+# A drag on the bare desktop shorter than this only nudged an icon: XFCE keeps
+# desktop icons on a grid of cells far larger. Found live: a person pressed on
+# an icon, held it 17 s while it moved 16 px, then double-clicked it; replayed,
+# the drag left the icon drawn selected and the double click's picture of it
+# no longer matched.
+DESKTOP_NUDGE_PIXELS = 40
+
 LOOK_MISSING = ("what was around the click when it was recorded is not on the screen "
                 "(it looks different, or has moved too far), so a replay does not click there")
 
@@ -878,7 +977,20 @@ def run(program, params=None, start=1, report=None, ladder=None):
 
     counts = {"done": 0, "verified": 0, "unverified": 0, "skipped": 0}
 
+    # The window an "open this app" step brought up: {"window", "step", "already"}.
+    raised = {}
+    # The first step whose recording typed something this run types otherwise.
+    changed_at = None
+
     def finish(outcome, step=None, reason="", resume_from=None, evidence="", options=None):
+        # A step in a window an earlier step opened (or found open) that then
+        # could not find its target: what is on the screen is probably that
+        # app in another state than the fresh one it was recorded in (a
+        # browser on another page), and opening it fresh is the way back.
+        reopen = None
+        if (raised and step and step["n"] > raised["step"] and outcome in (HALTED, HALTED_BEFORE_EFFECT)
+                and title_matches(raised["window"], _stable_title(step.get("window")) or "")):
+            reopen = dict(raised)
         result = dict(
             counts, outcome=outcome, total=total, step=step["n"] if step else None,
             reason=reason, resume_from=resume_from, evidence=evidence,
@@ -886,6 +998,10 @@ def run(program, params=None, start=1, report=None, ladder=None):
             options=options or [], healed=len(ladder.healed) if ladder else 0,
             judged=len(ladder.judged) if ladder else 0, trail=list(ladder.trail) if ladder else [],
             repairs=ladder.summary() if ladder else "", model_calls=ladder.model_calls if ladder else 0,
+            reopen=reopen,
+            # What this run typed differently came before this step: what it
+            # clicked may be laid out differently (another search's results).
+            after_change=bool(step and changed_at is not None and step["n"] > changed_at),
         )
         result["text"] = _summary_text(program, result, step)
         return result
@@ -944,6 +1060,9 @@ def run(program, params=None, start=1, report=None, ladder=None):
         finally:
             audit.origin = None
 
+        if result.get("raised"):
+            raised.update(result["raised"], step=step["n"])
+
         if result["status"] == "needs_approval":
             text = result["text"]
             if text.startswith(approval.MARKER):
@@ -951,6 +1070,12 @@ def run(program, params=None, start=1, report=None, ladder=None):
             return finish(NEEDS_APPROVAL, step, reason=text, resume_from=step["n"])
 
         counts["done"] += 1
+
+        # A step that worked in the window an earlier step opened: that app is
+        # in a state the recording's steps work in, and opening it fresh is no
+        # longer the way out of a later stop.
+        if raised and step["n"] > raised["step"] and (step.get("point") or step.get("target")):
+            raised.clear()
 
         if not step.get("expect"):
             counts["unverified"] += 1

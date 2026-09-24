@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -77,6 +78,76 @@ why; a human will review it on the Decurix dashboard.
 _written_pause = None
 
 
+# ============================================================
+# What the chat and the desktop's card show while soul works
+#
+# soul's job log is written for whoever debugs soul: `scheduler: "chatgpt
+# \"where is x\"" [general] -> skill=general model=qwen2.5-coder:3b`,
+# `memory: nothing in L1 yet`. Forwarded as it was, that is what the card's
+# "Working on" line and the chat's live box showed a person. Each line is put
+# into words here, or left out when it only describes soul's own plumbing;
+# the raw line is still in soul's job log and in /tmp/decurix-startup.log.
+# ============================================================
+
+# Plumbing: which classifier matched, which model a step went to, memory and
+# skill-library lookups that found nothing, workspace ingestion.
+_INTERNAL_STEP = re.compile(
+    r"^(?:memory: (?:checking L1|nothing in L1)"
+    r"|skill library: (?:checking for|no matching|skipping|match failed)"
+    r"|scheduler: \".*\" \[[\w-]+\] -> skill="
+    r"|scheduler: rerouting to the "
+    r"|Answering directly - no task steps needed"
+    r"|rag(?:-progress)?: |l1: |stored: |failed to store: "
+    r"|could not judge whether this is worth remembering"
+    r"|feedback: (?:found|could not consult)"
+    r"|skill:[\w-]+ -> model replied: "
+    r"|coding-architecture: =+"
+    r"|no skill matched task type)"
+)
+
+_STEP_REWRITES = [
+    (re.compile(r"^skill:[\w-]+ -> \$ (.+)$", re.DOTALL), lambda m: f"Running: {m.group(1)}"),
+    (re.compile(r"^skill:[\w-]+ -> exit 0(?: \u00b7 (.*))?$", re.DOTALL),
+     lambda m: f"Output: {m.group(1)}" if m.group(1) else "The command finished"),
+    (re.compile(r"^skill:[\w-]+ -> exit (\d+)(?: \u00b7 (.*))?$", re.DOTALL),
+     lambda m: f"The command failed (exit {m.group(1)})" + (f": {m.group(2)}" if m.group(2) else "")),
+    (re.compile(r"^skill:general -> this needs a look at the machine.*$"),
+     lambda m: "This needs a look at the machine - working it out command by command"),
+    (re.compile(r"^scheduler: step (\d+)/(\d+) \[[\w-]+\] (.*)$", re.DOTALL),
+     lambda m: f"Step {m.group(1)} of {m.group(2)}: {m.group(3)}"),
+    (re.compile(r"^memory: recalled (\d+) fact\(s\) from L1$"),
+     lambda m: f"Remembering {m.group(1)} thing(s) from earlier conversations"),
+    (re.compile(r"^websearch: querying (\S+) for: (.*)$", re.DOTALL),
+     lambda m: f"Searching {m.group(1)} for: {m.group(2)}"),
+    (re.compile(r"^skill:[\w-]+ -> (.*)$", re.DOTALL), lambda m: m.group(1)),
+    (re.compile(r"^(?:scheduler|atomizer|safety|websearch|feedback|skill library|memory|reasoning|coding-[a-z]+): (.*)$", re.DOTALL),
+     lambda m: m.group(1)),
+]
+
+
+def readable_step(line):
+    """A soul job-log line as a person reads it in the chat, or None to leave it out."""
+
+    text = (line or "").strip().replace('\\"', '"')
+    if not text or _INTERNAL_STEP.match(text):
+        return None
+
+    for pattern, rewrite in _STEP_REWRITES:
+        match = pattern.match(text)
+        if match:
+            text = rewrite(match).strip()
+            break
+
+    return text[:1].upper() + text[1:] if text else None
+
+
+def _emit_step(line):
+    log(f"TheBot: {line}")
+    text = readable_step(line)
+    if text:
+        progress.emit(text)
+
+
 def _post_json(url, payload):
     body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
@@ -131,7 +202,7 @@ def _stream_job(base, job_id):
                 continue
 
             if event.get("type") == "log":
-                progress.emit(event.get("line") or "")
+                _emit_step(event.get("line") or "")
 
             elif event.get("type") == "final":
                 return event.get("job") or {}

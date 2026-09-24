@@ -281,6 +281,23 @@ def repeated_command_nudge(command, result):
 
     output = (result["output"] or "").strip() or "(no output)"
 
+    if result["exit_code"] != 0:
+        # "If that answers the task, reply with DONE" after a failure is an
+        # invitation to answer from memory. Measured on TheBot's operator,
+        # which had the same wording: a Python import failed twice and the
+        # model answered with a header nothing had printed.
+        return f"""
+You have already run this command, and it FAILED with exit code
+{result['exit_code']}:
+
+$ {command}
+
+{output}
+
+It did not produce the answer, so you do not have it yet - do not answer
+from memory. Send a DIFFERENT command with COMMAND.
+""".strip()
+
     return f"""
 You have already run this command, and it finished with exit code
 {result['exit_code']}:

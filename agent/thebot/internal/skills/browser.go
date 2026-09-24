@@ -34,7 +34,11 @@ type BrowserSkill struct {
 	// Timeout bounds one browsing task end to end. Zero means
 	// defaultBrowserTimeout.
 	Timeout time.Duration
-	client  *http.Client
+	// PickupTimeout is how long a request may stay unclaimed before the
+	// skill concludes no extension is listening. Zero means
+	// defaultPickupTimeout.
+	PickupTimeout time.Duration
+	client        *http.Client
 }
 
 func NewBrowser() *BrowserSkill { return &BrowserSkill{client: &http.Client{}} }
@@ -50,6 +54,13 @@ const (
 	defaultBrowserTimeout = 16 * time.Minute
 	browserPollInterval   = 2 * time.Second
 	browserHTTPTimeout    = 10 * time.Second
+	// defaultPickupTimeout bounds how long a request may wait for the
+	// extension to take it at all. The extension's listener asks for work
+	// every few seconds, so a request still "pending" after this means none
+	// is listening - measured live: the desktop's Chromium was started
+	// without the extension, the request sat pending, and the task waited
+	// out the whole 16-minute budget before saying anything.
+	defaultPickupTimeout = 30 * time.Second
 )
 
 func (b *BrowserSkill) Name() string { return "browser" }
@@ -156,6 +167,13 @@ func (b *BrowserSkill) getJSON(ctx context.Context, path string, out any) error 
 	return json.Unmarshal(data, out)
 }
 
+func (b *BrowserSkill) pickupTimeout() time.Duration {
+	if b.PickupTimeout > 0 {
+		return b.PickupTimeout
+	}
+	return defaultPickupTimeout
+}
+
 func (b *BrowserSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	finish := func(output string, verified bool, meta map[string]any) (Result, error) {
 		if meta == nil {
@@ -191,6 +209,7 @@ func (b *BrowserSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	}
 
 	deadline := time.Now().Add(b.timeout())
+	pickup := time.Now().Add(b.pickupTimeout())
 	for time.Now().Before(deadline) {
 		if err := rc.Ctx.Err(); err != nil {
 			// TheBot's own job was cancelled (POST /api/jobs/{id}/cancel,
@@ -208,6 +227,15 @@ func (b *BrowserSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 			for _, r := range status.Requests {
 				if r.ID != submitted.ID {
 					continue
+				}
+				if r.Status == "pending" && time.Now().After(pickup) {
+					// Nothing took it: no extension is listening. Withdraw
+					// it (so a listener that turns up later does not act on
+					// it out of the blue) and let the operator, which works
+					// the screen with the gui command, do the task instead.
+					_ = b.postJSON(context.Background(), "/requests/"+url.PathEscape(submitted.ID)+"/cancel", map[string]any{}, nil)
+					rc.Logf("browser", "the browser extension is not running here - doing it on the screen instead")
+					return finish("The browser extension did not pick the task up.", false, map[string]any{"reroute": "operator"})
 				}
 				if r.Status != "done" {
 					break

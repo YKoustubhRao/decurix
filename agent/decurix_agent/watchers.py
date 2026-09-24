@@ -3,7 +3,7 @@ import threading
 import time
 import traceback
 
-from decurix_agent import config, progress, record_task, replay_task, skill_task, state, task_context, usage
+from decurix_agent import ask_task, config, progress, record_task, replay_task, skill_task, state, task_context, usage
 from decurix_agent.computer import approval
 from decurix_agent.harness import continue_after_query, perform_task
 from decurix_agent.logging_utils import log
@@ -60,10 +60,10 @@ def _report_queued(name):
 
 
 def _needs_no_backend(content):
-    """Whether a request is handled without the reasoning backend ("/replay", "/record", "/learn", "/skill", or a recorded task done again)."""
+    """Whether a request is handled without the reasoning backend ("/replay", "/record", "/learn", "/skill", a recorded task done again, or a question for a web app)."""
 
     return (bool(replay_task.parse(content)) or record_task.parse(content) is not None or skill_task.handles(content)
-            or skill_task.mimics(content))
+            or skill_task.mimics(content) or ask_task.handles(content))
 
 
 def _can_run_without_backend(content):
@@ -394,6 +394,11 @@ def _pass():
             # what differs changed - not worked out again by an
             # engine (computer/mimic.py).
             target = skill_task.perform_mimic
+        elif ask_task.handles(content):
+            # `chatgpt "where is x"`, `google x`, `search youtube for x`:
+            # the request is the whole plan - open the service with the
+            # question, read its answer off the page (ask_task.py).
+            target = ask_task.perform
         else:
             target = perform_task
 

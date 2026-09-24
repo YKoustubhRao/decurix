@@ -265,17 +265,19 @@ def _tidy(program, events):
       last press produced. Replaying every press opened the app three times.
       Only a burst with a double-click in it: two single clicks on one spot
       can be meant (a counter, a toggle), a double-click already opens.
+    - A small drag on the bare desktop only nudged an icon and is left out.
     - Two runs of typing into the same field, one straight after the other,
       are one piece of text the recorder split: "fl" and "amingo breeding
       season" would otherwise be asked about as two values. Never for a
       secret.
     """
 
-    steps = program["steps"]
     params = {p["name"]: p for p in program["params"]}
     notes = []
     tidy = []
     i = 0
+
+    steps = program["steps"]
 
     while i < len(steps):
         length = _repeated_presses(steps, events, i)
@@ -295,6 +297,16 @@ def _tidy(program, events):
             continue
         tidy.append(steps[i])
         i += 1
+
+    # A small drag on the bare desktop that no burst took in only nudged an
+    # icon (XFCE keeps them on a grid): not something to do again. Found live:
+    # an icon pressed, held 17 s and moved 16 px before its double click -
+    # just past REPEAT_PIXELS, and far past REPEAT_SECONDS from where the
+    # press began.
+    kept = [step for step in tidy if not replay._desktop_nudge(step)]
+    if len(kept) != len(tidy):
+        notes.append(f"{len(tidy) - len(kept)} small drag(s) on the desktop that only nudged an icon were left out")
+    tidy = kept
 
     joined = []
     for step in tidy:

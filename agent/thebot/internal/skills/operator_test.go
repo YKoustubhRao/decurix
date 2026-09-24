@@ -361,3 +361,99 @@ func TestOperatorNeverDeliversTheChatSignal(t *testing.T) {
 		t.Fatalf("result = %+v", res)
 	}
 }
+
+// Measured live: `... | xargs curl -s ...` failed on a desktop with no curl,
+// and the person was paged "Install curl using sudo apt-get install curl".
+// The loop tries another way first, and says what to use instead.
+func TestOperatorPushesBackOnQueryRightAfterAFailure(t *testing.T) {
+	chat := &scriptedChat{replies: []string{
+		"COMMAND:\necho x | xargs no-such-program-decurix -s",
+		"HELP:\nInstall no-such-program-decurix using `sudo apt-get install` before running the command.",
+		"COMMAND:\necho found",
+		"DONE:\nfound",
+	}}
+	res, _ := NewOperator().Run(operatorContext(t, chat), Subtask{Step: "fetch something", Type: "operator"})
+	if !res.Verified || res.Output != "found" {
+		t.Fatalf("result = %+v, want the second way to finish the task", res)
+	}
+	resultTurn := chat.calls[1][len(chat.calls[1])-1].Content
+	if !strings.Contains(resultTurn, "`no-such-program-decurix` is not installed") {
+		t.Errorf("the failed command's result did not say the program is missing:\n%s", resultTurn)
+	}
+	nudge := chat.calls[2][len(chat.calls[2])-1].Content
+	if !strings.Contains(nudge, "did not work") || !strings.Contains(nudge, "never ask them to run or install") {
+		t.Errorf("push back = %q", nudge)
+	}
+}
+
+// Twice is enough: a third HELP after failures goes to the person.
+func TestOperatorDeliversAQueryAfterRepeatedFailures(t *testing.T) {
+	chat := &scriptedChat{replies: []string{
+		"COMMAND:\nfalse", "HELP:\nit failed",
+		"COMMAND:\nexit 2", "HELP:\nit failed again",
+		"COMMAND:\nexit 3", "HELP:\nstill failing",
+	}}
+	res, _ := NewOperator().Run(operatorContext(t, chat), Subtask{Step: "do the thing", Type: "operator"})
+	if res.Meta["needsUserInput"] != true || res.Output != "still failing" {
+		t.Fatalf("result = %+v after %d calls, want the third query delivered", res, len(chat.calls))
+	}
+}
+
+// Approval is never argued with, failure or not.
+func TestOperatorDeliversAnApprovalQueryAfterAFailure(t *testing.T) {
+	chat := &scriptedChat{replies: []string{"COMMAND:\nfalse", "HELP:\nMay I have your permission to delete the old logs?"}}
+	res, _ := NewOperator().Run(operatorContext(t, chat), Subtask{Step: "tidy the logs", Type: "operator"})
+	if res.Meta["needsUserInput"] != true || len(chat.calls) != 2 {
+		t.Fatalf("result = %+v after %d calls, want the approval delivered immediately", res, len(chat.calls))
+	}
+}
+
+func TestMissingProgramHintNamesOnlyAProgramTheCommandRan(t *testing.T) {
+	if hint := missingProgramHint("xargs: curl: No such file or directory", "echo q | xargs curl -s https://x"); !strings.Contains(hint, "python3") {
+		t.Errorf("curl hint = %q", hint)
+	}
+	if hint := missingProgramHint("bash: line 1: jq: command not found", "cat a.json | jq ."); !strings.Contains(hint, "`jq` is not installed") {
+		t.Errorf("jq hint = %q", hint)
+	}
+	// A file the program was given is not a missing program.
+	if hint := missingProgramHint("cat: notes.txt: No such file or directory", "cat notes.txt"); hint != "" {
+		t.Errorf("a missing file was taken for a missing program: %q", hint)
+	}
+}
+
+// Measured live: python3 with a missing module failed twice, and the model
+// answered with a header nothing had printed. A failed repeat does not invite
+// an answer, and a DONE with no successful command is pushed back once.
+func TestOperatorDoesNotTakeAnAnswerNothingShowed(t *testing.T) {
+	chat := &scriptedChat{replies: []string{
+		"COMMAND:\npython3 -c \"import no_such_module_decurix\"",
+		"COMMAND:\npython3 -c \"import no_such_module_decurix\"",
+		"DONE:\ntext/html; charset=utf-8",
+		"COMMAND:\necho text/html",
+		"DONE:\ntext/html",
+	}}
+	res, _ := NewOperator().Run(operatorContext(t, chat), Subtask{Step: "what content-type does example.com send?", Type: "operator"})
+	if !res.Verified || res.Output != "text/html" {
+		t.Fatalf("result = %+v, want the answer the command printed", res)
+	}
+	repeat := chat.calls[2][len(chat.calls[2])-1].Content
+	if !strings.Contains(repeat, "FAILED") || strings.Contains(repeat, "reply now with DONE") || !strings.Contains(repeat, "`no_such_module_decurix` is not installed") {
+		t.Errorf("repeat nudge = %q", repeat)
+	}
+	if pushback := chat.calls[3][len(chat.calls[3])-1].Content; !strings.Contains(pushback, "Do not answer from memory") {
+		t.Errorf("an answer after nothing but failures was not pushed back: %q", pushback)
+	}
+}
+
+// A failure can be the answer: said again, quoting the error, it is taken.
+func TestOperatorTakesAFailureThatIsTheAnswer(t *testing.T) {
+	chat := &scriptedChat{replies: []string{
+		"COMMAND:\nls ~/work/no-such-report.txt",
+		"DONE:\nThere is no such file.",
+		"DONE:\nThere is no such file: ls says \"No such file or directory\".",
+	}}
+	res, _ := NewOperator().Run(operatorContext(t, chat), Subtask{Step: "is there a report in ~/work?", Type: "operator"})
+	if !res.Verified || !strings.Contains(res.Output, "No such file or directory") {
+		t.Fatalf("result = %+v after %d calls", res, len(chat.calls))
+	}
+}

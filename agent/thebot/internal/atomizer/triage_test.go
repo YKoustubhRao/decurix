@@ -72,3 +72,29 @@ func TestTriageKeepsCodingWhole(t *testing.T) {
 		t.Errorf("Triage = %+v, want the coding skill, whole", r)
 	}
 }
+
+// Measured live: "content-type" read as a request to type sent a terminal job
+// to the browser extension, which was not running, for 16 minutes.
+func TestTriageSendsOnlyRealPageWorkToTheBrowser(t *testing.T) {
+	notBrowser := []string{
+		"run curl -sI https://example.com in the terminal and tell me the content-type header",
+		"check the content-type example.com returns",
+		"from the shell, search example.com's robots.txt for sitemap lines",
+	}
+	for _, prompt := range notBrowser {
+		if got := Triage(prompt); got.Kind == RouteBrowser {
+			t.Errorf("Triage(%q) = browser, want anything else", prompt)
+		}
+	}
+	browser := []string{
+		"open google.com and search for addis ababa",
+		"go to amazon.com and add a kettle to the cart",
+		"browse to example.com then click More information",
+		"on github.com type decurix into the search box",
+	}
+	for _, prompt := range browser {
+		if got := Triage(prompt); got.Kind != RouteBrowser {
+			t.Errorf("Triage(%q) = %s, want browser", prompt, got.Kind)
+		}
+	}
+}

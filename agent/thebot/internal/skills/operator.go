@@ -111,6 +111,70 @@ Only reply HELP again if the human really has to act - to choose between options
 // a person can give. Such a HELP is always delivered, never pushed back on.
 var humanOnlyRe = regexp.MustCompile(`(?i)\b(approv|permission|consent|confirm|authori[sz]|password|passphrase|token|api[ -]?key|credential|secret|log ?in|sign ?in|2fa|otp|which\s+(one|of)|choose|pick|prefer|decide|should\s+i|do\s+you\s+want|payment|pay\b|purchase|send(ing)?\s+(an?\s+)?(e-?mail|message|sms)|publish|push)`)
 
+// failureQueryNudge answers a HELP that follows a failed command - the one
+// case successQueryNudge and prematureQueryNudge leave open, and the one that
+// paged a human live: `chatgpt "where is addis ababa"` became
+// `... | xargs curl -s https://www.google.com/search?q=`, which failed with
+// "xargs: curl: No such file or directory", and the person was sent
+// "Install curl using sudo apt-get install curl before running the command."
+// A failure is something to try another way, not a job for the person, until
+// the loop has tried twice (maxFailureNudges, the same as the Ollama
+// harness's MAX_FAILURE_NUDGES).
+const failureQueryNudge = `Your last command did not work: it finished with exit code %d and printed:
+
+%s
+
+Do not ask the human yet, and never ask them to run or install something for you. Try a DIFFERENT command that gets the same result - a simpler one, without the filter or pipe that may have hidden the output, or a different tool. Send it now with COMMAND.
+Only reply HELP if the human really has to act - to choose between options, give you something only they have, or approve a consequential action.`
+
+const maxFailureNudges = 2
+
+// ungroundedDoneNudge answers a DONE sent when every command so far failed.
+const ungroundedDoneNudge = `Every command you have run so far FAILED, so nothing on this machine has shown you the answer. Do not answer from memory.
+
+Send a DIFFERENT command that gets the real answer with COMMAND.
+If the failure itself is the answer (for example, the file really does not exist), reply DONE: again and quote the error that shows it.`
+
+// missingProgramRe finds the program a failed command could not find:
+// "bash: curl: command not found", "xargs: curl: No such file or directory",
+// "sh: 1: jq: not found".
+//
+// "No such file or directory" names a program only when a launcher says it
+// (xargs, env, a shell); from anything else it is a file the program was
+// given ("cat: notes.txt: No such file or directory").
+var missingProgramRe = regexp.MustCompile(`(?m)(?:^|:\s)([A-Za-z0-9_.+-]+): (?:command not found|not found)\s*$|(?:^|\b)(?:xargs|env|nohup|timeout|sudo|exec|nice|bash|sh|dash|zsh)(?:: line \d+)?: ([A-Za-z0-9_.+-]+): No such file or directory\s*$`)
+
+// missingModuleRe finds a Python module that is not installed.
+var missingModuleRe = regexp.MustCompile(`No module named '([\w.]+)'`)
+
+// missingProgramHint tells the model what to use instead of a program that
+// is not installed. It cannot install anything (no sudo), and every desktop
+// image has python3 - which also fetches a web page, the job curl and wget
+// are most often reached for.
+func missingProgramHint(output, command string) string {
+	if m := missingModuleRe.FindStringSubmatch(output); m != nil {
+		return fmt.Sprintf("\n\nThe Python module `%s` is not installed, and you cannot install it here. Use Python's standard library instead: urllib.request for web requests (urllib.request.urlopen(url).headers, .status, .read()), json, csv, subprocess.", m[1])
+	}
+	for _, m := range missingProgramRe.FindAllStringSubmatch(output, -1) {
+		program := m[1]
+		if program == "" {
+			program = m[2]
+		}
+		if !regexp.MustCompile(`(^|[\s|;&(])` + regexp.QuoteMeta(program) + `(\s|$)`).MatchString(command) {
+			continue // a missing file the program was given, not the program
+		}
+		hint := fmt.Sprintf("\n\n`%s` is not installed on this machine, and you cannot install software here. Use a program that is here instead.", program)
+		switch program {
+		case "curl", "wget", "http", "lynx", "links", "w3m":
+			hint += " To fetch a page use python3, for example:\nCOMMAND:\npython3 -c \"import urllib.request; print(urllib.request.urlopen('https://example.com', timeout=20).read().decode('utf-8', 'replace')[:3000])\""
+		case "jq":
+			hint += " To read JSON use python3 -c \"import json,sys; ...\"."
+		}
+		return hint
+	}
+	return ""
+}
+
 // prematureQueryNudge answers a HELP sent before any command ran. Its last
 // paragraph matters: HELP is also the approval brake, and this must never
 // talk the model out of asking permission.
@@ -166,9 +230,14 @@ type operatorState struct {
 	CommandsRun   int
 	Nudged        bool
 	SuccessNudged bool
-	LastCommand   string
-	LastResult    *shellResult
-	Commands      []string
+	FailureNudges int
+	// CommandsSucceeded counts commands that exited 0; UngroundedNudged is
+	// set once a DONE with none of them has been pushed back.
+	CommandsSucceeded int
+	UngroundedNudged  bool
+	LastCommand       string
+	LastResult        *shellResult
+	Commands          []string
 }
 
 func formatCommandResult(r shellResult) string {
@@ -280,10 +349,17 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 	}
 	rc.Logf("operator", "%s", headline(res))
 	st.CommandsRun++
+	if res.ExitCode == 0 {
+		st.CommandsSucceeded++
+	}
 	st.Commands = append(st.Commands, command)
 	st.LastCommand = command
 	st.LastResult = &res
-	st.Messages = append(st.Messages, llm.Message{Role: "user", Content: formatCommandResult(res)})
+	result := formatCommandResult(res)
+	if res.ExitCode != 0 {
+		result += missingProgramHint(res.Output, command)
+	}
+	st.Messages = append(st.Messages, llm.Message{Role: "user", Content: result})
 	return ""
 }
 
@@ -363,6 +439,16 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 			if value == "" {
 				value = "Done."
 			}
+			if st.CommandsRun > 0 && st.CommandsSucceeded == 0 && !st.UngroundedNudged {
+				// Every command so far failed, so nothing on this machine has
+				// shown the answer: a DONE now is from memory, unless the
+				// failure itself is the answer ("that file does not exist"),
+				// which the model can say again, quoting the error.
+				st.UngroundedNudged = true
+				rc.Logf("operator", "answered although every command failed - asking it where the answer came from")
+				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: ungroundedDoneNudge})
+				continue
+			}
 			return finish(value, true, nil)
 
 		case "help":
@@ -380,6 +466,17 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 					out = "(no output)"
 				}
 				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: fmt.Sprintf(successQueryNudge, truncateText(out, maxCommandOutputChars))})
+				continue
+			}
+			if st.LastResult != nil && st.LastResult.ExitCode != 0 && st.FailureNudges < maxFailureNudges && !humanOnlyRe.MatchString(value) {
+				st.FailureNudges++
+				rc.Logf("operator", "had a query right after a command failed - asking it to try another way")
+				out := strings.TrimSpace(st.LastResult.Output)
+				if out == "" {
+					out = "(no output)"
+				}
+				nudge := fmt.Sprintf(failureQueryNudge, st.LastResult.ExitCode, truncateText(out, maxCommandOutputChars)) + missingProgramHint(out, st.LastCommand)
+				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: nudge})
 				continue
 			}
 			st.Messages = append(st.Messages, reply)
@@ -486,6 +583,20 @@ func repeatedCommandNudge(command string, r shellResult) string {
 	out := strings.TrimSpace(r.Output)
 	if out == "" {
 		out = "(no output)"
+	}
+	if r.ExitCode != 0 {
+		// "If that answers the task, reply with DONE" after a traceback is
+		// an invitation to answer from memory. Measured live: python3 with
+		// the missing `requests` module, run twice, then DONE with a
+		// Content-Type header nothing had printed ("text/html;
+		// charset=utf-8"; the real one was "text/html").
+		return fmt.Sprintf(`You have already run this command, and it FAILED with exit code %d:
+
+$ %s
+
+%s
+
+It did not produce the answer, so you do not have it yet - do not answer from memory. Send a DIFFERENT command with COMMAND.`, r.ExitCode, command, truncateText(out, maxCommandOutputChars)) + missingProgramHint(out, command)
 	}
 	return fmt.Sprintf(`You have already run this command, and it finished with exit code %d:
 

@@ -287,3 +287,36 @@ func TestVerdictMarksOnlyThatTasksAgentReplies(t *testing.T) {
 		t.Fatalf("verdicts: %q %q %q %q", entries[0].Verdict, entries[1].Verdict, entries[2].Verdict, entries[3].Verdict)
 	}
 }
+
+// Found live: a restart ended the task record, the agent's "interrupted"
+// report was refused as already closed, and the chat said "Working..." for
+// good - with the next request's steps added to the dead turn.
+func TestEndTurnClosesWorkThatWillNeverBeReported(t *testing.T) {
+	store := newStore(t)
+
+	store.AppendUserRequest("d1", "t1", "open example.com")
+	store.AppendStep("d1", "Handing off to the browser extension")
+
+	if !store.EndTurn("d1", "The desktop was restarted before this task finished.") {
+		t.Fatal("EndTurn found no running turn")
+	}
+
+	thread := store.Snapshot("d1")
+	last := thread.Entries[len(thread.Entries)-1]
+	if thread.Running || last.Kind != KindError || len(last.Steps) != 1 {
+		t.Fatalf("thread = running %v, last entry %+v", thread.Running, last)
+	}
+
+	// The next request is a turn of its own.
+	store.AppendUserRequest("d1", "t2", "wiki addis ababa")
+	if steps := store.Snapshot("d1").Steps; len(steps) != 0 {
+		t.Errorf("the new turn started with the old one's steps: %+v", steps)
+	}
+
+	// Nothing running: nothing to close, and nothing added.
+	store.AppendAgentReply("d1", "t2", KindEntry, "done")
+	before := len(store.Snapshot("d1").Entries)
+	if store.EndTurn("d1", "stopped") || len(store.Snapshot("d1").Entries) != before {
+		t.Error("EndTurn added a reply to a thread with no running turn")
+	}
+}

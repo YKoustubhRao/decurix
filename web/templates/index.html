@@ -184,7 +184,10 @@
 .dcard-activity .act-label{flex:none;font-weight:600}
 .dcard-activity .act-request{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dcard-activity .act-elapsed{flex:none;margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--text-3)}
-.dcard-activity .act-step{color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px}
+.dcard-activity .act-step{display:block;color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px}
+/* A span, so it has to be a block for overflow to clip it: a long step ran
+   past the card. [hidden] still wins below. */
+.dcard-activity .act-step[hidden]{display:none}
 
 /* ---------- compact desktop info ---------- */
 
@@ -836,6 +839,8 @@
 .rail-list{overflow-y:auto;padding:10px;display:grid;gap:9px}
 
 .note{
+  /* A grid item: without this a one-line task widens the whole column past the rail. */
+  min-width:0;
   padding:11px 12px;
   background:var(--surface);
   border:1px solid var(--line);
@@ -858,6 +863,11 @@
   overflow-y:auto
 }
 .note-actions{display:flex;gap:6px;margin-top:9px}
+.note-kind{height:18px;padding:0 6px;font-size:10.5px;flex:none}
+.note-kind--query,.note-kind--approval{background:var(--busy-soft);color:var(--busy)}
+.note-kind--error{background:var(--danger-soft);color:var(--danger)}
+.note-task{font-size:11.5px;color:var(--text-3);margin:-2px 0 5px}
+.note-task::before{content:"Task: ";font-weight:600}
 
 @media (max-width:720px){
   .grid{grid-template-columns:1fr}
@@ -1260,9 +1270,9 @@
       <div class="field">
         <span class="field-label">Agent harness</span>
         <div class="segmented" role="radiogroup" aria-label="Agent harness">
-          <label class="seg"><input type="radio" name="harness" value="ollama" checked><span>Ollama</span></label>
+          <label class="seg"><input type="radio" name="harness" value="thebot" checked><span>TheBot</span></label>
           <label class="seg"><input type="radio" name="harness" value="claude" id="harnessClaude"><span>Claude Code</span></label>
-          <label class="seg"><input type="radio" name="harness" value="thebot"><span>TheBot</span></label>
+          <label class="seg"><input type="radio" name="harness" value="ollama"><span>Ollama</span></label>
         </div>
         <div class="hint claude-hint" id="claudeHint">Claude Code needs the Developer or AI Developer profile — the <code class="mono">claude</code> binary isn't in the Basic image.</div>
         <div class="hint">TheBot uses the same shared Ollama decurix already runs for every desktop — no separate URL to set up. PDF/HTML/Office-format document parsing isn't available yet in this harness; plain text/code files and real terminal execution both work fully.</div>
@@ -1628,7 +1638,7 @@
     document.getElementById("claudeHint").classList.toggle("on", blocked);
 
     if(blocked && claude.checked){
-      createForm.querySelector("input[name=harness][value=ollama]").checked = true;
+      createForm.querySelector("input[name=harness][value=thebot]").checked = true;
     }
 
     document.getElementById("claudeAuthRow").classList.toggle(
@@ -2137,7 +2147,7 @@
     busy(true);
 
     var profile = data.get("profile") || "basic";
-    var harness = data.get("harness") || "ollama";
+    var harness = data.get("harness") || "thebot";
     var cpus = parseInt(data.get("cpus") || "1", 10);
     var memoryMb = parseInt(data.get("memory_mb") || "2048", 10);
     var specialization = (data.get("specialization") || "").trim();
@@ -2583,6 +2593,13 @@
   var railCount = document.getElementById("railCount");
   var shown = new Map();
 
+  var NOTE_KINDS = {
+    query: "Needs your answer",
+    approval: "Needs approval",
+    error: "Failed",
+    done: "Done"
+  };
+
   function noteElement(note){
     var el = document.createElement("article");
     el.className = "note";
@@ -2600,11 +2617,33 @@
     var date = new Date(note.created_at);
     time.textContent = isNaN(date.getTime()) ? "" : relative(date);
 
-    head.append(vm, time);
+    head.append(vm);
+
+    // What kind of note it is, in words: a card that only said
+    // "DECURIX QUERY REQUEST" left the reader to find out.
+    var kindLabel = NOTE_KINDS[note.kind];
+    if(kindLabel){
+      var kind = document.createElement("span");
+      kind.className = "chip note-kind note-kind--" + note.kind;
+      kind.textContent = kindLabel;
+      head.append(kind);
+    }
+
+    head.append(time);
 
     var body = document.createElement("div");
     body.className = "note-body";
-    body.textContent = note.content || "";
+    // The agent's own words and the task they are about (the server reads
+    // both out of the note); the whole note only when it has neither.
+    body.textContent = note.message || note.content || "";
+
+    var task = null;
+    if(note.task){
+      task = document.createElement("div");
+      task.className = "note-task trunc";
+      task.textContent = note.task;
+      task.title = note.task;
+    }
 
     var actions = document.createElement("div");
     actions.className = "note-actions";
@@ -2620,7 +2659,9 @@
     resolve.addEventListener("click", function(){ resolveNote(note.id); });
 
     actions.append(reply, resolve);
-    el.append(head, body, actions);
+    el.append(head);
+    if(task) el.append(task);
+    el.append(body, actions);
 
     return el;
   }
