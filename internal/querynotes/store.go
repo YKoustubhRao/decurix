@@ -141,7 +141,9 @@ func (s *Store) list(where, order string, args ...any) []QueryNote {
 
 // List returns the notes still open, oldest first.
 func (s *Store) List() []QueryNote {
-	return s.list(`resolved_ns = 0`, `created_ns`)
+	// Older versions also stored successful replies here. Hide those reports
+	// without deleting them or changing their chat/task history.
+	return s.list(`resolved_ns = 0 AND kind NOT IN ('done', 'final', 'message')`, `created_ns`)
 }
 
 // ListResolved returns the notes that have been resolved, most recently
