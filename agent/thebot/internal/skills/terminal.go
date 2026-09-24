@@ -34,6 +34,12 @@ var (
 	// (subshells, grouping) essentially never open with an English
 	// narrating word like this, so it's a safe, narrow signal to strip.
 	trailingCommentRe = regexp.MustCompile(`(?i)\s*\((?:assuming|if|since|note|this|that|will|should|may|might|because|in case)\b[^()]*\)\s*$`)
+	// What a person says after the command is for TheBot, not the shell:
+	// "run curl -sI https://example.com in the terminal and tell me the
+	// content-type header" ran as that whole sentence, live, and failed with
+	// exit 127. Where to run it and what to report are cut off; neither
+	// phrase is ever part of a real command line.
+	trailingProseRe = regexp.MustCompile(`(?i)(?:\s+(?:in|on|from|using|via|inside)\s+(?:the\s+|a\s+|my\s+)?(?:terminal|shell|command[\s-]?line|console)\b|(?:\s*,\s*|\s+)(?:and|then)\s+(?:tell|show|give|report|let\s+me\s+know|say|explain|summari[sz]e|print\s+out)\b).*$`)
 
 	// Pronouns are the trap here: "run it again" reaches this skill too,
 	// and "it again" must never be handed to a shell.
@@ -117,6 +123,7 @@ func extractCommand(step string) (command, source string) {
 	if m := cmdLeadRe.FindStringSubmatch(step); m != nil {
 		candidate := stripWrappingQuotes(strings.TrimSpace(m[1]))
 		candidate = trailingCommentRe.ReplaceAllString(candidate, "")
+		candidate = stripWrappingQuotes(strings.TrimSpace(trailingProseRe.ReplaceAllString(candidate, "")))
 		candidate = sentencePeriodRe.ReplaceAllString(candidate, "$1")
 		if looksLikeCommand(candidate) {
 			return candidate, "named after 'run the command:' in the request"
@@ -168,6 +175,24 @@ func looksLikeShellSyntax(s string) bool {
 		return knownBareCommands[first] && len(fields) == 1
 	}
 	return shellSyntaxRe.MatchString(s)
+}
+
+// commandNotFound is the shell's exit code for a program that is not installed.
+const commandNotFound = 127
+
+// missingProgram names the program a command-not-found failure is about: the
+// one the shell named, else the command's first word.
+func missingProgram(stderr, command string) string {
+	if m := missingProgramRe.FindStringSubmatch(stderr); m != nil {
+		if m[1] != "" {
+			return m[1]
+		}
+		return m[2]
+	}
+	if fields := strings.Fields(command); len(fields) > 0 {
+		return fields[0]
+	}
+	return command
 }
 
 func (t *TerminalSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
@@ -270,6 +295,27 @@ func (t *TerminalSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 			return Result{
 				Subtask: subtask, SkillName: t.Name(), Output: out, Verified: true,
 				Meta:       map[string]any{"command": command, "source": source, "exitCode": exitCode, "cwd": cwd},
+				DurationMs: duration,
+			}, nil
+		}
+
+		// 127 is the shell saying the program is not installed. That is not
+		// something a cleverer command line fixes, and the one "fix" a model
+		// reaches for - install it - cannot work here (no sudo). Measured
+		// live: `curl` missing, the failure reasoning chose
+		// `sudo apt-get install curl`, and on the next run asked the person
+		// what to do. The operator works the same goal out command by
+		// command, told the program is not there.
+		if exitCode == commandNotFound {
+			program := missingProgram(stderr, command)
+			rc.Logf("terminal", "`%s` is not installed here - working it out another way", program)
+			return Result{
+				Subtask: subtask, SkillName: t.Name(),
+				Output:   fmt.Sprintf("Command: %s\nWorking directory: %s\nExit code: 127 (`%s` is not installed)", command, cwd, program),
+				Verified: false,
+				Meta: map[string]any{"command": command, "source": source, "exitCode": exitCode, "cwd": cwd,
+					"reroute":     "operator",
+					"rerouteNote": fmt.Sprintf("`%s` is not installed on this machine and cannot be installed (there is no sudo). Do it with a program that is here - python3 always is.", program)},
 				DurationMs: duration,
 			}, nil
 		}

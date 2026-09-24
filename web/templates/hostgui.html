@@ -13,7 +13,7 @@
 </style>
 </head>
 <body>
-<div id="msg">Starting {{.Title}} on the host&hellip;</div>
+<div id="msg" style="display:none">Starting {{.Title}} on the host&hellip;</div>
 <canvas id="screen" tabindex="0"></canvas>
 <script>
 (function () {
@@ -30,6 +30,14 @@
   }
   function fail(text) {
     live = false; msg.className = 'error'; msg.textContent = text; msg.style.display = 'block'; img.style.display = 'none';
+  }
+
+  // The person closed the app from inside it: this window was only ever showing it, so it closes too, rather than asking
+  // to be closed a second time. A window the browser will not let a page close says why it is empty instead.
+  function appClosed() {
+    live = false;
+    try { window.close(); } catch (e) {}
+    setTimeout(function () { fail('The app was closed. You can close this window.'); }, 400);
   }
 
   // Position in the app's own pixels: the picture is scaled to fit this window, so undo that scale.
@@ -91,7 +99,7 @@
     ws.onmessage = function (e) {
       if (typeof e.data !== 'string') { onPatch(e.data); return; }
       var m; try { m = JSON.parse(e.data); } catch (x) { return; }
-      if (m.closed) { closedByApp = true; fail('The app was closed.'); return; }
+      if (m.closed) { closedByApp = true; appClosed(); return; }
       if (m.id && answers[m.id]) { var cb = answers[m.id]; delete answers[m.id]; cb(m); }
     };
     ws.onclose = function () {
@@ -167,9 +175,13 @@
   // Closing this window closes the app on the host: it has no window of its own to close.
   window.addEventListener('pagehide', function () { if (live) navigator.sendBeacon('/api/host-gui/stop', new Blob([JSON.stringify({ id: ID, token: TOKEN })], { type: 'application/json' })); });
 
+  // The app is normally already running on the host (it is kept ready), so this answers at once; only a start that is
+  // really waiting for the app says so.
+  var slow = setTimeout(function () { msg.style.display = 'block'; }, 700);
   post('/api/host-gui/start', { target: TARGET, args: ARGS }).then(function (r) {
     return r.json().then(function (j) { return { ok: r.ok, body: j }; });
   }).then(function (res) {
+    clearTimeout(slow);
     if (!res.ok) { fail(res.body && res.body.error ? res.body.error : 'Could not start the app.'); return; }
     live = true; msg.style.display = 'none';
     img.style.display = 'block';
@@ -178,7 +190,7 @@
     connect();
     // Fit the window to the app, as far as the browser lets an app window be resized.
     try { window.resizeTo(res.body.w + (window.outerWidth - window.innerWidth), res.body.h + (window.outerHeight - window.innerHeight)); } catch (e) {}
-  }).catch(function () { fail('Could not reach the Decurix control plane.'); });
+  }).catch(function () { clearTimeout(slow); fail('Could not reach the Decurix control plane.'); });
 })();
 </script>
 </body>

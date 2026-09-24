@@ -63,6 +63,15 @@ def get_identity_context(engine=""):
             "you too - see your own learned-memory context below."
         )
 
+    try:
+        from decurix_agent.computer import modes
+        stage_info = modes.stage_summary()
+        facts.append(
+            f"- Worker replication mode: {stage_info['label']}. {stage_info['description']}"
+        )
+    except Exception:
+        pass
+
     return (
         "Facts about yourself. These are already known - answer questions "
         "about them directly, never ask the human for them:\n"

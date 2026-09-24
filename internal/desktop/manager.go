@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -689,6 +690,50 @@ func (m *Manager) listUncached(
 	return result, nil
 }
 
+// exitCodeRE reads the exit code out of ContainerList's status line,
+// "Exited (137) 5 minutes ago".
+var exitCodeRE = regexp.MustCompile(`^Exited \((-?\d+)\)`)
+
+// crashReason says why a container in `state` (ContainerList's State, with
+// its Status line) stopped on its own, or "" when it did not. Stop ends a
+// desktop with SIGTERM (143, or 0 when the init passes it on cleanly) and
+// SIGKILLs it once DESKTOP_STOP_TIMEOUT_SECONDS runs out (137), so those are
+// a person's or idle-pause's stop, not a crash - except a 137 the kernel's
+// OOM killer dealt, which oomKilled (only asked for a 137) tells apart.
+func crashReason(state, status string, oomKilled func() bool) string {
+	switch state {
+	case "dead":
+		return "Docker could not stop it cleanly"
+	case "restarting":
+		return "it keeps restarting"
+	case "exited":
+	default:
+		return ""
+	}
+
+	match := exitCodeRE.FindStringSubmatch(status)
+	if match == nil {
+		return ""
+	}
+
+	code, err := strconv.Atoi(match[1])
+	if err != nil {
+		return ""
+	}
+
+	switch code {
+	case 0, 143:
+		return ""
+	case 137:
+		if oomKilled != nil && oomKilled() {
+			return "it ran out of memory"
+		}
+		return ""
+	}
+
+	return fmt.Sprintf("it exited with code %d", code)
+}
+
 // desktopFromContainer builds one Desktop from a ContainerList entry plus its
 // metadata labels, falling back to ContainerInspect only for legacy containers
 // or on first boot to cache StartedAt.
@@ -791,6 +836,13 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 		status = "paused"
 	}
 
+	crash := crashReason(c.State, c.Status, func() bool {
+		inspectCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		inspect, err := m.client.ContainerInspect(inspectCtx, c.ID)
+		return err == nil && inspect.State != nil && inspect.State.OOMKilled
+	})
+
 	id := strings.TrimPrefix(
 		name,
 		"desktop_",
@@ -832,6 +884,7 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 		URL:            desktopURL(id),
 		CreatedAt:      createdAt,
 		StartedAt:      startedAt,
+		Crash:          crash,
 		CPUs:           cpus,
 		MemoryMB:       memoryMB,
 		Specialization: specialization,

@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/webui"
@@ -123,7 +124,8 @@ func (s *Server) runSkillHandler(w http.ResponseWriter, r *http.Request) {
 // learnRecordingHandler starts a lesson: the desktop asks whoever recorded a
 // demonstration what it needs to know to do the task itself. `session` is the
 // recording, `sessions` optionally more of them, comma separated - the desktop
-// then works out what differs between them.
+// then works out what differs between them. `name`, optional, is what the
+// person calls the skill.
 func (s *Server) learnRecordingHandler(w http.ResponseWriter, r *http.Request) {
 	id, session, ok := requireRecording(w, r, http.MethodPost)
 	if !ok {
@@ -148,7 +150,14 @@ func (s *Server) learnRecordingHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.sendTaught(w, r, id, learnContent(sessions), "/recordings/"+session+"/learn", map[string]any{"sessions": sessions[1:]})
+	name := strings.Join(strings.Fields(r.FormValue("name")), " ")
+	content, err := learnContent(sessions, name)
+	if err != nil {
+		jsonStatusError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	s.sendTaught(w, r, id, content, "/recordings/"+session+"/learn", map[string]any{"sessions": sessions[1:], "name": name})
 }
 
 // sendTaught delivers a "/skill" or "/learn" request to a desktop as a task:
@@ -195,10 +204,31 @@ func (s *Server) sendTaught(w http.ResponseWriter, r *http.Request, id, content,
 	jsonResponse(w, map[string]string{"status": "sent", "task_id": route.TaskID, "content": content})
 }
 
+// maxSkillNameRunes bounds the name a person gives a skill they teach; the
+// desktop keeps at most this much of it (http_api._learn).
+const maxSkillNameRunes = 80
+
 // learnContent is the request a lesson is sent and recorded as; the desktop's
-// watcher routes on it (skill_task.parse_learn).
-func learnContent(sessions []string) string {
-	return "/learn " + strings.Join(sessions, " ")
+// watcher routes on it (skill_task.parse_learn) and builds the same string
+// itself (skill_task.learn_request). `name` is what the person called the
+// skill, "" to let the desktop name it after the recording; a name holding
+// both kinds of quote cannot be written into a request and is refused.
+func learnContent(sessions []string, name string) (string, error) {
+	content := "/learn " + strings.Join(sessions, " ")
+
+	name = strings.Join(strings.Fields(name), " ")
+	switch {
+	case name == "":
+		return content, nil
+	case utf8.RuneCountInString(name) > maxSkillNameRunes:
+		return "", fmt.Errorf("a skill name is at most %d characters", maxSkillNameRunes)
+	case !strings.Contains(name, `"`):
+		return fmt.Sprintf(`%s name="%s"`, content, name), nil
+	case !strings.Contains(name, `'`):
+		return fmt.Sprintf(`%s name='%s'`, content, name), nil
+	default:
+		return "", fmt.Errorf("the name has both kinds of quote in it")
+	}
 }
 
 // skillContent is the request a skill run is sent and recorded as, and what

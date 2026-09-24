@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -29,6 +30,7 @@ import (
 // nothing, because no L1 existed at all. The model wasn't lying so much
 // as the system never gave it anywhere to put it.
 type L1 struct {
+	storeMu  sync.Mutex // Serializes duplicate detection and the following write.
 	db       *sql.DB
 	provider llm.Provider
 	embedder llm.Embedder
@@ -61,8 +63,10 @@ CREATE TABLE IF NOT EXISTS facts (
 	embedding TEXT NOT NULL,
 	created_at INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS facts_fact ON facts (fact);
 `
 	if _, err := db.Exec(schema); err != nil {
+		db.Close()
 		return nil, fmt.Errorf("l1: create schema: %w", err)
 	}
 	return &L1{db: db, provider: provider, embedder: embedder, model: model}, nil
@@ -189,6 +193,22 @@ const dedupeThreshold = 0.95
 // Store writes one real fact with its real embedding, unless L1 already
 // holds something that means the same thing.
 func (l *L1) Store(ctx context.Context, fact, source string) error {
+	l.storeMu.Lock()
+	defer l.storeMu.Unlock()
+
+	// Exact repeats need neither a model round trip nor a vector-table scan.
+	result, err := l.db.ExecContext(ctx,
+		`UPDATE facts SET created_at = ?, source = CASE WHEN source = 'explicit' THEN 'explicit' ELSE ? END WHERE fact = ?`,
+		time.Now().Unix(), source, fact)
+	if err != nil {
+		return err
+	}
+	if n, err := result.RowsAffected(); err != nil {
+		return err
+	} else if n > 0 {
+		return nil
+	}
+
 	vec, err := l.embedder.Embed(ctx, "", fact)
 	if err != nil {
 		return fmt.Errorf("l1: embed fact: %w", err)
@@ -211,14 +231,18 @@ func (l *L1) Store(ctx context.Context, fact, source string) error {
 			break
 		}
 	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
 	rows.Close()
 
 	if dupeID >= 0 {
 		// Refresh the existing entry rather than adding a second copy -
 		// an explicit restatement should also upgrade an inferred one.
 		_, err = l.db.ExecContext(ctx,
-			`UPDATE facts SET fact = ?, created_at = ?, source = CASE WHEN source = 'explicit' THEN 'explicit' ELSE ? END WHERE id = ?`,
-			fact, time.Now().Unix(), source, dupeID)
+			`UPDATE facts SET fact = ?, embedding = ?, created_at = ?, source = CASE WHEN source = 'explicit' THEN 'explicit' ELSE ? END WHERE id = ?`,
+			fact, encodeVec(vec), time.Now().Unix(), source, dupeID)
 		return err
 	}
 
@@ -233,6 +257,9 @@ func (l *L1) Store(ctx context.Context, fact, source string) error {
 // Returns nothing (not an error) when L1 is empty - that's a normal state,
 // not a failure.
 func (l *L1) Recall(ctx context.Context, query string, topK int) ([]L1Entry, error) {
+	if topK <= 0 {
+		return nil, nil
+	}
 	var count int
 	if err := l.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM facts`).Scan(&count); err != nil {
 		return nil, err

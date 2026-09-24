@@ -89,7 +89,28 @@ func TestSkillContentReadsBackAsWritten(t *testing.T) {
 		t.Fatalf("a value that cannot be written into a request was accepted: %v", err)
 	}
 
-	if got := learnContent([]string{"demo-1", "demo-2"}); got != "/learn demo-1 demo-2" {
+	if got, _ := learnContent([]string{"demo-1", "demo-2"}, ""); got != "/learn demo-1 demo-2" {
 		t.Fatalf("learnContent = %q", got)
+	}
+}
+
+// Keep this table equal to agent/tests/test_skill_match.py's
+// test_the_request_reads_back_the_same (skill_task.learn_request).
+func TestLearnContentCarriesTheName(t *testing.T) {
+	for name, want := range map[string]string{
+		"Google a phrase":      `/learn demo-1 name="Google a phrase"`,
+		"  Google   a phrase ": `/learn demo-1 name="Google a phrase"`,
+		`Say "hi"`:             `/learn demo-1 name='Say "hi"'`,
+	} {
+		if got, err := learnContent([]string{"demo-1"}, name); err != nil || got != want {
+			t.Errorf("learnContent(%q) = %q, %v; want %q", name, got, err, want)
+		}
+	}
+
+	if _, err := learnContent([]string{"demo-1"}, `both " and '`); err == nil {
+		t.Error("a name with both kinds of quote was accepted")
+	}
+	if _, err := learnContent([]string{"demo-1"}, strings.Repeat("x", maxSkillNameRunes+1)); err == nil {
+		t.Error("an overlong name was accepted")
 	}
 }

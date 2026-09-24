@@ -266,6 +266,15 @@ func TestTerminalStillTreatsCommandNotFoundAndNotExecutableAsRealFailures(t *tes
 	if notFound.Verified {
 		t.Error("command-not-found (exit 127) reported Verified=true, want false - this is a genuine execution failure")
 	}
+	// Live: `curl` missing led to `sudo apt-get install curl`, then to a
+	// question for the person. The operator gets the goal instead, told
+	// the program is not there.
+	if notFound.Meta["reroute"] != "operator" {
+		t.Errorf("command-not-found Meta = %+v, want a reroute to the operator", notFound.Meta)
+	}
+	if note, _ := notFound.Meta["rerouteNote"].(string); !strings.Contains(note, "`this-command-does-not-exist-xyz` is not installed") {
+		t.Errorf("reroute note = %q, want it to name the missing program", note)
+	}
 
 	if runtime.GOOS == "windows" {
 		// Git Bash on Windows doesn't enforce the Unix exec bit the way a
@@ -365,5 +374,23 @@ func TestTerminalRunsInsideWorkspaceRoot(t *testing.T) {
 	// the test binary happens to run from.
 	if !strings.Contains(strings.ToLower(result.Output), strings.ToLower(ws.Root())) {
 		t.Errorf("pwd output %q does not reference workspace root %q", result.Output, ws.Root())
+	}
+}
+
+// Live: the whole sentence ran as the command and failed with exit 127.
+func TestExtractCommandLeavesWhatToReportForTheReply(t *testing.T) {
+	cases := map[string]string{
+		"run curl -sI https://example.com in the terminal and tell me the content-type header": "curl -sI https://example.com",
+		"run `df -h` and tell me how much is free":                                             "df -h",
+		"run uname -r from the shell":                                                          "uname -r",
+		"execute ls -la ~/work, then show me the biggest file":                                 "ls -la ~/work",
+		// What is part of a command stays.
+		"run the command: grep -r \"tell me\" notes/": "grep -r \"tell me\" notes/",
+		"run echo hello && echo world":                "echo hello && echo world",
+	}
+	for step, want := range cases {
+		if got, _ := extractCommand(step); got != want {
+			t.Errorf("extractCommand(%q) = %q, want %q", step, got, want)
+		}
 	}
 }

@@ -1,10 +1,12 @@
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
 
 from decurix_agent import config, progress, state, usage
+from decurix_agent.computer import approval
 from decurix_agent.identity import get_identity_context
 from decurix_agent.logging_utils import log
 from decurix_agent.memory_context import get_memory_context
@@ -65,6 +67,87 @@ why; a human will review it on the Decurix dashboard.
 """.strip()
 
 
+# A pause the model wrote itself (an answer starting with APPROVAL_MARKER) is
+# a pause here and nowhere else: soul finished that job as "answered" and
+# holds no checkpoint, so a reply sent with reply=True resumes nothing and is
+# run as a request of its own. Measured: `google "sanmayee is great"` came
+# back as "NEEDS_APPROVAL: I want to Google ...", the human said "proceed",
+# and soul answered the single word "proceed" with "I can't assist with that
+# request". So the task and the question are kept here, and the reply goes
+# back as the original task with the human's answer in its context.
+_written_pause = None
+
+
+# ============================================================
+# What the chat and the desktop's card show while soul works
+#
+# soul's job log is written for whoever debugs soul: `scheduler: "chatgpt
+# \"where is x\"" [general] -> skill=general model=qwen2.5-coder:3b`,
+# `memory: nothing in L1 yet`. Forwarded as it was, that is what the card's
+# "Working on" line and the chat's live box showed a person. Each line is put
+# into words here, or left out when it only describes soul's own plumbing;
+# the raw line is still in soul's job log and in /tmp/decurix-startup.log.
+# ============================================================
+
+# Plumbing: which classifier matched, which model a step went to, memory and
+# skill-library lookups that found nothing, workspace ingestion.
+_INTERNAL_STEP = re.compile(
+    r"^(?:memory: (?:checking L1|nothing in L1)"
+    r"|skill library: (?:checking for|no matching|skipping|match failed)"
+    r"|scheduler: \".*\" \[[\w-]+\] -> skill="
+    r"|scheduler: rerouting to the "
+    r"|Answering directly - no task steps needed"
+    r"|rag(?:-progress)?: |l1: |stored: |failed to store: "
+    r"|could not judge whether this is worth remembering"
+    r"|feedback: (?:found|could not consult)"
+    r"|skill:[\w-]+ -> model replied: "
+    r"|coding-architecture: =+"
+    r"|no skill matched task type)"
+)
+
+_STEP_REWRITES = [
+    (re.compile(r"^skill:[\w-]+ -> \$ (.+)$", re.DOTALL), lambda m: f"Running: {m.group(1)}"),
+    (re.compile(r"^skill:[\w-]+ -> exit 0(?: \u00b7 (.*))?$", re.DOTALL),
+     lambda m: f"Output: {m.group(1)}" if m.group(1) else "The command finished"),
+    (re.compile(r"^skill:[\w-]+ -> exit (\d+)(?: \u00b7 (.*))?$", re.DOTALL),
+     lambda m: f"The command failed (exit {m.group(1)})" + (f": {m.group(2)}" if m.group(2) else "")),
+    (re.compile(r"^skill:general -> this needs a look at the machine.*$"),
+     lambda m: "This needs a look at the machine - working it out command by command"),
+    (re.compile(r"^scheduler: step (\d+)/(\d+) \[[\w-]+\] (.*)$", re.DOTALL),
+     lambda m: f"Step {m.group(1)} of {m.group(2)}: {m.group(3)}"),
+    (re.compile(r"^memory: recalled (\d+) fact\(s\) from L1$"),
+     lambda m: f"Remembering {m.group(1)} thing(s) from earlier conversations"),
+    (re.compile(r"^websearch: querying (\S+) for: (.*)$", re.DOTALL),
+     lambda m: f"Searching {m.group(1)} for: {m.group(2)}"),
+    (re.compile(r"^skill:[\w-]+ -> (.*)$", re.DOTALL), lambda m: m.group(1)),
+    (re.compile(r"^(?:scheduler|atomizer|safety|websearch|feedback|skill library|memory|reasoning|coding-[a-z]+): (.*)$", re.DOTALL),
+     lambda m: m.group(1)),
+]
+
+
+def readable_step(line):
+    """A soul job-log line as a person reads it in the chat, or None to leave it out."""
+
+    text = (line or "").strip().replace('\\"', '"')
+    if not text or _INTERNAL_STEP.match(text):
+        return None
+
+    for pattern, rewrite in _STEP_REWRITES:
+        match = pattern.match(text)
+        if match:
+            text = rewrite(match).strip()
+            break
+
+    return text[:1].upper() + text[1:] if text else None
+
+
+def _emit_step(line):
+    log(f"TheBot: {line}")
+    text = readable_step(line)
+    if text:
+        progress.emit(text)
+
+
 def _post_json(url, payload):
     body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
@@ -119,7 +202,7 @@ def _stream_job(base, job_id):
                 continue
 
             if event.get("type") == "log":
-                progress.emit(event.get("line") or "")
+                _emit_step(event.get("line") or "")
 
             elif event.get("type") == "final":
                 return event.get("job") or {}
@@ -161,7 +244,7 @@ def _cancel_job(base, job_id):
         log(f"Could not cancel TheBot job {job_id}: {exc}")
 
 
-def _build_context():
+def _build_context(extra=""):
     """
     The standing context soul folds into every model call's system frame:
     who this desktop is, its persistent worker memory, and the approval
@@ -185,10 +268,33 @@ def _build_context():
 
     parts.append(SAFETY_PREAMBLE)
 
+    if extra:
+        parts.append(extra)
+
     return "\n\n".join(parts)
 
 
-def _run_thebot(request, reply):
+def _answer_context(asked, reply):
+    """
+    What the human said to a pause the model wrote itself, for the context
+    of the task sent again - never glued onto the task, which is what soul
+    triages and plans (see _build_context).
+    """
+
+    if approval.is_approval(reply):
+        return (
+            "Earlier in this task you asked the human for approval: "
+            f"\"{asked}\". They replied \"{reply}\" - that is approval. "
+            "Do the task now, and do not ask for approval for it again."
+        )
+
+    return (
+        f"Earlier in this task you asked the human: \"{asked}\". "
+        f"They replied: \"{reply}\". Do the task with that answer in mind."
+    )
+
+
+def _run_thebot(request, reply, extra_context=""):
     """
     Submit one request to TheBot's /api/chat and follow the job until it
     finishes.
@@ -208,7 +314,7 @@ def _run_thebot(request, reply):
             base + "/api/chat",
             {
                 "prompt": request,
-                "context": _build_context(),
+                "context": _build_context(extra_context),
                 "workdir": str(config.WORK_DIR),
                 # One session per desktop, for the whole life of the
                 # container: soul keeps the conversation's history and the
@@ -373,7 +479,12 @@ def _handle_job(job, error, resuming=False):
     # The model can still pause on its own, in words, with the marker the
     # approval rules above ask for.
     if answer.startswith(APPROVAL_MARKER):
-        ask_for_query(answer[len(APPROVAL_MARKER):].strip(), kind="approval")
+        global _written_pause
+        asked = answer[len(APPROVAL_MARKER):].strip()
+        # state.current_task is still the original request while a reply
+        # is handled, so a second written pause keeps the first task.
+        _written_pause = {"task": state.current_task, "asked": asked}
+        ask_for_query(asked, kind="approval")
         return
 
     write_final_reply(answer or "(no result text)")
@@ -436,6 +547,9 @@ def warm_after_ready():
 
 
 def perform_task(task, task_file):
+    global _written_pause
+    _written_pause = None
+
     state.current_task = task
     state.current_task_file = task_file
     state.waiting_for_query = False
@@ -470,6 +584,19 @@ def continue_after_query(query_response):
     log("RECEIVED HUMAN REPLY TO QUERY (TheBot harness)")
     log(query_response)
     log("========================================")
+
+    global _written_pause
+    written, _written_pause = _written_pause, None
+
+    if written:
+        # soul holds nothing paused for a pause the model only wrote: the
+        # task goes again, with the question and the answer in its context.
+        job, error = _run_thebot(
+            written["task"], reply=False,
+            extra_context=_answer_context(written["asked"], query_response),
+        )
+        _handle_job(job, error, resuming=True)
+        return
 
     # soul resumes the job it paused for this session, with the reply as
     # the answer - approving the exact command it stopped before, or

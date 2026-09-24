@@ -5,7 +5,7 @@ from decurix_agent import config, harness
 from decurix_agent.computer import demonstration, recording
 from decurix_agent.http_api import Handler
 from decurix_agent.logging_utils import log
-from decurix_agent.watchers import command_watcher
+from decurix_agent.watchers import command_watcher, watchdog
 
 
 def tidy_recordings():
@@ -89,6 +89,13 @@ def main():
     threading.Thread(
         target=command_watcher,
         daemon=True,
+        name="command-watcher",
+    ).start()
+
+    threading.Thread(
+        target=watchdog,
+        daemon=True,
+        name="command-watchdog",
     ).start()
 
     threading.Thread(

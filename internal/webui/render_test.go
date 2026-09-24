@@ -2,6 +2,7 @@ package webui
 
 import (
 	"bytes"
+	"html/template"
 	"io"
 	"strings"
 	"testing"
@@ -44,6 +45,16 @@ func TestRenderEveryPage(t *testing.T) {
 		ParentID: running.ID,
 	}
 
+	crashed := desktop.Desktop{
+		ID:      "broken-box",
+		Name:    "broken-box",
+		Profile: "basic",
+		Harness: desktop.HarnessOllama,
+		Status:  "stopped",
+		URL:     "/desktop/broken-box/",
+		Crash:   "it exited with code 1",
+	}
+
 	entry := memory.WorkerMemoryEntry{
 		ID:        "memory-1",
 		DesktopID: running.ID,
@@ -54,7 +65,7 @@ func TestRenderEveryPage(t *testing.T) {
 	}
 
 	page := PageData{
-		Desktops:     []desktop.Desktop{running, stopped},
+		Desktops:     []desktop.Desktop{running, stopped, crashed},
 		WorkerMemory: []memory.WorkerMemoryEntry{entry},
 		MemoryByDesktop: map[string][]memory.WorkerMemoryEntry{
 			running.ID: {entry},
@@ -83,6 +94,11 @@ func TestRenderEveryPage(t *testing.T) {
 	// so it is asserted here rather than trusted.
 	if !strings.Contains(index.String(), "ui=touch") {
 		t.Fatal("the dashboard no longer opens a desktop screen with ?ui=touch; mobile keyboard and pinch-zoom will not be injected")
+	}
+
+	// A crashed desktop's card is red and says why, not just "stopped".
+	if !strings.Contains(index.String(), `class="status crashed"`) || !strings.Contains(index.String(), "Desktop crashed: it exited with code 1") {
+		t.Fatal("a crashed desktop's card does not show that it crashed")
 	}
 
 	if err := renderer.RenderRequests(io.Discard, page); err != nil {
@@ -205,6 +221,29 @@ func TestRenderEveryPage(t *testing.T) {
 	}
 	if !strings.Contains(view.String(), `TARGET = "C:\\Program Files\\App\\a.exe"`) {
 		t.Fatalf("the launch target did not reach the page's script as a JS string:\n%s", view.String())
+	}
+
+	// The screen viewer: a desktop's name is whatever a person typed and its
+	// password goes into the page's script, so both must stay quoted strings.
+	var screen bytes.Buffer
+	if err := renderer.RenderScreen(&screen, ScreenPageData{
+		ID: "terga", Name: `Ops </title><script>alert(1)</script>`, Password: `p"w</script>`,
+		NoVNC: "/static/novnc/rfb-1.6.0.js", Controls: template.HTML(`<div id="decurix-ticket"></div>`),
+	}); err != nil {
+		t.Fatalf("RenderScreen: %v", err)
+	}
+	viewer := screen.String()
+	if strings.Contains(viewer, "<script>alert(1)") || strings.Contains(viewer, `p"w</script>`) {
+		t.Fatalf("the screen viewer let a value break out of its context:\n%s", viewer)
+	}
+	for _, want := range []string{
+		`import { RFB, KeyTable, keysyms } from "/static/novnc/rfb-1.6.0.js"`,
+		`const ID = "terga"`,
+		`<div id="decurix-ticket"></div>`,
+	} {
+		if !strings.Contains(viewer, want) {
+			t.Fatalf("the screen viewer is missing %q", want)
+		}
 	}
 
 	// The DAGs list, empty and with one entry that has already run.

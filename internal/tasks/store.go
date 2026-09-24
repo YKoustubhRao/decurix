@@ -489,6 +489,29 @@ func (s *Store) Busy(workerID string) (string, error) {
 	}
 }
 
+// IsOpen reports whether a task still has a live execution on a worker -
+// queued, running or waiting on a human. A desktop that restarted on its own
+// reports the task it lost; one restarted through the API had that task
+// closed already (CloseOpen), and its report must not be recorded twice.
+func (s *Store) IsOpen(workerID, taskID string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var one int
+	err := s.db.QueryRow(
+		`SELECT 1 FROM executions WHERE worker_id = ? AND task_id = ? AND status IN (?, ?, ?) LIMIT 1`,
+		workerID, taskID, StatusQueued, StatusRunning, StatusWaiting,
+	).Scan(&one)
+
+	switch {
+	case err == sql.ErrNoRows:
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("tasks: checking task: %w", err)
+	}
+	return true, nil
+}
+
 // LastActivity returns when a worker's task records were last touched - a
 // task created, started, finished, or reopened by a human's reply - or
 // ok=false when the worker has no task records at all yet. Used by

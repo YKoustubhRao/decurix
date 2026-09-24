@@ -95,8 +95,30 @@ var (
 // panel and pressing its buttons, which only the operator's `gui` command
 // can do.
 func wantsScreen(prompt string) bool {
-	return screenSurfaceRe.MatchString(prompt) && screenActionRe.MatchString(prompt)
+	return screenSurfaceRe.MatchString(prompt) && matchesWord(screenActionRe, prompt)
 }
+
+// matchesWord reports whether re matches somewhere that is a word of its
+// own, not part of a hyphenated one: "content-type" is a header, not a
+// request to type, and "multi-select" asks nothing to be selected. Measured
+// live: "run curl -sI https://example.com in the terminal and tell me the
+// content-type header" went to the browser extension for its "type".
+func matchesWord(re *regexp.Regexp, prompt string) bool {
+	for _, loc := range re.FindAllStringIndex(prompt, -1) {
+		if loc[0] > 0 && prompt[loc[0]-1] == '-' {
+			continue
+		}
+		if loc[1] < len(prompt) && prompt[loc[1]] == '-' {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// shellRe is a request that names where it wants to be done, and it is not a
+// web page: "in the terminal", "from the shell", "on the command line".
+var shellRe = regexp.MustCompile(`(?i)\b(terminal|shell|command[\s-]?line|bash|console)\b`)
 
 var (
 	// The explicit ask, in the user's own words: "browse the web", "browse
@@ -125,7 +147,10 @@ func wantsBrowser(prompt string) bool {
 	if browsePhraseRe.MatchString(prompt) {
 		return true
 	}
-	return webDestinationRe.MatchString(prompt) && webInteractionRe.MatchString(prompt)
+	if shellRe.MatchString(prompt) {
+		return false
+	}
+	return webDestinationRe.MatchString(prompt) && matchesWord(webInteractionRe, prompt)
 }
 
 // greetingLeadRe strips the greeting off the front of a turn, so what

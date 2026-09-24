@@ -252,7 +252,7 @@ def _goto_sheet_cell(element):
     time.sleep(0.2)
 
 
-def _perform(kind, element, point, text, keys, direction, amount, option, append, end=None):
+def _perform(kind, element, point, text, keys, direction, amount, option, append, end=None, files=None):
     """Carry out one action; return which backend did it."""
 
     if element is not None and element.get("handle", {}).get("sheet_cell"):
@@ -374,11 +374,19 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
         xinput.drag(start[0], start[1], end[0], end[1])
         return "xdotool"
 
+    if kind == "upload":
+        if element is None or not files:
+            raise ComputerError("upload needs a target element and one or more file paths")
+        if element.get("source") == "cdp":
+            cdp.set_file_input_files(element, files)
+            return "cdp"
+        raise ComputerError("upload is currently supported for browser elements")
+
     raise ComputerError(f"unknown action {kind!r}")
 
 
 def act(kind, ref=None, role=None, name=None, path=None, point=None,
-        text=None, keys=None, direction=None, amount=None, option=None, append=False, end=None):
+        text=None, keys=None, direction=None, amount=None, option=None, append=False, end=None, files=None):
     """
     Do one thing on the screen and report what changed. `end` is the point a
     drag drops at.
@@ -424,6 +432,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         "end": list(end) if end else None,
         "text": kept,
         "append": bool(append) if kind == "type" else None,
+        "files": [str(f) for f in files] if files else None,
         "keys": keys,
         "option": option,
         "direction": (direction or "down") if kind == "scroll" else None,
@@ -457,7 +466,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         }
 
     try:
-        backend = _perform(kind, element, point, text, keys, direction, amount, option, append, end)
+        backend = _perform(kind, element, point, text, keys, direction, amount, option, append, end, files=files)
     except ComputerError as exc:
         entry.update({
             "outcome": "failed",
@@ -487,7 +496,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     verb = {
         "click": "Clicked", "double_click": "Double-clicked", "right_click": "Right-clicked",
         "type": "Typed into", "key": "Pressed keys on", "scroll": "Scrolled",
-        "select": "Selected in", "drag": "Dragged",
+        "select": "Selected in", "drag": "Dragged", "upload": "Uploaded to",
     }[kind]
 
     summary = f"{verb} {target or 'the focused window'}"
@@ -499,6 +508,9 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         summary = f"Pressed {' '.join(keys)}" + (f" on {target}" if target else "")
     elif kind == "select":
         summary = f"Selected {el._quote(option or '')} in {target}"
+    elif kind == "upload":
+        files_str = ", ".join(os.path.basename(f) for f in (files or []))
+        summary = f"Uploaded {files_str} to {target or 'the file input'}"
     if decision.approved:
         summary += " (approved by the human)"
 
@@ -752,6 +764,9 @@ APPS = {
     "terminal": ["xfce4-terminal"],
     "chromium": ["chromium-browser"],
     "browser": ["chromium-browser"],
+    "mail": ["thunderbird"],
+    "email": ["thunderbird"],
+    "thunderbird": ["thunderbird"],
 }
 
 OFFICE_EXTENSIONS = (".odt", ".ods", ".odp", ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".csv", ".rtf")
@@ -845,7 +860,7 @@ def _open(target, new_tab):
             argv = ["soffice", "--nologo", str(path)]
         elif path.is_dir():
             argv = ["thunar", str(path)]
-        elif path.suffix.lower() in (".html", ".htm", ".pdf"):
+        elif path.suffix.lower() in (".html", ".htm", ".pdf", ".eml"):
             return _open("file://" + str(path.resolve()), new_tab)
         else:
             argv = ["mousepad", str(path)]
@@ -890,3 +905,16 @@ def _wait_until(probe, seconds, failure):
     if failure:
         raise ComputerError(failure)
     return None
+
+
+def upload_files(target, files, ref=None):
+    """
+    Convenience helper to upload one or more files to a target element in the browser.
+    `target` can be an element ref (e12), role and name ('button "Upload"'), or selector.
+    """
+    if ref:
+        return act("upload", ref=ref, files=files)
+    if isinstance(target, str) and el.REF_RE.match(target):
+        return act("upload", ref=target, files=files)
+    return act("upload", name=target, files=files)
+

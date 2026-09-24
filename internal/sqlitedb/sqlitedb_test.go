@@ -1,10 +1,26 @@
 package sqlitedb
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestOpenEscapesFileName(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data #1%25.db")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE kept (id INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("database was not created at requested path: %v", err)
+	}
+}
 
 // A step already applied is skipped on the next start, and one appended
 // later is applied on top - which is what lets a component grow its schema

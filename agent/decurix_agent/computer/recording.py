@@ -201,6 +201,14 @@ def update(session_id, **fields):
         if meta is None:
             raise FileNotFoundError(f"no recording {session_id}")
 
+        # A rename keeps what the recording was first called as its `task`:
+        # the words a person typed for the ticket (`google "koustubh is
+        # great"`) are what a skill taught from it is matched against
+        # (mimic.plan), and a friendly name must not lose them.
+        title = fields.get("title")
+        if title is not None and title != meta.get("title") and meta.get("title") and not meta.get("task"):
+            meta["task"] = meta["title"]
+
         for key in ("title", "description", "status", "ended_at", "reason"):
             if fields.get(key) is not None:
                 meta[key] = fields[key]

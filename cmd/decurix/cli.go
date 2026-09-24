@@ -208,7 +208,7 @@ func runCLI(baseURL string) int {
 func printCLIHelp() {
 	fmt.Println(`Commands:
   list | ls                          list desktops
-  create <name> [--profile basic|developer|ai] [--harness ollama|claude|thebot] [--cpus N] [--memory-mb N] [--copy-apps] [--apps chrome,gh,ssh]
+  create <name> [--profile basic|developer|ai] [--harness thebot|claude|ollama] [--cpus N] [--memory-mb N] [--copy-apps] [--apps chrome,gh,ssh]
   start <id>
   pause <id>                         freeze container CPU (0% CPU)
   unpause | wake <id>                thaw frozen container (< 1ms)
@@ -284,7 +284,7 @@ var createFlags = map[string]string{
 
 func cliCreate(ctx context.Context, c *apiClient, args []string) {
 	if len(args) == 0 {
-		fmt.Println("usage: create <name> [--profile basic|developer|ai] [--harness ollama|claude|thebot] [--cpus N] [--memory-mb N] [--copy-apps] [--apps chrome,gh,ssh]")
+		fmt.Println("usage: create <name> [--profile basic|developer|ai] [--harness thebot|claude|ollama] [--cpus N] [--memory-mb N] [--copy-apps] [--apps chrome,gh,ssh]")
 		return
 	}
 
@@ -513,6 +513,8 @@ func printChatEntry(e conversation.Entry) {
 		switch e.Kind {
 		case conversation.KindApproval:
 			label = "Agent (needs approval)"
+		case conversation.KindQuery:
+			label = "Agent (needs your answer)"
 		case conversation.KindError:
 			label = "Agent (error)"
 		default:

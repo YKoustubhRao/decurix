@@ -48,6 +48,8 @@ from decurix_agent.computer import privacy
 STATE_DIR = Path.home() / ".decurix" / "computer"
 STATE_FILE = STATE_DIR / "approval.json"
 
+from decurix_agent.computer import modes
+
 GRANT_SECONDS = 15 * 60
 
 # Controls whose own label says they commit the human to something.
@@ -77,6 +79,13 @@ MESSAGING_CONTEXT = re.compile(
     re.IGNORECASE,
 )
 
+# Channels and external network endpoints
+EXTERNAL_CHANNELS = re.compile(
+    r"\b(email|mail|gmail|outlook|yahoo|proton|slack|telegram|discord|whatsapp|"
+    r"teams|twitter|x\.com|linkedin|facebook|stripe|paypal|checkout)\b",
+    re.IGNORECASE,
+)
+
 ENTER_KEY = re.compile(r"(^|\+)(return|enter|kp_enter)$", re.IGNORECASE)
 
 # The same words soul's internal/safety.IsApproval accepts, so a reply means
@@ -100,12 +109,46 @@ def is_approval(reply):
     return bool(reply) and bool(APPROVAL_RE.match(reply)) and not REFUSAL_RE.search(reply)
 
 
+def is_external_action(kind, element=None, text=None, keys=None, context=None):
+    """
+    Check if an on-screen action targets an external communication channel,
+    payment provider, or public service (Dual-zone policy).
+    """
+
+    context = context or {}
+    where = " ".join(filter(None, [context.get("window"), context.get("url"),
+                                   element.get("window_title") if element else None]))
+
+    if element is not None:
+        name = element.get("name") or ""
+        if element.get("role") in ACTIVATING_ROLES:
+            if CONSEQUENTIAL_CONTROL.match(name) or EXTERNAL_CHANNELS.search(name):
+                return True
+
+    if MESSAGING_CONTEXT.search(where) or EXTERNAL_CHANNELS.search(where):
+        if kind == "key" and keys and any(ENTER_KEY.search(k.strip()) for k in keys):
+            return True
+        if kind == "type" and text and ("\n" in text or "@" in text):
+            return True
+
+    return False
+
+
 def assess(kind, element, text=None, keys=None, context=None):
     """
     Why this action needs a human's approval first, or None.
 
     `context` is {"window": active window title, "url": active tab URL}.
     """
+
+    stage = modes.get_stage()
+
+    # Stage 1: Observation mode stops mutating actions to observe without external side-effects
+    if stage == modes.STAGE_OBSERVATION:
+        if kind in ("click", "double_click") and element is not None and element.get("role") in ACTIVATING_ROLES:
+            return "worker is in Stage 1 Observation (shadowing) mode - mutating action paused"
+        if kind == "key" and keys and any(ENTER_KEY.search(k.strip()) for k in keys):
+            return "worker is in Stage 1 Observation (shadowing) mode - key submission paused"
 
     context = context or {}
     where = " ".join(filter(None, [context.get("window"), context.get("url"),
@@ -141,12 +184,27 @@ def _fingerprint(kind, element, text, keys, point):
     return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()[:24]
 
 
+# How long anything waits for the approval store. Every holder keeps it for a
+# file read and write, so a wait this long means a holder is stuck (a `gui`
+# process frozen mid-write); the agent's command watcher settles every reply
+# through here and must never wait on that forever.
+LOCK_TIMEOUT_SECONDS = 10
+
+
 @contextmanager
 def _locked():
     STATE_DIR.mkdir(parents=True, exist_ok=True)
 
     with open(STATE_DIR / "approval.lock", "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("the approval store is held by something that is not letting go")
+                time.sleep(0.05)
 
         try:
             state = json.loads(STATE_FILE.read_text(encoding="utf-8"))

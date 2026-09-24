@@ -224,7 +224,8 @@ class Answering(unittest.TestCase):
 
     def test_an_unclear_confirmation_saves_nothing_and_can_be_asked_again(self):
         skill = learning.build([demo("demo-20260914T101500-aaaaaa", "Acme")])
-        result = answer_all(skill, {"confirm": "maybe"})
+        # Any other reply is a name; one with nothing to name it by is not.
+        result = answer_all(skill, {"confirm": "?"})
 
         self.assertEqual((result["decision"], skill["status"]), ("hold", skills.DRAFT))
         self.assertEqual(learning.next_question(skill)["kind"], "confirm")
@@ -346,6 +347,31 @@ class Requests(unittest.TestCase):
         self.assertFalse(skill_task.handles("/replay x"))
 
 
+class LearnedMemoryDispatch(unittest.TestCase):
+    def test_optional_memory_write_does_not_block_skill_completion(self):
+        started = threading.Event()
+        release = threading.Event()
+        returned = threading.Event()
+
+        def slow_memory(_skill):
+            started.set()
+            release.wait(timeout=2)
+
+        def launch():
+            skill_task._remember_async({"name": "saved-skill"})
+            returned.set()
+
+        with mock.patch.object(skill_task, "_remember", slow_memory):
+            caller = threading.Thread(target=launch)
+            caller.start()
+            try:
+                self.assertTrue(started.wait(timeout=0.2))
+                self.assertTrue(returned.wait(timeout=0.2))
+            finally:
+                release.set()
+                caller.join(timeout=1)
+
+
 class TeachingBase(unittest.TestCase):
     """A desktop with a recordings store, a skills store and a scripted screen, and messaging caught."""
 
@@ -362,6 +388,7 @@ class TeachingBase(unittest.TestCase):
         self.asked, self.finals, self.remembered = [], [], []
         patches = [
             mock.patch.object(skill_task, "remember", lambda title, summary, category="workflow": self.remembered.append((title, summary, category))),
+            mock.patch.object(skill_task, "_remember_async", lambda skill: skill_task._remember(skill)),
             mock.patch.object(skill_task, "ask_for_query", lambda text, kind="query", engine=None: self.asked.append((text, kind))),
             mock.patch.object(skill_task, "write_final_reply", lambda text, kind="final", engine=None: self.finals.append((text, kind))),
             mock.patch.object(skill_task.usage, "add"),
@@ -404,7 +431,8 @@ class Teaching(TeachingBase):
 
         self.assertEqual([kind for _, kind in self.asked], ["query"] * 4)
         self.assertIn("learned 4 steps", self.asked[0][0])
-        self.assertIn("Save it as `add-a-customer`", self.asked[3][0])
+        self.assertIn("What should I call it?", self.asked[3][0])
+        self.assertIn("`yes` keeps \"Add a customer\"", self.asked[3][0])
         self.assertEqual(self.finals, [])
         self.assertEqual(skills.load("add-a-customer")["status"], skills.DRAFT)
 
@@ -413,6 +441,37 @@ class Teaching(TeachingBase):
         self.assertEqual(self.finals[-1][1], "final")
         self.assertIn("/skill add-a-customer customer_name=", self.finals[-1][0])
         self.assertEqual(skills.load("add-a-customer")["status"], skills.READY)
+
+    def test_the_last_question_takes_a_name(self):
+        self.teach("the customer is in the list", "yes", "changes")
+
+        skill_task.resume("Add a CRM customer")
+
+        self.assertIn("as `add-a-crm-customer`", self.finals[-1][0])
+        saved = skills.load("add-a-crm-customer")
+        self.assertEqual((saved["title"], saved["status"]), ("Add a CRM customer", skills.READY))
+        # The goal a request is matched against is still what was recorded.
+        self.assertEqual(saved["goal"], "Add a customer")
+        # The draft it was kept under while being taught is gone.
+        with self.assertRaises(FileNotFoundError):
+            skills.load("add-a-customer")
+
+    def test_a_name_that_looks_like_an_answer_is_still_a_name(self):
+        self.teach("the customer is in the list", "yes", "changes")
+
+        skill_task.resume("Delete old customers")
+
+        self.assertEqual(skills.load("delete-old-customers")["status"], skills.READY)
+
+    def test_a_name_given_when_teaching_is_offered_back(self):
+        self.record()
+        skill_task.perform(f'/learn {self.SESSION} name="Onboard a client"')
+        for reply in ("the customer is in the list", "yes", "changes"):
+            skill_task.resume(reply)
+
+        self.assertIn("I will save it as \"Onboard a client\"", self.asked[-1][0])
+        skill_task.resume("yes")
+        self.assertEqual(skills.load("onboard-a-client")["status"], skills.READY)
 
     def test_a_saved_skill_lands_in_the_desktops_learned_memory_and_a_draft_does_not(self):
         self.teach("the customer is in the list", "yes", "changes")
