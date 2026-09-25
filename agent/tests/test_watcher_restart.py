@@ -96,6 +96,41 @@ class Replies(Base):
         state.waiting_for_query = False
         self.assertFalse(watchers.is_reply_file(messaging.save_request("a new request", TASK).name))
 
+    def test_an_empty_reply_is_retried_when_its_writer_finishes(self):
+        state.waiting_for_query = True
+        state.current_task = "/learn demo-x"
+        state.paused_skill = {"mode": "learn"}
+        path = self.request("", reply=True)
+        watchers._pass()
+        self.assertEqual(FakeThread.started, [])
+        self.assertEqual(state.processed_commands, set())
+        path.write_text("skip", encoding="utf-8")
+        watchers._pass()
+        self.assertEqual(FakeThread.started[0][0], watchers.skill_task.resume)
+
+    def test_a_reply_is_invisible_to_watcher_until_its_text_is_complete(self):
+        state.waiting_for_query = True
+        state.current_task = "/learn demo-x"
+        state.paused_skill = {"mode": "learn"}
+        original_write = Path.write_text
+        checked = []
+
+        def slow_write(path, text, **kwargs):
+            if path.parent == self.command_dir and path.name.endswith(".tmp"):
+                watchers._pass()
+                checked.append(list(self.command_dir.glob("*.txt")))
+                self.assertEqual(state.processed_commands, set())
+            return original_write(path, text, **kwargs)
+
+        with mock.patch.object(Path, "write_text", slow_write):
+            path = messaging.save_request("skip", TASK)
+
+        self.assertEqual(checked, [[]])
+        self.assertEqual(path.read_text(), "skip")
+        watchers._pass()
+        self.assertEqual(FakeThread.started[0][0], watchers.skill_task.resume)
+        self.assertFalse(path.exists())
+
     def test_a_reply_nothing_is_waiting_for_is_answered_not_run(self):
         path = self.request("keep", reply=True)
 

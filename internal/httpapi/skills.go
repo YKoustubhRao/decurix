@@ -167,6 +167,11 @@ func (s *Server) learnRecordingHandler(w http.ResponseWriter, r *http.Request) {
 func (s *Server) sendTaught(w http.ResponseWriter, r *http.Request, id, content, agentPath string, payload map[string]any) {
 	worker := desktop.SanitizeID(id)
 
+	// Held until the request is handed over, so no automated send can
+	// slip in between this busy check and it (see sendlock.go).
+	unlock := s.lockDesktop(worker)
+	defer unlock()
+
 	if why, err := s.Tasks.Busy(worker); err != nil {
 		log.Printf("skills: %v", err)
 	} else if why != "" {

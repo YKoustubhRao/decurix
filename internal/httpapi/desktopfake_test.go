@@ -28,6 +28,15 @@ func fakeDesktopManager(t *testing.T, existingIDs ...string) *desktop.Manager {
 	}
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A page that lists desktops (the triggers page) gets none: only Get
+		// knows the given IDs.
+		if strings.HasSuffix(r.URL.Path, "/containers/json") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte("[]"))
+
+			return
+		}
+
 		for id := range exists {
 			if strings.Contains(r.URL.Path, "/containers/desktop_"+id+"/json") {
 				w.Header().Set("Content-Type", "application/json")

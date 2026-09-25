@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
+<title>Triggers · Decurix</title>
+
+{{template "theme"}}
+{{template "trigger-css"}}
+{{template "trigger-list-css"}}
+
+<style>
+.stack{display:grid;gap:18px}
+
+.panel-head{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:15px 20px;
+  border-bottom:1px solid var(--line);
+  font-size:14px;
+  font-weight:650;
+  color:var(--text)
+}
+.panel-head svg{color:var(--text-3)}
+.panel-head .grow{flex:1}
+
+.section-title{display:flex;align-items:center;gap:8px;margin:10px 0 -4px;font-size:12px;font-weight:650;
+  letter-spacing:.04em;text-transform:uppercase;color:var(--text-3)}
+
+.awake{display:flex;gap:12px;align-items:flex-start;padding:15px 20px}
+.awake-mark{
+  flex:none;
+  width:30px;height:30px;
+  display:grid;place-items:center;
+  border-radius:var(--r-md);
+  background:var(--surface-2);
+  color:var(--text-3)
+}
+.awake[data-state="held"] .awake-mark{background:var(--live-soft);color:var(--live)}
+.awake[data-state="off"] .awake-mark{background:var(--busy-soft);color:var(--busy)}
+.awake-body{display:grid;gap:4px;min-width:0}
+.awake-title{font-size:13.5px;font-weight:600;color:var(--text)}
+
+.compose{display:grid;gap:16px;padding:20px}
+.compose .textarea{min-height:120px;font-family:var(--sans);font-size:13.5px}
+.kind-pane{display:none}
+.kind-pane.on{display:grid;gap:8px}
+.kind-pane .input.mono{font-family:var(--mono)}
+.compose-foot{
+  display:flex;align-items:center;gap:12px;padding:13px 20px;
+  border-top:1px solid var(--line);background:var(--surface-2);
+  border-radius:0 0 var(--r-xl) var(--r-xl)
+}
+.compose-foot .hint{flex:1}
+
+.row{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:14px;
+  padding:14px 20px;
+  border-bottom:1px solid var(--line)
+}
+.row:last-child{border-bottom:none}
+.row[data-enabled="false"]{opacity:.6}
+.row-main{min-width:0;display:grid;gap:5px}
+.row-title{font-size:13.5px;font-weight:600;color:var(--text);word-break:break-word}
+.row-meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;font-size:11.5px;color:var(--text-3)}
+.row-actions{display:flex;flex-wrap:wrap;gap:6px;flex-shrink:0;justify-content:flex-end}
+.row-error{font-size:12px;color:var(--danger);word-break:break-word}
+.row-inline{display:flex;gap:6px;margin-top:4px}
+.row-inline[hidden]{display:none}
+.row-inline .input{max-width:260px}
+.empty-row{padding:22px 20px;color:var(--text-3);font-size:13px;text-align:center}
+
+.state{
+  display:inline-flex;align-items:center;gap:5px;
+  height:21px;padding:0 8px;border-radius:999px;
+  font-size:11.5px;font-weight:600;
+  background:var(--surface-2);color:var(--text-2)
+}
+.state[data-kind="ok"]{background:var(--live-soft);color:var(--live)}
+.state[data-kind="wait"]{background:var(--busy-soft);color:var(--busy)}
+.state[data-kind="bad"]{background:var(--danger-soft);color:var(--danger)}
+
+.form{display:grid;gap:14px;padding:18px 20px;border-top:1px solid var(--line);background:var(--surface-2)}
+.form[hidden]{display:none}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.grid-3{display:grid;grid-template-columns:2fr 1fr 1fr;gap:12px}
+.form .input.mono{font-family:var(--mono)}
+.form-foot{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}
+details.adv summary{cursor:pointer;font-size:12px;color:var(--text-2);font-weight:600}
+details.adv[open] summary{margin-bottom:10px}
+
+@media (max-width:720px){
+  .grid-2,.grid-3{grid-template-columns:1fr}
+  .row{flex-direction:column}
+  .row-actions{justify-content:flex-start}
+  .compose-foot{flex-direction:column-reverse;align-items:stretch}
+}
+</style>
+</head>
+
+<body>
+
+{{template "sprite"}}
+
+<div id="progress"></div>
+<div id="toasts"></div>
+
+{{template "topbar" "triggers"}}
+
+<main class="wrap wrap-narrow">
+
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">Automation</div>
+      <h1>Triggers</h1>
+      <p class="page-sub">Start a desktop's task without sending it yourself: on a repeating schedule, once at a time you pick, or when an email arrives.</p>
+    </div>
+  </div>
+
+  <div class="stack">
+
+    <div class="panel">
+      <div class="awake" id="awake" data-state="idle">
+        <div class="awake-mark"><svg width="16" height="16"><use href="#i-clock"/></svg></div>
+        <div class="awake-body">
+          <div class="awake-title" id="awakeTitle">Checking…</div>
+          <div class="hint" id="awakeText"></div>
+          <div class="hint" id="wakeText" hidden></div>
+        </div>
+      </div>
+    </div>
+
+{{if .Desktops}}
+    <form class="panel" id="newTrigger" autocomplete="off">
+      <div class="panel-head">
+        <svg width="15" height="15"><use href="#i-plus"/></svg>
+        <span class="grow">New trigger</span>
+      </div>
+      <div class="compose">
+
+        <div class="field">
+          <label>Start it</label>
+          <div class="segmented" role="radiogroup" aria-label="Trigger" id="kindPicker">
+            <label class="seg"><input type="radio" name="kind" value="cron" data-kind="cron" checked><span>On a schedule</span></label>
+            <label class="seg"><input type="radio" name="kind" value="once" data-kind="once"><span>Once, later</span></label>
+            <label class="seg"><input type="radio" name="kind" value="email" data-kind="email"><span>When an email arrives</span></label>
+          </div>
+        </div>
+
+        <div class="kind-pane" data-pane="cron">
+          <label for="cron">Cron schedule <span class="mono">(minute hour day month weekday, UTC)</span></label>
+          <input class="input mono" id="cron" placeholder="*/30 * * * *">
+          <div class="hint">
+            Runs the request every time the schedule matches, with <span class="mono">TIME:{&hellip;}</span> appended.
+            <span class="mono">0 * * * *</span> hourly, <span class="mono">0 9 * * *</span> daily at 09:00 UTC,
+            <span class="mono">0 9 * * 1</span> every Monday at 09:00 UTC.
+          </div>
+        </div>
+
+        <div class="kind-pane" data-pane="once">
+          <label for="runAt">Run at <span class="mono">(your local time)</span></label>
+          <input class="input" type="datetime-local" id="runAt">
+          <div class="hint">Sends the request exactly once, at that time, with <span class="mono">TIME:{&hellip;}</span> appended.</div>
+        </div>
+
+        {{template "email-rule-fields"}}
+
+        <div class="field">
+          <label for="trigDesktop">Send the task to</label>
+          <select class="select" id="trigDesktop">
+            {{range .Desktops}}
+            <option value="{{.ID}}">{{.Name}}</option>
+            {{end}}
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="trigContent">Request</label>
+          <textarea class="textarea" id="trigContent" placeholder="Describe the task…"></textarea>
+        </div>
+
+      </div>
+      <div class="compose-foot">
+        <div class="hint">A due run waits while its desktop is busy, rather than land as someone's reply.</div>
+        <button type="submit" class="btn btn-primary" id="trigSave">
+          <svg width="15" height="15"><use href="#i-clock"/></svg>
+          <span id="trigSaveText">Create trigger</span>
+        </button>
+      </div>
+    </form>
+{{else}}
+    <div class="empty">
+      <div class="empty-mark"><svg width="19" height="19"><use href="#i-monitor"/></svg></div>
+      <h2>No desktops for a trigger to start</h2>
+      <p>Create a desktop first; a trigger sends its request to one.</p>
+    </div>
+{{end}}
+
+    <div class="panel">
+      <div class="panel-head">
+        <svg width="15" height="15"><use href="#i-clock"/></svg>
+        <span class="grow">Schedules</span>
+      </div>
+      <div id="schedList"></div>
+    </div>
+
+    <div class="section-title" id="email"><svg width="13" height="13"><use href="#i-mail"/></svg>Email</div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <svg width="15" height="15"><use href="#i-fork"/></svg>
+        <span class="grow">Email triggers</span>
+        <button type="button" class="btn btn-quiet btn-sm" id="showRule">
+          <svg width="14" height="14"><use href="#i-plus"/></svg>
+          New email trigger
+        </button>
+      </div>
+      <div id="ruleList"></div>
+    </div>
+
+    <div class="panel" id="mailboxes">
+      <div class="panel-head">
+        <svg width="15" height="15"><use href="#i-mail"/></svg>
+        <span class="grow">Mailboxes</span>
+        <button type="button" class="btn btn-quiet btn-sm" id="showConnect">
+          <svg width="14" height="14"><use href="#i-plus"/></svg>
+          Connect a mailbox
+        </button>
+      </div>
+      <div id="accountList"></div>
+
+      <form class="form" id="connectForm" hidden autocomplete="off">
+        <div class="grid-2">
+          <div class="field">
+            <label for="connEmail">Email address</label>
+            <input class="input" id="connEmail" type="email" placeholder="you@gmail.com" required>
+          </div>
+          <div class="field">
+            <label for="connPassword">App password</label>
+            <input class="input mono" id="connPassword" type="password" placeholder="abcd efgh ijkl mnop" required autocomplete="new-password">
+          </div>
+        </div>
+        <div class="hint">
+          For Gmail, an <strong>app password</strong>, not your Google password: turn on 2-Step Verification, then
+          Google Account &rsaquo; Security &rsaquo; App passwords. It is stored on this computer only and never shown again.
+          Decurix only reads (it never marks email as read, moves or sends anything), and only email that arrives
+          <em>after</em> you connect can trigger a task.
+        </div>
+        <details class="adv">
+          <summary>Another provider, or another folder</summary>
+          <div class="grid-3">
+            <div class="field">
+              <label for="connHost">IMAP server</label>
+              <input class="input mono" id="connHost" placeholder="imap.gmail.com">
+            </div>
+            <div class="field">
+              <label for="connPort">Port (TLS)</label>
+              <input class="input mono" id="connPort" inputmode="numeric" placeholder="993">
+            </div>
+            <div class="field">
+              <label for="connFolder">Folder</label>
+              <input class="input mono" id="connFolder" placeholder="INBOX">
+            </div>
+          </div>
+        </details>
+        <div class="form-foot">
+          <button type="button" class="btn btn-quiet" id="cancelConnect">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="connectButton">Test and connect</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <svg width="15" height="15"><use href="#i-inbox"/></svg>
+        <span class="grow">Started by email</span>
+      </div>
+      <div id="jobList"></div>
+    </div>
+
+  </div>
+
+</main>
+
+{{template "chrome-js"}}
+{{template "trigger-js"}}
+
+<script>
+(function(){
+  "use strict";
+
+  var toast = Decurix.toast, post = Decurix.post, T = window.Triggers, el = T.el;
+
+  var state = {accounts: [], rules: [], jobs: [], schedules: []};
+  var desktopSelect = document.getElementById("trigDesktop");
+
+  function desktopName(id){
+    var options = desktopSelect ? desktopSelect.options : [];
+    for(var i = 0; i < options.length; i++){
+      if(options[i].value === id){ return options[i].textContent; }
+    }
+    return id + " (deleted)";
+  }
+
+  function stateChip(text, kind){
+    var chip = el("span", "state");
+    chip.dataset.kind = kind || "";
+    chip.appendChild(el("span", "dot"));
+    chip.appendChild(document.createTextNode(text));
+    return chip;
+  }
+
+  function duration(ns){
+    var s = Math.round(ns / 1e9);
+    if(s < 3600){ return Math.round(s / 60) + " min"; }
+    var h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
+    return h + " h" + (m ? " " + m + " min" : "");
+  }
+
+  async function act(url, fields, done){
+    Decurix.busy(true);
+    try{
+      await post(url, fields);
+      if(done){ toast(done, "success"); }
+      await load();
+    }catch(e){
+      toast(e.message, "error");
+    }finally{
+      Decurix.busy(false);
+    }
+  }
+
+  /* ---------------- keep awake ---------------- */
+
+  function listing(items){
+    if(items.length < 2){ return items.join(""); }
+    return items.slice(0, -1).join(", ") + " and " + items[items.length - 1];
+  }
+
+  function renderAwake(ka, poller){
+    var box = document.getElementById("awake");
+    var title = document.getElementById("awakeTitle");
+    var text = document.getElementById("awakeText");
+    var wake = document.getElementById("wakeText");
+
+    var caught = "Closing the lid, choosing Sleep, or a flat battery still stop everything - nothing runs on a sleeping computer. " +
+      "Email that arrives meanwhile is not lost, and a schedule that came due runs once: both are picked up the moment the computer wakes.";
+
+    if(!ka){
+      box.dataset.state = "idle";
+      title.textContent = "Keep-awake is unknown";
+      text.textContent = caught;
+    }else if(!ka.enabled){
+      box.dataset.state = "off";
+      title.textContent = "This computer may go to sleep";
+      text.textContent = "Keep-awake is off (DECURIX_KEEP_AWAKE=0). " + caught;
+    }else if(!ka.wanted){
+      box.dataset.state = "idle";
+      title.textContent = "This computer sleeps as usual";
+      text.textContent = "No trigger is waiting, so it isn't kept awake. Once a schedule is set or a mailbox connected, it is kept from going to sleep on its own. " + caught;
+    }else if(ka.held || ka.script){
+      box.dataset.state = "held";
+      title.textContent = "Kept awake: " + listing(ka.reasons);
+      text.textContent = "This computer won't go to sleep on its own" +
+        (ka.held ? "" : " while the script that started Decurix is running") +
+        "; the screen can still turn off. " + caught;
+    }else{
+      box.dataset.state = "off";
+      title.textContent = "Nothing is keeping this computer awake";
+      text.textContent = "Decurix runs in a container, which can't stop the computer sleeping - the script that starts it does, " +
+        "and it isn't running. Start Decurix with scripts/…/build (or rebuild) and leave it open. " + caught;
+    }
+
+    var w = poller && poller.last_wake;
+    if(w && T.when(w.at)){
+      wake.hidden = false;
+      wake.textContent = "Last woke " + T.ago(w.at) + " after " + duration(w.slept_ns) + " asleep - every mailbox was checked straight away.";
+    }else{
+      wake.hidden = true;
+    }
+  }
+
+  /* ---------------- schedules ---------------- */
+
+  function renderSchedules(){
+    var list = document.getElementById("schedList");
+    list.innerHTML = "";
+    if(!state.schedules.length){
+      list.appendChild(el("div", "trig-empty", "No schedules yet."));
+    }
+    state.schedules.forEach(function(sch){ list.appendChild(T.scheduleRow(sch, desktopName, load)); });
+  }
+
+  /* ---------------- email triggers ---------------- */
+
+  function renderRules(){
+    var list = document.getElementById("ruleList");
+    list.innerHTML = "";
+    if(!state.rules.length){
+      list.appendChild(el("div", "trig-empty", state.accounts.length ? "No email triggers yet." : "Connect a mailbox below, then add an email trigger for it."));
+    }
+    state.rules.forEach(function(r){ list.appendChild(T.ruleRow(r, desktopName, load)); });
+  }
+
+  /* ---------------- mailboxes ---------------- */
+
+  function accountRow(a){
+    var row = el("div", "row");
+    row.dataset.enabled = a.enabled ? "true" : "false";
+
+    var main = el("div", "row-main");
+    main.appendChild(el("div", "row-title", a.email));
+
+    var meta = el("div", "row-meta");
+    var chips = {
+      connected: ["Connected", "ok"], connecting: ["Connecting", "wait"],
+      needs_password: ["Password needed", "bad"], error: ["Can't connect", "bad"], paused: ["Paused", ""]
+    };
+    var c = chips[a.status] || [a.status, ""];
+    meta.appendChild(stateChip(c[0], c[1]));
+    meta.appendChild(el("span", "mono", a.host + (a.folder !== "INBOX" ? " · " + a.folder : "")));
+
+    var checked = T.ago(a.last_check_at);
+    if(checked){ meta.appendChild(el("span", "", "Checked " + checked)); }
+    meta.appendChild(el("span", "", a.seen + " new email" + (a.seen === 1 ? "" : "s") + " read"));
+    main.appendChild(meta);
+
+    if(a.last_error){
+      main.appendChild(el("div", "row-error", a.last_error));
+    }
+
+    if(a.needs_password && a.enabled){
+      main.appendChild(el("div", "hint", "Not checked until you enter a new app password: logging in again and again with a refused one can get the account locked."));
+    }else if(a.status === "error" && a.failures > 1){
+      main.appendChild(el("div", "hint", "Trying again less often while it keeps failing (" + a.failures + " in a row)."));
+    }
+
+    var pw = el("form", "row-inline");
+    pw.hidden = !a.needs_password;
+    var pwInput = el("input", "input mono");
+    pwInput.type = "password";
+    pwInput.placeholder = "New app password";
+    pwInput.autocomplete = "new-password";
+    pw.appendChild(pwInput);
+    var pwSave = el("button", "btn btn-primary btn-sm", "Save");
+    pwSave.type = "submit";
+    pw.appendChild(pwSave);
+    pw.addEventListener("submit", function(e){
+      e.preventDefault();
+      if(!pwInput.value){ return pwInput.focus(); }
+      act("/api/mail/accounts/password", {id: a.id, password: pwInput.value}, "Password updated");
+    });
+    main.appendChild(pw);
+
+    row.appendChild(main);
+
+    var actions = el("div", "row-actions");
+    actions.appendChild(T.textButton("Check now", function(){
+      act("/api/mail/accounts/check", {id: a.id}, "Checked " + a.email);
+    }));
+    actions.appendChild(T.textButton(a.enabled ? "Pause" : "Resume", function(){
+      act("/api/mail/accounts/toggle", {id: a.id, enabled: String(!a.enabled)});
+    }));
+    if(!a.needs_password){
+      actions.appendChild(T.textButton("Change password", function(){
+        pw.hidden = !pw.hidden;
+        if(!pw.hidden){ pwInput.focus(); }
+      }));
+    }
+    actions.appendChild(T.iconButton("trash", "Disconnect " + a.email, function(){
+      if(!confirm("Disconnect " + a.email + "? Its saved password and its email triggers are deleted.")){ return; }
+      act("/api/mail/accounts/delete", {id: a.id}, "Disconnected");
+    }));
+    row.appendChild(actions);
+
+    return row;
+  }
+
+  /* A refresh must not throw away a password being typed into a row. */
+  function editingAccounts(list){
+    if(list.contains(document.activeElement)){ return true; }
+    return Array.prototype.some.call(list.querySelectorAll("input"), function(i){ return i.value !== ""; });
+  }
+
+  function renderAccounts(){
+    var list = document.getElementById("accountList");
+    if(editingAccounts(list)){ return; }
+
+    list.innerHTML = "";
+    if(!state.accounts.length){
+      list.appendChild(el("div", "empty-row", "No mailbox connected yet."));
+    }
+    state.accounts.forEach(function(a){ list.appendChild(accountRow(a)); });
+  }
+
+  /* ---------------- jobs ---------------- */
+
+  var jobChips = {
+    pending: ["Waiting", "wait"], sending: ["Sending", "wait"], sent: ["Sent", "ok"], failed: ["Failed", "bad"],
+    skipped: ["Skipped", "bad"], cancelled: ["Cancelled", ""]
+  };
+
+  function jobRow(j){
+    var row = el("div", "row");
+
+    var main = el("div", "row-main");
+    main.appendChild(el("div", "row-title", j.subject || "(no subject)"));
+
+    var meta = el("div", "row-meta");
+    var c = jobChips[j.status] || [j.status, ""];
+    meta.appendChild(stateChip(c[0], c[1]));
+    meta.appendChild(el("span", "", j.from));
+    meta.appendChild(el("span", "", "→ " + desktopName(j.desktop_id)));
+    meta.appendChild(el("span", "", j.rule_name));
+    var got = T.ago(j.created_at);
+    if(got){ meta.appendChild(el("span", "", got)); }
+    if(j.task_id){
+      var link = el("a", "", "Open task");
+      link.href = "/tasks/" + encodeURIComponent(j.task_id);
+      meta.appendChild(link);
+    }
+    main.appendChild(meta);
+
+    if(j.note){
+      main.appendChild(el("div", j.status === "pending" && !j.attempts ? "hint" : "row-error", j.note));
+    }
+    row.appendChild(main);
+
+    var actions = el("div", "row-actions");
+    if(j.status === "sending"){
+      /* Being handed to the desktop right now: nothing to cancel or retry. */
+    }else if(j.status === "pending"){
+      actions.appendChild(T.textButton("Cancel", function(){ act("/api/mail/jobs", {id: j.id, action: "cancel"}); }));
+    }else{
+      actions.appendChild(T.textButton(j.status === "skipped" ? "Send anyway" : "Run again", function(){
+        act("/api/mail/jobs", {id: j.id, action: "retry"}, "Queued");
+      }));
+    }
+    row.appendChild(actions);
+
+    return row;
+  }
+
+  function renderJobs(){
+    var list = document.getElementById("jobList");
+    list.innerHTML = "";
+    if(!state.jobs.length){
+      list.appendChild(el("div", "empty-row", "No email has started a task yet."));
+    }
+    state.jobs.forEach(function(j){ list.appendChild(jobRow(j)); });
+  }
+
+  /* ---------------- load ---------------- */
+
+  async function load(){
+    var mail = null, schedules = null;
+
+    try{
+      var r = await fetch("/api/mail", {cache: "no-store"});
+      var data = await r.json();
+      if(r.ok){ mail = data; }
+    }catch(e){ /* the rest of the page still works */ }
+
+    try{
+      var s = await fetch("/api/schedules", {cache: "no-store"});
+      if(s.ok){ schedules = await s.json(); }
+    }catch(e){ /* likewise */ }
+
+    if(mail){
+      state.accounts = mail.accounts || [];
+      state.rules = mail.rules || [];
+      state.jobs = mail.jobs || [];
+      T.setAccounts(state.accounts);
+      renderAwake(mail.keep_awake, mail.poller);
+      renderAccounts();
+      renderRules();
+      renderJobs();
+    }
+    if(schedules){
+      state.schedules = schedules || [];
+      renderSchedules();
+    }
+  }
+
+  /* ---------------- new trigger ---------------- */
+
+  var form = document.getElementById("newTrigger");
+  var content = document.getElementById("trigContent");
+
+  /* Each kind of trigger: its pane, its button, and how it is created.
+     A new kind is one more entry here and one more radio above. */
+  var kinds = {
+    cron: {
+      label: "Create schedule",
+      create: async function(desktop, text){
+        var cron = document.getElementById("cron").value.trim();
+        if(!cron){ throw new Error("Enter a cron schedule first."); }
+        await post("/api/schedules/create", {id: desktop, content: text, cron: cron});
+        document.getElementById("cron").value = "";
+        return "Schedule created";
+      }
+    },
+    once: {
+      label: "Schedule the run",
+      create: async function(desktop, text){
+        var local = document.getElementById("runAt").value;
+        var at = local ? new Date(local) : null;
+        if(!at || isNaN(at.getTime())){ throw new Error("Pick a time to run this at."); }
+        if(at.getTime() <= Date.now()){ throw new Error("Pick a time in the future."); }
+        await post("/api/schedules/create", {id: desktop, content: text, run_at: at.toISOString()});
+        document.getElementById("runAt").value = "";
+        return "Run scheduled";
+      }
+    },
+    email: {
+      label: "Save email trigger",
+      create: async function(desktop, text){
+        await T.create(desktop, text);
+        return "Saved - matching email from now on starts a task";
+      }
+    }
+  };
+
+  function currentKind(){
+    var checked = form.querySelector('input[name="kind"]:checked');
+    return checked ? checked.value : "cron";
+  }
+
+  function syncKind(){
+    var kind = currentKind();
+    form.querySelectorAll(".kind-pane").forEach(function(p){ p.classList.toggle("on", p.dataset.pane === kind); });
+    T.show(kind === "email");
+    document.getElementById("trigSaveText").textContent = kinds[kind].label;
+  }
+
+  function pickKind(kind){
+    var radio = form.querySelector('input[name="kind"][value="' + kind + '"]');
+    if(radio){ radio.checked = true; syncKind(); }
+  }
+
+  if(form){
+    form.querySelectorAll('input[name="kind"]').forEach(function(r){ r.addEventListener("change", syncKind); });
+    syncKind();
+
+    T.wireTest(function(){ return desktopSelect.value; }, function(){ return content.value; });
+
+    form.addEventListener("submit", async function(e){
+      e.preventDefault();
+
+      var text = content.value.trim();
+      if(!text){ content.focus(); return toast("Write the request first.", "error"); }
+
+      var button = document.getElementById("trigSave");
+      button.disabled = true;
+      Decurix.busy(true);
+      try{
+        var done = await kinds[currentKind()].create(desktopSelect.value, text);
+        content.value = "";
+        toast(done, "success");
+        await load();
+      }catch(err){
+        toast(err.message, "error");
+      }finally{
+        button.disabled = false;
+        Decurix.busy(false);
+      }
+    });
+  }
+
+  document.getElementById("showRule").addEventListener("click", function(){
+    if(!form){ return toast("Create a desktop first.", "error"); }
+    pickKind("email");
+    form.scrollIntoView({behavior: "smooth", block: "start"});
+    if(!state.accounts.length){ return; }
+    document.getElementById("ruleSender").focus({preventScroll: true});
+  });
+
+  /* ---------------- connect form ---------------- */
+
+  var connectForm = document.getElementById("connectForm");
+
+  document.getElementById("showConnect").addEventListener("click", function(){
+    connectForm.hidden = false;
+    document.getElementById("connEmail").focus();
+  });
+  document.getElementById("cancelConnect").addEventListener("click", function(){
+    connectForm.hidden = true;
+  });
+
+  connectForm.addEventListener("submit", async function(e){
+    e.preventDefault();
+
+    var btn = document.getElementById("connectButton");
+    btn.disabled = true;
+    Decurix.busy(true);
+
+    try{
+      await post("/api/mail/accounts/connect", {
+        email: document.getElementById("connEmail").value,
+        password: document.getElementById("connPassword").value,
+        host: document.getElementById("connHost").value,
+        port: document.getElementById("connPort").value,
+        folder: document.getElementById("connFolder").value
+      });
+      connectForm.reset();
+      connectForm.hidden = true;
+      toast("Mailbox connected", "success");
+      await load();
+    }catch(err){
+      toast(err.message, "error");
+    }finally{
+      btn.disabled = false;
+      Decurix.busy(false);
+    }
+  });
+
+  /* The old Email page's address lands here, on its part of the page. */
+  if(location.hash === "#email" || location.hash === "#mailboxes"){
+    setTimeout(function(){
+      var target = document.getElementById(location.hash.slice(1));
+      if(target){ target.scrollIntoView({block: "start"}); }
+    }, 50);
+  }
+
+  load();
+  setInterval(load, 5000);
+})();
+</script>
+
+</body>
+</html>
