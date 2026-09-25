@@ -13,18 +13,20 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/webui"
 )
 
-// The email-trigger page and its API (internal/mailtrigger): mailbox
-// connections, the rules that turn a matching email into a request, and the
-// jobs they queued. A job reaches its desktop through SubmitTracked, the same
+// The email-trigger API (internal/mailtrigger): mailbox connections, the
+// rules that turn a matching email into a request, and the jobs they queued.
+// They are set up on the triggers page (beside schedules) and from the
+// requests page's compose form. A job reaches its desktop through SubmitTracked, the same
 // door a schedule's run takes - a fifth one onto submitRequest.
 //
 // Unlike most errors here, a mailbox's own error is shown as the server
 // said it: "the password was refused" and "the server could not be reached"
 // are fixed differently, and both are about the person's own mailbox.
 
-// emailPageHandler renders the email-trigger page.
-func (s *Server) emailPageHandler(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/email" {
+// triggersPageHandler renders the triggers page: every way a request starts
+// on its own - a schedule, a one-time run, an email - in one place.
+func (s *Server) triggersPageHandler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/triggers" {
 		http.NotFound(w, r)
 		return
 	}
@@ -35,9 +37,19 @@ func (s *Server) emailPageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.Web.RenderEmail(w, webui.PageData{Desktops: desktops}); err != nil {
+	if err := s.Web.RenderTriggers(w, webui.PageData{Desktops: desktops}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+// emailPageMovedHandler sends the old Email page's address to the email part
+// of the triggers page, so a bookmark still lands on it.
+func emailPageMovedHandler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/email" {
+		http.NotFound(w, r)
+		return
+	}
+	http.Redirect(w, r, "/triggers#email", http.StatusMovedPermanently)
 }
 
 // mailStateHandler returns everything the page shows: the mailboxes (never
