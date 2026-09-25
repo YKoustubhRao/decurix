@@ -28,6 +28,20 @@ func note(id, desktop, kind string) QueryNote {
 	return QueryNote{ID: id, DesktopID: desktop, VMName: desktop, Filename: id + ".txt", Content: "c-" + id, Kind: kind, CreatedAt: time.Now()}
 }
 
+func TestOldCompletedReportsAreHiddenWithoutDeletion(t *testing.T) {
+	s := newTestStore(t)
+	for _, kind := range []string{"done", "final", "message", "query", "approval", "error"} {
+		s.Add(note(kind, "box", kind))
+	}
+	if got := len(s.List()); got != 3 {
+		t.Fatalf("open actionable notes = %d, want 3", got)
+	}
+	var count int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM query_notes").Scan(&count); err != nil || count != 6 {
+		t.Fatalf("stored notes = %d, err = %v; historical reports must remain", count, err)
+	}
+}
+
 // A database written before notes could be resolved (only the first two
 // schema steps applied) keeps every note, all of them still open.
 func TestNotesFromBeforeResolvingStayOpen(t *testing.T) {
@@ -91,8 +105,8 @@ func TestResolveAnsweredOnlyTouchesWaitingNotesOfThatDesktop(t *testing.T) {
 		t.Fatalf("the waiting notes should be resolved, open: %v", open)
 	}
 
-	if !open["done"] || !open["err"] || !open["other"] {
-		t.Fatalf("reports and other desktops' notes must stay open, open: %v", open)
+	if open["done"] || !open["err"] || !open["other"] {
+		t.Fatalf("only errors and other desktops' questions should stay visible, open: %v", open)
 	}
 
 	for _, n := range s.ListResolved() {
