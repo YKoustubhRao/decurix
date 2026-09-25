@@ -7,6 +7,7 @@ from datetime import date
 
 from decurix_agent import progress
 from decurix_agent.computer import approval, audit, constraints, core, launchers, privacy, recording, screen, visual, volatility
+from decurix_agent.computer import detour
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 from decurix_agent.logging_utils import log
@@ -533,10 +534,13 @@ def _screen_brief(observation):
 
 class _Halt(Exception):
 
-    def __init__(self, reason, evidence="", missing=False, options=None):
+    def __init__(self, reason, evidence="", missing=False, options=None, observation=None):
         super().__init__(reason)
         self.reason = reason
         self.evidence = evidence
+        # The screen the target was looked for on, when it was not found:
+        # what run() compares with the recording's screens (a detour).
+        self.observation = observation
         # The controls on the screen closest to the one wanted, when an
         # escalation ladder (escalation.py) looked and was not sure: what a
         # person is offered instead of a bare "not found".
@@ -693,9 +697,10 @@ def _find(step, ladder=None, report=None):
                 repair = ladder.recover(step, observation, reason)
                 if repair["element"] is not None:
                     return repair["element"], None, observation, repair
-                raise _Halt(reason, _screen_brief(observation), missing=missing, options=repair["options"])
+                raise _Halt(reason, _screen_brief(observation), missing=missing, options=repair["options"],
+                            observation=observation)
 
-            raise _Halt(reason, _screen_brief(observation), missing=missing)
+            raise _Halt(reason, _screen_brief(observation), missing=missing, observation=observation)
 
         time.sleep(POLL_SECONDS)
 
@@ -721,7 +726,7 @@ def _opened_window(step):
     return None
 
 
-def _open_desktop_icon(step):
+def _open_desktop_icon(step, next_step=None):
     """
     A click or double click on a desktop icon that opened a window is done by
     opening that window's launcher (computer/launchers.py), not by the picture
@@ -734,6 +739,11 @@ def _open_desktop_icon(step):
         return None
 
     window = _opened_window(step)
+    # Learning from several demonstrations keeps only result checks they
+    # share. The window-opened check can disappear even though the next
+    # action was recorded inside that window.
+    if not window and next_step and next_step.get("n") == step["n"] + 1:
+        window = _stable_title(next_step.get("window"))
     if not window or launchers.for_window(window) is None and launchers.find_window(window, title_matches) is None:
         return None
 
@@ -745,7 +755,7 @@ def _open_desktop_icon(step):
     return done, already
 
 
-def _run_step(step, values, ladder=None, report=None):
+def _run_step(step, values, ladder=None, report=None, next_step=None):
     kind = step["kind"]
 
     if kind not in REPLAYABLE:
@@ -763,7 +773,7 @@ def _run_step(step, values, ladder=None, report=None):
             (report or progress.emit)(f"Step {step['n']}: a small drag on the desktop only nudged an icon - nothing to do")
             return {"status": "done", "observation": None}
 
-        opened = _open_desktop_icon(step)
+        opened = _open_desktop_icon(step, next_step)
         if opened:
             done, already = opened
             (report or progress.emit)(f"Step {step['n']}: {done} rather than clicking its icon")
@@ -773,7 +783,8 @@ def _run_step(step, values, ladder=None, report=None):
             # launcher reconnects to it where it was left. run() says so if a
             # later step in it cannot find its target.
             return {"status": "done", "observation": None,
-                    "raised": {"window": _opened_window(step), "already": already}}
+                    "raised": {"window": _opened_window(step) or _stable_title((next_step or {}).get("window")),
+                               "already": already}}
 
         target = {}
         if kind in NEEDS_TARGET and not (step.get("target") or step.get("point")):
@@ -853,21 +864,94 @@ def _kin(step):
         return step["kin"]
 
     kin = None
-    session, index = step.get("session"), step.get("event")
-    if session and index is not None:
+    frame = _recorded_frame(step)
+    if frame is not None:
         try:
-            _, events = recording.load(session)
-            event = next((e for e in events if e.get("i") == index), None)
-            png = _Frames(session).png(event.get("before")) if event else None
-            if png:
-                width, height, rgb = visual.decode_png(png)
-                kin = visual.make_kin(rgb, width, height, step.get("point"))
+            width, height, rgb = frame
+            kin = visual.make_kin(rgb, width, height, step.get("point"))
         except Exception as exc:  # best effort: without it the step halts, as it always has
             log(f"replay: could not read what step {step.get('n')} clicked: {exc}")
             kin = None
 
     step["kin"] = kin
     return kin
+
+
+_recorded = {}
+
+
+def _recorded_frame(step):
+    """
+    The screen a step's recording saw before it, as (width, height, rgb), or
+    None when the recording (or that frame) is gone. Kept for the process:
+    a recording's frames never change.
+    """
+
+    session, index = step.get("session"), step.get("event")
+    if not session or index is None:
+        return None
+
+    key = (session, index)
+    if key not in _recorded:
+        frame = None
+        try:
+            _, events = recording.load(session)
+            event = next((e for e in events if e.get("i") == index), None)
+            png = _Frames(session).png(event.get("before")) if event else None
+            if png:
+                frame = visual.decode_png(png)
+        except Exception as exc:
+            log(f"replay: could not read the screen step {step.get('n')} was recorded on: {exc}")
+        if len(_recorded) > 64:
+            _recorded.clear()
+        _recorded[key] = frame
+    return _recorded[key]
+
+
+def _recover(steps, index, step, halt, values, ladder, report):
+    """
+    A step that did not find its target, in a run with a ladder: the screen
+    may not be the recording's (workflows are similar, not the same).
+    ("skip", index to go on from) when the steps from here dealt with
+    something this run never met; ("done", result) when the engine, reading
+    the screen's text, said where a point click lands now and it ran; None
+    to halt as before.
+    """
+
+    now = halt.observation.get("frame") if halt.observation else None
+    if ladder is None or now is None or not halt.missing:
+        return None
+
+    screens = {}
+
+    def screen_of(s):
+        s = dict(s, session=s.get("session") or step.get("session"))
+        key = (s.get("session"), s.get("event"))
+        if key not in screens:
+            frame = _recorded_frame(s)
+            screens[key] = detour.Screen(*frame) if frame is not None else None
+        return screens[key]
+
+    try:
+        jump = ladder.detour(steps, index, detour.Screen(now.width, now.height, bytes(now.rgb)), screen_of)
+    except Exception as exc:  # a way to be smarter, never a reason to fail differently
+        log(f"replay: could not compare step {step['n']}'s screens: {exc}")
+        jump = None
+    if jump is not None:
+        return "skip", jump
+
+    if step.get("point") and not step.get("target") and halt.reason == LOOK_MISSING:
+        try:
+            point = ladder.ground_point(step, now, _recorded_frame(step))
+        except Exception as exc:
+            log(f"replay: could not ground step {step['n']}: {exc}")
+            point = None
+        if point is not None:
+            placed = {k: v for k, v in step.items() if k not in ("look", "follows_change")}
+            placed["point"] = list(point)
+            return "done", _run_step(placed, values, ladder, report)
+
+    return None
 
 
 def _ordinal(n):
@@ -975,7 +1059,7 @@ def run(program, params=None, start=1, report=None, ladder=None):
         else:
             values[param["name"]] = param.get("default") or ""
 
-    counts = {"done": 0, "verified": 0, "unverified": 0, "skipped": 0}
+    counts = {"done": 0, "verified": 0, "unverified": 0, "skipped": 0, "detoured": 0}
 
     # The window an "open this app" step brought up: {"window", "step", "already"}.
     raised = {}
@@ -1029,8 +1113,18 @@ def run(program, params=None, start=1, report=None, ladder=None):
     _fit_screen([s for s in steps if s["n"] >= start], report)
     changed_at = _first_change(program, values)
 
-    for step in steps:
-        if step["n"] < start:
+    if ladder is not None:
+        ladder.typed = [(str(p.get("example") if p.get("example") is not None else p.get("default")), str(values[p["name"]]))
+                        for p in program.get("params") or []
+                        if p["name"] in values and not p.get("secret") and not isinstance(values[p["name"]], list)
+                        and (p.get("example") is not None or p.get("default") is not None)
+                        and str(values[p["name"]]) != str(p.get("example") if p.get("example") is not None else p.get("default"))]
+
+    # Steps from here up to this one were left out as a detour (_recover).
+    skip_until = 0
+
+    for index, step in enumerate(steps):
+        if step["n"] < start or step["n"] < skip_until:
             continue
 
         if changed_at is not None and step["n"] > changed_at and step.get("look"):
@@ -1043,7 +1137,8 @@ def run(program, params=None, start=1, report=None, ladder=None):
 
         audit.origin = {"session": program.get("session"), "step": step["n"]}
         try:
-            result = _run_step(step, values, ladder, report)
+            next_step = steps[index + 1] if index + 1 < total else None
+            result = _run_step(step, values, ladder, report, next_step=next_step)
         except _Halt as halt:
             # An optional step (a skill learned that it only sometimes
             # happens) that is not on the screen simply did not happen this
@@ -1054,9 +1149,22 @@ def run(program, params=None, start=1, report=None, ladder=None):
                 report(f"Left out step {step['n']}: it only sometimes happens and is not on the screen")
                 continue
 
-            outcome = HALTED if counts["done"] else HALTED_BEFORE_EFFECT
-            return finish(outcome, step, reason=halt.reason, resume_from=step["n"], evidence=halt.evidence,
-                          options=halt.options)
+            try:
+                recovered = _recover(steps, index, step, halt, values, ladder, report)
+            except _Halt as again:
+                halt, recovered = again, None
+
+            if recovered is None:
+                outcome = HALTED if counts["done"] else HALTED_BEFORE_EFFECT
+                return finish(outcome, step, reason=halt.reason, resume_from=step["n"], evidence=halt.evidence,
+                              options=halt.options)
+
+            if recovered[0] == "skip":
+                skip_until = steps[recovered[1]]["n"]
+                counts["detoured"] += skip_until - step["n"]
+                continue
+
+            result = recovered[1]
         finally:
             audit.origin = None
 
@@ -1104,7 +1212,10 @@ def run(program, params=None, start=1, report=None, ladder=None):
         if ladder is not None:
             ladder.confirm(step)
 
-    return finish(VERIFIED if counts["unverified"] == 0 else COMPLETED_UNVERIFIED)
+    # Steps left out, or a click placed by the engine reading the screen, are
+    # a judgement: such a run is complete, never verified.
+    judged = counts["detoured"] or (ladder is not None and ladder.grounded)
+    return finish(VERIFIED if counts["unverified"] == 0 and not judged else COMPLETED_UNVERIFIED)
 
 
 def _summary_text(program, result, step):
@@ -1114,8 +1225,13 @@ def _summary_text(program, result, step):
     evidence = f" Now {result['evidence']}." if result.get("evidence") else ""
     outcome = result["outcome"]
 
-    if result.get("skipped"):
-        ran = f"{result['done']} of {total} steps ran ({result['skipped']} optional, not on the screen, left out)"
+    if result.get("skipped") or result.get("detoured"):
+        left = []
+        if result.get("skipped"):
+            left.append(f"{result['skipped']} optional, not on the screen")
+        if result.get("detoured"):
+            left.append(f"{result['detoured']} not needed this time")
+        ran = f"{result['done']} of {total} steps ran ({'; '.join(left)}, left out)"
     else:
         ran = f"all {total} steps ran" if result["done"] == total else f"steps {total - result['done'] + 1}-{total} ran"
 
@@ -1128,7 +1244,9 @@ def _summary_text(program, result, step):
     if outcome == COMPLETED_UNVERIFIED:
         verified, unverified = result["verified"], result["unverified"]
         confirmed = f"{verified} {'was' if verified == 1 else 'were'} confirmed on the screen"
-        return (f"Replayed {name}: {ran}. {confirmed}; {unverified} left nothing a replay can check, "
+        unchecked = (f"{unverified} left nothing a replay can check" if unverified
+                     else "the rest was the run's own judgement of the screen")
+        return (f"Replayed {name}: {ran}. {confirmed}; {unchecked}, "
                 f"so look at the result before relying on it.{repairs}")
 
     if outcome == HALTED_BEFORE_EFFECT:

@@ -33,6 +33,10 @@ type Schedule struct {
 	CreatedAt time.Time `json:"created_at"`
 	LastRunAt time.Time `json:"last_run_at"`
 	NextRunAt time.Time `json:"next_run_at"`
+	// Waiting says why a run that is due has not gone out yet (its desktop
+	// is busy), and WaitingSince since when; both clear once it runs.
+	Waiting      string    `json:"waiting"`
+	WaitingSince time.Time `json:"waiting_since"`
 }
 
 var schema = []string{
@@ -49,6 +53,8 @@ var schema = []string{
 	`CREATE INDEX schedules_desktop ON schedules (desktop_id, created_ns)`,
 	`CREATE INDEX schedules_due ON schedules (enabled, next_run_ns)`,
 	`ALTER TABLE schedules ADD COLUMN run_once INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE schedules ADD COLUMN waiting TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE schedules ADD COLUMN waiting_since_ns INTEGER NOT NULL DEFAULT 0`,
 }
 
 // Store is a SQLite-backed collection of Schedules.
@@ -173,7 +179,7 @@ func (s *Store) CreateOnce(desktopID, content string, runAt time.Time) (Schedule
 // List returns schedules, most recently created first. When desktopID is
 // empty, schedules for every desktop are returned.
 func (s *Store) List(desktopID string) []Schedule {
-	query := `SELECT id, desktop_id, content, cron_expr, enabled, created_ns, last_run_ns, next_run_ns, run_once FROM schedules`
+	query := `SELECT id, desktop_id, content, cron_expr, enabled, created_ns, last_run_ns, next_run_ns, run_once, waiting, waiting_since_ns FROM schedules`
 
 	args := []any{}
 
@@ -209,7 +215,7 @@ func (s *Store) List(desktopID string) []Schedule {
 // Due returns enabled schedules whose next run has arrived by now.
 func (s *Store) Due(now time.Time) ([]Schedule, error) {
 	rows, err := s.db.Query(
-		`SELECT id, desktop_id, content, cron_expr, enabled, created_ns, last_run_ns, next_run_ns, run_once
+		`SELECT id, desktop_id, content, cron_expr, enabled, created_ns, last_run_ns, next_run_ns, run_once, waiting, waiting_since_ns
 		 FROM schedules WHERE enabled = 1 AND next_run_ns > 0 AND next_run_ns <= ?`,
 		sqlitedb.ToNS(now),
 	)
@@ -257,7 +263,7 @@ func (s *Store) MarkRun(id string, ranAt time.Time) error {
 
 	if runOnce != 0 {
 		if _, err := s.db.Exec(
-			`UPDATE schedules SET enabled = 0, last_run_ns = ?, next_run_ns = 0 WHERE id = ?`,
+			`UPDATE schedules SET enabled = 0, last_run_ns = ?, next_run_ns = 0, waiting = '', waiting_since_ns = 0 WHERE id = ?`,
 			sqlitedb.ToNS(ranAt), id,
 		); err != nil {
 			return fmt.Errorf("schedule: mark run %s: %w", id, err)
@@ -275,12 +281,12 @@ func (s *Store) MarkRun(id string, ranAt time.Time) error {
 
 	if !ok {
 		_, err = s.db.Exec(
-			`UPDATE schedules SET enabled = 0, last_run_ns = ?, next_run_ns = 0 WHERE id = ?`,
+			`UPDATE schedules SET enabled = 0, last_run_ns = ?, next_run_ns = 0, waiting = '', waiting_since_ns = 0 WHERE id = ?`,
 			sqlitedb.ToNS(ranAt), id,
 		)
 	} else {
 		_, err = s.db.Exec(
-			`UPDATE schedules SET last_run_ns = ?, next_run_ns = ? WHERE id = ?`,
+			`UPDATE schedules SET last_run_ns = ?, next_run_ns = ?, waiting = '', waiting_since_ns = 0 WHERE id = ?`,
 			sqlitedb.ToNS(ranAt), sqlitedb.ToNS(next), id,
 		)
 	}
@@ -290,6 +296,17 @@ func (s *Store) MarkRun(id string, ranAt time.Time) error {
 	}
 
 	return nil
+}
+
+// NoteWaiting records that a due run is held because its desktop is busy
+// (why), keeping the time it first had to wait.
+func (s *Store) NoteWaiting(id, why string, at time.Time) {
+	if _, err := s.db.Exec(
+		`UPDATE schedules SET waiting = ?, waiting_since_ns = CASE WHEN waiting_since_ns = 0 THEN ? ELSE waiting_since_ns END WHERE id = ?`,
+		why, sqlitedb.ToNS(at), id,
+	); err != nil {
+		log.Printf("schedule: note waiting %s: %v", id, err)
+	}
 }
 
 // SetEnabled turns a schedule on or off. Turning a cron schedule back on
@@ -305,7 +322,7 @@ func (s *Store) SetEnabled(id string, enabled bool) error {
 	defer s.mu.Unlock()
 
 	if !enabled {
-		if _, err := s.db.Exec(`UPDATE schedules SET enabled = 0 WHERE id = ?`, id); err != nil {
+		if _, err := s.db.Exec(`UPDATE schedules SET enabled = 0, waiting = '', waiting_since_ns = 0 WHERE id = ?`, id); err != nil {
 			return fmt.Errorf("schedule: disable %s: %w", id, err)
 		}
 
@@ -356,6 +373,19 @@ func (s *Store) SetEnabled(id string, enabled bool) error {
 	return nil
 }
 
+// Active reports whether any schedule is still waiting to fire - one of the
+// things that should keep this machine from going to sleep (see
+// internal/keepawake): a laptop asleep at 09:00 runs its 09:00 schedule only
+// once it wakes.
+func (s *Store) Active() bool {
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM schedules WHERE enabled = 1 AND next_run_ns > 0`).Scan(&n); err != nil {
+		return false
+	}
+
+	return n > 0
+}
+
 // Delete removes a schedule by ID. It is a no-op if the ID is not present.
 func (s *Store) Delete(id string) {
 	if _, err := s.db.Exec(`DELETE FROM schedules WHERE id = ?`, id); err != nil {
@@ -379,9 +409,9 @@ func (s *Store) DeleteForDesktop(desktopID string) {
 func scanSchedule(rows *sql.Rows) (Schedule, error) {
 	var sch Schedule
 	var enabled, runOnce int
-	var created, lastRun, nextRun int64
+	var created, lastRun, nextRun, waitingSince int64
 
-	if err := rows.Scan(&sch.ID, &sch.DesktopID, &sch.Content, &sch.CronExpr, &enabled, &created, &lastRun, &nextRun, &runOnce); err != nil {
+	if err := rows.Scan(&sch.ID, &sch.DesktopID, &sch.Content, &sch.CronExpr, &enabled, &created, &lastRun, &nextRun, &runOnce, &sch.Waiting, &waitingSince); err != nil {
 		return Schedule{}, err
 	}
 
@@ -390,6 +420,7 @@ func scanSchedule(rows *sql.Rows) (Schedule, error) {
 	sch.CreatedAt = sqlitedb.FromNS(created)
 	sch.LastRunAt = sqlitedb.FromNS(lastRun)
 	sch.NextRunAt = sqlitedb.FromNS(nextRun)
+	sch.WaitingSince = sqlitedb.FromNS(waitingSince)
 
 	return sch, nil
 }

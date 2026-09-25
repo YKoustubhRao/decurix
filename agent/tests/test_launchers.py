@@ -100,6 +100,35 @@ class TestReplayingTheDesktop(Desktop):
         self.assertEqual(self.activated, [7])
         self.assertIn("from its launcher", self.lines[0])
 
+    def test_next_steps_window_opens_desktop_icon_when_result_check_is_missing(self):
+        # A learned skill can lose a window check when demonstrations differ.
+        step = dict(OPEN, n=1, expect=[])
+        next_step = dict(IN_CHROME, n=2)
+        with patch.object(replay.core, "act") as act, patch.object(replay.core, "observe") as observe:
+            result = replay._run_step(step, {}, report=self.lines.append, next_step=next_step)
+        act.assert_not_called()
+        observe.assert_not_called()
+        self.assertEqual(self.launched, [["/home/headless/.local/bin/koustubh-chrome-host"]])
+        self.assertEqual(result["raised"]["window"], "Koustubh - Chrome")
+
+    def test_run_uses_following_steps_window_for_desktop_icon(self):
+        first = dict(OPEN, n=1, expect=[], summary="double click 72,262")
+        second = dict(IN_CHROME, n=2, expect=[], summary="click 535,361")
+        observation = {"size": [1536, 729], "active_title": "Koustubh - Chrome", "frame": object()}
+        with patch.object(replay.core, "observe", return_value=observation), \
+             patch.object(replay.core, "act", return_value={"status": "done", "observation": observation}) as act, \
+             patch.object(replay, "_fit_screen"):
+            result = replay.run({"steps": [first, second], "params": [], "title": "kol"}, report=self.lines.append)
+        self.assertIn(result["outcome"], replay.SUCCESS)
+        self.assertEqual(self.launched, [["/home/headless/.local/bin/koustubh-chrome-host"]])
+        act.assert_called_once()
+        self.assertEqual(act.call_args.kwargs["point"], (535, 361))
+
+    def test_an_unrelated_following_step_does_not_choose_a_launcher(self):
+        step = dict(OPEN, n=1, expect=[])
+        self.assertIsNone(replay._open_desktop_icon(step, dict(IN_CHROME, n=3)))
+        self.assertEqual(self.launched, [])
+
     def test_an_app_already_open_is_raised_not_opened_twice(self):
         self.windows.append({"id": 9, "title": "Koustubh - Chrome", "active": False})
         replay._run_step(OPEN, {}, report=self.lines.append)

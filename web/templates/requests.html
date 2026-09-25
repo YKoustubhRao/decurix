@@ -7,6 +7,8 @@
 <title>Requests · Decurix</title>
 
 {{template "theme"}}
+{{template "trigger-css"}}
+{{template "trigger-list-css"}}
 
 <style>
 .compose{display:grid;gap:18px;padding:20px}
@@ -70,27 +72,7 @@
   color:var(--text)
 }
 .sched-panel .panel-head svg{color:var(--text-3)}
-.sched-row{
-  display:flex;
-  align-items:flex-start;
-  justify-content:space-between;
-  gap:14px;
-  padding:14px 20px;
-  border-bottom:1px solid var(--line)
-}
-.sched-row:last-child{border-bottom:none}
-.sched-row[data-enabled="false"]{opacity:.55}
-.sched-main{min-width:0;display:grid;gap:5px}
-.sched-content{
-  font-size:13px;
-  color:var(--text);
-  white-space:pre-wrap;
-  word-break:break-word;
-  max-width:64ch
-}
-.sched-meta{display:flex;flex-wrap:wrap;align-items:center;gap:7px 11px;font-size:11.5px;color:var(--text-3)}
-.sched-actions{display:flex;gap:6px;flex-shrink:0}
-.sched-empty{padding:26px 20px;color:var(--text-3);font-size:13px;text-align:center}
+.sched-panel .panel-head .grow{flex:1}
 
 .dest-status{
   display:inline-flex;
@@ -189,7 +171,7 @@
         </label>
       </div>
 
-      <div class="field cron-field" id="runOnceField">
+      <div class="field cron-field" id="runOnceField" data-once>
         <label for="runAt">Run at <span class="mono">(your local time)</span></label>
         <input class="input" type="datetime-local" id="runAt" name="run_at" autocomplete="off">
         <div class="hint">
@@ -197,6 +179,15 @@
           resubmits it - with <span class="mono">TIME:{&hellip;}</span> appended too.
         </div>
       </div>
+
+      <div class="field">
+        <label class="repeat-row">
+          <input type="checkbox" id="onEmail">
+          <span>Run when an email arrives</span>
+        </label>
+      </div>
+
+      {{template "email-rule-fields"}}
 
     </div>
 
@@ -212,7 +203,8 @@
   <div class="panel sched-panel">
     <div class="panel-head">
       <svg width="15" height="15"><use href="#i-clock"/></svg>
-      Scheduled requests
+      <span class="grow">Triggers</span>
+      <a class="btn btn-quiet btn-sm" href="/triggers">All triggers and mailboxes</a>
     </div>
     <div id="schedList"></div>
   </div>
@@ -231,6 +223,7 @@
 </main>
 
 {{template "chrome-js"}}
+{{template "trigger-js"}}
 
 <script>
 (function(){
@@ -239,7 +232,7 @@
   var form = document.getElementById("composeForm");
   if(!form){ return; }
 
-  var toast = Decurix.toast, post = Decurix.post;
+  var toast = Decurix.toast, post = Decurix.post, T = window.Triggers;
 
   var select = document.getElementById("desktop");
   var content = document.getElementById("content");
@@ -252,6 +245,7 @@
   var runOnce = document.getElementById("runOnce");
   var runOnceField = document.getElementById("runOnceField");
   var runAtInput = document.getElementById("runAt");
+  var onEmail = document.getElementById("onEmail");
   var schedList = document.getElementById("schedList");
 
   /* ---------------- destination suggestion ---------------- */
@@ -333,6 +327,9 @@
   function syncRepeatUI(){
     var repeating = repeat.checked;
     var once = runOnce.checked;
+    var email = onEmail.checked;
+
+    T.show(email);
 
     cronField.classList.toggle("on", repeating);
     cronInput.required = repeating;
@@ -344,24 +341,25 @@
       sendButton.innerHTML = '<svg width="15" height="15"><use href="#i-clock"/></svg>Schedule it';
     }else if(once){
       sendButton.innerHTML = '<svg width="15" height="15"><use href="#i-clock"/></svg>Run at that time';
+    }else if(email){
+      sendButton.innerHTML = '<svg width="15" height="15"><use href="#i-mail"/></svg>Save email trigger';
     }else{
       sendButton.innerHTML = '<svg width="15" height="15"><use href="#i-send"/></svg>Send to desktop';
     }
   }
 
-  repeat.addEventListener("change", function(){
-    if(repeat.checked){
-      runOnce.checked = false;
-    }
-    syncRepeatUI();
+  /* At most one way to start it later: a schedule, a set time, or an email. */
+  [repeat, runOnce, onEmail].forEach(function(box){
+    box.addEventListener("change", function(){
+      if(box.checked){
+        [repeat, runOnce, onEmail].forEach(function(other){ if(other !== box){ other.checked = false; } });
+      }
+      if(box === onEmail && box.checked){ T.loadAccounts(); }
+      syncRepeatUI();
+    });
   });
 
-  runOnce.addEventListener("change", function(){
-    if(runOnce.checked){
-      repeat.checked = false;
-    }
-    syncRepeatUI();
-  });
+  T.wireTest(function(){ return select.value; }, function(){ return content.value.trim(); });
 
   syncRepeatUI();
 
@@ -395,6 +393,7 @@
 
     var repeating = repeat.checked;
     var once = runOnce.checked;
+    var email = onEmail.checked;
     var cron = cronInput.value.trim();
     var runAtLocal = runAtInput.value;
 
@@ -444,6 +443,13 @@
         syncRepeatUI();
         markSent("Run scheduled");
         loadSchedules();
+      }else if(email){
+        await T.create(select.value, text);
+
+        onEmail.checked = false;
+        syncRepeatUI();
+        markSent("Email trigger saved");
+        loadSchedules();
       }else{
         await post("/api/desktops/send", {id: select.value, content: text});
         markSent("Delivered to the desktop");
@@ -478,147 +484,34 @@
     }, 3200);
   }
 
-  /* ---------------- scheduled requests list ---------------- */
+  /* ---------------- triggers list: schedules and email triggers ---------------- */
 
   function desktopName(id){
     var option = select.querySelector('option[value="' + id.replace(/"/g, '\\"') + '"]');
     return option ? option.textContent : id;
   }
 
-  /* Zero time comes back as Go's RFC3339 zero value - "never happened",
-     not a real timestamp. */
-  function formatWhen(iso){
-    if(!iso){ return null; }
-
-    var d = new Date(iso);
-    if(isNaN(d.getTime()) || d.getUTCFullYear() <= 1){ return null; }
-
-    return d.toLocaleString(undefined, {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
-  }
-
-  function scheduleRow(sch){
-    var row = document.createElement("div");
-    row.className = "sched-row";
-    row.dataset.enabled = sch.enabled ? "true" : "false";
-
-    var main = document.createElement("div");
-    main.className = "sched-main";
-
-    var body = document.createElement("div");
-    body.className = "sched-content";
-    body.textContent = sch.content;
-    main.appendChild(body);
-
-    var meta = document.createElement("div");
-    meta.className = "sched-meta";
-
-    var cronChip = document.createElement("span");
-    cronChip.className = "mono";
-    cronChip.textContent = sch.run_once ? "once" : sch.cron_expr;
-    meta.appendChild(cronChip);
-
-    var dest = document.createElement("span");
-    dest.textContent = desktopName(sch.desktop_id);
-    meta.appendChild(dest);
-
-    var lastRun = formatWhen(sch.last_run_at);
-    var hasFired = !!lastRun;
-
-    var state = document.createElement("span");
-    if(sch.run_once && hasFired){
-      state.textContent = "Ran";
-    }else if(!sch.enabled){
-      state.textContent = "Paused";
-    }else{
-      var next = formatWhen(sch.next_run_at);
-      state.textContent = next ? ("Next " + next + " UTC") : "Next run pending";
-    }
-    meta.appendChild(state);
-
-    if(lastRun){
-      var last = document.createElement("span");
-      last.textContent = "Last ran " + lastRun + " UTC";
-      meta.appendChild(last);
-    }
-
-    main.appendChild(meta);
-    row.appendChild(main);
-
-    var actions = document.createElement("div");
-    actions.className = "sched-actions";
-
-    /* A fired one-time run is a terminal state - nothing left to pause or resume. */
-    if(!(sch.run_once && hasFired)){
-      var toggleBtn = document.createElement("button");
-      toggleBtn.type = "button";
-      toggleBtn.className = "btn btn-quiet btn-sm";
-      toggleBtn.textContent = sch.enabled ? "Pause" : "Resume";
-      toggleBtn.addEventListener("click", function(){
-        toggleSchedule(sch.id, !sch.enabled);
-      });
-      actions.appendChild(toggleBtn);
-    }
-
-    var deleteBtn = document.createElement("button");
-    deleteBtn.type = "button";
-    deleteBtn.className = "btn btn-quiet btn-sm";
-    deleteBtn.setAttribute("aria-label", "Delete schedule");
-    deleteBtn.innerHTML = '<svg width="14" height="14"><use href="#i-trash"/></svg>';
-    deleteBtn.addEventListener("click", function(){
-      deleteSchedule(sch.id);
-    });
-    actions.appendChild(deleteBtn);
-
-    row.appendChild(actions);
-
-    return row;
-  }
-
-  function renderSchedules(list){
-    schedList.innerHTML = "";
-
-    if(!list.length){
-      var empty = document.createElement("div");
-      empty.className = "sched-empty";
-      empty.textContent = "No scheduled requests yet.";
-      schedList.appendChild(empty);
-      return;
-    }
-
-    list.forEach(function(sch){
-      schedList.appendChild(scheduleRow(sch));
-    });
-  }
-
   async function loadSchedules(){
-    var list;
+    var schedules = null, mail = null;
 
     try{
       var response = await fetch("/api/schedules", {cache: "no-store"});
-      list = await response.json();
-    }catch(e){
+      if(response.ok){ schedules = await response.json(); }
+    }catch(e){ /* shown as empty */ }
+
+    mail = await T.loadAccounts();
+
+    var rules = (mail && mail.rules) || [];
+    schedules = schedules || [];
+
+    schedList.innerHTML = "";
+    if(!schedules.length && !rules.length){
+      schedList.appendChild(T.el("div", "trig-empty", "No schedules or email triggers yet."));
       return;
     }
 
-    renderSchedules(list || []);
-  }
-
-  async function toggleSchedule(id, enabled){
-    try{
-      await post("/api/schedules/toggle", {id: id, enabled: String(enabled)});
-      loadSchedules();
-    }catch(e){
-      toast(e.message, "error");
-    }
-  }
-
-  async function deleteSchedule(id){
-    try{
-      await post("/api/schedules/delete", {id: id});
-      loadSchedules();
-    }catch(e){
-      toast(e.message, "error");
-    }
+    schedules.forEach(function(sch){ schedList.appendChild(T.scheduleRow(sch, desktopName, loadSchedules)); });
+    rules.forEach(function(r){ schedList.appendChild(T.ruleRow(r, desktopName, loadSchedules)); });
   }
 
   loadSchedules();

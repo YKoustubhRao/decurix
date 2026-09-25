@@ -22,6 +22,8 @@ cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source ./scripts/linux/lib/ollama-setup.sh
 # shellcheck source=lib/lan-tunnel.sh
 source ./scripts/linux/lib/lan-tunnel.sh
+# shellcheck source=lib/keep-awake.sh
+source ./scripts/linux/lib/keep-awake.sh
 
 CLI_MODE=""
 
@@ -42,6 +44,7 @@ done
 cleanup() {
     echo ""
     stop_lan_tunnel
+    stop_keep_awake
     echo "=== Tunnel stopped. Decurix is still running: http://127.0.0.1:8080 ==="
     echo "(Run this script again for a new tunnel, or 'docker compose down' to stop Decurix.)"
 }
@@ -191,6 +194,12 @@ fi
 # --cli is a terminal-native alternative to the tunnel below: it never opens
 # a tunnel URL, so the INT/TERM trap's "tunnel stopped" message would not
 # make sense here - Ctrl+C to leave the CLI should just leave it.
+# Nothing runs while this machine sleeps - no email trigger, no schedule -
+# and the control plane, in its container, cannot stop the host sleeping.
+# Held only while the dashboard has something that needs it (lib/keep-awake.sh).
+echo ""
+start_keep_awake
+
 if [ -n "$CLI_MODE" ]; then
     trap - INT TERM
 
@@ -200,7 +209,9 @@ if [ -n "$CLI_MODE" ]; then
     echo ""
 
     docker compose exec desktop-manager ./decurix --cli
-    exit $?
+    cli_status=$?
+    stop_keep_awake
+    exit $cli_status
 fi
 
 echo ""

@@ -93,6 +93,7 @@ Set-Location (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
 
 . "$PSScriptRoot/lib/Ollama-Setup.ps1"
 . "$PSScriptRoot/lib/Lan-Tunnel.ps1"
+. "$PSScriptRoot/lib/Keep-Awake.ps1"
 
 $script:IntentionalExit = $false
 
@@ -284,6 +285,14 @@ try {
     # stack back down, for an interrupted *rebuild* - is skipped: leaving the
     # CLI should just leave Decurix running, not undo the rebuild that just
     # finished.
+    # Nothing runs while this machine sleeps - no email trigger, no
+    # schedule - and the control plane, in its container, cannot stop
+    # Windows sleeping. Held only while the dashboard has something that
+    # needs it (lib/Keep-Awake.ps1); released in finally{}, however this
+    # script ends.
+    Write-Host ""
+    Start-KeepAwake
+
     if ($Cli) {
         Write-Host ""
         Write-Host "=== Opening the Decurix CLI ==="
@@ -319,6 +328,8 @@ try {
     }
 }
 finally {
+    Stop-KeepAwake
+
     if (-not $script:IntentionalExit) {
         Invoke-Cleanup
     }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -97,6 +98,35 @@ func (m *Manager) GatewayIPs(ctx context.Context) []string {
 		}
 	}
 	return ips
+}
+
+// ContainerNetworks returns the address ranges of the Docker networks
+// desktops live on (decurix-network, and the default bridge), and each one's
+// gateway. A request from inside one of those ranges that is not its
+// gateway comes from a container - a desktop, or the bundled Ollama - never
+// from a person's browser, which reaches the control plane from the host
+// (loopback, or through a published port, which Docker hands over from the
+// gateway). httpapi uses it to keep what only a person should see away from
+// the agents.
+func (m *Manager) ContainerNetworks(ctx context.Context) (subnets []netip.Prefix, gateways []netip.Addr) {
+	for _, name := range []string{NetworkName, "bridge"} {
+		info, err := m.client.NetworkInspect(ctx, name, network.InspectOptions{})
+		if err != nil {
+			continue
+		}
+
+		for _, cfg := range info.IPAM.Config {
+			if prefix, err := netip.ParsePrefix(cfg.Subnet); err == nil {
+				subnets = append(subnets, prefix.Masked())
+			}
+
+			if gw, err := netip.ParseAddr(cfg.Gateway); err == nil {
+				gateways = append(gateways, gw)
+			}
+		}
+	}
+
+	return subnets, gateways
 }
 
 // EnsureNetwork creates the shared Docker network used by desktops if it does not already exist.

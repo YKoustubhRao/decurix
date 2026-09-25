@@ -2,6 +2,7 @@ package dag
 
 import (
 	"context"
+	"errors"
 	"log"
 	"regexp"
 	"strings"
@@ -404,6 +405,18 @@ func (r *Runner) dispatch(ctx context.Context, runID string, rn RunNode, node No
 	content := substitute(node.Content, node.ID, edges, nodes, runNodes)
 
 	taskID, err := r.Submitter.SubmitTracked(ctx, node.DesktopID, content)
+
+	// The desktop became busy after the check above (a person sent it
+	// something): the same "back off and retry next tick", not a failure.
+	var busy interface{ DesktopBusy() string }
+	if errors.As(err, &busy) {
+		if _, releaseErr := r.Store.ReleaseRunNode(rn.ID); releaseErr != nil {
+			log.Printf("dag: releasing node %s in run %s: %v", node.ID, runID, releaseErr)
+		}
+
+		return
+	}
+
 	if err != nil {
 		log.Printf("dag: dispatching node %s in run %s: %v", node.ID, runID, err)
 

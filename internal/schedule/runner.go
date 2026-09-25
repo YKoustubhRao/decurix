@@ -2,6 +2,7 @@ package schedule
 
 import (
 	"context"
+	"errors"
 	"log"
 	"sync"
 	"time"
@@ -103,10 +104,28 @@ func (r *Runner) tick(ctx context.Context) {
 // succeeded: a desktop that is unreachable this minute should not turn every
 // following tick into a retry of the same stale run - it should just wait for
 // the schedule's next one.
+//
+// The one exception is a desktop that is busy (the Submitter refuses with an
+// error that has a DesktopBusy method): the run is held, not sent and not
+// skipped, and tried again every tick until the desktop is free. Sent to an
+// agent waiting on a person, it would be taken as that person's answer.
 func (r *Runner) fire(ctx context.Context, sch Schedule, now time.Time) {
 	content := sch.Content + timeField(now)
 
-	if err := r.Submitter.Submit(ctx, sch.DesktopID, content); err != nil {
+	err := r.Submitter.Submit(ctx, sch.DesktopID, content)
+
+	var busy interface{ DesktopBusy() string }
+	if errors.As(err, &busy) {
+		if sch.Waiting == "" {
+			log.Printf("schedule: holding %s until %s is free (%s)", sch.ID, sch.DesktopID, busy.DesktopBusy())
+		}
+
+		r.Store.NoteWaiting(sch.ID, busy.DesktopBusy(), now)
+
+		return
+	}
+
+	if err != nil {
 		log.Printf("schedule: firing %s on %s: %v", sch.ID, sch.DesktopID, err)
 	}
 
