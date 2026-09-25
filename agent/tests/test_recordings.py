@@ -484,6 +484,33 @@ class TypingIntoAField(unittest.TestCase):
         self.assertTrue(self.entry("Initech", role="paragraph")["append"])
 
 
+class RecorderStartup(unittest.TestCase):
+    def test_ready_before_slow_initial_screen_read_and_keeps_queued_input(self):
+        from decurix_agent.computer import demonstration
+
+        with tempfile.TemporaryDirectory() as directory:
+            ready = Path(directory) / "ready"
+            with mock.patch.object(demonstration.recording, "meta", return_value={}), \
+                 mock.patch.object(demonstration.recording, "update"), \
+                 mock.patch.object(demonstration.session, "ensure"), \
+                 mock.patch.object(demonstration.signal, "signal"), \
+                 mock.patch.object(demonstration.progress, "flush"), \
+                 mock.patch.object(demonstration, "READY_FILE", ready), \
+                 mock.patch.object(demonstration.Recorder, "_select_input"), \
+                 mock.patch.object(demonstration.Recorder, "_read_input"), \
+                 mock.patch.object(demonstration.Recorder, "_process"):
+                recorder = demonstration.Recorder("demo-test")
+                recorder.agent_devices = set()
+
+                def observe(**kwargs):
+                    self.assertEqual(ready.read_text(), str(demonstration.os.getpid()))
+                    recorder.raw.put({"type": "press"})
+                    return {"frame": object()}
+
+                with mock.patch.object(demonstration.core, "observe", side_effect=observe):
+                    self.assertEqual(recorder.run(), 0)
+                self.assertIsNone(recorder.latest)
+
 class RecordingClickTargets(unittest.TestCase):
     def test_a_browser_hit_test_recovers_a_named_control_when_its_cached_box_misses(self):
         from decurix_agent.computer import demonstration

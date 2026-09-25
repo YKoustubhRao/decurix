@@ -63,6 +63,153 @@ request, and it will be sent to the human.
 """.strip()
 
 
+# The premature-HELP pushback when the HELP itself carries a command the
+# model never ran. Measured live on qwen2.5-coder:3b with an email-triggered
+# request: it replied "HELP: The email contains INV-7001, you need to append
+# it ... COMMAND: echo INV-7001 >> ~/work/invoices.txt DONE: ...". The parser
+# rightly takes the HELP (the first marker); the plain pushback then got
+# "DONE: The invoice number is INV-7001." - and the task was reported done
+# with nothing written, three runs out of three. Saying which command was not
+# run, and asking for exactly that, is what the model needs to hear. It is
+# never run for it: the model has to send it, so every check a command goes
+# through (dangerous_reason, the screen approval gate) still applies.
+UNRUN_COMMAND_NUDGE = """
+You wrote a command but did not run it, so nothing has been done yet:
+
+{command}
+
+If that is what the task needs, run it now: reply with COMMAND: followed
+by the command. Only reply HELP again if a human genuinely has to act
+before you can continue.
+
+If you were pausing for approval before a payment, an outgoing message,
+or another real-world consequence: reply HELP again with the same
+request, and it will be sent to the human.
+""".strip()
+
+# What a DONE gets answered with, once, when nothing has run in a task that
+# asks for a change on this desktop (TASK_WANTS_CHANGE_RE), or after the
+# model proposed a command it never ran: it is reporting work that did not
+# happen. Measured live on email-triggered "append the invoice number to
+# ~/work/invoices.txt": "DONE: INV-9003" with no command, reported as done
+# with nothing written. A task that only asks something is left alone, and a
+# second DONE is taken as the answer.
+UNGROUNDED_DONE_NUDGE = """
+{what}{proposed}
+
+If the task needs something done here (a file written, changed or
+removed), do it now with COMMAND: and reply DONE: only after its output
+shows it worked. If the task only asked a question, reply DONE: again
+with the answer.
+""".strip()
+
+# A command that can change something on this desktop, as opposed to only
+# reading: a redirect into a file, or a program whose job is to write. A
+# script (python3 ..., sh ...) might write anything, so it counts. Used only
+# to decide whether a change task that says DONE has changed anything yet -
+# never to allow or refuse a command.
+WRITES_RE = re.compile(
+    r"(?<![<>&0-9])>>?(?!&)|\b(tee|touch|mkdir|cp|mv|rm|rmdir|ln|install|dd|truncate|chmod|chown|unzip|tar|wget|curl\s+[^|]*-o|"
+    r"sed\s+-i|perl\s+-i|python3?|node|sh|bash|git|apt(-get)?|pip3?|npm|gui)\b"
+)
+
+# A task that asks to add to a file, and a command that would instead
+# replace one (a single ">"). Measured live on email-triggered "append the
+# invoice number to ~/work/invoices.txt": the model wrote
+# `echo "INV-9802" > ~/work/invoices.txt`, and the invoice the task before
+# it had appended was gone - the run looked fine, the data loss surfaced a
+# task later. overwrite_target finds such a command before it runs.
+TASK_APPENDS_RE = re.compile(r"\b(append|add (it |them |this |that |the \w+ )?to)\b", re.IGNORECASE)
+
+_TRUNCATE_RE = re.compile(r"(?<![<>&0-9])>(?![>&|])\s*(\"[^\"]+\"|'[^']+'|[^\s;|&<>]+)")
+
+OVERWRITE_NUDGE = """
+Not run: that ">" would replace everything already in {path} -
+it is not empty, and the task says to add to it. Use ">>" to append.
+""".strip()
+
+# How many times a command that would overwrite is refused before a person
+# is asked instead.
+MAX_OVERWRITE_NUDGES = 2
+
+
+def overwrite_target(task, command):
+    """The existing, non-empty file a command would truncate in a task that
+    asks to append, or None. Only a plain `> file` redirect is recognised; it
+    is a net for one measured mistake, not a sandbox."""
+
+    if not TASK_APPENDS_RE.search(task or ""):
+        return None
+
+    for match in _TRUNCATE_RE.finditer(command):
+        target = match.group(1).strip("\"'")
+        if target.startswith("/dev/"):
+            continue
+
+        path = os.path.expanduser(os.path.expandvars(target))
+        if not os.path.isabs(path):
+            path = os.path.join(str(config.WORK_DIR), path)
+
+        try:
+            if os.path.isfile(path) and os.path.getsize(path) > 0:
+                return target
+        except OSError:
+            continue
+
+    return None
+
+
+def refuse_overwrite(history, response_command, target, nudges):
+    """Answers a command that would overwrite target instead of running it.
+    Returns False once it has been refused MAX_OVERWRITE_NUDGES times and a
+    person has been asked instead - the task then waits for them."""
+
+    if nudges >= MAX_OVERWRITE_NUDGES:
+        ask_for_query(
+            f"""
+The task says to add to {target}, but the agent keeps trying to replace its
+contents instead:
+
+$ {response_command}
+
+It has not been run. Reply with what to do.
+""".strip()
+        )
+        return False
+
+    log(f"Refused a command that would overwrite {target} in an append task.")
+    progress.emit(f"Not run - it would replace the contents of {target}: {response_command}")
+
+    history.append({"role": "assistant", "content": command_only(response_command)})
+    history.append({"role": "user", "content": OVERWRITE_NUDGE.format(path=target)})
+
+    return True
+
+
+TASK_WANTS_CHANGE_RE = re.compile(
+    r"\b(append|write|save|create|delete|remove|move|copy|rename|download|install|edit|store)\b",
+    re.IGNORECASE,
+)
+
+_UNRUN_COMMAND_RE = re.compile(r"COMMAND:\s*(.+?)(?=\n\s*\**\s*(?:DONE|HELP)\s*:|\Z)", re.DOTALL)
+
+
+def unrun_command(response):
+    """The command a HELP reply wrote after its HELP, if any (never run)."""
+
+    help_at = response.find("HELP")
+    if help_at < 0:
+        return None
+
+    match = _UNRUN_COMMAND_RE.search(response, help_at)
+    if not match:
+        return None
+
+    command = match.group(1).strip().strip("`").strip()
+
+    return command or None
+
+
 # What a HELP gets answered with, once, when it arrives straight after a
 # command that SUCCEEDED (exit 0).
 #
@@ -630,6 +777,19 @@ def perform_task(task, task_file):
     commands_run = 0
     nudged = False
     success_nudged = False
+
+    # A command the model wrote inside a premature HELP and has not run
+    # (unrun_command), and whether a DONE claiming work while it is still
+    # unrun has been pushed back already.
+    proposed_command = None
+    ungrounded_nudged = False
+
+    # Whether a command that can change something (WRITES_RE) has succeeded
+    # yet: a task asking for a change is not done by commands that only read.
+    changed = False
+
+    # Commands refused for overwriting a file the task says to append to.
+    overwrite_nudges = 0
     failure_nudges = 0
     invalid_in_a_row = 0
 
@@ -689,6 +849,41 @@ def perform_task(task, task_file):
 
         if action == "done":
 
+            if not ungrounded_nudged and (
+                (commands_run == 0 and proposed_command)
+                or (not changed and TASK_WANTS_CHANGE_RE.search(task or ""))
+            ):
+
+                ungrounded_nudged = True
+
+                log(
+                    "Agent reported DONE without changing anything in a task "
+                    "that asks for a change - pushing back once."
+                )
+
+                what = (
+                    "No command has run in this task, so nothing on this desktop has changed yet."
+                    if commands_run == 0
+                    else "Your commands so far only read things; none of them changed anything on this desktop, "
+                    "so the task is not done yet."
+                )
+
+                proposed = (
+                    f"\n\nThe command you proposed was never run:\n\n{proposed_command}"
+                    if proposed_command
+                    else ""
+                )
+
+                history.append({"role": "assistant", "content": f"DONE: {value}"})
+                history.append(
+                    {
+                        "role": "user",
+                        "content": UNGROUNDED_DONE_NUDGE.format(what=what, proposed=proposed),
+                    }
+                )
+
+                continue
+
             write_final_reply(value)
 
             return
@@ -698,23 +893,31 @@ def perform_task(task, task_file):
             if commands_run == 0 and not nudged and not is_safety_brake(value):
 
                 nudged = True
+                proposed_command = unrun_command(response)
 
                 log(
                     "Agent had a query before running anything - "
                     "pushing back once."
                 )
 
+                # Only the HELP itself is kept: an answer the model guessed
+                # beside its command would be read back as if it had
+                # happened (see command_only).
                 history.append(
                     {
                         "role": "assistant",
-                        "content": response,
+                        "content": f"HELP: {value}" if proposed_command else response,
                     }
                 )
 
                 history.append(
                     {
                         "role": "user",
-                        "content": PREMATURE_QUERY_NUDGE,
+                        "content": (
+                            UNRUN_COMMAND_NUDGE.format(command=proposed_command)
+                            if proposed_command
+                            else PREMATURE_QUERY_NUDGE
+                        ),
                     }
                 )
 
@@ -862,6 +1065,16 @@ It is not going to get past this on its own.
                 pause_for_dangerous_command(command, danger)
                 return
 
+            target = overwrite_target(task, command)
+
+            if target:
+                if not refuse_overwrite(history, command, target, overwrite_nudges):
+                    return
+
+                overwrite_nudges += 1
+
+                continue
+
             progress.emit(f"$ {command}")
 
             commands_run += 1
@@ -874,6 +1087,9 @@ It is not going to get past this on its own.
 
             last_command = command
             last_result = result
+
+            if result.get("exit_code") == 0 and WRITES_RE.search(command):
+                changed = True
 
             progress.emit(describe_result(result))
 
@@ -981,6 +1197,10 @@ def continue_after_query(query_response):
         return
 
     task = state.current_task
+
+    # Commands refused for overwriting a file the task says to append to
+    # (overwrite_target), counted afresh after the reply.
+    overwrite_nudges = 0
 
     state.waiting_for_query = False
 
@@ -1203,6 +1423,16 @@ $ {value}
             if danger:
                 pause_for_dangerous_command(value, danger)
                 return
+
+            target = overwrite_target(task, value)
+
+            if target:
+                if not refuse_overwrite(history, value, target, overwrite_nudges):
+                    return
+
+                overwrite_nudges += 1
+
+                continue
 
             progress.emit(f"$ {value}")
 

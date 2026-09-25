@@ -243,9 +243,9 @@ def _pass():
             continue
 
         if not content:
-            state.processed_commands.add(
-                path.name
-            )
+            # A writer may have created the file but not finished writing it.
+            # Leave it eligible for the next pass; remembering its name here
+            # would strand the complete request for the life of this process.
             continue
 
         # The reasoning backend has not been reached yet - Ollama

@@ -105,6 +105,28 @@ func TestRenderEveryPage(t *testing.T) {
 		t.Fatalf("RenderRequests: %v", err)
 	}
 
+	var triggers strings.Builder
+	if err := renderer.RenderTriggers(&triggers, page); err != nil {
+		t.Fatalf("RenderTriggers: %v", err)
+	}
+	for _, want := range []string{`data-kind="cron"`, `data-kind="once"`, `data-kind="email"`, `id="schedList"`, `id="ruleList"`} {
+		if !strings.Contains(triggers.String(), want) {
+			t.Fatalf("the triggers page is missing %s", want)
+		}
+	}
+
+	if err := renderer.RenderTriggers(io.Discard, PageData{}); err != nil {
+		t.Fatalf("RenderTriggers with no desktops: %v", err)
+	}
+
+	var requests strings.Builder
+	if err := renderer.RenderRequests(&requests, page); err != nil {
+		t.Fatalf("RenderRequests: %v", err)
+	}
+	if !strings.Contains(requests.String(), `id="onEmail"`) || !strings.Contains(requests.String(), `href="/triggers"`) {
+		t.Fatal("the requests page no longer offers setting up an email trigger")
+	}
+
 	notes := QueryNotesPageData{
 		Notes: []querynotes.QueryNote{{
 			ID:        "1",

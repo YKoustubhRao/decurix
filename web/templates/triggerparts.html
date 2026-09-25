@@ -1,0 +1,394 @@
+{{/*
+  What the requests page and the triggers page share for setting up a
+  trigger. "email-rule-fields" is the part of a form that turns a request
+  into an email trigger (the destination desktop and the request text are the
+  page's own); "trigger-js" defines window.Triggers, which fills and reads it.
+*/}}
+
+{{define "trigger-css"}}
+<style>
+.email-fields{display:none;gap:14px}
+.email-fields.on{display:grid}
+.email-fields [hidden]{display:none !important}
+.email-fields .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.email-fields .input.mono{font-family:var(--mono)}
+.email-fields .check{display:flex;align-items:flex-start;gap:9px;cursor:pointer;font-size:13px;color:var(--text)}
+.email-fields .check input{width:16px;height:16px;margin-top:1px;accent-color:var(--accent);flex:none}
+.email-fields .check small{display:block;color:var(--text-3);font-size:12px}
+.email-fields .no-mailbox{
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  padding:12px 14px;border:1px dashed var(--line-2);border-radius:var(--r-md);
+  font-size:13px;color:var(--text-2)
+}
+.email-fields .no-mailbox[hidden]{display:none}
+
+.tests{display:grid;gap:0;border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden;background:var(--surface)}
+.test{display:flex;gap:10px;align-items:baseline;padding:8px 12px;border-bottom:1px solid var(--line);font-size:12.5px}
+.test:last-child{border-bottom:none}
+.test[data-match="true"]{background:var(--live-soft)}
+.test-mark{flex:none;width:14px;color:var(--live);font-weight:700}
+.test-main{min-width:0;display:grid;gap:2px}
+.test-subject{color:var(--text);word-break:break-word}
+.test-from{color:var(--text-3);font-size:11.5px;word-break:break-word}
+
+@media (max-width:720px){
+  .email-fields .grid-2{grid-template-columns:1fr}
+}
+</style>
+{{end}}
+
+{{define "email-rule-fields"}}
+<div class="email-fields" id="emailFields">
+  <div class="no-mailbox" id="noMailbox" hidden>
+    <svg width="15" height="15"><use href="#i-mail"/></svg>
+    <span>No mailbox is connected yet.</span>
+    <a class="btn btn-quiet btn-sm" href="/triggers#email">Connect one on the Triggers page</a>
+  </div>
+
+  <div class="field">
+    <label for="ruleAccount">When email arrives in</label>
+    <select class="select" id="ruleAccount"></select>
+  </div>
+
+  <div class="grid-2">
+    <div class="field">
+      <label for="ruleSender">Sender matches <span class="mono">(regex)</span></label>
+      <input class="input mono" id="ruleSender" placeholder="@acme\.com$" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="ruleSubject">Subject matches <span class="mono">(regex)</span></label>
+      <input class="input mono" id="ruleSubject" placeholder="^invoice\b" autocomplete="off">
+    </div>
+  </div>
+  <div class="hint">
+    Case doesn't matter. Leave one empty to match on the other alone; with both, both must match. The sender
+    pattern is tried on the address (<span class="mono">billing@acme.com</span>) and on the whole From line.
+    In the request, <span class="mono">{subject}</span>, <span class="mono">{sender}</span>,
+    <span class="mono">{from}</span> and <span class="mono">{date}</span> are filled in; the email itself is written
+    out below it (a request starting with <span class="mono">/</span> is sent exactly as written).
+  </div>
+
+  <div class="field">
+    <label for="ruleName">Name <span class="mono">(optional)</span></label>
+    <input class="input" id="ruleName" placeholder="Acme invoices" autocomplete="off">
+  </div>
+
+  <label class="check">
+    <input type="checkbox" id="ruleBody" checked>
+    <span>Include the email's text<small>Up to 3,000 characters, marked as written by the sender so the agent treats it as information, not orders.</small></span>
+  </label>
+  <label class="check">
+    <input type="checkbox" id="ruleVerified" checked>
+    <span>Verified senders only<small>Anyone can put any address in a From line. With this on, an email only starts a task if your provider confirmed it really comes from the sender's domain (DMARC or DKIM). Email you send to yourself usually isn't verified.</small></span>
+  </label>
+
+  <div>
+    <button type="button" class="btn btn-default btn-sm" id="testRule">Test on recent email</button>
+  </div>
+  <div id="testResults" hidden></div>
+</div>
+{{end}}
+
+{{define "trigger-js"}}
+<script>
+/* window.Triggers: the email-rule fields shared by the requests and triggers
+   pages. Mail endpoints answer 403 to a desktop; a page loaded by a person
+   reaches them as usual. */
+window.Triggers = (function(){
+  "use strict";
+
+  var post = Decurix.post, toast = Decurix.toast;
+  var accounts = [];
+
+  function $(id){ return document.getElementById(id); }
+
+  function el(tag, cls, text){
+    var node = document.createElement(tag);
+    if(cls){ node.className = cls; }
+    if(text !== undefined && text !== null){ node.textContent = text; }
+    return node;
+  }
+
+  /* The mailbox choice, kept across refreshes. */
+  function setAccounts(list){
+    accounts = list || [];
+    var select = $("ruleAccount");
+    if(!select){ return; }
+
+    var chosen = select.value;
+    select.innerHTML = "";
+    accounts.forEach(function(a){
+      var o = el("option", "", a.email + (a.enabled ? "" : " (paused)"));
+      o.value = a.id;
+      select.appendChild(o);
+    });
+    if(chosen){ select.value = chosen; }
+
+    $("noMailbox").hidden = accounts.length > 0;
+    select.closest(".field").hidden = accounts.length === 0;
+  }
+
+  async function loadAccounts(){
+    try{
+      var response = await fetch("/api/mail", {cache: "no-store"});
+      var data = await response.json();
+      if(!response.ok){ throw new Error(data.error || "Could not load"); }
+      setAccounts(data.accounts);
+      return data;
+    }catch(e){
+      setAccounts([]);
+      return null;
+    }
+  }
+
+  function show(on){
+    $("emailFields").classList.toggle("on", !!on);
+    if(!on){ $("testResults").hidden = true; }
+  }
+
+  /* The fields of a rule, given the page's desktop and request. */
+  function fields(desktopID, content){
+    return {
+      account_id: $("ruleAccount").value,
+      desktop_id: desktopID,
+      name: $("ruleName").value,
+      sender_re: $("ruleSender").value,
+      subject_re: $("ruleSubject").value,
+      content: content,
+      include_body: String($("ruleBody").checked),
+      verified_only: String($("ruleVerified").checked)
+    };
+  }
+
+  /* Why a rule cannot be saved yet, or "". */
+  function problem(f){
+    if(!accounts.length){ return "Connect a mailbox first."; }
+    if(!f.account_id){ return "Pick the mailbox to watch."; }
+    if(!f.sender_re.trim() && !f.subject_re.trim()){ return "Give a sender or subject pattern."; }
+    return "";
+  }
+
+  function reset(){
+    ["ruleName", "ruleSender", "ruleSubject"].forEach(function(id){ $(id).value = ""; });
+    $("ruleBody").checked = true;
+    $("ruleVerified").checked = true;
+    $("testResults").hidden = true;
+  }
+
+  async function create(desktopID, content){
+    var f = fields(desktopID, content);
+    var why = problem(f);
+    if(why){ throw new Error(why); }
+    await post("/api/mail/rules/create", f);
+    reset();
+  }
+
+  function wireTest(getDesktop, getContent){
+    $("testRule").addEventListener("click", async function(){
+      var f = fields(getDesktop(), getContent());
+      var why = problem(f);
+      if(why){ return toast(why, "error"); }
+
+      var box = $("testResults");
+      Decurix.busy(true);
+      try{
+        var results = await post("/api/mail/rules/test", f);
+        box.innerHTML = "";
+
+        var matched = results.filter(function(r){ return r.matches; }).length;
+        var head = el("div", "hint", matched + " of the latest " + results.length + " emails match." +
+          (f.verified_only === "true" ? " With \"verified senders only\", those without ✓ verified would be skipped." : ""));
+        head.style.marginBottom = "8px";
+        box.appendChild(head);
+
+        var list = el("div", "tests");
+        results.forEach(function(r){
+          var line = el("div", "test");
+          line.dataset.match = String(r.matches);
+          line.appendChild(el("span", "test-mark", r.matches ? "✓" : ""));
+          var main = el("div", "test-main");
+          main.appendChild(el("span", "test-subject", r.subject || "(no subject)"));
+          main.appendChild(el("span", "test-from", r.from + (r.verified ? " · ✓ verified" : " · not verified")));
+          main.title = r.verify_note || "";
+          line.appendChild(main);
+          list.appendChild(line);
+        });
+        box.appendChild(list);
+        box.hidden = false;
+      }catch(e){
+        toast(e.message, "error");
+      }finally{
+        Decurix.busy(false);
+      }
+    });
+  }
+
+  /* Go's zero time means "never". */
+  function when(iso){
+    if(!iso){ return null; }
+    var d = new Date(iso);
+    if(isNaN(d.getTime()) || d.getUTCFullYear() <= 1){ return null; }
+    return d;
+  }
+
+  function shortTime(iso){
+    var d = when(iso);
+    return d ? d.toLocaleString(undefined, {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"}) : null;
+  }
+
+  function ago(iso){
+    var d = when(iso);
+    if(!d){ return null; }
+    var s = Math.max(0, Math.round((Date.now() - d.getTime()) / 1000));
+    if(s < 60){ return "just now"; }
+    if(s < 3600){ return Math.round(s / 60) + " min ago"; }
+    if(s < 86400){ return Math.round(s / 3600) + " h ago"; }
+    return shortTime(iso);
+  }
+
+  function accountEmail(id){
+    for(var i = 0; i < accounts.length; i++){
+      if(accounts[i].id === id){ return accounts[i].email; }
+    }
+    return "a disconnected mailbox";
+  }
+
+  function iconButton(icon, label, onClick){
+    var b = el("button", "btn btn-quiet btn-sm");
+    b.type = "button";
+    b.setAttribute("aria-label", label);
+    b.innerHTML = '<svg width="14" height="14"><use href="#i-' + icon + '"/></svg>';
+    b.addEventListener("click", onClick);
+    return b;
+  }
+
+  function textButton(label, onClick){
+    var b = el("button", "btn btn-quiet btn-sm", label);
+    b.type = "button";
+    b.addEventListener("click", onClick);
+    return b;
+  }
+
+  /* One row of the list of triggers, for a schedule (cron or once). */
+  function scheduleRow(sch, desktopName, reload){
+    var row = el("div", "trig-row");
+    row.dataset.enabled = sch.enabled ? "true" : "false";
+
+    var main = el("div", "trig-main");
+    main.appendChild(el("div", "trig-content", sch.content));
+
+    var meta = el("div", "trig-meta");
+    meta.appendChild(el("span", "trig-kind", sch.run_once ? "Once" : "Repeat"));
+    if(!sch.run_once){ meta.appendChild(el("span", "mono", sch.cron_expr)); }
+    meta.appendChild(el("span", "", "→ " + desktopName(sch.desktop_id)));
+
+    var lastRun = shortTime(sch.last_run_at);
+    var fired = sch.run_once && !!lastRun;
+    if(fired){
+      meta.appendChild(el("span", "", "Ran " + lastRun));
+    }else if(!sch.enabled){
+      meta.appendChild(el("span", "", "Paused"));
+    }else{
+      var next = shortTime(sch.next_run_at);
+      meta.appendChild(el("span", "", next ? "Next " + next : "Next run pending"));
+    }
+    if(sch.waiting){
+      var since = shortTime(sch.waiting_since);
+      meta.appendChild(el("span", "", "Held" + (since ? " since " + since : "") + ": " + sch.waiting));
+    }
+    if(lastRun && !fired){ meta.appendChild(el("span", "", "Last ran " + lastRun)); }
+    main.appendChild(meta);
+    row.appendChild(main);
+
+    var actions = el("div", "trig-actions");
+    if(!fired){
+      actions.appendChild(textButton(sch.enabled ? "Pause" : "Resume", function(){
+        act("/api/schedules/toggle", {id: sch.id, enabled: String(!sch.enabled)}, reload);
+      }));
+    }
+    actions.appendChild(iconButton("trash", "Delete schedule", function(){
+      act("/api/schedules/delete", {id: sch.id}, reload);
+    }));
+    row.appendChild(actions);
+    return row;
+  }
+
+  /* One row of the list of triggers, for an email rule. */
+  function ruleRow(r, desktopName, reload){
+    var row = el("div", "trig-row");
+    row.dataset.enabled = r.enabled ? "true" : "false";
+
+    var main = el("div", "trig-main");
+    main.appendChild(el("div", "trig-title", r.name));
+    main.appendChild(el("div", "trig-content", r.content));
+
+    var meta = el("div", "trig-meta");
+    meta.appendChild(el("span", "trig-kind", "Email"));
+    if(!r.enabled){ meta.appendChild(el("span", "", "Paused")); }
+    if(r.sender_re){ meta.appendChild(el("span", "mono", "from /" + r.sender_re + "/")); }
+    if(r.subject_re){ meta.appendChild(el("span", "mono", "subject /" + r.subject_re + "/")); }
+    meta.appendChild(el("span", "", accountEmail(r.account_id) + " → " + desktopName(r.desktop_id)));
+    if(r.verified_only){ meta.appendChild(el("span", "", "verified senders")); }
+    var last = ago(r.last_fired_at);
+    meta.appendChild(el("span", "", r.fired + " task" + (r.fired === 1 ? "" : "s") + (last ? ", last " + last : "")));
+    main.appendChild(meta);
+    row.appendChild(main);
+
+    var actions = el("div", "trig-actions");
+    actions.appendChild(textButton(r.enabled ? "Pause" : "Resume", function(){
+      act("/api/mail/rules/toggle", {id: r.id, enabled: String(!r.enabled)}, reload);
+    }));
+    actions.appendChild(iconButton("trash", "Delete rule", function(){
+      if(!confirm("Delete the rule \"" + r.name + "\"?")){ return; }
+      act("/api/mail/rules/delete", {id: r.id}, reload);
+    }));
+    row.appendChild(actions);
+    return row;
+  }
+
+  async function act(url, f, reload){
+    Decurix.busy(true);
+    try{
+      await post(url, f);
+      if(reload){ await reload(); }
+    }catch(e){
+      toast(e.message, "error");
+    }finally{
+      Decurix.busy(false);
+    }
+  }
+
+  return {
+    loadAccounts: loadAccounts, setAccounts: setAccounts, accounts: function(){ return accounts; },
+    show: show, create: create, wireTest: wireTest,
+    scheduleRow: scheduleRow, ruleRow: ruleRow,
+    el: el, ago: ago, when: when, shortTime: shortTime, textButton: textButton, iconButton: iconButton, act: act
+  };
+})();
+</script>
+{{end}}
+
+{{define "trigger-list-css"}}
+<style>
+.trig-row{
+  display:flex;align-items:flex-start;justify-content:space-between;gap:14px;
+  padding:14px 20px;border-bottom:1px solid var(--line)
+}
+.trig-row:last-child{border-bottom:none}
+.trig-row[data-enabled="false"]{opacity:.55}
+.trig-main{min-width:0;display:grid;gap:5px}
+.trig-title{font-size:13.5px;font-weight:600;color:var(--text);word-break:break-word}
+.trig-content{font-size:13px;color:var(--text);white-space:pre-wrap;word-break:break-word;max-width:64ch}
+.trig-meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px 11px;font-size:11.5px;color:var(--text-3)}
+.trig-kind{
+  display:inline-flex;align-items:center;height:19px;padding:0 7px;border-radius:999px;
+  background:var(--surface-2);color:var(--text-2);font-weight:600
+}
+.trig-actions{display:flex;flex-wrap:wrap;gap:6px;flex-shrink:0;justify-content:flex-end}
+.trig-empty{padding:24px 20px;color:var(--text-3);font-size:13px;text-align:center}
+@media (max-width:720px){
+  .trig-row{flex-direction:column}
+  .trig-actions{justify-content:flex-start}
+}
+</style>
+{{end}}
