@@ -114,10 +114,15 @@ ENV PATH="/home/headless/.cargo/bin:${PATH}"
 # window list; at-spi2-core, libatk-adaptor and the Atspi bindings expose GTK,
 # XFCE and LibreOffice widgets by role and name. ~3 MB in all. Chromium is read
 # over its DevTools port instead (agent/chromium-browser.init), which needs
-# nothing installed.
+# nothing installed. tesseract-ocr (+ English, ~10 MB) reads the text of a
+# screen that is only pixels - a host app on a canvas - when a replay has to
+# decide whether a step is still needed or where a click lands now
+# (computer/ocr.py); without it those rungs are skipped, nothing breaks.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         xdotool \
+        tesseract-ocr \
+        tesseract-ocr-eng \
         python3-xlib \
         python3-gi \
         gir1.2-atspi-2.0 \

@@ -3,8 +3,10 @@ import math
 import os
 import re
 
+from decurix_agent.computer import detour as detours
 from decurix_agent.computer import elements as el
 from decurix_agent.computer import healing
+from decurix_agent.computer import ocr
 
 
 # ============================================================
@@ -45,6 +47,8 @@ from decurix_agent.computer import healing
 MODEL_CALLS = int(os.environ.get("DECURIX_ESCALATION_MODEL_CALLS", "3"))
 GROUND_CONFIDENCE = 0.75
 JUDGE_CONFIDENCE = 0.85
+DETOUR_CONFIDENCE = 0.7
+POINT_LINES = 40
 MAX_OPTIONS = 3
 SCREEN_CHARS = 1500
 
@@ -67,6 +71,25 @@ JUDGE_SYSTEM = (
     "Say whether the screen shows the step did what it was meant to do. Say null when you cannot tell - "
     "a wrong yes lets a broken run carry on. "
     'Reply with exactly one line of JSON and nothing else: {"achieved": true, "false" or null, "confidence": <0 to 1>, "reason": "<short>"}'
+)
+
+DETOUR_SYSTEM = (
+    "You help a workflow automation run a task a person recorded, on a computer screen whose content can differ "
+    "from run to run. The recording reached a step that is not on the screen now. You are given the text the "
+    "recording's screen showed at that step, the text it showed a few steps later, and the text on the screen now. "
+    "Decide whether the steps in between dealt with something that is not here this time - a pop-up, a cookie "
+    "banner, a sign-in or robot check, a notice - so the run should leave them out and carry on from the later step. "
+    "Say false when the screen now is simply somewhere else, and null when you cannot tell. "
+    'Reply with exactly one line of JSON and nothing else: {"skip": true, false or null, "confidence": <0 to 1>, "reason": "<short>"}'
+)
+
+POINT_SYSTEM = (
+    "You are the grounding step of a workflow automation that runs a task a person recorded, on a screen whose "
+    "content differs from run to run (another search, another customer). When recorded, the person clicked a line "
+    "of text. You are given that line with the lines around it, and the numbered lines of text on the screen now. "
+    "Choose the line that plays the same part in the task now - the same kind of thing in the same role, not the "
+    "same words - or 0 when none does. A wrong click can cost the person real work, so say 0 when you are not sure. "
+    'Reply with exactly one line of JSON and nothing else: {"choice": <number, or 0>, "confidence": <0 to 1>, "reason": "<short>"}'
 )
 
 JSON_OBJECT = re.compile(r"\{.*?\}", re.DOTALL)
@@ -120,6 +143,10 @@ class Ladder:
         self.judged = []      # steps carried on past on the engine's say-so
         self.seen = {}        # step id -> where it was found and what stood around it
         self.confirmed = set()
+        self.detours = []     # runs of steps left out as not needed this time
+        self.grounded = []    # point clicks placed by the engine reading the screen's text
+        # What the recording typed and what this run types instead: [(recorded, now)].
+        self.typed = []
         self.trail = []       # every rung tried, in order, for whoever has to be asked
 
     # -- bookkeeping --------------------------------------------------
@@ -163,6 +190,13 @@ class Ladder:
         parts = []
         if self.healed:
             parts.append("repaired " + "; ".join(f"step {h['n']} (\"{h['was']}\" is now \"{h['now']}\")" for h in self.healed[:4]))
+        if self.detours:
+            parts.append("left out " + "; ".join(
+                (f"steps {d['from']}-{d['to'] - 1}" if d["to"] - d["from"] > 1 else f"step {d['from']}")
+                + " (what they dealt with was not on the screen this time)" for d in self.detours[:3]))
+        if self.grounded:
+            parts.append("chose where to click in step " + ", ".join(
+                f"{g['n']} (\"{g['now'][:60]}\" for the recorded \"{g['was'][:60]}\")" for g in self.grounded[:3]))
         if self.judged:
             parts.append("took the screen's word for step " + ", ".join(str(n) for n in self.judged[:4])
                          + " (its recorded result was not there exactly)")
@@ -293,3 +327,127 @@ class Ladder:
             self.judged.append(step["n"])
 
         return achieved
+
+    # -- when the screen is not the recording's ---------------------------
+
+    def _typing(self):
+        return "".join(f"The recording typed {el._quote(was, 80)}; this run typed {el._quote(now, 80)}.\n"
+                       for was, now in self.typed[:3])
+
+    def detour(self, steps, index, now, screen_of):
+        """
+        Whether the steps from steps[index] on dealt with something this run
+        does not meet (detour.py): the index to go on from, or None. The
+        recording's own screens propose it; the engine, reading their text,
+        may overrule a proposal or carry a close one. Without an engine only
+        a clear one (detour.SURE_MARGIN) is taken.
+        """
+
+        typed = [v for pair in self.typed for v in pair]
+        found = detours.find(steps, index, now, screen_of, typed=typed)
+        if found is None:
+            return None
+
+        first, then = steps[index], steps[found["to"]]
+        span = f"steps {first['n']}-{then['n'] - 1}" if then["n"] - first["n"] > 1 else f"step {first['n']}"
+        verdict = None
+
+        texts = (found["here"].lines, found["there"].lines, now.lines) if ocr.available() else ((), (), ())
+        if self.ask_model is not None and self.calls_left > 0 and all(texts):
+            self.calls_left -= 1
+            self.model_calls += 1
+            prompt = (
+                (f"Task: {self.goal}\n" if self.goal else "") + self._typing()
+                + f"The run is at step {first['n']}: {first.get('summary', '')}\n"
+                + f"The recording's screen at step {first['n']}:\n{ocr.text(texts[0], 700)}\n\n"
+                + f"The recording's screen at step {then['n']} ({then.get('summary', '')}):\n{ocr.text(texts[1], 700)}\n\n"
+                + f"The screen now:\n{ocr.text(texts[2], 700)}"
+            )
+            try:
+                answer = parse_reply(self.ask_model(DETOUR_SYSTEM, prompt)) or {}
+            except Exception as exc:
+                self.trail.append(f"the engine could not be asked about {span} ({str(exc)[:80]})")
+                answer = {}
+            sure = _confidence(answer.get("confidence")) >= DETOUR_CONFIDENCE
+            if answer.get("skip") is True and sure:
+                verdict = "the engine agreed"
+            elif answer.get("skip") is False and sure:
+                self.trail.append(f"the engine said {span} are still needed ({str(answer.get('reason') or '')[:80]})")
+                return None
+
+        if verdict is None:
+            if found["margin"] < detours.SURE_MARGIN:
+                self.trail.append(f"the screen looks more like step {then['n']}'s than step {first['n']}'s, "
+                                  f"but not clearly enough to leave out {span}")
+                return None
+            verdict = "the screens say so"
+
+        self.detours.append({"from": first["n"], "to": then["n"], "ids": [self.key(s) for s in steps[index:found["to"]]],
+                             "margin": found["margin"], "how": verdict})
+        self.trail.append(f"left out {span}: the screen now is what the recording saw at step {then['n']} ({verdict})")
+        self.report(f"Left out {span}: they dealt with something that is not on the screen this time - "
+                    f"the screen now looks like the recording's at step {then['n']} ({verdict}, {found['margin']:.2f})")
+        return found["to"]
+
+    def ground_point(self, step, now_frame, recorded_frame):
+        """
+        Where to click for a point step whose picture is not on the screen:
+        the engine reads what the recording clicked (ocr.py) and picks the line
+        that plays that part now. (x, y) or None. Never for a strict step.
+        """
+
+        if not self._may_ground(step) or now_frame is None or recorded_frame is None or not ocr.available():
+            return None
+        if step.get("kind") not in ("click", "double_click"):
+            return None
+
+        width, height, rgb = recorded_frame
+        before = ocr.read(width, height, rgb)
+        clicked = ocr.line_at(before, step.get("point"))
+        if clicked is None:
+            self.trail.append(f"no text under step {step['n']}'s recorded click to go by")
+            return None
+
+        around = sorted(before, key=lambda l: abs(l["box"][1] - clicked["box"][1]))[:7]
+        around.sort(key=lambda l: l["box"][1])
+        lines = [l for l in ocr.read_frame(now_frame) if len(ocr.WORD_RE.findall(l["text"])) >= 1][:POINT_LINES]
+        if not lines:
+            return None
+
+        self.calls_left -= 1
+        self.model_calls += 1
+        context = "\n".join(("> " if l is clicked else "  ") + l["text"][:120] for l in around)
+        prompt = (
+            (f"Task: {self.goal}\n" if self.goal else "") + self._typing()
+            + f"Step {step['n']}: {step.get('summary', '')}\n"
+            + f"When recorded, the person clicked the line marked >:\n{context}\n\n"
+            + "Lines on the screen now:\n"
+            + "\n".join(f"{n}. {l['text'][:120]}" for n, l in enumerate(lines, 1))
+        )
+
+        try:
+            answer = parse_reply(self.ask_model(POINT_SYSTEM, prompt)) or {}
+        except Exception as exc:
+            self.trail.append(f"the engine could not be asked where step {step['n']} clicks ({str(exc)[:80]})")
+            return None
+
+        try:
+            choice = int(answer.get("choice") or 0)
+        except (TypeError, ValueError):
+            choice = 0
+        confidence = _confidence(answer.get("confidence"))
+
+        if not 1 <= choice <= len(lines) or confidence < GROUND_CONFIDENCE:
+            self.trail.append(f"the engine was not sure where step {step['n']} clicks now")
+            return None
+
+        line = lines[choice - 1]
+        x, y, w, h = line["box"]
+        point = (x + min(w // 2, 60), y + h // 2)
+        self.grounded.append({"id": self.key(step), "n": step["n"], "was": clicked["text"], "now": line["text"],
+                              "confidence": round(confidence, 2)})
+        self.trail.append(f"the engine chose the line {el._quote(line['text'], 60)} at {confidence:.2f}")
+        self.report(f"Step {step['n']}: what was clicked is not on the screen as recorded - clicking "
+                    f"{el._quote(line['text'], 60)} at {point[0]},{point[1]}, which plays the part the recorded "
+                    f"{el._quote(clicked['text'], 60)} did (the engine chose it, {confidence:.2f})")
+        return point

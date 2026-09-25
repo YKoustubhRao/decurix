@@ -14,6 +14,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/keepawake"
 	"github.com/YKoustubhRao/decurix/internal/mailtrigger"
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
+	"github.com/YKoustubhRao/decurix/internal/webui"
 )
 
 // emptyMailbox is a mailbox with nothing in it; a login as
@@ -172,5 +173,44 @@ func TestTheMailboxIsNotAvailableToDesktops(t *testing.T) {
 		if rec.Code != want {
 			t.Errorf("%s: status = %d, want %d", addr, rec.Code, want)
 		}
+	}
+}
+
+func TestTheEmailPageIsPartOfTheTriggersPage(t *testing.T) {
+	s := mailServer(t)
+	s.Web = webui.NewRenderer()
+	s.nets.subnets = []netip.Prefix{netip.MustParsePrefix("172.18.0.0/16")}
+	s.nets.gateways = []netip.Addr{netip.MustParseAddr("172.18.0.1")}
+	s.nets.fetched = time.Now()
+
+	mux := http.NewServeMux()
+	s.RegisterRoutes(mux)
+
+	get := func(path, addr string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.RemoteAddr = addr
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec
+	}
+
+	page := get("/triggers", "127.0.0.1:50000")
+	if page.Code != http.StatusOK {
+		t.Fatalf("/triggers: status = %d", page.Code)
+	}
+	for _, want := range []string{"Triggers", `id="schedList"`, `id="ruleList"`, `id="accountList"`} {
+		if !strings.Contains(page.Body.String(), want) {
+			t.Errorf("/triggers does not show %s", want)
+		}
+	}
+
+	moved := get("/email", "127.0.0.1:50000")
+	if moved.Code != http.StatusMovedPermanently || moved.Header().Get("Location") != "/triggers#email" {
+		t.Errorf("/email: %d to %q, want a permanent redirect to /triggers#email", moved.Code, moved.Header().Get("Location"))
+	}
+
+	// It holds the mailbox setup, so a desktop may not load it either.
+	if code := get("/triggers", "172.18.0.5:50000").Code; code != http.StatusForbidden {
+		t.Errorf("/triggers from a desktop: status = %d, want 403", code)
 	}
 }
