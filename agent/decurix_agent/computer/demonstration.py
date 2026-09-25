@@ -210,9 +210,14 @@ def start(title="", description="", task_id=""):
             pass
         time.sleep(0.1)
 
-    reason = (recording.meta(session_id) or {}).get("reason") or "the recorder did not start"
+    exit_code = _process.poll()
+    reason = (recording.meta(session_id) or {}).get("reason")
+    if not reason:
+        reason = (f"the recorder exited during startup (exit code {exit_code}); see {LOG_FILE}"
+                  if exit_code is not None else
+                  f"timed out waiting for input capture after {START_SECONDS} seconds; see {LOG_FILE}")
 
-    if _process.poll() is None:
+    if exit_code is None:
         _process.kill()
 
     _close(session_id, "failed", reason)
@@ -980,16 +985,25 @@ class Recorder:
         signal.signal(signal.SIGUSR1, self._on_pause)
         signal.signal(signal.SIGUSR2, self._on_resume)
 
-        try:
-            self.latest = core.observe(remember=False)
-        except ComputerError as exc:
-            log(f"Could not read the screen at the start: {exc}")
-
         reader = threading.Thread(target=self._read_input, daemon=True)
         reader.start()
 
+        # Input is being captured now. The first full screen/accessibility
+        # observation can take longer than start()'s deadline on a busy
+        # desktop, so it must not hold up the ready handshake.
         READY_FILE.write_text(str(os.getpid()), encoding="utf-8")
         log(f"Recording demonstration {self.session_id}; ignoring input from devices {sorted(self.agent_devices)}")
+
+        try:
+            first = core.observe(remember=False)
+            # A person may act while this first look is in progress. Its
+            # result can then describe the screen *after* that action, rather
+            # than the screen the action's captured frame shows.
+            with self.raw.mutex:
+                if not self.raw.queue:
+                    self.latest = first
+        except ComputerError as exc:
+            log(f"Could not read the screen at the start: {exc}")
 
         self._process()
         reader.join(timeout=2)

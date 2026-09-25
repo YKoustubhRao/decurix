@@ -726,7 +726,7 @@ def _opened_window(step):
     return None
 
 
-def _open_desktop_icon(step):
+def _open_desktop_icon(step, next_step=None):
     """
     A click or double click on a desktop icon that opened a window is done by
     opening that window's launcher (computer/launchers.py), not by the picture
@@ -739,6 +739,11 @@ def _open_desktop_icon(step):
         return None
 
     window = _opened_window(step)
+    # Learning from several demonstrations keeps only result checks they
+    # share. The window-opened check can disappear even though the next
+    # action was recorded inside that window.
+    if not window and next_step and next_step.get("n") == step["n"] + 1:
+        window = _stable_title(next_step.get("window"))
     if not window or launchers.for_window(window) is None and launchers.find_window(window, title_matches) is None:
         return None
 
@@ -750,7 +755,7 @@ def _open_desktop_icon(step):
     return done, already
 
 
-def _run_step(step, values, ladder=None, report=None):
+def _run_step(step, values, ladder=None, report=None, next_step=None):
     kind = step["kind"]
 
     if kind not in REPLAYABLE:
@@ -768,7 +773,7 @@ def _run_step(step, values, ladder=None, report=None):
             (report or progress.emit)(f"Step {step['n']}: a small drag on the desktop only nudged an icon - nothing to do")
             return {"status": "done", "observation": None}
 
-        opened = _open_desktop_icon(step)
+        opened = _open_desktop_icon(step, next_step)
         if opened:
             done, already = opened
             (report or progress.emit)(f"Step {step['n']}: {done} rather than clicking its icon")
@@ -778,7 +783,8 @@ def _run_step(step, values, ladder=None, report=None):
             # launcher reconnects to it where it was left. run() says so if a
             # later step in it cannot find its target.
             return {"status": "done", "observation": None,
-                    "raised": {"window": _opened_window(step), "already": already}}
+                    "raised": {"window": _opened_window(step) or _stable_title((next_step or {}).get("window")),
+                               "already": already}}
 
         target = {}
         if kind in NEEDS_TARGET and not (step.get("target") or step.get("point")):
@@ -1131,7 +1137,8 @@ def run(program, params=None, start=1, report=None, ladder=None):
 
         audit.origin = {"session": program.get("session"), "step": step["n"]}
         try:
-            result = _run_step(step, values, ladder, report)
+            next_step = steps[index + 1] if index + 1 < total else None
+            result = _run_step(step, values, ladder, report, next_step=next_step)
         except _Halt as halt:
             # An optional step (a skill learned that it only sometimes
             # happens) that is not on the screen simply did not happen this

@@ -34,10 +34,13 @@ def save_request(request, task_id=""):
 
     path = config.COMMAND_DIR / filename
 
-    path.write_text(
-        request,
-        encoding="utf-8"
-    )
+    # The watcher globs *.txt every second. Publishing that name before the
+    # write finishes lets it read an empty request and remember the filename
+    # as processed forever. Write to a name outside the glob, then publish it
+    # in one rename after all bytes are present.
+    pending = path.with_name(path.name + ".tmp")
+    pending.write_text(request, encoding="utf-8")
+    pending.replace(path)
 
     log(f"Received request: {request}")
     log(f"Saved to {path}")
