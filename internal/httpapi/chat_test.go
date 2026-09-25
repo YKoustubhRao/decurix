@@ -138,9 +138,9 @@ func TestAgentTurnBuildsTranscript(t *testing.T) {
 		t.Fatalf("expected the answer to carry its 2 steps, got %d", len(entry.Steps))
 	}
 
-	// The same callback still feeds the Query rail, in full.
-	if notes := s.QueryNotes.List(); len(notes) != 1 {
-		t.Fatalf("expected the query note to still be recorded, got %d", len(notes))
+	// Successful replies belong in chat, not the actionable Query rail.
+	if notes := s.QueryNotes.List(); len(notes) != 0 {
+		t.Fatalf("expected no query for a successful reply, got %d", len(notes))
 	}
 }
 
@@ -353,6 +353,26 @@ func TestStepImageURLDeduplicatesIdenticalScreenshots(t *testing.T) {
 
 // A quiet callback (a finished recording) still answers in the chat but puts
 // nothing on the Query rail.
+func TestQueryRailOnlyContainsActionableReplies(t *testing.T) {
+	for _, tc := range []struct {
+		kind string
+		want int
+	}{{"final", 0}, {"message", 0}, {"query", 1}, {"approval", 1}, {"error", 1}, {"", 0}} {
+		t.Run(tc.kind, func(t *testing.T) {
+			s := chatServer(t)
+			body, _ := json.Marshal(map[string]string{"desktop_id": "box", "kind": tc.kind,
+				"content": "DECURIX TASK COMPLETED\n\nFinal reply:\nHello", "reply": "Hello"})
+			postJSON(t, s.queryTextHandler, "/api/querytext", string(body))
+			if got := len(s.QueryNotes.List()); got != tc.want {
+				t.Fatalf("queries = %d, want %d", got, tc.want)
+			}
+			if entries := readThread(t, s, "box").Entries; len(entries) != 1 || entries[0].Content != "Hello" {
+				t.Fatalf("reply missing from chat: %+v", entries)
+			}
+		})
+	}
+}
+
 func TestQuietQueryTextSkipsTheQueryRail(t *testing.T) {
 	s := chatServer(t)
 
@@ -373,7 +393,7 @@ func TestQuietQueryTextSkipsTheQueryRail(t *testing.T) {
 
 // Answering a desktop's query - in the chat, or anywhere else a request reaches
 // it as the reply - resolves that query's note out of the open list and into
-// the history. A finished task's report is not a query, so a reply leaves it.
+// the history. Another desktop's unanswered query remains open.
 func TestReplyResolvesTheQueryNote(t *testing.T) {
 	s := chatServer(t)
 
@@ -383,7 +403,7 @@ func TestReplyResolvesTheQueryNote(t *testing.T) {
 		`{"desktop_id":"claude-box","task_id":"`+route.TaskID+`","content":"DECURIX QUERY REQUEST",
 		  "kind":"approval","reply":"Approve paying INV-1042?"}`)
 	postJSON(t, s.queryTextHandler, "/api/querytext",
-		`{"desktop_id":"other-box","content":"DECURIX TASK COMPLETED","kind":"final","reply":"Done."}`)
+		`{"desktop_id":"other-box","content":"DECURIX QUERY REQUEST","kind":"query","reply":"Which file?"}`)
 
 	if open := s.QueryNotes.List(); len(open) != 2 {
 		t.Fatalf("expected both notes open before any reply, got %d", len(open))
@@ -395,7 +415,7 @@ func TestReplyResolvesTheQueryNote(t *testing.T) {
 
 	open := s.QueryNotes.List()
 	if len(open) != 1 || open[0].DesktopID != "other-box" {
-		t.Fatalf("expected only the other desktop's report to stay open, got %+v", open)
+		t.Fatalf("expected only the other desktop's query to stay open, got %+v", open)
 	}
 
 	resolved := s.QueryNotes.ListResolved()

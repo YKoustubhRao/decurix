@@ -91,8 +91,8 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: time.Now(),
 	}
 
-	// The same callback feeds two surfaces: the Query rail keeps the whole
-	// formatted note, while the chat shows only the agent's actual words.
+	// Chat receives every reply. The Query rail keeps formatted notes only
+	// for questions, approvals, and failures that need attention.
 	chatText, notedKind := agentReplyFromNote(req.Content)
 
 	if trimmed := strings.TrimSpace(req.Reply); trimmed != "" {
@@ -121,7 +121,7 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 	// an approval is answered by one.
 	note.Kind = outcomeKindFor(req.Kind, chatKind)
 
-	if !req.Quiet {
+	if !req.Quiet && note.Kind != tasks.OutcomeDone {
 		s.QueryNotes.Add(note)
 	}
 
