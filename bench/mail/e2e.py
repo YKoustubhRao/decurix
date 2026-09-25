@@ -19,7 +19,7 @@ tree's agent on the Ollama harness and the host's Ollama.
 It checks, in order:
   1. a wrong password is refused and not saved; the right one connects
   2. the password is stored encrypted, and mail.key is 0600
-  3. a desktop gets 403 from the Email page and API, the host 200
+  3. a desktop gets 403 from the Triggers page and the mail API, the host 200
   4. a spoofed sender (dmarc=fail) is skipped, a newsletter ignored
   5. a sleep: the control plane is frozen (docker pause) while an email
      arrives, and must read it within seconds of thawing
@@ -162,7 +162,7 @@ volumes:
     compose = ["docker", "compose", "-p", PROJECT, "-f", str(REPO / "docker-compose.yaml"), "-f", f"{work}/override.yaml"]
     sh(*compose, "build", cwd=REPO)
     sh(*compose, "up", "-d", cwd=REPO)
-    until(lambda: urllib.request.urlopen(BASE + "/email", timeout=5).status == 200, 180, "the control plane")
+    until(lambda: urllib.request.urlopen(BASE + "/triggers", timeout=5).status == 200, 180, "the control plane")
 
     post("/api/desktops/create", name=DESKTOP, profile="basic", harness="ollama")
     until(lambda: get(f"/api/desktops/status?id={DESKTOP}").get("status") == "running", 300, "the desktop")
@@ -215,9 +215,9 @@ def run(runs):
     check(len(stored) > 1 and stored[1].startswith("enc1:") and "pass" not in stored[1], "the password is encrypted")
 
     print("== 3. The desktops cannot reach it", flush=True)
-    inside = in_desktop("for p in /email /api/mail; do curl -s -o /dev/null -w '%{http_code} ' http://decurix:8080$p; done; "
+    inside = in_desktop("for p in /triggers /api/mail; do curl -s -o /dev/null -w '%{http_code} ' http://decurix:8080$p; done; "
                         "curl -s -o /dev/null -w '%{http_code}' -X POST http://decurix:8080/api/mail/rules/create -d x=1")
-    check(inside.split() == ["403", "403", "403"], f"a desktop gets 403 from the Email page and API ({inside})")
+    check(inside.split() == ["403", "403", "403"], f"a desktop gets 403 from the Triggers page and the mail API ({inside})")
     check(urllib.request.urlopen(BASE + "/api/mail").status == 200, "the host gets 200")
 
     code, _ = post("/api/mail/rules/create", account_id=acct["id"], desktop_id=DESKTOP, name="Acme invoices",

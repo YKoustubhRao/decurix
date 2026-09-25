@@ -149,7 +149,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/schedules/toggle", s.toggleScheduleHandler)
 	// The email triggers: a person's mailbox, never an agent's to read or
 	// change (humansonly.go).
-	mux.HandleFunc("/email", s.humansOnly(s.emailPageHandler))
+	mux.HandleFunc("/triggers", s.humansOnly(s.triggersPageHandler))
+	mux.HandleFunc("/email", s.humansOnly(emailPageMovedHandler))
 	mux.HandleFunc("/api/mail", s.humansOnly(s.mailStateHandler))
 	mux.HandleFunc("/api/mail/accounts/connect", s.humansOnly(s.connectMailHandler))
 	mux.HandleFunc("/api/mail/accounts/password", s.humansOnly(s.mailPasswordHandler))

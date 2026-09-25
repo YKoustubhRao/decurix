@@ -27,12 +27,20 @@ const themeFile = "theme.html"
 
 // templatePaths returns the embedded file list to parse for a page: the page
 // itself first (so the parsed template takes its name) plus the shared theme.
-func templatePaths(page string) []string {
-	return []string{
+func templatePaths(page string, partials ...string) []string {
+	paths := []string{
 		path.Join(templatesDir, page),
 		path.Join(templatesDir, themeFile),
 	}
+	for _, partial := range partials {
+		paths = append(paths, path.Join(templatesDir, partial))
+	}
+	return paths
 }
+
+// triggerParts holds what the requests and triggers pages share for setting
+// up a trigger: the email-rule fields and the script that fills and reads them.
+const triggerParts = "triggerparts.html"
 
 // PageData is the template data passed to the dashboard page: the current desktops, the worker memory, and the current cloud tunnel URL (if any).
 type PageData struct {
@@ -177,7 +185,7 @@ type Renderer struct {
 	dagTmpl        *template.Template
 	hostGUITmpl    *template.Template
 	screenTmpl     *template.Template
-	emailTmpl      *template.Template
+	triggersTmpl   *template.Template
 }
 
 // NewRenderer parses all templates once at startup.
@@ -187,7 +195,7 @@ func NewRenderer() *Renderer {
 			template.ParseFS(web.TemplatesFS, templatePaths("index.html")...),
 		),
 		requestsTmpl: template.Must(
-			template.ParseFS(web.TemplatesFS, templatePaths("requests.html")...),
+			template.ParseFS(web.TemplatesFS, templatePaths("requests.html", triggerParts)...),
 		),
 		dashboardTmpl: template.Must(
 			template.ParseFS(web.TemplatesFS, templatePaths("dashboard.html")...),
@@ -219,8 +227,8 @@ func NewRenderer() *Renderer {
 		screenTmpl: template.Must(
 			template.ParseFS(web.TemplatesFS, templatePaths("screen.html")...),
 		),
-		emailTmpl: template.Must(
-			template.ParseFS(web.TemplatesFS, templatePaths("email.html")...),
+		triggersTmpl: template.Must(
+			template.ParseFS(web.TemplatesFS, templatePaths("triggers.html", triggerParts)...),
 		),
 	}
 }
@@ -235,9 +243,10 @@ func (rd *Renderer) RenderRequests(w io.Writer, data PageData) error {
 	return rd.requestsTmpl.ExecuteTemplate(w, "requests.html", data)
 }
 
-// RenderEmail renders the email-trigger page.
-func (rd *Renderer) RenderEmail(w io.Writer, data PageData) error {
-	return rd.emailTmpl.ExecuteTemplate(w, "email.html", data)
+// RenderTriggers renders the triggers page: schedules, one-time runs and
+// email triggers, the ways a request starts without a person sending it.
+func (rd *Renderer) RenderTriggers(w io.Writer, data PageData) error {
+	return rd.triggersTmpl.ExecuteTemplate(w, "triggers.html", data)
 }
 
 // RenderQueryNotesDashboard renders the query-notes dashboard.
