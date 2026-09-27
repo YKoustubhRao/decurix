@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Chat · Decurix</title>
+
+{{template "theme"}}
+
+<style>
+.cg{max-width:1180px;margin:0 auto;padding:18px 20px 0;display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:18px;
+  height:calc(100dvh - 54px)}
+@media (max-width:860px){.cg{grid-template-columns:1fr}.cg-side{display:none}}
+
+.cg-main{display:flex;flex-direction:column;min-height:0;background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--r-xl);box-shadow:var(--shadow-1);overflow:hidden}
+.cg-log{flex:1;overflow-y:auto;padding:22px 22px 8px;display:flex;flex-direction:column;gap:14px}
+
+.cg-empty{margin:auto;text-align:center;color:var(--text-3);max-width:44ch;line-height:1.6;font-size:14px}
+.cg-empty h2{color:var(--text);font-size:17px;margin-bottom:6px}
+.cg-empty .cg-try{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:14px}
+.cg-empty button{border:1px solid var(--line);background:var(--surface-2);color:var(--text-2);border-radius:999px;
+  padding:6px 12px;font:inherit;font-size:12.5px;cursor:pointer}
+.cg-empty button:hover{border-color:var(--line-2);color:var(--text)}
+
+.m{display:flex;flex-direction:column;gap:4px;max-width:min(82%,640px)}
+.m.user{align-self:flex-end;align-items:flex-end}
+.m-meta{font-size:11.5px;color:var(--text-3);display:flex;gap:6px;align-items:center}
+.m-meta .tag{font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:999px;background:var(--surface-2);color:var(--text-2)}
+.m-meta .tag.needs{background:var(--busy-soft);color:var(--busy)}
+.m-meta .tag.err{background:var(--danger-soft);color:var(--danger)}
+.m-meta .tag.ok{background:var(--live-soft);color:var(--live)}
+.m-body{padding:10px 13px;border-radius:var(--r-lg);white-space:pre-wrap;word-wrap:break-word;line-height:1.55;font-size:14px}
+.m.user .m-body{background:var(--btn);color:var(--btn-text);border-bottom-right-radius:4px}
+.m.concierge .m-body{background:var(--surface-2);color:var(--text)}
+.m.agent .m-body{background:var(--accent-soft);color:var(--text);border:1px solid var(--line)}
+.m.agent.needs .m-body{background:var(--busy-soft)}
+.m.agent.err .m-body,.m.concierge.err .m-body{background:var(--danger-soft)}
+.m-body pre{margin:0;font-family:var(--mono);font-size:12.5px;white-space:pre-wrap}
+.m.pending .m-body{opacity:.6}
+.m-actions{display:flex;gap:6px}
+.m-actions button{border:1px solid var(--line-2);background:var(--surface);color:var(--text);border-radius:var(--r-sm);
+  padding:4px 11px;font:inherit;font-size:12.5px;cursor:pointer}
+.m-actions button:hover{background:var(--surface-2)}
+
+.cg-compose{border-top:1px solid var(--line);padding:12px;display:flex;gap:8px;align-items:flex-end;
+  padding-bottom:max(12px,env(safe-area-inset-bottom))}
+.cg-compose textarea{flex:1;resize:none;min-height:42px;max-height:180px;padding:10px 12px;border:1px solid var(--line-2);
+  border-radius:var(--r-md);background:var(--paper);color:var(--text);font:inherit;font-size:14px;line-height:1.45}
+.cg-compose textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--ring)}
+.cg-compose button{height:42px;width:42px;display:grid;place-items:center;border:0;border-radius:var(--r-md);
+  background:var(--btn);color:var(--btn-text);cursor:pointer}
+.cg-compose button:disabled{opacity:.45;cursor:default}
+
+.cg-side{display:flex;flex-direction:column;gap:10px;min-height:0;overflow-y:auto;padding-bottom:18px}
+.cg-side h3{font-size:12px;font-weight:650;letter-spacing:.04em;text-transform:uppercase;color:var(--text-3);margin:4px 2px}
+.job{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:11px 12px;display:flex;
+  flex-direction:column;gap:5px;cursor:pointer;text-align:left;font:inherit;color:inherit}
+.job:hover{border-color:var(--line-2)}
+.job-top{display:flex;align-items:center;gap:7px;font-size:12.5px}
+.job-num{font-family:var(--mono);font-weight:650}
+.job-desk{color:var(--text-3);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.job-req{font-size:13px;color:var(--text);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.job-live{font-size:12px;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--idle)}
+.dot.running{background:var(--busy);animation:pulse 1.4s ease-in-out infinite}
+.dot.needs_you{background:var(--busy)}
+.dot.done{background:var(--live)}
+.dot.failed,.dot.stopped{background:var(--danger)}
+@keyframes pulse{50%{opacity:.35}}
+.job-links{display:flex;gap:10px;font-size:12px}
+.job-links a{color:var(--text-3)}
+.job-links a:hover{color:var(--accent)}
+.cg-side .none{color:var(--text-3);font-size:13px;padding:2px}
+</style>
+</head>
+<body>
+{{template "sprite"}}
+
+<div id="progress"></div>
+<div id="toasts"></div>
+
+{{template "topbar" "chat"}}
+
+<div class="cg">
+  <section class="cg-main" aria-label="Chat with Decurix">
+    <div class="cg-log" id="log" aria-live="polite">
+      <div class="cg-empty" id="empty">
+        <h2>What should get done?</h2>
+        Tell me in plain words. I'll start it on a free desktop, number the job, and tell you here when it's done or needs you.
+        <div class="cg-try">
+          <button type="button" data-try="status">status</button>
+          <button type="button" data-try="what is the kernel version?">what is the kernel version?</button>
+          <button type="button" data-try="help">help</button>
+        </div>
+      </div>
+    </div>
+    <form class="cg-compose" id="compose" autocomplete="off">
+      <textarea id="input" rows="1" placeholder="Ask for anything - or @desktop, #3 yes, status, help" aria-label="Message"></textarea>
+      <button type="submit" id="sendBtn" aria-label="Send"><svg width="17" height="17"><use href="#i-send"/></svg></button>
+    </form>
+  </section>
+
+  <aside class="cg-side" aria-label="Jobs">
+    <h3>Jobs</h3>
+    <div id="jobs"><div class="none">No jobs yet.</div></div>
+  </aside>
+</div>
+
+{{template "chrome-js"}}
+<script>
+(() => {
+  const log = document.getElementById("log");
+  const empty = document.getElementById("empty");
+  const jobsEl = document.getElementById("jobs");
+  const input = document.getElementById("input");
+  const form = document.getElementById("compose");
+  const sendBtn = document.getElementById("sendBtn");
+
+  let lastID = 0;
+  let sessions = new Map();
+  const pending = [];   // messages shown before the server has them
+
+  // Everything written here came from a person or a model, so it only ever
+  // goes in through textContent (the chat page's rule), with ``` blocks as
+  // real <pre> nodes.
+  function body(text) {
+    const el = document.createElement("div");
+    el.className = "m-body";
+    const parts = String(text).split(/```[a-z]*\n?/);
+    parts.forEach((part, i) => {
+      if (!part) return;
+      if (i % 2) { const pre = document.createElement("pre"); pre.textContent = part.replace(/\n$/, ""); el.appendChild(pre); }
+      else el.appendChild(document.createTextNode(part));
+    });
+    return el;
+  }
+
+  function nearBottom() { return log.scrollHeight - log.scrollTop - log.clientHeight < 80; }
+  function toBottom() { log.scrollTop = log.scrollHeight; }
+
+  const kindTag = { query: ["needs you", "needs"], approval: ["approval", "needs"], error: ["failed", "err"], entry: ["done", "ok"] };
+
+  function render(m) {
+    const row = document.createElement("div");
+    row.className = "m " + m.role;
+    row.dataset.id = m.id || "";
+    if (m.session_id) row.dataset.session = m.session_id;
+    const k = kindTag[m.kind];
+    if (m.role === "agent" && k) row.classList.add(k[1]);
+    if (m.role === "concierge" && m.kind === "error") row.classList.add("err");
+
+    if (m.role !== "user") {
+      const meta = document.createElement("div");
+      meta.className = "m-meta";
+      if (m.session_id) {
+        const tag = document.createElement("span");
+        tag.className = "tag" + (m.role === "agent" && k ? " " + k[1] : "");
+        const s = sessions.get(m.session_id);
+        tag.textContent = "#" + m.session_id + (s ? " · " + s.desktop_name : "");
+        meta.appendChild(tag);
+      }
+      const who = document.createElement("span");
+      who.textContent = m.role === "agent" ? (k ? k[0] : "reply") : "Decurix";
+      meta.appendChild(who);
+      row.appendChild(meta);
+    }
+    row.appendChild(body(m.text));
+
+    // A job that asked for approval gets its answers as buttons - they send
+    // exactly what typing "#N yes" would.
+    if (m.role === "agent" && (m.kind === "approval" || m.kind === "query") && m.session_id) {
+      const s = sessions.get(m.session_id);
+      if (!s || s.status === "needs_you") {
+        const actions = document.createElement("div");
+        actions.className = "m-actions";
+        const opts = m.kind === "approval" ? [["Approve", "yes"], ["Deny", "no"]] : [];
+        opts.forEach(([label, word]) => {
+          const b = document.createElement("button");
+          b.type = "button"; b.textContent = label;
+          b.onclick = () => { actions.remove(); send("#" + m.session_id + " " + word); };
+          actions.appendChild(b);
+        });
+        const r = document.createElement("button");
+        r.type = "button"; r.textContent = "Reply…";
+        r.onclick = () => { input.value = "#" + m.session_id + " "; input.focus(); autosize(); };
+        actions.appendChild(r);
+        row.appendChild(actions);
+      }
+    }
+    return row;
+  }
+
+  function renderJobs(list) {
+    sessions = new Map(list.map(s => [s.id, s]));
+    jobsEl.replaceChildren();
+    if (!list.length) { const n = document.createElement("div"); n.className = "none"; n.textContent = "No jobs yet."; jobsEl.appendChild(n); return; }
+    const order = { needs_you: 0, running: 1 };
+    list.slice().sort((a, b) => (order[a.status] ?? 2) - (order[b.status] ?? 2) || b.id - a.id).forEach(s => {
+      const card = document.createElement("div");
+      card.className = "job"; card.tabIndex = 0;
+      const top = document.createElement("div"); top.className = "job-top";
+      const dot = document.createElement("span"); dot.className = "dot " + s.status;
+      const num = document.createElement("span"); num.className = "job-num"; num.textContent = "#" + s.id;
+      const desk = document.createElement("span"); desk.className = "job-desk"; desk.textContent = s.desktop_name;
+      const st = document.createElement("span"); st.textContent = s.status.replace("_", " ");
+      st.style.cssText = "font-size:11.5px;color:var(--text-3)";
+      top.append(dot, num, desk, st);
+      const req = document.createElement("div"); req.className = "job-req"; req.textContent = s.request;
+      card.append(top, req);
+      if (s.live_step) { const l = document.createElement("div"); l.className = "job-live"; l.textContent = s.live_step; card.appendChild(l); }
+      const links = document.createElement("div"); links.className = "job-links";
+      const chat = document.createElement("a"); chat.href = "/view/" + encodeURIComponent(s.desktop_id); chat.textContent = "Desktop chat";
+      const scr = document.createElement("a"); scr.href = "/desktop/" + encodeURIComponent(s.desktop_id) + "/"; scr.target = "_blank"; scr.rel = "noopener"; scr.textContent = "Screen";
+      const task = document.createElement("a"); task.href = "/tasks/" + encodeURIComponent(s.task_id); task.textContent = "Record";
+      [chat, scr, task].forEach(a => a.addEventListener("click", e => e.stopPropagation()));
+      links.append(chat, scr, task);
+      card.appendChild(links);
+      card.onclick = () => { input.value = "#" + s.id + " "; input.focus(); autosize(); };
+      jobsEl.appendChild(card);
+    });
+  }
+
+  async function poll() {
+    try {
+      const r = await fetch("/api/concierge?after=" + lastID, { cache: "no-store" });
+      if (!r.ok) return;
+      const data = await r.json();
+      renderJobs(data.sessions || []);
+      const msgs = data.messages || [];
+      if (!msgs.length) return;
+      const stick = nearBottom();
+      for (const m of msgs) {
+        if (m.id <= lastID) continue;
+        lastID = m.id;
+        // The server's copy of something already shown optimistically.
+        if (m.role === "user") {
+          const i = pending.findIndex(p => p.text === m.text);
+          if (i >= 0) { pending[i].el.remove(); pending.splice(i, 1); }
+        }
+        empty.remove();
+        // Only a job's newest reply can still be answered: drop the
+        // buttons from anything it said before.
+        if (m.role === "agent" && m.session_id) {
+          log.querySelectorAll('.m.agent[data-session="' + m.session_id + '"] .m-actions').forEach(a => a.remove());
+        }
+        log.appendChild(render(m));
+      }
+      // A job that moved on (answered, done) keeps no buttons either.
+      log.querySelectorAll(".m.agent[data-session] .m-actions").forEach(a => {
+        const s = sessions.get(Number(a.parentElement.dataset.session));
+        if (s && s.status !== "needs_you") a.remove();
+      });
+      if (stick) toBottom();
+    } catch (_) { /* next poll */ }
+  }
+
+  async function send(text) {
+    text = text.trim();
+    if (!text) return;
+    empty.remove();
+    const el = render({ role: "user", text });
+    el.classList.add("pending");
+    log.appendChild(el);
+    pending.push({ text, el });
+    toBottom();
+    try {
+      const r = await fetch("/api/concierge/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ text }),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+    } catch (e) {
+      el.classList.remove("pending");
+      el.querySelector(".m-body").style.outline = "1px solid var(--danger)";
+      if (window.Decurix && window.Decurix.toast) window.Decurix.toast("Not sent: " + e.message, "error");
+    }
+    poll();
+  }
+
+  function autosize() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 180) + "px"; }
+  input.addEventListener("input", autosize);
+  input.addEventListener("keydown", e => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); }
+  });
+  form.addEventListener("submit", e => {
+    e.preventDefault();
+    const t = input.value; input.value = ""; autosize();
+    send(t);
+  });
+  document.querySelectorAll("[data-try]").forEach(b => b.onclick = () => send(b.dataset.try));
+
+  poll();
+  setInterval(poll, 1500);
+  input.focus();
+})();
+</script>
+</body>
+</html>

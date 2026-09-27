@@ -5,6 +5,7 @@
 package httpapi
 
 import (
+	"github.com/YKoustubhRao/decurix/internal/concierge"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -64,6 +65,10 @@ type Server struct {
 	ResourceMon *resourcemon.Monitor
 	Suggest     *suggest.Store
 	Web         *webui.Renderer
+	// Concierge is the chat-first page (internal/concierge); assigned by
+	// cmd/decurix/main.go after construction, like DagRunner, since its
+	// Deps close over this *Server.
+	Concierge *concierge.Concierge
 
 	// sends serialises every send to one desktop (sendlock.go).
 	sends sendLocks
@@ -123,6 +128,11 @@ func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memorySt
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/", s.dashboardHandler)
 	mux.HandleFunc("/view/", s.desktopViewHandler)
+	// The concierge drives every desktop from one chat, approvals included,
+	// so it is a person's only - never an agent's (humansonly.go).
+	mux.HandleFunc("/chat", s.humansOnly(s.conciergePageHandler))
+	mux.HandleFunc("/api/concierge", s.humansOnly(s.conciergeStateHandler))
+	mux.HandleFunc("/api/concierge/send", s.humansOnly(s.conciergeSendHandler))
 	mux.HandleFunc("/desktop/", s.desktopProxyHandler)
 	mux.HandleFunc("/agent/", s.agentProxyHandler)
 	mux.HandleFunc("/api/desktops", s.desktopsAPIHandler)

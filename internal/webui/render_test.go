@@ -268,6 +268,15 @@ func TestRenderEveryPage(t *testing.T) {
 		}
 	}
 
+	// The concierge's chat page takes no data; it must still parse and run.
+	var chat bytes.Buffer
+	if err := renderer.RenderConcierge(&chat); err != nil {
+		t.Fatalf("RenderConcierge: %v", err)
+	}
+	if !strings.Contains(chat.String(), `id="compose"`) || !strings.Contains(chat.String(), `href="/chat" class="active"`) {
+		t.Fatalf("the chat page is missing its composer or its nav link")
+	}
+
 	// The DAGs list, empty and with one entry that has already run.
 	if err := renderer.RenderDags(io.Discard, DagsPageData{}); err != nil {
 		t.Fatalf("RenderDags (empty): %v", err)
