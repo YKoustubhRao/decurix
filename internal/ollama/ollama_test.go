@@ -2,6 +2,7 @@ package ollama
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"net/http"
@@ -170,5 +171,34 @@ func TestWarmAsyncIsDebouncedAndOffUntilEnabled(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if loads.Load() != 1 {
 		t.Fatalf("second call inside the debounce window loaded again (%d)", loads.Load())
+	}
+}
+
+// A pull that fails part way reports it inside the progress stream, not as
+// ImagePull's own error; drainImagePull must surface it instead of treating
+// the end of the stream as success.
+func TestDrainImagePull(t *testing.T) {
+	ok := `{"status":"Pulling from ollama/ollama"}
+{"status":"Downloading","progress":"[=>   ]"}
+{"status":"Status: Downloaded newer image for ollama/ollama:latest"}
+`
+	if err := drainImagePull(strings.NewReader(ok)); err != nil {
+		t.Fatalf("successful pull: got %v, want nil", err)
+	}
+
+	failed := `{"status":"Downloading"}
+{"errorDetail":{"message":"unexpected EOF"},"error":"unexpected EOF"}
+`
+	if err := drainImagePull(strings.NewReader(failed)); err == nil || err.Error() != "unexpected EOF" {
+		t.Fatalf("failed pull: got %v, want unexpected EOF", err)
+	}
+
+	onlyError := `{"error":"manifest unknown"}`
+	if err := drainImagePull(strings.NewReader(onlyError)); err == nil || err.Error() != "manifest unknown" {
+		t.Fatalf("error without detail: got %v, want manifest unknown", err)
+	}
+
+	if err := drainImagePull(strings.NewReader(`{"status":`)); err == nil {
+		t.Fatal("truncated stream: got nil, want an error")
 	}
 }
