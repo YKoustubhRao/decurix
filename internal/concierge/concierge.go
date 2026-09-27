@@ -128,6 +128,10 @@ var (
 	// A short yes/no is an answer, not a task - it goes to the one session
 	// waiting on a person, and is never started as a new task.
 	shortAnswer = regexp.MustCompile(`(?i)^(y|yes|yep|yeah|ok|okay|sure|approve|approved|go|go ahead|do it|proceed|confirm|confirmed|send it|lgtm|n|no|nope|deny|denied|reject|rejected|don'?t|do not|cancel)[.! ]*$`)
+	// A greeting or a thanks is talk to the concierge, not work for a
+	// desktop: starting a job for "hey" takes a desktop for nothing, and
+	// when every desktop is busy it read as a refusal.
+	smallTalk = regexp.MustCompile(`(?i)^(hi|hey|hello|hiya|yo|hey there|hi there|hello there|good (morning|afternoon|evening)|thanks|thank you|thx|ty|cool|nice|great)[.!,? ]*(decurix)?[.!? ]*$`)
 )
 
 // Process handles one message a person typed. Exported for tests and for a
@@ -169,6 +173,11 @@ func (c *Concierge) Process(ctx context.Context, text string) {
 
 	if shortAnswer.MatchString(text) {
 		c.answerWaiting(ctx, text)
+		return
+	}
+
+	if smallTalk.MatchString(text) {
+		c.say(0, "", c.greetingText())
 		return
 	}
 
@@ -660,11 +669,66 @@ func (c *Concierge) busyText(d desktop.Desktop, why string) string {
 	return fmt.Sprintf("%s is busy (%s). Wait for it, or send this to another desktop with @name.", d.Name, why)
 }
 
+// noFreeDesktopText says why nothing could take the request - which job
+// holds each desktop and what clears it - rather than just "busy", which
+// gave no way forward when the one desktop was waiting on an answer.
 func (c *Concierge) noFreeDesktopText(desktops []desktop.Desktop) string {
 	if len(desktops) == 0 {
 		return "There are no desktops yet. Create one on the Desktops page, then tell me again."
 	}
-	return "Every desktop is busy. I didn't start it - wait for one to finish (\"status\" shows them), or create another desktop."
+	byDesktop := map[string]Session{}
+	if active, err := c.Store.ActiveSessions(); err == nil {
+		for _, s := range active {
+			byDesktop[s.DesktopID] = s
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("I didn't start that - no desktop is free:")
+	waitingOnYou := false
+	for _, d := range desktops {
+		fmt.Fprintf(&b, "\n  @%s - ", d.ID)
+		if s, ok := byDesktop[d.ID]; ok {
+			if s.Status == StatusNeedsYou {
+				waitingOnYou = true
+				fmt.Fprintf(&b, "#%d is waiting for your answer (%s). Reply \"#%d <answer>\" or \"stop #%d\".", s.ID, clip(s.Request, 50), s.ID, s.ID)
+			} else {
+				fmt.Fprintf(&b, "working on #%d (%s).", s.ID, clip(s.Request, 50))
+			}
+			continue
+		}
+		why, _ := c.Deps.Busy(d.ID)
+		switch {
+		case !usable(d):
+			b.WriteString(stateOf(d) + ".")
+		case why != "":
+			// A task started outside this chat (the desktop's own chat page,
+			// a schedule, a mail rule): answer or stop it there.
+			fmt.Fprintf(&b, "busy with a task started elsewhere - %s. Open its chat, or \"stop @%s\".", why, d.ID)
+		default:
+			b.WriteString("free.")
+		}
+	}
+	if waitingOnYou {
+		b.WriteString("\nAnswer a waiting job and its desktop frees up. Then send your request again.")
+	} else {
+		b.WriteString("\nSend it again when one finishes, or create another desktop.")
+	}
+	return b.String()
+}
+
+// greetingText answers small talk, and says if anything is waiting.
+func (c *Concierge) greetingText() string {
+	waiting, _ := c.waiting()
+	switch len(waiting) {
+	case 0:
+		return "Hi! Tell me what you want done and I'll start it on a free desktop. Type \"help\" for the commands."
+	case 1:
+		s := waiting[0]
+		return fmt.Sprintf("Hi! #%d on %s is waiting for your answer (%s). Reply \"#%d <answer>\", or tell me something new to do.", s.ID, s.DesktopName, clip(s.Request, 60), s.ID)
+	default:
+		return fmt.Sprintf("Hi! %d jobs are waiting for your answer - type \"sessions\" to see them.", len(waiting))
+	}
 }
 
 func (c *Concierge) fail(err error) {
