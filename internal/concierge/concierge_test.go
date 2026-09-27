@@ -181,8 +181,62 @@ func TestNoFreeDesktopStartsNothing(t *testing.T) {
 	c := newConcierge(t, f)
 
 	got := send(t, c, "do something")
-	if !strings.Contains(got.Text, "Every desktop is busy") || len(f.sent) != 0 {
+	if !strings.Contains(got.Text, "no desktop is free") || len(f.sent) != 0 {
 		t.Fatalf("got %q, sent %v", got.Text, f.sent)
+	}
+	// A task this chat did not start says where it came from and how to clear it.
+	if !strings.Contains(got.Text, "started elsewhere") || !strings.Contains(got.Text, `"stop @alpha"`) {
+		t.Fatalf("got %q", got.Text)
+	}
+	if !strings.Contains(got.Text, "@dead - crashed") {
+		t.Fatalf("got %q", got.Text)
+	}
+}
+
+// The case seen live: the only desktop was held by a job waiting on an
+// approval, and every new request just said "busy" with no way forward.
+func TestNoFreeDesktopNamesTheJobWaitingOnYou(t *testing.T) {
+	f := newFake(running("alpha"))
+	c := newConcierge(t, f)
+
+	send(t, c, "delete every file in /etc")
+	f.reply("alpha", conversation.KindApproval, "rm -rf /etc - ok?")
+	c.Tick(context.Background())
+
+	got := send(t, c, "what is the kernel version?")
+	for _, want := range []string{"#1 is waiting for your answer", `"#1 <answer>"`, `"stop #1"`, "Answer a waiting job"} {
+		if !strings.Contains(got.Text, want) {
+			t.Fatalf("missing %q in %q", want, got.Text)
+		}
+	}
+	if len(f.sent) != 1 {
+		t.Fatalf("a second request was sent: %v", f.sent)
+	}
+}
+
+func TestSmallTalkIsAnsweredAndStartsNothing(t *testing.T) {
+	f := newFake(running("alpha"))
+	c := newConcierge(t, f)
+
+	for _, hi := range []string{"hey", "Hi!", "hello decurix", "thanks", "good morning"} {
+		if got := send(t, c, hi); !strings.Contains(got.Text, "Hi!") {
+			t.Fatalf("%q: said %q", hi, got.Text)
+		}
+	}
+	if len(f.sent) != 0 {
+		t.Fatalf("small talk was sent to a desktop: %v", f.sent)
+	}
+
+	// With a job waiting, the greeting says so.
+	send(t, c, "pay the invoice")
+	f.reply("alpha", conversation.KindApproval, "pay $400?")
+	c.Tick(context.Background())
+	if got := send(t, c, "hey"); !strings.Contains(got.Text, "#1 on alpha is waiting for your answer") {
+		t.Fatalf("said %q", got.Text)
+	}
+	// A real request that merely starts with a greeting is still a job.
+	if smallTalk.MatchString("hey can you check the gold price") {
+		t.Fatal("a request starting with hey was taken as small talk")
 	}
 }
 
