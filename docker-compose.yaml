@@ -47,8 +47,15 @@ services:
     restart: unless-stopped
 
 networks:
+  # External on purpose: the scripts (lib/ollama-setup.*) and the control
+  # plane itself (desktop.Manager.EnsureNetwork) create this network before
+  # compose ever runs, and compose refuses to adopt a network it did not
+  # create ("has incorrect label com.docker.compose.network"), which failed
+  # every fresh install. Create it first when running compose by hand:
+  #   docker network create decurix-network
   decurix-network:
     name: decurix-network
+    external: true
 
 volumes:
   decurix-data:
