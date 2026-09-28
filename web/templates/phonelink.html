@@ -58,17 +58,17 @@ details{margin-top:10px;color:var(--text-2)}
     <p class="small">Android only allows this through its developer tools: you install one free app and turn on one switch. Decurix does the rest.</p>
 
     <div class="warn" role="alert">
-      <h2>&#9888; Read this before you say yes</h2>
-      <p>Linking gives your Decurix <b>full control of this phone</b>, the same as a developer&rsquo;s cable:</p>
+      <h2>&#9888; What linking allows</h2>
+      <p>Linking lets your Decurix <b>open and use any app on this phone</b>, the same as a developer&rsquo;s cable. That covers banking, payments, messages and email, and it applies to you and to the AI agents in your desktops.</p>
       <ul>
-        <li><b>Any app can be opened and used</b> - banking, payments, messages, email, photos - by you <b>and by the AI agents</b> in your desktops.</li>
-        <li><b>The agents&rsquo; &ldquo;ask before paying or sending&rdquo; check cannot see inside phone apps.</b> An agent could tap Send or Pay in one without stopping to ask you.</li>
-        <li>Everything the apps show - messages, balances, one-time codes - can be seen on your desktops.</li>
-        <li>Anyone who can use your Decurix dashboard, or holds this phone&rsquo;s pairing, gets the same control. Link only a Decurix you own and trust.</li>
-        <li>Wireless debugging stays on, and the phone stays awake while linked, which uses more battery.</li>
+        <li><b>Agents act only on a task you give them.</b> Every agent is told to stop and ask you before it pays, buys, sends a message for you, or does anything else with real-world consequences.</li>
+        <li><b>Send, Pay and Buy are blocked until you approve them.</b> The VM reads the app&rsquo;s buttons and fields from Android itself, the same way a screen reader does. An agent&rsquo;s tap on a Send or Pay button, or pressing Enter in a messaging app, waits for your yes, just as it does in a desktop&rsquo;s browser.</li>
+        <li><b>A few cases can&rsquo;t be read, and only the agent&rsquo;s instruction to ask you covers them:</b> apps that draw their own screen without labels (some games and custom-built apps), and phones older than Android 11. The app&rsquo;s window in the VM says &ldquo;Picture only&rdquo; when this is the case.</li>
+        <li>Your desktops can see whatever these apps show, including messages, balances and one-time codes. So can anyone who can use your Decurix dashboard or has this phone&rsquo;s pairing. Only link a Decurix you trust.</li>
+        <li>Wireless debugging stays on and the phone stays awake while it is linked, which uses more battery.</li>
       </ul>
-      <p><b>To undo it at any time:</b> Revoke this phone in the Decurix Mobile menu, turn off Wireless debugging in Developer options, and uninstall Termux.</p>
-      <label class="ack"><input type="checkbox" id="ack"> I understand, and I want Decurix to control the apps on this phone.</label>
+      <p><b>To undo it at any time:</b> revoke this phone in the Decurix Mobile menu, turn off Wireless debugging in Developer options, and uninstall Termux.</p>
+      <label class="ack"><input type="checkbox" id="ack"> I understand, and I want Decurix to use the apps on this phone.</label>
     </div>
 
     <button class="btn" id="yes" type="button" disabled>Yes, set it up</button>
@@ -82,13 +82,13 @@ details{margin-top:10px;color:var(--text-2)}
 
     <div class="step">
       <h2><span class="n">1</span>Install Termux</h2>
-      <p class="small">Open the download and tap Install. If Android asks, allow your browser to install apps. Already have Termux? Skip this.</p>
+      <p class="small">When the download finishes, tap <b>Open</b>, then <b>Install</b>. If Android asks, allow your browser to install apps. Already have Termux? Skip this step.</p>
       <a class="btn" href="/phone/termux.apk">Download Termux</a>
     </div>
 
     <div class="step">
       <h2><span class="n">2</span>Start the setup</h2>
-      <p class="small">This copies one line and opens Termux. There, long-press the screen, tap <b>Paste</b>, then press <b>Enter</b>.</p>
+      <p class="small">This copies one line and opens Termux. Long-press the screen, tap <b>Paste</b>, then press <b>Enter</b>. If Termux is not installed yet, this opens the download from step 1 instead of Google Play.</p>
       <button class="btn" id="copy" type="button">Copy &amp; open Termux</button>
       <details class="small"><summary>Show the line</summary><code id="cmd"></code></details>
     </div>
@@ -150,8 +150,10 @@ details{margin-top:10px;color:var(--text-2)}
     var btn = this;
     copy(cmdEl.textContent).then(function () {
       btn.textContent = 'Copied - paste it in Termux';
-      // Termux's own launcher entry; Android opens it like tapping its icon.
-      location.href = 'intent:#Intent;package=com.termux;action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;end';
+      // Termux's own launcher entry; Android opens it like tapping its icon. With the package missing, Chrome
+      // would send the person to Google Play, whose Termux cannot run the helper - fall back to the download instead.
+      var fallback = encodeURIComponent(location.origin + '/phone/termux.apk');
+      location.href = 'intent:#Intent;package=com.termux;action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;S.browser_fallback_url=' + fallback + ';end';
     });
   };
 
