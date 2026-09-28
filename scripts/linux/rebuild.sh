@@ -27,6 +27,8 @@ cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source ./scripts/linux/lib/ollama-setup.sh
 # shellcheck source=lib/lan-tunnel.sh
 source ./scripts/linux/lib/lan-tunnel.sh
+# shellcheck source=lib/lan-address.sh
+source ./scripts/linux/lib/lan-address.sh
 # shellcheck source=lib/keep-awake.sh
 source ./scripts/linux/lib/keep-awake.sh
 
@@ -219,10 +221,9 @@ lan_port="${lan_port:-8090}"
 # address it would use to reach the internet without sending a single
 # packet; hostname -I is the fallback for a machine without `ip` (rare, but
 # cheap to guard against a script erroring out over a cosmetic feature).
-lan_ip="$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p')"
-if [ -z "$lan_ip" ]; then
-    lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
-fi
+# Under WSL2 this is Windows' own address, forwarded into WSL on the gated
+# port (lib/lan-address.sh) - WSL's private one is unreachable from a phone.
+lan_ip="$(decurix_lan_ip "$lan_port")"
 
 if [ -n "$lan_ip" ]; then
     lan_url="http://$lan_ip:$lan_port"

@@ -245,6 +245,16 @@ func TestRenderEveryPage(t *testing.T) {
 		t.Fatalf("the launch target did not reach the page's script as a JS string:\n%s", view.String())
 	}
 
+	// The viewer for an app on a linked phone: the app's name comes from the
+	// phone, so it must stay a quoted string too.
+	var phoneView bytes.Buffer
+	if err := renderer.RenderPhoneApp(&phoneView, PhoneAppPageData{ID: "vm1-phone-x", Title: "Evil </title><script>alert(1)</script>", Device: "d1", Package: "com.x"}); err != nil {
+		t.Fatalf("RenderPhoneApp: %v", err)
+	}
+	if strings.Contains(phoneView.String(), "<script>alert(1)") || !strings.Contains(phoneView.String(), `PKG = "com.x"`) {
+		t.Fatalf("the phone app viewer let a value break out, or lost the package:\n%s", phoneView.String())
+	}
+
 	// The screen viewer: a desktop's name is whatever a person typed and its
 	// password goes into the page's script, so both must stay quoted strings.
 	var screen bytes.Buffer
