@@ -22,6 +22,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/webui"
 	"github.com/YKoustubhRao/decurix/internal/winhost"
+	"github.com/YKoustubhRao/decurix/internal/wsconn"
 )
 
 // hostGUIDir is where the Windows helper script is written. It has to be somewhere the host can read: docker-compose.yaml
@@ -395,11 +396,11 @@ func (s *Server) hostGUIWSHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no such session", http.StatusNotFound)
 		return
 	}
-	c, err := upgradeWebSocket(w, r)
+	c, err := wsconn.Upgrade(w, r)
 	if err != nil {
 		return
 	}
-	defer c.close()
+	defer c.Close()
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
@@ -418,17 +419,17 @@ func (s *Server) hostGUIWSHandler(w http.ResponseWriter, r *http.Request) {
 				if !ok {
 					return
 				}
-				if c.write(wsBinary, encodePatch(u)) != nil {
+				if c.Write(wsconn.OpBinary, encodePatch(u)) != nil {
 					return
 				}
 			case <-sess.AppClosed():
-				c.write(wsText, []byte(`{"closed":true}`))
+				c.Write(wsconn.OpText, []byte(`{"closed":true}`))
 				return
 			case <-sess.Done():
-				c.write(wsText, []byte(`{"closed":true}`))
+				c.Write(wsconn.OpText, []byte(`{"closed":true}`))
 				return
 			case <-ping.C:
-				if c.write(wsPing, nil) != nil {
+				if c.Write(wsconn.OpPing, nil) != nil {
 					return
 				}
 			case <-ctx.Done():
@@ -438,15 +439,15 @@ func (s *Server) hostGUIWSHandler(w http.ResponseWriter, r *http.Request) {
 	}()
 	go func() {
 		<-ctx.Done()
-		c.close() // unblocks the read below
+		c.Close() // unblocks the read below
 	}()
 
 	for {
-		op, msg, err := c.read(70 * time.Second) // the viewer answers pings, so a quiet line is a dead one
+		op, msg, err := c.Read(70 * time.Second) // the viewer answers pings, so a quiet line is a dead one
 		if err != nil {
 			return
 		}
-		if op != wsText {
+		if op != wsconn.OpText {
 			continue
 		}
 		var req hostGUIRequest
@@ -460,7 +461,7 @@ func (s *Server) hostGUIWSHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		if wantsText {
 			out, _ := json.Marshal(map[string]any{"id": req.Seq, "text": text})
-			if c.write(wsText, out) != nil {
+			if c.Write(wsconn.OpText, out) != nil {
 				return
 			}
 		}

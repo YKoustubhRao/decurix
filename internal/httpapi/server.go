@@ -9,15 +9,18 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/YKoustubhRao/decurix/internal/cftunnel"
 	"github.com/YKoustubhRao/decurix/internal/claudeauth"
 	"github.com/YKoustubhRao/decurix/internal/conversation"
 	"github.com/YKoustubhRao/decurix/internal/dag"
 	"github.com/YKoustubhRao/decurix/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/devices"
 	"github.com/YKoustubhRao/decurix/internal/idlepause"
 	"github.com/YKoustubhRao/decurix/internal/keepawake"
 	"github.com/YKoustubhRao/decurix/internal/lanaccess"
 	"github.com/YKoustubhRao/decurix/internal/mailtrigger"
 	"github.com/YKoustubhRao/decurix/internal/memory"
+	"github.com/YKoustubhRao/decurix/internal/phonehost"
 	"github.com/YKoustubhRao/decurix/internal/querynotes"
 	"github.com/YKoustubhRao/decurix/internal/resourcemon"
 	"github.com/YKoustubhRao/decurix/internal/schedule"
@@ -43,8 +46,23 @@ type Server struct {
 	Tunnel     *tunnel.Store
 	ClaudeAuth *claudeauth.Store
 	LANAccess  *lanaccess.Store
-	Schedules  *schedule.Store
-	Dags       *dag.Store
+	// Devices is the phones and laptops paired with the gated listener
+	// (internal/devices), listed and revoked from the Mobile menu. Assigned
+	// by cmd/decurix/main.go after construction; nil means pairing is off.
+	Devices *devices.Store
+	// CFTunnel is the named Cloudflare tunnel: a fixed link on the
+	// person's own domain for the gated listener (internal/cftunnel).
+	// Assigned by cmd/decurix/main.go; nil means it is not available.
+	CFTunnel *cftunnel.Manager
+	// Phones is every Android phone linked right now (internal/phonehost);
+	// set with SetPhones, nil means phone links are off.
+	Phones *phonehost.Hub
+	// phoneSetup holds the one-time tokens of phone setups in progress.
+	phoneSetup phoneSetups
+	// termux caches where the latest Termux installer is.
+	termux    termuxLatest
+	Schedules *schedule.Store
+	Dags      *dag.Store
 	// DagRunner is assigned by cmd/decurix/main.go after construction, not
 	// through NewServer: it holds this *Server itself as its Submitter
 	// (SubmitTracked), so it cannot be built before the Server exists.
@@ -142,6 +160,19 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/desktops/send", s.sendRequestHandler)
 	mux.HandleFunc("/api/desktops/suggest", s.suggestDesktopHandler)
 	mux.HandleFunc("/api/host-apps/detect", s.detectHostAppsHandler)
+	// A linked phone connects here as a paired device (the gate checks its
+	// cookie on the tunnel's listener, the handler checks it on both).
+	mux.HandleFunc("/api/phones/connect", s.phoneConnectHandler)
+	mux.HandleFunc("/api/phones", s.phonesHandler)
+	// Linking a phone from the phone: the page, its token, and the three
+	// paths Termux fetches with that token (let past the gate, see
+	// PhoneSetupOpenPaths).
+	mux.HandleFunc("/phone/link", s.phoneLinkPageHandler)
+	mux.HandleFunc("/phone/termux.apk", s.phoneTermuxHandler)
+	mux.HandleFunc("/api/phones/setup-token", s.phoneSetupTokenHandler)
+	mux.HandleFunc("/phone/setup.sh", s.phoneSetupScriptHandler)
+	mux.HandleFunc("/phone/decurix", s.phoneBinaryHandler)
+	mux.HandleFunc("/api/phones/claim", s.phoneClaimHandler)
 	mux.HandleFunc("/api/desktops/host-apps/copy", s.copyHostAppsHandler)
 	mux.HandleFunc("/api/schedules", s.schedulesHandler)
 	mux.HandleFunc("/api/schedules/create", s.createScheduleHandler)
@@ -262,6 +293,17 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/host-gui/ws", hostGUIDirectOnly(s.hostGUIWSHandler))
 	mux.HandleFunc("/api/host-gui/stop", hostGUIDirectOnly(s.hostGUIStopHandler))
 	mux.HandleFunc("/host-gui/view", hostGUIDirectOnly(s.hostGUIViewHandler))
+	// A phone app is shown the way a host app is: in a window of the VM,
+	// reaching this listener directly with a token signed for that app.
+	mux.HandleFunc("/phone-app/view", hostGUIDirectOnly(s.phoneAppViewHandler))
+	mux.HandleFunc("/api/phone-app/ws", hostGUIDirectOnly(s.phoneAppWSHandler))
 	mux.HandleFunc("/api/lan-access/status", s.lanAccessStatusHandler)
 	mux.HandleFunc("/api/lan-access/rotate", s.lanAccessRotateHandler)
+	mux.HandleFunc("/api/lan-access/devices", s.lanAccessDevicesHandler)
+	mux.HandleFunc("/api/lan-access/devices/revoke", s.lanAccessRevokeDeviceHandler)
+	// The Cloudflare API token and the tunnel it controls are the person's
+	// alone: never on the gated listener, never to a desktop.
+	mux.HandleFunc("/api/cftunnel", s.humansOnly(s.cfTunnelStatusHandler))
+	mux.HandleFunc("/api/cftunnel/configure", s.humansOnly(s.cfTunnelConfigureHandler))
+	mux.HandleFunc("/api/cftunnel/disable", s.humansOnly(s.cfTunnelDisableHandler))
 }

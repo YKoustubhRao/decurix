@@ -82,7 +82,7 @@ func DetectHostAppsForce(force bool) []HostAppItem {
 			res := make([]HostAppItem, len(cachedHostApps))
 			copy(res, cachedHostApps)
 			hostAppsCacheMu.RUnlock()
-			return res
+			return withExtraHostApps(res)
 		}
 		hostAppsCacheMu.RUnlock()
 	}
@@ -93,7 +93,7 @@ func DetectHostAppsForce(force bool) []HostAppItem {
 	if !force && len(cachedHostApps) > 0 && time.Since(cachedHostTime) < 3*time.Minute {
 		res := make([]HostAppItem, len(cachedHostApps))
 		copy(res, cachedHostApps)
-		return res
+		return withExtraHostApps(res)
 	}
 
 	if force {
@@ -106,7 +106,7 @@ func DetectHostAppsForce(force bool) []HostAppItem {
 
 	res := make([]HostAppItem, len(results))
 	copy(res, results)
-	return res
+	return withExtraHostApps(res)
 }
 
 // DetectHostApps scans the host machine for credentials and settings that can be copied, web apps, and Windows programs.
@@ -196,7 +196,58 @@ const (
 	// ModeUnavailable is still a discovered app, but not one the desktop can
 	// launch. The UI shows it disabled together with UnavailableReason.
 	ModeUnavailable = "unavailable"
+	// ModePhone runs the app on a linked Android phone, on a display of its
+	// own, and shows and drives it from the VM (internal/phonehost).
+	ModePhone = "phone"
 )
+
+// phoneCmdPrefix marks a HostCmd that names an app on a linked phone:
+// "android:<paired device id>/<package>".
+const phoneCmdPrefix = "android:"
+
+// PhoneCmd is the HostCmd of package pkg on the phone paired as device.
+func PhoneCmd(device, pkg string) string {
+	return phoneCmdPrefix + device + "/" + pkg
+}
+
+// parsePhoneCmd splits a PhoneCmd back into the phone and the package.
+func parsePhoneCmd(cmd string) (device, pkg string, ok bool) {
+	rest, found := strings.CutPrefix(cmd, phoneCmdPrefix)
+	if !found {
+		return "", "", false
+	}
+
+	device, pkg, ok = strings.Cut(rest, "/")
+	return device, pkg, ok && device != "" && pkg != ""
+}
+
+var (
+	extraHostAppsMu sync.RWMutex
+	extraHostApps   func() []HostAppItem
+)
+
+// SetExtraHostApps adds apps found somewhere other than this machine - the
+// apps of linked phones - to every scan's answer. f is called on every scan
+// and must answer at once (from what is already known), not go and look.
+func SetExtraHostApps(f func() []HostAppItem) {
+	extraHostAppsMu.Lock()
+	defer extraHostAppsMu.Unlock()
+
+	extraHostApps = f
+}
+
+// withExtraHostApps appends the extra apps to a scan's result.
+func withExtraHostApps(items []HostAppItem) []HostAppItem {
+	extraHostAppsMu.RLock()
+	f := extraHostApps
+	extraHostAppsMu.RUnlock()
+
+	if f == nil {
+		return items
+	}
+
+	return append(items, f()...)
+}
 
 // HostAppChecker asks the host which Windows launch targets can run on a private desktop, and why not for the rest.
 type HostAppChecker func(ctx context.Context, targets []winhost.Target) (map[winhost.Target]string, error)
@@ -1950,6 +2001,27 @@ exit 1
 `, q.Encode())
 }
 
+// phoneAppLauncher is the shell that shows an app running on a linked phone: like hostGUILauncher, it opens the control
+// plane's viewer in an app window of the VM's own browser, with a token signed for exactly this app on this phone.
+func phoneAppLauncher(pc packContext, slug, title, device, pkg string) string {
+	id := pc.sessionID("phone-" + slug)
+	target := phoneCmdPrefix + device
+	q := url.Values{"id": {id}, "desktop": {pc.DesktopID}, "title": {title}, "device": {device}, "package": {pkg}}
+	if len(pc.Secret) > 0 {
+		q.Set("token", winhost.Token(pc.Secret, id, target, pkg))
+	}
+	return fmt.Sprintf(`CP="${CONTROL_PLANE_URL:-http://host.docker.internal:8080}"
+VIEW="$CP/phone-app/view?%s"
+for browser in chromium-browser google-chrome chromium; do
+    if command -v "$browser" >/dev/null 2>&1; then
+        exec "$browser" --app="$VIEW" --window-size=420,860
+    fi
+done
+echo "No browser is installed in this desktop to show the app in." >&2
+exit 1
+`, q.Encode())
+}
+
 // hostGUIWrapper is a complete launcher script around hostGUILauncher.
 func hostGUIWrapper(pc packContext, slug, title, target, args string) string {
 	return "#!/usr/bin/env bash\n" + hostGUILauncher(pc, slug, title, target, args)
@@ -2085,8 +2157,13 @@ func packDynamicApp(tw *tar.Writer, app HostAppItem, pc packContext) error {
 		cat := getCategoriesForApp(app.Category)
 
 		var wrapperScript string
-		webURL := getWebAppURLForApp(app.Name, app.HostCmd)
-		if webURL != "" {
+		var webURL string
+		suffix := "Host"
+		if device, pkg, ok := parsePhoneCmd(app.HostCmd); ok {
+			// On the phone itself, even when the service also has a web version: that is what was picked.
+			wrapperScript = "#!/usr/bin/env bash\n" + phoneAppLauncher(pc, slug, app.Name, device, pkg)
+			suffix = "Phone"
+		} else if webURL = getWebAppURLForApp(app.Name, app.HostCmd); webURL != "" {
 			wrapperScript = webAppWrapper(slug, webURL, hostFallback(pc, slug, app))
 		} else {
 			wrapperScript = "#!/usr/bin/env bash\n" + hostFallback(pc, slug, app)
@@ -2105,13 +2182,13 @@ func packDynamicApp(tw *tar.Writer, app HostAppItem, pc packContext) error {
 		launcherContent := fmt.Sprintf(`[Desktop Entry]
 Version=1.0
 Type=Application
-Name=%s (Host)
+Name=%s (%s)
 Comment=%s
 Exec=/home/headless/.local/bin/%s-host %%U
 Icon=%s
 Terminal=false
 Categories=%s
-%s`, app.Name, app.Description, slug, icon, cat, startupNotifyEntries(webURL))
+%s`, app.Name, suffix, app.Description, slug, icon, cat, startupNotifyEntries(webURL))
 
 		if err := writeStringToTar(tw, "Desktop/"+slug+"-host.desktop", launcherContent, 0755); err != nil {
 			return err

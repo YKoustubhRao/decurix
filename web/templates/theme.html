@@ -301,7 +301,13 @@ svg{display:block;flex:none}
   background:var(--surface);
   border:1px solid var(--line);
   border-radius:var(--r-lg);
-  box-shadow:var(--shadow-3)
+  box-shadow:var(--shadow-3);
+  /* The Mobile menu grew long (links, code, devices, phone apps): it scrolls
+     inside the viewport instead of running off the bottom of the screen. */
+  max-height:calc(100vh - 80px);
+  max-height:calc(100dvh - 80px);
+  overflow-y:auto;
+  overscroll-behavior:contain
 }
 .menu.open .menu-panel{display:block}
 .menu.open .icon-btn{background:var(--surface-2);color:var(--text)}
@@ -871,6 +877,85 @@ body.busy{cursor:progress}
   var lastLANURL = "";
   var lastLANTunnelURL = "";
   var lastLAN = null;
+  var lastDevices = null;
+  var lastPhones = null;
+
+  // addPhonesSection lists the Android phones linked right now, whose apps can
+  // be put in a VM, and says how to link one.
+  function addPhonesSection(panel){
+    if(!lastPhones){ return; }
+
+    addSectionTitle(panel, "Phone apps in VMs (optional)", true);
+
+    (lastPhones.phones || []).forEach(function(p){
+      var row = document.createElement("div");
+      row.className = "code-row";
+      var label = document.createElement("span");
+      label.className = "menu-link";
+      label.textContent = p.name + (p.model && p.model !== p.name ? " (" + p.model + ")" : "") + " \u00b7 linked";
+      row.appendChild(label);
+      panel.appendChild(row);
+    });
+
+    addNote(panel, (lastPhones.phones && lastPhones.phones.length ? "Its apps are listed when you create a desktop. " : "") +
+      "Signing a phone in (above) needs nothing installed. Only to use an Android phone\u2019s own apps inside your VMs does it need Termux: open the pairing link on it and answer Yes to \u201cUse this phone\u2019s apps\u201d. That hands Decurix and its agents full control of the phone\u2019s apps; the page explains before anything is set up. iPhone apps cannot be shown in VMs.");
+  }
+
+  // timeAgo renders how long ago a device was last seen, the way the menu reads it.
+  function timeAgo(iso){
+    var seconds = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+    if(seconds < 120){ return "just now"; }
+    if(seconds < 3600){ return Math.round(seconds / 60) + " min ago"; }
+    if(seconds < 172800){ return Math.round(seconds / 3600) + " h ago"; }
+    return Math.round(seconds / 86400) + " days ago";
+  }
+
+  // addDevicesSection lists the paired devices, each with a Revoke button.
+  function addDevicesSection(panel){
+    if(!lastDevices || !lastDevices.enabled){ return; }
+
+    addSectionTitle(panel, "Signed-in devices", true);
+
+    if(!lastDevices.devices.length){
+      addNote(panel, "None yet. A device that opens the pairing link, or ticks \u201cRemember this device\u201d when entering the code, shows up here.");
+      return;
+    }
+
+    addNote(panel, "Signed in to this dashboard, nothing installed on them. Revoke signs one out.");
+
+    lastDevices.devices.forEach(function(device){
+      var row = document.createElement("div");
+      row.className = "code-row";
+
+      var label = document.createElement("span");
+      label.className = "menu-link";
+      var appsLinked = lastPhones && (lastPhones.phones || []).some(function(p){ return p.id === device.id; });
+      label.textContent = device.name + " \u00b7 " + timeAgo(device.last_seen) + (appsLinked ? " \u00b7 apps linked" : "");
+      label.title = "Paired " + new Date(device.paired_at).toLocaleString();
+      row.appendChild(label);
+
+      var revoke = document.createElement("button");
+      revoke.type = "button";
+      revoke.className = "btn btn-quiet btn-sm";
+      revoke.textContent = "Revoke";
+      revoke.addEventListener("click", async function(){
+        revoke.disabled = true;
+
+        try{
+          await post("/api/lan-access/devices/revoke", {id: device.id});
+          lastDevices.devices = lastDevices.devices.filter(function(d){ return d.id !== device.id; });
+          renderMobilePanel();
+          toast(device.name + " was signed out.");
+        }catch(e){
+          toast(e.message, "error");
+          revoke.disabled = false;
+        }
+      });
+      row.appendChild(revoke);
+
+      panel.appendChild(row);
+    });
+  }
 
   // addLinkRow appends a copyable, clickable address row (a Cloudflare
   // tunnel URL or a LAN address) to panel.
@@ -918,18 +1003,38 @@ body.busy{cursor:progress}
     panel.appendChild(note);
   }
 
+  // signInLink is the one link to share: the free tunnel's address (the
+  // LAN address when there is no tunnel yet) with the access code in it, so
+  // opening it signs the device in and remembers it - nothing to type.
+  function signInLink(){
+    var base = lastLANTunnelURL || lastLANURL;
+    if(!base){ return ""; }
+    base = base.replace(/\/+$/, "");
+    if(!lastLAN || !lastLAN.enabled){ return base; }
+    return base + "/__decurix_access/authenticate?code=" + encodeURIComponent(lastLAN.code) + "&remember=1&next=%2F";
+  }
+
   function renderMobilePanel(){
     var panel = document.getElementById("tunnelPanel");
     if(!panel){ return; }
 
     panel.innerHTML = "";
 
+    /* -- pairing: one link that signs a device in and remembers it. An
+       addition to the addresses below, not a replacement for them. -- */
+    var link = signInLink();
+    if(link && lastLAN && lastLAN.enabled){
+      addSectionTitle(panel, "Pair a phone or computer");
+      addNote(panel, "Open this link on the device. It asks for a name, then stays signed in until you revoke it. Anyone with the link can pair, so share it only with your own devices.");
+      addLinkRow(panel, link, "Copy pairing link");
+    }
+
     /* -- the gated listener's addresses - both need the code below. The
        tunnel link is listed first since it works from anywhere (over the
        internet, not just this network); the direct LAN address is still
        shown underneath as a same-network fallback that doesn't depend on
        cloudflared being installed or up. -- */
-    addSectionTitle(panel, "Open on your phone");
+    addSectionTitle(panel, "Open on your phone", !!link);
 
     if(lastLANTunnelURL || lastLANURL){
       addNote(panel, "Needs the access code below.");
@@ -945,10 +1050,10 @@ body.busy{cursor:progress}
       addNote(panel, "No address known yet. Start Decurix with scripts/build.sh.");
     }
 
-    /* -- the code the LAN address above needs -- */
+    /* -- the code the addresses above need -- */
     if(lastLAN && lastLAN.enabled){
       addSectionTitle(panel, "Access code", true);
-      addNote(panel, "Enter it once per device; it's remembered after that.");
+      addNote(panel, "Changes every 48 hours. Paired devices stay signed in when it does.");
 
       var codeRow = document.createElement("div");
       codeRow.className = "code-row";
@@ -978,7 +1083,7 @@ body.busy{cursor:progress}
       rotateBtn.type = "button";
       rotateBtn.className = "btn btn-quiet btn-sm rotate-code-btn";
       rotateBtn.textContent = "New code";
-      rotateBtn.title = "Generates a new code and signs out anyone already connected.";
+      rotateBtn.title = "Generates a new code (and pairing link) and signs out anyone connected without pairing.";
       rotateBtn.addEventListener("click", async function(){
         rotateBtn.disabled = true;
 
@@ -986,7 +1091,7 @@ body.busy{cursor:progress}
           var result = await post("/api/lan-access/rotate", {});
           lastLAN.code = result.code;
           renderMobilePanel();
-          toast("New access code generated - anyone already connected was signed out.");
+          toast("New access code - the old code and pairing link no longer work.");
         }catch(e){
           toast(e.message, "error");
         }finally{
@@ -995,6 +1100,9 @@ body.busy{cursor:progress}
       });
       panel.appendChild(rotateBtn);
     }
+
+    addDevicesSection(panel);
+    addPhonesSection(panel);
 
     /* -- the unauthenticated addresses. Current scripts report neither (the
        admin listener is loopback-only and never tunnelled); this only shows
@@ -1025,6 +1133,16 @@ body.busy{cursor:progress}
     try{
       var lanResponse = await fetch("/api/lan-access/status", {cache: "no-store"});
       if(lanResponse.ok){ lastLAN = await lanResponse.json(); }
+    }catch(e){ /* keep whatever is already rendered */ }
+
+    try{
+      var devicesResponse = await fetch("/api/lan-access/devices", {cache: "no-store"});
+      if(devicesResponse.ok){ lastDevices = await devicesResponse.json(); }
+    }catch(e){ /* keep whatever is already rendered */ }
+
+    try{
+      var phonesResponse = await fetch("/api/phones", {cache: "no-store"});
+      if(phonesResponse.ok){ lastPhones = await phonesResponse.json(); }
     }catch(e){ /* keep whatever is already rendered */ }
 
     renderMobilePanel();

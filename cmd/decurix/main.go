@@ -21,10 +21,12 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/joho/godotenv"
 
+	"github.com/YKoustubhRao/decurix/internal/cftunnel"
 	"github.com/YKoustubhRao/decurix/internal/claudeauth"
 	"github.com/YKoustubhRao/decurix/internal/conversation"
 	"github.com/YKoustubhRao/decurix/internal/dag"
 	"github.com/YKoustubhRao/decurix/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/devices"
 	"github.com/YKoustubhRao/decurix/internal/httpapi"
 	"github.com/YKoustubhRao/decurix/internal/idlepause"
 	"github.com/YKoustubhRao/decurix/internal/keepawake"
@@ -32,9 +34,11 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/mailtrigger"
 	"github.com/YKoustubhRao/decurix/internal/memory"
 	"github.com/YKoustubhRao/decurix/internal/ollama"
+	"github.com/YKoustubhRao/decurix/internal/phonehost"
 	"github.com/YKoustubhRao/decurix/internal/querynotes"
 	"github.com/YKoustubhRao/decurix/internal/resourcemon"
 	"github.com/YKoustubhRao/decurix/internal/schedule"
+	"github.com/YKoustubhRao/decurix/internal/sealed"
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 	"github.com/YKoustubhRao/decurix/internal/stepimages"
 	"github.com/YKoustubhRao/decurix/internal/suggest"
@@ -174,6 +178,22 @@ func lanListenAddr() string {
 	return ":" + port
 }
 
+// lanPort returns the port of a listen address such as ":8090" - what the
+// named tunnel routes to.
+func lanPort(addr string) int {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 8090
+	}
+
+	n, err := strconv.Atoi(port)
+	if err != nil {
+		return 8090
+	}
+
+	return n
+}
+
 // idleStopThreshold reads DECURIX_IDLE_STOP_MINUTES, in minutes.
 // internal/idlepause is on by default: unset or invalid means
 // defaultIdleStopMinutes, not disabled. DECURIX_IDLE_STOP_MINUTES=0 (or any
@@ -228,6 +248,10 @@ func main() {
 	rebuild := flag.Bool("rebuild", false, "with -build-images, rebuild images that already exist instead of skipping them")
 	cliMode := flag.Bool("cli", false, "run an interactive CLI against a running control plane instead of starting the server")
 	cliURL := flag.String("url", "http://127.0.0.1:8080", "with -cli, the control plane's URL")
+	phoneMode := flag.Bool("phone", false, `run as a phone link, in Termux on an Android phone: decurix --phone "<pairing link>" (or with no link, reconnect)`)
+	phoneName := flag.String("phone-name", "", "with -phone, the name this phone is listed under (default: its model)")
+	phoneSerial := flag.String("phone-serial", "", "with -phone, the adb device to use when there are several")
+	phoneSetup := flag.Bool("phone-setup", false, "set up this phone's link (what the phone link page's command runs): decurix --phone-setup BASE TOKEN")
 	flag.Parse()
 
 	if *showVersion {
@@ -240,6 +264,15 @@ func main() {
 	// else, reached over the same HTTP API the dashboard uses.
 	if *cliMode {
 		os.Exit(runCLI(*cliURL))
+	}
+
+	// -phone is the same kind of thin client, on a phone: no Docker, no
+	// database, only an outbound link to a control plane (internal/phoneagent).
+	if *phoneSetup {
+		os.Exit(runPhoneSetup(flag.Arg(0), flag.Arg(1), *phoneSerial))
+	}
+	if *phoneMode {
+		os.Exit(runPhone(flag.Arg(0), *phoneName, *phoneSerial))
 	}
 
 	log.Printf("Decurix %s starting", version)
@@ -324,6 +357,17 @@ func main() {
 
 	tasksStore := must(tasks.NewStore(db))
 	lanAccess := lanaccess.NewStore()
+	pairedDevices := must(devices.NewStore(db))
+	lanAccess.SetDevices(pairedDevices)
+
+	// The fixed link on the person's own domain, when they set one up
+	// (internal/cftunnel). A key that cannot be written leaves the tokens
+	// unsealed rather than the feature off.
+	cfKey, err := sealed.LoadKey(sqlitedb.DataDir(), cftunnel.KeyFile)
+	if err != nil {
+		log.Printf("warning: %s: %v; the Cloudflare tokens will be stored unencrypted", cftunnel.KeyFile, err)
+	}
+	namedTunnel := must(cftunnel.NewManager(db, cfKey, lanPort(lanListenAddr())))
 	schedules := must(schedule.NewStore(db))
 	dags := must(dag.NewStore(db))
 	memoryStore := must(memory.NewStore(db))
@@ -345,6 +389,14 @@ func main() {
 		webui.NewRenderer(),
 	)
 
+	server.Devices = pairedDevices
+	server.CFTunnel = namedTunnel
+	// Linked Android phones (decurix --phone): their apps join the app list.
+	server.SetPhones(phonehost.NewHub())
+	// A phone that pairs is offered its phone link, set up from the phone
+	// itself; Termux fetches the setup with a one-time token, not a cookie.
+	lanAccess.SetAfterPair(server.PhoneLinkAfterPair)
+	lanAccess.SetOpenPaths(httpapi.PhoneSetupOpenPaths...)
 	server.HostGUISecret = hostGUISecret
 	// The Windows apps copied into VMs are kept running on the host, ready to show the moment one is opened.
 	server.HostGUIDataDir = sqlitedb.DataDir()
@@ -407,6 +459,7 @@ func main() {
 	// button triggers by hand - see RunAutoRotate's doc for why it waits out
 	// the first interval rather than rotating immediately.
 	go lanAccess.RunAutoRotate(ctx, lanaccess.AutoRotateInterval)
+	go namedTunnel.Run(ctx)
 
 	// IMPORTANT:
 	// Ollama initialization must not block the HTTP server.

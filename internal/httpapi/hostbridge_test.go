@@ -265,6 +265,13 @@ func TestHostRoutesAreOnlyOnThePrimaryListener(t *testing.T) {
 	hostRoutes := []string{
 		"/api/host-bridge/exec", "/api/host-bridge/open", "/api/host-bridge/clip",
 		"/api/host-gui/start", "/api/host-gui/ws", "/api/host-gui/stop", "/host-gui/view",
+		// The access code and the paired-device list are never served over
+		// the listener they gate.
+		"/api/lan-access/status", "/api/lan-access/rotate",
+		"/api/lan-access/devices", "/api/lan-access/devices/revoke",
+		"/api/cftunnel", "/api/cftunnel/configure", "/api/cftunnel/disable",
+		// A phone app is shown only in a VM's window, like a host app.
+		"/phone-app/view", "/api/phone-app/ws",
 	}
 	srv := &Server{}
 	gated := http.NewServeMux()

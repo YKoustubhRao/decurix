@@ -1113,3 +1113,44 @@ Categories=Utility;TextEditor;
 		t.Errorf("expected ModeHostGUI for desktop_app, got %q (reason: %q)", vetted[0].Mode, vetted[0].UnavailableReason)
 	}
 }
+
+func TestAPhoneAppOpensThePhoneViewerNotItsWebVersion(t *testing.T) {
+	buf := new(bytes.Buffer)
+	tw := tar.NewWriter(buf)
+
+	// WhatsApp has a web version too; picked from the phone, it must run on the phone.
+	app := HostAppItem{ID: "phone-d1-com.whatsapp", Name: "WhatsApp", Mode: ModePhone, HostCmd: PhoneCmd("d1", "com.whatsapp")}
+	if err := packDynamicApp(tw, app, testPack); err != nil {
+		t.Fatal(err)
+	}
+	tw.Close()
+
+	files := map[string]string{}
+	tr := tar.NewReader(buf)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _ := io.ReadAll(tr)
+		files[hdr.Name] = string(data)
+	}
+
+	wrapper := files[".local/bin/whatsapp-host"]
+	if !strings.Contains(wrapper, "/phone-app/view?") || strings.Contains(wrapper, "web.whatsapp.com") {
+		t.Fatalf("the launcher does not open the phone viewer:\n%s", wrapper)
+	}
+
+	id := testPack.sessionID("phone-whatsapp")
+	token := winhost.Token(testPack.Secret, id, "android:d1", "com.whatsapp")
+	if !strings.Contains(wrapper, "token="+token) || !strings.Contains(wrapper, "package=com.whatsapp") {
+		t.Fatalf("the launcher is not signed for exactly this app on this phone:\n%s", wrapper)
+	}
+
+	if !strings.Contains(files["Desktop/whatsapp-host.desktop"], "Name=WhatsApp (Phone)") {
+		t.Errorf("launcher entry: %s", files["Desktop/whatsapp-host.desktop"])
+	}
+}
