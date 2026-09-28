@@ -10,6 +10,8 @@
 package phoneagent
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -22,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/YKoustubhRao/decurix/internal/phonehost"
@@ -96,6 +99,10 @@ type agent struct {
 
 	mu       sync.Mutex
 	sessions map[uint32]*session
+
+	// sdk is the phone's Android API level; kick wakes the tree reader.
+	sdk  int
+	kick chan struct{}
 }
 
 // linkOnce connects, serves the link until it drops, and closes every session.
@@ -123,10 +130,17 @@ func linkOnce(ctx context.Context, cfg Config, server string) error {
 	}
 	defer conn.Close()
 
-	a := &agent{cfg: cfg, conn: conn, sessions: make(map[uint32]*session)}
+	a := &agent{cfg: cfg, conn: conn, sessions: make(map[uint32]*session), kick: make(chan struct{}, 1)}
 	defer a.closeAll()
 
 	model, android := a.describe(ctx)
+	a.sdk = a.apiLevel(ctx)
+
+	treeCtx, treeCancel := context.WithCancel(ctx)
+	defer treeCancel()
+	if a.sdk >= minTreeSDK {
+		go a.treeLoop(treeCtx)
+	}
 	if err := a.send(phonehost.Message{Op: phonehost.OpHello, Model: model, Android: android}); err != nil {
 		return err
 	}
@@ -177,6 +191,8 @@ func (a *agent) handle(ctx context.Context, m phonehost.Message) {
 		a.mu.Unlock()
 		if s != nil && m.Input != nil {
 			s.input(*m.Input)
+			s.lastInput.Store(time.Now().UnixNano())
+			a.wakeTree()
 		}
 
 	case phonehost.OpClose:
@@ -210,6 +226,107 @@ func (a *agent) describe(ctx context.Context) (model, android string) {
 	}
 
 	return get("ro.product.model"), get("ro.build.version.release")
+}
+
+// apiLevel reads the phone's Android API level (0 when it cannot be read).
+func (a *agent) apiLevel(ctx context.Context) int {
+	out, err := adbCommand(ctx, a.cfg.Serial, "shell", "getprop", "ro.build.version.sdk").Output()
+	if err != nil {
+		return 0
+	}
+
+	n, _ := strconv.Atoi(strings.TrimSpace(string(out)))
+
+	return n
+}
+
+// wakeTree asks the tree reader to read the screens again soon.
+func (a *agent) wakeTree() {
+	select {
+	case a.kick <- struct{}{}:
+	default:
+	}
+}
+
+// treeLoop reads what every open app's display shows and sends each session
+// its controls when they changed. One dump serves every session: it covers
+// every display, and Android allows one reader at a time anyway. It reads
+// soon after input (a moment later, so a burst of typing is one read), often
+// while someone is using an app, and seldom otherwise.
+func (a *agent) treeLoop(ctx context.Context) {
+	var lastInput time.Time
+
+	for {
+		live := a.streaming()
+
+		wait := treeIdle
+		if time.Since(lastInput) < treeActiveFor {
+			wait = treeActive
+		}
+		if len(live) == 0 {
+			wait = time.Hour
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-a.kick:
+			lastInput = time.Now()
+			// Let a burst of input finish before reading what it did.
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-a.kick:
+					continue
+				case <-time.After(treeAfterInput):
+				}
+				break
+			}
+		case <-time.After(wait):
+		}
+
+		live = a.streaming()
+		if len(live) == 0 {
+			continue
+		}
+
+		started := time.Now()
+		raw, err := dumpUI(ctx, a.cfg.Serial)
+		if ctx.Err() != nil {
+			return
+		}
+
+		var dump *xmlDisplays
+		if err == nil {
+			dump, err = parseDump(raw)
+		}
+		if err != nil {
+			// An app that never settles cannot be read this time; the next
+			// read may. The viewer keeps what it had.
+			a.cfg.Logf("reading the apps' controls: %v", err)
+			continue
+		}
+
+		for _, s := range live {
+			s.sendTree(a, dump, started)
+		}
+	}
+}
+
+// streaming is every session whose display is up.
+func (a *agent) streaming() []*session {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	var out []*session
+	for _, s := range a.sessions {
+		if s.streaming.Load() {
+			out = append(out, s)
+		}
+	}
+
+	return out
 }
 
 func (a *agent) closeAll() {
@@ -278,9 +395,63 @@ type session struct {
 	port    int
 	serial  string
 	control net.Conn
+	log     *io.PipeWriter // the server's output, read for its display's id
+
+	pkg string
+	// display is the id of the app's display (-1 until the server says) and
+	// its size, as the server reported them.
+	dmu          sync.Mutex
+	display      int
+	dispW, dispH int
+	lastTree     []byte
+	lastInput    atomic.Int64 // unix nanoseconds of the last input
+	streaming    atomic.Bool
 
 	cmu  sync.Mutex // one control message at a time
 	once sync.Once
+}
+
+// noteLog reads the server's output for the line naming the app's display.
+func (s *session) noteLog(r io.Reader) {
+	sc := bufio.NewScanner(r)
+	for sc.Scan() {
+		if w, h, id, ok := parseNewDisplay(sc.Text()); ok {
+			s.dmu.Lock()
+			s.display, s.dispW, s.dispH = id, w, h
+			s.dmu.Unlock()
+		}
+	}
+	io.Copy(io.Discard, r)
+}
+
+// sendTree sends the session its controls from dump, when they changed or
+// have just caught up with the last input.
+func (s *session) sendTree(a *agent, dump *xmlDisplays, started time.Time) {
+	s.dmu.Lock()
+	id, w, h := s.display, s.dispW, s.dispH
+	s.dmu.Unlock()
+
+	tree := treeFor(dump, id, s.pkg, w, h)
+	if tree == nil {
+		return
+	}
+	tree.Fresh = started.UnixNano() > s.lastInput.Load()
+
+	raw, err := json.Marshal(tree)
+	if err != nil {
+		return
+	}
+
+	s.dmu.Lock()
+	same := bytes.Equal(raw, s.lastTree)
+	s.lastTree = raw
+	s.dmu.Unlock()
+
+	if same {
+		return
+	}
+
+	a.send(phonehost.Message{Op: phonehost.OpTree, Session: s.id, Tree: tree})
 }
 
 // open starts the app of m on a new display and streams it until it ends.
@@ -310,7 +481,7 @@ func (a *agent) open(ctx context.Context, m phonehost.Message) {
 
 	scid := newSCID()
 	sctx, cancel := context.WithCancel(ctx)
-	s := &session{id: m.Session, cancel: cancel, port: port, serial: a.cfg.Serial}
+	s := &session{id: m.Session, cancel: cancel, port: port, serial: a.cfg.Serial, pkg: m.Package, display: -1, dispW: w, dispH: h}
 
 	a.mu.Lock()
 	a.sessions[s.id] = s
@@ -341,6 +512,10 @@ func (a *agent) open(ctx context.Context, m phonehost.Message) {
 		"vd_destroy_content=true",
 		"cleanup=true",
 	)...)
+	logs, logw := io.Pipe()
+	s.log = logw
+	s.cmd.Stdout, s.cmd.Stderr = logw, logw
+	go s.noteLog(logs)
 	if err := s.cmd.Start(); err != nil {
 		fail(fmt.Errorf("starting the app server: %w", err))
 		return
@@ -382,6 +557,16 @@ func (a *agent) open(ctx context.Context, m phonehost.Message) {
 	}
 
 	a.cfg.Logf("opened %s", m.Package)
+
+	s.streaming.Store(true)
+	if a.sdk >= minTreeSDK {
+		a.wakeTree()
+	} else {
+		a.send(phonehost.Message{Op: phonehost.OpTree, Session: s.id, Tree: &phonehost.Tree{
+			W: w, H: h, Nodes: []phonehost.Node{},
+			Error: "This phone runs an Android older than 11, which cannot show the app's buttons to the VM - only its picture.",
+		}})
+	}
 
 	prefix := make([]byte, 4)
 	binary.BigEndian.PutUint32(prefix, s.id)
@@ -439,9 +624,13 @@ func (s *session) stop() {
 		}
 		s.cmu.Unlock()
 
+		s.streaming.Store(false)
 		if s.cmd != nil && s.cmd.Process != nil {
 			s.cmd.Process.Kill()
 			s.cmd.Wait()
+		}
+		if s.log != nil {
+			s.log.Close()
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -37,6 +37,12 @@ CALL_TIMEOUT = 20
 # How long observe() waits for a loading page before reading it anyway.
 LOAD_WAIT_SECONDS = 8
 
+# "complete" once the page has loaded and is not catching up with an input.
+_READY = (
+    "document.readyState === 'complete' && "
+    "!document.documentElement.hasAttribute('data-decurix-busy') ? 'complete' : 'busy'"
+)
+
 INTERACTIVE = {
     "button", "link", "textbox", "searchbox", "checkbox", "radio", "combobox",
     "listbox", "option", "menuitem", "menuitemcheckbox", "menuitemradio", "tab",
@@ -264,8 +270,12 @@ def observe():
     try:
         # A page still loading has an accessibility tree with nothing in it
         # yet; reading it then reports an empty page the engine would act on.
+        # A page that mirrors something else's controls (a phone app's
+        # viewer) marks itself data-decurix-busy until its copy has caught up
+        # with the last input - the approval gate must judge what is there
+        # now, not the button that was there before the tap.
         deadline = time.monotonic() + LOAD_WAIT_SECONDS
-        while time.monotonic() < deadline and page.evaluate("document.readyState") != "complete":
+        while time.monotonic() < deadline and page.evaluate(_READY) != "complete":
             time.sleep(0.2)
 
         metrics = json.loads(page.evaluate(_METRICS))

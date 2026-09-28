@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-decurix-phone-app>
 <head>
 <meta charset="utf-8">
 <title>{{.Title}}</title>
@@ -8,10 +8,22 @@
 <style>
   html, body { margin: 0; height: 100%; background: #111; overflow: hidden; font: 14px/1.5 system-ui, sans-serif; }
   #wrap { position: absolute; inset: 0 0 44px 0; display: flex; align-items: center; justify-content: center; }
-  #screen { display: none; max-width: 100%; max-height: 100%; touch-action: none; user-select: none; outline: none; background: #000; }
+  #stage { position: relative; line-height: 0; touch-action: none; user-select: none; }
+  #screen, #video { display: block; max-width: 100vw; max-height: calc(100vh - 44px); outline: none; background: #000; }
+  #screen[hidden], #video[hidden] { display: none; }
+  /* The app's own controls, laid exactly over the picture: invisible to a
+     person, but real buttons and fields to the VM's browser - what the
+     desktop's agents read, what its approval gate judges, and what a
+     recording names. A tap on one is a tap on the phone at that place. */
+  #ax { position: absolute; inset: 0; overflow: hidden; }
+  #ax > * { position: absolute; box-sizing: border-box; margin: 0; padding: 0; border: 0; background: transparent;
+            color: transparent; caret-color: transparent; font-size: 10px; line-height: 1; overflow: hidden;
+            white-space: nowrap; outline: none; appearance: none; -webkit-appearance: none; cursor: default; }
+  #ax > .t { pointer-events: none; }
   #bar { position: absolute; left: 0; right: 0; bottom: 0; height: 44px; display: flex; justify-content: center; gap: 36px; align-items: center; background: #1b1b1b; border-top: 1px solid #2a2a2a; }
   #bar button { background: none; border: 0; color: #cfcfcf; width: 44px; height: 36px; border-radius: 8px; cursor: pointer; font-size: 18px; }
   #bar button:hover { background: #2a2a2a; color: #fff; }
+  #note { position: absolute; left: 12px; color: #9a9a9a; font-size: 11px; line-height: 1.3; max-width: 30%; }
   #msg { color: #d8d8d8; padding: 28px; max-width: 420px; }
   #msg.error { color: #ffb4a8; }
 </style>
@@ -19,9 +31,14 @@
 <body>
 <div id="wrap">
   <div id="msg">Opening {{.Title}} on your phone&hellip;</div>
-  <canvas id="screen" tabindex="0"></canvas>
+  <div id="stage" hidden>
+    <canvas id="screen" tabindex="0" aria-hidden="true"></canvas>
+    <video id="video" tabindex="0" aria-hidden="true" muted playsinline hidden></video>
+    <div id="ax"></div>
+  </div>
 </div>
 <div id="bar">
+  <span id="note" hidden></span>
   <button type="button" id="back" title="Back" aria-label="Back">&#9664;</button>
   <button type="button" id="home" title="Home" aria-label="Home">&#9679;</button>
   <button type="button" id="recents" title="Recent apps" aria-label="Recent apps">&#9632;</button>
@@ -29,43 +46,205 @@
 <script>
 (function () {
   var ID = {{.ID}}, TOKEN = {{.Token}}, DESKTOP = {{.Desktop}}, DEVICE = {{.Device}}, PKG = {{.Package}};
-  var msg = document.getElementById('msg'), cv = document.getElementById('screen');
+  var msg = document.getElementById('msg'), stage = document.getElementById('stage'), cv = document.getElementById('screen');
+  var vid = document.getElementById('video'), ax = document.getElementById('ax'), note = document.getElementById('note');
   var gfx = cv.getContext('2d', { alpha: false, desynchronized: true });
   var ws, decoder = null, config = null, needKey = true, videoW = 0, videoH = 0, live = false;
+  var treeW = 0, treeH = 0, hasTree = false, busyTimer = null, lastPointer = 0;
+  // What the picture is drawn on: the canvas (WebCodecs) or the video element (MediaSource).
+  var surface = cv, mode = typeof VideoDecoder === 'undefined' ? 'mse' : 'webcodecs', decoded = false;
+  // The frames since the last key frame, to hand MediaSource if WebCodecs turns out not to decode.
+  var gop = [];
 
   function fail(text) {
     live = false;
-    msg.className = 'error'; msg.textContent = text; msg.style.display = 'block'; cv.style.display = 'none';
+    msg.className = 'error'; msg.textContent = text; msg.style.display = 'block'; stage.hidden = true;
   }
 
-  // The codec string WebCodecs wants is read off the SPS: the three bytes after its NAL header.
-  function codecOf(annexB) {
-    for (var i = 0; i + 7 < annexB.length; i++) {
-      if (annexB[i] === 0 && annexB[i + 1] === 0 && annexB[i + 2] === 1 && (annexB[i + 3] & 0x1f) === 7) {
-        var h = function (b) { return ('0' + b.toString(16)).slice(-2); };
-        return 'avc1.' + h(annexB[i + 4]) + h(annexB[i + 5]) + h(annexB[i + 6]);
-      }
+  function showLive() {
+    if (live) { return; }
+    live = true; msg.style.display = 'none'; stage.hidden = false; surface.focus();
+  }
+
+  // ---- H.264 into fragmented MP4, for MediaSource ----
+  // scrcpy sends Annex B H.264. A browser without a working WebCodecs H.264
+  // decoder (the VM's own Chromium: its VideoDecoder claims avc1 and then
+  // fails to configure) still plays H.264 in MP4 through MediaSource, which
+  // also needs no secure page. Each frame becomes one fragment (ISO/IEC
+  // 14496-12 boxes: moof/mfhd/traf/tfhd/tfdt/trun + mdat), after one init
+  // segment (ftyp + moov) built from the stream's SPS and PPS.
+  var FMP4 = (function () {
+    function u16(n) { return [(n >> 8) & 255, n & 255]; }
+    function u32(n) { return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255]; }
+    function str(s) { var a = []; for (var i = 0; i < s.length; i++) { a.push(s.charCodeAt(i)); } return a; }
+    function flat(parts) {
+      var len = 0, i;
+      for (i = 0; i < parts.length; i++) { len += parts[i].length; }
+      var out = new Uint8Array(len), off = 0;
+      for (i = 0; i < parts.length; i++) { out.set(parts[i], off); off += parts[i].length; }
+      return out;
     }
-    return 'avc1.42E01F';
-  }
+    function box(type) {
+      var parts = Array.prototype.slice.call(arguments, 1).map(function (p) { return p instanceof Uint8Array ? p : new Uint8Array(p); });
+      var body = flat(parts);
+      return flat([new Uint8Array(u32(body.length + 8)), new Uint8Array(str(type)), body]);
+    }
+    var ZERO_MATRIX = [].concat(u32(0x10000), u32(0), u32(0), u32(0), u32(0x10000), u32(0), u32(0), u32(0), u32(0x40000000));
 
+    // The NAL units of an Annex B buffer, start codes removed.
+    function nals(b) {
+      var out = [], start = -1, i = 0;
+      while (i + 2 < b.length) {
+        if (b[i] === 0 && b[i + 1] === 0 && b[i + 2] === 1) {
+          if (start >= 0) { out.push(b.subarray(start, i > 0 && b[i - 1] === 0 ? i - 1 : i)); }
+          i += 3; start = i;
+        } else { i++; }
+      }
+      if (start >= 0 && start < b.length) { out.push(b.subarray(start)); }
+      return out;
+    }
+
+    function hex(n) { return ('0' + n.toString(16)).slice(-2); }
+
+    function init(sps, pps, w, h) {
+      var avcC = box('avcC', [1, sps[1], sps[2], sps[3], 0xff, 0xe1], u16(sps.length), sps, [1], u16(pps.length), pps);
+      var avc1 = box('avc1', [0, 0, 0, 0, 0, 0], u16(1), u16(0), u16(0), u32(0), u32(0), u32(0), u16(w), u16(h),
+        u32(0x480000), u32(0x480000), u32(0), u16(1), new Uint8Array(32), u16(0x18), u16(0xffff), avcC);
+      var empty = function (t) { return box(t, [0, 0, 0, 0], u32(0)); };
+      var stbl = box('stbl', box('stsd', [0, 0, 0, 0], u32(1), avc1), empty('stts'), empty('stsc'),
+        box('stsz', [0, 0, 0, 0], u32(0), u32(0)), empty('stco'));
+      var minf = box('minf', box('vmhd', [0, 0, 0, 1], u16(0), u16(0), u16(0), u16(0)),
+        box('dinf', box('dref', [0, 0, 0, 0], u32(1), box('url ', [0, 0, 0, 1]))), stbl);
+      var mdia = box('mdia', box('mdhd', [0, 0, 0, 0], u32(0), u32(0), u32(90000), u32(0), u16(0x55c4), u16(0)),
+        box('hdlr', [0, 0, 0, 0], u32(0), str('vide'), u32(0), u32(0), u32(0), str('VideoHandler'), [0]), minf);
+      var tkhd = box('tkhd', [0, 0, 0, 3], u32(0), u32(0), u32(1), u32(0), u32(0), u32(0), u32(0),
+        u16(0), u16(0), u16(0), u16(0), ZERO_MATRIX, u32(w << 16), u32(h << 16));
+      var mvhd = box('mvhd', [0, 0, 0, 0], u32(0), u32(0), u32(1000), u32(0), u32(0x10000), u16(0x100), u16(0), u32(0), u32(0),
+        ZERO_MATRIX, u32(0), u32(0), u32(0), u32(0), u32(0), u32(0), u32(2));
+      var mvex = box('mvex', box('trex', [0, 0, 0, 0], u32(1), u32(1), u32(0), u32(0), u32(0)));
+      return {
+        codec: 'avc1.' + hex(sps[1]) + hex(sps[2]) + hex(sps[3]),
+        data: flat([box('ftyp', str('isom'), u32(0x200), str('isom'), str('iso6'), str('avc1'), str('mp41')),
+          box('moov', mvhd, box('trak', tkhd, mdia), mvex)])
+      };
+    }
+
+    // One frame as one fragment: time and duration in 1/90000 s.
+    function fragment(seq, time, duration, key, annexB) {
+      var parts = [];
+      nals(annexB).forEach(function (n) {
+        var type = n[0] & 0x1f;
+        if (type !== 7 && type !== 8 && type !== 9) { parts.push(new Uint8Array(u32(n.length)), n); }
+      });
+      var sample = flat(parts);
+      var hi = Math.floor(time / 4294967296), lo = time >>> 0;
+      var flags = key ? 0x02000000 : 0x01010000;
+      function moof(offset) {
+        return box('moof', box('mfhd', [0, 0, 0, 0], u32(seq)),
+          box('traf', box('tfhd', [0, 2, 0, 0], u32(1)), box('tfdt', [1, 0, 0, 0], u32(hi), u32(lo)),
+            box('trun', [0, 0, 7, 1], u32(1), u32(offset), u32(duration), u32(sample.length), u32(flags))));
+      }
+      var m = moof(0);
+      m = moof(m.length + 8);
+      return flat([m, box('mdat', sample)]);
+    }
+
+    return { nals: nals, init: init, fragment: fragment };
+  })();
+
+  // ---- WebCodecs: straight onto the canvas, where the browser can ----
   function configure(cfg) {
     if (decoder) { try { decoder.close(); } catch (e) {} }
+    var nal = FMP4.nals(cfg).filter(function (n) { return (n[0] & 0x1f) === 7; })[0];
     decoder = new VideoDecoder({
       output: function (frame) {
+        decoded = true;
         if (cv.width !== frame.displayWidth || cv.height !== frame.displayHeight) {
           cv.width = frame.displayWidth; cv.height = frame.displayHeight;
         }
         gfx.drawImage(frame, 0, 0);
         frame.close();
-        if (!live) { live = true; msg.style.display = 'none'; cv.style.display = 'block'; cv.focus(); }
+        showLive();
       },
-      error: function (e) { needKey = true; }
+      // A decoder that fails before it has shown anything is one this browser
+      // does not have, whatever isConfigSupported said: use MediaSource.
+      error: function () { if (!decoded) { toMSE(); } else { needKey = true; } }
     });
-    // No description: the stream is Annex B, which is what WebCodecs takes without one.
-    decoder.configure({ codec: codecOf(cfg), optimizeForLatency: true });
+    try {
+      // No description: the stream is Annex B, which is what WebCodecs takes without one.
+      decoder.configure({ codec: nal ? FMP4.init(nal, nal, 16, 16).codec : 'avc1.42E01F', optimizeForLatency: true });
+    } catch (e) { toMSE(); }
     needKey = true;
   }
+
+  function webcodecsFrame(isKey, payload, pts) {
+    if (!decoder || decoder.state !== 'configured') { return; }
+    var data = payload;
+    if (isKey && config) { // the parameter sets travel ahead of each key frame
+      data = new Uint8Array(config.length + payload.length);
+      data.set(config); data.set(payload, config.length);
+    }
+    try {
+      decoder.decode(new EncodedVideoChunk({ type: isKey ? 'key' : 'delta', timestamp: pts, data: data }));
+    } catch (e) { needKey = true; }
+  }
+
+  // ---- MediaSource: the same frames as MP4 fragments, on a video element ----
+  var ms = null, sb = null, queue = [], seq = 0, clock = 0, FRAME = 3000; // 1/30 s in 1/90000 s
+  function toMSE() {
+    if (mode === 'mse' && ms) { return; }
+    mode = 'mse';
+    if (decoder) { try { decoder.close(); } catch (e) {} decoder = null; }
+    cv.hidden = true; vid.hidden = false; surface = vid;
+    ms = new MediaSource();
+    vid.src = URL.createObjectURL(ms);
+    ms.addEventListener('sourceopen', function () {
+      if (config) { mseInit(config); }
+      gop.forEach(function (f) { mseFrame(f.key, f.data); });
+    }, { once: true });
+  }
+  function mseInit(cfg) {
+    if (!ms || ms.readyState !== 'open') { return; }
+    var ns = FMP4.nals(cfg);
+    var sps = ns.filter(function (n) { return (n[0] & 0x1f) === 7; })[0];
+    var pps = ns.filter(function (n) { return (n[0] & 0x1f) === 8; })[0];
+    if (!sps || !pps) { return; }
+    var init = FMP4.init(sps, pps, videoW || 720, videoH || 1440);
+    if (!sb) {
+      try { sb = ms.addSourceBuffer('video/mp4; codecs="' + init.codec + '"'); } catch (e) {
+        fail('This browser cannot play the phone’s video (H.264). Recreate the desktop from a current image.');
+        return;
+      }
+      sb.addEventListener('updateend', pump);
+    }
+    push(init.data);
+  }
+  function mseFrame(isKey, payload) {
+    if (!sb) { return; }
+    push(FMP4.fragment(++seq, clock, FRAME, isKey, payload));
+    clock += FRAME;
+  }
+  function push(data) {
+    queue.push(data);
+    if (queue.length > 90) { queue = []; needKey = true; } // far behind: start again from a key frame
+    pump();
+  }
+  function pump() {
+    if (!sb || sb.updating) { return; }
+    if (sb.buffered.length) {
+      var end = sb.buffered.end(sb.buffered.length - 1), start = sb.buffered.start(0);
+      // Always show the newest picture: a live screen, not a recording to catch up on.
+      if (vid.currentTime < end - 0.3) { vid.currentTime = Math.max(start, end - 0.05); }
+      if (!queue.length && vid.currentTime - start > 30) { sb.remove(start, vid.currentTime - 10); return; }
+    }
+    if (!queue.length) { return; }
+    try { sb.appendBuffer(queue.shift()); } catch (e) { queue = []; needKey = true; }
+    if (vid.paused) { vid.play().catch(function () {}); }
+  }
+  vid.addEventListener('loadeddata', showLive);
+  vid.addEventListener('error', function () {
+    if (!live) { fail('This browser cannot play the phone’s video (H.264). Recreate the desktop from a current image.'); }
+  });
 
   function onFrame(buf) {
     var v = new DataView(buf), b0 = v.getUint8(0);
@@ -75,78 +254,243 @@
     }
     var isConfig = (b0 & 0x40) !== 0, isKey = (b0 & 0x20) !== 0;
     var payload = new Uint8Array(buf, 12);
-    if (isConfig) { config = payload.slice(); configure(config); return; }
-    if (!decoder || decoder.state !== 'configured') { return; }
-    if (needKey && !isKey) { return; }
-    var data = payload;
-    if (isKey && config) { // the parameter sets travel ahead of each key frame
-      data = new Uint8Array(config.length + payload.length);
-      data.set(config); data.set(payload, config.length);
+    if (isConfig) {
+      config = payload.slice();
+      if (mode === 'mse') { if (!ms) { toMSE(); } else { mseInit(config); } } else { configure(config); }
+      return;
     }
+    if (needKey && !isKey) { return; }
+    if (isKey) { needKey = false; gop = []; }
+    if (gop.length < 600) { gop.push({ key: isKey, data: payload.slice() }); }
     var pts = (v.getUint32(0) & 0x1fffffff) * 4294967296 + v.getUint32(4);
-    try {
-      decoder.decode(new EncodedVideoChunk({ type: isKey ? 'key' : 'delta', timestamp: pts, data: data }));
-      if (isKey) { needKey = false; }
-    } catch (e) { needKey = true; }
+    if (mode === 'mse') { mseFrame(isKey, payload); } else { webcodecsFrame(isKey, payload, pts); }
+  }
+
+  // ---- Busy: after input, until the controls have caught up with it ----
+  // The desktop's agent reads this page's controls before it acts, and its
+  // approval gate judges the control it is about to press. Until the phone
+  // sends controls read after the last input they may be the old screen's,
+  // so the page says so (computer/cdp.py waits for this attribute to go).
+  function markBusy() {
+    if (!hasTree) { return; }
+    document.documentElement.setAttribute('data-decurix-busy', '');
+    clearTimeout(busyTimer);
+    busyTimer = setTimeout(clearBusy, 8000);
+  }
+  function clearBusy() {
+    clearTimeout(busyTimer);
+    document.documentElement.removeAttribute('data-decurix-busy');
   }
 
   function send(input) {
-    if (ws && ws.readyState === 1) { ws.send(JSON.stringify(input)); }
+    if (ws && ws.readyState === 1) { ws.send(JSON.stringify(input)); markBusy(); }
+  }
+
+  function size() {
+    return { w: videoW || (surface === vid ? vid.videoWidth : cv.width), h: videoH || (surface === vid ? vid.videoHeight : cv.height) };
   }
 
   function pos(e) {
-    var r = cv.getBoundingClientRect(), w = videoW || cv.width, h = videoH || cv.height;
-    return { x: Math.round((e.clientX - r.left) * w / r.width), y: Math.round((e.clientY - r.top) * h / r.height), w: w, h: h };
+    var r = surface.getBoundingClientRect(), s = size();
+    return { x: Math.round((e.clientX - r.left) * s.w / r.width), y: Math.round((e.clientY - r.top) * s.h / r.height), w: s.w, h: s.h };
   }
 
+  function tap(x, y) {
+    var s = size();
+    send({ kind: 'touch', action: 0, x: x, y: y, w: s.w, h: s.h });
+    send({ kind: 'touch', action: 1, x: x, y: y, w: s.w, h: s.h });
+  }
+
+  // The middle of a control, in the video's pixels.
+  function middleOf(elem) {
+    var b = JSON.parse(elem.dataset.box), s = size();
+    var fx = s.w / (treeW || s.w), fy = s.h / (treeH || s.h);
+    return { x: Math.round((b[0] + b[2] / 2) * fx), y: Math.round((b[1] + b[3] / 2) * fy) };
+  }
+
+  function isField(t) { return !!t && t.parentNode === ax && t.tagName === 'INPUT'; }
+
+  // ---- Touch: the whole picture, controls included, is the phone's screen ----
   var down = false;
-  cv.addEventListener('pointerdown', function (e) {
+  stage.addEventListener('pointerdown', function (e) {
     if (!live) { return; }
-    down = true; cv.setPointerCapture(e.pointerId); cv.focus();
+    down = true; lastPointer = Date.now();
+    stage.setPointerCapture(e.pointerId);
     var p = pos(e); send({ kind: 'touch', action: 0, x: p.x, y: p.y, w: p.w, h: p.h });
-    e.preventDefault();
+    // A field keeps the browser's focus (typing goes through it); anything else hands it to the picture.
+    if (!isField(e.target)) { surface.focus(); e.preventDefault(); }
   });
-  cv.addEventListener('pointermove', function (e) {
+  stage.addEventListener('pointermove', function (e) {
     if (!down) { return; }
     var p = pos(e); send({ kind: 'touch', action: 2, x: p.x, y: p.y, w: p.w, h: p.h });
   });
   function up(e) {
     if (!down) { return; }
-    down = false;
+    down = false; lastPointer = Date.now();
     var p = pos(e); send({ kind: 'touch', action: 1, x: p.x, y: p.y, w: p.w, h: p.h });
   }
-  cv.addEventListener('pointerup', up);
-  cv.addEventListener('pointercancel', up);
-  cv.addEventListener('wheel', function (e) {
+  stage.addEventListener('pointerup', up);
+  stage.addEventListener('pointercancel', up);
+  stage.addEventListener('wheel', function (e) {
     var p = pos(e), s = e.deltaY > 0 ? -1 : 1;
     send({ kind: 'scroll', x: p.x, y: p.y, w: p.w, h: p.h, scroll_y: s });
     e.preventDefault();
   }, { passive: false });
 
-  // Named keys as Android keycodes; anything that types a character is sent as text.
+  // A field focused without a pointer (an agent's DOM focus) is tapped on the phone, so typing lands there.
+  var refocusing = false; // focus put back on a field after a refresh, not someone choosing it
+  ax.addEventListener('focusin', function (e) {
+    if (isField(e.target) && !refocusing && Date.now() - lastPointer > 500) {
+      var m = middleOf(e.target); tap(m.x, m.y);
+    }
+  });
+
+  // ---- Keys and text ----
   var KEYS = { Enter: 66, Backspace: 67, Delete: 112, Tab: 61, Escape: 111, ArrowUp: 19, ArrowDown: 20, ArrowLeft: 21, ArrowRight: 22, Home: 122, End: 123, PageUp: 92, PageDown: 93 };
-  cv.addEventListener('keydown', function (e) {
+  function key(code, meta) {
+    send({ kind: 'key', action: 0, key: code, meta: meta || 0 }); send({ kind: 'key', action: 1, key: code, meta: meta || 0 });
+  }
+  // Ctrl+A then Delete: what replacing a field's whole text is on Android.
+  function clearField() { key(29, 0x3000); key(67); }
+
+  stage.addEventListener('keydown', function (e) {
     if (!live) { return; }
+    if (isField(e.target)) {
+      // Text and deleting come through beforeinput; the rest are keys.
+      if (KEYS[e.key] && e.key !== 'Backspace' && e.key !== 'Delete') { key(KEYS[e.key]); e.preventDefault(); }
+      return;
+    }
     if (KEYS[e.key]) {
-      send({ kind: 'key', action: 0, key: KEYS[e.key] }); send({ kind: 'key', action: 1, key: KEYS[e.key] });
+      key(KEYS[e.key]);
       e.preventDefault();
     } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
       send({ kind: 'text', text: e.key });
       e.preventDefault();
     }
   });
+  ax.addEventListener('beforeinput', function (e) {
+    var t = e.target;
+    if (!isField(t)) { return; }
+    var whole = t.value.length > 0 && t.selectionStart === 0 && t.selectionEnd === t.value.length;
+    var type = e.inputType || '';
+    t.dataset.edited = String(Date.now());
+    if (type.indexOf('insert') === 0 && type !== 'insertLineBreak' && type !== 'insertParagraph') {
+      var data = e.data || (e.dataTransfer && e.dataTransfer.getData('text/plain')) || '';
+      if (whole) { clearField(); }
+      if (data) { send({ kind: 'text', text: data }); }
+    } else if (type === 'insertLineBreak' || type === 'insertParagraph') {
+      key(66);
+    } else if (type.indexOf('deleteContentBackward') === 0 || type.indexOf('deleteWordBackward') === 0) {
+      if (whole) { clearField(); } else { key(67); }
+    } else if (type.indexOf('delete') === 0) {
+      if (whole) { clearField(); } else { key(112); }
+    }
+  });
   document.addEventListener('paste', function (e) {
+    if (isField(document.activeElement)) { return; } // the field's beforeinput sends it
     var t = (e.clipboardData || window.clipboardData).getData('text');
     if (t) { send({ kind: 'text', text: t }); e.preventDefault(); }
   });
 
-  function key(code) { send({ kind: 'key', action: 0, key: code }); send({ kind: 'key', action: 1, key: code }); }
-  document.getElementById('back').onclick = function () { send({ kind: 'back' }); cv.focus(); };
-  document.getElementById('home').onclick = function () { key(3); cv.focus(); };
-  document.getElementById('recents').onclick = function () { key(187); cv.focus(); };
+  document.getElementById('back').onclick = function () { send({ kind: 'back' }); surface.focus(); };
+  document.getElementById('home').onclick = function () { key(3); surface.focus(); };
+  document.getElementById('recents').onclick = function () { key(187); surface.focus(); };
 
-  if (typeof VideoDecoder === 'undefined') {
-    fail('This browser cannot decode the phone’s video (no WebCodecs).');
+  // ---- The app's controls ----
+  var ROLE = { button: 'button', checkbox: 'checkbox', switch: 'switch', radio: 'radio', slider: 'slider', image: 'img' };
+
+  function place(elem, n) {
+    elem.style.left = (n.box[0] / treeW * 100) + '%';
+    elem.style.top = (n.box[1] / treeH * 100) + '%';
+    elem.style.width = (n.box[2] / treeW * 100) + '%';
+    elem.style.height = (n.box[3] / treeH * 100) + '%';
+    elem.dataset.box = JSON.stringify(n.box);
+  }
+
+  // What changes about a control between two reads of the screen.
+  function update(elem, n) {
+    place(elem, n);
+    if (n.role === 'textbox') {
+      var type = n.password ? 'password' : 'text';
+      if (elem.type !== type) { elem.type = type; }
+      // What was typed a moment ago stays until the phone's field has had time to show it.
+      if (Date.now() - Number(elem.dataset.edited || 0) > 2000 && elem.value !== (n.value || '')) { elem.value = n.value || ''; }
+    }
+    if (n.checked !== undefined && n.checked !== null) { elem.setAttribute('aria-checked', n.checked ? 'true' : 'false'); }
+    if (n.disabled) { elem.setAttribute('aria-disabled', 'true'); } else { elem.removeAttribute('aria-disabled'); }
+  }
+
+  function build(n) {
+    var elem;
+    if (n.role === 'textbox') {
+      elem = document.createElement('input');
+      elem.setAttribute('autocomplete', 'off');
+      elem.tabIndex = -1;
+      if (n.name) { elem.setAttribute('aria-label', n.name); elem.placeholder = n.name; }
+    } else if (n.role === 'text') {
+      elem = document.createElement('span');
+      elem.className = 't';
+      elem.textContent = n.name;
+    } else {
+      elem = document.createElement('div');
+      elem.setAttribute('role', ROLE[n.role] || 'button');
+      if (n.role === 'image') { elem.className = 't'; } else { elem.tabIndex = -1; }
+      if (n.name) { elem.setAttribute('aria-label', n.name); }
+      if (n.role === 'slider') { elem.setAttribute('aria-valuemin', '0'); elem.setAttribute('aria-valuemax', '100'); }
+    }
+    update(elem, n);
+    return elem;
+  }
+
+  function showTree(t) {
+    if (t.error) {
+      hasTree = false; clearBusy();
+      ax.textContent = '';
+      note.textContent = 'Picture only: ' + t.error; note.hidden = false;
+      return;
+    }
+    hasTree = true;
+    treeW = t.w; treeH = t.h;
+
+    // An app that draws its own screen without labels shows nothing to read:
+    // say so, since the approval gate cannot tell its Pay from anything else.
+    var controls = (t.nodes || []).filter(function (n) { return n.role !== 'text' && n.role !== 'image'; }).length;
+    if (controls === 0) {
+      note.textContent = 'Picture only: this screen has no buttons the VM can read.'; note.hidden = false;
+    } else {
+      note.hidden = true;
+    }
+
+    // A control the phone still shows keeps its element: an agent that has
+    // just read the page acts on the element it read (a rebuilt one is a
+    // different node, and its click failed as "detached"), and the field
+    // someone is typing in keeps the browser's focus. Same role and label is
+    // the same control; the Nth of several alike is matched to the Nth.
+    var old = {};
+    Array.prototype.forEach.call(ax.children, function (e) { old[e.dataset.key] = e; });
+    var active = document.activeElement, counts = {};
+
+    var frag = document.createDocumentFragment();
+    (t.nodes || []).forEach(function (n) {
+      var base = n.role + '\u0001' + (n.name || '');
+      counts[base] = (counts[base] || 0) + 1;
+      var key = base + '\u0001' + counts[base];
+      var elem = old[key];
+      if (elem) { delete old[key]; update(elem, n); } else { elem = build(n); elem.dataset.key = key; }
+      frag.appendChild(elem);
+    });
+    ax.textContent = '';
+    ax.appendChild(frag);
+    if (active && active.parentNode === ax && document.activeElement !== active) {
+      refocusing = true;
+      try { active.focus({ preventScroll: true }); } finally { refocusing = false; }
+    }
+
+    if (t.fresh) { clearBusy(); }
+  }
+
+  if (typeof VideoDecoder === 'undefined' && typeof MediaSource === 'undefined') {
+    fail('This browser cannot play the phone’s video.');
     return;
   }
 
@@ -161,6 +505,7 @@
     if (typeof e.data !== 'string') { onFrame(e.data); return; }
     var m = {}; try { m = JSON.parse(e.data); } catch (err) {}
     if (m.opened) { msg.textContent = 'Waiting for the first picture…'; }
+    if (m.tree) { showTree(m.tree); }
     if (m.closed) {
       if (m.error) { fail(m.error); } else { try { window.close(); } catch (err) {} fail('The app was closed. You can close this window.'); }
     }
