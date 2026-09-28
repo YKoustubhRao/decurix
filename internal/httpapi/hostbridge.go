@@ -46,6 +46,8 @@ func (s *Server) detectHostAppsHandler(w http.ResponseWriter, r *http.Request) {
 	force := r.URL.Query().Get("refresh") == "1" || r.URL.Query().Get("refresh") == "true"
 	// Somebody looking at the apps they can copy is about to create a desktop: get the host ready while they choose.
 	desktop.WarmHostApps()
+	// Linked phones are asked for their apps first, so the list includes them.
+	s.refreshPhoneApps(r.Context(), force)
 	items := desktop.DetectHostAppsForce(force)
 	jsonResponse(w, items)
 }
