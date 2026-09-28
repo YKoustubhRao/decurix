@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{.Title}}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<style>
+  html, body { margin: 0; height: 100%; background: #111; overflow: hidden; font: 14px/1.5 system-ui, sans-serif; }
+  #wrap { position: absolute; inset: 0 0 44px 0; display: flex; align-items: center; justify-content: center; }
+  #screen { display: none; max-width: 100%; max-height: 100%; touch-action: none; user-select: none; outline: none; background: #000; }
+  #bar { position: absolute; left: 0; right: 0; bottom: 0; height: 44px; display: flex; justify-content: center; gap: 36px; align-items: center; background: #1b1b1b; border-top: 1px solid #2a2a2a; }
+  #bar button { background: none; border: 0; color: #cfcfcf; width: 44px; height: 36px; border-radius: 8px; cursor: pointer; font-size: 18px; }
+  #bar button:hover { background: #2a2a2a; color: #fff; }
+  #msg { color: #d8d8d8; padding: 28px; max-width: 420px; }
+  #msg.error { color: #ffb4a8; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="msg">Opening {{.Title}} on your phone&hellip;</div>
+  <canvas id="screen" tabindex="0"></canvas>
+</div>
+<div id="bar">
+  <button type="button" id="back" title="Back" aria-label="Back">&#9664;</button>
+  <button type="button" id="home" title="Home" aria-label="Home">&#9679;</button>
+  <button type="button" id="recents" title="Recent apps" aria-label="Recent apps">&#9632;</button>
+</div>
+<script>
+(function () {
+  var ID = {{.ID}}, TOKEN = {{.Token}}, DESKTOP = {{.Desktop}}, DEVICE = {{.Device}}, PKG = {{.Package}};
+  var msg = document.getElementById('msg'), cv = document.getElementById('screen');
+  var gfx = cv.getContext('2d', { alpha: false, desynchronized: true });
+  var ws, decoder = null, config = null, needKey = true, videoW = 0, videoH = 0, live = false;
+
+  function fail(text) {
+    live = false;
+    msg.className = 'error'; msg.textContent = text; msg.style.display = 'block'; cv.style.display = 'none';
+  }
+
+  // The codec string WebCodecs wants is read off the SPS: the three bytes after its NAL header.
+  function codecOf(annexB) {
+    for (var i = 0; i + 7 < annexB.length; i++) {
+      if (annexB[i] === 0 && annexB[i + 1] === 0 && annexB[i + 2] === 1 && (annexB[i + 3] & 0x1f) === 7) {
+        var h = function (b) { return ('0' + b.toString(16)).slice(-2); };
+        return 'avc1.' + h(annexB[i + 4]) + h(annexB[i + 5]) + h(annexB[i + 6]);
+      }
+    }
+    return 'avc1.42E01F';
+  }
+
+  function configure(cfg) {
+    if (decoder) { try { decoder.close(); } catch (e) {} }
+    decoder = new VideoDecoder({
+      output: function (frame) {
+        if (cv.width !== frame.displayWidth || cv.height !== frame.displayHeight) {
+          cv.width = frame.displayWidth; cv.height = frame.displayHeight;
+        }
+        gfx.drawImage(frame, 0, 0);
+        frame.close();
+        if (!live) { live = true; msg.style.display = 'none'; cv.style.display = 'block'; cv.focus(); }
+      },
+      error: function (e) { needKey = true; }
+    });
+    // No description: the stream is Annex B, which is what WebCodecs takes without one.
+    decoder.configure({ codec: codecOf(cfg), optimizeForLatency: true });
+    needKey = true;
+  }
+
+  function onFrame(buf) {
+    var v = new DataView(buf), b0 = v.getUint8(0);
+    if (b0 & 0x80) { // a session packet: the display's size
+      videoW = v.getUint32(4); videoH = v.getUint32(8);
+      return;
+    }
+    var isConfig = (b0 & 0x40) !== 0, isKey = (b0 & 0x20) !== 0;
+    var payload = new Uint8Array(buf, 12);
+    if (isConfig) { config = payload.slice(); configure(config); return; }
+    if (!decoder || decoder.state !== 'configured') { return; }
+    if (needKey && !isKey) { return; }
+    var data = payload;
+    if (isKey && config) { // the parameter sets travel ahead of each key frame
+      data = new Uint8Array(config.length + payload.length);
+      data.set(config); data.set(payload, config.length);
+    }
+    var pts = (v.getUint32(0) & 0x1fffffff) * 4294967296 + v.getUint32(4);
+    try {
+      decoder.decode(new EncodedVideoChunk({ type: isKey ? 'key' : 'delta', timestamp: pts, data: data }));
+      if (isKey) { needKey = false; }
+    } catch (e) { needKey = true; }
+  }
+
+  function send(input) {
+    if (ws && ws.readyState === 1) { ws.send(JSON.stringify(input)); }
+  }
+
+  function pos(e) {
+    var r = cv.getBoundingClientRect(), w = videoW || cv.width, h = videoH || cv.height;
+    return { x: Math.round((e.clientX - r.left) * w / r.width), y: Math.round((e.clientY - r.top) * h / r.height), w: w, h: h };
+  }
+
+  var down = false;
+  cv.addEventListener('pointerdown', function (e) {
+    if (!live) { return; }
+    down = true; cv.setPointerCapture(e.pointerId); cv.focus();
+    var p = pos(e); send({ kind: 'touch', action: 0, x: p.x, y: p.y, w: p.w, h: p.h });
+    e.preventDefault();
+  });
+  cv.addEventListener('pointermove', function (e) {
+    if (!down) { return; }
+    var p = pos(e); send({ kind: 'touch', action: 2, x: p.x, y: p.y, w: p.w, h: p.h });
+  });
+  function up(e) {
+    if (!down) { return; }
+    down = false;
+    var p = pos(e); send({ kind: 'touch', action: 1, x: p.x, y: p.y, w: p.w, h: p.h });
+  }
+  cv.addEventListener('pointerup', up);
+  cv.addEventListener('pointercancel', up);
+  cv.addEventListener('wheel', function (e) {
+    var p = pos(e), s = e.deltaY > 0 ? -1 : 1;
+    send({ kind: 'scroll', x: p.x, y: p.y, w: p.w, h: p.h, scroll_y: s });
+    e.preventDefault();
+  }, { passive: false });
+
+  // Named keys as Android keycodes; anything that types a character is sent as text.
+  var KEYS = { Enter: 66, Backspace: 67, Delete: 112, Tab: 61, Escape: 111, ArrowUp: 19, ArrowDown: 20, ArrowLeft: 21, ArrowRight: 22, Home: 122, End: 123, PageUp: 92, PageDown: 93 };
+  cv.addEventListener('keydown', function (e) {
+    if (!live) { return; }
+    if (KEYS[e.key]) {
+      send({ kind: 'key', action: 0, key: KEYS[e.key] }); send({ kind: 'key', action: 1, key: KEYS[e.key] });
+      e.preventDefault();
+    } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      send({ kind: 'text', text: e.key });
+      e.preventDefault();
+    }
+  });
+  document.addEventListener('paste', function (e) {
+    var t = (e.clipboardData || window.clipboardData).getData('text');
+    if (t) { send({ kind: 'text', text: t }); e.preventDefault(); }
+  });
+
+  function key(code) { send({ kind: 'key', action: 0, key: code }); send({ kind: 'key', action: 1, key: code }); }
+  document.getElementById('back').onclick = function () { send({ kind: 'back' }); cv.focus(); };
+  document.getElementById('home').onclick = function () { key(3); cv.focus(); };
+  document.getElementById('recents').onclick = function () { key(187); cv.focus(); };
+
+  if (typeof VideoDecoder === 'undefined') {
+    fail('This browser cannot decode the phone’s video (no WebCodecs).');
+    return;
+  }
+
+  // A phone-shaped display, sized for this window.
+  var h = Math.max(640, Math.min(2400, Math.round(window.innerHeight * (window.devicePixelRatio || 1) / 8) * 8 - 48));
+  var w = Math.round(h * 9 / 19 / 8) * 8;
+  var q = new URLSearchParams({ id: ID, token: TOKEN, desktop: DESKTOP, device: DEVICE, package: PKG, w: String(w), h: String(h), dpi: '280' });
+
+  ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/api/phone-app/ws?' + q.toString());
+  ws.binaryType = 'arraybuffer';
+  ws.onmessage = function (e) {
+    if (typeof e.data !== 'string') { onFrame(e.data); return; }
+    var m = {}; try { m = JSON.parse(e.data); } catch (err) {}
+    if (m.opened) { msg.textContent = 'Waiting for the first picture…'; }
+    if (m.closed) {
+      if (m.error) { fail(m.error); } else { try { window.close(); } catch (err) {} fail('The app was closed. You can close this window.'); }
+    }
+  };
+  ws.onclose = function () { if (live) { fail('The connection to your phone ended. Close this window and open the app again.'); } };
+})();
+</script>
+</body>
+</html>

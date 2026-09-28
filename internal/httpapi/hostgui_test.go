@@ -22,6 +22,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/webui"
 	"github.com/YKoustubhRao/decurix/internal/winhost"
+	"github.com/YKoustubhRao/decurix/internal/wsconn"
 )
 
 // hostGUIServer returns a Server whose host helper is a bash loop speaking bridge.ps1's line protocol, plus the file
@@ -149,7 +150,7 @@ func (c *testWS) send(op byte, payload []byte) {
 func (c *testWS) sendJSON(v any) {
 	c.t.Helper()
 	b, _ := json.Marshal(v)
-	c.send(wsText, b)
+	c.send(wsconn.OpText, b)
 }
 
 // recv returns the next data message, skipping pings.
@@ -175,7 +176,7 @@ func (c *testWS) recv() (op byte, payload []byte, err error) {
 		if _, err = io.ReadFull(c.br, payload); err != nil {
 			return 0, nil, err
 		}
-		if h[0]&0x0F == wsPing {
+		if h[0]&0x0F == wsconn.OpPing {
 			continue
 		}
 		return h[0] & 0x0F, payload, nil
@@ -201,7 +202,7 @@ type picture struct {
 func (c *testWS) mustPicture() picture {
 	c.t.Helper()
 	op, p := c.mustRecv()
-	if op != wsBinary || len(p) < 13 {
+	if op != wsconn.OpBinary || len(p) < 13 {
 		c.t.Fatalf("not a picture: op %d, %d bytes", op, len(p))
 	}
 	u := func(i int) int { return int(binary.BigEndian.Uint16(p[1+2*i:])) }
@@ -253,7 +254,7 @@ func TestHostGUIStartStreamInputAndStop(t *testing.T) {
 		t.Fatalf("stop = %d", rec.Code)
 	}
 	// The viewer is told, so it can say the app was closed.
-	if op, p, err := ws.recv(); err != nil || op != wsText || !strings.Contains(string(p), `"closed":true`) {
+	if op, p, err := ws.recv(); err != nil || op != wsconn.OpText || !strings.Contains(string(p), `"closed":true`) {
 		t.Fatalf("after stop: op %d %q err %v, want {\"closed\":true}", op, p, err)
 	}
 	if _, resp := dialWS(t, ts, "/api/host-gui/ws?id=vm1-code&token="+tok, nil); resp == nil || resp.StatusCode != http.StatusNotFound {
@@ -331,9 +332,9 @@ func TestHostGUIIgnoresInputItDoesNotUnderstandAndKeepsGoing(t *testing.T) {
 	ws, _ := dialWS(t, ts, "/api/host-gui/ws?id=ok1&token="+tok, nil)
 	ws.mustRecv()
 
-	ws.send(wsText, []byte("not json"))
+	ws.send(wsconn.OpText, []byte("not json"))
 	ws.sendJSON(map[string]any{"kind": "explode"})
-	ws.send(wsBinary, []byte{1, 2, 3})
+	ws.send(wsconn.OpBinary, []byte{1, 2, 3})
 	ws.sendJSON(map[string]any{"kind": "key", "vk": 0})               // out of range
 	ws.sendJSON(map[string]any{"kind": "key", "vk": 65, "mods": "x"}) // not a modifier
 	ws.sendJSON(map[string]any{"kind": "type", "text": "still here"})
@@ -484,7 +485,7 @@ func TestHostGUICopyReturnsWhatTheAppCopiedAndPasteTypesIt(t *testing.T) {
 		ID   int
 		Text string
 	}
-	if json.Unmarshal(p, &ans); op != wsText || ans.ID != 7 || ans.Text != "hi" {
+	if json.Unmarshal(p, &ans); op != wsconn.OpText || ans.ID != 7 || ans.Text != "hi" {
 		t.Fatalf("copy answer = %d %s, want the text the app copied, under the request's own id", op, p)
 	}
 	ws.sendJSON(map[string]any{"kind": "copy", "vk": 86, "seq": 8}) // Ctrl+V is not a copy

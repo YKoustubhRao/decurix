@@ -184,6 +184,8 @@ type Renderer struct {
 	dagsTmpl       *template.Template
 	dagTmpl        *template.Template
 	hostGUITmpl    *template.Template
+	phoneAppTmpl   *template.Template
+	phoneLinkTmpl  *template.Template
 	screenTmpl     *template.Template
 	triggersTmpl   *template.Template
 }
@@ -223,6 +225,12 @@ func NewRenderer() *Renderer {
 		),
 		hostGUITmpl: template.Must(
 			template.ParseFS(web.TemplatesFS, templatePaths("hostgui.html")...),
+		),
+		phoneAppTmpl: template.Must(
+			template.ParseFS(web.TemplatesFS, "templates/phoneapp.html"),
+		),
+		phoneLinkTmpl: template.Must(
+			template.ParseFS(web.TemplatesFS, "templates/phonelink.html"),
 		),
 		screenTmpl: template.Must(
 			template.ParseFS(web.TemplatesFS, templatePaths("screen.html")...),
@@ -300,6 +308,40 @@ type HostGUIPageData struct {
 	Title   string
 	Target  string
 	Args    string
+}
+
+// PhoneAppPageData is the template data for the window a desktop opens to show and drive an app on a linked phone.
+type PhoneAppPageData struct {
+	// Token is the launch token signed for this app on this phone.
+	Token string
+	ID    string
+	// Desktop is the VM showing the window, kept from idle-pausing while it is open.
+	Desktop string
+	Title   string
+	// Device is the paired phone, Package the app on it.
+	Device  string
+	Package string
+}
+
+// PhoneLinkPageData is the template data for the page that sets up a phone link from the phone itself.
+type PhoneLinkPageData struct {
+	// DeviceID and Name are the paired device opening the page ("" when it is not one).
+	DeviceID string
+	Name     string
+	// BinaryReady says this control plane has the phone build to hand out.
+	BinaryReady bool
+	// Enabled says phone links are on at all.
+	Enabled bool
+}
+
+// RenderPhoneLink renders the phone link setup page.
+func (rd *Renderer) RenderPhoneLink(w io.Writer, data PhoneLinkPageData) error {
+	return rd.phoneLinkTmpl.ExecuteTemplate(w, "phonelink.html", data)
+}
+
+// RenderPhoneApp renders the viewer for one app running on a linked phone.
+func (rd *Renderer) RenderPhoneApp(w io.Writer, data PhoneAppPageData) error {
+	return rd.phoneAppTmpl.ExecuteTemplate(w, "phoneapp.html", data)
 }
 
 // RenderHostGUI renders the viewer for one app running on a private host desktop.

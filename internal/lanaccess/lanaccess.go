@@ -48,6 +48,16 @@ const (
 	// around the lockout.
 	authPath = "/__decurix_access/authenticate"
 
+	// forgetPath unpairs the device making the request and signs it out -
+	// "Forget this device", from the device itself.
+	forgetPath = "/__decurix_access/forget"
+
+	// deviceCookie carries a paired device's token (see DeviceRegistry). It
+	// outlives sessionCookie and every code rotation; only a revoke ends it.
+	// 400 days is the longest expiry Chromium honours.
+	deviceCookie    = "decurix_lan_device"
+	deviceCookieTTL = 400 * 24 * time.Hour
+
 	maxAttempts   = 5
 	lockoutWindow = 5 * time.Minute
 
@@ -59,6 +69,20 @@ const (
 	AutoRotateInterval = 48 * time.Hour
 )
 
+// DeviceRegistry remembers paired devices: a device that entered the code
+// once and chose to be remembered holds a token that survives code
+// rotation, until it is revoked. internal/devices implements it on SQLite;
+// this package only needs the three calls, so it still depends on nothing
+// internal.
+type DeviceRegistry interface {
+	// Pair records a new device and returns its token.
+	Pair(name string) (token string, err error)
+	// Valid reports whether token belongs to a paired device.
+	Valid(token string) bool
+	// Forget unpairs the device holding token.
+	Forget(token string) error
+}
+
 // Store holds the current access code and the sessions it has granted, for
 // the LAN/tunnel-facing listener - the surface a phone reaches, as opposed to
 // the primary listener a desktop agent's callbacks and a human at the control
@@ -67,6 +91,12 @@ type Store struct {
 	mu       sync.Mutex
 	password string
 	sessions map[string]time.Time
+	devices  DeviceRegistry
+	// open are paths served without the gate: each one checks a token of
+	// its own (SetOpenPaths).
+	open map[string]bool
+	// afterPair picks where a newly paired device goes next (SetAfterPair).
+	afterPair func(userAgent string) string
 
 	attemptsMu sync.Mutex
 	attempts   map[string]*attemptState
@@ -105,6 +135,54 @@ func generatePassword() string {
 	return string(code)
 }
 
+// SetDevices turns on "Remember this device": with a registry set, the gate
+// offers to pair the device, and a paired device's token is accepted in
+// place of a session. Call it before the listener starts serving.
+func (s *Store) SetDevices(registry DeviceRegistry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.devices = registry
+}
+
+// SetOpenPaths lets requests for exactly these paths past the gate. Only for
+// handlers that authenticate every request themselves - the phone setup a
+// phone's Termux runs has no browser, so no cookie, only a one-time token.
+func (s *Store) SetOpenPaths(paths ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.open = make(map[string]bool, len(paths))
+	for _, p := range paths {
+		s.open[p] = true
+	}
+}
+
+// SetAfterPair sets where a device goes once it is paired, when it was not
+// on its way somewhere already: f gets its User-Agent and returns a path, or
+// "" for the dashboard. It is how an Android phone is offered its phone link.
+func (s *Store) SetAfterPair(f func(userAgent string) string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.afterPair = f
+}
+
+func (s *Store) isOpen(path string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.open[path]
+}
+
+// deviceRegistry returns the registry SetDevices installed, or nil.
+func (s *Store) deviceRegistry() DeviceRegistry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.devices
+}
+
 // Password returns the current access code, for the dashboard's Mobile menu
 // to show the person sitting at the control plane. Never serve this over the
 // listener the code itself gates - see httpapi's lanAccessStatusHandler,
@@ -118,7 +196,9 @@ func (s *Store) Password() string {
 
 // Rotate replaces the access code and drops every session it had granted -
 // AO's "rotating drops the currently-connected phone", the deliberate way to
-// revoke access without restarting the control plane.
+// revoke access without restarting the control plane. Paired devices are
+// not signed out: pairing is what a person chose so that rotation would not
+// lock their own phone out, and each one is revoked by name instead.
 func (s *Store) Rotate() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -279,7 +359,22 @@ func (s *Store) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
+		if s.isOpen(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if r.Method == http.MethodPost && r.URL.Path == forgetPath {
+			s.handleForget(w, r)
+			return
+		}
+
 		if cookie, err := r.Cookie(sessionCookie); err == nil && s.validSession(cookie.Value) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if s.validDevice(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -294,8 +389,70 @@ func (s *Store) Middleware(next http.Handler) http.Handler {
 			requested = "/"
 		}
 
-		s.renderGate(w, http.StatusOK, requested, "")
+		s.renderGate(w, r, http.StatusOK, requested, "")
 	})
+}
+
+// validDevice reports whether r carries a paired device's token.
+func (s *Store) validDevice(r *http.Request) bool {
+	registry := s.deviceRegistry()
+	if registry == nil {
+		return false
+	}
+
+	cookie, err := r.Cookie(deviceCookie)
+	return err == nil && registry.Valid(cookie.Value)
+}
+
+// pairDevice pairs the device making this request under name and sets its
+// token cookie. A device that is already paired is left as it is, so
+// opening the pairing link again does not list the same phone twice. A
+// registry failure is logged and the person still gets the ordinary
+// session: pairing is a convenience, not a condition of entry.
+func (s *Store) pairDevice(w http.ResponseWriter, r *http.Request, name string) {
+	registry := s.deviceRegistry()
+	if registry == nil || s.validDevice(r) {
+		return
+	}
+
+	token, err := registry.Pair(name)
+	if err != nil {
+		log.Printf("lanaccess: pairing a device: %v", err)
+		return
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     deviceCookie,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  time.Now().Add(deviceCookieTTL),
+	})
+}
+
+// handleForget unpairs the device making the request, ends its session and
+// shows the gate - what a person does on a phone they are handing on.
+func (s *Store) handleForget(w http.ResponseWriter, r *http.Request) {
+	if cookie, err := r.Cookie(deviceCookie); err == nil {
+		if registry := s.deviceRegistry(); registry != nil {
+			if err := registry.Forget(cookie.Value); err != nil {
+				log.Printf("lanaccess: forgetting a device: %v", err)
+			}
+		}
+	}
+
+	if cookie, err := r.Cookie(sessionCookie); err == nil {
+		s.mu.Lock()
+		delete(s.sessions, cookie.Value)
+		s.mu.Unlock()
+	}
+
+	for _, name := range []string{deviceCookie, sessionCookie} {
+		http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
+	}
+
+	http.Redirect(w, r, "/", http.StatusFound)
 }
 
 // verify checks code against the current password for key, applying and
@@ -357,13 +514,22 @@ func (s *Store) handleAuthenticate(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 
 	if code == "" {
-		s.renderGate(w, http.StatusOK, next, "")
+		s.renderGate(w, r, http.StatusOK, next, "")
+		return
+	}
+
+	// A pairing link never pairs on the GET itself: a chat app fetching the
+	// link for its preview, or a browser prefetching it, would pair a
+	// "Device" nobody meant to. It shows a page with one button instead,
+	// which posts the code like the typed form does.
+	if r.URL.Query().Get("remember") == "1" && s.deviceRegistry() != nil {
+		s.renderPair(w, r, next, code)
 		return
 	}
 
 	ok, status, errMsg := s.verify(code, remoteKey(r))
 	if !ok {
-		s.renderGate(w, status, next, errMsg)
+		s.renderGate(w, r, status, next, errMsg)
 		return
 	}
 
@@ -376,7 +542,7 @@ func (s *Store) handleAuthenticate(w http.ResponseWriter, r *http.Request) {
 // requested) or re-shows the gate with an error.
 func (s *Store) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		s.renderGate(w, http.StatusBadRequest, "/", "Something went wrong reading that - try again.")
+		s.renderGate(w, r, http.StatusBadRequest, "/", "Something went wrong reading that - try again.")
 		return
 	}
 
@@ -385,11 +551,25 @@ func (s *Store) handleSubmit(w http.ResponseWriter, r *http.Request) {
 
 	ok, status, errMsg := s.verify(code, remoteKey(r))
 	if !ok {
-		s.renderGate(w, status, next, errMsg)
+		s.renderGate(w, r, status, next, errMsg)
 		return
 	}
 
 	s.grantSession(w)
+
+	if r.FormValue("remember") == "1" {
+		s.pairDevice(w, r, r.FormValue("device_name"))
+
+		s.mu.Lock()
+		after := s.afterPair
+		s.mu.Unlock()
+		if after != nil && next == "/" {
+			if dest := sanitizeNext(after(r.UserAgent())); dest != "/" {
+				next = dest
+			}
+		}
+	}
+
 	http.Redirect(w, r, next, http.StatusFound)
 }
 
@@ -416,6 +596,34 @@ func remoteKey(r *http.Request) string {
 	return host
 }
 
+// DeviceName guesses a readable name for the device behind userAgent, the
+// default the gate offers when pairing ("iPhone", "Android phone", "Mac").
+// The person can type over it; it only has to tell devices apart in a list.
+func DeviceName(userAgent string) string {
+	ua := strings.ToLower(userAgent)
+
+	switch {
+	case strings.Contains(ua, "iphone"):
+		return "iPhone"
+	case strings.Contains(ua, "ipad"):
+		return "iPad"
+	case strings.Contains(ua, "android") && strings.Contains(ua, "mobile"):
+		return "Android phone"
+	case strings.Contains(ua, "android"):
+		return "Android tablet"
+	case strings.Contains(ua, "macintosh") || strings.Contains(ua, "mac os"):
+		return "Mac"
+	case strings.Contains(ua, "windows"):
+		return "Windows PC"
+	case strings.Contains(ua, "cros"):
+		return "Chromebook"
+	case strings.Contains(ua, "linux"):
+		return "Linux computer"
+	}
+
+	return "Device"
+}
+
 // roundDuration renders a wait time the way a person reads a countdown:
 // whole seconds under a minute, whole minutes (rounded up) after that.
 func roundDuration(d time.Duration) string {
@@ -433,6 +641,13 @@ type gateData struct {
 	Action string
 	Next   string
 	Error  string
+	// CanPair shows the "Remember this device" choice, with DeviceName as
+	// the name it will be listed under.
+	CanPair    bool
+	DeviceName string
+	// Code, when set, is the page a pairing link opens: the code is
+	// carried in the form, and the person only confirms the name.
+	Code string
 }
 
 // renderGate writes the "enter the access code" page. It carries no
@@ -441,11 +656,39 @@ type gateData struct {
 // is a small, hand-kept copy of the dashboard's own tokens rather than a
 // shared one; the two are expected to drift a little rather than pull this
 // package into the module's template graph over one page.
-func (s *Store) renderGate(w http.ResponseWriter, status int, next, errMsg string) {
+func (s *Store) renderGate(w http.ResponseWriter, r *http.Request, status int, next, errMsg string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 
-	if err := gateTmpl.Execute(w, gateData{Action: loginPath, Next: next, Error: errMsg}); err != nil {
+	data := gateData{
+		Action:     loginPath,
+		Next:       next,
+		Error:      errMsg,
+		CanPair:    s.deviceRegistry() != nil,
+		DeviceName: DeviceName(r.UserAgent()),
+	}
+
+	s.executeGate(w, data)
+}
+
+// renderPair shows the page a pairing link opens: the device's name and one
+// button, which submits code with "remember" like the typed form.
+func (s *Store) renderPair(w http.ResponseWriter, r *http.Request, next, code string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+
+	s.executeGate(w, gateData{
+		Action:     loginPath,
+		Next:       next,
+		CanPair:    true,
+		DeviceName: DeviceName(r.UserAgent()),
+		Code:       code,
+	})
+}
+
+// executeGate writes gateTmpl for data.
+func (s *Store) executeGate(w http.ResponseWriter, data gateData) {
+	if err := gateTmpl.Execute(w, data); err != nil {
 		log.Printf("lanaccess: rendering gate page: %v", err)
 	}
 }
@@ -470,14 +713,33 @@ input:focus{outline:2px solid var(--accent);outline-offset:1px}
 button{width:100%;margin-top:12px;padding:11px;font-size:14px;font-weight:600;border:0;border-radius:9px;background:var(--accent);color:#fff;cursor:pointer}
 button:hover{background:var(--accent-hover)}
 .err{margin:0 0 14px;font-size:12.5px;color:var(--danger)}
+.pair{display:flex;align-items:center;gap:8px;margin:14px 0 8px;font-size:13px;color:var(--text)}
+.pair input{width:auto;margin:0}
+.pair-name{font-size:14px;padding:9px 11px}
+.hint{font-size:12px;margin:6px 0 0}
 </style>
 </head><body>
 <form class="card" method="POST" action="{{.Action}}" autocomplete="off">
+  {{if .Code}}
+  <h1>Pair this device</h1>
+  <p>It stays signed in to Decurix until you revoke it from the Mobile menu.</p>
+  <input type="hidden" name="code" value="{{.Code}}">
+  <input type="hidden" name="remember" value="1">
+  <input class="pair-name" type="text" name="device_name" value="{{.DeviceName}}" maxlength="60" aria-label="Device name" autocomplete="off" autofocus>
+  <input type="hidden" name="next" value="{{.Next}}">
+  <button type="submit">Pair</button>
+  {{else}}
   <h1>Enter the access code</h1>
   <p>Read it off the Decurix dashboard's Mobile menu, on the machine running your control plane.</p>
   {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
   <input type="text" name="code" placeholder="Access code" autocapitalize="off" autocomplete="off" spellcheck="false" autofocus required>
+  {{if .CanPair}}
+  <label class="pair"><input type="checkbox" name="remember" value="1" checked> Remember this device</label>
+  <input class="pair-name" type="text" name="device_name" value="{{.DeviceName}}" maxlength="60" aria-label="Device name" autocomplete="off">
+  <p class="hint">It stays signed in when the code changes, until you revoke it from the Mobile menu.</p>
+  {{end}}
   <input type="hidden" name="next" value="{{.Next}}">
   <button type="submit">Continue</button>
+  {{end}}
 </form>
 </body></html>`))
