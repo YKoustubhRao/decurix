@@ -73,6 +73,10 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
+# Chromium's H.264 decoder: a phone app's picture, and most web video (see the script).
+COPY agent/install-chromium-h264.sh /tmp/install-chromium-h264.sh
+RUN sh /tmp/install-chromium-h264.sh && rm -f /tmp/install-chromium-h264.sh
+
 COPY agent/vm_server.py /opt/vm_server.py
 COPY agent/decurix_agent /opt/decurix_agent
 COPY agent/start_agent_terminal.sh /opt/start_agent_terminal.sh

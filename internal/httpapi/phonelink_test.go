@@ -151,7 +151,9 @@ func TestThePhoneLinkPageSaysWhatItCanDo(t *testing.T) {
 	os.WriteFile(bin, []byte("x"), 0o755)
 	t.Setenv("DECURIX_PHONE_BINARY", bin)
 	if page := get(true); !strings.Contains(page, "Yes, set it up") || !strings.Contains(page, "Pixel 8") ||
-		!strings.Contains(page, "full control of this phone") || !strings.Contains(page, `id="yes" type="button" disabled`) {
+		!strings.Contains(page, "open and use any app on this phone") || !strings.Contains(page, "Send, Pay and Buy are blocked until you approve them") ||
+		!strings.Contains(page, "Picture only") ||
+		!strings.Contains(page, "S.browser_fallback_url=") || !strings.Contains(page, `id="yes" type="button" disabled`) {
 		t.Errorf("ready:\n%s", page)
 	}
 }
