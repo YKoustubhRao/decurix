@@ -86,6 +86,11 @@ HANDLED_SUFFIX = ".done"
 # desktop with nothing in the log to say why.
 STALL_SECONDS = 45
 
+# How often the watchdog looks, and how late one of its looks may be before it
+# means the container was frozen (paused, or the host asleep) rather than busy.
+WATCHDOG_TICK = 5
+PAUSE_SLACK_SECONDS = 10
+
 # When the command loop last started a pass, and the file it is handling now.
 _heartbeat = time.monotonic()
 _in_flight = None
@@ -168,20 +173,39 @@ def watchdog():
     """
 
     reported = None
+    stalled_for = 0.0
+    last_beat = _heartbeat
+    last_check = time.monotonic()
     while True:
-        time.sleep(5)
-        stalled = time.monotonic() - _heartbeat
-        if stalled < STALL_SECONDS:
-            reported = None
+        time.sleep(WATCHDOG_TICK)
+        now = time.monotonic()
+        gap, last_check = now - last_check, now
+
+        if _heartbeat != last_beat:
+            last_beat, stalled_for, reported = _heartbeat, 0.0, None
             continue
-        if reported == _heartbeat:
+        if gap > WATCHDOG_TICK + PAUSE_SLACK_SECONDS:
+            # This thread did not run for most of that gap: the whole
+            # container was frozen (idle-pause, or the host asleep), and the
+            # command loop with it. Measured live: a desktop idle-paused
+            # overnight and woken by a person reported "stuck for 19042s"
+            # the instant it thawed, before its loop had had one second to
+            # run. Time nobody could run in is not a stall.
+            continue
+        stalled_for += gap
+
+        if stalled_for < STALL_SECONDS or reported == _heartbeat:
             continue
         reported = _heartbeat
         try:
-            log(f"Command watcher has not passed in {stalled:.0f}s (handling {_in_flight or 'nothing'}). Threads:\n"
-                + _thread_stacks())
-            progress.emit("This desktop's agent is stuck handling a message - restart the desktop if it does not "
-                          "recover within a minute.")
+            log(f"Command watcher has not passed in {stalled_for:.0f}s (handling {_in_flight or 'nothing'}). "
+                "Threads:\n" + _thread_stacks())
+            # Only a message actually being handled is something a person is
+            # waiting on. A loop stalled between messages is in the log; in
+            # the chat it would open a "Working..." turn over nothing.
+            if _in_flight:
+                progress.emit("This desktop's agent is stuck handling a message - restart the desktop if it does "
+                              "not recover within a minute.")
         except Exception:
             pass
 
