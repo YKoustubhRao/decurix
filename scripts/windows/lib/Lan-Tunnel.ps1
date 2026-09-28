@@ -28,8 +28,31 @@
 # show up in time (the dashboard's Mobile menu will still pick it up
 # whenever it does). Sets $script:LanTunnelProcess/$script:LanTunnelLogFiles
 # for Stop-LanTunnel to clean up.
+# Get-NamedTunnelUrl returns the fixed link on the person's own domain when
+# one is set up in the dashboard (Mobile menu > Your own link), or $null.
+# Decurix runs that tunnel's connector itself (internal/cftunnel), so a
+# quick tunnel would only add a second, changing address.
+function Get-NamedTunnelUrl {
+    try {
+        $status = Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/cftunnel" -TimeoutSec 5
+        if ($status.configured -and $status.url) { return $status.url }
+    } catch {
+        # Not reachable or an older control plane: fall back to a quick tunnel.
+    }
+    return $null
+}
+
 function Start-LanTunnel {
     param([string]$LanPort)
+
+    $namedUrl = Get-NamedTunnelUrl
+    if ($namedUrl) {
+        Write-Host ""
+        Write-Host "=== Your own link is set up ==="
+        Write-Host "Gated URL (needs the access code, works from anywhere): $namedUrl"
+        Write-Host "(Decurix keeps its tunnel running itself - no quick tunnel is opened.)"
+        return
+    }
 
     Write-Host ""
     Write-Host "=== Starting a second tunnel for the access-code-gated URL ==="
@@ -49,7 +72,9 @@ function Start-LanTunnel {
 
         $content = (Get-Content $outLog -Raw -ErrorAction SilentlyContinue) +
                    (Get-Content $errLog -Raw -ErrorAction SilentlyContinue)
-        if ($content -match 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com') {
+        # A quick tunnel's address is hyphenated words; cloudflared's own errors
+        # mention https://api.trycloudflare.com, which is Cloudflare's API, not a tunnel.
+        if ($content -match 'https://[a-z0-9]+(-[a-z0-9]+)+\.trycloudflare\.com') {
             $lanTunnelUrl = $Matches[0]
             break
         }
@@ -66,6 +91,18 @@ function Start-LanTunnel {
         }
 
         Write-Host "Gated tunnel URL (needs the access code, works from anywhere): $lanTunnelUrl"
+
+        # One link that signs a device in and remembers it - what to open on
+        # a phone or another computer (the dashboard's Mobile menu shows it too).
+        try {
+            $lan = Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/lan-access/status" -TimeoutSec 5
+            if ($lan.enabled -and $lan.code) {
+                Write-Host "Open this on your phone or other computer (signs in, nothing to type):"
+                Write-Host "  $lanTunnelUrl/__decurix_access/authenticate?code=$($lan.code)&remember=1&next=%2F"
+            }
+        } catch {
+            # Best effort - the dashboard's Mobile menu shows the same link.
+        }
     } else {
         Write-Host "(It didn't come up within 30s - it'll still appear in the dashboard's Mobile menu once it does.)"
     }
