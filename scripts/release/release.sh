@@ -24,6 +24,7 @@ cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DEFAULT_TARGETS=(
     "linux/amd64"
     "linux/arm64"
+    "android/arm64"
     "windows/amd64"
     "windows/arm64"
     "darwin/amd64"
@@ -106,6 +107,46 @@ trap 'rm -rf "$STAGE_ROOT"' EXIT
 stageBundle() {
     local dest="$1"
     local goos="$2"
+
+    # On a phone the binary is the phone link, not a control plane
+    # (internal/phoneagent): a README for that, and no .env.
+    if [ "$goos" = "android" ]; then
+        cat > "$dest/README.txt" <<EOF
+Decurix $VERSION - phone link (Android, in Termux)
+===============================================
+
+This is the decurix binary built for Android. On a phone it runs as the
+phone link: VMs on your Decurix can then list and use the apps on this
+phone. The apps run on the phone, on a display of their own, and show in
+the VM; the phone's own screen can stay off.
+
+You normally do not need this archive: open the pairing link from the
+Decurix Mobile menu on the phone and answer "Yes, set it up" - the phone
+downloads this helper from your Decurix and sets itself up. The steps
+below are the same thing done by hand.
+
+Setup, once, in Termux (https://f-droid.org/packages/com.termux/):
+
+  1. pkg install android-tools
+  2. cp decurix ~/ && chmod +x ~/decurix
+  3. Settings > Developer options > Wireless debugging: on. Tap
+     "Pair device with pairing code", then in Termux (split screen):
+
+         adb pair localhost:<pairing port> <pairing code>
+         adb connect localhost:<port shown on the Wireless debugging screen>
+         adb tcpip 5555
+         adb connect localhost:5555
+
+  4. On the Decurix dashboard: Mobile menu > "Pair a phone or computer",
+     copy the link, then:
+
+         ~/decurix --phone "<pairing link>"
+
+After that, ~/decurix --phone alone reconnects with what it saved. The
+adb tcpip step lasts until the phone restarts; repeat step 3 after one.
+EOF
+        return
+    fi
     local run="./decurix"
     local copyEnv="cp .env.example .env"
     local dataDir="~/.config/decurix"
@@ -205,6 +246,17 @@ archiveBundle() {
     echo "  archive: $OUTPUT_DIR/$name.tar.gz"
 }
 
+# The phone build of the control plane's own binary rides in every control
+# plane bundle: a phone that sets up its link from its browser downloads it
+# from that control plane (/phone/decurix), which looks for it beside itself.
+PHONE_HELPER="$STAGE_ROOT/decurix-android-arm64"
+if [ "$BINARIES_ONLY" -eq 0 ]; then
+    echo ""
+    echo "=== phone helper (android/arm64) ==="
+    CGO_ENABLED=0 GOOS=android GOARCH=arm64 \
+        go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o "$PHONE_HELPER" ./cmd/decurix
+fi
+
 for target in "${TARGETS[@]}"; do
     goos="${target%%/*}"
     goarch="${target##*/}"
@@ -245,6 +297,9 @@ for target in "${TARGETS[@]}"; do
 
     cp "$OUTPUT_DIR/${name}${ext}" "$stage/decurix${ext}"
     chmod +x "$stage/decurix${ext}"
+    if [ "$goos" != "android" ]; then
+        cp "$PHONE_HELPER" "$stage/decurix-android-arm64"
+    fi
     stageBundle "$stage" "$goos"
     archiveBundle "$name" "$stage" "$goos"
 done

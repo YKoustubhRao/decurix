@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="robots" content="noindex">
+<title>Decurix - Link this phone</title>
+<style>
+:root{--paper:#f6f5f2;--surface:#fffefc;--line:#e1dfd8;--text:#1a1917;--text-2:#5b584f;--accent:#136c4b;--accent-hover:#0f5a3e;--danger:#a03528;--ok:#136c4b}
+@media (prefers-color-scheme:dark){:root{--paper:#100f0e;--surface:#191817;--line:#2c2a26;--text:#f2f0ea;--text-2:#a9a59a;--accent:#4fbd8b;--accent-hover:#6ad0a1;--danger:#e8836f;--ok:#4fbd8b}}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:var(--paper);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:20px 16px;display:flex;justify-content:center}
+.card{width:100%;max-width:420px;background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:22px}
+h1{font-size:19px;margin:0 0 8px}
+p{font-size:14px;color:var(--text-2);margin:0 0 14px;line-height:1.5}
+.btn{display:block;width:100%;text-align:center;text-decoration:none;margin-top:10px;padding:13px;font-size:15px;font-weight:600;border:0;border-radius:10px;background:var(--accent);color:#fff;cursor:pointer}
+.btn:hover{background:var(--accent-hover)}
+.btn.quiet{background:transparent;color:var(--text-2);border:1px solid var(--line);font-weight:500}
+.step{border-top:1px solid var(--line);padding-top:14px;margin-top:14px}
+.step h2{font-size:15px;margin:0 0 6px}
+.step .n{display:inline-block;width:22px;height:22px;border-radius:11px;background:var(--accent);color:#fff;font-size:12px;text-align:center;line-height:22px;margin-right:6px}
+code{display:block;font-size:12px;background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:10px;word-break:break-all;margin-top:8px;user-select:all}
+.small{font-size:12.5px}
+details{margin-top:10px;color:var(--text-2)}
+.warn{margin:16px 0 4px;padding:14px;border:2px solid var(--danger);border-radius:12px;background:color-mix(in srgb,var(--danger) 8%,transparent)}
+.warn h2{font-size:15px;margin:0 0 8px;color:var(--danger)}
+.warn p,.warn li{font-size:13px;color:var(--text);line-height:1.5}
+.warn ul{margin:0 0 10px;padding-left:18px}
+.warn li{margin-bottom:6px}
+.ack{display:flex;gap:10px;align-items:flex-start;font-size:13.5px;font-weight:600;margin-top:4px;cursor:pointer}
+.ack input{width:20px;height:20px;margin:1px 0 0;flex:none}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.status{margin-top:16px;font-size:14px;font-weight:600}
+.status.ok{color:var(--ok)}
+.err{color:var(--danger)}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<div class="card">
+{{if not .Enabled}}
+  <h1>Phone links are off</h1>
+  <p>This Decurix does not link phones.</p>
+  <a class="btn quiet" href="/">Go to the dashboard</a>
+{{else if not .DeviceID}}
+  <h1>Link a phone</h1>
+  <p>Open the pairing link from the Decurix Mobile menu on your Android phone. After pairing, it offers to link the phone&rsquo;s apps.</p>
+  <a class="btn quiet" href="/">Go to the dashboard</a>
+{{else if not .BinaryReady}}
+  <h1>Not available yet</h1>
+  <p>This Decurix was built without the phone helper. Rebuild the control plane (<b>docker compose up -d --build</b>) and open this page again.</p>
+  <a class="btn quiet" href="/">Go to the dashboard</a>
+{{else}}
+  <section id="ask">
+    <h1>Use this phone&rsquo;s apps in your VMs?</h1>
+    <p>Your desktops can then open the apps installed on {{.Name}} and use them for you. The apps run on this phone, on a screen of their own, so they work while it is in your pocket.</p>
+    <p class="small">Android only allows this through its developer tools: you install one free app and turn on one switch. Decurix does the rest.</p>
+
+    <div class="warn" role="alert">
+      <h2>&#9888; Read this before you say yes</h2>
+      <p>Linking gives your Decurix <b>full control of this phone</b>, the same as a developer&rsquo;s cable:</p>
+      <ul>
+        <li><b>Any app can be opened and used</b> - banking, payments, messages, email, photos - by you <b>and by the AI agents</b> in your desktops.</li>
+        <li><b>The agents&rsquo; &ldquo;ask before paying or sending&rdquo; check cannot see inside phone apps.</b> An agent could tap Send or Pay in one without stopping to ask you.</li>
+        <li>Everything the apps show - messages, balances, one-time codes - can be seen on your desktops.</li>
+        <li>Anyone who can use your Decurix dashboard, or holds this phone&rsquo;s pairing, gets the same control. Link only a Decurix you own and trust.</li>
+        <li>Wireless debugging stays on, and the phone stays awake while linked, which uses more battery.</li>
+      </ul>
+      <p><b>To undo it at any time:</b> Revoke this phone in the Decurix Mobile menu, turn off Wireless debugging in Developer options, and uninstall Termux.</p>
+      <label class="ack"><input type="checkbox" id="ack"> I understand, and I want Decurix to control the apps on this phone.</label>
+    </div>
+
+    <button class="btn" id="yes" type="button" disabled>Yes, set it up</button>
+    <a class="btn quiet" href="/">Not now</a>
+    <p class="err small" id="askErr" hidden></p>
+  </section>
+
+  <section id="steps" hidden>
+    <h1>Link {{.Name}}</h1>
+    <p class="small">Three steps, about two minutes. Come back to this page when you are done; it shows when the phone is linked.</p>
+
+    <div class="step">
+      <h2><span class="n">1</span>Install Termux</h2>
+      <p class="small">Open the download and tap Install. If Android asks, allow your browser to install apps. Already have Termux? Skip this.</p>
+      <a class="btn" href="/phone/termux.apk">Download Termux</a>
+    </div>
+
+    <div class="step">
+      <h2><span class="n">2</span>Start the setup</h2>
+      <p class="small">This copies one line and opens Termux. There, long-press the screen, tap <b>Paste</b>, then press <b>Enter</b>.</p>
+      <button class="btn" id="copy" type="button">Copy &amp; open Termux</button>
+      <details class="small"><summary>Show the line</summary><code id="cmd"></code></details>
+    </div>
+
+    <div class="step">
+      <h2><span class="n">3</span>Type the code</h2>
+      <p class="small">Termux opens Settings for you. Turn on <b>Wireless debugging</b>, tap <b>Pair device with pairing code</b>, and type the 6 digits into Termux.</p>
+      <p class="small">No Developer options in Settings? Settings &gt; About phone &gt; tap <b>Build number</b> 7 times, then come back.</p>
+    </div>
+
+    <div class="status" id="status">Waiting for the phone to link&hellip;</div>
+    <a class="btn" id="done" href="/" hidden>Go to the dashboard</a>
+  </section>
+{{end}}
+</div>
+{{if and .Enabled .DeviceID .BinaryReady}}
+<script>
+(function () {
+  var DEVICE = {{.DeviceID}};
+  var cmdEl = document.getElementById('cmd');
+
+  function copy(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text);
+    }
+    // Over a plain-http LAN address the clipboard API is not there.
+    var ta = document.createElement('textarea');
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); } finally { document.body.removeChild(ta); }
+    return Promise.resolve();
+  }
+
+  var ack = document.getElementById('ack'), yes = document.getElementById('yes');
+  ack.onchange = function () { yes.disabled = !ack.checked; };
+
+  yes.onclick = async function () {
+    if (!ack.checked) { return; }
+    var err = document.getElementById('askErr');
+    try {
+      var res = await fetch('/api/phones/setup-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'understood=1'
+      });
+      var data = await res.json();
+      if (!res.ok) { throw new Error(data.error || 'failed'); }
+      var url = location.origin + '/phone/setup.sh?t=' + data.token + '&b=' + encodeURIComponent(location.origin);
+      // "yes |": a fresh Termux can stop to ask about a package's settings file.
+      cmdEl.textContent = "command -v curl >/dev/null || yes | pkg install curl; curl -fsSL '" + url + "' | sh";
+      document.getElementById('ask').hidden = true;
+      document.getElementById('steps').hidden = false;
+      poll();
+    } catch (e) {
+      err.textContent = 'Could not start the setup: ' + e.message; err.hidden = false;
+    }
+  };
+
+  document.getElementById('copy').onclick = function () {
+    var btn = this;
+    copy(cmdEl.textContent).then(function () {
+      btn.textContent = 'Copied - paste it in Termux';
+      // Termux's own launcher entry; Android opens it like tapping its icon.
+      location.href = 'intent:#Intent;package=com.termux;action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;end';
+    });
+  };
+
+  function poll() {
+    fetch('/api/phones', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) {
+      var linked = (d.phones || []).some(function (p) { return p.id === DEVICE; });
+      if (linked) {
+        var s = document.getElementById('status');
+        s.textContent = 'Linked. Its apps show up when you create a desktop.';
+        s.className = 'status ok';
+        document.getElementById('done').hidden = false;
+        return;
+      }
+      setTimeout(poll, 3000);
+    }).catch(function () { setTimeout(poll, 5000); });
+  }
+})();
+</script>
+{{end}}
+</body>
+</html>

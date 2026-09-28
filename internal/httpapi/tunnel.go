@@ -3,6 +3,8 @@ package httpapi
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
+	"strings"
 )
 
 // maxTunnelRequestBytes bounds one POST /api/tunnel body - four short URLs,
@@ -45,21 +47,48 @@ func (s *Server) tunnelHandler(w http.ResponseWriter, r *http.Request) {
 			s.Tunnel.SetLANURL(req.LANURL)
 		}
 
-		if req.LANTunnelURL != "" {
+		if req.LANTunnelURL != "" && tunnelAddress(req.LANTunnelURL) {
 			s.Tunnel.SetLANTunnelURL(req.LANTunnelURL)
 		}
 
 		jsonResponse(w, map[string]string{"status": "recorded"})
 
 	case http.MethodGet:
+		// A named tunnel's fixed link replaces whatever quick tunnel a
+		// script reported: it is the one that survives a restart.
+		lanTunnelURL := s.Tunnel.LANTunnelURL()
+		if !tunnelAddress(lanTunnelURL) {
+			lanTunnelURL = "" // stored by a script from before the check
+		}
+		if s.CFTunnel != nil {
+			if named := s.CFTunnel.URL(); named != "" {
+				lanTunnelURL = named
+			}
+		}
+
 		jsonResponse(w, map[string]string{
 			"url":            s.Tunnel.Get(),
 			"admin_url":      s.Tunnel.AdminURL(),
 			"lan_url":        s.Tunnel.LANURL(),
-			"lan_tunnel_url": s.Tunnel.LANTunnelURL(),
+			"lan_tunnel_url": lanTunnelURL,
 		})
 
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// tunnelAddress reports whether raw can be a tunnel's own address. Cloudflare's
+// API host is not one: cloudflared names it in the error it logs when a quick
+// tunnel cannot be created, and a script that took it for the tunnel handed
+// out links that answered "method not allowed".
+func tunnelAddress(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return false
+	}
+
+	host := strings.ToLower(u.Hostname())
+
+	return host != "trycloudflare.com" && host != "api.trycloudflare.com"
 }
