@@ -39,6 +39,9 @@ import (
 // Claude session store, LAN-access store, scheduled-request store, DAG
 // store, and web UI renderer together to serve the Decurix control plane.
 type Server struct {
+	// finished is the last few tasks that ended done, for the pages' notification (finished.go).
+	finished finishedFeed
+
 	Desktops   *desktop.Manager
 	QueryNotes *querynotes.Store
 	Memory     *memory.Store
@@ -251,6 +254,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/agent/events", s.agentEventHandler)
 	mux.HandleFunc("/api/querytext", s.queryTextHandler)
 	mux.HandleFunc("/api/querynotes", s.queryNotesHandler)
+	mux.HandleFunc("/api/tasks/finished", s.finishedTasksHandler)
 	mux.HandleFunc("/api/querynotes/close", s.closeQueryNoteHandler)
 	mux.HandleFunc("/api/querynotes/resolved", s.resolvedQueryNotesHandler)
 	mux.HandleFunc("/dashboard", s.dashboardPostsHandler)

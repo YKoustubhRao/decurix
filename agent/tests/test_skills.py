@@ -198,6 +198,22 @@ class Answering(unittest.TestCase):
         learning.answer(self.skill, self.ask("goal"), "skip")
         self.assertIsNone(self.skill["done_when"])
 
+    def test_what_a_person_says_about_a_step_goes_on_that_step(self):
+        result = learning.answer(self.skill, self.ask("goal"),
+                                 "The customer is in the list. Step 2 types the customer's name; the last step saves it")
+        steps = self.skill["steps"]
+
+        self.assertEqual(steps[1]["intent"], "Step 2 types the customer's name")
+        self.assertEqual(steps[-1]["intent"], "the last step saves it")
+        self.assertEqual(self.skill["done_when"], "The customer is in the list.")
+        self.assertIn("step", self.skill["explanation"])
+        self.assertIn("2", result["note"])
+        self.assertIn("you said: \"Step 2 types", learning.overview(self.skill))
+
+        learning.answer(self.skill, self.ask("goal"), "skip")
+        self.assertFalse(any(s.get("intent") for s in steps))
+        self.assertIsNone(self.skill["explanation"])
+
     def test_a_click_at_a_spot_can_be_skipped_or_handed_to_a_person(self):
         for reply, kind in (("skip", None), ("i'll do it by hand", "manual")):
             meta, events = demo("demo-20260914T101500-aaaaaa", "Acme")
