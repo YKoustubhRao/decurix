@@ -10,6 +10,9 @@ import "context"
 type Message struct {
 	Role    string // "system" | "user" | "assistant"
 	Content string
+	// Images are PNGs shown with a user message - only ever set for a brain
+	// with Capabilities.Vision. Every provider sends them in its own shape.
+	Images [][]byte `json:",omitempty"`
 }
 
 type Result struct {

@@ -3,6 +3,7 @@ package conversation
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
@@ -108,6 +109,64 @@ func TestStepWithoutUserRequestOpensTurn(t *testing.T) {
 
 	if !s.Snapshot("desktop-1").Running {
 		t.Fatal("expected an unsolicited step to open a turn rather than be dropped")
+	}
+}
+
+// Steps nobody asked for (a person demonstrating on the screen) are filed
+// under an entry of their own when a request follows them: found live, a
+// request sent after a demonstration came back with the demonstration's
+// clicks attached to its reply, as if the agent had done them to answer it.
+func TestARequestAfterUnrequestedStepsDoesNotTakeThemAsItsOwn(t *testing.T) {
+	s := newStore(t)
+
+	s.AppendUserRequest("desktop-1", "", "hello")
+	s.AppendAgentReply("desktop-1", "", KindEntry, "Hi!")
+	// Past the window in which a step still belongs to that reply.
+	s.threadFor("desktop-1").entries[1].CreatedAt = time.Now().Add(-time.Minute)
+
+	s.AppendActionStep("desktop-1", `click button "New quotation"`, Action{Kind: "click", Outcome: "done"})
+	s.AppendActionStep("desktop-1", `type "Deco Addict" into textbox "Customer"`, Action{Kind: "type", Outcome: "done"})
+
+	s.AppendUserRequest("desktop-1", "task-2", "What is 17 times 23?")
+
+	thread := s.Snapshot("desktop-1")
+	if !thread.Running || len(thread.Steps) != 0 {
+		t.Fatalf("the request's turn should start with no steps: running %v, %d steps", thread.Running, len(thread.Steps))
+	}
+	if len(thread.Entries) != 4 {
+		t.Fatalf("got %d entries, want hello, Hi!, the unrequested activity, the request", len(thread.Entries))
+	}
+	filed := thread.Entries[2]
+	if filed.Role != RoleAgent || filed.Content != UnrequestedActivity || len(filed.Steps) != 2 {
+		t.Fatalf("the demonstration's steps were not filed on their own: %+v", filed)
+	}
+
+	s.AppendStep("desktop-1", "Running: echo $((17*23))")
+	s.AppendAgentReply("desktop-1", "task-2", KindEntry, "391")
+
+	reply := s.Snapshot("desktop-1").Entries[4]
+	if reply.Content != "391" || len(reply.Steps) != 1 {
+		t.Fatalf("the reply carries %d steps, want only its own one: %+v", len(reply.Steps), reply.Steps)
+	}
+}
+
+// A request queued behind a request still joins that turn (the watcher takes
+// it as that task's reply or runs it next) - only a turn steps opened alone
+// is closed first.
+func TestARequestBehindARequestStillJoinsItsTurn(t *testing.T) {
+	s := newStore(t)
+
+	s.AppendStep("desktop-1", "Running: whoami") // unrequested, on an empty thread
+	s.AppendUserRequest("desktop-1", "", "tidy up /work")
+	s.AppendStep("desktop-1", "Running: ls /work")
+	s.AppendUserRequest("desktop-1", "", "also check disk space")
+
+	thread := s.Snapshot("desktop-1")
+	if len(thread.Steps) != 1 || thread.Steps[0].Text != "Running: ls /work" {
+		t.Fatalf("live steps = %+v, want the first request's one", thread.Steps)
+	}
+	if thread.Entries[0].Content != UnrequestedActivity {
+		t.Fatalf("the step before any request was not filed on its own: %+v", thread.Entries[0])
 	}
 }
 

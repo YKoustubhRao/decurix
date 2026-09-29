@@ -116,6 +116,26 @@ func matchesWord(re *regexp.Regexp, prompt string) bool {
 	return false
 }
 
+var (
+	// An email to be drafted for a person to send: the operator puts it in
+	// the Outbox (`office email`). Left to the chat skill, "draft an email
+	// to acme@example.com with the statement attached" came back as the
+	// email's text in the reply - nothing in the Outbox, nothing attached.
+	draftVerbRe   = regexp.MustCompile(`(?i)\b(draft|prepare|compose)\b[^.?!\n]{0,80}?\b(e-?mails?|mails?|repl(y|ies)|reminders?|letters?|messages?)\b`)
+	outboxRe      = regexp.MustCompile(`(?i)\bout-?box\b`)
+	writeEmailRe  = regexp.MustCompile(`(?i)\bwrite\b[^.?!\n]{0,40}?\be-?mails?\b`)
+	emailTargetRe = regexp.MustCompile(`(?i)[\w.+-]+@[\w-]+\.[\w.]+|\battach(ed|ment|ing)?\b`)
+)
+
+// wantsEmailDraft reports whether a request asks for an email to be prepared
+// for sending - drafted, prepared or composed, or put in the Outbox, or
+// written to an address or with an attachment. "Help me word an email to my
+// boss" names no address and stays conversation: the words are the answer.
+func wantsEmailDraft(prompt string) bool {
+	return draftVerbRe.MatchString(prompt) || outboxRe.MatchString(prompt) ||
+		(writeEmailRe.MatchString(prompt) && emailTargetRe.MatchString(prompt))
+}
+
 // shellRe is a request that names where it wants to be done, and it is not a
 // web page: "in the terminal", "from the shell", "on the command line".
 var shellRe = regexp.MustCompile(`(?i)\b(terminal|shell|command[\s-]?line|bash|console)\b`)
@@ -208,6 +228,10 @@ func Triage(prompt string) Route {
 	// not a plan written before anything on the screen has been looked at.
 	if wantsScreen(p) && !researchRe.MatchString(p) {
 		return Route{Kind: RouteOperate, TaskType: matched, Reason: "work in an app on the screen - the operator drives it with the gui command"}
+	}
+
+	if wantsEmailDraft(p) && !researchRe.MatchString(p) {
+		return Route{Kind: RouteOperate, TaskType: matched, Reason: "an email to prepare - the operator drafts it into the Outbox"}
 	}
 
 	if looksCompound(p) {

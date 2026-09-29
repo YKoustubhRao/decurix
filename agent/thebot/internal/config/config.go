@@ -46,11 +46,27 @@ type Config struct {
 
 	OpenAIAPIKey string
 	OpenAIModel  string
+	// OpenAIBaseURL points the openai provider at any OpenAI-compatible
+	// server instead of api.openai.com - in Decurix, the control plane's
+	// /api/llm/<provider> proxy, which holds the real key (Claude or Azure).
+	OpenAIBaseURL string
 	// OpenAIEmbedModel is separate from OpenAIModel (chat) - OpenAI's
 	// embeddings and chat are different model families.
 	OpenAIEmbedModel string
 
 	EmbedModel string // Ollama's embed model name, only used if Ollama is the embedder
+
+	// Brain is what the control plane says TheBot reasons with ("ollama",
+	// "claude", "azure" - DECURIX_BRAIN), and BrainVision whether that model
+	// reads images ("1"/"0" - DECURIX_BRAIN_VISION; "" means unknown, and a
+	// local model is then asked, see llm.Brain).
+	Brain       string
+	BrainVision string
+
+	// EmbedProvider "ollama" embeds through Ollama whatever the chat
+	// provider is; "" follows the chat provider (openai embeds itself). An
+	// OpenAI-compatible proxy need not offer embeddings at all.
+	EmbedProvider string
 
 	// Port is loopback-only - "embedded, not an external API" means this
 	// is how the VM's own local UI talks to the soul process, never a
@@ -87,9 +103,13 @@ func Load() Config {
 
 		OpenAIAPIKey:     getenv("OPENAI_API_KEY", ""),
 		OpenAIModel:      getenv("OPENAI_MODEL", "gpt-4o"),
+		OpenAIBaseURL:    getenv("OPENAI_BASE_URL", ""),
 		OpenAIEmbedModel: getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small"),
 
-		EmbedModel: getenv("EMBED_MODEL", "nomic-embed-text"),
+		EmbedModel:    getenv("EMBED_MODEL", "nomic-embed-text"),
+		EmbedProvider: getenv("EMBED_PROVIDER", ""),
+		Brain:         getenv("DECURIX_BRAIN", "ollama"),
+		BrainVision:   getenv("DECURIX_BRAIN_VISION", ""),
 
 		Port:          getenv("SOUL_PORT", "4900"),
 		DoclingScript: getenv("DOCLING_SCRIPT", "scripts/docling_convert.py"),

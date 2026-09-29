@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -60,7 +61,7 @@ func TestOperatorRunsCommandsAndAnswersFromWhatTheyPrinted(t *testing.T) {
 	}
 	// Append-only transcript: turn two starts with everything turn one sent.
 	for i, m := range chat.calls[0] {
-		if chat.calls[1][i] != m {
+		if !reflect.DeepEqual(chat.calls[1][i], m) {
 			t.Fatalf("turn two rewrote message %d - the prompt cache would be lost", i)
 		}
 	}

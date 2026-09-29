@@ -41,7 +41,10 @@ type Result struct {
 // than that (no ambient globals), mirroring the Node prototype's
 // per-call context object.
 type RunContext struct {
-	Ctx            context.Context
+	Ctx context.Context
+	// Brain is what the model behind Provider can do (vision, a hosted
+	// model's larger budgets). Nil-safe: nil is a small local text model.
+	Brain          *llm.Brain
 	OnLog          func(string)
 	OriginalPrompt string
 	PriorResults   []Result

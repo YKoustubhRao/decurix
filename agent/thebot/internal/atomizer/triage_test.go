@@ -33,6 +33,15 @@ func TestTriageRoutesRequestsByShape(t *testing.T) {
 		{"list the running processes using the most memory", RouteOperate},
 		{"create a folder called reports in ~/work and then move every csv from ~/Downloads into it", RouteOperate},
 
+		// An email to prepare: the operator drafts it into the Outbox with
+		// `office email`; the chat skill would only have written its text.
+		{"Draft an email to acme@example.com with the overdue statement attached", RouteOperate},
+		{"Prepare a payment reminder email for Acme and put it in the outbox", RouteOperate},
+		{"write an email to billing@acme.example about invoice INV-7", RouteOperate},
+		{"compose a reply to the supplier confirming delivery on Friday", RouteOperate},
+		// Wording help is conversation: no address, nothing to attach.
+		{"help me write an email asking my boss for Friday off", RouteChat},
+
 		// On the screen: the operator, with the gui command - not the web
 		// skill fetching the URL, and not a plan written before looking.
 		{"In the Decurix Admin panel open in Chromium, add a new user: name Dana Scott, email dana@example.com, role Editor.", RouteOperate},

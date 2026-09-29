@@ -596,27 +596,62 @@ func modelConcurrency(cfg config.Config) int {
 	return 4
 }
 
+// buildBrain works out what the chat model can do. A hosted brain is
+// described by the control plane (it tested the model when the key was
+// saved); a local one is asked of Ollama itself, in the background, since
+// Ollama may come up after soul.
+func buildBrain(cfg config.Config, model string) *llm.Brain {
+	caps := llm.Capabilities{Brain: cfg.Brain, Vision: cfg.BrainVision == "1"}
+	if cfg.Provider != "ollama" {
+		caps.Hosted = true
+	}
+	if caps.Brain == "" {
+		caps.Brain = cfg.Provider
+	}
+	brain := llm.NewBrain(caps)
+
+	if cfg.Provider == "ollama" {
+		go brain.LearnFromOllama(context.Background(), cfg.OllamaHost, model, cfg.BrainVision != "", log.Printf)
+	} else {
+		log.Printf("[soul] brain: %s (hosted) - vision %v", caps.Brain, caps.Vision)
+	}
+	return brain
+}
+
+// ollamaEmbedder is Ollama as the embedder alone, for a chat provider that
+// cannot embed (why says which), or nil - RAG and feedback off for this run -
+// when no Ollama is configured or reachable. A nil *OllamaProvider must not
+// be returned as a non-nil Embedder, so the nil is spelt out.
+func ollamaEmbedder(cfg config.Config, why string) llm.Embedder {
+	if cfg.OllamaHost == "" {
+		log.Printf("[soul] no OLLAMA_HOST configured for embeddings (%s) - Data RAG and feedback are disabled for this run", why)
+		return nil
+	}
+	ollama := llm.NewOllama(cfg.OllamaHost)
+	ollama.EmbedModel = cfg.EmbedModel
+	if !ollama.IsReachable(context.Background()) {
+		log.Printf("[soul] Ollama not reachable at %s - Data RAG and feedback are disabled for this run", cfg.OllamaHost)
+		return nil
+	}
+	log.Printf("[soul] using Ollama at %s for embeddings only (%s)", cfg.OllamaHost, why)
+	return ollama
+}
+
 func buildProvider(cfg config.Config) (llm.Provider, llm.Models, llm.Embedder) {
 	switch cfg.Provider {
 	case "openai":
 		p := llm.NewOpenAI(cfg.OpenAIAPIKey, cfg.OpenAIEmbedModel)
-		return p, llm.DefaultModels(cfg.OpenAIModel).WithCoding(cfg.CodingModel), p // OpenAI does both chat and embed - one provider, no fallback needed
+		if cfg.OpenAIBaseURL != "" {
+			p.BaseURL = strings.TrimRight(cfg.OpenAIBaseURL, "/")
+		}
+		models := llm.DefaultModels(cfg.OpenAIModel).WithCoding(cfg.CodingModel)
+		if cfg.EmbedProvider == "ollama" {
+			return p, models, ollamaEmbedder(cfg, "the chat provider's endpoint is not asked for embeddings")
+		}
+		return p, models, p // OpenAI does both chat and embed - one provider, no fallback needed
 	case "anthropic":
 		chat := llm.NewAnthropic(cfg.AnthropicAPIKey, cfg.AnthropicModel)
-		var embedder llm.Embedder
-		if cfg.OllamaHost == "" {
-			log.Printf("[soul] no OLLAMA_HOST configured for embeddings (Anthropic has no embeddings API) - Data RAG and feedback are disabled for this run")
-		} else {
-			ollama := llm.NewOllama(cfg.OllamaHost)
-			ollama.EmbedModel = cfg.EmbedModel
-			if ollama.IsReachable(context.Background()) {
-				embedder = ollama
-				log.Printf("[soul] using Ollama at %s for embeddings only (Anthropic has no embeddings API)", cfg.OllamaHost)
-			} else {
-				log.Printf("[soul] Ollama not reachable at %s - Data RAG and feedback are disabled for this run", cfg.OllamaHost)
-			}
-		}
-		return chat, llm.DefaultModels(cfg.AnthropicModel).WithCoding(cfg.CodingModel), embedder
+		return chat, llm.DefaultModels(cfg.AnthropicModel).WithCoding(cfg.CodingModel), ollamaEmbedder(cfg, "Anthropic has no embeddings API")
 	default: // "ollama"
 		p := llm.NewOllama(cfg.OllamaHost)
 		p.EmbedModel = cfg.EmbedModel
@@ -725,6 +760,7 @@ func main() {
 	skills.SetFallback(generalSkill)
 
 	sched := scheduler.New(provider, models, ws, l2, dataRAG, fb, l1)
+	sched.Brain = buildBrain(cfg, models.Default)
 	sched.SkillLib = skillLib
 	s := newServer(cfg, provider, ws, sched)
 

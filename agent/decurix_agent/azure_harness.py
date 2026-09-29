@@ -30,10 +30,8 @@ human's reply as the paused tool call's result.
 
 import base64
 import json
-import mimetypes
 import os
 import time
-import urllib.request
 from pathlib import Path
 
 from decurix_agent import config, llm_client, progress, state, task_context, usage
@@ -43,7 +41,7 @@ from decurix_agent.identity import get_identity_context
 from decurix_agent.logging_utils import log
 from decurix_agent.memory_context import get_memory_context
 from decurix_agent.messaging import ask_for_query, remember, write_final_reply
-from decurix_agent.tools import office
+from decurix_agent.tools import office, outbox
 
 ENGINE = "azure"
 
@@ -58,11 +56,6 @@ MAX_RESULT_CHARS = 14000
 KEEP_SCREENS = 2
 KEEP_DOCUMENT_PAGES = 6
 SCREEN_LABEL = "The screen after that call:"
-# Attachments a draft email may carry.
-MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
-
-OUTBOX_URL = config.CONTROL_PLANE_URL.rstrip("/") + "/api/outbox"
-
 SYSTEM_PROMPT = """You are a careful back-office worker operating your own Linux desktop (XFCE, a Chrome browser, LibreOffice) through tools. You do real work for a real company: purchase orders, invoices, onboarding, price lists, MIS reports, statements, collections, commodity prices.
 
 When to act, and when to ask - the rule everything else follows:
@@ -442,54 +435,11 @@ def _screen_tool(name, args):
 
 
 def _draft_email(args):
-    files = []
-    total = 0
-
-    for path in args.get("attachments") or []:
-        p = Path(os.path.expanduser(path))
-        if not p.is_absolute():
-            p = config.WORK_DIR / p
-        if not p.is_file():
-            return f"Not drafted: attachment {path} does not exist."
-        data = p.read_bytes()
-        total += len(data)
-        if total > MAX_ATTACHMENT_BYTES:
-            return "Not drafted: the attachments are larger than 20 MB together."
-        files.append({
-            "name": p.name,
-            "content_type": mimetypes.guess_type(p.name)[0] or "application/octet-stream",
-            "data": base64.b64encode(data).decode("ascii"),
-        })
-
-    to = [a.strip() for a in (args.get("to") or []) if a and a.strip()]
-    if not to:
-        return "Not drafted: give at least one recipient."
-
-    payload = {
-        "desktop_id": config.DESKTOP_ID,
-        "task_id": task_context.current() or "",
-        "to": to,
-        "cc": [a.strip() for a in (args.get("cc") or []) if a and a.strip()],
-        "subject": (args.get("subject") or "").strip(),
-        "body": args.get("body") or "",
-        "attachments": files,
-    }
-
-    request = urllib.request.Request(
-        OUTBOX_URL, data=json.dumps(payload).encode("utf-8"), method="POST",
-        headers={"Content-Type": "application/json"},
-    )
-
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            answer = json.loads(response.read().decode("utf-8") or "{}")
-    except Exception as exc:  # the control plane is down, or refused it
-        return f"Not drafted: the control plane did not take the draft ({exc})."
-
-    names = ", ".join(f["name"] for f in files) or "no attachments"
-    progress.emit(f"Drafted an email to {', '.join(to)}: {payload['subject']}")
-    return (f"Drafted (id {answer.get('id', '?')}) to {', '.join(to)}, subject {payload['subject']!r}, with {names}. "
-            "It waits in the Outbox for a person to send it.")
+        return outbox.draft(args.get("to"), args.get("subject"), args.get("body"),
+                            cc=args.get("cc"), attachments=args.get("attachments"))
+    except outbox.DraftError as exc:
+        return f"Not drafted: {exc}"
 
 
 # ------------------------------------------------------------------
@@ -651,7 +601,7 @@ def _run(messages):
             _conversation = None
             write_final_reply(
                 "The hosted model could not be reached, so the task stopped. Send the request again in a minute; "
-                f"if it keeps happening, check AZURE_ENDPOINT / AZURE_KEY on the control plane.\n\n({exc})",
+                f"if it keeps happening, check Azure OpenAI's key: New desktop > Model > Azure OpenAI > Change, on the dashboard.\n\n({exc})",
                 kind="error", engine=ENGINE,
             )
             return

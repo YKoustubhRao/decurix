@@ -117,8 +117,9 @@ func getenvInt(key string, fallback int) int {
 func (o *OllamaProvider) Name() string { return "ollama" }
 
 type ollamaMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string   `json:"role"`
+	Content string   `json:"content"`
+	Images  []string `json:"images,omitempty"` // base64, for a vision model
 }
 
 type ollamaChatRequest struct {
@@ -164,7 +165,7 @@ func (o *OllamaProvider) Chat(ctx context.Context, model string, messages []Mess
 
 	msgs := make([]ollamaMessage, len(messages))
 	for i, m := range messages {
-		msgs[i] = ollamaMessage{Role: m.Role, Content: m.Content}
+		msgs[i] = ollamaMessage{Role: m.Role, Content: m.Content, Images: base64All(m.Images)}
 	}
 
 	// 8192 stays the default for ordinary calls; a caller that genuinely

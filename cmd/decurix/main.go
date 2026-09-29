@@ -31,6 +31,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/idlepause"
 	"github.com/YKoustubhRao/decurix/internal/keepawake"
 	"github.com/YKoustubhRao/decurix/internal/lanaccess"
+	"github.com/YKoustubhRao/decurix/internal/llm"
 	"github.com/YKoustubhRao/decurix/internal/mailtrigger"
 	"github.com/YKoustubhRao/decurix/internal/memory"
 	"github.com/YKoustubhRao/decurix/internal/ollama"
@@ -399,6 +400,13 @@ func main() {
 	lanAccess.SetAfterPair(server.PhoneLinkAfterPair)
 	lanAccess.SetOpenPaths(httpapi.PhoneSetupOpenPaths...)
 	server.HostGUISecret = hostGUISecret
+	// The hosted models (Claude, Azure) a person set up on the dashboard,
+	// keys sealed like the Cloudflare tokens. Never read from .env.
+	llmKey, err := sealed.LoadKey(sqlitedb.DataDir(), llm.KeyFile)
+	if err != nil {
+		log.Printf("warning: %s: %v; the model API keys will be stored unencrypted", llm.KeyFile, err)
+	}
+	server.LLM = must(llm.NewHub(db, llmKey))
 	// The Windows apps copied into VMs are kept running on the host, ready to show the moment one is opened.
 	server.HostGUIDataDir = sqlitedb.DataDir()
 	go server.RestoreHostApps(context.Background())
@@ -464,14 +472,15 @@ func main() {
 
 	// IMPORTANT:
 	// Ollama initialization must not block the HTTP server.
-	// With a hosted model configured, the local one is loaded only once some
-	// desktop runs an engine that reads it (ollama, thebot, claude's fallback
-	// grounder never does). Measured on an 8 GB host: the preload alone held
-	// 1.8 GB and left the machine swapping for minutes with only azure
-	// desktops running.
-	if server.LLM.Configured() {
-		ollama.SetWarmNeeded(func() bool { return desktops.UsesLocalModel(context.Background()) })
-	}
+	// With a hosted model set up, the local one is loaded only once some
+	// desktop reasons with it (the Ollama brain, or an old ollama-harness
+	// desktop) - a new desktop may well pick the hosted one. Measured on an
+	// 8 GB host: the preload alone held 1.8 GB and left the machine swapping
+	// for minutes with only hosted-model desktops running. Checked each time,
+	// so a key typed in after startup counts.
+	ollama.SetWarmNeeded(func() bool {
+		return !server.LLM.AnyConfigured() || desktops.UsesLocalModel(context.Background())
+	})
 
 	go func() {
 		if !ollama.Needed() {
