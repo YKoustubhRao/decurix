@@ -245,12 +245,9 @@ func TestAPhoneAppIsButtonsInARealDesktop(t *testing.T) {
 		time.Sleep(time.Second)
 	}
 
-	// What the desktop images now do at build time (a no-op on an image built with it): H.264 for Chromium.
-	if out, err := docker("cp", filepath.Join(repo, "agent", "install-chromium-h264.sh"), name+":/tmp/install-chromium-h264.sh"); err != nil {
-		t.Fatalf("docker cp: %v %s", err, out)
-	}
-	if out, err := docker("exec", "-u", "root", name, "sh", "/tmp/install-chromium-h264.sh"); err != nil {
-		t.Fatalf("installing Chromium's H.264 decoder: %v %s", err, out)
+	// The phone's picture is H.264, which the desktop's browser (Google Chrome, agent/install-browser.sh) decodes.
+	if out, err := docker("exec", name, "/opt/google/chrome/google-chrome", "--version"); err != nil {
+		t.Fatalf("the desktop image has no Google Chrome - rebuild it (decurix --build-images): %v %s", err, out)
 	}
 
 	if out, err := docker("cp", filepath.Join(repo, "agent", "decurix_agent"), name+":/tmp/decurix_agent"); err != nil {

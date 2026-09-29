@@ -9,6 +9,7 @@ benchmark's oracle run (bench/gui/run.py --engine oracle).
 
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from decurix_agent.computer import approval
@@ -35,6 +36,20 @@ class ApprovalRules(unittest.TestCase):
         for name in ("Save settings", "Sign in", "Create user", "Sending options", "Posts", "Check out our blog", "Delete user"):
             with self.subTest(name=name):
                 self.assertIsNone(approval.assess("click", element("button", name)))
+
+    def test_navigating_to_a_module_is_not_an_action(self):
+        # Odoo's menu search lists its apps as options; its navbar as one-word links.
+        self.assertIsNone(approval.assess("click", element("option", "Purchase")))
+        self.assertIsNone(approval.assess("click", element("link", "Purchase", path='site x > navigation "Main" > link "Purchase"')))
+        self.assertIsNone(approval.assess("click", element("menuitem", "Purchase", path='site x > navigation > menuitem "Purchase"')))
+
+    def test_actions_that_look_like_navigation_still_stop(self):
+        # A button is an action wherever it is; so is a multi-word label, and a one-word item outside the navigation bar.
+        self.assertIsNotNone(approval.assess("click", element("button", "Purchase", path='site x > navigation > button "Purchase"')))
+        self.assertIsNotNone(approval.assess("click", element("link", "Pay now", path='site x > navigation > link "Pay now"')))
+        self.assertIsNotNone(approval.assess("click", element("menuitem", "Post", path='site x > menu "Action" > menuitem "Post"')))
+        self.assertIsNotNone(approval.assess("click", element("link", "Purchase")))
+        self.assertIsNotNone(approval.assess("click", element("menuitem", "Send & Print", path='site x > navigation > menuitem "Send & Print"')))
 
     def test_only_activating_roles_are_gated(self):
         self.assertIsNone(approval.assess("click", element("heading", "Send newsletter")))
@@ -164,3 +179,295 @@ class Refs(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BrowserIdentityTests(unittest.TestCase):
+    """A recording made on the old Chromium must replay on Chrome, and the reverse."""
+
+    def test_the_product_segment_is_reported_under_one_name(self):
+        from decurix_agent.computer import browser
+
+        self.assertEqual(browser.canonical_title("Invoices - Odoo - Google Chrome"), "Invoices - Odoo - Chromium")
+        self.assertEqual(browser.canonical_title("Invoices - Odoo - Chromium"), "Invoices - Odoo - Chromium")
+        self.assertEqual(browser.canonical_title("Google Chrome"), "Chromium")
+        self.assertEqual(browser.canonical_title("Report — Google Chrome for Testing"), "Report - Chromium")
+
+    def test_other_windows_that_mention_the_browser_are_not_browsers(self):
+        from decurix_agent.computer import browser
+
+        for title in ("Chromium tips.txt - Mousepad", "chrome-extension notes - Mousepad", "Terminal - "):
+            self.assertFalse(browser.is_browser_title(title), title)
+            self.assertEqual(browser.canonical_title(title), title)
+
+    def test_a_recorded_window_check_matches_the_new_browser(self):
+        from decurix_agent.computer import browser, replay
+
+        recorded = replay._stable_title("Customers - Odoo - Chromium")
+        live = browser.canonical_title("Customers - Odoo - Google Chrome")
+        self.assertTrue(replay.title_matches(recorded, live))
+
+
+class OneFieldPerTyping(unittest.TestCase):
+    def test_a_tab_in_typed_text_is_refused_before_anything_happens(self):
+        from unittest import mock
+        from decurix_agent.computer import core
+        from decurix_agent.computer.errors import ComputerError
+
+        with mock.patch.object(core, "observe") as observe:
+            with self.assertRaises(ComputerError) as caught:
+                core.act("type", ref="e1", text="Admin\tadmin123\n")
+        observe.assert_not_called()  # refused before the screen was even read
+        self.assertIn("one field at a time", str(caught.exception))
+
+
+class ColumnNamedFields(unittest.TestCase):
+    """An unlabelled field in a table cell is named by its column's header (Odoo's order lines)."""
+
+    def test_an_unnamed_field_takes_its_columns_header(self):
+        from decurix_agent.computer import cdp
+
+        metrics = {"scx": 0, "scy": 100}
+        found = [
+            {"role": "textbox", "name": "", "box": [210, 300, 80, 20], "path": 'site x > table "Lines" > row "1" > textbox ""'},
+            {"role": "textbox", "name": "Customer", "box": [210, 100, 80, 20], "path": 'site x > textbox "Customer"'},
+            {"role": "button", "name": "", "box": [400, 300, 20, 20], "path": 'site x > button ""'},
+        ]
+        # The page reports the field at (200, 310) in document coordinates, scrolled 100 down, under "Quantity".
+        cdp._name_by_column(found, [[200, 310, 80, 20, "Quantity"]], metrics, origin_x=10, origin_y=90, dpr=1)
+
+        self.assertEqual(found[0]["name"], "Quantity")
+        self.assertTrue(found[0]["path"].endswith('textbox "Quantity"'))
+        self.assertEqual(found[1]["name"], "Customer")   # a labelled field keeps its own name
+        self.assertEqual(found[2]["name"], "")           # only fields are named by a column
+
+    def test_nothing_at_that_spot_names_nothing(self):
+        from decurix_agent.computer import cdp
+
+        found = [{"role": "textbox", "name": "", "box": [210, 300, 80, 20], "path": 'textbox ""'}]
+        cdp._name_by_column(found, [[500, 500, 80, 20, "Quantity"]], {"scx": 0, "scy": 0}, 10, 90, 1)
+        self.assertEqual(found[0]["name"], "")
+
+
+class ColumnNamesFromAHostilePage(unittest.TestCase):
+    def test_malformed_entries_are_ignored_not_fatal(self):
+        from decurix_agent.computer import cdp
+
+        found = [{"role": "textbox", "name": "", "box": [210, 300, 80, 20], "path": 'textbox ""'}]
+        cdp._name_by_column(found, [["x", 1], [1, 2, 3, 4, 5], "junk", None, [200, 210, 80, 20, "Qty"]],
+                            {"scx": 0, "scy": 0}, 10, 90, 1)
+        self.assertEqual(found[0]["name"], "Qty")
+        cdp._name_by_column(found, {"not": "a list"}, {"scx": 0, "scy": 0}, 10, 90, 1)
+
+
+class BrowserAvailability(unittest.TestCase):
+    def test_a_slow_devtools_answer_is_waited_for(self):
+        import threading, time as _t
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        from unittest import mock
+        from decurix_agent.computer import cdp
+
+        class Slow(BaseHTTPRequestHandler):
+            def do_GET(self):
+                _t.sleep(1.2)  # a busy browser: longer than the old half-second limit
+                self.send_response(200); self.end_headers(); self.wfile.write(b'{"Browser": "Chrome/154"}')
+
+            def log_message(self, *a):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Slow)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            with mock.patch.object(cdp, "BASE", f"http://127.0.0.1:{server.server_port}"):
+                self.assertTrue(cdp.available())
+        finally:
+            server.shutdown()
+
+    def test_no_browser_is_known_at_once(self):
+        import socket, time as _t
+        from unittest import mock
+        from decurix_agent.computer import cdp
+
+        s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
+        with mock.patch.object(cdp, "BASE", f"http://127.0.0.1:{port}"):
+            t0 = _t.time()
+            self.assertFalse(cdp.available())
+            self.assertLess(_t.time() - t0, 1.0)
+
+
+class LibreOfficeReportedPositions(unittest.TestCase):
+    """What a freshly opened Calc reported, measured on a real desktop."""
+
+    MENU = ("menu bar", [0, 36, 1256, 25])
+    STALE = [MENU, ("tool bar", [0, 36, 1262, 39]), ("tool bar", [0, 75, 1280, 39]),
+             ("tool bar", [1230, 182, 44, 42]), ("tool bar", None)]
+    RIGHT = [MENU, ("tool bar", [0, 61, 1262, 39]), ("tool bar", [0, 100, 1280, 39])]
+
+    def test_a_toolbar_over_the_menu_bar_gives_the_offset(self):
+        from decurix_agent.computer import atspi
+        self.assertEqual(atspi.libreoffice_offset(self.STALE), 25)
+
+    def test_widgets_reported_where_they_are_are_left_alone(self):
+        from decurix_agent.computer import atspi
+        self.assertEqual(atspi.libreoffice_offset(self.RIGHT), 0)
+        self.assertEqual(atspi.libreoffice_offset([self.MENU]), 0)  # no toolbar shown: nothing to measure by
+        self.assertEqual(atspi.libreoffice_offset([("tool bar", [0, 36, 10, 10])]), 0)
+
+    def test_the_sheet_tab_moves_and_the_menu_does_not(self):
+        from decurix_agent.computer import atspi
+        tab = {"role": "page tab", "name": "Sheet1", "box": [133, 603, 63, 23], "bar": None}
+        menu = {"role": "menu", "name": "File", "box": [0, 36, 40, 25], "bar": "menu bar"}
+        atspi._correct_libreoffice_boxes([tab, menu], self.STALE)
+        self.assertEqual(tab["box"], [133, 628, 63, 23])  # where it is drawn, measured
+        self.assertEqual(menu["box"], [0, 36, 40, 25])
+
+
+class FieldsNamedByTheirGroupLabel(unittest.TestCase):
+    """OrangeHRM's shape: labels are sibling elements, dates named only by their placeholder."""
+
+    M = {"scx": 0, "scy": 0}
+
+    def _el(self, role, name, box, value=""):
+        return {"role": role, "name": name, "value": value, "box": box, "path": f"site x > {role} \"{name}\""}
+
+    def test_placeholder_only_fields_get_their_labels(self):
+        from decurix_agent.computer import cdp
+        dob = self._el("textbox", "yyyy-dd-mm", [600, 300, 200, 40])
+        expiry = self._el("textbox", "yyyy-dd-mm", [900, 200, 200, 40])
+        first = self._el("textbox", "First Name", [100, 100, 200, 40])
+        labels = [[600, 300, 200, 40, "Date of Birth", "yyyy-dd-mm", None],
+                  [900, 200, 200, 40, "License Expiry Date", "yyyy-dd-mm", None],
+                  [100, 100, 200, 40, "Employee Full Name", "First Name", None],
+                  "junk", [1, 2, 3, 4, 5, 6, 7]]
+        cdp._name_by_group([dob, expiry, first], labels, self.M, 0, 0, 1)
+        self.assertEqual(dob["name"], "Date of Birth (yyyy-dd-mm)")
+        self.assertEqual(expiry["name"], "License Expiry Date (yyyy-dd-mm)")
+        self.assertIn("Date of Birth", dob["path"])
+        # A placeholder that is not a format is replaced, not kept.
+        self.assertEqual(first["name"], "Employee Full Name")
+
+    def test_a_properly_labelled_field_keeps_its_name(self):
+        from decurix_agent.computer import cdp
+        f = self._el("textbox", "Email", [0, 0, 100, 20])
+        cdp._name_by_group([f], [[0, 0, 100, 20, "Contact", "you@example.com", None]], self.M, 0, 0, 1)
+        self.assertEqual(f["name"], "Email")
+
+    def test_a_drawn_dropdown_becomes_a_combobox(self):
+        from decurix_agent.computer import cdp
+        shown = self._el("text", "-- Select --", [610, 510, 80, 20])
+        other = self._el("text", "-- Select --", [610, 610, 80, 20])
+        labels = [[600, 500, 300, 40, "Nationality", "", "-- Select --"],
+                  [600, 600, 300, 40, "Marital Status", "", "-- Select --"]]
+        cdp._name_by_group([shown, other], labels, self.M, 0, 0, 1)
+        self.assertEqual((shown["role"], shown["name"], shown["value"]), ("combobox", "Nationality", "-- Select --"))
+        self.assertEqual(other["name"], "Marital Status")
+
+
+class ChoosingInADrawnDropdown(unittest.TestCase):
+
+    def _opt(self, name, role="option"):
+        return {"role": role, "name": name, "source": "cdp", "box": [0, 0, 10, 10], "path": f"list > {name}"}
+
+    def _run(self, options, want, role="combobox", page=()):
+        from decurix_agent.computer import core
+        clicked, typed = [], []
+        looks = iter([{"elements": list(page)}] + [{"elements": list(page) + options}] * 50)
+        with patch.object(core.cdp, "click", side_effect=lambda e, **k: clicked.append(e.get("name"))), \
+             patch.object(core.cdp, "type_text", side_effect=lambda e, t: typed.append(t)), \
+             patch.object(core, "observe", side_effect=lambda: next(looks)), \
+             patch.object(core, "CUSTOM_OPTIONS_SECONDS", 0), patch.object(core, "CUSTOM_OPEN_SECONDS", 0):
+            core._select_custom({"role": role, "name": "Nationality"}, want)
+        return clicked, typed
+
+    def test_the_exact_label_is_clicked(self):
+        clicked, _ = self._run([self._opt("British Indian Ocean"), self._opt("Indian"), self._opt("Indonesian")], "indian")
+        self.assertEqual(clicked, ["Nationality", "Indian"])
+
+    def test_a_variant_named_in_another_order_is_found_and_create_is_never_taken(self):
+        opts = [self._opt('Create "Customizable Desk (White, Aluminium)"', "link"),
+                self._opt("[FURN_0096] Customizable Desk (Aluminium, White)", "link"),
+                self._opt("[FURN_0097] Customizable Desk (Steel, White)", "link")]
+        clicked, _ = self._run(opts, "Customizable Desk (White, Aluminium)")
+        self.assertEqual(clicked[-1], "[FURN_0096] Customizable Desk (Aluminium, White)")
+
+    def test_searches_go_from_the_whole_value_to_its_first_word(self):
+        from decurix_agent.computer import core
+        self.assertEqual(core._searches("Customizable Desk (White, Aluminium)"),
+                         ["Customizable Desk (White, Aluminium)", "Customizable Desk", "Customizable"])
+
+    def test_a_variant_offered_only_as_its_general_item_is_explained(self):
+        from decurix_agent.computer import core
+        with self.assertRaises(core.ComputerError) as ctx:
+            self._run([self._opt("StoolD_0045", "link")], "Stool (Navy)")
+        self.assertIn("general item", str(ctx.exception))
+        self.assertIn("select 'Stool'", str(ctx.exception))
+
+    def test_only_what_appeared_is_a_choice(self):
+        from decurix_agent.computer import core
+        elsewhere = self._opt("Indian", "link")  # on the page before the list opened
+        with self.assertRaises(core.ComputerError):
+            self._run([], "Indian", role="text", page=[elsewhere])
+
+    def test_two_equal_candidates_are_not_guessed_between(self):
+        from decurix_agent.computer import core
+        with self.assertRaises(core.ComputerError):
+            self._run([self._opt("Indian Ocean"), self._opt("Indian Rupee")], "Indian")
+
+    def test_a_missing_option_lists_what_there_is(self):
+        from decurix_agent.computer import core
+        with self.assertRaises(core.ComputerError) as ctx:
+            self._run([self._opt("Single"), self._opt("Married")], "Divorced", role="text")
+        self.assertIn("Married", str(ctx.exception))
+
+
+class TypingNeedsAField(unittest.TestCase):
+    def test_typing_into_a_table_row_is_refused_before_anything_happens(self):
+        from decurix_agent.computer import core
+        row = {"role": "row", "name": "Stool (Navy) | 6.00 | 500.00", "source": "cdp", "ref": "e9",
+               "path": "site x > row a", "box": [0, 380, 900, 30], "states": []}
+        with patch.object(core, "observe", return_value={"elements": [row], "frame": None, "windows": []}), \
+             patch.object(core, "_perform") as perform:
+            with self.assertRaises(core.ComputerError) as ctx:
+                core.act("type", point=(179, 392), text="Corner Desk Right Sit")
+            perform.assert_not_called()
+        self.assertIn("not a field", str(ctx.exception))
+
+
+class ObservingOneWindow(unittest.TestCase):
+    """observe(window=...) with the title the observation itself printed."""
+
+    OBS = {
+        "size": [1280, 720], "active_title": "Requests for Quotation - Chromium",
+        "windows": [{"title": "Requests for Quotation - Chromium", "active": True}],
+        "groups": [{"id": "cdp:1", "title": 'Chromium tab "Requests for Quotation" https://x.odoo.com/odoo/purchase',
+                    "window_title": "Requests for Quotation - Chromium"},
+                   {"id": "atspi:panel", "title": "xfce4-panel window \"\""}],
+        "elements": [{"role": "row", "name": "P00002 | Gemini Furniture", "group": "cdp:1", "ref": "e1",
+                      "path": "site x > row a", "box": [0, 600, 900, 30], "states": []},
+                     {"role": "button", "name": "Start", "group": "atspi:panel", "ref": "e2",
+                      "path": "panel > button Start", "box": [0, 690, 30, 30], "states": []}],
+    }
+
+    def test_the_full_window_title_finds_the_tab(self):
+        from decurix_agent.computer import elements as el
+        for wanted in ("Requests for Quotation - Chromium", "Requests for Quotation", "requests for quotation - Google Chrome"):
+            text = el.render(self.OBS, only_group=wanted)
+            self.assertIn("P00002", text, wanted)
+            self.assertNotIn("Start", text, wanted)
+
+    def test_a_name_that_matches_nothing_shows_everything_and_says_so(self):
+        from decurix_agent.computer import elements as el
+        text = el.render(self.OBS, only_group="Invoices")
+        self.assertIn("P00002", text)
+        self.assertIn("no window matches", text)
+
+
+class ADialogsOwnControl(unittest.TestCase):
+    def test_confirm_means_the_open_dialogs_not_the_pages(self):
+        from decurix_agent.computer import elements as el
+        page = {"role": "button", "name": "Confirm", "ref": "e1", "group": "g", "path": "site > button Confirm", "box": [300, 150, 80, 30], "states": []}
+        dialog = {"role": "dialog", "name": "Configure your product", "ref": "e2", "group": "g", "path": "site > dialog", "box": [250, 200, 780, 400], "states": []}
+        mine = {"role": "button", "name": "Confirm", "ref": "e3", "group": "g", "path": "site > button Confirm[2]", "box": [900, 560, 80, 30], "states": []}
+        self.assertEqual(el.find([page, dialog, mine], role="button", name="Confirm")["ref"], "e3")
+        # With no dialog open, two Confirms are still for the engine to tell apart.
+        with self.assertRaises(el.ComputerError):
+            el.find([page, mine], role="button", name="Confirm")

@@ -1,0 +1,14 @@
+{
+  "DefaultBrowserSettingEnabled": false,
+  "MetricsReportingEnabled": false,
+  "BrowserSignin": 0,
+  "SyncDisabled": true,
+  "HardwareAccelerationModeEnabled": false,
+  "AutofillCreditCardEnabled": false,
+  "TranslateEnabled": false,
+  "DefaultSearchProviderEnabled": true,
+  "DefaultSearchProviderName": "Google",
+  "DefaultSearchProviderSearchURL": "https://www.google.com/search?q={searchTerms}",
+  "RemoteDebuggingAllowed": true,
+  "DeveloperToolsAvailability": 1
+}

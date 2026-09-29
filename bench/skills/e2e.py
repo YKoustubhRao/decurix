@@ -181,8 +181,12 @@ def run():
         text = reply_text(last)
         if last.get("kind") == "final" or last.get("kind") == "error":
             break
-        if "Save it as" in text:
+        # The last question asks for the name ("What should I call it? ... `yes` keeps ...");
+        # it also says when the task is finished, so it is matched before "finished" is.
+        if "Save it as" in text or "What should I call it" in text:
             answer = "yes"
+        elif "Which of them change" in text:
+            answer = "all change"
         elif "same every time" in text:
             answer = "changes"
         elif "only sometimes happen" in text or "sometimes" in text and "always part" in text:

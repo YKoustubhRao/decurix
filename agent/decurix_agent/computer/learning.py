@@ -62,7 +62,7 @@ MAX_OVERVIEW_CHARS = 1600
 MAX_LOOP_BLOCK = 12
 
 SAME = re.compile(r"\b(same|constant|fixed|static|unchanged|never changes?|(does not|doesn'?t|do not|don'?t) change)\b", re.I)
-CHANGES = re.compile(r"(?<!not )(?<!n't )\b(chang(?:e|es|ing)|differ(?:s|ent)?|vari(?:es|able|ed))\b", re.I)
+CHANGES = re.compile(r"(?<!not )(?<!n't )\b(chang(?:e|es|ing)|differ(?:s|ent)?|vary|vari(?:es|able|ed))\b", re.I)
 SOMETIMES = re.compile(r"\b(sometimes?|occasionally|only if|only when|if (?:it|there)|depends|conditional|optional|maybe|not always)\b", re.I)
 ALWAYS = re.compile(r"(?<!not )\b(always|every time|each time|required|mandatory|part of)\b", re.I)
 KEEP = re.compile(r"\b(keep|try|as recorded|ok(?:ay)?|fine|go ahead)\b", re.I)
@@ -399,6 +399,10 @@ def _merge(runs):
                 step["expect"] = _common_checks(step.get("expect") or [], seen.get("expect") or [])
                 step["consequential"] = step.get("consequential") or seen.get("consequential", False)
 
+                if step["kind"] == "upload":
+                    step["file_samples"] = (step.get("file_samples") or [step.get("files") or []]) + \
+                        (seen.get("file_samples") or [seen.get("files") or []])
+
                 if step["kind"] == "type":
                     step["samples"].extend(seen["samples"])
                     step["secret"] = step["secret"] or seen["secret"]
@@ -468,14 +472,20 @@ def _generalise(steps, demos):
             name = replay._param_name(label, used)
             step["param"] = name
             sample = step["files"][0] if step["files"] else "document.pdf"
+            # Asked about like a typed value (the grouped question): the file
+            # a run uploads usually comes with that run's documents (the next
+            # new joiner's offer letter), but may be the same every time.
             params.append({
                 "name": name,
                 "label": label,
-                "default": sample,
+                "default": None,
                 "example": sample,
-                "varies": True,
+                # Demonstrations that uploaded different files: it changes, as
+                # differing typed text does. One demonstration: asked.
+                "varies": True if len({tuple(f) for f in step.get("file_samples") or []}) > 1 else None,
                 "step": step["n"],
                 "constraint": None,
+                "file": True,
             })
             step["summary"] = replay._summary(step)
             continue
@@ -708,6 +718,16 @@ def questions(skill):
                   and f"coordinates:{step['id']}" not in skill["answers"]]
     first_positional = positional[0]["id"] if positional else None
 
+    # Every typed value nobody has said changes or stays is asked about in
+    # one question too: a demonstration of keying a document into a system
+    # (a PO into an ERP, a new joiner into an HRMS) types ten fields, and ten
+    # questions in a row, each answered "changes", is what made teaching one
+    # tedious. Answers are still kept per step (`variable:<id>`).
+    undecided_values = [step for step in skill["steps"]
+                        if step["id"] not in in_loop and params.get(step.get("param"))
+                        and params[step["param"]]["varies"] is None]
+    first_value = undecided_values[0]["id"] if len(undecided_values) > 1 else None
+
     for step in skill["steps"]:
         if step["id"] in loop_at:
             found.append(_loop(skill, loop_at[step["id"]]))
@@ -715,7 +735,9 @@ def questions(skill):
             continue
 
         param = params.get(step.get("param"))
-        if param and param["varies"] is None:
+        if step["id"] == first_value:
+            found.append(_variables(skill, undecided_values, params))
+        elif param and param["varies"] is None and first_value is None:
             found.append(_variable(skill, step, param))
 
         if step.get("seen", skill["demos"]) < skill["demos"]:
@@ -782,6 +804,102 @@ def _variable(skill, step, param):
             "same every time, or does it change from run to run (a different customer, amount, ...)? "
             "Reply `same` or `changes`.")
     return _question(f"variable:{step['id']}", "variable", text, step["id"])
+
+
+def _variables(skill, steps, params):
+    """One question for every typed value whose changing or staying is not known yet."""
+
+    def where(step):
+        target = step.get("target") or {}
+        if target.get("role"):
+            return f"{target['role']} {el._quote(target.get('name') or '', 40)}"
+        return "the focused field"
+
+    def given(step):
+        param = params[step["param"]]
+        if param.get("file"):
+            return f"the file {el._quote(param['example'] or '', 60)} uploaded to {where(step)}"
+        return f"{el._quote(param['example'] or '', 50)} into {where(step)}"
+
+    listed = "; ".join(f"{i}) {given(s)}" for i, s in enumerate(steps, 1))
+    text = (f"You gave {len(steps)} values: {listed}. Which of them change from run to run (a different "
+            "customer, amount, date, document number...)? Reply `all change` or `all same`, or name them - for "
+            f"example `all change except {len(steps)}`, or `1 and 2 change` (the others then stay as you typed them).")
+
+    question = _question("variables:" + "+".join(s["id"] for s in steps), "variables", text)
+    question["default"] = CAUTIOUS["variable"]
+    question["values"] = [{"id": s["id"], "param": s["param"]} for s in steps]
+    return question
+
+
+OPPOSITE = {"changes": "same", "same": "changes"}
+EXCEPT = re.compile(r"\b(?:except|but not|other than|apart from|besides)\b", re.I)
+
+
+def _variable_choices(question, text):
+    """
+    What a reply to the grouped values question decides for each step:
+    {step id: changes|same}, or None when it cannot be read. "all change
+    except 3" makes 3 the opposite; "1 and 4 change" makes the rest the
+    opposite; a bare verb decides every one.
+    """
+
+    count = len(question["values"])
+    parts = EXCEPT.split(text, maxsplit=1)
+    head, tail = parts[0], (parts[1] if len(parts) > 1 else "")
+
+    head_choice = _choose("variable", head)
+    head_numbers = _step_numbers(head)
+    tail_numbers = _step_numbers(tail) if tail else []
+
+    if head_choice is None or head_numbers is None or tail_numbers is None or (tail and not tail_numbers):
+        return None
+
+    named = {n: head_choice for n in head_numbers}
+    tail_choice = (_choose("variable", tail) if tail else None) or OPPOSITE[head_choice]
+    for n in tail_numbers:
+        if named.get(n, tail_choice) != tail_choice:
+            return None
+        named[n] = tail_choice
+
+    if any(n < 1 or n > count for n in named):
+        return None
+
+    rest = OPPOSITE[head_choice] if head_numbers else head_choice
+    return {item["id"]: named.get(i, rest) for i, item in enumerate(question["values"], 1)}
+
+
+def _answer_values(skill, question, text):
+    """The reply to the grouped values question, applied to each value it covers."""
+
+    qid = question["id"]
+    choices = _variable_choices(question, text)
+    note = ""
+
+    if choices is None:
+        tries = skill["unclear"][qid] = skill["unclear"].get(qid, 0) + 1
+        if tries < MAX_UNCLEAR:
+            return {"understood": False, "note": "I did not catch that - reply `all change`, `all same`, or for "
+                    f"example `all change except {len(question['values'])}`.", "decision": None}
+        choices = {item["id"]: question["default"] for item in question["values"]}
+        note = "I could not tell what you meant, so I will ask for every one of those values on each run."
+        text = f"(assumed {question['default']})"
+
+    for step_id, choice in choices.items():
+        if _step_by_id(skill, step_id) is None:
+            continue
+        _apply(skill, {"kind": "variable", "step": step_id, "id": f"variable:{step_id}"}, choice)
+        skill["answers"][f"variable:{step_id}"] = choice
+
+    skill["answers"][qid] = text[:300]
+
+    if not note:
+        stays = [i for i, item in enumerate(question["values"], 1) if choices.get(item["id"]) == "same"]
+        changes = len(question["values"]) - len(stays)
+        note = (f"Got it: {changes} change each run" + (f", {', '.join(map(str, stays))} stay as typed" if stays else "")
+                + ".")
+
+    return {"understood": True, "note": note, "decision": None}
 
 
 def _loop(skill, loop):
@@ -948,6 +1066,9 @@ def answer(skill, question, reply):
 
     if question.get("steps"):
         return _answer_positional(skill, question, text)
+
+    if question.get("values"):
+        return _answer_values(skill, question, text)
 
     # Anything but a yes or a no is the name to save it as; a reply with
     # nothing to name it by is unclear, like any other.

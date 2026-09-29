@@ -1,0 +1,36 @@
+#!/bin/sh
+# The desktop's web browser (installed as /usr/bin/chromium-browser; see
+# agent/install-browser.sh). Every way of starting the browser comes here -
+# Chrome's own google-chrome commands are diverted to this file - so it always
+# starts with:
+#   - one profile, ~/.config/chromium: sign-ins made in the desktop's earlier
+#     Chromium carry over, and Chrome 136+ only accepts a DevTools port on a
+#     profile that is not its default one;
+#   - the flags in ~/.chromium-browser.init (the DevTools port the agent reads
+#     pages through, the sandbox probe; agent/chromium-browser.init), which
+#     start_agent_terminal.sh reinstalls on every start.
+# The name stays chromium-browser because launchers already written into
+# desktops' home folders call it.
+
+CHROMIUM_FLAGS=""
+if [ -f "$HOME/.chromium-browser.init" ]; then
+    . "$HOME/.chromium-browser.init"
+elif [ -f /opt/decurix-chromium.init ]; then
+    . /opt/decurix-chromium.init
+fi
+
+chrome=/opt/google/chrome/google-chrome
+if [ ! -x "$chrome" ]; then
+    echo "chromium-browser: $chrome is missing - rebuild the desktop image" >&2
+    exit 127
+fi
+
+case " $* " in
+    *" --user-data-dir="*)
+        # shellcheck disable=SC2086 # CHROMIUM_FLAGS is a list of flags
+        exec "$chrome" $CHROMIUM_FLAGS "$@"
+        ;;
+esac
+
+# shellcheck disable=SC2086
+exec "$chrome" --user-data-dir="${DECURIX_BROWSER_PROFILE:-$HOME/.config/chromium}" $CHROMIUM_FLAGS "$@"
