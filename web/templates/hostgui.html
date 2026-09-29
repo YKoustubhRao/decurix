@@ -10,10 +10,13 @@
   #msg { color: #d8d8d8; font: 15px/1.5 system-ui, sans-serif; padding: 28px; max-width: 560px; }
   #msg.error { color: #ffb4a8; }
   #msg small { display: block; margin-top: 10px; color: #8a8a8a; }
+  #msg .spin { display: inline-block; width: 14px; height: 14px; margin-right: 10px; vertical-align: -2px;
+    border: 2px solid #555; border-top-color: #d8d8d8; border-radius: 50%; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
 </style>
 </head>
 <body>
-<div id="msg" style="display:none">Starting {{.Title}} on the host&hellip;</div>
+<div id="msg" style="display:none"><span class="spin"></span>Starting {{.Title}} on the host&hellip;<small id="hint" style="display:none">The first start in a desktop sets the app up on the host (a browser brings your profile over), which can take a minute or two. Later starts are instant.</small></div>
 <canvas id="screen" tabindex="0"></canvas>
 <script>
 (function () {
@@ -178,10 +181,11 @@
   // The app is normally already running on the host (it is kept ready), so this answers at once; only a start that is
   // really waiting for the app says so.
   var slow = setTimeout(function () { msg.style.display = 'block'; }, 700);
+  var slower = setTimeout(function () { var h = document.getElementById('hint'); if (h) h.style.display = 'block'; }, 6000);
   post('/api/host-gui/start', { target: TARGET, args: ARGS }).then(function (r) {
     return r.json().then(function (j) { return { ok: r.ok, body: j }; });
   }).then(function (res) {
-    clearTimeout(slow);
+    clearTimeout(slow); clearTimeout(slower);
     if (!res.ok) { fail(res.body && res.body.error ? res.body.error : 'Could not start the app.'); return; }
     live = true; msg.style.display = 'none';
     img.style.display = 'block';
@@ -190,7 +194,7 @@
     connect();
     // Fit the window to the app, as far as the browser lets an app window be resized.
     try { window.resizeTo(res.body.w + (window.outerWidth - window.innerWidth), res.body.h + (window.outerHeight - window.innerHeight)); } catch (e) {}
-  }).catch(function () { clearTimeout(slow); fail('Could not reach the Decurix control plane.'); });
+  }).catch(function () { clearTimeout(slow); clearTimeout(slower); fail('Could not reach the Decurix control plane.'); });
 })();
 </script>
 </body>

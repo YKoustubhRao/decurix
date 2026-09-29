@@ -1274,8 +1274,40 @@ body.busy{cursor:progress}
     var on = notifyEnabled() && notifySupported() && Notification.permission === "granted";
     btn.classList.toggle("on", on);
     btn.setAttribute("aria-pressed", on ? "true" : "false");
-    btn.setAttribute("aria-label", on ? "Desktop notifications on for queries" : "Turn on desktop notifications for queries");
+    btn.setAttribute("aria-label", on ? "Desktop notifications on: finished tasks and questions" : "Turn on desktop notifications for finished tasks and questions");
+    btn.title = btn.getAttribute("aria-label");
   }
+
+  /* What a note says happened, for a notification's title. A finished task's report is a note too, and used to
+     arrive as "<desktop> needs you". */
+  function noteHeadline(note){
+    var who = note.vm_name || note.desktop_id || "A desktop";
+    switch(note.kind){
+      case "done": return who + " finished its task";
+      case "error": return who + " could not finish its task";
+      case "approval": return who + " needs your approval";
+      default: return who + " needs you";
+    }
+  }
+
+  function noteBody(note){
+    var task = (note.task || "").trim(), message = (note.message || note.content || "").trim();
+    return ((task ? task + " \u2014 " : "") + message).slice(0, 180);
+  }
+
+  /* A tab in the background, with no browser notifications, still says so in its title until it is looked at. */
+  var titleBase = null;
+  function markTitle(){
+    if(titleBase === null){ titleBase = document.title; }
+    document.title = "\u25CF " + titleBase;
+  }
+  function clearTitle(){
+    if(titleBase !== null){ document.title = titleBase; titleBase = null; }
+  }
+  document.addEventListener("visibilitychange", function(){ if(document.visibilityState === "visible"){ clearTitle(); } });
+  window.addEventListener("focus", clearTitle);
+
+  var toldAboutBell = false;
 
   function notifyNewQueries(notes){
     if(notifiedIds === null){
@@ -1286,20 +1318,60 @@ body.busy{cursor:progress}
     var seenBefore = notifiedIds;
     notifiedIds = new Set(notes.map(function(n){ return n.id; }));
 
-    if(!notifyEnabled() || !notifySupported() || Notification.permission !== "granted"){ return; }
-    if(document.visibilityState === "visible" && document.hasFocus()){ return; }
+    notes.filter(function(note){ return !seenBefore.has(note.id); }).forEach(announce);
+  }
 
-    notes.forEach(function(note){
-      if(seenBefore.has(note.id)){ return; }
+  /* A task that finished leaves no query note, so pages ask the control plane what finished since they last looked
+     (/api/tasks/finished). The first answer only says where "now" is: opening a page never replays old news. */
+  var finishedAfter = null;
 
-      try{
-        var n = new Notification((note.vm_name || note.filename || "A desktop") + " needs you", {
-          body: (note.content || "").slice(0, 180),
-          tag: "decurix-query-" + note.id
-        });
-        n.onclick = function(){ window.focus(); n.close(); };
-      }catch(e){ /* notifications unavailable or blocked mid-session */ }
-    });
+  async function refreshFinished(){
+    try{
+      var url = "/api/tasks/finished" + (finishedAfter === null ? "" : "?after=" + finishedAfter);
+      var response = await fetch(url, {cache: "no-store"});
+      if(!response.ok){ return; }
+      var data = await response.json();
+      var first = finishedAfter === null;
+      finishedAfter = data.latest || 0;
+      if(first){ return; }
+      (data.items || []).forEach(function(item){
+        announce({id: "finished-" + item.seq, kind: "done", desktop_id: item.desktop_id, vm_name: item.vm_name,
+                  task: item.task, message: item.message});
+      });
+    }catch(e){ /* try again on the next tick */ }
+  }
+
+  /* Tell the person about one note or finished task: a toast when this page is in front, else a system notification
+     when they turned the bell on, else a mark in the tab's title. */
+  function announce(note){
+    var inFront = document.visibilityState === "visible" && document.hasFocus();
+    var system = notifyEnabled() && notifySupported() && Notification.permission === "granted";
+
+    if(inFront){
+      /* The chat of that desktop already shows the reply as it lands. */
+      if(location.pathname === "/view/" + note.desktop_id){ return; }
+      var hint = "";
+      if(!system && !toldAboutBell && notifySupported()){
+        hint = " (Turn on the bell at the top to be told even when this tab is in the background.)";
+        toldAboutBell = true;
+      }
+      toast(noteHeadline(note) + ": " + noteBody(note) + hint, note.kind === "error" ? "error" : "");
+      return;
+    }
+
+    if(!system){ markTitle(); return; }
+
+    try{
+      var n = new Notification(noteHeadline(note), {
+        body: noteBody(note),
+        tag: "decurix-query-" + note.id
+      });
+      n.onclick = function(){
+        window.focus();
+        if(note.desktop_id && location.pathname !== "/view/" + note.desktop_id){ location.href = "/view/" + encodeURIComponent(note.desktop_id); }
+        n.close();
+      };
+    }catch(e){ markTitle(); /* notifications unavailable or blocked mid-session */ }
   }
 
   async function toggleNotify(){
@@ -1325,7 +1397,7 @@ body.busy{cursor:progress}
 
     setNotifyEnabled(true);
     updateNotifyButton();
-    toast("Desktop notifications are on for queries that need you.");
+    toast("Desktop notifications are on: you will be told when a task finishes or a desktop needs you.");
   }
 
   /* ---- boot ---- */
@@ -1354,6 +1426,9 @@ body.busy{cursor:progress}
 
     refreshModel();
     setInterval(refreshModel, 60000);
+
+    refreshFinished();
+    setInterval(refreshFinished, 5000);
 
     /* Pages that poll query notes themselves feed the badge directly. */
     if(document.body.dataset.queryPoll !== "own"){
@@ -1410,7 +1485,7 @@ body.busy{cursor:progress}
       <div class="menu-panel" id="tunnelPanel"></div>
     </div>
 
-    <button type="button" class="icon-btn" id="notifyToggle" aria-pressed="false" aria-label="Turn on desktop notifications for queries">
+    <button type="button" class="icon-btn" id="notifyToggle" aria-pressed="false" aria-label="Turn on desktop notifications for finished tasks and questions" title="Turn on desktop notifications for finished tasks and questions">
       <svg width="17" height="17"><use href="#i-bell"/></svg>
     </button>
 

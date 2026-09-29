@@ -16,6 +16,7 @@ type fakeOpts struct {
 	launch string // the answer to launch; "OK pid=42" if empty
 	noWin  bool   // launch succeeds but no window ever shows, and status says the app exited
 	moved  bool   // a launchr of an already-resolved program says it is no longer there
+	slow   string // seconds a launch takes to answer (a first browser start importing the profile), "" for none
 }
 
 // requireBash skips a test that stands a bash script in for the Windows helper. The protocol is the same on every OS, but
@@ -50,7 +51,7 @@ func fakeHelper(t *testing.T, o fakeOpts) (Starter, *int32) {
 		moved = "1"
 	}
 	script := `
-dolaunch() { echo "` + o.launch + `"; if [ "` + noWin + `" = 0 ] && [[ "` + o.launch + `" == OK* ]]; then send 1 0 0 20 10 ABC; fi; }
+dolaunch() { [ -n "` + o.slow + `" ] && sleep ` + o.slow + `; echo "` + o.launch + `"; if [ "` + noWin + `" = 0 ] && [[ "` + o.launch + `" == OK* ]]; then send 1 0 0 20 10 ABC; fi; }
 send() { printf 'FRAME 20 10 %s %s %s %s %s %s\n%s' "$2" "$3" "$4" "$5" "$1" "${#6}" "$6"; }
 while IFS= read -r l; do
   printf '%s\n' "$l" >> "$FAKE_LOG"
@@ -249,6 +250,24 @@ func TestParseFrameHeaderRejectsWhatCouldOverrunTheBuffer(t *testing.T) {
 			t.Errorf("%q was accepted", bad)
 		}
 	}
+}
+
+// A launch that answers after the ordinary request timeout - the first start of a browser in a VM, which copies the
+// person's profile first - must still start the app, not be killed as a helper that stopped answering.
+func TestALaunchMayTakeLongerThanAnOrdinaryRequest(t *testing.T) {
+	start, _ := fakeHelper(t, fakeOpts{slow: "1"})
+	defer func(d time.Duration) { requestTimeout = d }(requestTimeout)
+	requestTimeout = 300 * time.Millisecond
+	m := NewManager(start)
+	defer m.StopAll()
+	s, err := m.Start(context.Background(), "vm-chrome", `C:\chrome.exe`, "")
+	if err != nil {
+		t.Fatalf("a slow launch failed: %v", err)
+	}
+	if w, h := s.Size(); w != 20 || h != 10 {
+		t.Fatalf("size %dx%d after a slow launch", w, h)
+	}
+	m.waitIdle()
 }
 
 func TestStartReturnsTheHelpersReasonWhenTheLaunchIsRefused(t *testing.T) {
