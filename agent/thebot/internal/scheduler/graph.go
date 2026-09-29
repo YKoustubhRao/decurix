@@ -425,7 +425,7 @@ func (e *execution) runContext(n *node) skills.RunContext {
 	s := e.s
 	return skills.RunContext{
 		Ctx: e.ctx, OnLog: e.log, OriginalPrompt: e.req.Prompt,
-		PriorResults: prior, Provider: s.Provider, Model: s.Models.ForTaskType(n.step.Type), Workspace: s.Workspace,
+		PriorResults: prior, Provider: s.Provider, Brain: s.Brain, Model: s.Models.ForTaskType(n.step.Type), Workspace: s.Workspace,
 		RAG: s.RAG, Feedback: s.Feedback, SessionHistory: e.req.History, RecalledFacts: e.recalled,
 		SelfStats: e.stats,
 		// Live memory handles: the coding harness queries L1 mid-build with

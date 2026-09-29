@@ -5,7 +5,11 @@ something the screen exposes no element for leaves in a recording, whether a
 replay finds it again where it moved, and - what matters more - that it will
 not click the wrong thing.
 
-    python3 bench/recordings/e2e.py [--keep]
+    python3 bench/recordings/e2e.py [--keep] [--brain ollama|claude|azure]
+
+--brain runs the desktop as one created with that brain is (bench/brain.py),
+calling back to this tree's control plane on 127.0.0.1:8080. A replay uses no
+model, so this checks that recording and replay are the same on every brain.
 
 Needs Docker and a built decurix-desktop:basic (scripts/*/build-images.sh).
 Takes about three minutes and leaves nothing behind unless --keep is given.
@@ -23,6 +27,9 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import brain  # noqa: E402
 
 REPO = str(Path(__file__).resolve().parents[2])
 NAME = "decurix-e2e-rec"
@@ -159,12 +166,17 @@ def imported():
 
 
 def main():
+    chosen = brain.chosen()
+    # A hosted brain calls the model through a real control plane; the local
+    # one needs none (nothing listens on 18081 - callbacks are not checked).
+    callback = "http://host.docker.internal:8080" if chosen in ("claude", "azure") else "http://host.docker.internal:18081"
     subprocess.run(["docker", "rm", "-f", NAME], capture_output=True)
     subprocess.run([
         "docker", "run", "-d", "--name", NAME, "--add-host", "host.docker.internal:host-gateway", "--shm-size=1g",
         "--security-opt", f"seccomp={REPO}/internal/desktop/seccomp-desktop.json", "--ulimit", "core=0",
         "-e", "VNC_PW=admin", "-e", "VNC_RESOLUTION=1280x720", "-e", "DESKTOP_ID=e2e", "-e", "DESKTOP_NAME=e2e",
-        "-e", "CONTROL_PLANE_URL=http://host.docker.internal:18081", "-e", "AGENT_HARNESS=ollama",
+        "-e", f"CONTROL_PLANE_URL={callback}",
+        *brain.docker_env(chosen, callback),
         "-e", "DECURIX_REPLAY_FIND_SECONDS=5", "-e", "DECURIX_REPLAY_EXPECT_SECONDS=3",
         "-v", f"{REPO}/agent/decurix_agent:/opt/decurix_agent:ro", IMAGE,
     ], check=True, capture_output=True)

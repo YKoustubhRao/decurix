@@ -6,8 +6,10 @@ CONTROL_PLANE_URL/api/llm/chat and the control plane adds the key. That is
 what lets an agent with a shell and a browser use a strong model without
 being able to leak the credential behind it.
 
-`available()` says whether this control plane has a hosted model at all
-(DECURIX_LLM=1, set by buildDesktopEnv only when it does).
+`available()` says whether this desktop has a hosted model to ask:
+DECURIX_LLM names its provider ("claude" or "azure"; "1", from desktops
+created before there was a choice, is Azure), set by buildDesktopEnv only for
+a desktop whose brain is that hosted model.
 """
 
 import base64
@@ -22,7 +24,11 @@ import urllib.request
 from decurix_agent import config
 from decurix_agent.logging_utils import log
 
-CHAT_URL = config.CONTROL_PLANE_URL.rstrip("/") + "/api/llm/chat"
+PROVIDER = {"1": "azure"}.get(
+    os.environ.get("DECURIX_LLM", "").strip().lower(),
+    os.environ.get("DECURIX_LLM", "").strip().lower(),
+)
+CHAT_URL = config.CONTROL_PLANE_URL.rstrip("/") + f"/api/llm/{PROVIDER or 'azure'}/chat"
 
 # One answer can take a while when it reads several pages of a scanned PDF.
 TIMEOUT_SECONDS = int(os.environ.get("DECURIX_LLM_TIMEOUT_SECONDS", "240"))
@@ -58,7 +64,7 @@ def retry_after(headers):
 
 
 def available():
-    return os.environ.get("DECURIX_LLM", "").strip() == "1"
+    return PROVIDER in ("azure", "claude")
 
 
 def chat(messages, tools=None, model="default", max_tokens=4000, temperature=None, response_format=None):

@@ -420,7 +420,20 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None):
         cell = str(e.get("cell") or "").upper().replace("$", "")
         if not re.fullmatch(r"[A-Z]{1,3}[1-9]\d*", cell):
             raise OfficeError(f"{e.get('cell')!r} is not a cell address like B14")
-        by_sheet.setdefault(sheet, []).append((cell, e.get("value")))
+        # "formula" is how a model naturally names a formula's edit; taken as
+        # the value (with its "="). An edit with neither key is refused, never
+        # read as "empty the cell": live, {"cell": "D2", "formula": "=SUM(..)"}
+        # wiped a total and the engine reported it updated.
+        if "value" in e:
+            value = e["value"]
+        elif "formula" in e:
+            value = str(e["formula"] or "")
+            if value and not value.startswith("="):
+                value = "=" + value
+        else:
+            raise OfficeError(f"the edit of {sheet}!{cell} has no value: give \"value\" (a number, text, \"=FORMULA\", "
+                              "or null to empty the cell)")
+        by_sheet.setdefault(sheet, []).append((cell, value))
 
     for sheet, cell_edits in by_sheet.items():
         name = sheet_files[sheet]
@@ -435,6 +448,13 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None):
         old, new = str(r.get("from") or ""), str(r.get("to") or "")
         if not old or not new:
             raise OfficeError("each replace_refs entry needs from and to")
+        # A sheet name is written quoted or bare ('Data'!$B$2 / Data!$B$2)
+        # depending on who saved the file; both mean the same range. Live, a
+        # model wrote the bare form, the file had the quoted one, and nothing
+        # matched. Try the other spelling when the given one is not there.
+        if not any(old in entries[n].decode("utf-8", "ignore") for n in entries
+                   if re.match(r"xl/(charts/chart\d+|workbook|pivotCache/pivotCacheDefinition\d+)\.xml$", n)):
+            old, new = _other_sheet_quoting(old), _other_sheet_quoting(new)
         for name in list(entries):
             if re.match(r"xl/(charts/chart\d+|tables/table\d+|workbook|pivotCache/pivotCacheDefinition\d+)\.xml$", name):
                 text = entries[name].decode("utf-8")
@@ -488,6 +508,17 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None):
         if not swaps:
             msg += " - none matched: read the workbook to see the exact ranges its charts use"
     return msg + ". Formulas recalculate when the file is opened."
+
+
+def _other_sheet_quoting(ref):
+    """Data!$B$2:$B$3 <-> 'Data'!$B$2:$B$3 (the sheet name quoted or not)."""
+
+    sheet, bang, rest = ref.partition("!")
+    if not bang:
+        return ref
+    if sheet.startswith("'") and sheet.endswith("'") and len(sheet) > 1:
+        return sheet[1:-1] + "!" + rest
+    return f"'{sheet}'!" + rest
 
 
 def _sheet_files(entries):
@@ -713,31 +744,130 @@ def _image_to_pdf(src, dst):
     Image.open(src).convert("RGB").save(dst, "PDF", resolution=150)
 
 
+def _ocr_file(path, limit=MAX_TEXT_CHARS):
+    """Text tesseract reads off one picture, "" when it cannot run."""
+
+    try:
+        done = subprocess.run(["tesseract", str(path), "stdout", "--psm", "3"],
+                              capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    text = (done.stdout or "").strip()
+    return text[:limit]
+
+
 # ------------------------------------------------------------------
 # Command line, for the other harnesses' shell loops: `office read x.pdf`
 # ------------------------------------------------------------------
+
+USAGE = """office - documents, spreadsheets and email drafts, from the shell
+
+  office read FILE [PAGES]              read a PDF, scan, picture, Word, Excel or .eml file
+  office update BOOK.xlsx SPEC          change cells of an existing workbook, keeping its charts,
+                                        formatting and everything else. SPEC (JSON, - for stdin):
+                                        {"edits": [{"sheet": "Data", "cell": "B14", "value": 1250.5}],
+                                         "replace_refs": [{"from": "Data!$B$2:$B$13", "to": "Data!$B$2:$B$14"}],
+                                         "output_path": "optional.xlsx"}
+                                        a value is a number, text, null (empties the cell) or "=FORMULA";
+                                        replace_refs extends what charts, tables and names read
+  office create BOOK.xlsx SPEC          a new workbook. SPEC: {"sheets": [{"name": "Sheet1", "rows": [[...]],
+                                        "header": true, "widths": {"A": 20}, "number_format": {"C": "#,##0.00"}}]}
+  office combine OUT.pdf IN...          one PDF from PDFs, pictures and office documents, in order
+  office email --to ADDR [--cc ADDR] --subject S [--attach FILE]... [--body TEXT | body on stdin]
+                                        put an email in the Outbox for a person to review and send.
+                                        It is never sent from here.
+"""
+
+
+def _spec(arg):
+    """A JSON spec given as `-` (stdin), inline JSON, or a file."""
+
+    import sys
+
+    if arg == "-":
+        text = sys.stdin.read()
+    elif arg.lstrip().startswith(("{", "[")):
+        text = arg
+    else:
+        text = Path(os.path.expanduser(arg)).read_text()
+    try:
+        spec = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise OfficeError(f"the spec is not valid JSON ({exc})") from exc
+    if not isinstance(spec, dict):
+        raise OfficeError("the spec must be a JSON object")
+    return spec
+
+
+def _email(argv):
+    import argparse
+    import sys
+
+    from decurix_agent.tools import outbox
+
+    parser = argparse.ArgumentParser(prog="office email", add_help=False)
+    parser.add_argument("--to", action="append", default=[])
+    parser.add_argument("--cc", action="append", default=[])
+    parser.add_argument("--subject", default="")
+    parser.add_argument("--attach", action="append", default=[])
+    parser.add_argument("--body")
+    args, rest = parser.parse_known_args(argv)
+    if rest:
+        raise OfficeError(f"office email does not take {' '.join(rest)!r}; see `office` for its flags")
+
+    body = args.body
+    if body is None:
+        body = "" if sys.stdin.isatty() else sys.stdin.read()
+    if not args.subject.strip():
+        raise OfficeError("give the email a --subject")
+    if not body.strip():
+        raise OfficeError("the email has no body: pass --body or send it on stdin")
+
+    try:
+        return outbox.draft(args.to, args.subject, body, cc=args.cc, attachments=args.attach)
+    except outbox.DraftError as exc:
+        raise OfficeError(f"not drafted: {exc}") from exc
+
 
 def main(argv=None):
     import sys
 
     argv = list(sys.argv[1:] if argv is None else argv)
-    if not argv:
-        print("usage: office read FILE [PAGES] | office update FILE EDITS.json | office combine OUT IN...")
-        return 2
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(USAGE)
+        return 0 if argv else 2
     try:
         cmd = argv.pop(0)
         if cmd == "read":
             r = read_document(argv[0], pages=argv[1] if len(argv) > 1 else None)
             print(r["text"])
-            for img in r["images"]:
-                print(f"[page image: {img}]")
+            # How pictures reach the engine depends on its model (TheBot's
+            # operator sets DECURIX_OFFICE_IMAGES): "attach" - a model that
+            # reads images is shown each [page image: ...] itself; "ocr" - a
+            # text-only model is given what OCR reads off them instead, since
+            # a path to a picture is of no use to it.
+            if os.environ.get("DECURIX_OFFICE_IMAGES", "").strip() == "ocr":
+                for n, img in enumerate(r["images"], 1):
+                    print(f"\n--- picture {n} of {len(r['images'])}, read by OCR (check figures against the context: OCR misreads) ---")
+                    print(_ocr_file(img) or "(OCR read no text here)")
+            else:
+                for img in r["images"]:
+                    print(f"[page image: {img}]")
         elif cmd == "update":
-            spec = json.loads(Path(argv[1]).read_text())
+            if len(argv) < 2:
+                raise OfficeError("usage: office update BOOK.xlsx SPEC (JSON, or - to read it from stdin)")
+            spec = _spec(argv[1])
             print(update_workbook(argv[0], spec.get("edits"), spec.get("replace_refs"), spec.get("output_path")))
+        elif cmd == "create":
+            if len(argv) < 2:
+                raise OfficeError("usage: office create BOOK.xlsx SPEC (JSON, or - to read it from stdin)")
+            print(create_workbook(argv[0], _spec(argv[1]).get("sheets") or []))
         elif cmd == "combine":
             print(combine_pdf(argv[0], argv[1:]))
+        elif cmd == "email":
+            print(_email(argv))
         else:
-            print(f"unknown command {cmd!r}")
+            print(f"unknown command {cmd!r}\n\n{USAGE}")
             return 2
     except (OfficeError, OSError, ValueError, IndexError) as exc:
         print(f"error: {exc}")

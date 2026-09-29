@@ -1,6 +1,7 @@
 package prompt
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -12,7 +13,7 @@ func TestFrameIsStableAndOrderedMostStableFirst(t *testing.T) {
 	now := time.Date(2026, 9, 12, 23, 15, 0, 0, time.UTC)
 	f := Frame{Host: "Desktop name: kilo", Facts: []string{"The user's name is Asha."}, Stats: "- Data RAG: 3 file(s)", Now: now, WithTime: true}
 	a, b := f.Message(), f.Message()
-	if a != b {
+	if !reflect.DeepEqual(a, b) {
 		t.Fatal("the same frame rendered differently twice")
 	}
 	c := a.Content
@@ -46,7 +47,7 @@ func TestIsNeedsTools(t *testing.T) {
 func TestFrameWithoutTimeIsStableAcrossTheDay(t *testing.T) {
 	morning := Frame{Host: "h", Now: time.Date(2026, 9, 12, 8, 0, 0, 0, time.UTC)}.Message()
 	evening := Frame{Host: "h", Now: time.Date(2026, 9, 12, 21, 30, 0, 0, time.UTC)}.Message()
-	if morning != evening {
+	if !reflect.DeepEqual(morning, evening) {
 		t.Errorf("date-only frames differ within a day:\n%s\n---\n%s", morning.Content, evening.Content)
 	}
 }

@@ -40,7 +40,7 @@ func TestBuildContainerConfigsMountsSharedToolsAndCacheVolume(t *testing.T) {
 }
 
 func TestBuildDesktopEnvIncludesToolsAndCachePaths(t *testing.T) {
-	env := buildDesktopEnv("box1", "ollama", "dev", "")
+	env := buildDesktopEnv("box1", "ollama", "dev", "", Brain{})
 
 	var pathVal, gorootVal, gomodVal, npmVal, pipVal, hfVal string
 	for _, e := range env {
@@ -117,8 +117,47 @@ func TestBuildDesktopEnvControlPlaneURL(t *testing.T) {
 	}
 
 	t.Setenv("DECURIX_CONTROL_PLANE_URL", "")
-	want(buildDesktopEnv("box1", "ollama", "dev", ""), "http://host.docker.internal:8080")
+	want(buildDesktopEnv("box1", "ollama", "dev", "", Brain{}), "http://host.docker.internal:8080")
 
 	t.Setenv("DECURIX_CONTROL_PLANE_URL", "http://decurix:8080")
-	want(buildDesktopEnv("box1", "ollama", "dev", ""), "http://decurix:8080")
+	want(buildDesktopEnv("box1", "ollama", "dev", "", Brain{}), "http://decurix:8080")
+}
+
+func TestAHostedBrainIsGivenTheProxyNeverAKey(t *testing.T) {
+	t.Setenv("DECURIX_CONTROL_PLANE_URL", "http://decurix:8080")
+
+	local := buildDesktopEnv("box1", HarnessTheBot, "", "", Brain{})
+	if envValue(local, "DECURIX_BRAIN") != BrainOllama || envValue(local, "LLM_PROVIDER") != "" || envValue(local, "DECURIX_LLM") != "" {
+		t.Fatalf("local brain env: %v", local)
+	}
+
+	env := buildDesktopEnv("box1", HarnessTheBot, "", "", Brain{Kind: BrainClaude, Model: "claude-opus-5-5"})
+	want := map[string]string{
+		"DECURIX_BRAIN":        BrainClaude,
+		"LLM_PROVIDER":         "openai",
+		"OPENAI_BASE_URL":      "http://decurix:8080/api/llm/claude",
+		"EMBED_PROVIDER":       "ollama",
+		"DECURIX_LLM":          BrainClaude,
+		"DECURIX_BRAIN_MODEL":  "claude-opus-5-5",
+		"DECURIX_BRAIN_VISION": "0",
+	}
+	for k, v := range want {
+		if got := envValue(env, k); got != v {
+			t.Errorf("%s = %q, want %q", k, got, v)
+		}
+	}
+	if seeing := buildDesktopEnv("box1", HarnessTheBot, "", "", Brain{Kind: BrainClaude, Vision: true}); envValue(seeing, "DECURIX_BRAIN_VISION") != "1" {
+		t.Error("a brain that reads images is not told so")
+	}
+	if envValue(local, "DECURIX_BRAIN_VISION") != "" {
+		t.Error("the Ollama brain was told about vision - TheBot asks Ollama itself")
+	}
+	if desktopModel(env) != "claude-opus-5-5" {
+		t.Errorf("desktopModel = %q", desktopModel(env))
+	}
+	for _, kv := range env {
+		if strings.Contains(kv, "sk-") || strings.HasPrefix(kv, "ANTHROPIC_API_KEY=") || strings.HasPrefix(kv, "AZURE_KEY=") {
+			t.Errorf("a key reached the desktop: %s", kv)
+		}
+	}
 }

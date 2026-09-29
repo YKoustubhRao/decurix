@@ -48,6 +48,10 @@ const (
 	maxSteps   = 400
 )
 
+// UnrequestedActivity is the entry that files steps no request asked for,
+// once a request arrives after them (see AppendUserRequest).
+const UnrequestedActivity = "Activity on this desktop that no request asked for (a person working on the screen, or a command run by hand)."
+
 // lateStepWindow is how long after an agent's reply a step is still taken as
 // part of the turn that reply closed. A desktop reports steps from a
 // background queue but its reply directly, so the last line of a turn can
@@ -235,6 +239,16 @@ func (s *Store) AppendUserRequest(desktopID, taskID, content string) Entry {
 	defer s.mu.Unlock()
 
 	current := s.threadFor(desktopID)
+
+	// A turn that steps opened on their own (a person demonstrating on the
+	// screen, a gui command run by hand - nobody asked for it) is not the
+	// turn this request joins: it is closed under an entry of its own first.
+	// It used to be taken for a turn in flight, so a request sent after a
+	// demonstration came back with the demonstration's clicks attached to
+	// its reply, as if the agent had done them to answer it.
+	if current.running && current.openedBySteps() {
+		s.appendAgentReplyLocked(desktopID, "", KindEntry, UnrequestedActivity)
+	}
 
 	entry := Entry{
 		ID:        s.nextID(),
@@ -531,6 +545,15 @@ func (t *thread) lastEntry() *Entry {
 	}
 
 	return &t.entries[len(t.entries)-1]
+}
+
+// openedBySteps reports whether the running turn was opened by steps alone:
+// a turn a request opens always has that request as its latest entry (a
+// request queued behind it is another user entry), while one steps opened
+// follows the last reply, or nothing at all.
+func (t *thread) openedBySteps() bool {
+	last := t.lastEntry()
+	return last == nil || last.Role != RoleUser
 }
 
 // appendCapped appends an item, dropping the oldest entries once the slice

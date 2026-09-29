@@ -1,14 +1,15 @@
 // Package llm gives the desktops a hosted model without giving them its key.
 //
-// A desktop's agent (the "azure" harness, and the grounder/judge of every
-// harness) POSTs an OpenAI-shaped chat request to the control plane's
-// /api/llm/chat, and Client.Chat forwards it to an Azure AI Foundry endpoint
-// with the api-key header added here. The key lives only in the control
-// plane's own environment: an agent that browses the web and runs shell
-// commands can be talked into printing anything it can read, so the key is
-// never baked into a container the way OLLAMA_URL is.
+// A desktop's agent (TheBot with a hosted brain, and the grounder/judge of
+// every harness) POSTs an OpenAI-shaped chat request to the control plane's
+// /api/llm/<provider>/..., and the Hub forwards it: to an Azure AI Foundry
+// endpoint (Client, the api-key header added here) or to Claude (Claude,
+// translated to the Messages API). The credentials are typed into the
+// dashboard by a person and kept sealed in SQLite (Store) - never read from
+// .env, never baked into a container: an agent that browses the web and runs
+// shell commands can be talked into printing anything it can read.
 //
-// Depends on nothing internal.
+// Depends on sqlitedb and sealed only.
 package llm
 
 import (
@@ -19,13 +20,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 )
 
 const (
-	// DefaultModel is the deployment used when AZURE_MODEL is unset: the
+	// DefaultModel is the deployment used when none is given: the
 	// strongest GPT deployment on the endpoint this was built against that
 	// reads images and calls tools (checked 2026-09-28).
 	DefaultModel = "gpt-5.4"
@@ -41,8 +41,8 @@ const (
 	requestTimeout = 4 * time.Minute
 )
 
-// ErrNotConfigured is a chat asked of a control plane with no AZURE_KEY.
-var ErrNotConfigured = errors.New("llm: no hosted model is configured (AZURE_ENDPOINT / AZURE_KEY)")
+// ErrNotConfigured is a chat asked of a provider nobody has set up yet.
+var ErrNotConfigured = errors.New("llm: this hosted model has not been set up (dashboard: New desktop > Model)")
 
 // Client forwards chat requests to one Azure AI endpoint.
 type Client struct {
@@ -53,15 +53,14 @@ type Client struct {
 	HTTP      *http.Client
 }
 
-// FromEnv builds a Client from AZURE_ENDPOINT, AZURE_KEY, AZURE_MODEL and
-// AZURE_FAST_MODEL. The Client is returned even when unconfigured, so the
-// status route can say so; Configured tells them apart.
-func FromEnv() *Client {
+// NewAzure builds a Client for one Azure AI endpoint; empty model names take
+// DefaultModel / DefaultFastModel.
+func NewAzure(endpoint, key, model, fastModel string) *Client {
 	c := &Client{
-		Endpoint:  strings.TrimRight(strings.TrimSpace(os.Getenv("AZURE_ENDPOINT")), "/"),
-		Key:       strings.TrimSpace(os.Getenv("AZURE_KEY")),
-		Model:     strings.TrimSpace(os.Getenv("AZURE_MODEL")),
-		FastModel: strings.TrimSpace(os.Getenv("AZURE_FAST_MODEL")),
+		Endpoint:  strings.TrimRight(strings.TrimSpace(endpoint), "/"),
+		Key:       strings.TrimSpace(key),
+		Model:     strings.TrimSpace(model),
+		FastModel: strings.TrimSpace(fastModel),
 		HTTP:      &http.Client{Timeout: requestTimeout},
 	}
 

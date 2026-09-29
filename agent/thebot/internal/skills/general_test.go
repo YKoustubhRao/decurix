@@ -2,6 +2,7 @@ package skills
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -153,7 +154,7 @@ func TestGeneralRunThreadsSessionHistory(t *testing.T) {
 	if got[0].Role != "system" {
 		t.Errorf("messages[0].Role = %q, want system", got[0].Role)
 	}
-	if got[1] != history[0] || got[2] != history[1] {
+	if !reflect.DeepEqual(got[1], history[0]) || !reflect.DeepEqual(got[2], history[1]) {
 		t.Errorf("history was not threaded in order: got %+v, %+v; want %+v, %+v", got[1], got[2], history[0], history[1])
 	}
 	if got[3].Role != "user" || got[3].Content != "what is my name" {

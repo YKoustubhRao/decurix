@@ -81,8 +81,14 @@ def ask_model(system, prompt):
     if llm_client.available():
         try:
             return llm_client.ask_once(system, prompt)
-        except llm_client.LLMError:
-            pass  # fall back to this desktop's own engine
+        except llm_client.LLMError as exc:
+            # A desktop whose brain is the hosted model has no local one to
+            # fall back to: asking Ollama would load a model nobody chose
+            # for it, minutes on a small host. The caller treats this as
+            # "not sure", the same as any failed question.
+            if config.HOSTED_BRAIN:
+                raise RuntimeError(str(exc)) from exc
+            # otherwise fall back to this desktop's own engine
 
     return _ask_once(system, prompt)
 

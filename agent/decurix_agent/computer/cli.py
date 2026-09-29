@@ -19,6 +19,12 @@ from decurix_agent.computer.errors import ComputerError
 # a screenshot, and pretending otherwise would be the fastest way to make it
 # click the wrong thing.
 #
+# An engine whose model CAN see asks for the screen too: with
+# DECURIX_GUI_SCREENSHOT set (TheBot's operator sets it for a vision brain),
+# every command that looks at or acts on the screen leaves a PNG of the screen
+# as it ended up there, shrunk by DECURIX_GUI_SCREENSHOT_SCALE, for the engine
+# to attach to its next turn. The text is printed either way.
+#
 # Exit codes are part of the contract, and harnesses read them:
 #   0 done   1 could not do it   3 NEEDS_APPROVAL (nothing happened)   4 verify failed
 # ============================================================
@@ -29,6 +35,43 @@ EXIT_NEEDS_APPROVAL = approval.EXIT_NEEDS_APPROVAL
 EXIT_VERIFY_FAILED = 4
 
 TEXT_BUDGET = int(os.environ.get("DECURIX_GUI_TEXT_CHARS", "3500"))
+
+# The commands that look at or act on the screen: after these, a vision
+# engine is shown the screen (save_screenshot).
+SCREEN_COMMANDS = {
+    "observe", "click", "double-click", "right-click", "type", "key", "scroll",
+    "select", "open", "upload", "drag", "verify", "replay", "do",
+}
+
+
+def save_screenshot(argv):
+    """
+    Leave the screen where DECURIX_GUI_SCREENSHOT says, after a screen command.
+
+    Taken after the command, whether it worked or not: a click that "could
+    not find e12" is exactly when seeing the screen helps. Never raises -
+    the picture is extra, the command's own result is what counts.
+    """
+
+    path = os.environ.get("DECURIX_GUI_SCREENSHOT", "").strip()
+    if not path or not argv or argv[0] not in SCREEN_COMMANDS:
+        return
+
+    try:
+        scale = max(1, int(os.environ.get("DECURIX_GUI_SCREENSHOT_SCALE", "1")))
+    except ValueError:
+        scale = 1
+
+    try:
+        from decurix_agent.computer import screen
+
+        data = screen.grab().png(scale=scale)
+        tmp = path + ".part"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+    except Exception as exc:
+        logging_utils.log(f"gui: could not save the screenshot: {exc}")
 
 USAGE = """gui - see and use this desktop's screen
 
@@ -495,6 +538,7 @@ def main(argv=None):
         print(f"gui: internal error ({type(exc).__name__}: {exc}); details in /tmp/decurix-gui.log")
         code = EXIT_ERROR
     finally:
+        save_screenshot(sys.argv[1:] if argv is None else argv)
         # A short-lived command: the audit step it queued has to leave before
         # the process does.
         progress.flush()
