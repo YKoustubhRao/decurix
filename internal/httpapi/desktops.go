@@ -85,7 +85,8 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 
 	name := strings.TrimSpace(r.FormValue("name"))
 	profile := strings.TrimSpace(r.FormValue("profile"))
-	harness := strings.TrimSpace(r.FormValue("harness"))
+	brain, brainErr := s.desktopBrain(r.FormValue("harness"), r.FormValue("brain"))
+	harness := desktop.HarnessTheBot
 	// One line: a textarea's newlines would otherwise land in a Docker env
 	// var and, later, in identity.py's plain fact list.
 	specialization := strings.Join(strings.Fields(r.FormValue("specialization")), " ")
@@ -121,28 +122,8 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if harness == "" {
-		harness = desktop.HarnessTheBot
-	}
-
-	switch harness {
-	case desktop.HarnessOllama, desktop.HarnessClaude, desktop.HarnessTheBot, desktop.HarnessAzure:
-		// valid
-	default:
-		http.Error(
-			w,
-			"invalid harness: must be ollama, claude, thebot or azure",
-			http.StatusBadRequest,
-		)
-		return
-	}
-
-	if profile == "basic" && harness == desktop.HarnessClaude {
-		http.Error(
-			w,
-			"claude harness requires the developer or ai profile",
-			http.StatusBadRequest,
-		)
+	if brainErr != nil {
+		jsonStatusError(w, http.StatusBadRequest, brainErr.Error())
 		return
 	}
 
@@ -196,13 +177,6 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var claudeCredentialsJSON string
-	if harness == desktop.HarnessClaude {
-		if session, ok := s.ClaudeAuth.Get(); ok {
-			claudeCredentialsJSON = session.CredentialsJSON
-		}
-	}
-
 	// A specialized child worker must be spawned from a desktop that
 	// actually exists - otherwise ParentID would name a parent nobody can
 	// ever look up.
@@ -247,9 +221,10 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		name,
 		profile,
 		harness,
+		brain,
 		cpus,
 		memoryMB,
-		claudeCredentialsJSON,
+		"",
 		specialization,
 		parentID,
 		selectedApps,

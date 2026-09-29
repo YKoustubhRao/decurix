@@ -37,8 +37,10 @@ func NewAnthropic(apiKey, defaultModel string) *AnthropicProvider {
 func (a *AnthropicProvider) Name() string { return "anthropic" }
 
 type anthropicMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role string `json:"role"`
+	// Content is a string, or text and image blocks when the message carries
+	// images.
+	Content any `json:"content"`
 }
 
 type anthropicRequest struct {
@@ -81,7 +83,15 @@ func (a *AnthropicProvider) Chat(ctx context.Context, model string, messages []M
 			system = m.Content
 			continue
 		}
-		msgs = append(msgs, anthropicMessage{Role: m.Role, Content: m.Content})
+		msg := anthropicMessage{Role: m.Role, Content: m.Content}
+		if len(m.Images) > 0 {
+			blocks := []map[string]any{}
+			for _, img := range base64All(m.Images) {
+				blocks = append(blocks, map[string]any{"type": "image", "source": map[string]string{"type": "base64", "media_type": "image/png", "data": img}})
+			}
+			msg.Content = append(blocks, map[string]any{"type": "text", "text": m.Content})
+		}
+		msgs = append(msgs, msg)
 	}
 
 	maxTokens := 4096

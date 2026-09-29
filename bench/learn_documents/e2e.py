@@ -11,14 +11,15 @@ new POs the demonstration never saw:
      one product and quantity per line - are read from the PDF by the hosted
      model (decurix_agent/binding.py); the warehouse, which the person said
      stays the same, is typed as taught.
-  A. A plain request to the Office (GPT) engine naming a third PO: it is
-     shown the taught procedure and runs it with values it read itself.
+  A. A plain request naming a third PO, to TheBot on a hosted brain: it has
+     to find the taught procedure and run it with values it read itself.
 
 Every result is read back from the app's own saved data, never taken from
 the agent's report.
 
-Needs: the control plane on 127.0.0.1:8080 with AZURE_* set, and a running
-desktop with the "azure" harness built from this tree's image:
+Needs: this tree's control plane on 127.0.0.1:8080 with a hosted brain set up
+(New desktop > Model), and a running desktop created with that brain from this
+tree's image:
 
     python3 bench/learn_documents/e2e.py office1
 """
@@ -285,7 +286,7 @@ def main():
             # A paused run takes the next request as its answer; end it before path A.
             reply_after(send("stop"))
 
-        print("\n== A: a plain request to the Office (GPT) engine, with a third PO")
+        print("\n== A: a plain request to TheBot, with a third PO")
         pdf_a = put(po_pdf(PO_A, work), f"{HOME}/work/inbox/mjob-e2e-a")
         count = len(saved_quotations())
         before = send(f"A customer sent us a purchase order: {pdf_a}. Enter it in our sales app as a quotation.")

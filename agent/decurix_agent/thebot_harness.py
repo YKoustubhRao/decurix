@@ -63,7 +63,9 @@ email, SMS, or any other platform), publishing anything, or taking any
 other action with real-world consequences you are not fully confident
 about - stop before doing it. Ask for approval with HELP, or begin your
 reply with exactly "{APPROVAL_MARKER}" followed by what you want to do and
-why; a human will review it on the Decurix dashboard.
+why; a human will review it on the Decurix dashboard. Drafting an email into
+the Outbox (office email) is not sending it: a person reviews and sends it
+there, so draft one without asking.
 """.strip()
 
 
@@ -384,13 +386,40 @@ def _looks_like_backend_failure(text):
     if any(phrase in lowered for phrase in _BACKEND_FAILURE_PHRASES):
         return True
 
-    if "ollama" not in lowered:
+    # soul names its provider in every error it wraps ("ollama: ...",
+    # "openai returned HTTP 503: ..." - a hosted brain reaches the control
+    # plane's proxy through soul's OpenAI-compatible provider).
+    if "ollama" not in lowered and "openai" not in lowered:
         return False
 
     return any(shape in lowered for shape in _BACKEND_FAILURE_SHAPES)
 
 
+def _brain_name():
+    """What this desktop reasons with, as a person would say it."""
+
+    if config.BRAIN == "claude":
+        return f"Claude ({config.BRAIN_MODEL or 'hosted'})"
+    if config.BRAIN == "azure":
+        return f"Azure OpenAI ({config.BRAIN_MODEL or 'hosted'})"
+    return config.OLLAMA_MODEL
+
+
 def _backend_note(reason):
+    if config.HOSTED_BRAIN:
+        # Nothing about a local model applies: no Ollama to tune, no .env.
+        # What goes wrong with a hosted one is its key, its quota or the
+        # network, all fixed on the dashboard or by waiting.
+        return (
+            f"TheBot's model, {_brain_name()}, did not answer through the "
+            "control plane.\n\n"
+            "If this keeps happening, check its key and model on the "
+            "dashboard (New desktop > Model > Change) - a rate limit or a "
+            "spent quota also shows up this way - then send the request "
+            "again.\n\n"
+            f"Technical detail:\n{reason}"
+        )
+
     return backend_failure_note(
         f"TheBot's reasoning model ({config.OLLAMA_MODEL})",
         config.OLLAMA_URL,
@@ -502,6 +531,17 @@ def wait_for_backend():
     a query for a human.
     """
 
+    if config.HOSTED_BRAIN:
+        # A hosted brain: soul reasons through the control plane's proxy,
+        # and Ollama only embeds (best-effort - soul runs without memory
+        # rather than not at all), so neither the local server nor its chat
+        # model is waited for, and nothing is loaded into it.
+        wait_for_http_ok(
+            config.THEBOT_URL.rstrip("/") + "/api/health",
+            f"TheBot soul at {config.THEBOT_URL}",
+        )
+        return
+
     wait_for_http_ok(
         config.OLLAMA_URL.rstrip("/") + "/api/tags",
         f"Ollama at {config.OLLAMA_URL}",
@@ -559,10 +599,12 @@ def perform_task(task, task_file):
     log(task)
     log("========================================")
 
-    # soul reasons with the shared Ollama model, which costs nothing per
-    # call; it does not report token counts back, so those stay unknown.
-    usage.set_model(config.OLLAMA_MODEL)
-    usage.add(cost_usd=0)
+    # soul does not report token counts back, so those stay unknown. The
+    # local model costs nothing per call; a hosted one's spend is on the
+    # provider's own bill.
+    usage.set_model(config.BRAIN_MODEL if config.HOSTED_BRAIN else config.OLLAMA_MODEL)
+    if not config.HOSTED_BRAIN:
+        usage.add(cost_usd=0)
 
     # A new task, not a reply: if soul still holds a paused job for this
     # desktop (the human moved on without answering it), it is dropped.

@@ -2,7 +2,10 @@
 """
 Live end-to-end check of teaching and running a skill on a real desktop.
 
-    python3 bench/skills/e2e.py [--keep]
+    python3 bench/skills/e2e.py [--keep] [--brain ollama|claude|azure]
+
+--brain runs the desktop as one created with that brain is (bench/brain.py);
+its model calls go through this tree's control plane on 127.0.0.1:8080.
 
 Needs Docker and a built decurix-desktop:basic (scripts/*/build-images.sh).
 Takes about two minutes and leaves nothing behind unless --keep is given.
@@ -23,6 +26,9 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import brain  # noqa: E402
+
 REPO = str(Path(__file__).resolve().parents[2])
 NAME = "decurix-e2e"
 PORT = 18080
@@ -34,6 +40,8 @@ posts = []
 class Mock(BaseHTTPRequestHandler):
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get("Content-Length", "0") or "0"))
+        if brain.forward_llm(self, body):
+            return
         try:
             data = json.loads(body)
         except ValueError:
@@ -114,7 +122,8 @@ def main():
         "docker", "run", "-d", "--name", NAME, "--add-host", "host.docker.internal:host-gateway", "--shm-size=1g",
         "--security-opt", f"seccomp={REPO}/internal/desktop/seccomp-desktop.json", "--ulimit", "core=0",
         "-e", "VNC_PW=admin", "-e", "VNC_RESOLUTION=1280x720", "-e", "DESKTOP_ID=e2e", "-e", "DESKTOP_NAME=e2e",
-        "-e", f"CONTROL_PLANE_URL=http://host.docker.internal:{PORT}", "-e", "AGENT_HARNESS=ollama",
+        "-e", f"CONTROL_PLANE_URL=http://host.docker.internal:{PORT}",
+        *brain.docker_env(brain.chosen(), f"http://host.docker.internal:{PORT}"),
         "-e", "OLLAMA_URL=http://host.docker.internal:11434", "-e", "DECURIX_REPLAY_FIND_SECONDS=6",
         # This benchmark verifies deterministic healing and human correction.
         # A live model could choose the renamed button or wait for a cold load,

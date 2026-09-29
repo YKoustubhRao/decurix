@@ -46,7 +46,9 @@ const (
 	// (and the shared Ollama container) are attached to.
 	NetworkName = "decurix-network"
 
-	// Agent harnesses: which reasoning engine drives a desktop's tasks.
+	// Agent harnesses: which reasoning engine drives a desktop's tasks. New
+	// desktops always run TheBot (with a Brain of their own); the others
+	// remain only so desktops created before that keep working.
 	HarnessOllama = "ollama"
 	HarnessClaude = "claude"
 	// HarnessTheBot runs the same OLLAMA_URL/OLLAMA_MODEL every desktop
@@ -59,7 +61,47 @@ const (
 	// office work that has to read documents and screens a 3B local model
 	// cannot. The desktop never holds the model's key.
 	HarnessAzure = "azure"
+
+	// Brains: which model TheBot reasons with (Desktop.Brain). The hosted
+	// ones name an internal/llm provider; the desktop is given the proxy's
+	// address, never a key.
+	BrainOllama = "ollama"
+	BrainClaude = "claude"
+	BrainAzure  = "azure"
 )
+
+// Brain is a desktop's model choice as the control plane resolved it at
+// creation: Kind is one of the Brain* constants ("" is BrainOllama), Model
+// the hosted model's name (shown on the card; ignored for BrainOllama).
+type Brain struct {
+	Kind  string
+	Model string
+	// Vision is whether a hosted model reads images (tested when its key was
+	// saved). For the Ollama brain it is not said: TheBot asks Ollama.
+	Vision bool
+}
+
+// kind is b.Kind with "" read as BrainOllama.
+func (b Brain) kind() string {
+	if b.Kind == "" {
+		return BrainOllama
+	}
+	return b.Kind
+}
+
+// Hosted reports whether the brain is a hosted model rather than Ollama.
+func (b Brain) Hosted() bool {
+	return b.kind() != BrainOllama
+}
+
+// desktopModel is the model a desktop reasons with, as its env says: the
+// hosted brain's when it has one, else the Ollama model.
+func desktopModel(env []string) string {
+	if m := envValue(env, "DECURIX_BRAIN_MODEL"); m != "" {
+		return m
+	}
+	return envValue(env, "OLLAMA_MODEL")
+}
 
 // EnsureImages reports whether every desktop image is present locally. It
 // deliberately does not pull: decurix-desktop:* are local-only tags that exist
@@ -199,8 +241,8 @@ func controlPlaneURL() string {
 	return "http://host.docker.internal:8080"
 }
 
-// buildDesktopEnv builds the container environment variables (VNC, desktop identity, control-plane/Ollama URLs, agent harness) for a desktop by name.
-func buildDesktopEnv(name, harness, specialization, parentID string) []string {
+// buildDesktopEnv builds the container environment variables (VNC, desktop identity, control-plane/Ollama URLs, agent harness, brain) for a desktop by name.
+func buildDesktopEnv(name, harness, specialization, parentID string, brain Brain) []string {
 	defaultPassword := os.Getenv("DEFAULT_PASSWORD")
 	if defaultPassword == "" {
 		defaultPassword = "admin"
@@ -279,12 +321,35 @@ func buildDesktopEnv(name, harness, specialization, parentID string) []string {
 	}
 	env = append(env, "OLLAMA_NUM_PARALLEL="+numParallel)
 
-	// Every harness asks the hosted model its one-off questions (the replay
-	// grounder, judge, detours) when the control plane has one: they are
-	// exactly the calls a small local model gets wrong. The key stays in the
-	// control plane; this only says the proxy route will answer.
-	if strings.TrimSpace(os.Getenv("AZURE_KEY")) != "" && strings.TrimSpace(os.Getenv("AZURE_ENDPOINT")) != "" {
-		env = append(env, "DECURIX_LLM=1")
+	env = append(env, "DECURIX_BRAIN="+brain.kind())
+
+	// A hosted brain: TheBot's OpenAI-compatible provider pointed at the
+	// control plane's proxy (/api/llm/<provider>/v1/...), which adds the key
+	// and, for Claude, translates. The "key" here is a placeholder soul's
+	// config insists on; the real one never enters a desktop. Embeddings
+	// stay on the shared Ollama (EMBED_PROVIDER): Claude has no embeddings
+	// API and an Azure resource need not have an embedding deployment.
+	//
+	// DECURIX_LLM names the same provider for the agent's own one-off
+	// questions (harness.ask_model: the replay grounder, judge, detours) -
+	// exactly the calls a small local model gets wrong. A desktop on the
+	// local brain asks the local model, so it never spends on a hosted one
+	// nobody chose for it.
+	if brain.Hosted() {
+		env = append(env,
+			"LLM_PROVIDER=openai",
+			"OPENAI_BASE_URL="+strings.TrimRight(controlPlaneURL(), "/")+"/api/llm/"+brain.kind(),
+			"OPENAI_API_KEY=held-by-the-control-plane",
+			"OPENAI_MODEL=default",
+			"EMBED_PROVIDER=ollama",
+			"DECURIX_LLM="+brain.kind(),
+			"DECURIX_BRAIN_MODEL="+brain.Model,
+			"DECURIX_BRAIN_VISION="+map[bool]string{true: "1", false: "0"}[brain.Vision],
+			// A hosted model reads long prompts in seconds; the CPU-sized
+			// defaults in start_agent_terminal.sh would starve its research.
+			"THEBOT_WEB_PAGES=3",
+			"THEBOT_WEB_PAGE_CHARS=6000",
+		)
 	}
 
 	if specialization != "" {
@@ -320,7 +385,8 @@ func buildContainerConfigs(imageName, containerName, profile, harness string, cp
 		"desktop-harness":        harness,
 		"desktop-cpus":           strconv.FormatInt(cpus, 10),
 		"desktop-memory":         strconv.FormatInt(memoryMB, 10),
-		"desktop-model":          envValue(env, "OLLAMA_MODEL"),
+		"desktop-brain":          envValue(env, "DECURIX_BRAIN"),
+		"desktop-model":          desktopModel(env),
 		"desktop-specialization": envValue(env, "DESKTOP_SPECIALIZATION"),
 		"desktop-parent-id":      envValue(env, "DESKTOP_PARENT_ID"),
 	}

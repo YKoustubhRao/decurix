@@ -84,9 +84,11 @@ type Server struct {
 	ResourceMon *resourcemon.Monitor
 	Suggest     *suggest.Store
 	Web         *webui.Renderer
-	// LLM forwards the desktops' chats to the hosted model (internal/llm).
+	// LLM holds the hosted models a person set up and forwards the desktops'
+	// chats to them (internal/llm). main.go replaces the in-memory default
+	// with one saved in the database.
 	// NewServer reads it from the environment; unconfigured, its routes say so.
-	LLM *llm.Client
+	LLM *llm.Hub
 	// Outbox holds the emails agents drafted for a person to send
 	// (internal/outbox). Assigned by cmd/decurix/main.go; nil turns it off.
 	Outbox *outbox.Store
@@ -116,6 +118,16 @@ type Server struct {
 	keptHostApps   map[string]keptHostApp
 }
 
+// mustMemoryHub is an llm.Hub kept in memory only - NewHub cannot fail
+// without a database.
+func mustMemoryHub() *llm.Hub {
+	hub, err := llm.NewHub(nil, nil)
+	if err != nil {
+		panic(err)
+	}
+	return hub
+}
+
 // NewServer creates a Server from its component stores/managers.
 func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memoryStore *memory.Store, chat *conversation.Store, stepImages *stepimages.Store, taskRecords *tasks.Store, tunnelStore *tunnel.Store, claudeAuth *claudeauth.Store, lanAccess *lanaccess.Store, schedules *schedule.Store, dags *dag.Store, suggestions *suggest.Store, web *webui.Renderer) *Server {
 	srv := &Server{
@@ -132,7 +144,7 @@ func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memorySt
 		Dags:             dags,
 		Suggest:          suggestions,
 		Web:              web,
-		LLM:              llm.FromEnv(),
+		LLM:              mustMemoryHub(),
 		recentStepImages: make(map[string]string),
 	}
 
@@ -322,8 +334,11 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/cftunnel", s.humansOnly(s.cfTunnelStatusHandler))
 	mux.HandleFunc("/api/cftunnel/configure", s.humansOnly(s.cfTunnelConfigureHandler))
 	mux.HandleFunc("/api/cftunnel/disable", s.humansOnly(s.cfTunnelDisableHandler))
-	// The hosted model: for the desktops' agents, over the Docker network.
-	mux.HandleFunc("/api/llm/chat", s.llmChatHandler)
+	// The hosted models: set up by a person (their keys never leave this
+	// listener), used by the desktops' agents over the Docker network.
+	mux.HandleFunc("/api/llm/settings", s.humansOnly(s.llmSettingsHandler))
+	mux.HandleFunc("/api/llm/settings/forget", s.humansOnly(s.llmForgetHandler))
+	mux.HandleFunc("/api/llm/", s.llmProxyHandler)
 	// Drafts from the agents' draft_email; sending them is humansOnly above.
 	mux.HandleFunc("/api/outbox", s.outboxCreateHandler)
 }
