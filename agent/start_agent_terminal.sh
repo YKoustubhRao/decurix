@@ -54,7 +54,9 @@ prewarm_chromium() {
     echo "[$(date)] Chromium pre-warmed in background (pid $!)" >> "$LOG"
 }
 has_host_apps() { ls "$HOME"/.local/share/applications/*-host.desktop >/dev/null 2>&1; }
-if [ "$prewarm" = "1" ] || { [ -z "$prewarm" ] && has_host_apps; }; then
+# An Office (GPT) desktop works ERPs and HRMSs in the browser: warm it at boot,
+# or its first page waits out a cold start (over 30 s measured on a loaded host).
+if [ "$prewarm" = "1" ] || { [ -z "$prewarm" ] && { has_host_apps || [ "${AGENT_HARNESS:-}" = "azure" ]; }; }; then
     prewarm_chromium
 elif [ -z "$prewarm" ]; then
     (
@@ -106,6 +108,16 @@ if [ -L "$HOME/Desktop/README" ] && [ "$(readlink "$HOME/Desktop/README")" = "$H
 fi
 if [ -f "$HOME/Desktop/versionsticker.desktop" ] && grep -q "version_sticker" "$HOME/Desktop/versionsticker.desktop" 2>/dev/null; then
     rm -f "$HOME/Desktop/versionsticker.desktop"
+fi
+
+# The base image's "Chromium Web Browser" icon, on a desktop created before the
+# browser became Google Chrome (agent/install-browser.sh): it still starts the
+# browser, but its picture went with the old package. Replaced by the image's
+# own icon - only that exact file; an icon a person made stays.
+browser_icon="$HOME/Desktop/chromium-browser.desktop"
+if [ -f /opt/decurix-desktop-browser.desktop ] && [ -f "$browser_icon" ] \
+    && grep -q "^Name=Chromium Web Browser$" "$browser_icon" 2>/dev/null; then
+    cp /opt/decurix-desktop-browser.desktop "$browser_icon" && chmod 755 "$browser_icon"
 fi
 
 # The agent's own directories live under ~/.decurix, so ~/work is the only

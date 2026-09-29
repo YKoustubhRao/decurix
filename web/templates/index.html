@@ -967,7 +967,7 @@
             </span>
 
             <span class="chip">
-              {{if eq .Harness "claude"}}Claude Code{{else if eq .Harness "thebot"}}TheBot{{else}}Ollama{{end}}
+              {{if eq .Harness "claude"}}Claude Code{{else if eq .Harness "thebot"}}TheBot{{else if eq .Harness "azure"}}Office (GPT){{else}}Ollama{{end}}
             </span>
           </div>
         </div>
@@ -1273,7 +1273,9 @@
           <label class="seg"><input type="radio" name="harness" value="thebot" checked><span>TheBot</span></label>
           <label class="seg"><input type="radio" name="harness" value="claude" id="harnessClaude"><span>Claude Code</span></label>
           <label class="seg"><input type="radio" name="harness" value="ollama"><span>Ollama</span></label>
+          <label class="seg"><input type="radio" name="harness" value="azure" id="harnessAzure" disabled><span>Office (GPT)</span></label>
         </div>
+        <div class="hint" id="azureHint">Office (GPT) runs on the hosted model set in the control plane's <code class="mono">.env</code> (<code class="mono">AZURE_ENDPOINT</code> / <code class="mono">AZURE_KEY</code>): it reads PDFs, scans, Excel and Word files, works web apps such as an ERP or HRMS on screen, updates Excel models without breaking their charts, and drafts emails into the Outbox for you to send. Any profile works.</div>
         <div class="hint claude-hint" id="claudeHint">Claude Code needs the Developer or AI Developer profile — the <code class="mono">claude</code> binary isn't in the Basic image.</div>
         <div class="hint">TheBot uses the same shared Ollama decurix already runs for every desktop — no separate URL to set up. PDF/HTML/Office-format document parsing isn't available yet in this harness; plain text/code files and real terminal execution both work fully.</div>
         <div class="claude-auth-row" id="claudeAuthRow">
@@ -1646,6 +1648,20 @@
       createForm.querySelector("input[name=harness]:checked").value === "claude"
     );
   }
+
+  /* The Office (GPT) harness needs a hosted model on the control plane;
+     it is offered only when /api/llm says one is configured. */
+  fetch("/api/llm", {cache: "no-store"}).then(function(r){ return r.ok ? r.json() : null; }).then(function(info){
+    var azure = document.getElementById("harnessAzure");
+    if(!azure) return;
+    azure.disabled = !(info && info.configured);
+    var hint = document.getElementById("azureHint");
+    if(!hint) return;
+    var does = " It reads PDFs, scans, Excel and Word files, works web apps such as an ERP or HRMS on screen, updates Excel models without breaking their charts, and drafts emails into the Outbox for you to send. Any profile works.";
+    hint.textContent = (info && info.configured)
+      ? "Office (GPT) runs on " + (info.model || "the hosted model") + ", reached through the control plane - the desktop never holds its key." + does
+      : "Office (GPT) needs AZURE_ENDPOINT and AZURE_KEY in the control plane's .env." + does;
+  }).catch(function(){});
 
   createForm.querySelectorAll("input[name=profile], input[name=harness]").forEach(function(input){
     input.addEventListener("change", syncHarness);
@@ -2045,7 +2061,7 @@
     card.dataset.desktopId = info.id;
 
     var profileLabel = info.profile === "ai" ? "AI Developer" : (info.profile === "developer" ? "Developer" : "Basic");
-    var harnessLabel = info.harness === "claude" ? "Claude Code" : (info.harness === "thebot" ? "TheBot" : "Ollama");
+    var harnessLabel = info.harness === "claude" ? "Claude Code" : (info.harness === "thebot" ? "TheBot" : (info.harness === "azure" ? "Office (GPT)" : "Ollama"));
     var cpusLabel = info.cpus == 1 ? "1 core" : (info.cpus + " cores");
     var url = "/desktop/" + encodeURIComponent(info.id) + "/";
 

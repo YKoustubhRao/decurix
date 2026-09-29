@@ -2,7 +2,7 @@ import re
 import threading
 import traceback
 
-from decurix_agent import progress, state, usage
+from decurix_agent import binding, progress, state, usage
 from decurix_agent.computer import (approval, constraints, core, escalation, experience, launchers, learning, mimic,
                                     recording, replay, skills)
 from decurix_agent.computer import elements as el
@@ -115,9 +115,14 @@ def parse_learn(content):
 
 
 def parse_skill(content):
-    """(what was asked for, {param: value}) of a "/skill" request, or None. Nothing asked for lists the skills."""
+    """
+    (what was asked for, {param: value}) of a "/skill" request, or None. Nothing
+    asked for lists the skills. Only the first line is the command: lines after
+    it are the run's context (an email, the files it brought - skill_context),
+    which values the command does not give are read from.
+    """
 
-    match = SKILL_RE.match((content or "").strip())
+    match = SKILL_RE.match((content or "").strip().split("\n", 1)[0].strip())
     if not match:
         return None
 
@@ -129,6 +134,13 @@ def parse_skill(content):
 
     query = OPTION_RE.sub("", rest).strip()
     return ("" if query.lower() == "list" else query), params
+
+
+def skill_context(content):
+    """What follows a "/skill" request's command line: the documents and email of this run."""
+
+    parts = (content or "").strip().split("\n", 1)
+    return parts[1].strip() if len(parts) > 1 else ""
 
 
 def request_text(name, params=None):
@@ -259,7 +271,7 @@ def perform_mimic(content, task_file=None):
         log(f"Mimicking {found['kind']} {found['id']} for {content!r}: {changed or found['spans']}")
 
         run = {"skill": skill, "values": values, "start": 1, "checked": False, "patches": [], "asked": 0, "stuck": 0,
-               "ladder": _ladder(skill), "asked_ids": [], "mimic": found, "one_off": one_off}
+               "ladder": _ladder(skill), "asked_ids": [], "mimic": found, "one_off": one_off, "context": content}
         _prepare(run)
     except _Refused as refusal:
         write_final_reply(str(refusal), kind="error", engine=SKILL_ENGINE)
@@ -287,7 +299,7 @@ def perform(content, task_file=None):
         if parse_learn(content) is not None:
             _learn(*parse_learn(content))
         else:
-            _run_request(*parse_skill(content))
+            _run_request(*parse_skill(content), context=skill_context(content))
     except _Refused as refusal:
         write_final_reply(str(refusal), kind="error", engine=LEARN_ENGINE if parse_learn(content) is not None else SKILL_ENGINE)
     except Exception as exc:
@@ -491,7 +503,7 @@ def _listing():
     return "Skills on this desktop:\n" + "\n".join(lines) + "\nRun one with `/skill <name>`."
 
 
-def _run_request(query, given):
+def _run_request(query, given, context=""):
     if not query:
         write_final_reply(_listing(), kind="final", engine=SKILL_ENGINE)
         return
@@ -505,7 +517,7 @@ def _run_request(query, given):
         raise _Refused(f"I do not know a skill like \"{query}\". " + _listing())
 
     run = {"skill": skill, "values": skills.initial_values(skill, given), "start": 1, "checked": False, "patches": [],
-           "asked": 0, "stuck": 0, "ladder": _ladder(skill), "asked_ids": []}
+           "asked": 0, "stuck": 0, "ladder": _ladder(skill), "asked_ids": [], "context": context}
     _prepare(run)
 
 
@@ -531,13 +543,27 @@ def _prepare(run):
 
     # A value the field cannot take is asked for again, saying why, rather
     # than typed into it.
-    wrong = [] if missing else constraints.violations(skills.required(skill), run["values"])
+    wrong = [] if missing else constraints.violations(skills.required(skill), run["values"], split=skills.split_items)
     if wrong:
         why = " ".join(f"{param['label']}: {reason}." for param, reason in wrong)
         missing = [param for param, _ in wrong]
         for param in missing:
             run["values"].pop(param["name"], None)
         problem = why
+
+    # Values the request did not give are read from its documents first, once
+    # per run, when a hosted model is there to read them (binding.py). What it
+    # cannot find is asked for exactly as before.
+    if missing and not run.get("filled") and binding.available() and run.get("context"):
+        run["filled"] = True
+        progress.emit("Reading the values this task needs from its documents.")
+        found, evidence = binding.fill(skill, missing, run["context"])
+        if found:
+            run["values"].update(found)
+            run.setdefault("evidence", {}).update(evidence)
+            progress.emit("Read from the documents:\n" + binding.report(evidence, found))
+            _prepare(run)
+            return
 
     if missing:
         _pause(run, "values", (problem + " " if problem else "") + _need_text(skill, missing),
@@ -731,6 +757,10 @@ def _finish(run, result):
     skill = run["skill"]
     text = result["text"]
 
+    if run.get("evidence"):
+        filled = {k: run["values"][k] for k in run["evidence"] if k in run["values"]}
+        text += "\n\nValues read from the documents:\n" + binding.report(run["evidence"], filled)
+
     if run.get("one_off"):
         # Built from a recording for this request only: nothing to save, and a
         # person has not said which parts change - Learn is how they do.
@@ -809,7 +839,7 @@ def _values_reply(paused, reply):
 
     left = [name for name in missing if not run["values"].get(name)]
     if run["asked"] >= 2 and (left or skills.list_problem(run["skill"], run["values"])
-                              or constraints.violations(skills.required(run["skill"]), run["values"])):
+                              or constraints.violations(skills.required(run["skill"]), run["values"], split=skills.split_items)):
         raise _Refused(f"I still do not have usable values for {', '.join(missing)}, so I did not start.")
 
     _prepare(run)

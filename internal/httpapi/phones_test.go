@@ -175,17 +175,30 @@ func TestALinkedPhonesAppsAreListedAndOpenInAViewer(t *testing.T) {
 		t.Fatalf("first message %d %s %v", op, raw, err)
 	}
 
-	op, raw, err = viewer.Read(5 * time.Second)
-	if err != nil || op != wsconn.OpBinary || len(raw) != 12 || raw[0] != 0x80 {
-		t.Fatalf("the phone's frame reached the viewer as %d %v %v (want the 12-byte packet, no session prefix)", op, raw, err)
+	// The frame (video) and the app's controls (the phone's tree reader) come
+	// from separate streams on the phone, in either order; the viewer takes both.
+	var frame, tree []byte
+	for i := 0; i < 2; i++ {
+		op, raw, err = viewer.Read(5 * time.Second)
+		if err != nil {
+			t.Fatalf("reading the viewer's messages: %v", err)
+		}
+		switch op {
+		case wsconn.OpBinary:
+			frame = raw
+		case wsconn.OpText:
+			tree = raw
+		}
 	}
 
-	// The app's controls follow, as the phone read them.
-	op, raw, err = viewer.Read(5 * time.Second)
+	if len(frame) != 12 || frame[0] != 0x80 {
+		t.Fatalf("the phone's frame reached the viewer as %v (want the 12-byte packet, no session prefix)", frame)
+	}
+
 	var got struct{ Tree *phonehost.Tree }
-	if err != nil || op != wsconn.OpText || json.Unmarshal(raw, &got) != nil || got.Tree == nil ||
+	if json.Unmarshal(tree, &got) != nil || got.Tree == nil ||
 		len(got.Tree.Nodes) != 1 || got.Tree.Nodes[0].Name != "Send" || !got.Tree.Fresh {
-		t.Fatalf("the app's controls reached the viewer as %d %s %v", op, raw, err)
+		t.Fatalf("the app's controls reached the viewer as %s", tree)
 	}
 }
 

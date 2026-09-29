@@ -207,6 +207,31 @@ class Volatility(unittest.TestCase):
         self.assertIn('textbox "Password" value changed', summary)
         self.assertEqual(core.expectations(change)["values"], [])
 
+    def test_a_forms_answer_is_read_back_whole(self):
+        # OrangeHRM after Save on a form with a badly typed date: a close button
+        # and two words of text. Only the button used to be named.
+        save = field("button", "Save")
+        before = {"elements": [save], "windows": [], "active_title": "A"}
+        appeared = [
+            {"role": "button", "name": "\u00d7", "value": "", "states": [], "path": "form > button x"},
+            {"role": "text", "name": "Should be a valid date in yyyy-dd-mm format", "value": "", "states": [], "path": "form > text d"},
+            {"role": "text", "name": "Required", "value": "", "states": [], "path": "form > text r"},
+        ]
+        change = core.compare(before, dict(before, elements=[save] + appeared))
+        summary = core.summarize(change)
+        self.assertIn("Should be a valid date in yyyy-dd-mm format", summary)
+        self.assertIn('"Required"', summary)
+        self.assertNotIn("more)", summary)
+        self.assertLess(summary.index("valid date"), summary.index("\u00d7"))
+
+    def test_a_new_page_is_cut_to_its_messages_and_controls(self):
+        before = {"elements": [], "windows": [], "active_title": "A"}
+        many = [{"role": "text", "name": f"row {i}", "value": "", "states": [], "path": f"t {i}"} for i in range(40)]
+        many.append({"role": "alert", "name": "Record created", "value": "", "states": [], "path": "alert"})
+        summary = core.summarize(core.compare(before, dict(before, elements=many)))
+        self.assertIn('alert "Record created"', summary)
+        self.assertNotIn("row 39", summary)
+
 
 class Store(unittest.TestCase):
 

@@ -9,6 +9,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from decurix_agent.computer import browser
+from decurix_agent.logging_utils import log
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 
@@ -151,6 +153,9 @@ class Page:
         self.target = target
         self.ws = _Socket(target["webSocketDebuggerUrl"])
         self.seq = 0
+        # Events that arrived while waiting for an answer, kept for wait_event:
+        # only the domains a caller enabled send any.
+        self.events = []
 
     def call(self, method, params=None, timeout=CALL_TIMEOUT):
         self.seq += 1
@@ -165,12 +170,37 @@ class Page:
                 raise ComputerError(f"Chromium did not answer {method} within {timeout}s")
 
             if message.get("id") != mine:
+                if "method" in message and "id" not in message:
+                    self.events.append(message)
                 continue
 
             if "error" in message:
                 raise ComputerError(f"{method}: {message['error'].get('message')}")
 
             return message.get("result", {})
+
+    def wait_event(self, method, timeout):
+        """The params of the first `method` event, waiting up to `timeout` seconds; None if none came."""
+
+        deadline = time.monotonic() + timeout
+
+        while True:
+            for message in self.events:
+                if message.get("method") == method:
+                    self.events.remove(message)
+                    return message.get("params") or {}
+
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return None
+
+            self.ws.sock.settimeout(left)
+            try:
+                message = json.loads(self.ws.receive())
+            except (socket.timeout, OSError, ValueError):
+                return None
+            if "method" in message and "id" not in message:
+                self.events.append(message)
 
     def evaluate(self, expression):
         result = self.call("Runtime.evaluate", {"expression": expression, "returnByValue": True})
@@ -180,17 +210,40 @@ class Page:
         self.ws.close()
 
 
-def _get(path, method="GET", timeout=2):
+def _get(path, method="GET", timeout=None):
+    # A busy browser answers late (BUSY_ANSWER_SECONDS); a missing one refuses at once.
+    timeout = BUSY_ANSWER_SECONDS if timeout is None else timeout
     request = urllib.request.Request(BASE + path, method=method)
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
+# How long a browser whose DevTools port is open may take to answer. It was
+# half a second, and a Chrome busy rendering an ERP page (Odoo's quotation form,
+# with another desktop loading beside it) answered later: the layer reported
+# "open without its debugging port" and showed the agent an empty screen.
+BUSY_ANSWER_SECONDS = float(os.environ.get("DECURIX_CDP_ANSWER_SECONDS", "5"))
+
+
 def available():
+    """
+    Whether the browser's DevTools port answers. A refused connection (nothing
+    listening) is known at once; a slow answer is a busy browser, not a missing
+    port, and is waited for.
+    """
+
     try:
-        _get("/json/version", timeout=0.5)
+        _get("/json/version", timeout=BUSY_ANSWER_SECONDS)
         return True
-    except (OSError, ValueError):
+    except ConnectionRefusedError:
+        return False
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, ConnectionRefusedError):
+            return False
+        log(f"cdp: the DevTools port did not answer: {exc}")
+        return False
+    except (OSError, ValueError) as exc:
+        log(f"cdp: the DevTools port did not answer: {exc}")
         return False
 
 
@@ -205,6 +258,91 @@ def _page_targets():
         if t.get("type") == "page" and t.get("webSocketDebuggerUrl")
         and not t.get("url", "").startswith(("devtools://", "chrome-extension://"))
     ]
+
+
+def _name_by_column(found, columns, metrics, origin_x, origin_y, dpr):
+    """Give an unnamed field in a table cell its column's header as its name (_COLUMN_NAMES)."""
+
+    boxes = []
+    # Only well-formed entries: the page's own scripts can redefine what the
+    # evaluation returns, and a name is a hint - never a reason to fail a look.
+    for entry in columns if isinstance(columns, list) else []:
+        if (not isinstance(entry, list) or len(entry) != 5 or not isinstance(entry[4], str)
+                or not all(isinstance(v, (int, float)) for v in entry[:4])):
+            continue
+        x, y, w, h, header = entry
+        sx, sy = origin_x + (x - metrics["scx"]) * dpr, origin_y + (y - metrics["scy"]) * dpr
+        boxes.append((sx + w * dpr / 2, sy + h * dpr / 2, header[:60]))
+
+    for element in found:
+        if element["name"] or element["role"] not in _NAMEABLE_FIELDS or not element.get("box"):
+            continue
+        bx, by, bw, bh = element["box"]
+        cx, cy = bx + bw / 2, by + bh / 2
+        match = next((header for hx, hy, header in boxes if abs(hx - cx) <= 3 and abs(hy - cy) <= 3), None)
+        if match:
+            element["name"] = match
+            element["named_by"] = "column"
+            head, _, _ = element["path"].rpartition(" > ")
+            element["path"] = (head + " > " if head else "") + f"{element['role']} {el._quote(match, 40)}"
+
+
+def _name_by_group(found, labels, metrics, origin_x, origin_y, dpr):
+    """
+    Name a field whose only name is its placeholder (or none) by its group's
+    label (_GROUP_LABELS). A custom dropdown - a focusable block with no role,
+    read by the accessibility tree as its text ("-- Select --") - becomes a
+    combobox named by its label, holding that text as its value.
+    """
+
+    fields, customs = [], []
+    for entry in labels if isinstance(labels, list) else []:
+        if (not isinstance(entry, list) or len(entry) != 7 or not all(isinstance(v, str) for v in entry[4:6])
+                or not (entry[6] is None or isinstance(entry[6], str))
+                or not all(isinstance(v, (int, float)) for v in entry[:4])):
+            continue
+        x, y, w, h, label, placeholder, shown = entry
+        sx, sy = origin_x + (x - metrics["scx"]) * dpr, origin_y + (y - metrics["scy"]) * dpr
+        box = (sx, sy, w * dpr, h * dpr)
+        if shown is None:
+            fields.append((sx + w * dpr / 2, sy + h * dpr / 2, label[:60], placeholder[:40]))
+        else:
+            customs.append((box, label[:60], shown[:60]))
+
+    for element in found:
+        if element.get("named_by") or not element.get("box"):
+            continue
+        bx, by, bw, bh = element["box"]
+        cx, cy = bx + bw / 2, by + bh / 2
+
+        if element["role"] in _NAMEABLE_FIELDS:
+            match = next(((label, ph) for hx, hy, label, ph in fields if abs(hx - cx) <= 3 and abs(hy - cy) <= 3), None)
+            if not match:
+                continue
+            label, placeholder = match
+            # Only a name that is nothing or the placeholder is replaced: a field
+            # the page labelled properly keeps its own name.
+            if element["name"] and element["name"] != placeholder:
+                continue
+            name = f"{label} ({placeholder})" if placeholder and _FORMAT_PLACEHOLDER.match(placeholder) else label
+            role = element["role"]
+        elif element["role"] == "text":
+            match = next(((label, shown) for (x, y, w, h), label, shown in customs
+                          if x - 2 <= cx <= x + w + 2 and y - 2 <= cy <= y + h + 2
+                          and (element.get("name") or "").strip() == shown), None)
+            if not match:
+                continue
+            name, shown = match
+            role = "combobox"
+            element["role"] = role
+            element["value"] = shown
+        else:
+            continue
+
+        element["name"] = name
+        element["named_by"] = "label"
+        head, _, _ = element["path"].rpartition(" > ")
+        element["path"] = (head + " > " if head else "") + f"{role} {el._quote(name, 40)}"
 
 
 def active_page():
@@ -255,6 +393,94 @@ _METRICS = """JSON.stringify({
 })"""
 
 
+# A form control inside a table cell with no label of its own is named by its
+# column's header, the way a screen reader announces it. Found in Odoo's order
+# lines: after "Add Line" the row's cells were five unnamed textboxes and
+# comboboxes, and nothing said which took the product and which the quantity.
+_COLUMN_NAMES = """JSON.stringify((() => {
+  const out = [];
+  const fields = document.querySelectorAll('input:not([type=hidden]), select, textarea, [contenteditable="true"], ' +
+    '[role=combobox], [role=textbox], [role=spinbutton], [role=searchbox]');
+  const labelled = el => el.getAttribute('aria-label') || el.getAttribute('aria-labelledby') ||
+    (el.labels && el.labels.length) || el.getAttribute('title') || el.getAttribute('placeholder');
+  const start = cell => [...cell.parentElement.children].slice(0, [...cell.parentElement.children].indexOf(cell))
+    .reduce((n, c) => n + (c.colSpan || 1), 0);
+  for (const el of fields) {
+    if (labelled(el)) continue;
+    const cell = el.closest('td, th, [role=gridcell], [role=cell]');
+    const table = cell && cell.closest('table, [role=grid], [role=table], [role=treegrid]');
+    if (!cell || !table || !cell.parentElement) continue;
+    const head = table.querySelector('thead tr') || table.querySelector('[role=row]');
+    if (!head || head === cell.parentElement) continue;
+    const column = start(cell);
+    let n = 0, header = '';
+    for (const h of head.children) {
+      const span = h.colSpan || 1;
+      if (column >= n && column < n + span) { header = (h.getAttribute('aria-label') || h.innerText || '').trim(); break; }
+      n += span;
+    }
+    const r = el.getBoundingClientRect();
+    if (header && r.width > 0 && r.height > 0) {
+      out.push([r.left + scrollX, r.top + scrollY, r.width, r.height, header.replace(/\\s+/g, ' ').slice(0, 60)]);
+    }
+  }
+  return out;
+})())"""
+
+# A field with no label of its own - named, at best, by its placeholder - in
+# a form whose label is a sibling element instead of a <label for> (OrangeHRM,
+# many Vue/React kits): every date field there read `textbox "yyyy-dd-mm"`, and
+# live the agent typed a date of birth into the driving licence's expiry. A
+# screen reader has the same problem; a person reads the text beside the box.
+# So the field is named by the text before it inside the smallest enclosing
+# block that holds no other field (its own label group), and a placeholder that
+# is a format ("yyyy-dd-mm") is kept after it. Returns [x, y, w, h, name,
+# placeholder, shown text of a custom dropdown or null].
+_GROUP_LABELS = """JSON.stringify((() => {
+  const out = [];
+  const selector = 'input:not([type=hidden]):not([type=file]), select, textarea, [contenteditable="true"], ' +
+    '[role=combobox], [role=textbox], [role=spinbutton], [role=searchbox]';
+  // A custom dropdown is often a focusable <div> with no role at all
+  // (OrangeHRM's "-- Select --"): a field too, reported with its shown text.
+  const custom = '[tabindex]:not([tabindex="-1"]):not(a):not(button):not(input):not(select):not(textarea):not([role]):not(body)';
+  const all = selector + ', ' + custom;
+  const fields = document.querySelectorAll(all);
+  const own = el => el.getAttribute('aria-label') || el.getAttribute('aria-labelledby') ||
+    (el.labels && el.labels.length) || el.getAttribute('title');
+  for (const el of fields) {
+    const isCustom = el.matches(custom);
+    if (isCustom && (el.children.length > 2 || (el.innerText || '').trim().length > 60)) continue;
+    if (own(el) || el.closest('td, th, [role=gridcell], [role=cell]')) continue;
+    let group = el.parentElement, label = '';
+    for (let depth = 0; group && depth < 5 && !label; depth++, group = group.parentElement) {
+      if ([...group.querySelectorAll(all)].filter(f => !f.contains(el) && !el.contains(f)).length) break;
+      const walker = document.createTreeWalker(group, NodeFilter.SHOW_TEXT);
+      const words = [];
+      for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+        if (el.contains(t) || !(t.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+        const text = t.textContent.replace(/\\s+/g, ' ').trim();
+        if (text) words.push(text);
+      }
+      label = words.join(' ').replace(/\\s*\\*\\s*$/, '').trim();
+    }
+    const r = el.getBoundingClientRect();
+    if (label && label.length <= 60 && r.width > 0 && r.height > 0) {
+      out.push([r.left + scrollX, r.top + scrollY, r.width, r.height, label,
+                isCustom ? '' : (el.getAttribute('placeholder') || ''),
+                isCustom ? (el.innerText || '').replace(/\\s+/g, ' ').trim() : null]);
+    }
+  }
+  return out;
+})())"""
+
+# A placeholder that says how to write the value, worth keeping in the name.
+_FORMAT_PLACEHOLDER = re.compile(r"^[ymdhsa]{1,4}([-/.: ][ymdhsa]{1,4})+$", re.I)
+
+
+# The roles a column header may name.
+_NAMEABLE_FIELDS = {"textbox", "combobox", "spinbutton", "searchbox", "listbox", "checkbox"}
+
+
 def _prop(node, key):
     for prop in node.get("properties", []):
         if prop.get("name") == key:
@@ -281,6 +507,14 @@ def observe():
         metrics = json.loads(page.evaluate(_METRICS))
         nodes = page.call("Accessibility.getFullAXTree").get("nodes", [])
         snapshot = page.call("DOMSnapshot.captureSnapshot", {"computedStyles": []})
+        try:
+            columns = json.loads(page.evaluate(_COLUMN_NAMES) or "[]")
+        except (ComputerError, ValueError):
+            columns = []  # a name from a column is help, never a reason to fail a look
+        try:
+            labels = json.loads(page.evaluate(_GROUP_LABELS) or "[]")
+        except (ComputerError, ValueError):
+            labels = []
     finally:
         page.close()
 
@@ -326,7 +560,7 @@ def observe():
     group = {
         "id": group_id,
         "title": f"Chromium tab {el._quote(title, 60)} {url[:100]}",
-        "window_title": f"{title} - Chromium",
+        "window_title": browser.page_window_title(title),
         "url": url,
         "source": "cdp",
     }
@@ -470,6 +704,8 @@ def observe():
             if child is not None:
                 stack.append((child, child_segments, next_inside_row, child_bar))
 
+    _name_by_column(found, columns, metrics, origin_x, origin_y, dpr)
+    _name_by_group(found, labels, metrics, origin_x, origin_y, dpr)
     el.dedupe_paths(found)
 
     return found, group
@@ -553,7 +789,7 @@ def element_at_screen_point(x, y, known_elements=()):
                         "path": f"site browser > {norm} {el._quote(name, 40)}",
                         "source": "cdp",
                         "group": f"cdp:{page.target.get('id')}",
-                        "window_title": f"{metrics.get('title') or page.target.get('title') or ''} - Chromium",
+                        "window_title": browser.page_window_title(metrics.get('title') or page.target.get('title') or ''),
                         "app": "chromium",
                         "bar": None,
                         "handle": {
@@ -600,18 +836,63 @@ def _center(page, backend_id):
     return sum(xs) / 4, sum(ys) / 4
 
 
+# How long a click waits for a file chooser after its barrier (below). The
+# page opens it from the click's own handler; measured on a desktop's Chrome,
+# the announcement was already in before a round trip sent after the click
+# came back, 20 of 20 times - the wait is a margin for a loaded desktop, and
+# it is what every click that opens nothing pays.
+CHOOSER_WAIT_SECONDS = 0.1
+
+
+def _press(page, x, y, button, count):
+    page.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
+
+    for n in range(1, count + 1):
+        for kind in ("mousePressed", "mouseReleased"):
+            page.call("Input.dispatchMouseEvent", {
+                "type": kind, "x": x, "y": y, "button": button, "clickCount": n,
+            })
+
+
+def _intercept_choosers(page):
+    """Have the page announce a file chooser (Page.fileChooserOpened) instead of showing one."""
+
+    try:
+        page.call("Page.enable")
+        page.call("Page.setInterceptFileChooserDialog", {"enabled": True})
+        return True
+    except ComputerError:
+        return False
+
+
 def click(element, button="left", count=1):
+    """
+    Click an element. Returns {"file_chooser": mode} when the click opened a
+    file chooser, else {}.
+
+    A native file chooser is a GTK dialog outside the page: live, an agent
+    that clicked Odoo's "Upload Bill" spent a minute double-clicking inside
+    "Open Files" and never chose the invoice. So file choosers are
+    intercepted for the click - none is shown - and the caller is told, so
+    the engine uses the upload action (set_file_input_files) instead.
+    """
+
     page = _page_for(element)
 
     try:
+        intercepting = button == "left" and _intercept_choosers(page)
         x, y = _center(page, element["handle"]["backend_id"])
-        page.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
+        _press(page, x, y, button, count)
 
-        for n in range(1, count + 1):
-            for kind in ("mousePressed", "mouseReleased"):
-                page.call("Input.dispatchMouseEvent", {
-                    "type": kind, "x": x, "y": y, "button": button, "clickCount": n,
-                })
+        if intercepting:
+            try:
+                page.evaluate("1")  # a barrier: the click's handler has run by its answer
+            except ComputerError:
+                pass
+            opened = page.wait_event("Page.fileChooserOpened", CHOOSER_WAIT_SECONDS)
+            if opened is not None:
+                return {"file_chooser": opened.get("mode") or "selectSingle"}
+        return {}
     finally:
         page.close()
 
@@ -685,6 +966,16 @@ def press_key(page, name):
     page.call("Input.dispatchKeyEvent", {"type": "keyUp", "key": key, "code": key, "windowsVirtualKeyCode": code, "nativeVirtualKeyCode": code})
 
 
+def close_list(element):
+    """Press Escape in the tab `element` is on: closes an open suggestion list, keeping what was typed."""
+
+    page = _page_for(element)
+    try:
+        press_key(page, "Escape")
+    finally:
+        page.close()
+
+
 def select_option(element, option):
     page = _page_for(element)
 
@@ -723,8 +1014,16 @@ def select_option(element, option):
 
 def set_file_input_files(element, files):
     """
-    Set files on a file input element (<input type="file">), or an element wrapping/referencing one.
-    Uses Chrome DevTools Protocol DOM.setFileInputFiles.
+    Choose files for the upload control `element` is.
+
+    The page decides which input that is, so it is asked: an element that is
+    a file input, holds one or is the label of one is set directly; anything
+    else (a styled "Upload" or "Browse" button, whose input may only be made
+    when it is clicked - Odoo's "Upload Bill") is clicked with the page's
+    file chooser intercepted, and the files go to the input the page opened
+    it for. Only when clicking opens no chooser is a lone file input near the
+    element used. DOM.setFileInputFiles fires the input's own input/change
+    events; firing them again made some pages upload twice.
     """
     if isinstance(files, (str, bytes)):
         files = [files]
@@ -737,63 +1036,82 @@ def set_file_input_files(element, files):
     try:
         backend_id = element["handle"]["backend_id"]
         object_id = _object(page, backend_id)
-        target_info = page.call("Runtime.callFunctionOn", {
+
+        direct = page.call("Runtime.callFunctionOn", {
             "objectId": object_id,
-            "returnByValue": True,
             "functionDeclaration": """function() {
-                if (this.tagName === 'INPUT' && (this.type || '').toLowerCase() === 'file') {
-                    return {found: true, is_self: true};
-                }
-                const input = this.querySelector('input[type="file"]');
-                if (input) return {found: true, is_child: true};
+                const isFile = el => el && el.tagName === 'INPUT' && (el.type || '').toLowerCase() === 'file';
+                if (isFile(this)) return this;
+                const inner = this.querySelectorAll ? this.querySelectorAll('input[type="file"]') : [];
+                if (inner.length === 1) return inner[0];
                 if (this.htmlFor) {
                     const el = document.getElementById(this.htmlFor);
-                    if (el && el.tagName === 'INPUT' && (el.type || '').toLowerCase() === 'file') {
-                        return {found: true, is_for: true, id: this.htmlFor};
-                    }
+                    if (isFile(el)) return el;
                 }
-                return {found: false, tag: this.tagName};
+                return null;
             }"""
-        }).get("result", {}).get("value") or {}
+        }).get("result", {}).get("objectId")
 
-        target_object_id = object_id
-        if target_info.get("is_child"):
-            resolved = page.call("Runtime.callFunctionOn", {
-                "objectId": object_id,
-                "functionDeclaration": "function() { return this.querySelector('input[type=\"file\"]'); }"
-            })
-            target_object_id = resolved.get("result", {}).get("objectId") or object_id
-        elif target_info.get("is_for"):
-            resolved = page.call("Runtime.callFunctionOn", {
-                "objectId": object_id,
-                "arguments": [{"value": target_info["id"]}],
-                "functionDeclaration": "function(id) { return document.getElementById(id); }"
-            })
-            target_object_id = resolved.get("result", {}).get("objectId") or object_id
+        if direct:
+            _check_multiple(page, direct, abs_files)
+            page.call("DOM.setFileInputFiles", {"files": abs_files, "objectId": direct})
+            return _uploaded(abs_files)
 
-        try:
-            page.call("DOM.setFileInputFiles", {
-                "files": abs_files,
-                "objectId": target_object_id,
-            })
-        except Exception:
-            page.call("DOM.setFileInputFiles", {
-                "files": abs_files,
-                "backendNodeId": backend_id,
-            })
+        if _intercept_choosers(page):
+            x, y = _center(page, backend_id)
+            _press(page, x, y, "left", 1)
+            opened = page.wait_event("Page.fileChooserOpened", CHOOSER_OPEN_SECONDS)
+            if opened is not None and opened.get("backendNodeId"):
+                if opened.get("mode") == "selectSingle" and len(abs_files) > 1:
+                    raise ComputerError(f"{el.describe(element)} takes one file at a time - upload them one by one")
+                page.call("DOM.setFileInputFiles", {"files": abs_files, "backendNodeId": opened["backendNodeId"]})
+                return _uploaded(abs_files)
 
-        page.call("Runtime.callFunctionOn", {
-            "objectId": target_object_id,
-            "returnByValue": True,
+        # No chooser opened: a lone input in an enclosing block (a hidden
+        # input beside a "Browse" button that listens for something else).
+        nearby = page.call("Runtime.callFunctionOn", {
+            "objectId": object_id,
             "functionDeclaration": """function() {
-                this.dispatchEvent(new Event('input', {bubbles: true}));
-                this.dispatchEvent(new Event('change', {bubbles: true}));
-                return true;
+                let node = this.parentElement;
+                for (let i = 0; node && i < 6; i++, node = node.parentElement) {
+                    const inputs = node.querySelectorAll('input[type="file"]');
+                    if (inputs.length === 1) return inputs[0];
+                    if (inputs.length > 1) return null;
+                }
+                const all = document.querySelectorAll('input[type="file"]');
+                return all.length === 1 ? all[0] : null;
             }"""
-        })
-        return f"Uploaded {len(abs_files)} file(s): " + ", ".join(os.path.basename(f) for f in abs_files)
+        }).get("result", {}).get("objectId")
+
+        if not nearby:
+            raise ComputerError(f"{el.describe(element)} opened no file chooser and has no file input near it - "
+                                "target the control that opens the file dialog")
+
+        _check_multiple(page, nearby, abs_files)
+        page.call("DOM.setFileInputFiles", {"files": abs_files, "objectId": nearby})
+        return _uploaded(abs_files)
     finally:
         page.close()
+
+
+# How long an upload waits for the page to open its file chooser after the
+# click: longer than a plain click's wait, since this click is for nothing else.
+CHOOSER_OPEN_SECONDS = 3.0
+
+
+def _check_multiple(page, object_id, files):
+    if len(files) < 2:
+        return
+    multiple = page.call("Runtime.callFunctionOn", {
+        "objectId": object_id, "returnByValue": True,
+        "functionDeclaration": "function() { return !!this.multiple; }",
+    }).get("result", {}).get("value")
+    if not multiple:
+        raise ComputerError("that file field takes one file at a time - upload them one by one")
+
+
+def _uploaded(files):
+    return f"Uploaded {len(files)} file(s): " + ", ".join(os.path.basename(f) for f in files)
 
 
 def scroll(element, direction, amount=3):
@@ -821,6 +1139,12 @@ def scroll(element, direction, amount=3):
 
 def navigate(url, new_tab=False):
     """Load a URL in the active tab (or a new one) and wait for it to load."""
+
+    # A pre-warmed Chromium (--no-startup-window, start_agent_terminal.sh) is
+    # running with no tab at all: open the page in a new one rather than
+    # refusing - "Chromium has no open tab" sent an agent on a long detour.
+    if not new_tab and not _page_targets():
+        new_tab = True
 
     if new_tab:
         try:

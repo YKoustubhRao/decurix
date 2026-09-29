@@ -1,4 +1,5 @@
 import base64
+import os
 import json
 import sys
 import traceback
@@ -50,17 +51,19 @@ TOOLS = [
             "Do one thing on the screen, then report what changed and return the new screenshot. "
             "Target an element by ref from the latest observe (preferred), or by role and name; use "
             "x/y screen coordinates only when no element fits. Actions: click, double_click, "
-            "right_click, type (replaces a field's text unless append is true; \\n is Enter), key "
+            "right_click, type (one field per call: replaces its text unless append is true; \\n is Enter, a Tab "
+            "is refused - type the next field by its own ref), key "
             "(keys like [\"ctrl+s\"] or [\"Return\"]; sent to the target or the focused window), "
-            "scroll (direction up/down/left/right, amount), select (pick option in a dropdown), "
-            "drag (from the target, or x/y, to end_x/end_y). "
+            "scroll (direction up/down/left/right, amount), select (pick an option in a dropdown - also one a page draws itself, and a field that suggests entries as you type, such as a customer or product: it types the value and clicks the matching suggestion), "
+            "drag (from the target, or x/y, to end_x/end_y), upload (put files from this desktop into a file input - "
+            "target the input or its Browse/Upload button; files are paths). "
             "Controls that send, pay, buy or publish are stopped for human approval: the result "
             "then starts with NEEDS_APPROVAL and nothing happened."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["click", "double_click", "right_click", "type", "key", "scroll", "select", "drag"]},
+                "action": {"type": "string", "enum": ["click", "double_click", "right_click", "type", "key", "scroll", "select", "drag", "upload"]},
                 "ref": {"type": "string", "description": "Element ref from observe, e.g. e12."},
                 "role": {"type": "string"},
                 "name": {"type": "string"},
@@ -74,6 +77,7 @@ TOOLS = [
                 "option": {"type": "string", "description": "For select: the option's label."},
                 "end_x": {"type": "integer", "description": "For drag: where to drop."},
                 "end_y": {"type": "integer"},
+                "files": {"type": "array", "items": {"type": "string"}, "description": "For upload: file paths on this desktop."},
             },
             "required": ["action"],
         },
@@ -185,6 +189,19 @@ def _text(text):
     return {"type": "text", "text": text}
 
 
+def _absolute(files):
+    """Upload paths as the browser needs them: absolute, ~ expanded, relative ones from the work dir."""
+
+    if not files:
+        return None
+    from decurix_agent import config
+    out = []
+    for f in files if isinstance(files, list) else [files]:
+        p = os.path.expanduser(str(f))
+        out.append(p if os.path.isabs(p) else os.path.join(str(config.WORK_DIR), p))
+    return out
+
+
 def call_tool(name, arguments):
     """Run one tool; return (content blocks, is_error)."""
 
@@ -222,6 +239,7 @@ def call_tool(name, arguments):
             option=arguments.get("option"),
             append=bool(arguments.get("append")),
             end=end,
+            files=_absolute(arguments.get("files")),
         )
 
         if result["status"] == "needs_approval":

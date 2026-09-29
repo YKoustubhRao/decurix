@@ -20,6 +20,15 @@ if config.AGENT_HARNESS == "claude":
     def _after_ready():
         return
 
+elif config.AGENT_HARNESS == "azure":
+    from decurix_agent.azure_harness import (
+        perform_task,
+        continue_after_query,
+        ask_once as _ask_once,
+        wait_for_backend as _wait_for_backend,
+        warm_after_ready as _after_ready,
+    )
+
 elif config.AGENT_HARNESS == "thebot":
     from decurix_agent.thebot_harness import (
         perform_task,
@@ -63,6 +72,17 @@ def ask_model(system, prompt):
     opinion without knowing which engine is behind them. TheBot has no
     single-question endpoint of its own, so it asks the Ollama it already uses.
     """
+
+    # A hosted model, when the control plane has one, answers these for
+    # every engine: choosing among candidates, judging a screen, placing a
+    # click - exactly the one-off calls a small local model gets wrong.
+    from decurix_agent import llm_client
+
+    if llm_client.available():
+        try:
+            return llm_client.ask_once(system, prompt)
+        except llm_client.LLMError:
+            pass  # fall back to this desktop's own engine
 
     return _ask_once(system, prompt)
 

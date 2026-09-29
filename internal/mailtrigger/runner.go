@@ -370,6 +370,8 @@ func (r *Runner) readBatch(ctx context.Context, mb Mailbox, acct Account, uids [
 		var jobs []Job
 		var text string
 		var textRead bool
+		var files []Attachment
+		var filesRead bool
 
 		for _, m := range matchers {
 			if !m.matches(msg) {
@@ -387,7 +389,20 @@ func (r *Runner) readBatch(ctx context.Context, mb Mailbox, acct Account, uids [
 				text = bodyText(header, raw, maxBodyChars)
 			}
 
-			jobs = append(jobs, newJob(acct, m.rule, msg, text, p.At))
+			if !filesRead && mayHaveAttachments(header) {
+				filesRead = true
+
+				if full, ok := mb.(interface{ Full(uint32) ([]byte, error) }); ok {
+					raw, err := full.Full(uid)
+					if err != nil {
+						return fmt.Errorf("reading an email's attachments: %w", err)
+					}
+
+					files = uniqueNames(ExtractAttachments(raw))
+				}
+			}
+
+			jobs = append(jobs, newJob(acct, m.rule, msg, text, p.At, files))
 		}
 
 		p.Jobs = append(p.Jobs, jobs...)
@@ -440,9 +455,11 @@ func (m matcher) matches(msg Message) bool {
 	return true
 }
 
-func newJob(acct Account, rule Rule, msg Message, text string, at time.Time) Job {
+func newJob(acct Account, rule Rule, msg Message, text string, at time.Time, files []Attachment) Job {
+	id := newID("mjob")
+
 	job := Job{
-		ID:        newID("mjob"),
+		ID:        id,
 		RuleID:    rule.ID,
 		RuleName:  rule.Name,
 		AccountID: acct.ID,
@@ -451,8 +468,9 @@ func newJob(acct Account, rule Rule, msg Message, text string, at time.Time) Job
 		From:      msg.From,
 		Subject:   msg.Subject,
 		Received:  msg.Received,
-		Content:   Render(rule, msg, text),
+		Content:   RenderWithFiles(rule, msg, text, InboxDir(id), files),
 		Status:    JobPending,
+		Files:     files,
 	}
 
 	if job.Received.IsZero() {
@@ -485,6 +503,12 @@ func newJob(acct Account, rule Rule, msg Message, text string, at time.Time) Job
 // instructions" is not the last thing the model reads. A "---" in the
 // email's own text is broken up, so it cannot fake the end of the email.
 func Render(rule Rule, msg Message, text string) string {
+	return RenderWithFiles(rule, msg, text, "", nil)
+}
+
+// RenderWithFiles is Render for an email that carried files: they are listed
+// inside the email's frame with where they are on the desktop (dir).
+func RenderWithFiles(rule Rule, msg Message, text, dir string, files []Attachment) string {
 	date := ""
 	if !msg.Received.IsZero() {
 		date = msg.Received.UTC().Format(time.RFC3339)
@@ -497,12 +521,24 @@ func Render(rule Rule, msg Message, text string) string {
 		"{date}", date,
 	).Replace(rule.Content)
 
-	if strings.HasPrefix(strings.TrimSpace(content), "/") {
+	// A slash command is sent as written - its words are parsed exactly -
+	// except /skill, which reads the values it is not given from lines after
+	// its command (decurix_agent/skill_task.skill_context): a taught workflow
+	// set off by an email fills itself in from that email and its files.
+	trimmed := strings.TrimSpace(content)
+	isSkill := strings.HasPrefix(trimmed, "/skill ") || strings.HasPrefix(trimmed, "/skills ")
+
+	if strings.HasPrefix(trimmed, "/") && !isSkill {
 		return content
 	}
 
 	var b strings.Builder
-	b.WriteString(strings.TrimRight(content, "\n"))
+	if isSkill {
+		// The command stays one line; everything after it is context.
+		b.WriteString(strings.Join(strings.Fields(trimmed), " "))
+	} else {
+		b.WriteString(strings.TrimRight(content, "\n"))
+	}
 	b.WriteString("\n\n" + emailStart + "\nFrom: ")
 	b.WriteString(oneLine(msg.From))
 	b.WriteString("\nSubject: ")
@@ -518,7 +554,20 @@ func Render(rule Rule, msg Message, text string) string {
 		b.WriteString(strings.ReplaceAll(text, "---", "- - -"))
 	}
 
-	b.WriteString("\n" + emailEnd + "\n\nUse the email above to do this: ")
+	if len(files) > 0 {
+		b.WriteString("\n\nFiles attached to the email, saved on this desktop:")
+		for _, f := range files {
+			b.WriteString("\n  " + dir + "/" + f.Name)
+		}
+	}
+
+	b.WriteString("\n" + emailEnd)
+
+	if isSkill {
+		return b.String()
+	}
+
+	b.WriteString("\n\nUse the email above to do this: ")
 	b.WriteString(strings.TrimSpace(content))
 
 	return b.String()
@@ -587,7 +636,24 @@ func (r *Runner) dispatch(ctx context.Context) {
 }
 
 func (r *Runner) send(ctx context.Context, job Job) {
-	taskID, err := r.Submitter.SubmitTracked(ctx, job.DesktopID, job.Content)
+	var taskID string
+	var err error
+
+	files, ferr := r.Store.JobFiles(job.ID)
+	fs, canFiles := r.Submitter.(FileSubmitter)
+
+	switch {
+	case ferr != nil:
+		err = ferr
+	case len(files) > 0 && canFiles:
+		taskID, err = fs.SubmitTrackedWithFiles(ctx, job.DesktopID, job.Content, InboxDir(job.ID), files)
+	default:
+		taskID, err = r.Submitter.SubmitTracked(ctx, job.DesktopID, job.Content)
+	}
+
+	if err == nil {
+		r.Store.dropJobFiles(job.ID)
+	}
 
 	var busy interface{ DesktopBusy() string }
 

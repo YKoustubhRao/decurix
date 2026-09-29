@@ -4,7 +4,7 @@ import struct
 import time
 import zlib
 
-from decurix_agent.computer import session
+from decurix_agent.computer import browser, session
 from decurix_agent.computer.errors import ComputerError
 
 
@@ -365,9 +365,14 @@ def windows():
         except Exception:
             continue
 
+        raw_title = _window_name(d, window)
+
         result.append({
             "id": int(wid),
-            "title": _window_name(d, window),
+            # A browser window's product segment is reported as one name
+            # (browser.py), so a recording made on Chromium replays on Chrome.
+            "title": browser.canonical_title(raw_title),
+            "raw_title": raw_title,
             "pid": int(pid[0]) if pid is not None and len(pid) else None,
             "box": (-origin.x, -origin.y, geometry.width, geometry.height),
             "active": int(wid) == int(active_id),

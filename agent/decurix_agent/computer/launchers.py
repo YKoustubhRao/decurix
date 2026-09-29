@@ -5,7 +5,7 @@ import shlex
 import time
 from pathlib import Path
 
-from decurix_agent.computer import screen, session, xinput
+from decurix_agent.computer import browser, screen, session, xinput
 from decurix_agent.logging_utils import log
 
 
@@ -75,6 +75,20 @@ def entries(places=None):
     return found
 
 
+def _opens_the_browser(entry):
+    """A launcher that starts the browser itself - not a web app's --app window, which is titled by its page."""
+
+    try:
+        words = shlex.split(entry["exec"])
+    except ValueError:
+        return False
+    if not words:
+        return False
+    program = os.path.basename(words[0])
+    return (program == browser.COMMAND or program in browser.APP_NAMES) and \
+        not any(w.startswith("--app") for w in words[1:])
+
+
 def for_window(title, places=None):
     """
     The one launcher that opens a window titled `title`, or None - never a
@@ -94,6 +108,12 @@ def for_window(title, places=None):
         if name == wanted:
             score = 3
         elif wanted.startswith(name + " ") or wanted.endswith(" " + name) or f" {name} " in f" {wanted} ":
+            score = 2
+        elif browser.is_browser_title(title) and _opens_the_browser(entry):
+            # A page's window is titled "<page> - Chromium" whatever the icon
+            # that started the browser is called ("Google Chrome" since the
+            # desktops run Chrome) - a recorded double click on that icon must
+            # still be done by it.
             score = 2
         elif entry["wm_class"] and _norm(entry["wm_class"]) in wanted.split():
             score = 1
