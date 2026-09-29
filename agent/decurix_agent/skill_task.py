@@ -88,7 +88,8 @@ def _ladder(skill):
     """
 
     ready = getattr(state, "backend_ready", False) and escalation.MODEL_CALLS > 0
-    return escalation.Ladder(ask_model=_ask_model if ready else None, goal=skill.get("title") or skill.get("name") or "")
+    return escalation.Ladder(ask_model=_ask_model if ready else None, goal=skill.get("title") or skill.get("name") or "",
+                             explanation=skill.get("explanation") or "")
 
 
 # ============================================================
@@ -736,6 +737,8 @@ def _ask_stuck(run, result, preface="", unclear=0):
                    "control to use instead - for example `use \"Save as\"`.")
 
     detail = ""
+    if step.get("intent"):
+        detail += f" You said about this step: {el._quote(step['intent'], 160)}."
     if result.get("trail"):
         detail += " I tried: " + "; ".join(result["trail"][:4]) + "."
     if found and not ran:

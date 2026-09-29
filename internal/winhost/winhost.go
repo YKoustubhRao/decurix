@@ -51,7 +51,14 @@ type Update struct {
 // Timings, variables so tests can shorten them.
 var (
 	requestTimeout = 20 * time.Second
-	launchTimeout  = 30 * time.Second
+	// A launch answers once the program has been started, and the first launch of a browser for a VM first brings the
+	// person's profile over into that VM's private one (bridge.ps1's Initialize-PrivateBrowserProfile) - hundreds of MB,
+	// a minute or more on a busy host. Timed out at requestTimeout, the helper was killed mid-copy, the copy never
+	// finished, and every retry (the kept app's, the person's click) met the same "stopped answering".
+	launchRequestTimeout = 15 * time.Minute
+	launchTimeout        = 30 * time.Second
+	// How long Keep gives one start of a kept app, profile import included.
+	keepStartTimeout = 20 * time.Minute
 	// A session nobody is watching or driving is ended, taking the app with it, once this long has passed.
 	idleStop = 90 * time.Second
 	// A session started ahead of time (Manager.Start called before anyone has ever watched it - see hostAppStarter)
@@ -345,7 +352,7 @@ func (m *Manager) launchLine(s *Session, target, args string) (string, error) {
 	r, known := m.resolved[t]
 	m.mu.Unlock()
 	if known {
-		resp, err := s.Do(r.line())
+		resp, err := s.DoTimeout(r.line(), launchRequestTimeout)
 		if err != nil || !strings.HasPrefix(resp, "ERR Not found") {
 			return resp, err
 		}
@@ -353,7 +360,7 @@ func (m *Manager) launchLine(s *Session, target, args string) (string, error) {
 		delete(m.resolved, t) // moved or uninstalled since the check; do not trust it again
 		m.mu.Unlock()
 	}
-	return s.Do("launch\t" + target + "\t" + args)
+	return s.DoTimeout("launch\t"+target+"\t"+args, launchRequestTimeout)
 }
 
 func firstErr(errs ...error) error {
@@ -515,7 +522,7 @@ func (m *Manager) keepRunning(id string, k *keptApp) {
 			return
 		default:
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), keepStartTimeout)
 		s, err := m.Start(ctx, id, k.target, k.args)
 		cancel()
 		if err != nil {
@@ -834,6 +841,11 @@ func (s *Session) deadErr() error {
 
 // Do sends one protocol line and returns the helper's one-line answer.
 func (s *Session) Do(line string) (string, error) {
+	return s.DoTimeout(line, requestTimeout)
+}
+
+// DoTimeout is Do for a command that may take longer than requestTimeout to answer.
+func (s *Session) DoTimeout(line string, timeout time.Duration) (string, error) {
 	s.ioMu.Lock()
 	defer s.ioMu.Unlock()
 	if !s.Alive() {
@@ -851,8 +863,9 @@ func (s *Session) Do(line string) (string, error) {
 		return resp, nil
 	case <-s.done:
 		return "", s.deadErr()
-	case <-time.After(requestTimeout):
-		s.fail(errors.New("the host helper stopped answering"))
+	case <-time.After(timeout):
+		verb, _, _ := strings.Cut(strings.ReplaceAll(line, "\t", " "), " ")
+		s.fail(fmt.Errorf("the host helper stopped answering (%q took over %s)", verb, timeout))
 		go s.Stop()
 		return "", s.deadErr()
 	}

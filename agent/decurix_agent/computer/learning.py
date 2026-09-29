@@ -84,6 +84,9 @@ THROW_AWAY = re.compile(
     r"(?:don'?t|do not) save(?: it)?)\W*$", re.I)
 # The longest skill name a person can give, as build() keeps it.
 MAX_NAME = 80
+# The longest explanation of a task kept, and of what one step is for.
+MAX_EXPLANATION = 1500
+MAX_INTENT = 300
 
 CHOICES = {
     "variable": [("same", SAME), ("changes", CHANGES)],
@@ -654,6 +657,8 @@ def _line(step):
         line += " [for each item]"
     if step.get("consequential"):
         line += " [stops for approval]"
+    if step.get("intent"):
+        line += f" - you said: {el._quote(step['intent'], 80)}"
 
     return line
 
@@ -783,7 +788,10 @@ def _goal(skill):
                      + ", ".join(f"{p['name']} ({p['label']})" for p in learned) + ".")
 
     parts.append("A few questions before I try to do it myself. First: when is this task finished - "
-                 "what should be on the screen, or true, at the end? A sentence is fine, or reply `skip`.")
+                 "what should be on the screen, or true, at the end? And if you like, explain the task or any step "
+                 "in your own words: a replay only has what you did, and what you meant is what helps when the next "
+                 "run's screen looks different - for example `step 6 clicks the first search result, whatever it "
+                 "is`. Write as much as you like, or reply `skip`.")
 
     return _question("goal", "goal", "\n".join(parts))
 
@@ -1060,9 +1068,7 @@ def answer(skill, question, reply):
     text = (reply or "").strip()
 
     if kind == "goal":
-        skill["done_when"] = None if NOTHING.match(text) else text[:300]
-        skill["answers"][qid] = text[:300]
-        return {"understood": True, "note": "", "decision": None}
+        return _answer_goal(skill, text)
 
     if question.get("steps"):
         return _answer_positional(skill, question, text)
@@ -1098,6 +1104,57 @@ def answer(skill, question, reply):
         skill["unclear"].pop(qid, None)
 
     return {"understood": True, "note": note, "decision": decision}
+
+
+# A step a person's explanation is about: "step 6", "6th step", "the last step".
+STEP_MENTION = re.compile(r"\bsteps?\s*#?\s*(\d+)\b|\b(\d+)(?:st|nd|rd|th)\s+step\b|\b(last|final)\s+step\b", re.I)
+PIECES = re.compile(r"(?:\n+|;|(?<=[.!?])\s+)")
+
+
+def _answer_goal(skill, text):
+    """
+    The first question's reply: when the task is finished, and whatever the
+    person explained in their own words. It is kept whole as the skill's
+    `explanation`; each part that names a step ("step 6 clicks the first
+    result") goes on that step as its `intent` - which a run hands to whoever
+    has to find that step's target again, the engine or the person - and the
+    rest is what "finished" means (`done_when`).
+    """
+
+    skill["answers"]["goal"] = text[:300]
+    for step in skill["steps"]:
+        step.pop("intent", None)
+
+    if not text or NOTHING.match(text):
+        skill["done_when"] = skill["explanation"] = None
+        return {"understood": True, "note": "", "decision": None}
+
+    text = text[:MAX_EXPLANATION]
+    skill["explanation"] = text
+
+    by_n = {step["n"]: step for step in skill["steps"]}
+    attached, rest = [], []
+    for piece in (p.strip() for p in PIECES.split(text)):
+        if not piece:
+            continue
+        hits = []
+        for match in STEP_MENTION.finditer(piece):
+            n = skill["steps"][-1]["n"] if match.group(3) and skill["steps"] else int(match.group(1) or match.group(2))
+            if n in by_n and n not in hits:
+                hits.append(n)
+        for n in hits:
+            step = by_n[n]
+            step["intent"] = ((step["intent"] + " ") if step.get("intent") else "") + piece[:MAX_INTENT]
+            attached.append(n)
+        if not hits:
+            rest.append(piece)
+
+    skill["done_when"] = " ".join(rest)[:300] or None
+    note = ""
+    if attached:
+        numbers = ", ".join(str(n) for n in dict.fromkeys(attached))
+        note = f"Noted what you said about step{'s' if len(set(attached)) > 1 else ''} {numbers} - I will go by it when the screen looks different."
+    return {"understood": True, "note": note, "decision": None}
 
 
 def rename(skill, given):

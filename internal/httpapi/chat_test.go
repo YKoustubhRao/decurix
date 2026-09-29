@@ -9,6 +9,7 @@ import (
 	"image/png"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -447,5 +448,48 @@ func TestManualResolveKeepsTheNoteInTheHistory(t *testing.T) {
 	resolved := s.QueryNotes.ListResolved()
 	if len(resolved) != 1 || resolved[0].ID != id || resolved[0].Resolution != querynotes.ResolutionManual {
 		t.Fatalf("expected the note in the history as manual, got %+v", resolved)
+	}
+}
+
+// A finished task leaves no query note, so the pages learn that the work is done from the finished feed: a page's
+// first look gets only where "now" is, and later looks get each task finished since, named by its request.
+func TestAFinishedTaskIsInTheFinishedFeed(t *testing.T) {
+	s := chatServer(t)
+
+	finished := func(query string) map[string]any {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		s.finishedTasksHandler(rec, httptest.NewRequest(http.MethodGet, "/api/tasks/finished"+query, nil))
+		var out map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("%v: %s", err, rec.Body.String())
+		}
+		return out
+	}
+
+	first := finished("")
+	if items := first["items"].([]any); len(items) != 0 || first["latest"].(float64) != 0 {
+		t.Fatalf("a first look must not replay anything: %v", first)
+	}
+
+	deliver(t, s, "research-box", "count the files in /etc")
+	postJSON(t, s.queryTextHandler, "/api/querytext",
+		`{"desktop_id":"research-box","vm_name":"Research","filename":"a.txt","kind":"final","reply":"241 files.",
+		  "content":"DECURIX TASK COMPLETED\n\nFinal reply:\n241 files."}`)
+	postJSON(t, s.queryTextHandler, "/api/querytext",
+		`{"desktop_id":"research-box","vm_name":"Research","filename":"b.txt","kind":"query","reply":"Which folder?",
+		  "content":"DECURIX QUERY REQUEST\n\nWhich folder?"}`)
+
+	got := finished("?after=0")
+	items := got["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("want only the finished task (a question is a query note), got %v", items)
+	}
+	item := items[0].(map[string]any)
+	if item["vm_name"] != "Research" || item["message"] != "241 files." || item["task"] != "count the files in /etc" {
+		t.Fatalf("finished task reads %v", item)
+	}
+	if again := finished("?after=" + strconv.Itoa(int(got["latest"].(float64)))); len(again["items"].([]any)) != 0 {
+		t.Fatalf("asking after the latest gave %v", again)
 	}
 }

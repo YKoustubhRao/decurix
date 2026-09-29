@@ -147,6 +147,10 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
+	if outcomeKindFor(req.Kind, chatKind) == tasks.OutcomeDone {
+		s.recordFinished(desktopID, req.VMName, taskID, chatText)
+	}
+
 	if s.IdleChecker != nil && outcomeKindFor(req.Kind, chatKind) == tasks.OutcomeDone {
 		s.IdleChecker.FastPauseAfter(desktopID, 15*time.Second)
 	}

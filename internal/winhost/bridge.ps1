@@ -874,7 +874,9 @@ function Get-ActiveBrowserProfile([string]$dir) {
     $lsPath = Join-Path $dir 'Local State'
     if (-not (Test-Path -LiteralPath $lsPath)) { return '' }
     try {
-        $content = Get-Content -LiteralPath $lsPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+        # FileShare.ReadWrite: the person's own browser is usually running and holds Local State open.
+        $fs = [System.IO.File]::Open($lsPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        try { $content = (New-Object System.IO.StreamReader($fs, [Text.Encoding]::UTF8)).ReadToEnd() } finally { $fs.Close() }
         if (-not $content) { return '' }
         $json = ConvertFrom-Json $content -ErrorAction SilentlyContinue
         if (-not $json) { return '' }
@@ -895,6 +897,17 @@ function Get-ActiveBrowserProfile([string]$dir) {
     return ''
 }
 
+# What is never brought over: caches the browser rebuilds on its own, and components it downloads again. Chrome's
+# Service Worker CacheStorage alone was 1.6 GB on the machine this was measured on, and with it the import took minutes.
+$ProfileSkipDirs = @(
+    'Cache', 'Code Cache', 'GPUCache', 'GrShaderCache', 'ShaderCache', 'DawnCache', 'DawnWebGPUCache', 'DawnGraphiteCache',
+    'GraphiteDawnCache', 'GPUPersistentCache', 'Media Cache', 'CacheStorage', 'ScriptCache', 'Crashpad', 'BrowserMetrics',
+    'DeferredBrowserMetrics', 'component_crx_cache', 'extensions_crx_cache', 'screen_ai', 'optimization_guide_model_store',
+    'OnDeviceHeadSuggestModel', 'WasmTtsEngine', 'Safe Browsing', 'Shared Dictionary', 'Download Service',
+    'segmentation_platform', 'Snapshots', 'SODA', 'SODALanguagePacks', 'hyphen-data'
+)
+$ProfileSkipFiles = @('Singleton*', '*lock*', '*.tmp', 'Lock*', 'Parent.lock', '*.pma')
+
 function Initialize-PrivateBrowserProfile([string]$base, [string]$dir) {
     if (-not ($Browsers -contains $base)) { return }
     # A Decurix marker, rather than Chromium's Local State, lets profiles created by an older build receive this one-time
@@ -904,13 +917,19 @@ function Initialize-PrivateBrowserProfile([string]$base, [string]$dir) {
     $source = Get-BrowserProfileSource $base
     if (-not $source -or -not (Test-Path -LiteralPath $source -PathType Container)) { return }
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
-    $copyArgs = @(
-        $source, $dir, '/E', '/XJ', '/R:0', '/W:0', '/NFL', '/NDL', '/NJH', '/NJS', '/NP',
-        '/XD', 'Cache', 'Code Cache', 'GPUCache', 'GrShaderCache', 'ShaderCache', 'DawnCache',
-        'Media Cache', 'CacheStorage', 'Crashpad', 'BrowserMetrics',
-        '/XF', 'Singleton*', '*lock*', '*.tmp', 'Lock*', 'Parent.lock'
-    )
-    & robocopy @copyArgs | Out-Null
+    $common = @('/XJ', '/R:0', '/W:0', '/MT:16', '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/XD') + $ProfileSkipDirs + @('/XF') + $ProfileSkipFiles
+    # Only the profile the person uses (the signed-in one, else the last used) and the top-level files that go with it
+    # (Local State holds the key its cookies and passwords are encrypted with): other profiles were most of the rest.
+    $active = Get-ActiveBrowserProfile $source
+    if ($active -and (Test-Path -LiteralPath (Join-Path $source $active) -PathType Container)) {
+        & robocopy $source $dir '/LEV:1' @common | Out-Null
+        $top = $LASTEXITCODE
+        & robocopy (Join-Path $source $active) (Join-Path $dir $active) '/E' @common | Out-Null
+        $code = [Math]::Max($top, $LASTEXITCODE)
+    } else {
+        & robocopy $source $dir '/E' @common | Out-Null
+        $code = $LASTEXITCODE
+    }
     # If robocopy skipped locked critical files like Local State, copy them with FileShare.ReadWrite fallback:
     $localStateDest = Join-Path $dir 'Local State'
     $localStateSrc = Join-Path $source 'Local State'
@@ -922,7 +941,10 @@ function Initialize-PrivateBrowserProfile([string]$base, [string]$dir) {
             $inStream.Close(); $outStream.Close()
         } catch {}
     }
-    if ($LASTEXITCODE -le 8 -and (Test-Path -LiteralPath $dir)) { Set-Content -LiteralPath $marker -Value '1' -Encoding ASCII }
+    # robocopy's exit code is bits: 8 means some files could not be copied - the ones the person's running browser holds
+    # locked (its cookie file, while it is open) - and only 16 is a failure of the copy itself. Treating 8 as failure left
+    # the marker unwritten, so every start imported again, over what the private profile had changed since.
+    if ($code -lt 16 -and (Test-Path -LiteralPath $dir)) { Set-Content -LiteralPath $marker -Value '1' -Encoding ASCII }
 }
 
 # The command line a resolved program is started with: its own profile for a browser or Electron app (per desktop), and the
