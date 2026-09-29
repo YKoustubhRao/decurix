@@ -54,6 +54,11 @@ const (
 	// scheduler/skills loop instead of the hand-rolled Ollama loop -
 	// needs no new env var of its own for the Ollama case.
 	HarnessTheBot = "thebot"
+	// HarnessAzure is a tool-calling loop on the hosted model the control
+	// plane forwards to (internal/llm, /api/llm/chat): the engine for back-
+	// office work that has to read documents and screens a 3B local model
+	// cannot. The desktop never holds the model's key.
+	HarnessAzure = "azure"
 )
 
 // EnsureImages reports whether every desktop image is present locally. It
@@ -273,6 +278,14 @@ func buildDesktopEnv(name, harness, specialization, parentID string) []string {
 		numParallel = "1"
 	}
 	env = append(env, "OLLAMA_NUM_PARALLEL="+numParallel)
+
+	// Every harness asks the hosted model its one-off questions (the replay
+	// grounder, judge, detours) when the control plane has one: they are
+	// exactly the calls a small local model gets wrong. The key stays in the
+	// control plane; this only says the proxy route will answer.
+	if strings.TrimSpace(os.Getenv("AZURE_KEY")) != "" && strings.TrimSpace(os.Getenv("AZURE_ENDPOINT")) != "" {
+		env = append(env, "DECURIX_LLM=1")
+	}
 
 	if specialization != "" {
 		env = append(env, "DESKTOP_SPECIALIZATION="+specialization)

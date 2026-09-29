@@ -34,6 +34,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/mailtrigger"
 	"github.com/YKoustubhRao/decurix/internal/memory"
 	"github.com/YKoustubhRao/decurix/internal/ollama"
+	"github.com/YKoustubhRao/decurix/internal/outbox"
 	"github.com/YKoustubhRao/decurix/internal/phonehost"
 	"github.com/YKoustubhRao/decurix/internal/querynotes"
 	"github.com/YKoustubhRao/decurix/internal/resourcemon"
@@ -463,7 +464,21 @@ func main() {
 
 	// IMPORTANT:
 	// Ollama initialization must not block the HTTP server.
+	// With a hosted model configured, the local one is loaded only once some
+	// desktop runs an engine that reads it (ollama, thebot, claude's fallback
+	// grounder never does). Measured on an 8 GB host: the preload alone held
+	// 1.8 GB and left the machine swapping for minutes with only azure
+	// desktops running.
+	if server.LLM.Configured() {
+		ollama.SetWarmNeeded(func() bool { return desktops.UsesLocalModel(context.Background()) })
+	}
+
 	go func() {
+		if !ollama.Needed() {
+			log.Println("Ollama: not preloading - a hosted model is configured and no desktop uses a local-model engine yet.")
+			return
+		}
+
 		if err := ollamaManager.EnsureReady(ctx); err != nil {
 			log.Printf("warning: Ollama initialization failed: %v", err)
 			return
@@ -514,6 +529,13 @@ func main() {
 	mailRunner := &mailtrigger.Runner{Store: mail, Submitter: server, PollInterval: mailPollInterval()}
 	server.Mail = mail
 	server.MailRunner = mailRunner
+
+	// Emails agents drafted, sent only when a person presses Send.
+	drafts := must(outbox.New(db))
+	if err := drafts.RecoverInterrupted(); err != nil {
+		log.Printf("outbox: %v", err)
+	}
+	server.Outbox = drafts
 	go mailRunner.Run(ctx)
 
 	// Keeps this machine from idle-sleeping while a mailbox is watched or a

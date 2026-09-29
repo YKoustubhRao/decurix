@@ -5,6 +5,8 @@
 package httpapi
 
 import (
+	"github.com/YKoustubhRao/decurix/internal/llm"
+	"github.com/YKoustubhRao/decurix/internal/outbox"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -82,6 +84,12 @@ type Server struct {
 	ResourceMon *resourcemon.Monitor
 	Suggest     *suggest.Store
 	Web         *webui.Renderer
+	// LLM forwards the desktops' chats to the hosted model (internal/llm).
+	// NewServer reads it from the environment; unconfigured, its routes say so.
+	LLM *llm.Client
+	// Outbox holds the emails agents drafted for a person to send
+	// (internal/outbox). Assigned by cmd/decurix/main.go; nil turns it off.
+	Outbox *outbox.Store
 
 	// sends serialises every send to one desktop (sendlock.go).
 	sends sendLocks
@@ -124,6 +132,7 @@ func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memorySt
 		Dags:             dags,
 		Suggest:          suggestions,
 		Web:              web,
+		LLM:              llm.FromEnv(),
 		recentStepImages: make(map[string]string),
 	}
 
@@ -182,6 +191,13 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// change (humansonly.go).
 	mux.HandleFunc("/triggers", s.humansOnly(s.triggersPageHandler))
 	mux.HandleFunc("/email", s.humansOnly(emailPageMovedHandler))
+	// Whether a hosted model is configured (no key): the create dialog reads
+	// it on either listener. Chatting with it is primary-only (RegisterLocalRoutes).
+	mux.HandleFunc("/api/llm", s.llmStatusHandler)
+	mux.HandleFunc("/api/outbox/list", s.humansOnly(s.outboxListHandler))
+	mux.HandleFunc("/api/outbox/file", s.humansOnly(s.outboxFileHandler))
+	mux.HandleFunc("/api/outbox/send", s.humansOnly(s.outboxSendHandler))
+	mux.HandleFunc("/api/outbox/discard", s.humansOnly(s.outboxDiscardHandler))
 	mux.HandleFunc("/api/mail", s.humansOnly(s.mailStateHandler))
 	mux.HandleFunc("/api/mail/accounts/connect", s.humansOnly(s.connectMailHandler))
 	mux.HandleFunc("/api/mail/accounts/password", s.humansOnly(s.mailPasswordHandler))
@@ -306,4 +322,8 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/cftunnel", s.humansOnly(s.cfTunnelStatusHandler))
 	mux.HandleFunc("/api/cftunnel/configure", s.humansOnly(s.cfTunnelConfigureHandler))
 	mux.HandleFunc("/api/cftunnel/disable", s.humansOnly(s.cfTunnelDisableHandler))
+	// The hosted model: for the desktops' agents, over the Docker network.
+	mux.HandleFunc("/api/llm/chat", s.llmChatHandler)
+	// Drafts from the agents' draft_email; sending them is humansOnly above.
+	mux.HandleFunc("/api/outbox", s.outboxCreateHandler)
 }

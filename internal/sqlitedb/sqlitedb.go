@@ -79,6 +79,13 @@ func Open(path string) (*sql.DB, error) {
 	query.Add("_pragma", "temp_store(MEMORY)")
 	query.Add("_pragma", "cache_size(-16000)")
 	query.Add("_pragma", "mmap_size(67108864)")
+	// Every transaction takes the write lock when it begins (BEGIN IMMEDIATE),
+	// waiting under busy_timeout. A deferred one that read first and wrote
+	// after another connection committed failed at once with
+	// SQLITE_BUSY_SNAPSHOT (517, "database is locked"), which no timeout
+	// retries: a finished task's outcome was lost that way. Stores open
+	// transactions only to write, so none waits for nothing.
+	query.Add("_txlock", "immediate")
 
 	// Escape URI metacharacters in directory and file names; otherwise a '?'
 	// silently becomes driver options and opens a different database.

@@ -71,6 +71,18 @@ class TestFindingTheLauncher(Desktop):
         self.assertEqual(launchers.for_window("New Tab - Chromium-browser")["name"], "Chromium Web Browser")
         self.assertIsNone(launchers.for_window("Untitled 1 - Mousepad"))
 
+    def test_the_browsers_own_icon_opens_a_browser_window_whatever_it_is_called(self):
+        # Since the desktops run Chrome the icon is "Google Chrome", while a
+        # page's window keeps the canonical "... - Chromium" title.
+        place = Path(self.tmp.name)
+        (place / "chromium-browser.desktop").unlink()
+        (place / "decurix-desktop-browser.desktop").write_text(
+            "[Desktop Entry]\nType=Application\nName=Google Chrome\nExec=chromium-browser %U\n")
+        (place / "chatgpt-host.desktop").write_text(
+            "[Desktop Entry]\nType=Application\nName=ChatGPT\nExec=chromium-browser --app=https://chatgpt.com\n")
+        self.assertEqual(launchers.for_window("Google - Chromium")["name"], "Google Chrome")
+        self.assertEqual(launchers.for_window("Koustubh - Chrome")["name"], "Koustubh - Chrome (Host)")
+
     def test_two_launchers_that_fit_equally_are_not_guessed_between(self):
         (Path(self.tmp.name) / "other.desktop").write_text(HOST_CHROME.replace("koustubh-chrome-host", "other-chrome"))
         self.assertIsNone(launchers.for_window("Koustubh - Chrome"))

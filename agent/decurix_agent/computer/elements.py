@@ -167,6 +167,13 @@ def parse_point(target):
     return int(match.group(1)), int(match.group(2))
 
 
+def _inside(box, outer):
+    if not box or not outer:
+        return False
+    cx, cy = box[0] + box[2] / 2, box[1] + box[3] / 2
+    return outer[0] <= cx <= outer[0] + outer[2] and outer[1] <= cy <= outer[1] + outer[3]
+
+
 def find(elements, ref=None, role=None, name=None, path=None, active_group=None):
     """
     Resolve a target against a fresh observation, or raise a ComputerError
@@ -226,6 +233,23 @@ def find(elements, ref=None, role=None, name=None, path=None, active_group=None)
     if len(matches) > 1 and active_group:
         in_active = [e for e in matches if e.get("group") == active_group]
         matches = in_active or matches
+
+    # While a dialog is open over a page, its "Confirm" is the one meant - the
+    # page's own (an Odoo quotation's, which turns it into an order) sits under
+    # the dialog and cannot be reached. Only when exactly one match is inside
+    # the dialog on top.
+    if len(matches) > 1:
+        order = {id(e): i for i, e in enumerate(elements)}
+        dialogs = [e for e in elements if e["role"] in ("dialog", "alertdialog") and e.get("box")
+                   and "offscreen" not in (e.get("states") or [])]
+        if dialogs:
+            top = dialogs[-1]
+            # Inside it: drawn within its box and after it in the page's order
+            # (a modal's box can be the whole viewport, its backdrop included).
+            inside = [e for e in matches if e.get("group") == top.get("group") and _inside(e.get("box"), top["box"])
+                      and order.get(id(e), -1) > order[id(top)]]
+            if len(inside) == 1:
+                matches = inside
 
     if len(matches) > 1:
         visible = [e for e in matches if "offscreen" not in e.get("states", [])]
@@ -362,6 +386,25 @@ def _group_lines(members, coords):
         yield flush()
 
 
+def group_matches(group, wanted):
+    """
+    Whether `wanted` names this group: part of its title, or of the window
+    title it is shown in - with or without the browser's " - Chromium" - so
+    the title an observation itself prints ("Invoices - Chromium") finds the
+    tab it came from (whose group title is 'Chromium tab "Invoices" ...').
+    """
+
+    needle = (wanted or "").strip().lower()
+    if not needle:
+        return True
+    names = [group.get("title") or "", group.get("window_title") or ""]
+    haystacks = [n.lower() for n in names if n]
+    if any(needle in h for h in haystacks):
+        return True
+    bare = re.sub(r"\s+[-\u2013\u2014]\s+[^-\u2013\u2014]+$", "", needle).strip()
+    return bool(bare) and bare != needle and any(bare in h for h in haystacks)
+
+
 def render(observation, budget=3500, coords=False, only_group=None):
     """
     The screen as text: which windows are open, then each window's elements,
@@ -388,8 +431,14 @@ def render(observation, budget=3500, coords=False, only_group=None):
 
     groups = observation.get("groups", [])
     if only_group:
-        needle = only_group.lower()
-        groups = [g for g in groups if needle in g["title"].lower()]
+        chosen = [g for g in groups if group_matches(g, only_group)]
+        if chosen:
+            groups = chosen
+        else:
+            # A filter that matches nothing must not turn a full screen into
+            # "no accessible elements" - live, the engine then clicked a list
+            # row by its picture and opened the wrong purchase order.
+            lines.append(f"Note: no window matches {_quote(only_group, 60)}; showing every window.")
 
     used = sum(len(line) + 1 for line in lines)
     hidden = 0

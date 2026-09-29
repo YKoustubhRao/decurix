@@ -701,8 +701,10 @@ class Loops(unittest.TestCase):
         learning.answer(skill, learning.next_question(skill), "fixed, just those three")
 
         self.assertEqual(len(skill["steps"]), 8)
-        self.assertEqual([q["kind"] for q in learning.questions(skill) if q["id"] not in skill["answers"]],
-                         ["variable"] * 3 + ["confirm"])
+        # The three typed fields are asked about together (test_learn_documents), not one by one.
+        left = [q for q in learning.questions(skill) if q["id"] not in skill["answers"]]
+        self.assertEqual([q["kind"] for q in left], ["variables", "confirm"])
+        self.assertEqual(len(left[0]["values"]), 3)
 
     def looped(self):
         skill = learning.build([rows(self.SESSION)])

@@ -134,6 +134,26 @@ def is_external_action(kind, element=None, text=None, keys=None, context=None):
     return False
 
 
+# Where a click goes somewhere rather than does something. Found live in Odoo:
+# picking the "Purchase" app from its menu search (an option in a listbox) was
+# stopped as a purchase, so no purchasing workflow could get past the menu.
+# - An option is a choice in a list; it commits nothing. The button that
+#   follows it ("Confirm", "Pay now") is what acts, and is still gated.
+# - A one-word link, menu item or tab inside the site's own navigation bar is a
+#   place ("Purchase", "Sales", "Invoicing"). A menu item in an action menu, a
+#   button, and any label of more words ("Send & Print", "Pay now") still stop.
+NAVIGATION_PATH = re.compile(r"(^|>\s*)navigation\b")
+
+
+def _navigates(element):
+    role = element.get("role")
+    if role == "option":
+        return True
+    name = (element.get("name") or "").strip()
+    return (role in ("link", "menuitem", "tab") and len(name.split()) == 1
+            and bool(NAVIGATION_PATH.search(element.get("path") or "")))
+
+
 def assess(kind, element, text=None, keys=None, context=None):
     """
     Why this action needs a human's approval first, or None.
@@ -156,7 +176,7 @@ def assess(kind, element, text=None, keys=None, context=None):
 
     if kind in ("click", "double_click") and element is not None:
         name = element.get("name") or ""
-        if element["role"] in ACTIVATING_ROLES and CONSEQUENTIAL_CONTROL.match(name):
+        if element["role"] in ACTIVATING_ROLES and CONSEQUENTIAL_CONTROL.match(name) and not _navigates(element):
             label = " ".join(name.split())[:60]
             return f'"{label}" sends, pays, buys or publishes something on your behalf'
 

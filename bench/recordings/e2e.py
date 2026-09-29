@@ -68,8 +68,11 @@ EXPORT = {
 }
 
 ROWS = ["Invoice 1041 Paid", "Invoice 1042 Paid", "Invoice 1043 Due"]
-# The second row, in the middle: canvas at (300,200) plus the browser's own 109 px of tabs and toolbar.
-SECOND_ROW = (460, 405)
+# The second row, in the middle: canvas at (300,200) in the page, row centre at (160,96) in the canvas.
+# Where the page itself starts on the screen depends on the browser's own tabs and toolbar (109 px on
+# Chromium 112, less on Chrome), so it is measured on the desktop (viewport_origin), never assumed.
+ROW_IN_PAGE = (300 + 160, 200 + 96)
+SECOND_ROW = None
 
 failures = []
 
@@ -89,6 +92,23 @@ def bash(script, **kw):
 def page(rows=ROWS, left=300, top=200):
     body = PAGE % {"left": left, "top": top, "rows": json.dumps(rows)}
     bash("cat > ~/work/invoices.html <<'EOF'\n" + body + "EOF")
+
+
+def viewport_origin():
+    """Where the open page's top-left corner is on the screen, as the page itself reports it."""
+
+    out = bash("""python3 - <<'EOF'
+import json
+from decurix_agent.computer import cdp
+p = cdp.active_page()
+try:
+    m = json.loads(p.evaluate("JSON.stringify([screenX, screenY, outerWidth, outerHeight, innerWidth, innerHeight])"))
+finally:
+    p.close()
+sx, sy, ow, oh, iw, ih = m
+print(json.dumps([sx + (ow - iw) // 2, sy + oh - ih]))
+EOF""").stdout
+    return json.loads(out)
 
 
 def shows(text):
@@ -176,6 +196,10 @@ def run():
     bash("printf %s t00000000000000f1 > /tmp/decurix-current-task; printf %s 'Open the second invoice' > /tmp/decurix-current-task.request")
     bash("gui open file:///home/headless/work/invoices.html", timeout=90)
     time.sleep(1)
+    global SECOND_ROW
+    ox, oy = viewport_origin()
+    SECOND_ROW = (ox + ROW_IN_PAGE[0], oy + ROW_IN_PAGE[1])
+    print(f"  the page starts at ({ox},{oy}) on the screen; the second row is at {SECOND_ROW}")
     out = bash(f"gui click {SECOND_ROW[0]},{SECOND_ROW[1]}", timeout=90).stdout
     bash("printf %s '' > /tmp/decurix-current-task")
     session = "task-t00000000000000f1"

@@ -32,6 +32,9 @@ type Job struct {
 	Received  time.Time `json:"received"`
 	Content   string    `json:"content"`
 	Status    string    `json:"status"`
+	// Files are the email's attachments, set when the poll makes the job and
+	// kept in mail_job_files until it is sent; not read back into lists.
+	Files []Attachment `json:"-"`
 	// Note says why a job is waiting, failed or was skipped.
 	Note   string `json:"note"`
 	TaskID string `json:"task_id"`

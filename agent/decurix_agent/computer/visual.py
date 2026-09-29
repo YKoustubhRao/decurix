@@ -78,12 +78,14 @@ MAX_MISMATCH = 0.02
 
 # Anywhere else it must be all but identical. The further from where it was
 # recorded, the less a near-match proves: on real pixels the row above
-# `Invoice 1042 Paid` read `Invoice 1041 Paid` - one digit, 0.018 of its blocks -
-# and was found for it. What is accepted there scored 0.006 at most (a row that
-# reflowed onto a fractional pixel), so the limit is the middle of that gap
-# (bench/recordings/tune.py prints both ends). A false halt is put to a person;
-# a click on the wrong row is not undone.
-MAX_MISMATCH_MOVED = 0.01
+# `Invoice 1042 Paid` read `Invoice 1041 Paid` - one digit - and was found for
+# it. That one digit is 0.018 of its blocks in Chromium 112's rendering and
+# 0.012 in Chrome 154's; what is rightly accepted there scored 0.006 at most
+# (Chromium, a row reflowed onto a fractional pixel) and 0.0 on Chrome. The
+# limit is the middle of the narrower gap, 0.006..0.012, measured with
+# bench/recordings/tune.py on a corpus built in each browser. A false halt is
+# put to a person; a click on the wrong row is not undone.
+MAX_MISMATCH_MOVED = 0.009
 
 # A patch with fewer blocks that have anything in them cannot be recognised
 # (a blank margin matches everywhere). Blocks overlap, so one small feature
