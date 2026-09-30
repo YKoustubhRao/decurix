@@ -900,10 +900,16 @@
       <p class="page-sub">Agents that learn, adapt, and improve - with desktops of their own.</p>
     </div>
 
-    <button class="btn btn-primary" id="newDesktopBtn">
-      <svg width="15" height="15"><use href="#i-plus"/></svg>
-      New desktop
-    </button>
+    <div class="page-head-actions">
+      <a class="btn btn-default" href="/api/backup" download title="Download what every desktop was taught, what they learned, and this control plane's records and keys. Keep it private: it opens your saved passwords and API keys.">
+        <svg width="15" height="15"><use href="#i-download"/></svg>
+        Back up
+      </a>
+      <button class="btn btn-primary" id="newDesktopBtn">
+        <svg width="15" height="15"><use href="#i-plus"/></svg>
+        New desktop
+      </button>
+    </div>
   </div>
 
   <div class="rule">
@@ -1203,6 +1209,10 @@
           <svg width="14" height="14"><use href="#i-fork"/></svg>
         </button>
 
+        <button class="btn btn-default btn-sm action-icon" data-restore="{{.ID}}" title="Restore skills and memory from a backup (what this desktop already has is kept)" aria-label="Restore skills and memory from a backup">
+          <svg width="14" height="14"><use href="#i-inbox"/></svg>
+        </button>
+
         <span class="spacer"></span>
 
         <button class="btn btn-danger btn-sm action-icon" data-act="delete" data-id="{{.ID}}" data-name="{{.Name}}" title="Delete" aria-label="Delete desktop">
@@ -1241,7 +1251,7 @@
     <div class="dialog-head">
       <div>
         <h2 id="createDialogTitle">New desktop</h2>
-        <p id="createDialogSub">A fresh container with a persistent home directory.</p>
+        <p id="createDialogSub">A computer of its own that keeps its files: Chrome, LibreOffice Writer and Calc, Python and text recognition for scans.</p>
       </div>
       <button type="button" class="icon-btn" data-close-dialog aria-label="Close">
         <svg width="16" height="16"><use href="#i-x"/></svg>
@@ -1261,7 +1271,11 @@
         <div class="hint">What this child worker should focus on. It starts with a copy of the parent's learned memory, and shares new memory with it from then on.</div>
       </div>
 
-      <div class="field">
+      <!-- Hidden while every profile is the same image (scripts/*/build-images
+           tag basic as developer and ai): a choice that changes nothing, whose
+           hint listed tools no desktop has. The radios stay for the create and
+           spawn-child code that reads and sets them. -->
+      <div class="field" hidden>
         <span class="field-label">Profile</span>
         <div class="segmented" role="radiogroup" aria-label="Profile">
           <label class="seg"><input type="radio" name="profile" value="basic" checked><span>Basic</span></label>
@@ -1547,7 +1561,7 @@
       parent ? "Spawn a specialized child worker" : "New desktop";
     document.getElementById("createDialogSub").textContent = parent
       ? "A new desktop spawned from " + parent.name + ", sharing its learned memory."
-      : "A fresh container with a persistent home directory.";
+      : "A computer of its own that keeps its files: Chrome, LibreOffice Writer and Calc, Python and text recognition for scans.";
 
     syncBrain();
     loadModels();
@@ -3008,6 +3022,51 @@
 
     event.preventDefault();
     openCreate();
+  });
+})();
+
+/* Restore a desktop's skills and memory from a backup (httpapi/restore.go). */
+(function(){
+  var picker = document.createElement("input");
+  picker.type = "file";
+  picker.accept = ".gz,.tgz,application/gzip";
+  picker.hidden = true;
+  document.body.appendChild(picker);
+  var target = null;
+
+  document.addEventListener("click", function(e){
+    var btn = e.target.closest("[data-restore]");
+    if (!btn) return;
+    target = btn.dataset.restore;
+    picker.value = "";
+    picker.click();
+  });
+
+  function send(file, from){
+    var url = "/api/desktops/restore?id=" + encodeURIComponent(target) + (from ? "&from=" + encodeURIComponent(from) : "");
+    return fetch(url, {method: "POST", body: file, headers: {"Content-Type": "application/gzip"}})
+      .then(function(r){ return r.text().then(function(t){ return {ok: r.ok, text: t}; }); });
+  }
+
+  picker.addEventListener("change", function(){
+    var file = picker.files && picker.files[0];
+    if (!file) return;
+    send(file).then(function(res){
+      // A backup of several desktops: ask which one's know-how to take.
+      var many = !res.ok && /several desktops \(([^)]*)\)/.exec(res.text);
+      if (many) {
+        var from = window.prompt("This backup holds several desktops: " + many[1] + ".\nWhose skills and memory should " + target + " take?");
+        return from ? send(file, from.trim()) : null;
+      }
+      return res;
+    }).then(function(res){
+      if (!res) return;
+      if (!res.ok) { Decurix.toast("Not restored: " + res.text.trim(), "error"); return; }
+      var d = JSON.parse(res.text);
+      var msg = "Restored " + d.restored.length + " file(s) from " + d.from + " into " + target + ".";
+      if (d.kept_existing.length) msg += " Kept " + d.kept_existing.length + " it already had.";
+      Decurix.toast(msg);
+    }).catch(function(){ Decurix.toast("Not restored: the control plane did not answer.", "error"); });
   });
 })();
 </script>

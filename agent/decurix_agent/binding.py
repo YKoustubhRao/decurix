@@ -94,6 +94,7 @@ def fill(skill, params, context):
 
     files = referenced_files(context)
     parts = [{"type": "text", "text": _prompt(skill, params, context)}]
+    texts = [context or ""]
     images = 0
 
     for path in files:
@@ -103,6 +104,7 @@ def fill(skill, params, context):
             parts.append({"type": "text", "text": f"\n[{path}: could not be read - {exc}]"})
             continue
 
+        texts.append(doc["text"])
         parts.append({"type": "text", "text": f"\n--- Document {path} ---\n{doc['text'][:MAX_FILE_CHARS]}"})
         for image in doc["images"]:
             if images == MAX_IMAGES:
@@ -120,7 +122,7 @@ def fill(skill, params, context):
         log(f"binding: could not fill values for {skill.get('name')}: {exc}")
         return {}, {}
 
-    return _clean(params, answer)
+    return _clean(params, answer, texts)
 
 
 def _prompt(skill, params, context):
@@ -135,7 +137,7 @@ def _prompt(skill, params, context):
     ])
 
 
-def _clean(params, answer):
+def _clean(params, answer, texts=()):
     """Only values of the params asked for, in the shape each takes."""
 
     wanted = {p["name"]: p for p in params}
@@ -153,16 +155,40 @@ def _clean(params, answer):
             items = [str(v).strip() for v in items if str(v).strip()]
             if not items or any(";" in v or "\n" in v for v in items):
                 continue  # an item holding the separator cannot be written as a list value
-            values[name] = "; ".join(items)
+            values[name] = "; ".join(as_written(v, param.get("example"), texts) for v in items)
         else:
             if isinstance(value, (list, dict)):
                 continue
-            values[name] = str(value).strip()
+            values[name] = as_written(str(value).strip(), param.get("example"), texts)
 
         if isinstance(why, dict) and why.get(name):
             evidence[name] = str(why[name])[:200]
 
     return values, evidence
+
+
+def as_written(value, example, texts):
+    """
+    The document's own spelling of an all-capitals value, when the example was
+    not in capitals. Found live: a PO's letterhead read "WOOD CORNER" and its
+    signature line "Wood Corner"; the model took the letterhead and the
+    quotation was saved for a customer spelled like no record. A value the
+    documents only ever write in capitals (a code, "ACME") is kept as it is.
+    """
+
+    letters = [c for c in value if c.isalpha()]
+    if len(letters) < 2 or value != value.upper():
+        return value
+    if example and str(example) == str(example).upper():
+        return value
+    words = value.split()
+    pattern = re.compile(r"(?<!\w)" + r"\s+".join(re.escape(w) for w in words) + r"(?!\w)", re.IGNORECASE)
+    for text in texts:
+        for match in pattern.finditer(text or ""):
+            found = " ".join(match.group(0).split())
+            if found != found.upper():
+                return found
+    return value
 
 
 def report(evidence, values):

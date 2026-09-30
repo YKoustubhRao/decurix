@@ -52,7 +52,7 @@ def save_request(request, task_id=""):
 # Control plane communication
 # ============================================================
 
-def send_query(filename, content, kind="", reply="", engine=None, quiet=False, interrupted=False):
+def send_query(filename, content, kind="", reply="", engine=None, quiet=False, interrupted=False, checked=False):
     """
     Send a query to the Decurix control plane.
 
@@ -105,6 +105,11 @@ def send_query(filename, content, kind="", reply="", engine=None, quiet=False, i
         payload["quiet"] = True
     if interrupted:
         payload["interrupted"] = True
+    # Whether the result went through the final check (verify.py, the skill
+    # gate): the task records keep it as data, so an audit can tell a checked
+    # "done" from one nobody looked at.
+    if kind in ("final", "error"):
+        payload["checked"] = bool(checked)
 
     payload.update(usage.snapshot())
 
@@ -425,6 +430,7 @@ Completed at:
         engine=engine,
         quiet=quiet,
         interrupted=interrupted,
+        checked=checked,
     )
 
     if sent:

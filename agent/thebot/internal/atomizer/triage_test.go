@@ -89,6 +89,8 @@ func TestTriageSendsOnlyRealPageWorkToTheBrowser(t *testing.T) {
 		"run curl -sI https://example.com in the terminal and tell me the content-type header",
 		"check the content-type example.com returns",
 		"from the shell, search example.com's robots.txt for sitemap lines",
+		// An address is not a website (live: waited on the browser extension).
+		"Create invoices.xlsx in my work folder with three invoices. Then draft an email to ap@example.com with the workbook attached.",
 	}
 	for _, prompt := range notBrowser {
 		if got := Triage(prompt); got.Kind == RouteBrowser {
@@ -100,6 +102,7 @@ func TestTriageSendsOnlyRealPageWorkToTheBrowser(t *testing.T) {
 		"go to amazon.com and add a kettle to the cart",
 		"browse to example.com then click More information",
 		"on github.com type decurix into the search box",
+		"email sam@acme.com, then open acme.com and click Pricing",
 	}
 	for _, prompt := range browser {
 		if got := Triage(prompt); got.Kind != RouteBrowser {
@@ -133,5 +136,46 @@ func TestTriageSendsATaughtTaskToTheOperator(t *testing.T) {
 	p := `Do the task you were taught, "Ask ChatGPT" (skill ask-chatgpt) with typed_text="what is 2+5?".`
 	if got := Triage(p); got.Kind != RouteOperate {
 		t.Fatalf("Triage(%q) = %v (%s), want operate", p, got.Kind, got.Reason)
+	}
+}
+
+// An Office document or PDF is the operator's to make (office create/update),
+// never file-write's, which writes text: live, a workbook request saved the
+// model's refusal as totals.xlsx and was reported done.
+func TestTriageSendsOfficeDocumentsToTheOperator(t *testing.T) {
+	for _, prompt := range []string{
+		"Create totals.xlsx in my work folder with two rows: Rent 1500 and Power 220, and a Total row that sums them.",
+		"make report.docx with a heading and the three findings",
+		"update budget.xlsx: set March to 1200",
+		"combine a.pdf and b.pdf into all.pdf",
+	} {
+		if got := Triage(prompt); got.Kind != RouteOperate {
+			t.Errorf("Triage(%q) = %s, want operate", prompt, got.Kind)
+		}
+	}
+	// Text files stay with file-write.
+	if got := Triage("write hello world to notes.txt"); got.Kind != RouteSkill || got.TaskType != "file-write" {
+		t.Errorf("a text file: %+v, want the file-write skill", got)
+	}
+}
+
+// Without the browser extension, web work goes to the operator: found live,
+// a step sent to the browser skill waited 30 s for a listener that was never
+// there and failed the task.
+func TestWebPageWorkGoesToTheOperatorWithoutTheExtension(t *testing.T) {
+	was := BrowserAvailable
+	defer func() { BrowserAvailable = was }()
+
+	req := "Open https://opensource-demo.orangehrmlive.com, log in and add the new employee"
+	BrowserAvailable = true
+	if r := Triage(req); r.Kind != RouteBrowser {
+		t.Fatalf("with the extension: %+v", r)
+	}
+	BrowserAvailable = false
+	if r := Triage(req); r.Kind != RouteOperate || r.TaskType != "operator" {
+		t.Fatalf("without the extension: %+v", r)
+	}
+	if typ := shapeStep("browser", "Open the Odoo Sales app and create the quotation").Type; typ != "operator" {
+		t.Errorf("a planned [browser] step without the extension runs as %q", typ)
 	}
 }

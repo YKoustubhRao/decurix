@@ -199,7 +199,14 @@ def teach(session):
 
     before = send(f'/learn {session} name="Enter a customer PO"')
     asked = []
-    for _ in range(12):
+    # What a person teaching this says when asked what the task is: the
+    # study step (a hosted brain) opens with its understanding, "is that
+    # right?", and may ask questions of its own, worded differently each run.
+    explanation = ("Yes. It keys a customer's purchase order into the sales app as a quotation. "
+                   "The customer, the customer reference, and each line's product and quantity come "
+                   "from the PO and change every time; a PO can have more or fewer lines than this one. "
+                   "The warehouse is always Main. It is done when the page says Saved quotation.")
+    for _ in range(20):
         entry = reply_after(before)
         text = entry.get("content") or ""
         asked.append(text)
@@ -223,6 +230,11 @@ def teach(session):
             answer = "the page says Saved quotation"
         elif "same every time" in text:
             answer = "changes"
+        elif "is that right" in text or "What I understood" in text:
+            answer = explanation
+        elif text.rstrip().endswith("?"):
+            # One of the model's own questions: answered from what a person knows.
+            answer = explanation
         else:
             raise SystemExit(f"a question this bench does not know how to answer:\n{text}")
         print(f"  Q: {text[:150]!r}\n  A: {answer}")

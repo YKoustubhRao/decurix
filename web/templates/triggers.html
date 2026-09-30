@@ -659,7 +659,7 @@ details.adv[open] summary{margin-bottom:10px}
       var data = await r.json();
       list.innerHTML = "";
       if(!(data.drafts || []).length){
-        list.appendChild(el("div", "empty-row", "Nothing yet. An Office (GPT) desktop puts the emails it prepares here."));
+        list.appendChild(el("div", "empty-row", "Nothing yet. When you ask an agent to draft an email, it waits here."));
         return;
       }
       data.drafts.forEach(function(d){ list.appendChild(draftRow(d, data.accounts || [])); });

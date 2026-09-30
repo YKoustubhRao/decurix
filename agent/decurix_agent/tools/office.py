@@ -323,11 +323,22 @@ def _workbook_objects(p):
 # Workbooks: creating
 # ------------------------------------------------------------------
 
+SHEET_KEYS = {"name", "rows", "cells", "header", "widths", "number_format"}
+
+
 def create_workbook(path, sheets):
     """
     A new workbook. `sheets` is a list of {"name", "rows": [[...], ...],
-    "header": true, "widths": {"A": 20}, "number_format": {"C": "#,##0.00"}}.
-    A string starting with "=" is a formula. Refuses to overwrite a file.
+    "cells": {"C5": "=SUM(C2:C4)"}, "header": true, "widths": {"A": 20},
+    "number_format": {"C": "#,##0.00"}}. `rows` fill from A1 down; `cells`
+    set single cells by address, after the rows (a value, "=FORMULA", or
+    {"formula": ...} / {"value": ...}). A string starting with "=" is a
+    formula. Refuses to overwrite a file.
+
+    A sheet given neither rows nor cells, or a key this does not read, is
+    refused: live, a spec of {"cells": {...}} (before cells existed) made an
+    empty sheet, the result said "Created", and the engine attached the empty
+    workbook to an email and reported the task done.
     """
 
     openpyxl = _openpyxl()
@@ -339,6 +350,17 @@ def create_workbook(path, sheets):
     if not sheets:
         raise OfficeError("give at least one sheet")
 
+    for spec in sheets:
+        if not isinstance(spec, dict):
+            raise OfficeError("each sheet is an object like {\"name\": \"Data\", \"rows\": [[...], ...]}")
+        unknown = sorted(set(spec) - SHEET_KEYS)
+        if unknown:
+            raise OfficeError(f"a sheet does not take {', '.join(map(repr, unknown))}; it takes "
+                              f"{', '.join(sorted(SHEET_KEYS))}")
+        if "rows" not in spec and "cells" not in spec:
+            raise OfficeError(f"sheet {spec.get('name') or '(unnamed)'!r} has no data: give \"rows\" "
+                              "([[\"Invoice\", \"Amount\"], [\"INV-1\", 1200]]) or \"cells\" ({\"A1\": \"Invoice\"})")
+
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
 
@@ -346,6 +368,20 @@ def create_workbook(path, sheets):
         ws = wb.create_sheet(str(spec.get("name") or f"Sheet{len(wb.sheetnames) + 1}")[:31])
         for row in spec.get("rows") or []:
             ws.append([_cell_value(v) for v in row])
+        for ref, v in (spec.get("cells") or {}).items():
+            cell = str(ref).upper().replace("$", "")
+            if not re.fullmatch(r"[A-Z]{1,3}[1-9]\d*", cell):
+                raise OfficeError(f"{ref!r} is not a cell address like B14")
+            if isinstance(v, dict):
+                if "value" in v:
+                    v = v["value"]
+                elif "formula" in v:
+                    v = str(v["formula"] or "")
+                    if v and not v.startswith("="):
+                        v = "=" + v
+                else:
+                    raise OfficeError(f"cell {cell} has no value: give a value, \"=FORMULA\" or {{\"formula\": ...}}")
+            ws[cell] = _cell_value(v)
 
         if spec.get("header", True) and ws.max_row >= 1:
             for c in ws[1]:
@@ -367,7 +403,13 @@ def create_workbook(path, sheets):
 
     p.parent.mkdir(parents=True, exist_ok=True)
     wb.save(str(p))
-    return f"Created {p} with sheets {wb.sheetnames}."
+    # Say what is in it, so a reader of this result sees an empty or short
+    # sheet for what it is instead of taking "Created" for the whole job.
+    parts = []
+    for ws in wb:
+        filled = sum(1 for r in ws.iter_rows() for c in r if c.value not in (None, ""))
+        parts.append(f"{ws.title}: {ws.max_row} rows x {ws.max_column} columns, {filled} cells filled")
+    return f"Created {p} - " + "; ".join(parts) + ". Run office read on it to check the values."
 
 
 def _cell_value(v):
@@ -771,7 +813,9 @@ USAGE = """office - documents, spreadsheets and email drafts, from the shell
                                         a value is a number, text, null (empties the cell) or "=FORMULA";
                                         replace_refs extends what charts, tables and names read
   office create BOOK.xlsx SPEC          a new workbook. SPEC: {"sheets": [{"name": "Sheet1", "rows": [[...]],
-                                        "header": true, "widths": {"A": 20}, "number_format": {"C": "#,##0.00"}}]}
+                                        "cells": {"C5": "=SUM(C2:C4)"}, "header": true, "widths": {"A": 20},
+                                        "number_format": {"C": "#,##0.00"}}]} - rows fill from A1, cells set
+                                        one address each; a sheet needs one or the other
   office combine OUT.pdf IN...          one PDF from PDFs, pictures and office documents, in order
   office email --to ADDR [--cc ADDR] --subject S [--attach FILE]... [--body TEXT | body on stdin]
                                         put an email in the Outbox for a person to review and send.

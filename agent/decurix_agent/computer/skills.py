@@ -173,6 +173,35 @@ def explanation(skill):
     return " ".join((skill.get("explanation") or skill.get("done_when") or "").split())
 
 
+BROWSER_SUFFIX = re.compile(r"\s+-\s+(?:Chromium|Google Chrome)$")
+
+
+def places(skill, limit=3):
+    """
+    Where a skill does its work: the sites and files it opens, and the windows
+    its steps are in ("sales.html", "Sales"). Found live: a skill taught in a
+    local sales app was run for a request to enter an order in Odoo - nothing
+    it was shown said which system the skill works in.
+    """
+
+    found = []
+
+    def add(place):
+        place = (place or "").strip()
+        if place and place.lower() not in (p.lower() for p in found):
+            found.append(place)
+
+    for step in skill.get("steps") or []:
+        target = step.get("open")
+        if target:
+            match = re.match(r"https?://([^/?#]+)", target)
+            add(match.group(1) if match else os.path.basename(target.split("?")[0]) or target)
+        add(BROWSER_SUFFIX.sub("", step.get("window") or ""))
+        if len(found) >= limit:
+            break
+    return found[:limit]
+
+
 def search(query="", limit=8):
     """Ready skills for `query`, best first; with no words in it, every ready skill."""
 

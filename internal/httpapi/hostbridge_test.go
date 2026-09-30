@@ -269,7 +269,7 @@ func TestHostRoutesAreOnlyOnThePrimaryListener(t *testing.T) {
 		// the listener they gate.
 		"/api/lan-access/status", "/api/lan-access/rotate",
 		"/api/lan-access/devices", "/api/lan-access/devices/revoke",
-		"/api/cftunnel", "/api/cftunnel/configure", "/api/cftunnel/disable",
+		"/api/cftunnel", "/api/cftunnel/configure", "/api/cftunnel/disable", "/api/backup", "/api/desktops/restore",
 		// A phone app is shown only in a VM's window, like a host app.
 		"/phone-app/view", "/api/phone-app/ws",
 		// The hosted models' keys are set up here, never over the phone link.

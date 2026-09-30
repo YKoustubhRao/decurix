@@ -157,3 +157,51 @@ class AnEmailIsDraftedNeverSent(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CreatingAWorkbook(unittest.TestCase):
+    """office create never says "Created" over data it did not write."""
+
+    def setUp(self):
+        try:
+            import openpyxl  # noqa: F401
+        except ImportError:
+            self.skipTest("openpyxl is only in the desktop images")
+        self.dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.dir, "invoices.xlsx")
+
+    def values(self):
+        import openpyxl
+        ws = openpyxl.load_workbook(self.path).active
+        return {c.coordinate: c.value for row in ws.iter_rows() for c in row if c.value is not None}
+
+    # The spec the engine sent live: cells by address, a formula as an object.
+    def test_cells_by_address_are_written(self):
+        spec = {"sheets": [{"name": "Invoices", "cells": {
+            "A1": "Invoice", "B1": "Customer", "C1": "Amount",
+            "A2": "INV-101", "B2": "Acme", "C2": 1200,
+            "A3": "INV-102", "B3": "Globex", "C3": 850,
+            "B4": "Total", "C4": {"formula": "SUM(C2:C3)"}}}]}
+        code, out = run(["create", self.path, "-"], stdin=json.dumps(spec))
+        self.assertEqual(code, 0, out)
+        v = self.values()
+        self.assertEqual(v["B2"], "Acme")
+        self.assertEqual(v["C3"], 850)
+        self.assertEqual(v["C4"], "=SUM(C2:C3)")
+        self.assertIn("4 rows x 3 columns, 11 cells filled", out)
+
+    def test_rows_and_cells_together(self):
+        office.create_workbook(self.path, [{"name": "S", "rows": [["a", "b"], [1, 2]], "cells": {"C2": "=A2+B2"}}])
+        self.assertEqual(self.values()["C2"], "=A2+B2")
+
+    def test_a_sheet_with_no_data_is_refused_and_nothing_is_written(self):
+        code, out = run(["create", self.path, "-"], stdin=json.dumps({"sheets": [{"name": "Invoices"}]}))
+        self.assertEqual(code, 1)
+        self.assertIn("has no data", out)
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_a_key_it_does_not_read_is_refused(self):
+        with self.assertRaises(office.OfficeError) as e:
+            office.create_workbook(self.path, [{"name": "S", "data": [["a"]]}])
+        self.assertIn("'data'", str(e.exception))
+        self.assertFalse(os.path.exists(self.path))
