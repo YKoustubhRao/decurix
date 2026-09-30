@@ -198,6 +198,58 @@ class TestPerform(unittest.TestCase):
         self.assertIn("Chromium did not start", sent[0][0])
 
 
+class TestAListOfQuestions(unittest.TestCase):
+    """Found live: `chatgpt "a", "b", ...` went to ChatGPT as one prompt, after the person said one by one."""
+
+    def test_the_live_request_is_split(self):
+        service, questions = ask_task.parse_all('chatgpt "a for?", "b for?", "c for?", "d for?", "e for?"')
+        self.assertEqual(service["key"], "chatgpt")
+        self.assertEqual(questions, ["a for?", "b for?", "c for?", "d for?", "e for?"])
+
+    def test_ways_of_listing(self):
+        for content, expected in [
+            ('chatgpt "koustubh is great", "obama vs trump" and "who is jesus"', ["koustubh is great", "obama vs trump", "who is jesus"]),
+            ('chatgpt "what can you do" followed by "thank you"', ["what can you do", "thank you"]),
+            ('google “pizza”, “pasta”', ["pizza", "pasta"]),
+        ]:
+            with self.subTest(content):
+                self.assertEqual(ask_task.parse_all(content)[1], expected)
+
+    def test_a_question_that_quotes_something_is_one_question(self):
+        for content in ['chatgpt what does "carpe diem" mean', 'chatgpt "where is addis ababa"',
+                        'chatgpt "is "x" a word"']:
+            with self.subTest(content):
+                self.assertEqual(len(ask_task.parse_all(content)[1]), 1)
+
+    def _perform(self, content, results):
+        sent = []
+        with patch.object(ask_task.core, "open_target") as opened, \
+                patch.object(ask_task, "_read", side_effect=results), \
+                patch.object(ask_task, "write_final_reply", side_effect=lambda r, **kw: sent.append((r, kw))), \
+                patch.object(ask_task.progress, "emit"):
+            ask_task.perform(content)
+        return sent, opened
+
+    def test_each_is_asked_on_its_own(self):
+        sent, opened = self._perform('chatgpt "a for?", "b for?"',
+                                     [{"state": "answer", "text": "Apple."}, {"state": "answer", "text": "Ball."}])
+        self.assertEqual([c.args[0] for c in opened.call_args_list],
+                         ["https://chatgpt.com/?q=a%20for%3F", "https://chatgpt.com/?q=b%20for%3F"])
+        reply, kw = sent[0]
+        self.assertEqual(kw["kind"], "final")
+        self.assertIn('1. "a for?"', reply)
+        self.assertIn("Apple.", reply)
+        self.assertIn("Ball.", reply)
+
+    def test_a_refusal_stops_the_rest(self):
+        sent, opened = self._perform('chatgpt "a", "b", "c"',
+                                     [{"state": "answer", "text": "A."}, {"state": "blocked", "why": "too many requests"}])
+        self.assertEqual(opened.call_count, 2)
+        reply, kw = sent[0]
+        self.assertEqual(kw["kind"], "final")
+        self.assertIn('Not asked, because it stopped there: "c"', reply)
+
+
 class TestReadableSteps(unittest.TestCase):
     """soul's job log, as the chat and the desktop's card show it."""
 
@@ -263,3 +315,60 @@ class TestRepeatedFailure(unittest.TestCase):
         self.assertNotIn("reply now with DONE", nudge)
         ok = task_runner.repeated_command_nudge("uname -r", {"exit_code": 0, "output": "6.6.87"})
         self.assertIn("reply now with DONE", ok)
+
+
+class TestATaughtExplanationGoesToTheModel(unittest.TestCase):
+    """Found live: a person taught "query them one by one" and no model ever read it."""
+
+    JUK = {"name": "juk", "title": "juk", "status": "ready", "goal": 'chatgpt "what can you do" followed by "thank you"',
+           "explanation": "i will send you a list of things to query and you query them one by one",
+           "done_when": "i will send you a list of things to query and you query them one by one", "steps": []}
+
+    def _handles(self, content, hosted, skills_here):
+        with patch.object(ask_task.llm_client, "available", return_value=hosted), \
+                patch("decurix_agent.computer.skills.search", return_value=skills_here):
+            return ask_task.handles(content)
+
+    def test_a_hosted_model_is_left_the_request(self):
+        self.assertFalse(self._handles('chatgpt "a for?", "b for?"', True, [self.JUK]))
+
+    def test_without_a_hosted_model_the_shortcut_still_answers(self):
+        self.assertTrue(self._handles('chatgpt "a for?", "b for?"', False, [self.JUK]))
+
+    def test_only_a_skill_for_that_service_and_explained(self):
+        self.assertTrue(self._handles('google pizza', True, [self.JUK]))
+        unexplained = dict(self.JUK, explanation=None, done_when=None)
+        self.assertTrue(self._handles('chatgpt "a"', True, [unexplained]))
+
+    def test_the_engine_reads_the_persons_words(self):
+        from decurix_agent import thebot_harness
+        from decurix_agent.computer import skill_engine, skills
+        with patch.object(skills, "search", return_value=[self.JUK]):
+            context = thebot_harness.taught_context()
+        self.assertIn("query them one by one", context)
+        self.assertIn("gui ask chatgpt", context)
+        self.assertIn("The person who taught it said", skill_engine.render_text(self.JUK))
+        self.assertNotIn("finished when", skill_engine.render_text(self.JUK))
+
+    def test_gui_ask_knows_the_services_by_name(self):
+        self.assertEqual(ask_task.service_named("ChatGPT")["key"], "chatgpt")
+        self.assertEqual(ask_task.service_named("wiki")["key"], "wikipedia")
+        self.assertIsNone(ask_task.service_named("bing"))
+
+
+class TestANewTabKeepsItsAddress(unittest.TestCase):
+    """Found live: DevTools decodes /json/new's query once, and "7%2B8" arrived as "7+8" - ChatGPT read "7 8"."""
+
+    def test_the_whole_address_is_escaped_for_devtools(self):
+        from decurix_agent.computer import cdp
+        asked = []
+
+        def fake_get(path, method="GET", timeout=5):
+            asked.append(path)
+            raise OSError("stop here")
+
+        with patch.object(cdp, "_get", fake_get):
+            with self.assertRaises(ComputerError):
+                cdp.navigate("https://chatgpt.com/?q=what%20is%207%2B8%3F", new_tab=True)
+
+        self.assertEqual(asked[0], "/json/new?https%3A%2F%2Fchatgpt.com%2F%3Fq%3Dwhat%2520is%25207%252B8%253F")

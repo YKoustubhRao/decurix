@@ -1,0 +1,5 @@
+#!/bin/sh
+# The `office` command: read documents and update workbooks from a shell
+# (decurix_agent/tools/office.py) - the same code the azure harness's tools run,
+# for the engines that work through shell commands.
+PYTHONPATH="/opt${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m decurix_agent.tools.office "$@"

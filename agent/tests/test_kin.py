@@ -131,6 +131,22 @@ class KinTests(unittest.TestCase):
         page = results_page([(4, 21)], seed=2, top=200, extra=elsewhere)
         self.assertEqual(visual.find_kin(kin, page)["box"][1], 200)
 
+    def test_a_coloured_picture_in_the_column_is_not_a_link(self):
+        # Found live: John Cena's portrait (a blue background) at the results' column was clicked as "the first link".
+        kin = visual.make_kin(RECORDED.rgb, WIDTH, HEIGHT, FIRST)
+
+        def photo(rgb):
+            # A picture ending at the column, mostly skin and shadow, with a patch of blue backdrop the size of a title.
+            for y in range(40, 160):
+                for x in range(COLUMN - 60, COLUMN + 5):
+                    shade = (x * 7 + y * 3) % 40
+                    blue = 100 <= y < 116 and x >= COLUMN - 1
+                    colour = (30 + shade, 20 + shade, 150) if blue else (200 - shade, 150 - shade, 120)
+                    rgb[(y * WIDTH + x) * 3:(y * WIDTH + x) * 3 + 3] = bytes(colour)
+
+        self.assertIsNone(visual.find_kin(kin, results_page([], seed=2, extra=photo)))
+        self.assertEqual(visual.find_kin(kin, results_page([(4, 21)], seed=2, top=200, extra=photo))["box"][1], 200)
+
     def test_a_screen_of_another_size_finds_nothing(self):
         kin = visual.make_kin(RECORDED.rgb, WIDTH, HEIGHT, FIRST)
         self.assertIsNone(visual.find_kin(kin, Frame(320, 240, bytes(320 * 240 * 3))))

@@ -453,6 +453,7 @@ class Flow(ts.TeachingBase):
             fake = self.screen()
             fake.elements[:] = [field("button", "Save changes")]
             skill_task.perform(f"/skill {name}")
+            self.confirm_done()
 
         self.assertEqual([f[1] for f in self.finals], ["final", "final"])
         self.assertNotIn("learned from this run", self.finals[0][0])
@@ -465,6 +466,7 @@ class Flow(ts.TeachingBase):
         fake.elements[:] = [field("button", "Store"), field("button", "Cancel", path="site x > button Cancel", box=[300, 300, 50, 20])]
 
         skill_task.perform(f"/skill {name}")
+        self.confirm_done()
 
         self.assertEqual(len(ask.calls), 1)
         self.assertEqual(self.finals[-1][1], "final", self.finals[-1][0])
@@ -487,6 +489,7 @@ class Flow(ts.TeachingBase):
         self.assertIn("I tried:", question)
 
         skill_task.resume("1")
+        self.confirm_done()
 
         self.assertEqual(self.finals[-1][1], "final", self.finals[-1][0])
         learned = skills.load(name)["steps"][0]
@@ -538,7 +541,8 @@ class Flow(ts.TeachingBase):
     def test_skills_report_how_they_are_holding_up(self):
         name = self.taught()
         shown = skills.summary(skills.load(name))
-        self.assertEqual(shown["health"], {"fragile": [], "drifting": [], "recent": []})
+        self.assertEqual(shown["health"], {"fragile": [], "drifting": [], "recent": [],
+                                           "stage": "apprentice", "clean_runs": 0, "trust_after": 3})
 
 
 if __name__ == "__main__":

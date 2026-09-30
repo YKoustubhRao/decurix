@@ -136,6 +136,15 @@ var schema = []string{
 	)`,
 	`CREATE INDEX mail_jobs_status ON mail_jobs (status, created_ns)`,
 	`CREATE INDEX mail_rules_account ON mail_rules (account_id)`,
+	// The files a matching email carried, kept until its job is sent.
+	`CREATE TABLE mail_job_files (
+		job_id       TEXT NOT NULL,
+		position     INTEGER NOT NULL,
+		name         TEXT NOT NULL,
+		content_type TEXT NOT NULL,
+		data         BLOB NOT NULL,
+		PRIMARY KEY (job_id, position)
+	)`,
 }
 
 // Store is the SQLite-backed collection of accounts, rules and jobs.
@@ -527,6 +536,12 @@ func (s *Store) RecordPoll(accountID string, p Poll) error {
 		)
 		if err != nil {
 			return fmt.Errorf("mailtrigger: record poll: %w", err)
+		}
+
+		if n, _ := res.RowsAffected(); n == 1 && len(job.Files) > 0 {
+			if err := insertJobFiles(tx, job.ID, job.Files); err != nil {
+				return err
+			}
 		}
 
 		if n, _ := res.RowsAffected(); n == 1 && job.Status == JobPending {

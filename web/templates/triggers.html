@@ -74,6 +74,12 @@
 .row-inline[hidden]{display:none}
 .row-inline .input{max-width:260px}
 .empty-row{padding:22px 20px;color:var(--text-3);font-size:13px;text-align:center}
+.outbox-hint{padding:12px 20px 0}
+.mail-body{white-space:pre-wrap;font-size:12.5px;color:var(--text-2);background:var(--surface-2);
+  border-radius:var(--r-md);padding:10px 12px;max-height:260px;overflow:auto;margin-top:4px}
+.mail-files{display:flex;flex-wrap:wrap;gap:6px 12px;font-size:12px}
+.mail-send{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.mail-send select{max-width:220px}
 
 .state{
   display:inline-flex;align-items:center;gap:5px;
@@ -207,6 +213,17 @@ details.adv[open] summary{margin-bottom:10px}
         <span class="grow">Schedules</span>
       </div>
       <div id="schedList"></div>
+    </div>
+
+    <div class="section-title" id="outbox"><svg width="13" height="13"><use href="#i-send"/></svg>Outbox</div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <svg width="15" height="15"><use href="#i-send"/></svg>
+        <span class="grow">Emails the agents prepared</span>
+      </div>
+      <div class="hint outbox-hint">An agent never sends email itself. What it drafts waits here: read it, open its attachments, then send it from one of your connected mailboxes - or discard it.</div>
+      <div id="outboxList"></div>
     </div>
 
     <div class="section-title" id="email"><svg width="13" height="13"><use href="#i-mail"/></svg>Email</div>
@@ -555,10 +572,105 @@ details.adv[open] summary{margin-bottom:10px}
     state.jobs.forEach(function(j){ list.appendChild(jobRow(j)); });
   }
 
+  /* ---------------- outbox ---------------- */
+
+  var draftChips = {
+    draft: ["Waiting for you", "wait"], sending: ["Sending", "wait"], sent: ["Sent", "ok"],
+    failed: ["Not sent", "bad"], discarded: ["Discarded", ""]
+  };
+
+  function draftRow(d, accounts){
+    var row = el("div", "row");
+    var main = el("div", "row-main");
+    main.appendChild(el("div", "row-title", d.subject || "(no subject)"));
+
+    var meta = el("div", "row-meta");
+    var c = draftChips[d.status] || [d.status, ""];
+    meta.appendChild(stateChip(c[0], c[1]));
+    meta.appendChild(el("span", "", "To " + (d.to || []).join(", ") + ((d.cc || []).length ? "  Cc " + d.cc.join(", ") : "")));
+    meta.appendChild(el("span", "", "from " + desktopName(d.desktop_id)));
+    var when = T.ago(d.created_at);
+    if(when){ meta.appendChild(el("span", "", when)); }
+    if(d.task_id){
+      var link = el("a", "", "Open task");
+      link.href = "/tasks/" + encodeURIComponent(d.task_id);
+      meta.appendChild(link);
+    }
+    main.appendChild(meta);
+
+    if((d.files || []).length){
+      var files = el("div", "mail-files");
+      d.files.forEach(function(f){
+        var a = el("a", "", f.name + " (" + Math.max(1, Math.round(f.size / 1024)) + " KB)");
+        a.href = "/api/outbox/file?id=" + encodeURIComponent(d.id) + "&name=" + encodeURIComponent(f.name);
+        files.appendChild(a);
+      });
+      main.appendChild(files);
+    }
+
+    var details = el("details");
+    details.appendChild(el("summary", "", "Read the email"));
+    details.appendChild(el("div", "mail-body", d.body || "(empty)"));
+    main.appendChild(details);
+
+    if(d.note){ main.appendChild(el("div", "row-error", d.note)); }
+    row.appendChild(main);
+
+    var actions = el("div", "row-actions");
+    if(d.status === "draft" || d.status === "failed"){
+      var send = el("div", "mail-send");
+      if(!accounts.length){
+        var connect = el("a", "", "Connect a mailbox to send");
+        connect.href = "#mailboxes";
+        send.appendChild(connect);
+      }else{
+        var pick = el("select", "select");
+        accounts.forEach(function(a){
+          var o = el("option", "", a.email);
+          o.value = a.id;
+          pick.appendChild(o);
+        });
+        send.appendChild(pick);
+        var btn = el("button", "btn btn-primary btn-sm", d.status === "failed" ? "Try again" : "Send");
+        btn.type = "button";
+        btn.addEventListener("click", async function(){
+          if(!window.confirm("Send \"" + (d.subject || "(no subject)") + "\" to " + (d.to || []).join(", ") + "?")){ return; }
+          Decurix.busy(true);
+          try{
+            var r = await post("/api/outbox/send", {id: d.id, account_id: pick.value});
+            toast(r.status === "sent" ? "Sent" : ("Not sent: " + (r.note || "the mail server refused it")), r.status === "sent" ? "success" : "error");
+          }catch(e){ toast(e.message, "error"); }
+          finally{ Decurix.busy(false); loadOutbox(); }
+        });
+        send.appendChild(btn);
+      }
+      actions.appendChild(send);
+      actions.appendChild(T.textButton("Discard", function(){ act("/api/outbox/discard", {id: d.id}, "Discarded").then(loadOutbox); }));
+    }
+    row.appendChild(actions);
+    return row;
+  }
+
+  async function loadOutbox(){
+    var list = document.getElementById("outboxList");
+    try{
+      var r = await fetch("/api/outbox/list", {cache: "no-store"});
+      if(!r.ok){ return; }
+      var data = await r.json();
+      list.innerHTML = "";
+      if(!(data.drafts || []).length){
+        list.appendChild(el("div", "empty-row", "Nothing yet. When you ask an agent to draft an email, it waits here."));
+        return;
+      }
+      data.drafts.forEach(function(d){ list.appendChild(draftRow(d, data.accounts || [])); });
+    }catch(e){ /* the rest of the page still works */ }
+  }
+
   /* ---------------- load ---------------- */
 
   async function load(){
     var mail = null, schedules = null;
+    loadOutbox();
 
     try{
       var r = await fetch("/api/mail", {cache: "no-store"});

@@ -89,6 +89,9 @@ func linkFakePhone(t *testing.T, srv *httptest.Server, token string) *wsconn.Con
 				binary.BigEndian.PutUint32(frame, m.Session)
 				frame[4] = 0x80 // a session packet
 				conn.Write(wsconn.OpBinary, frame)
+				send(phonehost.Message{Op: phonehost.OpTree, Session: m.Session, Tree: &phonehost.Tree{
+					W: 720, H: 1440, Fresh: true, Nodes: []phonehost.Node{{Role: "button", Name: "Send", Box: [4]int{620, 1360, 80, 80}}},
+				}})
 			}
 		}
 	}()
@@ -172,9 +175,30 @@ func TestALinkedPhonesAppsAreListedAndOpenInAViewer(t *testing.T) {
 		t.Fatalf("first message %d %s %v", op, raw, err)
 	}
 
-	op, raw, err = viewer.Read(5 * time.Second)
-	if err != nil || op != wsconn.OpBinary || len(raw) != 12 || raw[0] != 0x80 {
-		t.Fatalf("the phone's frame reached the viewer as %d %v %v (want the 12-byte packet, no session prefix)", op, raw, err)
+	// The frame (video) and the app's controls (the phone's tree reader) come
+	// from separate streams on the phone, in either order; the viewer takes both.
+	var frame, tree []byte
+	for i := 0; i < 2; i++ {
+		op, raw, err = viewer.Read(5 * time.Second)
+		if err != nil {
+			t.Fatalf("reading the viewer's messages: %v", err)
+		}
+		switch op {
+		case wsconn.OpBinary:
+			frame = raw
+		case wsconn.OpText:
+			tree = raw
+		}
+	}
+
+	if len(frame) != 12 || frame[0] != 0x80 {
+		t.Fatalf("the phone's frame reached the viewer as %v (want the 12-byte packet, no session prefix)", frame)
+	}
+
+	var got struct{ Tree *phonehost.Tree }
+	if json.Unmarshal(tree, &got) != nil || got.Tree == nil ||
+		len(got.Tree.Nodes) != 1 || got.Tree.Nodes[0].Name != "Send" || !got.Tree.Fresh {
+		t.Fatalf("the app's controls reached the viewer as %s", tree)
 	}
 }
 

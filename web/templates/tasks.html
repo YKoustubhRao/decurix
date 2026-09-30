@@ -154,11 +154,17 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
       <p class="page-sub">Every task a worker was given, what it did, where a person had to step in, and whether the answer held up.</p>
     </div>
 
-    <nav class="windows" aria-label="Period">
-      {{range .Windows}}
-      <a href="/tasks?days={{.Value}}"{{if .Active}} class="active" aria-current="page"{{end}}>{{.Label}}</a>
-      {{end}}
-    </nav>
+    <div class="page-head-actions">
+      <nav class="windows" aria-label="Period">
+        {{range .Windows}}
+        <a href="/tasks?days={{.Value}}"{{if .Active}} class="active" aria-current="page"{{end}}>{{.Label}}</a>
+        {{end}}
+      </nav>
+      <a class="btn btn-default btn-sm" href="/api/tasks/export?days={{$window.Value}}" download title="One row per task {{$window.Phrase}}: what was asked, how it ended, whether the desktop checked the result, and where a person stepped in. Opens in Excel.">
+        <svg width="14" height="14"><use href="#i-download"/></svg>
+        Export
+      </a>
+    </div>
   </div>
 
 {{if not $report.Totals.Tasks}}

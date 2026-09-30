@@ -3,6 +3,7 @@ package skills
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -43,8 +44,9 @@ type OperatorSkill struct {
 const (
 	defaultOperatorTurns  = 16
 	defaultCommandTimeout = 180 * time.Second
-	// maxCommandOutputChars is how much of one command's output the model
-	// is shown. One `apt install` or `find /` would otherwise inflate every
+	// maxCommandOutputChars is how much of one command's output a local
+	// model is shown (llm.Capabilities.CommandOutputChars; a hosted one sees
+	// more). One `apt install` or `find /` would otherwise inflate every
 	// later turn of the same goal.
 	maxCommandOutputChars = 4000
 	maxInvalidReplies     = 3
@@ -83,11 +85,34 @@ HELP:
 - DONE when the task is finished, or when you can already answer it (a greeting, a fact you were given). Base it on output you actually saw - never report work you did not verify.
 - COMMAND when you need to look at or change something. You get the exit code and output back. If it fails, read the error and try something different; never resend a command that just failed.
 - HELP only when no command can unblock you: the human has to choose, give you a secret, or do something outside this machine. Not knowing yet is not being blocked - run a command and find out.
-- Before a payment, sending a message as the human, publishing, or deleting something that cannot be recovered, reply HELP saying exactly what you would do.
+- Before a payment, sending a message as the human, publishing, or deleting something that cannot be recovered, reply HELP saying exactly what you would do. Drafting an email with office email is not sending it (a person sends it from the Outbox): do that without asking.
 - Commands run in %s with no terminal attached: never open editors or pagers, and pass -y to installers.
-- For anything in a window (a web page in the browser, LibreOffice, a text editor) use the gui command: gui observe lists the screen's elements with refs like e12, then gui click e12, gui type e12 "text", gui key ctrl+s, gui select e12 "option", gui open <url|file|app>. Every gui action prints what changed. gui recordings <words> finds a recorded demonstration of a task, and gui replay <id> runs it again. gui skills <words> finds a task this desktop was taught: gui skill <name> says what it needs and gui do <name> --param name=value does it with no model - prefer it to working the task out yourself.
-%s
+- For anything in a window (a web page in the browser, LibreOffice, a text editor) use the gui command: gui observe lists the screen's elements with refs like e12, then gui click e12, gui type e12 "text", gui key ctrl+s, gui select e12 "option", gui open <url|file|app>. Every gui action prints what changed. gui recordings <words> finds a recorded demonstration of a task, and gui replay <id> runs it again. gui skills <words> finds a task this desktop was taught: gui skill <name> says what it needs and gui do <name> --param name=value does it with no model - prefer it to working the task out yourself, but only in the app or site it works in (gui skill says where): the same kind of work in another system is done there with gui. A value gui skill calls a list takes every item of the document in one run, in the document's order, separated by \"; \" (--param product=\"Desk; Chair\" --param quantity=\"3; 1\") - never only the first item. gui ask chatgpt "QUESTION" (or google, duckduckgo, wikipedia, youtube) puts one question to that service in the browser and prints its answer - run it once per question.
+- To read a document (PDF, scan, Word, Excel, email, picture) run office read <file> [pages]; never guess at a file's contents.
+- To change an existing spreadsheet, never rewrite it with a script (that drops its charts): run office update <file.xlsx> - with a JSON spec on stdin, e.g. office update model.xlsx - <<'EOF' then {"edits": [{"sheet": "Data", "cell": "B14", "value": 1250}], "replace_refs": [{"from": "Data!$B$2:$B$13", "to": "Data!$B$2:$B$14"}]} then EOF. replace_refs makes charts and totals take in rows you added. office create <file.xlsx> - makes a new one from {"sheets": [{"name": "Invoices", "rows": [["Invoice", "Amount"], ["INV-1", 1200]], "cells": {"B3": "=SUM(B2:B2)"}}]} (rows fill from A1; cells set one address each).
+- To prepare an email, run office email --to <address> --subject "<subject>" [--attach <file>] with the body on stdin (a heredoc). It goes to the Outbox for the human to review and send - it is never sent, so drafting one needs no approval. There is no way for you to send email yourself.
+%s%s
 Task: %s`
+
+// visionRule is added to the contract for a brain that reads images: the
+// screenshot comes with every gui command's result.
+const visionRule = `- The pages of a scanned document that office read finds are shown to you as pictures: read them yourself.
+- After every gui command you are also shown a screenshot of the screen as it is now. Use it to check what really happened and to find what the element list does not name (a picture, a canvas, an unlabelled icon, a message painted on the page). Still act by ref from gui observe wherever there is one; use x,y coordinates only for something that has no ref.
+`
+
+// officeRules is added to the contract for a hosted brain: the lessons the
+// Office (GPT) engine was given after running back-office work live, which
+// TheBot lacked. Found by bench/backoffice wf3: onboarding a new joiner in
+// OrangeHRM, the operator filed an ID scan that was someone else's and left
+// three requested fields empty, then reported it done.
+const officeRules = `- Documents belong to someone: check the name and number on an ID, certificate, letter or invoice against the person or company the task is for before you use or upload it. One that is someone else's is not used anywhere - not typed from, not uploaded; leave it out, finish the rest of the task, and say so in your DONE (it is a finding, not a reason to stop and ask).
+- The same name up to capitals, punctuation or spacing ("ACME CORPORATION" / "Acme Corporation"), or the same code, tax number or email, is the same record. A company's contact people listed under it are not rival records. A different name, or several records that fit, is a question for the person.
+- Checking documents against each other is not finding a record: there "matches" means the same characters, ignoring only capitals and spacing. Report every other difference in a name, number or address, however small, with both spellings and which documents they are in - a missing letter in a cheque's account name makes a payment bounce.
+- Two lists name the same item differently (a supplier's part number against your code; "EP2 grease 1kg" against "EP2 Lithium Grease 1 kg"): match items by description, size and unit as well as code, and before calling one missing from a list or new to it, look for it that way.
+- A document's own figures go on what is made from it, even when the system proposes another (a list price, a default tax); say which differed. Every figure has a unit and a basis (per gram or per 10 g, per unit or per box, with or without tax): read which one the source uses and convert to what was asked.
+- In a web app: fields further down a page need a scroll - look before deciding something is not there. A form is saved only when the page says so; field errors ("Required", "Should be a valid date") mean nothing on it was saved. A record page with several sections has a Save in each: use the one in the section you filled. A drop-down ("-- Select --", a combobox) or a field that suggests entries as you type is set with gui select REF "value", which finds the entry by its text - never by clicking at coordinates in its open list, which picks whatever happens to be there. An order or bill line's product is such a field even when its column reads "Description": gui select it - typed text and Tab leave the line with no product. If the list offers only the general product (no variant), select that and complete the dialog that opens: set every attribute the document names (colour, material, size) before its Confirm, then check the line shows the document's variant. Type a date in the format its field shows, converting it yourself - that is not a question for the person: "yyyy-dd-mm" is year-day-month, so 14 March 1998 (1998-03-14) is typed 1998-14-03; then check the field holds it.
+- Before DONE, go through the request part by part - every record, field, document, file and email it asks for - and check each on the screen or in the file. Your DONE lists them, each done or not, and anything left undone and why.
+`
 
 // successQueryNudge answers a HELP that arrives straight after a command
 // succeeded, with that command's output in front of the model again.
@@ -235,15 +260,48 @@ type operatorState struct {
 	// set once a DONE with none of them has been pushed back.
 	CommandsSucceeded int
 	UngroundedNudged  bool
+	EarlyDoneNudged   bool // a DONE before any command was pushed back
 	LastCommand       string
 	LastResult        *shellResult
 	Commands          []string
+	// OutputChars is how much of a command's output the model is shown,
+	// fixed when the goal starts (llm.Capabilities.CommandOutputChars) so a
+	// resumed goal reads the same way it began.
+	OutputChars int
+	// Vision is whether the model is shown the screen after on-screen
+	// commands (llm.Capabilities.Vision), fixed with OutputChars.
+	Vision bool
+	// Screenshot is the file Decurix's gui command leaves the screen in
+	// (DECURIX_GUI_SCREENSHOT), when Vision is on.
+	Screenshot string
+	// ScreenScale and ScreenTextChars are handed to the gui command.
+	ScreenScale     int
+	ScreenTextChars int
+	// Turns bounds the goal (llm.Capabilities.OperatorTurns).
+	Turns int
+	// Request is the goal as asked; Seen is everything the operator has
+	// been shown as text since (the request, command outputs, a person's
+	// replies), and ShownPages whether a document page came as a picture.
+	// grounding.go refuses to type a value none of them hold.
+	Request        string
+	Seen           string
+	ShownPages     bool
+	UntracedNudges int
 }
 
-func formatCommandResult(r shellResult) string {
+// outputChars is OutputChars, or the local default for a checkpoint written
+// before it existed.
+func (st *operatorState) outputChars() int {
+	if st.OutputChars > 0 {
+		return st.OutputChars
+	}
+	return maxCommandOutputChars
+}
+
+func formatCommandResult(r shellResult, limit int) string {
 	out := r.Output
-	if len(out) > maxCommandOutputChars {
-		out = out[:maxCommandOutputChars] + fmt.Sprintf("\n... [%d more characters truncated]", len(r.Output)-maxCommandOutputChars)
+	if len(out) > limit {
+		out = out[:limit] + fmt.Sprintf("\n... [%d more characters truncated]", len(r.Output)-limit)
 	}
 	return fmt.Sprintf("Command execution result:\n\nexit_code: %d\n\noutput:\n%s", r.ExitCode, out)
 }
@@ -262,7 +320,10 @@ func headline(r shellResult) string {
 	return fmt.Sprintf("exit %d · %s", r.ExitCode, line)
 }
 
-func (o *OperatorSkill) turns() int {
+func (o *OperatorSkill) turns(st *operatorState) int {
+	if o.MaxTurns == 0 && st != nil && st.Turns > 0 {
+		return st.Turns
+	}
 	if o.MaxTurns > 0 {
 		return o.MaxTurns
 	}
@@ -302,8 +363,26 @@ func (o *OperatorSkill) start(rc RunContext, subtask Subtask) *operatorState {
 	}
 	messages := []llm.Message{rc.SystemMessage()}
 	messages = append(messages, rc.SessionHistory...)
-	messages = append(messages, llm.Message{Role: "user", Content: fmt.Sprintf(operatorContract, rc.Dir(), findings, subtask.Step)})
-	return &operatorState{Messages: messages}
+	caps := rc.Brain.Caps()
+	st := &operatorState{
+		OutputChars:     caps.CommandOutputChars(),
+		Vision:          caps.Vision,
+		ScreenScale:     caps.ScreenshotScale(),
+		ScreenTextChars: caps.ScreenTextChars(),
+		Turns:           caps.OperatorTurns(),
+	}
+	vision := ""
+	if caps.Hosted {
+		vision += officeRules
+	}
+	if st.Vision {
+		vision += visionRule
+		st.Screenshot = filepath.Join(os.TempDir(), fmt.Sprintf("thebot-screen-%d.png", time.Now().UnixNano()))
+	}
+	st.Messages = append(messages, llm.Message{Role: "user", Content: fmt.Sprintf(operatorContract, rc.Dir(), vision, findings, subtask.Step)})
+	st.Request = subtask.Step
+	st.noteSeen(subtask.Step + "\n" + findings)
+	return st
 }
 
 // resume continues a paused transcript with the human's reply: an approved
@@ -331,6 +410,7 @@ func (o *OperatorSkill) resume(rc RunContext, subtask Subtask, st *operatorState
 		return st, ""
 	}
 	if reply != "" {
+		st.noteSeen(reply)
 		st.Messages = append(st.Messages, llm.Message{Role: "user", Content: "The human replied: " + reply + "\n\nContinue the task."})
 	}
 	return st, ""
@@ -342,7 +422,8 @@ func (o *OperatorSkill) resume(rc RunContext, subtask Subtask, st *operatorState
 // approval exactly as it does for a command internal/safety stops.
 func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string) string {
 	rc.Logf("operator", "$ %s", command)
-	res := runShell(rc.Ctx, rc.Dir(), command, o.commandTimeout())
+	started := time.Now()
+	res := runShell(rc.Ctx, rc.Dir(), command, o.commandTimeout(), st.guiEnv()...)
 	if reason := screenApprovalReason(res); reason != "" {
 		rc.Logf("operator", "approval needed on screen - %s", reason)
 		return reason
@@ -355,12 +436,133 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 	st.Commands = append(st.Commands, command)
 	st.LastCommand = command
 	st.LastResult = &res
-	result := formatCommandResult(res)
+	st.noteSeen(res.Output)
+	result := formatCommandResult(res, st.outputChars())
 	if res.ExitCode != 0 {
 		result += missingProgramHint(res.Output, command)
 	}
-	st.Messages = append(st.Messages, llm.Message{Role: "user", Content: result})
+	msg := llm.Message{Role: "user", Content: result}
+	if pages := st.documentPictures(res.Output); len(pages) > 0 {
+		st.forgetOldPictures(pagesNote, maxDocumentPictures-len(pages))
+		st.ShownPages = true
+		msg.Images = pages
+		msg.Content += pagesNote
+	} else if shot := st.takeScreenshot(started); shot != nil {
+		st.forgetOldPictures(screenshotNote, 0)
+		msg.Images = [][]byte{shot}
+		msg.Content += screenshotNote
+	}
+	st.Messages = append(st.Messages, msg)
 	return ""
+}
+
+// The notes that mark which kind of picture a message carries. Screenshots
+// and document pages are kept apart: a screenshot is out of date the moment
+// the next one arrives, while a scanned invoice is read again and again for
+// the whole task - live, on the Office (GPT) engine, screenshots pushed the
+// invoice out of the conversation and the engine asked a person to type in
+// what it had already read.
+const (
+	screenshotNote = "\n\n(The screenshot shows the screen now.)"
+	pagesNote      = "\n\n(The document's pages are shown as pictures.)"
+	// maxDocumentPictures bounds the document pages kept in the transcript.
+	maxDocumentPictures = 6
+)
+
+// pageImageRe finds the pictures office read lists for a scan.
+var pageImageRe = regexp.MustCompile(`(?m)^\[page image: ([^\]\n]+)\]\s*$`)
+
+// documentPictures loads the page pictures a command's output names, for a
+// brain that can see (at most maxDocumentPictures).
+func (st *operatorState) documentPictures(output string) [][]byte {
+	if !st.Vision {
+		return nil
+	}
+	var out [][]byte
+	for _, m := range pageImageRe.FindAllStringSubmatch(output, -1) {
+		if len(out) == maxDocumentPictures {
+			break
+		}
+		info, err := os.Stat(strings.TrimSpace(m[1]))
+		if err != nil || info.Size() == 0 || info.Size() > maxScreenshotBytes {
+			continue
+		}
+		if data, err := os.ReadFile(strings.TrimSpace(m[1])); err == nil {
+			out = append(out, data)
+		}
+	}
+	return out
+}
+
+// guiEnv is what Decurix's gui command is told about this brain: how much of
+// the screen's element list to print, and - for a brain that can see -
+// where to leave a screenshot and at what size.
+func (st *operatorState) guiEnv() []string {
+	env := []string{"DECURIX_OFFICE_IMAGES=ocr"}
+	if st.Vision {
+		env[0] = "DECURIX_OFFICE_IMAGES=attach"
+	}
+	if st.ScreenTextChars > 0 {
+		env = append(env, "DECURIX_GUI_TEXT_CHARS="+strconv.Itoa(st.ScreenTextChars))
+	}
+	if st.Vision && st.Screenshot != "" {
+		env = append(env,
+			"DECURIX_GUI_SCREENSHOT="+st.Screenshot,
+			"DECURIX_GUI_SCREENSHOT_SCALE="+strconv.Itoa(max(1, st.ScreenScale)),
+		)
+	}
+	return env
+}
+
+// maxScreenshotBytes bounds one attached screenshot; a full-size PNG of a
+// busy 1280x720 screen is about 1 MB.
+const maxScreenshotBytes = 4 << 20
+
+// takeScreenshot is the screenshot the command just left, or nil: none is
+// asked for, the command was not a screen command, or the file is older than
+// the command (left by an earlier one). The file is removed once read, so a
+// later non-screen command can never pick up a stale picture.
+func (st *operatorState) takeScreenshot(since time.Time) []byte {
+	if !st.Vision || st.Screenshot == "" {
+		return nil
+	}
+	info, err := os.Stat(st.Screenshot)
+	if err != nil || info.ModTime().Before(since.Add(-time.Second)) || info.Size() == 0 || info.Size() > maxScreenshotBytes {
+		return nil
+	}
+	data, err := os.ReadFile(st.Screenshot)
+	_ = os.Remove(st.Screenshot)
+	if err != nil {
+		return nil
+	}
+	return data
+}
+
+// forgetOldPictures takes the pictures off earlier messages of one kind
+// (note), keeping the newest `keep` of them: none for screenshots, whose old
+// copies are out of date by definition, and room for the new document pages
+// within maxDocumentPictures. Every picture costs as much as a page of text on
+// every later turn of the goal.
+func (st *operatorState) forgetOldPictures(note string, keep int) {
+	for i := len(st.Messages) - 1; i >= 0; i-- {
+		m := &st.Messages[i]
+		if len(m.Images) == 0 || !strings.HasSuffix(m.Content, note) {
+			continue
+		}
+		if keep >= len(m.Images) {
+			keep -= len(m.Images)
+			continue
+		}
+		if keep > 0 {
+			// Some of this message's pictures still fit: it keeps its note,
+			// so a later pass can still drop the rest.
+			m.Images = m.Images[:keep]
+			keep = 0
+			continue
+		}
+		m.Images = nil
+		m.Content = strings.TrimSuffix(m.Content, note) + "\n(Pictures that were shown here are no longer shown - run the command again to see them.)"
+	}
 }
 
 // guiApprovalExit and guiApprovalMarker are how Decurix's `gui` command says
@@ -409,7 +611,7 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 		return Result{Subtask: subtask, SkillName: o.Name(), Output: output, Verified: verified, Meta: meta}, nil
 	}
 
-	for turn := 0; turn < o.turns(); turn++ {
+	for turn := 0; turn < o.turns(st); turn++ {
 		if err := rc.Ctx.Err(); err != nil {
 			return finish("Stopped before finishing: "+err.Error(), false, map[string]any{"error": err.Error(), "fatal": true})
 		}
@@ -449,6 +651,14 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: ungroundedDoneNudge})
 				continue
 			}
+			if st.CommandsRun == 0 && !st.EarlyDoneNudged {
+				if nudge := earlyDoneNudge(st, rc.SessionHistory, value); nudge != "" {
+					st.EarlyDoneNudged = true
+					rc.Logf("operator", "answered before running anything - pushing back once")
+					st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: nudge})
+					continue
+				}
+			}
 			return finish(value, true, nil)
 
 		case "help":
@@ -465,7 +675,7 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				if out == "" {
 					out = "(no output)"
 				}
-				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: fmt.Sprintf(successQueryNudge, truncateText(out, maxCommandOutputChars))})
+				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: fmt.Sprintf(successQueryNudge, truncateText(out, st.outputChars()))})
 				continue
 			}
 			if st.LastResult != nil && st.LastResult.ExitCode != 0 && st.FailureNudges < maxFailureNudges && !humanOnlyRe.MatchString(value) {
@@ -475,7 +685,7 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				if out == "" {
 					out = "(no output)"
 				}
-				nudge := fmt.Sprintf(failureQueryNudge, st.LastResult.ExitCode, truncateText(out, maxCommandOutputChars)) + missingProgramHint(out, st.LastCommand)
+				nudge := fmt.Sprintf(failureQueryNudge, st.LastResult.ExitCode, truncateText(out, st.outputChars())) + missingProgramHint(out, st.LastCommand)
 				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: nudge})
 				continue
 			}
@@ -506,7 +716,7 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				repeats++
 				if repeats == 1 {
 					rc.Logf("operator", "repeated a command it already ran - showing it the output again")
-					st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: repeatedCommandNudge(value, *st.LastResult)})
+					st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: repeatedCommandNudge(value, *st.LastResult, st.outputChars())})
 					continue
 				}
 				// Told once and still repeating. What the command actually
@@ -515,7 +725,7 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				// 5.10.124 before running anything; the real answer was 6.6.87.
 				rc.Logf("operator", "still repeating the same command - ending with what it printed")
 				if st.LastResult.ExitCode == 0 {
-					return finish(answerFromCommand(value, *st.LastResult), true, nil)
+					return finish(answerFromCommand(value, *st.LastResult, st.outputChars()), true, nil)
 				}
 				return finish(fmt.Sprintf("I kept retrying `%s`, and it keeps failing with exit code %d:\n\n%s",
 					value, st.LastResult.ExitCode, truncateText(st.LastResult.Output, 1000)), false,
@@ -523,6 +733,23 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 			}
 			repeats = 0
 			invalid = 0
+
+			if nudge := groundingNudge(st, value); nudge != "" {
+				if st.UntracedNudges < maxUntracedNudges {
+					st.UntracedNudges++
+					rc.Logf("operator", "would have typed values it never read - sent back to find them")
+					st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: nudge})
+					continue
+				}
+				// Sent back twice and still typing what it cannot trace: a
+				// person knows where the values are, a guess does not.
+				question := "I could not find where the values to type come from, so I have not typed them. " +
+					"Which values should I use? (" + strings.TrimPrefix(nudge, "Not run: ") + ")"
+				st.Messages = append(st.Messages, reply)
+				res, _ := finish(question, false, map[string]any{"needsUserInput": true, "question": question, "failureReasoning": question})
+				res.Checkpoint = st
+				return res, nil
+			}
 			st.Messages = append(st.Messages, reply)
 
 			if concern := safety.AssessCommand(value); concern != nil && !rc.IsApproved(value) {
@@ -556,7 +783,7 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 		}
 	}
 
-	res, _ := finish(fmt.Sprintf("I ran out of turns (%d) before finishing, after running %d command(s).", o.turns(), st.CommandsRun), false,
+	res, _ := finish(fmt.Sprintf("I ran out of turns (%d) before finishing, after running %d command(s).", o.turns(st), st.CommandsRun), false,
 		map[string]any{"needsUserInput": true, "failureReasoning": "ran out of turns without finishing - probably repeating an approach that cannot work"})
 	res.Checkpoint = st
 	return res, nil
@@ -579,7 +806,7 @@ If it was a shell command to run, prefix it with COMMAND:
 If you need the human before you can continue, prefix it with HELP:`, opening)
 }
 
-func repeatedCommandNudge(command string, r shellResult) string {
+func repeatedCommandNudge(command string, r shellResult, limit int) string {
 	out := strings.TrimSpace(r.Output)
 	if out == "" {
 		out = "(no output)"
@@ -596,7 +823,7 @@ $ %s
 
 %s
 
-It did not produce the answer, so you do not have it yet - do not answer from memory. Send a DIFFERENT command with COMMAND.`, r.ExitCode, command, truncateText(out, maxCommandOutputChars)) + missingProgramHint(out, command)
+It did not produce the answer, so you do not have it yet - do not answer from memory. Send a DIFFERENT command with COMMAND.`, r.ExitCode, command, truncateText(out, limit)) + missingProgramHint(out, command)
 	}
 	return fmt.Sprintf(`You have already run this command, and it finished with exit code %d:
 
@@ -604,15 +831,15 @@ $ %s
 
 %s
 
-Do not run it again. If that answers the task, reply now with DONE: and the answer. Only send a COMMAND if it is a different command you still need.`, r.ExitCode, command, truncateText(out, maxCommandOutputChars))
+Do not run it again. If that answers the task, reply now with DONE: and the answer. Only send a COMMAND if it is a different command you still need.`, r.ExitCode, command, truncateText(out, limit))
 }
 
-func answerFromCommand(command string, r shellResult) string {
+func answerFromCommand(command string, r shellResult, limit int) string {
 	out := strings.TrimSpace(r.Output)
 	if out == "" {
 		return fmt.Sprintf("`%s` finished with exit code %d and printed nothing.", command, r.ExitCode)
 	}
-	return truncateText(out, maxCommandOutputChars)
+	return truncateText(out, limit)
 }
 
 func truncateText(s string, n int) string {

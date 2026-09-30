@@ -10,7 +10,10 @@ RUN go mod download
 COPY agent/thebot/cmd ./cmd
 COPY agent/thebot/internal ./internal
 COPY agent/thebot/web ./web
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /soul ./cmd/soul
+# Two cores and one package at a time: an unbounded build inside Docker took
+# every core and a couple of GB at once and brought down the 8 GB WSL host
+# this is developed on. It costs a minute of wall time, not correctness.
+RUN GOMAXPROCS=2 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -p 1 -trimpath -ldflags="-s -w" -o /soul ./cmd/soul
 
 FROM accetto/ubuntu-vnc-xfce-chromium-g3:latest
 
@@ -73,12 +76,67 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
+# Back-office documents (decurix_agent/tools/office.py): poppler-utils reads a
+# PDF's text and turns a scanned page into a picture the hosted model can read;
+# openpyxl reads and writes workbooks; pypdf, img2pdf and PIL combine scans and
+# PDFs into one file; python-docx reads Word files. ~40 MB in all.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        poppler-utils \
+        python3-openpyxl \
+        python3-pypdf \
+        python3-docx \
+        python3-pil \
+        img2pdf && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# LibreOffice Writer and Calc: where a person demonstrates spreadsheet and document
+# work, what the GUI benchmark's calc-*/writer-* tasks run in (without it they cannot
+# start), and what turns a Word or Excel file into a faithful PDF
+# (tools/office.combine_pdf). The developer/ai Dockerfiles install the full suite, but
+# only this image is built and tagged as all three, so none of them had it.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libreoffice-writer \
+        libreoffice-calc \
+        libreoffice-gtk3 \
+        fonts-liberation && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# The browser: Google Chrome stable from Google's signed repository, in place of
+# the base image's frozen Chromium 112, behind the one launcher every route to
+# the browser ends in (agent/install-browser.sh, agent/chromium-browser). Its
+# managed policies keep default-browser, sign-in and sync prompts - modal
+# dialogs nobody on a desktop is there to answer - from ever appearing.
+COPY agent/chromium-browser /tmp/chromium-browser
+COPY agent/chrome-policies.json /etc/opt/chrome/policies/managed/decurix.json
+COPY agent/install-browser.sh /tmp/install-browser.sh
+RUN chmod 644 /etc/opt/chrome/policies/managed/decurix.json \
+    && sh /tmp/install-browser.sh && rm -f /tmp/install-browser.sh /tmp/chromium-browser
+
+# browser-agent: extension_pipeline/ext_server.py, the backend for the
+# browser-agent extension. No desktop loads the extension today (the Chrome
+# launcher passes no --load-extension), so soul sends web work to the
+# operator unless THEBOT_BROWSER_EXTENSION=1. Placed before the agent's own
+# code so a code change does not re-run this pip install. Only core/, extension/
+# and extension_pipeline/ ship - eval/, legacy/ and playwright_pipeline/
+# are reference material for a pipeline this desktop doesn't run (see
+# agent/BROWSER_INTEGRATION.md).
+COPY agent/browser-agent/core /opt/browser-agent/core
+COPY agent/browser-agent/extension /opt/browser-agent/extension
+COPY agent/browser-agent/extension_pipeline /opt/browser-agent/extension_pipeline
+COPY agent/browser-agent/requirements.txt /opt/browser-agent/requirements.txt
+RUN python3 -m venv /opt/browser-agent-venv && \
+    /opt/browser-agent-venv/bin/pip install --no-cache-dir -r /opt/browser-agent/requirements.txt
 COPY agent/vm_server.py /opt/vm_server.py
 COPY agent/decurix_agent /opt/decurix_agent
 COPY agent/start_agent_terminal.sh /opt/start_agent_terminal.sh
 # The `gui` command: the screen as a shell command, for the engines that
 # work through shell commands (decurix_agent/computer/cli.py).
 COPY agent/gui /usr/local/bin/gui
+COPY agent/office /usr/local/bin/office
 # TheBot harness's soul binary - built above from real source, started
 # conditionally by start_agent_terminal.sh only when AGENT_HARNESS=thebot.
 COPY --from=thebot-builder /soul /opt/soul
@@ -89,18 +147,6 @@ COPY --from=thebot-builder /soul /opt/soul
 # anything else - plain text/code files and every other skill (web
 # search, terminal, file-write, memory) don't need Python at all.
 COPY agent/thebot/scripts /opt/thebot-scripts
-# browser-agent: extension_pipeline/ext_server.py, the backend for the
-# extension loaded into this desktop's Chromium (see
-# agent/chromium-browser.init's --load-extension). Only core/, extension/
-# and extension_pipeline/ ship - eval/, legacy/ and playwright_pipeline/
-# are reference material for a pipeline this desktop doesn't run (see
-# agent/BROWSER_INTEGRATION.md).
-COPY agent/browser-agent/core /opt/browser-agent/core
-COPY agent/browser-agent/extension /opt/browser-agent/extension
-COPY agent/browser-agent/extension_pipeline /opt/browser-agent/extension_pipeline
-COPY agent/browser-agent/requirements.txt /opt/browser-agent/requirements.txt
-RUN python3 -m venv /opt/browser-agent-venv && \
-    /opt/browser-agent-venv/bin/pip install --no-cache-dir -r /opt/browser-agent/requirements.txt
 # Default desktop wallpaper, replacing the base image's stock XFCE one -
 # end users should see Decurix branding, not generic XFCE art, the moment
 # a desktop opens.
@@ -109,14 +155,22 @@ COPY agent/decurix-wallpaper.svg /opt/decurix-wallpaper.svg
 # an absolute path rather than an icon-theme name, so it renders regardless
 # of which icon theme is active.
 COPY agent/decurix-start-icon.svg /opt/decurix-start-icon.svg
-# Chromium's launch flags, without the base image's hardcoded --no-sandbox
+# The browser's launch flags, without the base image's hardcoded --no-sandbox
 # (see agent/chromium-browser.init). Seeded into /home/headless for new
 # desktops, and kept in /opt for start_agent_terminal.sh to reinstall into
 # existing ones, whose home is a volume this layer never reaches.
 COPY agent/chromium-browser.init /opt/decurix-chromium.init
 COPY agent/chromium-browser.init /home/headless/.chromium-browser.init
+# The browser's desktop icon: the base image's "Chromium Web Browser" icon pointed at
+# the removed package's icon image and offered Chromium-only actions. Same file name,
+# so anything that looks it up still finds it; start_agent_terminal.sh swaps the old
+# one on desktops created before.
+COPY agent/decurix-desktop-browser.desktop /opt/decurix-desktop-browser.desktop
+COPY agent/decurix-desktop-browser.desktop /home/headless/Desktop/chromium-browser.desktop
+# A desktop launcher runs only when it is executable (xfdesktop asks "untrusted launcher?" otherwise).
+RUN chmod 755 /home/headless/Desktop/chromium-browser.desktop
 
-RUN chmod +x /opt/vm_server.py /opt/start_agent_terminal.sh /opt/soul /usr/local/bin/gui
+RUN chmod +x /opt/vm_server.py /opt/start_agent_terminal.sh /opt/soul /usr/local/bin/gui /usr/local/bin/office
 
 RUN mkdir -p /home/headless/.config/autostart \
     /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml \
@@ -159,6 +213,7 @@ RUN chmod 644 /home/headless/.config/autostart/decurix-agent.desktop \
     /home/headless/.config/xfce4/panel/launcher-4/decurix-browser.desktop \
     /home/headless/.config/xfce4/panel/launcher-5/decurix-terminal.desktop \
     /home/headless/.chromium-browser.init /opt/decurix-chromium.init /opt/decurix-start-icon.svg \
+    /opt/decurix-desktop-browser.desktop \
     && chown headless:headless \
     /home/headless/.config/autostart/decurix-agent.desktop \
     /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml \
@@ -168,7 +223,8 @@ RUN chmod 644 /home/headless/.config/autostart/decurix-agent.desktop \
     /home/headless/.config/xfce4/panel/launcher-3/decurix-files.desktop \
     /home/headless/.config/xfce4/panel/launcher-4/decurix-browser.desktop \
     /home/headless/.config/xfce4/panel/launcher-5/decurix-terminal.desktop \
-    /home/headless/.chromium-browser.init /opt/decurix-start-icon.svg
+    /home/headless/.chromium-browser.init /opt/decurix-start-icon.svg \
+    /home/headless/Desktop/chromium-browser.desktop
 
 # Restore the base image's own permissions on /etc/passwd and /etc/group.
 #

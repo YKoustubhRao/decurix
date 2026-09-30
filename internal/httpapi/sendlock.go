@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/YKoustubhRao/decurix/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/mailtrigger"
 	"github.com/YKoustubhRao/decurix/internal/tasks"
 )
 
@@ -74,3 +75,38 @@ func (s *Server) submitWhenFree(ctx context.Context, desktopID, content string) 
 
 	return s.submitLocked(ctx, desktopID, content)
 }
+
+// SubmitTrackedWithFiles is SubmitTracked for a request that names files it
+// brought along (an email trigger's attachments): under the same send lock
+// and busy check, the files are written into dir on the desktop first, so
+// they are there when the agent reads the request. Implements
+// mailtrigger.FileSubmitter.
+func (s *Server) SubmitTrackedWithFiles(ctx context.Context, desktopID, content, dir string, files []mailtrigger.Attachment) (string, error) {
+	id := desktop.SanitizeID(desktopID)
+
+	unlock := s.lockDesktop(id)
+	defer unlock()
+
+	why, err := s.Tasks.Busy(id)
+	if err != nil {
+		return "", err
+	}
+
+	if why != "" {
+		return "", &DesktopBusyError{Reason: why}
+	}
+
+	out := make([]desktop.File, len(files))
+	for i, f := range files {
+		out[i] = desktop.File{Name: f.Name, Data: f.Data}
+	}
+
+	if err := s.Desktops.CopyFiles(ctx, id, dir, out); err != nil {
+		return "", err
+	}
+
+	route, err := s.submitLocked(ctx, desktopID, content)
+	return route.TaskID, err
+}
+
+var _ mailtrigger.FileSubmitter = (*Server)(nil)

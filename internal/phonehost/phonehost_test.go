@@ -169,6 +169,45 @@ func TestASessionOpensStreamsTakesInputAndCloses(t *testing.T) {
 	}
 }
 
+func TestTheAppsControlsReachItsSessionNewestOnly(t *testing.T) {
+	hub, phone := link(t)
+
+	go func() {
+		m := phone.recv()
+		phone.send(Message{Op: OpOpened, Session: m.Session, Codec: "h264"})
+		// Two trees before anyone reads: only the second is still of use.
+		phone.send(Message{Op: OpTree, Session: m.Session, Tree: &Tree{W: 720, H: 1440, Nodes: []Node{{Role: "button", Name: "Pay"}}}})
+		phone.send(Message{Op: OpTree, Session: m.Session, Tree: &Tree{W: 720, H: 1440, Fresh: true, Nodes: []Node{{Role: "button", Name: "Send"}}}})
+		// One for a session nobody has is dropped.
+		phone.send(Message{Op: OpTree, Session: m.Session + 100, Tree: &Tree{}})
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s, err := hub.Open(ctx, "dev1", "com.whatsapp", 720, 1440, 280)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case tr := <-s.Trees():
+			if tr.Nodes[0].Name == "Send" {
+				if !tr.Fresh || tr.W != 720 {
+					t.Errorf("tree = %+v", tr)
+				}
+				return
+			}
+			// The first may be taken before the second arrives; then the second follows.
+		case <-deadline:
+			t.Fatal("the newest tree never arrived")
+		}
+	}
+}
+
 func TestAPhoneThatCannotOpenSaysWhy(t *testing.T) {
 	hub, phone := link(t)
 

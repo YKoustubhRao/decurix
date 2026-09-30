@@ -1,6 +1,7 @@
 import base64
 import fcntl
 import json
+import os
 import re
 import shutil
 import time
@@ -8,7 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from decurix_agent import progress
-from decurix_agent.computer import approval, atspi, audit, cdp, privacy, screen, session, volatility, xinput
+from decurix_agent.computer import approval, atspi, audit, browser, cdp, privacy, screen, session, volatility, xinput
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 
@@ -32,7 +33,7 @@ from decurix_agent.computer.errors import ComputerError
 STATE_DIR = Path.home() / ".decurix" / "computer"
 STATE_FILE = STATE_DIR / "observation.json"
 
-CHROMIUM_APPS = {"chromium", "chromium-browser", "google chrome", "chrome"}
+CHROMIUM_APPS = browser.APP_NAMES
 
 SETTLE_SECONDS = 4.0
 
@@ -103,9 +104,9 @@ def observe(remember=True, frame=None):
             groups.append(page_group)
         except ComputerError as exc:
             notes.append(f"could not read the browser tab: {exc}")
-    elif any(re.search(r"chromium", w["title"], re.I) for w in windows):
+    elif any(browser.is_browser_title(w["title"]) for w in windows):
         notes.append(
-            "Chromium is open without its debugging port, so its page cannot be read. "
+            "The browser is open without its debugging port, so its page cannot be read. "
             "Close it and use open <url> to reopen the page."
         )
 
@@ -277,8 +278,8 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
         button_x = 3 if kind == "right_click" else 1
 
         if element is not None and element["source"] == "cdp":
-            cdp.click(element, button=button_cdp, count=count)
-            return "cdp"
+            opened = cdp.click(element, button=button_cdp, count=count)
+            return "cdp:file_chooser" if opened.get("file_chooser") else "cdp"
 
         # A list or table cell's own action is "activate" - open the file,
         # not select it - so a cell is clicked where it is drawn instead.
@@ -360,8 +361,14 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
         if element is None or not option:
             raise ComputerError("select needs a dropdown and the option to pick")
         if element["source"] == "cdp":
-            cdp.select_option(element, option)
-            return "cdp"
+            try:
+                cdp.select_option(element, option)
+                return "cdp"
+            except ComputerError as exc:
+                if "is not a dropdown" not in str(exc):
+                    raise
+            _select_custom(element, option)
+            return "cdp:custom"
         atspi.select_option(element, option)
         return "atspi"
 
@@ -385,6 +392,128 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
     raise ComputerError(f"unknown action {kind!r}")
 
 
+# Page elements typing can never go into.
+NOT_A_FIELD = {"row", "button", "link", "heading", "image", "img", "tab", "menuitem", "option",
+               "checkbox", "radio", "listitem", "list", "table", "navigation"}
+
+
+# How long a custom dropdown has to show its options once clicked, and once typed into.
+CUSTOM_OPTIONS_SECONDS = 4.0
+CUSTOM_OPEN_SECONDS = 1.5
+
+# What a dropdown's list shows: its options, and in many kits (Odoo) plain links.
+_SUGGESTION_ROLES = ("option", "menuitem", "listitem", "link")
+
+# Entries a list offers besides the choices: they make or search, never pick.
+_NOT_A_CHOICE = re.compile(r"^\s*(create|add|search more|new)\b", re.I)
+
+
+def _words(text):
+    return set(re.findall(r"\w+", (text or "").lower()))
+
+
+def _pick(candidates, option):
+    """The one candidate labelled `option`: exact, else starting with it, else holding all its words."""
+
+    want = option.strip().lower()
+    wanted = _words(option)
+    tests = (lambda n: n == want, lambda n: n.startswith(want), lambda n: wanted and wanted <= _words(n))
+
+    for test in tests:
+        hits = [e for e in candidates if test((e.get("name") or "").strip().lower())]
+        if len(hits) == 1:
+            return hits[0]
+        if len(hits) > 1:
+            raise ComputerError(f"several options fit {option!r}: " + ", ".join(sorted({h['name'] for h in hits})[:8])
+                                + " - pick one yourself")
+    return None
+
+
+def _searches(option):
+    """
+    What to type into a searching dropdown, most specific first: the value,
+    what comes before its first bracket or comma, its first two words, its
+    first word. A list searches for the typed text as one piece, so a variant
+    written in another order ("Desk (White, Aluminium)" for Odoo's "Desk
+    (Aluminium, White)") finds nothing until the search is shorter; the pick is
+    still judged against the whole value (_pick).
+    """
+
+    words = option.split()
+    tries = [option.strip(), re.split(r"[(,]", option)[0].strip(), " ".join(words[:2]), words[0] if words else ""]
+    out = []
+    for t in tries:
+        if len(t) >= 3 and t not in out:
+            out.append(t)
+    return out
+
+
+def _select_custom(element, option):
+    """
+    Pick `option` in a dropdown a page drew itself (no <select>: OrangeHRM's
+    "-- Select --", Odoo's customer and product fields, most component kits)
+    the way a person does: open it - typing the value, then shorter searches,
+    when it only suggests once typed into - then click the matching entry
+    among what appeared. Only what appeared counts, so a link elsewhere on the
+    page with the same words is never taken; "Create ..." and "Search
+    More..." are never choices; two entries that fit equally are not guessed
+    between. Live, typing a product and clicking the next field left Odoo's
+    line with no product at all.
+    """
+
+    def expanded():
+        now = observe()["elements"]
+        me = next((e for e in now if e.get("path") == element.get("path")), None)
+        return now, bool(me and "expanded" in (me.get("states") or []))
+
+    # A list already open (an earlier try left it) would count as on the page
+    # before the click, so none of its entries would count as appearing.
+    now, is_open = expanded()
+    if is_open:
+        cdp.close_list(element)
+        time.sleep(0.3)
+        now, _ = expanded()
+    known = {e["path"] for e in now}
+    cdp.click(element)
+    searches = _searches(option) if element["role"] in ("combobox", "textbox", "searchbox") else []
+    deadline = time.monotonic() + CUSTOM_OPEN_SECONDS
+    seen = []
+
+    while True:
+        now = observe()["elements"]
+        candidates = [e for e in now if e["path"] not in known and e["role"] in _SUGGESTION_ROLES
+                      and e.get("source") == "cdp" and e.get("box")
+                      and not _NOT_A_CHOICE.match(e.get("name") or "")]
+        seen = [e.get("name") or "" for e in candidates] or seen
+        hit = _pick(candidates, option)
+        if hit is not None:
+            cdp.click(hit)
+            return
+
+        if time.monotonic() > deadline:
+            if not searches:
+                break
+            cdp.type_text(element, searches.pop(0))
+            deadline = time.monotonic() + CUSTOM_OPTIONS_SECONDS
+        time.sleep(0.3)
+
+    # Leave the page as it was found: an open list covers what is under it.
+    if expanded()[1]:
+        cdp.close_list(element)
+    if seen:
+        message = f"{el.describe(element)} has no option {option!r}. It offers: " + ", ".join(seen[:30])
+        # A value written with its variant ("Stool (Navy)") against an entry
+        # that is only its general item ("Stool", shown with its code as
+        # "StoolD_0045"): say so, and what selecting it leads to.
+        head = re.split(r"[(,]", option)[0].strip()
+        general = [n for n in seen if head and head != option.strip() and n.lower().startswith(head.lower())]
+        if len(general) == 1:
+            message += (f". {general[0]!r} starts with {head!r}: it is likely the general item that {option!r} is a "
+                        f"variant of - select {head!r} (or that entry), then choose the variant in what the page asks next")
+        raise ComputerError(message)
+    raise ComputerError(f"{el.describe(element)} showed no options for {option!r}")
+
+
 def act(kind, ref=None, role=None, name=None, path=None, point=None,
         text=None, keys=None, direction=None, amount=None, option=None, append=False, end=None, files=None):
     """
@@ -395,6 +524,15 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     paragraph for the engine), element, change, observation (the "after"
     observation, or the "before" one when nothing ran).
     """
+
+    # One field per typing action. A Tab inside the text moves focus to the next
+    # field, and what lands there is recorded - and withheld or not - as if it
+    # were typed into this one: live, "Admin\tadmin123\n" put the password into
+    # the username's step in plain text. Typing each field on its own lets the
+    # password field be recognised as one.
+    if kind == "type" and text and "\t" in text:
+        raise ComputerError("type one field at a time: a Tab in the text would carry the rest into another field. "
+                            "Type into this field, then type the next value into its own field (by its ref).")
 
     before = observe()
 
@@ -407,6 +545,14 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
 
     keys = [k for k in (keys or []) if k and k.strip()]
     target = el.describe(element) if element else (f"{point[0]},{point[1]}" if point else "")
+
+    # Typing needs a field. Aimed at a page's row, button or link, the text goes
+    # to whatever still has focus: live, a product name typed "into" an Odoo
+    # order row at a coordinate landed in the previous line's Unit Price.
+    if kind == "type" and element is not None and element.get("source") == "cdp" \
+            and element["role"] in NOT_A_FIELD:
+        raise ComputerError(f"{el.describe(element)} is not a field to type into - click the cell or control that "
+                            "opens a field, observe, then type into that field by its ref")
 
     # Typing with no target at all (no ref/role/name/path/point) goes to
     # whatever already has focus, and that field is the one whose secrecy
@@ -514,9 +660,15 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     if decision.approved:
         summary += " (approved by the human)"
 
+    note = ""
+    if backend == "cdp:file_chooser":
+        # cdp.click intercepted it: no dialog is on the screen, nothing was chosen.
+        note = (f"\n{target} opens a file chooser; none was shown and no file was chosen. "
+                "To attach a file, use the upload action on this same control with the file path(s).")
+
     return {
         "status": "done",
-        "text": f"{summary}.\nWhat changed: {change_text}",
+        "text": f"{summary}.\nWhat changed: {change_text}{note}",
         "element": element,
         "change": change,
         "observation": after,
@@ -605,12 +757,26 @@ def summarize(change, limit=6):
             else:
                 parts.append(f"{el.describe(element)} [{old}] -> [{new}]")
 
-    notable = [e for e in change["appeared"] if e["role"] in el.INTERACTIVE_ROLES
-               or e["role"] in ("dialog", "alert", "status", "heading")]
     if change["appeared"]:
-        shown = ", ".join(el.describe(e) for e in (notable or change["appeared"])[:limit])
-        more = len(change["appeared"]) - min(len(notable or change["appeared"]), limit)
-        parts.append(f"{len(change['appeared'])} element(s) appeared: {shown}" + (f" (+{more} more)" if more > 0 else ""))
+        appeared = change["appeared"]
+        # What a Save or a Submit answers with is a few words appearing - "Successfully
+        # Saved", "Should be a valid date in yyyy-dd-mm format" - usually plain text
+        # beside a close button. Listing only the button ("button × (+2 more)") hid the
+        # validation errors of a form that never saved, and the engine reported its
+        # fields as filled. So messages come first, and a handful of new elements is
+        # listed whole; only a new page's hundreds are cut to the controls.
+        messages = [e for e in appeared if e["role"] in ("alert", "status", "dialog")]
+        texts = [e for e in appeared if e["role"] in ("text", "paragraph", "heading", "label")
+                 and (e.get("name") or "").strip()]
+        controls = [e for e in appeared if e["role"] in el.INTERACTIVE_ROLES]
+        if len(appeared) <= SMALL_CHANGE:
+            ordered = messages + texts + [e for e in appeared if e not in messages and e not in texts]
+            shown_list = ordered
+        else:
+            shown_list = (messages + [e for e in texts if e["role"] == "heading"] + controls)[:limit] or appeared[:limit]
+        shown = ", ".join(el.describe(e) for e in shown_list)
+        more = len(appeared) - len(shown_list)
+        parts.append(f"{len(appeared)} element(s) appeared: {shown}" + (f" (+{more} more)" if more > 0 else ""))
 
     if change["disappeared"]:
         parts.append(f"{len(change['disappeared'])} element(s) disappeared")
@@ -625,6 +791,10 @@ def summarize(change, limit=6):
         parts.append(("under 1%" if percent < 1 else f"{round(percent)}%") + " of the screen changed")
 
     return "; ".join(parts) if parts else "nothing visible changed"
+
+
+# Up to this many new elements are all listed in an action's result.
+SMALL_CHANGE = 10
 
 
 # Roles worth checking for on a replay, besides the ones that can be acted on.
@@ -762,8 +932,11 @@ APPS = {
     "file manager": ["thunar"],
     "thunar": ["thunar"],
     "terminal": ["xfce4-terminal"],
-    "chromium": ["chromium-browser"],
-    "browser": ["chromium-browser"],
+    "chromium": [browser.COMMAND],
+    "chrome": [browser.COMMAND],
+    "google chrome": [browser.COMMAND],
+    "browser": [browser.COMMAND],
+    "web browser": [browser.COMMAND],
     "mail": ["thunderbird"],
     "email": ["thunderbird"],
     "thunderbird": ["thunderbird"],
@@ -773,10 +946,8 @@ OFFICE_EXTENSIONS = (".odt", ".ods", ".odp", ".docx", ".doc", ".xlsx", ".xls", "
 
 
 def _chromium_argv(url):
-    return [
-        "chromium-browser", "--remote-debugging-port=9222", "--no-first-run",
-        "--no-default-browser-check", url,
-    ]
+    # The launcher adds the profile, the DevTools port and every other flag.
+    return [browser.COMMAND, url]
 
 
 def open_target(target, new_tab=False):
@@ -816,6 +987,12 @@ def open_target(target, new_tab=False):
     return summary
 
 
+# How long a cold Chromium may take to open its debugging port. It is ~3 s on
+# an idle machine and was over 30 s on a loaded 8 GB host, where a shorter
+# wait failed a task whose browser was about to be ready.
+BROWSER_START_SECONDS = int(os.environ.get("DECURIX_BROWSER_START_SECONDS", "90"))
+
+
 def _open(target, new_tab):
     target = (target or "").strip()
     if not target:
@@ -831,14 +1008,14 @@ def _open(target, new_tab):
             _raise_browser()
             return f"Opened {url} in Chromium (tab title {el._quote(title, 60)})."
 
-        if any(re.search(r"chromium", t, re.I) for t in before_titles):
+        if any(browser.is_browser_title(t) for t in before_titles):
             raise ComputerError(
-                "Chromium is already open without its debugging port. Close it first "
+                "The browser is already open without its debugging port. Close it first "
                 "(key ctrl+shift+q in its window), then open the page again."
             )
 
         session.launch(_chromium_argv(url))
-        _wait_until(cdp.available, 30, "Chromium did not start")
+        _wait_until(cdp.available, BROWSER_START_SECONDS, "Chromium did not start")
         title = cdp.wait_ready(timeout=15, default_title=url)
         _raise_browser()
         return f"Started Chromium on {url} (tab title {el._quote(title, 60)})."
@@ -847,11 +1024,11 @@ def _open(target, new_tab):
     lower = target.lower()
 
     if lower in CHROMIUM_APPS:
-        if any(re.search(r"chromium", t, re.I) for t in before_titles) or cdp.available():
+        if any(browser.is_browser_title(t) for t in before_titles) or cdp.available():
             _raise_browser()
             return "Brought Chromium to the front."
         session.launch(_chromium_argv("about:blank"))
-        _wait_until(cdp.available, 30, "Chromium did not start")
+        _wait_until(cdp.available, BROWSER_START_SECONDS, "Chromium did not start")
         _raise_browser()
         return "Started Chromium."
 
@@ -890,7 +1067,7 @@ def _open(target, new_tab):
 
 def _raise_browser():
     for w in screen.windows():
-        if re.search(r"chromium", w["title"], re.I):
+        if browser.is_browser_title(w["title"]):
             xinput.activate(w["id"])
             return
 

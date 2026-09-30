@@ -641,6 +641,7 @@ def _find(step, ladder=None, report=None):
 
     deadline = time.monotonic() + FIND_SECONDS
     last_kin = None
+    confirming = False
     refitted = False
     brought = False
 
@@ -687,6 +688,14 @@ def _find(step, ladder=None, report=None):
                 observation["kin"] = seen
                 return None, seen["point"], observation, None
             last_kin = seen["point"] if seen else None
+
+        # A kind-match seen once is confirmed by one more look before the step
+        # gives up, however long the first took: whether it is clicked must
+        # not depend on how fast this machine computes a look (on a loaded or
+        # 1-vCPU desktop one look alone could outlast the deadline).
+        if time.monotonic() >= deadline and last_kin is not None and not confirming:
+            confirming = True
+            continue
 
         if time.monotonic() >= deadline:
             # Two candidates is not "not there": a replay does not guess
@@ -815,10 +824,12 @@ def _run_step(step, values, ladder=None, report=None, next_step=None):
                 else:
                     ladder.found(step, element, seen)
 
-        files = step.get("files")
-        if step.get("param") and values.get(step["param"]):
+        # Files go with an upload only: a typed step's value is its text.
+        files = step.get("files") if kind == "upload" else None
+        if kind == "upload" and step.get("param") and values.get(step["param"]):
             val = values.get(step["param"])
-            files = val if isinstance(val, list) else [val]
+            # Several files are given the way list values are: separated by ';'.
+            files = val if isinstance(val, list) else [f.strip() for f in str(val).split(";") if f.strip()]
 
         return core.act(
             kind,

@@ -216,6 +216,13 @@ class Engine(unittest.TestCase):
         self.assertIn("2. Best songs of Jimi Hendrix", self.asked[0][1])
         self.assertEqual(ladder.grounded[0]["now"], "Best songs of Jimi Hendrix {COOL MUSIC}")
 
+    def test_what_the_person_explained_goes_to_the_engine(self):
+        ladder = self.ladder('{"choice": 2, "confidence": 0.85}')
+        ladder.explanation = "search Google and open the first result"
+        self.ground(ladder, self.point_step(intent="step 11 clicks the first search result, whatever it is"))
+        self.assertIn("The person explained the task: search Google and open the first result", self.asked[0][1])
+        self.assertIn("What the person said this step is for: step 11 clicks the first search result", self.asked[0][1])
+
     def test_an_unsure_or_impossible_answer_places_nothing(self):
         for reply in ('{"choice": 0, "confidence": 0.9}', '{"choice": 2, "confidence": 0.4}',
                       '{"choice": 9, "confidence": 0.99}', "the second one"):

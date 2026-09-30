@@ -144,7 +144,7 @@ func TestPlannerOpensWithTheSharedSystemFrame(t *testing.T) {
 	frame := llm.Message{Role: "system", Content: "shared frame"}
 	Planner{Provider: rec, Model: "m", System: &frame}.Atomize(context.Background(), "research X and then write a summary to b.md")
 
-	if len(rec.messages) != 2 || rec.messages[0] != frame {
+	if len(rec.messages) != 2 || !reflect.DeepEqual(rec.messages[0], frame) {
 		t.Fatalf("messages = %+v, want the shared frame first", rec.messages)
 	}
 }

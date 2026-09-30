@@ -1,6 +1,8 @@
 import subprocess
 import time
 
+from decurix_agent.computer import browser
+
 
 # ============================================================
 # Context Tracker: IrisGo AI "Watch" Sensing Layer
@@ -36,7 +38,7 @@ def _infer_app_from_title(title):
     """Infer the application from the window title."""
 
     t = (title or "").lower()
-    if "chromium" in t or "chrome" in t:
+    if browser.is_browser_title(title) or "chromium" in t or "chrome" in t:
         return "chromium"
     if "firefox" in t:
         return "firefox"

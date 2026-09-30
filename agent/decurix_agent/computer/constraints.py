@@ -110,13 +110,28 @@ def problem(constraint, value):
     return f"{value!r} is not {DESCRIPTIONS[kind]}"
 
 
-def violations(params, values):
-    """[(param, why)] for every constrained parameter the given values break."""
+def violations(params, values, split=None):
+    """
+    [(param, why)] for every constrained parameter the given values break. A
+    list parameter's value is judged item by item when `split` (the rule that
+    separates its items, skills.split_items) is given: "1; 4; 10" is three
+    numbers, not one value that is not a number.
+    """
 
     found = []
 
     for param in params:
-        why = problem(param.get("constraint"), (values or {}).get(param["name"]))
+        value = (values or {}).get(param["name"])
+
+        if param.get("list") and split is not None and value:
+            for n, item in enumerate(split(value), 1):
+                why = problem(param.get("constraint"), item)
+                if why:
+                    found.append((param, f"item {n} ({why})"))
+                    break
+            continue
+
+        why = problem(param.get("constraint"), value)
         if why:
             found.append((param, why))
 

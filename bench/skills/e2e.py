@@ -2,7 +2,10 @@
 """
 Live end-to-end check of teaching and running a skill on a real desktop.
 
-    python3 bench/skills/e2e.py [--keep]
+    python3 bench/skills/e2e.py [--keep] [--brain ollama|claude|azure]
+
+--brain runs the desktop as one created with that brain is (bench/brain.py);
+its model calls go through this tree's control plane on 127.0.0.1:8080.
 
 Needs Docker and a built decurix-desktop:basic (scripts/*/build-images.sh).
 Takes about two minutes and leaves nothing behind unless --keep is given.
@@ -23,6 +26,9 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import brain  # noqa: E402
+
 REPO = str(Path(__file__).resolve().parents[2])
 NAME = "decurix-e2e"
 PORT = 18080
@@ -34,6 +40,8 @@ posts = []
 class Mock(BaseHTTPRequestHandler):
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get("Content-Length", "0") or "0"))
+        if brain.forward_llm(self, body):
+            return
         try:
             data = json.loads(body)
         except ValueError:
@@ -114,7 +122,8 @@ def main():
         "docker", "run", "-d", "--name", NAME, "--add-host", "host.docker.internal:host-gateway", "--shm-size=1g",
         "--security-opt", f"seccomp={REPO}/internal/desktop/seccomp-desktop.json", "--ulimit", "core=0",
         "-e", "VNC_PW=admin", "-e", "VNC_RESOLUTION=1280x720", "-e", "DESKTOP_ID=e2e", "-e", "DESKTOP_NAME=e2e",
-        "-e", f"CONTROL_PLANE_URL=http://host.docker.internal:{PORT}", "-e", "AGENT_HARNESS=ollama",
+        "-e", f"CONTROL_PLANE_URL=http://host.docker.internal:{PORT}",
+        *brain.docker_env(brain.chosen(), f"http://host.docker.internal:{PORT}"),
         "-e", "OLLAMA_URL=http://host.docker.internal:11434", "-e", "DECURIX_REPLAY_FIND_SECONDS=6",
         # This benchmark verifies deterministic healing and human correction.
         # A live model could choose the renamed button or wait for a cold load,
@@ -181,8 +190,12 @@ def run():
         text = reply_text(last)
         if last.get("kind") == "final" or last.get("kind") == "error":
             break
-        if "Save it as" in text:
+        # The last question asks for the name ("What should I call it? ... `yes` keeps ...");
+        # it also says when the task is finished, so it is matched before "finished" is.
+        if "Save it as" in text or "What should I call it" in text:
             answer = "yes"
+        elif "Which of them change" in text:
+            answer = "all change"
         elif "same every time" in text:
             answer = "changes"
         elif "only sometimes happen" in text or "sometimes" in text and "always part" in text:
@@ -206,6 +219,21 @@ def run():
           "| params:", [(p["name"], p["varies"]) for p in skill["params"]])
     assert skill["status"] == "ready"
 
+    def confirmed(reply, index, task_id, shown):
+        """
+        A run that could not check every step on the screen is not reported
+        done (verify.py): with no model here to look, it asks. The script is the
+        person - it looks at the real page first, and only then says done.
+        """
+        if reply["kind"] == "query" and "confirm this is done" in reply["reply"]:
+            v = bash(f"gui verify --text '{shown}'", check=False)
+            print(f"   asked to confirm; the page shows {shown!r}: {v.returncode == 0}")
+            assert v.returncode == 0, "asked to confirm a run whose page does not show it"
+            send("done", task_id)
+            reply = wait_reply(index + 1, timeout=180)
+            show("confirmed", reply)
+        return reply
+
     # ---- do it ----
     print("\n== running the skill")
     before = len(replies())
@@ -217,6 +245,7 @@ def run():
     send("Initech", "t00000000000000c2")
     done = wait_reply(before + 2, timeout=180)
     show("result", done)
+    done = confirmed(done, before + 2, "t00000000000000c3", "Saved Initech")
     assert done["kind"] == "final", "the skill run did not complete"
 
     v = bash("gui verify --text 'Saved Initech'", check=False)
@@ -232,7 +261,9 @@ def run():
     send('/skill add-a-customer customer_name="Umbrella"', "t00000000000000d1")
     healed = wait_reply(before + 1, timeout=180)
     show("result", healed)
-    assert healed["kind"] == "final" and "repaired step 3" in healed["reply"], "the rename was not healed"
+    repaired = "repaired step 3" in healed["reply"]
+    healed = confirmed(healed, before + 1, "t00000000000000d2", "Saved Umbrella")
+    assert healed["kind"] == "final" and (repaired or "repaired step 3" in healed["reply"]), "the rename was not healed"
 
     v = bash("gui verify --text 'Saved Umbrella'", check=False)
     print("$ gui verify --text 'Saved Umbrella' ->", v.returncode)
@@ -251,6 +282,7 @@ def run():
     send('use "Go"', "t00000000000000e2")
     fixed = wait_reply(before + 2, timeout=180)
     show("result", fixed)
+    fixed = confirmed(fixed, before + 2, "t00000000000000e3", "Saved Wayne")
     assert fixed["kind"] == "final" and "remembered" in fixed["reply"]
 
     v = bash("gui verify --text 'Saved Wayne'", check=False)

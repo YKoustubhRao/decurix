@@ -198,7 +198,7 @@ func (m *Manager) Create(
 		sanitizeName(name),
 	)
 
-	env := buildDesktopEnv(name, harness, specialization, parentID)
+	env := buildDesktopEnv(name, harness, specialization, parentID, Brain{})
 
 	config, hostConfig, networkingConfig := buildContainerConfigs(
 		imageName,
@@ -283,7 +283,8 @@ func (m *Manager) Create(
 		Name:           name,
 		Profile:        profile,
 		Harness:        harness,
-		Model:          envValue(env, "OLLAMA_MODEL"),
+		Brain:          BrainOllama,
+		Model:          desktopModel(env),
 		ContainerID:    resp.ID,
 		Volume:         volumeName,
 		Status:         "running",
@@ -304,6 +305,7 @@ func (m *Manager) BeginProvisioning(
 	name string,
 	profile string,
 	harness string,
+	brain Brain,
 	cpus int64,
 	memoryMB int64,
 	claudeCredentialsJSON string,
@@ -335,6 +337,8 @@ func (m *Manager) BeginProvisioning(
 		Name:           name,
 		Profile:        profile,
 		Harness:        harness,
+		Brain:          brain.kind(),
+		Model:          brain.Model,
 		CPUs:           cpus,
 		MemoryMB:       memoryMB,
 		Status:         "provisioning",
@@ -356,13 +360,14 @@ func (m *Manager) BeginProvisioning(
 	snapshot := *prov
 	m.provisioningMu.Unlock()
 
-	go m.runProvisioning(prov, claudeCredentialsJSON, selectedApps, onStarted)
+	go m.runProvisioning(prov, brain, claudeCredentialsJSON, selectedApps, onStarted)
 
 	return &snapshot, nil
 }
 
 func (m *Manager) runProvisioning(
 	prov *ProvisioningDesktop,
+	brain Brain,
 	claudeCredentialsJSON string,
 	selectedApps []string,
 	onStarted func(d *Desktop) error,
@@ -428,8 +433,10 @@ func (m *Manager) runProvisioning(
 
 	// 3. Container Configuration & Creation
 	updateStage("container", "Creating container environment...", 45)
-	env := buildDesktopEnv(name, prov.Harness, prov.Specialization, prov.ParentID)
-	prov.Model = envValue(env, "OLLAMA_MODEL")
+	env := buildDesktopEnv(name, prov.Harness, prov.Specialization, prov.ParentID, brain)
+	m.provisioningMu.Lock()
+	prov.Model = desktopModel(env)
+	m.provisioningMu.Unlock()
 
 	config, hostConfig, networkingConfig := buildContainerConfigs(
 		imageName,
@@ -804,7 +811,7 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 				}
 			}
 			if model == "" && inspect.Config != nil {
-				model = envValue(inspect.Config.Env, "OLLAMA_MODEL")
+				model = desktopModel(inspect.Config.Env)
 			}
 			if specialization == "" && inspect.Config != nil {
 				specialization = envValue(inspect.Config.Env, "DESKTOP_SPECIALIZATION")
@@ -827,6 +834,11 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 	harness := c.Labels["desktop-harness"]
 	if harness == "" {
 		harness = HarnessOllama
+	}
+
+	brain := c.Labels["desktop-brain"]
+	if brain == "" {
+		brain = BrainOllama
 	}
 
 	status := "stopped"
@@ -877,6 +889,7 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 		Name:           id,
 		Profile:        profile,
 		Harness:        harness,
+		Brain:          brain,
 		Model:          model,
 		ContainerID:    c.ID,
 		Volume:         volumeName,
@@ -1151,6 +1164,7 @@ func (m *Manager) Get(ctx context.Context, id string) (Desktop, error) {
 		Name:        desktopID,
 		Profile:     "basic",
 		Harness:     HarnessOllama,
+		Brain:       BrainOllama,
 		ContainerID: inspect.ID,
 		Status:      "stopped",
 		URL:         desktopURL(desktopID),
@@ -1173,7 +1187,11 @@ func (m *Manager) Get(ctx context.Context, id string) (Desktop, error) {
 			found.Harness = harness
 		}
 
-		found.Model = envValue(inspect.Config.Env, "OLLAMA_MODEL")
+		if brain := inspect.Config.Labels["desktop-brain"]; brain != "" {
+			found.Brain = brain
+		}
+
+		found.Model = desktopModel(inspect.Config.Env)
 		found.Specialization = envValue(inspect.Config.Env, "DESKTOP_SPECIALIZATION")
 		found.ParentID = envValue(inspect.Config.Env, "DESKTOP_PARENT_ID")
 	}
@@ -1301,10 +1319,21 @@ func (m *Manager) SendRequest(
 	}
 
 	// Communicate directly over the Docker network.
-	// vm_server.py listens on port 8081 inside the desktop container.
+	// vm_server.py listens on port 8081 inside the desktop container. By
+	// address, not container name: the name resolves only for a control
+	// plane that is itself on decurix-network (compose); the released
+	// binary on the host has no Docker DNS, and every request it sent failed
+	// as "no such host". The same address resolveProxyTarget uses for the
+	// screen and the recordings.
+	host := name
+	if inspect.NetworkSettings != nil {
+		if n, ok := inspect.NetworkSettings.Networks[NetworkName]; ok && n != nil && n.IPAddress != "" {
+			host = n.IPAddress
+		}
+	}
 	url := fmt.Sprintf(
 		"http://%s:8081/request",
-		name,
+		host,
 	)
 
 	req, err := http.NewRequestWithContext(

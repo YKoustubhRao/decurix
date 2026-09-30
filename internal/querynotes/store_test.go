@@ -146,3 +146,38 @@ func TestResolvedHistoryIsNewestFirst(t *testing.T) {
 		t.Fatalf("expected most recently resolved first, got %+v", got)
 	}
 }
+
+// A deleted desktop's notes - every kind - leave the open list, and stay in
+// the history saying why.
+func TestDeletingADesktopResolvesItsNotes(t *testing.T) {
+	s := newTestStore(t)
+	s.Add(note("q", "gone", KindQuery))
+	s.Add(note("e", "gone", "error"))
+	s.Add(note("k", "kept", KindQuery))
+
+	s.ResolveDesktop("gone")
+
+	open := s.List()
+	if len(open) != 1 || open[0].ID != "k" {
+		t.Fatalf("open = %+v, want only k", open)
+	}
+	for _, n := range s.ListResolved() {
+		if n.Resolution != ResolutionDeleted {
+			t.Errorf("%s resolved as %q", n.ID, n.Resolution)
+		}
+	}
+}
+
+// Notes of desktops that no longer exist are resolved; others are not.
+func TestOrphanNotesAreResolved(t *testing.T) {
+	s := newTestStore(t)
+	s.Add(note("a", "alive", KindQuery))
+	s.Add(note("b", "godspeed", "error"))
+
+	if n := s.ResolveOrphans([]string{"alive"}); n != 1 {
+		t.Fatalf("resolved %d, want 1", n)
+	}
+	if open := s.List(); len(open) != 1 || open[0].ID != "a" {
+		t.Fatalf("open = %+v, want only a", open)
+	}
+}

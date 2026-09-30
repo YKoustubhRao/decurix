@@ -94,6 +94,16 @@ var (
 // itself - fine for reading the web, useless for signing in to an admin
 // panel and pressing its buttons, which only the operator's `gui` command
 // can do.
+// taughtTaskRe is how the desktop agent hands over a taught task:
+// `Do the task you were taught, "<title>" (skill <name>) ...`.
+var taughtTaskRe = regexp.MustCompile(`(?i)^\s*do the task you were taught\b`)
+
+// webAppLeadRe is a request that starts with the name of a web app to ask
+// ("chatgpt ...", "ask ChatGPT ...", "search google for ..."), the services
+// `gui ask` reaches. The name has to lead: "what does google say about x"
+// and "is chatgpt down?" are questions about it.
+var webAppLeadRe = regexp.MustCompile(`(?i)^\s*(?:please\s+)?(?:(?:ask|use|query|search)\s+(?:on\s+|in\s+|with\s+)?(?:chat\s?-?gpt|google|duck\s?duck\s?go|wikipedia|you\s?tube)\b|(?:chat\s?-?gpt|google|duck\s?duck\s?go|wikipedia|you\s?tube)\s*(?:for\b|to\b|about\b|[:,\-]|["“']))`)
+
 func wantsScreen(prompt string) bool {
 	return screenSurfaceRe.MatchString(prompt) && matchesWord(screenActionRe, prompt)
 }
@@ -114,6 +124,38 @@ func matchesWord(re *regexp.Regexp, prompt string) bool {
 		return true
 	}
 	return false
+}
+
+var (
+	// An email to be drafted for a person to send: the operator puts it in
+	// the Outbox (`office email`). Left to the chat skill, "draft an email
+	// to acme@example.com with the statement attached" came back as the
+	// email's text in the reply - nothing in the Outbox, nothing attached.
+	draftVerbRe   = regexp.MustCompile(`(?i)\b(draft|prepare|compose)\b[^.?!\n]{0,80}?\b(e-?mails?|mails?|repl(y|ies)|reminders?|letters?|messages?)\b`)
+	outboxRe      = regexp.MustCompile(`(?i)\bout-?box\b`)
+	writeEmailRe  = regexp.MustCompile(`(?i)\bwrite\b[^.?!\n]{0,40}?\be-?mails?\b`)
+	emailTargetRe = regexp.MustCompile(`(?i)[\w.+-]+@[\w-]+\.[\w.]+|\battach(ed|ment|ing)?\b`)
+)
+
+// documentFileRe names an Office document or a PDF by its file name.
+var (
+	documentFileRe = regexp.MustCompile(`(?i)\b[\w-]+\.(xlsx|xlsm|xls|ods|docx|doc|odt|rtf|pptx|ppt|odp|pdf)\b`)
+	documentVerbRe = regexp.MustCompile(`(?i)\b(create|make|write|build|generate|prepare|produce|update|add|fill|put|save|edit|change|combine|merge|export|convert)\b`)
+)
+
+// wantsDocument reports whether a request asks for an Office document or a
+// PDF, named by its file, to be made or changed.
+func wantsDocument(prompt string) bool {
+	return documentFileRe.MatchString(prompt) && documentVerbRe.MatchString(prompt)
+}
+
+// wantsEmailDraft reports whether a request asks for an email to be prepared
+// for sending - drafted, prepared or composed, or put in the Outbox, or
+// written to an address or with an attachment. "Help me word an email to my
+// boss" names no address and stays conversation: the words are the answer.
+func wantsEmailDraft(prompt string) bool {
+	return draftVerbRe.MatchString(prompt) || outboxRe.MatchString(prompt) ||
+		(writeEmailRe.MatchString(prompt) && emailTargetRe.MatchString(prompt))
 }
 
 // shellRe is a request that names where it wants to be done, and it is not a
@@ -150,8 +192,17 @@ func wantsBrowser(prompt string) bool {
 	if shellRe.MatchString(prompt) {
 		return false
 	}
+	// An email address's domain is not a place to go. Found live: "create
+	// invoices.xlsx ... Then draft an email to ap@example.com" was a browser
+	// task ("example.com" plus "then") and waited on an extension that was
+	// not running before the operator got it.
+	prompt = emailAddressRe.ReplaceAllString(prompt, " ")
 	return webDestinationRe.MatchString(prompt) && matchesWord(webInteractionRe, prompt)
 }
+
+// emailAddressRe is an email address, taken out before looking for a web
+// destination.
+var emailAddressRe = regexp.MustCompile(`[\w.+-]+@[\w-]+(\.[\w-]+)+`)
 
 // greetingLeadRe strips the greeting off the front of a turn, so what
 // follows it can be judged on its own.
@@ -193,6 +244,28 @@ func Triage(prompt string) Route {
 		return Route{Kind: RouteSkill, TaskType: matched, Reason: "a request to build software - the coding harness takes it whole"}
 	}
 
+	// A request that leads with a web app's name ("chatgpt \"a\", \"b\"",
+	// "ask google ...") is something to put to that app, never a question
+	// for the model itself. Found live: `chatgpt "what is 3+3?", "what
+	// colour is the sky?"` was triaged as a question and answered from the
+	// model's own knowledge, by the chat skill, which has no tools - so
+	// neither `gui ask` nor what the person taught about ChatGPT (the
+	// harness puts that in the standing context) was ever used. The
+	// operator has both. The desktop agent's own shortcut (ask_task.py)
+	// takes these first; it leaves one here only when a person taught how
+	// they want it done.
+	// A task a person taught this desktop, handed over by the desktop agent
+	// while the skill is still being learned (skill_task._by_model): work on
+	// the screen, always. Found live: triaged as a question, it went to the
+	// chat skill - no tools - which answered as if it had done the task.
+	if taughtTaskRe.MatchString(p) {
+		return Route{Kind: RouteOperate, TaskType: matched, Reason: "a task a person taught - the operator does it on the screen"}
+	}
+
+	if webAppLeadRe.MatchString(p) {
+		return Route{Kind: RouteOperate, TaskType: matched, Reason: "something to ask a web app - the operator uses it with gui ask"}
+	}
+
 	// Before wantsScreen and the compound check, for the same reason
 	// wantsScreen already goes first: "Open google.com. Search for this.
 	// Do that." is one goal on one page, worked through by the extension's
@@ -200,6 +273,9 @@ func Triage(prompt string) Route {
 	// and not the operator's generic, coordinate-driven screen loop when a
 	// page-aware, selector-grounded tool is exactly what this is.
 	if wantsBrowser(p) {
+		if !BrowserAvailable {
+			return Route{Kind: RouteOperate, TaskType: matched, Reason: "an interactive task in a real web page - the operator works the browser with the gui command"}
+		}
 		return Route{Kind: RouteBrowser, TaskType: "browser", Reason: "an interactive task in a real web page - handing it to the browser extension"}
 	}
 
@@ -208,6 +284,19 @@ func Triage(prompt string) Route {
 	// not a plan written before anything on the screen has been looked at.
 	if wantsScreen(p) && !researchRe.MatchString(p) {
 		return Route{Kind: RouteOperate, TaskType: matched, Reason: "work in an app on the screen - the operator drives it with the gui command"}
+	}
+
+	// An Office document or a PDF is made with the operator's office
+	// command, never by the file-write skill, which only writes text: found
+	// live, "create totals.xlsx ... with a Total row" went to file-write and
+	// saved the model's refusal as totals.xlsx. A request that also needs
+	// research is still planned; file-write hands such a step on itself.
+	if wantsDocument(p) && !researchRe.MatchString(p) {
+		return Route{Kind: RouteOperate, TaskType: matched, Reason: "an Office document or PDF to make - the operator builds it with the office command"}
+	}
+
+	if wantsEmailDraft(p) && !researchRe.MatchString(p) {
+		return Route{Kind: RouteOperate, TaskType: matched, Reason: "an email to prepare - the operator drafts it into the Outbox"}
 	}
 
 	if looksCompound(p) {

@@ -5,7 +5,11 @@ something the screen exposes no element for leaves in a recording, whether a
 replay finds it again where it moved, and - what matters more - that it will
 not click the wrong thing.
 
-    python3 bench/recordings/e2e.py [--keep]
+    python3 bench/recordings/e2e.py [--keep] [--brain ollama|claude|azure]
+
+--brain runs the desktop as one created with that brain is (bench/brain.py),
+calling back to this tree's control plane on 127.0.0.1:8080. A replay uses no
+model, so this checks that recording and replay are the same on every brain.
 
 Needs Docker and a built decurix-desktop:basic (scripts/*/build-images.sh).
 Takes about three minutes and leaves nothing behind unless --keep is given.
@@ -23,6 +27,9 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import brain  # noqa: E402
 
 REPO = str(Path(__file__).resolve().parents[2])
 NAME = "decurix-e2e-rec"
@@ -68,8 +75,11 @@ EXPORT = {
 }
 
 ROWS = ["Invoice 1041 Paid", "Invoice 1042 Paid", "Invoice 1043 Due"]
-# The second row, in the middle: canvas at (300,200) plus the browser's own 109 px of tabs and toolbar.
-SECOND_ROW = (460, 405)
+# The second row, in the middle: canvas at (300,200) in the page, row centre at (160,96) in the canvas.
+# Where the page itself starts on the screen depends on the browser's own tabs and toolbar (109 px on
+# Chromium 112, less on Chrome), so it is measured on the desktop (viewport_origin), never assumed.
+ROW_IN_PAGE = (300 + 160, 200 + 96)
+SECOND_ROW = None
 
 failures = []
 
@@ -89,6 +99,23 @@ def bash(script, **kw):
 def page(rows=ROWS, left=300, top=200):
     body = PAGE % {"left": left, "top": top, "rows": json.dumps(rows)}
     bash("cat > ~/work/invoices.html <<'EOF'\n" + body + "EOF")
+
+
+def viewport_origin():
+    """Where the open page's top-left corner is on the screen, as the page itself reports it."""
+
+    out = bash("""python3 - <<'EOF'
+import json
+from decurix_agent.computer import cdp
+p = cdp.active_page()
+try:
+    m = json.loads(p.evaluate("JSON.stringify([screenX, screenY, outerWidth, outerHeight, innerWidth, innerHeight])"))
+finally:
+    p.close()
+sx, sy, ow, oh, iw, ih = m
+print(json.dumps([sx + (ow - iw) // 2, sy + oh - ih]))
+EOF""").stdout
+    return json.loads(out)
 
 
 def shows(text):
@@ -139,12 +166,17 @@ def imported():
 
 
 def main():
+    chosen = brain.chosen()
+    # A hosted brain calls the model through a real control plane; the local
+    # one needs none (nothing listens on 18081 - callbacks are not checked).
+    callback = "http://host.docker.internal:8080" if chosen in ("claude", "azure") else "http://host.docker.internal:18081"
     subprocess.run(["docker", "rm", "-f", NAME], capture_output=True)
     subprocess.run([
         "docker", "run", "-d", "--name", NAME, "--add-host", "host.docker.internal:host-gateway", "--shm-size=1g",
         "--security-opt", f"seccomp={REPO}/internal/desktop/seccomp-desktop.json", "--ulimit", "core=0",
         "-e", "VNC_PW=admin", "-e", "VNC_RESOLUTION=1280x720", "-e", "DESKTOP_ID=e2e", "-e", "DESKTOP_NAME=e2e",
-        "-e", "CONTROL_PLANE_URL=http://host.docker.internal:18081", "-e", "AGENT_HARNESS=ollama",
+        "-e", f"CONTROL_PLANE_URL={callback}",
+        *brain.docker_env(chosen, callback),
         "-e", "DECURIX_REPLAY_FIND_SECONDS=5", "-e", "DECURIX_REPLAY_EXPECT_SECONDS=3",
         "-v", f"{REPO}/agent/decurix_agent:/opt/decurix_agent:ro", IMAGE,
     ], check=True, capture_output=True)
@@ -176,6 +208,10 @@ def run():
     bash("printf %s t00000000000000f1 > /tmp/decurix-current-task; printf %s 'Open the second invoice' > /tmp/decurix-current-task.request")
     bash("gui open file:///home/headless/work/invoices.html", timeout=90)
     time.sleep(1)
+    global SECOND_ROW
+    ox, oy = viewport_origin()
+    SECOND_ROW = (ox + ROW_IN_PAGE[0], oy + ROW_IN_PAGE[1])
+    print(f"  the page starts at ({ox},{oy}) on the screen; the second row is at {SECOND_ROW}")
     out = bash(f"gui click {SECOND_ROW[0]},{SECOND_ROW[1]}", timeout=90).stdout
     bash("printf %s '' > /tmp/decurix-current-task")
     session = "task-t00000000000000f1"

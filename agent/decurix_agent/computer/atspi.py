@@ -1,5 +1,6 @@
 import time
 
+from decurix_agent.computer import browser
 from decurix_agent.computer import elements as el
 from decurix_agent.computer import session
 from decurix_agent.computer.errors import ComputerError
@@ -186,7 +187,7 @@ def observe(skip_apps=()):
             if not flags.get("showing"):
                 continue
 
-            title = window.get_name() or ""
+            title = browser.canonical_title(window.get_name() or "")
             group_id = f"atspi:{app_name}:{window_index}:{title}"
             kind = "dialog" if role in ("dialog", "alert", "file chooser") else "window"
 
@@ -199,51 +200,76 @@ def observe(skip_apps=()):
             })
 
             before = len(found)
+            bars = []
             # An editor marks unsaved changes with a leading "*"; it is still
             # the same window, and its widgets must keep their refs.
             stable_title = title.lstrip("*").strip()
             _walk(
                 Atspi, window, [app_index, window_index],
                 [f"{app_name} {kind} {el._quote(stable_title, 60)}"],
-                group_id, title, app_name, pid, found, deadline,
+                group_id, title, app_name, pid, found, deadline, bars,
             )
             el.dedupe_paths(found[before:])
 
             if app_name == "soffice" and role == "frame":
-                _correct_libreoffice_boxes(found[before:], _box(Atspi, window))
+                _correct_libreoffice_boxes(found[before:], bars)
 
     return found, groups
 
 
-def _correct_libreoffice_boxes(elements, frame_box):
+def libreoffice_offset(bars):
     """
-    Move LibreOffice's self-drawn widgets to where they are actually drawn.
+    How far above where they are drawn LibreOffice reports its self-drawn
+    widgets, in pixels (0 when they are reported where they are).
 
     LibreOffice reports the extents of everything VCL paints in a document
-    window - the document, table cells, toolbars, sheet tabs - offset by the
-    frame's own screen position: measured under XFCE, the frame is at y=27
-    (below the top panel) and every one of those widgets is reported exactly
-    27 px above where it appears, while the native GTK menu bar is reported
-    correctly. So those boxes are shifted by the frame's origin, and the menu
-    bar's are left alone. Dialogs are native GTK and never shifted.
+    window - the document, table cells, toolbars, sheet tabs - by an offset
+    that depends on its state: measured on the same desktop, a freshly opened
+    Calc reported them 25 px (the menu bar's height) too high, the pointer
+    merely crossing the window made them right, and a no-op window move made
+    them wrong again. An earlier desktop had them 27 px too high, the frame's
+    y. The frame's own extents cannot say which: it reported (0,0) while the
+    window was at (0,36). The native GTK menu bar is always right, though, and
+    VCL's first toolbar is drawn directly below it - so a toolbar reported
+    above the menu bar's bottom edge is off by exactly the overlap. That is
+    measured every observation, so it holds whichever state the app is in.
+    `bars` is [(raw role, box)] of the window's menu and tool bars.
     """
 
-    if not frame_box:
-        return
+    menus = [box for role, box in bars if role == "menu bar" and box and box[3] > 0]
+    tools = [box for role, box in bars if role == "tool bar" and box and box[3] > 0]
 
-    dx, dy = frame_box[0], frame_box[1]
+    if not menus or not tools:
+        return 0
 
-    if dx == 0 and dy == 0:
+    menu_bottom = max(box[1] + box[3] for box in menus)
+    top = min(box[1] for box in tools)
+
+    # A toolbar can only be above the menu bar if it is misreported; one or
+    # two pixels is a border, not an offset.
+    return menu_bottom - top if menu_bottom - top > 2 else 0
+
+
+def _correct_libreoffice_boxes(elements, bars):
+    """
+    Move LibreOffice's self-drawn widgets to where they are actually drawn
+    (libreoffice_offset). The menu bar's items are native and left alone;
+    dialogs are separate windows and never passed here.
+    """
+
+    dy = libreoffice_offset(bars)
+
+    if not dy:
         return
 
     for element in elements:
         if element.get("bar") == "menu bar" or not element.get("box"):
             continue
         box = element["box"]
-        element["box"] = [box[0] + dx, box[1] + dy, box[2], box[3]]
+        element["box"] = [box[0], box[1] + dy, box[2], box[3]]
 
 
-def _walk(Atspi, root, index_path, path, group_id, window_title, app_name, pid, found, deadline):
+def _walk(Atspi, root, index_path, path, group_id, window_title, app_name, pid, found, deadline, bars=None):
     stack = [(root, index_path, path, 0, None, "", "")]
     visited = 0
     seen = set()
@@ -314,6 +340,12 @@ def _walk(Atspi, root, index_path, path, group_id, window_title, app_name, pid, 
         if interactive and not name and role not in UNNAMED_OK:
             interactive = False
 
+        # The taskbar lists each window as a button named with its title; a
+        # browser window's is reported the way its window is (browser.py), so
+        # a recorded click on it replays whichever browser build is installed.
+        if name and browser.is_browser_title(name):
+            name = browser.canonical_title(name)
+
         key = (role, name, tuple(box) if box else None)
 
         if depth > 0 and box and (interactive or readable or sheet) and key not in seen:
@@ -365,6 +397,8 @@ def _walk(Atspi, root, index_path, path, group_id, window_title, app_name, pid, 
         child_bar = bar
         if raw_role in ("tool bar", "menu bar", "status bar"):
             child_bar = name or raw_role
+            if bars is not None and raw_role != "status bar":
+                bars.append((raw_role, box))
 
         # Pushed in reverse so they are visited, and listed, in reading order.
         for child_index in reversed(range(min(count, 500))):
@@ -558,11 +592,11 @@ def place_caret(element, at_end=True):
     cell's paragraph - through the accessibility Text interface.
 
     Not a click, on purpose. LibreOffice reports the on-screen extents of
-    everything it draws itself (the document, its cells, its toolbars) offset
-    by its frame's position - a click at a cell's reported centre landed in
-    the line above it. _correct_libreoffice_boxes compensates for the offset
-    as measured, but setting the caret needs no coordinates at all, so it
-    cannot be wrong on a geometry nobody measured.
+    everything it draws itself (the document, its cells, its toolbars) too
+    high - a click at a cell's reported centre landed in the line above it.
+    _correct_libreoffice_boxes compensates for the offset it can measure, but
+    setting the caret needs no coordinates at all, so it cannot be wrong on a
+    geometry nobody measured.
     """
 
     Atspi = _lib()
