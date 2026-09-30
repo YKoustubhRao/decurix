@@ -31,6 +31,8 @@ source ./scripts/linux/lib/lan-tunnel.sh
 source ./scripts/linux/lib/lan-address.sh
 # shellcheck source=lib/keep-awake.sh
 source ./scripts/linux/lib/keep-awake.sh
+# shellcheck source=lib/build-resources.sh
+source ./scripts/linux/lib/build-resources.sh
 
 SKIP_CONFIRM=""
 CLI_MODE=""
@@ -70,6 +72,9 @@ if [ -z "$SKIP_CONFIRM" ]; then
         exit 1
     fi
 fi
+
+# Check and start the memory-limited builder before deleting any app data.
+configure_build_resources
 
 # However far the rebuild got, an interrupted one should not leave a stack
 # half old, half fresh - tear down whatever is currently there rather than
@@ -142,7 +147,9 @@ export DOCKER_BUILDKIT=1
 
 echo ""
 echo "=== Enabling Linux Kernel Samepage Merging (KSM) for RAM deduplication ==="
-if [ -w /sys/kernel/mm/ksm/run ]; then
+if grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; then
+    echo "Skipping KSM changes inside WSL."
+elif [ -w /sys/kernel/mm/ksm/run ]; then
     echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null && echo "KSM enabled (run=1)" || true
     if [ -w /sys/kernel/mm/ksm/use_zero_pages ]; then
         echo 1 > /sys/kernel/mm/ksm/use_zero_pages 2>/dev/null && echo "KSM zero pages deduplication enabled" || true
@@ -181,7 +188,12 @@ export DECURIX_HOST_HOME="${HOME:-/home}"
 echo ""
 echo "=== Starting Decurix ==="
 
-docker compose up -d --build
+if [ -n "$DECURIX_BUILD_BUILDER" ]; then
+    docker compose build --builder "$DECURIX_BUILD_BUILDER"
+else
+    docker compose build
+fi
+docker compose up -d --no-build
 
 echo ""
 echo "=== Waiting for dashboard ==="
