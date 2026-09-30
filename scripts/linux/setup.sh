@@ -123,7 +123,7 @@ echo ""
 echo "Cloudflared:"
 cloudflared --version
 
-if [ -d /sys/kernel/mm/ksm ]; then
+if [ -d /sys/kernel/mm/ksm ] && ! grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; then
     echo ""
     echo "=== Enabling Linux Kernel Samepage Merging (KSM) for RAM deduplication ==="
     echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null && echo "KSM enabled (run=1)" || true
