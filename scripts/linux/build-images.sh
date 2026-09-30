@@ -41,6 +41,10 @@ fi
 
 cd "$root"
 
+# shellcheck source=lib/build-resources.sh
+source ./scripts/linux/lib/build-resources.sh
+configure_build_resources
+
 echo "========================================"
 echo " Building Decurix desktop images"
 echo "========================================"
@@ -71,10 +75,12 @@ build_one() {
     echo ""
     echo "=== Building $label image ==="
 
-    docker build \
-        -f "$dockerfile" \
-        -t "$tag" \
-        .
+    if [ -n "$DECURIX_BUILD_BUILDER" ]; then
+        docker buildx build --builder "$DECURIX_BUILD_BUILDER" --load \
+            -f "$dockerfile" -t "$tag" .
+    else
+        docker build -f "$dockerfile" -t "$tag" .
+    fi
 }
 
 build_one decurix-desktop:basic docker/desktop.basic.Dockerfile "Unified Desktop Base"
