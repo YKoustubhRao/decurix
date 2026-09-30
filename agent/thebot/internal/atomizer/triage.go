@@ -137,6 +137,18 @@ var (
 	emailTargetRe = regexp.MustCompile(`(?i)[\w.+-]+@[\w-]+\.[\w.]+|\battach(ed|ment|ing)?\b`)
 )
 
+// documentFileRe names an Office document or a PDF by its file name.
+var (
+	documentFileRe = regexp.MustCompile(`(?i)\b[\w-]+\.(xlsx|xlsm|xls|ods|docx|doc|odt|rtf|pptx|ppt|odp|pdf)\b`)
+	documentVerbRe = regexp.MustCompile(`(?i)\b(create|make|write|build|generate|prepare|produce|update|add|fill|put|save|edit|change|combine|merge|export|convert)\b`)
+)
+
+// wantsDocument reports whether a request asks for an Office document or a
+// PDF, named by its file, to be made or changed.
+func wantsDocument(prompt string) bool {
+	return documentFileRe.MatchString(prompt) && documentVerbRe.MatchString(prompt)
+}
+
 // wantsEmailDraft reports whether a request asks for an email to be prepared
 // for sending - drafted, prepared or composed, or put in the Outbox, or
 // written to an address or with an attachment. "Help me word an email to my
@@ -180,8 +192,17 @@ func wantsBrowser(prompt string) bool {
 	if shellRe.MatchString(prompt) {
 		return false
 	}
+	// An email address's domain is not a place to go. Found live: "create
+	// invoices.xlsx ... Then draft an email to ap@example.com" was a browser
+	// task ("example.com" plus "then") and waited on an extension that was
+	// not running before the operator got it.
+	prompt = emailAddressRe.ReplaceAllString(prompt, " ")
 	return webDestinationRe.MatchString(prompt) && matchesWord(webInteractionRe, prompt)
 }
+
+// emailAddressRe is an email address, taken out before looking for a web
+// destination.
+var emailAddressRe = regexp.MustCompile(`[\w.+-]+@[\w-]+(\.[\w-]+)+`)
 
 // greetingLeadRe strips the greeting off the front of a turn, so what
 // follows it can be judged on its own.
@@ -252,6 +273,9 @@ func Triage(prompt string) Route {
 	// and not the operator's generic, coordinate-driven screen loop when a
 	// page-aware, selector-grounded tool is exactly what this is.
 	if wantsBrowser(p) {
+		if !BrowserAvailable {
+			return Route{Kind: RouteOperate, TaskType: matched, Reason: "an interactive task in a real web page - the operator works the browser with the gui command"}
+		}
 		return Route{Kind: RouteBrowser, TaskType: "browser", Reason: "an interactive task in a real web page - handing it to the browser extension"}
 	}
 
@@ -260,6 +284,15 @@ func Triage(prompt string) Route {
 	// not a plan written before anything on the screen has been looked at.
 	if wantsScreen(p) && !researchRe.MatchString(p) {
 		return Route{Kind: RouteOperate, TaskType: matched, Reason: "work in an app on the screen - the operator drives it with the gui command"}
+	}
+
+	// An Office document or a PDF is made with the operator's office
+	// command, never by the file-write skill, which only writes text: found
+	// live, "create totals.xlsx ... with a Total row" went to file-write and
+	// saved the model's refusal as totals.xlsx. A request that also needs
+	// research is still planned; file-write hands such a step on itself.
+	if wantsDocument(p) && !researchRe.MatchString(p) {
+		return Route{Kind: RouteOperate, TaskType: matched, Reason: "an Office document or PDF to make - the operator builds it with the office command"}
 	}
 
 	if wantsEmailDraft(p) && !researchRe.MatchString(p) {

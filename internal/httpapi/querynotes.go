@@ -55,6 +55,11 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		// and said so.
 		Interrupted bool `json:"interrupted"`
 
+		// Checked says whether the desktop's final check judged a finished
+		// result (messaging.write_final_reply). Absent from older images,
+		// which leaves it unknown rather than "not checked".
+		Checked *bool `json:"checked"`
+
 		// What the task records need from the end of a turn: which task it
 		// was, and what the desktop knows about the model and the spend so
 		// far. All optional, and absent from older images.
@@ -133,6 +138,7 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		CostUSD:      nonNegativeFloat(req.CostUSD),
 		InputTokens:  nonNegativeInt(req.InputTokens),
 		OutputTokens: nonNegativeInt(req.OutputTokens),
+		Checked:      req.Checked,
 	})
 	if err != nil {
 		log.Printf("querytext from %s: %v", desktopID, err)

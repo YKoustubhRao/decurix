@@ -186,6 +186,32 @@ class RunFilledFromTheDocument(TeachingBase):
         self.assertNotIn(names["Customer"] + " (", self.asked[-1][0])
 
 
+class ValuesAreSpelledAsTheDocumentWritesThem(unittest.TestCase):
+    PO = "WOOD CORNER\nPURCHASE ORDER\nPO Number: WC-PO-118\nAuthorised by Purchasing, Wood Corner"
+
+    def test_a_letterhead_in_capitals_is_spelled_as_the_document_writes_it(self):
+        # Found live: the quotation was saved for "WOOD CORNER".
+        self.assertEqual(binding.as_written("WOOD CORNER", "Deco Addict", [self.PO]), "Wood Corner")
+
+    def test_a_value_only_ever_written_in_capitals_is_kept(self):
+        self.assertEqual(binding.as_written("WC-PO-118", "DA-PO-7731", [self.PO]), "WC-PO-118")
+        self.assertEqual(binding.as_written("PURCHASE ORDER", "Deco Addict", [self.PO]), "PURCHASE ORDER")
+
+    def test_capitals_the_example_also_had_are_kept(self):
+        self.assertEqual(binding.as_written("WOOD CORNER", "DECO ADDICT", [self.PO]), "WOOD CORNER")
+
+    def test_part_of_a_longer_word_is_not_a_spelling(self):
+        self.assertEqual(binding.as_written("WOOD", "Oak", ["Woodland Ltd\nWOOD"]), "WOOD")
+
+    def test_the_clean_step_applies_it_to_single_and_list_values(self):
+        params = [{"name": "customer", "example": "Deco Addict"},
+                  {"name": "product", "example": "Large Cabinet", "list": True}]
+        values, _ = binding._clean(params, {"values": {"customer": "WOOD CORNER",
+                                                        "product": ["LARGE DESK", "Office Chair"]}},
+                                   [self.PO + "\n1 Large Desk 4\n2 Office Chair 10"])
+        self.assertEqual(values, {"customer": "Wood Corner", "product": "Large Desk; Office Chair"})
+
+
 if __name__ == "__main__":
     unittest.main()
 

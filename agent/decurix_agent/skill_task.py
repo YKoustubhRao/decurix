@@ -846,6 +846,18 @@ def _finish(run, result):
     _pause(run, "confirm", _doubt_text(result["text"], verdict), result=result, verdict=verdict)
 
 
+def _evidence_text(run):
+    """
+    The report's list of values read from the run's documents (binding.py),
+    or "". Every way a /skill run can succeed - replay, or the engine while
+    the skill is still being learned (_gate) - says where its values came from.
+    """
+    if not run or not run.get("evidence"):
+        return ""
+    filled = {k: run["values"][k] for k in run["evidence"] if k in run["values"]}
+    return "\n\nValues read from the documents:\n" + binding.report(run["evidence"], filled)
+
+
 def _succeed(run, result, checked_by, seen="", helped=False):
     skill = run["skill"]
     text = result["text"]
@@ -855,9 +867,7 @@ def _succeed(run, result, checked_by, seen="", helped=False):
     elif checked_by == "person":
         text += "\n\nYou confirmed it was done."
 
-    if run.get("evidence"):
-        filled = {k: run["values"][k] for k in run["evidence"] if k in run["values"]}
-        text += "\n\nValues read from the documents:\n" + binding.report(run["evidence"], filled)
+    text += _evidence_text(run)
 
     if run.get("one_off"):
         # Built from a recording for this request only: nothing to save, and a
@@ -1352,7 +1362,7 @@ def _gate(reply, kind, engine):
             _record_verdict(run, True, checked_by="model",
                             helped=guided["mode"] == "takeover" or run.get("attempts", 1) > 1)
         text = f"{reply}\n\nChecked on the screen: {verdict['seen']}" if verdict.get("seen") else reply
-        write_final_reply(text, kind="final", engine=engine, checked=True)
+        write_final_reply(text + _evidence_text(run), kind="final", engine=engine, checked=True)
         return True
 
     # The model said done and the screen says not: one more go, told what the

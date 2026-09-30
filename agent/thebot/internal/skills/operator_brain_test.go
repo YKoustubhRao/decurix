@@ -129,3 +129,26 @@ printf screen > "$DECURIX_GUI_SCREENSHOT"; echo typed`,
 		t.Errorf("after a screenshot: %d document pages, %d screenshots; want both kept", pages, screens)
 	}
 }
+
+// A hosted brain is given the back-office rules the Office engine learned
+// live; a local brain's contract stays as small as before.
+func TestAHostedBrainIsGivenTheBackOfficeRules(t *testing.T) {
+	for _, tc := range []struct {
+		caps llm.Capabilities
+		want bool
+	}{
+		{llm.Capabilities{Brain: "azure", Vision: true, Hosted: true}, true},
+		{llm.Capabilities{Brain: "ollama"}, false},
+	} {
+		chat := &scriptedChat{replies: []string{"DONE:\nok"}}
+		rc := operatorContext(t, chat)
+		rc.Brain = llm.NewBrain(tc.caps)
+		if _, err := NewOperator().Run(rc, Subtask{Step: "onboard the new joiner", Type: "operator"}); err != nil {
+			t.Fatal(err)
+		}
+		contract := chat.calls[0][len(chat.calls[0])-1].Content
+		if got := strings.Contains(contract, "Documents belong to someone"); got != tc.want {
+			t.Errorf("%s: rules in the contract = %v, want %v", tc.caps.Brain, got, tc.want)
+		}
+	}
+}

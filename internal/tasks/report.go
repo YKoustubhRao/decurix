@@ -84,6 +84,13 @@ type Filter struct {
 	Limit    int
 }
 
+// CountsForAutonomy reports whether a task of this type is an attempt an
+// engine made. A demonstration was done by a person while it was recorded,
+// and a lesson is a person being asked about one: neither is counted.
+func CountsForAutonomy(taskType string) bool {
+	return taskType != TypeDemonstration && taskType != TypeTeaching
+}
+
 // ReportAndList computes the autonomy report and filtered task list in a single
 // database pass over the tasks created since a time.
 func (s *Store) ReportAndList(filter Filter) (Report, []Summary, error) {
@@ -409,9 +416,7 @@ func reportFromSummaries(since time.Time, summaries []Summary) Report {
 	}
 
 	for _, summary := range summaries {
-		// A person did it while it was recorded, or was being asked about it
-		// while it was learned: no engine was being autonomous.
-		if summary.Type == TypeDemonstration || summary.Type == TypeTeaching {
+		if !CountsForAutonomy(summary.Type) {
 			continue
 		}
 

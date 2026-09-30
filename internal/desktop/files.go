@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"path"
 	"strings"
 	"time"
@@ -88,6 +89,35 @@ func (m *Manager) CopyFiles(ctx context.Context, desktopID, dir string, files []
 	}
 
 	return nil
+}
+
+// CopyOut reads a folder or file under /home/headless out of a desktop, as the
+// tar stream Docker produces (entries named from the folder's own name down).
+// Like CopyFiles it works on a stopped desktop. A path that is not there is
+// ErrNotFound; the caller closes the stream.
+func (m *Manager) CopyOut(ctx context.Context, desktopID, p string) (io.ReadCloser, error) {
+	const home = "/home/headless"
+
+	clean := path.Clean(p)
+	if !strings.HasPrefix(clean+"/", home+"/") || clean == home {
+		return nil, fmt.Errorf("copy out: %q is not under %s", p, home)
+	}
+
+	containerName := "desktop_" + sanitizeName(desktopID)
+
+	rc, _, err := m.client.CopyFromContainer(ctx, containerName, clean)
+	if err != nil {
+		if nf := notFound(desktopID, err); nf != err {
+			return nil, nf
+		}
+		if strings.Contains(strings.ToLower(err.Error()), "could not find the file") {
+			return nil, ErrNotFound
+		}
+
+		return nil, fmt.Errorf("copy %s out of %s: %w", clean, containerName, err)
+	}
+
+	return rc, nil
 }
 
 // UsesLocalModel reports whether any desktop reasons with the local Ollama

@@ -467,6 +467,9 @@ func (s *Server) deleteDesktopHandler(w http.ResponseWriter, r *http.Request) {
 
 	s.closeOpenTasks(id, "The desktop was deleted before this task finished.")
 
+	// Its open notes can never be answered now.
+	s.QueryNotes.ResolveDesktop(desktop.SanitizeID(id))
+
 	// The worker's records outlive its container.
 	if err := s.Tasks.MarkWorkerDeleted(desktop.SanitizeID(id)); err != nil {
 		log.Printf("deleteDesktop: %v", err)
