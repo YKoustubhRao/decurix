@@ -10,7 +10,10 @@ RUN go mod download
 COPY agent/thebot/cmd ./cmd
 COPY agent/thebot/internal ./internal
 COPY agent/thebot/web ./web
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /soul ./cmd/soul
+# Two cores and one package at a time: an unbounded build inside Docker took
+# every core and a couple of GB at once and brought down the 8 GB WSL host
+# this is developed on. It costs a minute of wall time, not correctness.
+RUN GOMAXPROCS=2 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -p 1 -trimpath -ldflags="-s -w" -o /soul ./cmd/soul
 
 FROM accetto/ubuntu-vnc-xfce-chromium-g3:latest
 
@@ -113,6 +116,20 @@ COPY agent/install-browser.sh /tmp/install-browser.sh
 RUN chmod 644 /etc/opt/chrome/policies/managed/decurix.json \
     && sh /tmp/install-browser.sh && rm -f /tmp/install-browser.sh /tmp/chromium-browser
 
+# browser-agent: extension_pipeline/ext_server.py, the backend for the
+# browser-agent extension. No desktop loads the extension today (the Chrome
+# launcher passes no --load-extension), so soul sends web work to the
+# operator unless THEBOT_BROWSER_EXTENSION=1. Placed before the agent's own
+# code so a code change does not re-run this pip install. Only core/, extension/
+# and extension_pipeline/ ship - eval/, legacy/ and playwright_pipeline/
+# are reference material for a pipeline this desktop doesn't run (see
+# agent/BROWSER_INTEGRATION.md).
+COPY agent/browser-agent/core /opt/browser-agent/core
+COPY agent/browser-agent/extension /opt/browser-agent/extension
+COPY agent/browser-agent/extension_pipeline /opt/browser-agent/extension_pipeline
+COPY agent/browser-agent/requirements.txt /opt/browser-agent/requirements.txt
+RUN python3 -m venv /opt/browser-agent-venv && \
+    /opt/browser-agent-venv/bin/pip install --no-cache-dir -r /opt/browser-agent/requirements.txt
 COPY agent/vm_server.py /opt/vm_server.py
 COPY agent/decurix_agent /opt/decurix_agent
 COPY agent/start_agent_terminal.sh /opt/start_agent_terminal.sh
@@ -130,18 +147,6 @@ COPY --from=thebot-builder /soul /opt/soul
 # anything else - plain text/code files and every other skill (web
 # search, terminal, file-write, memory) don't need Python at all.
 COPY agent/thebot/scripts /opt/thebot-scripts
-# browser-agent: extension_pipeline/ext_server.py, the backend for the
-# extension loaded into this desktop's Chromium (see
-# agent/chromium-browser.init's --load-extension). Only core/, extension/
-# and extension_pipeline/ ship - eval/, legacy/ and playwright_pipeline/
-# are reference material for a pipeline this desktop doesn't run (see
-# agent/BROWSER_INTEGRATION.md).
-COPY agent/browser-agent/core /opt/browser-agent/core
-COPY agent/browser-agent/extension /opt/browser-agent/extension
-COPY agent/browser-agent/extension_pipeline /opt/browser-agent/extension_pipeline
-COPY agent/browser-agent/requirements.txt /opt/browser-agent/requirements.txt
-RUN python3 -m venv /opt/browser-agent-venv && \
-    /opt/browser-agent-venv/bin/pip install --no-cache-dir -r /opt/browser-agent/requirements.txt
 # Default desktop wallpaper, replacing the base image's stock XFCE one -
 # end users should see Decurix branding, not generic XFCE art, the moment
 # a desktop opens.

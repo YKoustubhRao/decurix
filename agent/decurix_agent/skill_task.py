@@ -1260,6 +1260,9 @@ def _judge(run, claim):
                         reference_png=evidence.final_frame(skill), observed=evidence.observed())
 
 
+REPORT_CHARS = 4000
+
+
 def _doubt_text(claim, verdict):
     lead = {verify.NOT_DONE: "I do not think this is done.",
             verify.UNSURE: "I cannot confirm this is done."}.get(verdict["verdict"], "I cannot confirm this is done.")
@@ -1268,10 +1271,15 @@ def _doubt_text(claim, verdict):
         parts.append(f"The screen shows: {verdict['seen']}")
     if verdict.get("why"):
         parts.append(f"({verdict['why']})")
-    parts.append(f"What was reported: {el._quote(claim, 600)}")
-    parts.append("Look at the screen. Reply `done` if it is done, `retry` to have it tried again, or tell me "
-                 "what is wrong - I will remember it for next time.")
-    return " ".join(parts)
+    head = " ".join(parts)
+    # The report is shown whole (up to REPORT_CHARS): found live, a 600-character
+    # cut ended at "ID_scan.png does not..." - the one finding the person being
+    # asked most needed to read.
+    report = (claim or "").strip()
+    if len(report) > REPORT_CHARS:
+        report = report[:REPORT_CHARS].rstrip() + " ..."
+    return (f"{head}\n\nWhat was reported:\n{report}\n\nLook at the screen. Reply `done` if it is done, `retry` "
+            "to have it tried again, or tell me what is wrong - I will remember it for next time.")
 
 
 def _record_verdict(run, ok, checked_by=None, helped=False, why="", mode=None):

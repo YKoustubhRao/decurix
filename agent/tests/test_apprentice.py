@@ -611,3 +611,11 @@ class ReplayCommand(unittest.TestCase):
         with mock.patch.object(skill_task.verify, "judge", lambda *a, **kw: verdict(verify.DONE, seen="3 rows saved")):
             self.replay_task._run({"session": "demo-1"}, {}, 1)
         self.assertIn("Checked on the screen: 3 rows saved", self.finals[-1][0])
+
+
+class ADoubtShowsTheWholeReport(unittest.TestCase):
+    def test_a_finding_at_the_end_of_a_long_report_reaches_the_person(self):
+        claim = "Done. " + "Filled a field. " * 60 + "ID_scan.png does not belong to her - not uploaded."
+        text = skill_task._doubt_text(claim, {"verdict": verify.UNSURE, "seen": "the attachments tab"})
+        self.assertIn("ID_scan.png does not belong to her", text)
+        self.assertIn("Reply `done`", text)
