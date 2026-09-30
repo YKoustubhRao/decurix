@@ -349,6 +349,8 @@ Want a clean slate instead — fresh images, no leftover desktops, an empty dash
 
 This is the "reinstall" script. After a confirmation prompt (`-y`/`-Yes` to skip it), it removes every `desktop_*` container and volume, removes the bundled `decurix-ollama` container (its pulled-models volume is kept — no reason to redownload gigabytes of models), and **permanently deletes the `decurix-data` volume**, so all task history, chat transcripts, query notes and worker memory are gone. It also rebuilds every desktop image and the control plane image — so a change to `agent/` or a Dockerfile is picked up — but with Docker's normal build cache rather than `--no-cache`, so it's just as fast as `build.sh` when nothing actually changed. `.env` is left as it is. Ctrl+C during a rebuild tears the whole stack down rather than leaving it half old, half fresh.
 
+On WSL, the Linux scripts use a memory-limited BuildKit builder with one build step at a time. The first run with this builder downloads BuildKit and starts a separate build cache, so it can take longer than later rebuilds. The scripts leave WSL kernel memory settings alone.
+
 ### Testing one desktop image standalone
 
 Iterating on `agent/` or a `docker/desktop.*.Dockerfile` doesn't need the whole control plane running. `test-vm` starts one throwaway desktop container plus a stdlib-only dummy control plane (`scripts/testing/dummy_control_plane.py`) that just prints whatever the agent sends it — no `docker compose`, no dashboard, no touching any desktop you already have running:
@@ -486,3 +488,34 @@ Tomorrow, software will give you **workers**.
 Decurix is building toward that future.
 
 **Give AI a computer. Give it a job. Let it learn.**
+
+### Windows desktop app (Electron)
+
+To build an installer on Windows, install Go 1.26+, Node.js/npm, then run this
+once from a **Windows PowerShell** window in a checkout on a Windows drive
+(for example `C:\src\decurix`). The build script checks for at least 3 GB of
+free RAM to avoid exhausting the machine:
+
+```powershell
+.\scripts\windows\build-electron.ps1
+```
+
+The installer appears in `dist\electron\`. Install it, then launch **Decurix**
+from the Start menu or desktop shortcut. The app starts the bundled Windows
+control plane, builds any missing worker images on first launch, and opens the
+dashboard in an Electron window. Docker Desktop must be installed and running.
+On first launch, Decurix starts its Docker-managed Ollama fallback for local-model
+workers. You do not need WSL, Go, Node.js, npm, or the repository on the machine
+where you install the app.
+
+The app keeps the control plane running when you close its window, so active
+workers and scheduled tasks can continue. Opening the app again reconnects to
+that process. Its database, editable `.env`, example config, and startup log
+live in `%APPDATA%\decurix\` (`desktop.log` is the log). On first launch,
+the app creates `.env` pointing to its Docker-managed Ollama fallback. Edit
+that file if you want to use a host or remote model server. If you already have
+Decurix running on port 8080, the app opens that dashboard. Stop the old
+instance before launching the newly installed version to use the bundled
+build. The installer includes the Android phone helper used by the dashboard’s
+phone-link download. A named Cloudflare tunnel needs `cloudflared` installed
+on Windows; the desktop launcher does not create a temporary quick tunnel.

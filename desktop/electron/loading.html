@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+  <title>Starting Decurix</title>
+  <style>
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #111827; color: #f9fafb; font: 16px system-ui, sans-serif; }
+    main { width: min(540px, calc(100vw - 64px)); }
+    h1 { font-size: 2rem; margin: 0 0 12px; }
+    p { color: #cbd5e1; line-height: 1.5; }
+    button { display: none; margin-top: 20px; padding: 11px 18px; background: #a7f3d0; color: #052e21; border: 0; border-radius: 8px; font: inherit; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Starting Decurix</h1>
+    <p id="status" role="status">Connecting to the local dashboard…</p>
+    <button id="retry" type="button">Retry</button>
+  </main>
+  <script>
+    const status = document.getElementById('status');
+    const retry = document.getElementById('retry');
+    window.decurixStartup.onStatus(({ message, failed }) => {
+      status.textContent = message;
+      retry.style.display = failed ? 'inline-block' : 'none';
+    });
+    retry.addEventListener('click', () => {
+      retry.style.display = 'none';
+      status.textContent = 'Trying again…';
+      window.decurixStartup.retry();
+    });
+  </script>
+</body>
+</html>
