@@ -5,3 +5,5 @@ dist/
 
 bench/gui/results/
 /decurix
+node_modules/
+desktop/electron/build/

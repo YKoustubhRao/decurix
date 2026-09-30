@@ -26,6 +26,8 @@ source ./scripts/linux/lib/lan-tunnel.sh
 source ./scripts/linux/lib/lan-address.sh
 # shellcheck source=lib/keep-awake.sh
 source ./scripts/linux/lib/keep-awake.sh
+# shellcheck source=lib/build-resources.sh
+source ./scripts/linux/lib/build-resources.sh
 
 CLI_MODE=""
 
@@ -69,7 +71,7 @@ if [ ! -f .env ]; then
 fi
 
 # Enable Linux KSM for RAM deduplication if supported
-if [ -d /sys/kernel/mm/ksm ]; then
+if [ -d /sys/kernel/mm/ksm ] && ! grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; then
     if [ -w /sys/kernel/mm/ksm/run ]; then
         echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
         echo 1 > /sys/kernel/mm/ksm/use_zero_pages 2>/dev/null || true
@@ -112,7 +114,18 @@ echo "=== Starting Decurix ==="
 # No --build: an already-built control plane image starts as-is. Existing
 # desktop_* containers and volumes, and the decurix-data volume (task
 # history, chats, worker memory), are untouched.
-docker compose up -d
+# A fresh checkout has no control-plane image. Build it with the same WSL
+# limits; existing images are left alone on normal launches.
+control_plane_image="$(docker compose config --images | head -n 1)"
+if ! docker image inspect "$control_plane_image" >/dev/null 2>&1; then
+    configure_build_resources
+    if [ -n "$DECURIX_BUILD_BUILDER" ]; then
+        docker compose build --builder "$DECURIX_BUILD_BUILDER"
+    else
+        docker compose build
+    fi
+fi
+docker compose up -d --no-build
 
 echo ""
 echo "=== Waiting for dashboard ==="
