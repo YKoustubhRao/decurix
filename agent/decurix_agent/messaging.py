@@ -334,7 +334,20 @@ def backend_failure_note(what, url, error):
 # Final task reply
 # ============================================================
 
-def write_final_reply(reply, kind="final", engine=None, quiet=False, interrupted=False):
+# What a finished task passes before it is reported (skill_task._gate): a
+# success an engine claims for a taught task is checked first. Set at import
+# by skill_task, so this module needs to know nothing about skills.
+_final_gate = None
+
+
+def set_final_gate(gate):
+    """`gate(reply, kind, engine)` -> True when it took the report over (it reports itself, checked=True)."""
+
+    global _final_gate
+    _final_gate = gate
+
+
+def write_final_reply(reply, kind="final", engine=None, quiet=False, interrupted=False, checked=False):
     """
     Write the final result into querytext/ so the existing
     querytext watcher sends it to the Decurix control plane.
@@ -349,6 +362,17 @@ def write_final_reply(reply, kind="final", engine=None, quiet=False, interrupted
     one): for a result nobody needs paging about, such as a finished
     recording that now sits in the desktop card's recordings list.
     """
+
+    if _final_gate is not None and not checked and not interrupted:
+        try:
+            if _final_gate(reply, kind, engine):
+                return
+        except Exception as exc:
+            # A check that breaks must not lose the report - nor pass it off as
+            # checked: it goes out saying it was not.
+            log(f"The final check failed, reporting unchecked: {exc!r}")
+            if kind == "final":
+                reply = f"{reply}\n\n(Not checked: the check itself failed. Look at the screen before relying on this.)"
 
     # ddmmyyyyhhmmss.txt
     filename = time.strftime("%d%m%Y%H%M%S") + ".txt"

@@ -94,6 +94,16 @@ var (
 // itself - fine for reading the web, useless for signing in to an admin
 // panel and pressing its buttons, which only the operator's `gui` command
 // can do.
+// taughtTaskRe is how the desktop agent hands over a taught task:
+// `Do the task you were taught, "<title>" (skill <name>) ...`.
+var taughtTaskRe = regexp.MustCompile(`(?i)^\s*do the task you were taught\b`)
+
+// webAppLeadRe is a request that starts with the name of a web app to ask
+// ("chatgpt ...", "ask ChatGPT ...", "search google for ..."), the services
+// `gui ask` reaches. The name has to lead: "what does google say about x"
+// and "is chatgpt down?" are questions about it.
+var webAppLeadRe = regexp.MustCompile(`(?i)^\s*(?:please\s+)?(?:(?:ask|use|query|search)\s+(?:on\s+|in\s+|with\s+)?(?:chat\s?-?gpt|google|duck\s?duck\s?go|wikipedia|you\s?tube)\b|(?:chat\s?-?gpt|google|duck\s?duck\s?go|wikipedia|you\s?tube)\s*(?:for\b|to\b|about\b|[:,\-]|["“']))`)
+
 func wantsScreen(prompt string) bool {
 	return screenSurfaceRe.MatchString(prompt) && matchesWord(screenActionRe, prompt)
 }
@@ -211,6 +221,28 @@ func Triage(prompt string) Route {
 
 	if matched == "coding" {
 		return Route{Kind: RouteSkill, TaskType: matched, Reason: "a request to build software - the coding harness takes it whole"}
+	}
+
+	// A request that leads with a web app's name ("chatgpt \"a\", \"b\"",
+	// "ask google ...") is something to put to that app, never a question
+	// for the model itself. Found live: `chatgpt "what is 3+3?", "what
+	// colour is the sky?"` was triaged as a question and answered from the
+	// model's own knowledge, by the chat skill, which has no tools - so
+	// neither `gui ask` nor what the person taught about ChatGPT (the
+	// harness puts that in the standing context) was ever used. The
+	// operator has both. The desktop agent's own shortcut (ask_task.py)
+	// takes these first; it leaves one here only when a person taught how
+	// they want it done.
+	// A task a person taught this desktop, handed over by the desktop agent
+	// while the skill is still being learned (skill_task._by_model): work on
+	// the screen, always. Found live: triaged as a question, it went to the
+	// chat skill - no tools - which answered as if it had done the task.
+	if taughtTaskRe.MatchString(p) {
+		return Route{Kind: RouteOperate, TaskType: matched, Reason: "a task a person taught - the operator does it on the screen"}
+	}
+
+	if webAppLeadRe.MatchString(p) {
+		return Route{Kind: RouteOperate, TaskType: matched, Reason: "something to ask a web app - the operator uses it with gui ask"}
 	}
 
 	// Before wantsScreen and the compound check, for the same reason

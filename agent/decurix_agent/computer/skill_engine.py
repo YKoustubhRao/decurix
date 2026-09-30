@@ -25,8 +25,12 @@ def summary_line(skill):
     """One line for a skill in a list."""
 
     needs = ", ".join(p["name"] for p in skills.required(skill))
+    said = skills.explanation(skill)
+    summary = (skill.get("understanding") or {}).get("summary")
     return (f"{skill['name']} {el._quote(skill.get('title') or '', 70)} - {len(skill['steps'])} steps, run {skill.get('runs', 0)} times"
-            + (f"; needs {needs}" if needs else ""))
+            + (f"; needs {needs}" if needs else "")
+            + (f"; what it is: {el._quote(summary, 200)}" if summary else "")
+            + (f"; the person who taught it said: {el._quote(said, 160)}" if said else ""))
 
 
 def render_text(skill, budget=3500):
@@ -35,8 +39,16 @@ def render_text(skill, budget=3500):
     lines = [f"Skill {skill['name']} {el._quote(skill.get('title') or '', 80)}: {len(skill['steps'])} steps, "
              f"learned from {skill.get('demos', 1)} demonstration(s), run {skill.get('runs', 0)} times."]
 
-    if skill.get("done_when"):
-        lines.append("It is finished when: " + el._quote(skill["done_when"], 240))
+    said = skills.explanation(skill)
+    if said:
+        lines.append("The person who taught it said: " + el._quote(said, 600)
+                     + " - that is how they want this task done; follow it.")
+
+    understood = learning.understood_text(skill)
+    if understood:
+        lines.append(understood)
+    for correction in skill.get("corrections") or []:
+        lines.append(f"A correction after an earlier run: {correction['text']}")
 
     needed = skills.required(skill)
     if needed:

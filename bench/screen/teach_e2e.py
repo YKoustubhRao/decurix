@@ -5,6 +5,11 @@ the skill with a new value from a clean start, and again with the browser alread
 (it must ask, not click blind; `skip` finishes it). Needs Playwright (see e2e.py) and a fresh desktop
 whose XFCE desktop shows the Chromium icon. About four minutes on a 1-vCPU desktop.
 
+The runs check the replay itself, so the desktop must replay a new skill rather than learn it with
+the model first (skill_task._by_model): one with no hosted brain, or created with
+DECURIX_SKILL_TRUST_RUNS=0. A run that could not see every result asks to be confirmed; the script
+looks at the browser before it says done.
+
     /tmp/pw/bin/python bench/screen/teach_e2e.py <desktop id>
 """
 import json, os, re, subprocess, sys, tempfile, time, urllib.parse, urllib.request
@@ -139,6 +144,19 @@ final = entry["content"] if entry else ""
 print("\n--- lesson ends ---\n" + final + "\n---")
 check("skill saved", entry is not None and entry["kind"] != "query" and "Flamingo search" in final)
 
+def confirmed(entry, wanted):
+    """
+    A run that could not see every step's result is not reported done: with no
+    model to look, it asks (verify.py). The script is the person - it looks at
+    the browser's title first, and only then says done.
+    """
+    if entry is not None and entry["kind"] == "query" and "confirm this is done" in entry["content"]:
+        title = sh("xdotool getactivewindow getwindowname")
+        check(f"asked to confirm, and the browser does show {wanted!r}", searched(title, wanted), title)
+        return send("done", 60)
+    return entry, 0.0
+
+
 # Run it with another value, from where the recording started (no browser open).
 m = re.search(r"`(/skill [^`]+)`", final)
 run = m.group(1) if m else ""
@@ -147,6 +165,7 @@ param = pm.group(1) if pm else "typed_text"
 sh(CLOSE_BROWSER); time.sleep(3)
 entry, took = send(f'/skill flamingo-search {param}="penguin facts"', 300)
 print("\n--- run 1 ---\n" + (entry["content"] if entry else "(nothing)") + "\n---")
+entry, took = confirmed(entry, "penguin facts")
 check("skill run from a clean start finishes", entry is not None and entry["kind"] != "query", f"{took:.1f}s")
 title = sh("xdotool getactivewindow getwindowname")
 check("the browser shows the new search", searched(title, "penguin facts"), title)
@@ -155,6 +174,7 @@ check("the browser shows the new search", searched(title, "penguin facts"), titl
 # launcher, so the run brings the open browser forward instead of clicking where the icon was drawn.
 entry, took = send(f'/skill flamingo-search {param}="owl facts"', 300)
 print("\n--- run 2 ---\n" + (entry["content"] if entry else "(nothing)") + "\n---")
+entry, took = confirmed(entry, "owl facts")
 check("with the icon covered it uses the open browser, not a blind click", entry is not None and entry["kind"] != "query", f"{took:.1f}s")
 title = sh("xdotool getactivewindow getwindowname")
 check("the browser shows the second search", searched(title, "owl facts"), title)
