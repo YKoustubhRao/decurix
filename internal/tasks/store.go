@@ -102,19 +102,22 @@ type Task struct {
 
 // Execution is one attempt at a task by one engine.
 type Execution struct {
-	ID            string         `json:"id"`
-	TaskID        string         `json:"task_id"`
-	Attempt       int            `json:"attempt"`
-	WorkerID      string         `json:"worker_id"`
-	Engine        string         `json:"engine"`
-	Model         string         `json:"model"`
-	Status        string         `json:"status"`
-	FinalReply    string         `json:"final_reply"`
-	StartedAt     time.Time      `json:"started_at"`
-	EndedAt       time.Time      `json:"ended_at"`
-	CostUSD       *float64       `json:"cost_usd"`
-	InputTokens   *int64         `json:"input_tokens"`
-	OutputTokens  *int64         `json:"output_tokens"`
+	ID           string    `json:"id"`
+	TaskID       string    `json:"task_id"`
+	Attempt      int       `json:"attempt"`
+	WorkerID     string    `json:"worker_id"`
+	Engine       string    `json:"engine"`
+	Model        string    `json:"model"`
+	Status       string    `json:"status"`
+	FinalReply   string    `json:"final_reply"`
+	StartedAt    time.Time `json:"started_at"`
+	EndedAt      time.Time `json:"ended_at"`
+	CostUSD      *float64  `json:"cost_usd"`
+	InputTokens  *int64    `json:"input_tokens"`
+	OutputTokens *int64    `json:"output_tokens"`
+	// Checked says whether the desktop's final check judged the result
+	// before it was reported; nil when the desktop did not say.
+	Checked       *bool          `json:"checked"`
 	Steps         []Step         `json:"steps"`
 	Interventions []Intervention `json:"interventions"`
 }
@@ -209,6 +212,8 @@ type Outcome struct {
 	CostUSD      *float64
 	InputTokens  *int64
 	OutputTokens *int64
+	// Checked: whether the final check judged a finished result (nil: not said).
+	Checked *bool
 }
 
 // Route is where a human request goes: a new task, the reply to a task's open
@@ -292,6 +297,9 @@ var schema = []string{
 	// The steps above are applied on every existing installation and must
 	// never be edited - schema changes only ever append.
 	`ALTER TABLE executions RENAME COLUMN final_message TO final_reply`,
+	// Whether the desktop's final check (verify.py, the skill gate) judged
+	// the result: 1 checked, 0 not, NULL not said (an older desktop image).
+	`ALTER TABLE executions ADD COLUMN checked INTEGER`,
 }
 
 // Store is the SQLite-backed record of every worker's tasks.
@@ -912,11 +920,12 @@ func (s *Store) RecordOutcome(workerID, taskID string, outcome Outcome) (string,
 			model = CASE WHEN ? != '' THEN ? ELSE model END,
 			cost_usd = COALESCE(?, cost_usd),
 			input_tokens = COALESCE(?, input_tokens),
-			output_tokens = COALESCE(?, output_tokens)
+			output_tokens = COALESCE(?, output_tokens),
+			checked = COALESCE(?, checked)
 		 WHERE id = ?`,
 		outcome.Engine, outcome.Engine, outcome.Model, outcome.Model,
 		nullFloat(outcome.CostUSD), nullInt(outcome.InputTokens), nullInt(outcome.OutputTokens),
-		ref.id,
+		nullBool(outcome.Checked), ref.id,
 	); err != nil {
 		return "", fmt.Errorf("tasks: recording outcome: %w", err)
 	}
@@ -1269,7 +1278,7 @@ func (s *Store) Get(taskID string) (Detail, error) {
 func (s *Store) loadExecutions(where string, args ...any) ([]Execution, error) {
 	rows, err := s.db.Query(
 		`SELECT e.id, e.task_id, e.attempt, e.worker_id, e.engine, e.model, e.status, e.final_reply,
-			e.started_ns, e.ended_ns, e.cost_usd, e.input_tokens, e.output_tokens
+			e.started_ns, e.ended_ns, e.cost_usd, e.input_tokens, e.output_tokens, e.checked
 		 FROM executions e JOIN tasks t ON t.id = e.task_id `+where+` ORDER BY e.task_id, e.attempt`, args...,
 	)
 	if err != nil {
@@ -1283,11 +1292,11 @@ func (s *Store) loadExecutions(where string, args ...any) ([]Execution, error) {
 		var execution Execution
 		var started, ended int64
 		var cost sql.NullFloat64
-		var input, output sql.NullInt64
+		var input, output, checked sql.NullInt64
 
 		if err := rows.Scan(&execution.ID, &execution.TaskID, &execution.Attempt, &execution.WorkerID,
 			&execution.Engine, &execution.Model, &execution.Status, &execution.FinalReply,
-			&started, &ended, &cost, &input, &output); err != nil {
+			&started, &ended, &cost, &input, &output, &checked); err != nil {
 			return nil, fmt.Errorf("tasks: reading executions: %w", err)
 		}
 
@@ -1304,6 +1313,10 @@ func (s *Store) loadExecutions(where string, args ...any) ([]Execution, error) {
 		}
 		if output.Valid {
 			execution.OutputTokens = &output.Int64
+		}
+		if checked.Valid {
+			c := checked.Int64 != 0
+			execution.Checked = &c
 		}
 
 		executions = append(executions, execution)
@@ -1353,6 +1366,17 @@ func nullFloat(value *float64) any {
 	}
 
 	return *value
+}
+
+// nullBool stores a said/unsaid flag: 1, 0, or NULL.
+func nullBool(value *bool) any {
+	if value == nil {
+		return nil
+	}
+	if *value {
+		return 1
+	}
+	return 0
 }
 
 func nullInt(value *int64) any {

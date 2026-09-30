@@ -2,10 +2,14 @@ package desktop
 
 // Desktop represents a managed desktop container: its identity, profile, backing Docker resources, status, and resource allocation.
 type Desktop struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Profile     string `json:"profile"`
-	Harness     string `json:"harness"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Profile string `json:"profile"`
+	Harness string `json:"harness"`
+	// Brain is the model TheBot reasons with: BrainOllama (the local model,
+	// the default), BrainClaude or BrainAzure (hosted, reached through the
+	// control plane's /api/llm proxy). Fixed at creation, like Harness.
+	Brain       string `json:"brain"`
 	Model       string `json:"model,omitempty"`
 	ContainerID string `json:"container_id"`
 	Volume      string `json:"volume"`
@@ -57,6 +61,7 @@ type ProvisioningDesktop struct {
 	Name           string `json:"name"`
 	Profile        string `json:"profile"`
 	Harness        string `json:"harness"`
+	Brain          string `json:"brain"`
 	Model          string `json:"model,omitempty"`
 	CPUs           int64  `json:"cpus"`
 	MemoryMB       int64  `json:"memory_mb"`
@@ -79,6 +84,7 @@ func (p *ProvisioningDesktop) ToDesktop() Desktop {
 		Name:           p.Name,
 		Profile:        p.Profile,
 		Harness:        p.Harness,
+		Brain:          p.Brain,
 		Model:          p.Model,
 		Volume:         "desktop_" + p.ID + "_home",
 		Status:         p.Status,
@@ -90,4 +96,3 @@ func (p *ProvisioningDesktop) ToDesktop() Desktop {
 		ParentID:       p.ParentID,
 	}
 }
-

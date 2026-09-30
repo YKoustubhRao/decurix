@@ -133,6 +133,15 @@ func (f *FileWriteSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		return Result{Subtask: subtask, SkillName: f.Name(), Output: "No workspace configured.", Verified: false, Meta: map[string]any{}}, nil
 	}
 
+	// Text is all this skill writes. An Office document or a PDF is a zip or
+	// a binary format, and text saved under its name is a file nothing opens:
+	// found live, "create totals.xlsx ... and a Total row" saved the model's
+	// own "I can't provide a valid .xlsx file as raw text" as totals.xlsx, and
+	// the task was reported done. The operator has `office create`/`update`.
+	if explicit := pathFromRequest(subtask.Step); isDocumentFormat(explicit) {
+		return documentReroute(f, rc, subtask, explicit), nil
+	}
+
 	rc.Logf("file-write", "planning the file to write...")
 	path, content, err := planFile(rc, subtask.Step)
 	if err != nil {
@@ -146,6 +155,9 @@ func (f *FileWriteSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	// The user's own filename wins over the model's invention.
 	if explicit := pathFromRequest(subtask.Step); explicit != "" {
 		path = explicit
+	}
+	if isDocumentFormat(path) {
+		return documentReroute(f, rc, subtask, path), nil
 	}
 
 	abs, err := resolveWritePath(rc, path)
@@ -223,4 +235,34 @@ func resolveWritePath(rc RunContext, path string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("%s is outside the working directory and the home directory", p)
+}
+
+// documentFormats are files that are not text: writing text under one of
+// these names makes a file nothing can open.
+var documentFormats = map[string]bool{
+	".xlsx": true, ".xlsm": true, ".xls": true, ".ods": true,
+	".docx": true, ".doc": true, ".odt": true, ".rtf": true,
+	".pptx": true, ".ppt": true, ".odp": true, ".pdf": true,
+}
+
+// isDocumentFormat reports whether path names an Office document or a PDF.
+func isDocumentFormat(path string) bool {
+	return path != "" && documentFormats[strings.ToLower(filepath.Ext(path))]
+}
+
+// documentReroute hands a step that makes an Office document or a PDF to
+// the operator, which builds one with the office command.
+func documentReroute(f *FileWriteSkill, rc RunContext, subtask Subtask, path string) Result {
+	rc.Logf("file-write", "%s is not a text file - the operator makes it with the office command", path)
+	return Result{
+		Subtask: subtask, SkillName: f.Name(),
+		Output:   fmt.Sprintf("%s is an Office document or PDF, not text: not written.", path),
+		Verified: false,
+		Meta: map[string]any{
+			"reroute": "operator",
+			"rerouteNote": fmt.Sprintf("%s must be a real %s file: make or change it with the office command "+
+				"(office create / office update for a workbook, office combine for a PDF), never by writing text into it, "+
+				"then read it back with office read.", filepath.Base(path), strings.ToLower(filepath.Ext(path))),
+		},
+	}
 }

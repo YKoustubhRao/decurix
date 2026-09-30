@@ -242,7 +242,11 @@ func CurrentStatus(ctx context.Context) Status {
 
 	if chosen == nil {
 		st.Reason = sel.Reason
-		st.Fits, st.OnGPU, st.TPS, st.Installed = sel.Fits, sel.OnGPU, sel.TPS, sel.Model.Installed
+		// The measurement describes what fits now; it says how well the model
+		// in use fits only when that is the same model.
+		if normName(sel.Model.Name) == normName(st.Model) {
+			st.Fits, st.OnGPU, st.TPS, st.Installed = sel.Fits, sel.OnGPU, sel.TPS, sel.Model.Installed
+		}
 		return st
 	}
 
@@ -296,6 +300,7 @@ func listInstalled(ctx context.Context, baseURL string) ([]Candidate, error) {
 		Models []struct {
 			Name    string `json:"name"`
 			Size    int64  `json:"size"`
+			Digest  string `json:"digest"`
 			Details struct {
 				Family        string   `json:"family"`
 				Families      []string `json:"families"`
@@ -325,6 +330,7 @@ func listInstalled(ctx context.Context, baseURL string) ([]Candidate, error) {
 				c.ActiveB = k.ActiveB
 			}
 		}
+		c.KVPerToken = installedKVBytes(ctx, baseURL, m.Name, m.Digest)
 
 		out = append(out, c)
 	}

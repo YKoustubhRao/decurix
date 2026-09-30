@@ -7,13 +7,16 @@ RUN go mod download
 
 COPY . .
 
+# Two cores and one package at a time (GOMAXPROCS, -p 1): an unbounded
+# build inside Docker brought down the 8 GB WSL host this is developed on.
+ENV GOMAXPROCS=2
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -o decurix ./cmd/decurix
+    go build -p 1 -o decurix ./cmd/decurix
 
 # The phone build of the same binary, handed out by /phone/decurix when a
 # phone sets up its link from its own browser (httpapi/phonelink.go).
 RUN CGO_ENABLED=0 GOOS=android GOARCH=arm64 \
-    go build -trimpath -ldflags "-s -w" -o decurix-android-arm64 ./cmd/decurix
+    go build -p 1 -trimpath -ldflags "-s -w" -o decurix-android-arm64 ./cmd/decurix
 
 
 FROM debian:bookworm-slim

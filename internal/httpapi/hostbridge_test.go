@@ -269,9 +269,11 @@ func TestHostRoutesAreOnlyOnThePrimaryListener(t *testing.T) {
 		// the listener they gate.
 		"/api/lan-access/status", "/api/lan-access/rotate",
 		"/api/lan-access/devices", "/api/lan-access/devices/revoke",
-		"/api/cftunnel", "/api/cftunnel/configure", "/api/cftunnel/disable",
+		"/api/cftunnel", "/api/cftunnel/configure", "/api/cftunnel/disable", "/api/backup", "/api/desktops/restore",
 		// A phone app is shown only in a VM's window, like a host app.
 		"/phone-app/view", "/api/phone-app/ws",
+		// The hosted models' keys are set up here, never over the phone link.
+		"/api/llm/settings", "/api/llm/settings/forget",
 	}
 	srv := &Server{}
 	gated := http.NewServeMux()
@@ -288,6 +290,15 @@ func TestHostRoutesAreOnlyOnThePrimaryListener(t *testing.T) {
 		if _, pattern := primary.Handler(req); pattern != path {
 			t.Errorf("%s is missing from the primary listener (matched %q)", path, pattern)
 		}
+	}
+
+	// The model proxy spends the person's API keys: for the desktops only.
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/claude/v1/chat/completions", nil)
+	if _, pattern := gated.Handler(req); pattern == "/api/llm/" {
+		t.Error("the model proxy is registered on the gated listener")
+	}
+	if _, pattern := primary.Handler(req); pattern != "/api/llm/" {
+		t.Errorf("the model proxy is missing from the primary listener (matched %q)", pattern)
 	}
 }
 

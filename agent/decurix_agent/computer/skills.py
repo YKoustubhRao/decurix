@@ -161,6 +161,47 @@ def _score(skill, query):
     return len(wanted & words)
 
 
+def explanation(skill):
+    """
+    What the person who taught a skill said about it, in their own words, or
+    "". Kept whole: `done_when` is only the part that named no step, and a
+    person's "I will send you a list and you do them one by one" is how they
+    want the task done, not what finished looks like. A skill taught before
+    `explanation` was kept has only `done_when`.
+    """
+
+    return " ".join((skill.get("explanation") or skill.get("done_when") or "").split())
+
+
+BROWSER_SUFFIX = re.compile(r"\s+-\s+(?:Chromium|Google Chrome)$")
+
+
+def places(skill, limit=3):
+    """
+    Where a skill does its work: the sites and files it opens, and the windows
+    its steps are in ("sales.html", "Sales"). Found live: a skill taught in a
+    local sales app was run for a request to enter an order in Odoo - nothing
+    it was shown said which system the skill works in.
+    """
+
+    found = []
+
+    def add(place):
+        place = (place or "").strip()
+        if place and place.lower() not in (p.lower() for p in found):
+            found.append(place)
+
+    for step in skill.get("steps") or []:
+        target = step.get("open")
+        if target:
+            match = re.match(r"https?://([^/?#]+)", target)
+            add(match.group(1) if match else os.path.basename(target.split("?")[0]) or target)
+        add(BROWSER_SUFFIX.sub("", step.get("window") or ""))
+        if len(found) >= limit:
+            break
+    return found[:limit]
+
+
 def search(query="", limit=8):
     """Ready skills for `query`, best first; with no words in it, every ready skill."""
 
@@ -351,6 +392,7 @@ def summary(skill, detail=False):
         "title": skill.get("title") or skill["name"],
         "status": skill.get("status"),
         "done_when": skill.get("done_when"),
+        "explanation": explanation(skill) or None,
         "demos": skill.get("demos", 1),
         "runs": skill.get("runs", 0),
         "version": skill.get("version", 1),

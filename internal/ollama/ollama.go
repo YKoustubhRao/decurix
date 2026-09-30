@@ -775,6 +775,28 @@ func EnableWarm() {
 	warmState.mu.Unlock()
 }
 
+// warmNeeded, when set, says whether anything will talk to the local model
+// at all (SetWarmNeeded). Nil means yes.
+var warmNeeded func() bool
+
+// SetWarmNeeded installs the check WarmAsync and main's startup preload ask
+// before loading the local model. A control plane whose desktops all run on a
+// hosted model (the azure harness) must not spend gigabytes of a small
+// machine's memory on a model nothing reads.
+func SetWarmNeeded(needed func() bool) {
+	warmState.mu.Lock()
+	warmNeeded = needed
+	warmState.mu.Unlock()
+}
+
+// Needed reports whether the local model is wanted (see SetWarmNeeded).
+func Needed() bool {
+	warmState.mu.Lock()
+	needed := warmNeeded
+	warmState.mu.Unlock()
+	return needed == nil || needed()
+}
+
 // WarmAsync makes sure the model desktops use is resident in Ollama, without
 // making the caller wait: if it is not loaded, a background load is started
 // so that it overlaps with whatever the person is already waiting for - a
@@ -782,6 +804,10 @@ func EnableWarm() {
 // Debounced, single-flight and best-effort; a machine with no reachable
 // Ollama just logs once per attempt.
 func WarmAsync() {
+	if !Needed() {
+		return
+	}
+
 	warmState.mu.Lock()
 	if !warmState.enabled || warmState.inflight || time.Since(warmState.last) < warmMinGap {
 		warmState.mu.Unlock()

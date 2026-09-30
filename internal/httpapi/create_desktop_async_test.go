@@ -21,7 +21,7 @@ func TestCreateDesktopAsyncAndStatusPoll(t *testing.T) {
 	srv.RegisterRoutes(mux)
 
 	// 1. Send POST /api/desktops/create - must return HTTP 202 Accepted immediately (< 200ms)
-	body := strings.NewReader("name=async-desk-1&profile=basic&harness=ollama&cpus=2&memory_mb=2048")
+	body := strings.NewReader("name=async-desk-1&profile=basic&brain=ollama&cpus=2&memory_mb=2048")
 	req := httptest.NewRequest(http.MethodPost, "/api/desktops/create", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
@@ -95,7 +95,7 @@ func TestCreateDesktopDefaultCPU(t *testing.T) {
 	srv.RegisterRoutes(mux)
 
 	// Post create without cpus specified
-	body := strings.NewReader("name=desk-default-cpu&profile=basic&harness=ollama")
+	body := strings.NewReader("name=desk-default-cpu&profile=basic&brain=ollama")
 	req := httptest.NewRequest(http.MethodPost, "/api/desktops/create", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
@@ -122,7 +122,7 @@ func TestCreateDesktopDefaultCPU(t *testing.T) {
 // the value it holds then moves on by itself.
 func TestBeginProvisioningReturnsASnapshotNotTheLiveRecord(t *testing.T) {
 	mgr := fakeDesktopManager(t)
-	prov, err := mgr.BeginProvisioning("snap-1", "basic", "ollama", 1, 2048, "", "", "", nil, func(*desktop.Desktop) error { return nil })
+	prov, err := mgr.BeginProvisioning("snap-1", "basic", "thebot", desktop.Brain{}, 1, 2048, "", "", "", nil, func(*desktop.Desktop) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}

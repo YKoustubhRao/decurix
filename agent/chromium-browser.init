@@ -1,5 +1,6 @@
-# Decurix's Chromium launch flags. Sourced by the base image's own launcher
-# (/usr/bin/chromium-browser) every time the browser starts, from
+# Decurix's browser launch flags. Sourced by the desktop's browser launcher
+# (agent/chromium-browser, installed as /usr/bin/chromium-browser - Google
+# Chrome behind it, see agent/install-browser.sh) every time it starts, from
 # ~/.chromium-browser.init - agent/start_agent_terminal.sh reinstalls it
 # there on every desktop start, because /home/headless is a persistent
 # volume and a copy baked into the image only ever reaches new desktops.
@@ -21,8 +22,15 @@
 # browser through it, the same trust the agent's shell already has.
 # --no-default-browser-check: the "not your default browser" bar is one more
 # thing between an agent and the page it was asked to use.
-CHROMIUM_FLAGS="--disable-gpu --start-maximized --remote-debugging-port=9222 --no-default-browser-check --renderer-process-limit=2 --disable-dev-shm-usage --enable-features=MemorySaverMode --disk-cache-dir=/tmp/chromium-cache --disk-cache-size=33554432 --js-flags=--max-old-space-size=256 --disable-features=AudioServiceOutOfProcess,Translate,AutofillServerCommunication --disable-background-networking --disable-component-update --disable-domain-reliability --disable-sync --no-first-run --no-pings --mute-audio"
-CHROMIUM_FLAGS="--disable-gpu --start-maximized --remote-debugging-port=9222 --password-store=basic --no-default-browser-check --no-first-run --disable-breakpad --disable-features=AudioServiceOutOfProcess,Translate,AutofillServerCommunication,OptimizationHints,MediaRouter --disable-background-networking --disable-component-update --disable-domain-reliability --disable-sync --no-pings --mute-audio"
+# Chrome reads only the last of a repeated --disable-features, so there is one
+# list, and one assignment (a second, overriding one used to make the first dead).
+# --hide-crash-restore-bubble: a desktop stopped by idle-pause leaves the profile
+#   marked as crashed, and the "Restore pages?" bubble takes the keyboard.
+# --renderer-process-limit / --disk-cache-*: a desktop has 1-2 vCPUs and ~2.5 GB;
+#   the cache lives in /tmp so it never fills the persistent home volume.
+# Not set on purpose: MemorySaverMode (it discards background tabs - a half-filled
+#   ERP form in another tab) and a V8 heap cap (ERP single-page apps need more).
+CHROMIUM_FLAGS="--disable-gpu --start-maximized --remote-debugging-port=9222 --password-store=basic --no-default-browser-check --no-first-run --disable-breakpad --hide-crash-restore-bubble --renderer-process-limit=2 --disk-cache-dir=/tmp/chromium-cache --disk-cache-size=67108864 --disable-features=AudioServiceOutOfProcess,Translate,AutofillServerCommunication,OptimizationHints,MediaRouter --disable-background-networking --disable-component-update --disable-domain-reliability --disable-sync --no-pings --mute-audio"
 
 # The warning bar is left alone in that case: the browser really is
 # running unsandboxed there, and hiding that would be a lie.

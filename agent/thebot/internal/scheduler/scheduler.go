@@ -139,8 +139,10 @@ type Request struct {
 }
 
 type Scheduler struct {
-	Provider  llm.Provider
-	Models    llm.Models
+	Provider llm.Provider
+	Models   llm.Models
+	// Brain is what the model can do; handed to every skill (RunContext).
+	Brain     *llm.Brain
 	Workspace *workspace.Workspace
 	L2        *memory.L2
 	// RAG, Feedback and L1 are all optional (nil-safe) - a Scheduler built

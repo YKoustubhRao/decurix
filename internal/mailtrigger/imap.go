@@ -110,7 +110,14 @@ var literalRe = regexp.MustCompile(`\{(\d+)\}$`)
 
 // maxLiteral refuses a literal larger than anything a poll asks for, so a
 // hostile or broken server cannot make the control plane allocate at will.
-const maxLiteral = 4 * 1024 * 1024
+// The largest thing asked for is a whole message with its attachments
+// (Full, capped at maxMessageBytes).
+const maxLiteral = maxMessageBytes + 64*1024
+
+// maxMessageBytes caps a whole message fetched for its attachments: an
+// emailed PO, invoice or price sheet is far smaller; a 200 MB video is not
+// something a back-office task was set up for.
+const maxMessageBytes = 25 * 1024 * 1024
 
 // readResponse reads one response, following every literal it announces.
 func (c *imapClient) readResponse() (response, error) {
@@ -315,6 +322,17 @@ func (c *imapClient) Headers(uids []uint32) (map[uint32][]byte, error) {
 	}
 
 	return fetched(untagged), nil
+}
+
+// Full fetches a whole message - header, body and attachments - up to
+// maxMessageBytes. BODY.PEEK, like the rest: nothing is marked read.
+func (c *imapClient) Full(uid uint32) ([]byte, error) {
+	untagged, err := c.command("UID FETCH %d (UID BODY.PEEK[]<0.%d>)", uid, maxMessageBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	return fetched(untagged)[uid], nil
 }
 
 func (c *imapClient) Text(uid uint32) ([]byte, error) {

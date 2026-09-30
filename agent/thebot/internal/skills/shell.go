@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"strconv"
 	"syscall"
@@ -53,12 +54,15 @@ func (c *cappedBuffer) Write(p []byte) (int, error) {
 //   - WaitDelay stops Wait blocking on a pipe a backgrounded child still
 //     holds open: `python3 -m http.server &` returns at once in a terminal,
 //     and would otherwise hang here until the timeout.
-func runShell(ctx context.Context, dir, command string, timeout time.Duration) shellResult {
+func runShell(ctx context.Context, dir, command string, timeout time.Duration, extraEnv ...string) shellResult {
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	cmd := exec.Command("bash", "-c", command)
 	cmd.Dir = dir
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
 	cmd.Stdin = nil
 	var out cappedBuffer
 	cmd.Stdout = &out

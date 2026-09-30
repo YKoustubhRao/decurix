@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from decurix_agent import logging_utils, progress
-from decurix_agent.computer import approval, audit, cdp, core, privacy, processing, recording, screen, session
+from decurix_agent.computer import approval, audit, browser, cdp, core, privacy, processing, recording, screen, session
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 from decurix_agent.logging_utils import log
@@ -739,7 +739,7 @@ class Recorder:
         # replayable by role/name and the browser stays fully visible.
         browser_visible = any(
             element.get("source") == "cdp" for element in observation["elements"]
-        ) or "chromium" in (observation.get("active_title") or "").lower()
+        ) or browser.is_browser_title(observation.get("active_title"))
         if browser_visible and cdp.available():
             element = cdp.element_at_screen_point(*action["point"], observation["elements"])
             if element is not None:

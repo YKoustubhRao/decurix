@@ -43,10 +43,26 @@ func Register(taskType string, match func(step string) bool) {
 func Classify(step string) string {
 	for _, c := range registry {
 		if c.match(step) {
-			return c.taskType
+			return withoutMissingBrowser(c.taskType)
 		}
 	}
 	return "general"
+}
+
+// BrowserAvailable says whether the browser-agent extension is installed on
+// this machine (soul sets it at startup). Without it, work in a web page is
+// the operator's, driving the browser with gui: found live, a recovery plan
+// sent "create the quotation in Odoo" to the browser skill on a desktop with
+// no extension, which waited 30 s and failed the whole task.
+var BrowserAvailable = true
+
+// withoutMissingBrowser turns the browser task type into the operator's when
+// the extension is not installed.
+func withoutMissingBrowser(taskType string) string {
+	if taskType == "browser" && !BrowserAvailable {
+		return "operator"
+	}
+	return taskType
 }
 
 var (

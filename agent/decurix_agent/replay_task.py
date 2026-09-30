@@ -117,6 +117,14 @@ def _run(program, params, start):
         ask_for_query(result["text"], kind=kind, engine=ENGINE)
         return
 
+    if result["outcome"] == replay.COMPLETED_UNVERIFIED:
+        # Ran to the end without seeing every result: not a success until it is
+        # shown to be one (skill_task.check_unchecked; imported here, as
+        # skill_task imports this module).
+        from decurix_agent import skill_task
+        skill_task.check_unchecked(result["text"], engine=ENGINE)
+        return
+
     kind = "final" if result["outcome"] in replay.SUCCESS else "error"
     write_final_reply(result["text"], kind=kind, engine=ENGINE)
 

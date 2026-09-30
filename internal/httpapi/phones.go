@@ -178,7 +178,8 @@ func (s *Server) phoneAppViewHandler(w http.ResponseWriter, r *http.Request) {
 // the app is started on a display of its own when it connects and closed
 // when it goes. Out, binary: each of the phone's video messages as scrcpy
 // frames it (a 12-byte header and its payload); text JSON {"opened":true,
-// "codec":...} once streaming and {"closed":true,"error":...} at the end.
+// "codec":...} once streaming, {"tree":phonehost.Tree} whenever the app's
+// controls change, and {"closed":true,"error":...} at the end.
 // In, text JSON: one phonehost.Input each.
 func (s *Server) phoneAppWSHandler(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -238,6 +239,10 @@ func (s *Server) phoneAppWSHandler(w http.ResponseWriter, r *http.Request) {
 			select {
 			case f := <-sess.Frames():
 				if c.Write(wsconn.OpBinary, f) != nil {
+					return
+				}
+			case t := <-sess.Trees():
+				if say(map[string]any{"tree": t}) != nil {
 					return
 				}
 			case <-sess.Done():

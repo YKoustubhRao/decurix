@@ -5,6 +5,9 @@
 package httpapi
 
 import (
+	"database/sql"
+	"github.com/YKoustubhRao/decurix/internal/llm"
+	"github.com/YKoustubhRao/decurix/internal/outbox"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -37,6 +40,9 @@ import (
 // Claude session store, LAN-access store, scheduled-request store, DAG
 // store, and web UI renderer together to serve the Decurix control plane.
 type Server struct {
+	// finished is the last few tasks that ended done, for the pages' notification (finished.go).
+	finished finishedFeed
+
 	Desktops   *desktop.Manager
 	QueryNotes *querynotes.Store
 	Memory     *memory.Store
@@ -82,6 +88,17 @@ type Server struct {
 	ResourceMon *resourcemon.Monitor
 	Suggest     *suggest.Store
 	Web         *webui.Renderer
+	// LLM holds the hosted models a person set up and forwards the desktops'
+	// chats to them (internal/llm). main.go replaces the in-memory default
+	// with one saved in the database.
+	// NewServer reads it from the environment; unconfigured, its routes say so.
+	LLM *llm.Hub
+	// Outbox holds the emails agents drafted for a person to send
+	// (internal/outbox). Assigned by cmd/decurix/main.go; nil turns it off.
+	Outbox *outbox.Store
+	// DB is the control plane's database, read only for a backup's snapshot
+	// (backup.go). Assigned by cmd/decurix/main.go; nil turns backups off.
+	DB *sql.DB
 
 	// sends serialises every send to one desktop (sendlock.go).
 	sends sendLocks
@@ -108,6 +125,16 @@ type Server struct {
 	keptHostApps   map[string]keptHostApp
 }
 
+// mustMemoryHub is an llm.Hub kept in memory only - NewHub cannot fail
+// without a database.
+func mustMemoryHub() *llm.Hub {
+	hub, err := llm.NewHub(nil, nil)
+	if err != nil {
+		panic(err)
+	}
+	return hub
+}
+
 // NewServer creates a Server from its component stores/managers.
 func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memoryStore *memory.Store, chat *conversation.Store, stepImages *stepimages.Store, taskRecords *tasks.Store, tunnelStore *tunnel.Store, claudeAuth *claudeauth.Store, lanAccess *lanaccess.Store, schedules *schedule.Store, dags *dag.Store, suggestions *suggest.Store, web *webui.Renderer) *Server {
 	srv := &Server{
@@ -124,6 +151,7 @@ func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memorySt
 		Dags:             dags,
 		Suggest:          suggestions,
 		Web:              web,
+		LLM:              mustMemoryHub(),
 		recentStepImages: make(map[string]string),
 	}
 
@@ -182,6 +210,13 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// change (humansonly.go).
 	mux.HandleFunc("/triggers", s.humansOnly(s.triggersPageHandler))
 	mux.HandleFunc("/email", s.humansOnly(emailPageMovedHandler))
+	// Whether a hosted model is configured (no key): the create dialog reads
+	// it on either listener. Chatting with it is primary-only (RegisterLocalRoutes).
+	mux.HandleFunc("/api/llm", s.llmStatusHandler)
+	mux.HandleFunc("/api/outbox/list", s.humansOnly(s.outboxListHandler))
+	mux.HandleFunc("/api/outbox/file", s.humansOnly(s.outboxFileHandler))
+	mux.HandleFunc("/api/outbox/send", s.humansOnly(s.outboxSendHandler))
+	mux.HandleFunc("/api/outbox/discard", s.humansOnly(s.outboxDiscardHandler))
 	mux.HandleFunc("/api/mail", s.humansOnly(s.mailStateHandler))
 	mux.HandleFunc("/api/mail/accounts/connect", s.humansOnly(s.connectMailHandler))
 	mux.HandleFunc("/api/mail/accounts/password", s.humansOnly(s.mailPasswordHandler))
@@ -223,6 +258,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/agent/events", s.agentEventHandler)
 	mux.HandleFunc("/api/querytext", s.queryTextHandler)
 	mux.HandleFunc("/api/querynotes", s.queryNotesHandler)
+	mux.HandleFunc("/api/tasks/finished", s.finishedTasksHandler)
 	mux.HandleFunc("/api/querynotes/close", s.closeQueryNoteHandler)
 	mux.HandleFunc("/api/querynotes/resolved", s.resolvedQueryNotesHandler)
 	mux.HandleFunc("/dashboard", s.dashboardPostsHandler)
@@ -232,6 +268,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/tasks/get", s.taskAPIHandler)
 	mux.HandleFunc("/api/tasks/report", s.taskReportAPIHandler)
 	mux.HandleFunc("/api/tasks/verdict", s.taskVerdictHandler)
+	// The whole record as a file: a person's, never a desktop's to read.
+	mux.HandleFunc("/api/tasks/export", s.humansOnly(s.taskExportHandler))
 	mux.HandleFunc("/recordings/", s.recordingsPageHandler)
 	mux.HandleFunc("/api/desktops/recordings", s.recordingsAPIHandler)
 	mux.HandleFunc("/api/desktops/recordings/get", s.recordingAPIHandler)
@@ -303,7 +341,17 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/lan-access/devices/revoke", s.lanAccessRevokeDeviceHandler)
 	// The Cloudflare API token and the tunnel it controls are the person's
 	// alone: never on the gated listener, never to a desktop.
+	// A backup holds the keys to the saved secrets: a person's, here only.
+	mux.HandleFunc("/api/backup", s.humansOnly(s.backupHandler))
+	mux.HandleFunc("/api/desktops/restore", s.humansOnly(s.restoreDesktopHandler))
 	mux.HandleFunc("/api/cftunnel", s.humansOnly(s.cfTunnelStatusHandler))
 	mux.HandleFunc("/api/cftunnel/configure", s.humansOnly(s.cfTunnelConfigureHandler))
 	mux.HandleFunc("/api/cftunnel/disable", s.humansOnly(s.cfTunnelDisableHandler))
+	// The hosted models: set up by a person (their keys never leave this
+	// listener), used by the desktops' agents over the Docker network.
+	mux.HandleFunc("/api/llm/settings", s.humansOnly(s.llmSettingsHandler))
+	mux.HandleFunc("/api/llm/settings/forget", s.humansOnly(s.llmForgetHandler))
+	mux.HandleFunc("/api/llm/", s.llmProxyHandler)
+	// Drafts from the agents' draft_email; sending them is humansOnly above.
+	mux.HandleFunc("/api/outbox", s.outboxCreateHandler)
 }

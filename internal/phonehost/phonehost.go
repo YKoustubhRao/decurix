@@ -10,6 +10,12 @@
 // both ways, and the video as binary messages from the phone, each prefixed
 // by the session it belongs to.
 //
+// Beside the video, the phone sends what is on the app's display as controls
+// (OpTree: role, label, position - read from Android's own accessibility
+// tree), so a VM sees a phone app the way it sees a web page: named buttons
+// and fields, not only a picture. That is what lets the desktops' approval
+// gate stop a tap on a phone app's Send or Pay.
+//
 // Depends on nothing internal but wsconn.
 package phonehost
 
@@ -53,6 +59,9 @@ type Message struct {
 	// input (control plane -> phone)
 	Input *Input `json:"input,omitempty"`
 
+	// tree (phone -> control plane)
+	Tree *Tree `json:"tree,omitempty"`
+
 	// error, for a request or a session
 	Error string `json:"error,omitempty"`
 }
@@ -67,6 +76,7 @@ const (
 	OpClose  = "close"  // control plane: end Session
 	OpClosed = "closed" // phone: Session ended (Error says why, if it failed)
 	OpError  = "error"  // phone: request Req failed
+	OpTree   = "tree"   // phone: what Session's display shows, as controls
 )
 
 // App is one app installed on a phone.
@@ -93,6 +103,35 @@ type Input struct {
 	Text    string  `json:"text,omitempty"`     // text to type
 	ScrollX float64 `json:"scroll_x,omitempty"` // -16..16
 	ScrollY float64 `json:"scroll_y,omitempty"`
+}
+
+// Tree is what an app's display shows, as controls, in the display's own
+// pixels (W x H - the video may be scaled from it).
+type Tree struct {
+	W     int    `json:"w"`
+	H     int    `json:"h"`
+	Nodes []Node `json:"nodes"`
+	// Fresh is set when the tree was read after the last input the phone
+	// was given for the session, so what it shows follows that input.
+	Fresh bool `json:"fresh,omitempty"`
+	// Error says why there is no tree ("" when there is one): an Android
+	// older than 11 cannot read another display's controls.
+	Error string `json:"error,omitempty"`
+}
+
+// Node is one control or piece of text on a phone app's display.
+type Node struct {
+	// Role is button, textbox, checkbox, switch, radio, slider, image or text.
+	Role  string `json:"role"`
+	Name  string `json:"name,omitempty"`
+	Value string `json:"value,omitempty"`
+	// Box is left, top, width, height in the display's pixels.
+	Box      [4]int `json:"box"`
+	Checked  *bool  `json:"checked,omitempty"`
+	Disabled bool   `json:"disabled,omitempty"`
+	Focused  bool   `json:"focused,omitempty"`
+	Password bool   `json:"password,omitempty"`
+	Selected bool   `json:"selected,omitempty"`
 }
 
 // Info is a phone as the dashboard lists it.
@@ -238,16 +277,21 @@ func (p *phone) handle(m Message) {
 		p.model, p.android = m.Model, m.Android
 		p.mu.Unlock()
 		return
-	case OpOpened, OpClosed:
+	case OpOpened, OpClosed, OpTree:
 		p.mu.Lock()
 		s := p.sessions[m.Session]
 		p.mu.Unlock()
 		if s == nil {
 			return
 		}
-		if m.Op == OpOpened {
+		switch m.Op {
+		case OpOpened:
 			s.opened(m.Codec)
-		} else {
+		case OpTree:
+			if m.Tree != nil {
+				s.setTree(m.Tree)
+			}
+		default:
 			s.end(m.Error)
 		}
 		return
@@ -446,6 +490,7 @@ type Session struct {
 	phone *phone
 
 	frames chan []byte
+	trees  chan *Tree
 	ready  chan struct{}
 	done   chan struct{}
 
@@ -472,6 +517,7 @@ func (h *Hub) Open(ctx context.Context, id, pkg string, w, hgt, dpi int) (*Sessi
 		ID:     sid,
 		phone:  p,
 		frames: make(chan []byte, frameBacklog),
+		trees:  make(chan *Tree, 1),
 		ready:  make(chan struct{}),
 		done:   make(chan struct{}),
 	}
@@ -529,6 +575,25 @@ func (s *Session) end(reason string) {
 	delete(s.phone.sessions, s.ID)
 	s.phone.mu.Unlock()
 }
+
+// setTree keeps only the newest tree: an older one is of no use to a viewer
+// that has not taken it yet.
+func (s *Session) setTree(t *Tree) {
+	for {
+		select {
+		case s.trees <- t:
+			return
+		default:
+		}
+		select {
+		case <-s.trees:
+		default:
+		}
+	}
+}
+
+// Trees delivers what the app's display shows as controls, newest only.
+func (s *Session) Trees() <-chan *Tree { return s.trees }
 
 // Codec is the video's codec ("h264").
 func (s *Session) Codec() string {
