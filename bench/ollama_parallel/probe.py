@@ -5,8 +5,14 @@ OLLAMA_NUM_PARALLEL=2 stop that?
 Each desktop sends its own system prompt. With one slot, Ollama keeps one
 evaluated prefix: desktop A, then B, then A again re-reads A's prompt from
 scratch - on this repo's CPU host that is minutes (see CLAUDE.md's prompt-cache
-notes). Ollama reports how many prompt tokens it had to evaluate
-(`prompt_eval_count`), so the answer is read off the third call, not timed.
+notes). The answer is read off how long each call spent evaluating its prompt:
+Ollama 0.24's prompt_eval_count counts cached tokens too, so only the time
+shows a cache hit.
+
+Measured 2026-09-30 (Ollama 0.24.0, qwen3:0.6b, 6-core WSL host): a repeated
+prompt took 0.06 s against 17 s cold, and A after B took 17 s with
+OLLAMA_NUM_PARALLEL=1 *and* =2 - the second slot does not keep A's prefix,
+while every slot reserves its own KV cache. Leave it at 1.
 
 Runs a PRIVATE Ollama on its own port against the installed models, never the
 shared one the desktops use (probing that would evict their cache), with a
@@ -61,8 +67,10 @@ def run(parallel, model, port, ctx):
                 time.sleep(1)
         a, b = prompt("A"), prompt("B")
         call(port, model, "warm up " + prompt("W"), ctx)  # load the model once
-        results = [("A", *call(port, model, a, ctx)), ("B", *call(port, model, b, ctx)),
-                   ("A again", *call(port, model, a, ctx))]
+        # The control first: A twice in a row shows whether this Ollama reuses a
+        # cached prefix at all; without that, "evicted" below means nothing.
+        results = [("A", *call(port, model, a, ctx)), ("A repeat", *call(port, model, a, ctx)),
+                   ("B", *call(port, model, b, ctx)), ("A again", *call(port, model, a, ctx))]
         return results
     finally:
         server.terminate()
@@ -81,8 +89,14 @@ def main():
         print(f"OLLAMA_NUM_PARALLEL={parallel}")
         for name, tokens, secs in rows:
             print(f"  {name:8} evaluated {tokens:4} prompt tokens in {secs:5.2f}s")
-        again, first = rows[2][1], rows[0][1]
-        print(f"  -> A's prefix {'SURVIVED' if again < first / 2 else 'was EVICTED'} by B\n")
+        # Judged by time, not prompt_eval_count: Ollama 0.24 reports the whole
+        # prompt as evaluated even when it came from the cache (808 tokens in
+        # 0.06 s), so only the seconds say whether it was read again.
+        first, repeat, again = rows[0][2], rows[1][2], rows[3][2]
+        if repeat >= first / 2:
+            print("  -> no prompt caching at all here (A repeated was read again) - the test says nothing\n")
+        else:
+            print(f"  -> A's prefix {'SURVIVED' if again < first / 2 else 'was EVICTED'} by B\n")
         sys.stdout.flush()
 
 
