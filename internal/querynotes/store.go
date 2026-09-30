@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"slices"
 	"time"
 
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
@@ -38,6 +39,9 @@ type QueryNote struct {
 const (
 	ResolutionAnswered = "answered"
 	ResolutionManual   = "manual"
+	// ResolutionDeleted: the desktop the note came from was deleted, so
+	// there is no agent left to reply to.
+	ResolutionDeleted = "desktop_deleted"
 )
 
 // Kinds of note that mean the desktop is waiting on a human, which is exactly
@@ -167,6 +171,27 @@ func (s *Store) Close(id string) {
 // is not something a reply answers, and stays open until someone resolves it.
 func (s *Store) ResolveAnswered(desktopID string) {
 	s.resolve(`desktop_id = ? AND kind IN (?, ?)`, ResolutionAnswered, desktopID, KindQuery, KindApproval)
+}
+
+// ResolveDesktop resolves every open note of a deleted desktop: none of them
+// can be answered any more, and a reply box aimed at a desktop that is gone
+// would only fail.
+func (s *Store) ResolveDesktop(desktopID string) {
+	s.resolve(`desktop_id = ?`, ResolutionDeleted, desktopID)
+}
+
+// ResolveOrphans resolves the open notes of every desktop not in existing -
+// ones deleted before ResolveDesktop existed. It returns how many it resolved.
+func (s *Store) ResolveOrphans(existing []string) int {
+	var n int
+	for _, note := range s.List() {
+		if !slices.Contains(existing, note.DesktopID) {
+			s.resolve(`id = ?`, ResolutionDeleted, note.ID)
+			n++
+		}
+	}
+
+	return n
 }
 
 func (s *Store) resolve(where, resolution string, args ...any) {

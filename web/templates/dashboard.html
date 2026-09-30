@@ -406,7 +406,7 @@
 
       head.append(
         el("span", "vm trunc", note.vm_name || note.filename || "Desktop"),
-        el("span", "how", note.resolution === "answered" ? "Answered" : "Resolved"),
+        el("span", "how", note.resolution === "answered" ? "Answered" : note.resolution === "desktop_deleted" ? "Desktop deleted" : "Resolved"),
         el("span", "when", isNaN(when.getTime()) ? "" : when.toLocaleString([], {dateStyle: "medium", timeStyle: "short"}))
       );
 

@@ -88,7 +88,8 @@ POINT_SYSTEM = (
     "content differs from run to run (another search, another customer). When recorded, the person clicked a line "
     "of text. You are given that line with the lines around it, and the numbered lines of text on the screen now. "
     "Choose the line that plays the same part in the task now - the same kind of thing in the same role, not the "
-    "same words - or 0 when none does. A wrong click can cost the person real work, so say 0 when you are not sure. "
+    "same words - or 0 when none does. When the person explained what the step is for (\"the first search result\"), "
+    "that is what the line must be. A wrong click can cost the person real work, so say 0 when you are not sure. "
     'Reply with exactly one line of JSON and nothing else: {"choice": <number, or 0>, "confidence": <0 to 1>, "reason": "<short>"}'
 )
 
@@ -131,9 +132,11 @@ class Ladder:
     experience.commit).
     """
 
-    def __init__(self, ask_model=None, goal="", total=0, model_calls=None):
+    def __init__(self, ask_model=None, goal="", total=0, model_calls=None, explanation=""):
         self.ask_model = ask_model
         self.goal = goal
+        # What the person who taught the skill explained in their own words (learning._answer_explain).
+        self.explanation = explanation or ""
         self.total = total
         self.calls_left = MODEL_CALLS if model_calls is None else model_calls
         self.model_calls = 0
@@ -419,7 +422,9 @@ class Ladder:
         context = "\n".join(("> " if l is clicked else "  ") + l["text"][:120] for l in around)
         prompt = (
             (f"Task: {self.goal}\n" if self.goal else "") + self._typing()
+            + (f"The person explained the task: {self.explanation[:600]}\n" if self.explanation else "")
             + f"Step {step['n']}: {step.get('summary', '')}\n"
+            + (f"What the person said this step is for: {step['intent']}\n" if step.get("intent") else "")
             + f"When recorded, the person clicked the line marked >:\n{context}\n\n"
             + "Lines on the screen now:\n"
             + "\n".join(f"{n}. {l['text'][:120]}" for n, l in enumerate(lines, 1))

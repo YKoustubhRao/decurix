@@ -58,22 +58,8 @@
 
 .cron-field{display:none}
 .cron-field.on{display:grid}
+
 .cron-field .input{font-family:var(--mono)}
-
-.sched-panel{margin-top:18px}
-.sched-panel .panel-head{
-  display:flex;
-  align-items:center;
-  gap:8px;
-  padding:15px 20px;
-  border-bottom:1px solid var(--line);
-  font-size:14px;
-  font-weight:650;
-  color:var(--text)
-}
-.sched-panel .panel-head svg{color:var(--text-3)}
-.sched-panel .panel-head .grow{flex:1}
-
 .dest-status{
   display:inline-flex;
   align-items:center;
@@ -200,14 +186,6 @@
     </div>
   </form>
 
-  <div class="panel sched-panel">
-    <div class="panel-head">
-      <svg width="15" height="15"><use href="#i-clock"/></svg>
-      <span class="grow">Triggers</span>
-      <a class="btn btn-quiet btn-sm" href="/triggers">All triggers and mailboxes</a>
-    </div>
-    <div id="schedList"></div>
-  </div>
 {{else}}
   <div class="empty">
     <div class="empty-mark"><svg width="19" height="19"><use href="#i-monitor"/></svg></div>
@@ -246,7 +224,6 @@
   var runOnceField = document.getElementById("runOnceField");
   var runAtInput = document.getElementById("runAt");
   var onEmail = document.getElementById("onEmail");
-  var schedList = document.getElementById("schedList");
 
   /* ---------------- destination suggestion ---------------- */
 
@@ -434,7 +411,6 @@
         repeat.checked = false;
         syncRepeatUI();
         markSent("Schedule created");
-        loadSchedules();
       }else if(once){
         await post("/api/schedules/create", {id: select.value, content: text, run_at: runAtDate.toISOString()});
 
@@ -442,14 +418,12 @@
         runOnce.checked = false;
         syncRepeatUI();
         markSent("Run scheduled");
-        loadSchedules();
       }else if(email){
         await T.create(select.value, text);
 
         onEmail.checked = false;
         syncRepeatUI();
         markSent("Email trigger saved");
-        loadSchedules();
       }else{
         await post("/api/desktops/send", {id: select.value, content: text});
         markSent("Delivered to the desktop");
@@ -484,38 +458,6 @@
     }, 3200);
   }
 
-  /* ---------------- triggers list: schedules and email triggers ---------------- */
-
-  function desktopName(id){
-    var option = select.querySelector('option[value="' + id.replace(/"/g, '\\"') + '"]');
-    return option ? option.textContent : id;
-  }
-
-  async function loadSchedules(){
-    var schedules = null, mail = null;
-
-    try{
-      var response = await fetch("/api/schedules", {cache: "no-store"});
-      if(response.ok){ schedules = await response.json(); }
-    }catch(e){ /* shown as empty */ }
-
-    mail = await T.loadAccounts();
-
-    var rules = (mail && mail.rules) || [];
-    schedules = schedules || [];
-
-    schedList.innerHTML = "";
-    if(!schedules.length && !rules.length){
-      schedList.appendChild(T.el("div", "trig-empty", "No schedules or email triggers yet."));
-      return;
-    }
-
-    schedules.forEach(function(sch){ schedList.appendChild(T.scheduleRow(sch, desktopName, loadSchedules)); });
-    rules.forEach(function(r){ schedList.appendChild(T.ruleRow(r, desktopName, loadSchedules)); });
-  }
-
-  loadSchedules();
-  setInterval(loadSchedules, 20000);
 })();
 </script>
 

@@ -31,9 +31,11 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/idlepause"
 	"github.com/YKoustubhRao/decurix/internal/keepawake"
 	"github.com/YKoustubhRao/decurix/internal/lanaccess"
+	"github.com/YKoustubhRao/decurix/internal/llm"
 	"github.com/YKoustubhRao/decurix/internal/mailtrigger"
 	"github.com/YKoustubhRao/decurix/internal/memory"
 	"github.com/YKoustubhRao/decurix/internal/ollama"
+	"github.com/YKoustubhRao/decurix/internal/outbox"
 	"github.com/YKoustubhRao/decurix/internal/phonehost"
 	"github.com/YKoustubhRao/decurix/internal/querynotes"
 	"github.com/YKoustubhRao/decurix/internal/resourcemon"
@@ -251,6 +253,8 @@ func main() {
 	phoneMode := flag.Bool("phone", false, `run as a phone link, in Termux on an Android phone: decurix --phone "<pairing link>" (or with no link, reconnect)`)
 	phoneName := flag.String("phone-name", "", "with -phone, the name this phone is listed under (default: its model)")
 	phoneSerial := flag.String("phone-serial", "", "with -phone, the adb device to use when there are several")
+	restoreBackup := flag.String("restore-backup", "", "put a backup's database and key files back into the data dir (the control plane must be stopped), then exit")
+	restoreForce := flag.Bool("force", false, "with -restore-backup, restore even though a control plane answers at -url")
 	phoneSetup := flag.Bool("phone-setup", false, "set up this phone's link (what the phone link page's command runs): decurix --phone-setup BASE TOKEN")
 	flag.Parse()
 
@@ -273,6 +277,12 @@ func main() {
 	}
 	if *phoneMode {
 		os.Exit(runPhone(flag.Arg(0), *phoneName, *phoneSerial))
+	}
+
+	// Restoring reads .env for DECURIX_DATA_DIR and nothing else.
+	if *restoreBackup != "" {
+		loadEnv()
+		os.Exit(runRestore(*restoreBackup, sqlitedb.DataDir(), *cliURL, *restoreForce))
 	}
 
 	log.Printf("Decurix %s starting", version)
@@ -390,7 +400,25 @@ func main() {
 	)
 
 	server.Devices = pairedDevices
+	server.DB = db
 	server.CFTunnel = namedTunnel
+
+	// Notes of desktops deleted before deleting resolved them sat in "Needs
+	// you" for good, with a Reply that had nowhere to go. Only when the list
+	// is known: a failed list is not evidence that anything was deleted.
+	go func() {
+		all, err := desktops.List(context.Background())
+		if err != nil {
+			return
+		}
+		ids := make([]string, 0, len(all))
+		for _, d := range all {
+			ids = append(ids, d.ID)
+		}
+		if n := server.QueryNotes.ResolveOrphans(ids); n > 0 {
+			log.Printf("Resolved %d open note(s) of desktops that no longer exist.", n)
+		}
+	}()
 	// Linked Android phones (decurix --phone): their apps join the app list.
 	server.SetPhones(phonehost.NewHub())
 	// A phone that pairs is offered its phone link, set up from the phone
@@ -398,6 +426,13 @@ func main() {
 	lanAccess.SetAfterPair(server.PhoneLinkAfterPair)
 	lanAccess.SetOpenPaths(httpapi.PhoneSetupOpenPaths...)
 	server.HostGUISecret = hostGUISecret
+	// The hosted models (Claude, Azure) a person set up on the dashboard,
+	// keys sealed like the Cloudflare tokens. Never read from .env.
+	llmKey, err := sealed.LoadKey(sqlitedb.DataDir(), llm.KeyFile)
+	if err != nil {
+		log.Printf("warning: %s: %v; the model API keys will be stored unencrypted", llm.KeyFile, err)
+	}
+	server.LLM = must(llm.NewHub(db, llmKey))
 	// The Windows apps copied into VMs are kept running on the host, ready to show the moment one is opened.
 	server.HostGUIDataDir = sqlitedb.DataDir()
 	go server.RestoreHostApps(context.Background())
@@ -463,7 +498,27 @@ func main() {
 
 	// IMPORTANT:
 	// Ollama initialization must not block the HTTP server.
+	// With a hosted model set up, the local one is loaded only once some
+	// desktop reasons with it (the Ollama brain, or an old ollama-harness
+	// desktop) - a new desktop may well pick the hosted one. Measured on an
+	// 8 GB host: the preload alone held 1.8 GB and left the machine swapping
+	// for minutes with only hosted-model desktops running. Checked each time,
+	// so a key typed in after startup counts.
+	ollama.SetWarmNeeded(func() bool {
+		return !server.LLM.AnyConfigured() || desktops.UsesLocalModel(context.Background())
+	})
+
 	go func() {
+		if !ollama.Needed() {
+			log.Println("Ollama: not preloading - a hosted model is configured and no desktop uses a local-model engine yet.")
+			// Still choose the model (it reads /api/tags and /api/show, and
+			// loads nothing): skipping this left ollama.Model's fallback as
+			// the model a later Ollama-brain desktop was given, and the one
+			// the top bar showed - a 24B model on an 8 GB host.
+			ollama.SelectModel(ctx)
+			return
+		}
+
 		if err := ollamaManager.EnsureReady(ctx); err != nil {
 			log.Printf("warning: Ollama initialization failed: %v", err)
 			return
@@ -514,6 +569,13 @@ func main() {
 	mailRunner := &mailtrigger.Runner{Store: mail, Submitter: server, PollInterval: mailPollInterval()}
 	server.Mail = mail
 	server.MailRunner = mailRunner
+
+	// Emails agents drafted, sent only when a person presses Send.
+	drafts := must(outbox.New(db))
+	if err := drafts.RecoverInterrupted(); err != nil {
+		log.Printf("outbox: %v", err)
+	}
+	server.Outbox = drafts
 	go mailRunner.Run(ctx)
 
 	// Keeps this machine from idle-sleeping while a mailbox is watched or a

@@ -1983,6 +1983,12 @@ func (pc packContext) sessionID(slug string) string {
 // control plane's viewer in an app window of the VM's own browser, and the viewer shows the app and sends input back.
 // The URL is fixed when the launcher is written and carries a token signed for exactly this app, so the control plane
 // will start it and nothing else.
+//
+// Like webAppWrapper it raises the viewer when it is already open and ignores clicks while one is opening: the VM's
+// browser shows nothing until its window exists (seconds on a cold 1-vCPU desktop), and every impatient click used to
+// open another viewer of the same app. The viewer's window is found by its class (Chromium names an --app window after
+// the URL's host and path: "<host>__host-gui_view") and its title (the app's name). With no X display or no xdotool
+// (tests, a broken session) it just opens the viewer, as it always did.
 func hostGUILauncher(pc packContext, slug, title, target, args string) string {
 	id := pc.sessionID(slug)
 	q := url.Values{"id": {id}, "desktop": {pc.DesktopID}, "title": {title}, "target": {target}, "args": {args}}
@@ -1991,14 +1997,51 @@ func hostGUILauncher(pc packContext, slug, title, target, args string) string {
 	}
 	return fmt.Sprintf(`CP="${CONTROL_PLANE_URL:-http://host.docker.internal:8080}"
 VIEW="$CP/host-gui/view?%s"
+TITLE=%s
+export DISPLAY="${DISPLAY:-:1}"
+
+viewer_window() {
+    for w in $(xdotool search --classname '__host-gui_view$' 2>/dev/null); do
+        [ "$(xdotool getwindowname "$w" 2>/dev/null)" = "$TITLE" ] && { echo "$w"; return 0; }
+    done
+    return 1
+}
+
 for browser in chromium-browser google-chrome chromium; do
-    if command -v "$browser" >/dev/null 2>&1; then
+    command -v "$browser" >/dev/null 2>&1 || continue
+    if ! command -v xdotool >/dev/null 2>&1 || ! xdotool getdisplaygeometry >/dev/null 2>&1; then
         exec "$browser" --app="$VIEW"
     fi
+    # Already open (possibly minimized): bring it forward instead of opening a second viewer.
+    if win=$(viewer_window) && [ -n "$win" ]; then
+        xdotool windowactivate "$win" >/dev/null 2>&1
+        exit 0
+    fi
+    # A launch is already in flight: this click is a repeat of it.
+    exec 9>/tmp/decurix-launch-%s.lock
+    flock -n 9 || exit 0
+    # 9>&- : the browser must not inherit the lock, or a cold start would hold it for as long as it runs.
+    "$browser" --app="$VIEW" >/dev/null 2>&1 9>&- &
+    # Hold the lock until the viewer is up (bounded), so clicks in the meantime are ignored.
+    for _ in $(seq 1 900); do
+        viewer_window >/dev/null && break
+        sleep 0.1
+    done
+    exit 0
 done
 echo "No browser is installed in this desktop to show the app in." >&2
 exit 1
-`, q.Encode())
+`, q.Encode(), shellQuote(title), slug)
+}
+
+// hostGUIStartupEntries are the .desktop keys that make XFCE show a busy cursor from the click on a Windows app's icon
+// until its viewer window appears (see hostGUILauncher for the window's class).
+func hostGUIStartupEntries() string {
+	host := webAppHost(controlPlaneURL())
+	if host == "" {
+		return ""
+	}
+	return "StartupNotify=true\nStartupWMClass=" + host + "__host-gui_view\n"
 }
 
 // phoneAppLauncher is the shell that shows an app running on a linked phone: like hostGUILauncher, it opens the control
@@ -2158,6 +2201,7 @@ func packDynamicApp(tw *tar.Writer, app HostAppItem, pc packContext) error {
 
 		var wrapperScript string
 		var webURL string
+		var startup string // .desktop keys for a busy cursor until the app's window shows
 		suffix := "Host"
 		if device, pkg, ok := parsePhoneCmd(app.HostCmd); ok {
 			// On the phone itself, even when the service also has a web version: that is what was picked.
@@ -2165,6 +2209,7 @@ func packDynamicApp(tw *tar.Writer, app HostAppItem, pc packContext) error {
 			suffix = "Phone"
 		} else if webURL = getWebAppURLForApp(app.Name, app.HostCmd); webURL != "" {
 			wrapperScript = webAppWrapper(slug, webURL, hostFallback(pc, slug, app))
+			startup = startupNotifyEntries(webURL)
 		} else {
 			wrapperScript = "#!/usr/bin/env bash\n" + hostFallback(pc, slug, app)
 			// This is the exact launcher a host_gui app's icon runs the first time someone opens it - start it now
@@ -2172,6 +2217,7 @@ func packDynamicApp(tw *tar.Writer, app HostAppItem, pc packContext) error {
 			// Start finds it already running and joins it at once (see winhost.Manager.Start).
 			if target, args, ok := windowsTarget(app.HostCmd); ok {
 				startHostAppAhead(pc.DesktopID, pc.sessionID(slug), target, args)
+				startup = hostGUIStartupEntries()
 			}
 		}
 
@@ -2188,7 +2234,7 @@ Exec=/home/headless/.local/bin/%s-host %%U
 Icon=%s
 Terminal=false
 Categories=%s
-%s`, app.Name, suffix, app.Description, slug, icon, cat, startupNotifyEntries(webURL))
+%s`, app.Name, suffix, app.Description, slug, icon, cat, startup)
 
 		if err := writeStringToTar(tw, "Desktop/"+slug+"-host.desktop", launcherContent, 0755); err != nil {
 			return err

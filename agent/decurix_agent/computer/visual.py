@@ -78,12 +78,14 @@ MAX_MISMATCH = 0.02
 
 # Anywhere else it must be all but identical. The further from where it was
 # recorded, the less a near-match proves: on real pixels the row above
-# `Invoice 1042 Paid` read `Invoice 1041 Paid` - one digit, 0.018 of its blocks -
-# and was found for it. What is accepted there scored 0.006 at most (a row that
-# reflowed onto a fractional pixel), so the limit is the middle of that gap
-# (bench/recordings/tune.py prints both ends). A false halt is put to a person;
-# a click on the wrong row is not undone.
-MAX_MISMATCH_MOVED = 0.01
+# `Invoice 1042 Paid` read `Invoice 1041 Paid` - one digit - and was found for
+# it. That one digit is 0.018 of its blocks in Chromium 112's rendering and
+# 0.012 in Chrome 154's; what is rightly accepted there scored 0.006 at most
+# (Chromium, a row reflowed onto a fractional pixel) and 0.0 on Chrome. The
+# limit is the middle of the narrower gap, 0.006..0.012, measured with
+# bench/recordings/tune.py on a corpus built in each browser. A false halt is
+# put to a person; a click on the wrong row is not undone.
+MAX_MISMATCH_MOVED = 0.009
 
 # A patch with fewer blocks that have anything in them cannot be recognised
 # (a blank margin matches everywhere). Blocks overlap, so one small feature
@@ -599,6 +601,11 @@ KIN_MIN_HEIGHT = 8
 KIN_REACH = 8
 # The widest a line of text is followed across.
 KIN_SPAN = 700
+# A line of text is at least this many times as wide as it is tall (a few letters): a sliver of a coloured photo is not.
+KIN_MIN_ASPECT = 1.5
+# Text stands on the page: this share of the pixels just above and just below it must be one plain colour, not the ink.
+# Found live: a blue photo on a search results page (John Cena's portrait) was taken for "the first link", and clicked.
+KIN_PLAIN_GROUND = 0.7
 
 
 def _pixel(rgb, width, x, y):
@@ -759,6 +766,44 @@ def _item_at(rgb, width, height, px, py, ink):
     return left, top, right, bottom
 
 
+def _looks_like_text(rgb, width, height, box, is_ink):
+    """Whether a run of ink is a line of text: wide enough, and on a plain ground rather than inside a picture."""
+
+    left, top, right, bottom = box
+    tall = bottom - top + 1
+    if right - left + 1 < KIN_MIN_ASPECT * tall:
+        return False
+    counts = {}
+    total = 0
+    for y in (top - 2, bottom + 2):
+        if not 0 <= y < height:
+            continue
+        for x in range(max(0, left), min(width, right + 1)):
+            c = _pixel(rgb, width, x, y)
+            key = (c[0] >> 3, c[1] >> 3, c[2] >> 3)
+            counts[key] = counts.get(key, 0) + 1
+            total += 1
+    if not total:
+        return False
+    key = max(counts, key=counts.get)
+    if counts[key] < KIN_PLAIN_GROUND * total:
+        return False
+    return not is_ink(key[0] * 8 + 4, key[1] * 8 + 4, key[2] * 8 + 4)
+
+
+def _text_items(rgb, width, height, left, ink):
+    """_column_items that are lines of text (_looks_like_text), each with its whole box: [(item, box)]."""
+
+    is_ink = _inker(ink)
+    out = []
+    for item in _column_items(rgb, width, height, left, ink):
+        x0, top, _, bottom = item
+        box = _item_at(rgb, width, height, x0 + 1, (top + bottom) // 2, ink) or item
+        if _looks_like_text(rgb, width, height, box, is_ink):
+            out.append((item, box))
+    return out
+
+
 def _column_items(rgb, width, height, left, ink):
     """
     Every line of text in `ink` that starts at column `left` (within
@@ -807,7 +852,10 @@ def make_kin(rgb, width, height, point):
     if tall < KIN_MIN_HEIGHT or not (left <= px <= right):
         return None
 
-    kin = [i for i in _column_items(rgb, width, height, left, ink) if _same_height(i, tall)]
+    if not _looks_like_text(rgb, width, height, item, _inker(ink)):
+        return None
+
+    kin = [i for i, _ in _text_items(rgb, width, height, left, ink) if _same_height(i, tall)]
     ordinal = next((n for n, i in enumerate(kin, 1) if abs(i[1] - top) <= KIN_GAP_Y + 1), None)
     if ordinal is None:
         return None
@@ -836,13 +884,11 @@ def find_kin(kin, frame):
         return None
 
     rgb, width, height = frame.rgb, frame.width, frame.height
-    items = [i for i in _column_items(rgb, width, height, left, ink) if _same_height(i, tall)]
+    items = [(i, box) for i, box in _text_items(rgb, width, height, left, ink) if _same_height(i, tall)]
     if len(items) < ordinal:
         return None
 
-    x0, top, _, bottom = items[ordinal - 1]
-    box = _item_at(rgb, width, height, x0 + 1, (top + bottom) // 2, ink) or items[ordinal - 1]
-    bl, bt, br, bb = box
+    bl, bt, br, bb = items[ordinal - 1][1]
     # Where on the line it was clicked, kept inside the line: a shorter title is clicked on its middle.
     x = bl + ax if bl + ax <= br else (bl + br) // 2
     y = min(max(bt + ay, bt), bb)

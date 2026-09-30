@@ -615,11 +615,15 @@
 /* ---------- create dialog ---------- */
 
 .create-grid{display:grid;gap:15px}
-.claude-hint{display:none}
-.claude-hint.on{display:block}
-.claude-auth-row{display:none;align-items:center;gap:10px;margin-top:2px}
-.claude-auth-row.on{display:flex}
-.claude-auth-row span{font-size:12.5px;color:var(--text-2);flex:1;min-width:0}
+.brain-status{display:flex;align-items:center;gap:10px;margin-top:8px;font-size:12.5px;color:var(--text-2)}
+.brain-status span{flex:1;min-width:0}
+.brain-status[hidden],.brain-setup[hidden],.brain-setup [hidden]{display:none}
+.brain-setup{display:grid;gap:10px;margin-top:10px;padding:12px;border:1px solid var(--line);border-radius:var(--r-md);background:var(--surface-2)}
+.brain-setup .row{display:grid;gap:10px;grid-template-columns:1fr 1fr}
+@media (max-width:520px){.brain-setup .row{grid-template-columns:1fr}}
+.brain-setup label{font-size:12px;color:var(--text-2);display:grid;gap:4px}
+.brain-setup .actions{display:flex;gap:8px;align-items:center;justify-content:flex-end}
+.brain-setup .brain-error{color:var(--danger, #b3261e);font-size:12px;flex:1;min-width:0}
 
 /* ---------- copy host apps section ---------- */
 
@@ -896,10 +900,16 @@
       <p class="page-sub">Agents that learn, adapt, and improve - with desktops of their own.</p>
     </div>
 
-    <button class="btn btn-primary" id="newDesktopBtn">
-      <svg width="15" height="15"><use href="#i-plus"/></svg>
-      New desktop
-    </button>
+    <div class="page-head-actions">
+      <a class="btn btn-default" href="/api/backup" download title="Download what every desktop was taught, what they learned, and this control plane's records and keys. Keep it private: it opens your saved passwords and API keys.">
+        <svg width="15" height="15"><use href="#i-download"/></svg>
+        Back up
+      </a>
+      <button class="btn btn-primary" id="newDesktopBtn">
+        <svg width="15" height="15"><use href="#i-plus"/></svg>
+        New desktop
+      </button>
+    </div>
   </div>
 
   <div class="rule">
@@ -967,7 +977,7 @@
             </span>
 
             <span class="chip">
-              {{if eq .Harness "claude"}}Claude Code{{else if eq .Harness "thebot"}}TheBot{{else}}Ollama{{end}}
+              {{if eq .Harness "claude"}}Claude Code{{else if eq .Harness "azure"}}Office (GPT){{else if eq .Harness "thebot"}}TheBot · {{if eq .Brain "claude"}}Claude{{else if eq .Brain "azure"}}Azure{{else}}Ollama{{end}}{{else}}Ollama{{end}}
             </span>
           </div>
         </div>
@@ -1195,8 +1205,12 @@
         </button>
         {{end}}
 
-        <button class="btn btn-default btn-sm action-icon" data-spawn-child="{{.ID}}" data-spawn-child-name="{{.Name}}" data-spawn-child-profile="{{.Profile}}" data-spawn-child-harness="{{.Harness}}" data-spawn-child-cpus="{{.CPUs}}" data-spawn-child-memory-mb="{{.MemoryMB}}" title="Spawn a specialized child worker" aria-label="Spawn a specialized child worker">
+        <button class="btn btn-default btn-sm action-icon" data-spawn-child="{{.ID}}" data-spawn-child-name="{{.Name}}" data-spawn-child-profile="{{.Profile}}" data-spawn-child-brain="{{.Brain}}" data-spawn-child-cpus="{{.CPUs}}" data-spawn-child-memory-mb="{{.MemoryMB}}" title="Spawn a specialized child worker" aria-label="Spawn a specialized child worker">
           <svg width="14" height="14"><use href="#i-fork"/></svg>
+        </button>
+
+        <button class="btn btn-default btn-sm action-icon" data-restore="{{.ID}}" title="Restore skills and memory from a backup (what this desktop already has is kept)" aria-label="Restore skills and memory from a backup">
+          <svg width="14" height="14"><use href="#i-inbox"/></svg>
         </button>
 
         <span class="spacer"></span>
@@ -1237,7 +1251,7 @@
     <div class="dialog-head">
       <div>
         <h2 id="createDialogTitle">New desktop</h2>
-        <p id="createDialogSub">A fresh container with a persistent home directory.</p>
+        <p id="createDialogSub">A computer of its own that keeps its files: Chrome, LibreOffice Writer and Calc, Python and text recognition for scans.</p>
       </div>
       <button type="button" class="icon-btn" data-close-dialog aria-label="Close">
         <svg width="16" height="16"><use href="#i-x"/></svg>
@@ -1257,7 +1271,11 @@
         <div class="hint">What this child worker should focus on. It starts with a copy of the parent's learned memory, and shares new memory with it from then on.</div>
       </div>
 
-      <div class="field">
+      <!-- Hidden while every profile is the same image (scripts/*/build-images
+           tag basic as developer and ai): a choice that changes nothing, whose
+           hint listed tools no desktop has. The radios stay for the create and
+           spawn-child code that reads and sets them. -->
+      <div class="field" hidden>
         <span class="field-label">Profile</span>
         <div class="segmented" role="radiogroup" aria-label="Profile">
           <label class="seg"><input type="radio" name="profile" value="basic" checked><span>Basic</span></label>
@@ -1268,17 +1286,40 @@
       </div>
 
       <div class="field">
-        <span class="field-label">Agent harness</span>
-        <div class="segmented" role="radiogroup" aria-label="Agent harness">
-          <label class="seg"><input type="radio" name="harness" value="thebot" checked><span>TheBot</span></label>
-          <label class="seg"><input type="radio" name="harness" value="claude" id="harnessClaude"><span>Claude Code</span></label>
-          <label class="seg"><input type="radio" name="harness" value="ollama"><span>Ollama</span></label>
+        <span class="field-label">Model</span>
+        <div class="segmented" role="radiogroup" aria-label="The model TheBot reasons with">
+          <label class="seg"><input type="radio" name="brain" value="ollama" checked><span>Ollama (local)</span></label>
+          <label class="seg"><input type="radio" name="brain" value="claude"><span>Claude</span></label>
+          <label class="seg"><input type="radio" name="brain" value="azure"><span>Azure OpenAI</span></label>
         </div>
-        <div class="hint claude-hint" id="claudeHint">Claude Code needs the Developer or AI Developer profile — the <code class="mono">claude</code> binary isn't in the Basic image.</div>
-        <div class="hint">TheBot uses the same shared Ollama decurix already runs for every desktop — no separate URL to set up. PDF/HTML/Office-format document parsing isn't available yet in this harness; plain text/code files and real terminal execution both work fully.</div>
-        <div class="claude-auth-row" id="claudeAuthRow">
-          <span id="claudeAuthText">Checking Claude sign-in…</span>
-          <button type="button" class="btn btn-quiet btn-sm" id="claudeAuthBtn">Log in to Claude</button>
+        <div class="hint" id="brainHint">Every desktop runs TheBot, and TheBot adapts to the model: one that reads images is shown the screen and scanned pages, a text-only one gets the screen's element list and OCR. With Ollama it thinks on this machine's own model, free but slower. Claude or Azure OpenAI think faster and better, billed to your account; their keys stay in the control plane and never enter a desktop.</div>
+
+        <div class="brain-status" id="brainStatus" hidden>
+          <span id="brainStatusText"></span>
+          <button type="button" class="btn btn-quiet btn-sm" id="brainChangeBtn">Change</button>
+        </div>
+
+        <div class="brain-setup" id="brainSetup" hidden>
+          <div class="hint" id="brainSetupIntro"></div>
+          <label id="brainEndpointRow">Endpoint
+            <input class="input mono" type="url" id="brainEndpoint" placeholder="https://your-resource.services.ai.azure.com/models" autocomplete="off" spellcheck="false">
+          </label>
+          <label>API key
+            <input class="input mono" type="password" id="brainKey" autocomplete="off" spellcheck="false">
+          </label>
+          <div class="row">
+            <label><span id="brainModelLabel">Model</span>
+              <input class="input mono" type="text" id="brainModel" autocomplete="off" spellcheck="false">
+            </label>
+            <label><span id="brainFastLabel">Fast model</span>
+              <input class="input mono" type="text" id="brainFast" autocomplete="off" spellcheck="false">
+            </label>
+          </div>
+          <div class="actions">
+            <span class="brain-error" id="brainError"></span>
+            <button type="button" class="btn btn-quiet btn-sm" id="brainForgetBtn" hidden>Remove</button>
+            <button type="button" class="btn btn-default btn-sm" id="brainSaveBtn">Check &amp; save</button>
+          </div>
         </div>
       </div>
 
@@ -1340,43 +1381,6 @@
 </dialog>
 
 
-<dialog id="claudeLoginDialog">
-  <form method="dialog" id="claudeLoginForm">
-    <div class="dialog-head">
-      <div>
-        <h2>Sign in to Claude</h2>
-        <p>One login, shared by every Claude Code desktop.</p>
-      </div>
-      <button type="button" class="icon-btn" data-close-claude-login aria-label="Close">
-        <svg width="16" height="16"><use href="#i-x"/></svg>
-      </button>
-    </div>
-
-    <div class="dialog-body create-grid">
-      <div class="field">
-        <span class="field-label">1. Open the sign-in page</span>
-        <div class="claude-login-url-row">
-          <a class="claude-login-url mono" id="claudeLoginUrl" href="#" target="_blank" rel="noopener">Getting a sign-in link…</a>
-          <button type="button" class="icon-btn copy-btn" id="claudeLoginCopyBtn" data-copy="" disabled aria-label="Copy sign-in link">
-            <svg width="13" height="13"><use href="#i-copy"/></svg>
-          </button>
-        </div>
-        <div class="hint">Opens in a new tab. Sign in, then copy the code it gives you back.</div>
-      </div>
-
-      <div class="field">
-        <label for="claudeLoginCode">2. Paste the code</label>
-        <input class="input mono" type="text" id="claudeLoginCode" name="code" placeholder="code#state" autocomplete="off" autocapitalize="off" spellcheck="false">
-        <div class="hint claude-login-error" id="claudeLoginError"></div>
-      </div>
-    </div>
-
-    <div class="dialog-foot">
-      <button type="button" class="btn btn-quiet" data-close-claude-login>Cancel</button>
-      <button type="submit" class="btn btn-primary" id="claudeLoginSubmit">Sign in</button>
-    </div>
-  </form>
-</dialog>
 
 
 <dialog id="confirmDialog">
@@ -1534,7 +1538,7 @@
   var createForm = document.getElementById("createForm");
   var specializationField = document.getElementById("specializationField");
 
-  /* parent is {id, name, profile, harness, cpus, memoryMb}, or omitted for
+  /* parent is {id, name, profile, brain, cpus, memoryMb}, or omitted for
      an ordinary "New desktop" open. */
   function openCreate(parent){
     createForm.reset();
@@ -1542,13 +1546,13 @@
     specializationField.style.display = parent ? "" : "none";
 
     if(parent){
-      // Inherit the parent's profile/harness/CPU/memory rather than always
+      // Inherit the parent's profile/model/CPU/memory rather than always
       // resetting to the hardcoded defaults - a specialization meant to run
-      // on (say) a Claude-harness developer desktop shouldn't silently
-      // become a bare Ollama/Basic child unless someone notices and
-      // re-picks every option by hand.
+      // on (say) a Claude developer desktop shouldn't silently become a bare
+      // Ollama/Basic child unless someone notices and re-picks every option
+      // by hand.
       selectRadio("profile", parent.profile);
-      selectRadio("harness", parent.harness);
+      selectRadio("brain", parent.brain);
       selectRadio("cpus", parent.cpus);
       selectRadio("memory_mb", parent.memoryMb);
     }
@@ -1557,12 +1561,12 @@
       parent ? "Spawn a specialized child worker" : "New desktop";
     document.getElementById("createDialogSub").textContent = parent
       ? "A new desktop spawned from " + parent.name + ", sharing its learned memory."
-      : "A fresh container with a persistent home directory.";
+      : "A computer of its own that keeps its files: Chrome, LibreOffice Writer and Calc, Python and text recognition for scans.";
 
-    syncHarness();
+    syncBrain();
+    loadModels();
     createDialog.showModal();
     document.getElementById(parent ? "dSpecialization" : "dName").focus();
-    loadClaudeAuthStatus();
     resetHostAppsSection();
   }
 
@@ -1582,7 +1586,7 @@
       id: button.dataset.spawnChild,
       name: button.dataset.spawnChildName,
       profile: button.dataset.spawnChildProfile,
-      harness: button.dataset.spawnChildHarness,
+      brain: button.dataset.spawnChildBrain,
       cpus: button.dataset.spawnChildCpus,
       memoryMb: button.dataset.spawnChildMemoryMb,
     });
@@ -1627,31 +1631,154 @@
     });
   }
 
-  /* The claude harness needs the developer or ai profile - it is the only
-     one with the claude binary installed. */
-  function syncHarness(){
-    var profile = createForm.querySelector("input[name=profile]:checked").value;
-    var claude = document.getElementById("harnessClaude");
-    var blocked = profile === "basic";
+  /* ---------------- the model TheBot reasons with ---------------- */
 
-    claude.disabled = blocked;
-    document.getElementById("claudeHint").classList.toggle("on", blocked);
+  /* Claude and Azure are set up here, by a person, and saved (sealed) by the
+     control plane - never read from .env. The settings routes are only on
+     this computer's own address; over the phone link they are refused and
+     the panel says so. */
+  var BRAIN_NAMES = {claude: "Claude", azure: "Azure OpenAI"};
+  var modelInfo = null;
+  var brainEditing = false;
 
-    if(blocked && claude.checked){
-      createForm.querySelector("input[name=harness][value=thebot]").checked = true;
-    }
-
-    document.getElementById("claudeAuthRow").classList.toggle(
-      "on",
-      createForm.querySelector("input[name=harness]:checked").value === "claude"
-    );
+  function chosenBrain(){
+    var input = createForm.querySelector("input[name=brain]:checked");
+    return input ? input.value : "ollama";
   }
 
-  createForm.querySelectorAll("input[name=profile], input[name=harness]").forEach(function(input){
-    input.addEventListener("change", syncHarness);
+  async function loadModels(){
+    try{
+      var response = await fetch("/api/llm", {cache: "no-store"});
+      modelInfo = response.ok ? await response.json() : null;
+    }catch(e){
+      modelInfo = null;
+    }
+    syncBrain();
+  }
+
+  function providerInfo(p){
+    return (modelInfo && modelInfo.providers && modelInfo.providers[p]) || {};
+  }
+
+  function syncBrain(){
+    var p = chosenBrain();
+    var status = document.getElementById("brainStatus");
+    var setup = document.getElementById("brainSetup");
+    var hosted = p === "claude" || p === "azure";
+    var info = providerInfo(p);
+
+    if(!hosted){
+      status.hidden = true;
+      setup.hidden = true;
+      brainEditing = false;
+      return;
+    }
+
+    var configured = !!info.configured;
+    status.hidden = !configured || brainEditing;
+    setup.hidden = configured && !brainEditing;
+
+    if(configured){
+      document.getElementById("brainStatusText").textContent =
+        BRAIN_NAMES[p] + " is set up: " + info.model + (info.fast_model ? " (fast: " + info.fast_model + ")" : "") + ". " +
+        (info.vision
+          ? "It reads images, so TheBot shows it the screen and scanned pages."
+          : "It reads text only, so TheBot gives it the screen's element list and OCR of scanned pages.");
+    }
+
+    if(!setup.hidden){ fillSetup(p, info, configured); }
+  }
+
+  function fillSetup(p, info, configured){
+    var defaults = (modelInfo && modelInfo.defaults && modelInfo.defaults[p]) || {};
+    var azure = p === "azure";
+
+    document.getElementById("brainSetupIntro").textContent = azure
+      ? "Your Azure AI resource: its endpoint, a key, and the names of two chat deployments that read images and call tools."
+      : "An Anthropic API key (console.anthropic.com > API keys). Usage is billed to that account.";
+    document.getElementById("brainEndpointRow").hidden = !azure;
+    document.getElementById("brainModelLabel").textContent = azure ? "Deployment" : "Model";
+    document.getElementById("brainFastLabel").textContent = azure ? "Fast deployment" : "Fast model";
+
+    var key = document.getElementById("brainKey");
+    key.value = "";
+    key.placeholder = configured ? "Saved - leave empty to keep it" : (azure ? "Key 1 or Key 2" : "sk-ant-…");
+    document.getElementById("brainEndpoint").value = info.endpoint || "";
+    document.getElementById("brainModel").value = info.model || "";
+    document.getElementById("brainModel").placeholder = defaults.model || "";
+    document.getElementById("brainFast").value = info.fast_model || "";
+    document.getElementById("brainFast").placeholder = defaults.fast_model || "";
+    document.getElementById("brainForgetBtn").hidden = !configured;
+    document.getElementById("brainError").textContent = "";
+  }
+
+  document.getElementById("brainChangeBtn").addEventListener("click", function(){
+    brainEditing = true;
+    syncBrain();
+    document.getElementById("brainKey").focus();
   });
 
-  syncHarness();
+  async function saveBrain(){
+    var p = chosenBrain();
+    var btn = document.getElementById("brainSaveBtn");
+    var error = document.getElementById("brainError");
+
+    btn.disabled = true;
+    btn.textContent = "Checking…";
+    error.textContent = "";
+
+    try{
+      modelInfo = await post("/api/llm/settings", {
+        provider: p,
+        endpoint: document.getElementById("brainEndpoint").value.trim(),
+        key: document.getElementById("brainKey").value.trim(),
+        model: document.getElementById("brainModel").value.trim(),
+        fast_model: document.getElementById("brainFast").value.trim()
+      });
+      brainEditing = false;
+      toast(BRAIN_NAMES[p] + " is set up.");
+      syncBrain();
+      return true;
+    }catch(e){
+      error.textContent = e.message === "Request failed"
+        ? "Could not save. Keys can only be set up from this computer's own dashboard, not over the phone link."
+        : e.message;
+      return false;
+    }finally{
+      btn.disabled = false;
+      btn.textContent = "Check & save";
+    }
+  }
+
+  document.getElementById("brainSaveBtn").addEventListener("click", saveBrain);
+
+  document.getElementById("brainForgetBtn").addEventListener("click", async function(){
+    var p = chosenBrain();
+    if(!(await askConfirm(
+      "Remove " + BRAIN_NAMES[p] + "?",
+      "Its key is deleted from the control plane. Desktops that think with it stop answering until it is set up again.",
+      "Remove",
+      true
+    ))){ return; }
+
+    try{
+      modelInfo = await post("/api/llm/settings/forget", {provider: p});
+      brainEditing = false;
+      toast(BRAIN_NAMES[p] + " removed.");
+      syncBrain();
+    }catch(e){
+      toast(e.message, "error");
+    }
+  });
+
+  createForm.querySelectorAll("input[name=brain]").forEach(function(input){
+    input.addEventListener("change", function(){
+      brainEditing = false;
+      syncBrain();
+    });
+  });
+
+  loadModels();
 
   /* ---------------- copy host apps ---------------- */
 
@@ -1897,137 +2024,6 @@
     });
   }
 
-  /* ---------------- claude login ---------------- */
-
-  var claudeAuthLoggedIn = false;
-
-  async function loadClaudeAuthStatus(){
-    var text = document.getElementById("claudeAuthText");
-    var btn = document.getElementById("claudeAuthBtn");
-
-    try{
-      var response = await fetch("/api/claude-auth/status");
-      var status = await response.json();
-
-      claudeAuthLoggedIn = !!status.loggedIn;
-
-      if(claudeAuthLoggedIn){
-        text.textContent = "Signed in to Claude" + (status.email ? " as " + status.email : "") + ".";
-        btn.textContent = "Switch account";
-      }else{
-        text.textContent = "Not signed in to Claude yet.";
-        btn.textContent = "Log in to Claude";
-      }
-    }catch(e){
-      text.textContent = "Could not check Claude sign-in status.";
-    }
-  }
-
-  loadClaudeAuthStatus();
-
-  var claudeLoginDialog = document.getElementById("claudeLoginDialog");
-  var claudeLoginForm = document.getElementById("claudeLoginForm");
-  var claudeLoginUrl = document.getElementById("claudeLoginUrl");
-  var claudeLoginCopyBtn = document.getElementById("claudeLoginCopyBtn");
-  var claudeLoginCode = document.getElementById("claudeLoginCode");
-  var claudeLoginError = document.getElementById("claudeLoginError");
-  var claudeLoginSubmit = document.getElementById("claudeLoginSubmit");
-  var claudeLoginId = null;
-
-  /* Set when "Create desktop" itself triggers the login dialog (claude
-     harness picked, nobody signed in yet) rather than the user clicking
-     "Log in to Claude" on their own - a successful sign-in then finishes
-     the create instead of just closing the dialog. */
-  var createPendingClaudeLogin = false;
-
-  function showClaudeLoginError(message){
-    claudeLoginError.textContent = message;
-    claudeLoginError.classList.toggle("on", !!message);
-  }
-
-  /* Esc and the backdrop close a <dialog> without running a click handler,
-     so cancelling the in-progress container lives here - the one place a
-     close always passes through, whichever way it happened. */
-  claudeLoginDialog.addEventListener("close", function(){
-    var id = claudeLoginId;
-    claudeLoginId = null;
-    createPendingClaudeLogin = false;
-
-    if(id){
-      post("/api/claude-auth/login/cancel", {login_id: id}).catch(function(){});
-    }
-  });
-
-  document.getElementById("claudeAuthBtn").addEventListener("click", async function(){
-    var btn = this;
-    btn.disabled = true;
-
-    claudeLoginId = null;
-    claudeLoginUrl.textContent = "Getting a sign-in link…";
-    claudeLoginUrl.href = "#";
-    claudeLoginCopyBtn.disabled = true;
-    claudeLoginCopyBtn.dataset.copy = "";
-    claudeLoginCode.value = "";
-    showClaudeLoginError("");
-    claudeLoginDialog.showModal();
-
-    try{
-      var result = await post("/api/claude-auth/login/start", {});
-      claudeLoginId = result.loginId;
-      claudeLoginUrl.textContent = result.url;
-      claudeLoginUrl.href = result.url;
-      claudeLoginCopyBtn.disabled = false;
-      claudeLoginCopyBtn.dataset.copy = result.url;
-      claudeLoginCode.focus();
-    }catch(e){
-      showClaudeLoginError(e.message);
-    }finally{
-      btn.disabled = false;
-    }
-  });
-
-  document.querySelectorAll("[data-close-claude-login]").forEach(function(button){
-    button.addEventListener("click", function(){ claudeLoginDialog.close(); });
-  });
-
-  claudeLoginForm.addEventListener("submit", async function(event){
-    event.preventDefault();
-
-    if(!claudeLoginId){
-      showClaudeLoginError("The sign-in link isn't ready yet.");
-      return;
-    }
-
-    var code = claudeLoginCode.value.trim();
-    if(!code){ return; }
-
-    claudeLoginSubmit.disabled = true;
-    claudeLoginSubmit.textContent = "Signing in…";
-    showClaudeLoginError("");
-
-    try{
-      var result = await post("/api/claude-auth/login/code", {login_id: claudeLoginId, code: code});
-
-      var resumeCreate = createPendingClaudeLogin;
-      createPendingClaudeLogin = false;
-
-      claudeLoginId = null;
-      claudeLoginDialog.close();
-      toast("Signed in to Claude" + (result.email ? " as " + result.email : "") + ".");
-      claudeAuthLoggedIn = true;
-      loadClaudeAuthStatus();
-
-      if(resumeCreate){ await performCreate(); }
-    }catch(e){
-      showClaudeLoginError(e.message);
-      claudeLoginCode.value = "";
-      claudeLoginCode.focus();
-    }finally{
-      claudeLoginSubmit.disabled = false;
-      claudeLoginSubmit.textContent = "Sign in";
-    }
-  });
-
   function insertProvisioningCard(info){
     var grid = document.querySelector(".grid");
     if(!grid){ return null; }
@@ -2045,7 +2041,7 @@
     card.dataset.desktopId = info.id;
 
     var profileLabel = info.profile === "ai" ? "AI Developer" : (info.profile === "developer" ? "Developer" : "Basic");
-    var harnessLabel = info.harness === "claude" ? "Claude Code" : (info.harness === "thebot" ? "TheBot" : "Ollama");
+    var harnessLabel = "TheBot · " + ({claude: "Claude", azure: "Azure"}[info.brain] || "Ollama");
     var cpusLabel = info.cpus == 1 ? "1 core" : (info.cpus + " cores");
     var url = "/desktop/" + encodeURIComponent(info.id) + "/";
 
@@ -2148,7 +2144,7 @@
     busy(true);
 
     var profile = data.get("profile") || "basic";
-    var harness = data.get("harness") || "thebot";
+    var brain = data.get("brain") || "ollama";
     var cpus = parseInt(data.get("cpus") || "1", 10);
     var memoryMb = parseInt(data.get("memory_mb") || "2048", 10);
     var specialization = (data.get("specialization") || "").trim();
@@ -2167,7 +2163,7 @@
       id: sanitizedID,
       name: finalName,
       profile: profile,
-      harness: harness,
+      brain: brain,
       cpus: cpus,
       memoryMb: memoryMb,
       specialization: specialization,
@@ -2189,7 +2185,7 @@
       await post("/api/desktops/create", {
         name: sanitizedID,
         profile: profile,
-        harness: harness,
+        brain: brain,
         cpus: cpus,
         memory_mb: memoryMb,
         specialization: specialization,
@@ -2223,20 +2219,19 @@
   createForm.addEventListener("submit", async function(event){
     event.preventDefault();
 
-    var harness = createForm.querySelector("input[name=harness]:checked").value;
-
-    /* Claude opted in with nobody signed in to the shared session: prompt
-       for login right here instead of creating a desktop that comes up
-       unauthenticated. Re-check status first rather than trusting the
-       cached flag - it was only as fresh as the dialog's last open. */
-    if(harness === "claude"){
-      await loadClaudeAuthStatus();
-
-      if(!claudeAuthLoggedIn){
-        createPendingClaudeLogin = true;
-        document.getElementById("claudeAuthBtn").click();
+    /* A hosted model picked but not set up yet: the panel is open with its
+       fields, so a filled-in form is checked and saved first, and the
+       desktop is created only once that worked - never one that would fail
+       its first request. */
+    var brain = chosenBrain();
+    if((brain === "claude" || brain === "azure") && (!providerInfo(brain).configured || brainEditing)){
+      var filled = document.getElementById("brainKey").value.trim() || providerInfo(brain).configured;
+      if(!filled){
+        document.getElementById("brainError").textContent = "Add the API key first.";
+        document.getElementById("brainKey").focus();
         return;
       }
+      if(!(await saveBrain())){ return; }
     }
 
     await performCreate();
@@ -3027,6 +3022,51 @@
 
     event.preventDefault();
     openCreate();
+  });
+})();
+
+/* Restore a desktop's skills and memory from a backup (httpapi/restore.go). */
+(function(){
+  var picker = document.createElement("input");
+  picker.type = "file";
+  picker.accept = ".gz,.tgz,application/gzip";
+  picker.hidden = true;
+  document.body.appendChild(picker);
+  var target = null;
+
+  document.addEventListener("click", function(e){
+    var btn = e.target.closest("[data-restore]");
+    if (!btn) return;
+    target = btn.dataset.restore;
+    picker.value = "";
+    picker.click();
+  });
+
+  function send(file, from){
+    var url = "/api/desktops/restore?id=" + encodeURIComponent(target) + (from ? "&from=" + encodeURIComponent(from) : "");
+    return fetch(url, {method: "POST", body: file, headers: {"Content-Type": "application/gzip"}})
+      .then(function(r){ return r.text().then(function(t){ return {ok: r.ok, text: t}; }); });
+  }
+
+  picker.addEventListener("change", function(){
+    var file = picker.files && picker.files[0];
+    if (!file) return;
+    send(file).then(function(res){
+      // A backup of several desktops: ask which one's know-how to take.
+      var many = !res.ok && /several desktops \(([^)]*)\)/.exec(res.text);
+      if (many) {
+        var from = window.prompt("This backup holds several desktops: " + many[1] + ".\nWhose skills and memory should " + target + " take?");
+        return from ? send(file, from.trim()) : null;
+      }
+      return res;
+    }).then(function(res){
+      if (!res) return;
+      if (!res.ok) { Decurix.toast("Not restored: " + res.text.trim(), "error"); return; }
+      var d = JSON.parse(res.text);
+      var msg = "Restored " + d.restored.length + " file(s) from " + d.from + " into " + target + ".";
+      if (d.kept_existing.length) msg += " Kept " + d.kept_existing.length + " it already had.";
+      Decurix.toast(msg);
+    }).catch(function(){ Decurix.toast("Not restored: the control plane did not answer.", "error"); });
   });
 })();
 </script>

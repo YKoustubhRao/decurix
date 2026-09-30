@@ -34,6 +34,14 @@ AGENT_HARNESS = os.environ.get(
     "ollama"
 ).strip().lower()
 
+# The model TheBot reasons with (desktop.Brain on the control plane): "ollama"
+# (the shared local model), or a hosted one - "claude" or "azure" - reached
+# through the control plane's /api/llm proxy, which holds the key. Desktops
+# created before brains existed have none, which is the local model.
+BRAIN = os.environ.get("DECURIX_BRAIN", "ollama").strip().lower() or "ollama"
+BRAIN_MODEL = os.environ.get("DECURIX_BRAIN_MODEL", "").strip()
+HOSTED_BRAIN = BRAIN in ("claude", "azure")
+
 # Set only for a desktop spawned as another desktop's specialized child (see
 # httpapi.createDesktopHandler / desktop.Manager.Create) - "" for an ordinary,
 # standalone desktop.

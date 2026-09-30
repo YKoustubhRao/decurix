@@ -87,6 +87,7 @@ type createPersonaDesktopReq struct {
 	Name      string `json:"name"`
 	Profile   string `json:"profile"`
 	Harness   string `json:"harness"`
+	Brain     string `json:"brain"`
 	CPUs      int64  `json:"cpus"`
 	MemoryMB  int64  `json:"memory_mb"`
 }
@@ -120,10 +121,12 @@ func (s *Server) createPersonaDesktopHandler(w http.ResponseWriter, r *http.Requ
 		profile = "basic"
 	}
 
-	harness := strings.TrimSpace(req.Harness)
-	if harness == "" {
-		harness = desktop.HarnessTheBot
+	brain, err := s.desktopBrain(req.Harness, req.Brain)
+	if err != nil {
+		jsonStatusError(w, http.StatusBadRequest, err.Error())
+		return
 	}
+	harness := desktop.HarnessTheBot
 
 	cpus := req.CPUs
 	if cpus <= 0 {
@@ -135,13 +138,6 @@ func (s *Server) createPersonaDesktopHandler(w http.ResponseWriter, r *http.Requ
 		memoryMB = 4096
 	}
 
-	var claudeCredentialsJSON string
-	if harness == desktop.HarnessClaude {
-		if session, ok := s.ClaudeAuth.Get(); ok {
-			claudeCredentialsJSON = session.CredentialsJSON
-		}
-	}
-
 	if s.Desktops == nil {
 		jsonStatusError(w, http.StatusServiceUnavailable, "desktop manager unavailable")
 		return
@@ -151,9 +147,10 @@ func (s *Server) createPersonaDesktopHandler(w http.ResponseWriter, r *http.Requ
 		name,
 		profile,
 		harness,
+		brain,
 		cpus,
 		memoryMB,
-		claudeCredentialsJSON,
+		"",
 		p.Specialization,
 		"",
 		nil,
@@ -176,6 +173,7 @@ type deployTeamReq struct {
 	Prefix   string `json:"prefix"`
 	Profile  string `json:"profile"`
 	Harness  string `json:"harness"`
+	Brain    string `json:"brain"`
 	CPUs     int64  `json:"cpus"`
 	MemoryMB int64  `json:"memory_mb"`
 }
@@ -209,10 +207,12 @@ func (s *Server) deployTeamHandler(w http.ResponseWriter, r *http.Request) {
 		profile = "basic"
 	}
 
-	harness := strings.TrimSpace(req.Harness)
-	if harness == "" {
-		harness = desktop.HarnessTheBot
+	brain, err := s.desktopBrain(req.Harness, req.Brain)
+	if err != nil {
+		jsonStatusError(w, http.StatusBadRequest, err.Error())
+		return
 	}
+	harness := desktop.HarnessTheBot
 
 	cpus := req.CPUs
 	if cpus <= 0 {
@@ -222,13 +222,6 @@ func (s *Server) deployTeamHandler(w http.ResponseWriter, r *http.Request) {
 	memoryMB := req.MemoryMB
 	if memoryMB <= 0 {
 		memoryMB = 4096
-	}
-
-	var claudeCredentialsJSON string
-	if harness == desktop.HarnessClaude {
-		if session, ok := s.ClaudeAuth.Get(); ok {
-			claudeCredentialsJSON = session.CredentialsJSON
-		}
 	}
 
 	if s.Desktops == nil {
@@ -256,9 +249,10 @@ func (s *Server) deployTeamHandler(w http.ResponseWriter, r *http.Request) {
 			workerName,
 			profile,
 			harness,
+			brain,
 			cpus,
 			memoryMB,
-			claudeCredentialsJSON,
+			"",
 			p.Specialization,
 			parentID,
 			nil,

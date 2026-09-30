@@ -62,7 +62,7 @@ MAX_OVERVIEW_CHARS = 1600
 MAX_LOOP_BLOCK = 12
 
 SAME = re.compile(r"\b(same|constant|fixed|static|unchanged|never changes?|(does not|doesn'?t|do not|don'?t) change)\b", re.I)
-CHANGES = re.compile(r"(?<!not )(?<!n't )\b(chang(?:e|es|ing)|differ(?:s|ent)?|vari(?:es|able|ed))\b", re.I)
+CHANGES = re.compile(r"(?<!not )(?<!n't )\b(chang(?:e|es|ing)|differ(?:s|ent)?|vary|vari(?:es|able|ed))\b", re.I)
 SOMETIMES = re.compile(r"\b(sometimes?|occasionally|only if|only when|if (?:it|there)|depends|conditional|optional|maybe|not always)\b", re.I)
 ALWAYS = re.compile(r"(?<!not )\b(always|every time|each time|required|mandatory|part of)\b", re.I)
 KEEP = re.compile(r"\b(keep|try|as recorded|ok(?:ay)?|fine|go ahead)\b", re.I)
@@ -84,6 +84,9 @@ THROW_AWAY = re.compile(
     r"(?:don'?t|do not) save(?: it)?)\W*$", re.I)
 # The longest skill name a person can give, as build() keeps it.
 MAX_NAME = 80
+# The longest explanation of a task kept, and of what one step is for.
+MAX_EXPLANATION = 1500
+MAX_INTENT = 300
 
 CHOICES = {
     "variable": [("same", SAME), ("changes", CHANGES)],
@@ -399,6 +402,10 @@ def _merge(runs):
                 step["expect"] = _common_checks(step.get("expect") or [], seen.get("expect") or [])
                 step["consequential"] = step.get("consequential") or seen.get("consequential", False)
 
+                if step["kind"] == "upload":
+                    step["file_samples"] = (step.get("file_samples") or [step.get("files") or []]) + \
+                        (seen.get("file_samples") or [seen.get("files") or []])
+
                 if step["kind"] == "type":
                     step["samples"].extend(seen["samples"])
                     step["secret"] = step["secret"] or seen["secret"]
@@ -468,14 +475,20 @@ def _generalise(steps, demos):
             name = replay._param_name(label, used)
             step["param"] = name
             sample = step["files"][0] if step["files"] else "document.pdf"
+            # Asked about like a typed value (the grouped question): the file
+            # a run uploads usually comes with that run's documents (the next
+            # new joiner's offer letter), but may be the same every time.
             params.append({
                 "name": name,
                 "label": label,
-                "default": sample,
+                "default": None,
                 "example": sample,
-                "varies": True,
+                # Demonstrations that uploaded different files: it changes, as
+                # differing typed text does. One demonstration: asked.
+                "varies": True if len({tuple(f) for f in step.get("file_samples") or []}) > 1 else None,
                 "step": step["n"],
                 "constraint": None,
+                "file": True,
             })
             step["summary"] = replay._summary(step)
             continue
@@ -644,6 +657,8 @@ def _line(step):
         line += " [for each item]"
     if step.get("consequential"):
         line += " [stops for approval]"
+    if step.get("intent"):
+        line += f" - you said: {el._quote(step['intent'], 80)}"
 
     return line
 
@@ -685,6 +700,12 @@ def questions(skill):
 
     found = [_goal(skill)]
 
+    # What the model that studied the demonstration could not work out
+    # (study.py), one at a time, before the rule-based questions: its answers
+    # can settle those too (which values change, what a step is for).
+    for asked in (skill.get("understanding") or {}).get("questions") or []:
+        found.append(_question(f"study:{asked['id']}", "study", asked["text"]))
+
     starts = skill.get("starts")
     if starts:
         found.append(_start(starts))
@@ -708,6 +729,16 @@ def questions(skill):
                   and f"coordinates:{step['id']}" not in skill["answers"]]
     first_positional = positional[0]["id"] if positional else None
 
+    # Every typed value nobody has said changes or stays is asked about in
+    # one question too: a demonstration of keying a document into a system
+    # (a PO into an ERP, a new joiner into an HRMS) types ten fields, and ten
+    # questions in a row, each answered "changes", is what made teaching one
+    # tedious. Answers are still kept per step (`variable:<id>`).
+    undecided_values = [step for step in skill["steps"]
+                        if step["id"] not in in_loop and params.get(step.get("param"))
+                        and params[step["param"]]["varies"] is None]
+    first_value = undecided_values[0]["id"] if len(undecided_values) > 1 else None
+
     for step in skill["steps"]:
         if step["id"] in loop_at:
             found.append(_loop(skill, loop_at[step["id"]]))
@@ -715,7 +746,9 @@ def questions(skill):
             continue
 
         param = params.get(step.get("param"))
-        if param and param["varies"] is None:
+        if step["id"] == first_value:
+            found.append(_variables(skill, undecided_values, params))
+        elif param and param["varies"] is None and first_value is None:
             found.append(_variable(skill, step, param))
 
         if step.get("seen", skill["demos"]) < skill["demos"]:
@@ -740,6 +773,20 @@ def _question(qid, kind, text, step=None):
     return {"id": qid, "kind": kind, "step": step, "text": text, "default": CAUTIOUS.get(kind)}
 
 
+def understood_text(skill):
+    """What the model that studied a demonstration understood (study.py), for the person to check; '' when none."""
+
+    understanding = skill.get("understanding") or {}
+    if not understanding.get("summary"):
+        return ""
+    lines = [f"What I understood: {understanding['summary']}"]
+    if understanding.get("done_when"):
+        lines.append(f"It is done when: {understanding['done_when']}")
+    for rule in understanding.get("rules") or []:
+        lines.append(f"- {rule}")
+    return "\n".join(lines)
+
+
 def _goal(skill):
     sources = f" from {skill['demos']} demonstrations" if skill["demos"] > 1 else ""
     parts = [
@@ -760,8 +807,19 @@ def _goal(skill):
         parts.append("What differed between your demonstrations, so it changes each run: "
                      + ", ".join(f"{p['name']} ({p['label']})" for p in learned) + ".")
 
+    understood = understood_text(skill)
+    if understood:
+        parts.append(understood)
+        parts.append("A few questions before I try to do it myself. First: is that right? Correct anything I got "
+                     "wrong, and add whatever I should know - what it is for, what can be different next time, "
+                     "what to watch out for. Reply `yes` if it is right as it stands.")
+        return _question("goal", "goal", "\n".join(parts))
+
     parts.append("A few questions before I try to do it myself. First: when is this task finished - "
-                 "what should be on the screen, or true, at the end? A sentence is fine, or reply `skip`.")
+                 "what should be on the screen, or true, at the end? And if you like, explain the task or any step "
+                 "in your own words: a replay only has what you did, and what you meant is what helps when the next "
+                 "run's screen looks different - for example `step 6 clicks the first search result, whatever it "
+                 "is`. Write as much as you like, or reply `skip`.")
 
     return _question("goal", "goal", "\n".join(parts))
 
@@ -778,10 +836,119 @@ def _variable(skill, step, param):
     same = " (both times you typed the same)" if len(samples) > 1 else ""
     target = step.get("target") or {}
     where = f"{target['role']} {el._quote(target.get('name') or '', 50)}" if target.get("role") else "the focused field"
+    meaning = ((skill.get("understanding") or {}).get("inputs") or {}).get(param["name"])
+    if meaning:
+        same += f" ({el._quote(meaning, 120)})"
     text = (f"Step {step['n']}: you typed {el._quote(param['example'] or '', 60)} into {where}{same}. Is that the "
             "same every time, or does it change from run to run (a different customer, amount, ...)? "
             "Reply `same` or `changes`.")
     return _question(f"variable:{step['id']}", "variable", text, step["id"])
+
+
+def _variables(skill, steps, params):
+    """One question for every typed value whose changing or staying is not known yet."""
+
+    def where(step):
+        target = step.get("target") or {}
+        if target.get("role"):
+            return f"{target['role']} {el._quote(target.get('name') or '', 40)}"
+        return "the focused field"
+
+    understanding = skill.get("understanding") or {}
+
+    def given(step):
+        param = params[step["param"]]
+        if param.get("file"):
+            said = f"the file {el._quote(param['example'] or '', 60)} uploaded to {where(step)}"
+        else:
+            said = f"{el._quote(param['example'] or '', 50)} into {where(step)}"
+        meaning = (understanding.get("inputs") or {}).get(step["param"])
+        return f"{said} ({el._quote(meaning, 120)})" if meaning else said
+
+    listed = "; ".join(f"{i}) {given(s)}" for i, s in enumerate(steps, 1))
+    guess = understanding.get("varies") or {}
+    if guess and all(s["param"] in guess for s in steps):
+        changing = [str(i) for i, s in enumerate(steps, 1) if guess[s["param"]]]
+        listed += (". I think " + (" and ".join(changing) + (" change" if len(changing) > 1 else " changes")
+                                   if changing else "none of them change"))
+    text = (f"You gave {len(steps)} values: {listed}. Which of them change from run to run (a different "
+            "customer, amount, date, document number...)? Reply `all change` or `all same`, or name them - for "
+            f"example `all change except {len(steps)}`, or `1 and 2 change` (the others then stay as you typed them).")
+
+    question = _question("variables:" + "+".join(s["id"] for s in steps), "variables", text)
+    question["default"] = CAUTIOUS["variable"]
+    question["values"] = [{"id": s["id"], "param": s["param"]} for s in steps]
+    return question
+
+
+OPPOSITE = {"changes": "same", "same": "changes"}
+EXCEPT = re.compile(r"\b(?:except|but not|other than|apart from|besides)\b", re.I)
+
+
+def _variable_choices(question, text):
+    """
+    What a reply to the grouped values question decides for each step:
+    {step id: changes|same}, or None when it cannot be read. "all change
+    except 3" makes 3 the opposite; "1 and 4 change" makes the rest the
+    opposite; a bare verb decides every one.
+    """
+
+    count = len(question["values"])
+    parts = EXCEPT.split(text, maxsplit=1)
+    head, tail = parts[0], (parts[1] if len(parts) > 1 else "")
+
+    head_choice = _choose("variable", head)
+    head_numbers = _step_numbers(head)
+    tail_numbers = _step_numbers(tail) if tail else []
+
+    if head_choice is None or head_numbers is None or tail_numbers is None or (tail and not tail_numbers):
+        return None
+
+    named = {n: head_choice for n in head_numbers}
+    tail_choice = (_choose("variable", tail) if tail else None) or OPPOSITE[head_choice]
+    for n in tail_numbers:
+        if named.get(n, tail_choice) != tail_choice:
+            return None
+        named[n] = tail_choice
+
+    if any(n < 1 or n > count for n in named):
+        return None
+
+    rest = OPPOSITE[head_choice] if head_numbers else head_choice
+    return {item["id"]: named.get(i, rest) for i, item in enumerate(question["values"], 1)}
+
+
+def _answer_values(skill, question, text):
+    """The reply to the grouped values question, applied to each value it covers."""
+
+    qid = question["id"]
+    choices = _variable_choices(question, text)
+    note = ""
+
+    if choices is None:
+        tries = skill["unclear"][qid] = skill["unclear"].get(qid, 0) + 1
+        if tries < MAX_UNCLEAR:
+            return {"understood": False, "note": "I did not catch that - reply `all change`, `all same`, or for "
+                    f"example `all change except {len(question['values'])}`.", "decision": None}
+        choices = {item["id"]: question["default"] for item in question["values"]}
+        note = "I could not tell what you meant, so I will ask for every one of those values on each run."
+        text = f"(assumed {question['default']})"
+
+    for step_id, choice in choices.items():
+        if _step_by_id(skill, step_id) is None:
+            continue
+        _apply(skill, {"kind": "variable", "step": step_id, "id": f"variable:{step_id}"}, choice)
+        skill["answers"][f"variable:{step_id}"] = choice
+
+    skill["answers"][qid] = text[:300]
+
+    if not note:
+        stays = [i for i, item in enumerate(question["values"], 1) if choices.get(item["id"]) == "same"]
+        changes = len(question["values"]) - len(stays)
+        note = (f"Got it: {changes} change each run" + (f", {', '.join(map(str, stays))} stay as typed" if stays else "")
+                + ".")
+
+    return {"understood": True, "note": note, "decision": None}
 
 
 def _loop(skill, loop):
@@ -906,7 +1073,10 @@ def _confirm(skill):
     if needed:
         parts.append("Each run I need: " + ", ".join(f"{p['name']} ({p['label']})" for p in needed) + ".")
 
-    if skill.get("done_when"):
+    understood = understood_text(skill)
+    if understood:
+        parts.append("\n" + understood + "\n")
+    elif skill.get("done_when"):
         parts.append(f"It is finished when: {el._quote(skill['done_when'], 200)}.")
 
     if skill.get("named"):
@@ -942,12 +1112,24 @@ def answer(skill, question, reply):
     text = (reply or "").strip()
 
     if kind == "goal":
-        skill["done_when"] = None if NOTHING.match(text) else text[:300]
-        skill["answers"][qid] = text[:300]
+        if skill.get("understanding", {}).get("summary") and (YES.match(text) and len(text.split()) <= 3):
+            # "yes" to what the model understood: nothing of the person's own
+            # to keep as their explanation.
+            skill["answers"]["goal"] = text[:300]
+            return {"understood": True, "note": "", "decision": None}
+        return _answer_goal(skill, text)
+
+    if kind == "study":
+        # Whatever the person says is the answer, "skip" included; skill_task
+        # hands it to the model to fold in (study.absorb).
+        skill["answers"][qid] = text[:1000] or "skip"
         return {"understood": True, "note": "", "decision": None}
 
     if question.get("steps"):
         return _answer_positional(skill, question, text)
+
+    if question.get("values"):
+        return _answer_values(skill, question, text)
 
     # Anything but a yes or a no is the name to save it as; a reply with
     # nothing to name it by is unclear, like any other.
@@ -977,6 +1159,57 @@ def answer(skill, question, reply):
         skill["unclear"].pop(qid, None)
 
     return {"understood": True, "note": note, "decision": decision}
+
+
+# A step a person's explanation is about: "step 6", "6th step", "the last step".
+STEP_MENTION = re.compile(r"\bsteps?\s*#?\s*(\d+)\b|\b(\d+)(?:st|nd|rd|th)\s+step\b|\b(last|final)\s+step\b", re.I)
+PIECES = re.compile(r"(?:\n+|;|(?<=[.!?])\s+)")
+
+
+def _answer_goal(skill, text):
+    """
+    The first question's reply: when the task is finished, and whatever the
+    person explained in their own words. It is kept whole as the skill's
+    `explanation`; each part that names a step ("step 6 clicks the first
+    result") goes on that step as its `intent` - which a run hands to whoever
+    has to find that step's target again, the engine or the person - and the
+    rest is what "finished" means (`done_when`).
+    """
+
+    skill["answers"]["goal"] = text[:300]
+    for step in skill["steps"]:
+        step.pop("intent", None)
+
+    if not text or NOTHING.match(text):
+        skill["done_when"] = skill["explanation"] = None
+        return {"understood": True, "note": "", "decision": None}
+
+    text = text[:MAX_EXPLANATION]
+    skill["explanation"] = text
+
+    by_n = {step["n"]: step for step in skill["steps"]}
+    attached, rest = [], []
+    for piece in (p.strip() for p in PIECES.split(text)):
+        if not piece:
+            continue
+        hits = []
+        for match in STEP_MENTION.finditer(piece):
+            n = skill["steps"][-1]["n"] if match.group(3) and skill["steps"] else int(match.group(1) or match.group(2))
+            if n in by_n and n not in hits:
+                hits.append(n)
+        for n in hits:
+            step = by_n[n]
+            step["intent"] = ((step["intent"] + " ") if step.get("intent") else "") + piece[:MAX_INTENT]
+            attached.append(n)
+        if not hits:
+            rest.append(piece)
+
+    skill["done_when"] = " ".join(rest)[:300] or None
+    note = ""
+    if attached:
+        numbers = ", ".join(str(n) for n in dict.fromkeys(attached))
+        note = f"Noted what you said about step{'s' if len(set(attached)) > 1 else ''} {numbers} - I will go by it when the screen looks different."
+    return {"understood": True, "note": note, "decision": None}
 
 
 def rename(skill, given):

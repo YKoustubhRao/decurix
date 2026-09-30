@@ -36,8 +36,10 @@ func NewOpenAI(apiKey, embedModel string) *OpenAIProvider {
 func (o *OpenAIProvider) Name() string { return "openai" }
 
 type openaiMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role string `json:"role"`
+	// Content is a string, or a list of text and image_url parts when the
+	// message carries images.
+	Content any `json:"content"`
 }
 
 type openaiChatRequest struct {
@@ -74,6 +76,13 @@ func (o *OpenAIProvider) Chat(ctx context.Context, model string, messages []Mess
 	msgs := make([]openaiMessage, len(messages))
 	for i, m := range messages {
 		msgs[i] = openaiMessage{Role: m.Role, Content: m.Content}
+		if len(m.Images) > 0 {
+			parts := []map[string]any{{"type": "text", "text": m.Content}}
+			for _, img := range base64All(m.Images) {
+				parts = append(parts, map[string]any{"type": "image_url", "image_url": map[string]string{"url": "data:image/png;base64," + img}})
+			}
+			msgs[i].Content = parts
+		}
 	}
 
 	body, err := json.Marshal(openaiChatRequest{

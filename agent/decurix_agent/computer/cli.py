@@ -19,6 +19,12 @@ from decurix_agent.computer.errors import ComputerError
 # a screenshot, and pretending otherwise would be the fastest way to make it
 # click the wrong thing.
 #
+# An engine whose model CAN see asks for the screen too: with
+# DECURIX_GUI_SCREENSHOT set (TheBot's operator sets it for a vision brain),
+# every command that looks at or acts on the screen leaves a PNG of the screen
+# as it ended up there, shrunk by DECURIX_GUI_SCREENSHOT_SCALE, for the engine
+# to attach to its next turn. The text is printed either way.
+#
 # Exit codes are part of the contract, and harnesses read them:
 #   0 done   1 could not do it   3 NEEDS_APPROVAL (nothing happened)   4 verify failed
 # ============================================================
@@ -29,6 +35,83 @@ EXIT_NEEDS_APPROVAL = approval.EXIT_NEEDS_APPROVAL
 EXIT_VERIFY_FAILED = 4
 
 TEXT_BUDGET = int(os.environ.get("DECURIX_GUI_TEXT_CHARS", "3500"))
+
+# The commands that look at or act on the screen: after these, a vision
+# engine is shown the screen (save_screenshot).
+SCREEN_COMMANDS = {
+    "observe", "click", "double-click", "right-click", "type", "key", "scroll",
+    "select", "open", "upload", "drag", "verify", "replay", "do",
+}
+
+
+def _look(skill, n):
+    """
+    `gui skill NAME --look N`: the screen the person did step N on, left where a
+    vision engine is shown a command's picture (DECURIX_GUI_SCREENSHOT) - so a
+    model doing a taught task can see what a step recorded as a point on the
+    screen was pressing, instead of guessing from coordinates.
+    """
+
+    from decurix_agent.computer import evidence
+
+    step = next((s for s in skill["steps"] if s["n"] == n), None)
+    if step is None:
+        raise ComputerError(f"{skill['name']} has steps 1 to {len(skill['steps'])}, not {n}.")
+
+    png = evidence.step_picture(step)
+    if png is None:
+        raise ComputerError(f"the recording step {n} came from is not on this desktop any more, so there is no picture of it.")
+
+    print(f"Step {n} of {skill['name']}: {step.get('summary')}.")
+    if step.get("intent"):
+        print(f"The person said: {step['intent']}")
+    if step.get("point"):
+        print(f"The red ring marks where the person pressed ({step['point'][0]},{step['point'][1]}).")
+    print("The picture with this result is the RECORDING's screen before that step, not the screen now - "
+          "run gui observe to see the screen now.")
+
+    path = os.environ.get("DECURIX_GUI_SCREENSHOT", "").strip()
+    if path:
+        try:
+            tmp = path + ".part"
+            with open(tmp, "wb") as f:
+                f.write(png)
+            os.replace(tmp, path)
+        except OSError as exc:
+            print(f"(The picture could not be attached: {exc})")
+    else:
+        print("(This engine is not shown pictures; the step's description above is all there is.)")
+    return EXIT_OK
+
+
+def save_screenshot(argv):
+    """
+    Leave the screen where DECURIX_GUI_SCREENSHOT says, after a screen command.
+
+    Taken after the command, whether it worked or not: a click that "could
+    not find e12" is exactly when seeing the screen helps. Never raises -
+    the picture is extra, the command's own result is what counts.
+    """
+
+    path = os.environ.get("DECURIX_GUI_SCREENSHOT", "").strip()
+    if not path or not argv or argv[0] not in SCREEN_COMMANDS:
+        return
+
+    try:
+        scale = max(1, int(os.environ.get("DECURIX_GUI_SCREENSHOT_SCALE", "1")))
+    except ValueError:
+        scale = 1
+
+    try:
+        from decurix_agent.computer import screen
+
+        data = screen.grab().png(scale=scale)
+        tmp = path + ".part"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+    except Exception as exc:
+        logging_utils.log(f"gui: could not save the screenshot: {exc}")
 
 USAGE = """gui - see and use this desktop's screen
 
@@ -52,8 +135,13 @@ USAGE = """gui - see and use this desktop's screen
 
   gui skills [WORDS]             tasks this desktop was taught, best match first
   gui skill NAME                 one skill's steps and what it needs
+  gui skill NAME --look N        the screen the person did step N on (the spot
+                                 they pressed ringed), as this command's picture
   gui do NAME [--param NAME=VALUE]... [--from N]
                                  do a taught task, with no model
+
+  gui ask SERVICE "QUESTION"     put one question to chatgpt, google, duckduckgo,
+                                 wikipedia or youtube and print its answer
 
 TARGET is a ref from observe (e12), a role and name ('button "Save"'),
 a name ("Save"), or screen coordinates (640,360) as a last resort.
@@ -247,11 +335,16 @@ def build_parser():
 
     described = sub.add_parser("skill", add_help=False)
     described.add_argument("name")
+    described.add_argument("--look", type=int, default=None)
 
     doer = sub.add_parser("do", add_help=False)
     doer.add_argument("name")
     doer.add_argument("--param", action="append", default=[])
     doer.add_argument("--from", dest="start", type=int, default=1)
+
+    asker = sub.add_parser("ask", add_help=False)
+    asker.add_argument("service")
+    asker.add_argument("words", nargs="+")
 
     return parser
 
@@ -373,6 +466,24 @@ def run(argv):
         _, program = _load_program(args.session)
         return _print_replay(replay.run(program, params=_params(args.param), start=args.start))
 
+    if command == "ask":
+        # The same reader the `chatgpt "..."` shortcut uses (ask_task.py),
+        # for an engine to call once per question it decides to ask.
+        from decurix_agent import ask_task
+
+        service = ask_task.service_named(args.service)
+        question = " ".join(" ".join(args.words).split())
+        if service is None or not question:
+            raise ComputerError("gui ask SERVICE \"QUESTION\": SERVICE is chatgpt, google, duckduckgo, "
+                                "wikipedia or youtube, and one question - run it again for each question.")
+        reply, kind = ask_task._ask(service, question)
+        # What the service answered, kept as evidence of this task for the
+        # check before it is reported done (evidence.observed).
+        from decurix_agent.computer import evidence
+        evidence.note(f"{service['name']} was asked {question!r}; " + reply)
+        print(reply)
+        return EXIT_OK if kind == "final" else EXIT_ERROR
+
     if command == "skills":
         found = skills.search(" ".join(args.words))
         if not found:
@@ -389,6 +500,9 @@ def run(argv):
             names = ", ".join(s["name"] for s in candidates)
             raise ComputerError((f"more than one skill fits {args.name!r}: {names}. Use its exact name."
                                  if candidates else f"there is no skill {args.name!r} here. Run `gui skills` to list them."))
+
+        if command == "skill" and args.look is not None:
+            return _look(skill, args.look)
 
         if command == "skill":
             print(skill_engine.render_text(skill, budget=TEXT_BUDGET))
@@ -495,6 +609,7 @@ def main(argv=None):
         print(f"gui: internal error ({type(exc).__name__}: {exc}); details in /tmp/decurix-gui.log")
         code = EXIT_ERROR
     finally:
+        save_screenshot(sys.argv[1:] if argv is None else argv)
         # A short-lived command: the audit step it queued has to leave before
         # the process does.
         progress.flush()

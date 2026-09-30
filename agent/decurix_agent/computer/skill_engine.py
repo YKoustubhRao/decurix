@@ -1,6 +1,10 @@
+import json
+
+from decurix_agent import llm_client, task_context
 from decurix_agent.computer import escalation, core, learning, replay, skills
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
+from decurix_agent.logging_utils import log
 
 
 # ============================================================
@@ -25,8 +29,14 @@ def summary_line(skill):
     """One line for a skill in a list."""
 
     needs = ", ".join(p["name"] for p in skills.required(skill))
+    said = skills.explanation(skill)
+    summary = (skill.get("understanding") or {}).get("summary")
+    where = ", ".join(skills.places(skill))
     return (f"{skill['name']} {el._quote(skill.get('title') or '', 70)} - {len(skill['steps'])} steps, run {skill.get('runs', 0)} times"
-            + (f"; needs {needs}" if needs else ""))
+            + (f"; works in {where}" if where else "")
+            + (f"; needs {needs}" if needs else "")
+            + (f"; what it is: {el._quote(summary, 200)}" if summary else "")
+            + (f"; the person who taught it said: {el._quote(said, 160)}" if said else ""))
 
 
 def render_text(skill, budget=3500):
@@ -35,8 +45,21 @@ def render_text(skill, budget=3500):
     lines = [f"Skill {skill['name']} {el._quote(skill.get('title') or '', 80)}: {len(skill['steps'])} steps, "
              f"learned from {skill.get('demos', 1)} demonstration(s), run {skill.get('runs', 0)} times."]
 
-    if skill.get("done_when"):
-        lines.append("It is finished when: " + el._quote(skill["done_when"], 240))
+    where = skills.places(skill)
+    if where:
+        lines.append(f"Works in: {', '.join(where)} - it does its task there and nowhere else; a request "
+                     "for the same kind of work in another app or site is not this skill.")
+
+    said = skills.explanation(skill)
+    if said:
+        lines.append("The person who taught it said: " + el._quote(said, 600)
+                     + " - that is how they want this task done; follow it.")
+
+    understood = learning.understood_text(skill)
+    if understood:
+        lines.append(understood)
+    for correction in skill.get("corrections") or []:
+        lines.append(f"A correction after an earlier run: {correction['text']}")
 
     needed = skills.required(skill)
     if needed:
@@ -47,8 +70,14 @@ def render_text(skill, budget=3500):
     if gated:
         lines.append(f"{gated} step(s) stop for human approval every run.")
 
-    args = "".join(f' --param {p["name"]}="..."' for p in needed)
+    args = "".join(f' --param {p["name"]}="' + ("ITEM 1; ITEM 2; ..." if p.get("list") else "...") + '"'
+                   for p in needed)
     footer = f"Run it with no model: gui do {skill['name']}{args} [--from N]"
+    if any(p.get("list") for p in needed):
+        # Found live: an engine read a two-line PO and ran the skill with the
+        # first line only, twice. A list is every item, in one run.
+        footer += ("\nA list value is every item of the document, in its order, all lists the same length - "
+                   "one run enters them all; never give only the first item.")
 
     lines.append(learning.overview(skill, budget=max(200, budget - sum(len(x) + 1 for x in lines) - len(footer) - 20)))
     lines.append(footer)
@@ -72,6 +101,43 @@ def _refusal(skill, reason, missing=()):
     }
 
 
+FITS_SYSTEM = (
+    "You decide whether a taught procedure can do a request. The procedure was demonstrated in one app or "
+    "site (where it works) and replays clicks there. The same kind of work asked for in a DIFFERENT app, "
+    "site or system (another ERP, another web app, one the request names or says is open) is not this "
+    "procedure's to do. Reply with JSON only: {\"same_system\": true|false, \"requested_system\": \"<the "
+    "app or site the request is for, or empty>\"}. When the request names no system, it is the same."
+)
+
+
+def other_system(skill, request):
+    """
+    The app or site the request is for, when that is not where the skill works;
+    "" when it is, when it cannot be told, or with no hosted model to ask.
+    Found live: asked to enter a purchase order "in our ERP - it is Odoo", the
+    engine looked up the skills for "customer po" and ran the one taught in a
+    local sales app, which opened that app over the Odoo tab and saved the
+    order there - twice, after being told in words where the skill works.
+    """
+
+    request = (request or "").strip()
+    where = skills.places(skill)
+    if not request or not where or not llm_client.available():
+        return ""
+    prompt = (f"Procedure: {skill.get('title') or skill['name']}\nWorks in: {', '.join(where)}\n"
+              f"What it does: {(skills.explanation(skill) or skill.get('goal') or '')[:400]}\n\nRequest:\n{request[:1500]}")
+    try:
+        message, _ = llm_client.chat([{"role": "system", "content": FITS_SYSTEM}, {"role": "user", "content": prompt}],
+                                     max_tokens=200, response_format={"type": "json_object"})
+        answer = json.loads(message.get("content") or "{}")
+    except (llm_client.LLMError, ValueError) as exc:
+        log(f"skill_engine: could not tell which system {skill['name']} is for: {exc}")
+        return ""
+    if answer.get("same_system") is False:
+        return str(answer.get("requested_system") or "another app").strip()[:80] or "another app"
+    return ""
+
+
 def run(skill, params=None, start=1):
     """
     Run a ready skill with no model and say how it ended, in replay.run's shape.
@@ -82,6 +148,12 @@ def run(skill, params=None, start=1):
 
     if skill.get("status") != skills.READY:
         return _refusal(skill, "it was never finished being taught - a person confirms a skill in the chat with /learn")
+
+    elsewhere = other_system(skill, task_context.current_request())
+    if elsewhere:
+        return _refusal(skill, f"this request is for {elsewhere}, and the skill works in "
+                               f"{', '.join(skills.places(skill)) or 'another app'} - do the task in {elsewhere} with gui "
+                               "instead (the skill's steps show what the work involves)")
 
     values = skills.initial_values(skill, params)
 

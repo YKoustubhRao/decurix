@@ -1,3 +1,4 @@
+import os
 import time
 
 
@@ -37,6 +38,21 @@ import time
 
 HISTORY = 5
 RUN_HISTORY = 10
+
+# How many runs in a row must succeed - checked, not assumed, and with no
+# person stepping in - before a skill is run as a replay with the model only
+# on call. Until then the model does the task with the skill as its guide
+# (skill_task._by_model): a worker still learning its range of tasks leans on
+# the brain, and leans on it less once the task has shown it runs smoothly.
+# One failure, or a run a person had to rescue, and it is back to learning.
+# 0 trusts every skill from the start: replayed, the model only on call (what
+# a bench of the replay itself wants).
+try:
+    TRUST_AFTER = max(0, int(os.environ.get("DECURIX_SKILL_TRUST_RUNS", "3")))
+except ValueError:
+    TRUST_AFTER = 3
+
+APPRENTICE, TRUSTED = "apprentice", "trusted"
 ALIAS_LIMIT = 5
 PROMOTE_AFTER = 2
 FRAGILE_AT = 3
@@ -126,6 +142,39 @@ def commit(skill, ladder, outcome, success, asked=None):
     return learned
 
 
+def note_verdict(skill, mode, ok, checked_by=None, helped=False, why=""):
+    """
+    Record how one run of a skill ended, for stage(): `mode` "model" (the
+    engine did it, guided by the skill) or "replay"; `ok` only for a success
+    that was checked - by the screen (`checked_by` "screen"), the model looking
+    at it ("model") or a person ("person"); `helped` when a person had to step
+    in. The caller saves.
+    """
+
+    experience = skill.setdefault("experience", {"runs": [], "steps": {}})
+    experience["verdicts"] = (experience.get("verdicts", []) + [{
+        "at": int(time.time()), "mode": mode, "ok": bool(ok), "checked_by": checked_by,
+        "helped": bool(helped), "why": (why or "")[:300],
+    }])[-RUN_HISTORY:]
+
+
+def clean_streak(skill):
+    """How many runs in a row, most recent first, succeeded, were checked and needed no person."""
+
+    streak = 0
+    for verdict in reversed((skill.get("experience") or {}).get("verdicts") or []):
+        if not (verdict.get("ok") and verdict.get("checked_by") and not verdict.get("helped")):
+            break
+        streak += 1
+    return streak
+
+
+def stage(skill):
+    """APPRENTICE while the skill has not yet run TRUST_AFTER times in a row cleanly, TRUSTED after."""
+
+    return TRUSTED if clean_streak(skill) >= TRUST_AFTER else APPRENTICE
+
+
 def health(skill):
     """
     How well a skill holds up: {"fragile": [{"n", "summary", "needed", "of"}],
@@ -148,7 +197,8 @@ def health(skill):
         (fragile if needed >= FRAGILE_AT else drifting).append(entry)
 
     return {"fragile": sorted(fragile, key=lambda e: e["n"]), "drifting": sorted(drifting, key=lambda e: e["n"]),
-            "recent": [r["outcome"] for r in experience.get("runs") or []]}
+            "recent": [r["outcome"] for r in experience.get("runs") or []],
+            "stage": stage(skill), "clean_runs": clean_streak(skill), "trust_after": TRUST_AFTER}
 
 
 def advice(skill):
