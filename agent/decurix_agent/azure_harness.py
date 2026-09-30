@@ -34,7 +34,7 @@ import os
 import time
 from pathlib import Path
 
-from decurix_agent import config, llm_client, progress, state, task_context, usage
+from decurix_agent import config, guidance, llm_client, progress, state, task_context, usage
 from decurix_agent.commands import dangerous_reason, run_command
 from decurix_agent.computer import approval
 from decurix_agent.identity import get_identity_context
@@ -538,8 +538,9 @@ def _procedures(task):
 
     for skill in chosen:
         lines.append("- " + skill_engine.summary_line(skill))
-        if skill.get("done_when"):
-            lines.append(f"    finished when: {skill['done_when'][:200]}")
+        said = skills.explanation(skill)
+        if said:
+            lines.append(f"    the person who taught it said (follow it): {said[:600]}")
         for param in skills.required(skill):
             kind = "a list, one per item" if param.get("list") else "one value"
             lines.append(f"    {param['name']}: typed into {param.get('label') or param['name']} ({kind}); "
@@ -564,12 +565,17 @@ def _procedures(task):
 
 def _system_message(task=""):
     memory = get_memory_context()
-    return SYSTEM_PROMPT.format(
+    prompt = SYSTEM_PROMPT.format(
         work_dir=config.WORK_DIR,
         identity=get_identity_context(f"hosted model via the control plane ({ENGINE})"),
         memory=("Notes this desktop has been taught (use them):\n" + memory) if memory else "",
         procedures=_procedures(task),
     )
+    # A taught task this request is (skill_task._by_model): its procedure,
+    # this run's values and how to look at the demonstration, in the
+    # engine's own shell terms (`gui skill NAME --look N` through run_shell).
+    guided = guidance.text()
+    return f"{prompt}\n\n{guided}" if guided else prompt
 
 
 def _step(messages, tools):

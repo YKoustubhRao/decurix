@@ -3,7 +3,7 @@ import threading
 import time
 import traceback
 
-from decurix_agent import ask_task, config, progress, record_task, replay_task, skill_task, state, task_context, usage
+from decurix_agent import ask_task, config, guidance, progress, record_task, replay_task, skill_task, state, task_context, usage
 from decurix_agent.computer import approval
 from decurix_agent.harness import continue_after_query, perform_task
 from decurix_agent.logging_utils import log
@@ -376,6 +376,7 @@ def _pass():
             approval.reset()
         except OSError as exc:
             log(f"Could not clear on-screen approvals: {exc}")
+        guidance.end()
 
         # "/replay <recording>" runs a recording, "/record <task>"
         # records a person doing it, "/learn <recording>" teaches a

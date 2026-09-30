@@ -107,3 +107,31 @@ func TestTriageSendsOnlyRealPageWorkToTheBrowser(t *testing.T) {
 		}
 	}
 }
+
+func TestTriageSendsAWebAppsQuestionsToTheOperator(t *testing.T) {
+	// Found live: answered by the chat skill from the model's own knowledge.
+	for _, p := range []string{
+		`chatgpt "what is 3+3?", "what colour is the sky?"`,
+		`ChatGPT: who is jesus`,
+		`ask chatgpt what can you do`,
+		`search google for pizza near me`,
+		`google "best laptop"`,
+	} {
+		if got := Triage(p); got.Kind != RouteOperate {
+			t.Errorf("Triage(%q) = %v (%s), want operate", p, got.Kind, got.Reason)
+		}
+	}
+	for _, p := range []string{"what does google say about x?", "is chatgpt down?", "who founded google?"} {
+		if got := Triage(p); got.Reason == "something to ask a web app - the operator uses it with gui ask" {
+			t.Errorf("Triage(%q) took it for a web app's question", p)
+		}
+	}
+}
+
+func TestTriageSendsATaughtTaskToTheOperator(t *testing.T) {
+	// Found live: "a question - answering directly", by a skill with no tools.
+	p := `Do the task you were taught, "Ask ChatGPT" (skill ask-chatgpt) with typed_text="what is 2+5?".`
+	if got := Triage(p); got.Kind != RouteOperate {
+		t.Fatalf("Triage(%q) = %v (%s), want operate", p, got.Kind, got.Reason)
+	}
+}

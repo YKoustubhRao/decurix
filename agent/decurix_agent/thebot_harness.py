@@ -5,7 +5,7 @@ import time
 import urllib.error
 import urllib.request
 
-from decurix_agent import config, progress, state, usage
+from decurix_agent import config, guidance, progress, state, usage
 from decurix_agent.computer import approval
 from decurix_agent.identity import get_identity_context
 from decurix_agent.logging_utils import log
@@ -268,12 +268,68 @@ def _build_context(extra=""):
             "Persistent worker memory for this desktop:\n\n" + memory_context
         )
 
+    taught = taught_context()
+    if taught:
+        parts.append(taught)
+
+    # A taught task this request is (skill_task._by_model): the procedure the
+    # model is to follow, this run's values, how to look at the demonstration.
+    guided = guidance.text()
+    if guided:
+        parts.append(guided)
+
     parts.append(SAFETY_PREAMBLE)
 
     if extra:
         parts.append(extra)
 
     return "\n\n".join(parts)
+
+
+# How many taught skills the standing context lists. In name order, never
+# ranked by the request: the context is part of soul's system frame, and a
+# frame that changed with every request would cost a local brain its prompt
+# cache.
+MAX_TAUGHT_IN_CONTEXT = 8
+
+WEB_ASK_HINT = (
+    "To put one question to ChatGPT, Google, DuckDuckGo, Wikipedia or YouTube and read "
+    "its answer, run: gui ask chatgpt \"QUESTION\" (or google/duckduckgo/wikipedia/youtube). "
+    "It opens the service in the desktop's browser and prints what it answered; "
+    "for several questions, run it once per question."
+)
+
+
+def taught_context():
+    """
+    The skills a person taught this desktop, each with what they said about
+    it in their own words, for soul's system frame. Found live: a person
+    taught "query them one by one" and the model never saw it - worker memory
+    had only the skill's name and values, and the words were filed as what
+    "finished" looks like. Read from the skills themselves every task, so a
+    skill taught before this is covered too.
+    """
+
+    from decurix_agent.computer import skill_engine, skills
+
+    try:
+        ready = sorted(skills.search("", limit=100), key=lambda s: s["name"])[:MAX_TAUGHT_IN_CONTEXT]
+    except (OSError, ValueError) as exc:
+        log(f"TheBot: could not list taught skills: {exc}")
+        ready = []
+
+    lines = [
+        "Tasks a person taught on this desktop by demonstration. When a request is one of "
+        "these, or like one, do it the way the person said - their words are how they want it "
+        "done, even when the request is worded differently. `gui skill NAME` shows one's steps, "
+        "`gui do NAME --param name=value` runs it as recorded.",
+    ]
+    lines += ["- " + skill_engine.summary_line(skill) for skill in ready]
+    if not ready:
+        lines = []
+
+    lines.append(WEB_ASK_HINT)
+    return "\n".join(lines)
 
 
 def _answer_context(asked, reply):

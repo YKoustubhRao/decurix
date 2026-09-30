@@ -1148,7 +1148,11 @@ def navigate(url, new_tab=False):
 
     if new_tab:
         try:
-            target = _get("/json/new?" + urllib.parse.quote(url, safe=":/?&=#%"), method="PUT", timeout=10)
+            # The whole URL is escaped, % included: DevTools decodes this query
+            # once, and a URL's own escapes left as they were came out decoded -
+            # found live, `chatgpt.com/?q=what%20is%207%2B8` opened as
+            # `?q=what%20is%207+8`, and ChatGPT was asked "what is 7 8?".
+            target = _get("/json/new?" + urllib.parse.quote(url, safe=""), method="PUT", timeout=10)
         except (OSError, ValueError) as exc:
             raise ComputerError(f"could not open a new tab: {exc}")
         page = Page(target)

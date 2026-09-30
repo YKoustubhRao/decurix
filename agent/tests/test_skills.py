@@ -406,7 +406,7 @@ class TeachingBase(unittest.TestCase):
             mock.patch.object(skill_task, "remember", lambda title, summary, category="workflow": self.remembered.append((title, summary, category))),
             mock.patch.object(skill_task, "_remember_async", lambda skill: skill_task._remember(skill)),
             mock.patch.object(skill_task, "ask_for_query", lambda text, kind="query", engine=None: self.asked.append((text, kind))),
-            mock.patch.object(skill_task, "write_final_reply", lambda text, kind="final", engine=None: self.finals.append((text, kind))),
+            mock.patch.object(skill_task, "write_final_reply", lambda text, kind="final", engine=None, **kw: self.finals.append((text, kind))),
             mock.patch.object(skill_task.usage, "add"),
         ]
         for patch in patches:
@@ -418,6 +418,12 @@ class TeachingBase(unittest.TestCase):
          replay.FIND_SECONDS, replay.EXPECT_SECONDS, replay.POLL_SECONDS, state.current_task) = self.saved
         state.paused_skill = None
         self.tmp.cleanup()
+
+    def confirm_done(self):
+        """An unchecked run is not a success until someone says so (verify.py): say that it is done."""
+
+        self.assertIn("confirm this is done", self.asked[-1][0])
+        skill_task.resume("done")
 
     def record(self, session=SESSION, customer="Acme", made=None):
         meta, events = made or demo(session, customer)
@@ -548,7 +554,7 @@ class Teaching(TeachingBase):
 
         skill_task.resume("done")
         self.assertEqual(self.finals[-1][1], "final", self.finals[-1][0])
-        self.assertIn("customer is in the list", self.finals[-1][0])
+        self.assertIn("every step's expected result was on the screen", self.finals[-1][0])
         self.assertEqual(skills.load("add-a-customer")["runs"], 1)
 
     def test_a_value_given_in_the_request_is_not_asked_for(self):
@@ -613,6 +619,7 @@ class Teaching(TeachingBase):
         self.assertIn("`retry`", self.asked[-1][0])
 
         skill_task.resume('use "Archive" instead')
+        self.confirm_done()
 
         self.assertEqual(self.finals[-1][1], "final", self.finals[-1][0])
         self.assertIn("remembered", self.finals[-1][0])
@@ -624,6 +631,7 @@ class Teaching(TeachingBase):
         name, fake = self.stuck()
 
         skill_task.resume("skip")
+        self.confirm_done()
 
         self.assertEqual(self.finals[-1][1], "final")
         self.assertIn("nothing was left to do after step 1", self.finals[-1][0])
@@ -828,6 +836,7 @@ class LoopFlow(TeachingBase):
         self.assertIn("is not on the screen", self.asked[-1][0])
 
         skill_task.resume('use "Add line"')
+        self.confirm_done()
 
         self.assertEqual(self.finals[-1][1], "final", self.finals[-1][0])
         self.assertEqual([kw["text"] for kind, kw in fake.acted if kind == "type"], ["Tea", "Milk"])
@@ -875,7 +884,7 @@ class EngineAccess(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("gui do add-a-customer --param customer_name=", shown)
         self.assertIn("[stops for approval]", shown)
-        self.assertIn('It is finished when: "the customer shows in the list"', shown)
+        self.assertIn('The person who taught it said: "the customer shows in the list"', shown)
 
     def test_a_run_that_needs_a_value_does_nothing_and_says_which(self):
         code, output = self.gui("do", "add-a-customer")
