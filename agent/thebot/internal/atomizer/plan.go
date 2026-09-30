@@ -321,6 +321,7 @@ func shapeStep(tool, body string) Step {
 		typ = Classify(body)
 		tool = ""
 	}
+	typ = withoutMissingBrowser(typ)
 
 	// A command is not a program to build. The 3B planner tagged
 	// `grep -oP '(?<=go-)\d+\.\d+\.\d+' index.html | sort -nr | head -n 1` as

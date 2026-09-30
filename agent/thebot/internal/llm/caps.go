@@ -59,7 +59,9 @@ func (c Capabilities) ScreenTextChars() int {
 // end; a local one that has not finished in 16 is lost, not nearly done.
 func (c Capabilities) OperatorTurns() int {
 	if c.Hosted {
-		return 40
+		// 40 ran out live entering a three-line order in Odoo (a product
+		// variant dialog per line): every click and field is a turn.
+		return 80
 	}
 	return 16
 }

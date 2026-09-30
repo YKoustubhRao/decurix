@@ -118,6 +118,24 @@ class WithTheModel(ts.TeachingBase):
         self.assertIn("never report DONE", told)
         self.assertIn("0 of 3 clean runs", told)
 
+    def test_values_the_documents_gave_are_reported_when_the_model_did_the_task(self):
+        # Found by bench/learn_documents: the replay's report said where each
+        # value was read, the model's (a skill still being learned) did not.
+        self.taught_customer()
+        self.screen()
+        self.verdicts = [verdict(verify.DONE, seen="Initech is in the customer list")]
+        read = ({"customer_name": "Initech"}, {"customer_name": "PO.pdf, Bill To"})
+
+        with mock.patch.object(skill_task.binding, "available", return_value=True), \
+                mock.patch.object(skill_task.binding, "fill", return_value=read):
+            skill_task.perform("/skill add-a-customer\nsee /home/headless/work/PO.pdf")
+
+        self.assertTrue(self.engine_calls, "the model did not do the task")
+        text, kind = self.finals[-1]
+        self.assertEqual(kind, "final")
+        self.assertIn("Values read from the documents", text)
+        self.assertIn("Bill To", text)
+
     def test_a_done_is_reported_only_once_the_screen_shows_it(self):
         self.taught_customer()
         self.screen()

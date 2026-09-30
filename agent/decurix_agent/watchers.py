@@ -158,6 +158,12 @@ def _thread_stacks():
     return "\n".join(parts)
 
 
+# How often the watchdog looks, and how much later than that a look may come
+# before it counts as the process having been frozen.
+WATCHDOG_TICK = 5
+FROZEN_SLACK = 10
+
+
 def watchdog():
     """
     Say, with every thread's stack, when the command loop stops passing. It
@@ -168,9 +174,20 @@ def watchdog():
     """
 
     reported = None
+    resumed = 0.0
+    tick = time.monotonic()
     while True:
-        time.sleep(5)
-        stalled = time.monotonic() - _heartbeat
+        time.sleep(WATCHDOG_TICK)
+        now = time.monotonic()
+        # A sleep that took far longer than asked means the whole process was
+        # frozen (idle-pause's `docker pause`), and the monotonic clock ran on
+        # meanwhile. Time frozen is not time stuck: found live, every desktop
+        # woken from a pause could say "stuck handling a message" before its
+        # command loop had run once since.
+        if now - tick > WATCHDOG_TICK + FROZEN_SLACK:
+            resumed = now
+        tick = now
+        stalled = now - max(_heartbeat, resumed)
         if stalled < STALL_SECONDS:
             reported = None
             continue

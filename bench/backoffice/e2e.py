@@ -253,7 +253,10 @@ def wf1_po_to_sales_order(work):
         got = odoo("sale.order.line", "search_read", [[["order_id", "=", o["id"]], ["display_type", "=", False]]],
                    {"fields": ["product_id", "product_uom_qty", "price_unit"]})
         want = sorted((n, float(q), p) for n, q, p in lines)
-        have = sorted((l["product_id"][1].split("] ")[-1], l["product_uom_qty"], round(l["price_unit"], 2)) for l in got)
+        # A line left with no product (an empty row the agent added) is a
+        # line the PO does not have - reported, not a crash.
+        have = sorted(((l["product_id"][1].split("] ")[-1] if l["product_id"] else "(no product)"),
+                       l["product_uom_qty"], round(l["price_unit"], 2)) for l in got)
         check("with the PO's exact products, quantities and prices", len(have) == len(want) and
               all(any(h[0] == w[0] and h[1] == w[1] and abs(h[2] - w[2]) < 0.01 for h in have) for w in want),
               f"want {want} have {have}")
@@ -572,7 +575,7 @@ wb.save('{HOME}/work/wf10/commodity_trends.xlsx'); print(json.dumps('ok'))
     content = reply.get("content", "")
     print(f"  ({took:.0f}s) {content[:500]}")
     steps = " ".join(s.get("text") or "" for s in reply.get("steps") or [])
-    check("the browser was used", re.search(r"Opening https?://|Looking at the screen", steps), steps[:200])
+    check("the browser was used", re.search(r"Opening https?://|Looking at the screen|gui (?:ask|open|observe)\b", steps), steps[:200])
     rows = xlsx_rows(f"{HOME}/work/wf10/commodity_trends.xlsx").get("Trend", [])
     row = next((r for r in rows if r and str(r[0]).startswith(TODAY.isoformat())), None)
     check("today's row was added", row, rows)

@@ -5,6 +5,7 @@
 package httpapi
 
 import (
+	"database/sql"
 	"github.com/YKoustubhRao/decurix/internal/llm"
 	"github.com/YKoustubhRao/decurix/internal/outbox"
 	"net/http"
@@ -95,6 +96,9 @@ type Server struct {
 	// Outbox holds the emails agents drafted for a person to send
 	// (internal/outbox). Assigned by cmd/decurix/main.go; nil turns it off.
 	Outbox *outbox.Store
+	// DB is the control plane's database, read only for a backup's snapshot
+	// (backup.go). Assigned by cmd/decurix/main.go; nil turns backups off.
+	DB *sql.DB
 
 	// sends serialises every send to one desktop (sendlock.go).
 	sends sendLocks
@@ -264,6 +268,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/tasks/get", s.taskAPIHandler)
 	mux.HandleFunc("/api/tasks/report", s.taskReportAPIHandler)
 	mux.HandleFunc("/api/tasks/verdict", s.taskVerdictHandler)
+	// The whole record as a file: a person's, never a desktop's to read.
+	mux.HandleFunc("/api/tasks/export", s.humansOnly(s.taskExportHandler))
 	mux.HandleFunc("/recordings/", s.recordingsPageHandler)
 	mux.HandleFunc("/api/desktops/recordings", s.recordingsAPIHandler)
 	mux.HandleFunc("/api/desktops/recordings/get", s.recordingAPIHandler)
@@ -335,6 +341,9 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/lan-access/devices/revoke", s.lanAccessRevokeDeviceHandler)
 	// The Cloudflare API token and the tunnel it controls are the person's
 	// alone: never on the gated listener, never to a desktop.
+	// A backup holds the keys to the saved secrets: a person's, here only.
+	mux.HandleFunc("/api/backup", s.humansOnly(s.backupHandler))
+	mux.HandleFunc("/api/desktops/restore", s.humansOnly(s.restoreDesktopHandler))
 	mux.HandleFunc("/api/cftunnel", s.humansOnly(s.cfTunnelStatusHandler))
 	mux.HandleFunc("/api/cftunnel/configure", s.humansOnly(s.cfTunnelConfigureHandler))
 	mux.HandleFunc("/api/cftunnel/disable", s.humansOnly(s.cfTunnelDisableHandler))

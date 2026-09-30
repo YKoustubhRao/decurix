@@ -80,6 +80,9 @@ type Candidate struct {
 	ParamsB   float64 `json:"params_b"`
 	ActiveB   float64 `json:"active_b,omitempty"` // mixture-of-experts: parameters used per token; 0 = dense
 	Installed bool    `json:"installed"`
+	// KVPerToken is the KV cache elements one token of context holds, read
+	// off the model's architecture (kvBytesPerToken); 0 = not known, estimate.
+	KVPerToken float64 `json:"kv_per_token,omitempty"`
 }
 
 // catalog is the set of models the selector may recommend, or pull into the
@@ -145,8 +148,16 @@ func (m Candidate) activeGB() float64 {
 }
 
 // NeedGB is the memory the model takes while running at NumCtx: the weights,
-// plus the KV cache and runtime buffers, which grow with the model.
+// plus the KV cache and runtime buffers. The KV cache is exact when the
+// model's architecture is known (an installed model), else estimated from its
+// size - which overstates a mixture-of-experts model's cache several times and
+// understates a dense model's with many KV heads.
 func (m Candidate) NeedGB() float64 {
+	if m.KVPerToken > 0 {
+		kv := m.KVPerToken * kvElementBytes() * NumCtx / gb
+		return m.SizeGB + 0.5 + 0.02*m.ParamsB + kv
+	}
+
 	return m.SizeGB + 0.5 + 0.06*m.ParamsB
 }
 

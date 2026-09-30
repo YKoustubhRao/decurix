@@ -1,4 +1,5 @@
 import json
+import os
 import re
 
 from decurix_agent import llm_client, usage
@@ -41,6 +42,13 @@ JUDGE_SYSTEM = (
     "Answer \"not_done\" when you can see it was not: an error, a validation message, the wrong page or record, "
     "another value than asked, a half-filled form, a sign-in page, a CAPTCHA, nothing changed, fewer items than "
     "were asked for.\n"
+    "When the task names a document and you are shown what it says, the values entered or reported must be the "
+    "document's: a customer, reference, product, quantity or amount that is not in it (or differs from it) is "
+    "\"not_done\", however complete the screen looks.\n"
+    "The same value written in the format its field uses is not a difference: a date field whose placeholder "
+    "reads yyyy-dd-mm (year-day-month) shows 14 March 1998 as 1998-14-03; a number may show thousands "
+    "separators or a currency. Judge the value, not its format (found live: a correct date of birth was "
+    "called wrong).\n"
     "Answer \"unsure\" whenever you cannot tell from what you are shown. Never guess \"done\".\n"
     "Reply with JSON only: {\"verdict\": \"done\"|\"not_done\"|\"unsure\", \"confidence\": 0.0-1.0, "
     "\"seen\": \"what the screen now shows, one sentence\", \"why\": \"one sentence\"}"
@@ -72,8 +80,13 @@ def judge(task, claim="", criteria="", values=None, steps="", live_png=None, ref
         lines.append("What the worker's tools did and read off the screen during this task, as it happened (observed, "
                      "not claimed - a report that matches these is backed by them):\n" + "\n".join(observed)[-6000:])
     lines.append(f"What the worker reports: {(claim or '(nothing)').strip()[:2500]}")
+    doc_text, doc_pictures = _documents(task)
+    if doc_text:
+        lines.append("The documents the task names, as they read (the values must come from these):\n" + doc_text)
 
     content = [{"type": "text", "text": "\n".join(lines)}]
+    for picture in doc_pictures:
+        content += [{"type": "text", "text": "A page of a document the task names:"}, llm_client.image_part(path=picture)]
     if live_png:
         content += [{"type": "text", "text": "The screen NOW:"}, llm_client.image_part(live_png)]
     else:
@@ -97,6 +110,37 @@ def judge(task, claim="", criteria="", values=None, steps="", live_png=None, ref
 
     log(f"verify: {found}")
     return found
+
+
+# A document named by its path in a task; the same shape TheBot's operator
+# refuses to type values from before reading (internal/skills/grounding.go).
+DOCUMENT_PATH = re.compile(r"(?:~|/)[\w.~/-]*[\w-]\.(?:pdf|xlsx|xlsm|docx|csv|eml|png|jpe?g)\b", re.I)
+MAX_DOCUMENT_CHARS = 4000
+MAX_DOCUMENT_PICTURES = 2
+
+
+def _documents(task):
+    """
+    (text, [picture paths]) of the documents the task names, read the way the
+    worker reads them. Found live: a PO was entered with a customer and lines
+    the PDF never had, and the check - shown only the screen - saw a saved
+    quotation and passed it. Unreadable documents are left out, never guessed.
+    """
+
+    from decurix_agent.tools import office
+
+    texts, pictures = [], []
+    for path in dict.fromkeys(DOCUMENT_PATH.findall(task or "")):
+        try:
+            doc = office.read_document(path)
+        except Exception as exc:  # a missing or unreadable file: judged without it
+            log(f"verify: could not read {path}: {exc}")
+            continue
+        texts.append(f"--- {path}\n{(doc.get('text') or '').strip()}")
+        for image in doc.get("images") or []:
+            if len(pictures) < MAX_DOCUMENT_PICTURES and os.path.isfile(image):
+                pictures.append(image)
+    return "\n".join(texts)[:MAX_DOCUMENT_CHARS], pictures
 
 
 def _parse(text):
