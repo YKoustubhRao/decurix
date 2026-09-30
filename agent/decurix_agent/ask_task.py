@@ -4,7 +4,7 @@ import time
 import traceback
 import urllib.parse
 
-from decurix_agent import progress, state, usage
+from decurix_agent import llm_client, progress, state, usage
 from decurix_agent.computer import cdp, core, privacy
 from decurix_agent.computer.errors import ComputerError
 from decurix_agent.computer.mimic import SECOND_JOB
@@ -325,6 +325,25 @@ DESKTOP_JOB = re.compile(
 
 QUOTES = "\"'“”‘’`"
 
+# Several questions in one request: `chatgpt "a", "b" and "c"`. Each is put
+# to the service on its own, in turn. Found live: the whole list went to
+# ChatGPT as one prompt, which answered them together, when the person had
+# said to ask them one by one. Only a request that is nothing but quoted
+# questions is a list - a question that merely quotes something is one.
+_QUOTED = r'"[^"]+"|“[^”]+”|‘[^’]+’|`[^`]+`'
+_LIST_JOIN = r"\s*(?:,|;|\band\b|\bthen\b|\bfollowed\s+by\b)?\s*(?:,\s*)?(?:\band\s+)?(?:then\s+)?"
+QUESTION_LIST = re.compile(rf"\s*(?:{_QUOTED})(?:{_LIST_JOIN}(?:{_QUOTED}))+\s*[.!]*\s*$", re.IGNORECASE)
+MAX_QUESTIONS = 10
+
+
+def service_named(name):
+    """The service a bare name means ("chatgpt", "ChatGPT", "wiki"), or None."""
+
+    for service in SERVICES:
+        if re.fullmatch(service["names"], (name or "").strip(), re.IGNORECASE):
+            return service
+    return None
+
 
 def _service(match):
     for service in SERVICES:
@@ -341,6 +360,14 @@ def _clean_question(text):
     return re.sub(r"\s+", " ", question)
 
 
+def split_questions(text):
+    """The questions of a list of quoted ones (`"a", "b" and "c"`), or [] for one question."""
+
+    if not QUESTION_LIST.match(text or ""):
+        return []
+    return [re.sub(r"\s+", " ", q[1:-1]).strip() for q in re.findall(_QUOTED, text)]
+
+
 def parse(content):
     """
     (service, question) when a request is something to put to a web app the
@@ -348,13 +375,24 @@ def parse(content):
     that only names the service ("open youtube").
     """
 
+    found = parse_all(content)
+    if found is None:
+        return None
+    service, questions = found
+    return service, questions[0] if len(questions) == 1 else " / ".join(questions)
+
+
+def parse_all(content):
+    """(service, [question, ...]) - parse(), with a list of questions kept apart."""
+
     text = (content or "").strip()
     if not text or text.startswith("/") or "\n" in text.strip():
         return None
 
     match = TRAILING.match(text)
     if match:
-        service, question = _service(match), _clean_question(match.group("question"))
+        raw = match.group("question")
+        service = _service(match)
     else:
         match = LEADING.match(text)
         if not match:
@@ -364,26 +402,64 @@ def parse(content):
         if service.get("not_query") and re.match(r"\s*(?:" + service["not_query"] + ")", rest, re.IGNORECASE):
             return None
         joined = JOINER.match(rest)
-        question = _clean_question(rest[joined.end():] if joined else rest)
+        raw = rest[joined.end():] if joined else rest
 
     if service is None:
         return None
 
-    if question and (DESKTOP_JOB.search(question) or (service["kind"] != "assistant" and SECOND_JOB.search(question))):
-        # A job for the desktop after the answer: the engine does the whole thing.
+    questions = split_questions(raw) or [_clean_question(raw)]
+    if len(questions) > MAX_QUESTIONS:
         return None
 
-    return service, question
+    for question in questions:
+        if question and (DESKTOP_JOB.search(question) or (service["kind"] != "assistant" and SECOND_JOB.search(question))):
+            # A job for the desktop after the answer: the engine does the whole thing.
+            return None
+
+    return service, questions
 
 
 def handles(content):
     """Whether the command watcher should hand this request to perform()."""
 
     try:
-        return parse(content) is not None
+        found = parse(content)
+        if found is None:
+            return False
+        taught = taught_for(found[0])
+        if taught is not None:
+            log(f"Leaving {content!r} to the engine: {taught['name']!r} was taught for {found[0]['name']} "
+                "with the person's own explanation, and a hosted model can follow it.")
+            return False
+        return True
     except Exception as exc:
         log(f"Could not read {content!r} as a question for a web app: {exc}")
         return False
+
+
+def taught_for(service):
+    """
+    A ready skill a person taught for this service and explained in their own
+    words, when a hosted model is here to read them - or None. Found live: a
+    person taught a ChatGPT skill saying "I will send you a list of things to
+    query and you query them one by one", and this shortcut, which reads no
+    one's words, answered the next list before any model saw it. A small
+    local model is still better served by the shortcut; a hosted one is given
+    the person's words (thebot_harness.taught_context, azure_harness's
+    procedures) and `gui ask` to do the asking.
+    """
+
+    if not llm_client.available():
+        return None
+
+    from decurix_agent.computer import skills
+
+    pattern = re.compile(rf"\b(?:{service['names']})\b", re.IGNORECASE)
+    for skill in skills.search("", limit=100):
+        said = skills.explanation(skill)
+        if said and pattern.search(f"{skill.get('goal') or ''} {skill.get('title') or ''} {said}"):
+            return skill
+    return None
 
 
 def _begin(content, task_file):
@@ -401,13 +477,16 @@ def perform(content, task_file=None):
     _begin(content, task_file)
 
     try:
-        found = parse(content)
+        found = parse_all(content)
         if found is None:
             write_final_reply("That is not something to ask a web app.", kind="error", engine=ENGINE)
             return
 
-        service, question = found
-        reply, kind = _ask(service, question)
+        service, questions = found
+        if len(questions) == 1:
+            reply, kind = _ask(service, questions[0])
+        else:
+            reply, kind = _ask_each(service, questions)
         write_final_reply(reply, kind=kind, engine=ENGINE)
     except Exception as exc:
         log(traceback.format_exc())
@@ -444,6 +523,35 @@ def _ask(service, question):
 
     result = _read(service)
     return render(service, question, result)
+
+
+def _ask_each(service, questions):
+    """Put each question to the service on its own, in turn; one reply with every answer."""
+
+    name, total = service["name"], len(questions)
+    parts, answered = [], 0
+
+    for n, question in enumerate(questions, 1):
+        progress.emit(f"Question {n} of {total}")
+        reply, kind = _ask(service, question)
+        where = "\n\nIt is open in the browser on the desktop."
+        if reply.endswith(where):
+            reply = reply[:-len(where)]
+        parts.append(f"{n}. \"{question}\"\n{reply}")
+        if kind != "final":
+            # A refusal (a challenge, a usage limit, an outage) will refuse the
+            # rest too: stop, and say what was not asked.
+            rest = questions[n:]
+            if rest:
+                parts.append("Not asked, because it stopped there: " + ", ".join(f'"{q}"' for q in rest))
+            break
+        answered += 1
+
+    head = f"I asked {name} {total} questions, one at a time"
+    if answered < total:
+        head += f"; {answered} answered"
+    reply = head + ":\n\n" + "\n\n".join(parts) + "\n\nEach one is open in its own tab in the browser on the desktop."
+    return reply, "final" if answered else "error"
 
 
 def _page_for(service):

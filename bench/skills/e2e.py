@@ -219,6 +219,21 @@ def run():
           "| params:", [(p["name"], p["varies"]) for p in skill["params"]])
     assert skill["status"] == "ready"
 
+    def confirmed(reply, index, task_id, shown):
+        """
+        A run that could not check every step on the screen is not reported
+        done (verify.py): with no model here to look, it asks. The script is the
+        person - it looks at the real page first, and only then says done.
+        """
+        if reply["kind"] == "query" and "confirm this is done" in reply["reply"]:
+            v = bash(f"gui verify --text '{shown}'", check=False)
+            print(f"   asked to confirm; the page shows {shown!r}: {v.returncode == 0}")
+            assert v.returncode == 0, "asked to confirm a run whose page does not show it"
+            send("done", task_id)
+            reply = wait_reply(index + 1, timeout=180)
+            show("confirmed", reply)
+        return reply
+
     # ---- do it ----
     print("\n== running the skill")
     before = len(replies())
@@ -230,6 +245,7 @@ def run():
     send("Initech", "t00000000000000c2")
     done = wait_reply(before + 2, timeout=180)
     show("result", done)
+    done = confirmed(done, before + 2, "t00000000000000c3", "Saved Initech")
     assert done["kind"] == "final", "the skill run did not complete"
 
     v = bash("gui verify --text 'Saved Initech'", check=False)
@@ -245,7 +261,9 @@ def run():
     send('/skill add-a-customer customer_name="Umbrella"', "t00000000000000d1")
     healed = wait_reply(before + 1, timeout=180)
     show("result", healed)
-    assert healed["kind"] == "final" and "repaired step 3" in healed["reply"], "the rename was not healed"
+    repaired = "repaired step 3" in healed["reply"]
+    healed = confirmed(healed, before + 1, "t00000000000000d2", "Saved Umbrella")
+    assert healed["kind"] == "final" and (repaired or "repaired step 3" in healed["reply"]), "the rename was not healed"
 
     v = bash("gui verify --text 'Saved Umbrella'", check=False)
     print("$ gui verify --text 'Saved Umbrella' ->", v.returncode)
@@ -264,6 +282,7 @@ def run():
     send('use "Go"', "t00000000000000e2")
     fixed = wait_reply(before + 2, timeout=180)
     show("result", fixed)
+    fixed = confirmed(fixed, before + 2, "t00000000000000e3", "Saved Wayne")
     assert fixed["kind"] == "final" and "remembered" in fixed["reply"]
 
     v = bash("gui verify --text 'Saved Wayne'", check=False)

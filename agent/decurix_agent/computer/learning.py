@@ -700,6 +700,12 @@ def questions(skill):
 
     found = [_goal(skill)]
 
+    # What the model that studied the demonstration could not work out
+    # (study.py), one at a time, before the rule-based questions: its answers
+    # can settle those too (which values change, what a step is for).
+    for asked in (skill.get("understanding") or {}).get("questions") or []:
+        found.append(_question(f"study:{asked['id']}", "study", asked["text"]))
+
     starts = skill.get("starts")
     if starts:
         found.append(_start(starts))
@@ -767,6 +773,20 @@ def _question(qid, kind, text, step=None):
     return {"id": qid, "kind": kind, "step": step, "text": text, "default": CAUTIOUS.get(kind)}
 
 
+def understood_text(skill):
+    """What the model that studied a demonstration understood (study.py), for the person to check; '' when none."""
+
+    understanding = skill.get("understanding") or {}
+    if not understanding.get("summary"):
+        return ""
+    lines = [f"What I understood: {understanding['summary']}"]
+    if understanding.get("done_when"):
+        lines.append(f"It is done when: {understanding['done_when']}")
+    for rule in understanding.get("rules") or []:
+        lines.append(f"- {rule}")
+    return "\n".join(lines)
+
+
 def _goal(skill):
     sources = f" from {skill['demos']} demonstrations" if skill["demos"] > 1 else ""
     parts = [
@@ -786,6 +806,14 @@ def _goal(skill):
     if learned:
         parts.append("What differed between your demonstrations, so it changes each run: "
                      + ", ".join(f"{p['name']} ({p['label']})" for p in learned) + ".")
+
+    understood = understood_text(skill)
+    if understood:
+        parts.append(understood)
+        parts.append("A few questions before I try to do it myself. First: is that right? Correct anything I got "
+                     "wrong, and add whatever I should know - what it is for, what can be different next time, "
+                     "what to watch out for. Reply `yes` if it is right as it stands.")
+        return _question("goal", "goal", "\n".join(parts))
 
     parts.append("A few questions before I try to do it myself. First: when is this task finished - "
                  "what should be on the screen, or true, at the end? And if you like, explain the task or any step "
@@ -808,6 +836,9 @@ def _variable(skill, step, param):
     same = " (both times you typed the same)" if len(samples) > 1 else ""
     target = step.get("target") or {}
     where = f"{target['role']} {el._quote(target.get('name') or '', 50)}" if target.get("role") else "the focused field"
+    meaning = ((skill.get("understanding") or {}).get("inputs") or {}).get(param["name"])
+    if meaning:
+        same += f" ({el._quote(meaning, 120)})"
     text = (f"Step {step['n']}: you typed {el._quote(param['example'] or '', 60)} into {where}{same}. Is that the "
             "same every time, or does it change from run to run (a different customer, amount, ...)? "
             "Reply `same` or `changes`.")
@@ -823,13 +854,23 @@ def _variables(skill, steps, params):
             return f"{target['role']} {el._quote(target.get('name') or '', 40)}"
         return "the focused field"
 
+    understanding = skill.get("understanding") or {}
+
     def given(step):
         param = params[step["param"]]
         if param.get("file"):
-            return f"the file {el._quote(param['example'] or '', 60)} uploaded to {where(step)}"
-        return f"{el._quote(param['example'] or '', 50)} into {where(step)}"
+            said = f"the file {el._quote(param['example'] or '', 60)} uploaded to {where(step)}"
+        else:
+            said = f"{el._quote(param['example'] or '', 50)} into {where(step)}"
+        meaning = (understanding.get("inputs") or {}).get(step["param"])
+        return f"{said} ({el._quote(meaning, 120)})" if meaning else said
 
     listed = "; ".join(f"{i}) {given(s)}" for i, s in enumerate(steps, 1))
+    guess = understanding.get("varies") or {}
+    if guess and all(s["param"] in guess for s in steps):
+        changing = [str(i) for i, s in enumerate(steps, 1) if guess[s["param"]]]
+        listed += (". I think " + (" and ".join(changing) + (" change" if len(changing) > 1 else " changes")
+                                   if changing else "none of them change"))
     text = (f"You gave {len(steps)} values: {listed}. Which of them change from run to run (a different "
             "customer, amount, date, document number...)? Reply `all change` or `all same`, or name them - for "
             f"example `all change except {len(steps)}`, or `1 and 2 change` (the others then stay as you typed them).")
@@ -1032,7 +1073,10 @@ def _confirm(skill):
     if needed:
         parts.append("Each run I need: " + ", ".join(f"{p['name']} ({p['label']})" for p in needed) + ".")
 
-    if skill.get("done_when"):
+    understood = understood_text(skill)
+    if understood:
+        parts.append("\n" + understood + "\n")
+    elif skill.get("done_when"):
         parts.append(f"It is finished when: {el._quote(skill['done_when'], 200)}.")
 
     if skill.get("named"):
@@ -1068,7 +1112,18 @@ def answer(skill, question, reply):
     text = (reply or "").strip()
 
     if kind == "goal":
+        if skill.get("understanding", {}).get("summary") and (YES.match(text) and len(text.split()) <= 3):
+            # "yes" to what the model understood: nothing of the person's own
+            # to keep as their explanation.
+            skill["answers"]["goal"] = text[:300]
+            return {"understood": True, "note": "", "decision": None}
         return _answer_goal(skill, text)
+
+    if kind == "study":
+        # Whatever the person says is the answer, "skip" included; skill_task
+        # hands it to the model to fold in (study.absorb).
+        skill["answers"][qid] = text[:1000] or "skip"
+        return {"understood": True, "note": "", "decision": None}
 
     if question.get("steps"):
         return _answer_positional(skill, question, text)

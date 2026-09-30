@@ -1,10 +1,13 @@
+import json
 import re
 import threading
+import time
 import traceback
 
-from decurix_agent import binding, progress, state, usage
-from decurix_agent.computer import (approval, constraints, core, escalation, experience, launchers, learning, mimic,
-                                    recording, replay, skills)
+from decurix_agent import (binding, config, guidance, llm_client, messaging, progress, state, study, task_context,
+                           usage, verify)
+from decurix_agent.computer import (approval, constraints, core, escalation, evidence, experience, launchers, learning,
+                                    mimic, recording, replay, skills)
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 from decurix_agent.logging_utils import log
@@ -328,6 +331,8 @@ def resume(reply, approval_outcome=None):
     try:
         if paused["mode"] == "learn":
             _learn_reply(paused, reply)
+        elif paused["mode"] == "confirm":
+            _confirm_reply(paused, reply)
         else:
             _run_reply(paused, reply, approval_outcome)
     except _Refused as refusal:
@@ -380,6 +385,15 @@ def _learn(ids, name):
     except ValueError as exc:
         raise _Refused(f"I cannot learn from that: {exc}.")
 
+    if study.available():
+        # The model studies the demonstration first, and asks what it could
+        # not work out (study.py) - a lesson for a task whose next run will be
+        # different, not only a replay of this one.
+        progress.emit("Studying your recording to work out what the task is and what I need to ask.")
+        understanding = study.study(skill)
+        if understanding is not None:
+            skill["understanding"] = understanding
+
     _ask(skill)
 
 
@@ -396,11 +410,21 @@ def _ask(skill, preface="", question=None):
 def _learn_reply(paused, reply):
     skill, question = paused["skill"], paused["question"]
 
-    if ABANDON_RE.match(reply or ""):
+    # Only a bare "stop" / "cancel" ends a lesson: an answer may well start
+    # with the word ("stop and tell me" to "what if it already exists?").
+    if ABANDON_RE.match(reply or "") and len((reply or "").split()) <= 2:
         skills.save(skill)
         write_final_reply(
             f"Stopped. What you have told me about \"{skill['title']}\" is kept - send `/learn {skill['sources'][0]}` "
             "to carry on where we left off.", kind="final", engine=LEARN_ENGINE)
+        return
+
+    # A correction to what the model understood, given at the last question,
+    # is not a name: names are short, sentences are not.
+    if question["kind"] == "confirm" and skill.get("understanding") and len((reply or "").split()) > MAX_NAME_WORDS:
+        progress.emit("Taking in your correction.")
+        study.absorb(skill, "Is this how the task should be done? (the summary and rules above)", reply)
+        _ask(skill, "Got it - here it is again.")
         return
 
     # The last question takes a name, which moves the skill to another file.
@@ -410,6 +434,18 @@ def _learn_reply(paused, reply):
     if not result["understood"]:
         _ask(skill, result["note"], question=question)
         return
+
+    # What the person told the model that studied the demonstration is folded
+    # into what it understood; an answer that opens something it must know
+    # gets one follow-up, asked next.
+    if skill.get("understanding") is not None and question["kind"] in ("study", "goal") \
+            and not learning.NOTHING.match(reply or "") \
+            and not (question["kind"] == "goal" and skill["answers"].get("goal") == (reply or "").strip()[:300]
+                     and learning.YES.match(reply or "") and len((reply or "").split()) <= 3):
+        progress.emit("Taking in your answer.")
+        follow_up = study.absorb(skill, question["text"], reply)
+        if follow_up:
+            _add_follow_up(skill, question, follow_up)
 
     decision = result["decision"]
 
@@ -435,6 +471,18 @@ def _learn_reply(paused, reply):
         _ask(skill, result["note"])
 
 
+MAX_NAME_WORDS = 6
+
+
+def _add_follow_up(skill, question, text):
+    """Ask `text` right after `question` (study.absorb's follow-up)."""
+
+    asked = skill["understanding"].setdefault("questions", [])
+    new = {"id": f"f{skill['understanding'].get('follow_ups', len(asked))}", "text": text, "why": "follow-up"}
+    at = next((i + 1 for i, q in enumerate(asked) if f"study:{q['id']}" == question["id"]), 0)
+    asked.insert(at, new)
+
+
 def _remember_async(skill):
     """Record optional learned memory without delaying the completed lesson."""
 
@@ -451,8 +499,9 @@ def _remember(skill):
 
     lines = [f"Taught by demonstration ({len(skill.get('sources') or [])} recording(s), {len(steps)} steps)."]
 
-    if skill.get("done_when"):
-        lines.append(f"Done when: {skill['done_when'].rstrip('. ')}.")
+    said = skills.explanation(skill)
+    if said:
+        lines.append(f"The person who taught it said: {said.rstrip('. ')}.")
 
     if params:
         wanted = ", ".join(f'{p["name"]} ({p["label"]})' for p in params)
@@ -571,6 +620,10 @@ def _prepare(run):
                missing=[p["name"] for p in missing])
         return
 
+    if run["start"] == 1 and _learning_by_model(run):
+        _by_model(run)
+        return
+
     if run["start"] == 1 and not run["checked"]:
         checks = learning.start_checks(skill)
 
@@ -648,7 +701,17 @@ def _execute(run):
                step=result["step"], resume_from=result["resume_from"])
     elif outcome == replay.RECONCILIATION_REQUIRED or result["resume_from"] is None or run["stuck"] >= MAX_STUCK_ASKS:
         _settle(run, outcome)
+        _record_verdict(run, False, why=result["text"])
         write_final_reply(result["text"], kind="error", engine=SKILL_ENGINE)
+    elif _engine_can_drive() and not run.get("taken_over"):
+        # A replay that got stuck hands the rest to the model before it asks
+        # a person: it can see the screen, read what was meant, and adapt.
+        # The run then counts as one that needed the model, so the skill goes
+        # back to being learned with it (experience.stage).
+        run["taken_over"] = True
+        _settle(run, outcome)
+        ran = result["resume_from"] == result["step"] + 1
+        _by_model(run, from_step=result["step"], note=result["text"], ran=ran)
     else:
         run["stuck"] += 1
         _ask_stuck(run, result)
@@ -757,8 +820,40 @@ def _ask_stuck(run, result, preface="", unclear=0):
 
 
 def _finish(run, result):
+    """
+    A replay that ran to its end. It is a success only once it is shown to be
+    one: every step's result seen on the screen, or the model looking at the
+    screen, or the person saying so. Anything else is asked about - never
+    reported as done (verify.py).
+    """
+
+    outcome = result.get("outcome", replay.COMPLETED_UNVERIFIED)
+    screen_checked = outcome == replay.VERIFIED and not result.get("skipped")
+
+    if screen_checked and not (verify.available() and _stage(run) == experience.APPRENTICE):
+        return _succeed(run, result, "screen")
+
+    progress.emit("Checking the screen to see that the task was really done.")
+    verdict = _judge(run, result["text"])
+
+    if verdict["verdict"] == verify.DONE:
+        return _succeed(run, result, "model", seen=verdict["seen"])
+    if screen_checked and verdict["verdict"] == verify.UNSURE:
+        # Every step's own result was on the screen; the model could not tell
+        # more than that. The screen is the proof it always was.
+        return _succeed(run, result, "screen")
+
+    _pause(run, "confirm", _doubt_text(result["text"], verdict), result=result, verdict=verdict)
+
+
+def _succeed(run, result, checked_by, seen="", helped=False):
     skill = run["skill"]
     text = result["text"]
+
+    if checked_by == "model" and seen:
+        text += f"\n\nChecked on the screen: {seen}"
+    elif checked_by == "person":
+        text += "\n\nYou confirmed it was done."
 
     if run.get("evidence"):
         filled = {k: run["values"][k] for k in run["evidence"] if k in run["values"]}
@@ -768,7 +863,8 @@ def _finish(run, result):
         # Built from a recording for this request only: nothing to save, and a
         # person has not said which parts change - Learn is how they do.
         write_final_reply(text + f" (Done from your recording of \"{run['mimic']['text']}\". Teach it with Learn "
-                                 "and I will also know which parts change.)", kind="final", engine=SKILL_ENGINE)
+                                 "and I will also know which parts change.)", kind="final", engine=SKILL_ENGINE,
+                          checked=True)
         return
 
     if run["patches"]:
@@ -783,18 +879,18 @@ def _finish(run, result):
         text += " I have learned from this run: " + "; ".join(learned) + "."
 
     skill["runs"] = skill.get("runs", 0) + 1
+    experience.note_verdict(skill, "replay", True, checked_by=checked_by,
+                            helped=helped or bool(run["asked_ids"]) or bool(run.get("taken_over")))
     skills.save(skill)
     text += experience.advice(skill)
 
-    if skill.get("done_when"):
-        text += f" You said it is finished when: {el._quote(skill['done_when'], 200)} - worth a look."
-
-    write_final_reply(text, kind="final", engine=SKILL_ENGINE)
+    write_final_reply(text, kind="final", engine=SKILL_ENGINE, checked=True)
 
 
 def _stop(step, run=None):
     if run is not None:
         _settle(run, "stopped")
+        _record_verdict(run, False, why="stopped by the person")
 
     write_final_reply(f"Stopped before step {step}, as you asked. Nothing from that step on was done.",
                       kind="final", engine=SKILL_ENGINE)
@@ -805,6 +901,9 @@ def _run_reply(paused, reply, approval_outcome):
 
     if kind == "values":
         return _values_reply(paused, reply)
+
+    if kind == "confirm":
+        return _confirm_reply(dict(paused, claim=paused["result"]["text"]), reply)
 
     if kind == "start":
         if learning.YES.match(reply or ""):
@@ -961,3 +1060,376 @@ def _retarget(run, step_n, wanted, role=None):
     step["summary"] = replay._summary(step)
 
     return True
+
+
+# ============================================================
+# Learning a skill with the model, and checking every finish
+#
+# A worker still learning its range of tasks leans on the brain: until a skill
+# has run TRUST_AFTER times in a row cleanly (experience.stage), the engine
+# does it, with the skill - the person's steps, their words, what the lesson
+# worked out, corrections from earlier runs, this run's values - as its guide,
+# and it can look at the screen each step was done on (`gui skill NAME
+# --look N`) or replay the stretches that fit (`gui do`). Once the skill runs
+# smoothly it is a replay, and the model is called only when the replay gets
+# stuck (_execute). A failure puts it back to learning.
+#
+# Either way, no success is reported until it is shown: _finish judges a
+# replay's end, _gate an engine's "done", and anything short of a confident
+# "done" asks the person (_doubt_text) - who may say it is done, have it tried
+# again, or say what is wrong, which is kept as a correction the model reads
+# on every later run.
+# ============================================================
+
+MAX_MODEL_ATTEMPTS = 2
+MAX_CORRECTIONS = 8
+CONFIRM_RE = re.compile(r"^\W*(yes|y|yep|yeah|done|it(?:'s| is)? done|it worked|correct|right|looks (?:right|good|fine)|ok(?:ay)?|good)\b",
+                        re.IGNORECASE)
+REDO_RE = re.compile(r"^\W*(retry|try again|again|redo|do it again|finish it|keep going|continue)\b", re.IGNORECASE)
+
+
+def _engine_can_drive():
+    """Whether this desktop's engine can do screen work with a hosted model (TheBot on one, or the Office engine)."""
+
+    engine_ok = (config.AGENT_HARNESS == "thebot" and config.HOSTED_BRAIN) or config.AGENT_HARNESS == "azure"
+    return engine_ok and llm_client.available() and getattr(state, "backend_ready", False)
+
+
+def _stage(run):
+    return experience.APPRENTICE if run.get("one_off") else experience.stage(run["skill"])
+
+
+def _learning_by_model(run):
+    return _engine_can_drive() and not run.get("replay_only") and _stage(run) == experience.APPRENTICE
+
+
+def _criteria(skill):
+    """What the person said about the task and what done looks like, for the model and the check."""
+
+    parts = []
+    said = skills.explanation(skill)
+    if said:
+        parts.append(said)
+    understood = skill.get("understanding") or {}
+    if understood.get("done_when") and understood["done_when"] not in said:
+        parts.append(f"Done when: {understood['done_when']}")
+    for rule in understood.get("rules") or []:
+        parts.append(f"Rule: {rule}")
+    for said in understood.get("dialogue") or []:
+        # The person's own words, which the rules above were written from.
+        parts.append(f"Asked when it was taught: {said['q']} - the person answered: {said['a']}")
+    for correction in skill.get("corrections") or []:
+        parts.append(f"A correction the person made after an earlier run: {correction['text']}")
+    return "\n".join(parts)
+
+
+def _procedure(run, from_step=None, note="", ran=False):
+    """What the engine is told when it does a taught task (guidance.py puts it into its model's context)."""
+
+    skill = run["skill"]
+    name, title = skill["name"], skill.get("title") or skill["name"]
+    one_off = run.get("one_off")
+    streak = 0 if one_off else experience.clean_streak(skill)
+
+    lines = []
+    if one_off:
+        lines.append(f"This request is a task a person recorded on this desktop (\"{run['mimic']['text']}\"), not yet taught. "
+                     "Do it the way they did, adapting to what the screen shows now.")
+    else:
+        lines.append(f"This request is a task a person taught this desktop by doing it: skill `{name}` (\"{title}\"). "
+                     f"You are still learning it ({streak} of {experience.TRUST_AFTER} clean runs before it runs on its "
+                     "own), so do it yourself, with care: follow what the person did and said, and adapt to what the "
+                     "screen shows now - the screen is the truth, the recording is the guide.")
+
+    understood = skill.get("understanding") or {}
+    if understood.get("summary"):
+        lines.append(f"What the task is: {understood['summary']}")
+    criteria = _criteria(skill)
+    if criteria:
+        lines.append("What the person said, and what was agreed when they taught it (follow it):\n" + criteria)
+
+    if run["values"]:
+        params = {p["name"]: p for p in skill.get("params") or []}
+        shown = []
+        for key, value in run["values"].items():
+            param = params.get(key) or {}
+            meaning = (understood.get("inputs") or {}).get(key) or param.get("label") or key
+            shown.append(f"- {key} = {json.dumps(value, ensure_ascii=False)} ({meaning}; the person typed "
+                         f"{json.dumps(param.get('example') or '', ensure_ascii=False)})")
+        lines.append("This run's values - type these where the person typed theirs:\n" + "\n".join(shown))
+
+    steps = []
+    for step in skill["steps"]:
+        line = f"{step['n']}. {step.get('summary') or step['kind']}"
+        if step.get("intent"):
+            line += f" - the person said: {step['intent']}"
+        purpose = (understood.get("steps") or {}).get(str(step["n"]))
+        if purpose:
+            line += f" - purpose: {purpose}"
+        steps.append(line)
+    lines.append("The person's steps:\n" + "\n".join(steps))
+
+    if from_step:
+        lines.append(f"A replay of these steps already ran up to step {from_step} and stopped there: {note} "
+                     + ("That step WAS done but its result did not show: look at the screen before doing anything - "
+                        "never repeat it blindly. " if ran else "")
+                     + f"Carry on from step {from_step}.")
+
+    if one_off:
+        how = [
+            "How to work:",
+            f"- `gui recording {run['mimic']['id']}` lists what the person did; work each step with gui observe / "
+            "click / type / key, adapting to the screen.",
+        ]
+    else:
+        how = ["How to work:"]
+    how += [] if one_off else [
+        f"- `gui skill {name} --look N` shows the screen as it was when the person did step N, with the spot they "
+        "pressed ringed in red. Use it for any step recorded as a point on the screen, and whenever you are unsure "
+        "what a step meant.",
+        f"- `gui do {name} --from N` replays from step N exactly as recorded, stopping at the first step it cannot "
+        "do; use it only when the screen matches the recording, and check where it stopped.",
+        "- Otherwise work each step with gui observe / click / type / key as usual.",
+    ]
+    how += [
+        "- If the request asks for several items (a list), do the task once per item, one after another, unless "
+        "the person said otherwise.",
+        "- Before you say DONE, look at the screen (gui verify) and make sure it shows the task done for THIS run's "
+        "values. If it does not, keep working, or ask (HELP) - never report DONE for what the screen does not show. "
+        "Your report is checked against the screen, and a false DONE is the worst outcome.",
+    ]
+    if run.get("attempt_note"):
+        how.append(f"- A check after your previous attempt found: {run['attempt_note']} Fix that.")
+    lines.append("\n".join(how))
+
+    return "\n\n".join(lines)
+
+
+def _engine_request(run):
+    """The request the engine is given for a taught task."""
+
+    if run.get("mimic"):
+        return run["context"] or run["mimic"]["text"]
+
+    skill = run["skill"]
+    request = f"Do the task you were taught, \"{skill.get('title') or skill['name']}\" (skill {skill['name']})"
+    if run["values"]:
+        request += " with " + ", ".join(f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in run["values"].items())
+    request += "."
+    if run.get("context"):
+        request += "\n\n" + run["context"]
+    return request
+
+
+def _by_model(run, from_step=None, note="", ran=False):
+    """Hand the task to the engine, guided by the skill (see the section above)."""
+
+    skill = run["skill"]
+    request = _engine_request(run)
+    run.setdefault("attempts", 0)
+    run["attempts"] += 1
+
+    guidance.begin(skill=skill["name"], task=request, text=_procedure(run, from_step, note, ran),
+                   values=run["values"], mode="takeover" if from_step else "model", run=run)
+
+    if from_step:
+        progress.emit(f"The replay stopped at step {from_step}; the model is taking it from there.")
+    else:
+        progress.emit(f"Doing \"{skill.get('title') or skill['name']}\" with the model, guided by what you taught "
+                      "(it is still learning this task).")
+    log(f"Skill {skill['name']}: handed to the engine ({'takeover at ' + str(from_step) if from_step else 'learning'})")
+
+    _engine(request, state.current_task_file)
+
+
+def _judge(run, claim):
+    skill = run["skill"]
+    steps = "; ".join(f"{s['n']}. {s.get('summary')}" for s in skill["steps"])[:1500]
+    return verify.judge(run.get("context") or _engine_request(run), claim=claim, criteria=_criteria(skill),
+                        values=run["values"], steps=steps, live_png=evidence.live(),
+                        reference_png=evidence.final_frame(skill), observed=evidence.observed())
+
+
+def _doubt_text(claim, verdict):
+    lead = {verify.NOT_DONE: "I do not think this is done.",
+            verify.UNSURE: "I cannot confirm this is done."}.get(verdict["verdict"], "I cannot confirm this is done.")
+    parts = [lead]
+    if verdict.get("seen"):
+        parts.append(f"The screen shows: {verdict['seen']}")
+    if verdict.get("why"):
+        parts.append(f"({verdict['why']})")
+    parts.append(f"What was reported: {el._quote(claim, 600)}")
+    parts.append("Look at the screen. Reply `done` if it is done, `retry` to have it tried again, or tell me "
+                 "what is wrong - I will remember it for next time.")
+    return " ".join(parts)
+
+
+def _record_verdict(run, ok, checked_by=None, helped=False, why="", mode=None):
+    """Note how a run ended on the saved skill (a fresh copy: the run's own may hold unproven changes)."""
+
+    if run.get("one_off"):
+        return
+    try:
+        fresh = skills.load(run["skill"]["name"])
+    except FileNotFoundError:
+        return
+    experience.note_verdict(fresh, mode or ("model" if run.get("attempts") else "replay"), ok, checked_by=checked_by,
+                            helped=helped, why=why)
+    if ok:
+        fresh["runs"] = fresh.get("runs", 0) + 1
+    skills.save(fresh)
+
+
+def _correct(run, text):
+    """Keep what a person said was wrong, for every later run's model (and the check)."""
+
+    text = " ".join((text or "").split())[:500]
+    if run.get("one_off") or not text:
+        return
+    try:
+        fresh = skills.load(run["skill"]["name"])
+    except FileNotFoundError:
+        return
+    fresh["corrections"] = ((fresh.get("corrections") or []) + [{"at": int(time.time()), "text": text}])[-MAX_CORRECTIONS:]
+    skills.save(fresh)
+    run["skill"]["corrections"] = fresh["corrections"]
+
+
+def _did_screen_work():
+    """Whether the task being worked on acted on the screen (its recording has an action in it)."""
+
+    task_id = task_context.current()
+    if not task_id:
+        return False
+    try:
+        meta = recording.meta(recording.session_for_task(task_id))
+    except (OSError, ValueError):
+        return False
+    return bool(meta and meta.get("event_count"))
+
+
+def _retry_engine(guided, note):
+    """Send a task the engine did not finish back to it, told what the check saw (a task no skill guides)."""
+
+    progress.emit(f"Not done yet: {note} Trying again.")
+    guidance.begin(skill=None, task=guided["task"], run=None, mode="engine", attempt=guided.get("attempt", 1) + 1,
+                   text=f"A check of the screen after the previous attempt at this task found: {note} Finish the "
+                        "task; do not report DONE until the screen shows it done.")
+    _engine(guided["task"], state.current_task_file)
+
+
+def _gate(reply, kind, engine):
+    """
+    messaging's final gate: a task an engine finished is checked before its
+    report goes out - a taught task always (guidance.py), any other task when
+    it acted on the screen. True when this took the report over.
+    """
+
+    guided = guidance.get()
+    if guided is None:
+        if kind != "final" or not verify.available() or not _did_screen_work():
+            return False
+        guided = guidance.begin(skill=None, task=state.current_task or "", text="", mode="engine", run=None)
+
+    run = guided.get("run")
+
+    if kind != "final":
+        guidance.end()
+        if run is not None:
+            _record_verdict(run, False, why=(reply or "")[:300])
+        return False
+
+    progress.emit("Checking the screen to see that the task was really done.")
+    verdict = _judge(run, reply) if run is not None else verify.judge(guided["task"], claim=reply,
+                                                                          live_png=evidence.live(),
+                                                                          observed=evidence.observed())
+
+    if verdict["verdict"] == verify.DONE:
+        guidance.end()
+        if run is not None:
+            # A takeover, or a run the check had to send back, worked in the
+            # end but did not run smoothly: it does not count towards trust.
+            _record_verdict(run, True, checked_by="model",
+                            helped=guided["mode"] == "takeover" or run.get("attempts", 1) > 1)
+        text = f"{reply}\n\nChecked on the screen: {verdict['seen']}" if verdict.get("seen") else reply
+        write_final_reply(text, kind="final", engine=engine, checked=True)
+        return True
+
+    # The model said done and the screen says not: one more go, told what the
+    # check saw, before a person is asked.
+    attempts = run.get("attempts", 0) if run is not None else guided.get("attempt", 1)
+    if verdict["verdict"] == verify.NOT_DONE and attempts < MAX_MODEL_ATTEMPTS and _engine_can_drive():
+        note = " ".join(x for x in (verdict.get("seen"), verdict.get("why")) if x)
+        if run is not None:
+            run["attempt_note"] = note
+            progress.emit(f"Not done yet: {note} Trying again.")
+            _by_model(run)
+        else:
+            _retry_engine(guided, note)
+        return True
+
+    guidance.end()
+    state.paused_skill = {"mode": "confirm", "run": run, "claim": reply, "verdict": verdict, "engine": engine,
+                          "task": guided["task"]}
+    ask_for_query(_doubt_text(reply, verdict), kind="query", engine=engine)
+    return True
+
+
+def check_unchecked(claim, engine):
+    """
+    A run that ended without seeing every result (a /replay's
+    completed_unverified): judged on the screen, else asked - never reported
+    done unseen.
+    """
+
+    progress.emit("Checking the screen to see that the task was really done.")
+    verdict = verify.judge(state.current_task or "", claim=claim, live_png=evidence.live(), observed=evidence.observed())
+    if verdict["verdict"] == verify.DONE:
+        return write_final_reply(f"{claim}\n\nChecked on the screen: {verdict['seen']}", kind="final", engine=engine,
+                                 checked=True)
+    state.paused_skill = {"mode": "confirm", "run": None, "claim": claim, "verdict": verdict, "engine": engine,
+                          "task": state.current_task or ""}
+    ask_for_query(_doubt_text(claim, verdict), kind="query", engine=engine)
+
+
+def _confirm_reply(paused, reply):
+    """The person's answer to "I cannot confirm this is done" - after an engine's run or a replay's."""
+
+    run, claim = paused["run"], paused.get("claim") or ""
+    engine = paused.get("engine") or SKILL_ENGINE
+    seen = paused["verdict"].get("seen") or ""
+    reply = (reply or "").strip()
+
+    if CONFIRM_RE.match(reply) and not re.search(r"\b(not|n't|isn'?t|wrong|but)\b", reply, re.IGNORECASE):
+        if run is not None and paused.get("result") is not None:
+            return _succeed(run, paused["result"], "person", helped=True)
+        if run is not None:
+            _record_verdict(run, True, checked_by="person", helped=True)
+        return write_final_reply(f"{claim}\n\nYou confirmed it was done.", kind="final", engine=engine, checked=True)
+
+    if STOP_RE.match(reply) or ABANDON_RE.match(reply) or learning.NO.match(reply):
+        if run is not None:
+            _record_verdict(run, False, why="the person said it was not done")
+        return write_final_reply("Not done - marked as a failure. " + seen, kind="error", engine=engine, checked=True)
+
+    redo = bool(REDO_RE.match(reply))
+    if not redo and run is not None:
+        # What is wrong, in their words: kept for every later run.
+        _correct(run, reply)
+        _record_verdict(run, False, why=reply)
+
+    # A command (/replay, /skill) is not something to hand the engine as a task.
+    if _engine_can_drive() and (run is not None or not (paused.get("task") or "").startswith("/")):
+        note = (seen or "it was not done") if redo else f"the person said: {reply}"
+        progress.emit("Trying again." if redo else "Trying again with what you said.")
+        if run is not None:
+            run["attempt_note"], run["attempts"] = note, 0
+            return _by_model(run)
+        return _retry_engine({"task": paused.get("task") or claim, "attempt": 0}, note)
+
+    write_final_reply("Not done - marked as a failure" + ("" if redo else f", and I will remember what you said: "
+                                                          f"{el._quote(reply, 200)}"), kind="error", engine=engine,
+                      checked=True)
+
+
+messaging.set_final_gate(_gate)

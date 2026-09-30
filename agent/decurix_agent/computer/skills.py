@@ -161,6 +161,18 @@ def _score(skill, query):
     return len(wanted & words)
 
 
+def explanation(skill):
+    """
+    What the person who taught a skill said about it, in their own words, or
+    "". Kept whole: `done_when` is only the part that named no step, and a
+    person's "I will send you a list and you do them one by one" is how they
+    want the task done, not what finished looks like. A skill taught before
+    `explanation` was kept has only `done_when`.
+    """
+
+    return " ".join((skill.get("explanation") or skill.get("done_when") or "").split())
+
+
 def search(query="", limit=8):
     """Ready skills for `query`, best first; with no words in it, every ready skill."""
 
@@ -351,6 +363,7 @@ def summary(skill, detail=False):
         "title": skill.get("title") or skill["name"],
         "status": skill.get("status"),
         "done_when": skill.get("done_when"),
+        "explanation": explanation(skill) or None,
         "demos": skill.get("demos", 1),
         "runs": skill.get("runs", 0),
         "version": skill.get("version", 1),
