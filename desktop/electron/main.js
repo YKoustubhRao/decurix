@@ -5,12 +5,16 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
+const { setupMobileAccess } = require('./mobile-access');
 
 const dashboard = 'http://127.0.0.1:8080';
 const marker = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Decurix"';
 const dashboardOrigin = new URL(dashboard).origin;
 let window;
 let starting = false;
+let closing = false;
+let mobileAccess = null;
+let mobileAccessPromise = null;
 
 function resource(name) {
   if (app.isPackaged) return path.join(process.resourcesPath, name);
@@ -20,6 +24,22 @@ function resource(name) {
 
 function dataDir() {
   return path.join(app.getPath('appData'), 'decurix');
+}
+
+function startMobileAccess() {
+  if (mobileAccessPromise || closing) return;
+  mobileAccessPromise = setupMobileAccess(dataDir()).then(async (access) => {
+    if (closing) await access?.stop();
+    else mobileAccess = access;
+  }).catch((error) => console.warn('Mobile access setup failed:', error.message));
+}
+
+async function stopMobileAccess() {
+  await mobileAccessPromise;
+  mobileAccessPromise = null;
+  const access = mobileAccess;
+  mobileAccess = null;
+  await access?.stop();
 }
 
 function update(message, failed = false) {
@@ -88,12 +108,25 @@ async function start() {
         throw new Error(`Worker image build failed. Start Docker Desktop and check ${path.join(dataDir(), 'desktop.log')}`);
       }
       update('Starting Decurix…');
-      const serverExit = runBackend([]).then((exitCode) => {
-        throw new Error(`Decurix exited with code ${exitCode}. Check ${path.join(dataDir(), 'desktop.log')}`);
-      });
-      await Promise.race([waitForDashboard(), serverExit]);
+      const serverExit = runBackend([]);
+      const showStopped = async (reason) => {
+        if (!window || window.isDestroyed()) return;
+        await stopMobileAccess();
+        await window.loadFile(path.join(__dirname, 'loading.html'));
+        update(`${reason} Check ${path.join(dataDir(), 'desktop.log')}`, true);
+      };
+      serverExit.then(
+        (code) => showStopped(`Decurix exited with code ${code}.`),
+        (error) => showStopped(`Decurix could not start: ${error.message}.`),
+      ).catch((error) => console.error('Could not show backend status:', error));
+      await Promise.race([waitForDashboard(), serverExit.then((code) => {
+        throw new Error(`Decurix exited with code ${code}. Check ${path.join(dataDir(), 'desktop.log')}`);
+      })]);
     }
-    if (window && !window.isDestroyed()) await window.loadURL(dashboard);
+    if (window && !window.isDestroyed()) {
+      await window.loadURL(dashboard);
+      startMobileAccess();
+    }
   } catch (error) {
     update(error.message, true);
   } finally {
@@ -150,6 +183,11 @@ if (!app.requestSingleInstanceLock()) {
     }
   });
   app.whenReady().then(openWindow);
-  app.on('window-all-closed', () => app.quit());
+  app.on('window-all-closed', async () => {
+    closing = true;
+    try { await stopMobileAccess(); }
+    catch (error) { console.warn('Could not stop quick tunnel:', error.message); }
+    app.quit();
+  });
   ipcMain.on('retry-startup', () => { if (!starting && window) start(); });
 }

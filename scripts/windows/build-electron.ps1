@@ -31,6 +31,10 @@ foreach ($tool in @('go', 'node', 'npm')) {
     }
 }
 
+Write-Host 'Checking Electron launcher...'
+& node --test (Join-Path $electron 'main.test.js') (Join-Path $electron 'mobile-access.test.js')
+if ($LASTEXITCODE -ne 0) { throw 'Electron launcher tests failed.' }
+
 $version = 'dev'
 if (Get-Command git -ErrorAction SilentlyContinue) {
     $description = git -C $repo describe --tags --always --dirty 2>$null

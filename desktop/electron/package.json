@@ -7,7 +7,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node --test main.test.js",
+    "test": "node --test main.test.js mobile-access.test.js",
     "dist:win": "electron-builder --win nsis --x64"
   },
   "devDependencies": {
@@ -18,7 +18,7 @@
     "appId": "com.decurix.desktop",
     "productName": "Decurix",
     "directories": { "output": "../../dist/electron" },
-    "files": ["main.js", "preload.js", "loading.html", "package.json"],
+    "files": ["main.js", "mobile-access.js", "preload.js", "loading.html", "package.json"],
     "extraResources": [
       { "from": "build/decurix.exe", "to": "decurix.exe" },
       { "from": "build/decurix-android-arm64", "to": "decurix-android-arm64" },

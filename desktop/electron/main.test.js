@@ -13,9 +13,12 @@ const favicon = fs.readFileSync(path.join(__dirname, '..', '..', 'web', 'favicon
 async function boot(initialState) {
   const windows = [];
   const spawns = [];
+  const children = [];
   const copied = [];
   const written = [];
   const external = [];
+  const mobileCalls = [];
+  let quits = 0;
   let state = initialState;
 
   class FakeWindow extends EventEmitter {
@@ -25,7 +28,7 @@ async function boot(initialState) {
       this.webContents = new EventEmitter();
       this.webContents.setWindowOpenHandler = (handler) => { this.popup = handler; };
       this.webContents.send = (channel, value) => { this.lastStatus = { channel, value }; };
-      this.loadFile = async () => {};
+      this.loadFile = async () => { this.loadFileCount = (this.loadFileCount || 0) + 1; };
       this.loadURL = async (url) => { this.url = url; };
       this.isDestroyed = () => false;
       windows.push(this);
@@ -38,7 +41,7 @@ async function boot(initialState) {
   app.setAppUserModelId = () => {};
   app.requestSingleInstanceLock = () => true;
   app.whenReady = () => Promise.resolve();
-  app.quit = () => {};
+  app.quit = () => { quits += 1; };
 
   const http = {
     get(_url, _options, callback) {
@@ -64,6 +67,7 @@ async function boot(initialState) {
     spawn(file, args, options) {
       spawns.push({ file, args, options });
       const child = new EventEmitter();
+      children.push(child);
       child.unref = () => {};
       if (args[0] === '--build-images') queueMicrotask(() => child.emit('exit', 0));
       else state = 'ready';
@@ -86,6 +90,10 @@ async function boot(initialState) {
     'node:fs': fileSystem,
     'node:http': http,
     'node:path': path,
+    './mobile-access': { setupMobileAccess: async () => {
+      mobileCalls.push('start');
+      return { stop: async () => { mobileCalls.push('stop'); } };
+    } },
   };
   vm.runInNewContext(source, {
     require: (name) => modules[name],
@@ -95,7 +103,7 @@ async function boot(initialState) {
     __dirname,
   }, { filename: 'main.js' });
   for (let i = 0; i < 12; i += 1) await new Promise((resolve) => setImmediate(resolve));
-  return { window: windows[0], spawns, copied, written, external };
+  return { window: windows[0], app, spawns, children, copied, written, external, mobileCalls, get quits() { return quits; } };
 }
 
 test('reuses a running dashboard without launching another backend', async () => {
@@ -129,4 +137,25 @@ test('keeps local popups in Electron and sends external links to the browser', a
   assert.equal(result.window.popup({ url: 'http://127.0.0.1:8080/view/abc' }).action, 'allow');
   assert.equal(result.window.popup({ url: 'https://example.com/' }).action, 'deny');
   assert.deepEqual(result.external, ['https://example.com/']);
+});
+
+
+test('shows a retry screen when the backend exits after startup', async () => {
+  const result = await boot('absent');
+  result.children[1].emit('exit', 1);
+  for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(result.window.loadFileCount, 2);
+  assert.equal(result.window.lastStatus.value.failed, true);
+  assert.match(result.window.lastStatus.value.message, /exited with code 1/);
+});
+
+
+test('stops the temporary mobile tunnel when the app closes', async () => {
+  const result = await boot('ready');
+  assert.deepEqual(result.mobileCalls, ['start']);
+  result.window.emit('closed');
+  result.app.emit('window-all-closed');
+  for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(result.mobileCalls, ['start', 'stop']);
+  assert.equal(result.quits, 1);
 });
