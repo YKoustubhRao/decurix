@@ -781,6 +781,57 @@ class Loops(unittest.TestCase):
         self.assertIn("more than", skills.list_problem({"params": [{"name": "a", "list": True}]}, {"a": ";".join("x" * 201)}))
 
 
+def order_lines(session, lines=(("Bolts", "12"), ("Washers", "6"))):
+    """An order entered line by line, the income account typed the same on every line (GnuCash's invoice)."""
+
+    events = [event(0, "click", field("menuitem", "New Invoice"))]
+    for description, qty in lines:
+        n = len(events)
+        events += [
+            event(n, "type", field("textbox", "Description"), text=description),
+            event(n + 1, "type", field("textbox", "Income Account"), text="Income:Sales"),
+            event(n + 2, "type", field("textbox", "Quantity"), text=qty),
+        ]
+    events.append(event(len(events), "click", field("button", "Post")))
+    meta = {"id": session, "title": "Enter an order", "kind": "demonstration", "status": "complete",
+            "started_at": 1789380000, "screen": [1280, 720]}
+    return meta, events
+
+
+class LoopsWithAFixedField(unittest.TestCase):
+    """Found teaching a GnuCash invoice: every line types the same account, which is procedure, not data."""
+
+    def looped(self):
+        skill = learning.build([order_lines("demo-20260914T101500-aaaaaa")])
+        answer_all(skill, {"loop": "each"})
+        return skill
+
+    def test_what_every_repetition_types_alike_stays_as_typed(self):
+        skill = self.looped()
+
+        by_example = {p["example"]: p for p in skill["params"]}
+        self.assertEqual((by_example["Income:Sales"]["varies"], by_example["Income:Sales"].get("list")), (False, None))
+        self.assertEqual(by_example["Income:Sales"]["default"], "Income:Sales")
+        self.assertTrue(by_example["Bolts"]["list"])
+        self.assertTrue(by_example["12"]["list"])
+
+    def test_a_run_needs_only_the_lists_and_types_the_fixed_field_on_every_item(self):
+        skill = self.looped()
+        lists = {p["name"] for p in skill["params"] if p.get("list")}
+        fixed = next(p["name"] for p in skill["params"] if not p.get("list"))
+        values = {name: ("Nuts; Pins; Clips" if "12" not in str(p["examples"]) else "4; 4; 2")
+                  for name, p in ((p["name"], p) for p in skill["params"] if p.get("list"))}
+        self.assertEqual(len(lists), 2)
+
+        program, flat = skills.expand(skill, values)
+
+        typed = [s.get("param") for s in program["steps"] if s["kind"] == "type"]
+        self.assertEqual(len(typed), 9)
+        self.assertEqual(typed.count(fixed), 3)
+        self.assertNotIn(fixed, flat)        # the run was not asked for it: the skill knows it
+        self.assertEqual(sorted(v for k, v in flat.items() if k.endswith("__3")), ["2", "Clips"])
+
+
 class LoopFlow(TeachingBase):
 
     def taught(self):

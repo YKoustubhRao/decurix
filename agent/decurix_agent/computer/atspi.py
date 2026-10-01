@@ -209,6 +209,7 @@ def observe(skip_apps=()):
                 [f"{app_name} {kind} {el._quote(stable_title, 60)}"],
                 group_id, title, app_name, pid, found, deadline, bars,
             )
+            name_fields_by_layout(found[before:])
             el.dedupe_paths(found[before:])
 
             if app_name == "soffice" and role == "frame":
@@ -494,6 +495,91 @@ def _sheet_cells(Atspi, table, indices, segments, group_id, window_title, app_na
                     "pid": pid,
                 },
             })
+
+
+# The fields a label beside or above can name, when the toolkit left them nameless.
+LAYOUT_NAMED_ROLES = {"textbox", "combobox", "spinbutton", "password text"}
+# How far a label may sit to the left of its field, and above it.
+LABEL_GAP_LEFT = 160
+LABEL_GAP_ABOVE = 24
+
+
+def name_fields_by_layout(elements):
+    """
+    Name a nameless field after the label on its row just to its left (or,
+    failing that, just above it), when the application never tied the two
+    together with LABELLED_BY.
+
+    Found in GnuCash's New Invoice dialog: Customer, Job and Billing ID are
+    three nameless text boxes in one panel, so all three had the path
+    `panel "Billing Information" > textbox ""` and a recorded "type 4501
+    into the Billing ID" could only be found again by its order among them -
+    which changes the moment a customer is chosen and the Job row appears. A
+    person reads the label beside a field; so does this. A field with labels
+    on both sides of a tie, or none close enough, keeps no name rather than
+    a guessed one. Changes the elements' name and path in place.
+    """
+
+    labels = [e for e in elements if e.get("role") == "label" and (e.get("name") or "").strip() and e.get("box")]
+
+    for field in elements:
+        if field.get("role") not in LAYOUT_NAMED_ROLES or (field.get("name") or "").strip() or not field.get("box"):
+            continue
+
+        label = _label_beside(field["box"], labels) or _label_above(field["box"], labels)
+        if not label:
+            continue
+
+        name = label["name"].strip().rstrip(":").strip()
+        if not name:
+            continue
+        field["name"] = name
+        field["label_from"] = "layout"
+        role = field["role"]
+        empty = f"{role} {el._quote('', 40)}"
+        if field.get("path", "").endswith(empty):
+            field["path"] = field["path"][: -len(empty)] + f"{role} {el._quote(name, 40)}"
+
+
+def _label_beside(box, labels):
+    x, y, w, h = box
+    middle = y + h / 2
+    best = []
+    for label in labels:
+        lx, ly, lw, lh = label["box"]
+        gap = x - (lx + lw)
+        if not -4 <= gap <= LABEL_GAP_LEFT:
+            continue
+        if abs((ly + lh / 2) - middle) > max(6, h / 2):
+            continue
+        best.append((gap, label))
+    return _closest(best)
+
+
+def _label_above(box, labels):
+    x, y, w, h = box
+    best = []
+    for label in labels:
+        lx, ly, lw, lh = label["box"]
+        gap = y - (ly + lh)
+        if not -2 <= gap <= LABEL_GAP_ABOVE:
+            continue
+        if abs(lx - x) > 24:
+            continue
+        best.append((gap, label))
+    return _closest(best)
+
+
+def _closest(candidates):
+    """The nearest label, or None when two are equally near (a guess either way)."""
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda c: c[0])
+    if len(candidates) > 1 and abs(candidates[0][0] - candidates[1][0]) < 2 \
+            and candidates[0][1]["name"] != candidates[1][1]["name"]:
+        return None
+    return candidates[0][1]
 
 
 def _first_child_role(node):

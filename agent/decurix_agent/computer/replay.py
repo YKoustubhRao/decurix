@@ -309,6 +309,13 @@ def _stable_title(title, reference=None):
     kept = []
     for segment in TITLE_SPLIT.split(volatility.without_counters(title.lstrip("*"))):
         segment = segment.strip()
+        # One unbroken token of 20+ letters, digits, "-" and "_" is a name a
+        # program made up, as it is in a URL path (_volatile_segment): ERPNext
+        # titles a new form "New Sales Order - new-sales-order-gwaniocbxa", a
+        # different name every time, and a check that waited for it halted
+        # the next run at its first step.
+        if re.fullmatch(r"[A-Za-z0-9_-]{20,}", segment):
+            continue
         if segment and not re.search(r"\d", segment) and volatility.classify(segment, reference) != "clock_time":
             if volatility.classify(segment, reference) in (None, "too_short") and len(segment) >= 3:
                 kept.append(segment)

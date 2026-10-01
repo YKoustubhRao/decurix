@@ -343,14 +343,16 @@ def expand(skill, values):
         written.add(loop_id)
 
         block = [s for s in skill["steps"] if block_of.get(s["id"]) == loop_id]
-        count = max(len(items[s["param"]]) for s in block if s.get("param"))
-        block_params = {s["param"] for s in block if s.get("param")}
+        # A field typed the same on every item (learning._apply_loop keeps it
+        # fixed) is in the block but is not a list: only lists are split.
+        count = max(len(items[s["param"]]) for s in block if s.get("param") in lists)
+        block_params = {s["param"] for s in block if s.get("param") in lists}
 
         for n in range(count):
             for original in block:
                 each = copy.deepcopy(original)
 
-                if each.get("param"):
+                if each.get("param") in lists:
                     name = each["param"]
                     renamed = f"{name}__{n + 1}"
 
