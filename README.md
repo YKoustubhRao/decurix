@@ -517,5 +517,21 @@ that file if you want to use a host or remote model server. If you already have
 Decurix running on port 8080, the app opens that dashboard. Stop the old
 instance before launching the newly installed version to use the bundled
 build. The installer includes the Android phone helper used by the dashboard’s
-phone-link download. A named Cloudflare tunnel needs `cloudflared` installed
-on Windows; the desktop launcher does not create a temporary quick tunnel.
+phone-link download. When `cloudflared` is installed on Windows, the app
+opens a temporary Cloudflare link to the access-code-gated listener while its
+window is open. Closing the app stops that link. A configured named tunnel takes
+priority. The unauthenticated dashboard on port 8080 is never exposed by the
+Electron launcher.
+
+If you are switching from the Docker Compose/WSL control plane, its
+`decurix-data` Docker volume is separate from the native app's
+`%APPDATA%\decurix` database. Download a backup from the old dashboard before
+stopping it, then restore it while the native app is closed:
+
+```powershell
+& "<Decurix install folder>\resources\decurix.exe" --restore-backup "<backup.tar.gz>"
+```
+
+Existing worker containers may still call the old Docker control-plane address; create
+new workers and use their **Restore from a backup** action to bring their
+skills and memory across.
