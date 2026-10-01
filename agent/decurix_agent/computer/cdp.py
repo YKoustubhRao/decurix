@@ -903,6 +903,11 @@ def _object(page, backend_id):
 
 
 def type_text(element, text, replace=True):
+    """
+    Type into an element. Returns False when the field took the text and then
+    threw it away (the caller types it again with real keys), else True.
+    """
+
     page = _page_for(element)
 
     try:
@@ -916,8 +921,79 @@ def type_text(element, text, replace=True):
             for kind in ("mousePressed", "mouseReleased"):
                 page.call("Input.dispatchMouseEvent", {"type": kind, "x": x, "y": y, "button": "left", "clickCount": 1})
 
+        # A field may react to gaining focus by rewriting itself (a date
+        # picker opening): let the page finish reacting first.
+        _settle_frame(page)
+
         object_id = _object(page, backend_id)
-        info = page.call("Runtime.callFunctionOn", {
+        info = _select_for_typing(page, object_id, replace)
+
+        if info.get("multiline"):
+            page.call("Input.insertText", {"text": text})
+            return True
+
+        _insert_lines(page, text, replace)
+        if not (replace and text and "\n" not in text):
+            return True
+
+        # Did it stay? ERPNext's date field empties itself after text arrives
+        # in one piece while its date picker is open (found live: every
+        # "type 10-12-2026 into Delivery Date" reported success and left the
+        # field empty, so the order could not be saved). The same text typed
+        # key by key on the real keyboard stays. A field that formats what it
+        # is given ("12" shown as "12.000") counts as having kept it.
+        _settle_frame(page, 400)
+        value = _value_of(page, object_id)
+        return value is None or text in value or _formatted(text, value)
+    finally:
+        page.close()
+
+
+def _settle_frame(page, ms=120):
+    try:
+        page.call("Runtime.evaluate", {
+            # A timer as well as a frame: a hidden tab draws no frames.
+            "expression": f"new Promise(r => {{ setTimeout(r, {int(ms) + 100}); "
+                          f"requestAnimationFrame(() => setTimeout(r, {int(ms)})); }})",
+            "awaitPromise": True,
+        }, timeout=5)
+    except ComputerError:
+        time.sleep(ms / 1000)
+
+
+def _value_of(page, object_id):
+    try:
+        return page.call("Runtime.callFunctionOn", {
+            "objectId": object_id, "returnByValue": True,
+            "functionDeclaration": "function() { return this.value === undefined ? null : String(this.value); }",
+        }).get("result", {}).get("value")
+    except ComputerError:
+        return None
+
+
+def _formatted(text, value):
+    """Whether `value` is `text` as a field formats a number ("12" -> "12.000", "1,200")."""
+
+    try:
+        return float(text.replace(",", "")) == float((value or "").replace(",", ""))
+    except ValueError:
+        return False
+
+
+def _insert_lines(page, text, replace):
+    lines = text.split("\n")
+    for index, line in enumerate(lines):
+        if line:
+            page.call("Input.insertText", {"text": line})
+        elif replace and index == 0 and len(lines) == 1:
+            # Replacing with nothing: delete the selection.
+            press_key(page, "Backspace")
+        if index < len(lines) - 1:
+            press_key(page, "Enter")
+
+
+def _select_for_typing(page, object_id, replace):
+    return page.call("Runtime.callFunctionOn", {
             "objectId": object_id,
             "returnByValue": True,
             "functionDeclaration": """function(replace) {
@@ -932,21 +1008,6 @@ def type_text(element, text, replace=True):
             }""",
             "arguments": [{"value": bool(replace)}],
         }).get("result", {}).get("value") or {}
-
-        if info.get("multiline"):
-            page.call("Input.insertText", {"text": text})
-        else:
-            lines = text.split("\n")
-            for index, line in enumerate(lines):
-                if line:
-                    page.call("Input.insertText", {"text": line})
-                elif replace and index == 0 and len(lines) == 1:
-                    # Replacing with nothing: delete the selection.
-                    press_key(page, "Backspace")
-                if index < len(lines) - 1:
-                    press_key(page, "Enter")
-    finally:
-        page.close()
 
 
 _KEYS = {
@@ -1161,7 +1222,7 @@ def navigate(url, new_tab=False):
 
     try:
         if not new_tab:
-            result = page.call("Page.navigate", {"url": url})
+            result = _navigate_or_refuse_to_leave(page, url)
             if result.get("errorText"):
                 raise ComputerError(f"could not load {url}: {result['errorText']}")
 
@@ -1179,6 +1240,52 @@ def navigate(url, new_tab=False):
         return page.evaluate("document.title") or url
     finally:
         page.close()
+
+
+def _navigate_or_refuse_to_leave(page, url):
+    """
+    Page.navigate, unless the page asks whether to leave with unsaved changes
+    ("Leave site? Changes you made may not be saved"): then stay, and say so.
+
+    Found on ERPNext, which asks that of any form with changes: Page.navigate
+    does not answer while the question is open, so an open timed out after
+    20 s and left the dialog on the screen for whatever came next. Leaving
+    would throw the changes away without anyone deciding to, so the answer is
+    always "stay"; whoever asked for the page decides what to do with them.
+    """
+
+    try:
+        page.call("Page.enable")
+    except ComputerError:
+        return page.call("Page.navigate", {"url": url})
+
+    page.seq += 1
+    mine = page.seq
+    page.ws.sock.settimeout(CALL_TIMEOUT)
+    page.ws.send(json.dumps({"id": mine, "method": "Page.navigate", "params": {"url": url}}))
+
+    while True:
+        try:
+            message = json.loads(page.ws.receive())
+        except socket.timeout:
+            raise ComputerError(f"Chromium did not answer Page.navigate within {CALL_TIMEOUT}s")
+
+        if message.get("method") == "Page.javascriptDialogOpening" \
+                and (message.get("params") or {}).get("type") == "beforeunload":
+            try:
+                page.call("Page.handleJavaScriptDialog", {"accept": False})
+            except ComputerError:
+                pass
+            raise ComputerError(
+                "the page has unsaved changes and asked whether to leave it; I stayed, so nothing was lost. "
+                "Save or discard the changes on the page, then open the address again."
+            )
+
+        if message.get("id") != mine:
+            continue
+        if "error" in message:
+            raise ComputerError(f"Page.navigate: {message['error'].get('message')}")
+        return message.get("result", {})
 
 
 def wait_ready(timeout=15, default_title=""):

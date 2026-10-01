@@ -1251,7 +1251,14 @@ def _apply_loop(skill, loop, choice):
         if step.get("param"):
             examples = [by_id[block[position]]["samples"][0] for block in loop["blocks"]]
             param = next(p for p in skill["params"] if p["name"] == step["param"])
-            param.update(varies=True, default=None, list=True, examples=examples, example=examples[0])
+            if len(set(examples)) == 1:
+                # Typed the same into every repetition (the income account on
+                # every line of an order): part of the procedure, not of the
+                # data - kept as typed, the way a `same` answer keeps it, so a
+                # run is not asked for one copy of it per item.
+                param.update(varies=False, default=examples[0], example=examples[0])
+            else:
+                param.update(varies=True, default=None, list=True, examples=examples, example=examples[0])
 
     skill["steps"] = [s for s in skill["steps"] if s["id"] not in dropped]
     skills.renumber(skill)

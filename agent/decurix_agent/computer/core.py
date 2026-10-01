@@ -303,8 +303,17 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
             raise ComputerError("nothing to type")
 
         if element is not None and element["source"] == "cdp":
-            cdp.type_text(element, text, replace=not append)
-            return "cdp"
+            if cdp.type_text(element, text, replace=not append) is not False:
+                return "cdp"
+            # The page threw the text away (cdp.type_text): type it the way
+            # a person does - click into the field, then real keys.
+            _focus_window(element)
+            cdp.click(element)
+            time.sleep(0.3)
+            if not append:
+                xinput.key("ctrl+a")
+            xinput.type_text(text)
+            return "xdotool"
 
         if element is not None:
             _focus_window(element)
