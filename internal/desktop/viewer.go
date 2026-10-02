@@ -26,6 +26,17 @@ func (m *Manager) ScreenAccess(ctx context.Context, rawID string) (ScreenAccess,
 	id := sanitizeName(rawID)
 	access := ScreenAccess{ID: id, Name: id}
 
+	if m.native != nil {
+		meta, err := m.native.readMeta(id)
+		if err != nil {
+			return access, err
+		}
+		if strings.TrimSpace(meta.Name) != "" {
+			access.Name = strings.TrimSpace(meta.Name)
+		}
+		return access, nil
+	}
+
 	inspect, err := m.client.ContainerInspect(ctx, "desktop_"+id)
 	if err != nil {
 		return access, notFound(id, err)

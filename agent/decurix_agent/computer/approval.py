@@ -1,4 +1,3 @@
-import fcntl
 import hashlib
 import json
 import re
@@ -7,6 +6,7 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
+from decurix_agent import config, filelock
 from decurix_agent.computer import elements as el
 from decurix_agent.computer import privacy
 
@@ -45,7 +45,7 @@ from decurix_agent.computer import privacy
 # reading.
 # ============================================================
 
-STATE_DIR = Path.home() / ".decurix" / "computer"
+STATE_DIR = config.DECURIX_DIR / "computer"
 STATE_FILE = STATE_DIR / "approval.json"
 
 from decurix_agent.computer import modes
@@ -217,14 +217,10 @@ def _locked():
 
     with open(STATE_DIR / "approval.lock", "w") as lock:
         deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
-        while True:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    raise TimeoutError("the approval store is held by something that is not letting go")
-                time.sleep(0.05)
+        while not filelock.try_exclusive(lock):
+            if time.monotonic() >= deadline:
+                raise TimeoutError("the approval store is held by something that is not letting go")
+            time.sleep(0.05)
 
         try:
             state = json.loads(STATE_FILE.read_text(encoding="utf-8"))

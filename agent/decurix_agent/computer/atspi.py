@@ -691,3 +691,24 @@ def select_option(element, option):
             return item.get_name()
 
     raise ComputerError(f"could not select {option!r} in {el.describe(element)}")
+
+
+def set_text(element, text):
+    """
+    Replace a field's contents through the widget itself. Not done over
+    AT-SPI - the caller types into the field - so this is always False here;
+    it is what a native Windows worker's UI Automation can do (win.py).
+    """
+
+    return False
+
+
+# A native Windows worker has no AT-SPI: its windows' controls are read and
+# worked through UI Automation (win.py), into the same element shape.
+import os as _os
+
+if _os.name == "nt":
+    from decurix_agent.computer import win as _win
+
+    observe, default_action, place_caret = _win.observe, _win.default_action, _win.place_caret
+    grab_focus, select_option, set_text = _win.grab_focus, _win.select_option, _win.set_text

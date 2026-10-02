@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -422,6 +423,89 @@ func (m *Manager) Check(ctx context.Context, targets []Target) (map[Target]strin
 	}
 	m.keepWarm(h)
 	return verdicts, nil
+}
+
+// OpenDesktop starts a private desktop of its own and runs exe on it, for a native Windows worker: the desktop is the
+// worker's screen and exe its agent, and everything that agent starts shows up there. Unlike an app started by a
+// Manager, the session is nobody's spare and is never ended for being unwatched or for having no window - it lives
+// until Stop, or until the helper itself ends. env is added to the helper's environment, which exe inherits. exe is
+// started as it is given: nothing is looked up, and none of the rules for hiding a person's own apps apply to it.
+func OpenDesktop(ctx context.Context, start Starter, id string, env []string, exe, args, dir string) (*Session, error) {
+	if strings.ContainsAny(exe+args+dir, "\r\n\t") || strings.TrimSpace(exe) == "" {
+		return nil, errors.New("invalid program to start")
+	}
+	name := "decurix_" + unsafeName.ReplaceAllString(id, "_")
+	if len(name) > 48 {
+		name = name[:48]
+	}
+
+	// The helper outlives the request that started it, so it is not tied to ctx.
+	cmd, err := start(context.Background(), name)
+	if err != nil {
+		return nil, err
+	}
+	if cmd.Env == nil {
+		cmd.Env = os.Environ()
+	}
+	cmd.Env = append(cmd.Env, env...)
+
+	s, err := newSession(id, cmd)
+	if err != nil {
+		return nil, err
+	}
+	for _, line := range []string{"viewers 0", "desktop " + name, "screen"} {
+		if resp, err := s.Do(line); err != nil || !strings.HasPrefix(resp, "OK") {
+			s.Stop()
+			return nil, firstErr(err, fmt.Errorf("the host helper refused %q: %s", line, resp))
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		s.Stop()
+		return nil, err
+	}
+	resp, err := s.DoTimeout("launchr\t"+exe+"\t"+args+"\t"+dir+"\t0\tworker", launchRequestTimeout)
+	if err != nil {
+		s.Stop()
+		return nil, err
+	}
+	if !strings.HasPrefix(resp, "OK") {
+		s.Stop()
+		return nil, errors.New(strings.TrimSpace(strings.TrimPrefix(resp, "ERR")))
+	}
+	return s, nil
+}
+
+// Running reports whether the program the session was started for is still running ("" when it is), or how it ended.
+func (s *Session) Running() string {
+	st, err := s.Do("status")
+	if err != nil {
+		return err.Error()
+	}
+	if strings.HasPrefix(st, "STATUS exited") {
+		return "it " + strings.TrimPrefix(st, "STATUS ")
+	}
+	return ""
+}
+
+// Snapshot is the whole picture as it is now.
+func (s *Session) Snapshot(ctx context.Context) (Update, error) {
+	v := s.Watch()
+	defer v.Close()
+	for {
+		select {
+		case u, ok := <-v.C:
+			if !ok {
+				return Update{}, s.deadErr()
+			}
+			if u.Whole {
+				return u, nil
+			}
+		case <-s.done:
+			return Update{}, s.deadErr()
+		case <-ctx.Done():
+			return Update{}, ctx.Err()
+		}
+	}
 }
 
 // Target is one program a launcher would ask the host to run.

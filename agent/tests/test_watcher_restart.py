@@ -9,7 +9,6 @@ the agent that came back ran "keep" as a request to TheBot while the chat said
     PYTHONPATH=agent python3 -m unittest discover -s agent/tests
 """
 
-import fcntl
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,7 +17,7 @@ from unittest import mock
 # Imported first: it stubs decurix_agent.config on a machine with no desktop.
 import test_recordings  # noqa: F401
 
-from decurix_agent import messaging, state, task_context, watchers
+from decurix_agent import filelock, messaging, state, task_context, watchers
 from decurix_agent.computer import approval
 
 TASK = "t0123456789abcdef"
@@ -227,7 +226,7 @@ class ApprovalLock(unittest.TestCase):
                 mock.patch.object(approval, "STATE_FILE", Path(tmp) / "approval.json"), \
                 mock.patch.object(approval, "LOCK_TIMEOUT_SECONDS", 0.2):
             with open(Path(tmp) / "approval.lock", "w") as holder:
-                fcntl.flock(holder, fcntl.LOCK_EX)
+                filelock.exclusive(holder)
                 with self.assertRaises(TimeoutError):
                     approval.resolve_reply("yes")
             self.assertIsNone(approval.resolve_reply("yes"), "free again once the holder lets go")

@@ -4,6 +4,7 @@ import os
 import re
 from pathlib import Path
 
+from decurix_agent import config
 from decurix_agent.computer import experience, replay
 
 
@@ -22,7 +23,7 @@ from decurix_agent.computer import experience, replay
 # and "ready" once a person has confirmed it. Only a ready skill runs.
 # ============================================================
 
-ROOT = Path(os.environ.get("DECURIX_SKILLS_DIR") or (Path.home() / ".decurix" / "skills"))
+ROOT = Path(os.environ.get("DECURIX_SKILLS_DIR") or (config.DECURIX_DIR / "skills"))
 
 SCHEMA = "decurix.skill/v1"
 

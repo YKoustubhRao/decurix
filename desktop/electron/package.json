@@ -3,12 +3,14 @@
   "productName": "Decurix",
   "version": "0.1.0",
   "private": true,
-  "description": "Windows desktop launcher for Decurix",
+  "description": "Desktop app for Decurix",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "test": "node --test main.test.js mobile-access.test.js",
-    "dist:win": "electron-builder --win nsis --x64"
+    "dist:win": "electron-builder --win nsis --x64",
+    "dist:mac": "electron-builder --mac dir",
+    "dist:linux": "electron-builder --linux AppImage"
   },
   "devDependencies": {
     "electron": "44.5.1",
@@ -17,15 +19,69 @@
   "build": {
     "appId": "com.decurix.desktop",
     "productName": "Decurix",
-    "directories": { "output": "../../dist/electron" },
-    "files": ["main.js", "mobile-access.js", "preload.js", "loading.html", "package.json"],
-    "extraResources": [
-      { "from": "build/decurix.exe", "to": "decurix.exe" },
-      { "from": "build/decurix-android-arm64", "to": "decurix-android-arm64" },
-      { "from": "../../.env.example", "to": ".env.example" }
+    "directories": {
+      "output": "../../dist/electron"
+    },
+    "files": [
+      "main.js",
+      "mobile-access.js",
+      "preload.js",
+      "loading.html",
+      "package.json"
     ],
-    "win": { "target": "nsis" },
+    "extraResources": [
+      {
+        "from": "../../.env.example",
+        "to": ".env.example"
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "icon.ico",
+      "extraResources": [
+        {
+          "from": "build/decurix.exe",
+          "to": "decurix.exe"
+        },
+        {
+          "from": "build/runtime",
+          "to": "runtime"
+        },
+        {
+          "from": "build/decurix-android-arm64",
+          "to": "decurix-android-arm64"
+        },
+        {
+          "from": "build/cloudflared.exe",
+          "to": "cloudflared.exe"
+        }
+      ]
+    },
+    "mac": {
+      "target": "dir",
+      "icon": "icon.png",
+      "category": "public.app-category.developer-tools",
+      "identity": null,
+      "extraResources": [
+        {
+          "from": "build/stack",
+          "to": "stack"
+        }
+      ]
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "icon.png",
+      "category": "Utility",
+      "extraResources": [
+        {
+          "from": "build/stack",
+          "to": "stack"
+        }
+      ]
+    },
     "nsis": {
+      "include": "installer.nsh",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,

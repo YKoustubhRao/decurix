@@ -412,6 +412,7 @@ class TestChangeTasksNeedAChange(unittest.TestCase):
             self.assertFalse(task_runner.WRITES_RE.search(reads), reads)
 
 
+@unittest.skipIf(os.name == "nt", "the Ollama harness's shell commands are a Linux desktop's; Windows workers run TheBot")
 class TestAppendTasksNeverOverwrite(unittest.TestCase):
     TASK = "Append the invoice number from this email as one line to the file ~/work/invoices.txt."
 

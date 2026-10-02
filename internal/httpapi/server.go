@@ -5,9 +5,11 @@
 package httpapi
 
 import (
+	"context"
 	"database/sql"
 	"github.com/YKoustubhRao/decurix/internal/llm"
 	"github.com/YKoustubhRao/decurix/internal/outbox"
+	"io"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -123,6 +125,13 @@ type Server struct {
 	HostGUIDataDir string
 	keptHostAppsMu sync.Mutex
 	keptHostApps   map[string]keptHostApp
+
+	// recordingNow is, per native worker, whether a person's demonstration is being recorded there and when that
+	// was last asked (nativerecording.go).
+	recordingMu  sync.Mutex
+	recordingNow map[string]recordingState
+	// agentRequest stands in for Desktops.AgentRequest there, in tests.
+	agentRequest func(ctx context.Context, id, method, path string, body io.Reader) (*http.Response, error)
 }
 
 // mustMemoryHub is an llm.Hub kept in memory only - NewHub cannot fail
@@ -160,8 +169,13 @@ func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memorySt
 	desktop.SetHostAppChecker(srv.checkHostApps)
 	desktop.SetHostAppWarmer(srv.warmHostGUI)
 	desktop.SetHostAppStarter(srv.startHostGUIAppAhead)
-	desktop.WarmHostApps() // compile and load now, long before the first desktop exists
-	desktop.InitHostAppsScan()
+	// Nothing is copied into a native Windows worker - it starts the programs
+	// installed on this computer itself, on its own desktop - so there is no
+	// app list to scan and no spare helper to keep warm for one.
+	if desktops == nil || !desktops.Native() {
+		desktop.WarmHostApps() // compile and load now, long before the first desktop exists
+		desktop.InitHostAppsScan()
+	}
 	return srv
 }
 
@@ -288,6 +302,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/desktops/skills/delete", s.skillDeleteHandler)
 	mux.HandleFunc("/api/desktops/demonstration", s.demonstrationHandler)
 	mux.HandleFunc("/api/desktops/record", s.recordTaskHandler)
+	mux.HandleFunc("/api/desktops/open", s.humansOnly(s.openOnScreenHandler))
 	mux.HandleFunc("/api/desktops/ticket", s.ticketStatusHandler)
 	mux.HandleFunc("/api/desktops/ticket/action", s.ticketActionHandler)
 	mux.HandleFunc("/api/tunnel", s.tunnelHandler)

@@ -243,6 +243,34 @@ func (s *Store) memoryPick(ctx context.Context, content string, desktops []deskt
 	}, true
 }
 
+// Forget drops the cached embeddings of memory entries that no longer exist
+// (their desktop was deleted). The cache is only ever read by an entry's ID,
+// so a row left behind would cost nothing but disk - forever.
+func (s *Store) Forget(memoryIDs []string) {
+	// In pieces: SQLite bounds the number of parameters in one statement.
+	const piece = 500
+
+	for start := 0; start < len(memoryIDs); start += piece {
+		end := start + piece
+		if end > len(memoryIDs) {
+			end = len(memoryIDs)
+		}
+
+		placeholders := make([]string, 0, end-start)
+		args := make([]any, 0, end-start)
+		for _, id := range memoryIDs[start:end] {
+			placeholders = append(placeholders, "?")
+			args = append(args, id)
+		}
+
+		query := `DELETE FROM suggestion_embeddings WHERE memory_id IN (` + strings.Join(placeholders, ",") + `)`
+		if _, err := s.db.Exec(query, args...); err != nil {
+			log.Printf("suggest: forgetting embeddings: %v", err)
+			return
+		}
+	}
+}
+
 // loadCachedVectors reads the cached embedding for each of entries (never
 // the whole suggestion_embeddings table - that would grow with total fleet
 // memory rather than with what this call could ever use). Rows are fully

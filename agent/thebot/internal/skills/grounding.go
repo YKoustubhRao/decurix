@@ -40,7 +40,8 @@ const maxSeenChars = 400_000
 
 var (
 	// documentPathRe is a document named by its path in a request.
-	documentPathRe = regexp.MustCompile(`(?i)(?:~|/)[\w.~/-]*[\w-]\.(?:pdf|xlsx|xlsm|xls|ods|docx|doc|odt|csv|eml|png|jpe?g|tiff?)\b`)
+	// A Windows worker's documents are named C:\...\po.pdf.
+	documentPathRe = regexp.MustCompile(`(?i)(?:~|/|\b[a-z]:[\\/])[\w.~/\\-]*[\w-]\.(?:pdf|xlsx|xlsm|xls|ods|docx|doc|odt|csv|eml|png|jpe?g|tiff?)\b`)
 	// paramRe is one --param NAME=VALUE of gui do or gui replay.
 	paramRe = regexp.MustCompile(`--param\s+[\w.-]+=("(?:[^"\\]|\\.)*"|'[^']*'|\S+)`)
 )
@@ -205,10 +206,115 @@ func earlyDoneNudge(st *operatorState, history []llm.Message, answer string) str
 	return ""
 }
 
+var (
+	// What a request asks to be done in a window, by the kind of gui
+	// command that does it.
+	// "press Enter" and "write a report" are not typing into a window;
+	// "enter the name into the form" is.
+	asksToTypeRe  = regexp.MustCompile(`(?i)\b(type|types|typing|fill\s+(?:in|out))\b|\b(enter|write|put)\b[^.\n]{0,60}\b(into|in\s+the|in\s+it)\b`)
+	asksToPressRe = regexp.MustCompile(`(?i)\b(click|press|tap|tick|untick|uncheck)\b`)
+	guiCommandRe  = regexp.MustCompile(`(?m)(?:^|[;|&(]\s*)gui\s+([a-z]+)`)
+	// requestQuoteRe is something a request quotes: words to type or a
+	// control's name, not what it asks to be done.
+	requestQuoteRe = regexp.MustCompile("\"[^\"\n]*\"|'[^'\n]*'|`[^`\n]*`|“[^”\n]*”")
+)
+
+// unperformedScreenNudge is what to tell the operator instead of taking a DONE
+// for work in a window that no command did, or "" to take it. Found live on a
+// native Windows worker with a 1.5B model: asked to "open notepad and type
+// hello world into it", it ran `gui open notepad` and reported "Notepad
+// opened and Hello World typed" - nothing had been typed. With no hosted
+// model there is nothing to judge the screen afterwards (verify.py), so the
+// commands themselves are the evidence: a request that says to type needs a
+// command that types, one that says to click needs one that clicks or
+// presses. Only for a goal that is already on the screen (some gui command
+// ran), and a taught skill or a replay (gui do, gui replay) may have done
+// either.
+func unperformedScreenNudge(st *operatorState) string {
+	// Only what worked counts as done: a `gui type` the screen layer refused
+	// (aimed at a button) typed nothing. What was merely tried still says
+	// the goal is on the screen.
+	onScreen := false
+	for _, c := range st.Commands {
+		onScreen = onScreen || guiCommandRe.MatchString(c)
+	}
+	ran := map[string]bool{}
+	for _, c := range st.Worked {
+		for _, m := range guiCommandRe.FindAllStringSubmatch(c, -1) {
+			ran[m[1]] = true
+		}
+	}
+	if !onScreen || ran["do"] || ran["replay"] {
+		return ""
+	}
+	// The request with what it quotes taken out: "type 'click here'" asks
+	// for typing only.
+	asked := requestQuoteRe.ReplaceAllString(st.Request, " ")
+	switch {
+	case asksToTypeRe.MatchString(asked) && !ran["type"] && !ran["select"]:
+		return "Not taken: the task says to type something, and no command has typed anything yet (gui open only opens the window). " +
+			"Run gui observe to find the field's ref, then gui type REF \"the text\". Answer DONE only after a gui type printed what changed.\n\n" +
+			"Reply now with exactly:\nCOMMAND:\ngui observe"
+	case asksToPressRe.MatchString(asked) && !ran["click"] && !ran["key"] && !ran["select"]:
+		return "Not taken: the task says to click or press something, and no command has done that yet. " +
+			"Run gui observe to find the control's ref, then gui click REF (or gui key for a key). Answer DONE only after it printed what changed.\n\n" +
+			"Reply now with exactly:\nCOMMAND:\ngui observe"
+	}
+	return ""
+}
+
+// observedFieldRe is a line of gui observe's listing that is a field text
+// goes into: `e28 document "Text editor"`, `e2 textbox "Customer" value="..."`.
+var observedFieldRe = regexp.MustCompile(`(?m)^(e\d+) (textbox|document|searchbox|entry|password text)\b([^\n]*)$`)
+
+// typingFieldHint follows a gui observe that came after the push back above,
+// for a task that says to type: it names the fields in the listing and the
+// command that types into one. Found live with a 1.5B model: told to observe
+// and then type, it ran gui observe, was shown thirty elements of Notepad
+// (the editor among two dozen toolbar buttons), and answered DONE again -
+// and, asked once more by the person, typed into the Strikethrough button.
+// Only after the model has already claimed the typing once without doing it;
+// a model that works the screen by itself is told nothing.
+func typingFieldHint(st *operatorState, command, output string) string {
+	if !strings.HasPrefix(strings.TrimSpace(command), "gui observe") ||
+		!asksToTypeRe.MatchString(requestQuoteRe.ReplaceAllString(st.Request, " ")) {
+		return ""
+	}
+	var fields []string
+	for _, m := range observedFieldRe.FindAllStringSubmatch(output, -1) {
+		if strings.Contains(m[3], "disabled") {
+			continue
+		}
+		fields = append(fields, strings.TrimSpace(m[0]))
+		if len(fields) == 3 {
+			break
+		}
+	}
+	if len(fields) == 0 {
+		return ""
+	}
+	ref := strings.Fields(fields[0])[0]
+	return "\n\nNothing has been typed yet. The fields text can be typed into are:\n" + strings.Join(fields, "\n") +
+		"\n\nType into the right one now, with the text the task gives:\nCOMMAND:\ngui type " + ref + " \"the text\""
+}
+
+// unperformedScreenDoubt is what a person is asked when the operator says
+// done a second time and still no command did the work: the report is theirs
+// to judge, never passed on as a result. (The rule this follows: a worker may
+// ask, or say it failed, but never reports a success nothing showed.)
+func unperformedScreenDoubt(nudge, claim string) string {
+	missing := "no command typed anything"
+	if strings.Contains(nudge, "click or press") {
+		missing = "no command clicked or pressed anything"
+	}
+	return fmt.Sprintf("I cannot confirm this is done: the task asks for it, but %s. My own report was: %q. "+
+		"Look at the screen and reply `done` if it is, or tell me what is still missing.", missing, claim)
+}
+
 // readBefore reports whether an earlier command named the document (by its
 // full path, or its file name when it was reached by a relative path).
 func readBefore(commands []string, doc string) bool {
-	base := doc[strings.LastIndex(doc, "/")+1:]
+	base := doc[strings.LastIndexAny(doc, `/\`)+1:]
 	for _, c := range commands {
 		if strings.Contains(c, doc) || strings.Contains(c, base) {
 			return true

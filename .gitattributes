@@ -17,5 +17,12 @@ Dockerfile text eol=lf
 # the autostart .desktop file's Exec= line would name "start_agent_terminal.sh\r".
 *.init text eol=lf
 *.desktop text eol=lf
+# Scripts with a shebang and no extension, so no pattern above reaches them.
+# A Windows build embeds the working tree into decurix.exe (embed.go), and the
+# images the Windows app then builds got a gui, office and browser launcher
+# that could not run. scripts/windows/build-electron.ps1 refuses any other.
+agent/gui text eol=lf
+agent/office text eol=lf
+agent/chromium-browser text eol=lf
 # Becomes .env, which docker/Dockerfile copies into the Linux control plane.
 .env.example text eol=lf

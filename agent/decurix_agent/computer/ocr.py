@@ -1,7 +1,9 @@
 import hashlib
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 
 from decurix_agent.logging_utils import log
 
@@ -36,7 +38,32 @@ WORD_RE = re.compile(r"[A-Za-z][A-Za-z'\-]{2,}")
 
 
 def available():
+    if os.name == "nt":
+        # A native Windows worker: Windows' own text recognition (tools/winoffice.py).
+        return True
     return shutil.which("tesseract") is not None
+
+
+def _read_windows(width, height, rgb):
+    """
+    The same lines from Windows' OCR engine, which every Windows 10 and 11 has
+    (tesseract is a program a Linux desktop's image installs). It is given the
+    frame as it is: measured on a worker's screen it read small UI labels and
+    page text without the thresholding tesseract needs, in about a second.
+    """
+
+    from decurix_agent.computer.screen import Frame
+    from decurix_agent.tools import winoffice
+
+    with tempfile.TemporaryDirectory(prefix="decurix-ocr-") as folder:
+        picture = os.path.join(folder, "screen.png")
+        with open(picture, "wb") as f:
+            f.write(Frame(width, height, rgb).png())
+        found = winoffice.ocr_lines(picture)
+
+    lines = [{"text": l["text"], "box": [int(v) for v in l["box"]]} for l in found if WORD_RE.findall(l.get("text") or "")]
+    lines.sort(key=lambda l: (l["box"][1], l["box"][0]))
+    return lines
 
 
 def _pgm(width, height, rgb):
@@ -105,13 +132,20 @@ def read(width, height, rgb):
     if key in _cache:
         return _cache[key]
 
-    try:
-        done = subprocess.run(["tesseract", "stdin", "stdout", "--psm", "3", "tsv"],
-                              input=_pgm(width, height, rgb), capture_output=True, timeout=TIMEOUT_SECONDS)
-        lines = _parse_tsv(done.stdout.decode("utf-8", "replace")) if done.returncode == 0 else []
-    except (OSError, subprocess.SubprocessError) as exc:
-        log(f"ocr: tesseract failed: {exc}")
-        lines = []
+    if os.name == "nt":
+        try:
+            lines = _read_windows(width, height, rgb)
+        except Exception as exc:  # reading a screen is a way to be smarter, never a way to fail
+            log(f"ocr: Windows' text recognition failed: {exc}")
+            lines = []
+    else:
+        try:
+            done = subprocess.run(["tesseract", "stdin", "stdout", "--psm", "3", "tsv"],
+                                  input=_pgm(width, height, rgb), capture_output=True, timeout=TIMEOUT_SECONDS)
+            lines = _parse_tsv(done.stdout.decode("utf-8", "replace")) if done.returncode == 0 else []
+        except (OSError, subprocess.SubprocessError) as exc:
+            log(f"ocr: tesseract failed: {exc}")
+            lines = []
 
     if len(_cache) >= _CACHE_LIMIT:
         _cache.pop(next(iter(_cache)))

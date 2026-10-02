@@ -9,6 +9,9 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, 'mobile-access.js'), 'utf8');
 
+// What main.js passes: the cloudflared shipped with the app.
+const tunnelCommand = (port) => ({ file: 'cloudflared.exe', args: ['tunnel', '--url', `http://127.0.0.1:${port}`] });
+
 function harness(namedConfigured = false) {
   const state = { lan_url: '', lan_tunnel_url: '' };
   const spawns = [];
@@ -32,15 +35,6 @@ function harness(namedConfigured = false) {
       return request;
     },
   };
-  const dgram = {
-    createSocket() {
-      const socket = new EventEmitter();
-      socket.connect = (_port, _host, callback) => callback();
-      socket.address = () => ({ address: '192.168.1.5' });
-      socket.close = () => {};
-      return socket;
-    },
-  };
   const childProcess = {
     spawn(file, args, options) {
       spawns.push({ file, args, options });
@@ -53,7 +47,6 @@ function harness(namedConfigured = false) {
   };
   const modules = {
     'node:child_process': childProcess,
-    'node:dgram': dgram,
     'node:fs': { readFileSync: () => 'DECURIX_LAN_PORT=8123\n' },
     'node:http': http,
     'node:path': path,
@@ -71,13 +64,12 @@ function harness(namedConfigured = false) {
   return { api: module.exports, state, spawns, warnings, get child() { return child; } };
 }
 
-test('publishes only the gated LAN and quick tunnel URLs, then clears the temporary link', async () => {
+test('publishes only the gated quick tunnel URL, then clears the temporary link', async () => {
   const h = harness();
-  const access = await h.api.setupMobileAccess('/profile/AppData/decurix');
-  assert.equal(h.state.lan_url, 'http://192.168.1.5:8123');
+  const access = await h.api.setupMobileAccess('/profile/AppData/decurix', tunnelCommand);
   assert.equal(h.spawns.length, 1);
-  assert.equal(h.spawns[0].file, 'cloudflared');
-  assert.deepEqual(Array.from(h.spawns[0].args), ['tunnel', '--protocol', 'http2', '--url', 'http://127.0.0.1:8123']);
+  assert.equal(h.spawns[0].file, 'cloudflared.exe');
+  assert.deepEqual(Array.from(h.spawns[0].args), ['tunnel', '--url', 'http://127.0.0.1:8123']);
   h.child.stderr.emit('data', 'https://blue-');
   h.child.stderr.emit('data', 'flower.trycloudflare.com');
   for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setImmediate(resolve));
@@ -87,9 +79,16 @@ test('publishes only the gated LAN and quick tunnel URLs, then clears the tempor
   assert.equal(h.warnings.length, 0);
 });
 
+test('publishes no LAN address: the gated listener is on loopback', async () => {
+  const h = harness();
+  const access = await h.api.setupMobileAccess('/profile/AppData/decurix', tunnelCommand);
+  assert.equal(h.state.lan_url, '');
+  await access.stop();
+});
+
 test('does not start a quick tunnel when a named tunnel is configured', async () => {
   const h = harness(true);
-  const access = await h.api.setupMobileAccess('/profile/AppData/decurix');
+  const access = await h.api.setupMobileAccess('/profile/AppData/decurix', tunnelCommand);
   assert.equal(access, null);
   assert.equal(h.spawns.length, 0);
 });
@@ -101,14 +100,12 @@ test('ignores Cloudflare API hostnames in tunnel output', () => {
   assert.equal(h.api.lanPort('/profile/AppData/decurix', {}), 8123);
 });
 
-
-test('missing cloudflared leaves LAN access available without crashing', async () => {
+test('a tunnel that cannot start leaves the app running', async () => {
   const h = harness();
-  const access = await h.api.setupMobileAccess('/profile/AppData/decurix');
+  const access = await h.api.setupMobileAccess('/profile/AppData/decurix', tunnelCommand);
   h.child.emit('error', new Error('ENOENT'));
   h.child.emit('close', -1);
   for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(h.state.lan_url, 'http://192.168.1.5:8123');
   assert.equal(h.state.lan_tunnel_url, '');
   assert.match(h.warnings[0][1], /ENOENT/);
   await access.stop();

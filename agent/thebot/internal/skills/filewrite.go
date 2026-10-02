@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"thebot/internal/hostshell"
 	"thebot/internal/llm"
 )
 
@@ -222,6 +223,12 @@ func resolveWritePath(rc RunContext, path string) (string, error) {
 	p = filepath.Clean(p)
 
 	roots := []string{rc.WorkDir, home, os.TempDir()}
+	if hostshell.Windows {
+		// A native Windows worker's home and temp folder are the person's
+		// own, with their documents in them: only its work folder and
+		// workspace are its to write in.
+		roots = []string{rc.WorkDir}
+	}
 	if rc.Workspace != nil {
 		roots = append(roots, rc.Workspace.Root())
 	}

@@ -58,6 +58,7 @@ func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 		LinkedMemory:    linkedMemory,
 		DesktopNames:    desktopNames,
 		TunnelURL:       s.Tunnel.Get(),
+		Native:          s.Desktops.Native(),
 	}
 
 	if err := s.Web.RenderIndex(w, data); err != nil {
@@ -473,6 +474,24 @@ func (s *Server) deleteDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	// The worker's records outlive its container.
 	if err := s.Tasks.MarkWorkerDeleted(desktop.SanitizeID(id)); err != nil {
 		log.Printf("deleteDesktop: %v", err)
+	}
+
+	// Its chat does not: a desktop made later under the same name is another
+	// worker, and opened with this one's whole conversation in it (found by
+	// deleting "eve" and creating "eve"). The task records above keep what
+	// was done.
+	s.Chat.Clear(desktop.SanitizeID(id))
+
+	// Nor does what it learned, for the same reason: the new worker's card
+	// listed the old one's memory, a skill among it that it did not have.
+	// (Its skills and memory files went with its home.) A backup taken
+	// first is how know-how is carried to another worker.
+	forgotten, err := s.Memory.DeleteForDesktop(desktop.SanitizeID(id))
+	if err != nil {
+		log.Printf("deleteDesktop: %v", err)
+	}
+	if s.Suggest != nil {
+		s.Suggest.Forget(forgotten)
 	}
 
 	// A schedule targeting a deleted desktop would otherwise keep matching
