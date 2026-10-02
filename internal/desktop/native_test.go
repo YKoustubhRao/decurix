@@ -244,10 +244,70 @@ func TestANativeManagerNeverReachesForDocker(t *testing.T) {
 	if stale := m.StaleControlPlane(ctx); stale != nil {
 		t.Errorf("StaleControlPlane = %v", stale)
 	}
-	if err := m.MigrateHostApps(ctx, "ada", []string{"chrome"}); err != nil {
-		t.Errorf("MigrateHostApps: %v", err)
+	// Apps become shortcuts on a worker's screen; there is no worker "ada" here.
+	if err := m.MigrateHostApps(ctx, "ada", []string{"chrome"}); !errors.Is(err, ErrNotFound) {
+		t.Errorf("MigrateHostApps for a worker that is not there = %v, want ErrNotFound", err)
 	}
 	if _, _, err := m.StartClaudeLogin(ctx); err == nil {
 		t.Error("the Claude login, which needs a container, started")
+	}
+}
+
+// The apps picked for a native worker are shortcuts, not copies: a service's
+// web version, or a program the scan confirmed can run on a private desktop.
+// Credentials to copy and apps that cannot be shown mean nothing there.
+func TestTheAppsPickedForANativeWorkerBecomeShortcuts(t *testing.T) {
+	detected := []HostAppItem{
+		{ID: "chatgpt", Name: "ChatGPT", Mode: ModeWeb},
+		{ID: "win_google-chrome", Name: "Google Chrome", Mode: ModeHostGUI, HostCmd: `cmd.exe /c start explorer.exe shell:AppsFolder\Chrome`},
+		{ID: "win_code", Name: "Code", Mode: ModeHostGUI, HostCmd: `cmd.exe /c start "" "C:\Programs\VS Code\Code.exe" --new-window`},
+		{ID: "ssh", Name: "SSH keys", Mode: ModeData},
+		{ID: "win_calculator", Name: "Calculator", Mode: ModeUnavailable, HostCmd: `cmd.exe /c start explorer.exe shell:AppsFolder\Calc!App`},
+	}
+
+	got := nativeApps([]string{"chatgpt", "WIN_GOOGLE-CHROME", "win_code", "ssh", "win_calculator", "nobody", "chatgpt"}, detected)
+
+	want := []NativeApp{
+		{ID: "chatgpt", Name: "ChatGPT", Kind: NativeAppWeb, Target: "https://chatgpt.com"},
+		{ID: "win_google-chrome", Name: "Google Chrome", Kind: NativeAppProgram, Target: `shell:AppsFolder\Chrome`},
+		{ID: "win_code", Name: "Code", Kind: NativeAppProgram, Target: `C:\Programs\VS Code\Code.exe`, Args: "--new-window"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("shortcuts = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("shortcut %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestANativeWorkerKeepsItsShortcutsWhenMoreAreAdded(t *testing.T) {
+	m := nativeForTest(t)
+	writeWorker(t, m, nativeMeta{ID: "ada", Name: "Ada", Harness: HarnessTheBot, Brain: BrainClaude,
+		Apps: []NativeApp{{ID: "chatgpt", Name: "ChatGPT", Kind: NativeAppWeb, Target: "https://chatgpt.com"}}})
+
+	err := m.native.addNativeApps("ada", []NativeApp{
+		{ID: "chatgpt", Name: "ChatGPT", Kind: NativeAppWeb, Target: "https://chatgpt.com/new"},
+		{ID: "win_code", Name: "Code", Kind: NativeAppProgram, Target: `C:\Code.exe`},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	apps, err := m.NativeApps("Ada")
+	if err != nil || len(apps) != 2 || apps[0].Target != "https://chatgpt.com/new" || apps[1].ID != "win_code" {
+		t.Fatalf("NativeApps = %+v, %v: want ChatGPT replaced in place and Code added after it", apps, err)
+	}
+
+	if _, err := m.NativeApps("nobody"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("NativeApps of a worker that is not there = %v, want ErrNotFound", err)
+	}
+	// A stopped worker has no screen, so its screen is not "empty", and nothing can be opened on it.
+	if m.NativeScreenEmpty("ada") {
+		t.Error("a worker that is not running was reported as an empty screen")
+	}
+	if err := m.OpenNativeProgram("ada", apps[1]); !errors.Is(err, ErrNotRunning) {
+		t.Errorf("opening a program on a stopped worker = %v, want ErrNotRunning", err)
 	}
 }

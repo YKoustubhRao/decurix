@@ -72,6 +72,31 @@ func (s *Server) recordViewerInput(id string) func(hostGUIRequest) {
 	}
 }
 
+// recordWorkerInput is recordViewerInput for a worker's whole desktop, where a press can land on the wallpaper: on one
+// of its icons (which opens something - recorded as the "open" it causes, not as a click on a picture) or on nothing.
+// Neither is a step of a demonstration, and a replay would click a bare spot of the screen for it.
+func (s *Server) recordWorkerInput(id string, over interface{ OverWindow(x, y int) bool }) func(hostGUIRequest) {
+	record := s.recordViewerInput(id)
+	onWallpaper := false // a press that began on the wallpaper ends there too
+
+	return func(req hostGUIRequest) {
+		switch req.Kind {
+		case "down":
+			onWallpaper = s.recordingOn(id) && !over.OverWindow(req.X, req.Y)
+			if onWallpaper {
+				return
+			}
+		case "up":
+			if onWallpaper {
+				onWallpaper = false
+				return
+			}
+		}
+
+		record(req)
+	}
+}
+
 // recordingOn reports whether a demonstration is being recorded on the worker, asking its agent when the last
 // answer is old.
 func (s *Server) recordingOn(id string) bool {

@@ -1113,8 +1113,42 @@ def _learning_by_model(run):
     return _engine_can_drive() and not run.get("replay_only") and _stage(run) == experience.APPRENTICE
 
 
-def _criteria(skill):
-    """What the person said about the task and what done looks like, for the model and the check."""
+def _for_this_run(text, skill, values):
+    """
+    `text` about the task with each value the demonstration typed replaced by
+    this run's. What was understood from a demonstration is worded in its own
+    values ("a LinkedIn profile is open for Koustubh Rao"): read as it stands
+    it sends the model after the demonstration's result, and - found live -
+    the check called a run for another name done because the demonstration's
+    page was still on the screen.
+    """
+
+    for param in skill.get("params") or []:
+        example, value = param.get("example"), (values or {}).get(param.get("name"))
+        if value not in (None, ""):
+            # A lesson writes an input as its name in braces (study.py).
+            text = text.replace("{" + str(param.get("name")) + "}", str(value))
+        if not example or value in (None, "") or param.get("list") or len(str(example)) < 3:
+            continue
+        text = re.sub(re.escape(str(example)), lambda _m, v=str(value): v, text, flags=re.IGNORECASE)
+    return text
+
+
+# What a result's description still holds of the demonstration once its typed
+# values are replaced.
+EXAMPLE_NOTE = ("Where what the person said or what done looks like names a detail of the demonstration's own result "
+                "(a place, a date, an amount, a company, a title), it is an example of the kind of result - this "
+                "run's result has its own. The demonstration's own result on the screen is NOT this run's.")
+
+
+def _criteria(skill, values=None):
+    """
+    What the person said about the task and what done looks like, for the
+    model and the check - in this run's values when they are given.
+    """
+
+    if values:
+        return _for_this_run(_criteria(skill), skill, values) + "\n" + EXAMPLE_NOTE
 
     parts = []
     said = skills.explanation(skill)
@@ -1153,8 +1187,8 @@ def _procedure(run, from_step=None, note="", ran=False):
 
     understood = skill.get("understanding") or {}
     if understood.get("summary"):
-        lines.append(f"What the task is: {understood['summary']}")
-    criteria = _criteria(skill)
+        lines.append(f"What the task is: {_for_this_run(understood['summary'], skill, run['values'])}")
+    criteria = _criteria(skill, run["values"])
     if criteria:
         lines.append("What the person said, and what was agreed when they taught it (follow it):\n" + criteria)
 
@@ -1218,15 +1252,24 @@ def _procedure(run, from_step=None, note="", ran=False):
 def _engine_request(run):
     """The request the engine is given for a taught task."""
 
-    if run.get("mimic"):
-        return run["context"] or run["mimic"]["text"]
-
     skill = run["skill"]
-    request = f"Do the task you were taught, \"{skill.get('title') or skill['name']}\" (skill {skill['name']})"
+
+    # A request matched to a recording goes in the same words as a `/skill`
+    # run, with what the person typed after them - never as their words alone.
+    # Found live: `search "sundar pichai"`, matched to a taught search, went to
+    # the engine as typed; its triage called that a question, its chat skill -
+    # no tools - answered "DONE", and nothing had touched the screen. The
+    # engine sends "Do the task you were taught" to its operator, always.
+    if run.get("one_off"):
+        request = f"Do the task you were taught by a recording of \"{run['mimic']['text']}\""
+    else:
+        request = f"Do the task you were taught, \"{skill.get('title') or skill['name']}\" (skill {skill['name']})"
     if run["values"]:
         request += " with " + ", ".join(f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in run["values"].items())
     request += "."
-    if run.get("context"):
+    if run.get("mimic"):
+        request += "\n\nThe person asked: " + (run.get("context") or run["mimic"]["text"])
+    elif run.get("context"):
         request += "\n\n" + run["context"]
     return request
 
@@ -1255,7 +1298,7 @@ def _by_model(run, from_step=None, note="", ran=False):
 def _judge(run, claim):
     skill = run["skill"]
     steps = "; ".join(f"{s['n']}. {s.get('summary')}" for s in skill["steps"])[:1500]
-    return verify.judge(run.get("context") or _engine_request(run), claim=claim, criteria=_criteria(skill),
+    return verify.judge(run.get("context") or _engine_request(run), claim=claim, criteria=_criteria(skill, run["values"]),
                         values=run["values"], steps=steps, live_png=evidence.live(),
                         reference_png=evidence.final_frame(skill), observed=evidence.observed())
 
@@ -1313,6 +1356,13 @@ def _correct(run, text):
     run["skill"]["corrections"] = fresh["corrections"]
 
 
+def _acts_on_screen(skill):
+    """Whether a skill's own steps are work on the screen (every recorded skill's are)."""
+
+    return any(step.get("kind") in ("click", "double_click", "right_click", "type", "key", "select", "drag", "scroll",
+                                    "open", "upload") for step in skill.get("steps") or [])
+
+
 def _did_screen_work():
     """Whether the task being worked on acted on the screen (its recording has an action in it)."""
 
@@ -1358,9 +1408,18 @@ def _gate(reply, kind, engine):
         return False
 
     progress.emit("Checking the screen to see that the task was really done.")
-    verdict = _judge(run, reply) if run is not None else verify.judge(guided["task"], claim=reply,
-                                                                          live_png=evidence.live(),
-                                                                          observed=evidence.observed())
+    if run is not None and _acts_on_screen(run["skill"]) and not _did_screen_work():
+        # Nothing was opened, clicked or typed during this task, and the task
+        # is done on the screen: no picture of the screen can make that done -
+        # what it shows is left from before (found live: the demonstration's
+        # own page, still open, passed for a run that had done nothing).
+        verdict = {"verdict": verify.NOT_DONE, "confidence": 1.0, "seen": "",
+                   "why": "Nothing was done on the screen during this task: no app was opened, nothing clicked or "
+                          "typed. The task has to be carried out with the gui command."}
+    else:
+        verdict = _judge(run, reply) if run is not None else verify.judge(guided["task"], claim=reply,
+                                                                              live_png=evidence.live(),
+                                                                              observed=evidence.observed())
 
     if verdict["verdict"] == verify.DONE:
         guidance.end()

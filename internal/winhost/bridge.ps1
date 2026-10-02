@@ -9,6 +9,13 @@
 #   check <target> <args>    what launch would decide, without starting anything: "OK<TAB>exe<TAB>args<TAB>dir<TAB>own<TAB>base"
 #                            (the program it resolved to, for launchr) or "ERR <reason>"
 #   launchr <exe> <args> <dir> <own 0|1> <base>   launch what a check resolved, with nothing left to look up
+#   open <target> <args>     start one more app on the desktop a launch made (a worker's screen), resolved as launch does
+#   count                    "COUNT <n>": how many windows a person would see on the desktop (0 is an empty screen)
+#   shortcuts <label><TAB>id<US>name<US>icon<TAB>...   the icons on a worker's wallpaper (US is \x1f); label is its corner text
+#   tasks                    "TASKS handle<US>a|m|-<US>title<TAB>...": the windows a taskbar has a button for, front first
+#   win raise|min|close <handle>   what a taskbar button does to its window
+#   start                    open the Start menu drawn on a worker's taskbar, or put it away
+#   over <x> <y>             "OVER window" or "OVER desktop": what the picture shows at that point
 #   screen                   the picture is the whole private desktop, shown even when nothing has a window on it (a
 #                            worker's screen, winhost.OpenDesktop) rather than one app's windows
 #   viewers <n>              how many people are watching; the picture is only captured while n > 0
@@ -26,6 +33,7 @@
 #   FRAME <W> <H> <x> <y> <w> <h> <whole 0|1> <n>   then n raw JPEG bytes: the picture is W x H and this JPEG is its
 #                            rectangle x,y,w,h (the whole picture when <whole> is 1). Sent only when something changed.
 #   EVENT closed             the app has no window left
+#   EVENT open <id>          a shortcut on the wallpaper was double-clicked
 param([Parameter(Mandatory = $true)][string]$DesktopName)
 
 $NativeSource = @'
@@ -171,6 +179,28 @@ public class Native {
     public static string Launch(string desktopName, string exe, string args, string workDir) {
         desktop = CreateDesktop(desktopName, IntPtr.Zero, IntPtr.Zero, 0, 0x10000000, IntPtr.Zero);
         if (desktop == IntPtr.Zero) return "ERR CreateDesktop failed (" + Marshal.GetLastWin32Error() + ")";
+        IntPtr process;
+        string said = Spawn(desktopName, exe, args, workDir, out process);
+        if (process != IntPtr.Zero) launched = process;
+        return said;
+    }
+
+    // One more program on the desktop Launch already made: a person opening an app on a worker's screen. It is in the
+    // same job, so it ends with the desktop, but it is not what the session was started for - Status still speaks of that.
+    public static string Open(string desktopName, string exe, string args, string workDir) {
+        if (desktop == IntPtr.Zero) return "ERR this desktop has not been started";
+        IntPtr process;
+        string said = Spawn(desktopName, exe, args, workDir, out process);
+        if (process != IntPtr.Zero) CloseHandle(process);
+        Kick();
+        return said;
+    }
+
+    // How many windows a person would see on the desktop: 0 is an empty screen.
+    public static int WindowCount() { return AppWindows().Count; }
+
+    static string Spawn(string desktopName, string exe, string args, string workDir, out IntPtr process) {
+        process = IntPtr.Zero;
         STARTUPINFO si = new STARTUPINFO();
         si.cb = Marshal.SizeOf(si);
         si.lpDesktop = desktopName;
@@ -182,7 +212,7 @@ public class Native {
         Marshal.FreeHGlobal(env);
         if (!started) return "ERR CreateProcess failed (" + err + ")";
         AssignProcessToJobObject(job, pi.hProcess);
-        launched = pi.hProcess;
+        process = pi.hProcess;
         return "OK pid=" + pi.dwProcessId;
     }
 
@@ -258,7 +288,7 @@ public class Native {
     class Win { public IntPtr H; public RECT R, V; public double Sc; }
 
     static bool Collect(IntPtr h, IntPtr l) {
-        if (!IsWindowVisible(h)) return true;
+        if (!IsWindowVisible(h) || IsIconic(h)) return true; // a minimised window is parked off the screen
         var cls = new StringBuilder(80); GetClassName(h, cls, 80);
         if (Array.IndexOf(SystemWindowClasses, cls.ToString()) >= 0) return true;
         int cloaked; // a window the shell has hidden but not destroyed (a hosted app that is not on screen)
@@ -317,7 +347,8 @@ public class Native {
         var bmp = new Bitmap(pw, ph, PixelFormat.Format24bppRgb);
         try {
             using (var g = Graphics.FromImage(bmp)) {
-                g.Clear(Color.FromArgb(0x1b, 0x1b, 0x1b));
+                if (fixedScreen) lock (deskLock) g.DrawImageUnscaled(Backdrop(pw, ph), 0, 0);
+                else g.Clear(Color.FromArgb(0x1b, 0x1b, 0x1b));
                 g.InterpolationMode = InterpolationMode.HighQualityBilinear;
                 // A popup's drop shadow and rounded corners capture as black; over the window beneath them they should show it.
                 var seeThrough = new ImageAttributes();
@@ -342,6 +373,7 @@ public class Native {
                     }
                 }
             }
+            if (fixedScreen) using (var g = Graphics.FromImage(bmp)) lock (deskLock) DrawShell(g);
             lock (geo) { frameL = l; frameT = t; frameScale = sc; haveFrame = true; }
             return bmp;
         } catch { bmp.Dispose(); throw; }
@@ -474,6 +506,606 @@ public class Native {
         return true;
     }
 
+    // ---- A worker's desktop. A private desktop has no shell: no wallpaper, no icons, no taskbar, and nothing that
+    // raises a clicked window or moves one by its title bar - that is Explorer's and the window manager's work, done
+    // for real input, and input here is posted messages. So in screen mode this helper is the missing half: it paints
+    // a wallpaper and the worker's shortcuts behind the windows, and treats a press on a title bar, a border or a
+    // caption button the way the window manager would. The taskbar is the viewer page's (drawn here it would cover the
+    // foot of a maximised window); it asks for the windows with "tasks" and acts on one with "win".
+
+    [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+    [DllImport("user32.dll")] static extern bool ShowWindowAsync(IntPtr h, int cmd);
+    [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
+    [DllImport("user32.dll")] static extern bool IsZoomed(IntPtr h);
+    [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint cmd);
+    [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int index);
+    [DllImport("user32.dll")] static extern uint GetClassLong(IntPtr h, int index);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll")] static extern IntPtr SetActiveWindow(IntPtr h);
+    [DllImport("user32.dll")] static extern uint GetDoubleClickTime();
+    [DllImport("gdi32.dll")] static extern int GetObject(IntPtr h, int size, out BITMAP bm);
+    [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr h);
+    [StructLayout(LayoutKind.Sequential)] struct BITMAP { public int bmType, bmWidth, bmHeight, bmWidthBytes; public short bmPlanes, bmBitsPixel; public IntPtr bmBits; }
+    [StructLayout(LayoutKind.Sequential)] struct BITMAPINFOHEADER { public int biSize, biWidth, biHeight; public short biPlanes, biBitCount; public int biCompression, biSizeImage, biXPelsPerMeter, biYPelsPerMeter, biClrUsed, biClrImportant; }
+    [StructLayout(LayoutKind.Sequential)] struct DIBSECTION { public BITMAP dsBm; public BITMAPINFOHEADER dsBmih; public uint mask0, mask1, mask2; public IntPtr dshSection; public uint dsOffset; }
+    [DllImport("gdi32.dll", EntryPoint = "GetObject")] static extern int GetDib(IntPtr h, int size, out DIBSECTION dib);
+    [StructLayout(LayoutKind.Sequential)] struct SIZE { public int cx, cy; }
+    [ComImport, Guid("bcc18b79-ba16-442f-80c4-8a59c30c463b"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IShellItemImageFactory { [PreserveSig] int GetImage(SIZE size, int flags, out IntPtr hbm); }
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    static extern int SHCreateItemFromParsingName(string path, IntPtr bindContext, [MarshalAs(UnmanagedType.LPStruct)] Guid iid, out IShellItemImageFactory item);
+
+    class Shortcut { public string Id, Name; public Bitmap Img; public Rectangle Box; }
+    static readonly object deskLock = new object();
+    static List<Shortcut> shortcuts = new List<Shortcut>();
+    static Bitmap backdrop;
+    static string deskLabel = "";
+    static int picked = -1; static long pickedAt;
+
+    static double Dpi() { try { return GetDpiForSystem() / 96.0; } catch { return 1.0; } }
+
+    // Where a program named without a folder is: beside Windows, or where it registered itself (App Paths).
+    static string FindProgram(string exe) {
+        string sys = System.IO.Path.Combine(Environment.SystemDirectory, exe);
+        if (System.IO.File.Exists(sys)) return sys;
+        foreach (var hive in new[] { Microsoft.Win32.Registry.CurrentUser, Microsoft.Win32.Registry.LocalMachine }) {
+            try {
+                using (var key = hive.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\App Paths\" + exe)) {
+                    string p = key == null ? null : key.GetValue(null) as string;
+                    if (p != null) { p = Environment.ExpandEnvironmentVariables(p).Trim('"'); if (System.IO.File.Exists(p)) return p; }
+                }
+            } catch { }
+        }
+        return null;
+    }
+
+    // The icon Windows itself shows for a program, a shortcut or a Start-menu entry (shell:AppsFolder\...), at the size
+    // asked for. Null when it has none to give; the shortcut is then drawn as its initial.
+    static Bitmap ShellIcon(string source, int px) {
+        if (string.IsNullOrEmpty(source)) return null;
+        try {
+            string path = Environment.ExpandEnvironmentVariables(source);
+            if (path.IndexOf('\\') < 0 && path.IndexOf(':') < 0) path = FindProgram(path);
+            if (path == null) return null;
+            IShellItemImageFactory item;
+            if (SHCreateItemFromParsingName(path, IntPtr.Zero, typeof(IShellItemImageFactory).GUID, out item) != 0 || item == null) return null;
+            IntPtr hbm;
+            int hr = item.GetImage(new SIZE { cx = px, cy = px }, 0x4 /* SIIGBF_ICONONLY */, out hbm);
+            Marshal.ReleaseComObject(item);
+            if (hr != 0 || hbm == IntPtr.Zero) return null;
+            try {
+                DIBSECTION dib;
+                int got = GetDib(hbm, Marshal.SizeOf(typeof(DIBSECTION)), out dib);
+                BITMAP bm = dib.dsBm;
+                if (got == 0 || bm.bmBits == IntPtr.Zero || bm.bmBitsPixel != 32) return Image.FromHbitmap(hbm);
+                // The pixels carry their own transparency, which Image.FromHbitmap would drop (a black square behind the icon).
+                using (var view = new Bitmap(bm.bmWidth, bm.bmHeight, bm.bmWidthBytes, PixelFormat.Format32bppPArgb, bm.bmBits)) {
+                    var copy = new Bitmap(view.Width, view.Height, PixelFormat.Format32bppPArgb);
+                    using (var g = Graphics.FromImage(copy)) g.DrawImageUnscaled(view, 0, 0);
+                    // A DIB's rows are stored last row first unless its height is written as negative: read as they
+                    // lie in memory, such a picture is upside down.
+                    if (got >= Marshal.SizeOf(typeof(DIBSECTION)) && dib.dsBmih.biHeight > 0) copy.RotateFlip(RotateFlipType.RotateNoneFlipY);
+                    return copy;
+                }
+            } finally { DeleteObject(hbm); }
+        } catch { return null; }
+    }
+
+    // The worker's shortcuts: "id<US>name<US>icon source", TAB between them. label is written in the wallpaper's corner.
+    public static void SetShortcuts(string label, string spec) {
+        int px = (int)Math.Round(48 * Dpi());
+        var list = new List<Shortcut>();
+        foreach (string entry in spec.Split('\t')) {
+            string[] f = entry.Split('\u001f');
+            if (f.Length < 2 || f[0].Length == 0) continue;
+            list.Add(new Shortcut { Id = f[0], Name = f[1], Img = ShellIcon(f.Length > 2 ? f[2] : "", px) });
+        }
+        lock (deskLock) {
+            foreach (var old in shortcuts) if (old.Img != null) old.Img.Dispose();
+            shortcuts = list; deskLabel = label ?? ""; picked = -1;
+            if (backdrop != null) { backdrop.Dispose(); backdrop = null; }
+        }
+        Kick();
+    }
+
+    static readonly Color[] BadgeColors = { Color.FromArgb(0x2f, 0x8f, 0x6b), Color.FromArgb(0x3b, 0x6f, 0xb6), Color.FromArgb(0x8a, 0x5c, 0xb8), Color.FromArgb(0xb8, 0x6a, 0x3b), Color.FromArgb(0xa8, 0x4a, 0x62) };
+
+    // What is behind every window: the wallpaper, with the shortcuts on it. Kept until the shortcuts or the one picked
+    // change, so a capture only copies it. Called with deskLock held.
+    static Bitmap Backdrop(int w, int h) {
+        if (backdrop != null && backdrop.Width == w && backdrop.Height == h) return backdrop;
+        if (backdrop != null) backdrop.Dispose();
+        var bmp = new Bitmap(w, h, PixelFormat.Format24bppRgb);
+        float s = (float)Dpi();
+        using (var g = Graphics.FromImage(bmp)) {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+            // The wallpaper every Decurix desktop has (agent/decurix-wallpaper.svg: a black-to-red-to-yellow sweep, two
+            // glows and the mark), drawn rather than loaded - GDI+ reads no SVG.
+            float k = w / 1280f;
+            using (var sweep = new LinearGradientBrush(new PointF(0, 0), new PointF(w, h), Color.Black, Color.White)) {
+                sweep.InterpolationColors = new ColorBlend {
+                    Colors = new[] { Color.FromArgb(0x05, 0x03, 0x02), Color.FromArgb(0x33, 0x05, 0x03), Color.FromArgb(0x7a, 0x0f, 0x07), Color.FromArgb(0xc2, 0x1f, 0x0c),
+                                     Color.FromArgb(0xe8, 0x5f, 0x0f), Color.FromArgb(0xff, 0xb7, 0x03), Color.FromArgb(0xff, 0xe0, 0x66) },
+                    Positions = new[] { 0f, 0.18f, 0.38f, 0.56f, 0.74f, 0.90f, 1f }
+                };
+                g.FillRectangle(sweep, 0, 0, w, h);
+            }
+            foreach (var glow in new[] { new { X = 154f, Y = -58f, R = 620f, C = Color.FromArgb(76, 0xff, 0xd6, 0x0a) }, new { X = 1344f, Y = 756f, R = 520f, C = Color.FromArgb(61, 0xff, 0x78, 0x14) } })
+                using (var round = new GraphicsPath()) {
+                    round.AddEllipse((glow.X - glow.R) * k, (glow.Y - glow.R) * k, 2 * glow.R * k, 2 * glow.R * k);
+                    using (var light = new PathGradientBrush(round)) {
+                        light.CenterColor = glow.C;
+                        light.SurroundColors = new[] { Color.FromArgb(0, glow.C) };
+                        g.FillPath(light, round);
+                    }
+                }
+            Blossom(g, 970 * k, 470 * k, 24 * 11.5f * k, Color.FromArgb(14, 255, 255, 255), Color.FromArgb(18, 255, 255, 255));
+
+            int cw = (int)(96 * s), ch = (int)(104 * s), icon = (int)Math.Round(48 * s), m = (int)(12 * s);
+            if (barH == 0) LayoutBar();
+            int rows = Math.Max(1, (h - barH - 2 * m) / ch);
+            using (var f = new Font("Segoe UI", 12f * s, GraphicsUnit.Pixel))
+            using (var white = new SolidBrush(Color.White))
+            using (var shade = new SolidBrush(Color.FromArgb(170, 0, 0, 0)))
+            using (var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Near, Trimming = StringTrimming.EllipsisCharacter }) {
+                for (int i = 0; i < shortcuts.Count; i++) {
+                    var sc = shortcuts[i];
+                    sc.Box = new Rectangle(m + (i / rows) * cw, m + (i % rows) * ch, cw, ch);
+                    if (i == picked) {
+                        var box = Rectangle.Inflate(sc.Box, -(int)(3 * s), -(int)(3 * s));
+                        using (var fill = new SolidBrush(Color.FromArgb(60, 255, 255, 255))) g.FillRectangle(fill, box);
+                        using (var line = new Pen(Color.FromArgb(130, 255, 255, 255))) g.DrawRectangle(line, box);
+                    }
+                    var at = new Rectangle(sc.Box.X + (cw - icon) / 2, sc.Box.Y + (int)(10 * s), icon, icon);
+                    if (sc.Img != null) g.DrawImage(sc.Img, at);
+                    else {
+                        using (var fill = new SolidBrush(BadgeColors[Math.Abs(sc.Name.GetHashCode() % BadgeColors.Length)])) g.FillEllipse(fill, at);
+                        using (var big = new Font("Segoe UI", 24f * s, FontStyle.Bold, GraphicsUnit.Pixel))
+                        using (var mid = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+                            g.DrawString(sc.Name.Length > 0 ? sc.Name.Substring(0, 1).ToUpper() : "?", big, white, at, mid);
+                    }
+                    var text = new RectangleF(sc.Box.X + 2, at.Bottom + 5 * s, cw - 4, sc.Box.Bottom - at.Bottom - 8 * s);
+                    var under = text; under.Offset(1, 1);
+                    g.DrawString(sc.Name, f, shade, under, fmt);
+                    g.DrawString(sc.Name, f, white, text, fmt);
+                }
+            }
+        }
+        backdrop = bmp;
+        return bmp;
+    }
+
+    // ---- The taskbar and the Start menu, drawn over the foot of the picture the way the Linux desktops' panel is laid
+    // out (agent/decurix-panel.xml): a dark bar with, in its middle, the Start button (the red tile of
+    // agent/decurix-start-icon.svg), the browser pinned beside it and an icon for each open window, and the time over
+    // the date at the right. They are painted, not windows, so they are in nobody's way but the viewer's: a press on
+    // them is the shell's and goes no further.
+
+    [DllImport("user32.dll")] static extern bool SystemParametersInfo(uint action, uint param, ref RECT r, uint ini);
+    [DllImport("user32.dll", EntryPoint = "GetClassLongPtrW")] static extern IntPtr GetClassLongPtr(IntPtr h, int index);
+
+    class TaskButton { public IntPtr H; public bool Front; public string Title, Pin; public Rectangle Box; }
+    static int barH; static Rectangle barRect, startRect, menuRect;
+    static List<TaskButton> barButtons = new List<TaskButton>();
+    static List<Rectangle> menuItems = new List<Rectangle>();
+    static bool menuOpen, shellDown; static int menuHover = -1, barHover = -2; // barHover: -1 the Start button, else a button's
+    static Bitmap barBmp, menuBmp; static string barKey = "", menuKey = "";
+    static readonly Dictionary<IntPtr, Bitmap> windowIcons = new Dictionary<IntPtr, Bitmap>();
+
+    // The Linux desktops' theme (Yaru-red-dark): a dark grey panel, light text, the red of the Start tile.
+    static readonly Color Panel = Color.FromArgb(0x2c, 0x2c, 0x2c), Panel2 = Color.FromArgb(0x38, 0x38, 0x38), Ink = Color.FromArgb(0xf7, 0xf7, 0xf7),
+                          Ink2 = Color.FromArgb(0xb8, 0xb8, 0xb8), Lit = Color.FromArgb(0x4a, 0x4a, 0x4a), Red = Color.FromArgb(0xc2, 0x1f, 0x0c);
+
+    // The Decurix mark: five petals and a centre, in a box of the given size.
+    static void Blossom(Graphics g, float x, float y, float size, Color petals, Color centre) {
+        float k = size / 24f;
+        float[,] at = { { 12f, 7.25f }, { 16.52f, 10.53f }, { 14.79f, 15.84f }, { 9.21f, 15.84f }, { 7.48f, 10.53f } };
+        using (var b = new SolidBrush(petals))
+            for (int i = 0; i < 5; i++) g.FillEllipse(b, x + (at[i, 0] - 2.85f) * k, y + (at[i, 1] - 2.85f) * k, 5.7f * k, 5.7f * k);
+        using (var b = new SolidBrush(centre)) g.FillEllipse(b, x + 9.8f * k, y + 9.8f * k, 4.4f * k, 4.4f * k);
+    }
+
+    static GraphicsPath Rounded(RectangleF r, float radius) {
+        var p = new GraphicsPath(); float d = radius * 2;
+        p.AddArc(r.X, r.Y, d, d, 180, 90); p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+        p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90); p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+        p.CloseFigure(); return p;
+    }
+
+    // Where the taskbar is. A maximised window fills this computer's work area, which leaves the height of the person's
+    // own taskbar free at the foot of the screen: the worker's is drawn exactly there, so it covers nothing. With no
+    // such gap (their taskbar hides itself, or is elsewhere) it has the panel's own height, over the foot of the picture.
+    static void LayoutBar() {
+        float s = (float)Dpi();
+        var work = new RECT(); int gap = 0;
+        try { if (SystemParametersInfo(0x30 /* SPI_GETWORKAREA */, 0, ref work, 0)) gap = screenH - work.B; } catch { }
+        barH = gap >= (int)(30 * s) && gap <= (int)(80 * s) ? gap : (int)Math.Round(44 * s);
+        barRect = new Rectangle(0, screenH - barH, screenW, barH);
+        if (startRect.IsEmpty) startRect = new Rectangle(screenW / 2, barRect.Y, barH, barH);
+    }
+
+    // The small picture a window shows of itself: its own icon, else its program's.
+    static Bitmap WindowIcon(IntPtr h, int px) {
+        Bitmap have;
+        if (windowIcons.TryGetValue(h, out have)) return have;
+        if (windowIcons.Count > 64) windowIcons.Clear();
+        Bitmap bmp = null;
+        try {
+            IntPtr icon = IntPtr.Zero, answer;
+            foreach (int which in new[] { 1, 2, 0 }) // the big one first: it is drawn at 22 px and more
+                if (icon == IntPtr.Zero && SendMessageTimeout(h, 0x7F /* WM_GETICON */, (IntPtr)which, IntPtr.Zero, 0x2, 100, out answer) != IntPtr.Zero) icon = answer;
+            if (icon == IntPtr.Zero) icon = GetClassLongPtr(h, -14 /* GCLP_HICON */);
+            if (icon == IntPtr.Zero) icon = GetClassLongPtr(h, -34 /* GCLP_HICONSM */);
+            if (icon != IntPtr.Zero) using (var ic = Icon.FromHandle(icon)) bmp = ic.ToBitmap();
+            else { int pid; GetWindowThreadProcessId(h, out pid); bmp = ShellIcon(Process.GetProcessById(pid).MainModule.FileName, px); }
+        } catch { }
+        windowIcons[h] = bmp;
+        return bmp;
+    }
+
+    // The shortcuts pinned beside the Start button: the browser, as on the Linux panel.
+    static Shortcut Pinned() {
+        foreach (var sc in shortcuts) if (sc.Id == "decurix:browser") return sc;
+        return null;
+    }
+
+    // Draws the taskbar (and the Start menu while it is open) over the picture. Each is kept as a bitmap until what it
+    // shows changes, so a capture only copies it. Called with deskLock held.
+    static void DrawShell(Graphics g) {
+        if (barH == 0) LayoutBar();
+        float s = (float)Dpi();
+
+        var list = new List<IntPtr>();
+        if (desktop != IntPtr.Zero) Enum(TaskWindow, list);
+        var key = new StringBuilder();
+        var titles = new List<string>(); var mins = new List<bool>();
+        foreach (IntPtr h in list) {
+            var title = new StringBuilder(200); GetWindowText(h, title, 200);
+            titles.Add(title.ToString()); mins.Add(IsIconic(h));
+            key.Append(h.ToInt64()).Append(mins[mins.Count - 1] ? 'm' : '-').Append(title).Append('\n');
+        }
+        string clock = DateTime.Now.ToString("hh:mm tt", System.Globalization.CultureInfo.InvariantCulture);
+        string day = DateTime.Now.ToString("MM/dd/yyyy", System.Globalization.CultureInfo.InvariantCulture);
+        Shortcut pin = Pinned();
+        key.Append(clock).Append(barHover).Append(menuOpen).Append(pin != null);
+
+        if (barBmp == null || key.ToString() != barKey || barBmp.Width != barRect.Width) {
+            barKey = key.ToString();
+            if (barBmp != null) barBmp.Dispose();
+            barBmp = new Bitmap(barRect.Width, barRect.Height, PixelFormat.Format24bppRgb);
+            barButtons.Clear();
+            using (var b = Graphics.FromImage(barBmp)) {
+                b.SmoothingMode = SmoothingMode.AntiAlias;
+                b.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                b.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+                b.Clear(Panel);
+                using (var hover = new SolidBrush(Panel2)) using (var front = new SolidBrush(Lit)) using (var red = new SolidBrush(Red))
+                using (var ink = new SolidBrush(Ink)) using (var dim = new SolidBrush(Ink2)) {
+                    // The time over the date, at the right.
+                    using (var right = new StringFormat { Alignment = StringAlignment.Far, LineAlignment = StringAlignment.Center })
+                    using (var small = new Font("Segoe UI", 11.5f * s, GraphicsUnit.Pixel)) {
+                        b.DrawString(clock, small, ink, new RectangleF(barRect.Width - 140 * s, 1 * s, 128 * s, barRect.Height / 2f), right);
+                        b.DrawString(day, small, ink, new RectangleF(barRect.Width - 140 * s, barRect.Height / 2f - 1 * s, 128 * s, barRect.Height / 2f), right);
+                    }
+
+                    // In the middle: Start, what is pinned, then an icon for each window.
+                    float cell = barRect.Height, pad = 5 * s, tile = cell - 2 * pad;
+                    int n = 1 + (pin != null ? 1 : 0) + list.Count;
+                    float x = Math.Max(8 * s, (barRect.Width - n * cell) / 2f);
+                    int icon = (int)Math.Round(24 * s);
+
+                    startRect = new Rectangle((int)x, barRect.Y, (int)cell, barRect.Height);
+                    var box = new RectangleF(x + pad, pad, tile, tile);
+                    if (barHover == -1 || menuOpen) using (var p = Rounded(RectangleF.Inflate(box, 2 * s, 2 * s), 7 * s)) b.FillPath(hover, p);
+                    using (var p = Rounded(RectangleF.Inflate(box, -2 * s, -2 * s), 6 * s)) b.FillPath(red, p);
+                    float mark = (tile - 4 * s) * 0.82f;
+                    Blossom(b, box.X + (tile - mark) / 2, box.Y + (tile - mark) / 2, mark, Color.FromArgb(200, 255, 255, 255), Color.White);
+                    x += cell;
+
+                    if (pin != null) {
+                        box = new RectangleF(x + pad, pad, tile, tile);
+                        barButtons.Add(new TaskButton { Pin = pin.Id, Title = pin.Name, Box = new Rectangle((int)x, 0, (int)cell, barRect.Height) });
+                        if (barHover == barButtons.Count - 1) using (var p = Rounded(box, 6 * s)) b.FillPath(hover, p);
+                        var at = new RectangleF(box.X + (tile - icon) / 2, box.Y + (tile - icon) / 2, icon, icon);
+                        if (pin.Img != null) b.DrawImage(pin.Img, at);
+                        x += cell;
+                    }
+
+                    bool first = true;
+                    for (int i = 0; i < list.Count && x + cell < barRect.Width - 150 * s; i++, x += cell) {
+                        box = new RectangleF(x + pad, pad, tile, tile);
+                        bool isFront = first && !mins[i];
+                        if (!mins[i]) first = false;
+                        barButtons.Add(new TaskButton { H = list[i], Front = isFront, Title = titles[i], Box = new Rectangle((int)x, 0, (int)cell, barRect.Height) });
+                        using (var p = Rounded(box, 6 * s)) { if (isFront) b.FillPath(front, p); else if (barHover == barButtons.Count - 1) b.FillPath(hover, p); }
+                        // A line under a window that is open, longer under the one in front - how a panel says "running".
+                        float line = isFront ? 16 * s : 6 * s;
+                        using (var mark2 = new SolidBrush(mins[i] ? Ink2 : Red)) b.FillRectangle(mark2, box.X + (tile - line) / 2, barRect.Height - 4 * s, line, 3 * s);
+                        Bitmap pic = WindowIcon(list[i], icon);
+                        var at = new RectangleF(box.X + (tile - icon) / 2, box.Y + (tile - icon) / 2 - 1 * s, icon, icon);
+                        if (pic != null) b.DrawImage(pic, at);
+                        else using (var p = Rounded(at, 5 * s)) b.FillPath(dim, p);
+                    }
+                }
+            }
+        }
+        g.DrawImageUnscaled(barBmp, barRect.X, barRect.Y);
+
+        // The name of what the pointer is on, above it: the buttons are icons only.
+        if (!menuOpen && barHover >= 0 && barHover < barButtons.Count && !string.IsNullOrEmpty(barButtons[barHover].Title)) {
+            var tb = barButtons[barHover];
+            using (var f = new Font("Segoe UI", 12f * s, GraphicsUnit.Pixel)) {
+                string title = tb.Title.Length > 60 ? tb.Title.Substring(0, 57) + "..." : tb.Title;
+                SizeF size = g.MeasureString(title, f);
+                float tw = size.Width + 14 * s, th = size.Height + 8 * s;
+                float tx = Math.Max(4 * s, Math.Min(barRect.Width - tw - 4 * s, tb.Box.X + tb.Box.Width / 2f - tw / 2));
+                var tip = new RectangleF(tx, barRect.Y - th - 6 * s, tw, th);
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+                using (var p = Rounded(tip, 5 * s)) using (var fill = new SolidBrush(Color.FromArgb(240, Panel))) g.FillPath(fill, p);
+                using (var ink = new SolidBrush(Ink)) g.DrawString(title, f, ink, tip.X + 7 * s, tip.Y + 4 * s);
+            }
+        }
+
+        if (!menuOpen) return;
+        var mkey = shortcuts.Count + ":" + menuHover + ":" + startRect.X + ":" + (shortcuts.Count > 0 ? shortcuts[0].Id : "");
+        if (menuBmp == null || mkey != menuKey) {
+            menuKey = mkey;
+            if (menuBmp != null) menuBmp.Dispose();
+            int row = (int)(40 * s), pad = (int)(8 * s), head = (int)(36 * s), width = (int)(320 * s);
+            int rows = Math.Max(1, Math.Min(shortcuts.Count, (barRect.Y - head - 2 * pad - (int)(12 * s)) / row));
+            int height = head + rows * row + pad;
+            int left = Math.Max((int)(6 * s), Math.Min(screenW - width - (int)(6 * s), startRect.X + startRect.Width / 2 - width / 2));
+            menuRect = new Rectangle(left, barRect.Y - (int)(8 * s) - height, width, height);
+            menuBmp = new Bitmap(menuRect.Width, menuRect.Height, PixelFormat.Format32bppPArgb);
+            menuItems.Clear();
+            using (var b = Graphics.FromImage(menuBmp)) {
+                b.SmoothingMode = SmoothingMode.AntiAlias;
+                b.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                b.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+                var all = new RectangleF(0.5f, 0.5f, menuRect.Width - 1, menuRect.Height - 1);
+                using (var p = Rounded(all, 10 * s)) using (var fill = new SolidBrush(Panel)) using (var line = new Pen(Lit)) { b.FillPath(fill, p); b.DrawPath(line, p); }
+                using (var ink = new SolidBrush(Ink)) using (var dim = new SolidBrush(Ink2))
+                using (var hover = new SolidBrush(Lit))
+                using (var f = new Font("Segoe UI", 13f * s, GraphicsUnit.Pixel))
+                using (var caps = new Font("Segoe UI", 11f * s, FontStyle.Bold, GraphicsUnit.Pixel))
+                using (var fmt = new StringFormat { LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap }) {
+                    b.DrawString("Applications", caps, dim, new RectangleF(pad + 8 * s, 0, width, head), fmt);
+                    int icon = (int)Math.Round(24 * s);
+                    for (int i = 0; i < rows; i++) {
+                        var box = new Rectangle(pad, head + i * row, width - 2 * pad, row);
+                        menuItems.Add(box);
+                        if (i == menuHover) using (var p = Rounded(box, 6 * s)) b.FillPath(hover, p);
+                        var at = new RectangleF(box.X + 8 * s, box.Y + (row - icon) / 2f, icon, icon);
+                        var sc = shortcuts[i];
+                        if (sc.Img != null) b.DrawImage(sc.Img, at);
+                        else {
+                            using (var fill = new SolidBrush(BadgeColors[Math.Abs(sc.Name.GetHashCode() % BadgeColors.Length)])) b.FillEllipse(fill, at);
+                            using (var mid = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+                                b.DrawString(sc.Name.Length > 0 ? sc.Name.Substring(0, 1).ToUpper() : "?", caps, ink, at, mid);
+                        }
+                        b.DrawString(sc.Name, f, ink, new RectangleF(at.Right + 10 * s, box.Y, box.Right - at.Right - 14 * s, row), fmt);
+                    }
+                }
+            }
+        }
+        g.DrawImage(menuBmp, menuRect.X, menuRect.Y, menuRect.Width, menuRect.Height);
+    }
+
+    // A press on the taskbar or the Start menu. "OK" when the press was the shell's: the Start button opens and shuts
+    // the menu, a row of the menu or a pinned icon opens that shortcut, a window's icon brings it to the front (or
+    // minimises the one already there), and a press anywhere else while the menu is open only puts it away.
+    static string ShellPress(POINT p, bool right) {
+        string open = null; IntPtr raise = IntPtr.Zero, min = IntPtr.Zero; bool mine = false;
+        lock (deskLock) {
+            if (barH == 0) LayoutBar();
+            if (menuOpen && menuRect.Contains(p.X, p.Y)) {
+                for (int i = 0; i < menuItems.Count && !right; i++)
+                    if (menuItems[i].Contains(p.X - menuRect.X, p.Y - menuRect.Y) && i < shortcuts.Count) open = shortcuts[i].Id;
+                if (open != null) menuOpen = false;
+                mine = true;
+            } else if (startRect.Contains(p.X, p.Y)) {
+                if (!right) menuOpen = !menuOpen;
+                mine = true;
+            } else {
+                mine = menuOpen;
+                menuOpen = false;
+                if (barRect.Contains(p.X, p.Y)) {
+                    mine = true;
+                    foreach (var b in barButtons) {
+                        if (right || !b.Box.Contains(p.X - barRect.X, p.Y - barRect.Y)) continue;
+                        if (b.Pin != null) open = b.Pin; else if (b.Front) min = b.H; else raise = b.H;
+                    }
+                }
+            }
+            if (mine) { menuHover = -1; shellDown = true; }
+        }
+        if (open != null) Reply("EVENT open " + open);
+        if (raise != IntPtr.Zero) Activate(raise);
+        if (min != IntPtr.Zero) ShowWindowAsync(min, 6 /* SW_MINIMIZE */);
+        return mine ? "OK" : null;
+    }
+
+    // The pointer over the taskbar or the open menu lights what it is on; true when it is over either, so the move
+    // goes to no window underneath.
+    static bool ShellHover(POINT p) {
+        lock (deskLock) {
+            if (barH == 0) LayoutBar();
+            int bar = -2, item = -1;
+            bool inMenu = menuOpen && menuRect.Contains(p.X, p.Y);
+            if (inMenu) { for (int i = 0; i < menuItems.Count; i++) if (menuItems[i].Contains(p.X - menuRect.X, p.Y - menuRect.Y)) item = i; }
+            else if (startRect.Contains(p.X, p.Y)) bar = -1;
+            else if (barRect.Contains(p.X, p.Y)) { for (int i = 0; i < barButtons.Count; i++) if (barButtons[i].Box.Contains(p.X - barRect.X, p.Y - barRect.Y)) bar = i; }
+            barHover = bar; menuHover = item;
+            return inMenu || barRect.Contains(p.X, p.Y);
+        }
+    }
+
+    // Opens the Start menu, or puts it away: what the Start key does.
+    public static void ToggleStart() {
+        lock (deskLock) { menuOpen = !menuOpen; menuHover = -1; }
+        Kick();
+    }
+
+    static bool OverShell(POINT p) {
+        lock (deskLock) { if (barH == 0) LayoutBar(); return barRect.Contains(p.X, p.Y) || (menuOpen && menuRect.Contains(p.X, p.Y)); }
+    }
+
+    // A press on the wallpaper: it picks the shortcut under it, and a second press there within a double-click opens it -
+    // which is said to the control plane ("EVENT open <id>"), since what a shortcut starts is the control plane's to know.
+    static void DesktopPress(POINT p) {
+        string open = null;
+        lock (deskLock) {
+            Backdrop(screenW, screenH); // where each icon is is worked out when the wallpaper is drawn
+            int hit = -1;
+            for (int i = 0; i < shortcuts.Count; i++) if (shortcuts[i].Box.Contains(p.X, p.Y)) hit = i;
+            long now = Stopwatch.GetTimestamp();
+            if (hit >= 0 && hit == picked && (now - pickedAt) * 1000 / Stopwatch.Frequency <= GetDoubleClickTime()) { open = shortcuts[hit].Id; pickedAt = 0; }
+            else pickedAt = now;
+            if (hit != picked) { picked = hit; if (backdrop != null) { backdrop.Dispose(); backdrop = null; } }
+        }
+        if (open != null) Reply("EVENT open " + open);
+    }
+
+    // "window" where a window shows this point of the picture, "desktop" where only the wallpaper does.
+    public static string Over(int x, int y) {
+        EnsureGeometry();
+        POINT p = ScreenPoint(x, y);
+        return (!fixedScreen || !OverShell(p)) && WindowAt(p) != IntPtr.Zero ? "window" : "desktop";
+    }
+
+    // Brings a window to the front and gives it the keyboard, restoring it if it was minimised - what a click on a
+    // window or on its taskbar button does. Windows does this only for real input, and only lets a thread of the same
+    // desktop, joined to the window's input queue, do it instead.
+    static void Activate(IntPtr top) {
+        var th = new Thread(() => {
+            if (!SetThreadDesktop(desktop)) return;
+            int pid; uint owner = GetWindowThreadProcessId(top, out pid);
+            uint me = GetCurrentThreadId();
+            bool joined = AttachThreadInput(me, owner, true);
+            try {
+                if (IsIconic(top)) ShowWindowAsync(top, 9 /* SW_RESTORE */);
+                // BringWindowToTop says yes and leaves another program's window where it was (measured); putting it
+                // above everything and then back among ordinary windows does move it.
+                bool always = (GetWindowLong(top, -20 /* GWL_EXSTYLE */) & 0x8 /* WS_EX_TOPMOST */) != 0;
+                SetWindowPos(top, (IntPtr)(-1) /* HWND_TOPMOST */, 0, 0, 0, 0, 0x1 | 0x2 | 0x10 /* NOSIZE, NOMOVE, NOACTIVATE */);
+                if (!always) SetWindowPos(top, (IntPtr)(-2) /* HWND_NOTOPMOST */, 0, 0, 0, 0, 0x1 | 0x2 | 0x10);
+                SetForegroundWindow(top); SetActiveWindow(top);
+            } finally { if (joined) AttachThreadInput(me, owner, false); }
+        }) { IsBackground = true };
+        th.Start(); th.Join(500); // an app that has stopped answering must not take the session with it
+    }
+
+    // What part of a window a point is on, in the window's own words (WM_NCHITTEST): 1 its contents, 2 its title bar,
+    // 8/9/20 the minimise, maximise and close buttons, 10-17 its borders.
+    static int HitTest(IntPtr top, POINT p) {
+        double sc = Scale(top);
+        int x = (int)Math.Round(p.X * sc), y = (int)Math.Round(p.Y * sc);
+        IntPtr answer;
+        if (SendMessageTimeout(top, 0x0084, IntPtr.Zero, (IntPtr)(((y & 0xFFFF) << 16) | (x & 0xFFFF)), 0x2, 200, out answer) == IntPtr.Zero) return 1;
+        return (int)(long)answer;
+    }
+
+    static void Caption(IntPtr w, int hit) {
+        int command = hit == 20 ? 0xF060 /* SC_CLOSE */ : hit == 8 ? 0xF020 /* SC_MINIMIZE */ : IsZoomed(w) ? 0xF120 /* SC_RESTORE */ : 0xF030 /* SC_MAXIMIZE */;
+        PostMessage(w, 0x0112 /* WM_SYSCOMMAND */, (IntPtr)command, IntPtr.Zero);
+    }
+
+    static IntPtr dragWin, pressWin; static int dragHit, pressHit; static POINT dragFrom; static RECT dragRect;
+
+    // The window manager's share of a mouse event on a worker's desktop. "OK" when it was all there was to do; null when
+    // the event is for the window's own contents.
+    static string Manage(string kind, POINT p, bool right, bool twice) {
+        if (kind == "move") {
+            if (dragWin == IntPtr.Zero) return captured == IntPtr.Zero && ShellHover(p) ? "OK" : null;
+            int dx = p.X - dragFrom.X, dy = p.Y - dragFrom.Y;
+            int l = dragRect.L, t = dragRect.T, r = dragRect.R, b = dragRect.B;
+            bool left = dragHit == 10 || dragHit == 13 || dragHit == 16, rightEdge = dragHit == 11 || dragHit == 14 || dragHit == 17;
+            bool topEdge = dragHit >= 12 && dragHit <= 14, bottom = dragHit >= 15 && dragHit <= 17;
+            if (dragHit == 2) { l += dx; r += dx; t += dy; b += dy; }
+            if (left) l = Math.Min(l + dx, r - 160);
+            if (rightEdge) r = Math.Max(r + dx, l + 160);
+            if (topEdge) t = Math.Min(t + dy, b - 80);
+            if (bottom) b = Math.Max(b + dy, t + 80);
+            SetWindowPos(dragWin, IntPtr.Zero, l, t, r - l, b - t, 0x4 | 0x10 | 0x4000 /* NOZORDER, NOACTIVATE, ASYNCWINDOWPOS */);
+            return "OK";
+        }
+        if (kind == "up") {
+            if (shellDown) { shellDown = false; return "OK"; }
+            if (dragWin != IntPtr.Zero) { dragWin = IntPtr.Zero; return "OK"; }
+            if (pressWin == IntPtr.Zero) return null;
+            IntPtr w = pressWin; int hit = pressHit; pressWin = IntPtr.Zero;
+            // A caption button acts when the press is let go on it, so a press can still be taken back by moving off.
+            if (IsWindow(w) && WindowAt(p) == w && HitTest(w, p) == hit) Caption(w, hit);
+            return "OK";
+        }
+        if (captured != IntPtr.Zero) return null;
+        string shell = ShellPress(p, right);
+        if (shell != null || right) return shell;
+        IntPtr top = WindowAt(p);
+        if (top == IntPtr.Zero) { DesktopPress(p); return "OK"; }
+        var ws = AppWindows();
+        if (ws.Count > 0 && ws[0].H != top) Activate(top);
+        int at = HitTest(top, p);
+        if (at == 2 || (at >= 10 && at <= 17)) {
+            if (at == 2 && twice) Caption(top, 9);
+            else if (!IsZoomed(top)) { dragWin = top; dragHit = at; dragFrom = p; GetWindowRect(top, out dragRect); }
+            return "OK";
+        }
+        if (at == 8 || at == 9 || at == 20) { pressWin = top; pressHit = at; return "OK"; }
+        return null;
+    }
+
+    static bool TaskWindow(IntPtr h, IntPtr l) {
+        if (!IsWindowVisible(h) || GetWindow(h, 4 /* GW_OWNER */) != IntPtr.Zero) return true;
+        if ((GetWindowLong(h, -20 /* GWL_EXSTYLE */) & 0x80 /* WS_EX_TOOLWINDOW */) != 0) return true;
+        var cls = new StringBuilder(80); GetClassName(h, cls, 80);
+        if (Array.IndexOf(SystemWindowClasses, cls.ToString()) >= 0) return true;
+        int cloaked;
+        if (DwmGetWindowAttribute(h, 14, out cloaked, 4) == 0 && cloaked != 0) return true;
+        var title = new StringBuilder(200);
+        if (GetWindowText(h, title, 200) == 0) return true;
+        ((List<IntPtr>)GCHandle.FromIntPtr(l).Target).Add(h);
+        return true;
+    }
+
+    // The windows a taskbar would have a button for, topmost first: "<handle><US><a|m|-><US><title>", TAB between them.
+    // a is the one in front, m a minimised one.
+    public static string Tasks() {
+        var list = new List<IntPtr>();
+        if (desktop != IntPtr.Zero) Enum(TaskWindow, list);
+        var sb = new StringBuilder();
+        bool front = true;
+        foreach (IntPtr h in list) {
+            var title = new StringBuilder(200); GetWindowText(h, title, 200);
+            bool min = IsIconic(h);
+            if (sb.Length > 0) sb.Append('\t');
+            sb.Append(h.ToInt64()).Append('\u001f').Append(min ? "m" : front ? "a" : "-").Append('\u001f')
+              .Append(title.ToString().Replace('\t', ' ').Replace('\u001f', ' ').Replace('\r', ' ').Replace('\n', ' '));
+            if (!min) front = false;
+        }
+        return sb.ToString();
+    }
+
+    // What a taskbar button does to its window: raise (and restore), min, close. Only to a window that has a button.
+    public static string WindowDo(string action, long handle) {
+        IntPtr h = (IntPtr)handle;
+        var list = new List<IntPtr>();
+        if (desktop != IntPtr.Zero) Enum(TaskWindow, list);
+        if (!list.Contains(h)) return "ERR that window is not there any more";
+        switch (action) {
+            case "raise": Activate(h); break;
+            case "min": ShowWindowAsync(h, 6 /* SW_MINIMIZE */); break;
+            case "close": PostMessage(h, 0x0010 /* WM_CLOSE */, IntPtr.Zero, IntPtr.Zero); break;
+            default: return "ERR unknown action";
+        }
+        Kick();
+        return "OK";
+    }
+
     // Walks down to the innermost visible, enabled child under a screen point.
     static IntPtr Descend(IntPtr wnd, POINT screen) {
         for (int i = 0; i < 16; i++) {
@@ -538,15 +1170,33 @@ public class Native {
 
     // While a button is held, moves and the release go to the control that got the press, like mouse capture. mods is
     // any of c, s, a (Ctrl, Shift, Alt) held during this event.
+    static IntPtr downWin; static long downAt; static POINT downPt;
+
     public static string Mouse(string kind, int x, int y, bool right, string mods) {
         EnsureGeometry();
         POINT screen = ScreenPoint(x, y);
+        // A second press in the same place within the double-click time. Windows makes a double-click out of real input
+        // only, so posted presses never became one: a word could not be selected, nor a file opened from a list.
+        bool twice = false;
+        if (kind == "down" && !right) {
+            long now = Stopwatch.GetTimestamp();
+            IntPtr under = WindowAt(screen);
+            twice = under != IntPtr.Zero && under == downWin && (now - downAt) * 1000 / Stopwatch.Frequency <= GetDoubleClickTime()
+                    && Math.Abs(screen.X - downPt.X) <= 4 && Math.Abs(screen.Y - downPt.Y) <= 4;
+            downWin = twice ? IntPtr.Zero : under; downAt = now; downPt = screen;
+        }
+        if (fixedScreen) {
+            string managed = Manage(kind, screen, right, twice);
+            if (managed != null) return managed;
+        }
         IntPtr target = captured;
         if (target == IntPtr.Zero) {
             IntPtr top = WindowAt(screen);
             if (top == IntPtr.Zero) return "OK"; // nothing of the app is there
             target = Descend(top, screen);
         }
+        // Only a window that asked for double-clicks (CS_DBLCLKS) is sent one; any other takes a second press.
+        uint leftDown = twice && (GetClassLong(target, -26 /* GCL_STYLE */) & 0x8) != 0 ? 0x0203u /* WM_LBUTTONDBLCLK */ : WM_LBUTTONDOWN;
         IntPtr lp = ClientLParam(target, screen);
         // The flags a mouse message carries for the modifiers that are down (MK_CONTROL, MK_SHIFT).
         int flags = (mods.Contains("c") ? 0x8 : 0) | (mods.Contains("s") ? 0x4 : 0);
@@ -555,7 +1205,7 @@ public class Native {
                 case "move": PostMessage(target, WM_MOUSEMOVE, (IntPtr)(flags | (captured != IntPtr.Zero ? (right ? 2 : 1) : 0)), lp); break;
                 case "down":
                     PostMessage(target, WM_MOUSEMOVE, (IntPtr)flags, lp);
-                    PostMessage(target, right ? WM_RBUTTONDOWN : WM_LBUTTONDOWN, (IntPtr)(flags | (right ? 2 : 1)), lp);
+                    PostMessage(target, right ? WM_RBUTTONDOWN : leftDown, (IntPtr)(flags | (right ? 2 : 1)), lp);
                     break;
                 case "up": PostMessage(target, right ? WM_RBUTTONUP : WM_LBUTTONUP, (IntPtr)flags, lp); break;
             }
@@ -1045,6 +1695,21 @@ try {
                         Reply ([Native]::Launch($DesktopName, $l.Target, $l.Args, $l.WorkDir))
                     }
                 }
+                "open" {
+                    $f = $rest.Split("`t")
+                    $r = Resolve-Launch $f[0] $(if ($f.Count -gt 1) { $f[1] } else { '' })
+                    if ($r.Error) { Reply "ERR $($r.Error)" }
+                    else { Reply ([Native]::Open($DesktopName, $r.Target, $r.Args, $r.WorkDir)) }
+                }
+                "count" { Reply ("COUNT " + [Native]::WindowCount()) }
+                "shortcuts" {
+                    $f = $rest.Split("`t", 2)
+                    [Native]::SetShortcuts($f[0], $(if ($f.Count -gt 1) { $f[1] } else { '' })); Reply "OK"
+                }
+                "tasks" { Reply ("TASKS " + [Native]::Tasks()) }
+                "start" { [Native]::ToggleStart(); Reply "OK" }
+                "win" { $p = $rest.Split(" "); Reply ([Native]::WindowDo($p[0], [long]$p[1])) }
+                "over" { $p = $rest.Split(" "); Reply ("OVER " + [Native]::Over([int]$p[0], [int]$p[1])) }
                 "screen" { [Native]::FixedScreen(); Reply "OK" }
                 "viewers" { [Native]::SetViewers([int]$rest); Reply "OK" }
                 "keyframe" { [Native]::KeyFrame(); Reply "OK" }

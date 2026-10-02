@@ -435,6 +435,12 @@ func vncAuthResponse(challenge []byte, password string) ([]byte, error) {
 	return response, nil
 }
 
+// VNCAuthResponse is the answer VNC authentication expects to a challenge for
+// a password: what a native worker's own VNC endpoint checks a viewer against.
+func VNCAuthResponse(challenge []byte, password string) ([]byte, error) {
+	return vncAuthResponse(challenge, password)
+}
+
 // bits8Reverse reverses the bit order of a single byte.
 func bits8Reverse(b byte) byte {
 	var out byte

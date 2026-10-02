@@ -55,6 +55,7 @@ class WithTheModel(ts.TeachingBase):
         self.verdicts = []        # what the check says, in turn
         state.backend_ready = True
         guidance.end()
+        self.acted_on_screen = True   # whether the fake engine "worked the screen" during the task
 
         def engine(request, task_file=None):
             self.engine_calls.append((request, guidance.text()))
@@ -68,6 +69,7 @@ class WithTheModel(ts.TeachingBase):
             return self.verdicts.pop(0) if self.verdicts else verdict(verify.UNSURE)
 
         for patch in (mock.patch.object(skill_task, "_engine_can_drive", lambda: True),
+                      mock.patch.object(skill_task, "_did_screen_work", lambda: self.acted_on_screen),
                       mock.patch.object(skill_task, "_engine", engine),
                       mock.patch.object(skill_task.verify, "judge", judge),
                       mock.patch.object(skill_task.verify, "available", lambda: True),
@@ -117,6 +119,54 @@ class WithTheModel(ts.TeachingBase):
         self.assertIn("the customer is in the list", told)
         self.assertIn("never report DONE", told)
         self.assertIn("0 of 3 clean runs", told)
+
+    def test_a_done_with_nothing_done_on_the_screen_is_never_put_to_the_check(self):
+        # Found live: a taught search was answered "DONE" by an engine that had
+        # touched nothing, and the check passed it - the demonstration's own
+        # page was still open. A screen task with no screen action was not
+        # done, whatever the screen shows: sent back once, then asked about.
+        self.taught_customer()
+        self.screen()
+        self.acted_on_screen = False
+        self.verdicts = [verdict(verify.DONE, seen="Acme is in the customer list")]
+
+        skill_task.perform('/skill add-a-customer customer_name="Initech"')
+
+        self.assertEqual(self.judged, [])                      # no picture was asked to prove anything
+        self.assertEqual(len(self.engine_calls), 2)            # sent back once...
+        self.assertIn("Nothing was done on the screen", self.engine_calls[1][1])
+        self.assertEqual(self.finals, [])                      # ...and never reported done
+        self.assertIn("I do not think this is done", self.asked[-1][0])
+
+    def test_what_done_looks_like_is_said_in_this_runs_values(self):
+        # The lesson's words name the demonstration's value ("Acme"); the model
+        # and the check are told this run's.
+        self.teach("Acme is in the customer list", "yes", "changes", "yes")
+        self.asked.clear()
+        self.finals.clear()
+        self.screen()
+        self.verdicts = [verdict(verify.DONE, seen="Initech is in the customer list")]
+
+        skill_task.perform('/skill add-a-customer customer_name="Initech"')
+
+        told = self.engine_calls[0][1]
+        self.assertIn("Initech is in the customer list", told)
+        self.assertNotIn("Acme is in the customer list", told)
+        self.assertIn("Initech is in the customer list", self.judged[0]["criteria"])
+
+    def test_a_request_matched_to_a_taught_task_is_handed_over_as_one(self):
+        # Found live: the person's own words (`search "sundar pichai"`) went to
+        # the engine, which took them for a question and answered without
+        # doing anything. The engine's operator takes "Do the task you were taught".
+        skill = self.taught_customer()
+        run = {"skill": skill, "values": {"customer_name": "Initech"}, "mimic": {"text": "add customer Acme", "id": "x"},
+               "context": "add customer Initech"}
+
+        request = skill_task._engine_request(run)
+
+        self.assertTrue(request.startswith('Do the task you were taught, "Add a customer" (skill add-a-customer)'))
+        self.assertIn('customer_name="Initech"', request)
+        self.assertIn("The person asked: add customer Initech", request)
 
     def test_values_the_documents_gave_are_reported_when_the_model_did_the_task(self):
         # Found by bench/learn_documents: the replay's report said where each

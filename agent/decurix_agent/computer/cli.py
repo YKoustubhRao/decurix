@@ -1,5 +1,6 @@
 import argparse
 import os
+import re
 import sys
 
 from decurix_agent import cliargs, logging_utils, progress
@@ -40,7 +41,7 @@ TEXT_BUDGET = int(os.environ.get("DECURIX_GUI_TEXT_CHARS", "3500"))
 # engine is shown the screen (save_screenshot).
 SCREEN_COMMANDS = {
     "observe", "click", "double-click", "right-click", "type", "key", "scroll",
-    "select", "open", "upload", "drag", "verify", "replay", "do",
+    "select", "open", "upload", "drag", "verify", "replay", "do", "front",
 }
 
 
@@ -105,7 +106,13 @@ def save_screenshot(argv):
     try:
         from decurix_agent.computer import screen
 
-        data = screen.grab().png(scale=scale)
+        frame = screen.grab()
+        if scale == 1 and os.environ.get("DECURIX_GUI_RULER", "") == "1":
+            # So a vision model can say where something is (pointing.py).
+            from decurix_agent.computer import pointing
+
+            frame = pointing.ruled(frame)
+        data = frame.png(scale=scale)
         tmp = path + ".part"
         with open(tmp, "wb") as f:
             f.write(data)
@@ -124,6 +131,7 @@ USAGE = """gui - see and use this desktop's screen
   gui scroll [TARGET] down [N]   scroll up/down/left/right
   gui select TARGET "option"     choose an option in a dropdown
   gui open URL|FILE|APP          open a web page, a document, or an app
+  gui front TITLE                bring an open window to the front (a few words of its title)
   gui upload TARGET FILE...      upload file(s) to a file input element
   gui drag TARGET X,Y            drag an element (or a point) and drop it at X,Y
   gui verify [--text T]          look again: what changed, is T on screen?
@@ -243,8 +251,26 @@ def _last_name(ref):
     return None
 
 
+# A Windows path: a drive or a share, then folders. In one, a backslash is a
+# separator - "C:\\work\\notes\\t1" holds no new line and no tab.
+WINDOWS_PATH = re.compile(r"(?:^|[\s\"\'(=])(?:[A-Za-z]:|\\\\[\w.-]+)\\[^\s\"\']*")
+
+
 def _unescape(text):
-    return text.replace("\\n", "\n").replace("\\t", "\t")
+    """
+    The text of `gui type` with \\n and \\t read as a new line and a tab - outside a
+    Windows path. Found by bench/native: a file name typed into a Save dialog,
+    C:\\...\\workers\\t1\\home\\..., was refused as "a Tab in the text" (its \\t1), and
+    a folder called \\new would have been cut in two by an Enter.
+    """
+
+    out, last = [], 0
+    for match in WINDOWS_PATH.finditer(text):
+        out.append(text[last:match.start()].replace("\\n", "\n").replace("\\t", "\t"))
+        out.append(match.group(0))
+        last = match.end()
+    out.append(text[last:].replace("\\n", "\n").replace("\\t", "\t"))
+    return "".join(out)
 
 
 def _is_target(token):
@@ -308,6 +334,9 @@ def build_parser():
     opener = sub.add_parser("open", add_help=False)
     opener.add_argument("target", nargs="+")
     opener.add_argument("--new-tab", action="store_true")
+
+    front = sub.add_parser("front", add_help=False)
+    front.add_argument("title", nargs="+")
 
     verify = sub.add_parser("verify", add_help=False)
     verify.add_argument("--text")
@@ -438,6 +467,10 @@ def run(argv):
 
     if command == "open":
         print(core.open_target(" ".join(args.target), new_tab=args.new_tab))
+        return EXIT_OK
+
+    if command == "front":
+        print(core.bring_to_front(" ".join(args.title)))
         return EXIT_OK
 
     if command == "verify":
