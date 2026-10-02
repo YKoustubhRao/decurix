@@ -678,26 +678,38 @@ public class Native {
         return bmp;
     }
 
-    // ---- The taskbar and the Start menu, drawn over the foot of the picture the way the Linux desktops' panel is laid
-    // out (agent/decurix-panel.xml): a dark bar with, in its middle, the Start button (the red tile of
-    // agent/decurix-start-icon.svg), the browser pinned beside it and an icon for each open window, and the time over
-    // the date at the right. They are painted, not windows, so they are in nobody's way but the viewer's: a press on
-    // them is the shell's and goes no further.
+    // ---- The taskbar and the Start menu, drawn over the foot of the picture and laid out as Windows 11's are: a dark
+    // bar with, in its middle, the Start button (the red tile of agent/decurix-start-icon.svg), a Search box and an icon
+    // for each open window, and at the right the input language and the time over the date. Start and Search open one
+    // panel - a search field over the worker's apps - and the clock opens a calendar. They are painted, not windows, so
+    // they are in nobody's way but the viewer's: a press on them is the shell's and goes no further, and while the panel
+    // is open the keyboard is its search field's.
 
     [DllImport("user32.dll")] static extern bool SystemParametersInfo(uint action, uint param, ref RECT r, uint ini);
     [DllImport("user32.dll", EntryPoint = "GetClassLongPtrW")] static extern IntPtr GetClassLongPtr(IntPtr h, int index);
+    [DllImport("user32.dll")] static extern IntPtr GetKeyboardLayout(uint thread);
 
-    class TaskButton { public IntPtr H; public bool Front; public string Title, Pin; public Rectangle Box; }
-    static int barH; static Rectangle barRect, startRect, menuRect;
+    class TaskButton { public IntPtr H; public bool Front; public string Title; public Rectangle Box; }
+    // Open is a shortcut's id, or WebMark followed by the words to look up on the web.
+    class MenuItem { public Rectangle Box; public string Open; }
+    const char WebMark = '\u0001';
+    const int HoverStart = -1, HoverNone = -2, HoverSearch = -3, HoverLang = -4, HoverClock = -5; // barHover, else a window button's index
+    const int MaxQuery = 80;
+
+    static int barH; static Rectangle barRect, startRect, searchRect, langRect, clockRect, menuRect, calRect, calPrev, calNext;
     static List<TaskButton> barButtons = new List<TaskButton>();
-    static List<Rectangle> menuItems = new List<Rectangle>();
-    static bool menuOpen, shellDown; static int menuHover = -1, barHover = -2; // barHover: -1 the Start button, else a button's
-    static Bitmap barBmp, menuBmp; static string barKey = "", menuKey = "";
+    static List<MenuItem> menuItems = new List<MenuItem>();
+    static bool menuOpen, calOpen, shellDown; static int menuHover = -1, menuSel = -1, menuCols = 1, calMonth, barHover = HoverNone;
+    static string query = "";
+    static Bitmap barBmp, menuBmp, calBmp; static string barKey = "", menuKey = "", calKey = "";
+    static string langTop, langBottom = "", langName = "";
     static readonly Dictionary<IntPtr, Bitmap> windowIcons = new Dictionary<IntPtr, Bitmap>();
 
-    // The Linux desktops' theme (Yaru-red-dark): a dark grey panel, light text, the red of the Start tile.
-    static readonly Color Panel = Color.FromArgb(0x2c, 0x2c, 0x2c), Panel2 = Color.FromArgb(0x38, 0x38, 0x38), Ink = Color.FromArgb(0xf7, 0xf7, 0xf7),
-                          Ink2 = Color.FromArgb(0xb8, 0xb8, 0xb8), Lit = Color.FromArgb(0x4a, 0x4a, 0x4a), Red = Color.FromArgb(0xc2, 0x1f, 0x0c);
+    // Windows 11's dark theme: a near-black bar, lighter sheets above it, white text. The accent is Decurix's red.
+    static readonly Color Panel = Color.FromArgb(0x20, 0x20, 0x20), Panel2 = Color.FromArgb(0x2d, 0x2d, 0x2d), Ink = Color.FromArgb(0xff, 0xff, 0xff),
+                          Ink2 = Color.FromArgb(0xc5, 0xc5, 0xc5), Ink3 = Color.FromArgb(0x7d, 0x7d, 0x7d), Lit = Color.FromArgb(0x3d, 0x3d, 0x3d),
+                          Sheet = Color.FromArgb(0x2b, 0x2b, 0x2b), Foot = Color.FromArgb(0x22, 0x22, 0x22), Field = Color.FromArgb(0x1c, 0x1c, 0x1c),
+                          Glow = Color.FromArgb(22, 255, 255, 255), Red = Color.FromArgb(0xc2, 0x1f, 0x0c);
 
     // The Decurix mark: five petals and a centre, in a box of the given size.
     static void Blossom(Graphics g, float x, float y, float size, Color petals, Color centre) {
@@ -709,20 +721,38 @@ public class Native {
     }
 
     static GraphicsPath Rounded(RectangleF r, float radius) {
-        var p = new GraphicsPath(); float d = radius * 2;
+        var p = new GraphicsPath(); float d = Math.Max(1f, Math.Min(radius * 2, Math.Min(r.Width, r.Height)));
         p.AddArc(r.X, r.Y, d, d, 180, 90); p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
         p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90); p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
         p.CloseFigure(); return p;
     }
 
+    // A magnifying glass in a box of the given size: what says "search".
+    static void Glass(Graphics g, float x, float y, float size, Color c) {
+        float d = size * 0.66f;
+        using (var pen = new Pen(c, Math.Max(1.4f, size / 9f)) { StartCap = LineCap.Round, EndCap = LineCap.Round }) {
+            g.DrawEllipse(pen, x, y, d, d);
+            g.DrawLine(pen, x + d * 0.86f, y + d * 0.86f, x + size, y + size);
+        }
+    }
+
+    // A shortcut's picture, or its initial on a coloured disc when Windows has no picture of it.
+    static void Emblem(Graphics g, Shortcut sc, RectangleF at) {
+        if (sc.Img != null) { g.DrawImage(sc.Img, at); return; }
+        using (var fill = new SolidBrush(BadgeColors[Math.Abs(sc.Name.GetHashCode() % BadgeColors.Length)])) g.FillEllipse(fill, at);
+        using (var f = new Font("Segoe UI", at.Height * 0.5f, FontStyle.Bold, GraphicsUnit.Pixel)) using (var white = new SolidBrush(Color.White))
+        using (var mid = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+            g.DrawString(sc.Name.Length > 0 ? sc.Name.Substring(0, 1).ToUpper() : "?", f, white, at, mid);
+    }
+
     // Where the taskbar is. A maximised window fills this computer's work area, which leaves the height of the person's
     // own taskbar free at the foot of the screen: the worker's is drawn exactly there, so it covers nothing. With no
-    // such gap (their taskbar hides itself, or is elsewhere) it has the panel's own height, over the foot of the picture.
+    // such gap (their taskbar hides itself, or is elsewhere) it has Windows 11's own height, over the foot of the picture.
     static void LayoutBar() {
         float s = (float)Dpi();
         var work = new RECT(); int gap = 0;
         try { if (SystemParametersInfo(0x30 /* SPI_GETWORKAREA */, 0, ref work, 0)) gap = screenH - work.B; } catch { }
-        barH = gap >= (int)(30 * s) && gap <= (int)(80 * s) ? gap : (int)Math.Round(44 * s);
+        barH = gap >= (int)(30 * s) && gap <= (int)(80 * s) ? gap : (int)Math.Round(48 * s);
         barRect = new Rectangle(0, screenH - barH, screenW, barH);
         if (startRect.IsEmpty) startRect = new Rectangle(screenW / 2, barRect.Y, barH, barH);
     }
@@ -746,17 +776,57 @@ public class Native {
         return bmp;
     }
 
-    // The shortcuts pinned beside the Start button: the browser, as on the Linux panel.
-    static Shortcut Pinned() {
-        foreach (var sc in shortcuts) if (sc.Id == "decurix:browser") return sc;
-        return null;
+    // The input language as Windows' taskbar writes it: "ENG" over "IN". It is the person's own - what they type
+    // reaches the worker as the characters their keyboard made - so it is shown, not switched.
+    static void ReadLanguage() {
+        if (langTop != null) return;
+        var ci = System.Globalization.CultureInfo.CurrentCulture;
+        try { int id = (int)((long)GetKeyboardLayout(0) & 0xFFFF); if (id != 0) ci = new System.Globalization.CultureInfo(id); } catch { }
+        try {
+            langName = ci.DisplayName;
+            langBottom = ci.IsNeutralCulture ? "" : new System.Globalization.RegionInfo(ci.LCID).TwoLetterISORegionName.ToUpperInvariant();
+            langTop = ci.ThreeLetterISOLanguageName.ToUpperInvariant();
+        } catch { langTop = "ENG"; }
     }
 
-    // Draws the taskbar (and the Start menu while it is open) over the picture. Each is kept as a bitmap until what it
-    // shows changes, so a capture only copies it. Called with deskLock held.
+    // The worker's apps the search field's words find: names that begin with them first, then names with a word that
+    // does, then names that hold them anywhere. Every app when nothing is typed.
+    static List<Shortcut> Matches() {
+        var found = new List<Shortcut>();
+        string q = query.Trim().ToLowerInvariant();
+        if (q.Length == 0) { found.AddRange(shortcuts); return found; }
+        for (int pass = 0; pass < 3; pass++)
+            foreach (var sc in shortcuts) {
+                string name = sc.Name.ToLowerInvariant();
+                int rank = name.StartsWith(q, StringComparison.Ordinal) ? 0 : (" " + name).IndexOf(" " + q, StringComparison.Ordinal) >= 0 ? 1
+                         : name.IndexOf(q, StringComparison.Ordinal) >= 0 ? 2 : 3;
+                if (rank == pass) found.Add(sc);
+            }
+        return found;
+    }
+
+    // What the open panel offers, in order: the apps found, and - when something is typed - looking it up on the web.
+    // Worked out from the words alone, never from what was last drawn: Enter can follow a letter before the next picture.
+    static List<string> Offers() {
+        var offers = new List<string>();
+        foreach (var sc in Matches()) offers.Add(sc.Id);
+        if (query.Trim().Length > 0) offers.Add(WebMark + query.Trim());
+        return offers;
+    }
+
+    static void Announce(string open) {
+        if (string.IsNullOrEmpty(open)) return;
+        if (open[0] == WebMark) Reply("EVENT web " + open.Substring(1)); else Reply("EVENT open " + open);
+    }
+
+    static void OpenMenu() { menuOpen = true; calOpen = false; query = ""; menuSel = -1; menuHover = -1; }
+
+    // Draws the taskbar (and the Start panel or the calendar while one is open) over the picture. Each is kept as a
+    // bitmap until what it shows changes, so a capture only copies it. Called with deskLock held.
     static void DrawShell(Graphics g) {
         if (barH == 0) LayoutBar();
         float s = (float)Dpi();
+        ReadLanguage();
 
         var list = new List<IntPtr>();
         if (desktop != IntPtr.Zero) Enum(TaskWindow, list);
@@ -767,10 +837,9 @@ public class Native {
             titles.Add(title.ToString()); mins.Add(IsIconic(h));
             key.Append(h.ToInt64()).Append(mins[mins.Count - 1] ? 'm' : '-').Append(title).Append('\n');
         }
-        string clock = DateTime.Now.ToString("hh:mm tt", System.Globalization.CultureInfo.InvariantCulture);
-        string day = DateTime.Now.ToString("MM/dd/yyyy", System.Globalization.CultureInfo.InvariantCulture);
-        Shortcut pin = Pinned();
-        key.Append(clock).Append(barHover).Append(menuOpen).Append(pin != null);
+        // The time and the date as this computer writes them.
+        string clock = DateTime.Now.ToString("t"), day = DateTime.Now.ToString("d");
+        key.Append(clock).Append(day).Append(barHover).Append(menuOpen).Append(calOpen);
 
         if (barBmp == null || key.ToString() != barKey || barBmp.Width != barRect.Width) {
             barKey = key.ToString();
@@ -782,48 +851,70 @@ public class Native {
                 b.InterpolationMode = InterpolationMode.HighQualityBicubic;
                 b.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
                 b.Clear(Panel);
-                using (var hover = new SolidBrush(Panel2)) using (var front = new SolidBrush(Lit)) using (var red = new SolidBrush(Red))
-                using (var ink = new SolidBrush(Ink)) using (var dim = new SolidBrush(Ink2)) {
-                    // The time over the date, at the right.
-                    using (var right = new StringFormat { Alignment = StringAlignment.Far, LineAlignment = StringAlignment.Center })
-                    using (var small = new Font("Segoe UI", 11.5f * s, GraphicsUnit.Pixel)) {
-                        b.DrawString(clock, small, ink, new RectangleF(barRect.Width - 140 * s, 1 * s, 128 * s, barRect.Height / 2f), right);
-                        b.DrawString(day, small, ink, new RectangleF(barRect.Width - 140 * s, barRect.Height / 2f - 1 * s, 128 * s, barRect.Height / 2f), right);
+                using (var edge = new Pen(Lit)) b.DrawLine(edge, 0, 0, barRect.Width, 0);
+                using (var hover = new SolidBrush(Glow)) using (var field = new SolidBrush(Panel2)) using (var red = new SolidBrush(Red))
+                using (var ink = new SolidBrush(Ink)) using (var dim = new SolidBrush(Ink2)) using (var rim = new Pen(Lit)) {
+                    float cell = barRect.Height, pad = 5 * s, tile = cell - 2 * pad;
+
+                    // At the right: the language, then the time over the date.
+                    int clockW = (int)(96 * s), langW = (int)(46 * s);
+                    clockRect = new Rectangle(barRect.Width - clockW - (int)(6 * s), barRect.Y, clockW, barRect.Height);
+                    langRect = new Rectangle(clockRect.X - langW - (int)(2 * s), barRect.Y, langW, barRect.Height);
+                    foreach (var lit in new[] { new { On = barHover == HoverClock || calOpen, Box = clockRect }, new { On = barHover == HoverLang, Box = langRect } })
+                        if (lit.On) using (var p = Rounded(new RectangleF(lit.Box.X, pad - 1 * s, lit.Box.Width, tile + 2 * s), 5 * s)) b.FillPath(hover, p);
+                    using (var right = new StringFormat { Alignment = StringAlignment.Far, LineAlignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap })
+                    using (var centre = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap })
+                    using (var small = new Font("Segoe UI", 12f * s, GraphicsUnit.Pixel)) {
+                        float half = barRect.Height / 2f;
+                        b.DrawString(clock, small, ink, new RectangleF(clockRect.X, 2 * s, clockRect.Width - 8 * s, half), right);
+                        b.DrawString(day, small, ink, new RectangleF(clockRect.X, half - 2 * s, clockRect.Width - 8 * s, half), right);
+                        if (langBottom.Length == 0) b.DrawString(langTop, small, ink, new RectangleF(langRect.X, 0, langRect.Width, barRect.Height), centre);
+                        else {
+                            b.DrawString(langTop, small, ink, new RectangleF(langRect.X, 2 * s, langRect.Width, half), centre);
+                            b.DrawString(langBottom, small, ink, new RectangleF(langRect.X, half - 2 * s, langRect.Width, half), centre);
+                        }
                     }
 
-                    // In the middle: Start, what is pinned, then an icon for each window.
-                    float cell = barRect.Height, pad = 5 * s, tile = cell - 2 * pad;
-                    int n = 1 + (pin != null ? 1 : 0) + list.Count;
-                    float x = Math.Max(8 * s, (barRect.Width - n * cell) / 2f);
+                    // In the middle: Start, the Search box, then an icon for each window.
+                    float trayLeft = langRect.X - 8 * s;
+                    bool wide = barRect.Width >= 900 * s;
+                    float searchW = wide ? 190 * s : cell, gap = 6 * s;
+                    float total = cell + searchW + gap + list.Count * cell;
+                    float x = Math.Max(8 * s, Math.Min((barRect.Width - total) / 2f, trayLeft - total));
                     int icon = (int)Math.Round(24 * s);
 
                     startRect = new Rectangle((int)x, barRect.Y, (int)cell, barRect.Height);
                     var box = new RectangleF(x + pad, pad, tile, tile);
-                    if (barHover == -1 || menuOpen) using (var p = Rounded(RectangleF.Inflate(box, 2 * s, 2 * s), 7 * s)) b.FillPath(hover, p);
+                    if (barHover == HoverStart || menuOpen) using (var p = Rounded(RectangleF.Inflate(box, 2 * s, 2 * s), 6 * s)) b.FillPath(hover, p);
                     using (var p = Rounded(RectangleF.Inflate(box, -2 * s, -2 * s), 6 * s)) b.FillPath(red, p);
                     float mark = (tile - 4 * s) * 0.82f;
                     Blossom(b, box.X + (tile - mark) / 2, box.Y + (tile - mark) / 2, mark, Color.FromArgb(200, 255, 255, 255), Color.White);
                     x += cell;
 
-                    if (pin != null) {
-                        box = new RectangleF(x + pad, pad, tile, tile);
-                        barButtons.Add(new TaskButton { Pin = pin.Id, Title = pin.Name, Box = new Rectangle((int)x, 0, (int)cell, barRect.Height) });
-                        if (barHover == barButtons.Count - 1) using (var p = Rounded(box, 6 * s)) b.FillPath(hover, p);
-                        var at = new RectangleF(box.X + (tile - icon) / 2, box.Y + (tile - icon) / 2, icon, icon);
-                        if (pin.Img != null) b.DrawImage(pin.Img, at);
-                        x += cell;
+                    searchRect = new Rectangle((int)x, barRect.Y, (int)searchW, barRect.Height);
+                    float glass = 13 * s;
+                    if (wide) {
+                        var pill = new RectangleF(x + 3 * s, pad + 1 * s, searchW - 6 * s, tile - 2 * s);
+                        using (var p = Rounded(pill, pill.Height / 2)) { b.FillPath(field, p); if (barHover == HoverSearch) b.FillPath(hover, p); b.DrawPath(rim, p); }
+                        Glass(b, pill.X + 13 * s, pill.Y + (pill.Height - glass) / 2, glass, Ink2);
+                        using (var f = new Font("Segoe UI", 13f * s, GraphicsUnit.Pixel)) using (var mid = new StringFormat { LineAlignment = StringAlignment.Center })
+                            b.DrawString("Search", f, dim, new RectangleF(pill.X + 34 * s, pill.Y, pill.Width - 40 * s, pill.Height), mid);
+                    } else {
+                        if (barHover == HoverSearch) using (var p = Rounded(new RectangleF(x + pad, pad, tile, tile), 6 * s)) b.FillPath(hover, p);
+                        Glass(b, x + (cell - glass) / 2, (cell - glass) / 2, glass, Ink);
                     }
+                    x += searchW + gap;
 
                     bool first = true;
-                    for (int i = 0; i < list.Count && x + cell < barRect.Width - 150 * s; i++, x += cell) {
+                    for (int i = 0; i < list.Count && x + cell < trayLeft; i++, x += cell) {
                         box = new RectangleF(x + pad, pad, tile, tile);
                         bool isFront = first && !mins[i];
                         if (!mins[i]) first = false;
                         barButtons.Add(new TaskButton { H = list[i], Front = isFront, Title = titles[i], Box = new Rectangle((int)x, 0, (int)cell, barRect.Height) });
-                        using (var p = Rounded(box, 6 * s)) { if (isFront) b.FillPath(front, p); else if (barHover == barButtons.Count - 1) b.FillPath(hover, p); }
-                        // A line under a window that is open, longer under the one in front - how a panel says "running".
+                        if (isFront || barHover == barButtons.Count - 1) using (var p = Rounded(box, 5 * s)) b.FillPath(hover, p);
+                        // A pill under a window that is open, longer and in the accent under the one in front - how Windows says "running".
                         float line = isFront ? 16 * s : 6 * s;
-                        using (var mark2 = new SolidBrush(mins[i] ? Ink2 : Red)) b.FillRectangle(mark2, box.X + (tile - line) / 2, barRect.Height - 4 * s, line, 3 * s);
+                        using (var mark2 = new SolidBrush(isFront ? Red : Ink3)) using (var p = Rounded(new RectangleF(box.X + (tile - line) / 2, barRect.Height - 5 * s, line, 3 * s), 1.5f * s)) b.FillPath(mark2, p);
                         Bitmap pic = WindowIcon(list[i], icon);
                         var at = new RectangleF(box.X + (tile - icon) / 2, box.Y + (tile - icon) / 2 - 1 * s, icon, icon);
                         if (pic != null) b.DrawImage(pic, at);
@@ -834,124 +925,292 @@ public class Native {
         }
         g.DrawImageUnscaled(barBmp, barRect.X, barRect.Y);
 
-        // The name of what the pointer is on, above it: the buttons are icons only.
-        if (!menuOpen && barHover >= 0 && barHover < barButtons.Count && !string.IsNullOrEmpty(barButtons[barHover].Title)) {
-            var tb = barButtons[barHover];
+        // The name of what the pointer is on, above it: the buttons are icons only, and the tray's are abbreviations.
+        string tipText = null; float tipAt = 0;
+        if (!menuOpen && !calOpen) {
+            if (barHover >= 0 && barHover < barButtons.Count) { tipText = barButtons[barHover].Title; tipAt = barButtons[barHover].Box.X + barButtons[barHover].Box.Width / 2f; }
+            else if (barHover == HoverClock) { tipText = DateTime.Now.ToString("D"); tipAt = clockRect.X + clockRect.Width / 2f; }
+            else if (barHover == HoverLang) { tipText = langName; tipAt = langRect.X + langRect.Width / 2f; }
+        }
+        if (!string.IsNullOrEmpty(tipText)) {
             using (var f = new Font("Segoe UI", 12f * s, GraphicsUnit.Pixel)) {
-                string title = tb.Title.Length > 60 ? tb.Title.Substring(0, 57) + "..." : tb.Title;
+                string title = tipText.Length > 60 ? tipText.Substring(0, 57) + "..." : tipText;
                 SizeF size = g.MeasureString(title, f);
                 float tw = size.Width + 14 * s, th = size.Height + 8 * s;
-                float tx = Math.Max(4 * s, Math.Min(barRect.Width - tw - 4 * s, tb.Box.X + tb.Box.Width / 2f - tw / 2));
+                float tx = Math.Max(4 * s, Math.Min(barRect.Width - tw - 4 * s, tipAt - tw / 2));
                 var tip = new RectangleF(tx, barRect.Y - th - 6 * s, tw, th);
                 g.SmoothingMode = SmoothingMode.AntiAlias;
                 g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
-                using (var p = Rounded(tip, 5 * s)) using (var fill = new SolidBrush(Color.FromArgb(240, Panel))) g.FillPath(fill, p);
+                using (var p = Rounded(tip, 5 * s)) using (var fill = new SolidBrush(Color.FromArgb(245, Sheet))) using (var rim = new Pen(Lit)) { g.FillPath(fill, p); g.DrawPath(rim, p); }
                 using (var ink = new SolidBrush(Ink)) g.DrawString(title, f, ink, tip.X + 7 * s, tip.Y + 4 * s);
             }
         }
 
-        if (!menuOpen) return;
-        var mkey = shortcuts.Count + ":" + menuHover + ":" + startRect.X + ":" + (shortcuts.Count > 0 ? shortcuts[0].Id : "");
+        if (menuOpen) DrawStart(g, s);
+        if (calOpen) DrawCalendar(g, s);
+    }
+
+    // The Start panel: a search field, then the worker's apps as a grid ("Pinned") - or, once something is typed, what
+    // it finds, best match first, and the web - and the worker's name at the foot.
+    static void DrawStart(Graphics g, float s) {
+        var found = Matches();
+        string words = query.Trim();
+        bool searching = words.Length > 0;
+        var mkey = query + "\n" + menuSel + ":" + menuHover + ":" + shortcuts.Count + ":" + (shortcuts.Count > 0 ? shortcuts[0].Id : "") + ":" + deskLabel + ":" + barRect.Y;
         if (menuBmp == null || mkey != menuKey) {
             menuKey = mkey;
             if (menuBmp != null) menuBmp.Dispose();
-            int row = (int)(40 * s), pad = (int)(8 * s), head = (int)(36 * s), width = (int)(320 * s);
-            int rows = Math.Max(1, Math.Min(shortcuts.Count, (barRect.Y - head - 2 * pad - (int)(12 * s)) / row));
-            int height = head + rows * row + pad;
-            int left = Math.Max((int)(6 * s), Math.Min(screenW - width - (int)(6 * s), startRect.X + startRect.Width / 2 - width / 2));
-            menuRect = new Rectangle(left, barRect.Y - (int)(8 * s) - height, width, height);
-            menuBmp = new Bitmap(menuRect.Width, menuRect.Height, PixelFormat.Format32bppPArgb);
+            int width = Math.Min((int)(600 * s), screenW - (int)(24 * s)), height = Math.Min((int)(640 * s), barRect.Y - (int)(24 * s));
+            menuRect = new Rectangle((screenW - width) / 2, barRect.Y - (int)(12 * s) - height, width, height);
+            menuBmp = new Bitmap(width, height, PixelFormat.Format32bppPArgb);
             menuItems.Clear();
             using (var b = Graphics.FromImage(menuBmp)) {
                 b.SmoothingMode = SmoothingMode.AntiAlias;
                 b.InterpolationMode = InterpolationMode.HighQualityBicubic;
                 b.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
-                var all = new RectangleF(0.5f, 0.5f, menuRect.Width - 1, menuRect.Height - 1);
-                using (var p = Rounded(all, 10 * s)) using (var fill = new SolidBrush(Panel)) using (var line = new Pen(Lit)) { b.FillPath(fill, p); b.DrawPath(line, p); }
-                using (var ink = new SolidBrush(Ink)) using (var dim = new SolidBrush(Ink2))
-                using (var hover = new SolidBrush(Lit))
-                using (var f = new Font("Segoe UI", 13f * s, GraphicsUnit.Pixel))
-                using (var caps = new Font("Segoe UI", 11f * s, FontStyle.Bold, GraphicsUnit.Pixel))
-                using (var fmt = new StringFormat { LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap }) {
-                    b.DrawString("Applications", caps, dim, new RectangleF(pad + 8 * s, 0, width, head), fmt);
-                    int icon = (int)Math.Round(24 * s);
-                    for (int i = 0; i < rows; i++) {
-                        var box = new Rectangle(pad, head + i * row, width - 2 * pad, row);
-                        menuItems.Add(box);
-                        if (i == menuHover) using (var p = Rounded(box, 6 * s)) b.FillPath(hover, p);
-                        var at = new RectangleF(box.X + 8 * s, box.Y + (row - icon) / 2f, icon, icon);
-                        var sc = shortcuts[i];
-                        if (sc.Img != null) b.DrawImage(sc.Img, at);
-                        else {
-                            using (var fill = new SolidBrush(BadgeColors[Math.Abs(sc.Name.GetHashCode() % BadgeColors.Length)])) b.FillEllipse(fill, at);
-                            using (var mid = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
-                                b.DrawString(sc.Name.Length > 0 ? sc.Name.Substring(0, 1).ToUpper() : "?", caps, ink, at, mid);
-                        }
-                        b.DrawString(sc.Name, f, ink, new RectangleF(at.Right + 10 * s, box.Y, box.Right - at.Right - 14 * s, row), fmt);
+                int m = (int)(28 * s), foot = (int)(60 * s);
+                var all = new RectangleF(0.5f, 0.5f, width - 1, height - 1);
+                using (var p = Rounded(all, 9 * s)) using (var fill = new SolidBrush(Sheet)) using (var under = new SolidBrush(Foot)) using (var line = new Pen(Lit)) {
+                    b.FillPath(fill, p);
+                    b.SetClip(p);
+                    b.FillRectangle(under, 0, height - foot, width, foot);
+                    b.DrawLine(line, 0, height - foot, width, height - foot);
+                    b.ResetClip();
+                    b.DrawPath(line, p);
+                }
+                using (var ink = new SolidBrush(Ink)) using (var dim = new SolidBrush(Ink2)) using (var faint = new SolidBrush(Ink3))
+                using (var hover = new SolidBrush(Glow)) using (var chosen = new SolidBrush(Lit)) using (var rim = new Pen(Lit))
+                using (var f = new Font("Segoe UI", 14f * s, GraphicsUnit.Pixel))
+                using (var small = new Font("Segoe UI", 12f * s, GraphicsUnit.Pixel))
+                using (var bold = new Font("Segoe UI", 13.5f * s, FontStyle.Bold, GraphicsUnit.Pixel))
+                using (var mid = new StringFormat { LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap })
+                using (var centred = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Near, Trimming = StringTrimming.EllipsisCharacter }) {
+                    // The search field, with the keyboard: what is typed while the panel is open goes here.
+                    var field = new RectangleF(m, 26 * s, width - 2 * m, 38 * s);
+                    using (var p = Rounded(field, field.Height / 2)) using (var fill = new SolidBrush(Field)) using (var lit = new Pen(Red, 1.5f * s)) { b.FillPath(fill, p); b.DrawPath(searching ? lit : rim, p); }
+                    float glass = 14 * s;
+                    Glass(b, field.X + 15 * s, field.Y + (field.Height - glass) / 2, glass, Ink2);
+                    var text = new RectangleF(field.X + 40 * s, field.Y, field.Width - 56 * s, field.Height);
+                    float caret = text.X + 2 * s;
+                    if (query.Length == 0) b.DrawString("Search for apps and the web", f, faint, text, mid);
+                    else {
+                        b.DrawString(query, f, ink, text, mid);
+                        using (var fit = new StringFormat(StringFormat.GenericTypographic) { FormatFlags = StringFormatFlags.MeasureTrailingSpaces })
+                            caret = Math.Min(text.Right, text.X + 3 * s + b.MeasureString(query, f, 4000, fit).Width);
                     }
+                    using (var bar = new Pen(Ink, Math.Max(1f, s))) b.DrawLine(bar, caret, field.Y + 10 * s, caret, field.Bottom - 10 * s);
+
+                    float top = field.Bottom + 22 * s, bottom = height - foot - 10 * s;
+                    b.DrawString(searching ? (found.Count > 0 ? "Best match" : "Nothing here is called that") : "Pinned", bold, ink, m + 4 * s, top);
+                    top += 32 * s;
+
+                    if (!searching) {
+                        const int cols = 6;
+                        menuCols = cols;
+                        float cw = (width - 2 * m) / (float)cols, ch = 90 * s, icon = 34 * s;
+                        if (found.Count == 0) b.DrawString("No apps have been added to this worker yet.", f, dim, m + 4 * s, top + 4 * s);
+                        for (int i = 0; i < found.Count; i++) {
+                            float y = top + (i / cols) * ch;
+                            if (y + ch > bottom) break;
+                            var box = new Rectangle((int)(m + (i % cols) * cw), (int)y, (int)cw, (int)ch);
+                            menuItems.Add(new MenuItem { Box = box, Open = found[i].Id });
+                            if (i == menuSel || i == menuHover) using (var p = Rounded(RectangleF.Inflate(box, -3 * s, -3 * s), 6 * s)) b.FillPath(i == menuSel ? chosen : hover, p);
+                            Emblem(b, found[i], new RectangleF(box.X + (cw - icon) / 2, box.Y + 12 * s, icon, icon));
+                            b.DrawString(found[i].Name, small, ink, new RectangleF(box.X + 4 * s, box.Y + 12 * s + icon + 7 * s, cw - 8 * s, ch - icon - 24 * s), centred);
+                        }
+                    } else {
+                        menuCols = 1;
+                        float row = 54 * s, icon = 32 * s, y = top;
+                        // Room is kept for the web's heading and row under the apps found.
+                        for (int i = 0; i < found.Count && y + row <= bottom - row - 34 * s; i++, y += row) {
+                            var box = new Rectangle(m, (int)y, width - 2 * m, (int)row);
+                            menuItems.Add(new MenuItem { Box = box, Open = found[i].Id });
+                            if (i == menuSel || i == menuHover) using (var p = Rounded(RectangleF.Inflate(box, 0, -2 * s), 6 * s)) b.FillPath(i == menuSel ? chosen : hover, p);
+                            Emblem(b, found[i], new RectangleF(box.X + 12 * s, box.Y + (row - icon) / 2, icon, icon));
+                            b.DrawString(found[i].Name, f, ink, new RectangleF(box.X + 56 * s, box.Y + 6 * s, box.Width - 66 * s, row / 2), mid);
+                            b.DrawString("App", small, dim, new RectangleF(box.X + 56 * s, box.Y + row / 2 - 3 * s, box.Width - 66 * s, row / 2 - 4 * s), mid);
+                        }
+                        if (found.Count > 0) { b.DrawString("Search the web", bold, ink, m + 4 * s, y + 8 * s); y += 34 * s; }
+                        int web = found.Count; // its place among what the panel offers (Offers), whatever fitted above it
+                        var line = new Rectangle(m, (int)y, width - 2 * m, (int)row);
+                        menuItems.Add(new MenuItem { Box = line, Open = WebMark + words });
+                        if (web == menuSel || menuItems.Count - 1 == menuHover) using (var p = Rounded(RectangleF.Inflate(line, 0, -2 * s), 6 * s)) b.FillPath(web == menuSel ? chosen : hover, p);
+                        var disc = new RectangleF(line.X + 12 * s, line.Y + (row - icon) / 2, icon, icon);
+                        using (var fill = new SolidBrush(Lit)) b.FillEllipse(fill, disc);
+                        Glass(b, disc.X + 9.5f * s, disc.Y + 9.5f * s, 13 * s, Ink);
+                        b.DrawString(words, f, ink, new RectangleF(line.X + 56 * s, line.Y + 6 * s, line.Width - 66 * s, row / 2), mid);
+                        b.DrawString("Look this up in the worker's browser", small, dim, new RectangleF(line.X + 56 * s, line.Y + row / 2 - 3 * s, line.Width - 66 * s, row / 2 - 4 * s), mid);
+                    }
+
+                    // Whose desktop this is, where Windows names the person signed in.
+                    var face = new RectangleF(m + 2 * s, height - foot + (foot - 30 * s) / 2, 30 * s, 30 * s);
+                    using (var fill = new SolidBrush(Red)) b.FillEllipse(fill, face);
+                    using (var one = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+                        b.DrawString(deskLabel.Length > 0 ? deskLabel.Substring(0, 1).ToUpper() : "W", bold, ink, face, one);
+                    b.DrawString(deskLabel.Length > 0 ? deskLabel : "Worker", f, ink, new RectangleF(face.Right + 12 * s, height - foot, width - face.Right - m - 12 * s, foot), mid);
                 }
             }
         }
         g.DrawImage(menuBmp, menuRect.X, menuRect.Y, menuRect.Width, menuRect.Height);
     }
 
-    // A press on the taskbar or the Start menu. "OK" when the press was the shell's: the Start button opens and shuts
-    // the menu, a row of the menu or a pinned icon opens that shortcut, a window's icon brings it to the front (or
-    // minimises the one already there), and a press anywhere else while the menu is open only puts it away.
+    // The calendar the clock opens: today's date in full, and a month that can be paged through.
+    static void DrawCalendar(Graphics g, float s) {
+        DateTime today = DateTime.Today, month = new DateTime(today.Year, today.Month, 1).AddMonths(calMonth);
+        string ckey = today.ToString("yyyyMMdd") + ":" + calMonth + ":" + barRect.Y;
+        if (calBmp == null || ckey != calKey) {
+            calKey = ckey;
+            if (calBmp != null) calBmp.Dispose();
+            int m = (int)(14 * s), head = (int)(52 * s), bar = (int)(44 * s), names = (int)(28 * s), cell = (int)(40 * s);
+            int width = 7 * cell + 2 * m, height = head + bar + names + 6 * cell + m;
+            calRect = new Rectangle(screenW - width - (int)(12 * s), barRect.Y - (int)(12 * s) - height, width, height);
+            calBmp = new Bitmap(width, height, PixelFormat.Format32bppPArgb);
+            using (var b = Graphics.FromImage(calBmp)) {
+                b.SmoothingMode = SmoothingMode.AntiAlias;
+                b.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+                var all = new RectangleF(0.5f, 0.5f, width - 1, height - 1);
+                using (var p = Rounded(all, 9 * s)) using (var fill = new SolidBrush(Sheet)) using (var line = new Pen(Lit)) { b.FillPath(fill, p); b.DrawPath(line, p); b.DrawLine(line, 0, head, width, head); }
+                using (var ink = new SolidBrush(Ink)) using (var dim = new SolidBrush(Ink2)) using (var faint = new SolidBrush(Ink3)) using (var red = new SolidBrush(Red))
+                using (var f = new Font("Segoe UI", 13f * s, GraphicsUnit.Pixel)) using (var bold = new Font("Segoe UI", 13.5f * s, FontStyle.Bold, GraphicsUnit.Pixel))
+                using (var mid = new StringFormat { LineAlignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap })
+                using (var centre = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+                using (var pen = new Pen(Ink2, 1.6f * s) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round }) {
+                    b.DrawString(today.ToString("D"), f, ink, new RectangleF(m + 4 * s, 0, width - 2 * m, head), mid);
+                    b.DrawString(month.ToString("Y"), bold, ink, new RectangleF(m + 4 * s, head, width - 2 * m, bar), mid);
+                    // Up for the month before and down for the one after, as Windows has them.
+                    int arrow = (int)(30 * s);
+                    calNext = new Rectangle(width - m - arrow, head + (bar - arrow) / 2, arrow, arrow);
+                    calPrev = new Rectangle(calNext.X - arrow - (int)(4 * s), calNext.Y, arrow, arrow);
+                    foreach (var way in new[] { new { Box = calPrev, Up = true }, new { Box = calNext, Up = false } }) {
+                        float cx = way.Box.X + arrow / 2f, cy = way.Box.Y + arrow / 2f, r = 4.5f * s, d = way.Up ? r / 2 : -r / 2;
+                        b.DrawLines(pen, new[] { new PointF(cx - r, cy + d), new PointF(cx, cy - d), new PointF(cx + r, cy + d) });
+                    }
+                    var fmt = System.Globalization.CultureInfo.CurrentCulture.DateTimeFormat;
+                    int firstDay = (int)fmt.FirstDayOfWeek;
+                    for (int i = 0; i < 7; i++)
+                        b.DrawString(fmt.ShortestDayNames[(firstDay + i) % 7], f, dim, new RectangleF(m + i * cell, head + bar, cell, names), centre);
+                    DateTime from = month.AddDays(-(((int)month.DayOfWeek - firstDay + 7) % 7));
+                    for (int i = 0; i < 42; i++) {
+                        DateTime d = from.AddDays(i);
+                        var box = new RectangleF(m + (i % 7) * cell, head + bar + names + (i / 7) * cell, cell, cell);
+                        if (d == today) b.FillEllipse(red, RectangleF.Inflate(box, -4 * s, -4 * s));
+                        b.DrawString(d.Day.ToString(), f, d == today ? ink : d.Month == month.Month ? ink : faint, box, centre);
+                    }
+                }
+            }
+        }
+        g.DrawImage(calBmp, calRect.X, calRect.Y, calRect.Width, calRect.Height);
+    }
+
+    // A press on the taskbar, the Start panel or the calendar. "OK" when the press was the shell's: the Start button
+    // opens and shuts the panel and the Search box opens it, an app or a row of the panel opens that, the clock opens and
+    // shuts the calendar, a window's icon brings it to the front (or minimises the one already there), and a press
+    // anywhere else while something is open only puts it away.
     static string ShellPress(POINT p, bool right) {
         string open = null; IntPtr raise = IntPtr.Zero, min = IntPtr.Zero; bool mine = false;
         lock (deskLock) {
             if (barH == 0) LayoutBar();
             if (menuOpen && menuRect.Contains(p.X, p.Y)) {
                 for (int i = 0; i < menuItems.Count && !right; i++)
-                    if (menuItems[i].Contains(p.X - menuRect.X, p.Y - menuRect.Y) && i < shortcuts.Count) open = shortcuts[i].Id;
+                    if (menuItems[i].Box.Contains(p.X - menuRect.X, p.Y - menuRect.Y)) open = menuItems[i].Open;
                 if (open != null) menuOpen = false;
                 mine = true;
+            } else if (calOpen && calRect.Contains(p.X, p.Y)) {
+                if (!right && calPrev.Contains(p.X - calRect.X, p.Y - calRect.Y)) calMonth--;
+                if (!right && calNext.Contains(p.X - calRect.X, p.Y - calRect.Y)) calMonth++;
+                mine = true;
             } else if (startRect.Contains(p.X, p.Y)) {
-                if (!right) menuOpen = !menuOpen;
+                if (!right) { if (menuOpen) menuOpen = false; else OpenMenu(); }
+                mine = true;
+            } else if (searchRect.Contains(p.X, p.Y)) {
+                if (!right && !menuOpen) OpenMenu();
+                mine = true;
+            } else if (clockRect.Contains(p.X, p.Y)) {
+                if (!right) { calOpen = !calOpen; calMonth = 0; menuOpen = false; }
                 mine = true;
             } else {
-                mine = menuOpen;
-                menuOpen = false;
+                mine = menuOpen || calOpen;
+                menuOpen = false; calOpen = false;
                 if (barRect.Contains(p.X, p.Y)) {
                     mine = true;
                     foreach (var b in barButtons) {
                         if (right || !b.Box.Contains(p.X - barRect.X, p.Y - barRect.Y)) continue;
-                        if (b.Pin != null) open = b.Pin; else if (b.Front) min = b.H; else raise = b.H;
+                        if (b.Front) min = b.H; else raise = b.H;
                     }
                 }
             }
             if (mine) { menuHover = -1; shellDown = true; }
         }
-        if (open != null) Reply("EVENT open " + open);
+        Announce(open);
         if (raise != IntPtr.Zero) Activate(raise);
         if (min != IntPtr.Zero) ShowWindowAsync(min, 6 /* SW_MINIMIZE */);
         return mine ? "OK" : null;
     }
 
-    // The pointer over the taskbar or the open menu lights what it is on; true when it is over either, so the move
-    // goes to no window underneath.
+    // The pointer over the taskbar, the open panel or the calendar lights what it is on; true when it is over any of
+    // them, so the move goes to no window underneath.
     static bool ShellHover(POINT p) {
         lock (deskLock) {
             if (barH == 0) LayoutBar();
-            int bar = -2, item = -1;
-            bool inMenu = menuOpen && menuRect.Contains(p.X, p.Y);
-            if (inMenu) { for (int i = 0; i < menuItems.Count; i++) if (menuItems[i].Contains(p.X - menuRect.X, p.Y - menuRect.Y)) item = i; }
-            else if (startRect.Contains(p.X, p.Y)) bar = -1;
+            int bar = HoverNone, item = -1;
+            bool inMenu = menuOpen && menuRect.Contains(p.X, p.Y), inCal = calOpen && calRect.Contains(p.X, p.Y);
+            if (inMenu) { for (int i = 0; i < menuItems.Count; i++) if (menuItems[i].Box.Contains(p.X - menuRect.X, p.Y - menuRect.Y)) item = i; }
+            else if (inCal) { }
+            else if (startRect.Contains(p.X, p.Y)) bar = HoverStart;
+            else if (searchRect.Contains(p.X, p.Y)) bar = HoverSearch;
+            else if (clockRect.Contains(p.X, p.Y)) bar = HoverClock;
+            else if (langRect.Contains(p.X, p.Y)) bar = HoverLang;
             else if (barRect.Contains(p.X, p.Y)) { for (int i = 0; i < barButtons.Count; i++) if (barButtons[i].Box.Contains(p.X - barRect.X, p.Y - barRect.Y)) bar = i; }
             barHover = bar; menuHover = item;
-            return inMenu || barRect.Contains(p.X, p.Y);
+            return inMenu || inCal || barRect.Contains(p.X, p.Y);
         }
     }
 
-    // Opens the Start menu, or puts it away: what the Start key does.
+    // Opens the Start panel, or puts it away: what the Start key does.
     public static void ToggleStart() {
-        lock (deskLock) { menuOpen = !menuOpen; menuHover = -1; }
+        lock (deskLock) { if (menuOpen) menuOpen = false; else OpenMenu(); }
         Kick();
     }
 
+    // Whether what is typed now goes to the Start panel's search field and not to a window.
+    public static bool ShellTyping() { lock (deskLock) return fixedScreen && menuOpen; }
+
+    // A character typed while the Start panel is open is its search field's. True when the shell took it.
+    static bool ShellChar(char ch) {
+        lock (deskLock) {
+            if (!fixedScreen || !menuOpen) return false;
+            if (ch >= ' ' && ch != 127 && query.Length < MaxQuery) { query += ch; menuSel = query.Trim().Length > 0 ? 0 : -1; }
+            return true;
+        }
+    }
+
+    // A key pressed while the Start panel is open: Backspace edits the search, the arrows move through what is
+    // offered, Enter opens the one chosen, Escape clears the search and then puts the panel away. Escape also puts the
+    // calendar away. True when the shell took the key.
+    static bool ShellKey(int vk) {
+        string open = null;
+        lock (deskLock) {
+            if (!fixedScreen) return false;
+            if (!menuOpen) { if (calOpen && vk == 27) { calOpen = false; return true; } return false; }
+            var offers = Offers();
+            int step = vk == 38 ? -menuCols : vk == 40 ? menuCols : vk == 37 ? -1 : vk == 39 ? 1 : 0;
+            if (vk == 27) { if (query.Length > 0) { query = ""; menuSel = -1; } else menuOpen = false; }
+            else if (vk == 8) { if (query.Length > 0) query = query.Substring(0, query.Length - 1); menuSel = query.Trim().Length > 0 ? 0 : -1; }
+            else if (vk == 13) { if (menuSel >= 0 && menuSel < offers.Count) { open = offers[menuSel]; menuOpen = false; } }
+            else if (step != 0 && offers.Count > 0) {
+                if (menuSel < 0) menuSel = 0;
+                else if (menuSel + step >= 0 && menuSel + step < offers.Count) menuSel += step;
+            }
+        }
+        Announce(open);
+        return true;
+    }
+
     static bool OverShell(POINT p) {
-        lock (deskLock) { if (barH == 0) LayoutBar(); return barRect.Contains(p.X, p.Y) || (menuOpen && menuRect.Contains(p.X, p.Y)); }
+        lock (deskLock) {
+            if (barH == 0) LayoutBar();
+            return barRect.Contains(p.X, p.Y) || (menuOpen && menuRect.Contains(p.X, p.Y)) || (calOpen && calRect.Contains(p.X, p.Y));
+        }
     }
 
     // A press on the wallpaper: it picks the shortcut under it, and a second press there within a double-click opens it -
@@ -1324,11 +1583,13 @@ public class Native {
     }
 
     public static void TypeChar(char ch) {
+        if (ShellChar(ch)) return;
         IntPtr t = KeyTarget();
         if (t != IntPtr.Zero) PostMessage(t, WM_CHAR, (IntPtr)ch, (IntPtr)1);
     }
 
     public static string Key(int vk, string mods) {
+        if (ShellKey(vk)) return "OK";
         IntPtr t = KeyTarget();
         if (t == IntPtr.Zero) return "ERR no window";
         // A keyboard turns these into characters through TranslateMessage; a direct message does not.
@@ -1708,6 +1969,7 @@ try {
                 }
                 "tasks" { Reply ("TASKS " + [Native]::Tasks()) }
                 "start" { [Native]::ToggleStart(); Reply "OK" }
+                "shell" { Reply ("SHELL " + [int][Native]::ShellTyping()) }
                 "win" { $p = $rest.Split(" "); Reply ([Native]::WindowDo($p[0], [long]$p[1])) }
                 "over" { $p = $rest.Split(" "); Reply ("OVER " + [Native]::Over([int]$p[0], [int]$p[1])) }
                 "screen" { [Native]::FixedScreen(); Reply "OK" }

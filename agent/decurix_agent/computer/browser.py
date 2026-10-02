@@ -3,7 +3,8 @@ Which windows are the desktop's web browser, whatever build it is.
 
 On a Linux desktop the browser is Google Chrome behind /usr/bin/chromium-browser
 (agent/install-browser.sh); desktops made before that ran Chromium 112. A
-native Windows worker uses Microsoft Edge, the Chromium every Windows has.
+native Windows worker uses the browser picked for it (Chrome, Brave or Edge),
+and with none picked whichever the computer has (windows_browser).
 Their windows differ only in the title's last segment - "Invoices - Odoo -
 Google Chrome" against "Invoices - Odoo - Chromium" - and every recording,
 skill and result check made so far says "- Chromium". So screen.windows()
@@ -14,6 +15,7 @@ compares product names. The raw title is kept beside it for anything shown to
 a person.
 """
 
+import json
 import os
 import re
 from pathlib import Path
@@ -26,12 +28,12 @@ CANONICAL = "Chromium"
 # Builds the desktop may run, longest first (so "Google Chrome for Testing"
 # is not read as "Google Chrome" followed by junk). Edge writes its name with
 # a zero-width space in it ("Microsoft​ Edge" - read off a real window).
-PRODUCTS = ("Google Chrome for Testing", "Google Chrome", "Chromium", "Microsoft​ Edge", "Microsoft Edge")
+PRODUCTS = ("Google Chrome for Testing", "Google Chrome", "Chromium", "Brave", "Microsoft​ Edge", "Microsoft Edge")
 
 # What a person or an engine may call the browser when asking to open it.
 APP_NAMES = frozenset({
     "chromium", "chromium-browser", "chrome", "google chrome", "google-chrome",
-    "google-chrome-stable", "browser", "web browser", "edge", "microsoft edge", "msedge",
+    "google-chrome-stable", "browser", "web browser", "edge", "microsoft edge", "msedge", "brave",
 })
 
 # The command that starts it on a Linux desktop: the launcher, with the
@@ -79,26 +81,97 @@ def page_window_title(page_title):
     return f"{page_title} - {CANONICAL}" if page_title else CANONICAL
 
 
-# Where Edge is installed, and Chrome for a computer that somehow has no Edge.
-_WINDOWS_BROWSERS = (
-    r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe",
-    r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe",
-    r"%LOCALAPPDATA%\Microsoft\Edge\Application\msedge.exe",
-    r"%ProgramFiles%\Google\Chrome\Application\chrome.exe",
-    r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe",
-    r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe",
-)
+# The browsers a native Windows worker can run, by the kind the control plane
+# names (desktop.browserKind): what a person calls it, and where it installs.
+_WINDOWS_KINDS = {
+    "chrome": ("Google Chrome", (
+        r"%ProgramFiles%\Google\Chrome\Application\chrome.exe",
+        r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe",
+        r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe",
+    )),
+    "brave": ("Brave", (
+        r"%ProgramFiles%\BraveSoftware\Brave-Browser\Application\brave.exe",
+        r"%ProgramFiles(x86)%\BraveSoftware\Brave-Browser\Application\brave.exe",
+        r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\Application\brave.exe",
+    )),
+    "msedge": ("Microsoft Edge", (
+        r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe",
+        r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe",
+        r"%LOCALAPPDATA%\Microsoft\Edge\Application\msedge.exe",
+    )),
+}
+
+# With no browser picked for the worker: whichever the computer has, Edge
+# first because every Windows has it.
+_FALLBACK_KINDS = ("msedge", "chrome", "brave")
+
+# Where the control plane says which browser was picked for this worker
+# (desktop.nativeHost.noteBrowser): {"kind": "chrome", "exe": "C:\\...\\chrome.exe"}.
+# Read at every launch, so a browser added to a running worker counts at once.
+CHOICE_FILE = "worker-browser.json"
 
 
-def windows_browser():
-    """The browser a native Windows worker runs, or a ComputerError when the computer has none."""
+def _decurix_dir():
+    return Path(os.environ.get("DECURIX_DIR") or (Path.home() / ".decurix"))
 
-    for candidate in _WINDOWS_BROWSERS:
+
+def chosen():
+    """(kind, exe) of the browser picked for this worker, or None when none was. exe may be ""."""
+
+    try:
+        choice = json.loads((_decurix_dir() / CHOICE_FILE).read_text(encoding="utf-8"))
+        kind = str(choice.get("kind") or "")
+        exe = str(choice.get("exe") or "")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+    return (kind, exe) if kind in _WINDOWS_KINDS else None
+
+
+def _installed(kind):
+    for candidate in _WINDOWS_KINDS[kind][1]:
         path = os.path.expandvars(candidate)
         if os.path.isfile(path):
             return path
 
-    raise ComputerError("no browser was found on this computer (Microsoft Edge or Google Chrome)")
+    return ""
+
+
+def windows_browser():
+    """
+    (kind, path) of the browser a native Windows worker runs.
+
+    The browser picked for the worker is the only one it uses: found live, a
+    person copied Chrome to a worker, used it, and the agent opened its pages
+    in Edge beside it. When that browser cannot be found the worker says so
+    and does not start another. Only a worker with none picked takes
+    whichever the computer has.
+    """
+
+    choice = chosen()
+    if choice:
+        kind, exe = choice
+        path = exe if exe and os.path.isfile(exe) else _installed(kind)
+        if not path:
+            raise ComputerError(f"this worker's browser is {_WINDOWS_KINDS[kind][0]}, and it was not found on this computer")
+        return kind, path
+
+    for kind in _FALLBACK_KINDS:
+        path = _installed(kind)
+        if path:
+            return kind, path
+
+    raise ComputerError("no browser was found on this computer (Google Chrome, Microsoft Edge or Brave)")
+
+
+def windows_browser_name():
+    """What a person calls the worker's browser ("Google Chrome"), or "" when the computer has none."""
+
+    try:
+        return _WINDOWS_KINDS[windows_browser()[0]][0]
+    except ComputerError:
+        choice = chosen()
+        return _WINDOWS_KINDS[choice[0]][0] if choice else ""
 
 
 def launch_argv(url):
@@ -116,10 +189,20 @@ def launch_argv(url):
     if os.name != "nt":
         return [COMMAND, url]
 
-    profile = Path(os.environ.get("DECURIX_DIR") or (Path.home() / ".decurix")) / "browser"
+    return windows_argv(url)
+
+
+def windows_argv(url):
+    """launch_argv for a native Windows worker."""
+
+    kind, path = windows_browser()
+
+    # One browser's profile is not another's: each kind has a folder of its
+    # own ("browser" is Edge's, as it was when Edge was the only one).
+    profile = _decurix_dir() / ("browser" if kind == "msedge" else f"browser-{kind}")
 
     return [
-        windows_browser(),
+        path,
         f"--remote-debugging-port={os.environ.get('DECURIX_CDP_PORT', '9222')}",
         f"--user-data-dir={profile}",
         "--no-first-run",

@@ -7,8 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -24,33 +29,108 @@ import (
 // and this file is what they both ask - which shortcuts the worker has, what
 // one opens, which windows are open.
 
-// builtInApps are the shortcuts every native worker has, ahead of the ones
-// picked for it: the browser, as a Linux desktop has (its "Google Chrome"
-// icon and its panel's pinned browser). It goes through the agent's /open by
-// name, so it is the worker's own browser, with its DevTools port.
-var builtInApps = []NativeApp{
-	{ID: "decurix:browser", Name: "Microsoft Edge", Kind: nativeAppNamed, Target: "browser"},
+// A worker has the shortcuts picked for it and no others: no browser is put
+// on its desktop or taskbar by default.
+
+// browserKinds are the browsers a worker can have as its own, by the name the
+// host-app scan gives one and by the last part of what starts it (a program,
+// or a Start-menu address such as shell:AppsFolder\Chrome). The kinds are the
+// agent's (computer/browser.py's _WINDOWS_KINDS).
+var browserKinds = []struct {
+	kind  string
+	names []string
+	bases []string
+}{
+	{"chrome", []string{"google chrome", "chrome"}, []string{"chrome.exe", "chrome"}},
+	{"brave", []string{"brave", "brave browser"}, []string{"brave.exe", "brave"}},
+	{"msedge", []string{"microsoft edge", "edge"}, []string{"msedge.exe", "msedge"}},
 }
 
-// nativeAppNamed is a built-in: something the worker's agent opens by name.
-const nativeAppNamed = "named"
+// browserKind is which browser a shortcut is, or "" for anything else. A
+// browser started with arguments is a page or a profile of it (an installed
+// web app), not the browser.
+func browserKind(app NativeApp) string {
+	if app.Kind != NativeAppProgram || strings.TrimSpace(app.Args) != "" {
+		return ""
+	}
 
-// builtInIcons is what Windows is asked for each built-in's picture.
-var builtInIcons = map[string]string{
-	"decurix:browser": "msedge.exe",
+	base := strings.ToLower(app.Target)
+	if i := strings.LastIndexAny(base, `\/`); i >= 0 {
+		base = base[i+1:]
+	}
+	name := strings.ToLower(strings.TrimSpace(app.Name))
+
+	for _, b := range browserKinds {
+		for _, n := range b.names {
+			if name == n {
+				return b.kind
+			}
+		}
+		for _, n := range b.bases {
+			if base == n {
+				return b.kind
+			}
+		}
+	}
+
+	return ""
 }
 
-// allApps is every shortcut a worker has: the built-ins, then its own.
-func allApps(meta nativeMeta) []NativeApp {
-	apps := append([]NativeApp{}, builtInApps...)
-	return append(apps, meta.Apps...)
+// workerBrowser is the browser picked for a worker: the first of its
+// shortcuts that is one. It is the worker's only browser - the one its icon
+// opens and the one its agent opens pages in. Found live: a person copied
+// Chrome to a worker and used it, and the agent opened its pages in Edge.
+func workerBrowser(apps []NativeApp) (app NativeApp, kind string, ok bool) {
+	for _, a := range apps {
+		if k := browserKind(a); k != "" {
+			return a, k, true
+		}
+	}
+
+	return NativeApp{}, "", false
+}
+
+// browserChoiceFile is where a worker's agent reads which browser is its own
+// (computer/browser.py's CHOICE_FILE), under the worker's .decurix.
+const browserChoiceFile = "worker-browser.json"
+
+// noteBrowser tells the worker's agent which browser was picked for it, or
+// that none was. The agent reads it at every launch, so a browser added to a
+// running worker counts at once.
+func (h *nativeHost) noteBrowser(meta nativeMeta) {
+	file := filepath.Join(h.home(meta.ID), ".decurix", browserChoiceFile)
+
+	app, kind, ok := workerBrowser(meta.Apps)
+	if !ok {
+		if err := os.Remove(file); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			log.Printf("worker %s: %v", meta.ID, err)
+		}
+		return
+	}
+
+	// The program itself when the shortcut names it; a Start-menu address is
+	// found by the agent where that browser installs.
+	choice := map[string]string{"kind": kind}
+	if strings.HasSuffix(strings.ToLower(app.Target), ".exe") {
+		choice["exe"] = app.Target
+	}
+
+	data, err := json.Marshal(choice)
+	if err == nil {
+		if err = os.MkdirAll(filepath.Dir(file), 0o755); err == nil {
+			err = os.WriteFile(file, data, 0o644)
+		}
+	}
+	if err != nil {
+		log.Printf("worker %s: its agent was not told its browser is %s: %v", meta.ID, app.Name, err)
+	}
 }
 
 // shortcuts is a worker's apps as the icons the helper draws.
 func shortcuts(meta nativeMeta) []winhost.Shortcut {
 	var out []winhost.Shortcut
-	for _, app := range allApps(meta) {
-		icon := builtInIcons[app.ID]
+	for _, app := range meta.Apps {
+		icon := ""
 		if app.Kind == NativeAppProgram {
 			icon = app.Target
 		}
@@ -65,16 +145,20 @@ func shortcuts(meta nativeMeta) []winhost.Shortcut {
 // still a worker.
 func (h *nativeHost) dress(id string, session *winhost.Session, meta nativeMeta) {
 	session.OnEvent(func(event string) {
-		appID, isOpen := strings.CutPrefix(event, "open ")
-		if !isOpen || h.open == nil {
-			return
-		}
-
 		ctx, cancel := context.WithTimeout(context.Background(), nativeOpenTimeout)
 		defer cancel()
 
-		if _, err := h.open(ctx, id, strings.TrimSpace(appID)); err != nil {
-			log.Printf("worker %s: opening %s from its desktop: %v", id, appID, err)
+		if appID, isOpen := strings.CutPrefix(event, "open "); isOpen && h.open != nil {
+			if _, err := h.open(ctx, id, strings.TrimSpace(appID)); err != nil {
+				log.Printf("worker %s: opening %s from its desktop: %v", id, appID, err)
+			}
+		}
+
+		// The Start panel's search, asked to look its words up.
+		if words, isWeb := strings.CutPrefix(event, "web "); isWeb && h.web != nil {
+			if _, err := h.web(ctx, id, webTarget(words)); err != nil {
+				log.Printf("worker %s: looking something up from its Start panel: %v", id, err)
+			}
 		}
 	})
 
@@ -107,8 +191,8 @@ type NativeOpenRefused struct{ Reason string }
 
 func (e *NativeOpenRefused) Error() string { return e.Reason }
 
-// NativeShortcuts are the shortcuts on a native worker's screen: the
-// built-ins, then the apps picked for it.
+// NativeShortcuts are the shortcuts on a native worker's screen: the apps
+// picked for it.
 func (m *Manager) NativeShortcuts(rawID string) ([]NativeApp, error) {
 	if m.native == nil {
 		return nil, errors.New("this control plane's desktops are containers")
@@ -119,12 +203,13 @@ func (m *Manager) NativeShortcuts(rawID string) ([]NativeApp, error) {
 		return nil, err
 	}
 
-	return allApps(meta), nil
+	return meta.Apps, nil
 }
 
 // OpenNativeApp opens one of a worker's shortcuts on its screen and says what
-// happened. An address, or a built-in, goes the way the Start menu's box does
-// - through the agent, so it is a step of a demonstration being recorded; a
+// happened. An address, or the worker's browser, goes the way the Start
+// menu's box does - through the agent, so it is a step of a demonstration
+// being recorded; any other
 // program is started on the worker's desktop by the helper that holds it,
 // which knows how to keep it off the person's own. ErrNotFound for an id the
 // worker does not have: this opens what was picked for it, never a path.
@@ -144,7 +229,17 @@ func (m *Manager) OpenNativeApp(ctx context.Context, rawID, appID string) (strin
 		return "", fmt.Errorf("shortcut %q: %w", appID, ErrNotFound)
 	}
 
-	if app.Kind == NativeAppProgram {
+	// The worker's browser is opened by its agent, like an address: started
+	// by the helper it would have no DevTools port, and the agent would not
+	// be able to read its pages - or would start another browser beside it.
+	target := app.Target
+	b, _, hasBrowser := workerBrowser(apps)
+	isBrowser := hasBrowser && b.ID == app.ID
+	if isBrowser {
+		target = "browser"
+	}
+
+	if app.Kind == NativeAppProgram && !isBrowser {
 		if err := m.OpenNativeProgram(rawID, *app); err != nil {
 			if errors.Is(err, ErrNotRunning) {
 				return "", err
@@ -155,7 +250,14 @@ func (m *Manager) OpenNativeApp(ctx context.Context, rawID, appID string) (strin
 		return "Opened " + app.Name + ".", nil
 	}
 
-	body, err := json.Marshal(map[string]string{"target": app.Target})
+	return m.agentOpen(ctx, rawID, target, app.Name)
+}
+
+// agentOpen has a worker's agent open a page, a file or its browser on the
+// worker's screen, as a person's own doing (a step of a demonstration being
+// recorded), and says what happened. name is what a person calls the thing.
+func (m *Manager) agentOpen(ctx context.Context, rawID, target, name string) (string, error) {
+	body, err := json.Marshal(map[string]string{"target": target})
 	if err != nil {
 		return "", err
 	}
@@ -176,15 +278,30 @@ func (m *Manager) OpenNativeApp(ctx context.Context, rawID, appID string) (strin
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		if answer.Summary == "" {
-			answer.Summary = "Opened " + app.Name + "."
+			answer.Summary = "Opened " + name + "."
 		}
 		return answer.Summary, nil
 	case resp.StatusCode < 500 && answer.Error != "":
 		// The agent's own words for a person ("don't know how to open ...").
 		return "", &NativeOpenRefused{Reason: answer.Error}
 	default:
-		return "", fmt.Errorf("the worker's agent answered %d to opening %s: %s", resp.StatusCode, app.ID, bytes.TrimSpace(raw))
+		return "", fmt.Errorf("the worker's agent answered %d to opening %s: %s", resp.StatusCode, name, bytes.TrimSpace(raw))
 	}
+}
+
+// addressRe is something typed that is already a web address: a link, or a
+// host name with a dot in it (or localhost), with or without a path.
+var addressRe = regexp.MustCompile(`(?i)^(https?://\S+|([a-z0-9-]+\.)+[a-z]{2,}(:\d+)?(/\S*)?|localhost(:\d+)?(/\S*)?)$`)
+
+// webTarget is what the Start panel's search opens for the words typed into
+// it: the address when they are one, else a web search for them.
+func webTarget(words string) string {
+	words = strings.TrimSpace(words)
+	if addressRe.MatchString(words) {
+		return words
+	}
+
+	return "https://www.google.com/search?q=" + url.QueryEscape(words)
 }
 
 // NativeWindows lists the windows open on a native worker's screen, as a
