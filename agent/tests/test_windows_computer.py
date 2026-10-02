@@ -7,6 +7,7 @@ What only a real private desktop can show is checked there, live.
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -301,6 +302,59 @@ class EdgeIsTheBrowserOnWindows(unittest.TestCase):
         self.assertFalse(browser.is_browser_title("Untitled - Notepad"))
 
 
+class TheBrowserPickedForTheWorkerIsTheOneItRuns(unittest.TestCase):
+    """Found live: Chrome was copied to a worker and used, and the agent opened its pages in Edge."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        env = patch.dict(os.environ, {"DECURIX_DIR": str(self.dir), "DECURIX_CDP_PORT": "9333"})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def pick(self, **choice):
+        (self.dir / browser.CHOICE_FILE).write_text(json.dumps(choice), encoding="utf-8")
+
+    def installed(self, *kinds):
+        return patch.object(browser, "_installed", lambda kind: f"C:\\{kind}.exe" if kind in kinds else "")
+
+    def test_the_picked_browser_is_run_with_a_profile_of_its_own(self):
+        self.pick(kind="chrome")
+        with self.installed("msedge", "chrome"):
+            argv = browser.windows_argv("https://example.com")
+        self.assertEqual(argv[0], "C:\\chrome.exe")
+        self.assertIn("--remote-debugging-port=9333", argv)
+        self.assertIn(f"--user-data-dir={self.dir / 'browser-chrome'}", argv)
+        with self.installed("msedge", "chrome"):
+            self.assertEqual(browser.windows_browser_name(), "Google Chrome")
+
+    def test_the_program_the_shortcut_names_is_the_one_run(self):
+        exe = self.dir / "chrome.exe"
+        exe.write_bytes(b"")
+        self.pick(kind="chrome", exe=str(exe))
+        with self.installed("msedge"):
+            self.assertEqual(browser.windows_browser(), ("chrome", str(exe)))
+
+    def test_a_picked_browser_that_is_gone_is_not_swapped_for_another(self):
+        self.pick(kind="brave")
+        with self.installed("msedge", "chrome"):
+            with self.assertRaises(ComputerError) as ctx:
+                browser.windows_browser()
+            self.assertEqual(browser.windows_browser_name(), "Brave")
+        self.assertIn("Brave", str(ctx.exception))
+
+    def test_with_none_picked_it_is_whichever_the_computer_has(self):
+        with self.installed("msedge", "chrome"):
+            self.assertEqual(browser.windows_browser(), ("msedge", "C:\\msedge.exe"))
+            self.assertIn(f"--user-data-dir={self.dir / 'browser'}", browser.windows_argv("about:blank"))
+        with self.installed("chrome"):
+            self.assertEqual(browser.windows_browser(), ("chrome", "C:\\chrome.exe"))
+
+    def test_a_choice_that_is_not_a_browser_it_knows_is_no_choice(self):
+        self.pick(kind="netscape")
+        self.assertIsNone(browser.chosen())
+
+
 class WhereAPageIsOnTheScreen(unittest.TestCase):
     METRICS = {"dpr": 1.25, "sx": 100, "sy": 50, "ow": 816, "oh": 700, "iw": 800, "ih": 600}
 
@@ -350,13 +404,14 @@ class WhoAWindowsWorkerIsToldItIs(unittest.TestCase):
         from decurix_agent import config, identity
 
         with patch.object(config, "NATIVE_WINDOWS", True), \
+                patch.object(browser, "windows_browser_name", return_value="Google Chrome"), \
                 patch.dict(os.environ, {"USERNAME": "ana", "COMPUTERNAME": "OFFICE-PC"}):
             facts = identity.get_identity_context("TheBot (soul)")
 
         self.assertRegex(facts, r"Windows \S+ computer OFFICE-PC")
         self.assertIn("Windows user: ana", facts)
         self.assertIn("PowerShell", facts)
-        self.assertIn("Microsoft Edge", facts)
+        self.assertIn("The browser is Google Chrome.", facts)
         for wrong in ("Ubuntu", "Docker", "VNC", "headless", "Chromium installed"):
             self.assertNotIn(wrong, facts)
 

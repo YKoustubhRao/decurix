@@ -56,7 +56,8 @@ func (s *Session) SetShortcuts(label string, shortcuts []Shortcut) error {
 }
 
 // OnEvent sets what is called with each thing the helper says on its own, other than a picture and "closed": so far
-// "open <shortcut id>", a double-click on an icon of the wallpaper. Each call is on a goroutine of its own, so f may
+// "open <shortcut id>" (a double-click on an icon of the wallpaper, or an app picked in the Start panel) and "web <words>"
+// (the Start panel's search asked to look something up). Each call is on a goroutine of its own, so f may
 // send the helper commands.
 func (s *Session) OnEvent(f func(event string)) {
 	s.mu.Lock()
@@ -112,6 +113,12 @@ func (s *Session) Window(action string, id int64) error {
 		return errors.New(strings.TrimSpace(strings.TrimPrefix(resp, "ERR")))
 	}
 	return nil
+}
+
+// ShellTyping reports whether the Start panel is open, so that what is typed goes to its search field and to no window.
+func (s *Session) ShellTyping() bool {
+	resp, err := s.Do("shell")
+	return err == nil && strings.TrimSpace(resp) == "SHELL 1"
 }
 
 // OverWindow reports whether a window shows at that point of the picture; false is the wallpaper itself.

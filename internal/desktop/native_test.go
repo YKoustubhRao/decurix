@@ -3,6 +3,7 @@ package desktop
 import (
 	"archive/tar"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -278,6 +279,74 @@ func TestTheAppsPickedForANativeWorkerBecomeShortcuts(t *testing.T) {
 	for i := range want {
 		if got[i] != want[i] {
 			t.Errorf("shortcut %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// A browser picked for a worker is the worker's browser: its agent is told
+// which, so the pages it opens are in that browser and not in another one
+// beside it. Found live: Chrome was copied to a worker and the agent used Edge.
+func TestTheBrowserPickedForAWorkerIsTheOneItsAgentUses(t *testing.T) {
+	for _, c := range []struct {
+		app  NativeApp
+		want string
+	}{
+		{NativeApp{Name: "Google Chrome", Kind: NativeAppProgram, Target: `shell:AppsFolder\Chrome`}, "chrome"},
+		{NativeApp{Name: "Chrome", Kind: NativeAppProgram, Target: `C:\Program Files\Google\Chrome\Application\chrome.exe`}, "chrome"},
+		{NativeApp{Name: "Brave", Kind: NativeAppProgram, Target: `shell:AppsFolder\Brave`}, "brave"},
+		{NativeApp{Name: "Microsoft Edge", Kind: NativeAppProgram, Target: `shell:AppsFolder\MSEdge`}, "msedge"},
+		// A page of a browser, a web shortcut and another program are not the browser.
+		{NativeApp{Name: "YouTube", Kind: NativeAppProgram, Target: `C:\chrome.exe`, Args: "--app=https://youtube.com"}, ""},
+		{NativeApp{Name: "Chrome", Kind: NativeAppWeb, Target: "https://chrome.google.com"}, ""},
+		{NativeApp{Name: "Code", Kind: NativeAppProgram, Target: `C:\Code.exe`}, ""},
+	} {
+		if got := browserKind(c.app); got != c.want {
+			t.Errorf("browserKind(%+v) = %q, want %q", c.app, got, c.want)
+		}
+	}
+
+	m := nativeForTest(t)
+	meta := nativeMeta{ID: "ada", Name: "Ada", Harness: HarnessTheBot, Brain: BrainClaude}
+	writeWorker(t, m, meta)
+	file := filepath.Join(m.native.home("ada"), ".decurix", browserChoiceFile)
+
+	m.native.noteBrowser(meta)
+	if _, err := os.Stat(file); err == nil {
+		t.Fatal("a worker with no browser picked was told it has one")
+	}
+
+	err := m.native.addAndRedress("ada", []NativeApp{
+		{ID: "win_code", Name: "Code", Kind: NativeAppProgram, Target: `C:\Code.exe`},
+		{ID: "win_chrome", Name: "Google Chrome", Kind: NativeAppProgram, Target: `C:\Apps\chrome.exe`},
+		{ID: "win_edge", Name: "Microsoft Edge", Kind: NativeAppProgram, Target: `shell:AppsFolder\MSEdge`},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var choice map[string]string
+	data, err := os.ReadFile(file)
+	if err != nil || json.Unmarshal(data, &choice) != nil {
+		t.Fatalf("the agent was not told its browser: %v (%s)", err, data)
+	}
+	if choice["kind"] != "chrome" || choice["exe"] != `C:\Apps\chrome.exe` {
+		t.Errorf("the agent was told %v, want the first browser picked: Chrome at its own path", choice)
+	}
+}
+
+// What is typed into the Start panel's search is opened as the address it is,
+// or looked up.
+func TestTheStartPanelsSearchOpensAnAddressOrLooksTheWordsUp(t *testing.T) {
+	for words, want := range map[string]string{
+		"https://example.com/a?b=c": "https://example.com/a?b=c",
+		"erp.example.com":           "erp.example.com",
+		"localhost:8000/app":        "localhost:8000/app",
+		"gold price today":          "https://www.google.com/search?q=gold+price+today",
+		"what is 7+8?":              "https://www.google.com/search?q=what+is+7%2B8%3F",
+		"notes":                     "https://www.google.com/search?q=notes",
+	} {
+		if got := webTarget(words); got != want {
+			t.Errorf("webTarget(%q) = %q, want %q", words, got, want)
 		}
 	}
 }

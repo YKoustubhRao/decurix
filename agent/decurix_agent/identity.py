@@ -21,6 +21,16 @@ from decurix_agent import config
 # long before it is asked to do anything real.
 # ============================================================
 
+def _windows_browser_fact():
+    """Which browser a native worker has: the one picked for it, else the computer's."""
+
+    from decurix_agent.computer import browser
+
+    name = browser.windows_browser_name()
+
+    return f"The browser is {name}. " if name else ""
+
+
 def get_identity_context(engine=""):
     """
     Describe this desktop to its own agent, one fact per line.
@@ -50,7 +60,7 @@ def get_identity_context(engine=""):
                 f"- Task working directory (your own folder): {config.WORK_DIR}",
                 f"- Machine: the Windows {platform.release()} computer {os.environ.get('COMPUTERNAME', '')} of the person you work for. "
                 "You have a desktop of your own on it that is not their screen; "
-                "what you open appears there. The browser is Microsoft Edge. "
+                f"what you open appears there. {_windows_browser_fact()}"
                 "Commands are Windows PowerShell. Their files and programs are "
                 "theirs: work in your own folder unless a task names another place.",
             ]
