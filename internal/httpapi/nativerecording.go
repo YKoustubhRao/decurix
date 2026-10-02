@@ -75,7 +75,11 @@ func (s *Server) recordViewerInput(id string) func(hostGUIRequest) {
 // recordWorkerInput is recordViewerInput for a worker's whole desktop, where a press can land on the wallpaper: on one
 // of its icons (which opens something - recorded as the "open" it causes, not as a click on a picture) or on nothing.
 // Neither is a step of a demonstration, and a replay would click a bare spot of the screen for it.
-func (s *Server) recordWorkerInput(id string, over interface{ OverWindow(x, y int) bool }) func(hostGUIRequest) {
+// Nor is what is typed into the Start panel's search field: it reaches no window.
+func (s *Server) recordWorkerInput(id string, over interface {
+	OverWindow(x, y int) bool
+	ShellTyping() bool
+}) func(hostGUIRequest) {
 	record := s.recordViewerInput(id)
 	onWallpaper := false // a press that began on the wallpaper ends there too
 
@@ -89,6 +93,10 @@ func (s *Server) recordWorkerInput(id string, over interface{ OverWindow(x, y in
 		case "up":
 			if onWallpaper {
 				onWallpaper = false
+				return
+			}
+		case "type", "key", "paste":
+			if s.recordingOn(id) && over.ShellTyping() {
 				return
 			}
 		}

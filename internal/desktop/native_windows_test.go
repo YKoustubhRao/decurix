@@ -68,7 +68,8 @@ func TestANativeWorkerRunsOnARealPrivateDesktop(t *testing.T) {
 	// A stand-in for the agent's arguments: "powershell -NoProfile\native_worker.py"
 	// would exit at once, so the worker is given a real long-running command
 	// line by starting the session the way start() does, with its own.
-	meta := nativeMeta{ID: "probe", Name: "Probe", Harness: HarnessTheBot, Brain: BrainClaude, CreatedAt: time.Now().Format(time.RFC3339)}
+	meta := nativeMeta{ID: "probe", Name: "Probe", Harness: HarnessTheBot, Brain: BrainClaude, CreatedAt: time.Now().Format(time.RFC3339),
+		Apps: []NativeApp{{ID: "chatgpt", Name: "ChatGPT", Kind: NativeAppWeb, Target: "https://chatgpt.com"}}}
 	if err := m.native.writeMeta(meta); err != nil {
 		t.Fatal(err)
 	}
@@ -123,8 +124,8 @@ func TestANativeWorkerRunsOnARealPrivateDesktop(t *testing.T) {
 	}
 	select {
 	case event := <-opened:
-		if event != "open "+builtInApps[0].ID {
-			t.Errorf("a double-click on the first icon said %q, want open %s", event, builtInApps[0].ID)
+		if event != "open "+meta.Apps[0].ID {
+			t.Errorf("a double-click on the first icon said %q, want open %s", event, meta.Apps[0].ID)
 		}
 	case <-time.After(5 * time.Second):
 		t.Error("a double-click on an icon said nothing")

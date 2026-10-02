@@ -204,6 +204,10 @@ func (h *nativeHost) addAndRedress(id string, apps []NativeApp) error {
 		return err
 	}
 
+	if meta, err := h.readMeta(id); err == nil {
+		h.noteBrowser(meta)
+	}
+
 	h.redress(id)
 
 	return nil
@@ -271,6 +275,9 @@ type nativeHost struct {
 	// open opens one of a worker's shortcuts (Manager.OpenNativeApp): what a
 	// double-click on an icon of its desktop asks for.
 	open func(ctx context.Context, id, appID string) (string, error)
+	// web opens a page in a worker's browser (Manager.agentOpen): what its
+	// Start panel's search asks for.
+	web func(ctx context.Context, id, target string) (string, error)
 }
 
 // NewNativeManager creates a Manager whose desktops are native workers. It
@@ -279,6 +286,9 @@ func NewNativeManager(rt NativeRuntime) *Manager {
 	m := NewManager(nil)
 	m.native = &nativeHost{rt: rt, running: map[string]*nativeRun{}, crashed: map[string]string{}, starting: map[string]chan struct{}{}}
 	m.native.open = m.OpenNativeApp
+	m.native.web = func(ctx context.Context, id, target string) (string, error) {
+		return m.agentOpen(ctx, id, target, target)
+	}
 	m.native.screenPassword = newScreenPassword()
 
 	// What a worker is told to call back to (controlPlaneURL), and what the
@@ -555,6 +565,8 @@ func (h *nativeHost) start(ctx context.Context, id string, say func(string)) err
 			return fmt.Errorf("start worker %s: %w", id, err)
 		}
 	}
+
+	h.noteBrowser(meta)
 
 	script := filepath.Join(h.rt.AgentDir, "native_worker.py")
 	session, err := winhost.OpenDesktop(ctx, h.rt.Helper, "w_"+id, h.env(meta, agentPort, soulPort, cdpPort), h.rt.Python, `"`+script+`"`, work)
