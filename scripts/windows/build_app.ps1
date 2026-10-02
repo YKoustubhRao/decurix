@@ -118,27 +118,43 @@ if ($running.Count -gt 0) {
     throw "The app built last time is running from $unpacked. Close it (and end 'decurix.exe' in Task Manager if it stays), then build again."
 }
 
-# From scratch: nothing an earlier build compiled, staged or packaged is
-# reused. The pinned downloads (Python, cloudflared, the wheels) are kept -
-# each is checked against its SHA-256 before it is used, so a kept one is as
-# good as a fresh one and the build does not need them again.
-Write-Host ''
-Write-Host '=== Clearing the last build ==='
-foreach ($old in @('runtime', 'stack', 'decurix.exe', 'decurix-android-arm64')) {
-    $path = Join-Path $stage $old
-    if (Test-Path $path) { Remove-Item $path -Recurse -Force }
+# One build at a time. Two at once stage into the same folders and each
+# deletes node_modules under the other: both then fail in "npm ci" with EPERM
+# on a folder that differs from run to run. The lock is a file held open, so
+# it is let go when this script ends however it ends, and when its window is
+# closed.
+$lockPath = Join-Path ([IO.Path]::GetTempPath()) 'decurix-build_app.lock'
+try {
+    $lock = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+} catch [IO.IOException] {
+    throw 'Another build of the Decurix app is already running (another terminal, or an assistant building for you). Wait for it to finish, or stop it, then build again.'
 }
-if (Test-Path $out) { Remove-Item $out -Recurse -Force }
 
-if ($Fresh) {
+try {
+    # From scratch: nothing an earlier build compiled, staged or packaged is
+    # reused. The pinned downloads (Python, cloudflared, the wheels) are kept -
+    # each is checked against its SHA-256 before it is used, so a kept one is as
+    # good as a fresh one and the build does not need them again.
     Write-Host ''
-    Write-Host '=== Deleting everything Decurix kept ==='
-    Clear-DecurixData
-}
+    Write-Host '=== Clearing the last build ==='
+    foreach ($old in @('runtime', 'stack', 'decurix.exe', 'decurix-android-arm64')) {
+        $path = Join-Path $stage $old
+        if (Test-Path $path) { Remove-Item $path -Recurse -Force }
+    }
+    if (Test-Path $out) { Remove-Item $out -Recurse -Force }
 
-Write-Host ''
-Write-Host '=== Building ==='
-& (Join-Path $PSScriptRoot 'build-electron.ps1') -MinFreeMemoryMB $MinFreeMemoryMB
+    if ($Fresh) {
+        Write-Host ''
+        Write-Host '=== Deleting everything Decurix kept ==='
+        Clear-DecurixData
+    }
+
+    Write-Host ''
+    Write-Host '=== Building ==='
+    & (Join-Path $PSScriptRoot 'build-electron.ps1') -MinFreeMemoryMB $MinFreeMemoryMB
+} finally {
+    $lock.Dispose()
+}
 
 $installer = Get-ChildItem $out -Filter 'Decurix Setup *.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
 $app = Join-Path $unpacked 'Decurix.exe'
