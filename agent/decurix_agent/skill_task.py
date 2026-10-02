@@ -1136,9 +1136,15 @@ def _for_this_run(text, skill, values):
 
 # What a result's description still holds of the demonstration once its typed
 # values are replaced.
-EXAMPLE_NOTE = ("Where what the person said or what done looks like names a detail of the demonstration's own result "
-                "(a place, a date, an amount, a company, a title), it is an example of the kind of result - this "
-                "run's result has its own. The demonstration's own result on the screen is NOT this run's.")
+EXAMPLE_NOTE = (
+    "READ THIS FIRST. What follows was written while watching ONE demonstration, done with other values than this "
+    "run's. This run's values have been put in where the demonstration's were. Anything else in it that describes "
+    "that demonstration's own result - a place, a date, an amount, a company, a job title, a count - is only an "
+    "example of the KIND of result, and this run's result will show its own instead: do not require it, do not "
+    "look for it, and do not treat its absence as a failure. What must hold is the kind of outcome (the right page "
+    "or record for THIS run's values, saved or opened or answered as the task asks). The demonstration's own result "
+    "still being on the screen is not this run's result."
+)
 
 
 def _criteria(skill, values=None):
@@ -1148,7 +1154,7 @@ def _criteria(skill, values=None):
     """
 
     if values:
-        return _for_this_run(_criteria(skill), skill, values) + "\n" + EXAMPLE_NOTE
+        return EXAMPLE_NOTE + "\n" + _for_this_run(_criteria(skill), skill, values)
 
     parts = []
     said = skills.explanation(skill)

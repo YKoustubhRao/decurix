@@ -208,10 +208,10 @@ public static class Ui {
     }
 
     static IntPtr ActiveWindow(List<Win> all) {
-        IntPtr fg = GetForegroundWindow();
-        foreach (var w in all) if (w.H == fg && IsApplicationWindow(w)) return fg;
-        // A private desktop has no foreground window until something asks for one: the topmost app window is where
-        // input goes, and what a person would call the active one.
+        // The topmost app window is where input goes, and what a person would call the active one. Not Windows' own
+        // "foreground window": on a private desktop nothing can set it (SetForegroundWindow answers yes and changes
+        // nothing), so it stays on whichever app had it first - found live, with the browser raised over Notepad,
+        // Ctrl+L meant for the browser was sent to Notepad's editor.
         foreach (var w in all) if (IsApplicationWindow(w)) return w.H;
         return IntPtr.Zero;
     }
