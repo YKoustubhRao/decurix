@@ -94,6 +94,9 @@ var (
 // itself - fine for reading the web, useless for signing in to an admin
 // panel and pressing its buttons, which only the operator's `gui` command
 // can do.
+// searchLeadRe is a request that opens with a verb for looking something up.
+var searchLeadRe = regexp.MustCompile(`(?i)^\s*(please\s+)?(search|look\s+up|google)\s+\S`)
+
 // taughtTaskRe is how the desktop agent hands over a taught task:
 // `Do the task you were taught, "<title>" (skill <name>) ...`.
 var taughtTaskRe = regexp.MustCompile(`(?i)^\s*do the task you were taught\b`)
@@ -330,6 +333,16 @@ func Triage(prompt string) Route {
 
 	if matched != "general" {
 		return Route{Kind: RouteSkill, TaskType: matched, Reason: fmt.Sprintf("recognised as a %q task", matched)}
+	}
+
+	// "search \"sundar pichai\"", "look up the Eiffel tower": something to find
+	// on the web, said the short way. The web skill's own pattern wants "for"
+	// or "web" after the verb, so these fell through to the chat skill, which
+	// has no tools - found live, it answered `NEEDS_APPROVAL: ... an external
+	// web action` to a person who had asked for a search. Not when it names
+	// something on this machine ("search the logs folder").
+	if searchLeadRe.MatchString(p) && !touchesMachine(p) {
+		return Route{Kind: RouteSkill, TaskType: "web", Reason: "something to look up - searching the web"}
 	}
 
 	if isConversational(p) {

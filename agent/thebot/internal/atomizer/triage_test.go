@@ -205,3 +205,30 @@ func TestWebPageWorkGoesToTheOperatorWithoutTheExtension(t *testing.T) {
 		t.Errorf("a planned [browser] step without the extension runs as %q", typ)
 	}
 }
+
+// Found live: `search "sundar pichai"` was a "question" for the chat skill,
+// which has no tools and answered that a web search needed approval.
+func TestTriageSendsAThingToLookUpToTheWebSkill(t *testing.T) {
+	for _, prompt := range []string{
+		`search "sundar pichai"`,
+		"search sundar pichai",
+		"look up the height of the Eiffel tower",
+		"please google decurix",
+	} {
+		got := Triage(prompt)
+		if got.Kind != RouteSkill || got.TaskType != "web" {
+			t.Errorf("Triage(%q) = %s/%s (%s), want the web skill", prompt, got.Kind, got.TaskType, got.Reason)
+		}
+	}
+
+	// Something on this machine is the operator's, and a named web app keeps its own route.
+	for _, prompt := range []string{
+		"search the logs folder for errors",
+		"search ~/work for files named report.csv",
+		`search google for "decurix"`,
+	} {
+		if got := Triage(prompt); got.Kind == RouteSkill && got.TaskType == "web" && got.Reason == "something to look up - searching the web" {
+			t.Errorf("Triage(%q) went to the web skill as a bare search", prompt)
+		}
+	}
+}

@@ -191,9 +191,7 @@ type Renderer struct {
 	phoneAppTmpl   *template.Template
 	phoneLinkTmpl  *template.Template
 	screenTmpl     *template.Template
-	// nativeScreenTmpl is a native Windows worker's screen (nativescreen.html).
-	nativeScreenTmpl *template.Template
-	triggersTmpl     *template.Template
+	triggersTmpl   *template.Template
 }
 
 // NewRenderer parses all templates once at startup.
@@ -240,9 +238,6 @@ func NewRenderer() *Renderer {
 		),
 		screenTmpl: template.Must(
 			template.ParseFS(web.TemplatesFS, templatePaths("screen.html")...),
-		),
-		nativeScreenTmpl: template.Must(
-			template.ParseFS(web.TemplatesFS, "templates/nativescreen.html"),
 		),
 		triggersTmpl: template.Must(
 			template.ParseFS(web.TemplatesFS, templatePaths("triggers.html", triggerParts)...),
@@ -367,6 +362,10 @@ type ScreenPageData struct {
 	Password string
 	// NoVNC is the path the RFB client module is served at.
 	NoVNC string
+	// Scale fits the picture to the window instead of asking the desktop to
+	// take the window's size: a native worker's screen is the size of this
+	// computer's own and cannot be resized.
+	Scale bool
 	// Controls is the recording ticket toolbar and resource alert markup the
 	// control plane already injected into noVNC's own page (httpapi), mounted
 	// into the viewer's session bar.
@@ -376,22 +375,6 @@ type ScreenPageData struct {
 // RenderScreen renders the viewer for one desktop's screen.
 func (rd *Renderer) RenderScreen(w io.Writer, data ScreenPageData) error {
 	return rd.screenTmpl.ExecuteTemplate(w, "screen.html", data)
-}
-
-// NativeScreenPageData is the template data for a native Windows worker's
-// screen: its private desktop, shown as pictures pushed over a WebSocket
-// rather than as a VNC session.
-type NativeScreenPageData struct {
-	ID   string
-	Name string
-	// Controls is the recording ticket toolbar (httpapi's ticketToolbar),
-	// the same one a desktop container's screen carries.
-	Controls template.HTML
-}
-
-// RenderNativeScreen renders the viewer for one native worker's screen.
-func (rd *Renderer) RenderNativeScreen(w io.Writer, data NativeScreenPageData) error {
-	return rd.nativeScreenTmpl.ExecuteTemplate(w, "nativescreen.html", data)
 }
 
 // FaviconSVG is the Decurix brand mark, served as the control plane's favicon.

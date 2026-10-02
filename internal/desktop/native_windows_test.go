@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -50,11 +51,11 @@ func TestANativeWorkerRunsOnARealPrivateDesktop(t *testing.T) {
 
 	m := NewNativeManager(NativeRuntime{
 		Root: t.TempDir(),
-		// The "agent": a console program that just stays alive. ping is on
-		// every Windows; its one argument is native_worker.py's path, which
-		// it rejects as a host name only after its own timeout.
-		Python:          filepath.Join(os.Getenv("SystemRoot"), "System32", "ping.exe"),
-		AgentDir:        "-n",
+		// The "agent": a console program that just stays alive and says
+		// nothing - PowerShell asleep. ping would do, but it writes a line a
+		// second into the helper's own output, in among its answers.
+		Python:          PowershellExe(),
+		AgentDir:        "-NoProfile",
 		Soul:            "unused",
 		ControlPlaneURL: "http://127.0.0.1:1",
 		Helper:          realHelper(t),
@@ -64,15 +65,15 @@ func TestANativeWorkerRunsOnARealPrivateDesktop(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	// A stand-in for the agent's arguments: "ping -n\native_worker.py" would
-	// exit at once, so the worker is given a real long-running command line
-	// by starting the session the way start() does, with ping's own.
+	// A stand-in for the agent's arguments: "powershell -NoProfile\native_worker.py"
+	// would exit at once, so the worker is given a real long-running command
+	// line by starting the session the way start() does, with its own.
 	meta := nativeMeta{ID: "probe", Name: "Probe", Harness: HarnessTheBot, Brain: BrainClaude, CreatedAt: time.Now().Format(time.RFC3339)}
 	if err := m.native.writeMeta(meta); err != nil {
 		t.Fatal(err)
 	}
 
-	session, err := winhost.OpenDesktop(ctx, m.native.rt.Helper, "w_probe", m.native.env(meta, 1, 2, 3), m.native.rt.Python, "-n 120 127.0.0.1", m.native.rt.Root)
+	session, err := winhost.OpenDesktop(ctx, m.native.rt.Helper, "w_probe", m.native.env(meta, 1, 2, 3), m.native.rt.Python, "-NoProfile -NonInteractive -Command Start-Sleep 120", m.native.rt.Root)
 	if err != nil {
 		t.Fatalf("OpenDesktop: %v", err)
 	}
@@ -104,6 +105,93 @@ func TestANativeWorkerRunsOnARealPrivateDesktop(t *testing.T) {
 		t.Fatalf("NativeSession = %v, %v", s, err)
 	}
 
+	// The desktop has its icons: a double-click on the first one (the cell
+	// in the wallpaper's top-left corner, at any display scaling) is said to
+	// the control plane, which is what knows what the shortcut opens.
+	opened := make(chan string, 4)
+	session.OnEvent(func(event string) { opened <- event })
+	if err := session.SetShortcuts("Probe", shortcuts(meta)); err != nil {
+		t.Fatalf("SetShortcuts: %v", err)
+	}
+	if session.OverWindow(60, 60) {
+		t.Fatal("the wallpaper's corner is reported as a window")
+	}
+	for i := 0; i < 2; i++ {
+		if err := firstError(session.Mouse("down", 60, 60, false, ""), session.Mouse("up", 60, 60, false, "")); err != nil {
+			t.Fatalf("pressing an icon: %v", err)
+		}
+	}
+	select {
+	case event := <-opened:
+		if event != "open "+builtInApps[0].ID {
+			t.Errorf("a double-click on the first icon said %q, want open %s", event, builtInApps[0].ID)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("a double-click on an icon said nothing")
+	}
+
+	// A shortcut opens a program on this same desktop, where the helper
+	// then counts one more window (the stand-in agent is a console program,
+	// so its console may be there already - a real agent runs windowless).
+	// The session goes on speaking of the agent it was started for.
+	before, err := session.Do("count")
+	if err != nil || !strings.HasPrefix(before, "COUNT ") {
+		t.Fatalf("count = %q, %v", before, err)
+	}
+	charmap := NativeApp{ID: "charmap", Name: "Character Map", Kind: NativeAppProgram, Target: filepath.Join(os.Getenv("SystemRoot"), "System32", "charmap.exe")}
+	if err := m.OpenNativeProgram("probe", charmap); err != nil {
+		t.Fatalf("OpenNativeProgram: %v", err)
+	}
+	after := before
+	for i := 0; i < 100 && after == before; i++ {
+		time.Sleep(200 * time.Millisecond)
+		after, _ = session.Do("count")
+	}
+	if after == before || m.NativeScreenEmpty("probe") {
+		t.Fatalf("Character Map was started but no window appeared on the worker's desktop (%s, then %s)", before, after)
+	}
+	if why := session.Running(); why != "" {
+		t.Fatalf("after opening an app the worker's own program is reported as: %s", why)
+	}
+	if err := m.OpenNativeProgram("probe", NativeApp{Name: "Nothing", Kind: NativeAppProgram, Target: filepath.Join(os.Getenv("SystemRoot"), "no-such-program.exe")}); err == nil {
+		t.Error("opening a program that is not on this computer reported success")
+	}
+
+	// The taskbar: the window has a button, which brings it to the front and
+	// closes it.
+	var charmapWindow int64
+	for _, w := range m.NativeWindows("probe") {
+		if w.Title == "Character Map" {
+			charmapWindow = w.ID
+		}
+	}
+	if charmapWindow == 0 {
+		t.Fatalf("the taskbar lists %+v, with no Character Map", m.NativeWindows("probe"))
+	}
+	if err := m.NativeWindowDo("probe", "raise", charmapWindow); err != nil {
+		t.Errorf("raise: %v", err)
+	}
+	if front := m.NativeWindows("probe"); len(front) == 0 || front[0].ID != charmapWindow || !front[0].Active {
+		t.Errorf("after raising Character Map the taskbar's front window is %+v", front)
+	}
+	if err := m.NativeWindowDo("probe", "close", charmapWindow); err != nil {
+		t.Errorf("close: %v", err)
+	}
+	gone := false
+	for i := 0; i < 50 && !gone; i++ {
+		time.Sleep(200 * time.Millisecond)
+		gone = true
+		for _, w := range m.NativeWindows("probe") {
+			gone = gone && w.ID != charmapWindow
+		}
+	}
+	if !gone {
+		t.Error("Character Map is still on the taskbar after its button closed it")
+	}
+	if err := m.NativeWindowDo("probe", "raise", charmapWindow); err == nil {
+		t.Error("raising a window that has closed reported success")
+	}
+
 	if err := m.Stop(ctx, "probe"); err != nil {
 		t.Fatal(err)
 	}
@@ -119,4 +207,13 @@ func TestANativeWorkerRunsOnARealPrivateDesktop(t *testing.T) {
 	if _, err := m.NativeSession("probe"); !errors.Is(err, ErrNotRunning) {
 		t.Errorf("NativeSession of a stopped worker = %v, want ErrNotRunning", err)
 	}
+}
+
+func firstError(errs ...error) error {
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }

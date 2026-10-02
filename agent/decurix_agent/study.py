@@ -38,14 +38,14 @@ MAX_QUESTIONS = 5
 MAX_FOLLOW_UPS = 3
 MAX_PICTURES = 5
 
-STUDY_SYSTEM = """You are an apprentice learning a computer task by watching a person do it (one or a few demonstrations) on a Linux desktop. Later you will do this task on your own, with other values, on screens that may look different, and your work will be checked. What you work out now, and what you ask now, is all you will have.
+STUDY_SYSTEM = """You are an apprentice learning a computer task by watching a person do it (one or a few demonstrations) on a desktop. Later you will do this task on your own, with other values, on screens that may look different, and your work will be checked. What you work out now, and what you ask now, is all you will have.
 
 Study the recording you are given - the numbered steps (what was clicked, typed, in which window), the person's own notes, and the screenshots - and work out:
 - summary: what the task achieves, in two or three sentences, in the person's terms.
 - steps: what each step is FOR (not what it clicks), by step number.
 - inputs: for each typed value (named by its parameter), what it is and where a future run gets it (the request, a document, always the same...).
 - varies: for each input, true if it will be different on another run, false if it stays the same.
-- done_when: what must be visible on the screen, or true, when the task is finished - concrete enough to check from a screenshot.
+- done_when: what must be visible on the screen, or true, when the task is finished - concrete enough to check from a screenshot, and true of EVERY run, not only this demonstration. Write an input as its parameter in braces ("a profile page for {typed_text} is open"), never as the value the person happened to use, and leave out details that only this demonstration's result has (this person's city, this order's total, today's date): another run's result will not show them. The same goes for the summary.
 - incidental: step numbers that look accidental or not needed (a stray click, scrolling around, closing a popup that may not appear).
 - rules: leave empty unless the notes already state one; each rule is one imperative sentence.
 - questions: what you must ask the person, because you cannot work it out and getting it wrong would make a future run fail or do the wrong thing. Think about: what the request will look like next time (one item or a list? done once per item?), decisions (what if the record is not found, already exists, or the page differs?), which values come from where, preconditions (signed in, which account, which page to start from), steps that send, pay, submit or delete and what to check before them, and anything in the notes you do not understand. Most important first, at most 5. Each is one short, concrete question that can be answered in a line, naming steps by number and what is on the screen. Do not ask what you can see or work out, about passwords, about screen coordinates, or whether to save the task - those are handled separately.

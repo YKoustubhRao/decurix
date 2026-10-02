@@ -34,6 +34,9 @@ func (m *Manager) ScreenAccess(ctx context.Context, rawID string) (ScreenAccess,
 		if strings.TrimSpace(meta.Name) != "" {
 			access.Name = strings.TrimSpace(meta.Name)
 		}
+		// The worker's screen is served by the control plane itself (VNC
+		// spoken by httpapi), with a password of this run's own.
+		access.Password = m.native.screenPassword
 		return access, nil
 	}
 

@@ -112,10 +112,33 @@ Write-Host '========================================'
 
 # The unpacked app cannot be replaced while it is running from that folder.
 # (An installed copy runs from elsewhere and is left alone.)
+#
+# Closing the app's window does not end it: the control plane (and the workers
+# it runs) is detached and stays, so after any run of the last build something
+# is always still running from that folder. That part is stopped here - the
+# workers that were running start again with the new build. An open window is
+# somebody using the app, and is only closed for them by -Fresh, which says it
+# closes a running Decurix.
 $unpacked = Join-Path $out 'win-unpacked'
-$running = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($unpacked, [StringComparison]::OrdinalIgnoreCase) })
+function Get-UnpackedProcesses {
+    @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($unpacked + '\', [StringComparison]::OrdinalIgnoreCase) })
+}
+$running = Get-UnpackedProcesses
 if ($running.Count -gt 0) {
-    throw "The app built last time is running from $unpacked. Close it (and end 'decurix.exe' in Task Manager if it stays), then build again."
+    $window = @($running | Where-Object { (Split-Path -Parent $_.ExecutablePath).TrimEnd('\') -ieq $unpacked })
+    if ($window.Count -gt 0 -and -not $Fresh) {
+        throw "The app built last time is open (from $unpacked). Close its window, then build again."
+    }
+
+    Write-Host "Stopping the Decurix the last build left running in the background ($($running.Count) processes)"
+    for ($try = 0; $running.Count -gt 0 -and $try -lt 10; $try++) {
+        $running | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        Start-Sleep -Seconds 1
+        $running = Get-UnpackedProcesses
+    }
+    if ($running.Count -gt 0) {
+        throw "Could not stop what is running from $unpacked ($(($running | ForEach-Object { $_.Name } | Select-Object -Unique) -join ', ')). End it in Task Manager, then build again."
+    }
 }
 
 # One build at a time. Two at once stage into the same folders and each

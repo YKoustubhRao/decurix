@@ -108,7 +108,9 @@ const windowsRule = `- This computer runs Windows and every command is Windows P
 // visionRule is added to the contract for a brain that reads images: the
 // screenshot comes with every gui command's result.
 const visionRule = `- The pages of a scanned document that office read finds are shown to you as pictures: read them yourself.
-- After every gui command you are also shown a screenshot of the screen as it is now. Use it to check what really happened and to find what the element list does not name (a picture, a canvas, an unlabelled icon, a message painted on the page). Still act by ref from gui observe wherever there is one; use x,y coordinates only for something that has no ref.
+- Windows: gui observe names the active window and the open ones. Before working in a window that is not the active one, bring it forward with gui front "a few words of its title" (for the browser: gui front browser) - there is no taskbar to click, and alt+tab does nothing here. Close one you no longer need with gui key alt+f4 once it is in front, unless the task wants it left open.
+- A page that asks whoever is there to prove they are a person (a CAPTCHA, "I'm not a robot", "unusual traffic") is for the person, never for you: reply HELP asking them to complete it on this worker's screen and to reply when done. Do not click at it.
+- After every gui command you are also shown a screenshot of the screen as it is now. Use it to check what really happened and to find what the element list does not name (a picture, a canvas, an unlabelled icon, a message painted on the page). Still act by ref from gui observe wherever there is one; use x,y coordinates only for something that has no ref. The screenshot has a ruler drawn on it: dotted pink lines every 100 pixels, each numbered with its real screen position at the top and left edges and again half way across. Read a position off those numbers (a point between the 300 and 400 lines is 300-and-something) - never estimate it from the picture's own size, which is not the screen's. After a click by coordinates, check in the next screenshot that it landed; if nothing changed, read the position again more carefully before trying another.
 `
 
 // officeRules is added to the contract for a hosted brain: the lessons the
@@ -145,7 +147,7 @@ Only reply HELP again if the human really has to act - to choose between options
 
 // humanOnlyRe recognises a HELP that is genuinely asking for something only
 // a person can give. Such a HELP is always delivered, never pushed back on.
-var humanOnlyRe = regexp.MustCompile(`(?i)\b(approv|permission|consent|confirm|authori[sz]|password|passphrase|token|api[ -]?key|credential|secret|log ?in|sign ?in|2fa|otp|which\s+(one|of)|choose|pick|prefer|decide|should\s+i|do\s+you\s+want|payment|pay\b|purchase|send(ing)?\s+(an?\s+)?(e-?mail|message|sms)|publish|push)`)
+var humanOnlyRe = regexp.MustCompile(`(?i)\b(approv|permission|consent|confirm|authori[sz]|captcha|not\s+a\s+robot|human\s+check|a\s+person\s+is\s+there|password|passphrase|token|api[ -]?key|credential|secret|log ?in|sign ?in|2fa|otp|which\s+(one|of)|choose|pick|prefer|decide|should\s+i|do\s+you\s+want|payment|pay\b|purchase|send(ing)?\s+(an?\s+)?(e-?mail|message|sms)|publish|push)`)
 
 // failureQueryNudge answers a HELP that follows a failed command - the one
 // case successQueryNudge and prematureQueryNudge leave open, and the one that
@@ -304,7 +306,7 @@ If you can already answer - including from the facts you were given - answer now
 If you could find out by running something, run it with COMMAND.
 Only reply HELP again if the human really has to act before you can continue.
 
-If you were pausing for approval before a payment, an outgoing message, or another real-world consequence, reply HELP again with the same request and it will go to the human.`
+If you were pausing for approval before a payment, an outgoing message, or another real-world consequence: when it is a click in an app or a web page, do not ask - do the work up to that click and make it with gui, which stops such a click itself and asks the human with the details in front of them. For anything else (a shell command, a script), reply HELP again with the same request and it will go to the human.`
 
 var (
 	controlRe      = regexp.MustCompile(`\b(COMMAND|DONE|HELP):[*_` + "`" + `]*`)
@@ -663,6 +665,13 @@ func (st *operatorState) guiEnv() []string {
 			"DECURIX_GUI_SCREENSHOT="+st.Screenshot,
 			"DECURIX_GUI_SCREENSHOT_SCALE="+strconv.Itoa(max(1, st.ScreenScale)),
 		)
+		// A whole-size picture carries a ruler (computer/pointing.py): the
+		// provider shrinks what the model is shown, so a position read off
+		// the picture is only right when the picture says it. A half-size
+		// one would make the ruler's numbers too small to read.
+		if st.ScreenScale <= 1 {
+			env = append(env, "DECURIX_GUI_RULER=1")
+		}
 	}
 	return env
 }

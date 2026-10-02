@@ -164,6 +164,20 @@ def align(recorded, request, places):
     # name) must be there, unchanged.
     action = [i for i, (w, _, _) in enumerate(old_words)
               if w not in FILLER and w not in content and not _value_like(recorded, old_words, i, i + 1)]
+    if not action:
+        # Every word of the ticket turned up somewhere in the recording, which
+        # says nothing when the recording is of web pages: a search's result
+        # page has "search" in its address and in half its controls. Found
+        # live: a ticket `search "koustubh rao"`, taught, and then `search
+        # "sundar pichai"` matched nothing - not even the ticket's own words -
+        # and went to the engine. What the person *typed* is still a value;
+        # a word they only clicked past is the task's.
+        typed = set()
+        for kind, text in places:
+            if kind == "typed":
+                typed.update(word for word, _, _ in _words(text))
+        action = [i for i, (w, _, _) in enumerate(old_words)
+                  if w not in FILLER and w not in typed and not _value_like(recorded, old_words, i, i + 1)]
     kept = set()
     for tag, i1, i2, _, _ in opcodes:
         if tag == "equal":

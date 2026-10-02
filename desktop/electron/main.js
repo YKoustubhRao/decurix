@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, powerSaveBlocker, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, powerSaveBlocker, shell } = require('electron');
 const { spawn } = require('node:child_process');
 const dgram = require('node:dgram');
 const fs = require('node:fs');
@@ -483,6 +483,11 @@ function configureNavigation(contents) {
 }
 
 function openWindow() {
+  // No File / Edit / View / Window bar: the app is its dashboard, and nothing in
+  // that menu is the app's own. A Mac keeps its menu - it is where Quit and
+  // copy and paste live there, at the top of the screen and not in the window.
+  if (process.platform !== 'darwin' && Menu) Menu.setApplicationMenu(null);
+
   window = new BrowserWindow({
     width: 1280,
     height: 850,

@@ -169,9 +169,10 @@ func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memorySt
 	desktop.SetHostAppChecker(srv.checkHostApps)
 	desktop.SetHostAppWarmer(srv.warmHostGUI)
 	desktop.SetHostAppStarter(srv.startHostGUIAppAhead)
-	// Nothing is copied into a native Windows worker - it starts the programs
-	// installed on this computer itself, on its own desktop - so there is no
-	// app list to scan and no spare helper to keep warm for one.
+	// Nothing is copied into a native Windows worker - the apps picked for it
+	// are shortcuts to the programs installed on this computer, started on its
+	// own desktop - so there is no spare helper to keep warm, and the app list
+	// is scanned when the create dialog first asks for it.
 	if desktops == nil || !desktops.Native() {
 		desktop.WarmHostApps() // compile and load now, long before the first desktop exists
 		desktop.InitHostAppsScan()

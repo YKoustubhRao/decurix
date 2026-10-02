@@ -255,23 +255,6 @@ func TestRenderEveryPage(t *testing.T) {
 		t.Fatalf("the phone app viewer let a value break out, or lost the package:\n%s", phoneView.String())
 	}
 
-	// A native Windows worker's screen: the same recording toolbar, and a
-	// name a person typed that must stay text.
-	var native bytes.Buffer
-	if err := renderer.RenderNativeScreen(&native, NativeScreenPageData{
-		ID: "ada", Name: `Ops </title><script>alert(1)</script>`, Controls: template.HTML(`<div id="decurix-ticket"></div>`),
-	}); err != nil {
-		t.Fatalf("RenderNativeScreen: %v", err)
-	}
-	if strings.Contains(native.String(), "<script>alert(1)") {
-		t.Fatalf("the native screen let a name break out of its context:\n%s", native.String())
-	}
-	for _, want := range []string{`var ID = "ada"`, `<div id="decurix-ticket"></div>`, `/screen'`} {
-		if !strings.Contains(native.String(), want) {
-			t.Fatalf("the native screen is missing %q", want)
-		}
-	}
-
 	// The screen viewer: a desktop's name is whatever a person typed and its
 	// password goes into the page's script, so both must stay quoted strings.
 	var screen bytes.Buffer

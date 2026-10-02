@@ -40,8 +40,8 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A native Windows worker has no VNC server to proxy to: its screen is a
-	// private desktop of this computer, shown by nativescreen.go.
+	// A native Windows worker has no VNC server to proxy to: the control plane
+	// is one for it, behind the same viewer (nativescreen.go, nativerfb.go).
 	if s.Desktops.Native() {
 		rest := ""
 		if len(parts) == 2 {

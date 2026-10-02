@@ -15,6 +15,8 @@ leaves stdout unset; everything the agent prints goes to the worker's log.
 import os
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 # The Python the Windows app ships is the "embeddable" one, whose python*._pth
@@ -71,9 +73,46 @@ def start_soul(logs):
     return process
 
 
+def keep_soul_running(logs):
+    """
+    Start TheBot's engine, and start it again whenever it ends: a worker whose
+    engine is gone accepts requests and can do none of them. It ends when it
+    crashes, and when something outside ends it - found live, an antivirus that
+    took a freshly built soul.exe a minute into a task, after which every
+    request failed until the worker was restarted by hand. Tried again at once,
+    then at growing intervals (the file may be gone for good).
+    """
+
+    process = start_soul(logs)
+    if process is None:
+        return
+
+    def watch(process):
+        wait = 2
+        while True:
+            started = time.monotonic()
+            code = process.wait()
+            if time.monotonic() - started > 120:
+                wait = 2  # it had been running: a first failure, retried at once
+            print(f"soul (TheBot) ended (exit code {code}); starting it again in {wait} s")
+            while True:
+                time.sleep(wait)
+                wait = min(wait * 2, 60)
+                try:
+                    again = start_soul(logs)
+                except OSError as exc:
+                    print(f"soul (TheBot) could not be started: {exc}")
+                    continue
+                if again is not None:
+                    process = again
+                    break
+
+    threading.Thread(target=watch, args=(process,), daemon=True, name="soul-keeper").start()
+
+
 def main():
     logs = open_log()
-    start_soul(logs)
+    keep_soul_running(logs)
 
     # After the log is open: importing the agent already creates its folders
     # and reads its configuration.
