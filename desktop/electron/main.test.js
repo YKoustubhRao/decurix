@@ -9,8 +9,21 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
 const favicon = fs.readFileSync(path.join(__dirname, '..', '..', 'web', 'favicon.svg'), 'utf8');
+const log = Buffer.from('2026/10/01 18:05:17 Decurix dev starting\r\n2026/10/01 18:05:17 listen tcp 127.0.0.1:8080: bind: address in use\r\n\r\n');
 
-async function boot(initialState) {
+// path.join, not literals: on Windows (where this is built) it joins with "\".
+const data = path.join('/profile/AppData', 'decurix');
+
+// backendStarts: whether a control plane that is started comes up (answers on
+// 8080) or never does.
+// stopFails: stopping the phone link throws, as it does when the control plane
+// it reports to is gone.
+// platform: 'win32' is the native app; 'darwin' and 'linux' run the control
+// plane in Docker, where dockerRun(args) is each docker command's exit code
+// ('missing': no docker program), files the paths that exist besides what the
+// app writes, and staged the VERSION of a stack an earlier run left behind.
+async function boot(initialState, { backendStarts = true, stopFails = false, platform = 'win32', dockerRun = () => 0, files = [], staged = null } = {}) {
+  const intervals = [];
   const windows = [];
   const spawns = [];
   const children = [];
@@ -18,7 +31,12 @@ async function boot(initialState) {
   const written = [];
   const external = [];
   const mobileCalls = [];
+  let tunnel = null;
   let quits = 0;
+  const blockers = [];
+  const home = '/Users/ana';
+  const stack = path.join(data, 'stack');
+  const present = new Set(files);
   let state = initialState;
 
   class FakeWindow extends EventEmitter {
@@ -38,6 +56,8 @@ async function boot(initialState) {
   const app = new EventEmitter();
   app.isPackaged = true;
   app.getPath = () => '/profile/AppData';
+  app.paths = {};
+  app.setPath = (name, value) => { app.paths[name] = value; };
   app.setAppUserModelId = () => {};
   app.requestSingleInstanceLock = () => true;
   app.whenReady = () => Promise.resolve();
@@ -69,41 +89,84 @@ async function boot(initialState) {
       const child = new EventEmitter();
       children.push(child);
       child.unref = () => {};
-      if (args[0] === '--build-images') queueMicrotask(() => child.emit('exit', 0));
-      else state = 'ready';
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      if (path.basename(file) === 'docker') {
+        // A docker command says a line and ends; `up` is what makes the
+        // dashboard answer.
+        const result = dockerRun(Array.from(args));
+        setImmediate(() => {
+          if (result === 'missing') { child.emit('error', Object.assign(new Error('spawn docker ENOENT'), { code: 'ENOENT' })); return; }
+          child.stdout.emit('data', Buffer.from(`docker ${args[0]} ${args[1]}\n`));
+          if (result === 0 && args.includes('up') && backendStarts) state = 'ready';
+          child.emit('exit', result);
+        });
+        return child;
+      }
+      if (file === 'open') return child;
+      // The control plane answers on 8080 a few polls after it is started.
+      if (backendStarts) setImmediate(() => { state = 'ready'; });
       return child;
     },
   };
 
   const fileSystem = {
     mkdirSync() {},
-    existsSync() { return false; },
+    existsSync(file) { return present.has(file); },
     copyFileSync(from, to) { copied.push({ from, to }); },
     writeFileSync(file, content) { written.push({ file, content }); },
+    writeSync() {},
+    readFileSync(file) {
+      if (file === path.join('/installed/resources', 'stack', 'VERSION')) return 'build-2';
+      if (file === path.join(stack, 'VERSION') && staged !== null) return staged;
+      throw Object.assign(new Error('no such file'), { code: 'ENOENT' });
+    },
     openSync() { return 1; },
     closeSync() {},
+    fstatSync() { return { size: log.length }; },
+    readSync(_file, buffer, _offset, length, position) { return log.copy(buffer, 0, position, position + length); },
   };
 
   const modules = {
-    electron: { app, BrowserWindow: FakeWindow, ipcMain: new EventEmitter(), shell: { openExternal: (url) => external.push(url) } },
+    electron: {
+      app, BrowserWindow: FakeWindow, ipcMain: new EventEmitter(), shell: { openExternal: (url) => external.push(url) },
+      powerSaveBlocker: { start: (kind) => { blockers.push(kind); return blockers.length; }, stop: (id) => { blockers.push(`stop ${id}`); } },
+    },
     'node:child_process': childProcess,
+    // Finding this computer's address on the network is not what is tested here.
+    'node:dgram': { createSocket: () => ({ once() {}, connect() {}, close() {} }) },
+    'node:os': { homedir: () => home },
     'node:fs': fileSystem,
     'node:http': http,
     'node:path': path,
-    './mobile-access': { setupMobileAccess: async () => {
+    './mobile-access': { setupMobileAccess: async (_dir, tunnelCommand) => {
       mobileCalls.push('start');
-      return { stop: async () => { mobileCalls.push('stop'); } };
+      tunnel = tunnelCommand(8090);
+      return { stop: async () => { mobileCalls.push('stop'); if (stopFails) throw new Error('connect ECONNREFUSED 127.0.0.1:8080'); } };
     } },
   };
   vm.runInNewContext(source, {
     require: (name) => modules[name],
-    process: { resourcesPath: '/installed/resources' },
+    process: { resourcesPath: '/installed/resources', platform, env: { PATH: '/usr/bin' } },
     URL,
-    setTimeout: (callback) => queueMicrotask(callback),
+    setTimeout: (callback) => setImmediate(callback),
+    // The watch on the control plane: a test makes its clock tick by hand.
+    setInterval: (callback) => { intervals.push(callback); },
+    Buffer,
+    console: { ...console, error() {}, warn() {} },
     __dirname,
   }, { filename: 'main.js' });
-  for (let i = 0; i < 12; i += 1) await new Promise((resolve) => setImmediate(resolve));
-  return { window: windows[0], app, spawns, children, copied, written, external, mobileCalls, get quits() { return quits; } };
+  const settle = async (turns = 12) => { for (let i = 0; i < turns; i += 1) await new Promise((resolve) => setImmediate(resolve)); };
+  await settle();
+  return {
+    window: windows[0], app, spawns, children, copied, written, external, mobileCalls, settle, blockers, stack, home,
+    // The docker commands run, each as its words.
+    get docker() { return spawns.filter((s) => path.basename(s.file) === 'docker').map((s) => Array.from(s.args).join(' ')); },
+    // One tick of the watch, and time for what it starts.
+    tick: async (times = 1) => { for (let i = 0; i < times; i += 1) { await Promise.all(intervals.map((run) => run())); await settle(); } },
+    setState: (next) => { state = next; },
+    get tunnel() { return tunnel; }, get quits() { return quits; },
+  };
 }
 
 test('reuses a running dashboard without launching another backend', async () => {
@@ -112,18 +175,24 @@ test('reuses a running dashboard without launching another backend', async () =>
   assert.equal(result.spawns.length, 0);
 });
 
-test('builds images and starts the packaged Windows backend when absent', async () => {
+test('starts the shipped Windows control plane when absent, and nothing else', async () => {
   const result = await boot('absent');
   assert.equal(result.window.url, 'http://127.0.0.1:8080');
-  assert.deepEqual(result.spawns.map((call) => Array.from(call.args)), [['--build-images'], []]);
-  for (const call of result.spawns) {
-    assert.equal(call.file, '/installed/resources/decurix.exe');
-    assert.equal(call.options.cwd, '/profile/AppData/decurix');
-    assert.equal(call.options.windowsHide, true);
-  }
-  assert.equal(result.copied[0].from, '/installed/resources/.env.example');
-  assert.equal(result.written[0].file, '/profile/AppData/decurix/.env');
-  assert.match(result.written[0].content, /OLLAMA_URL=http:\/\/decurix-ollama:11434/);
+  // One program: no image build, no Docker, no other runtime to prepare.
+  assert.equal(result.spawns.length, 1);
+  assert.equal(result.spawns[0].file, path.join('/installed/resources', 'decurix.exe'));
+  assert.deepEqual(Array.from(result.spawns[0].args), []);
+  assert.equal(result.spawns[0].options.cwd, data);
+  assert.equal(result.spawns[0].options.windowsHide, true);
+  assert.equal(result.spawns[0].options.detached, true);
+  assert.equal(result.copied[0].from, path.join('/installed/resources', '.env.example'));
+  assert.equal(result.written[0].file, path.join(data, '.env'));
+  assert.equal(result.written[0].content, 'OLLAMA_MODEL=auto\n');
+});
+
+test('keeps the Electron profile out of the control plane data dir', async () => {
+  const result = await boot('ready');
+  assert.equal(result.app.paths.userData, path.join(data, 'electron'));
 });
 
 test('refuses another server on port 8080', async () => {
@@ -139,23 +208,174 @@ test('keeps local popups in Electron and sends external links to the browser', a
   assert.deepEqual(result.external, ['https://example.com/']);
 });
 
-
-test('shows a retry screen when the backend exits after startup', async () => {
-  const result = await boot('absent');
-  result.children[1].emit('exit', 1);
-  for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setImmediate(resolve));
+test('shows a retry screen with the last log line when the backend never comes up', async () => {
+  const result = await boot('absent', { backendStarts: false });
+  result.children[0].emit('exit', 1);
+  await result.settle(3);
   assert.equal(result.window.loadFileCount, 2);
   assert.equal(result.window.lastStatus.value.failed, true);
   assert.match(result.window.lastStatus.value.message, /exited with code 1/);
+  assert.match(result.window.lastStatus.value.detail, /address in use/);
 });
 
-
-test('stops the temporary mobile tunnel when the app closes', async () => {
+// Found by killing the control plane under an open window: it had been started
+// by an earlier run of the app, so nothing told this one, and the window went on
+// showing a dashboard that no longer answered.
+test('starts the control plane again when it dies under an open window', async () => {
   const result = await boot('ready');
-  assert.deepEqual(result.mobileCalls, ['start']);
+  assert.equal(result.spawns.length, 0);
+
+  // One missed answer is a busy moment, not a death.
+  result.setState('absent');
+  await result.tick(1);
+  result.setState('ready');
+  await result.tick(3);
+  assert.equal(result.spawns.length, 0);
+  assert.equal(result.window.loadFileCount, 1);
+
+  result.setState('absent');
+  await result.tick(3);
+  assert.equal(result.spawns.length, 1, 'the control plane was not started again');
+  assert.equal(result.window.url, 'http://127.0.0.1:8080');
+  assert.equal(result.window.loadFileCount, 2);
+  // The phone link belonged to the one that died, and is opened again.
+  assert.deepEqual(result.mobileCalls, ['start', 'stop', 'start']);
+});
+
+// Found on the installed app: stopping the phone link reports to the control
+// plane, which is exactly what is gone - and that error stopped the restart.
+test('starts it again even though the phone link cannot be cleared', async () => {
+  const result = await boot('ready', { stopFails: true });
+  result.setState('absent');
+  await result.tick(3);
+  assert.equal(result.spawns.length, 1, 'the control plane was not started again');
+  assert.equal(result.window.url, 'http://127.0.0.1:8080');
+  assert.deepEqual(result.mobileCalls, ['start', 'stop', 'start']);
+});
+
+test('one that keeps dying is left stopped, with a Retry', async () => {
+  const result = await boot('ready');
+  for (let death = 0; death < 3; death += 1) {
+    result.setState('absent');
+    await result.tick(3);
+  }
+  assert.equal(result.spawns.length, 3);
+
+  result.setState('absent');
+  await result.tick(3);
+  assert.equal(result.spawns.length, 3, 'it was started a fourth time');
+  assert.equal(result.window.lastStatus.value.failed, true);
+  assert.match(result.window.lastStatus.value.message, /keeps stopping/);
+  assert.match(result.window.lastStatus.value.detail, /address in use/);
+});
+
+test('does not start it again while the app is closing', async () => {
+  const result = await boot('ready');
   result.window.emit('closed');
   result.app.emit('window-all-closed');
-  for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  result.setState('absent');
+  await result.tick(4);
+  assert.equal(result.spawns.length, 0);
+});
+
+test('runs the shipped cloudflared for the phone link and stops it when the app closes', async () => {
+  const result = await boot('ready');
+  assert.deepEqual(result.mobileCalls, ['start']);
+  assert.equal(result.tunnel.file, path.join('/installed/resources', 'cloudflared.exe'));
+  assert.equal(result.tunnel.args.at(-1), 'http://127.0.0.1:8090');
+  result.window.emit('closed');
+  result.app.emit('window-all-closed');
+  await result.settle(3);
   assert.deepEqual(result.mobileCalls, ['start', 'stop']);
   assert.equal(result.quits, 1);
+});
+
+// ---- a Mac or Linux: the control plane runs in Docker ----
+
+const dockerOnPath = path.join('/usr/local/bin', 'docker');
+const cloudflaredOnPath = path.join('/opt/homebrew/bin', 'cloudflared');
+
+test('on a Mac, a first launch builds and starts the control plane in Docker', async () => {
+  const result = await boot('absent', { platform: 'darwin', files: [dockerOnPath] });
+  assert.equal(result.window.url, 'http://127.0.0.1:8080');
+  assert.deepEqual(result.docker, [
+    'version --format {{.Server.Version}}',
+    'compose build',
+    'compose run --rm --no-deps -T desktop-manager ./decurix --build-images',
+    'compose up -d --no-build',
+  ]);
+
+  // Docker is found where Docker Desktop puts it, which an app started from
+  // the Finder does not have on its PATH - and its helpers need that PATH too.
+  const run = result.spawns[0];
+  assert.equal(run.file, dockerOnPath);
+  assert.equal(run.options.cwd, result.stack);
+  assert.ok(run.options.env.PATH.split(path.delimiter).includes('/usr/local/bin'));
+  assert.equal(run.options.env.DECURIX_HOST_HOME, result.home);
+  // The project a checkout's own compose stack has, so the app takes it over.
+  assert.equal(run.options.env.COMPOSE_PROJECT_NAME, 'decurix');
+  assert.equal(run.options.env.DECURIX_HOST_MNT_C, path.join(data, 'no-windows-drive'));
+
+  // What the app ships is staged where docker builds from it, beside the
+  // person's settings, which name the control plane's own model server.
+  const stagedNames = result.copied.filter((c) => c.to.startsWith(result.stack)).map((c) => path.basename(c.to)).sort();
+  assert.deepEqual(stagedNames, ['.env', 'Dockerfile', 'decurix', 'decurix-android-arm64', 'docker-compose.yaml']);
+  const settings = result.written.find((w) => w.file === path.join(data, '.env'));
+  assert.equal(settings.content, 'OLLAMA_URL=http://decurix-ollama:11434\nOLLAMA_MODEL=auto\n');
+  // No Windows control plane is started there.
+  assert.ok(!result.spawns.some((s) => /decurix\.exe$/.test(s.file)));
+});
+
+test('says Docker Desktop is needed when the Mac has none', async () => {
+  const result = await boot('absent', { platform: 'darwin', dockerRun: () => 'missing' });
+  assert.equal(result.window.lastStatus.value.failed, true);
+  assert.match(result.window.lastStatus.value.message, /needs Docker Desktop/);
+  assert.deepEqual(result.docker, ['version --format {{.Server.Version}}']);
+});
+
+test('starts Docker Desktop when it is installed and not running', async () => {
+  let asked = 0;
+  // Not answering the first two times it is asked, then up.
+  const dockerRun = (args) => (args[0] === 'version' && (asked += 1) <= 2 ? 1 : 0);
+  const result = await boot('absent', { platform: 'darwin', files: [dockerOnPath], dockerRun });
+  await result.settle(20);
+  assert.ok(result.spawns.some((s) => s.file === 'open' && Array.from(s.args).join(' ') === '-ga Docker'));
+  assert.equal(result.window.url, 'http://127.0.0.1:8080');
+});
+
+test('on Linux a Docker that does not answer is not started, and the person is told', async () => {
+  const result = await boot('absent', { platform: 'linux', files: [dockerOnPath], dockerRun: () => 1 });
+  assert.equal(result.window.lastStatus.value.failed, true);
+  assert.match(result.window.lastStatus.value.message, /Docker is not running, or this user may not use it/);
+  assert.ok(!result.spawns.some((s) => s.file === 'open'));
+});
+
+test('a worker image that cannot be built stops the start, with the log', async () => {
+  const dockerRun = (args) => (args.includes('--build-images') ? 1 : 0);
+  const result = await boot('absent', { platform: 'darwin', files: [dockerOnPath], dockerRun });
+  assert.equal(result.window.lastStatus.value.failed, true);
+  assert.match(result.window.lastStatus.value.message, /Could not build the worker desktop/);
+  assert.match(result.window.lastStatus.value.detail, /address in use/);
+  assert.ok(!result.docker.includes('compose up -d --no-build'));
+});
+
+test('a stack an older build of the app left running is replaced by this one', async () => {
+  const result = await boot('ready', { platform: 'darwin', files: [dockerOnPath], staged: 'build-1' });
+  assert.ok(result.docker.includes('compose up -d --no-build'));
+  assert.ok(result.written.some((w) => w.file === path.join(result.stack, 'VERSION') && w.content === 'build-2'));
+});
+
+test('a stack this build started is used as it is', async () => {
+  const result = await boot('ready', { platform: 'darwin', files: [dockerOnPath], staged: 'build-2' });
+  assert.deepEqual(result.docker, []);
+  assert.equal(result.window.url, 'http://127.0.0.1:8080');
+});
+
+test('the phone link there uses the cloudflared the computer has, and is left out without one', async () => {
+  const without = await boot('ready', { platform: 'darwin' });
+  assert.deepEqual(without.mobileCalls, []);
+
+  const withOne = await boot('ready', { platform: 'darwin', files: [cloudflaredOnPath] });
+  assert.deepEqual(withOne.mobileCalls, ['start']);
+  assert.equal(withOne.tunnel.file, cloudflaredOnPath);
 });

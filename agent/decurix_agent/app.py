@@ -104,13 +104,13 @@ def main():
     ).start()
 
     server = ThreadingHTTPServer(
-        ("0.0.0.0", 8081),
+        (config.AGENT_BIND, config.AGENT_PORT),
         Handler,
     )
 
     log(
         "VM agent listening on "
-        "0.0.0.0:8081"
+        f"{config.AGENT_BIND}:{config.AGENT_PORT}"
     )
 
     server.serve_forever()

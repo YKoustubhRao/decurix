@@ -10,6 +10,7 @@
     main { width: min(540px, calc(100vw - 64px)); }
     h1 { font-size: 2rem; margin: 0 0 12px; }
     p { color: #cbd5e1; line-height: 1.5; }
+    #detail { min-height: 3em; color: #94a3b8; font: 13px ui-monospace, Consolas, monospace; overflow-wrap: anywhere; }
     button { display: none; margin-top: 20px; padding: 11px 18px; background: #a7f3d0; color: #052e21; border: 0; border-radius: 8px; font: inherit; cursor: pointer; }
   </style>
 </head>
@@ -17,18 +18,23 @@
   <main>
     <h1>Starting Decurix</h1>
     <p id="status" role="status">Connecting to the local dashboard…</p>
+    <p id="detail"></p>
     <button id="retry" type="button">Retry</button>
   </main>
   <script>
     const status = document.getElementById('status');
     const retry = document.getElementById('retry');
-    window.decurixStartup.onStatus(({ message, failed }) => {
+    const detail = document.getElementById('detail');
+    window.decurixStartup.onStatus(({ message, failed, detail: line, button }) => {
       status.textContent = message;
+      detail.textContent = line || '';
+      retry.textContent = button || 'Retry';
       retry.style.display = failed ? 'inline-block' : 'none';
     });
     retry.addEventListener('click', () => {
       retry.style.display = 'none';
-      status.textContent = 'Trying again…';
+      status.textContent = 'One moment…';
+      detail.textContent = '';
       window.decurixStartup.retry();
     });
   </script>

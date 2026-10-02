@@ -1,3 +1,4 @@
+import os
 import time
 
 
@@ -10,6 +11,17 @@ def timestamp():
 
 
 _log_path = None
+
+
+def log_file(name):
+    """
+    Where a side process keeps its log: /tmp in a desktop container, the
+    worker's own logs folder (DECURIX_LOG_DIR) for a native Windows worker,
+    which has no /tmp and shares its computer with other workers.
+    """
+
+    folder = os.environ.get("DECURIX_LOG_DIR", "").strip()
+    return os.path.join(folder, name) if folder else "/tmp/" + name
 
 
 def log_to_file(path):

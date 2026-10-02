@@ -330,3 +330,35 @@ func TestNormalizeVectorAndFastDotProduct(t *testing.T) {
 		t.Fatalf("expected 0 for zero vector similarity, got %f", simZero)
 	}
 }
+
+// A deleted desktop's memory entries are gone; their cached embeddings go too.
+func TestForgetDropsOnlyTheNamedEmbeddings(t *testing.T) {
+	s := newTestStore(t, &fakeDesktops{}, &fakeActivity{}, &fakeMemory{}, (&stubEmbedder{}).embed)
+
+	for _, id := range []string{"m1", "m2", "m3"} {
+		if _, err := s.db.Exec(`INSERT INTO suggestion_embeddings (memory_id, vector, dims, created_ns) VALUES (?, ?, 1, 1)`, id, []byte{0, 0, 0, 0}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s.Forget(nil)
+	s.Forget([]string{"m1", "m3", "never-cached"})
+
+	rows, err := s.db.Query(`SELECT memory_id FROM suggestion_embeddings`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var left []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		left = append(left, id)
+	}
+	rows.Close()
+
+	if len(left) != 1 || left[0] != "m2" {
+		t.Fatalf("expected only m2's embedding left, got %v", left)
+	}
+}

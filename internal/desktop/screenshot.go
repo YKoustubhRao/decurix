@@ -153,6 +153,18 @@ func (m *Manager) Screenshot(ctx context.Context, rawID string, maxWidth int) ([
 		return nil, entry.lastErr
 	}
 
+	if m.native != nil {
+		encoded, err := m.native.screenshot(ctx, sanitizedID, maxWidth)
+		if err != nil {
+			entry.lastErr = err
+			entry.errAt = time.Now()
+			return nil, err
+		}
+		m.touchViewed(sanitizedID)
+		entry.data, entry.at, entry.lastErr = encoded, time.Now(), nil
+		return encoded, nil
+	}
+
 	// Only a cache miss pays for the ContainerInspect captureTarget needs to
 	// resolve the desktop's address and password - a cache hit above never
 	// touches Docker at all.

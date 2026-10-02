@@ -9,6 +9,8 @@
 #   check <target> <args>    what launch would decide, without starting anything: "OK<TAB>exe<TAB>args<TAB>dir<TAB>own<TAB>base"
 #                            (the program it resolved to, for launchr) or "ERR <reason>"
 #   launchr <exe> <args> <dir> <own 0|1> <base>   launch what a check resolved, with nothing left to look up
+#   screen                   the picture is the whole private desktop, shown even when nothing has a window on it (a
+#                            worker's screen, winhost.OpenDesktop) rather than one app's windows
 #   viewers <n>              how many people are watching; the picture is only captured while n > 0
 #   keyframe                 the next picture sent is a whole one
 #   move|down|up <x> <y> [right] [+mods]   mouse, in frame pixels; mods is any of c s a (Ctrl, Shift, Alt) held during it
@@ -74,6 +76,7 @@ public class Native {
     [DllImport("user32.dll")] static extern bool GetGUIThreadInfo(uint tid, ref GUITHREADINFO info);
     [DllImport("user32.dll")] static extern bool SetThreadDesktop(IntPtr h);
     [DllImport("user32.dll")] static extern bool AttachThreadInput(uint from, uint to, bool attach);
+    [DllImport("user32.dll")] static extern bool IsWindow(IntPtr h);
     [DllImport("user32.dll")] static extern bool GetKeyboardState(byte[] state);
     [DllImport("user32.dll")] static extern bool SetKeyboardState(byte[] state);
     [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
@@ -276,6 +279,17 @@ public class Native {
         return list;
     }
 
+    // A worker's screen: the picture is the whole private desktop, at the size of the computer's own screen, whether or
+    // not anything has a window on it - a worker with nothing open still has a screen to show. An app's picture, by
+    // contrast, is cut to the app's own windows and ends when it has none.
+    [DllImport("user32.dll")] static extern int GetSystemMetrics(int index);
+    static bool fixedScreen; static int screenW, screenH;
+
+    public static void FixedScreen() {
+        screenW = GetSystemMetrics(0); screenH = GetSystemMetrics(1);
+        fixedScreen = screenW > 0 && screenH > 0;
+    }
+
     // Finds the app's main window: the biggest of its windows.
     static bool LocateWindow() {
         long best = 0;
@@ -292,11 +306,12 @@ public class Native {
     // The caller disposes it; null when the app has no window.
     static Bitmap Compose() {
         var ws = AppWindows();
-        if (ws.Count == 0) return null;
+        if (ws.Count == 0 && !fixedScreen) return null;
         LocateWindow();
         int l = int.MaxValue, t = int.MaxValue, r = int.MinValue, b = int.MinValue;
         foreach (var w in ws) { l = Math.Min(l, w.V.L); t = Math.Min(t, w.V.T); r = Math.Max(r, w.V.R); b = Math.Max(b, w.V.B); }
         double sc = Scale(mainWindow); // the main window's scale is the picture's, so a DPI-unaware app stays crisp
+        if (fixedScreen) { l = 0; t = 0; r = screenW; b = screenH; sc = 1.0; }
         int pw = (int)Math.Round((r - l) * sc), ph = (int)Math.Round((b - t) * sc);
         if (pw <= 0 || ph <= 0 || pw > 8192 || ph > 8192) return null;
         var bmp = new Bitmap(pw, ph, PixelFormat.Format24bppRgb);
@@ -569,14 +584,27 @@ public class Native {
     // If Windows will not say, fall back to what was clicked last.
     static IntPtr KeyTarget() {
         var ws = AppWindows();
-        if (ws.Count > 0) {
-            int pid; uint tid = GetWindowThreadProcessId(ws[0].H, out pid);
-            var gi = new GUITHREADINFO(); gi.cbSize = Marshal.SizeOf(gi);
-            if (GetGUIThreadInfo(tid, ref gi) && gi.hwndFocus != IntPtr.Zero) return gi.hwndFocus;
-            if (lastTarget != IntPtr.Zero) return lastTarget;
-            return ws[0].H;
-        }
-        return lastTarget;
+        // The topmost window whose thread has a keyboard focus: a menu or dialog the app has open is above its main
+        // window and shares its thread, so it gets its own keys.
+        IntPtr focus = IntPtr.Zero;
+        // Windows answers "where is the focus" only to a thread on the same desktop, and this process's own threads
+        // are on the person's. Asked from one of those it always said "nowhere", so keys went to whatever was
+        // clicked last - or, with nothing clicked yet, to the window's frame, which drops them. Found live on a
+        // worker's screen: Notepad opened, its editor focused, and what a person typed went nowhere until they
+        // clicked. So it is asked from a thread that has joined the private desktop.
+        var ask = new System.Threading.Thread(() => {
+            if (!SetThreadDesktop(desktop)) return;
+            foreach (var w in ws) {
+                int pid; uint tid = GetWindowThreadProcessId(w.H, out pid);
+                var gi = new GUITHREADINFO(); gi.cbSize = Marshal.SizeOf(gi);
+                if (GetGUIThreadInfo(tid, ref gi) && gi.hwndFocus != IntPtr.Zero) { focus = gi.hwndFocus; return; }
+            }
+        });
+        ask.Start(); ask.Join(1000);
+        if (focus != IntPtr.Zero) return focus;
+        // What was clicked last, only while it is still there: the last click may have been in an app since closed.
+        if (lastTarget != IntPtr.Zero && IsWindow(lastTarget)) return lastTarget;
+        return ws.Count > 0 ? ws[0].H : IntPtr.Zero;
     }
 
     // ---- Clipboard. The clipboard belongs to the window station, so it is the person's own: an app on the private desktop
@@ -642,7 +670,7 @@ public class Native {
     public static string FocusInfo() {
         IntPtr t = KeyTarget();
         var cls = new StringBuilder(64); GetClassName(t, cls, 64);
-        return t + " " + cls + (t == lastTarget ? " (last clicked)" : " (focus)");
+        return t + " " + cls + (t == lastTarget ? " (last clicked)" : "");
     }
 
     public static void TypeChar(char ch) {
@@ -1017,6 +1045,7 @@ try {
                         Reply ([Native]::Launch($DesktopName, $l.Target, $l.Args, $l.WorkDir))
                     }
                 }
+                "screen" { [Native]::FixedScreen(); Reply "OK" }
                 "viewers" { [Native]::SetViewers([int]$rest); Reply "OK" }
                 "keyframe" { [Native]::KeyFrame(); Reply "OK" }
                 "status" { Reply ("STATUS " + [Native]::Status()) }

@@ -1,7 +1,6 @@
 'use strict';
 
 const { spawn } = require('node:child_process');
-const dgram = require('node:dgram');
 const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
@@ -44,33 +43,15 @@ function requestJSON(route, method = 'GET', body) {
   });
 }
 
-function localAddress() {
-  return new Promise((resolve) => {
-    const socket = dgram.createSocket('udp4');
-    let settled = false;
-    const finish = (address) => {
-      if (settled) return;
-      settled = true;
-      try { socket.close(); } catch { /* Already closed. */ }
-      resolve(address);
-    };
-    socket.once('error', () => finish(null));
-    socket.connect(65530, '1.1.1.1', () => {
-      try { finish(socket.address().address); } catch { finish(null); }
-    });
-    setTimeout(() => finish(null), 1500).unref();
-  });
-}
-
-async function setupMobileAccess(dataDir) {
+// tunnelCommand(port) is the command line that runs cloudflared against the
+// gated listener: main.js runs the copy shipped with the app.
+//
+// No LAN address is published. On a person's own computer the gated listener
+// is bound to loopback (cmd/decurix nativeLANAddr: a listener on every
+// interface makes Windows Firewall ask about it), so a phone on the same
+// Wi-Fi cannot reach it and the tunnel is the phone's way in.
+async function setupMobileAccess(dataDir, tunnelCommand) {
   const port = lanPort(dataDir);
-  const address = await localAddress();
-  if (address) {
-    try {
-      const status = await requestJSON('/api/tunnel');
-      if (!status.lan_url) await requestJSON('/api/tunnel', 'POST', { lan_url: `http://${address}:${port}` });
-    } catch (error) { console.warn('Could not publish LAN URL:', error.message); }
-  }
 
   try {
     const named = await requestJSON('/api/cftunnel');
@@ -84,9 +65,8 @@ async function setupMobileAccess(dataDir) {
 
   // Only the code-gated listener is exposed. The primary :8080 dashboard
   // remains local to this machine and its own worker containers.
-  const child = spawn('cloudflared', [
-    'tunnel', '--protocol', 'http2', '--url', `http://127.0.0.1:${port}`,
-  ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const { file, args } = tunnelCommand(port);
+  const child = spawn(file, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
 
   let output = '';
   let published = false;

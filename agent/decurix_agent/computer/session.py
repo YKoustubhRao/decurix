@@ -105,3 +105,11 @@ def launch(argv, cwd=None):
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
+
+
+# A native Windows worker has no X display or session bus to find: the desktop
+# the agent runs on is the worker's screen, and whatever it starts inherits it.
+if os.name == "nt":
+    from decurix_agent.computer import win as _win
+
+    ensure, app_env, launch = _win.ensure, _win.app_env, _win.launch

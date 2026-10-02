@@ -454,6 +454,10 @@ func isBrowserApp(name string) bool {
 // strips cache bloat to maintain zero redundant memory, streams them into the container's
 // /home/headless volume, and installs the host execution bridge launchers.
 func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selectedIDs []string) error {
+	if m.native != nil {
+		return nil
+	}
+
 	if len(selectedIDs) == 0 {
 		return nil
 	}

@@ -225,12 +225,37 @@ def _get(path, method="GET", timeout=None):
 BUSY_ANSWER_SECONDS = float(os.environ.get("DECURIX_CDP_ANSWER_SECONDS", "5"))
 
 
+def _nothing_listens():
+    """
+    Whether the DevTools port is free to bind, i.e. no browser has it.
+
+    Only Windows needs asking this way: there a connection to a port nothing
+    listens on is not refused at once but after about two seconds (the system
+    tries three times), and every look at a screen with no browser open paid
+    them - measured, 2.06 s against a few milliseconds on Linux. Binding the
+    port says the same thing immediately.
+    """
+
+    parsed = urllib.parse.urlparse(BASE)
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind((parsed.hostname or "127.0.0.1", parsed.port or 80))
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
 def available():
     """
     Whether the browser's DevTools port answers. A refused connection (nothing
     listening) is known at once; a slow answer is a busy browser, not a missing
     port, and is waited for.
     """
+
+    if os.name == "nt" and _nothing_listens():
+        return False
 
     try:
         _get("/json/version", timeout=BUSY_ANSWER_SECONDS)
@@ -381,6 +406,36 @@ def active_page():
         raise ComputerError("could not attach to any Chromium tab")
 
     return fallback
+
+
+def _viewport(metrics):
+    """
+    (origin_x, origin_y, dpr): where the page's top-left corner is on the
+    screen, in screen pixels, and how many screen pixels one CSS pixel is.
+
+    On a Linux desktop the browser has no borders of its own and a CSS pixel
+    is a screen pixel, so the window's position plus the height of its bars is
+    the answer. On Windows neither holds - measured in Edge at 125% scaling: a
+    box at CSS (200, 100) was drawn at screen (277, 238), where that sum, even
+    scaled, said (291, 251): the window's invisible borders are on three sides
+    and the page reports rounded CSS pixels. The browser's own content window
+    says exactly where the page is, so that is asked instead (win.py); the
+    arithmetic is only the fallback, with the border taken off the bottom too.
+    """
+
+    dpr = metrics["dpr"] or 1
+    side = metrics["ow"] - metrics["iw"]
+    bars = metrics["oh"] - metrics["ih"]
+
+    if os.name == "nt":
+        from decurix_agent.computer import win
+
+        origin = win.browser_viewport()
+        if origin is not None:
+            return origin[0], origin[1], dpr
+        return (metrics["sx"] + side / 2) * dpr, (metrics["sy"] + bars - side / 2) * dpr, dpr
+
+    return metrics["sx"] + side, metrics["sy"] + bars, dpr
 
 
 _METRICS = """JSON.stringify({
@@ -538,18 +593,19 @@ def observe():
             if node_index < len(backend_ids) and ("type" in pairs or "autocomplete" in pairs):
                 declared[backend_ids[node_index]] = pairs
 
-    origin_x = metrics["sx"] + (metrics["ow"] - metrics["iw"])
-    origin_y = metrics["sy"] + (metrics["oh"] - metrics["ih"])
-    dpr = metrics["dpr"] or 1
+    origin_x, origin_y, dpr = _viewport(metrics)
 
     def screen_box(backend_id):
         rect = bounds.get(backend_id)
         if not rect or rect[2] <= 0 or rect[3] <= 0:
             return None, False
-        x = rect[0] - metrics["scx"]
-        y = rect[1] - metrics["scy"]
-        on_screen = (x + rect[2] > 0 and y + rect[3] > 0 and x < metrics["iw"] and y < metrics["ih"])
-        box = [int(origin_x + x * dpr), int(origin_y + y * dpr), int(rect[2] * dpr), int(rect[3] * dpr)]
+        # The snapshot's bounds are already in screen pixels (measured at 125%
+        # scaling: a 120 px wide box came back 150 wide), from the top of the
+        # document; the scroll position is the page's own, in CSS pixels.
+        x = rect[0] - metrics["scx"] * dpr
+        y = rect[1] - metrics["scy"] * dpr
+        on_screen = (x + rect[2] > 0 and y + rect[3] > 0 and x < metrics["iw"] * dpr and y < metrics["ih"] * dpr)
+        box = [int(origin_x + x), int(origin_y + y), int(rect[2]), int(rect[3])]
         return box, on_screen
 
     by_id = {n["nodeId"]: n for n in nodes}
@@ -734,9 +790,7 @@ def element_at_screen_point(x, y, known_elements=()):
     try:
         page = active_page()
         metrics = json.loads(page.evaluate(_METRICS))
-        dpr = metrics["dpr"] or 1
-        origin_x = metrics["sx"] + (metrics["ow"] - metrics["iw"])
-        origin_y = metrics["sy"] + (metrics["oh"] - metrics["ih"])
+        origin_x, origin_y, dpr = _viewport(metrics)
         viewport_x = (x - origin_x) / dpr + metrics["scx"]
         viewport_y = (y - origin_y) / dpr + metrics["scy"]
 

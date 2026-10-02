@@ -48,7 +48,8 @@ class GuiLeavesTheScreenForAVisionEngine(unittest.TestCase):
 class OfficeReadsPicturesTheWayTheModelCan(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
-        self.picture = os.path.join(self.dir.name, "invoice.png")
+        # Resolved, as office names it: Windows' temp folder has a short name too.
+        self.picture = os.path.join(os.path.realpath(self.dir.name), "invoice.png")
         with open(self.picture, "wb") as f:
             f.write(b"\x89PNG not really")
 

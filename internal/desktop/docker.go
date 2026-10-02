@@ -128,6 +128,10 @@ func (m *Manager) EnsureImages(ctx context.Context) error {
 // and Docker's default bridge, which is what host.docker.internal resolves to on Linux) - the addresses a control plane
 // running on the host must listen on, besides loopback, for its desktops to call back without opening a port to the LAN.
 func (m *Manager) GatewayIPs(ctx context.Context) []string {
+	if m.native != nil {
+		return nil
+	}
+
 	var ips []string
 	seen := map[string]bool{}
 	for _, name := range []string{NetworkName, "bridge"} {
@@ -156,6 +160,10 @@ func (m *Manager) GatewayIPs(ctx context.Context) []string {
 // gateway). httpapi uses it to keep what only a person should see away from
 // the agents.
 func (m *Manager) ContainerNetworks(ctx context.Context) (subnets []netip.Prefix, gateways []netip.Addr) {
+	if m.native != nil {
+		return nil, nil
+	}
+
 	for _, name := range []string{NetworkName, "bridge"} {
 		info, err := m.client.NetworkInspect(ctx, name, network.InspectOptions{})
 		if err != nil {
@@ -178,6 +186,10 @@ func (m *Manager) ContainerNetworks(ctx context.Context) (subnets []netip.Prefix
 
 // EnsureNetwork creates the shared Docker network used by desktops if it does not already exist.
 func (m *Manager) EnsureNetwork(ctx context.Context) error {
+	if m.native != nil {
+		return nil
+	}
+
 	_, err := m.client.NetworkInspect(
 		ctx,
 		NetworkName,
@@ -496,6 +508,10 @@ func desktopURL(id string) string {
 // longer works once the control plane stops listening on the LAN-facing one. It is a one-off startup report, not a
 // per-request check.
 func (m *Manager) StaleControlPlane(ctx context.Context) []string {
+	if m.native != nil {
+		return nil
+	}
+
 	args := filters.NewArgs()
 	args.Add("label", "desktop-manager=true")
 	containers, err := m.client.ContainerList(ctx, container.ListOptions{All: true, Filters: args})

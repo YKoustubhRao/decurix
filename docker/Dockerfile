@@ -7,6 +7,10 @@ RUN go mod download
 
 COPY . .
 
+# TheBot's sources, packed for go:embed (embed.go): without it the binary
+# cannot build the desktop images itself (--build-images).
+RUN go generate .
+
 # Two cores and one package at a time (GOMAXPROCS, -p 1): an unbounded
 # build inside Docker brought down the 8 GB WSL host this is developed on.
 ENV GOMAXPROCS=2
