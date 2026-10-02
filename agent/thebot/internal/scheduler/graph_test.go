@@ -194,6 +194,10 @@ func TestSchedulerPausesForApprovalAndResumesFromTheCheckpoint(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\necho pushed-for-real\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// What PowerShell runs for `git` on a Windows worker.
+	if err := os.WriteFile(filepath.Join(bin, "git.cmd"), []byte("@echo pushed-for-real\r\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	sched := newTestScheduler(t, &mockProvider{})

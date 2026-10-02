@@ -1,5 +1,4 @@
 import base64
-import fcntl
 import json
 import os
 import re
@@ -8,7 +7,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from decurix_agent import progress
+from decurix_agent import config, filelock, progress
 from decurix_agent.computer import approval, atspi, audit, browser, cdp, privacy, screen, session, volatility, xinput
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
@@ -30,7 +29,7 @@ from decurix_agent.computer.errors import ComputerError
 # difference between them is what the engine is told happened.
 # ============================================================
 
-STATE_DIR = Path.home() / ".decurix" / "computer"
+STATE_DIR = config.DECURIX_DIR / "computer"
 STATE_FILE = STATE_DIR / "observation.json"
 
 CHROMIUM_APPS = browser.APP_NAMES
@@ -72,7 +71,7 @@ def _state_lock():
     STATE_DIR.mkdir(parents=True, exist_ok=True)
 
     with open(STATE_DIR / "observation.lock", "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        filelock.exclusive(lock)
         yield
 
 
@@ -307,6 +306,11 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
             return "cdp"
 
         if element is not None:
+            # A control that takes its text whole (a native Windows worker's,
+            # of a toolkit that tells its app - atspi.set_text) is given it;
+            # text that ends in Enter is typed, since the Enter is a key.
+            if not append and "\n" not in text and atspi.set_text(element, text):
+                return "value"
             _focus_window(element)
             center = el.center(element)
             # Inside a document (a Writer table cell, a paragraph) focus is
@@ -337,7 +341,7 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
             raise ComputerError("no key given")
         if element is not None:
             _focus_window(element)
-            if element["source"] == "atspi":
+            if element["source"] != "cdp":
                 atspi.grab_focus(element)
         for combo in keys:
             xinput.key(combo)
@@ -395,6 +399,9 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
 # Page elements typing can never go into.
 NOT_A_FIELD = {"row", "button", "link", "heading", "image", "img", "tab", "menuitem", "option",
                "checkbox", "radio", "listitem", "list", "table", "navigation"}
+
+# What typing does go into, for naming the fields a refusal points at.
+TYPING_ROLES = {"textbox", "document", "combobox", "searchbox", "spinbutton", "password text", "entry", "editbar"}
 
 
 # How long a custom dropdown has to show its options once clicked, and once typed into.
@@ -549,10 +556,22 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     # Typing needs a field. Aimed at a page's row, button or link, the text goes
     # to whatever still has focus: live, a product name typed "into" an Odoo
     # order row at a coordinate landed in the previous line's Unit Price.
-    if kind == "type" and element is not None and element.get("source") == "cdp" \
-            and element["role"] in NOT_A_FIELD:
-        raise ComputerError(f"{el.describe(element)} is not a field to type into - click the cell or control that "
-                            "opens a field, observe, then type into that field by its ref")
+    # The same on a Windows worker's screen, where it was found live: a small
+    # model sent `gui type e40 "Hello World"` with e40 a toolbar button of
+    # Notepad, the keys went to the button, and nothing was typed. There the
+    # refusal names the fields that are on the screen, because the one the
+    # model wants is usually a line or two away in the list it just read.
+    if kind == "type" and element is not None and element["role"] in NOT_A_FIELD \
+            and element.get("source") in ("cdp", "uia"):
+        message = (f"{el.describe(element)} is not a field to type into - click the cell or control that "
+                   "opens a field, observe, then type into that field by its ref")
+        if element.get("source") == "uia":
+            fields = [el.describe(e) for e in before["elements"]
+                      if e.get("role") in TYPING_ROLES and "disabled" not in (e.get("states") or [])][:4]
+            if fields:
+                message = (f"{el.describe(element)} is not a field to type into. The fields on the screen are: "
+                           + "; ".join(fields) + " - type into one of those by its ref")
+        raise ComputerError(message)
 
     # Typing with no target at all (no ref/role/name/path/point) goes to
     # whatever already has focus, and that field is the one whose secrecy
@@ -946,8 +965,9 @@ OFFICE_EXTENSIONS = (".odt", ".ods", ".odp", ".docx", ".doc", ".xlsx", ".xls", "
 
 
 def _chromium_argv(url):
-    # The launcher adds the profile, the DevTools port and every other flag.
-    return [browser.COMMAND, url]
+    # On a Linux desktop the launcher adds the profile, the DevTools port and
+    # every other flag; a native Windows worker's are given by browser.py.
+    return browser.launch_argv(url)
 
 
 def open_target(target, new_tab=False):
@@ -1021,7 +1041,7 @@ def _open(target, new_tab):
         return f"Started Chromium on {url} (tab title {el._quote(title, 60)})."
 
     path = Path(target).expanduser()
-    lower = target.lower()
+    lower = target.lower().strip()
 
     if lower in CHROMIUM_APPS:
         if any(browser.is_browser_title(t) for t in before_titles) or cdp.available():
@@ -1032,7 +1052,15 @@ def _open(target, new_tab):
         _raise_browser()
         return "Started Chromium."
 
-    if path.exists():
+    if os.name == "nt":
+        # What opens what is the computer's own business there (win.py): the
+        # programs installed on it, never the shell.
+        from decurix_agent.computer import win
+
+        argv = win.open_argv(target)
+        if argv[0] == "url":
+            return _open(argv[1], new_tab)
+    elif path.exists():
         if path.suffix.lower() in OFFICE_EXTENSIONS:
             argv = ["soffice", "--nologo", str(path)]
         elif path.is_dir():
@@ -1062,7 +1090,16 @@ def _open(target, new_tab):
         return f"Started {' '.join(argv)}, but no new window appeared within 45 seconds - observe to check."
 
     time.sleep(1.0)
-    return f"Opened {el._quote(opened[-1]['title'], 80)}."
+    title = opened[-1]["title"]
+
+    if os.name == "nt":
+        # A window opened on a private desktop is given the keyboard by nobody
+        # (win.py / decurix-ui.cs GiveFocus), and many name themselves only
+        # once they have loaded ("Notepad", then "Untitled - Notepad").
+        xinput.activate(opened[-1]["id"])
+        title = next((w["title"] for w in screen.windows() if w["id"] == opened[-1]["id"] and w["title"]), title)
+
+    return f"Opened {el._quote(title, 80)}."
 
 
 def _raise_browser():

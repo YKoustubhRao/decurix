@@ -131,6 +131,32 @@ func TestTriageSendsAWebAppsQuestionsToTheOperator(t *testing.T) {
 	}
 }
 
+// Found live on a native Windows worker: a request that was only a command in
+// backticks named an app and "open", went to the operator as screen work, and
+// the small model answered "DONE" without running it.
+func TestTriageRunsACommandNamedInTheRequest(t *testing.T) {
+	for _, p := range []string{
+		"run the command: `gui open \"character map\"`",
+		"Run `gui click 'button \"Select\"'`.",
+		"please execute this command `gui open https://example.com`",
+		"run the command: `gui observe`",
+	} {
+		got := Triage(p)
+		if got.Kind != RouteSkill || got.TaskType != "terminal" {
+			t.Errorf("Triage(%q) = %v/%s (%s), want the terminal skill", p, got.Kind, got.TaskType, got.Reason)
+		}
+	}
+	// A command that is only part of the request is still a goal for a loop.
+	for _, p := range []string{
+		"run `gui observe` and then click the Save button in the editor window",
+		"open the settings window and click `Apply`",
+	} {
+		if got := Triage(p); got.Kind == RouteSkill && got.TaskType == "terminal" {
+			t.Errorf("Triage(%q) ran it as a bare command (%s)", p, got.Reason)
+		}
+	}
+}
+
 func TestTriageSendsATaughtTaskToTheOperator(t *testing.T) {
 	// Found live: "a question - answering directly", by a skill with no tools.
 	p := `Do the task you were taught, "Ask ChatGPT" (skill ask-chatgpt) with typed_text="what is 2+5?".`

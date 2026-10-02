@@ -1251,7 +1251,7 @@
     <div class="dialog-head">
       <div>
         <h2 id="createDialogTitle">New desktop</h2>
-        <p id="createDialogSub">A computer of its own that keeps its files: Chrome, LibreOffice Writer and Calc, Python and text recognition for scans.</p>
+        <p id="createDialogSub" data-default="{{if .Native}}A worker with a desktop of its own on this computer. It runs the programs installed here, out of sight: nothing it opens appears on your screen.{{else}}A computer of its own that keeps its files: Chrome, LibreOffice Writer and Calc, Python and text recognition for scans.{{end}}">{{if .Native}}A worker with a desktop of its own on this computer. It runs the programs installed here, out of sight: nothing it opens appears on your screen.{{else}}A computer of its own that keeps its files: Chrome, LibreOffice Writer and Calc, Python and text recognition for scans.{{end}}</p>
       </div>
       <button type="button" class="icon-btn" data-close-dialog aria-label="Close">
         <svg width="16" height="16"><use href="#i-x"/></svg>
@@ -1292,7 +1292,7 @@
           <label class="seg"><input type="radio" name="brain" value="claude"><span>Claude</span></label>
           <label class="seg"><input type="radio" name="brain" value="azure"><span>Azure OpenAI</span></label>
         </div>
-        <div class="hint" id="brainHint">Every desktop runs TheBot, and TheBot adapts to the model: one that reads images is shown the screen and scanned pages, a text-only one gets the screen's element list and OCR. With Ollama it thinks on this machine's own model, free but slower. Claude or Azure OpenAI think faster and better, billed to your account; their keys stay in the control plane and never enter a desktop.</div>
+        <div class="hint" id="brainHint">Every desktop runs TheBot, and TheBot adapts to the model: one that reads images is shown the screen and scanned pages, a text-only one gets the screen's element list and OCR. With Ollama it thinks on this machine's own model, free but slower{{if .Native}} (the first worker waits while that model is downloaded, once){{end}}. Claude or Azure OpenAI think faster and better, billed to your account; their keys stay in the control plane and never enter a desktop.</div>
 
         <div class="brain-status" id="brainStatus" hidden>
           <span id="brainStatusText"></span>
@@ -1323,7 +1323,11 @@
         </div>
       </div>
 
-      <div class="field">
+      <!-- A native worker's programs are ordinary programs of this computer:
+           there is no CPU or memory allocation to choose, and nothing to copy
+           in - it starts what is installed here itself. The inputs stay for
+           the code that reads them. -->
+      <div class="field"{{if .Native}} hidden{{end}}>
         <span class="field-label">CPU</span>
         <div class="segmented" role="radiogroup" aria-label="CPU cores">
           <label class="seg"><input type="radio" name="cpus" value="1" checked><span>1</span></label>
@@ -1333,7 +1337,7 @@
         </div>
       </div>
 
-      <div class="field">
+      <div class="field"{{if .Native}} hidden{{end}}>
         <span class="field-label">Memory</span>
         <div class="segmented" role="radiogroup" aria-label="Memory">
           <label class="seg"><input type="radio" name="memory_mb" value="2048" checked><span>2 GB</span></label>
@@ -1343,7 +1347,7 @@
         </div>
       </div>
 
-      <div class="field host-apps-section">
+      <div class="field host-apps-section"{{if .Native}} hidden style="display:none"{{end}}>
         <div class="host-apps-head">
           <div>
             <span class="field-label" style="margin-bottom:2px">Copy apps & sessions from desktop</span>
@@ -1561,7 +1565,7 @@
       parent ? "Spawn a specialized child worker" : "New desktop";
     document.getElementById("createDialogSub").textContent = parent
       ? "A new desktop spawned from " + parent.name + ", sharing its learned memory."
-      : "A computer of its own that keeps its files: Chrome, LibreOffice Writer and Calc, Python and text recognition for scans.";
+      : document.getElementById("createDialogSub").dataset.default;
 
     syncBrain();
     loadModels();

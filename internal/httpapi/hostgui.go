@@ -396,6 +396,14 @@ func (s *Server) hostGUIWSHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no such session", http.StatusNotFound)
 		return
 	}
+	s.serveSessionSocket(w, r, sess, q.Get("id"), q.Get("desktop"), nil)
+}
+
+// serveSessionSocket is one viewer's WebSocket to a private desktop, for as long as either end keeps it open: the
+// protocol hostGUIWSHandler describes. label names the session in the log; desktopID is the desktop to keep marked as
+// in use meanwhile ("" for none). before, when given, is called with each input before it is applied (a native
+// worker's demonstration recorder, nativerecording.go).
+func (s *Server) serveSessionSocket(w http.ResponseWriter, r *http.Request, sess *winhost.Session, label, desktopID string, before func(hostGUIRequest)) {
 	c, err := wsconn.Upgrade(w, r)
 	if err != nil {
 		return
@@ -404,7 +412,7 @@ func (s *Server) hostGUIWSHandler(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	s.markDesktopViewed(ctx, q.Get("desktop"))
+	s.markDesktopViewed(ctx, desktopID)
 	v := sess.Watch()
 	defer v.Close()
 
@@ -454,9 +462,12 @@ func (s *Server) hostGUIWSHandler(w http.ResponseWriter, r *http.Request) {
 		if json.Unmarshal(msg, &req) != nil {
 			continue
 		}
+		if before != nil {
+			before(req)
+		}
 		text, wantsText, err := applyInput(sess, req)
 		if err != nil {
-			log.Printf("host-gui: input %s on %s: %v", req.Kind, q.Get("id"), err)
+			log.Printf("host-gui: input %s on %s: %v", req.Kind, label, err)
 			continue
 		}
 		if wantsText {

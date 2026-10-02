@@ -495,6 +495,9 @@ svg{display:block;flex:none}
 /* ---------- form controls ---------- */
 
 .field{display:grid;gap:6px}
+/* display:grid above outranks the browser's own [hidden] rule: without this a
+   field marked hidden (the create dialog's Profile picker) was shown anyway. */
+.field[hidden]{display:none}
 
 .field > label,.field-label{
   font-size:12px;

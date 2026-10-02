@@ -378,7 +378,7 @@ def handle(message):
 
 
 def main():
-    logging_utils.log_to_file("/tmp/decurix-mcp.log")
+    logging_utils.log_to_file(logging_utils.log_file("decurix-mcp.log"))
 
     try:
         for line in sys.stdin:

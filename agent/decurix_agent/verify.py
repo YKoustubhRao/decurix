@@ -114,7 +114,8 @@ def judge(task, claim="", criteria="", values=None, steps="", live_png=None, ref
 
 # A document named by its path in a task; the same shape TheBot's operator
 # refuses to type values from before reading (internal/skills/grounding.go).
-DOCUMENT_PATH = re.compile(r"(?:~|/)[\w.~/-]*[\w-]\.(?:pdf|xlsx|xlsm|docx|csv|eml|png|jpe?g)\b", re.I)
+# A native Windows worker's documents are named C:\...\po.pdf.
+DOCUMENT_PATH = re.compile(r"(?:~|/|\b[a-z]:[\\/])[\w.~/\\-]*[\w-]\.(?:pdf|xlsx|xlsm|docx|csv|eml|png|jpe?g)\b", re.I)
 MAX_DOCUMENT_CHARS = 4000
 MAX_DOCUMENT_PICTURES = 2
 

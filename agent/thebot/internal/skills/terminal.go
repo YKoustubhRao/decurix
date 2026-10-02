@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"thebot/internal/hostshell"
 	"thebot/internal/safety"
 )
 
@@ -221,7 +222,7 @@ func (t *TerminalSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	ctx, cancel := context.WithTimeout(rc.Ctx, terminalTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "bash", "-c", command)
+	cmd := hostshell.CommandContext(ctx, command)
 	cmd.Dir = cwd
 	start := time.Now()
 	stdout, err := cmd.Output()
@@ -264,6 +265,17 @@ func (t *TerminalSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		// cancelled - also exits with empty stderr, but it did not "run
 		// fine and report a negative result". It did not finish. Exit code
 		// -1 is how a signal death shows up here.
+		// Decurix's screen gate stopped an on-screen action (`gui click` on a
+		// Send button: exit 3, nothing happened). That is a pause for a
+		// person's yes, exactly as it is in the operator's loop - found
+		// live: run from here it was reported as the command's ordinary
+		// result, the task ended, and the yes had nothing to resume. The
+		// approved command is run again, and the gate lets that one through.
+		if reason := screenApprovalReason(shellResult{ExitCode: exitCode, Output: string(stdout)}); reason != "" {
+			rc.Logf("terminal", "approval needed on screen - %s", reason)
+			return NeedsApproval(subtask, t.Name(), command, reason, nil), nil
+		}
+
 		if ctx.Err() != nil || (isExitErr && exitCode < 0) {
 			why := "it was killed before finishing"
 			switch {
@@ -306,6 +318,21 @@ func (t *TerminalSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		// `sudo apt-get install curl`, and on the next run asked the person
 		// what to do. The operator works the same goal out command by
 		// command, told the program is not there.
+		// On a Windows worker the same thing is PowerShell not recognising
+		// the name (exit 1, so only its words say so) - nearly always a
+		// Linux command, which the operator is told the PowerShell for.
+		if program := missingOnWindows(stderr); program != "" && hostshell.Windows {
+			rc.Logf("terminal", "`%s` is not a command here - working it out another way", program)
+			return Result{
+				Subtask: subtask, SkillName: t.Name(),
+				Output:   fmt.Sprintf("Command: %s\nWorking directory: %s\nExit code: %d (`%s` is not a command on this computer)", command, cwd, exitCode, program),
+				Verified: false,
+				Meta: map[string]any{"command": command, "source": source, "exitCode": exitCode, "cwd": cwd,
+					"reroute":     "operator",
+					"rerouteNote": strings.TrimSpace(windowsMissingProgramHint(program))},
+				DurationMs: duration,
+			}, nil
+		}
 		if exitCode == commandNotFound {
 			program := missingProgram(stderr, command)
 			rc.Logf("terminal", "`%s` is not installed here - working it out another way", program)

@@ -2,11 +2,12 @@ package httpapi
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/YKoustubhRao/decurix/internal/conversation"
@@ -21,6 +22,31 @@ import (
 // other fields and stops the full body being buffered before that check
 // ever runs.
 const maxQueryTextRequestBytes = 32768
+
+// noteIDs hands out query note IDs: the time in nanoseconds, moved on by one
+// when the clock has not moved since the last one. The time alone was the ID,
+// and on Windows - where the clock a program reads ticks far more coarsely
+// than a nanosecond - two notes arriving together got the same one, and the
+// second was written over the first (querynotes.Store.Add updates on a
+// conflict). TestReplyResolvesTheQueryNote failed on Windows for that reason.
+var noteIDs struct {
+	mu   sync.Mutex
+	last int64
+}
+
+// nextNoteID returns an ID no other note of this process has.
+func nextNoteID() string {
+	noteIDs.mu.Lock()
+	defer noteIDs.mu.Unlock()
+
+	id := time.Now().UnixNano()
+	if id <= noteIDs.last {
+		id = noteIDs.last + 1
+	}
+	noteIDs.last = id
+
+	return strconv.FormatInt(id, 10)
+}
 
 // queryTextHandler records a query note submitted from inside a desktop.
 func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
@@ -88,7 +114,7 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	note := querynotes.QueryNote{
-		ID:        fmt.Sprintf("%d", time.Now().UnixNano()),
+		ID:        nextNoteID(),
 		DesktopID: req.DesktopID,
 		VMName:    req.VMName,
 		Filename:  req.Filename,

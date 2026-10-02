@@ -104,6 +104,16 @@ var taughtTaskRe = regexp.MustCompile(`(?i)^\s*do the task you were taught\b`)
 // and "is chatgpt down?" are questions about it.
 var webAppLeadRe = regexp.MustCompile(`(?i)^\s*(?:please\s+)?(?:(?:ask|use|query|search)\s+(?:on\s+|in\s+|with\s+)?(?:chat\s?-?gpt|google|duck\s?duck\s?go|wikipedia|you\s?tube)\b|(?:chat\s?-?gpt|google|duck\s?duck\s?go|wikipedia|you\s?tube)\s*(?:for\b|to\b|about\b|[:,\-]|["“']))`)
 
+// namedCommandRe is a request that is nothing but a command to run, written
+// out in backticks: "run the command: `gui open "character map"`". The
+// request already is the plan, so the terminal skill runs exactly that - no
+// model call. Found live on a native Windows worker: that request named a
+// surface ("character map") and an action ("open"), so it went to the
+// operator as screen work, and the small model answered "DONE" without
+// running anything. Only when the command is the whole request: "run `ls`
+// and then fix what it shows" is still a goal for a loop.
+var namedCommandRe = regexp.MustCompile("(?is)^\\s*(?:please\\s+)?(?:run|execute)\\b[^`\\n]{0,40}`[^`]+`\\s*[.!]?\\s*$")
+
 func wantsScreen(prompt string) bool {
 	return screenSurfaceRe.MatchString(prompt) && matchesWord(screenActionRe, prompt)
 }
@@ -242,6 +252,10 @@ func Triage(prompt string) Route {
 
 	if matched == "coding" {
 		return Route{Kind: RouteSkill, TaskType: matched, Reason: "a request to build software - the coding harness takes it whole"}
+	}
+
+	if namedCommandRe.MatchString(p) {
+		return Route{Kind: RouteSkill, TaskType: "terminal", Reason: "a command named in the request - running exactly that"}
 	}
 
 	// A request that leads with a web app's name ("chatgpt \"a\", \"b\"",

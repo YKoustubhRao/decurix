@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -280,7 +281,7 @@ func TestFileWriteAcceptsDecoratedMarkers(t *testing.T) {
 	ws, _ := workspace.New(t.TempDir())
 	rc := RunContext{Ctx: context.Background(), Provider: stub, Model: "m", Workspace: ws, OnLog: func(string) {}}
 	res, _ := NewFileWrite().Run(rc, Subtask{Step: "write a reminder about milk", Type: "file-write"})
-	if !res.Verified || !strings.HasSuffix(res.Meta["path"].(string), "notes/today.md") {
+	if !res.Verified || !strings.HasSuffix(res.Meta["path"].(string), filepath.Join("notes", "today.md")) {
 		t.Fatalf("result = %+v", res)
 	}
 }

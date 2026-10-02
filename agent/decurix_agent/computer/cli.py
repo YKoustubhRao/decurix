@@ -2,7 +2,7 @@ import argparse
 import os
 import sys
 
-from decurix_agent import logging_utils, progress
+from decurix_agent import cliargs, logging_utils, progress
 from decurix_agent.computer import approval, core, replay, skill_engine, skills
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
@@ -593,10 +593,11 @@ def run(argv):
 
 
 def main(argv=None):
-    logging_utils.log_to_file("/tmp/decurix-gui.log")
+    logging_utils.log_to_file(logging_utils.log_file("decurix-gui.log"))
+    argv = cliargs.from_environment(argv)
 
     try:
-        code = run(sys.argv[1:] if argv is None else argv)
+        code = run(argv)
     except ComputerError as exc:
         print(f"gui: {exc}")
         code = EXIT_ERROR
@@ -606,10 +607,10 @@ def main(argv=None):
         # A bug here must not hand an engine a traceback to reason about.
         import traceback
         logging_utils.log(traceback.format_exc())
-        print(f"gui: internal error ({type(exc).__name__}: {exc}); details in /tmp/decurix-gui.log")
+        print(f"gui: internal error ({type(exc).__name__}: {exc}); details in {logging_utils.log_file('decurix-gui.log')}")
         code = EXIT_ERROR
     finally:
-        save_screenshot(sys.argv[1:] if argv is None else argv)
+        save_screenshot(argv)
         # A short-lived command: the audit step it queued has to leave before
         # the process does.
         progress.flush()
