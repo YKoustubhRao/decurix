@@ -113,7 +113,6 @@ class ControlPlane:
     def send(self, desktop, text, timeout=TASK_SECONDS):
         """Send a request and wait for the worker's answer: (entry, seconds), or (None, seconds)."""
 
-        before = len(self.thread(desktop).get("entries") or [])
         started = time.time()
 
         status, data = self.call("/api/desktops/send", {"id": desktop, "content": text})
@@ -123,7 +122,12 @@ class ControlPlane:
         while time.time() - started < timeout:
             time.sleep(3)
             t = self.thread(desktop)
-            new = [e for e in (t.get("entries") or [])[before:] if e.get("role") != "user"]
+            entries = t.get("entries") or []
+            # What came after this request, found by the request itself: a long chat keeps only its latest entries,
+            # so "how many there were before" stops meaning anything once it is full.
+            sent = max((i for i, e in enumerate(entries) if e.get("role") == "user" and (e.get("content") or "").strip() == text.strip()),
+                       default=None)
+            new = [e for e in entries[sent + 1:] if e.get("role") != "user"] if sent is not None else []
             if new and not t.get("running"):
                 return new[-1], time.time() - started
 
