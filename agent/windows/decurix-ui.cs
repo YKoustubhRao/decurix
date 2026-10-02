@@ -253,11 +253,25 @@ public static class Ui {
         return null;
     }
 
-    static void Activate(IntPtr h) {
-        if (!IsWindow(h)) throw new ArgumentException("that window is gone");
+    [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+
+    // Puts a window in front of the others on this desktop. BringWindowToTop and SetForegroundWindow answer yes here
+    // and leave another program's window where it was (measured, in the control plane's helper and again here: a page
+    // opened in the browser stayed behind a Notepad left open by an earlier task, and the worker typed into a page it
+    // could not see). Windows gives the foreground only to the program that has the person's input, and on a private
+    // desktop no program does. Making the window topmost and then ordinary again is not subject to that, and moves it.
+    static void Raise(IntPtr h) {
         if (IsIconic(h)) ShowWindow(h, 9 /* SW_RESTORE */);
+        bool always = (GetWindowLong(h, -20 /* GWL_EXSTYLE */) & 0x8 /* WS_EX_TOPMOST */) != 0;
+        SetWindowPos(h, (IntPtr)(-1) /* HWND_TOPMOST */, 0, 0, 0, 0, 0x1 | 0x2 | 0x10 /* NOSIZE, NOMOVE, NOACTIVATE */);
+        if (!always) SetWindowPos(h, (IntPtr)(-2) /* HWND_NOTOPMOST */, 0, 0, 0, 0, 0x1 | 0x2 | 0x10);
         BringWindowToTop(h);
         SetForegroundWindow(h);
+    }
+
+    static void Activate(IntPtr h) {
+        if (!IsWindow(h)) throw new ArgumentException("that window is gone");
+        Raise(h);
         GiveFocus(h);
     }
 
@@ -736,7 +750,7 @@ public static class Ui {
 
     static void Click(int x, int y, bool right, int count) {
         IntPtr top = WindowAt(new POINT { X = x, Y = y });
-        if (top != IntPtr.Zero) { BringWindowToTop(top); SetForegroundWindow(top); }
+        if (top != IntPtr.Zero) Raise(top);
         IntPtr target = Mouse(WM_MOUSEMOVE, x, y, 0, IntPtr.Zero);
         lastTarget = target;
         uint down = right ? WM_RBUTTONDOWN : WM_LBUTTONDOWN, up = right ? WM_RBUTTONUP : WM_LBUTTONUP;

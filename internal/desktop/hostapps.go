@@ -455,7 +455,11 @@ func isBrowserApp(name string) bool {
 // /home/headless volume, and installs the host execution bridge launchers.
 func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selectedIDs []string) error {
 	if m.native != nil {
-		return nil
+		// Nothing to copy: the apps become shortcuts on the worker's screen.
+		if _, err := m.native.readMeta(sanitizeName(desktopID)); err != nil || len(selectedIDs) == 0 {
+			return err
+		}
+		return m.native.addAndRedress(sanitizeName(desktopID), nativeApps(selectedIDs, DetectHostApps()))
 	}
 
 	if len(selectedIDs) == 0 {
@@ -1269,6 +1273,7 @@ func queryWindowsStartApps() []rawStartApp {
 
 		cmd := exec.CommandContext(ctx, psExe, "-NoProfile", "-NonInteractive", "-InputFormat", "None", "-Command", "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress")
 		cmd.Stdin = strings.NewReader("")
+		HideWindow(cmd)
 		if output, err := cmd.Output(); err == nil && len(output) > 0 {
 			if apps := parseGetStartAppsJSON(output); len(apps) > 0 {
 				startAppsCached = apps

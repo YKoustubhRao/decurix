@@ -57,15 +57,34 @@ POLL_INTERVAL_SECONDS = 2
 TASK_TIMEOUT_SECONDS = 1800
 
 SAFETY_PREAMBLE = f"""
-Approval rules for this desktop: before making or approving any payment,
-sending or approving any outgoing message on the human's behalf (WhatsApp,
-email, SMS, or any other platform), publishing anything, or taking any
-other action with real-world consequences you are not fully confident
-about - stop before doing it. Ask for approval with HELP, or begin your
-reply with exactly "{APPROVAL_MARKER}" followed by what you want to do and
-why; a human will review it on the Decurix dashboard. Drafting an email into
-the Outbox (office email) is not sending it: a person reviews and sends it
-there, so draft one without asking.
+Approval rules for this desktop.
+
+You act for the human. What their request asks for is theirs to decide, and
+by asking they have decided it: do it, without asking again. That includes
+deleting the record they name, submitting the form or ticket they describe,
+saving the settings they list, renaming or removing the file they point at.
+Asking "shall I?" about the very thing they asked for wastes their time.
+
+Stop for a yes in three cases only:
+1. Money: paying, buying, booking, transferring.
+2. Speaking for them: sending an email or a message to other people, or
+   publishing something publicly.
+3. Something consequential the request did NOT ask for: deleting or
+   overwriting more than what was named, or anything you are not sure about.
+
+On the screen - in an app or a web page - you never ask for 1 or 2 yourself,
+neither before you start nor before the final click. Do all the work (open
+the page, find the record, fill in what is needed) and make the click: the
+gui command is what decides. It refuses a click that pays, sends, buys or
+publishes and asks the human at that moment, with the details in front of
+them; a click it lets through (submitting a form or a support ticket the
+request asked for, saving, deleting the named record) needed no yes.
+Away from the screen (a shell command, a script), ask with HELP, or begin
+your reply with exactly "{APPROVAL_MARKER}" followed by what you want to do
+and why; a human will review it on the Decurix dashboard.
+
+Drafting an email into the Outbox (office email) is not sending it: a person
+reviews and sends it there, so draft one without asking.
 """.strip()
 
 
@@ -226,12 +245,27 @@ def _poll_job(base, job_id):
             job = _get_json(base + f"/api/jobs/{job_id}")
         except (urllib.error.URLError, OSError, ValueError) as exc:
             log(f"Could not poll TheBot job {job_id}: {exc}")
-            return None
+            # The engine has gone, or has come back without the job (it keeps
+            # jobs in memory): either way this job will never finish.
+            raise EngineStopped() from exc
 
         if job.get("status") in ("done", "error"):
             return job
 
     return None
+
+
+class EngineStopped(Exception):
+    """TheBot's engine went away in the middle of a job."""
+
+
+# What a person is told then. Found live: the engine's process was ended from
+# outside (an antivirus took its file) a minute into a task, and the report
+# read "did not finish within 1800 seconds" and blamed the model's key.
+ENGINE_STOPPED = (
+    "TheBot's engine stopped in the middle of this task, so the task was not finished. Nothing more was done "
+    "after the last step shown above. The engine is started again by itself; send the request again."
+)
 
 
 def _cancel_job(base, job_id):
@@ -398,7 +432,10 @@ def _run_thebot(request, reply, extra_context=""):
         job = None
 
     if job is None:
-        job = _poll_job(base, job_id)
+        try:
+            job = _poll_job(base, job_id)
+        except EngineStopped:
+            return None, ENGINE_STOPPED
 
     if job is None:
         _cancel_job(base, job_id)
@@ -486,6 +523,10 @@ def _backend_note(reason):
     )
 
 
+APPROVAL_ASKED_RE = re.compile(r"\bneeds? (your )?approval\b|\bplease approve\b|\bapprove (if|this|it|the)\b|"
+                               r"\b(your|for) (approval|permission|go-ahead)\b", re.IGNORECASE)
+
+
 def _escalate(reason):
     """
     Send one reason to the human, rewritten if it is really about the
@@ -496,7 +537,10 @@ def _escalate(reason):
         ask_for_query(_backend_note(reason))
         return
 
-    ask_for_query(reason)
+    # A question that asks for a yes to something consequential is an
+    # approval, whichever way the model worded it: the chat and the task
+    # record tell the two apart ("Needs approval" / "Needs your answer").
+    ask_for_query(reason, kind="approval" if APPROVAL_ASKED_RE.search(reason) else "query")
 
 
 def _fail_on_backend(reason):
@@ -521,6 +565,10 @@ def _handle_job(job, error, resuming=False):
         # something to run through _looks_like_backend_failure's text
         # matching (that heuristic is for soul's own authored answers,
         # which this error string never is).
+        if error == ENGINE_STOPPED:
+            # Not the model's doing and not a setup to fix: said as it is.
+            write_final_reply(error, kind="error")
+            return
         if resuming:
             # The documented exception: a failure while resuming after a
             # human's reply keeps the task paused, so a resend of that

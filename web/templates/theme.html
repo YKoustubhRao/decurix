@@ -314,6 +314,8 @@ svg{display:block;flex:none}
 
 .menu-title{font-size:12px;font-weight:600;color:var(--text);margin-bottom:3px}
 .menu-note{font-size:12px;color:var(--text-3);line-height:1.45}
+.menu-waiting{display:flex;align-items:flex-start;gap:8px}
+.menu-ring{flex:none;width:12px;height:12px;margin-top:2px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%}
 
 .menu-link{
   display:block;
@@ -910,6 +912,15 @@ body.busy{cursor:progress}
   var lastDevices = null;
   var lastPhones = null;
 
+  /* Whether /api/tunnel has answered yet, and until when a menu with no
+     address in it is "still getting one" rather than "has none": the tunnel is
+     opened after the control plane starts, so a page loaded in between used to
+     show an empty menu that filled in on its own up to 15 seconds later. */
+  var tunnelLoaded = false;
+  var tunnelWaitUntil = Date.now() + 90000;
+  var tunnelWaitTimer = 0;
+  var lastMobileState = "";
+
   // addPhonesSection lists the Android phones linked right now, whose apps can
   // be put in a VM, and says how to link one.
   function addPhonesSection(panel){
@@ -1033,6 +1044,18 @@ body.busy{cursor:progress}
     panel.appendChild(note);
   }
 
+  // addWaiting is a note with a spinner: something this menu is still waiting for.
+  function addWaiting(panel, text){
+    var note = document.createElement("div");
+    note.className = "menu-note menu-waiting";
+    note.setAttribute("role", "status");
+    var ring = document.createElement("span");
+    ring.className = "menu-ring spin";
+    note.appendChild(ring);
+    note.appendChild(document.createTextNode(text));
+    panel.appendChild(note);
+  }
+
   // signInLink is the one link to share: the free tunnel's address (the
   // LAN address when there is no tunnel yet) with the access code in it, so
   // opening it signs the device in and remembers it - nothing to type.
@@ -1076,8 +1099,13 @@ body.busy{cursor:progress}
         if(lastLANTunnelURL){ addNote(panel, "Same network only:"); }
         addLinkRow(panel, lastLANURL, "Copy LAN link");
       }
+    }else if(!tunnelLoaded || Date.now() < tunnelWaitUntil){
+      /* The link comes from a tunnel that is opened after Decurix starts and
+         takes a few seconds: say so, rather than show a menu with no link in
+         it that fills in by itself a moment later. */
+      addWaiting(panel, tunnelLoaded ? "Getting the link for your phone. This takes a few seconds after Decurix starts…" : "Loading…");
     }else{
-      addNote(panel, "No address known yet. Start Decurix with scripts/build.sh.");
+      addNote(panel, "No link yet. It appears here as soon as the tunnel to this computer is up. If it never does, check that this computer is online, then restart Decurix.");
     }
 
     /* -- the code the addresses above need -- */
@@ -1157,6 +1185,7 @@ body.busy{cursor:progress}
         lastAdminURL = data.admin_url || "";
         lastLANURL = data.lan_url || "";
         lastLANTunnelURL = data.lan_tunnel_url || "";
+        tunnelLoaded = true;
       }
     }catch(e){ /* keep whatever is already rendered */ }
 
@@ -1175,7 +1204,23 @@ body.busy{cursor:progress}
       if(phonesResponse.ok){ lastPhones = await phonesResponse.json(); }
     }catch(e){ /* keep whatever is already rendered */ }
 
-    renderMobilePanel();
+    /* No address yet: ask again soon instead of at the next 15 s tick, until
+       one arrives or the wait is over (the look after that says there is none). */
+    var waiting = !lastLANTunnelURL && !lastLANURL && Date.now() < tunnelWaitUntil;
+    clearTimeout(tunnelWaitTimer);
+    if(waiting){
+      tunnelWaitTimer = setTimeout(refreshTunnel, 2000);
+    }
+
+    /* Rebuilt only when something in it changed (or a minute passed: "seen 5
+       min ago"): a rebuild takes a button out from under a click, and closes
+       the menu with it. */
+    var state = JSON.stringify([lastTunnelURL, lastAdminURL, lastLANURL, lastLANTunnelURL, lastLAN, lastDevices, lastPhones,
+      tunnelLoaded, waiting, Math.floor(Date.now() / 60000)]);
+    if(state !== lastMobileState){
+      lastMobileState = state;
+      renderMobilePanel();
+    }
   }
 
 

@@ -11,3 +11,4 @@ desktop/electron/build/
 agent/thebot.tar.gz
 # A Windows build of the control plane at the repository root (go build ./cmd/decurix).
 /decurix.exe
+bench/native/results/

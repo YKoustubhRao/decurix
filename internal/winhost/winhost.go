@@ -216,6 +216,22 @@ func (m *Manager) keepWarm(h *Session) {
 	m.mu.Unlock()
 }
 
+// DropSpare ends the helper kept waiting for the next launch, if there is one: for a caller that only wanted a Check and
+// will launch nothing into it.
+func (m *Manager) DropSpare() {
+	m.mu.Lock()
+	spare := m.spare
+	m.spare = nil
+	if m.spareTmr != nil {
+		m.spareTmr.Stop()
+		m.spareTmr = nil
+	}
+	m.mu.Unlock()
+	if spare != nil {
+		spare.Stop()
+	}
+}
+
 // Warm makes sure a helper is up and waiting for the next app, so nobody waits for one: it starts one in the background if
 // there is none, and if there is one it keeps it another spareTTL. Call it whenever an app is likely to be wanted soon - the
 // control plane starting, someone choosing apps to copy, a desktop being created - and it returns at once.
@@ -487,6 +503,32 @@ func (s *Session) Running() string {
 	return ""
 }
 
+// Open starts one more program on the session's desktop - a person opening an app on a worker's screen. The helper
+// resolves target the way a launch does (a shortcut, a Start-menu address, a browser given a profile of its own), so
+// what it refuses to hide for a copied app it refuses here too, with the same reason.
+func (s *Session) Open(target, args string) error {
+	if strings.ContainsAny(target+args, "\r\n") || strings.Contains(target, "\t") || strings.TrimSpace(target) == "" {
+		return errors.New("invalid application")
+	}
+	resp, err := s.DoTimeout("open\t"+target+"\t"+args, launchRequestTimeout)
+	if err != nil {
+		return err
+	}
+	if !strings.HasPrefix(resp, "OK") {
+		return errors.New(strings.TrimSpace(strings.TrimPrefix(resp, "ERR")))
+	}
+	return nil
+}
+
+// Empty reports whether the session's desktop has no window a person would see: a worker's screen with nothing open.
+func (s *Session) Empty() (bool, error) {
+	resp, err := s.Do("count")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(resp) == "COUNT 0", nil
+}
+
 // Snapshot is the whole picture as it is now.
 func (s *Session) Snapshot(ctx context.Context) (Update, error) {
 	v := s.Watch()
@@ -688,6 +730,7 @@ type Session struct {
 	appGone     chan struct{}
 	goneOnce    sync.Once
 	stopOnce    sync.Once
+	onEvent     func(string) // see OnEvent
 }
 
 func newSession(id string, cmd *exec.Cmd) (*Session, error) {
@@ -745,8 +788,10 @@ func (s *Session) read(r *bufio.Reader) {
 				}
 				s.publish(u.Update)
 			case strings.HasPrefix(line, "EVENT "):
-				if strings.TrimPrefix(line, "EVENT ") == "closed" {
+				if event := strings.TrimPrefix(line, "EVENT "); event == "closed" {
 					s.markAppGone()
+				} else {
+					s.event(event)
 				}
 			default:
 				select {

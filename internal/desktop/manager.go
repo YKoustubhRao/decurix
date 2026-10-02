@@ -336,9 +336,9 @@ func (m *Manager) BeginProvisioning(
 	onStarted func(d *Desktop) error,
 ) (*ProvisioningDesktop, error) {
 	if m.native != nil {
-		// Nothing is copied into a native worker: it starts the programs
-		// already on this computer itself, on its own desktop.
-		return m.nativeProvision(name, profile, harness, brain, cpus, memoryMB, specialization, parentID, onStarted)
+		// Nothing is copied into a native worker: the apps picked become
+		// shortcuts on its screen to the programs already on this computer.
+		return m.nativeProvision(name, profile, harness, brain, cpus, memoryMB, specialization, parentID, selectedApps, onStarted)
 	}
 
 	sanitizedID := sanitizeName(name)

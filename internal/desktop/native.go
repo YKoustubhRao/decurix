@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -88,6 +89,158 @@ type nativeMeta struct {
 	// Stopped is a worker a person stopped: it is not started again when the
 	// control plane starts.
 	Stopped bool `json:"stopped,omitempty"`
+	// Apps are the shortcuts on this worker's screen: what a person picked
+	// from this computer's apps when creating it, or added since.
+	Apps []NativeApp `json:"apps,omitempty"`
+}
+
+// How a native worker's shortcut is opened.
+const (
+	// NativeAppWeb is an address shown in the worker's own browser.
+	NativeAppWeb = "web"
+	// NativeAppProgram is a program of this computer, started on the worker's
+	// own desktop.
+	NativeAppProgram = "program"
+)
+
+// NativeApp is a shortcut on a native worker's screen. A private desktop has
+// no Start menu and no icons, so the screen's page shows these in their place.
+// Nothing is copied: the program is the one installed on this computer.
+type NativeApp struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Kind is NativeAppWeb or NativeAppProgram.
+	Kind string `json:"kind"`
+	// Target is the address, or what the helper is asked to start (a program,
+	// a shortcut or a Start-menu address) with Args.
+	Target string `json:"target"`
+	Args   string `json:"args,omitempty"`
+}
+
+// nativeApps turns picked entries of the host-app scan into shortcuts. Only
+// what a worker's screen can show is kept: a service's web version, or a
+// program the helper confirmed it can run on a private desktop. Credentials
+// to copy, the VM bridge and phone apps have no meaning here.
+func nativeApps(selectedIDs []string, detected []HostAppItem) []NativeApp {
+	byID := make(map[string]HostAppItem, len(detected))
+	for _, item := range detected {
+		byID[strings.ToLower(item.ID)] = item
+	}
+
+	var apps []NativeApp
+	seen := map[string]bool{}
+	for _, id := range selectedIDs {
+		item, ok := byID[strings.ToLower(strings.TrimSpace(id))]
+		if !ok || seen[item.ID] {
+			continue
+		}
+
+		app := NativeApp{ID: item.ID, Name: item.Name}
+		switch item.Mode {
+		case ModeWeb:
+			app.Kind, app.Target = NativeAppWeb, getWebAppURLForApp(item.Name, item.HostCmd)
+		case ModeHostGUI:
+			target, args, ok := windowsTarget(item.HostCmd)
+			if !ok {
+				continue
+			}
+			app.Kind, app.Target, app.Args = NativeAppProgram, target, args
+		}
+		if app.Target == "" {
+			continue
+		}
+
+		seen[item.ID] = true
+		apps = append(apps, app)
+	}
+
+	return apps
+}
+
+// NativeApps are the shortcuts on a native worker's screen.
+func (m *Manager) NativeApps(rawID string) ([]NativeApp, error) {
+	if m.native == nil {
+		return nil, errors.New("this control plane's desktops are containers")
+	}
+
+	meta, err := m.native.readMeta(sanitizeName(rawID))
+	if err != nil {
+		return nil, err
+	}
+
+	return meta.Apps, nil
+}
+
+// addNativeApps puts more shortcuts on a worker's screen, keeping the ones it
+// has; one already there is replaced by what the scan says it is now.
+func (h *nativeHost) addNativeApps(id string, apps []NativeApp) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	meta, err := h.readMeta(id)
+	if err != nil {
+		return err
+	}
+
+	for _, app := range apps {
+		replaced := false
+		for i := range meta.Apps {
+			if meta.Apps[i].ID == app.ID {
+				meta.Apps[i], replaced = app, true
+			}
+		}
+		if !replaced {
+			meta.Apps = append(meta.Apps, app)
+		}
+	}
+
+	return h.writeMeta(meta)
+}
+
+// addAndRedress is addNativeApps, then the worker's icons drawn again if it
+// is running.
+func (h *nativeHost) addAndRedress(id string, apps []NativeApp) error {
+	if err := h.addNativeApps(id, apps); err != nil {
+		return err
+	}
+
+	h.redress(id)
+
+	return nil
+}
+
+// OpenNativeProgram starts one of a worker's program shortcuts on its own
+// desktop. The helper resolves it as it does a copied app - a browser or an
+// Electron app gets a profile of its own for this worker, so it cannot hand
+// the launch to the copy the person has open on their own screen.
+func (m *Manager) OpenNativeProgram(rawID string, app NativeApp) error {
+	session, err := m.NativeSession(rawID)
+	if err != nil {
+		return err
+	}
+
+	if app.Kind != NativeAppProgram {
+		return fmt.Errorf("%s is not a program", app.Name)
+	}
+
+	return session.Open(app.Target, app.Args)
+}
+
+// NativeScreenEmpty reports whether a running native worker has nothing open
+// on its screen. A worker that is not running is not "empty": it has no screen.
+func (m *Manager) NativeScreenEmpty(rawID string) bool {
+	if m.native == nil {
+		return false
+	}
+
+	session, err := m.native.session(sanitizeName(rawID))
+	if err != nil {
+		return false
+	}
+
+	empty, err := session.Empty()
+
+	return err == nil && empty
 }
 
 // nativeRun is one running worker.
@@ -111,6 +264,13 @@ type nativeHost struct {
 	// starting holds workers a start is in flight for, so two requests do not
 	// open two desktops for one worker.
 	starting map[string]chan struct{}
+	// screenPassword is what a viewer's VNC client proves it knows before it
+	// is shown a worker's screen: made when the control plane starts, given
+	// to the screen's page, never stored.
+	screenPassword string
+	// open opens one of a worker's shortcuts (Manager.OpenNativeApp): what a
+	// double-click on an icon of its desktop asks for.
+	open func(ctx context.Context, id, appID string) (string, error)
 }
 
 // NewNativeManager creates a Manager whose desktops are native workers. It
@@ -118,6 +278,8 @@ type nativeHost struct {
 func NewNativeManager(rt NativeRuntime) *Manager {
 	m := NewManager(nil)
 	m.native = &nativeHost{rt: rt, running: map[string]*nativeRun{}, crashed: map[string]string{}, starting: map[string]chan struct{}{}}
+	m.native.open = m.OpenNativeApp
+	m.native.screenPassword = newScreenPassword()
 
 	// What a worker is told to call back to (controlPlaneURL), and what the
 	// hosted brain's proxy address is built from.
@@ -126,6 +288,22 @@ func NewNativeManager(rt NativeRuntime) *Manager {
 	}
 
 	return m
+}
+
+// newScreenPassword is eight random letters and digits: VNC authentication
+// uses no more than eight characters of a password.
+func newScreenPassword() string {
+	const letters = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+	raw := make([]byte, 8)
+	if _, err := rand.Read(raw); err != nil {
+		panic("no random numbers for a screen password: " + err.Error())
+	}
+	for i, b := range raw {
+		raw[i] = letters[int(b)%len(letters)]
+	}
+
+	return string(raw)
 }
 
 // Native reports whether this Manager's desktops are native workers. A nil
@@ -388,6 +566,8 @@ func (h *nativeHost) start(ctx context.Context, id string, say func(string)) err
 	h.running[id] = &nativeRun{session: session, agentPort: agentPort, soulPort: soulPort, cdpPort: cdpPort, startedAt: time.Now()}
 	delete(h.crashed, id)
 	h.mu.Unlock()
+
+	h.dress(id, session, meta)
 
 	if meta.Stopped {
 		meta.Stopped = false
@@ -778,6 +958,7 @@ func (m *Manager) nativeProvision(
 	brain Brain,
 	cpus, memoryMB int64,
 	specialization, parentID string,
+	selectedApps []string,
 	onStarted func(d *Desktop) error,
 ) (*ProvisioningDesktop, error) {
 	id := sanitizeName(name)
@@ -802,6 +983,9 @@ func (m *Manager) nativeProvision(
 		Specialization: specialization, ParentID: parentID,
 	}
 	meta.Model = desktopModel(buildDesktopEnv(name, harness, specialization, parentID, brain))
+	if len(selectedApps) > 0 {
+		meta.Apps = nativeApps(selectedApps, DetectHostApps())
+	}
 
 	prov := &ProvisioningDesktop{
 		ID: id, Name: name, Profile: profile, Harness: harness, Brain: meta.Brain, Model: meta.Model,

@@ -120,6 +120,9 @@ def observe(remember=True, frame=None):
 
     groups = _order_groups(groups, windows, active_title)
 
+    if _human_check(found, page_group):
+        notes.append(HUMAN_CHECK_NOTE)
+
     width, height = frame.width, frame.height
 
     with _state_lock():
@@ -970,6 +973,32 @@ def _chromium_argv(url):
     return browser.launch_argv(url)
 
 
+# A page that asks whoever is there to prove they are a person. It is exactly
+# what a worker is not: the worker stops and a person does it on the worker's
+# screen. Found live: Google answered a search with its "unusual traffic" page,
+# and the engine clicked at the "I'm not a robot" box seven times, by guessed
+# coordinates, until it ran out of turns.
+HUMAN_CHECK = re.compile(
+    r"unusual traffic from your computer network|i(?:'|\u2019)?m not a robot|verify (?:that )?you(?:'| a)re (?:a )?human|"
+    r"are you a robot|\bcaptcha\b|complete the security check|checking (?:if|that) the site connection is secure|"
+    r"press (?:and|&) hold to confirm", re.IGNORECASE)
+
+HUMAN_CHECK_NOTE = (
+    "This page is a check that a person is there (a CAPTCHA). Do not try to pass it yourself: reply HELP asking the "
+    "person to complete it on this worker's screen and to reply when it is done, then carry on with the task."
+)
+
+
+def _human_check(found, page_group):
+    """Whether what is on the screen is a prove-you-are-human page."""
+
+    texts = [(page_group or {}).get("url") or "", (page_group or {}).get("title") or ""]
+    texts += [str(element.get("name") or "") for element in found[:200]]
+    if "google.com/sorry/" in texts[0]:
+        return True
+    return any(HUMAN_CHECK.search(text) for text in texts)
+
+
 def open_target(target, new_tab=False):
     """
     Open a web page, a document or an app, and wait for it to be on screen.
@@ -1099,7 +1128,49 @@ def _open(target, new_tab):
         xinput.activate(opened[-1]["id"])
         title = next((w["title"] for w in screen.windows() if w["id"] == opened[-1]["id"] and w["title"]), title)
 
+        # Windows 11's Notepad opens with the tabs it had when it was last
+        # closed - and that memory is the person's own, so a worker's Notepad
+        # came up showing their unsaved notes, and the worker typed its text
+        # into one of them (found by bench/native). Asked for with no file, it
+        # is given a new, empty tab to work in.
+        if len(argv) == 1 and Path(argv[0]).name.lower() == "notepad.exe" and not title.lower().startswith("untitled"):
+            xinput.key("ctrl+n")
+            time.sleep(0.8)
+            title = next((w["title"] for w in screen.windows() if w["id"] == opened[-1]["id"] and w["title"]), title)
+            return f"Opened Notepad with a new, empty tab ({el._quote(title, 60)}); its other tabs were already there - leave them alone."
+
     return f"Opened {el._quote(title, 80)}."
+
+
+def bring_to_front(title):
+    """
+    Put an open window in front of the others, by a few words of its title:
+    what a click on its taskbar button does. The engine's own view of the
+    screen has no taskbar - found live, with one app left in front of another
+    it clicked around the top of the screen looking for one, for ten minutes.
+    """
+
+    wanted = " ".join((title or "").lower().split())
+    if not wanted:
+        raise ComputerError("say which window: a few words of its title")
+
+    windows = [w for w in screen.windows() if w["title"]]
+    exact = [w for w in windows if w["title"].lower() == wanted]
+    partial = [w for w in windows if wanted in w["title"].lower()]
+    if not exact and not partial and wanted in ("browser", "chromium", "edge", "chrome"):
+        partial = [w for w in windows if browser.is_browser_title(w["title"])]
+    found = exact or partial
+
+    if not found:
+        raise ComputerError("no open window is titled like that. Open windows: "
+                            + (", ".join(el._quote(w["title"], 60) for w in windows) or "none"))
+    if len(found) > 1:
+        raise ComputerError("more than one window is titled like that: "
+                            + ", ".join(el._quote(w["title"], 60) for w in found) + ". Say more of the title.")
+
+    xinput.activate(found[0]["id"])
+    time.sleep(0.4)
+    return f"Brought {el._quote(found[0]['title'], 80)} to the front."
 
 
 def _raise_browser():

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode"
 
+	"thebot/internal/hostshell"
 	"thebot/internal/llm"
 )
 
@@ -82,7 +83,7 @@ func typedValues(command string) []string {
 	var out []string
 	for _, v := range raw {
 		for _, item := range strings.FieldsFunc(v, func(r rune) bool { return r == ';' || r == '\n' }) {
-			if item = strings.TrimSpace(strings.ReplaceAll(item, `\n`, "")); item != "" {
+			if item = strings.TrimSpace(item); item != "" {
 				out = append(out, item)
 			}
 		}
@@ -115,7 +116,7 @@ func groundingNudge(st *operatorState, command string) string {
 	seen := normalise(st.Seen)
 	var untraced []string
 	for _, v := range values {
-		if !strings.Contains(seen, normalise(v)) {
+		if !strings.Contains(seen, normalise(v)) && !strings.Contains(seen, normalise(withoutNewlineMarks(v))) {
 			untraced = append(untraced, fmt.Sprintf("%q", v))
 		}
 	}
@@ -126,6 +127,13 @@ func groundingNudge(st *operatorState, command string) string {
 		"would be guesses. Find each value in the document or the page it comes from and use it exactly as written "+
 		"there. If you converted one (a date's format, a unit), or it cannot be found, ask with HELP instead.",
 		strings.Join(untraced, ", "))
+}
+
+// withoutNewlineMarks is a typed value without the \n that gui type reads as
+// "press Enter" - unless the value is a Windows path, where \n is the start
+// of a folder's name.
+func withoutNewlineMarks(v string) string {
+	return strings.TrimSpace(strings.ReplaceAll(v, `\n`, ""))
 }
 
 // capitalsNudge asks for a value typed in capitals to be typed the way the
@@ -185,6 +193,8 @@ func asWritten(seen, value string) string {
 // still right for a request that needs none ("reply pong"); it is pushed
 // back once when it repeats an earlier answer, or when the request names a
 // document nothing has read.
+var alreadyDoneRe = regexp.MustCompile(`(?i)\balready\b|\bearlier in this (session|conversation|chat)\b|\bpreviously\b|\bas before\b`)
+
 func earlyDoneNudge(st *operatorState, history []llm.Message, answer string) string {
 	said := normalise(answer)
 	for _, m := range history {
@@ -196,6 +206,15 @@ func earlyDoneNudge(st *operatorState, history []llm.Message, answer string) str
 			return "Not taken: that is your answer to an EARLIER request in this conversation, and nothing has " +
 				"been run for this one. This request is new - do what it asks:\n" + st.Request
 		}
+	}
+	// "Already signed in, verified earlier in this session": what was true
+	// earlier in the conversation is not what is true now. Found by
+	// bench/native: the same request sent again after the page had been
+	// reset was answered from the history, with nothing looked at.
+	if alreadyDoneRe.MatchString(answer) {
+		return "Not taken: nothing has been looked at for this request. What you did or saw earlier in this " +
+			"conversation may no longer hold - the screen and the files may have changed since. Look first " +
+			"(gui observe, or the command that shows it), then do what is asked:\n" + st.Request
 	}
 	for _, doc := range documentPathRe.FindAllString(st.Request, -1) {
 		if !readBefore(st.Commands, doc) {
@@ -356,7 +375,11 @@ func shellWords(s string) []string {
 		case escaped:
 			cur.WriteRune(r)
 			escaped = false
-		case r == '\\' && quote != '\'':
+		case r == '\\' && quote != '\'' && !hostshell.Windows:
+			// PowerShell's escape is the backtick: there a backslash is a path's
+			// separator. Found by bench/native: read as an escape it was dropped
+			// from every Windows path, so a path typed into a Save dialog never
+			// matched the request it was copied from and was refused as a guess.
 			escaped = true
 		case quote != 0:
 			if r == quote {
