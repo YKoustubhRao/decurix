@@ -23,6 +23,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -81,6 +82,29 @@ var (
 )
 
 var unsafeName = regexp.MustCompile(`[^a-zA-Z0-9_]`)
+
+// desktopName is the private desktop a session id gets: what the helper is told, and what it names an app's own
+// profile after.
+func desktopName(id string) string {
+	name := "decurix_" + unsafeName.ReplaceAllString(id, "_")
+	if len(name) > 48 {
+		name = name[:48]
+	}
+
+	return name
+}
+
+// ProfileDir is where the helper keeps the profile of its own that it gives a browser or Electron app started under
+// session id (bridge.ps1's Complete-Launch: $ProfileRoot\<desktop>-<base>). base is the program's name without ".exe",
+// in lower case. "" when this computer has no such place (not Windows).
+func ProfileDir(id, base string) string {
+	local := os.Getenv("LOCALAPPDATA")
+	if local == "" {
+		return ""
+	}
+
+	return filepath.Join(local, "Decurix", "hidden-profiles", desktopName(id)+"-"+base)
+}
 
 // Manager owns the running sessions, one per id, and one warm helper for the next.
 type Manager struct {
@@ -327,10 +351,7 @@ func (m *Manager) launch(ctx context.Context, id, target, args string) (*Session
 		return nil, err
 	}
 	s.id = id
-	name := "decurix_" + unsafeName.ReplaceAllString(id, "_")
-	if len(name) > 48 {
-		name = name[:48]
-	}
+	name := desktopName(id)
 	for _, line := range []string{"desktop " + name, "viewers 1"} {
 		if resp, err := s.Do(line); err != nil || !strings.HasPrefix(resp, "OK") {
 			s.Stop()
@@ -450,10 +471,7 @@ func OpenDesktop(ctx context.Context, start Starter, id string, env []string, ex
 	if strings.ContainsAny(exe+args+dir, "\r\n\t") || strings.TrimSpace(exe) == "" {
 		return nil, errors.New("invalid program to start")
 	}
-	name := "decurix_" + unsafeName.ReplaceAllString(id, "_")
-	if len(name) > 48 {
-		name = name[:48]
-	}
+	name := desktopName(id)
 
 	// The helper outlives the request that started it, so it is not tied to ctx.
 	cmd, err := start(context.Background(), name)

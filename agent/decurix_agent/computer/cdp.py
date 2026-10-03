@@ -785,81 +785,274 @@ def element_at_screen_point(x, y, known_elements=()):
     path, role, name, and handle intact.
     """
 
+    element, _ = hit(x, y, known_elements, controls_only=True)
+    return element
+
+
+# What a field says about itself in its HTML, which privacy.py needs to keep
+# a secret out of a recording (observe reads the same two off its snapshot).
+_DECLARED = ("type", "autocomplete")
+
+# Fields are listed, and typed into, with or without a name.
+_FIELD_ROLES = ("textbox", "combobox", "searchbox", "spinbutton")
+
+# What a look at a page lists besides its controls: text a person reads.
+_TEXT_ROLES = ("statictext", "paragraph", "listitem", "status", "alert", "heading", "cell", "row")
+
+
+def _known_by_backend(known_elements, page):
+    target_id = page.target.get("id")
+    return {
+        element["handle"]["backend_id"]: element
+        for element in known_elements or ()
+        if element.get("source") == "cdp" and (element.get("handle") or {}).get("backend_id") is not None
+        and (element.get("handle") or {}).get("target_id") == target_id
+    }
+
+
+def _context(page, metrics):
+    """Where a page is: the title of its window as recordings write it, and its address."""
+
+    return {
+        "title": browser.page_window_title(metrics.get("title") or page.target.get("title") or ""),
+        "url": metrics.get("url") or "",
+    }
+
+
+def _describe(page, metrics, backend_id, known, controls_only=False):
+    """
+    The element a DOM node is, as observe would list it: the node itself or
+    the nearest thing around it that a look at the page lists - the button an
+    icon is inside, the row a cell is in. One a look already listed is
+    returned as listed (its path, name and box), with the value it has now;
+    one it did not (the page changed since) is described from the page's own
+    accessibility tree. None when nothing around the node has a name.
+    """
+
+    nodes = page.call("Accessibility.getPartialAXTree", {"backendNodeId": backend_id, "fetchRelatives": True}).get("nodes", [])
+    by_node_id = {node.get("nodeId"): node for node in nodes}
+    # A node inside a control's own shadow tree (the arrow of a <select>, the
+    # editing box of an <input>) names no parent: it is found as the child it
+    # is listed as. Measured: a press on a drop-down hit such a node, and the
+    # drop-down was not found from it.
+    parent_of = {child: node for node in nodes for child in node.get("childIds") or []}
+    current = next((node for node in nodes if node.get("backendDOMNodeId") == backend_id), None)
+
+    text = None
+    hops = 0
+
+    # A block that only holds text (a <div> a page made into a button with a
+    # click handler) is the text a look at the page lists inside it.
+    if current is not None and not " ".join((((current.get("name") or {}).get("value")) or "").split()):
+        for child_id in current.get("childIds") or []:
+            child = by_node_id.get(child_id)
+            name = " ".join((((child or {}).get("name") or {}).get("value") or "").split())
+            if child is not None and name and ((child.get("role") or {}).get("value") or "").lower() == "statictext":
+                listed = known.get(child.get("backendDOMNodeId"))
+                if listed is not None and not controls_only:
+                    text = ("listed", listed, "")
+                else:
+                    text = (child, name, "text")
+                break
+
+    while current is not None and hops < 60:
+        hops += 1
+        role = ((current.get("role") or {}).get("value") or "").lower()
+        name = " ".join(((current.get("name") or {}).get("value") or "").split())
+        here = current.get("backendDOMNodeId")
+        value = (current.get("value") or {}).get("value")
+
+        listed = known.get(here)
+        if listed is not None and (listed.get("name") or listed["role"] in _FIELD_ROLES) \
+                and not (controls_only and role not in INTERACTIVE):
+            found = dict(listed)
+            if role in INTERACTIVE:
+                found["value"] = str(value) if value not in (None, "") else ""
+            found["handle"] = dict(listed["handle"], tag=_tag(page, here))
+            return found
+
+        if role in INTERACTIVE and (name or el.normalize_role(role) in _FIELD_ROLES):
+            return _built(page, metrics, current, role, name, value)
+
+        if text is None and name and role in _TEXT_ROLES:
+            text = (current, name, "text" if role == "statictext" else role)
+
+        current = by_node_id.get(current.get("parentId")) or parent_of.get(current.get("nodeId"))
+
+    if text is not None and not controls_only:
+        if text[0] == "listed":
+            return dict(text[1])
+        return _built(page, metrics, text[0], text[2], text[1], None)
+
+    return None
+
+
+def _tag(page, backend_id):
+    try:
+        return (page.call("DOM.describeNode", {"backendNodeId": backend_id}).get("node", {}).get("nodeName") or "").lower()
+    except ComputerError:
+        return ""
+
+
+def _built(page, metrics, node, role, name, value):
+    """An element described from the page's accessibility tree alone, for one a look at the page has not listed."""
+
+    backend_id = node.get("backendDOMNodeId")
+    norm = "text" if role == "text" else el.normalize_role(role)
+
+    declared, tag = {}, ""
+    try:
+        described = page.call("DOM.describeNode", {"backendNodeId": backend_id}).get("node", {})
+        tag = (described.get("nodeName") or "").lower()
+        attributes = described.get("attributes") or []
+        declared = {k.lower(): v for k, v in zip(attributes[0::2], attributes[1::2]) if k.lower() in _DECLARED}
+    except ComputerError:
+        pass
+
+    box = None
+    try:
+        quads = page.call("DOM.getContentQuads", {"backendNodeId": backend_id}).get("quads") or []
+        if quads:
+            origin_x, origin_y, dpr = _viewport(metrics)
+            xs, ys = quads[0][0::2], quads[0][1::2]
+            box = [int(origin_x + min(xs) * dpr), int(origin_y + min(ys) * dpr),
+                   int((max(xs) - min(xs)) * dpr), int((max(ys) - min(ys)) * dpr)]
+    except ComputerError:
+        pass
+
+    # Rooted at the site, as observe roots every path of a page.
+    parsed = urllib.parse.urlparse(metrics.get("url") or "")
+    site = parsed.netloc or parsed.scheme or "page"
+
+    states = []
+    if _prop(node, "focused"):
+        states.append("focused")
+
+    return {
+        "role": norm,
+        "name": name[:200],
+        "value": str(value) if value not in (None, "") and role in INTERACTIVE else "",
+        "states": states,
+        "box": box,
+        "path": f"site {site} > {norm} {el._quote(name, 40)}",
+        "source": "cdp",
+        "group": f"cdp:{page.target.get('id')}",
+        "window_title": browser.page_window_title(metrics.get("title") or page.target.get("title") or ""),
+        "app": "chromium",
+        "bar": None,
+        "handle": {
+            "backend_id": backend_id,
+            "target_id": page.target.get("id"),
+            "dom_role": role,
+            "input_type": declared.get("type", ""),
+            "autocomplete": declared.get("autocomplete", ""),
+            "tag": tag,
+        },
+    }
+
+
+def hit(x, y, known_elements=(), controls_only=False):
+    """
+    What the page shows at a screen point, asked of the page itself:
+    (element or None, {"title", "url"} or None). The browser says which node
+    is there - the one on top, whatever a list of boxes would suggest - and
+    that node is described as a look at the page describes it (_describe).
+    Asked the moment a person presses, it is exactly what they pressed.
+    """
+
     page = None
 
     try:
         page = active_page()
         metrics = json.loads(page.evaluate(_METRICS))
+        context = _context(page, metrics)
         origin_x, origin_y, dpr = _viewport(metrics)
-        viewport_x = (x - origin_x) / dpr + metrics["scx"]
-        viewport_y = (y - origin_y) / dpr + metrics["scy"]
+        viewport_x = (x - origin_x) / dpr
+        viewport_y = (y - origin_y) / dpr
 
         if not (0 <= viewport_x < metrics["iw"] and 0 <= viewport_y < metrics["ih"]):
-            return None
+            return None, context
 
-        hit = page.call("DOM.getNodeForLocation", {
-            "x": max(0, int(viewport_x)),
-            "y": max(0, int(viewport_y)),
+        # DOM.getNodeForLocation takes a point of the document, in CSS pixels:
+        # measured on a page scrolled to its foot, the viewport's own point
+        # answered "No node found at given location".
+        found = page.call("DOM.getNodeForLocation", {
+            "x": max(0, int(viewport_x + metrics["scx"])),
+            "y": max(0, int(viewport_y + metrics["scy"])),
             "includeUserAgentShadowDOM": True,
         })
-        backend_id = hit.get("backendNodeId")
+        backend_id = found.get("backendNodeId")
         if backend_id is None:
-            return None
+            return None, context
 
-        accessibility = page.call("Accessibility.getPartialAXTree", {
-            "backendNodeId": backend_id,
-            "fetchRelatives": True,
-        }).get("nodes", [])
+        return _describe(page, metrics, backend_id, _known_by_backend(known_elements, page), controls_only), context
+    except (ComputerError, KeyError, TypeError, ValueError, OSError) as exc:
+        log(f"Could not ask the page what is at {x},{y}: {exc!r}")
+        return None, None
+    finally:
+        if page is not None:
+            page.close()
 
-        by_node_id = {node.get("nodeId"): node for node in accessibility}
-        current = next(
-            (node for node in accessibility if node.get("backendDOMNodeId") == backend_id),
-            None,
-        )
-        known_by_backend = {
-            element.get("handle", {}).get("backend_id"): element
-            for element in known_elements
-            if element.get("source") == "cdp"
-            and element.get("handle", {}).get("backend_id") is not None
-        }
 
-        while current is not None:
-            role = ((current.get("role") or {}).get("value") or "").lower()
-            if role in INTERACTIVE:
-                current_backend_id = current.get("backendDOMNodeId")
-                known = known_by_backend.get(current_backend_id)
-                if known is not None and known.get("name"):
-                    return known
+_FOCUSED = """(() => {
+  if (!document.hasFocus()) return null;
+  let a = document.activeElement;
+  while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement;
+  return a && a !== document.body && a !== document.documentElement ? a : null;
+})()"""
 
-                name = " ".join(((current.get("name") or {}).get("value") or "").split())
-                if name:
-                    norm = el.normalize_role(role)
-                    return {
-                        "role": norm,
-                        "name": name[:200],
-                        "value": str((current.get("value") or {}).get("value") or ""),
-                        "states": [],
-                        "box": None,
-                        "path": f"site browser > {norm} {el._quote(name, 40)}",
-                        "source": "cdp",
-                        "group": f"cdp:{page.target.get('id')}",
-                        "window_title": browser.page_window_title(metrics.get('title') or page.target.get('title') or ''),
-                        "app": "chromium",
-                        "bar": None,
-                        "handle": {
-                            "backend_id": current_backend_id,
-                            "target_id": page.target.get("id"),
-                            "dom_role": role,
-                            "input_type": "",
-                            "autocomplete": "",
-                        },
-                    }
 
-            parent_id = current.get("parentId")
-            current = by_node_id.get(parent_id)
+def focused(known_elements=()):
+    """
+    The field of the page that has the keyboard right now, asked of the page:
+    (element or None, {"title", "url"} or None). None when the keyboard is
+    elsewhere - the address bar, or no field at all. Its value is what the
+    field holds at this moment: asked as a person starts typing, it says
+    whether they typed into an empty field.
+    """
 
-        return None
-    except (ComputerError, KeyError, TypeError, ValueError):
+    page = None
+
+    try:
+        page = active_page()
+        metrics = json.loads(page.evaluate(_METRICS))
+        context = _context(page, metrics)
+
+        result = page.call("Runtime.evaluate", {"expression": _FOCUSED}).get("result", {})
+        if not result.get("objectId"):
+            return None, context
+
+        backend_id = page.call("DOM.describeNode", {"objectId": result["objectId"]}).get("node", {}).get("backendNodeId")
+        if backend_id is None:
+            return None, context
+
+        return _describe(page, metrics, backend_id, _known_by_backend(known_elements, page), controls_only=True), context
+    except (ComputerError, KeyError, TypeError, ValueError, OSError) as exc:
+        log(f"Could not ask the page which field has the keyboard: {exc!r}")
+        return None, None
+    finally:
+        if page is not None:
+            page.close()
+
+
+def chosen_option(element):
+    """The label of the option a <select> shows as chosen right now, or None when it cannot be asked."""
+
+    page = None
+
+    try:
+        page = _page_for(element)
+        object_id = _object(page, element["handle"]["backend_id"])
+        return page.call("Runtime.callFunctionOn", {
+            "objectId": object_id,
+            "returnByValue": True,
+            "functionDeclaration": """function() {
+                if (!this.options) { return null; }
+                const o = this.options[this.selectedIndex];
+                return o ? (o.label || o.text || '').trim() : '';
+            }""",
+        }).get("result", {}).get("value")
+    except (ComputerError, KeyError, TypeError, ValueError, OSError):
         return None
     finally:
         if page is not None:

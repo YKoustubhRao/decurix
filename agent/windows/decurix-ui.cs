@@ -126,6 +126,8 @@ public static class Ui {
                 reply["width"] = screenW; reply["height"] = screenH; reply["bytes"] = tail.Length;
                 break;
             case "elements": reply["windows"] = Elements(req); break;
+            case "at": At(Int(req, "x", 0), Int(req, "y", 0), reply); break;
+            case "front": Front(reply); break;
             case "invoke": reply["did"] = Invoke(Find(req)); break;
             case "focus": Find(req).SetFocus(); break;
             case "set_value": reply["set"] = SetValue(Find(req), Str(req, "text")); break;
@@ -226,6 +228,7 @@ public static class Ui {
             if (!IsApplicationWindow(w)) continue;
             result.Add(new Dictionary<string, object> {
                 { "id", w.H.ToInt64() }, { "title", w.Title }, { "pid", w.Pid }, { "class", w.Class },
+                { "app", ProcessName(w.Pid) },
                 { "box", new[] { w.V.L, w.V.T, w.V.R - w.V.L, w.V.B - w.V.T } }, { "active", w.H == active } });
         }
         return result;
@@ -447,6 +450,108 @@ public static class Ui {
 
     static string ProcessName(int pid) {
         try { return System.Diagnostics.Process.GetProcessById(pid).ProcessName; } catch (Exception) { return ""; }
+    }
+
+    [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    static extern bool QueryFullProcessImageName(IntPtr process, uint flags, StringBuilder name, ref int size);
+
+    // The program a window belongs to, by its full path - what says which app a person was working in. Asked with the
+    // least right that answers it (Process.MainModule wants more, and fails for a program of another bitness).
+    static string ProcessPath(int pid) {
+        IntPtr h = OpenProcess(0x1000 /* PROCESS_QUERY_LIMITED_INFORMATION */, false, pid);
+        if (h == IntPtr.Zero) return "";
+        try {
+            var name = new StringBuilder(1024); int size = name.Capacity;
+            return QueryFullProcessImageName(h, 0, name, ref size) ? name.ToString() : "";
+        } finally { CloseHandle(h); }
+    }
+
+    static readonly string[] BrowserApps = { "chrome", "msedge", "brave", "chromium" };
+
+    static bool IsBrowser(string app) {
+        return Array.IndexOf(BrowserApps, (app ?? "").ToLowerInvariant()) >= 0;
+    }
+
+    // The window of an app that a popup (a menu, a drop-down) belongs to: the topmost application window of the same
+    // program. Null for a popup of a program with no other window.
+    static Win OwnerOf(Win popup, List<Win> all) {
+        foreach (var w in all) if (w.Pid == popup.Pid && w.H != popup.H && IsApplicationWindow(w)) return w;
+        return null;
+    }
+
+    static Dictionary<string, object> Describe(Win w, List<Win> all, bool withNodes) {
+        string app = ProcessName(w.Pid);
+        bool popup = !IsApplicationWindow(w);
+        var d = new Dictionary<string, object> {
+            { "hwnd", w.H.ToInt64() }, { "title", w.Title }, { "pid", w.Pid }, { "class", w.Class }, { "popup", popup },
+            { "app", app }, { "exe", ProcessPath(w.Pid) }, { "browser", IsBrowser(app) },
+            { "box", new[] { w.V.L, w.V.T, w.V.R - w.V.L, w.V.B - w.V.T } } };
+        if (popup) {
+            var owner = OwnerOf(w, all);
+            if (owner != null) d["owner"] = new Dictionary<string, object> { { "hwnd", owner.H.ToInt64() }, { "title", owner.Title } };
+        }
+        // A browser's own tree is its whole page again, slowly: its page is asked over DevTools instead.
+        if (withNodes && !IsBrowser(app)) {
+            var nodes = new List<object>();
+            try {
+                AutomationElement root;
+                using (TreeRequest().Activate()) root = AutomationElement.FromHandle(w.H);
+                int count = 0;
+                Walk(root, nodes, new List<string>(), 0, ref count, DateTime.UtcNow.AddSeconds(3));
+            } catch (Exception e) { d["error"] = e.GetType().Name + ": " + e.Message; }
+            d["nodes"] = nodes;
+        }
+        return d;
+    }
+
+    // Where a browser window draws its page, or null.
+    static int[] PageBox(IntPtr browser) {
+        IntPtr host = IntPtr.Zero;
+        EnumChildWindows(browser, delegate(IntPtr child, IntPtr l) {
+            var cls = new StringBuilder(64); GetClassName(child, cls, 64);
+            if (cls.ToString() != "Chrome_RenderWidgetHostHWND" || !IsWindowVisible(child)) return true;
+            host = child;
+            return false;
+        }, IntPtr.Zero);
+        if (host == IntPtr.Zero) return null;
+        RECT r; GetWindowRect(host, out r);
+        return new[] { r.L, r.T, r.R - r.L, r.B - r.T };
+    }
+
+    // What is under a point of the screen right now: the topmost window there - not one behind it, whose controls a
+    // list of every window's controls would offer just the same - with that window's controls, so the one under the
+    // point can be named. For a browser, whether the point is on its page (which DevTools then names) or on its own
+    // bars. Asked the moment a person presses the mouse, before the press reaches the app.
+    static void At(int x, int y, Dictionary<string, object> reply) {
+        var all = Visible();
+        Win top = null;
+        foreach (var w in all)
+            if (x >= w.V.L && x < w.V.R && y >= w.V.T && y < w.V.B) { top = w; break; }
+        if (top == null) return;
+
+        var d = Describe(top, all, true);
+        if ((bool)d["browser"] && !(bool)d["popup"]) {
+            int[] page = PageBox(top.H);
+            if (page != null) {
+                d["page_box"] = page;
+                d["on_page"] = x >= page[0] && x < page[0] + page[2] && y >= page[1] && y < page[1] + page[3];
+            }
+        }
+        reply["window"] = d;
+    }
+
+    // The window keys go to right now, with its controls (one of which says it has the keyboard): asked the moment a
+    // person starts typing. A menu or drop-down the active window has open is above it, and is where keys belong.
+    static void Front(Dictionary<string, object> reply) {
+        var all = Visible();
+        IntPtr active = ActiveWindow(all);
+        Win front = null;
+        foreach (var w in all) if (w.H == active) { front = w; break; }
+        if (front == null) return;
+        if (all.Count > 0 && all[0].H != front.H && all[0].Pid == front.Pid && !IsApplicationWindow(all[0])) front = all[0];
+        reply["window"] = Describe(front, all, true);
     }
 
     static void Walk(AutomationElement e, List<object> nodes, List<string> containers, int depth, ref int count, DateTime deadline) {

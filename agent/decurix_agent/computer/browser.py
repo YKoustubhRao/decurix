@@ -106,7 +106,10 @@ _WINDOWS_KINDS = {
 _FALLBACK_KINDS = ("msedge", "chrome", "brave")
 
 # Where the control plane says which browser was picked for this worker
-# (desktop.nativeHost.noteBrowser): {"kind": "chrome", "exe": "C:\\...\\chrome.exe"}.
+# (desktop.nativeHost.noteBrowser): {"kind": "chrome", "exe": "C:\\...\\chrome.exe"},
+# and, when the shortcut picked says so, "profile_directory" (which of the
+# browser's profiles it opens) and "user_data_dir" (the profile folder this
+# worker's browser already has, from when its icon started it).
 # Read at every launch, so a browser added to a running worker counts at once.
 CHOICE_FILE = "worker-browser.json"
 
@@ -115,17 +118,27 @@ def _decurix_dir():
     return Path(os.environ.get("DECURIX_DIR") or (Path.home() / ".decurix"))
 
 
-def chosen():
-    """(kind, exe) of the browser picked for this worker, or None when none was. exe may be ""."""
+def _choice():
+    """What the control plane wrote about this worker's browser, or {} when none was picked."""
 
     try:
         choice = json.loads((_decurix_dir() / CHOICE_FILE).read_text(encoding="utf-8"))
-        kind = str(choice.get("kind") or "")
-        exe = str(choice.get("exe") or "")
+        kind = choice.get("kind")
     except (OSError, ValueError, AttributeError):
-        return None
+        return {}
 
-    return (kind, exe) if kind in _WINDOWS_KINDS else None
+    if not isinstance(kind, str) or kind not in _WINDOWS_KINDS:
+        return {}
+
+    return {key: str(value) for key, value in choice.items() if value}
+
+
+def chosen():
+    """(kind, exe) of the browser picked for this worker, or None when none was. exe may be ""."""
+
+    choice = _choice()
+
+    return (choice["kind"], choice.get("exe", "")) if choice else None
 
 
 def _installed(kind):
@@ -201,7 +214,16 @@ def windows_argv(url):
     # own ("browser" is Edge's, as it was when Edge was the only one).
     profile = _decurix_dir() / ("browser" if kind == "msedge" else f"browser-{kind}")
 
-    return [
+    # The profile this worker's browser already has is the one to go on with:
+    # found live, a person signed in to a site in the worker's Chrome as the
+    # agent had asked, and the agent then opened the site in a profile of its
+    # own, where nobody had signed in.
+    choice = _choice()
+    kept = choice.get("user_data_dir", "")
+    if kept and os.path.isdir(kept):
+        profile = kept
+
+    argv = [
         path,
         f"--remote-debugging-port={os.environ.get('DECURIX_CDP_PORT', '9222')}",
         f"--user-data-dir={profile}",
@@ -209,5 +231,10 @@ def windows_argv(url):
         "--no-default-browser-check",
         "--disable-session-crashed-bubble",
         "--hide-crash-restore-bubble",
-        url,
     ]
+
+    # Which of the browser's profiles the picked shortcut opens.
+    if choice.get("profile_directory"):
+        argv.append(f"--profile-directory={choice['profile_directory']}")
+
+    return argv + [url]

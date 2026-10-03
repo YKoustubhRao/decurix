@@ -370,4 +370,7 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/llm/", s.llmProxyHandler)
 	// Drafts from the agents' draft_email; sending them is humansOnly above.
 	mux.HandleFunc("/api/outbox", s.outboxCreateHandler)
+	// A native worker's agent opening one of the worker's own shortcuts: it
+	// starts a program of this computer, so it is on this listener only.
+	mux.HandleFunc("/api/agent/open-app", hostGUIDirectOnly(s.agentOpenAppHandler))
 }

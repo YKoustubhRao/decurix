@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from decurix_agent import config, filelock, progress
-from decurix_agent.computer import approval, atspi, audit, browser, cdp, privacy, screen, session, volatility, xinput
+from decurix_agent.computer import approval, atspi, audit, browser, cdp, privacy, screen, session, shortcuts, volatility, xinput
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 
@@ -1047,7 +1047,19 @@ def _open(target, new_tab):
     if not target:
         raise ComputerError("say what to open: a URL, a file, or an app name")
 
-    before_titles = {w["title"] for w in screen.windows()}
+    before = screen.windows()
+    before_titles = {w["title"] for w in before}
+    # A window that was not there is told by which window it is, not by its
+    # title: a second window of an app that is open has the first one's title.
+    before_ids = {w["id"] for w in before}
+
+    # One of this worker's own shortcuts, by its name: what a person opens
+    # from its icon, opened the same way (shortcuts.py).
+    shortcut = shortcuts.named(target)
+    if shortcut is not None and shortcut["kind"] == "browser":
+        target = "browser"
+    elif shortcut is not None and shortcut["kind"] == "web":
+        target = shortcut.get("target") or target
 
     if URL_RE.match(target):
         url = target if "://" in target else "http://" + target
@@ -1081,7 +1093,11 @@ def _open(target, new_tab):
         _raise_browser()
         return "Started Chromium."
 
-    if os.name == "nt":
+    if shortcut is not None and shortcut["kind"] == "program":
+        # Started by the control plane's helper, which holds this desktop.
+        shortcuts.open_program(shortcut)
+        argv = [shortcut.get("exe") or shortcut["name"]]
+    elif os.name == "nt":
         # What opens what is the computer's own business there (win.py): the
         # programs installed on it, never the shell.
         from decurix_agent.computer import win
@@ -1109,14 +1125,16 @@ def _open(target, new_tab):
             )
         argv = parts
 
-    session.launch(argv)
+    started = shortcut["name"] if shortcut is not None and shortcut["kind"] == "program" else " ".join(argv)
+    if shortcut is None or shortcut["kind"] != "program":
+        session.launch(argv)
 
     def new_window():
-        return [w for w in screen.windows() if w["title"] not in before_titles and w["title"]]
+        return [w for w in screen.windows() if w["id"] not in before_ids and w["title"]]
 
     opened = _wait_until(new_window, 45, None)
     if not opened:
-        return f"Started {' '.join(argv)}, but no new window appeared within 45 seconds - observe to check."
+        return f"Started {started}, but no new window appeared within 45 seconds - observe to check."
 
     time.sleep(1.0)
     title = opened[-1]["title"]
@@ -1133,7 +1151,7 @@ def _open(target, new_tab):
         # came up showing their unsaved notes, and the worker typed its text
         # into one of them (found by bench/native). Asked for with no file, it
         # is given a new, empty tab to work in.
-        if len(argv) == 1 and Path(argv[0]).name.lower() == "notepad.exe" and not title.lower().startswith("untitled"):
+        if len(argv) == 1 and Path(argv[0]).stem.lower() == "notepad" and not title.lower().startswith("untitled"):
             xinput.key("ctrl+n")
             time.sleep(0.8)
             title = next((w["title"] for w in screen.windows() if w["id"] == opened[-1]["id"] and w["title"]), title)
