@@ -6,7 +6,7 @@ import urllib.parse
 from datetime import date
 
 from decurix_agent import progress
-from decurix_agent.computer import approval, audit, constraints, core, launchers, privacy, recording, screen, visual, volatility
+from decurix_agent.computer import approval, audit, browser, constraints, core, launchers, privacy, recording, screen, visual, volatility
 from decurix_agent.computer import detour
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
@@ -202,6 +202,22 @@ def compile_program(meta, events, frames=None):
                 "constraint": None if secret else constraints.infer(label, element.get("role"), event.get("text")),
             })
 
+        if kind == "select" and event.get("option") and element.get("name"):
+            # What was chosen in a drop-down is a value of the task as much as
+            # what was typed into a field: "an order for Acme in India" done
+            # again for Japan chooses Japan. Named after the drop-down.
+            step["param"] = _param_name(element["name"], used)
+            params.append({
+                "name": step["param"],
+                "label": element["name"],
+                "default": event["option"],
+                "secret": False,
+                "reason": None,
+                "step": step["n"],
+                "constraint": None,
+                "choice": True,
+            })
+
         context = {"window": event.get("window") or "", "url": event.get("url") or ""}
         gate_element = element if element.get("role") else None
         if gate_element is None and kind in LOOK_KINDS and element.get("name"):
@@ -224,8 +240,23 @@ def compile_program(meta, events, frames=None):
                     step["expect"].append({"type": "value", "role": value["role"], "name": value["name"],
                                            "param": step["param"]})
                     break
+
+        # A drop-down that showed the option once it was chosen is checked for
+        # the option chosen this time.
+        if kind == "select" and step.get("param"):
+            for value in (event.get("expect") or {}).get("values") or []:
+                if value.get("value") == event.get("option") and value.get("name") == element.get("name"):
+                    step["expect"].append({"type": "value", "role": value["role"], "name": value["name"],
+                                           "param": step["param"]})
+                    break
         step["screen"] = event.get("screen") or meta.get("screen")
         step["window"] = event.get("window") or ""
+        # The program the window belonged to and, for a page, its address:
+        # what puts the window back when a run finds it is not there.
+        if event.get("app"):
+            step["app"] = event["app"]
+        if event.get("url"):
+            step["url"] = event["url"]
         step["summary"] = _summary(step)
 
         # Where the control was on the screen, kept beside the target rather
@@ -419,7 +450,8 @@ def _summary(step):
     if kind == "scroll":
         return f"scroll {step.get('direction', 'down')}" + (f" on {what}" if what else "")
     if kind == "select":
-        return f"select {el._quote(step.get('option') or '')} in {what}"
+        chosen = f"{{{step['param']}}}" if step.get("param") else el._quote(step.get("option") or "")
+        return f"select {chosen} in {what}"
     if kind == "drag":
         end = step.get("end") or ["?", "?"]
         return f"drag {what} to {end[0]},{end[1]}"
@@ -669,10 +701,17 @@ def _find(step, ladder=None, report=None):
         # it from the launcher that makes it, once. Found live: `skip` on the
         # double click that opened "Koustubh - Chrome" stopped the very next
         # step for the window not being there.
-        if reason.startswith(NOT_IN_FRONT) and not brought:
+        #
+        # A recording says which program each step's window belonged to. When
+        # no window of that program is open at all - the recording began with
+        # the app already open, so no step of it opens it - the app is opened
+        # the way a person would: from its shortcut, or the browser on the
+        # page the step was recorded on.
+        if not brought and (reason.startswith(NOT_IN_FRONT) or _app_gone(step)):
             brought = True
             window = _stable_title(step.get("window"))
-            done = launchers.bring_forward(window, title_matches) if window else None
+            done = launchers.bring_forward(window, title_matches, app=step.get("app"), url=step.get("url")) \
+                if window else None
             if done:
                 (report or progress.emit)(f"Step {step['n']}: {done}")
                 continue
@@ -712,6 +751,20 @@ def _find(step, ladder=None, report=None):
             raise _Halt(reason, _screen_brief(observation), missing=missing, observation=observation)
 
         time.sleep(POLL_SECONDS)
+
+
+def _app_gone(step):
+    """Whether the program a step was recorded in has no window open: only where a recording says the program."""
+
+    app = step.get("app")
+    # Only a native Windows worker's screen says which program a window is.
+    if not launchers.NATIVE or not app or not _stable_title(step.get("window")):
+        return False
+
+    if (app.get("name") or "").lower() in launchers.BROWSER_PROGRAMS:
+        return not any(browser.is_browser_title(w["title"]) for w in screen.windows())
+
+    return not launchers.app_open(app)
 
 
 def _on_desktop(step):
@@ -837,7 +890,7 @@ def _run_step(step, values, ladder=None, report=None, next_step=None):
             keys=step.get("keys"),
             direction=step.get("direction"),
             amount=step.get("amount"),
-            option=step.get("option"),
+            option=(values.get(step.get("param")) or step.get("option")) if kind == "select" else step.get("option"),
             append=bool(step.get("append")),
             end=tuple(step["end"]) if step.get("end") else None,
             files=files,

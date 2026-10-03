@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/YKoustubhRao/decurix/internal/desktop"
 )
 
 // Recording a person's demonstration on a native Windows worker.
@@ -170,4 +173,47 @@ func (s *Server) askAgent(ctx context.Context, id, method, path string, body []b
 	}
 
 	return json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out) == nil
+}
+
+// agentOpenAppHandler starts one of a native worker's program shortcuts on
+// its screen for the worker's own agent (POST /api/agent/open-app, JSON
+// desktop_id + app_id).
+//
+// A program a person opens from an icon or the Start menu is opened through
+// the agent, so that it is a step of the demonstration being recorded; a
+// replay of that step asks for it here again. The agent names a shortcut by
+// its id and nothing else: what is started is what the person picked for the
+// worker, resolved by the helper that holds its desktop (which gives a browser
+// or an Electron app a profile of its own). Never a path, never arguments.
+func (s *Server) agentOpenAppHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		DesktopID string `json:"desktop_id"`
+		AppID     string `json:"app_id"`
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.DesktopID == "" || req.AppID == "" {
+		jsonStatusError(w, http.StatusBadRequest, "say which worker and which of its shortcuts")
+		return
+	}
+
+	err := s.Desktops.OpenWorkerProgram(desktop.SanitizeID(req.DesktopID), req.AppID)
+
+	var refused *desktop.NativeOpenRefused
+	switch {
+	case err == nil:
+		jsonResponse(w, map[string]string{"status": "opened"})
+	case errors.As(err, &refused):
+		// The helper's own sentence, written for a person.
+		jsonStatusError(w, http.StatusConflict, refused.Reason)
+	case errors.Is(err, desktop.ErrNotRunning):
+		jsonStatusError(w, http.StatusConflict, "the worker is not running")
+	default:
+		jsonError(w, err)
+	}
 }

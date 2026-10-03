@@ -277,7 +277,10 @@ def call_tool(name, arguments):
         if name == "recordings":
             return [_text(replay.render_text(meta, program, budget=TREE_BUDGET))], False
 
-        result = replay.run(program, params=arguments.get("params") or {}, start=arguments.get("from") or 1)
+        from decurix_agent import guidance
+
+        params = guidance.with_run_values(arguments.get("params") or {}, program.get("params"), recording=arguments["id"])
+        result = replay.run(program, params=params, start=arguments.get("from") or 1)
         text = f"outcome: {result['outcome']}\n{result['text']}"
 
         if result["outcome"] == replay.NEEDS_APPROVAL:
@@ -310,7 +313,10 @@ def call_tool(name, arguments):
         if name == "skills":
             return [_text(skill_engine.render_text(skill, budget=TREE_BUDGET))], False
 
-        result = skill_engine.run(skill, params=arguments.get("params") or {}, start=arguments.get("from") or 1)
+        from decurix_agent import guidance
+
+        params = guidance.with_run_values(arguments.get("params") or {}, skill.get("params"), skill=skill["name"])
+        result = skill_engine.run(skill, params=params, start=arguments.get("from") or 1)
         text = f"outcome: {result['outcome']}\n{result['text']}"
 
         if result["outcome"] == replay.NEEDS_APPROVAL:

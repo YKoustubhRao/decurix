@@ -46,48 +46,100 @@ var browserKinds = []struct {
 	{"msedge", []string{"microsoft edge", "edge"}, []string{"msedge.exe", "msedge"}},
 }
 
-// browserKind is which browser a shortcut is, or "" for anything else. A
-// browser started with arguments is a page or a profile of it (an installed
+// pickedBrowser is what a shortcut that is a browser says about it.
+type pickedBrowser struct {
+	kind string
+	// exe is the program, when the shortcut names it; a Start-menu address
+	// names none, and the agent finds the browser where it installs.
+	exe string
+	// profile is the browser profile the shortcut opens ("Profile 2"), or "".
+	profile string
+}
+
+// profileArgRe is the one argument a shortcut to the browser itself may
+// carry: which of the browser's profiles to open.
+var profileArgRe = regexp.MustCompile(`(?i)^--profile-directory=(?:"([^"]*)"|(\S+))$`)
+
+// browserOf is which browser a shortcut is; ok is false for anything else.
+// A shortcut file is read for what it starts: found live, the browser picked
+// for a worker was "Koustubh - Chrome.lnk" - the shortcut Chrome makes for a
+// profile - which is Chrome by neither its name nor its file name, so the
+// worker was taken to have no browser and its agent opened Edge. A browser
+// started with any argument but its profile is a page of it (an installed
 // web app), not the browser.
-func browserKind(app NativeApp) string {
-	if app.Kind != NativeAppProgram || strings.TrimSpace(app.Args) != "" {
-		return ""
+func browserOf(app NativeApp) (b pickedBrowser, ok bool) {
+	if app.Kind != NativeAppProgram {
+		return b, false
 	}
 
-	base := strings.ToLower(app.Target)
+	target, args := app.Target, strings.TrimSpace(app.Args)
+	if strings.HasSuffix(strings.ToLower(target), ".lnk") {
+		if t, a, read := readShortcut(target); read {
+			target = t
+			if args == "" { // as the helper starts it: the shortcut's own arguments
+				args = strings.TrimSpace(a)
+			}
+		}
+	}
+
+	if args != "" {
+		m := profileArgRe.FindStringSubmatch(args)
+		if m == nil {
+			return b, false
+		}
+		b.profile = m[1] + m[2]
+	}
+
+	base := strings.ToLower(target)
 	if i := strings.LastIndexAny(base, `\/`); i >= 0 {
 		base = base[i+1:]
 	}
 	name := strings.ToLower(strings.TrimSpace(app.Name))
 
-	for _, b := range browserKinds {
-		for _, n := range b.names {
+	for _, k := range browserKinds {
+		for _, n := range k.names {
 			if name == n {
-				return b.kind
+				b.kind = k.kind
 			}
 		}
-		for _, n := range b.bases {
+		for _, n := range k.bases {
 			if base == n {
-				return b.kind
+				b.kind = k.kind
 			}
+		}
+		if b.kind != "" {
+			break
 		}
 	}
+	if b.kind == "" {
+		return b, false
+	}
 
-	return ""
+	if strings.HasSuffix(strings.ToLower(target), ".exe") {
+		b.exe = target
+	}
+
+	return b, true
+}
+
+// browserKind is which browser a shortcut is, or "" for anything else.
+func browserKind(app NativeApp) string {
+	b, _ := browserOf(app)
+	return b.kind
 }
 
 // workerBrowser is the browser picked for a worker: the first of its
 // shortcuts that is one. It is the worker's only browser - the one its icon
 // opens and the one its agent opens pages in. Found live: a person copied
 // Chrome to a worker and used it, and the agent opened its pages in Edge.
-func workerBrowser(apps []NativeApp) (app NativeApp, kind string, ok bool) {
+func workerBrowser(apps []NativeApp) (app NativeApp, b pickedBrowser, ok bool) {
 	for _, a := range apps {
-		if k := browserKind(a); k != "" {
-			return a, k, true
+		if b, ok := browserOf(a); ok {
+			return a, b, true
 		}
 	}
 
-	return NativeApp{}, "", false
+	return NativeApp{}, pickedBrowser{}, false
 }
 
 // browserChoiceFile is where a worker's agent reads which browser is its own
@@ -100,7 +152,7 @@ const browserChoiceFile = "worker-browser.json"
 func (h *nativeHost) noteBrowser(meta nativeMeta) {
 	file := filepath.Join(h.home(meta.ID), ".decurix", browserChoiceFile)
 
-	app, kind, ok := workerBrowser(meta.Apps)
+	app, b, ok := workerBrowser(meta.Apps)
 	if !ok {
 		if err := os.Remove(file); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			log.Printf("worker %s: %v", meta.ID, err)
@@ -108,11 +160,24 @@ func (h *nativeHost) noteBrowser(meta nativeMeta) {
 		return
 	}
 
-	// The program itself when the shortcut names it; a Start-menu address is
-	// found by the agent where that browser installs.
-	choice := map[string]string{"kind": kind}
-	if strings.HasSuffix(strings.ToLower(app.Target), ".exe") {
-		choice["exe"] = app.Target
+	choice := map[string]string{"kind": b.kind}
+	if b.exe != "" {
+		choice["exe"] = b.exe
+	}
+	if b.profile != "" {
+		choice["profile_directory"] = b.profile
+	}
+
+	// A browser opened from this worker's icon before the agent was the one
+	// to open it was started by the helper, with a profile the helper keeps
+	// for the worker - and whatever the person signed in to on the worker's
+	// screen is in that profile. The agent goes on with it: found live, a
+	// person signed in to a site in the worker's Chrome as the agent asked,
+	// and the agent then looked for the sign-in in a browser of its own.
+	if dir := winhost.ProfileDir(nativeSessionID(meta.ID), b.kind); dir != "" {
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			choice["user_data_dir"] = dir
+		}
 	}
 
 	data, err := json.Marshal(choice)
@@ -123,6 +188,69 @@ func (h *nativeHost) noteBrowser(meta nativeMeta) {
 	}
 	if err != nil {
 		log.Printf("worker %s: its agent was not told its browser is %s: %v", meta.ID, app.Name, err)
+	}
+}
+
+// workerAppsFile is where a worker's agent reads which shortcuts its screen
+// has (computer/shortcuts.py's APPS_FILE), under the worker's .decurix.
+const workerAppsFile = "worker-apps.json"
+
+// agentApp is one of a worker's shortcuts as its agent is told of it.
+type agentApp struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Kind is "browser" (the worker's own browser), "web" (an address, in
+	// Target) or "program".
+	Kind   string `json:"kind"`
+	Target string `json:"target,omitempty"`
+	// Exe is the program a shortcut starts, when the shortcut itself says:
+	// how the agent tells which shortcut an open window belongs to.
+	Exe string `json:"exe,omitempty"`
+}
+
+// noteApps tells the worker's agent which shortcuts its screen has. The
+// agent opens one by its name, the way a person opens one by its icon - so
+// what a person opened while recording, a replay opens again - and it is how
+// a replay knows what to open when a step's window is not there.
+func (h *nativeHost) noteApps(meta nativeMeta) {
+	h.noteBrowser(meta)
+
+	_, browser, hasBrowser := workerBrowser(meta.Apps)
+	seenBrowser := false
+
+	apps := []agentApp{}
+	for _, app := range meta.Apps {
+		told := agentApp{ID: app.ID, Name: app.Name, Kind: app.Kind}
+
+		switch {
+		case app.Kind == NativeAppWeb:
+			told.Target = app.Target
+		case hasBrowser && !seenBrowser && browserKind(app) == browser.kind:
+			told.Kind, told.Exe, seenBrowser = "browser", browser.exe, true
+		default:
+			target := app.Target
+			if strings.HasSuffix(strings.ToLower(target), ".lnk") {
+				if resolved, _, ok := readShortcut(target); ok {
+					target = resolved
+				}
+			}
+			if strings.HasSuffix(strings.ToLower(target), ".exe") {
+				told.Exe = target
+			}
+		}
+
+		apps = append(apps, told)
+	}
+
+	file := filepath.Join(h.home(meta.ID), ".decurix", workerAppsFile)
+	data, err := json.Marshal(apps)
+	if err == nil {
+		if err = os.MkdirAll(filepath.Dir(file), 0o755); err == nil {
+			err = os.WriteFile(file, data, 0o644)
+		}
+	}
+	if err != nil {
+		log.Printf("worker %s: its agent was not told its shortcuts: %v", meta.ID, err)
 	}
 }
 
@@ -240,17 +368,73 @@ func (m *Manager) OpenNativeApp(ctx context.Context, rawID, appID string) (strin
 	}
 
 	if app.Kind == NativeAppProgram && !isBrowser {
-		if err := m.OpenNativeProgram(rawID, *app); err != nil {
-			if errors.Is(err, ErrNotRunning) {
-				return "", err
-			}
-			return "", &NativeOpenRefused{Reason: app.Name + " could not be opened: " + err.Error()}
+		// By its name, through the agent - which has this control plane's
+		// helper start it (OpenWorkerProgram) and waits for its window. So a
+		// program opened from an icon or the Start menu is a step of a
+		// demonstration being recorded, as an address or the browser is, and
+		// a replay opens it by the same road. Found live: Character Map
+		// opened from the Start menu while recording left no trace in the
+		// recording, and its replay began by clicking in a window nothing
+		// had opened.
+		summary, err := m.agentOpen(ctx, rawID, app.Name, app.Name)
+		if err == nil {
+			return summary, nil
+		}
+
+		var refused *NativeOpenRefused
+		if errors.As(err, &refused) || errors.Is(err, ErrNotRunning) {
+			return "", err
+		}
+
+		// The agent could not be asked (it is still starting): the program
+		// is opened all the same, as it was before the agent was the way.
+		log.Printf("worker %s: opening %s without its agent: %v", sanitizeName(rawID), app.Name, err)
+		if err := m.openProgram(rawID, *app); err != nil {
+			return "", err
 		}
 
 		return "Opened " + app.Name + ".", nil
 	}
 
 	return m.agentOpen(ctx, rawID, target, app.Name)
+}
+
+// openProgram has the helper start a program shortcut, with why not in words
+// for the person when it cannot.
+func (m *Manager) openProgram(rawID string, app NativeApp) error {
+	if err := m.OpenNativeProgram(rawID, app); err != nil {
+		if errors.Is(err, ErrNotRunning) {
+			return err
+		}
+		return &NativeOpenRefused{Reason: app.Name + " could not be opened: " + err.Error()}
+	}
+
+	return nil
+}
+
+// OpenWorkerProgram starts one of a worker's program shortcuts on its screen
+// for the worker's own agent, which asks by the shortcut's id (and then waits
+// for the window itself). Only a shortcut picked for that worker, and never
+// its browser, which the agent starts itself: ErrNotFound for anything else.
+func (m *Manager) OpenWorkerProgram(rawID, appID string) error {
+	apps, err := m.NativeShortcuts(rawID)
+	if err != nil {
+		return err
+	}
+
+	b, _, hasBrowser := workerBrowser(apps)
+
+	for _, app := range apps {
+		if app.ID != appID {
+			continue
+		}
+		if app.Kind != NativeAppProgram || (hasBrowser && b.ID == app.ID) {
+			break
+		}
+		return m.openProgram(rawID, app)
+	}
+
+	return fmt.Errorf("program shortcut %q: %w", appID, ErrNotFound)
 }
 
 // agentOpen has a worker's agent open a page, a file or its browser on the

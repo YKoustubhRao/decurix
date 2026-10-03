@@ -730,6 +730,8 @@ def _approval_text(run, result, values):
 
     if step["kind"] == "type" and values.get(step.get("param")):
         lines.append(f"It would type {el._quote(values[step['param']], 80)}.")
+    if step["kind"] == "select" and values.get(step.get("param")):
+        lines.append(f"It would choose {el._quote(values[step['param']], 80)}.")
 
     if step.get("expect"):
         lines.append("When this was recorded it led to " + " and ".join(replay.describe_check(c) for c in step["expect"]) + ".")
@@ -1110,6 +1112,17 @@ def _stage(run):
 
 
 def _learning_by_model(run):
+    # A recording nobody has taught is mimicked: there is no lesson for a
+    # model to follow, only what the person did - and that, with this run's
+    # values put where theirs were, is exactly what a replay does. The model
+    # is for what a replay cannot do: it takes over where the replay gets
+    # stuck (_execute), and judges the result before anything is reported
+    # (_finish). Found live with the model first: it replayed the recording
+    # as it was, saving an order for the customer of the demonstration, and
+    # only then did the one it was asked for.
+    if run.get("one_off"):
+        return False
+
     return _engine_can_drive() and not run.get("replay_only") and _stage(run) == experience.APPRENTICE
 
 
@@ -1230,6 +1243,9 @@ def _procedure(run, from_step=None, note="", ran=False):
             "How to work:",
             f"- `gui recording {run['mimic']['id']}` lists what the person did; work each step with gui observe / "
             "click / type / key, adapting to the screen.",
+            f"- `gui replay {run['mimic']['id']} --from N` replays their steps from step N with THIS run's values "
+            "(they are filled in for you); use it only when the screen matches the recording, and check where it "
+            "stopped. Never redo a step that already ran: it would do the task twice.",
         ]
     else:
         how = ["How to work:"]

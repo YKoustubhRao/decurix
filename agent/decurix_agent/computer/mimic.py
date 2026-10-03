@@ -111,6 +111,9 @@ def _places_from_events(events):
         kind = event.get("kind")
         if kind == "type" and event.get("text") and not event.get("withheld"):
             places.append(("typed", event["text"]))
+        # What was chosen in a drop-down is a value of the task, as typed text is.
+        if kind == "select" and event.get("option"):
+            places.append(("typed", str(event["option"])))
         name = ((event.get("element") or {}).get("name") or "").strip()
         if name and kind in ("click", "double_click", "right_click", "select", "type"):
             places.append(("control", name))

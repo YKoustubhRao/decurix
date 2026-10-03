@@ -497,7 +497,12 @@ def run(argv):
 
     if command == "replay":
         _, program = _load_program(args.session)
-        return _print_replay(replay.run(program, params=_params(args.param), start=args.start))
+        # Done for a request with other values than the recording's: this
+        # run's, never the recorded ones (guidance.py).
+        from decurix_agent import guidance
+
+        params = guidance.with_run_values(_params(args.param), program.get("params"), recording=args.session)
+        return _print_replay(replay.run(program, params=params, start=args.start))
 
     if command == "ask":
         # The same reader the `chatgpt "..."` shortcut uses (ask_task.py),
@@ -541,7 +546,10 @@ def run(argv):
             print(skill_engine.render_text(skill, budget=TEXT_BUDGET))
             return EXIT_OK
 
-        return _print_replay(skill_engine.run(skill, params=_params(args.param), start=args.start),
+        from decurix_agent import guidance
+
+        params = guidance.with_run_values(_params(args.param), skill.get("params"), skill=skill["name"])
+        return _print_replay(skill_engine.run(skill, params=params, start=args.start),
                              command=f"gui do {skill['name']}")
 
     if command in ("click", "double-click", "right-click"):

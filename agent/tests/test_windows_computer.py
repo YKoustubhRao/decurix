@@ -350,6 +350,26 @@ class TheBrowserPickedForTheWorkerIsTheOneItRuns(unittest.TestCase):
         with self.installed("chrome"):
             self.assertEqual(browser.windows_browser(), ("chrome", "C:\\chrome.exe"))
 
+    def test_the_profile_the_workers_browser_already_has_is_the_one_used(self):
+        # Found live: a person signed in to a site in the worker's Chrome,
+        # and the agent then opened the site in a profile of its own.
+        kept = self.dir / "kept"
+        kept.mkdir()
+        self.pick(kind="chrome", profile_directory="Profile 2", user_data_dir=str(kept))
+        with self.installed("msedge", "chrome"):
+            argv = browser.windows_argv("https://example.com")
+        self.assertEqual(argv[0], "C:\\chrome.exe")
+        self.assertIn(f"--user-data-dir={kept}", argv)
+        self.assertIn("--profile-directory=Profile 2", argv)
+        self.assertEqual(argv[-1], "https://example.com")
+
+    def test_a_kept_profile_that_is_gone_is_not_used(self):
+        self.pick(kind="chrome", user_data_dir=str(self.dir / "gone"))
+        with self.installed("chrome"):
+            argv = browser.windows_argv("about:blank")
+        self.assertIn(f"--user-data-dir={self.dir / 'browser-chrome'}", argv)
+        self.assertFalse([a for a in argv if a.startswith("--profile-directory")])
+
     def test_a_choice_that_is_not_a_browser_it_knows_is_no_choice(self):
         self.pick(kind="netscape")
         self.assertIsNone(browser.chosen())
@@ -424,16 +444,47 @@ class WhoAWindowsWorkerIsToldItIs(unittest.TestCase):
 
 
 class FakeCamera:
-    """win.Camera without a helper: every picture is the same small frame."""
+    """
+    win.Camera without a helper: every picture is the same small frame, and
+    what is under a point is read off `windows` - the helper's own answers
+    ("at", "front"), topmost first. With `windows` None the screen cannot be
+    asked, and the recorder goes by its last look at the screen.
+    """
 
     taken = 0
+    windows = None
 
     def grab(self):
         FakeCamera.taken += 1
         return screen.Frame(4, 4, bytearray(48))
 
+    def ask(self, op, **fields):
+        if FakeCamera.windows is None:
+            raise ComputerError("no helper here")
+        if op == "at":
+            for window in FakeCamera.windows:
+                x0, y0, w, h = window["box"]
+                if x0 <= fields["x"] < x0 + w and y0 <= fields["y"] < y0 + h:
+                    return {"ok": True, "window": window}
+            return {"ok": True}
+        if op == "front":
+            return {"ok": True, "window": next((w for w in FakeCamera.windows if not w.get("popup")), None)}
+        raise ComputerError(f"unexpected {op}")
+
     def close(self):
         pass
+
+
+def uia_window(title, app, box, nodes, popup=False, hwnd=1, pid=10):
+    """A window as the helper's "at" describes one: its controls as UI Automation nodes."""
+
+    return {"hwnd": hwnd, "title": title, "pid": pid, "class": "#32770", "popup": popup, "app": app,
+            "exe": rf"C:\Apps\{app}.exe", "browser": False, "box": box, "nodes": nodes}
+
+
+def uia_node(role, name, box, **more):
+    return dict({"role": role, "name": name, "box": box, "containers": [], "patterns": [], "states": [],
+                 "rid": [len(name), box[0]], "framework": "Win32"}, **more)
 
 
 class WhatAPersonDidInTheViewer(unittest.TestCase):
