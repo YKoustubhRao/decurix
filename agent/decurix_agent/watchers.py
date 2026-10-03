@@ -321,6 +321,7 @@ def _pass():
             elif state.paused_skill is not None:
                 target, args = skill_task.resume, (content, outcome)
             else:
+                guidance.note_reply(content, outcome)
                 target, args = continue_after_query, (content,)
 
             thread = threading.Thread(

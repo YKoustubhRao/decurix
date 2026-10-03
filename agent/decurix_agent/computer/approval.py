@@ -88,6 +88,14 @@ EXTERNAL_CHANNELS = re.compile(
 
 ENTER_KEY = re.compile(r"(^|\+)(return|enter|kp_enter)$", re.IGNORECASE)
 
+# A field Enter searches from, wherever it is. Found live on LinkedIn
+# (2026-10-03): Enter in Messaging's "Search messages" box - looking a person
+# up, the step before any message is written - was stopped as "sends what was
+# typed as a message", every run, and a yes to it sent nothing and found
+# nobody. Named for searching at the start of its label, or a search field by
+# its own markup; the message box beside it ("Write a message...") is not.
+SEARCH_FIELD = re.compile(r"^\s*(search|find|filter|look up)\b", re.IGNORECASE)
+
 # The same words soul's internal/safety.IsApproval accepts, so a reply means
 # the same thing to the GUI gate as it does to TheBot's own gate.
 APPROVAL_RE = re.compile(
@@ -107,6 +115,19 @@ def is_approval(reply):
 
     reply = (reply or "").strip()
     return bool(reply) and bool(APPROVAL_RE.match(reply)) and not REFUSAL_RE.search(reply)
+
+
+# A reply that turns the action down and asks for nothing in its place: "no",
+# "don't send it", "stop". "No, send it to Priya instead" is an instruction.
+REFUSAL_LEAD = re.compile(r"^\s*(no|nope|don'?t|do not|stop|cancel|abort|never|deny|denied|reject(ed)?)\b", re.IGNORECASE)
+REDIRECTS = re.compile(r"\b(instead|rather|but|use|try|change|make it)\b", re.IGNORECASE)
+
+
+def is_refusal(reply):
+    """A reply that says no to the action and does not say to do something else."""
+
+    reply = (reply or "").strip()
+    return bool(REFUSAL_LEAD.match(reply)) and not REDIRECTS.search(reply)
 
 
 def is_external_action(kind, element=None, text=None, keys=None, context=None):
@@ -145,6 +166,17 @@ def is_external_action(kind, element=None, text=None, keys=None, context=None):
 NAVIGATION_PATH = re.compile(r"(^|>\s*)navigation\b")
 
 
+def searches(element):
+    """Whether Enter in this field runs a search rather than sending what was typed."""
+
+    if not element:
+        return False
+    handle = element.get("handle") or {}
+    if element.get("role") == "searchbox" or handle.get("dom_role") == "searchbox" or handle.get("input_type") == "search":
+        return True
+    return element.get("role") in ("textbox", "combobox", "entry") and bool(SEARCH_FIELD.match(element.get("name") or ""))
+
+
 def _navigates(element):
     role = element.get("role")
     if role == "option":
@@ -158,7 +190,8 @@ def assess(kind, element, text=None, keys=None, context=None):
     """
     Why this action needs a human's approval first, or None.
 
-    `context` is {"window": active window title, "url": active tab URL}.
+    `context` is {"window": active window title, "url": active tab URL,
+    "focused": the field that has the keyboard, when the caller knows it}.
     """
 
     stage = modes.get_stage()
@@ -181,7 +214,9 @@ def assess(kind, element, text=None, keys=None, context=None):
             return f'"{label}" sends, pays, buys or publishes something on your behalf'
 
     if kind == "key" and keys and any(ENTER_KEY.search(k.strip()) for k in keys):
-        if MESSAGING_CONTEXT.search(where):
+        # Where the keyboard is decides what Enter does: in a search box it
+        # searches. Unknown, it is taken to send - the cautious reading.
+        if MESSAGING_CONTEXT.search(where) and not searches(element or context.get("focused")):
             return "pressing Enter here sends what was typed as a message"
 
     if kind == "type" and text and "\n" in text and MESSAGING_CONTEXT.search(where):
