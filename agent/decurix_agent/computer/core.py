@@ -193,6 +193,27 @@ def _context(observation):
     return {"window": observation.get("active_title", ""), "url": url}
 
 
+def _keyboard_field(observation):
+    """
+    The field keys would go to now, or None when it cannot be told: the one
+    the look marked focused, else - in a browser - the one the page itself
+    says has the keyboard. What Enter does depends on it (approval.assess).
+    """
+
+    field = next((e for e in observation["elements"] if "focused" in e.get("states", [])
+                  and e.get("role") in TYPING_ROLES), None)
+    if field is not None:
+        return field
+
+    if browser.is_browser_title(observation.get("active_title")) and cdp.available():
+        try:
+            return cdp.focused(observation["elements"])[0]
+        except ComputerError:
+            return None
+
+    return None
+
+
 def _wait_for_settle(reference):
     """
     Wait until the screen stops changing, for at most SETTLE_SECONDS.
@@ -615,7 +636,11 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
 
     masks = privacy.secret_boxes(before["elements"])
 
-    decision = approval.check(kind, element, text=text, keys=keys, point=point, context=_context(before))
+    context = _context(before)
+    if kind == "key" and element is None:
+        context["focused"] = _keyboard_field(before)
+
+    decision = approval.check(kind, element, text=text, keys=keys, point=point, context=context)
 
     if not decision.allowed:
         text = approval.request_text(decision.request)

@@ -55,6 +55,37 @@ def get():
     return _current
 
 
+# A person's "no" to an approval this task asked for: (task id, their words).
+_refused = None
+
+
+def note_reply(reply, outcome):
+    """
+    What a person answered to an approval the screen gate asked for (the
+    watcher tells it before the engine sees the reply). A refusal is kept for
+    the task's final check; anything the person says after it - a yes to a
+    later approval, an instruction, an answer - means the task goes on, and
+    takes it back.
+    """
+
+    global _refused
+
+    from decurix_agent.computer import approval
+
+    if outcome == "declined" and approval.is_refusal(reply):
+        _refused = (task_context.current(), " ".join(str(reply).split())[:300])
+    else:
+        _refused = None
+
+
+def refused():
+    """The person's words when they said no to an approval of the task being worked on, else None."""
+
+    if _refused is not None and _refused[0] == task_context.current():
+        return _refused[1]
+    return None
+
+
 def text():
     return (_current or {}).get("text") or ""
 
