@@ -1848,19 +1848,28 @@ $ProfileSkipDirs = @(
 )
 $ProfileSkipFiles = @('Singleton*', '*lock*', '*.tmp', 'Lock*', 'Parent.lock', '*.pma')
 
-function Initialize-PrivateBrowserProfile([string]$base, [string]$dir) {
+function Initialize-PrivateBrowserProfile([string]$base, [string]$dir, [string]$requestedProfile) {
     if (-not ($Browsers -contains $base)) { return }
-    # A Decurix marker, rather than Chromium's Local State, lets profiles created by an older build receive this one-time
-    # import too. Once imported, later launches never overwrite work or sign-ins added inside the private profile.
-    $marker = Join-Path $dir '.decurix-host-profile-imported'
-    if (Test-Path -LiteralPath $marker) { return }
     $source = Get-BrowserProfileSource $base
     if (-not $source -or -not (Test-Path -LiteralPath $source -PathType Container)) { return }
+    # The profile to bring over is the one the launch will actually open. A profile shortcut ("Koustubh - Chrome") carries
+    # --profile-directory, and that profile - not whichever one is auto-detected as active - is where the person's sign-ins
+    # live. An older build copied only the auto-detected profile, so the shortcut's own profile was launched empty and the
+    # person had to sign in again.
+    $active = $requestedProfile
+    if (-not $active -or -not (Test-Path -LiteralPath (Join-Path $source $active) -PathType Container)) {
+        $active = Get-ActiveBrowserProfile $source
+    }
+    # One marker per profile folder (rather than one for the whole directory): a worker whose browser opens a second profile
+    # imports that one too, and a worker left half-imported by the older build heals itself the next time its shortcut's own
+    # profile is launched. Once imported, later launches never overwrite work or sign-ins added inside the private profile.
+    $safe = if ($active) { $active -replace '[^A-Za-z0-9._-]', '_' } else { 'all' }
+    $marker = Join-Path $dir ".decurix-host-profile-imported-$safe"
+    if (Test-Path -LiteralPath $marker) { return }
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     $common = @('/XJ', '/R:0', '/W:0', '/MT:16', '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/XD') + $ProfileSkipDirs + @('/XF') + $ProfileSkipFiles
-    # Only the profile the person uses (the signed-in one, else the last used) and the top-level files that go with it
-    # (Local State holds the key its cookies and passwords are encrypted with): other profiles were most of the rest.
-    $active = Get-ActiveBrowserProfile $source
+    # Only the profile the person uses and the top-level files that go with it (Local State holds the key its cookies and
+    # passwords are encrypted with): other profiles were most of the rest.
     if ($active -and (Test-Path -LiteralPath (Join-Path $source $active) -PathType Container)) {
         & robocopy $source $dir '/LEV:1' @common | Out-Null
         $top = $LASTEXITCODE
@@ -1893,7 +1902,13 @@ function Complete-Launch($p) {
     $argLine = $p.Args
     if ($p.OwnProfile) {
         $dir = Join-Path $ProfileRoot "$DesktopName-$($p.Base)"
-        Initialize-PrivateBrowserProfile $p.Base $dir
+        # The profile the shortcut asks to open is the one whose sign-ins must come across, so import that one.
+        $requested = ''
+        if ($Browsers -contains $p.Base) {
+            $m = [regex]::Match($argLine, '(?i)--profile-directory=(?:"([^"]*)"|(\S+))')
+            if ($m.Success) { $requested = $m.Groups[1].Value + $m.Groups[2].Value }
+        }
+        Initialize-PrivateBrowserProfile $p.Base $dir $requested
         $argLine = (($argLine + " --user-data-dir=`"$dir`"").Trim())
         if ($Browsers -contains $p.Base) {
             if ($argLine -notlike '*no-first-run*') { $argLine += ' --no-first-run --no-default-browser-check' }
