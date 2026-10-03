@@ -1579,7 +1579,8 @@ public class Native {
     public static string FocusInfo() {
         IntPtr t = KeyTarget();
         var cls = new StringBuilder(64); GetClassName(t, cls, 64);
-        return t + " " + cls + (t == lastTarget ? " (last clicked)" : "");
+        var pressed = new StringBuilder(64); if (lastTarget != IntPtr.Zero) GetClassName(lastTarget, pressed, 64);
+        return t + " " + cls + (t == lastTarget ? " (last clicked)" : "") + "; last press: " + lastTarget + " " + pressed;
     }
 
     public static void TypeChar(char ch) {

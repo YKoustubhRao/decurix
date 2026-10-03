@@ -205,7 +205,7 @@ func (h *nativeHost) addAndRedress(id string, apps []NativeApp) error {
 	}
 
 	if meta, err := h.readMeta(id); err == nil {
-		h.noteBrowser(meta)
+		h.noteApps(meta)
 	}
 
 	h.redress(id)
@@ -500,6 +500,10 @@ func (h *nativeHost) env(meta nativeMeta, agentPort, soulPort, cdpPort int) []st
 	)
 }
 
+// nativeSessionID is the helper session that holds a worker's private
+// desktop, which the helper also names its apps' own profiles after.
+func nativeSessionID(id string) string { return "w_" + id }
+
 // start opens the worker's private desktop and starts its agent on it. A
 // worker that is already running is left as it is.
 func (h *nativeHost) start(ctx context.Context, id string, say func(string)) error {
@@ -566,10 +570,10 @@ func (h *nativeHost) start(ctx context.Context, id string, say func(string)) err
 		}
 	}
 
-	h.noteBrowser(meta)
+	h.noteApps(meta)
 
 	script := filepath.Join(h.rt.AgentDir, "native_worker.py")
-	session, err := winhost.OpenDesktop(ctx, h.rt.Helper, "w_"+id, h.env(meta, agentPort, soulPort, cdpPort), h.rt.Python, `"`+script+`"`, work)
+	session, err := winhost.OpenDesktop(ctx, h.rt.Helper, nativeSessionID(id), h.env(meta, agentPort, soulPort, cdpPort), h.rt.Python, `"`+script+`"`, work)
 	if err != nil {
 		return fmt.Errorf("start worker %s: %w", id, err)
 	}

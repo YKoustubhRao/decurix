@@ -351,7 +351,7 @@ def _annotate(program):
         step["seen"] = 1
         step["session"] = program["session"]
 
-        if step["kind"] == "type":
+        if step["kind"] == "type" or (step["kind"] == "select" and step.get("param")):
             param = params[step["param"]]
             step["label"] = param["label"]
             step["secret"] = bool(param["secret"])
@@ -406,7 +406,7 @@ def _merge(runs):
                     step["file_samples"] = (step.get("file_samples") or [step.get("files") or []]) + \
                         (seen.get("file_samples") or [seen.get("files") or []])
 
-                if step["kind"] == "type":
+                if step["kind"] == "type" or (step["kind"] == "select" and "samples" in step and "samples" in seen):
                     step["samples"].extend(seen["samples"])
                     step["secret"] = step["secret"] or seen["secret"]
                     step["secret_reason"] = step.get("secret_reason") or seen.get("secret_reason")
@@ -493,7 +493,7 @@ def _generalise(steps, demos):
             step["summary"] = replay._summary(step)
             continue
 
-        if step["kind"] != "type":
+        if step["kind"] != "type" and not (step["kind"] == "select" and step.get("samples")):
             continue
 
         if step["secret"]:
@@ -526,8 +526,13 @@ def _generalise(steps, demos):
             # None: not asked yet.
             "varies": varies,
             "step": step["n"],
-            "constraint": constraints.infer(step["label"], (step.get("target") or {}).get("role"), samples[0]),
+            "constraint": None if step["kind"] == "select"
+            else constraints.infer(step["label"], (step.get("target") or {}).get("role"), samples[0]),
         })
+        if step["kind"] == "select":
+            # Chosen from a drop-down's list, not typed: asked about and
+            # reported in those words.
+            params[-1]["choice"] = True
         step["summary"] = replay._summary(step)
 
     return params
@@ -833,13 +838,14 @@ def _start(starts):
 
 def _variable(skill, step, param):
     samples = [s for s in step["samples"] if s]
-    same = " (both times you typed the same)" if len(samples) > 1 else ""
+    did, into = ("chose", "in") if param.get("choice") else ("typed", "into")
+    same = f" (both times you {did} the same)" if len(samples) > 1 else ""
     target = step.get("target") or {}
     where = f"{target['role']} {el._quote(target.get('name') or '', 50)}" if target.get("role") else "the focused field"
     meaning = ((skill.get("understanding") or {}).get("inputs") or {}).get(param["name"])
     if meaning:
         same += f" ({el._quote(meaning, 120)})"
-    text = (f"Step {step['n']}: you typed {el._quote(param['example'] or '', 60)} into {where}{same}. Is that the "
+    text = (f"Step {step['n']}: you {did} {el._quote(param['example'] or '', 60)} {into} {where}{same}. Is that the "
             "same every time, or does it change from run to run (a different customer, amount, ...)? "
             "Reply `same` or `changes`.")
     return _question(f"variable:{step['id']}", "variable", text, step["id"])
@@ -860,6 +866,8 @@ def _variables(skill, steps, params):
         param = params[step["param"]]
         if param.get("file"):
             said = f"the file {el._quote(param['example'] or '', 60)} uploaded to {where(step)}"
+        elif param.get("choice"):
+            said = f"{el._quote(param['example'] or '', 50)} chosen in {where(step)}"
         else:
             said = f"{el._quote(param['example'] or '', 50)} into {where(step)}"
         meaning = (understanding.get("inputs") or {}).get(step["param"])

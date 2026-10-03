@@ -380,3 +380,197 @@ func TestANativeWorkerKeepsItsShortcutsWhenMoreAreAdded(t *testing.T) {
 		t.Errorf("opening a program on a stopped worker = %v, want ErrNotRunning", err)
 	}
 }
+
+// shortcutFile is a .lnk as Windows writes one: the header, the target as a
+// LinkInfo block (with its Unicode path when wide), and the counted strings.
+func shortcutFile(target, args string, wide bool) []byte {
+	le16 := func(v int) []byte { return []byte{byte(v), byte(v >> 8)} }
+	le32 := func(v int) []byte { return []byte{byte(v), byte(v >> 8), byte(v >> 16), byte(v >> 24)} }
+	utf := func(s string) []byte {
+		var out []byte
+		for _, r := range s {
+			out = append(out, le16(int(r))...)
+		}
+		return out
+	}
+
+	flags := 1<<0 | 1<<1 | 1<<2 | 1<<4 | 1<<7 // an ID list, LinkInfo, a name, a working folder; Unicode strings
+	if args != "" {
+		flags |= 1 << 5
+	}
+
+	data := make([]byte, 0x4C)
+	copy(data, le32(0x4C))
+	copy(data[20:], le32(flags))
+
+	idList := []byte{1, 2, 3, 4, 0, 0}
+	data = append(data, le16(len(idList))...)
+	data = append(data, idList...)
+
+	header := 0x1C
+	if wide {
+		header = 0x24
+	}
+	ansi := append([]byte(target), 0)
+	body := append(append([]byte{}, ansi...), 0) // the path, then an empty suffix
+	info := append(le32(0), le32(header)...)
+	info = append(info, le32(1)...)                // VolumeIDAndLocalBasePath
+	info = append(info, le32(0)...)                // volume ID: none
+	info = append(info, le32(header)...)           // the path
+	info = append(info, le32(0)...)                // no network link
+	info = append(info, le32(header+len(ansi))...) // the suffix
+	if wide {
+		info = append(info, le32(header+len(body))...) // the path again, in Unicode
+		info = append(info, le32(0)...)
+		body = append(body, append(utf(target), 0, 0)...)
+	}
+	info = append(info, body...)
+	copy(info, le32(len(info)))
+	data = append(data, info...)
+
+	for _, s := range []string{"a comment", `C:\Somewhere`, args} {
+		if s == "" {
+			continue
+		}
+		data = append(data, le16(len([]rune(s)))...)
+		data = append(data, utf(s)...)
+	}
+
+	return data
+}
+
+// The shortcut Chrome puts on a person's desktop for one of its profiles is
+// Chrome by neither its name nor its file name. Found live: it was the only
+// browser picked for a worker, the worker was taken to have none, and its
+// agent opened Edge - where the person had not signed in.
+func TestAShortcutFileToABrowserIsTheWorkersBrowser(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string, data []byte) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	chrome := `C:\Program Files\Google\Chrome\Application\chrome.exe`
+	profile := write("Koustubh - Chrome.lnk", shortcutFile(chrome, `--profile-directory="Profile 2"`, true))
+	plain := write("Internet.lnk", shortcutFile(`C:\Apps\Brave\brave.exe`, "", false))
+	webApp := write("YouTube.lnk", shortcutFile(chrome, `--profile-directory=Default --app-id=agimnkijcaahngcdmfeangaknmldooml`, true))
+	other := write("Editor.lnk", shortcutFile(`C:\Apps\Code.exe`, "", true))
+	broken := write("Broken.lnk", []byte("not a shortcut"))
+
+	if target, args, ok := readShortcut(profile); !ok || target != chrome || args != `--profile-directory="Profile 2"` {
+		t.Fatalf("the shortcut read as %q %q (%v)", target, args, ok)
+	}
+
+	for _, c := range []struct {
+		app  NativeApp
+		want pickedBrowser
+	}{
+		{NativeApp{Name: "Koustubh - Chrome", Kind: NativeAppProgram, Target: profile}, pickedBrowser{"chrome", chrome, "Profile 2"}},
+		{NativeApp{Name: "Internet", Kind: NativeAppProgram, Target: plain}, pickedBrowser{"brave", `C:\Apps\Brave\brave.exe`, ""}},
+		// A page of the browser, another program and a file that is no shortcut are not it.
+		{NativeApp{Name: "YouTube", Kind: NativeAppProgram, Target: webApp}, pickedBrowser{}},
+		{NativeApp{Name: "Editor", Kind: NativeAppProgram, Target: other}, pickedBrowser{}},
+		{NativeApp{Name: "Broken", Kind: NativeAppProgram, Target: broken}, pickedBrowser{}},
+		{NativeApp{Name: "Gone", Kind: NativeAppProgram, Target: filepath.Join(dir, "gone.lnk")}, pickedBrowser{}},
+		// Arguments given with the shortcut are what it is started with, not its own.
+		{NativeApp{Name: "Mail", Kind: NativeAppProgram, Target: profile, Args: "--app=https://mail.example.com"}, pickedBrowser{}},
+	} {
+		got, ok := browserOf(c.app)
+		if !ok {
+			got = pickedBrowser{}
+		}
+		if got != c.want {
+			t.Errorf("browserOf(%s) = %+v, want %+v", c.app.Name, got, c.want)
+		}
+	}
+
+	// The agent is told the browser, the profile the shortcut opens, and -
+	// once the worker's browser has a profile folder from its icon - that folder.
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	m := nativeForTest(t)
+	meta := nativeMeta{ID: "ada", Name: "Ada", Harness: HarnessTheBot, Brain: BrainClaude,
+		Apps: []NativeApp{{ID: "win_k", Name: "Koustubh - Chrome", Kind: NativeAppProgram, Target: profile}}}
+	writeWorker(t, m, meta)
+	file := filepath.Join(m.native.home("ada"), ".decurix", browserChoiceFile)
+
+	told := func() map[string]string {
+		t.Helper()
+		m.native.noteBrowser(meta)
+		var choice map[string]string
+		data, err := os.ReadFile(file)
+		if err != nil || json.Unmarshal(data, &choice) != nil {
+			t.Fatalf("the agent was not told its browser: %v (%s)", err, data)
+		}
+		return choice
+	}
+
+	choice := told()
+	if choice["kind"] != "chrome" || choice["exe"] != chrome || choice["profile_directory"] != "Profile 2" || choice["user_data_dir"] != "" {
+		t.Errorf("the agent was told %v", choice)
+	}
+
+	kept := filepath.Join(os.Getenv("LOCALAPPDATA"), "Decurix", "hidden-profiles", "decurix_w_ada-chrome")
+	if err := os.MkdirAll(kept, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if choice = told(); choice["user_data_dir"] != kept {
+		t.Errorf("the agent was told %v, want the profile its browser already has: %s", choice, kept)
+	}
+}
+
+// A worker's agent is told every shortcut its screen has: what it opens by
+// name for a person (so a program opened from an icon is a step of a
+// recording) and what a replay opens when a step's window is not there.
+func TestAWorkersAgentIsToldItsShortcuts(t *testing.T) {
+	dir := t.TempDir()
+	charmap := filepath.Join(dir, "Character Map.lnk")
+	if err := os.WriteFile(charmap, shortcutFile(`C:\Windows\System32\charmap.exe`, "", true), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := nativeForTest(t)
+	meta := nativeMeta{ID: "ada", Name: "Ada", Harness: HarnessTheBot, Brain: BrainClaude, Apps: []NativeApp{
+		{ID: "win_chrome", Name: "Google Chrome", Kind: NativeAppProgram, Target: `C:\Apps\chrome.exe`},
+		{ID: "win_charmap", Name: "Character Map", Kind: NativeAppProgram, Target: charmap},
+		{ID: "win_notepad", Name: "Notepad", Kind: NativeAppProgram, Target: `shell:AppsFolder\Microsoft.WindowsNotepad_8wekyb3d8bbwe!App`},
+		{ID: "web_mail", Name: "Mail", Kind: NativeAppWeb, Target: "https://mail.example.com"},
+	}}
+	writeWorker(t, m, meta)
+	m.native.noteApps(meta)
+
+	var told []agentApp
+	data, err := os.ReadFile(filepath.Join(m.native.home("ada"), ".decurix", workerAppsFile))
+	if err != nil || json.Unmarshal(data, &told) != nil {
+		t.Fatalf("the agent was not told its shortcuts: %v (%s)", err, data)
+	}
+
+	want := []agentApp{
+		{ID: "win_chrome", Name: "Google Chrome", Kind: "browser", Exe: `C:\Apps\chrome.exe`},
+		{ID: "win_charmap", Name: "Character Map", Kind: "program", Exe: `C:\Windows\System32\charmap.exe`},
+		{ID: "win_notepad", Name: "Notepad", Kind: "program"},
+		{ID: "web_mail", Name: "Mail", Kind: "web", Target: "https://mail.example.com"},
+	}
+	if len(told) != len(want) {
+		t.Fatalf("told %+v, want %+v", told, want)
+	}
+	for i := range want {
+		if told[i] != want[i] {
+			t.Errorf("shortcut %d: told %+v, want %+v", i, told[i], want[i])
+		}
+	}
+
+	// The agent may have a program shortcut started, and only that: never its
+	// browser (which it starts itself, with its DevTools port), a web
+	// shortcut, or anything the worker was not given.
+	for _, id := range []string{"win_chrome", "web_mail", "win_paint"} {
+		if err := m.OpenWorkerProgram("ada", id); !errors.Is(err, ErrNotFound) {
+			t.Errorf("OpenWorkerProgram(%s) = %v, want ErrNotFound", id, err)
+		}
+	}
+	if err := m.OpenWorkerProgram("ada", "win_charmap"); !errors.Is(err, ErrNotRunning) {
+		t.Errorf("a worker that is not running had a program opened on it: %v", err)
+	}
+}

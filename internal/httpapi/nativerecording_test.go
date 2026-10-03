@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/YKoustubhRao/decurix/internal/desktop"
 )
 
 // fakeRecorder is a native worker's agent as nativerecording.go meets it: it
@@ -100,5 +103,29 @@ func TestViewerInputReachesTheRecorderOnlyWhileRecording(t *testing.T) {
 	record(click)
 	if len(agent.inputs) != 2 || agent.asked != asked {
 		t.Errorf("after it ended: %d inputs, asked again %d times; want 2 and 0", len(agent.inputs), agent.asked-asked)
+	}
+}
+
+// The route a worker's agent opens one of its shortcuts by asks for a worker
+// and a shortcut, and answers the helper's own reason when it cannot.
+func TestAnAgentOpeningAShortcutSaysWhyNot(t *testing.T) {
+	s := &Server{Desktops: desktop.NewNativeManager(desktop.NativeRuntime{Root: t.TempDir()})}
+
+	for body, want := range map[string]int{
+		`{}`:       http.StatusBadRequest,
+		`not json`: http.StatusBadRequest,
+		`{"desktop_id":"ada","app_id":"win_charmap"}`: http.StatusNotFound,
+	} {
+		rec := httptest.NewRecorder()
+		s.agentOpenAppHandler(rec, httptest.NewRequest(http.MethodPost, "/api/agent/open-app", strings.NewReader(body)))
+		if rec.Code != want {
+			t.Errorf("%s: answered %d, want %d (%s)", body, rec.Code, want, rec.Body)
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	s.agentOpenAppHandler(rec, httptest.NewRequest(http.MethodGet, "/api/agent/open-app", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET answered %d", rec.Code)
 	}
 }

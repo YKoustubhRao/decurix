@@ -146,6 +146,14 @@ class Camera:
         reply = _checked(reply)
         return Frame(reply["width"], reply["height"], reply["data"])
 
+    def ask(self, op, **fields):
+        """One request on this helper, for what must not wait behind a reading of the whole screen (hit, front)."""
+
+        with self._lock:
+            reply, self._process = _exchange(self._process, op, fields)
+
+        return _checked(reply)
+
     def close(self):
         with self._lock:
             if self._process is not None:
@@ -214,6 +222,9 @@ def windows():
             "title": browser.canonical_title(w["title"]),
             "raw_title": w["title"],
             "pid": w.get("pid"),
+            # The program it belongs to ("chrome", "notepad"): what tells a
+            # replay whether an app is open at all, whatever its title is now.
+            "app": (w.get("app") or "").lower(),
             "box": tuple(w["box"]),
             "active": bool(w["active"]),
         })
@@ -495,30 +506,97 @@ def observe(skip_apps=()):
                 "source": "uia",
             })
 
-        # An editor marks unsaved changes with a leading "*"; it is still the
-        # same window, and its controls must keep their refs.
-        stable = window_title.lstrip("*").strip()
-        root = f"{app} window {el._quote(stable, 60)}"
-        before = len(found)
+        elements = window_elements(window, group_id, window_title)
 
-        for node in window.get("nodes") or []:
-            element = _element(node, window, root, group_id, window_title, app)
-            if element is None:
-                continue
-
+        for element in elements:
             if element["role"] == "document" and not element["value"] and reads < MAX_DOCUMENT_READS \
                     and "text" in element["handle"]["patterns"]:
                 reads += 1
                 try:
-                    element["value"] = call("text", hwnd=window["hwnd"], rid=node["rid"], limit=200)["text"].strip()
+                    element["value"] = call("text", hwnd=window["hwnd"], rid=element["handle"]["rid"],
+                                            limit=200)["text"].strip()
                 except ComputerError:
                     pass
 
-            found.append(element)
-
-        el.dedupe_paths(found[before:])
+        found.extend(elements)
 
     return found, groups
+
+
+def window_elements(window, group_id, window_title):
+    """
+    One window's controls, as the helper listed them, in the shape every
+    backend uses. Shared by a look at the whole screen (observe) and by the
+    question "what is under this point" (hit), so a control a person pressed
+    is described exactly as a later look at the screen describes it.
+    """
+
+    app = window.get("app") or "app"
+
+    # An editor marks unsaved changes with a leading "*"; it is still the
+    # same window, and its controls must keep their refs.
+    stable = window_title.lstrip("*").strip()
+    root = f"{app} window {el._quote(stable, 60)}"
+
+    found = []
+    for node in window.get("nodes") or []:
+        element = _element(node, window, root, group_id, window_title, app)
+        if element is not None:
+            found.append(element)
+
+    el.dedupe_paths(found)
+
+    return found
+
+
+def _hit_window(window):
+    """
+    What the helper said about one window (its "at" and "front"), ready to
+    use: who it is - its title as recordings write one, its program, whether
+    it is the browser - and its controls. A menu or drop-down is a window of
+    its own; its entries are listed as part of the window it belongs to, as
+    observe lists them.
+    """
+
+    if not window:
+        return None
+
+    owner = window.get("owner") or {}
+    title = browser.canonical_title((owner.get("title") if window.get("popup") and owner else window.get("title")) or "")
+    app = window.get("app") or ""
+
+    found = {
+        "hwnd": window.get("hwnd"),
+        "title": title,
+        "app": app,
+        "exe": window.get("exe") or "",
+        "popup": bool(window.get("popup")),
+        "browser": bool(window.get("browser")),
+        "on_page": bool(window.get("on_page")),
+        "box": window.get("box"),
+        "elements": [],
+    }
+
+    if not found["browser"]:
+        found["elements"] = window_elements(window, f"uia:{app or 'app'}:{title}", title)
+
+    return found
+
+
+def hit(x, y, ask=None):
+    """
+    The window under a point of the screen right now - the topmost one there,
+    never one behind it - as _hit_window describes it, or None for the bare
+    desktop. `ask` is a helper to ask in place of the shared one (Camera.ask).
+    """
+
+    return _hit_window((ask or call)("at", x=int(x), y=int(y)).get("window"))
+
+
+def front(ask=None):
+    """The window keys go to right now, as hit() describes one, or None when nothing is open."""
+
+    return _hit_window((ask or call)("front").get("window"))
 
 
 def _element(node, window, root, group_id, window_title, app):
