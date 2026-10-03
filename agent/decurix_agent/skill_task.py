@@ -1429,6 +1429,20 @@ def _gate(reply, kind, engine):
             _record_verdict(run, False, why=(reply or "")[:300])
         return False
 
+    # The person said no to the action the task stopped for. Found live
+    # (2026-10-03): told "no, do not send it" at Send, the engine stopped as
+    # asked - and this check, seeing the message unsent, sent it back to do
+    # the whole task again and ask for the same approval. A refusal is the
+    # person's decision about the task, not a failure to repair.
+    said_no = guidance.refused()
+    if said_no:
+        guidance.end()
+        if run is not None:
+            _record_verdict(run, False, why=f"the person said no at an approval: {said_no}"[:300])
+        write_final_reply(f"Stopped there, as you said (\"{said_no}\"): the action I asked about was not carried out.\n\n"
+                          f"{reply}", kind="final", engine=engine, checked=True)
+        return True
+
     progress.emit("Checking the screen to see that the task was really done.")
     if run is not None and _acts_on_screen(run["skill"]) and not _did_screen_work():
         # Nothing was opened, clicked or typed during this task, and the task

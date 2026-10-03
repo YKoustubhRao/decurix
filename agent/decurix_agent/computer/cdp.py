@@ -448,12 +448,28 @@ _METRICS = """JSON.stringify({
 })"""
 
 
+# A page's inner frames are part of what a person sees, and a look at the page
+# reads them too (see _frames). The two scripts below name fields from the
+# page's own layout, so they go through every frame document the page may read
+# (the same site's), each at its place in the page: `each(document, ox, oy)`
+# is given a document and where its top-left corner is in the top document.
+_INNER_FRAMES = """if (depth < 3) for (const f of document.querySelectorAll('iframe, frame')) {
+    let inner = null;
+    try { inner = f.contentDocument; } catch (e) {}
+    if (!inner) continue;
+    const fr = f.getBoundingClientRect();
+    if (fr.width < 2 || fr.height < 2) continue;
+    each(inner, ox + fr.left + f.clientLeft, oy + fr.top + f.clientTop, depth + 1);
+  }"""
+
+
 # A form control inside a table cell with no label of its own is named by its
 # column's header, the way a screen reader announces it. Found in Odoo's order
 # lines: after "Add Line" the row's cells were five unnamed textboxes and
 # comboboxes, and nothing said which took the product and which the quantity.
 _COLUMN_NAMES = """JSON.stringify((() => {
   const out = [];
+  const each = (document, ox, oy, depth) => {
   const fields = document.querySelectorAll('input:not([type=hidden]), select, textarea, [contenteditable="true"], ' +
     '[role=combobox], [role=textbox], [role=spinbutton], [role=searchbox]');
   const labelled = el => el.getAttribute('aria-label') || el.getAttribute('aria-labelledby') ||
@@ -476,11 +492,14 @@ _COLUMN_NAMES = """JSON.stringify((() => {
     }
     const r = el.getBoundingClientRect();
     if (header && r.width > 0 && r.height > 0) {
-      out.push([r.left + scrollX, r.top + scrollY, r.width, r.height, header.replace(/\\s+/g, ' ').slice(0, 60)]);
+      out.push([r.left + ox, r.top + oy, r.width, r.height, header.replace(/\\s+/g, ' ').slice(0, 60)]);
     }
   }
+  __INNER_FRAMES__
+  };
+  each(document, scrollX, scrollY, 0);
   return out;
-})())"""
+})())""".replace("__INNER_FRAMES__", _INNER_FRAMES)
 
 # A field with no label of its own - named, at best, by its placeholder - in
 # a form whose label is a sibling element instead of a <label for> (OrangeHRM,
@@ -493,6 +512,7 @@ _COLUMN_NAMES = """JSON.stringify((() => {
 # placeholder, shown text of a custom dropdown or null].
 _GROUP_LABELS = """JSON.stringify((() => {
   const out = [];
+  const each = (document, ox, oy, depth) => {
   const selector = 'input:not([type=hidden]):not([type=file]), select, textarea, [contenteditable="true"], ' +
     '[role=combobox], [role=textbox], [role=spinbutton], [role=searchbox]';
   // A custom dropdown is often a focusable <div> with no role at all
@@ -520,13 +540,16 @@ _GROUP_LABELS = """JSON.stringify((() => {
     }
     const r = el.getBoundingClientRect();
     if (label && label.length <= 60 && r.width > 0 && r.height > 0) {
-      out.push([r.left + scrollX, r.top + scrollY, r.width, r.height, label,
+      out.push([r.left + ox, r.top + oy, r.width, r.height, label,
                 isCustom ? '' : (el.getAttribute('placeholder') || ''),
                 isCustom ? (el.innerText || '').replace(/\\s+/g, ' ').trim() : null]);
     }
   }
+  __INNER_FRAMES__
+  };
+  each(document, scrollX, scrollY, 0);
   return out;
-})())"""
+})())""".replace("__INNER_FRAMES__", _INNER_FRAMES)
 
 # A placeholder that says how to write the value, worth keeping in the name.
 _FORMAT_PLACEHOLDER = re.compile(r"^[ymdhsa]{1,4}([-/.: ][ymdhsa]{1,4})+$", re.I)
@@ -534,6 +557,111 @@ _FORMAT_PLACEHOLDER = re.compile(r"^[ymdhsa]{1,4}([-/.: ][ymdhsa]{1,4})+$", re.I
 
 # The roles a column header may name.
 _NAMEABLE_FIELDS = {"textbox", "combobox", "spinbutton", "searchbox", "listbox", "checkbox"}
+
+
+# How many inner frames of one page a look reads.
+MAX_FRAMES = 12
+
+
+def _frames(page):
+    """
+    The page's inner frames a person can see, outermost first: [{"id", "owner"
+    (the frame element's backend node id), "box" (where its content is drawn
+    in the page's view, CSS pixels)}].
+
+    A page is not one document. Found live on LinkedIn (2026-10-03): the whole
+    Messaging page is drawn in a frame of the same site, and the page's own
+    accessibility tree stops at the frame - a look listed 2 elements where a
+    person saw a search box, the conversations, the message box and Send. The
+    worker clicked at guessed coordinates and typed into nothing.
+
+    Only frames this DevTools session holds are listed (the page's own
+    process: the same site). A frame of another site is a target of its own
+    and is not read. A frame with no size is not shown to anyone and is left
+    out, with whatever is inside it.
+    """
+
+    try:
+        tree = page.call("Page.getFrameTree").get("frameTree") or {}
+    except ComputerError:
+        return []
+
+    return _inner_frames(page, tree)
+
+
+def _loader(tree):
+    """Which load of a page a frame tree is of: it changes when the tab goes to another document."""
+
+    return ((tree or {}).get("frame") or {}).get("loaderId") or ""
+
+
+def _frame_tree(page):
+    try:
+        return page.call("Page.getFrameTree").get("frameTree") or {}
+    except ComputerError:
+        return {}
+
+
+def _inner_frames(page, tree):
+    frames = []
+    queue = list(tree.get("childFrames") or [])
+
+    while queue and len(frames) < MAX_FRAMES:
+        entry = queue.pop(0)
+        frame_id = (entry.get("frame") or {}).get("id")
+        if not frame_id:
+            continue
+        try:
+            owner = page.call("DOM.getFrameOwner", {"frameId": frame_id}).get("backendNodeId")
+            if owner is None:
+                continue
+            quads = page.call("DOM.getContentQuads", {"backendNodeId": owner}).get("quads") or []
+        except ComputerError:
+            continue
+        if not quads:
+            continue
+        xs, ys = quads[0][0::2], quads[0][1::2]
+        box = (min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
+        if box[2] < 2 or box[3] < 2:
+            continue
+        frames.append({"id": frame_id, "owner": owner, "box": box})
+        queue.extend(entry.get("childFrames") or [])
+
+    return frames
+
+
+def _splice_frames(page, nodes, frames):
+    """
+    Put each inner frame's accessibility tree into `nodes`, under the frame
+    element it is drawn in, so one walk reads the page as a person sees it.
+    Node ids of a frame's tree are given a prefix of their own: they are only
+    promised to be unique within one tree.
+    """
+
+    for index, frame in enumerate(frames):
+        try:
+            inner = page.call("Accessibility.getFullAXTree", {"frameId": frame["id"]}).get("nodes", [])
+        except ComputerError:
+            continue
+        if not inner:
+            continue
+
+        prefix = f"f{index}:"
+        for node in inner:
+            node["nodeId"] = prefix + str(node.get("nodeId"))
+            if node.get("parentId") is not None:
+                node["parentId"] = prefix + str(node["parentId"])
+            node["childIds"] = [prefix + str(child) for child in node.get("childIds") or []]
+
+        owner = next((node for node in nodes if node.get("backendDOMNodeId") == frame["owner"]), None)
+        if owner is None:
+            owner = nodes[0] if nodes else None
+        if owner is None:
+            continue
+
+        owner.setdefault("childIds", []).append(inner[0]["nodeId"])
+        inner[0]["parentId"] = owner["nodeId"]
+        nodes.extend(inner)
 
 
 def _prop(node, key):
@@ -561,6 +689,10 @@ def observe():
 
         metrics = json.loads(page.evaluate(_METRICS))
         nodes = page.call("Accessibility.getFullAXTree").get("nodes", [])
+        tree = _frame_tree(page)
+        loader = _loader(tree)
+        frames = _inner_frames(page, tree)
+        _splice_frames(page, nodes, frames)
         snapshot = page.call("DOMSnapshot.captureSnapshot", {"computedStyles": []})
         try:
             columns = json.loads(page.evaluate(_COLUMN_NAMES) or "[]")
@@ -579,12 +711,25 @@ def observe():
     # and privacy.py needs to keep a secret out of the recording.
     declared = {}
     strings = snapshot.get("strings", [])
-    for document in snapshot.get("documents", [])[:1]:
+    by_frame = {frame["id"]: frame for frame in frames}
+    # Which frame's document a node is in (absent: the page's own).
+    frame_of = {}
+    for index, document in enumerate(snapshot.get("documents", [])):
+        frame = None
+        if index:
+            frame_index = document.get("frameId")
+            frame_id = strings[frame_index] if isinstance(frame_index, int) and 0 <= frame_index < len(strings) else None
+            frame = by_frame.get(frame_id)
+            if frame is None:
+                continue  # a frame nobody sees (no size), or one inside it
+            frame = dict(frame, scroll=(document.get("scrollOffsetX") or 0, document.get("scrollOffsetY") or 0))
         backend_ids = document.get("nodes", {}).get("backendNodeId", [])
         layout = document.get("layout", {})
         for node_index, rect in zip(layout.get("nodeIndex", []), layout.get("bounds", [])):
             if node_index < len(backend_ids):
                 bounds[backend_ids[node_index]] = rect
+                if frame is not None:
+                    frame_of[backend_ids[node_index]] = frame
         for node_index, attributes in enumerate(document.get("nodes", {}).get("attributes", [])):
             pairs = {}
             for name_index, value_index in zip(attributes[0::2], attributes[1::2]):
@@ -602,9 +747,23 @@ def observe():
         # The snapshot's bounds are already in screen pixels (measured at 125%
         # scaling: a 120 px wide box came back 150 wide), from the top of the
         # document; the scroll position is the page's own, in CSS pixels.
-        x = rect[0] - metrics["scx"] * dpr
-        y = rect[1] - metrics["scy"] * dpr
-        on_screen = (x + rect[2] > 0 and y + rect[3] > 0 and x < metrics["iw"] * dpr and y < metrics["ih"] * dpr)
+        frame = frame_of.get(backend_id)
+        if frame is None:
+            x = rect[0] - metrics["scx"] * dpr
+            y = rect[1] - metrics["scy"] * dpr
+            inside = True
+        else:
+            # A frame's document has its own origin and its own scroll
+            # position; the frame says where it is drawn in the page's view.
+            # The snapshot gives that scroll position in the same pixels as
+            # its bounds (measured at 125%: scrolled 60 CSS pixels, it said 75).
+            fx, fy, fw, fh = frame["box"]
+            x = fx * dpr - frame["scroll"][0] + rect[0]
+            y = fy * dpr - frame["scroll"][1] + rect[1]
+            inside = (x + rect[2] > fx * dpr and y + rect[3] > fy * dpr
+                      and x < (fx + fw) * dpr and y < (fy + fh) * dpr)
+        on_screen = inside and (x + rect[2] > 0 and y + rect[3] > 0
+                                and x < metrics["iw"] * dpr and y < metrics["ih"] * dpr)
         box = [int(origin_x + x), int(origin_y + y), int(rect[2]), int(rect[3])]
         return box, on_screen
 
@@ -738,6 +897,7 @@ def observe():
                     "handle": {
                         "backend_id": backend_id,
                         "target_id": page.target.get("id"),
+                        "loader": loader,
                         "dom_role": lower,
                         "input_type": declared.get(backend_id, {}).get("type", ""),
                         "autocomplete": declared.get(backend_id, {}).get("autocomplete", ""),
@@ -801,12 +961,30 @@ _TEXT_ROLES = ("statictext", "paragraph", "listitem", "status", "alert", "headin
 
 
 def _known_by_backend(known_elements, page):
+    """
+    The elements of an earlier look that are still this tab's, by node id.
+
+    A node id only means something within the document it was read from. Found
+    live (2026-10-03): a person typed "linkedin" into the new tab page's
+    search box and clicked LinkedIn in Google's results; the result's node had
+    the number the search box had had on the page before, and the click was
+    recorded as a click on `combobox "Ask Google"` - a control of a page that
+    was gone. So an element is only taken from a look at the same load of the
+    tab (its `loader`); one from before the tab went elsewhere is forgotten.
+    """
+
     target_id = page.target.get("id")
+    loader = _loader(_frame_tree(page))
+
+    def same_document(handle):
+        return not loader or handle.get("loader") in (None, "", loader)
+
     return {
         element["handle"]["backend_id"]: element
         for element in known_elements or ()
         if element.get("source") == "cdp" and (element.get("handle") or {}).get("backend_id") is not None
         and (element.get("handle") or {}).get("target_id") == target_id
+        and same_document(element["handle"])
     }
 
 
@@ -855,6 +1033,15 @@ def _describe(page, metrics, backend_id, known, controls_only=False):
                     text = (child, name, "text")
                 break
 
+        # The page's accessibility tree, asked about one node, answers with
+        # the node and what is above it - not always what is inside it. Found
+        # live: a press on a line of a conversation list (a <span> holding
+        # only its words) came back with no child at all, nothing above it
+        # had a name, and the press was recorded as a bare point. The DOM
+        # says what words the node holds.
+        if text is None:
+            text = _own_text(page, backend_id, known, controls_only)
+
     while current is not None and hops < 60:
         hops += 1
         role = ((current.get("role") or {}).get("value") or "").lower()
@@ -883,6 +1070,31 @@ def _describe(page, metrics, backend_id, known, controls_only=False):
         if text[0] == "listed":
             return dict(text[1])
         return _built(page, metrics, text[0], text[2], text[1], None)
+
+    return None
+
+
+def _own_text(page, backend_id, known, controls_only):
+    """
+    The words a DOM node holds directly, as _describe keeps a text it found:
+    ("listed", element, "") when a look at the page listed them, else (a node
+    to build the element from, the words, "text"); None when it holds none.
+    """
+
+    try:
+        children = page.call("DOM.describeNode", {"backendNodeId": backend_id, "depth": 1}).get("node", {}).get("children") or []
+    except ComputerError:
+        return None
+
+    for child in children:
+        words = " ".join((child.get("nodeValue") or "").split())
+        if child.get("nodeType") != 3 or not re.search(r"\w", words):
+            continue
+        listed = known.get(child.get("backendNodeId"))
+        if listed is not None and not controls_only:
+            return ("listed", listed, "")
+        # Built from the node that was pressed: it is the one with a box.
+        return ({"backendDOMNodeId": backend_id}, words, "text")
 
     return None
 
@@ -997,8 +1209,19 @@ def hit(x, y, known_elements=(), controls_only=False):
 _FOCUSED = """(() => {
   if (!document.hasFocus()) return null;
   let a = document.activeElement;
-  while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement;
-  return a && a !== document.body && a !== document.documentElement ? a : null;
+  // The keyboard is in the innermost thing that has it: inside a component's
+  // shadow tree, and inside an inner frame, whose own document says which of
+  // its fields. Found live on LinkedIn's Messaging page, which is a frame:
+  // the page said "the frame" had the keyboard, so what a person typed into
+  // its search box was recorded as typed into nothing.
+  for (let i = 0; a && i < 20; i++) {
+    if (a.shadowRoot && a.shadowRoot.activeElement) { a = a.shadowRoot.activeElement; continue; }
+    let inner = null;
+    if (a.tagName === 'IFRAME' || a.tagName === 'FRAME') { try { inner = a.contentDocument; } catch (e) {} }
+    if (inner && inner.activeElement) { a = inner.activeElement; continue; }
+    break;
+  }
+  return a && !['BODY', 'HTML', 'IFRAME', 'FRAME'].includes(a.tagName) ? a : null;
 })()"""
 
 

@@ -958,13 +958,28 @@ class Recorder:
         if not found["browser"]:
             front["element"] = next((e for e in found["elements"] if "focused" in e.get("states", [])
                                      and e["role"] in TEXT_ENTRY_ROLES), None)
-        elif found["popup"]:
-            front["where"] = "list"
         else:
+            # The browser's own pop-up in front is not always a drop-down's
+            # list: a click into a text field opens its suggestions (what was
+            # typed there before, autofill), and the keys still go to the
+            # field. Found live (2026-10-03): a name typed into a search box
+            # was recorded as typed into nothing, because that pop-up was in
+            # front when the first key came. So the page is asked which field
+            # has the keyboard either way; only when it is none, or a
+            # drop-down, is the pop-up the list keys choose from.
             element, context = cdp.focused((self.latest or {}).get("elements"))
-            front["element"] = element
-            if context:
-                front["window"], front["url"] = context["title"], context["url"]
+            if found["popup"] and (element is None or (element.get("handle") or {}).get("tag") == "select"):
+                front["where"] = "list"
+            else:
+                front["element"] = element
+                if context:
+                    front["window"], front["url"] = context["title"], context["url"]
+
+        if front["element"] is None:
+            # Typing with no field to name is what a replay cannot find again:
+            # say why, so a recording that has it can be explained.
+            log(f"Keys with no field: window {front['window']!r}, where {front['where']!r}, "
+                f"browser {found.get('browser')}, popup {found.get('popup')}, url {front['url']!r}")
 
         return front
 
