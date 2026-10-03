@@ -223,6 +223,15 @@ def windows_argv(url):
     if kept and os.path.isdir(kept):
         profile = kept
 
+    # A worker's profile starts as a copy of the person's own, so what they
+    # are signed in to (Google above all) is signed in there too.
+    from decurix_agent.computer import profile_seed  # Windows only: msvcrt
+    from decurix_agent.logging_utils import log
+
+    note = profile_seed.seed(kind, profile, choice.get("profile_directory", ""))
+    if note:
+        log(f"browser profile: {note}")
+
     argv = [
         path,
         f"--remote-debugging-port={os.environ.get('DECURIX_CDP_PORT', '9222')}",
