@@ -47,6 +47,37 @@ var (
 	paramRe = regexp.MustCompile(`--param\s+[\w.-]+=("(?:[^"\\]|\\.)*"|'[^']*'|\S+)`)
 )
 
+// attachedFilesMark opens the lines of a request that name the files a
+// person attached to it, one path a line (the control plane's
+// attachmentsMark, the desktop agent's attachments.MARK).
+const attachedFilesMark = "Files attached to this request, saved on this desktop:"
+
+// requestDocuments returns the documents a request names: paths with a
+// document's extension anywhere in it, and every file attached to it,
+// whatever its kind - a person attaches a file for it to be read.
+func requestDocuments(request string) []string {
+	docs := documentPathRe.FindAllString(request, -1)
+
+	if _, rest, found := strings.Cut(request, attachedFilesMark); found {
+		for _, line := range strings.Split(rest, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+
+			known := false
+			for _, doc := range docs {
+				known = known || doc == line
+			}
+			if !known {
+				docs = append(docs, line)
+			}
+		}
+	}
+
+	return docs
+}
+
 // noteSeen adds text the operator has now seen (the request, a command's
 // output, a person's reply), keeping the most recent maxSeenChars.
 func (st *operatorState) noteSeen(text string) {
@@ -100,7 +131,7 @@ func groundingNudge(st *operatorState, command string) string {
 	}
 
 	var unread []string
-	for _, doc := range documentPathRe.FindAllString(st.Request, -1) {
+	for _, doc := range requestDocuments(st.Request) {
 		if !readBefore(st.Commands, doc) {
 			unread = append(unread, doc)
 		}
@@ -216,7 +247,7 @@ func earlyDoneNudge(st *operatorState, history []llm.Message, answer string) str
 			"conversation may no longer hold - the screen and the files may have changed since. Look first " +
 			"(gui observe, or the command that shows it), then do what is asked:\n" + st.Request
 	}
-	for _, doc := range documentPathRe.FindAllString(st.Request, -1) {
+	for _, doc := range requestDocuments(st.Request) {
 		if !readBefore(st.Commands, doc) {
 			return fmt.Sprintf("Not taken: the request names %s and nothing has read it or done anything yet. "+
 				"Do the task first (office read %s to start), and answer DONE only with what the commands showed.", doc, doc)

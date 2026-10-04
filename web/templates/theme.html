@@ -494,6 +494,39 @@ svg{display:block;flex:none}
   font-weight:500
 }
 
+/* Files attached to a request: chosen ones waiting to be sent, and the ones
+   a sent request brought (Decurix.attachmentChips). */
+.attach-list{display:flex;flex-wrap:wrap;gap:6px}
+.attach-list[hidden]{display:none}
+.attach-chip{
+  display:inline-flex;
+  align-items:center;
+  gap:5px;
+  max-width:100%;
+  height:24px;
+  padding:0 8px;
+  border:1px solid var(--line);
+  border-radius:var(--r-sm);
+  background:var(--surface-2);
+  color:var(--text-2);
+  font-size:11.5px;
+  font-weight:500
+}
+.attach-chip svg{flex:none}
+.attach-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px}
+.attach-chip button{
+  flex:none;
+  margin-right:-3px;
+  padding:0 3px;
+  border:0;
+  background:none;
+  color:var(--text-3);
+  font-size:15px;
+  line-height:1;
+  cursor:pointer
+}
+.attach-chip button:hover{color:var(--danger)}
+
 /* ---------- form controls ---------- */
 
 .field{display:grid;gap:6px}
@@ -722,6 +755,7 @@ body.busy{cursor:progress}
 <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2.2"/><path d="M15 5.8A1.8 1.8 0 0 0 13.2 4H5.8A1.8 1.8 0 0 0 4 5.8v7.4A1.8 1.8 0 0 0 5.8 15"/></symbol>
 <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12.5 9.5 17.5 19.5 6.5"/></symbol>
 <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 8v4.8M12 16.1v.1"/></symbol>
+<symbol id="i-clip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.9-8.9a3.7 3.7 0 0 1 5.2 5.2l-8.9 8.9a1.8 1.8 0 0 1-2.6-2.6l8.2-8.2"/></symbol>
 <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
 <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2.6v2.2M12 19.2v2.2M2.6 12h2.2M19.2 12h2.2M5.4 5.4l1.5 1.5M17.1 17.1l1.5 1.5M18.6 5.4l-1.5 1.5M6.9 17.1l-1.5 1.5"/></symbol>
 <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13.4A8.4 8.4 0 0 1 10.6 4a8.4 8.4 0 1 0 9.4 9.4z"/></symbol>
@@ -853,6 +887,141 @@ body.busy{cursor:progress}
 
     var response = await fetch(url, fetchOpts);
 
+    var data = await response.json().catch(function(){ return {}; });
+
+    if(!response.ok){
+      throw new Error(data.error || "Request failed");
+    }
+
+    return data;
+  }
+
+  /* ---- attachments ----
+     Files a person adds to a request from this computer. The control plane
+     saves them into the desktop and names them at the end of the request,
+     one path a line under ATTACH_MARK (httpapi/attachments.go) - which is how
+     a request that brought files reads in the transcript, and what
+     splitAttachments takes back apart to show them as names. */
+
+  var ATTACH_MARK = "Files attached to this request, saved on this desktop:";
+  var MAX_ATTACH = 10;
+  var MAX_ATTACH_BYTES = 25 * 1024 * 1024;
+
+  function splitAttachments(text){
+    text = String(text == null ? "" : text);
+
+    var at = text.indexOf(ATTACH_MARK);
+    if(at === -1){ return {text: text, files: []}; }
+
+    var files = text.slice(at + ATTACH_MARK.length).split("\n")
+      .map(function(line){ return line.trim(); })
+      .filter(Boolean);
+
+    return {text: text.slice(0, at).replace(/\s+$/, ""), files: files};
+  }
+
+  function fileName(path){
+    return String(path).split(/[\\/]/).pop();
+  }
+
+  /* One chip per file; onRemove makes each removable. */
+  function attachmentChips(names, onRemove){
+    var list = document.createElement("div");
+    list.className = "attach-list";
+
+    names.forEach(function(name, index){
+      var chip = document.createElement("span");
+      chip.className = "attach-chip";
+      chip.title = name;
+
+      var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("width", 12);
+      svg.setAttribute("height", 12);
+      var use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+      use.setAttribute("href", "#i-clip");
+      svg.appendChild(use);
+
+      var label = document.createElement("span");
+      label.className = "attach-name";
+      label.textContent = fileName(name);
+
+      chip.append(svg, label);
+
+      if(onRemove){
+        var remove = document.createElement("button");
+        remove.type = "button";
+        remove.setAttribute("aria-label", "Remove " + fileName(name));
+        remove.textContent = "×";
+        remove.addEventListener("click", function(){ onRemove(index); });
+        chip.appendChild(remove);
+      }
+
+      list.appendChild(chip);
+    });
+
+    return list;
+  }
+
+  /* The files chosen for the next request: `button` opens the picker, `list`
+     shows what is chosen. Returns {files(), add(FileList), set([File]), clear()}. */
+  function attachmentPicker(button, list){
+    var input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.hidden = true;
+    button.after(input);
+
+    var chosen = [];
+
+    function draw(){
+      list.replaceChildren();
+      list.hidden = !chosen.length;
+      if(!chosen.length){ return; }
+
+      list.appendChild(attachmentChips(chosen.map(function(f){ return f.name; }), function(index){
+        chosen.splice(index, 1);
+        draw();
+      }));
+    }
+
+    function add(files){
+      Array.prototype.forEach.call(files || [], function(file){
+        if(chosen.length >= MAX_ATTACH){
+          return toast("At most " + MAX_ATTACH + " files can be attached to one request.", "error");
+        }
+        if(file.size > MAX_ATTACH_BYTES){
+          return toast(file.name + " is too large - at most 25 MB a file.", "error");
+        }
+        if(!file.size){
+          return toast(file.name + " is empty.", "error");
+        }
+        chosen.push(file);
+      });
+      draw();
+    }
+
+    button.addEventListener("click", function(){ input.click(); });
+    input.addEventListener("change", function(){ add(input.files); input.value = ""; });
+
+    draw();
+
+    return {
+      files: function(){ return chosen.slice(); },
+      add: add,
+      set: function(files){ chosen = (files || []).slice(); draw(); },
+      clear: function(){ chosen = []; draw(); }
+    };
+  }
+
+  /* post() with files: multipart, each file in the "files" field. */
+  async function postFiles(url, fields, files){
+    if(!files || !files.length){ return post(url, fields); }
+
+    var body = new FormData();
+    Object.keys(fields).forEach(function(k){ body.append(k, fields[k]); });
+    files.forEach(function(file){ body.append("files", file, file.name); });
+
+    var response = await fetch(url, {method: "POST", body: body});
     var data = await response.json().catch(function(){ return {}; });
 
     if(!response.ok){
@@ -1516,6 +1685,10 @@ body.busy{cursor:progress}
     toast: toast,
     busy: busy,
     post: post,
+    postFiles: postFiles,
+    splitAttachments: splitAttachments,
+    attachmentChips: attachmentChips,
+    attachmentPicker: attachmentPicker,
     setQueryBadge: setQueryBadge,
     notifyNewQueries: notifyNewQueries
   };

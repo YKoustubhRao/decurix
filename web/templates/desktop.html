@@ -438,6 +438,21 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
 }
 .composer-inner textarea::placeholder{color:var(--text-3)}
 
+.composer-attach{
+  flex:none;
+  width:34px;height:34px;
+  margin-left:-8px;
+  display:grid;place-items:center;
+  border-radius:50%;
+  color:var(--text-3);
+  transition:background .12s ease,color .12s ease
+}
+.composer-attach:hover{background:var(--surface-2);color:var(--text)}
+.composer-files{max-width:720px;margin:0 auto 8px}
+.chat-composer.is-dropping .composer-inner{border-color:var(--accent);box-shadow:0 0 0 3px var(--ring)}
+.bubble .attach-list{margin-top:7px}
+.bubble .attach-list:first-child{margin-top:0}
+
 .composer-send{
   flex:none;
   width:34px;height:34px;
@@ -539,7 +554,11 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
       </div>
 
       <form class="chat-composer" id="chatForm">
+        <div class="composer-files attach-list" id="chatFiles" hidden></div>
         <div class="composer-inner">
+          <button type="button" class="composer-attach" id="chatAttach" aria-label="Attach files" title="Attach files from this computer">
+            <svg width="16" height="16"><use href="#i-clip"/></svg>
+          </button>
           <textarea id="chatInput"
                     placeholder="Ask {{.Desktop.Name}}…"
                     rows="1"
@@ -549,7 +568,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
           </button>
         </div>
         <div class="composer-hint">
-          <span><kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line</span>
+          <span><kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line · drop or paste files to attach</span>
           <span class="offline" id="chatOffline">Reconnecting…</span>
         </div>
       </form>
@@ -589,12 +608,17 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
 
   var toast = Decurix.toast, post = Decurix.post;
 
+  /* Files chosen for the next request (the paperclip, a drop, a paste). */
+  var attached = Decurix.attachmentPicker(document.getElementById("chatAttach"), document.getElementById("chatFiles"));
+
   var lastVersion = -1;
   var lastThread = {entries: [], steps: [], running: false};
   var elapsedTimer = null;
 
   /* Requests sent from this tab that the server's transcript does not show
-     yet, oldest first: {key, content, createdAt, state, error, known}.
+     yet, oldest first: {key, content, files, createdAt, state, error, known}.
+     files are the File objects it was sent with; once the control plane has
+     accepted it, content is the request as sent (the files named in it).
      state is "sending", "delivered" or "failed"; known is the set of entry
      IDs the transcript already had at send time, so the server's copy of
      this request is the first new user entry with the same text. */
@@ -944,7 +968,13 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
       bubble.appendChild(flagEl);
     }
 
-    renderContent(bubble, entry.content);
+    /* A request that brought files reads as its words, then the files by
+       name - not the paths they were saved under on the desktop. */
+    var brought = fromUser ? Decurix.splitAttachments(entry.content) : {text: entry.content, files: []};
+    var names = brought.files.concat((entry.files || []).map(function(f){ return f.name; }));
+
+    if(brought.text.trim() || !names.length){ renderContent(bubble, brought.text); }
+    if(names.length){ bubble.appendChild(Decurix.attachmentChips(names)); }
     body.appendChild(bubble);
 
     var time = document.createElement("div");
@@ -1106,7 +1136,8 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
      copy is dropped as soon as a snapshot contains the real one. */
 
   function pendingElement(item){
-    var row = entryElement({role: "user", kind: "entry", content: item.content, created_at: item.createdAt});
+    var row = entryElement({role: "user", kind: "entry", content: item.content, created_at: item.createdAt,
+                            files: item.sent ? [] : item.files});
     row.classList.add(item.state === "failed" ? "is-failed" : "is-pending");
 
     var status = document.createElement("div");
@@ -1119,7 +1150,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
       var retry = document.createElement("button");
       retry.type = "button";
       retry.textContent = "Retry";
-      retry.addEventListener("click", function(){ send(item.content, item); });
+      retry.addEventListener("click", function(){ send(item.content, item.files, item); });
 
       var edit = document.createElement("button");
       edit.type = "button";
@@ -1127,6 +1158,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
       edit.addEventListener("click", function(){
         pending.splice(pending.indexOf(item), 1);
         input.value = item.content;
+        attached.set(item.files);
         grow();
         render(lastThread);
         input.focus();
@@ -1172,8 +1204,8 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
     });
   }
 
-  function send(text, retrying){
-    var item = retrying || {key: ++pendingSeq, content: text, createdAt: new Date().toISOString()};
+  function send(text, files, retrying){
+    var item = retrying || {key: ++pendingSeq, content: text, files: files || [], createdAt: new Date().toISOString()};
 
     item.state = "sending";
     item.error = "";
@@ -1184,10 +1216,20 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
     render(lastThread);
     scrollToBottom();
 
-    post("/api/desktops/send", {id: desktopId, content: text}).then(function(){
+    Decurix.postFiles("/api/desktops/send", {id: desktopId, content: text}, item.files).then(function(data){
       if(pending.indexOf(item) === -1){ return; }
 
       item.state = "delivered";
+
+      /* What the transcript holds is the request as sent, with its files
+         named in it: that is the text the server's copy is recognised by,
+         and the stream may already have brought it. */
+      if(data && data.content){
+        item.content = data.content;
+        item.sent = true;
+        reconcile(lastThread);
+      }
+
       render(lastThread);
 
       /* Delivered but not echoed back yet: if the stream still has not
@@ -1334,14 +1376,41 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
     event.preventDefault();
 
     var text = input.value.trim();
-    if(!text){ return; }
+    var files = attached.files();
+    if(!text && !files.length){ return; }
 
     input.value = "";
+    attached.clear();
     grow();
 
-    send(text);
+    send(text, files);
 
     input.focus();
+  });
+
+  /* Files dropped on the composer, or pasted into it (a screenshot, a file
+     copied in the file manager), are attached like ones picked. */
+  input.addEventListener("paste", function(event){
+    var files = event.clipboardData && event.clipboardData.files;
+    if(files && files.length){
+      event.preventDefault();
+      attached.add(files);
+    }
+  });
+
+  form.addEventListener("dragover", function(event){
+    if(!event.dataTransfer || Array.prototype.indexOf.call(event.dataTransfer.types, "Files") === -1){ return; }
+    event.preventDefault();
+    form.classList.add("is-dropping");
+  });
+
+  form.addEventListener("dragleave", function(){ form.classList.remove("is-dropping"); });
+
+  form.addEventListener("drop", function(event){
+    form.classList.remove("is-dropping");
+    if(!event.dataTransfer || !event.dataTransfer.files.length){ return; }
+    event.preventDefault();
+    attached.add(event.dataTransfer.files);
   });
 
   /* ---------------- clear ---------------- */

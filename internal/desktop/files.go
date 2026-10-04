@@ -95,6 +95,23 @@ func (m *Manager) CopyFiles(ctx context.Context, desktopID, dir string, files []
 	return nil
 }
 
+// AgentPath is a path under /home/headless as the desktop's own agent names
+// it: unchanged in a container, the real folder for a native worker (whose
+// home is a folder of this computer). What CopyFiles wrote is told to the
+// agent by this name; a path outside the home is returned as given.
+func (m *Manager) AgentPath(desktopID, p string) string {
+	if m.native == nil {
+		return p
+	}
+
+	real, err := m.native.homePath(sanitizeName(desktopID), p)
+	if err != nil {
+		return p
+	}
+
+	return real
+}
+
 // CopyOut reads a folder or file under /home/headless out of a desktop, as the
 // tar stream Docker produces (entries named from the folder's own name down).
 // Like CopyFiles it works on a stopped desktop. A path that is not there is
