@@ -22,6 +22,11 @@ current_task_id = ""
 waiting_for_query = False
 last_query_id = None
 
+# The question the agent is waiting on and its kind ("query" or "approval"),
+# so the person's reply can be kept with what it answered (lessons.py).
+last_query_text = ""
+last_query_kind = ""
+
 # Whether the harness's reasoning backend has been reached at least once.
 # Set by harness.wait_for_backend() on the thread app.py starts, read by
 # watchers.command_watcher() to decide whether a task can start yet. False

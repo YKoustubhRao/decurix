@@ -107,6 +107,25 @@ class TestAlign(unittest.TestCase):
         self.assertIsNone(self.spans('find "sundar pichai"', recorded, places))
         self.assertIsNone(self.spans('search "sundar pichai" and email it to bob', recorded, places))
 
+    def test_a_quoted_phrase_is_one_value_even_when_it_ends_in_the_recorded_word(self):
+        # Found live: the new message ended in the word the recorded one was,
+        # so "hello" matched "hello" and the rest of the message was read as
+        # part of the person's name - the worker searched for
+        # `akshit gupta "decurix auto say` and sent "hello".
+        places = [("typed", "linkedin"), ("typed", "sarthak gawade"), ("typed", "hello"),
+                  ("control", "Search messages"), ("control", "Send")]
+        recorded = 'open linkedin and send sarthak gawade "hello"'
+
+        self.assertEqual(self.spans('open linkedin and send akshit gupta "decurix auto say hello"', recorded, places),
+                         [("sarthak gawade", "akshit gupta", True), ("hello", "decurix auto say hello", True)])
+        self.assertEqual(self.spans('open linkedin and send akshit gupta "hello there, say hello"', recorded, places),
+                         [("sarthak gawade", "akshit gupta", True), ("hello", "hello there, say hello", True)])
+        # As before where nothing runs across a quote.
+        self.assertEqual(self.spans('open linkedin and send alex doe "hello from decurix"', recorded, places),
+                         [("sarthak gawade", "alex doe", True), ("hello", "hello from decurix", True)])
+        self.assertEqual(self.spans('open linkedin and send alex doe "hello"', recorded, places),
+                         [("sarthak gawade", "alex doe", True)])
+
 
 class TestPlan(_Recordings):
     def test_a_recorded_ticket_is_mimicked_without_being_taught(self):

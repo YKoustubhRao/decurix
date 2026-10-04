@@ -244,6 +244,80 @@ class WithTheModel(ts.TeachingBase):
         self.assertIn("customers are under Sales", self.engine_calls[-1][1])
         self.assertIn("Checked on the screen", self.finals[-1][0])
 
+    # --- a question the engine asks while doing a taught task ----------------
+
+    def asking(self, question, kind="query", lesson_says=None):
+        """Run the skill with an engine that stops to ask `question`; returns (answered itself, what it told the engine)."""
+
+        self.taught_customer()
+        self.screen()
+        outcome, told, calls = [], [], []
+
+        def engine(request, task_file=None):
+            self.engine_calls.append((request, guidance.text()))
+            outcome.append(skill_task._question_gate(question, kind, "thebot"))
+
+        def call(system, content, max_tokens=0):
+            calls.append(content)
+            return lesson_says or {"answered": False}
+
+        for patch in (mock.patch.object(skill_task, "_engine", engine),
+                      mock.patch.object(skill_task.study, "_call", call),
+                      mock.patch.object(skill_task.llm_client, "available", lambda: True),
+                      mock.patch.object(skill_task.threading, "Thread",
+                                        lambda target, args, daemon: mock.Mock(start=lambda: told.append(args[0])))):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+        skill_task.perform('/skill add-a-customer customer_name="Initech"')
+        return outcome[0], told, calls
+
+    def test_a_question_the_lesson_already_answers_is_not_put_to_the_person(self):
+        answered, told, calls = self.asking(
+            "Two customers match Initech. Which one?",
+            lesson_says={"answered": True, "answer": "Take the first one.", "from": "choose the first", "confidence": 0.95})
+
+        self.assertTrue(answered)
+        self.assertEqual(told, ["Take the first one."])
+        self.assertIn("the customer is in the list", calls[0])     # the model was shown what was taught
+        self.assertNotIn("run_answers", skills.load("add-a-customer"))
+
+    def test_an_unsure_reading_of_the_lesson_asks_the_person(self):
+        answered, told, _ = self.asking(
+            "Two customers match Initech. Which one?",
+            lesson_says={"answered": True, "answer": "Take the first one.", "confidence": 0.5})
+
+        self.assertFalse(answered)
+        self.assertEqual(told, [])
+
+    def test_an_approval_is_never_answered_from_the_lesson(self):
+        answered, told, calls = self.asking(
+            "I need your OK before I click Send.", kind="approval",
+            lesson_says={"answered": True, "answer": "Yes.", "confidence": 1.0})
+
+        self.assertFalse(answered)
+        self.assertEqual((told, calls), ([], []))
+        skill_task.learn_answer("yes")                              # a yes to an approval is not a lesson
+        self.assertNotIn("run_answers", skills.load("add-a-customer"))
+
+    def test_what_the_person_answers_during_a_run_is_kept_for_every_later_run(self):
+        # Found live: "always choose first", answered during a run, reached
+        # that run's engine and nothing else - the next run would ask again.
+        answered, _, _ = self.asking("Two customers match Initech. Which one?")
+        self.assertFalse(answered)
+
+        skill_task.learn_answer("always choose first")
+        skill_task.learn_answer("always choose first")              # the reply is taken once
+
+        kept = skills.load("add-a-customer")["run_answers"]
+        self.assertEqual([(x["q"], x["a"]) for x in kept],
+                         [("Two customers match Initech. Which one?", "always choose first")])
+
+        guidance.end()
+        skill_task.perform('/skill add-a-customer customer_name="Globex"')
+        self.assertIn("Which one? - the person answered: always choose first", self.engine_calls[-1][1])
+        self.assertIn("never ask them the same thing again", self.engine_calls[-1][1])
+
     def test_no_means_a_failure_not_a_success(self):
         self.taught_customer()
         self.screen()
