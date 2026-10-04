@@ -311,6 +311,24 @@ class TheBrowserPickedForTheWorkerIsTheOneItRuns(unittest.TestCase):
         env = patch.dict(os.environ, {"DECURIX_DIR": str(self.dir), "DECURIX_CDP_PORT": "9333"})
         env.start()
         self.addCleanup(env.stop)
+        # Which browser is run is what is tested here - not the copying of the
+        # profile of whoever runs the tests (it copied their real one, each test).
+        if os.name == "nt":
+            from decurix_agent.computer import profile_seed
+            seed = patch.object(profile_seed, "seed", lambda *args, **kwargs: "")
+            seed.start()
+            self.addCleanup(seed.stop)
+
+    def test_the_browser_opened_for_itself_is_given_no_page(self):
+        # It was given about:blank: a person who pressed the worker's Chrome
+        # icon got an empty white tab instead of the browser's own first page.
+        self.pick(kind="chrome")
+        with self.installed("chrome"):
+            argv = browser.windows_argv("")
+
+        self.assertTrue(argv[-1].startswith("--"), argv)
+        self.assertNotIn("about:blank", argv)
+        self.assertNotIn("", argv)
 
     def pick(self, **choice):
         (self.dir / browser.CHOICE_FILE).write_text(json.dumps(choice), encoding="utf-8")
