@@ -12,9 +12,24 @@
 #
 # Module state, like record_task's ticket: one task at a time runs, and a new
 # task (watchers) clears it.
+#
+# One part of it is also kept in a file: this run's values. The engine works
+# the screen through `gui`, a process of its own, and when it replays the
+# recording or the skill it was handed (`gui replay ID`, `gui do NAME`) the
+# replay must type this run's values - not the ones the person typed when
+# they recorded it. Found live: asked for an order for "Globex" in Germany,
+# matched to a recording of one for "Initech" in Japan, the engine ran
+# `gui replay` on the recording as it was and saved a second order for
+# Initech before it did the one it was asked for.
 # ============================================================
 
+import json
+
+from decurix_agent import config, task_context
+
 _current = None
+
+RUN_FILE = config.DECURIX_DIR / "computer" / "guided-run.json"
 
 
 def begin(skill, task, text, values=None, mode="model", **extra):
@@ -23,11 +38,52 @@ def begin(skill, task, text, values=None, mode="model", **extra):
     global _current
     _current = dict({"skill": skill, "task": task, "text": text, "values": dict(values or {}), "mode": mode,
                      "attempt": 1}, **extra)
+
+    run = extra.get("run") or {}
+    _keep({
+        "task_id": task_context.current(),
+        "skill": skill,
+        # A task done from a recording nobody has taught yet (skill_task's one-off).
+        "recording": (run.get("mimic") or {}).get("id") if run.get("one_off") else None,
+        "values": dict(values or {}),
+    })
+
     return _current
 
 
 def get():
     return _current
+
+
+# A person's "no" to an approval this task asked for: (task id, their words).
+_refused = None
+
+
+def note_reply(reply, outcome):
+    """
+    What a person answered to an approval the screen gate asked for (the
+    watcher tells it before the engine sees the reply). A refusal is kept for
+    the task's final check; anything the person says after it - a yes to a
+    later approval, an instruction, an answer - means the task goes on, and
+    takes it back.
+    """
+
+    global _refused
+
+    from decurix_agent.computer import approval
+
+    if outcome == "declined" and approval.is_refusal(reply):
+        _refused = (task_context.current(), " ".join(str(reply).split())[:300])
+    else:
+        _refused = None
+
+
+def refused():
+    """The person's words when they said no to an approval of the task being worked on, else None."""
+
+    if _refused is not None and _refused[0] == task_context.current():
+        return _refused[1]
+    return None
 
 
 def text():
@@ -37,3 +93,56 @@ def text():
 def end():
     global _current
     _current = None
+
+    try:
+        RUN_FILE.unlink()
+    except OSError:
+        pass
+
+
+def _keep(record):
+    try:
+        RUN_FILE.parent.mkdir(parents=True, exist_ok=True)
+        RUN_FILE.write_text(json.dumps(record), encoding="utf-8")
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+def run_values(skill=None, recording=None):
+    """
+    This run's values for the skill or recording an engine is about to replay:
+    what it was handed for the task it is on now, or {} when it was handed
+    nothing, something else, or for another task. Read from any process.
+    """
+
+    try:
+        kept = json.loads(RUN_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+    if not isinstance(kept, dict) or not kept.get("task_id") or kept.get("task_id") != task_context.current():
+        return {}
+
+    if (skill and kept.get("skill") == skill) or (recording and kept.get("recording") == recording):
+        values = kept.get("values")
+        return dict(values) if isinstance(values, dict) else {}
+
+    return {}
+
+
+def with_run_values(given, params, skill=None, recording=None):
+    """
+    `given` (what an engine passed a replay) with this run's own value for
+    every parameter of `params` it did not give. A value the engine gave is
+    kept: it may be working one item of a list.
+    """
+
+    mine = run_values(skill=skill, recording=recording)
+    names = {p.get("name") for p in params or []}
+    out = dict(given or {})
+
+    for name, value in mine.items():
+        if name in names and name not in out and value not in (None, ""):
+            out[name] = value
+
+    return out

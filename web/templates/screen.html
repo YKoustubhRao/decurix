@@ -217,7 +217,9 @@ const params = new URLSearchParams(location.search);
 // resize=remote (the default, what the dashboard asks for) fits the desktop to
 // the window; resize=scale shrinks the picture instead and leaves the desktop's
 // own size alone.
-const SCALE = params.get("resize") === "scale";
+// A desktop that cannot change its size (a native worker's is this computer's
+// own screen size) is always shown scaled.
+const SCALE = {{.Scale}} || params.get("resize") === "scale";
 const VIEW_ONLY = params.get("view_only") === "1" || params.get("view_only") === "true";
 const WS_URL = (location.protocol === "https:" ? "wss://" : "ws://") + location.host +
   "/desktop/" + encodeURIComponent(ID) + "/websockify";

@@ -246,6 +246,12 @@ archiveBundle() {
     echo "  archive: $OUTPUT_DIR/$name.tar.gz"
 }
 
+# TheBot's sources, packed for go:embed (embed.go): without this step a
+# released binary cannot build the desktop images. Before any GOOS is set:
+# the generator runs on this machine.
+echo "=== packing TheBot's sources ==="
+go generate .
+
 # The phone build of the control plane's own binary rides in every control
 # plane bundle: a phone that sets up its link from its browser downloads it
 # from that control plane (/phone/decurix), which looks for it beside itself.

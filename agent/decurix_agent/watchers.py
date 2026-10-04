@@ -3,7 +3,8 @@ import threading
 import time
 import traceback
 
-from decurix_agent import ask_task, config, guidance, progress, record_task, replay_task, skill_task, state, task_context, usage
+from decurix_agent import (ask_task, config, guidance, lessons, progress, record_task, replay_task, skill_task, state,
+                           task_context, usage)
 from decurix_agent.computer import approval
 from decurix_agent.harness import continue_after_query, perform_task
 from decurix_agent.logging_utils import log
@@ -316,11 +317,35 @@ def _pass():
             # A paused replay, or a taught skill's question, takes its
             # own reply; it is still a reply either way, which is all
             # tasks.Plan mirrors.
+            # What the person just told the worker is kept for later
+            # tasks (lessons.py) - except the answers of a lesson being
+            # taught, which the skill itself keeps, question by question.
+            teaching = (state.paused_skill or {}).get("mode") == "learn"
+            if not teaching:
+                # A replay's or a skill run's own question (a value, a
+                # stuck step); "is it done?" is not one of those.
+                mechanical = (state.paused_replay is not None
+                              or (state.paused_skill or {}).get("mode") == "run")
+                try:
+                    lessons.note(state.last_query_text, content, kind=state.last_query_kind, outcome=outcome,
+                                 task=state.current_task or "", skill=skill_task.guided_skill_title(),
+                                 mechanical=mechanical)
+                except Exception as exc:
+                    log(f"Could not keep what the person said: {exc}")
+
             if state.paused_replay is not None:
                 target, args = replay_task.resume, (content, outcome)
             elif state.paused_skill is not None:
                 target, args = skill_task.resume, (content, outcome)
             else:
+                guidance.note_reply(content, outcome)
+                # An answer to a question a taught task's engine asked
+                # (not a yes or no to an approval) is kept on the skill.
+                if outcome is None:
+                    try:
+                        skill_task.learn_answer(content)
+                    except Exception as exc:
+                        log(f"Could not keep the answer on the skill: {exc}")
                 target, args = continue_after_query, (content,)
 
             thread = threading.Thread(
@@ -411,6 +436,12 @@ def _pass():
             # is done the way they showed - their steps, with only
             # what differs changed - not worked out again by an
             # engine (computer/mimic.py).
+            target = skill_task.perform_mimic
+        elif not ask_task.handles(content) and state.backend_ready and skill_task.may_be_taught(content):
+            # Not the recorded ticket's words, but maybe its task said
+            # another way: with a hosted model, the model reads the
+            # request against what was taught here, and the engine
+            # gets it when it is none of those (request_reading.py).
             target = skill_task.perform_mimic
         elif ask_task.handles(content):
             # `chatgpt "where is x"`, `google x`, `search youtube for x`:

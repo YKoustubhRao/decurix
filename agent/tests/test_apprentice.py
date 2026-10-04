@@ -55,6 +55,7 @@ class WithTheModel(ts.TeachingBase):
         self.verdicts = []        # what the check says, in turn
         state.backend_ready = True
         guidance.end()
+        self.acted_on_screen = True   # whether the fake engine "worked the screen" during the task
 
         def engine(request, task_file=None):
             self.engine_calls.append((request, guidance.text()))
@@ -68,6 +69,7 @@ class WithTheModel(ts.TeachingBase):
             return self.verdicts.pop(0) if self.verdicts else verdict(verify.UNSURE)
 
         for patch in (mock.patch.object(skill_task, "_engine_can_drive", lambda: True),
+                      mock.patch.object(skill_task, "_did_screen_work", lambda: self.acted_on_screen),
                       mock.patch.object(skill_task, "_engine", engine),
                       mock.patch.object(skill_task.verify, "judge", judge),
                       mock.patch.object(skill_task.verify, "available", lambda: True),
@@ -117,6 +119,54 @@ class WithTheModel(ts.TeachingBase):
         self.assertIn("the customer is in the list", told)
         self.assertIn("never report DONE", told)
         self.assertIn("0 of 3 clean runs", told)
+
+    def test_a_done_with_nothing_done_on_the_screen_is_never_put_to_the_check(self):
+        # Found live: a taught search was answered "DONE" by an engine that had
+        # touched nothing, and the check passed it - the demonstration's own
+        # page was still open. A screen task with no screen action was not
+        # done, whatever the screen shows: sent back once, then asked about.
+        self.taught_customer()
+        self.screen()
+        self.acted_on_screen = False
+        self.verdicts = [verdict(verify.DONE, seen="Acme is in the customer list")]
+
+        skill_task.perform('/skill add-a-customer customer_name="Initech"')
+
+        self.assertEqual(self.judged, [])                      # no picture was asked to prove anything
+        self.assertEqual(len(self.engine_calls), 2)            # sent back once...
+        self.assertIn("Nothing was done on the screen", self.engine_calls[1][1])
+        self.assertEqual(self.finals, [])                      # ...and never reported done
+        self.assertIn("I do not think this is done", self.asked[-1][0])
+
+    def test_what_done_looks_like_is_said_in_this_runs_values(self):
+        # The lesson's words name the demonstration's value ("Acme"); the model
+        # and the check are told this run's.
+        self.teach("Acme is in the customer list", "yes", "changes", "yes")
+        self.asked.clear()
+        self.finals.clear()
+        self.screen()
+        self.verdicts = [verdict(verify.DONE, seen="Initech is in the customer list")]
+
+        skill_task.perform('/skill add-a-customer customer_name="Initech"')
+
+        told = self.engine_calls[0][1]
+        self.assertIn("Initech is in the customer list", told)
+        self.assertNotIn("Acme is in the customer list", told)
+        self.assertIn("Initech is in the customer list", self.judged[0]["criteria"])
+
+    def test_a_request_matched_to_a_taught_task_is_handed_over_as_one(self):
+        # Found live: the person's own words (`search "sundar pichai"`) went to
+        # the engine, which took them for a question and answered without
+        # doing anything. The engine's operator takes "Do the task you were taught".
+        skill = self.taught_customer()
+        run = {"skill": skill, "values": {"customer_name": "Initech"}, "mimic": {"text": "add customer Acme", "id": "x"},
+               "context": "add customer Initech"}
+
+        request = skill_task._engine_request(run)
+
+        self.assertTrue(request.startswith('Do the task you were taught, "Add a customer" (skill add-a-customer)'))
+        self.assertIn('customer_name="Initech"', request)
+        self.assertIn("The person asked: add customer Initech", request)
 
     def test_values_the_documents_gave_are_reported_when_the_model_did_the_task(self):
         # Found by bench/learn_documents: the replay's report said where each
@@ -193,6 +243,80 @@ class WithTheModel(ts.TeachingBase):
         self.assertFalse(saved["experience"]["verdicts"][0]["ok"])
         self.assertIn("customers are under Sales", self.engine_calls[-1][1])
         self.assertIn("Checked on the screen", self.finals[-1][0])
+
+    # --- a question the engine asks while doing a taught task ----------------
+
+    def asking(self, question, kind="query", lesson_says=None):
+        """Run the skill with an engine that stops to ask `question`; returns (answered itself, what it told the engine)."""
+
+        self.taught_customer()
+        self.screen()
+        outcome, told, calls = [], [], []
+
+        def engine(request, task_file=None):
+            self.engine_calls.append((request, guidance.text()))
+            outcome.append(skill_task._question_gate(question, kind, "thebot"))
+
+        def call(system, content, max_tokens=0):
+            calls.append(content)
+            return lesson_says or {"answered": False}
+
+        for patch in (mock.patch.object(skill_task, "_engine", engine),
+                      mock.patch.object(skill_task.study, "_call", call),
+                      mock.patch.object(skill_task.llm_client, "available", lambda: True),
+                      mock.patch.object(skill_task.threading, "Thread",
+                                        lambda target, args, daemon: mock.Mock(start=lambda: told.append(args[0])))):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+        skill_task.perform('/skill add-a-customer customer_name="Initech"')
+        return outcome[0], told, calls
+
+    def test_a_question_the_lesson_already_answers_is_not_put_to_the_person(self):
+        answered, told, calls = self.asking(
+            "Two customers match Initech. Which one?",
+            lesson_says={"answered": True, "answer": "Take the first one.", "from": "choose the first", "confidence": 0.95})
+
+        self.assertTrue(answered)
+        self.assertEqual(told, ["Take the first one."])
+        self.assertIn("the customer is in the list", calls[0])     # the model was shown what was taught
+        self.assertNotIn("run_answers", skills.load("add-a-customer"))
+
+    def test_an_unsure_reading_of_the_lesson_asks_the_person(self):
+        answered, told, _ = self.asking(
+            "Two customers match Initech. Which one?",
+            lesson_says={"answered": True, "answer": "Take the first one.", "confidence": 0.5})
+
+        self.assertFalse(answered)
+        self.assertEqual(told, [])
+
+    def test_an_approval_is_never_answered_from_the_lesson(self):
+        answered, told, calls = self.asking(
+            "I need your OK before I click Send.", kind="approval",
+            lesson_says={"answered": True, "answer": "Yes.", "confidence": 1.0})
+
+        self.assertFalse(answered)
+        self.assertEqual((told, calls), ([], []))
+        skill_task.learn_answer("yes")                              # a yes to an approval is not a lesson
+        self.assertNotIn("run_answers", skills.load("add-a-customer"))
+
+    def test_what_the_person_answers_during_a_run_is_kept_for_every_later_run(self):
+        # Found live: "always choose first", answered during a run, reached
+        # that run's engine and nothing else - the next run would ask again.
+        answered, _, _ = self.asking("Two customers match Initech. Which one?")
+        self.assertFalse(answered)
+
+        skill_task.learn_answer("always choose first")
+        skill_task.learn_answer("always choose first")              # the reply is taken once
+
+        kept = skills.load("add-a-customer")["run_answers"]
+        self.assertEqual([(x["q"], x["a"]) for x in kept],
+                         [("Two customers match Initech. Which one?", "always choose first")])
+
+        guidance.end()
+        skill_task.perform('/skill add-a-customer customer_name="Globex"')
+        self.assertIn("Which one? - the person answered: always choose first", self.engine_calls[-1][1])
+        self.assertIn("never ask them the same thing again", self.engine_calls[-1][1])
 
     def test_no_means_a_failure_not_a_success(self):
         self.taught_customer()

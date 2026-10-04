@@ -39,6 +39,13 @@ JUDGE_SYSTEM = (
     "them is listed). For a task that asks for information, each answer in the report must match what the tools "
     "read, and each must answer what was asked - an answer to a different question (a value garbled on the way, "
     "\"if you mean 7 x 8\" for 7+8) is not done.\n"
+    "A screen left over from before is not this task's result: when it shows the demonstration's own values (or "
+    "any others) where this run's should be, it is \"not_done\".\n"
+    "What a taught task's \"done\" looks like was written from one demonstration. Its details that belonged to "
+    "that demonstration's own result - a person's city, a company, a date, an amount - are examples and do NOT "
+    "apply to this run: a search taught on one person whose profile showed \"Udupi, Karnataka\" is done for "
+    "another person when THAT person's profile is open, whatever city it shows. Never answer not_done or unsure "
+    "because such a detail differs or is missing (found live: a correct run was refused for exactly that).\n"
     "Answer \"not_done\" when you can see it was not: an error, a validation message, the wrong page or record, "
     "another value than asked, a half-filled form, a sign-in page, a CAPTCHA, nothing changed, fewer items than "
     "were asked for.\n"
@@ -114,7 +121,8 @@ def judge(task, claim="", criteria="", values=None, steps="", live_png=None, ref
 
 # A document named by its path in a task; the same shape TheBot's operator
 # refuses to type values from before reading (internal/skills/grounding.go).
-DOCUMENT_PATH = re.compile(r"(?:~|/)[\w.~/-]*[\w-]\.(?:pdf|xlsx|xlsm|docx|csv|eml|png|jpe?g)\b", re.I)
+# A native Windows worker's documents are named C:\...\po.pdf.
+DOCUMENT_PATH = re.compile(r"(?:~|/|\b[a-z]:[\\/])[\w.~/\\-]*[\w-]\.(?:pdf|xlsx|xlsm|docx|csv|eml|png|jpe?g)\b", re.I)
 MAX_DOCUMENT_CHARS = 4000
 MAX_DOCUMENT_PICTURES = 2
 

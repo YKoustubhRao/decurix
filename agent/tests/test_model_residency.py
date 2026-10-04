@@ -62,7 +62,11 @@ class TestModelResidency(unittest.TestCase):
         fake = FakeOllama(delay=0.2)
         self.addCleanup(fake.close)
 
+        from decurix_agent import state
+
+        # Someone is waiting on a task: they are told why it is taking a while.
         with patch.object(config, "OLLAMA_URL", fake.url), \
+             patch.object(state, "current_task", "what is the kernel version?"), \
              patch("decurix_agent.progress.emit") as emit:
             ollama_client.ensure_model_resident()
 
@@ -73,6 +77,22 @@ class TestModelResidency(unittest.TestCase):
         self.assertEqual(sent["options"]["num_thread"], ollama_client.model_options()["num_thread"])
         self.assertEqual(sent["options"]["num_batch"], ollama_client.model_options()["num_batch"])
         self.assertTrue(any("Loading the model" in c.args[0] for c in emit.call_args_list))
+
+    def test_a_load_as_the_agent_starts_says_nothing_in_the_chat(self):
+        # Found live: a worker that had just been created showed "Working
+        # on: ..." on its card, over a model load no request was waiting for.
+        from decurix_agent import state
+
+        fake = FakeOllama(delay=0.1)
+        self.addCleanup(fake.close)
+
+        with patch.object(config, "OLLAMA_URL", fake.url), \
+             patch.object(state, "current_task", None), \
+             patch("decurix_agent.progress.emit") as emit:
+            ollama_client.ensure_model_resident()
+
+        self.assertEqual(len(fake.generates), 1, "the model is still loaded")
+        emit.assert_not_called()
 
     def test_resident_model_is_left_alone(self):
         fake = FakeOllama(resident=True)

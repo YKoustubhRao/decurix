@@ -1,3 +1,4 @@
+import os
 import re
 import subprocess
 import time
@@ -162,3 +163,12 @@ def activate(window_id):
             pass
 
     time.sleep(0.15)
+
+
+# A native Windows worker has no xdotool, and nothing like it would reach a
+# desktop that is not on screen: input there is posted window messages (win.py).
+if os.name == "nt":
+    from decurix_agent.computer import win as _win
+
+    click, move, type_text, key = _win.click, _win.move, _win.type_text, _win.key
+    scroll, drag, activate = _win.scroll, _win.drag, _win.activate

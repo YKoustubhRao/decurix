@@ -73,6 +73,13 @@ class UpdatingASpreadsheetKeepsItsChart(unittest.TestCase):
         self.assertEqual(code, 0, text)
         self.assertIn("<v>99</v>", self.read("xl/worksheets/sheet1.xml"))
 
+    def test_a_byte_order_mark_in_front_of_the_spec_is_not_part_of_it(self):
+        # What Windows PowerShell puts in front of anything it pipes: found
+        # live, every piped spec was refused as "not valid JSON".
+        code, text = run(["update", self.book, "-"], stdin='﻿{"edits": [{"sheet": "Data", "cell": "B2", "value": 77}]}')
+        self.assertEqual(code, 0, text)
+        self.assertIn("<v>77</v>", self.read("xl/worksheets/sheet1.xml"))
+
     def test_a_bad_spec_says_so_and_changes_nothing(self):
         before = self.read("xl/worksheets/sheet1.xml")
         code, text = run(["update", self.book, "-"], stdin="edits: B2=99")

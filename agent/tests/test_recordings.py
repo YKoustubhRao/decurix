@@ -9,6 +9,7 @@ display; the screen-facing half is exercised on a live desktop.
 
 import io
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -509,6 +510,7 @@ class TypingIntoAField(unittest.TestCase):
         self.assertTrue(self.entry("Initech", role="paragraph")["append"])
 
 
+@unittest.skipIf(os.name == "nt", "the X recorder's startup; a Windows worker's recorder is in test_windows_computer")
 class RecorderStartup(unittest.TestCase):
     def test_ready_before_slow_initial_screen_read_and_keeps_queued_input(self):
         from decurix_agent.computer import demonstration
@@ -600,8 +602,12 @@ class FakeRecorder:
         return recording.meta(self.session_id)
 
     def stop(self):
-        self.active = False
+        # In the real recorder's order: the recording is marked complete, and
+        # only then is the recorder gone. The other way round, record_task's
+        # poll could see "gone" before "complete" (it did, on Windows, where
+        # writing the file takes longer) and report a recording cut short.
         recording.update(self.session_id, status="complete", ended_at=time.time())
+        self.active = False
         return recording.meta(self.session_id)
 
     def note(self, text):

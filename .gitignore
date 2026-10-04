@@ -7,3 +7,8 @@ bench/gui/results/
 /decurix
 node_modules/
 desktop/electron/build/
+# Written by `go generate .` (embed_gen.go) from agent/thebot.
+agent/thebot.tar.gz
+# A Windows build of the control plane at the repository root (go build ./cmd/decurix).
+/decurix.exe
+bench/native/results/

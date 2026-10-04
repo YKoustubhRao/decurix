@@ -1,7 +1,7 @@
 // Package memory holds worker memory entries: reusable workflows or
 // decisions learned while a desktop worker was operating. Entries are kept in
-// the control plane's SQLite database, so they outlive both a restart and the
-// desktop they were learned on.
+// the control plane's SQLite database, so they outlive a restart - and are
+// deleted with the desktop they were learned on (DeleteForDesktop).
 package memory
 
 import (
@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
@@ -74,6 +75,31 @@ const (
 	maxSummaryLen   = 4000
 )
 
+// entryIDs hands out memory entry IDs: the time in nanoseconds, moved on by
+// one when the clock has not moved since the last one. The time alone was the
+// ID, and on Windows - where the clock a program reads ticks far more
+// coarsely than a nanosecond - two entries recorded together got the same
+// one, and the second was refused (a UNIQUE failure, so a lesson lost). The
+// same fault query notes had (httpapi's nextNoteID).
+var entryIDs struct {
+	mu   sync.Mutex
+	last int64
+}
+
+// nextEntryID returns an ID no other entry recorded by this process has.
+func nextEntryID() string {
+	entryIDs.mu.Lock()
+	defer entryIDs.mu.Unlock()
+
+	id := time.Now().UnixNano()
+	if id <= entryIDs.last {
+		id = entryIDs.last + 1
+	}
+	entryIDs.last = id
+
+	return fmt.Sprintf("memory-%d", id)
+}
+
 // Record validates and stores a new worker memory entry. It does not persist
 // the entry to a desktop container — callers that need that should follow up
 // with FormatForDesktopFile and the desktop package's PersistMemoryFile.
@@ -105,7 +131,7 @@ func (s *Store) Record(desktopID, title, summary, category string) (WorkerMemory
 	}
 
 	entry := WorkerMemoryEntry{
-		ID:        fmt.Sprintf("memory-%d", time.Now().UnixNano()),
+		ID:        nextEntryID(),
 		DesktopID: strings.TrimSpace(desktopID),
 		Title:     title,
 		Summary:   summary,
@@ -154,8 +180,9 @@ func (s *Store) Record(desktopID, title, summary, category string) (WorkerMemory
 	return entry, nil
 }
 
-// maxListedEntries bounds one List call. Worker memory accumulates forever -
-// nothing here deletes or archives an entry - so an unfiltered List (the
+// maxListedEntries bounds one List call. Worker memory accumulates for as
+// long as its desktop exists - nothing deletes or archives a single entry;
+// only deleting the desktop removes them - so an unfiltered List (the
 // dashboard's own call, on every page load) stays flat-cost as the fleet's
 // history grows instead of materializing every entry ever recorded.
 const maxListedEntries = 2000
@@ -198,6 +225,62 @@ func (s *Store) List(desktopID string) []WorkerMemoryEntry {
 	}
 
 	return entries
+}
+
+// DeleteForDesktop removes everything a desktop learned - its entries, and
+// its links to other workers - and returns the IDs of the entries removed
+// (for whoever keeps something per entry: suggest's embedding cache).
+//
+// Called when the desktop is deleted. Its memory used to stay: a desktop made
+// later under the same name is another worker, and its card then listed the
+// old one's memory - a skill among it that the new worker did not have. A
+// person who wants a worker's know-how to outlive it takes a backup and
+// restores it into another (httpapi's backup.go, restore.go).
+//
+// What a linked worker was given while the link stood is that worker's own
+// by now (a file in its own memory folder), and stays with it.
+func (s *Store) DeleteForDesktop(desktopID string) ([]string, error) {
+	desktopID = strings.TrimSpace(desktopID)
+	if desktopID == "" {
+		return nil, nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("memory: delete for desktop: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Read to the end and closed before the next statement (see sqlitedb).
+	rows, err := tx.Query(`SELECT id FROM worker_memory WHERE desktop_id = ?`, desktopID)
+	if err != nil {
+		return nil, fmt.Errorf("memory: delete for desktop: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("memory: delete for desktop: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("memory: delete for desktop: %w", err)
+	}
+
+	if _, err := tx.Exec(`DELETE FROM worker_memory WHERE desktop_id = ?`, desktopID); err != nil {
+		return nil, fmt.Errorf("memory: delete for desktop: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM worker_memory_links WHERE worker_a = ? OR worker_b = ?`, desktopID, desktopID); err != nil {
+		return nil, fmt.Errorf("memory: delete for desktop: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("memory: delete for desktop: %w", err)
+	}
+
+	return ids, nil
 }
 
 // linkKey canonicalizes a pair of desktop IDs into a stable (a, b) order so

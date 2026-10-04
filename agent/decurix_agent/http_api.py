@@ -66,6 +66,14 @@ from decurix_agent.messaging import save_request
 #   POST /demonstration/pause            {reason}
 #   POST /demonstration/resume
 #   POST /demonstration/stop
+#   POST /open                           {target}: a person opening an app, a
+#                                        file or a web address on this screen
+#                                        (a step of the demonstration, when
+#                                        one is being recorded)
+#   POST /demonstration/input            a native Windows worker only: one
+#                                        click or key a person made in the
+#                                        dashboard's viewer, before it is
+#                                        applied; answers {recording}
 #   GET  /ticket                         the ticket open on this desktop, if
 #                                        any - the GUI screen's toolbar
 #   POST /ticket/begin                   start capturing for the open ticket
@@ -270,6 +278,12 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 2 and parts[0] == "demonstration":
                 return self._demonstration(parts[1], data)
 
+            if parts == ["open"]:
+                # A person asking, from the dashboard's viewer, for an app, a
+                # file or a web address to be opened on this screen.
+                summary = demonstration.open_as_person(_text(data.get("target"), 2000))
+                return self._json(200, {"status": "ok", "summary": summary})
+
             if parts == ["recordings", "import"]:
                 return self._import(data)
 
@@ -350,6 +364,11 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(200, dict(result, status="ok"))
 
     def _demonstration(self, action, data):
+        if action == "input":
+            # A native Windows worker: what a person did in the dashboard's
+            # viewer, sent by the control plane before it applies it.
+            return self._json(200, {"recording": demonstration.feed(data)})
+
         if action == "start":
             meta = demonstration.start(title=_text(data.get("title"), 200), description=_text(data.get("description"), 2000))
         elif action == "pause":

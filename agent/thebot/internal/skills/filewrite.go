@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"thebot/internal/hostshell"
 	"thebot/internal/llm"
 )
 
@@ -38,6 +39,8 @@ Respond in EXACTLY this format, nothing else:
 PATH: <relative path for the file, e.g. code/segment_tree.py - infer a sensible name and folder if the user didn't give one>
 CONTENT:
 <the complete file content, raw, with no markdown fences>
+
+If the file cannot be written because its content depends on something only the user knows and has not said (a preference, a name, a figure), do not write a file: reply with exactly one line, ASK: <the question for the user>.
 
 The content must be complete and final. Never leave placeholders like [insert date] or "as of my last update" - if you were given findings below, they are the current truth and you must use them.
 
@@ -152,6 +155,26 @@ func (f *FileWriteSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		}, nil
 	}
 
+	// What the model wrote is a question for the person, not a file: found
+	// live (2026-10-04), asked to write "my usual sign-off, only I know it,
+	// ask me first" into signoff.txt, the model's "I need your usual message
+	// sign-off text before I can write signoff.txt." was saved as the file
+	// and the task reported "Wrote signoff.txt". The operator can ask, wait
+	// for the answer and then write it.
+	if question := asksThePerson(content); question != "" {
+		rc.Logf("file-write", "the model asked for something instead of writing the file - nothing written")
+		return Result{
+			Subtask: subtask, SkillName: f.Name(),
+			Output:   "Not written: the content depends on something only the person knows.",
+			Verified: false,
+			Meta: map[string]any{
+				"reroute": "operator",
+				"rerouteNote": "Nothing has been written yet. The file's content depends on something only the person knows (" +
+					question + "): ask them with HELP, and write the file with a shell command once they answer.",
+			},
+		}, nil
+	}
+
 	// The user's own filename wins over the model's invention.
 	if explicit := pathFromRequest(subtask.Step); explicit != "" {
 		path = explicit
@@ -194,6 +217,52 @@ func (f *FileWriteSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	}, nil
 }
 
+var (
+	askMarkerRe = regexp.MustCompile(`(?im)^\s*ASK\s*:\s*(.+)$`)
+	// A short reply that speaks to the person about what is missing, in the
+	// words models use for it. Short only: a real file may well contain
+	// "please provide" somewhere in its text.
+	asksPersonRe = regexp.MustCompile(`(?i)^\W*(i (?:need|require|do not have|don't have|do not know|don't know|cannot|can't|am unable)\b` +
+		`|i'm unable\b|please (?:provide|tell|share|specify|give|let me know)\b` +
+		`|(?:could|can|would) you (?:please )?(?:provide|tell|share|specify|give)\b` +
+		`|what (?:is|are|should|would) (?:your|the|i)\b|before i can\b)`)
+)
+
+// maxQuestionChars bounds what can be taken for a question rather than a file.
+const maxQuestionChars = 400
+
+// asksThePerson returns the question when what the model produced as a
+// file's content is really the model asking the person for something, and
+// "" when it is content.
+func asksThePerson(content string) string {
+	text := strings.TrimSpace(content)
+	if m := askMarkerRe.FindStringSubmatch(text); m != nil && len(text) <= maxQuestionChars {
+		return strings.TrimSpace(m[1])
+	}
+	if text == "" || len(text) > maxQuestionChars || strings.Count(text, "\n") > 3 {
+		return ""
+	}
+	if asksPersonRe.MatchString(text) {
+		return text
+	}
+	return ""
+}
+
+var addressesPersonRe = regexp.MustCompile(`(?i)\b(you|your)\b|\?\s*$`)
+
+// doneAsksThePerson returns the question when an operator's DONE is not an
+// answer but a request to the person for what is missing ("I need your
+// sign-off text to write the file"), and "" otherwise. Narrower than
+// asksThePerson: "I can't find notes.txt in /etc" is a real answer, so the
+// text must also speak to the person.
+func doneAsksThePerson(answer string) string {
+	question := asksThePerson(answer)
+	if question == "" || !addressesPersonRe.MatchString(question) {
+		return ""
+	}
+	return question
+}
+
 // resolveWritePath decides where a file actually lands.
 //
 // A relative path is relative to the step's working directory, which is
@@ -222,6 +291,12 @@ func resolveWritePath(rc RunContext, path string) (string, error) {
 	p = filepath.Clean(p)
 
 	roots := []string{rc.WorkDir, home, os.TempDir()}
+	if hostshell.Windows {
+		// A native Windows worker's home and temp folder are the person's
+		// own, with their documents in them: only its work folder and
+		// workspace are its to write in.
+		roots = []string{rc.WorkDir}
+	}
 	if rc.Workspace != nil {
 		roots = append(roots, rc.Workspace.Root())
 	}

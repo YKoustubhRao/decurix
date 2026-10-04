@@ -174,3 +174,29 @@ func TestGeneralRunWithNoSessionHistoryStillWorks(t *testing.T) {
 		t.Errorf("Chat() received %d messages, want 2 (system + new user turn) when there's no session history", len(stub.gotMessages))
 	}
 }
+
+// Found live: a taught screen task reached the chat skill, which answered
+// "DONE" - the operator's word - and that was reported as the task's result
+// with nothing done. A reply that opens like the operator's is work, and is
+// handed to the operator.
+func TestGeneralHandsAnOperatorStyleReplyToTheOperator(t *testing.T) {
+	for _, reply := range []string{"DONE", "DONE: opened the profile", "**DONE**", "COMMAND: gui observe"} {
+		stub := &stubChatProvider{response: reply}
+		rc := RunContext{Ctx: context.Background(), Provider: stub, Model: "test-model", OnLog: func(string) {}}
+
+		result, err := NewGeneral().Run(rc, Subtask{Step: `search "sundar pichai"`, Type: "general"})
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+		if result.Verified || result.Meta["reroute"] != "operator" {
+			t.Errorf("reply %q: Verified = %v, Meta = %v; want it handed to the operator", reply, result.Verified, result.Meta)
+		}
+	}
+
+	// An ordinary answer that merely contains the word is still an answer.
+	stub := &stubChatProvider{response: "It is done when the kettle clicks."}
+	rc := RunContext{Ctx: context.Background(), Provider: stub, Model: "test-model", OnLog: func(string) {}}
+	if result, _ := NewGeneral().Run(rc, Subtask{Step: "when is tea done?", Type: "general"}); !result.Verified {
+		t.Errorf("an ordinary answer was taken for an operator's reply: %+v", result.Meta)
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"thebot/internal/hostshell"
 	"thebot/internal/llm"
 )
 
@@ -36,7 +37,7 @@ func operatorContext(t *testing.T, provider llm.Provider) RunContext {
 
 func TestOperatorRunsCommandsAndAnswersFromWhatTheyPrinted(t *testing.T) {
 	chat := &scriptedChat{replies: []string{
-		"COMMAND:\nls | wc -l",
+		"COMMAND:\n" + forShell("ls | wc -l", "(Get-ChildItem).Count"),
 		"DONE:\nThere are 3 files.",
 	}}
 	rc := operatorContext(t, chat)
@@ -160,6 +161,79 @@ func TestOperatorTakesAnUnmarkedReplyAsTheAnswerEventually(t *testing.T) {
 	}
 }
 
+// Found live: a 1.5B model replied "DONE" four times to "open character map"
+// and that word was reported as the task's result.
+func TestOperatorNeverTakesABareMarkerAsTheAnswer(t *testing.T) {
+	for _, word := range []string{"DONE", "**Done.**", "HELP"} {
+		chat := &scriptedChat{replies: []string{word, word, word, word}}
+		res, _ := NewOperator().Run(operatorContext(t, chat), Subtask{Step: "open character map", Type: "operator"})
+		if res.Verified || res.Meta["needsUserInput"] != true {
+			t.Errorf("%q: result = %+v, want an unfinished task put to the person", word, res)
+		}
+		// As a question of its own, so the scheduler does not go on to
+		// "reason about the failure" and page the person with a guess.
+		if q, _ := res.Meta["question"].(string); !strings.Contains(q, "could not finish") || res.Checkpoint == nil {
+			t.Errorf("%q: question = %q, checkpoint %v", word, q, res.Checkpoint)
+		}
+	}
+}
+
+// ...but after a command that worked, a bare "DONE" means the model is
+// finished: what the command printed is the answer. Found live: the computer's
+// name was on the screen of the transcript, and the person was paged about a
+// "failed" step instead of being told it.
+func TestOperatorAnswersWithWhatTheCommandPrintedWhenDoneSaysNothing(t *testing.T) {
+	chat := &scriptedChat{replies: []string{"COMMAND:\necho LMNOP", "DONE", "DONE", "DONE", "DONE"}}
+	res, _ := NewOperator().Run(operatorContext(t, chat), Subtask{Step: "what is the name of this computer?", Type: "operator"})
+	if !res.Verified || !strings.Contains(res.Output, "LMNOP") {
+		t.Fatalf("result = %+v, want the command's own output as the answer", res)
+	}
+}
+
+// A reply that is one command with no marker is run, never delivered as the
+// answer; anything a sentence could be is left alone.
+func TestUnmarkedCommand(t *testing.T) {
+	for reply, want := range map[string]string{
+		`Get-ChildItem C:\work -FileCount`:      `Get-ChildItem C:\work -FileCount`,
+		"`(Get-ChildItem).Count`":               "(Get-ChildItem).Count",
+		"```powershell\n$env:COMPUTERNAME\n```": "$env:COMPUTERNAME",
+		"gui observe":                           "gui observe",
+		`office read pack.pdf 2`:                `office read pack.pdf 2`,
+		"241":                                   "",
+		"There are 3 files.":                    "",
+		"Get the file and read it.":             "",
+		"gui is the command to use":             "",
+		"Get-ChildItem\nThen count them":        "",
+		"The command is Get-ChildItem":          "",
+		"which one do you want?":                "",
+		"ls | wc -l":                            "",
+	} {
+		if got := unmarkedCommand(reply); got != want {
+			t.Errorf("unmarkedCommand(%q) = %q, want %q", reply, got, want)
+		}
+	}
+}
+
+func TestOperatorRunsACommandSentWithoutItsMarker(t *testing.T) {
+	if !hostshell.Windows {
+		t.Skip("the shapes recognised without a marker are the worker's own commands and PowerShell's")
+	}
+	chat := &scriptedChat{replies: []string{"(Get-ChildItem).Count", "DONE:\nThere are 2 entries."}}
+	rc := operatorContext(t, chat)
+	for _, name := range []string{"a", "b"} {
+		if err := os.WriteFile(filepath.Join(rc.WorkDir, name), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res, _ := NewOperator().Run(rc, Subtask{Step: "how many files are here?", Type: "operator"})
+	if !res.Verified || res.Output != "There are 2 entries." {
+		t.Fatalf("result = %+v", res)
+	}
+	if shown := chat.calls[1][len(chat.calls[1])-1].Content; !strings.Contains(shown, "exit_code: 0") || !strings.Contains(shown, "2") {
+		t.Errorf("the unmarked command was not run and shown: %s", shown)
+	}
+}
+
 func TestOperatorPausesForApprovalAndResumes(t *testing.T) {
 	chat := &scriptedChat{replies: []string{
 		"COMMAND:\ngit push origin main",
@@ -168,11 +242,7 @@ func TestOperatorPausesForApprovalAndResumes(t *testing.T) {
 	op := NewOperator()
 	rc := operatorContext(t, chat)
 	// A fake git so the approved command has something harmless to run.
-	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\necho pushed-for-real\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	stubProgram(t, "git", "echo pushed-for-real\n", "echo pushed-for-real\r\n")
 
 	res, _ := op.Run(rc, Subtask{Step: "push my branch", Type: "operator"})
 	if res.Meta["needsApproval"] != true || res.Meta["action"] != "git push origin main" || res.Checkpoint == nil {
@@ -207,14 +277,14 @@ func TestOperatorPausesWhenTheScreenGateStopsAGuiAction(t *testing.T) {
 
 	// A fake gui: stopped until the grant file exists, as the real gate is
 	// until a human's approval turns into a grant.
-	bin := t.TempDir()
 	grant := filepath.Join(t.TempDir(), "granted")
-	script := "#!/bin/sh\nif [ -f " + grant + " ]; then echo 'Clicked button \"Send newsletter\" (e35).'; exit 0; fi\n" +
-		"echo 'NEEDS_APPROVAL: Approval needed before I click button \"Send newsletter\" (e35) in \"Newsletter\": it sends something on your behalf. Nothing was clicked or sent.'\nexit 3\n"
-	if err := os.WriteFile(filepath.Join(bin, "gui"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	stubWorkerTools(t,
+		"if [ -f "+grant+" ]; then echo 'Clicked button \"Send newsletter\" (e35).'; exit 0; fi\n"+
+			"echo 'NEEDS_APPROVAL: Approval needed before I click button \"Send newsletter\" (e35) in \"Newsletter\": it sends something on your behalf. Nothing was clicked or sent.'\nexit 3\n",
+		"",
+		"if exist \""+grant+"\" goto granted\r\n"+
+			"echo NEEDS_APPROVAL: Approval needed before I click button \"Send newsletter\" (e35) in \"Newsletter\": it sends something on your behalf. Nothing was clicked or sent.\r\nexit /b 3\r\n"+
+			":granted\r\necho Clicked button \"Send newsletter\" (e35).\r\nexit /b 0\r\n")
 
 	res, _ := op.Run(rc, Subtask{Step: "send the newsletter", Type: "operator"})
 	if res.Meta["needsApproval"] != true || res.Meta["action"] != "gui click e35" || res.Checkpoint == nil {
@@ -286,7 +356,10 @@ func TestParseControl(t *testing.T) {
 // returned at once and must be reported as such, not hang to the timeout.
 func TestRunShellDoesNotHangOnABackgroundedChild(t *testing.T) {
 	start := time.Now()
-	res := runShell(context.Background(), t.TempDir(), "sleep 30 & echo started", 20*time.Second)
+	res := runShell(context.Background(), t.TempDir(), forShell(
+		"sleep 30 & echo started",
+		// (Started in another folder, so the test's own can be removed.)
+		"Start-Process -NoNewWindow -WorkingDirectory $env:SystemRoot ping.exe -ArgumentList '-n','30','127.0.0.1'; echo started"), 20*time.Second)
 	if elapsed := time.Since(start); elapsed > 10*time.Second {
 		t.Fatalf("runShell took %s for a command that returns immediately", elapsed)
 	}
@@ -305,7 +378,9 @@ func TestRunShellKillsATimedOutCommand(t *testing.T) {
 // Nothing may read a terminal: an installer's "continue? [Y/n]" must fail
 // fast on EOF instead of waiting forever.
 func TestRunShellGivesCommandsNoStdin(t *testing.T) {
-	res := runShell(context.Background(), t.TempDir(), "read -r answer; echo \"got=[$answer]\"", 5*time.Second)
+	res := runShell(context.Background(), t.TempDir(), forShell(
+		"read -r answer; echo \"got=[$answer]\"",
+		"$answer = [Console]::In.ReadLine(); echo \"got=[$answer]\""), 15*time.Second)
 	if !strings.Contains(res.Output, "got=[]") {
 		t.Errorf("result = %+v, want read to see EOF", res)
 	}
@@ -318,8 +393,31 @@ func TestResolveWritePathUsesTheWorkingDirectory(t *testing.T) {
 	if err != nil || got != filepath.Join(work, "notes", "today.md") {
 		t.Errorf("resolveWritePath = %q, %v", got, err)
 	}
-	if _, err := resolveWritePath(rc, "/etc/passwd"); err == nil {
-		t.Error("resolveWritePath allowed /etc/passwd")
+	outside := "/etc/passwd"
+	if hostshell.Windows {
+		// "/etc/passwd" is not an absolute path on Windows; this is.
+		outside = filepath.Join(os.Getenv("SystemRoot"), "win.ini")
+	}
+	if _, err := resolveWritePath(rc, outside); err == nil {
+		t.Errorf("resolveWritePath allowed %s", outside)
+	}
+}
+
+// A native Windows worker's home is the person's own, with their documents
+// in it: the file-write skill writes in the worker's folder only.
+func TestResolveWritePathKeepsOutOfThePersonsHomeOnWindows(t *testing.T) {
+	if !hostshell.Windows {
+		t.Skip("a Linux desktop's home is the desktop's own")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory")
+	}
+	rc := RunContext{WorkDir: t.TempDir()}
+	for _, p := range []string{filepath.Join(home, "Documents", "notes.txt"), "~/notes.txt"} {
+		if got, err := resolveWritePath(rc, p); err == nil && !strings.HasPrefix(got, rc.WorkDir) {
+			t.Errorf("resolveWritePath(%q) = %q, outside the worker's folder", p, got)
+		}
 	}
 }
 
@@ -378,7 +476,8 @@ func TestOperatorPushesBackOnQueryRightAfterAFailure(t *testing.T) {
 		t.Fatalf("result = %+v, want the second way to finish the task", res)
 	}
 	resultTurn := chat.calls[1][len(chat.calls[1])-1].Content
-	if !strings.Contains(resultTurn, "`no-such-program-decurix` is not installed") {
+	// PowerShell stops at the first name it does not know, which is xargs.
+	if !strings.Contains(resultTurn, forShell("`no-such-program-decurix` is not installed", "`xargs` is not a command on this computer")) {
 		t.Errorf("the failed command's result did not say the program is missing:\n%s", resultTurn)
 	}
 	nudge := chat.calls[2][len(chat.calls[2])-1].Content
@@ -422,10 +521,41 @@ func TestMissingProgramHintNamesOnlyAProgramTheCommandRan(t *testing.T) {
 	}
 }
 
+// A Linux command on a Windows worker is the same failure in PowerShell's
+// words, and the model is told the PowerShell for it.
+func TestMissingProgramHintOnWindowsNamesThePowerShellWay(t *testing.T) {
+	if !hostshell.Windows {
+		t.Skip("PowerShell's wording, on a native Windows worker")
+	}
+	output := "grep : The term 'grep' is not recognized as the name of a cmdlet, function, script file, or operable program. Check \nthe spelling of the name"
+	hint := missingProgramHint(output, "grep -r total report.txt")
+	if !strings.Contains(hint, "`grep` is not a command on this computer") || !strings.Contains(hint, "Select-String") {
+		t.Errorf("grep hint = %q", hint)
+	}
+	if hint := missingProgramHint("'jq' is not recognized as an internal or external command,", "cmd /c jq ."); !strings.Contains(hint, "ConvertFrom-Json") {
+		t.Errorf("jq hint = %q", hint)
+	}
+	// Bash's && is a parse error in PowerShell 5.1: nothing ran at all.
+	chain := "At line:6 char:14\n+ mkdir out && cd out\n+              ~~\nThe token '&&' is not a valid statement separator in this version."
+	if hint := missingProgramHint(chain, "mkdir out && cd out"); !strings.Contains(hint, "has no `&&`") || !strings.Contains(hint, "`;`") {
+		t.Errorf("&& hint = %q", hint)
+	}
+	// A counting switch that does not exist: the count is asked of the result.
+	count := "Get-ChildItem : A parameter cannot be found that matches parameter name 'Count'."
+	if hint := missingProgramHint(count, `Get-ChildItem C:\w -Count`); !strings.Contains(hint, "(Get-ChildItem <dir>).Count") {
+		t.Errorf("count hint = %q", hint)
+	}
+	// A file that is not there is not a missing program.
+	if hint := missingProgramHint("Get-Content : Cannot find path 'C:\\w\\notes.txt' because it does not exist.", "Get-Content notes.txt"); hint != "" {
+		t.Errorf("a missing file was taken for a missing program: %q", hint)
+	}
+}
+
 // Measured live: python3 with a missing module failed twice, and the model
 // answered with a header nothing had printed. A failed repeat does not invite
 // an answer, and a DONE with no successful command is pushed back once.
 func TestOperatorDoesNotTakeAnAnswerNothingShowed(t *testing.T) {
+	workerPython(t)
 	chat := &scriptedChat{replies: []string{
 		"COMMAND:\npython3 -c \"import no_such_module_decurix\"",
 		"COMMAND:\npython3 -c \"import no_such_module_decurix\"",
