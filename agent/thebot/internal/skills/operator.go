@@ -845,6 +845,19 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				res.Checkpoint = st
 				return res, nil
 			}
+			if question := doneAsksThePerson(value); question != "" {
+				// A DONE that only asks the person for what is missing is a
+				// question, whatever marker it came under. Found live
+				// (2026-10-04): told to ask for a sign-off only the person
+				// knows, the model was pushed off its HELP once and then
+				// "finished" with "I need your sign-off text ..." - reported
+				// as the task's result, with nothing paused for the answer.
+				rc.Logf("operator", "said done, but only asks the person for something - asking them")
+				st.Messages = append(st.Messages, reply)
+				res, _ := finish(question, false, map[string]any{"needsUserInput": true, "question": question, "failureReasoning": question})
+				res.Checkpoint = st
+				return res, nil
+			}
 			return finish(value, true, nil)
 
 		case "help":

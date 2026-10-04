@@ -63,13 +63,15 @@ class ControlPlane:
     def send(self, text, timeout=600):
         """Send a request (or a reply) and wait for the agent's next entry."""
 
-        before = len(self.thread().get("entries", []))
+        # By id, not by count: a chat keeps its last 200 entries, so on a worker that has been
+        # used a while the count stops growing and a new answer was never noticed.
+        seen = {e.get("id") for e in self.thread().get("entries", [])}
         status, answer = self.api("/api/desktops/send", {"id": self.desk, "content": text})
         if status >= 300:
             raise SystemExit(f"could not send {text!r}: {status} {answer}")
         deadline = time.time() + timeout
         while time.time() < deadline:
-            new = [e for e in self.thread().get("entries", [])[before:] if e.get("role") == "agent"]
+            new = [e for e in self.thread().get("entries", []) if e.get("id") not in seen and e.get("role") == "agent"]
             if new:
                 return new[-1]
             time.sleep(0.5)
@@ -282,6 +284,19 @@ def main():
         entry, asked = run('open messaging and send "deck looks good" to rahul verma', ["no, do not send it"])
         check(state()["sent"] == [], "nothing was sent")
         check(len(asked) == 1, f"it did not try again ({len(asked)} question(s))")
+
+        # Found live (2026-10-04): a quoted message that ended in the recorded message's own word was
+        # split there - the rest of it became part of the person's name, and "hello" was sent.
+        print("6. A quoted message that ends in the words of the recorded one")
+        entry, asked = run('open messaging and send "decurix auto says hello test" to rahul verma', ["yes"])
+        check(state()["sent"] == [{"to": "Rahul Verma", "text": "decurix auto says hello test"}],
+              f"the whole message went to the right person: {state()['sent']}")
+        check(len(asked) == 1 and 'button "Send"' in asked[0], f"asked once, for Send ({len(asked)} question(s))")
+
+        print("7. The same task, worded another way")
+        entry, asked = run('message adish shah: "running late, start without me"', ["yes"])
+        check(state()["sent"] == [{"to": "Adish Shah", "text": "running late, start without me"}],
+              f"the site got it: {state()['sent']}")
     finally:
         server.terminate()
 

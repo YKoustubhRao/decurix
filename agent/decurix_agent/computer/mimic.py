@@ -162,6 +162,10 @@ def align(recorded, request, places):
     matcher = difflib.SequenceMatcher(None, [w for w, _, _ in old_words], [w for w, _, _ in new_words], autojunk=False)
     opcodes = matcher.get_opcodes()
 
+    old_quotes, new_quotes = _quote_of(recorded, old_words), _quote_of(request, new_words)
+    if _straddles(opcodes, old_quotes, new_quotes):
+        opcodes = _by_quotes(old_words, new_words, old_quotes, new_quotes)
+
     # The task's shape: every ticket word that is not filler, not anything the
     # person typed or clicked, and not a value (a number, a quoted phrase, a
     # name) must be there, unchanged.
@@ -215,6 +219,81 @@ def align(recorded, request, places):
         return None
 
     return {"spans": spans, "shared": sum(1 for i in kept if old_words[i][0] not in FILLER)}
+
+
+# ------------------------------------------------------------
+# A quoted phrase is one value
+#
+# Found live (2026-10-04): taught as `... send sarthak gawade "hello"`, asked
+# `... send akshit gupta "decurix auto say hello"`. Word by word the two
+# "hello"s are the same word, so the difference was read as one change:
+# "sarthak gawade" -> `akshit gupta "decurix auto say`. The worker searched
+# for that, typed "hello", and sent it. A change never runs across a quote:
+# what is inside one is a value of its own, taken whole.
+# ------------------------------------------------------------
+
+def _quote_of(text, words):
+    """For each word, which quoted phrase of `text` it is inside (its number), else None."""
+
+    quotes = [(m.start(), m.end()) for m in QUOTED.finditer(text or "")]
+    return [next((k for k, (a, b) in enumerate(quotes) if a < start < b), None) for _, start, _ in words]
+
+
+def _straddles(opcodes, old_quotes, new_quotes):
+    """Whether any change takes in words from both sides of a quote."""
+
+    for tag, i1, i2, j1, j2 in opcodes:
+        if tag != "equal" and (len(set(old_quotes[i1:i2])) > 1 or len(set(new_quotes[j1:j2])) > 1):
+            return True
+    return False
+
+
+def _runs(quotes, start, end):
+    """[start, end) cut where the words pass into or out of a quoted phrase: (from, to, quote number)."""
+
+    runs = []
+    for index in range(start, end):
+        if runs and runs[-1][2] == quotes[index]:
+            runs[-1] = (runs[-1][0], index + 1, quotes[index])
+        else:
+            runs.append((index, index + 1, quotes[index]))
+    return runs
+
+
+def _by_quotes(old_words, new_words, old_quotes, new_quotes):
+    """
+    The two texts compared with each quoted phrase as one thing: a word inside
+    one only ever matches the same word of the same phrase, and a change that
+    covers quoted and unquoted words is cut at the quotes, piece by piece.
+    """
+
+    def keys(words, quotes):
+        phrases = {}
+        for (word, _, _), quote in zip(words, quotes):
+            if quote is not None:
+                phrases.setdefault(quote, []).append(word)
+        out, seen = [], {}
+        for (word, _, _), quote in zip(words, quotes):
+            if quote is None:
+                out.append(word)
+            else:
+                seen[quote] = seen.get(quote, -1) + 1
+                out.append((tuple(phrases[quote]), seen[quote]))
+        return out
+
+    matcher = difflib.SequenceMatcher(None, keys(old_words, old_quotes), keys(new_words, new_quotes), autojunk=False)
+
+    opcodes = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        old_runs, new_runs = _runs(old_quotes, i1, i2), _runs(new_quotes, j1, j2)
+        same_shape = (len(old_runs) == len(new_runs) > 1
+                      and all((a[2] is None) == (b[2] is None) for a, b in zip(old_runs, new_runs)))
+        if tag == "equal" or not same_shape:
+            opcodes.append((tag, i1, i2, j1, j2))
+            continue
+        for (a1, a2, _), (b1, b2, _) in zip(old_runs, new_runs):
+            opcodes.append(("replace", a1, a2, b1, b2))
+    return opcodes
 
 
 def _place(old_words, new_words, request, i1, i2, j1, j2, places):
