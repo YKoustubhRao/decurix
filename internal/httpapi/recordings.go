@@ -238,12 +238,21 @@ func (s *Server) demonstrationHandler(w http.ResponseWriter, r *http.Request) {
 // task of their own. Refused while the agent is busy, for the reason a replay
 // is: sent to a paused agent it would be taken as the reply.
 func (s *Server) recordTaskHandler(w http.ResponseWriter, r *http.Request) {
+	limitUpload(w, r)
+
+	files, err := readAttachments(r)
+	if err != nil {
+		uploadError(w, err)
+		return
+	}
+
 	id, ok := requireDesktop(w, r, http.MethodPost)
 	if !ok {
 		return
 	}
 
-	task := strings.TrimSpace(r.FormValue("task"))
+	// One line: what follows the task's line is the files it was given.
+	task := strings.Join(strings.Fields(r.FormValue("task")), " ")
 	if task == "" {
 		jsonStatusError(w, http.StatusBadRequest, "say what task you are about to do")
 		return
@@ -269,6 +278,21 @@ func (s *Server) recordTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The documents the person will work from (a PO to key in, an invoice to
+	// file): kept with the ticket's recording, so a lesson taught from it
+	// reads them beside what was typed (record_task.py, study.py).
+	paths, err := s.putAttachments(r.Context(), worker, files)
+	if err != nil {
+		uploadError(w, err)
+		return
+	}
+
+	content = withAttachments(content, paths)
+	if len(content) > maxRequestBytes {
+		jsonStatusError(w, http.StatusBadRequest, "request too long")
+		return
+	}
+
 	route := s.routeRequest(worker, content)
 
 	if err := s.deliverRequest(r.Context(), id, content, route.TaskID); err != nil {
@@ -279,6 +303,38 @@ func (s *Server) recordTaskHandler(w http.ResponseWriter, r *http.Request) {
 	route = s.recordDelivered(r.Context(), worker, content, route)
 
 	jsonResponse(w, map[string]string{"status": "sent", "task_id": route.TaskID, "content": content})
+}
+
+// ticketAttachHandler adds files to the ticket open on a desktop (POST
+// /api/desktops/ticket/attach, multipart: id + files): a document the person
+// reaches for part way through, kept with the ticket's recording like the
+// ones it was opened with.
+func (s *Server) ticketAttachHandler(w http.ResponseWriter, r *http.Request) {
+	limitUpload(w, r)
+
+	files, err := readAttachments(r)
+	if err != nil {
+		uploadError(w, err)
+		return
+	}
+
+	id, ok := requireDesktop(w, r, http.MethodPost)
+	if !ok {
+		return
+	}
+
+	if len(files) == 0 {
+		jsonStatusError(w, http.StatusBadRequest, "choose a file to attach")
+		return
+	}
+
+	paths, err := s.putAttachments(r.Context(), desktop.SanitizeID(id), files)
+	if err != nil {
+		uploadError(w, err)
+		return
+	}
+
+	s.callAgent(w, r, id, http.MethodPost, "/ticket/attach", map[string]any{"files": paths}, true)
 }
 
 // How long opening something on a worker's screen may take: a browser

@@ -289,3 +289,25 @@ func TestEarlyDoneNudgeIsNarrow(t *testing.T) {
 		t.Errorf("a short answer said again is still an echo when it is the whole earlier answer")
 	}
 }
+
+// A file a person attached is a document of the request whatever its kind,
+// and an answer given before anything read it is sent back.
+func TestAnAttachedFileIsADocumentOfTheRequest(t *testing.T) {
+	request := "what does this say?\n\n" + attachedFilesMark +
+		"\n  /home/headless/work/inbox/up-1/notes.txt\n  /home/headless/work/inbox/up-1/PO.pdf"
+
+	docs := requestDocuments(request)
+	if len(docs) != 2 || docs[0] != "/home/headless/work/inbox/up-1/PO.pdf" || docs[1] != "/home/headless/work/inbox/up-1/notes.txt" {
+		t.Fatalf("documents = %q", docs)
+	}
+
+	st := groundingState("what does this say?\n\n" + attachedFilesMark + "\n  /home/headless/work/inbox/up-1/notes.txt")
+	if n := earlyDoneNudge(st, nil, "It is a shopping list."); !strings.Contains(n, "office read /home/headless/work/inbox/up-1/notes.txt") {
+		t.Errorf("an unread attachment was answered about: %q", n)
+	}
+
+	st.Commands = []string{"office read /home/headless/work/inbox/up-1/notes.txt"}
+	if n := earlyDoneNudge(st, nil, "It is a shopping list."); n != "" {
+		t.Errorf("an answer after reading the attachment was pushed back: %q", n)
+	}
+}

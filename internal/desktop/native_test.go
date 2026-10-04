@@ -135,6 +135,14 @@ func TestFilesGoIntoAndComeOutOfANativeWorkersHome(t *testing.T) {
 		t.Errorf("notes.txt = %q, %v (a sender's folder is not part of the name)", data, err)
 	}
 
+	// The agent is told where a file is by its real place on this computer.
+	if got := m.AgentPath("ada", "/home/headless/work/inbox/7/notes.txt"); got != filepath.Join(inbox, "notes.txt") {
+		t.Errorf("AgentPath = %q, want %q", got, filepath.Join(inbox, "notes.txt"))
+	}
+	if got := m.AgentPath("ada", "/etc/passwd"); got != "/etc/passwd" {
+		t.Errorf("a path outside the home became %q", got)
+	}
+
 	for _, outside := range []string{"/home/headless", "/etc/passwd", "/home/headless/../../windows"} {
 		if err := m.CopyFiles(ctx, "ada", outside, files); err == nil {
 			t.Errorf("files were copied to %s, outside the worker's home", outside)

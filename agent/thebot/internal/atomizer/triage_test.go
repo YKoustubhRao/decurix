@@ -232,3 +232,16 @@ func TestTriageSendsAThingToLookUpToTheWebSkill(t *testing.T) {
 		}
 	}
 }
+
+// A request a person attached files to is the operator's, whatever it asks:
+// only the operator can read a file, and the chat skill would answer about a
+// document it never opened.
+func TestTriageSendsARequestWithAttachedFilesToTheOperator(t *testing.T) {
+	p := "what does this say?\n\n" + attachedFilesMark + "\n  /home/headless/work/inbox/up-1/notes.txt"
+	if got := Triage(p); got.Kind != RouteOperate {
+		t.Fatalf("Triage(%q) = %v (%s), want operate", p, got.Kind, got.Reason)
+	}
+	if got := Triage("what does this say?"); got.Kind == RouteOperate {
+		t.Errorf("the same question with no file went to the operator (%s)", got.Reason)
+	}
+}

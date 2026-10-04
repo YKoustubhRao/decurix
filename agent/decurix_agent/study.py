@@ -1,7 +1,7 @@
 import json
 import re
 
-from decurix_agent import llm_client, usage
+from decurix_agent import attachments, llm_client, usage
 from decurix_agent.computer import evidence, learning, replay
 from decurix_agent.logging_utils import log
 
@@ -45,7 +45,7 @@ STUDY_SYSTEM = """You are an apprentice learning a computer task by watching a p
 Study the recording you are given - the numbered steps (what was clicked, typed, in which window), the person's own notes, and the screenshots - and work out:
 - summary: what the task achieves, in two or three sentences, in the person's terms.
 - steps: what each step is FOR (not what it clicks), by step number. For every press you are shown the screen at the moment the person pressed, with a red ring on the exact spot: look at what is under the ring and around it, and say what that thing IS in the task ("the first conversation in the search results", "the result for the company that was searched for") - the step list only names the text or control that happened to be under the pointer, which on another run will read differently. If the list's name for a press and what the ring is on disagree, trust the picture and say so.
-- inputs: for each typed value (named by its parameter), what it is and where a future run gets it (the request, a document, always the same...).
+- inputs: for each typed value (named by its parameter), what it is and where a future run gets it (the request, a document, always the same...). When the documents the person worked from are shown (the files attached to their ticket), find each typed value in them and say which document and which label or line it was read from ("the customer named on the purchase order", "the Qty column, one per line"): a future run brings its own documents of the same kind and reads the same things from those. A value that is in a document varies.
 - varies: for each input, true if it will be different on another run, false if it stays the same.
 - done_when: what must be visible on the screen, or true, when the task is finished - concrete enough to check from a screenshot, and true of EVERY run, not only this demonstration. Write an input as its parameter in braces ("a profile page for {typed_text} is open"), never as the value the person happened to use, and leave out details that only this demonstration's result has (this person's city, this order's total, today's date): another run's result will not show them. The same goes for the summary.
 - incidental: step numbers that look accidental or not needed (a stray click, scrolling around, closing a popup that may not appear).
@@ -176,6 +176,24 @@ def _pictures(skill):
     return parts
 
 
+def _documents(skill):
+    """
+    The files attached to the demonstration's ticket, as the model reads them:
+    what the person had in front of them while they typed. Without them a
+    lesson sees "typed Gemini Furniture into Customer" and cannot say where a
+    later run finds its customer.
+    """
+
+    try:
+        return attachments.parts(
+            skill.get("documents"),
+            "The documents the person worked from in this demonstration (attached to their ticket). They are this "
+            "demonstration's own - another run will bring other documents of the same kind:")
+    except Exception as exc:
+        log(f"study: could not read the lesson's documents: {exc}")
+        return []
+
+
 def _described(skill):
     params = {p["name"]: p for p in skill.get("params") or []}
     lines = [f"The task as the person named it: {skill.get('goal') or skill.get('title')}",
@@ -185,6 +203,8 @@ def _described(skill):
     notes = [n["text"] for n in skill.get("notes") or [] if n.get("text")]
     if notes:
         lines.append("The person's own notes while recording: " + " | ".join(notes))
+    if skill.get("documents"):
+        lines.append("Documents attached to the ticket (shown below): " + attachments.names(skill["documents"]))
     if skill.get("tidied"):
         lines.append("Already tidied from the recording: " + "; ".join(skill["tidied"]))
     learned = [p for p in params.values() if p.get("varies")]
@@ -239,7 +259,7 @@ def study(skill):
     if not available():
         return None
     try:
-        data = _call(STUDY_SYSTEM, [{"type": "text", "text": _described(skill)}] + _pictures(skill))
+        data = _call(STUDY_SYSTEM, [{"type": "text", "text": _described(skill)}] + _documents(skill) + _pictures(skill))
     except (llm_client.LLMError, ValueError) as exc:
         log(f"study: could not study {skill.get('name')}: {exc}")
         return None

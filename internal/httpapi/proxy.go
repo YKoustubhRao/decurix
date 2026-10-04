@@ -271,7 +271,11 @@ func rewriteDesktopHTML(resp *http.Response, desktopID string) error {
 // "/record" request goes through), Record starts capturing for it, Stop
 // pauses (for a private step such as signing in), Continue resumes, and End
 // finishes it - which is what makes its recording's export downloadable,
-// offered right there once it does. The tab is also a drag handle: pressing
+// offered right there once it does. A ticket can be given files from the
+// person's own computer - the documents they will work from - when it is
+// opened (the paperclip beside +) and while it is open (Attach): they are
+// saved into the desktop and kept with the ticket's recording, so a lesson
+// taught from it reads them (attachments.go). The tab is also a drag handle: pressing
 // and moving it repositions the whole toolbar anywhere on the screen (see
 // the pointer handlers below), since docked at top-center it can sit over
 // whatever the person actually needs to click on the desktop underneath.
@@ -410,6 +414,26 @@ const ticketToolbar = `
 }
 @keyframes decurix-spin{to{transform:rotate(360deg)}}
 
+.decurix-files{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+.decurix-file{
+  display:inline-flex;align-items:center;gap:4px;
+  max-width:100%;
+  padding:2px 7px;
+  border:1px solid rgba(255,255,255,.2);
+  border-radius:6px;
+  background:rgba(255,255,255,.06);
+  font-size:11.5px;
+}
+.decurix-file span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:190px}
+#decurix-ticket-panel .decurix-file button{
+  flex:none;
+  padding:0 2px;border:0;background:none;
+  color:rgba(242,240,234,.6);font-size:14px;line-height:1;font-weight:400;
+}
+#decurix-ticket-panel .decurix-file button:hover:not(:disabled){background:none;color:#f5a793}
+#decurix-ticket-panel button.decurix-clip{flex:none;padding:8px 9px}
+.decurix-files-hint{font-size:11px;color:rgba(242,240,234,.6);margin-top:8px}
+
 #decurix-ticket-browse{
   display:block;
   margin-top:10px;
@@ -457,6 +481,7 @@ function clearPendingState(){
 }
 var userToggled = false;  // once a person opens/closes the panel by hand, stop auto-opening it for them
 var draftTask = "";       // the create-ticket input's text, kept across re-renders (see renderCreate)
+var draftFiles = [];      // the files chosen for the ticket about to be opened, kept the same way
 var reasonOpen = false;   // the Reason box is expanded
 var draftReason = "";     // its text, kept across re-renders the same way draftTask is
 var endedStarted = "";    // "replay" or "learn" once one was started from the saved-recording view
@@ -479,6 +504,117 @@ function api(path, fields){
         return data;
       });
     });
+}
+
+// api() with files: multipart, each file in the "files" field (attachments.go).
+function apiFiles(path, fields, files){
+  if(!files || !files.length){ return api(path, fields); }
+
+  var body = new FormData();
+  body.append("id", DESKTOP_ID);
+  Object.keys(fields || {}).forEach(function(k){ body.append(k, fields[k]); });
+  files.forEach(function(f){ body.append("files", f, f.name); });
+
+  return fetch(path, {method: "POST", body: body})
+    .then(function(r){
+      return r.json().catch(function(){ return {}; }).then(function(data){
+        if(!r.ok){
+          var failure = new Error(data.error || "that didn't work");
+          failure.status = r.status;
+          throw failure;
+        }
+        return data;
+      });
+    });
+}
+
+var MAX_FILES = 10;
+var MAX_FILE_BYTES = 25 * 1024 * 1024;
+
+// One file picker for the whole toolbar, outside the panel: the panel is
+// rebuilt on every render, and a picker rebuilt under an open file dialog
+// would never hear what was chosen. onPicked is who asked.
+var picker = document.createElement("input");
+picker.type = "file";
+picker.multiple = true;
+picker.style.display = "none";
+root.appendChild(picker);
+
+var onPicked = null;
+
+picker.addEventListener("change", function(){
+  var chosen = Array.prototype.slice.call(picker.files || []);
+  picker.value = "";
+
+  var problem = "";
+  chosen = chosen.filter(function(f){
+    if(f.size > MAX_FILE_BYTES){ problem = f.name + " is too large - at most 25 MB a file."; return false; }
+    if(!f.size){ problem = f.name + " is empty."; return false; }
+    return true;
+  });
+
+  // Whoever asked is answered once: a later choice belongs to a later click.
+  var then = onPicked;
+  onPicked = null;
+
+  if(problem){ error = problem; }
+  if(then && (chosen.length || problem)){ then(chosen); }
+});
+
+function pickFiles(then){
+  onPicked = then;
+  picker.click();
+}
+
+function baseName(path){
+  return String(path).split(/[\\/]/).pop();
+}
+
+// The files as chips; onRemove makes each removable.
+function fileChips(names, onRemove){
+  var list = document.createElement("div");
+  list.className = "decurix-files";
+
+  names.forEach(function(name, index){
+    var chip = document.createElement("span");
+    chip.className = "decurix-file";
+    chip.title = name;
+
+    var text = document.createElement("span");
+    text.textContent = baseName(name);
+    chip.appendChild(text);
+
+    if(onRemove){
+      var x = document.createElement("button");
+      x.type = "button";
+      x.setAttribute("aria-label", "Remove " + baseName(name));
+      x.textContent = "\u00d7";
+      x.disabled = busy;
+      x.addEventListener("click", function(){ onRemove(index); });
+      chip.appendChild(x);
+    }
+
+    list.appendChild(chip);
+  });
+
+  return list;
+}
+
+// Adds files to the ticket that is open: a document reached for part way
+// through, kept with the recording like the ones the ticket was opened with.
+function attachToTicket(files){
+  if(busy || !files.length){ render(); return; }
+  busy = true;
+  render();
+
+  apiFiles("/api/desktops/ticket/attach", {}, files).then(function(data){
+    busy = false;
+    setTicket(data.ticket || ticket);
+  }, function(e){
+    busy = false;
+    error = e.message;
+    render();
+  });
 }
 
 function act(action, fields){
@@ -680,8 +816,9 @@ function renderCreate(){
       }
     }, 25000);
 
-    api("/api/desktops/record", {task: task}).then(function(){
+    apiFiles("/api/desktops/record", {task: task}, draftFiles).then(function(){
       draftTask = "";
+      draftFiles = [];
       busy = false;
       render();
       refresh();
@@ -694,10 +831,32 @@ function renderCreate(){
 
   input.addEventListener("keydown", function(e){ if(e.key === "Enter"){ e.preventDefault(); submit(); } });
 
+  var clip = button("\ud83d\udcce", function(){
+    pickFiles(function(files){
+      draftFiles = draftFiles.concat(files).slice(0, MAX_FILES);
+      render();
+    });
+  }, "decurix-clip", ticketPending);
+  clip.title = "Attach the documents you will work from (from this computer)";
+  clip.setAttribute("aria-label", "Attach files");
+
   var r = row(true);
   r.appendChild(input);
+  r.appendChild(clip);
   r.appendChild(button("+", submit, "decurix-primary", ticketPending));
   panel.appendChild(r);
+
+  if(draftFiles.length){
+    panel.appendChild(fileChips(draftFiles.map(function(f){ return f.name; }), function(index){
+      draftFiles.splice(index, 1);
+      render();
+    }));
+
+    var hint = document.createElement("div");
+    hint.className = "decurix-files-hint";
+    hint.textContent = "Saved in this desktop's work/inbox folder and kept with the recording.";
+    panel.appendChild(hint);
+  }
 }
 
 function renderPending(){
@@ -755,6 +914,14 @@ function renderTicket(){
 
   r.appendChild(button("End", function(){ act("end"); }, "decurix-danger"));
   panel.appendChild(r);
+
+  var attachRow = row(false);
+  var attach = button("\ud83d\udcce Attach files", function(){ pickFiles(attachToTicket); });
+  attach.title = "Add a document from this computer to this ticket";
+  attachRow.appendChild(attach);
+  panel.appendChild(attachRow);
+
+  if(ticket.files && ticket.files.length){ panel.appendChild(fileChips(ticket.files)); }
 
   if(reasonOpen){ panel.appendChild(reasonBox()); }
 }

@@ -95,6 +95,9 @@ func activityOf(thread conversation.Thread) Activity {
 		}
 	}
 
+	// The card says what was asked, not where its files were saved.
+	activity.Request, _ = splitAttachments(activity.Request)
+
 	if title, ok := strings.CutPrefix(activity.Request, "/record"); ok && (title == "" || title[0] == ' ') {
 		activity.Ticket = true
 		activity.Request = strings.TrimSpace(title)

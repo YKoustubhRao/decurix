@@ -174,6 +174,7 @@ def build(sources, name=None):
         "starts": _starts(steps, programs),
         "done_when": None,
         "notes": _notes(steps, programs),
+        "documents": _documents(programs),
         "params": params,
         "steps": steps,
         "loops": loops,
@@ -611,6 +612,22 @@ def _starts(steps, programs):
         return None
 
     return {"window": window, "url": url, "check": None}
+
+
+def _documents(programs):
+    """
+    The documents the person worked from, as paths on this desktop: the files
+    each demonstration's ticket was given (record_task.py keeps them in the
+    recording's meta), in order, each once. A lesson's model reads them beside
+    what was typed (study.py), and a later run is told they were examples.
+    """
+
+    found = []
+    for meta, _, _ in programs:
+        for path in meta.get("files") or []:
+            if isinstance(path, str) and path and path not in found:
+                found.append(path)
+    return found
 
 
 def _notes(steps, programs):
