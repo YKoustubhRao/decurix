@@ -31,7 +31,8 @@ MAX_FILE_CHARS = 12000
 MAX_IMAGES = 6
 
 # A path as people and triggers write them: absolute, or under ~.
-PATH_RE = re.compile(r"(?<![\w/])((?:~|/home/headless|/tmp)/[^\s'\"<>|;,]+\.[A-Za-z0-9]{2,5})")
+# On a native Windows worker it is a drive path (C:\...\work\inbox\7\po.pdf).
+PATH_RE = re.compile(r"(?<![\w/])((?:(?:~|/home/headless|/tmp)/|[A-Za-z]:[\\/])[^\s'\"<>|;,]+\.[A-Za-z0-9]{2,5})")
 
 SYSTEM = (
     "You fill in the values a taught procedure needs, from the documents of one run. "

@@ -113,7 +113,7 @@ class Stopping(unittest.TestCase):
         rec = recorder(0)
         rec.pause_requested = rec.resume_requested = False
         flushed = []
-        rec._flush = lambda buffer: flushed.extend(buffer)
+        rec._flush = lambda buffer, final=False: flushed.extend(buffer)
         rec.stopping.set()
         for n in range(5):
             rec.raw.put({"type": "key_down", "n": n})

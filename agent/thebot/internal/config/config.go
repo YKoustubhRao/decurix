@@ -72,6 +72,10 @@ type Config struct {
 	// is how the VM's own local UI talks to the soul process, never a
 	// network-facing contract for third parties.
 	Port string
+	// Host is the address it listens on: every interface inside a desktop
+	// container (the control plane reaches it from outside the container),
+	// loopback for a native Windows worker.
+	Host string
 	// DoclingScript is the path to scripts/docling_convert.py - a Python
 	// subprocess the Data RAG shells out to for real PDF/DOCX/HTML/image
 	// parsing (docling is Python-only, so this dependency doesn't go away
@@ -111,6 +115,7 @@ func Load() Config {
 		Brain:         getenv("DECURIX_BRAIN", "ollama"),
 		BrainVision:   getenv("DECURIX_BRAIN_VISION", ""),
 
+		Host:          getenv("SOUL_HOST", "0.0.0.0"),
 		Port:          getenv("SOUL_PORT", "4900"),
 		DoclingScript: getenv("DOCLING_SCRIPT", "scripts/docling_convert.py"),
 	}

@@ -1,4 +1,3 @@
-import fcntl
 import hashlib
 import json
 import os
@@ -12,6 +11,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
+from decurix_agent import config, filelock
 from decurix_agent.computer import privacy
 from decurix_agent.logging_utils import log
 
@@ -45,7 +45,7 @@ from decurix_agent.logging_utils import log
 # given; what it is given has already been through privacy.py.
 # ============================================================
 
-ROOT = Path(os.environ.get("DECURIX_RECORDINGS_DIR") or (Path.home() / ".decurix" / "recordings"))
+ROOT = Path(os.environ.get("DECURIX_RECORDINGS_DIR") or (config.DECURIX_DIR / "recordings"))
 
 # The disk budget. Task and hand-run recordings are pruned oldest first past
 # it; a demonstration is something a person authored, and only a person
@@ -117,7 +117,7 @@ def _locked(directory):
     directory.mkdir(parents=True, exist_ok=True)
 
     with open(directory / ".lock", "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        filelock.exclusive(lock)
         yield
 
 

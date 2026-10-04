@@ -23,6 +23,13 @@ var (
 	// crashed, or never bound. Distinct from the errors above because the
 	// desktop itself is fine; only its agent is not listening yet.
 	ErrAgentUnreachable = errors.New("desktop agent is not responding")
+
+	// ErrNoVNC is a native Windows worker asked for a VNC address: its
+	// screen is not an X server but a private desktop, shown through
+	// Manager.NativeSession. ErrNoStats is the same worker asked for a
+	// container's resource figures.
+	ErrNoVNC   = errors.New("a native worker's screen is not served over VNC")
+	ErrNoStats = errors.New("a native worker has no container statistics")
 )
 
 // ProxyTarget resolves the internal VNC address (http://ip:port) to reverse-proxy
@@ -46,6 +53,20 @@ func (m *Manager) AgentProxyTarget(ctx context.Context, rawID string) (proxyURL 
 func (m *Manager) resolveProxyTarget(ctx context.Context, rawID, port string) (proxyURL *url.URL, sanitizedID string, err error) {
 	sanitizedID = sanitizeName(rawID)
 	cacheKey := sanitizedID + ":" + port
+
+	if m.native != nil {
+		// A worker's ports are its own and change with every start, so
+		// nothing is cached: the lookup is a map read.
+		switch port {
+		case vmAgentPort:
+			proxyURL, err = m.native.agentURL(sanitizedID)
+		case agentPort:
+			proxyURL, err = m.native.soulURL(sanitizedID)
+		default:
+			return nil, sanitizedID, ErrNoVNC
+		}
+		return proxyURL, sanitizedID, err
+	}
 
 	m.proxyTargetMu.RLock()
 	if entry, ok := m.proxyTargets[cacheKey]; ok && time.Now().Before(entry.expires) {

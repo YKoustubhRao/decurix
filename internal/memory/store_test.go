@@ -170,3 +170,75 @@ func TestStoreRecordDeduplication(t *testing.T) {
 		t.Fatalf("expected exactly 1 record after deduplication, got %d", len(list))
 	}
 }
+
+// Deleting a desktop takes what it learned with it: a desktop made later
+// under the same name is another worker, and used to list this one's memory.
+func TestDeleteForDesktopRemovesItsEntriesAndLinksOnly(t *testing.T) {
+	db, err := sqlitedb.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	s, err := NewStore(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := s.Record("eve", "Search Google", "Run it with /skill search-google.", "skill")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.Record("eve", "Month end", "Close the books on the last working day.", "workflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Record("ada", "Invoices", "Invoices go into the purchases sheet.", "workflow"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Link("eve", "ada"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Link("ada", "bob"); err != nil {
+		t.Fatal(err)
+	}
+
+	ids, err := s.DeleteForDesktop(" eve ")
+	if err != nil {
+		t.Fatalf("DeleteForDesktop returned error: %v", err)
+	}
+
+	removed := map[string]bool{}
+	for _, id := range ids {
+		removed[id] = true
+	}
+	if len(ids) != 2 || !removed[first.ID] || !removed[second.ID] {
+		t.Fatalf("expected the two deleted entries' IDs, got %v", ids)
+	}
+
+	if got := s.List("eve"); len(got) != 0 {
+		t.Fatalf("expected no memory left for the deleted desktop, got %v", got)
+	}
+	if got := s.List("ada"); len(got) != 1 {
+		t.Fatalf("another desktop's memory must stay, got %v", got)
+	}
+
+	if got := s.LinkedWorkers("eve"); len(got) != 0 {
+		t.Fatalf("expected the deleted desktop's links gone, got %v", got)
+	}
+	if got := s.LinkedWorkers("ada"); len(got) != 1 || got[0] != "bob" {
+		t.Fatalf("expected ada still linked to [bob] only, got %v", got)
+	}
+
+	// Nothing to delete, and no desktop named: neither is an error.
+	if ids, err := s.DeleteForDesktop("eve"); err != nil || len(ids) != 0 {
+		t.Fatalf("expected a second delete to do nothing, got %v, %v", ids, err)
+	}
+	if ids, err := s.DeleteForDesktop(""); err != nil || len(ids) != 0 {
+		t.Fatalf("expected an empty desktop ID to do nothing, got %v, %v", ids, err)
+	}
+	if got := s.List("ada"); len(got) != 1 {
+		t.Fatalf("an empty desktop ID must delete nothing, got %v", got)
+	}
+}

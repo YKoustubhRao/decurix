@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"thebot/internal/hostshell"
 	"thebot/internal/llm"
 	"thebot/internal/prompt"
 	"thebot/internal/safety"
@@ -94,10 +95,22 @@ HELP:
 %s%s
 Task: %s`
 
+// windowsRule is added to the contract for a native Windows worker
+// (hostshell.Windows): the contract's "shell command" is PowerShell there, and
+// a small model reaches for the Linux commands it knows best - `uname`, `ls |
+// wc -l`, a heredoc - none of which exist. It names the commands for the same
+// everyday questions the Linux prompt's examples cover.
+const windowsRule = `- This computer runs Windows and every command is Windows PowerShell. Linux commands do not exist here (no bash, grep, cat <<EOF, sudo, apt). Use PowerShell: $env:COMPUTERNAME (this computer's name), (Get-CimInstance Win32_OperatingSystem).Caption (the Windows version), Get-ChildItem <dir> (list), (Get-ChildItem <dir>).Count (count), Get-Content <file> (read), Set-Content -Path <file> -Value "text" (write), Add-Content (append), Select-String -Path <file> -Pattern "x" (search), Get-PSDrive C (disk space), Invoke-WebRequest -UseBasicParsing <url> (fetch a page). Paths use backslashes; ~ is not your work folder. There is no && or ||: send one command per reply, or join them with ; . python and python3 are here.
+- There is no <<'EOF' either: what office reads from stdin is piped to it from a single-quoted string - '{"edits": [{"sheet": "Data", "cell": "B14", "value": 1250}]}' | office update model.xlsx - and for an email's body of several lines a here-string, which starts with @' at the end of a line and ends with '@ at the start of one: @' then the body's lines then '@ | office email --to a@b.com --subject "Invoice".
+- You have a screen of your own on this computer, separate from the person's: what you open is not on their screen. Open a web page, a document or a program on it with gui open (gui open https://example.com, gui open C:\path\report.xlsx, gui open excel, gui open notepad) - never with Start-Process, Invoke-Item, start or explorer, which hand the job to Windows and may put the window on the person's own screen. gui calls the browser's windows "Chromium", whichever browser it is.
+`
+
 // visionRule is added to the contract for a brain that reads images: the
 // screenshot comes with every gui command's result.
 const visionRule = `- The pages of a scanned document that office read finds are shown to you as pictures: read them yourself.
-- After every gui command you are also shown a screenshot of the screen as it is now. Use it to check what really happened and to find what the element list does not name (a picture, a canvas, an unlabelled icon, a message painted on the page). Still act by ref from gui observe wherever there is one; use x,y coordinates only for something that has no ref.
+- Windows: gui observe names the active window and the open ones. Before working in a window that is not the active one, bring it forward with gui front "a few words of its title" (for the browser: gui front browser) - there is no taskbar to click, and alt+tab does nothing here. Close one you no longer need with gui key alt+f4 once it is in front, unless the task wants it left open.
+- A page that asks whoever is there to prove they are a person (a CAPTCHA, "I'm not a robot", "unusual traffic") is for the person, never for you: reply HELP asking them to complete it on this worker's screen and to reply when done. Do not click at it.
+- After every gui command you are also shown a screenshot of the screen as it is now. Use it to check what really happened and to find what the element list does not name (a picture, a canvas, an unlabelled icon, a message painted on the page). Still act by ref from gui observe wherever there is one; use x,y coordinates only for something that has no ref. The screenshot has a ruler drawn on it: dotted pink lines every 100 pixels, each numbered with its real screen position at the top and left edges and again half way across. Read a position off those numbers (a point between the 300 and 400 lines is 300-and-something) - never estimate it from the picture's own size, which is not the screen's. After a click by coordinates, check in the next screenshot that it landed; if nothing changed, read the position again more carefully before trying another.
 `
 
 // officeRules is added to the contract for a hosted brain: the lessons the
@@ -134,7 +147,7 @@ Only reply HELP again if the human really has to act - to choose between options
 
 // humanOnlyRe recognises a HELP that is genuinely asking for something only
 // a person can give. Such a HELP is always delivered, never pushed back on.
-var humanOnlyRe = regexp.MustCompile(`(?i)\b(approv|permission|consent|confirm|authori[sz]|password|passphrase|token|api[ -]?key|credential|secret|log ?in|sign ?in|2fa|otp|which\s+(one|of)|choose|pick|prefer|decide|should\s+i|do\s+you\s+want|payment|pay\b|purchase|send(ing)?\s+(an?\s+)?(e-?mail|message|sms)|publish|push)`)
+var humanOnlyRe = regexp.MustCompile(`(?i)\b(approv|permission|consent|confirm|authori[sz]|captcha|not\s+a\s+robot|human\s+check|a\s+person\s+is\s+there|password|passphrase|token|api[ -]?key|credential|secret|log ?in|sign ?in|2fa|otp|which\s+(one|of)|choose|pick|prefer|decide|should\s+i|do\s+you\s+want|payment|pay\b|purchase|send(ing)?\s+(an?\s+)?(e-?mail|message|sms)|publish|push)`)
 
 // failureQueryNudge answers a HELP that follows a failed command - the one
 // case successQueryNudge and prematureQueryNudge leave open, and the one that
@@ -169,6 +182,72 @@ If the failure itself is the answer (for example, the file really does not exist
 // given ("cat: notes.txt: No such file or directory").
 var missingProgramRe = regexp.MustCompile(`(?m)(?:^|:\s)([A-Za-z0-9_.+-]+): (?:command not found|not found)\s*$|(?:^|\b)(?:xargs|env|nohup|timeout|sudo|exec|nice|bash|sh|dash|zsh)(?:: line \d+)?: ([A-Za-z0-9_.+-]+): No such file or directory\s*$`)
 
+// windowsMissingProgramRe is the same failure on a native Windows worker, in
+// PowerShell's words ("xargs : The term 'xargs' is not recognized as the name
+// of a cmdlet, function, script file, or operable program") and cmd.exe's
+// ("'grep' is not recognized as an internal or external command"). PowerShell
+// exits 1 for it, not 127, so the words are the only signal - and PowerShell
+// wraps them wherever its line is full, so any space may be a line break.
+var windowsMissingProgramRe = regexp.MustCompile(`The\s+term\s+'([^']+)'\s+is\s+not\s+recognized\s+as\s+the\s+name|'([^']+)'\s+is\s+not\s+recognized\s+as\s+an\s+internal`)
+
+// windowsChainRe is PowerShell 5.1 refusing bash's && or ||.
+var windowsChainRe = regexp.MustCompile(`The\s+token\s+'(&&|\|\|)'\s+is\s+not\s+a\s+valid\s+statement\s+separator`)
+
+// windowsCountSwitchRe is PowerShell refusing a counting switch that does not exist (-Count, -FileCount, -Total).
+var windowsCountSwitchRe = regexp.MustCompile(`(?i)parameter\s+cannot\s+be\s+found\s+that\s+matches\s+parameter\s+name\s+'\w*(count|total|number)\w*'`)
+
+// missingOnWindows names the program a Windows shell said it could not find,
+// or "" when the output says no such thing.
+func missingOnWindows(output string) string {
+	m := windowsMissingProgramRe.FindStringSubmatch(output)
+	if m == nil {
+		return ""
+	}
+	if m[1] != "" {
+		return m[1]
+	}
+	return m[2]
+}
+
+// windowsMissingProgramHint is what a model is told when it reached for a
+// Linux command on a Windows worker - the usual reason a program is "missing"
+// there - with the PowerShell way for the ones it reaches for most.
+func windowsMissingProgramHint(program string) string {
+	hint := fmt.Sprintf("\n\n`%s` is not a command on this computer: it runs Windows PowerShell, not bash, and you cannot install software here. Use PowerShell's own commands instead.", program)
+	if use, ok := windowsInsteadOf[strings.TrimSuffix(strings.ToLower(program), ".exe")]; ok {
+		hint += " " + use
+	}
+	return hint
+}
+
+// windowsInsteadOf is the PowerShell for the Linux commands a model reaches
+// for most. Windows PowerShell 5.1 already aliases ls, cat, cp, mv, rm, echo,
+// pwd, ps, kill, curl and wget to its own cmdlets, so those are not here.
+var windowsInsteadOf = map[string]string{
+	"grep":    `To search text: Select-String -Path <file> -Pattern "x" (or <command> | Select-String "x").`,
+	"wc":      "To count: (Get-Content <file>).Count for lines, (Get-ChildItem <dir>).Count for files, or <command> | Measure-Object.",
+	"head":    "For the first lines: Get-Content <file> -TotalCount 10 (or <command> | Select-Object -First 10).",
+	"tail":    "For the last lines: Get-Content <file> -Tail 10 (or <command> | Select-Object -Last 10).",
+	"touch":   "To make an empty file: New-Item -ItemType File <path>.",
+	"which":   "To find a program: (Get-Command <name>).Source.",
+	"uname":   "For the system: (Get-CimInstance Win32_OperatingSystem).Caption and .Version.",
+	"df":      "For disk space: Get-PSDrive C.",
+	"free":    "For memory: Get-CimInstance Win32_OperatingSystem | Select-Object FreePhysicalMemory, TotalVisibleMemorySize.",
+	"sed":     `To replace text in a file: (Get-Content <file>) -replace "old", "new" | Set-Content <file>.`,
+	"awk":     `To take a column: <command> | ForEach-Object { ($_ -split "\s+")[0] }.`,
+	"xargs":   "To run something per item: <command> | ForEach-Object { <program> $_ }.",
+	"jq":      "To read JSON: (Get-Content <file> -Raw | ConvertFrom-Json).<field>.",
+	"sudo":    "There is no sudo: run the command without it.",
+	"apt":     "Nothing can be installed here.",
+	"apt-get": "Nothing can be installed here.",
+	"pip":     "Nothing can be installed here: use Python's standard library.",
+	"pip3":    "Nothing can be installed here: use Python's standard library.",
+	"bash":    "There is no bash: write the command in PowerShell.",
+	"sh":      "There is no sh: write the command in PowerShell.",
+	"test":    "To check a file exists: Test-Path <path>.",
+	"chmod":   "Windows has no chmod, and a file needs none to be read or run.",
+}
+
 // missingModuleRe finds a Python module that is not installed.
 var missingModuleRe = regexp.MustCompile(`No module named '([\w.]+)'`)
 
@@ -179,6 +258,24 @@ var missingModuleRe = regexp.MustCompile(`No module named '([\w.]+)'`)
 func missingProgramHint(output, command string) string {
 	if m := missingModuleRe.FindStringSubmatch(output); m != nil {
 		return fmt.Sprintf("\n\nThe Python module `%s` is not installed, and you cannot install it here. Use Python's standard library instead: urllib.request for web requests (urllib.request.urlopen(url).headers, .status, .read()), json, csv, subprocess.", m[1])
+	}
+	if hostshell.Windows {
+		// Bash's "then" and "or else" are a parse error in Windows
+		// PowerShell 5.1, so nothing in the command ran at all - and a model
+		// writes them by habit.
+		if m := windowsChainRe.FindStringSubmatch(output); m != nil {
+			return fmt.Sprintf("\n\nNothing ran: Windows PowerShell has no `%s`. Run one command per reply, or join them with `;` (`first; if ($?) { second }` to run the second only when the first worked).", m[1])
+		}
+		if program := missingOnWindows(output); program != "" {
+			return windowsMissingProgramHint(program)
+		}
+		// Counting is asked of the result, not of the cmdlet. Found live,
+		// twice: a small model wrote `Get-ChildItem <dir> -Count` (and
+		// `-FileCount`), then listed the folder and counted the lines itself
+		// - 2, for five files.
+		if windowsCountSwitchRe.MatchString(output) {
+			return "\n\nNo cmdlet has a switch that counts. Wrap the command and ask the result for its count: (Get-ChildItem <dir>).Count - and report the number it prints, not one you counted yourself."
+		}
 	}
 	for _, m := range missingProgramRe.FindAllStringSubmatch(output, -1) {
 		program := m[1]
@@ -209,12 +306,16 @@ If you can already answer - including from the facts you were given - answer now
 If you could find out by running something, run it with COMMAND.
 Only reply HELP again if the human really has to act before you can continue.
 
-If you were pausing for approval before a payment, an outgoing message, or another real-world consequence, reply HELP again with the same request and it will go to the human.`
+If you were pausing for approval before a payment, an outgoing message, or another real-world consequence: when it is a click in an app or a web page, do not ask - do the work up to that click and make it with gui, which stops such a click itself and asks the human with the details in front of them. For anything else (a shell command, a script), reply HELP again with the same request and it will go to the human.`
 
 var (
 	controlRe      = regexp.MustCompile(`\b(COMMAND|DONE|HELP):[*_` + "`" + `]*`)
 	looseControlRe = regexp.MustCompile("(?im)^[\\s*_`#>-]*(COMMAND|DONE|HELP)\\s*:[*_`]*")
 	fenceWrapRe    = regexp.MustCompile("(?s)^```[a-zA-Z]*\\n(.*?)\\n?```$")
+	// bareMarkerRe is a reply that is a marker word and nothing else
+	// ("DONE", "**Done.**"): no colon, so not a control signal, and no
+	// content, so not an answer either.
+	bareMarkerRe = regexp.MustCompile("(?i)^[\\s*_`#>-]*(COMMAND|DONE|HELP)[\\s*_`.!:]*$")
 )
 
 // parseControl finds the reply's control signal and its value, bounded at
@@ -247,6 +348,36 @@ func parseControl(reply string) (action, value string) {
 	return action, value
 }
 
+// unmarkedCommandRe is a reply that is one command and nothing else, in a
+// shape no sentence has: the worker's own gui / office commands, a PowerShell
+// cmdlet (Verb-Noun), or an expression that starts as PowerShell does
+// ($env:..., (Get-...)).
+var unmarkedCommandRe = regexp.MustCompile(`^(?:gui\s+(?:observe|click|type|key|select|open|scroll|drag|verify|upload|ask|recordings?|replay|skills?|do)\b.*` +
+	`|office\s+(?:read|update|create|combine|email)\b.*|\(?[A-Z][a-z]+-[A-Z][A-Za-z]+\b.*|\$env:[A-Za-z_]+.*)$`)
+
+// unmarkedCommand is the command a marker-less reply is, or "" when it is
+// anything else. Found live on a 1.5B model: asked how many files were in
+// its folder it replied `Get-ChildItem C:\...\work -FileCount` with no
+// COMMAND: in front, was told three times to add the marker, and its fourth
+// identical reply was delivered to the person as the answer. A command is to
+// be run - and if it is wrong (that one is), its error is what teaches the
+// next try. Deliberately narrow: one line, in a shape prose never takes, so a
+// sentence is never run as a command.
+func unmarkedCommand(reply string) string {
+	text := strings.TrimSpace(reply)
+	if m := fenceWrapRe.FindStringSubmatch(text); m != nil {
+		text = strings.TrimSpace(m[1])
+	}
+	text = strings.TrimSpace(strings.Trim(text, "`"))
+	if text == "" || strings.ContainsAny(text, "\r\n") || len(text) > 400 {
+		return ""
+	}
+	if !unmarkedCommandRe.MatchString(text) {
+		return ""
+	}
+	return text
+}
+
 // operatorState is the operator's checkpoint: everything needed to carry
 // on from exactly where it paused.
 type operatorState struct {
@@ -261,9 +392,14 @@ type operatorState struct {
 	CommandsSucceeded int
 	UngroundedNudged  bool
 	EarlyDoneNudged   bool // a DONE before any command was pushed back
+	ScreenNudged      bool // a DONE for typing or clicking no command did was pushed back
+	ScreenConfirmed   bool // ...and, said again, was put to the person: their answer stands
 	LastCommand       string
 	LastResult        *shellResult
 	Commands          []string
+	// Worked is the commands that exited 0: what was actually done, as
+	// against what was tried (unperformedScreenNudge reads it).
+	Worked []string
 	// OutputChars is how much of a command's output the model is shown,
 	// fixed when the goal starts (llm.Capabilities.CommandOutputChars) so a
 	// resumed goal reads the same way it began.
@@ -372,6 +508,9 @@ func (o *OperatorSkill) start(rc RunContext, subtask Subtask) *operatorState {
 		Turns:           caps.OperatorTurns(),
 	}
 	vision := ""
+	if hostshell.Windows {
+		vision += windowsRule
+	}
 	if caps.Hosted {
 		vision += officeRules
 	}
@@ -409,12 +548,25 @@ func (o *OperatorSkill) resume(rc RunContext, subtask Subtask, st *operatorState
 		st.Messages = append(st.Messages, llm.Message{Role: "user", Content: note + "\n\nContinue the task without running that command."})
 		return st, ""
 	}
+	if st.ScreenConfirmed {
+		// The answer to "I cannot confirm this is done". Only a plain yes
+		// lets the next DONE through; anything else is what is still missing,
+		// and a DONE over it is put to them again.
+		if screenConfirmRe.MatchString(reply) {
+			st.Messages = append(st.Messages, llm.Message{Role: "user", Content: "The human looked at the screen and confirmed the task is done. Reply DONE with a one-line report."})
+			return st, ""
+		}
+		st.ScreenConfirmed = false
+	}
 	if reply != "" {
 		st.noteSeen(reply)
 		st.Messages = append(st.Messages, llm.Message{Role: "user", Content: "The human replied: " + reply + "\n\nContinue the task."})
 	}
 	return st, ""
 }
+
+// screenConfirmRe is a person saying the work they were asked to look at is done.
+var screenConfirmRe = regexp.MustCompile(`(?i)^\s*(done|yes|y|yep|yeah|ok|okay|confirmed|it is|it's done|looks good|correct)\s*[.!]*\s*$`)
 
 // execute runs one command and records it in the transcript. It returns a
 // non-empty reason, and records nothing, when the command was an on-screen
@@ -432,6 +584,7 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 	st.CommandsRun++
 	if res.ExitCode == 0 {
 		st.CommandsSucceeded++
+		st.Worked = append(st.Worked, command)
 	}
 	st.Commands = append(st.Commands, command)
 	st.LastCommand = command
@@ -440,6 +593,8 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 	result := formatCommandResult(res, st.outputChars())
 	if res.ExitCode != 0 {
 		result += missingProgramHint(res.Output, command)
+	} else if st.ScreenNudged {
+		result += typingFieldHint(st, command, res.Output)
 	}
 	msg := llm.Message{Role: "user", Content: result}
 	if pages := st.documentPictures(res.Output); len(pages) > 0 {
@@ -510,6 +665,13 @@ func (st *operatorState) guiEnv() []string {
 			"DECURIX_GUI_SCREENSHOT="+st.Screenshot,
 			"DECURIX_GUI_SCREENSHOT_SCALE="+strconv.Itoa(max(1, st.ScreenScale)),
 		)
+		// A whole-size picture carries a ruler (computer/pointing.py): the
+		// provider shrinks what the model is shown, so a position read off
+		// the picture is only right when the picture says it. A half-size
+		// one would make the ruler's numbers too small to read.
+		if st.ScreenScale <= 1 {
+			env = append(env, "DECURIX_GUI_RULER=1")
+		}
 	}
 	return env
 }
@@ -627,6 +789,12 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 		}
 
 		action, value := parseControl(resp.Text)
+		if action == "invalid" {
+			if command := unmarkedCommand(resp.Text); command != "" {
+				rc.Logf("operator", "sent a command without its marker - running it")
+				action, value = "command", command
+			}
+		}
 		if prompt.IsNeedsTools(value) || prompt.IsNeedsTools(resp.Text) {
 			// The chat signal has no meaning here - this loop is the tools.
 			action = "invalid"
@@ -658,6 +826,37 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 					st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: nudge})
 					continue
 				}
+			}
+			if nudge := unperformedScreenNudge(st); nudge != "" && !st.ScreenConfirmed {
+				if !st.ScreenNudged {
+					st.ScreenNudged = true
+					rc.Logf("operator", "said done, but no command did the typing or clicking the task asks for - pushing back once")
+					st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: nudge})
+					continue
+				}
+				// Told once and still saying done over work no command did:
+				// a person looks, rather than a success nothing showed going
+				// out. Their answer comes back to this goal's transcript.
+				rc.Logf("operator", "still says done with nothing typed or clicked - asking the person to look")
+				st.ScreenConfirmed = true
+				question := unperformedScreenDoubt(nudge, value)
+				st.Messages = append(st.Messages, reply)
+				res, _ := finish(question, false, map[string]any{"needsUserInput": true, "question": question, "failureReasoning": question})
+				res.Checkpoint = st
+				return res, nil
+			}
+			if question := doneAsksThePerson(value); question != "" {
+				// A DONE that only asks the person for what is missing is a
+				// question, whatever marker it came under. Found live
+				// (2026-10-04): told to ask for a sign-off only the person
+				// knows, the model was pushed off its HELP once and then
+				// "finished" with "I need your sign-off text ..." - reported
+				// as the task's result, with nothing paused for the answer.
+				rc.Logf("operator", "said done, but only asks the person for something - asking them")
+				st.Messages = append(st.Messages, reply)
+				res, _ := finish(question, false, map[string]any{"needsUserInput": true, "question": question, "failureReasoning": question})
+				res.Checkpoint = st
+				return res, nil
 			}
 			return finish(value, true, nil)
 
@@ -773,11 +972,37 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				// this replaces argued about format until its budget ran out
 				// and then reported a stuck agent - for "how many files are
 				// in /etc?", answered correctly ("241") on turn two.
-				if text := strings.TrimSpace(resp.Text); text != "" {
+				// But a marker word and nothing else answers nothing. Found
+				// live on a native Windows worker: asked to open an app, a
+				// 1.5B model replied "DONE" four times without running a
+				// command, and that word was reported as the result.
+				text := strings.TrimSpace(resp.Text)
+				bare := bareMarkerRe.FindStringSubmatch(text)
+				if text != "" && bare == nil {
 					rc.Logf("operator", "never used a marker - taking its reply as the answer")
 					return finish(text, true, nil)
 				}
-				return finish("The model stopped producing usable replies.", false, map[string]any{"needsUserInput": true})
+				// "DONE" and nothing else, after a command that worked: the
+				// model is finished and has not said with what. What the
+				// command printed is the answer, as it is when a command is
+				// repeated. Found live: `$env:COMPUTERNAME` printed the
+				// computer's name, the model replied "DONE" four times, and
+				// the person was paged about a step that had "failed".
+				// Not for work in a window no command did - that is asked.
+				if bare != nil && strings.EqualFold(bare[1], "DONE") && st.LastResult != nil && st.LastResult.ExitCode == 0 &&
+					strings.TrimSpace(st.LastResult.Output) != "" && unperformedScreenNudge(st) == "" {
+					rc.Logf("operator", "said done without an answer - ending with what its last command printed")
+					return finish(answerFromCommand(st.LastCommand, *st.LastResult, st.outputChars()), true, nil)
+				}
+				// Nothing usable and nothing to report: said as it is, to the
+				// person, with the goal kept so their reply carries it on. (A
+				// plain failure here went to the scheduler's failure
+				// reasoning, which explained it with a story of its own.)
+				question := fmt.Sprintf("I could not finish this: the model stopped giving usable replies after %d command(s). "+
+					"Send the request again, or tell me how to go on.", st.CommandsRun)
+				res, _ := finish(question, false, map[string]any{"needsUserInput": true, "question": question, "failureReasoning": question})
+				res.Checkpoint = st
+				return res, nil
 			}
 			st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: invalidReplyNudge(resp.Text)})
 		}

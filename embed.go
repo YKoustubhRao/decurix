@@ -18,9 +18,23 @@ import "embed"
 // go:embed skips names beginning with "." or "_", so agent/__pycache__ and
 // any stray .pyc directories are excluded automatically.
 //
+// It also skips agent/thebot, without a word: a directory with a go.mod is
+// another module. TheBot's sources ride along as TheBotSource instead, which
+// `go generate .` writes (embed_gen.go) and internal/desktop unpacks back to
+// agent/thebot/... when it streams the context. A binary built without that
+// step cannot build the desktop images, and says so.
+//
+//go:generate go run embed_gen.go
 //go:embed docker/desktop.basic.Dockerfile
 //go:embed docker/desktop.developer.Dockerfile
 //go:embed docker/desktop.ai.Dockerfile
 //go:embed docker/tools.Dockerfile
 //go:embed agent
 var DesktopBuildContext embed.FS
+
+// TheBotSource is the archive of agent/thebot inside DesktopBuildContext, and
+// TheBotDir where its files belong in the build context.
+const (
+	TheBotSource = "agent/thebot.tar.gz"
+	TheBotDir    = "agent/thebot"
+)

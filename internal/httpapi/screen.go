@@ -49,6 +49,7 @@ func (s *Server) screenViewerHandler(w http.ResponseWriter, r *http.Request, raw
 		Name:     access.Name,
 		Password: access.Password,
 		NoVNC:    noVNCPath,
+		Scale:    s.Desktops.Native(),
 		// Server-owned markup (proxy.go), with only a sanitized ID spliced in.
 		Controls: template.HTML(controls),
 	}); err != nil {

@@ -198,6 +198,13 @@ def ask_for_query(problem, kind="query", engine=None):
     # blocked desktop with no visible question at all.
     problem = (problem or "").strip() or BLANK_PROBLEM
 
+    if _query_gate is not None:
+        try:
+            if _query_gate(problem, kind, engine):
+                return None
+        except Exception as exc:
+            log(f"The question was not checked against what was taught ({exc}); asking the person.")
+
     query_id = uuid.uuid4().hex
 
     # ddmmyyyyhhmmss.txt
@@ -234,6 +241,7 @@ Please send instructions through the Decurix control plane.
     )
 
     state.last_query_id = query_id
+    state.last_query_text, state.last_query_kind = problem, kind
 
     log("========================================")
     log("AGENT HAS A QUERY")
@@ -350,6 +358,19 @@ def set_final_gate(gate):
 
     global _final_gate
     _final_gate = gate
+
+
+# What a question passes before a person is paged with it
+# (skill_task._question_gate): one the person already answered when they
+# taught the task is answered from the lesson instead.
+_query_gate = None
+
+
+def set_query_gate(gate):
+    """`gate(problem, kind, engine)` -> True when it answered the question itself (nobody is asked)."""
+
+    global _query_gate
+    _query_gate = gate
 
 
 def write_final_reply(reply, kind="final", engine=None, quiet=False, interrupted=False, checked=False):

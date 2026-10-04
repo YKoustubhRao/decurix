@@ -441,6 +441,7 @@ func (s *Server) hostBridgeClipHandler(w http.ResponseWriter, r *http.Request) {
 		cmd = exec.Command("pbcopy")
 	case "windows":
 		cmd = exec.Command("clip.exe")
+		desktop.HideWindow(cmd)
 	default:
 		// Linux: try xclip, fallback to wl-copy or xsel
 		if _, err := exec.LookPath("xclip"); err == nil {

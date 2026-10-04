@@ -15,10 +15,12 @@ import (
 // result, and keeps only the newest one.
 func TestAVisionBrainIsShownTheScreenAfterEachScreenCommand(t *testing.T) {
 	chat := &scriptedChat{replies: []string{
-		`COMMAND:
-printf first > "$DECURIX_GUI_SCREENSHOT"; echo "clicked; scale $DECURIX_GUI_SCREENSHOT_SCALE; text $DECURIX_GUI_TEXT_CHARS"`,
-		`COMMAND:
-printf second > "$DECURIX_GUI_SCREENSHOT"; echo typed`,
+		"COMMAND:\n" + forShell(
+			`printf first > "$DECURIX_GUI_SCREENSHOT"; echo "clicked; scale $DECURIX_GUI_SCREENSHOT_SCALE; text $DECURIX_GUI_TEXT_CHARS"`,
+			`[IO.File]::WriteAllText($env:DECURIX_GUI_SCREENSHOT, 'first'); echo "clicked; scale $env:DECURIX_GUI_SCREENSHOT_SCALE; text $env:DECURIX_GUI_TEXT_CHARS"`),
+		"COMMAND:\n" + forShell(
+			`printf second > "$DECURIX_GUI_SCREENSHOT"; echo typed`,
+			`[IO.File]::WriteAllText($env:DECURIX_GUI_SCREENSHOT, 'second'); echo typed`),
 		`COMMAND:
 echo not-a-screen-command`,
 		"DONE:\nSaved.",
@@ -67,8 +69,9 @@ echo not-a-screen-command`,
 // for, its budgets stay small, and scanned documents are read to it by OCR.
 func TestATextBrainIsGivenTextOnly(t *testing.T) {
 	chat := &scriptedChat{replies: []string{
-		`COMMAND:
-echo "shot=[$DECURIX_GUI_SCREENSHOT] office=$DECURIX_OFFICE_IMAGES text=$DECURIX_GUI_TEXT_CHARS"`,
+		"COMMAND:\n" + forShell(
+			`echo "shot=[$DECURIX_GUI_SCREENSHOT] office=$DECURIX_OFFICE_IMAGES text=$DECURIX_GUI_TEXT_CHARS"`,
+			`echo "shot=[$env:DECURIX_GUI_SCREENSHOT] office=$env:DECURIX_OFFICE_IMAGES text=$env:DECURIX_GUI_TEXT_CHARS"`),
 		"DONE:\nok",
 	}}
 	rc := operatorContext(t, chat)
@@ -97,9 +100,10 @@ func TestDocumentPagesSurviveLaterScreenshots(t *testing.T) {
 	}
 
 	chat := &scriptedChat{replies: []string{
-		"COMMAND:\necho 'invoice.pdf: 1 page (it is a scan - read it from the pictures).'; echo '[page image: " + page + "]'; echo \"mode $DECURIX_OFFICE_IMAGES\"",
-		`COMMAND:
-printf screen > "$DECURIX_GUI_SCREENSHOT"; echo typed`,
+		"COMMAND:\necho 'invoice.pdf: 1 page (it is a scan - read it from the pictures).'; echo '[page image: " + page + "]'; echo \"mode " + forShell("$DECURIX_OFFICE_IMAGES", "$env:DECURIX_OFFICE_IMAGES") + "\"",
+		"COMMAND:\n" + forShell(
+			`printf screen > "$DECURIX_GUI_SCREENSHOT"; echo typed`,
+			`[IO.File]::WriteAllText($env:DECURIX_GUI_SCREENSHOT, 'screen'); echo typed`),
 		"DONE:\nKeyed in.",
 	}}
 	rc := operatorContext(t, chat)

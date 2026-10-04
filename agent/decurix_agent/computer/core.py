@@ -1,5 +1,4 @@
 import base64
-import fcntl
 import json
 import os
 import re
@@ -8,8 +7,8 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from decurix_agent import progress
-from decurix_agent.computer import approval, atspi, audit, browser, cdp, privacy, screen, session, volatility, xinput
+from decurix_agent import config, filelock, progress
+from decurix_agent.computer import approval, atspi, audit, browser, cdp, privacy, screen, session, shortcuts, volatility, xinput
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 
@@ -30,7 +29,7 @@ from decurix_agent.computer.errors import ComputerError
 # difference between them is what the engine is told happened.
 # ============================================================
 
-STATE_DIR = Path.home() / ".decurix" / "computer"
+STATE_DIR = config.DECURIX_DIR / "computer"
 STATE_FILE = STATE_DIR / "observation.json"
 
 CHROMIUM_APPS = browser.APP_NAMES
@@ -72,7 +71,7 @@ def _state_lock():
     STATE_DIR.mkdir(parents=True, exist_ok=True)
 
     with open(STATE_DIR / "observation.lock", "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        filelock.exclusive(lock)
         yield
 
 
@@ -120,6 +119,9 @@ def observe(remember=True, frame=None):
         notes.append(str(exc))
 
     groups = _order_groups(groups, windows, active_title)
+
+    if _human_check(found, page_group):
+        notes.append(HUMAN_CHECK_NOTE)
 
     width, height = frame.width, frame.height
 
@@ -189,6 +191,27 @@ def _context(observation):
         if g["id"] == group and g.get("source") == "cdp":
             url = g.get("url", "")
     return {"window": observation.get("active_title", ""), "url": url}
+
+
+def _keyboard_field(observation):
+    """
+    The field keys would go to now, or None when it cannot be told: the one
+    the look marked focused, else - in a browser - the one the page itself
+    says has the keyboard. What Enter does depends on it (approval.assess).
+    """
+
+    field = next((e for e in observation["elements"] if "focused" in e.get("states", [])
+                  and e.get("role") in TYPING_ROLES), None)
+    if field is not None:
+        return field
+
+    if browser.is_browser_title(observation.get("active_title")) and cdp.available():
+        try:
+            return cdp.focused(observation["elements"])[0]
+        except ComputerError:
+            return None
+
+    return None
 
 
 def _wait_for_settle(reference):
@@ -307,6 +330,11 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
             return "cdp"
 
         if element is not None:
+            # A control that takes its text whole (a native Windows worker's,
+            # of a toolkit that tells its app - atspi.set_text) is given it;
+            # text that ends in Enter is typed, since the Enter is a key.
+            if not append and "\n" not in text and atspi.set_text(element, text):
+                return "value"
             _focus_window(element)
             center = el.center(element)
             # Inside a document (a Writer table cell, a paragraph) focus is
@@ -337,7 +365,7 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
             raise ComputerError("no key given")
         if element is not None:
             _focus_window(element)
-            if element["source"] == "atspi":
+            if element["source"] != "cdp":
                 atspi.grab_focus(element)
         for combo in keys:
             xinput.key(combo)
@@ -395,6 +423,9 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
 # Page elements typing can never go into.
 NOT_A_FIELD = {"row", "button", "link", "heading", "image", "img", "tab", "menuitem", "option",
                "checkbox", "radio", "listitem", "list", "table", "navigation"}
+
+# What typing does go into, for naming the fields a refusal points at.
+TYPING_ROLES = {"textbox", "document", "combobox", "searchbox", "spinbutton", "password text", "entry", "editbar"}
 
 
 # How long a custom dropdown has to show its options once clicked, and once typed into.
@@ -549,10 +580,22 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     # Typing needs a field. Aimed at a page's row, button or link, the text goes
     # to whatever still has focus: live, a product name typed "into" an Odoo
     # order row at a coordinate landed in the previous line's Unit Price.
-    if kind == "type" and element is not None and element.get("source") == "cdp" \
-            and element["role"] in NOT_A_FIELD:
-        raise ComputerError(f"{el.describe(element)} is not a field to type into - click the cell or control that "
-                            "opens a field, observe, then type into that field by its ref")
+    # The same on a Windows worker's screen, where it was found live: a small
+    # model sent `gui type e40 "Hello World"` with e40 a toolbar button of
+    # Notepad, the keys went to the button, and nothing was typed. There the
+    # refusal names the fields that are on the screen, because the one the
+    # model wants is usually a line or two away in the list it just read.
+    if kind == "type" and element is not None and element["role"] in NOT_A_FIELD \
+            and element.get("source") in ("cdp", "uia"):
+        message = (f"{el.describe(element)} is not a field to type into - click the cell or control that "
+                   "opens a field, observe, then type into that field by its ref")
+        if element.get("source") == "uia":
+            fields = [el.describe(e) for e in before["elements"]
+                      if e.get("role") in TYPING_ROLES and "disabled" not in (e.get("states") or [])][:4]
+            if fields:
+                message = (f"{el.describe(element)} is not a field to type into. The fields on the screen are: "
+                           + "; ".join(fields) + " - type into one of those by its ref")
+        raise ComputerError(message)
 
     # Typing with no target at all (no ref/role/name/path/point) goes to
     # whatever already has focus, and that field is the one whose secrecy
@@ -593,7 +636,11 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
 
     masks = privacy.secret_boxes(before["elements"])
 
-    decision = approval.check(kind, element, text=text, keys=keys, point=point, context=_context(before))
+    context = _context(before)
+    if kind == "key" and element is None:
+        context["focused"] = _keyboard_field(before)
+
+    decision = approval.check(kind, element, text=text, keys=keys, point=point, context=context)
 
     if not decision.allowed:
         text = approval.request_text(decision.request)
@@ -946,8 +993,35 @@ OFFICE_EXTENSIONS = (".odt", ".ods", ".odp", ".docx", ".doc", ".xlsx", ".xls", "
 
 
 def _chromium_argv(url):
-    # The launcher adds the profile, the DevTools port and every other flag.
-    return [browser.COMMAND, url]
+    # On a Linux desktop the launcher adds the profile, the DevTools port and
+    # every other flag; a native Windows worker's are given by browser.py.
+    return browser.launch_argv(url)
+
+
+# A page that asks whoever is there to prove they are a person. It is exactly
+# what a worker is not: the worker stops and a person does it on the worker's
+# screen. Found live: Google answered a search with its "unusual traffic" page,
+# and the engine clicked at the "I'm not a robot" box seven times, by guessed
+# coordinates, until it ran out of turns.
+HUMAN_CHECK = re.compile(
+    r"unusual traffic from your computer network|i(?:'|\u2019)?m not a robot|verify (?:that )?you(?:'| a)re (?:a )?human|"
+    r"are you a robot|\bcaptcha\b|complete the security check|checking (?:if|that) the site connection is secure|"
+    r"press (?:and|&) hold to confirm", re.IGNORECASE)
+
+HUMAN_CHECK_NOTE = (
+    "This page is a check that a person is there (a CAPTCHA). Do not try to pass it yourself: reply HELP asking the "
+    "person to complete it on this worker's screen and to reply when it is done, then carry on with the task."
+)
+
+
+def _human_check(found, page_group):
+    """Whether what is on the screen is a prove-you-are-human page."""
+
+    texts = [(page_group or {}).get("url") or "", (page_group or {}).get("title") or ""]
+    texts += [str(element.get("name") or "") for element in found[:200]]
+    if "google.com/sorry/" in texts[0]:
+        return True
+    return any(HUMAN_CHECK.search(text) for text in texts)
 
 
 def open_target(target, new_tab=False):
@@ -998,7 +1072,19 @@ def _open(target, new_tab):
     if not target:
         raise ComputerError("say what to open: a URL, a file, or an app name")
 
-    before_titles = {w["title"] for w in screen.windows()}
+    before = screen.windows()
+    before_titles = {w["title"] for w in before}
+    # A window that was not there is told by which window it is, not by its
+    # title: a second window of an app that is open has the first one's title.
+    before_ids = {w["id"] for w in before}
+
+    # One of this worker's own shortcuts, by its name: what a person opens
+    # from its icon, opened the same way (shortcuts.py).
+    shortcut = shortcuts.named(target)
+    if shortcut is not None and shortcut["kind"] == "browser":
+        target = "browser"
+    elif shortcut is not None and shortcut["kind"] == "web":
+        target = shortcut.get("target") or target
 
     if URL_RE.match(target):
         url = target if "://" in target else "http://" + target
@@ -1021,18 +1107,33 @@ def _open(target, new_tab):
         return f"Started Chromium on {url} (tab title {el._quote(title, 60)})."
 
     path = Path(target).expanduser()
-    lower = target.lower()
+    lower = target.lower().strip()
 
     if lower in CHROMIUM_APPS:
         if any(browser.is_browser_title(t) for t in before_titles) or cdp.available():
             _raise_browser()
             return "Brought Chromium to the front."
-        session.launch(_chromium_argv("about:blank"))
+        # A Linux desktop's launcher is given a page; a native Windows
+        # worker's browser starts on its own first page, as it does for a
+        # person (browser.windows_argv).
+        session.launch(_chromium_argv("" if os.name == "nt" else "about:blank"))
         _wait_until(cdp.available, BROWSER_START_SECONDS, "Chromium did not start")
         _raise_browser()
         return "Started Chromium."
 
-    if path.exists():
+    if shortcut is not None and shortcut["kind"] == "program":
+        # Started by the control plane's helper, which holds this desktop.
+        shortcuts.open_program(shortcut)
+        argv = [shortcut.get("exe") or shortcut["name"]]
+    elif os.name == "nt":
+        # What opens what is the computer's own business there (win.py): the
+        # programs installed on it, never the shell.
+        from decurix_agent.computer import win
+
+        argv = win.open_argv(target)
+        if argv[0] == "url":
+            return _open(argv[1], new_tab)
+    elif path.exists():
         if path.suffix.lower() in OFFICE_EXTENSIONS:
             argv = ["soffice", "--nologo", str(path)]
         elif path.is_dir():
@@ -1052,17 +1153,70 @@ def _open(target, new_tab):
             )
         argv = parts
 
-    session.launch(argv)
+    started = shortcut["name"] if shortcut is not None and shortcut["kind"] == "program" else " ".join(argv)
+    if shortcut is None or shortcut["kind"] != "program":
+        session.launch(argv)
 
     def new_window():
-        return [w for w in screen.windows() if w["title"] not in before_titles and w["title"]]
+        return [w for w in screen.windows() if w["id"] not in before_ids and w["title"]]
 
     opened = _wait_until(new_window, 45, None)
     if not opened:
-        return f"Started {' '.join(argv)}, but no new window appeared within 45 seconds - observe to check."
+        return f"Started {started}, but no new window appeared within 45 seconds - observe to check."
 
     time.sleep(1.0)
-    return f"Opened {el._quote(opened[-1]['title'], 80)}."
+    title = opened[-1]["title"]
+
+    if os.name == "nt":
+        # A window opened on a private desktop is given the keyboard by nobody
+        # (win.py / decurix-ui.cs GiveFocus), and many name themselves only
+        # once they have loaded ("Notepad", then "Untitled - Notepad").
+        xinput.activate(opened[-1]["id"])
+        title = next((w["title"] for w in screen.windows() if w["id"] == opened[-1]["id"] and w["title"]), title)
+
+        # Windows 11's Notepad opens with the tabs it had when it was last
+        # closed - and that memory is the person's own, so a worker's Notepad
+        # came up showing their unsaved notes, and the worker typed its text
+        # into one of them (found by bench/native). Asked for with no file, it
+        # is given a new, empty tab to work in.
+        if len(argv) == 1 and Path(argv[0]).stem.lower() == "notepad" and not title.lower().startswith("untitled"):
+            xinput.key("ctrl+n")
+            time.sleep(0.8)
+            title = next((w["title"] for w in screen.windows() if w["id"] == opened[-1]["id"] and w["title"]), title)
+            return f"Opened Notepad with a new, empty tab ({el._quote(title, 60)}); its other tabs were already there - leave them alone."
+
+    return f"Opened {el._quote(title, 80)}."
+
+
+def bring_to_front(title):
+    """
+    Put an open window in front of the others, by a few words of its title:
+    what a click on its taskbar button does. The engine's own view of the
+    screen has no taskbar - found live, with one app left in front of another
+    it clicked around the top of the screen looking for one, for ten minutes.
+    """
+
+    wanted = " ".join((title or "").lower().split())
+    if not wanted:
+        raise ComputerError("say which window: a few words of its title")
+
+    windows = [w for w in screen.windows() if w["title"]]
+    exact = [w for w in windows if w["title"].lower() == wanted]
+    partial = [w for w in windows if wanted in w["title"].lower()]
+    if not exact and not partial and wanted in ("browser", "chromium", "edge", "chrome"):
+        partial = [w for w in windows if browser.is_browser_title(w["title"])]
+    found = exact or partial
+
+    if not found:
+        raise ComputerError("no open window is titled like that. Open windows: "
+                            + (", ".join(el._quote(w["title"], 60) for w in windows) or "none"))
+    if len(found) > 1:
+        raise ComputerError("more than one window is titled like that: "
+                            + ", ".join(el._quote(w["title"], 60) for w in found) + ". Say more of the title.")
+
+    xinput.activate(found[0]["id"])
+    time.sleep(0.4)
+    return f"Brought {el._quote(found[0]['title'], 80)} to the front."
 
 
 def _raise_browser():

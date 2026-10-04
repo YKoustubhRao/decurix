@@ -780,7 +780,12 @@ func main() {
 	// whoever runs the container chooses to publish this port (or proxies
 	// it internally, as decurix's own control plane does), never by a
 	// public listener outside the VM.
-	addr := "0.0.0.0:" + cfg.Port
+	//
+	// A native Windows worker is not in a container: it shares the person's
+	// own computer, where a listener on every interface is reachable from
+	// the network and makes Windows Firewall ask about it. The control plane
+	// sets SOUL_HOST=127.0.0.1 there.
+	addr := cfg.Host + ":" + cfg.Port
 	log.Printf("[soul] listening on http://%s", addr)
 	log.Fatal(http.ListenAndServe(addr, s.mux()))
 }

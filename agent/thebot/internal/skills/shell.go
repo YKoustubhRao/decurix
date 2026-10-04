@@ -7,8 +7,9 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
-	"syscall"
 	"time"
+
+	"thebot/internal/hostshell"
 )
 
 // shellResult is what one command did.
@@ -58,7 +59,7 @@ func runShell(ctx context.Context, dir, command string, timeout time.Duration, e
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.Command("bash", "-c", command)
+	cmd := hostshell.Command(command)
 	cmd.Dir = dir
 	if len(extraEnv) > 0 {
 		cmd.Env = append(os.Environ(), extraEnv...)
@@ -67,11 +68,11 @@ func runShell(ctx context.Context, dir, command string, timeout time.Duration, e
 	var out cappedBuffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	hostshell.OwnGroup(cmd)
 	cmd.WaitDelay = 2 * time.Second
 
 	if err := cmd.Start(); err != nil {
-		return shellResult{ExitCode: -1, Output: "could not start bash: " + err.Error()}
+		return shellResult{ExitCode: -1, Output: "could not start " + hostshell.Name + ": " + err.Error()}
 	}
 
 	done := make(chan error, 1)
@@ -83,7 +84,7 @@ func runShell(ctx context.Context, dir, command string, timeout time.Duration, e
 	case err = <-done:
 	case <-runCtx.Done():
 		timedOut = errors.Is(runCtx.Err(), context.DeadlineExceeded)
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		hostshell.KillTree(cmd)
 		err = <-done
 	}
 

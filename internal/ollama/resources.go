@@ -102,9 +102,11 @@ func probeGPU(ctx context.Context, cur Resources) (name string, totalGB, freeGB 
 	ctx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
 
-	out, err := exec.CommandContext(ctx, "nvidia-smi",
+	cmd := exec.CommandContext(ctx, "nvidia-smi",
 		"--query-gpu=name,memory.total,memory.free",
-		"--format=csv,noheader,nounits").Output()
+		"--format=csv,noheader,nounits")
+	hide(cmd)
+	out, err := cmd.Output()
 	if err != nil {
 		return "", 0, 0, false, false
 	}

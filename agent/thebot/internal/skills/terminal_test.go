@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"thebot/internal/hostshell"
 	"thebot/internal/workspace"
 )
 
@@ -230,11 +231,20 @@ func TestTerminalTreatsOrdinaryNonzeroExitAsARealVerifiedResult(t *testing.T) {
 	}
 	rc := RunContext{Ctx: context.Background(), OnLog: func(string) {}, Workspace: ws}
 
-	for _, step := range []string{
+	steps := []string{
 		"run the command: `grep zzz_no_such_pattern haystack.txt`",
 		"run the command: `false`",
 		"run the command: `test -f definitely_missing_xyz.txt`",
-	} {
+	}
+	if hostshell.Windows {
+		// The same honest negatives from Windows' own programs: a search
+		// that matches nothing, and a program that exits 1 without a word.
+		steps = []string{
+			"run the command: `findstr zzz_no_such_pattern haystack.txt`",
+			"run the command: `cmd /c exit 1`",
+		}
+	}
+	for _, step := range steps {
 		result, err := NewTerminal().Run(rc, Subtask{Step: step, Type: "terminal"})
 		if err != nil {
 			t.Fatalf("Run(%q) error = %v", step, err)
@@ -272,7 +282,7 @@ func TestTerminalStillTreatsCommandNotFoundAndNotExecutableAsRealFailures(t *tes
 	if notFound.Meta["reroute"] != "operator" {
 		t.Errorf("command-not-found Meta = %+v, want a reroute to the operator", notFound.Meta)
 	}
-	if note, _ := notFound.Meta["rerouteNote"].(string); !strings.Contains(note, "`this-command-does-not-exist-xyz` is not installed") {
+	if note, _ := notFound.Meta["rerouteNote"].(string); !strings.Contains(note, "`this-command-does-not-exist-xyz` is not "+forShell("installed", "a command on this computer")) {
 		t.Errorf("reroute note = %q, want it to name the missing program", note)
 	}
 
@@ -309,13 +319,15 @@ func TestTerminalTreatsNonzeroExitWithRealStderrAsARealFailure(t *testing.T) {
 
 	// A script that exits 1 (not 126/127) but writes a real, substantive
 	// error message - exactly pip's shape (exit 1, real stderr block).
-	scriptPath := filepath.Join(ws.Root(), "fails_with_stderr.sh")
-	script := "#!/bin/sh\necho 'error: something genuinely went wrong' >&2\nexit 1\n"
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+	name, script := "fails_with_stderr.sh", "#!/bin/sh\necho 'error: something genuinely went wrong' >&2\nexit 1\n"
+	if hostshell.Windows {
+		name, script = "fails_with_stderr.cmd", "@echo off\r\necho error: something genuinely went wrong 1>&2\r\nexit /b 1\r\n"
+	}
+	if err := os.WriteFile(filepath.Join(ws.Root(), name), []byte(script), 0o755); err != nil {
 		t.Fatalf("could not write fixture: %v", err)
 	}
 
-	result, err := NewTerminal().Run(rc, Subtask{Step: "run the command: `./fails_with_stderr.sh`", Type: "terminal"})
+	result, err := NewTerminal().Run(rc, Subtask{Step: "run the command: `./" + name + "`", Type: "terminal"})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -324,6 +336,46 @@ func TestTerminalTreatsNonzeroExitWithRealStderrAsARealFailure(t *testing.T) {
 	}
 	if !strings.Contains(result.Output, "something genuinely went wrong") {
 		t.Errorf("Output = %q, want the real stderr content reported", result.Output)
+	}
+}
+
+// A gui command given by name ("run the command: `gui click ...`") that the
+// screen gate stops is a pause for approval, as it is in the operator's loop:
+// found live, it was reported as the command's ordinary result and the
+// person's yes had nothing to resume. Approved, the same command runs again.
+func TestTerminalPausesWhenTheScreenGateStopsAGuiCommand(t *testing.T) {
+	grant := filepath.Join(t.TempDir(), "granted")
+	stubWorkerTools(t,
+		"if [ -f "+grant+" ]; then echo 'Clicked button \"Send message\" (e85).'; exit 0; fi\n"+
+			"echo 'NEEDS_APPROVAL: Approval needed before I click button \"Send message\" (e85) in \"Message form\": it sends something on your behalf. Nothing was clicked or sent.'\nexit 3\n",
+		"",
+		"if exist \""+grant+"\" goto granted\r\n"+
+			"echo NEEDS_APPROVAL: Approval needed before I click button \"Send message\" (e85) in \"Message form\": it sends something on your behalf. Nothing was clicked or sent.\r\nexit /b 3\r\n"+
+			":granted\r\necho Clicked button \"Send message\" (e85).\r\nexit /b 0\r\n")
+
+	ws := newTestWorkspace(t)
+	rc := RunContext{Ctx: context.Background(), OnLog: func(string) {}, Workspace: ws}
+	step := Subtask{Step: "run the command: `gui click e85`", Type: "terminal"}
+
+	res, err := NewTerminal().Run(rc, step)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Meta["needsApproval"] != true || res.Meta["action"] != "gui click e85" || res.Verified {
+		t.Fatalf("result = %+v, want a paused approval for the click", res)
+	}
+	if reason, _ := res.Meta["approvalReason"].(string); !strings.Contains(reason, `click button "Send message"`) {
+		t.Errorf("approvalReason = %q, want the gate's own description", reason)
+	}
+
+	// The person's yes became a grant (the desktop agent does that); the
+	// same command, run again, goes through.
+	if err := os.WriteFile(grant, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, _ = NewTerminal().Run(rc, step)
+	if !res.Verified || !strings.Contains(res.Output, "Clicked button") {
+		t.Fatalf("after approval, result = %+v", res)
 	}
 }
 

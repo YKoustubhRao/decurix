@@ -8,6 +8,7 @@ not show. No display, no model: the model's answer is scripted.
     PYTHONPATH=agent python3 -m unittest discover -s agent/tests
 """
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -120,11 +121,20 @@ class ValuesFromDocuments(unittest.TestCase):
         self.assertEqual(binding._clean(params, {"values": {"item": ["a;b", "c"]}})[0], {})
 
     def test_files_are_the_existing_ones_the_request_names(self):
-        with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+        # Under /tmp on a Linux desktop; a drive path on a native Windows worker.
+        with tempfile.TemporaryDirectory(dir=None if os.name == "nt" else "/tmp") as tmp:
             po = Path(tmp) / "PO.pdf"
             po.write_bytes(b"%PDF")
-            text = f"Files attached to the email:\n  {po}\n  {tmp}/missing.pdf\nsee {po} again."
+            text = f"Files attached to the email:\n  {po}\n  {Path(tmp) / 'missing.pdf'}\nsee {po} again."
             self.assertEqual(binding.referenced_files(text), [str(po)])
+
+    def test_a_windows_workers_paths_are_recognised(self):
+        text = r"Files attached: C:\Users\ana\AppData\Local\Decurix\workers\w1\home\work\inbox\7\po.pdf, and D:/scans/id.png."
+        found = [m.group(1).rstrip(".)") for m in binding.PATH_RE.finditer(text)]
+        self.assertEqual(found, [r"C:\Users\ana\AppData\Local\Decurix\workers\w1\home\work\inbox\7\po.pdf",
+                                 "D:/scans/id.png"])
+        # A URL's "s://" is not a drive.
+        self.assertEqual(binding.PATH_RE.findall("see https://example.com/a.pdf"), [])
 
     def test_no_model_fills_nothing(self):
         with mock.patch.object(binding.llm_client, "available", return_value=False):

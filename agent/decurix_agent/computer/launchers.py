@@ -26,6 +26,10 @@ from decurix_agent.logging_utils import log
 # it when something else is in front.
 # ============================================================
 
+# A native Windows worker: its launchers are the shortcuts the control plane
+# gave it (shortcuts.py), not .desktop files, and it opens them by name.
+NATIVE = os.name == "nt"
+
 HOME = Path(os.environ.get("HOME", "/home/headless"))
 PLACES = [HOME / "Desktop", HOME / ".local" / "share" / "applications"]
 
@@ -45,6 +49,14 @@ def _norm(text):
 
 def entries(places=None):
     """Every launcher on the desktop and in the menu: [{path, name, exec}], one per name and command."""
+
+    # A native Windows worker's launchers are its shortcuts (shortcuts.py):
+    # the icons on its wallpaper, which are not files it can read.
+    if NATIVE and places is None:
+        from decurix_agent.computer import shortcuts
+
+        return [{"path": e["id"], "name": e["name"], "exec": "", "wm_class": "", "kind": e["kind"], "shortcut": e}
+                for e in shortcuts.entries()]
 
     found, seen = [], set()
 
@@ -77,6 +89,9 @@ def entries(places=None):
 
 def _opens_the_browser(entry):
     """A launcher that starts the browser itself - not a web app's --app window, which is titled by its page."""
+
+    if entry.get("kind"):
+        return entry["kind"] == "browser"
 
     try:
         words = shlex.split(entry["exec"])
@@ -145,12 +160,73 @@ def find_window(title, matches):
     return None
 
 
-def bring_forward(title, matches, places=None, wait=None):
+def app_open(app):
+    """Whether a window of the program `app` names ({"name", "exe"}) is on the screen. False when it cannot be told."""
+
+    name = ((app or {}).get("name") or "").lower()
+    if not name:
+        return False
+
+    return any((w.get("app") or "") == name for w in screen.windows())
+
+
+def _open_native(title, app, url, places):
+    """
+    bring_forward's opening half on a native Windows worker: the browser on
+    the page the step was recorded on, or the shortcut that starts the step's
+    program. None when the program is open already (in another state than the
+    one recorded - not something to open a second copy over), or when nothing
+    here starts it.
+    """
+
+    from decurix_agent.computer import core, shortcuts
+    from decurix_agent.computer.errors import ComputerError
+
+    is_browser = browser.is_browser_title(title) or ((app or {}).get("name") or "").lower() in BROWSER_PROGRAMS
+
+    try:
+        if is_browser:
+            if any(browser.is_browser_title(w["title"]) for w in screen.windows()):
+                return None
+            if url and url.lower().startswith(("http://", "https://")):
+                core._open(url, False)
+                return f"opened the browser on {url}, where this was recorded"
+            core._open("browser", False)
+            return "opened the browser"
+
+        if app_open(app):
+            return None
+
+        shortcut = shortcuts.for_app(app)
+        entry = for_window(title, places) if shortcut is None else None
+        name = (shortcut or (entry or {}).get("shortcut") or {}).get("name")
+
+        if name:
+            core._open(name, False)
+            return f"opened {name!r} from its shortcut"
+
+        # No shortcut for it: the program itself, when Windows knows it by name.
+        if (app or {}).get("name"):
+            core._open(app["name"], False)
+            return f"opened {app['name']}"
+    except ComputerError as exc:
+        log(f"Could not open what {title!r} was recorded in: {exc}")
+
+    return None
+
+
+# The programs that are a browser, as a recording names a window's program.
+BROWSER_PROGRAMS = ("chrome", "msedge", "brave", "chromium")
+
+
+def bring_forward(title, matches, places=None, wait=None, app=None, url=None):
     """
     Put the window recorded as `title` in front: raise it when it is open,
     else open it from its launcher and wait for it. Returns a sentence saying
     what was done, or None when neither is possible (no such window, no
-    launcher that opens it, or it never appeared).
+    launcher that opens it, or it never appeared). `app` and `url` are what
+    the recording says of the step's window - its program and, for a page,
+    its address - and are what a native Windows worker opens it by.
     """
 
     window = find_window(title, matches)
@@ -158,6 +234,9 @@ def bring_forward(title, matches, places=None, wait=None):
         xinput.activate(window["id"])
         time.sleep(0.5)
         return f"brought {title!r} to the front"
+
+    if NATIVE:
+        return _open_native(title, app, url, places)
 
     entry = for_window(title, places)
     if entry is None:

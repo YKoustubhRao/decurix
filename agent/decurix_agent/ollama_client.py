@@ -197,11 +197,18 @@ def ensure_model_resident():
         _resident_at = time.monotonic()
         return
 
-    from decurix_agent import progress
+    from decurix_agent import progress, state
+
+    # Said in the chat only while someone is waiting on a task. This also runs
+    # as the agent starts (the backend is waited for before any request), and
+    # a step with no task opens a turn of its own: found live, a worker that
+    # had just been created showed "Working on: <the last request>" on its
+    # card, over a model load nobody had asked anything of.
+    say = progress.emit if state.current_task else (lambda line: None)
 
     started = time.monotonic()
     log(f"Model {config.OLLAMA_MODEL} is not loaded - loading it.")
-    progress.emit(
+    say(
         "Loading the model into memory - the first request after a quiet "
         "spell takes a few minutes on this machine"
     )
@@ -249,9 +256,7 @@ def ensure_model_resident():
 
         if now - announced >= LOAD_ANNOUNCE_SECONDS:
             announced = now
-            progress.emit(
-                f"Still loading the model ({int(now - started)}s)..."
-            )
+            say(f"Still loading the model ({int(now - started)}s)...")
 
         if now - started > LOAD_WAIT_SECONDS:
             raise RuntimeError(

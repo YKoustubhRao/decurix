@@ -124,7 +124,24 @@ def _page_range(pages, count):
     return first, last
 
 
+# A native Windows worker has none of the programs below (poppler, tesseract,
+# LibreOffice) and may install none: there the same jobs are done by
+# winoffice.py, with pypdf and what Windows itself has.
+WINDOWS = os.name == "nt"
+
+
+def _windows():
+    from decurix_agent.tools import winoffice
+    return winoffice
+
+
 def _pdf_page_count(p):
+    if WINDOWS:
+        try:
+            return _windows().pdf_page_count(p)
+        except _windows().Unavailable as exc:
+            raise OfficeError(str(exc)) from exc
+
     out = subprocess.run(["pdfinfo", str(p)], capture_output=True, text=True, timeout=60)
     m = re.search(r"^Pages:\s+(\d+)", out.stdout, re.M)
     if not m:
@@ -132,18 +149,28 @@ def _pdf_page_count(p):
     return int(m.group(1))
 
 
-def _read_pdf(p, pages, as_images):
-    if not shutil.which("pdftotext"):
-        raise OfficeError("pdftotext is not installed on this desktop (poppler-utils)")
-
-    count = _pdf_page_count(p)
-    first, last = _page_range(pages, count)
+def _pdf_text(p, first, last):
+    if WINDOWS:
+        try:
+            return _windows().pdf_text(p, first, last)
+        except _windows().Unavailable as exc:
+            raise OfficeError(str(exc)) from exc
 
     out = subprocess.run(
         ["pdftotext", "-layout", "-f", str(first), "-l", str(last), str(p), "-"],
         capture_output=True, text=True, timeout=120,
     )
-    text = out.stdout.strip()
+    return out.stdout
+
+
+def _read_pdf(p, pages, as_images):
+    if not WINDOWS and not shutil.which("pdftotext"):
+        raise OfficeError("pdftotext is not installed on this desktop (poppler-utils)")
+
+    count = _pdf_page_count(p)
+    first, last = _page_range(pages, count)
+
+    text = _pdf_text(p, first, last).strip()
     shown = last - first + 1
     scanned = len(text) < SCANNED_CHARS_PER_PAGE * shown
 
@@ -163,6 +190,9 @@ def _read_pdf(p, pages, as_images):
 
 
 def _pdf_pages_as_png(p, first, last):
+    if WINDOWS:
+        return _windows().pdf_pages_as_png(p, first, last)
+
     out_dir = Path(tempfile.mkdtemp(prefix="decurix-pages-"))
     subprocess.run(
         ["pdftoppm", "-r", "110", "-png", "-f", str(first), "-l", str(last), str(p), str(out_dir / "page")],
@@ -755,12 +785,21 @@ def _office_to_pdf(src, out_dir):
     """A Word/Excel/LibreOffice document as a PDF, laid out as LibreOffice prints it."""
 
     soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if WINDOWS:
+        # LibreOffice when the person has it; else Microsoft Office does it.
+        soffice = _windows().libreoffice()
+        if not soffice:
+            try:
+                return _windows().office_to_pdf(src, out_dir)
+            except _windows().Unavailable as exc:
+                raise OfficeError(str(exc)) from exc
     if not soffice:
         raise OfficeError(f"{src.name}: LibreOffice is not installed on this desktop, so it cannot be made a PDF")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     # Its own profile: a LibreOffice a person has open would otherwise take the job and exit at once.
-    profile = f"-env:UserInstallation=file://{out_dir}/profile"
+    profile = "-env:UserInstallation=" + (out_dir / "profile").as_uri() if WINDOWS \
+        else f"-env:UserInstallation=file://{out_dir}/profile"
     r = subprocess.run([soffice, profile, "--headless", "--convert-to", "pdf", "--outdir", str(out_dir), str(src)],
                        capture_output=True, text=True, timeout=240)
     pdf = out_dir / (src.stem + ".pdf")
@@ -770,6 +809,12 @@ def _office_to_pdf(src, out_dir):
 
 
 def _image_to_pdf(src, dst):
+    if WINDOWS:
+        try:
+            return _windows().image_to_pdf(src, dst)
+        except _windows().Unavailable as exc:
+            raise OfficeError(f"{src.name}: could not be made a PDF page ({exc})") from exc
+
     try:
         import img2pdf
         dst.write_bytes(img2pdf.convert(str(src)))
@@ -787,7 +832,10 @@ def _image_to_pdf(src, dst):
 
 
 def _ocr_file(path, limit=MAX_TEXT_CHARS):
-    """Text tesseract reads off one picture, "" when it cannot run."""
+    """Text tesseract reads off one picture, "" when it cannot run. (Windows' own OCR on a native worker.)"""
+
+    if WINDOWS:
+        return _windows().ocr(path)[:limit]
 
     try:
         done = subprocess.run(["tesseract", str(path), "stdout", "--psm", "3"],
@@ -833,7 +881,11 @@ def _spec(arg):
     elif arg.lstrip().startswith(("{", "[")):
         text = arg
     else:
-        text = Path(os.path.expanduser(arg)).read_text()
+        text = Path(os.path.expanduser(arg)).read_text(encoding="utf-8")
+    # A byte-order mark in front of it is not part of the spec: Windows
+    # programs put one on what they pipe and on files they save (found live:
+    # PowerShell did, and every spec piped to office was "not valid JSON").
+    text = text.lstrip("﻿")
     try:
         spec = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -874,9 +926,9 @@ def _email(argv):
 
 
 def main(argv=None):
-    import sys
+    from decurix_agent import cliargs
 
-    argv = list(sys.argv[1:] if argv is None else argv)
+    argv = cliargs.from_environment(argv)
     if not argv or argv[0] in ("-h", "--help", "help"):
         print(USAGE)
         return 0 if argv else 2
