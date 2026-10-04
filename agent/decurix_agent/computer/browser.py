@@ -189,7 +189,8 @@ def windows_browser_name():
 
 def launch_argv(url):
     """
-    The command that opens `url` in the worker's browser.
+    The command that opens `url` in the worker's browser ("" on a native
+    Windows worker: the browser alone, on the page it starts with).
 
     On a Linux desktop the launcher adds everything. A native Windows worker
     starts the browser itself, so what the launcher adds is given here: a
@@ -246,4 +247,7 @@ def windows_argv(url):
     if choice.get("profile_directory"):
         argv.append(f"--profile-directory={choice['profile_directory']}")
 
-    return argv + [url]
+    # Opened for itself, not for a page: the browser starts as it does for a
+    # person, on its own first page. It was given about:blank, and a person
+    # who pressed the worker's Chrome icon got an empty white tab.
+    return argv + ([url] if url else [])

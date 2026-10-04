@@ -12,9 +12,16 @@ profile's secrets are encrypted with (the same Windows user, so it opens).
 The refresh token a signed-in Chrome keeps in `Web Data` is what lets the
 copy get its Google cookies again. The `Cookies` file itself is held
 exclusively while the person's own browser runs and cannot be copied then;
-what is lost with it is signed-in-ness of sites other than Google, and the
-seeding is marked as incomplete so a later launch, with the browser closed,
-fills it in.
+what is lost with it is signed-in-ness of sites other than Google.
+
+It is done once, into a folder no browser has used, and never again. It used
+to be tried again at a later launch when files had been left behind, and that
+is how a worker lost what a person had set up in it: found live (2026-10-03),
+the first launch left 4 files behind, the person signed in to their sites in
+the worker's Chrome, and the next launch - two and a half minutes later -
+copied their own profile over the worker's, cookies and key included. From
+its first start the profile is the worker's own; what a person signs in to
+there is kept there.
 
 Files the running browser holds open without sharing are read with every
 sharing flag set, which is how most of a live profile can be read.
@@ -26,6 +33,7 @@ import json
 import msvcrt
 import os
 import shutil
+import time
 from pathlib import Path
 
 from decurix_agent.logging_utils import log
@@ -51,6 +59,10 @@ SKIP_FILES = ("Singleton*", "*lock*", "Lock*", "*.tmp", "*.pma", "LOCK", "Curren
               "Last Session", "Last Tabs")
 
 MARKER = ".decurix-profile-seeded"
+
+# How often a file that could not be read is tried within the one seeding.
+COPY_ATTEMPTS = 3
+COPY_RETRY_SECONDS = 0.4
 
 _GENERIC_READ = 0x80000000
 _SHARE_ALL = 0x1 | 0x2 | 0x4  # read, write, delete
@@ -100,17 +112,6 @@ def signed_in_profile(root):
     return profile.get("last_used") or ""
 
 
-def _signed_in(preferences):
-    """Whether this profile's Preferences name a signed-in Google account."""
-
-    try:
-        data = json.loads(preferences.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return False
-
-    return bool(data.get("account_info"))
-
-
 def _skipped_file(name):
     return any(fnmatch.fnmatch(name, pattern) for pattern in SKIP_FILES)
 
@@ -140,66 +141,57 @@ def _seed(kind, dest_root, profile_directory):
 
     safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in profile)
     marker = dest_root / f"{MARKER}-{safe}"
-    state = marker.read_text(encoding="utf-8", errors="ignore").split("\n", 1)[0] if marker.is_file() else ""
-    if state == "complete":
+
+    # Once, whatever came of it (see the note at the top): a mark of any kind
+    # means this folder has been the worker's own since.
+    if marker.is_file():
         return ""
-
-    # A browser already running on this folder holds it: copying over it would
-    # corrupt the very profile it is using. Its own lockfile says.
-    lock = dest_root / "lockfile"
-    if lock.exists():
-        try:
-            lock.unlink()
-        except OSError:
-            return ""
-
-    if state == "partial":
-        # Only the cookie file was left behind: try it again, never the rest,
-        # which the worker has been using since.
-        try:
-            _copy(root / profile / "Network" / "Cookies", dest_root / profile / "Network" / "Cookies")
-            journal = root / profile / "Network" / "Cookies-journal"
-            if journal.exists():
-                _copy(journal, dest_root / profile / "Network" / "Cookies-journal")
-        except OSError:
-            return ""
-        marker.write_text("complete\n", encoding="utf-8")
-        return f"copied the {profile} profile's saved cookies"
 
     dest_root.mkdir(parents=True, exist_ok=True)
 
-    # A worker whose browser was already signed in to a Google account by
-    # hand has what the seeding is for. Copying over it would replace the key
-    # its cookies are encrypted with and sign it out.
-    if state == "" and _signed_in(dest_root / profile / "Preferences"):
-        marker.write_text("complete\nkept the worker's own sign-in\n", encoding="utf-8")
+    # A folder a browser has already run on - a worker from before the
+    # seeding, or the profile the helper kept for its icon - holds what was
+    # set up in it. Copying over it would replace its cookies and the key
+    # they are encrypted with.
+    if (dest_root / "Local State").exists() or (dest_root / profile / "Preferences").exists():
+        marker.write_text("complete\nkept the worker's own profile\n", encoding="utf-8")
         return ""
 
-    failed = []
-    copied = 0
+    # The mark goes down before the copy: a launch that dies part way must
+    # not be followed by one that copies over what the browser then wrote.
+    marker.write_text("copying\n", encoding="utf-8")
 
-    try:
-        _copy(root / "Local State", dest_root / "Local State")
-    except OSError as error:
-        failed.append("Local State")
-        log(f"profile seed: {error}")
-
+    wanted = [(root / "Local State", dest_root / "Local State", "Local State")]
     for base, dirs, files in os.walk(root / profile):
         dirs[:] = [d for d in dirs if d.lower() not in SKIP_DIRS]
         relative = Path(base).relative_to(root)
+        wanted += [(Path(base) / name, dest_root / relative / name, str(relative / name))
+                   for name in files if not _skipped_file(name)]
 
-        for name in files:
-            if _skipped_file(name):
-                continue
+    # A file the person's browser is writing at this instant is free a moment
+    # later; one it holds for good (Cookies) is not. A few goes here are the
+    # only ones there will be.
+    failed = []
+    copied = 0
+    for attempt in range(COPY_ATTEMPTS):
+        if attempt:
+            time.sleep(COPY_RETRY_SECONDS)
+        failed = []
+        for source, target, name in wanted:
             try:
-                _copy(Path(base) / name, dest_root / relative / name)
+                _copy(source, target)
                 copied += 1
-            except OSError:
-                failed.append(str(relative / name))
+            except OSError as error:
+                failed.append((source, target, name))
+                if name == "Local State":
+                    log(f"profile seed: {error}")
+        wanted = failed
+        if not wanted:
+            break
+    failed = [name for _, _, name in failed]
 
     # Cookies is held exclusively by a running browser; everything else a
-    # sign-in needs was readable. The mark says which it was, so a launch
-    # made later, with the person's browser closed, completes it.
+    # sign-in needs was readable. The mark records which it was.
     locked_cookies = [f for f in failed if f.replace("\\", "/").endswith(("Network/Cookies", "Network/Cookies-journal"))]
     needed = [f for f in failed if f not in locked_cookies]
     status = "complete" if not failed else ("partial" if locked_cookies and not needed else "incomplete")

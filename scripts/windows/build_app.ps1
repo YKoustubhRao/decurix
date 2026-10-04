@@ -24,7 +24,7 @@
     the file and choose "Run with PowerShell". Needs Go, Node.js with npm, and
     an internet connection the first time.
 .PARAMETER MinFreeMemoryMB
-    Free RAM the build insists on before it starts (default 512; it builds
+    Free RAM the build insists on before it starts (default 256; it builds
     slowly when little is free, with Go and Node capped).
 .PARAMETER Run
     Start the freshly built app (the unpacked one) when the build is done.
@@ -39,7 +39,7 @@
     installed one too.
 #>
 param(
-    [int]$MinFreeMemoryMB = 512,
+    [int]$MinFreeMemoryMB = 256,
     [switch]$Run,
     [switch]$NoOpen,
     [switch]$Fresh
@@ -160,11 +160,21 @@ try {
     # good as a fresh one and the build does not need them again.
     Write-Host ''
     Write-Host '=== Clearing the last build ==='
-    foreach ($old in @('runtime', 'stack', 'decurix.exe', 'decurix-android-arm64')) {
-        $path = Join-Path $stage $old
-        if (Test-Path $path) { Remove-Item $path -Recurse -Force }
+    # A program that was just stopped is gone from the process list a moment
+    # before Windows lets go of its file: deleting at once failed with "Access
+    # to the path 'Decurix.exe' is denied" right after the ten processes of the
+    # last build were ended, and the file was free a few seconds later. So a
+    # delete that fails is tried again for a while before it is an error.
+    $targets = @('runtime', 'stack', 'decurix.exe', 'decurix-android-arm64' | ForEach-Object { Join-Path $stage $_ }) + $out
+    foreach ($path in $targets) {
+        for ($try = 0; (Test-Path $path) -and $try -lt 15; $try++) {
+            if ($try -gt 0) { Start-Sleep -Seconds 1 }
+            Remove-Item $path -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        if (Test-Path $path) {
+            throw "Could not delete $path - something still has a file in it open. Close it and build again."
+        }
     }
-    if (Test-Path $out) { Remove-Item $out -Recurse -Force }
 
     if ($Fresh) {
         Write-Host ''
