@@ -1113,7 +1113,10 @@ def _open(target, new_tab):
         if any(browser.is_browser_title(t) for t in before_titles) or cdp.available():
             _raise_browser()
             return "Brought Chromium to the front."
-        session.launch(_chromium_argv("about:blank"))
+        # A Linux desktop's launcher is given a page; a native Windows
+        # worker's browser starts on its own first page, as it does for a
+        # person (browser.windows_argv).
+        session.launch(_chromium_argv("" if os.name == "nt" else "about:blank"))
         _wait_until(cdp.available, BROWSER_START_SECONDS, "Chromium did not start")
         _raise_browser()
         return "Started Chromium."
