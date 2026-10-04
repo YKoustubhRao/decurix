@@ -21,7 +21,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -80,6 +82,29 @@ var (
 )
 
 var unsafeName = regexp.MustCompile(`[^a-zA-Z0-9_]`)
+
+// desktopName is the private desktop a session id gets: what the helper is told, and what it names an app's own
+// profile after.
+func desktopName(id string) string {
+	name := "decurix_" + unsafeName.ReplaceAllString(id, "_")
+	if len(name) > 48 {
+		name = name[:48]
+	}
+
+	return name
+}
+
+// ProfileDir is where the helper keeps the profile of its own that it gives a browser or Electron app started under
+// session id (bridge.ps1's Complete-Launch: $ProfileRoot\<desktop>-<base>). base is the program's name without ".exe",
+// in lower case. "" when this computer has no such place (not Windows).
+func ProfileDir(id, base string) string {
+	local := os.Getenv("LOCALAPPDATA")
+	if local == "" {
+		return ""
+	}
+
+	return filepath.Join(local, "Decurix", "hidden-profiles", desktopName(id)+"-"+base)
+}
 
 // Manager owns the running sessions, one per id, and one warm helper for the next.
 type Manager struct {
@@ -215,6 +240,22 @@ func (m *Manager) keepWarm(h *Session) {
 	m.mu.Unlock()
 }
 
+// DropSpare ends the helper kept waiting for the next launch, if there is one: for a caller that only wanted a Check and
+// will launch nothing into it.
+func (m *Manager) DropSpare() {
+	m.mu.Lock()
+	spare := m.spare
+	m.spare = nil
+	if m.spareTmr != nil {
+		m.spareTmr.Stop()
+		m.spareTmr = nil
+	}
+	m.mu.Unlock()
+	if spare != nil {
+		spare.Stop()
+	}
+}
+
 // Warm makes sure a helper is up and waiting for the next app, so nobody waits for one: it starts one in the background if
 // there is none, and if there is one it keeps it another spareTTL. Call it whenever an app is likely to be wanted soon - the
 // control plane starting, someone choosing apps to copy, a desktop being created - and it returns at once.
@@ -310,10 +351,7 @@ func (m *Manager) launch(ctx context.Context, id, target, args string) (*Session
 		return nil, err
 	}
 	s.id = id
-	name := "decurix_" + unsafeName.ReplaceAllString(id, "_")
-	if len(name) > 48 {
-		name = name[:48]
-	}
+	name := desktopName(id)
 	for _, line := range []string{"desktop " + name, "viewers 1"} {
 		if resp, err := s.Do(line); err != nil || !strings.HasPrefix(resp, "OK") {
 			s.Stop()
@@ -422,6 +460,112 @@ func (m *Manager) Check(ctx context.Context, targets []Target) (map[Target]strin
 	}
 	m.keepWarm(h)
 	return verdicts, nil
+}
+
+// OpenDesktop starts a private desktop of its own and runs exe on it, for a native Windows worker: the desktop is the
+// worker's screen and exe its agent, and everything that agent starts shows up there. Unlike an app started by a
+// Manager, the session is nobody's spare and is never ended for being unwatched or for having no window - it lives
+// until Stop, or until the helper itself ends. env is added to the helper's environment, which exe inherits. exe is
+// started as it is given: nothing is looked up, and none of the rules for hiding a person's own apps apply to it.
+func OpenDesktop(ctx context.Context, start Starter, id string, env []string, exe, args, dir string) (*Session, error) {
+	if strings.ContainsAny(exe+args+dir, "\r\n\t") || strings.TrimSpace(exe) == "" {
+		return nil, errors.New("invalid program to start")
+	}
+	name := desktopName(id)
+
+	// The helper outlives the request that started it, so it is not tied to ctx.
+	cmd, err := start(context.Background(), name)
+	if err != nil {
+		return nil, err
+	}
+	if cmd.Env == nil {
+		cmd.Env = os.Environ()
+	}
+	cmd.Env = append(cmd.Env, env...)
+
+	s, err := newSession(id, cmd)
+	if err != nil {
+		return nil, err
+	}
+	for _, line := range []string{"viewers 0", "desktop " + name, "screen"} {
+		if resp, err := s.Do(line); err != nil || !strings.HasPrefix(resp, "OK") {
+			s.Stop()
+			return nil, firstErr(err, fmt.Errorf("the host helper refused %q: %s", line, resp))
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		s.Stop()
+		return nil, err
+	}
+	resp, err := s.DoTimeout("launchr\t"+exe+"\t"+args+"\t"+dir+"\t0\tworker", launchRequestTimeout)
+	if err != nil {
+		s.Stop()
+		return nil, err
+	}
+	if !strings.HasPrefix(resp, "OK") {
+		s.Stop()
+		return nil, errors.New(strings.TrimSpace(strings.TrimPrefix(resp, "ERR")))
+	}
+	return s, nil
+}
+
+// Running reports whether the program the session was started for is still running ("" when it is), or how it ended.
+func (s *Session) Running() string {
+	st, err := s.Do("status")
+	if err != nil {
+		return err.Error()
+	}
+	if strings.HasPrefix(st, "STATUS exited") {
+		return "it " + strings.TrimPrefix(st, "STATUS ")
+	}
+	return ""
+}
+
+// Open starts one more program on the session's desktop - a person opening an app on a worker's screen. The helper
+// resolves target the way a launch does (a shortcut, a Start-menu address, a browser given a profile of its own), so
+// what it refuses to hide for a copied app it refuses here too, with the same reason.
+func (s *Session) Open(target, args string) error {
+	if strings.ContainsAny(target+args, "\r\n") || strings.Contains(target, "\t") || strings.TrimSpace(target) == "" {
+		return errors.New("invalid application")
+	}
+	resp, err := s.DoTimeout("open\t"+target+"\t"+args, launchRequestTimeout)
+	if err != nil {
+		return err
+	}
+	if !strings.HasPrefix(resp, "OK") {
+		return errors.New(strings.TrimSpace(strings.TrimPrefix(resp, "ERR")))
+	}
+	return nil
+}
+
+// Empty reports whether the session's desktop has no window a person would see: a worker's screen with nothing open.
+func (s *Session) Empty() (bool, error) {
+	resp, err := s.Do("count")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(resp) == "COUNT 0", nil
+}
+
+// Snapshot is the whole picture as it is now.
+func (s *Session) Snapshot(ctx context.Context) (Update, error) {
+	v := s.Watch()
+	defer v.Close()
+	for {
+		select {
+		case u, ok := <-v.C:
+			if !ok {
+				return Update{}, s.deadErr()
+			}
+			if u.Whole {
+				return u, nil
+			}
+		case <-s.done:
+			return Update{}, s.deadErr()
+		case <-ctx.Done():
+			return Update{}, ctx.Err()
+		}
+	}
 }
 
 // Target is one program a launcher would ask the host to run.
@@ -604,6 +748,7 @@ type Session struct {
 	appGone     chan struct{}
 	goneOnce    sync.Once
 	stopOnce    sync.Once
+	onEvent     func(string) // see OnEvent
 }
 
 func newSession(id string, cmd *exec.Cmd) (*Session, error) {
@@ -661,8 +806,10 @@ func (s *Session) read(r *bufio.Reader) {
 				}
 				s.publish(u.Update)
 			case strings.HasPrefix(line, "EVENT "):
-				if strings.TrimPrefix(line, "EVENT ") == "closed" {
+				if event := strings.TrimPrefix(line, "EVENT "); event == "closed" {
 					s.markAppGone()
+				} else {
+					s.event(event)
 				}
 			default:
 				select {

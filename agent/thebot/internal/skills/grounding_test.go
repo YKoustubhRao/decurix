@@ -97,20 +97,111 @@ func TestGroundingIgnoresCommandsThatTypeNothing(t *testing.T) {
 	}
 }
 
+// Found live on a native Windows worker: `gui open notepad`, then "Notepad
+// opened and Hello World typed" - nothing had typed anything.
+func TestADoneForTypingNoCommandDidIsPushedBack(t *testing.T) {
+	st := func(request string, commands ...string) *operatorState {
+		return &operatorState{Request: request, Commands: commands, Worked: commands}
+	}
+	// A gui type that failed (aimed at a button) typed nothing.
+	refused := &operatorState{Request: "open notepad and type hello into it",
+		Commands: []string{"gui open notepad", `gui type e40 "hello"`}, Worked: []string{"gui open notepad"}}
+	if got := unperformedScreenNudge(refused); !strings.Contains(got, "no command has typed") {
+		t.Errorf("a refused gui type counted as typing: %q", got)
+	}
+	for _, c := range []struct {
+		name string
+		st   *operatorState
+		want string
+	}{
+		{"opened only", st("open notepad and type hello world into it", "gui open notepad"), "no command has typed"},
+		{"typed", st("open notepad and type hello world into it", "gui open notepad", `gui type e1 "hello world"`), ""},
+		{"chained", st("open notepad and type hello into it", `gui open notepad; gui type e1 "hello"`), ""},
+		{"a click asked for", st("open the form and click Save", "gui open form.html", "gui observe"), "click or press"},
+		{"clicked", st("open the form and click Save", "gui open form.html", `gui click "Save"`), ""},
+		{"a taught skill may have done it", st("type the order into the app", "gui do enter-order --param ref=A1"), ""},
+		{"not screen work", st("type a note into notes.txt", `Set-Content notes.txt "x"`), ""},
+		{"quoted words are not the task", st(`open notepad and show me "type here"`, "gui open notepad"), ""},
+		{"press Enter is not typing", st("open the form and press Enter", "gui open form.html", "gui key Return"), ""},
+	} {
+		got := unperformedScreenNudge(c.st)
+		if (c.want == "") != (got == "") || !strings.Contains(got, c.want) {
+			t.Errorf("%s: nudge = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+func TestTheFieldHintNamesWhereTypingGoes(t *testing.T) {
+	st := &operatorState{Request: "open notepad and type hello world into it"}
+	listing := "Screen 1920x1080. Active window: \"Untitled - Notepad\"\n" +
+		"e28 document \"Text editor\"\ne40 button \"Strikethrough (Ctrl+Shift+X)\" [focused]\ne10 textbox \"Go to\" [disabled]\n"
+	hint := typingFieldHint(st, "gui observe", listing)
+	if !strings.Contains(hint, `e28 document "Text editor"`) || !strings.Contains(hint, "gui type e28") ||
+		strings.Contains(hint, "e40") || strings.Contains(hint, "e10") {
+		t.Errorf("hint = %q", hint)
+	}
+	if hint := typingFieldHint(st, "gui click e40", listing); hint != "" {
+		t.Errorf("a hint followed a command that is not an observe: %q", hint)
+	}
+	if hint := typingFieldHint(&operatorState{Request: "open notepad"}, "gui observe", listing); hint != "" {
+		t.Errorf("a hint for a task that types nothing: %q", hint)
+	}
+}
+
+// Through the loop: pushed back once, and a second "done" over nothing typed
+// goes to the person as a question - never out as a result. Their "done"
+// lets it finish; "nothing was typed" does not.
+func TestOperatorAsksAPersonRatherThanReportTypingItNeverDid(t *testing.T) {
+	stubTools(t, "")
+	chat := &scriptedChat{replies: []string{
+		"COMMAND:\ngui open notepad",
+		"DONE:\nNotepad opened and Hello World typed.",
+		"DONE:\nNotepad was opened and Hello World was typed into it.",
+		"DONE:\nStill done.",
+		"DONE:\nOpened Notepad; you confirmed the text is there.",
+	}}
+	op := NewOperator()
+	rc := operatorContext(t, chat)
+	task := Subtask{Step: "open notepad and type hello world into it", Type: "operator"}
+
+	res, _ := op.Run(rc, task)
+	if res.Verified || res.Meta["needsUserInput"] != true || !strings.Contains(res.Output, "cannot confirm") || res.Checkpoint == nil {
+		t.Fatalf("result = %+v, want a question for the person", res)
+	}
+	if nudge := chat.calls[2][len(chat.calls[2])-1].Content; !strings.Contains(nudge, "no command has typed") {
+		t.Errorf("the first done was not pushed back: %q", nudge)
+	}
+
+	// "No" is not a confirmation: the next done is asked about again.
+	rc.Resume, rc.HumanReply = res.Checkpoint, "nothing was typed"
+	res, _ = op.Run(rc, task)
+	if res.Verified || !strings.Contains(res.Output, "cannot confirm") {
+		t.Fatalf("after a no, result = %+v, want the question again", res)
+	}
+
+	rc.Resume, rc.HumanReply = res.Checkpoint, "done"
+	res, _ = op.Run(rc, task)
+	if !res.Verified || !strings.Contains(res.Output, "confirmed") {
+		t.Fatalf("after the person's done, result = %+v", res)
+	}
+}
+
 // stubTools puts stand-in gui and office commands first on PATH; gui logs
 // every call so the test can see what reached the app.
 func stubTools(t *testing.T, officeOutput string) (log string) {
 	t.Helper()
 	dir := t.TempDir()
 	log = filepath.Join(dir, "gui.log")
-	write := func(name, body string) {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body), 0o755); err != nil {
-			t.Fatal(err)
-		}
+	said := filepath.Join(dir, "office.txt")
+	if err := os.WriteFile(said, []byte(officeOutput+"\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	write("gui", `printf '%s\n' "$*" >> `+log+"\necho done\n")
-	write("office", "cat <<'EOF'\n"+officeOutput+"\nEOF\n")
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	stubWorkerTools(t,
+		`printf '%s\n' "$*" >> `+log+"\necho done\n",
+		"cat "+said+"\n",
+		"if \"%2\"==\"decurix_agent.tools.office\" goto office\r\n"+
+			">>\""+log+"\" echo %DECURIX_CLI_ARGS%\r\necho done\r\nexit /b 0\r\n"+
+			":office\r\ntype \""+said+"\"\r\n")
 	return log
 }
 

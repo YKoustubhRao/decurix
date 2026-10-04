@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -90,6 +91,7 @@ class TestFitScreen(unittest.TestCase):
         self.assertEqual((element, point, self.sizes), (None, [69, 276], [(1536, 864)]))
 
 
+@unittest.skipIf(os.name == "nt", "xrandr is a Linux desktop's; a Windows worker's screen keeps the computer's size")
 class TestSetSize(unittest.TestCase):
     """xrandr is asked for a mode of exactly the recorded size, under a name it will take."""
 

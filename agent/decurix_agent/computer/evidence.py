@@ -2,7 +2,7 @@ import json
 import time
 from pathlib import Path
 
-from decurix_agent import task_context
+from decurix_agent import config, task_context
 from decurix_agent.computer import recording, screen, visual
 from decurix_agent.logging_utils import log
 
@@ -112,7 +112,7 @@ def live(scale=1):
 # observed - never the worker's own claims.
 # ============================================================
 
-NOTES_DIR = Path.home() / ".decurix" / "computer" / "evidence"
+NOTES_DIR = config.DECURIX_DIR / "computer" / "evidence"
 NOTES_KEEP_SECONDS = 2 * 24 * 3600
 MAX_NOTE = 4000
 MAX_OBSERVED = 40

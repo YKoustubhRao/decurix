@@ -94,6 +94,9 @@ var (
 // itself - fine for reading the web, useless for signing in to an admin
 // panel and pressing its buttons, which only the operator's `gui` command
 // can do.
+// searchLeadRe is a request that opens with a verb for looking something up.
+var searchLeadRe = regexp.MustCompile(`(?i)^\s*(please\s+)?(search|look\s+up|google)\s+\S`)
+
 // taughtTaskRe is how the desktop agent hands over a taught task:
 // `Do the task you were taught, "<title>" (skill <name>) ...`.
 var taughtTaskRe = regexp.MustCompile(`(?i)^\s*do the task you were taught\b`)
@@ -103,6 +106,16 @@ var taughtTaskRe = regexp.MustCompile(`(?i)^\s*do the task you were taught\b`)
 // `gui ask` reaches. The name has to lead: "what does google say about x"
 // and "is chatgpt down?" are questions about it.
 var webAppLeadRe = regexp.MustCompile(`(?i)^\s*(?:please\s+)?(?:(?:ask|use|query|search)\s+(?:on\s+|in\s+|with\s+)?(?:chat\s?-?gpt|google|duck\s?duck\s?go|wikipedia|you\s?tube)\b|(?:chat\s?-?gpt|google|duck\s?duck\s?go|wikipedia|you\s?tube)\s*(?:for\b|to\b|about\b|[:,\-]|["“']))`)
+
+// namedCommandRe is a request that is nothing but a command to run, written
+// out in backticks: "run the command: `gui open "character map"`". The
+// request already is the plan, so the terminal skill runs exactly that - no
+// model call. Found live on a native Windows worker: that request named a
+// surface ("character map") and an action ("open"), so it went to the
+// operator as screen work, and the small model answered "DONE" without
+// running anything. Only when the command is the whole request: "run `ls`
+// and then fix what it shows" is still a goal for a loop.
+var namedCommandRe = regexp.MustCompile("(?is)^\\s*(?:please\\s+)?(?:run|execute)\\b[^`\\n]{0,40}`[^`]+`\\s*[.!]?\\s*$")
 
 func wantsScreen(prompt string) bool {
 	return screenSurfaceRe.MatchString(prompt) && matchesWord(screenActionRe, prompt)
@@ -244,6 +257,10 @@ func Triage(prompt string) Route {
 		return Route{Kind: RouteSkill, TaskType: matched, Reason: "a request to build software - the coding harness takes it whole"}
 	}
 
+	if namedCommandRe.MatchString(p) {
+		return Route{Kind: RouteSkill, TaskType: "terminal", Reason: "a command named in the request - running exactly that"}
+	}
+
 	// A request that leads with a web app's name ("chatgpt \"a\", \"b\"",
 	// "ask google ...") is something to put to that app, never a question
 	// for the model itself. Found live: `chatgpt "what is 3+3?", "what
@@ -316,6 +333,16 @@ func Triage(prompt string) Route {
 
 	if matched != "general" {
 		return Route{Kind: RouteSkill, TaskType: matched, Reason: fmt.Sprintf("recognised as a %q task", matched)}
+	}
+
+	// "search \"sundar pichai\"", "look up the Eiffel tower": something to find
+	// on the web, said the short way. The web skill's own pattern wants "for"
+	// or "web" after the verb, so these fell through to the chat skill, which
+	// has no tools - found live, it answered `NEEDS_APPROVAL: ... an external
+	// web action` to a person who had asked for a search. Not when it names
+	// something on this machine ("search the logs folder").
+	if searchLeadRe.MatchString(p) && !touchesMachine(p) {
+		return Route{Kind: RouteSkill, TaskType: "web", Reason: "something to look up - searching the web"}
 	}
 
 	if isConversational(p) {

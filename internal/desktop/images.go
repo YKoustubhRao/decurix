@@ -2,11 +2,15 @@ package desktop
 
 import (
 	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"path"
 	"time"
 
 	"github.com/docker/docker/api/types/build"
@@ -30,6 +34,10 @@ var desktopImages = []desktopImage{
 
 // MissingImages returns the desktop image tags that are not present locally.
 func (m *Manager) MissingImages(ctx context.Context) []string {
+	if m.native != nil {
+		return nil
+	}
+
 	var missing []string
 
 	for _, img := range desktopImages {
@@ -46,6 +54,10 @@ func (m *Manager) MissingImages(ctx context.Context) []string {
 // It also tags the base image for developer and ai profiles, and populates
 // the shared decurix-tools volume.
 func (m *Manager) BuildImages(ctx context.Context, out io.Writer, onlyMissing bool) error {
+	if m.native != nil {
+		return nil
+	}
+
 	for _, img := range desktopImages {
 		if onlyMissing {
 			if _, _, err := m.client.ImageInspectWithRaw(ctx, img.Tag); err == nil {
@@ -83,6 +95,10 @@ func (m *Manager) BuildImages(ctx context.Context, out io.Writer, onlyMissing bo
 // PruneDanglingResources prunes untagged/dangling Docker image layers left behind
 // by builds, reclaiming disk space without affecting any active desktop images.
 func (m *Manager) PruneDanglingResources(ctx context.Context) (uint64, error) {
+	if m.native != nil {
+		return 0, nil
+	}
+
 	pruneFilters := filters.NewArgs()
 	pruneFilters.Add("dangling", "true")
 
@@ -97,6 +113,10 @@ func (m *Manager) PruneDanglingResources(ctx context.Context) (uint64, error) {
 // buildImage streams the embedded build context to the daemon and reports the
 // resulting build output.
 func (m *Manager) buildImage(ctx context.Context, out io.Writer, img desktopImage) error {
+	if _, err := fs.Stat(decurix.DesktopBuildContext, decurix.TheBotSource); err != nil {
+		return errNoTheBotSource
+	}
+
 	// The daemon consumes the context as it builds, so produce the tar on a
 	// pipe rather than buffering the whole agent tree in memory.
 	reader, writer := io.Pipe()
@@ -122,47 +142,106 @@ func (m *Manager) buildImage(ctx context.Context, out io.Writer, img desktopImag
 	return streamBuildOutput(out, resp.Body)
 }
 
+// errNoTheBotSource is a binary built without `go generate .`: go:embed left
+// agent/thebot out (it is a Go module of its own), and nothing put it back.
+var errNoTheBotSource = errors.New("this decurix was built without TheBot's sources, so it cannot build the desktop images: run `go generate .` at the repository root, then build it again")
+
 // writeBuildContext tars the embedded build context into w, preserving the
 // paths the Dockerfiles expect.
 func writeBuildContext(w io.Writer) error {
+	return tarBuildContext(w, decurix.DesktopBuildContext)
+}
+
+// tarBuildContext tars every file of fsys into w under its own path, except
+// decurix.TheBotSource, whose files are written under decurix.TheBotDir -
+// where they are in the repository, and where the Dockerfiles COPY them from.
+func tarBuildContext(w io.Writer, fsys fs.FS) error {
 	tw := tar.NewWriter(w)
 
-	err := fs.WalkDir(decurix.DesktopBuildContext, ".", func(path string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 
-		if d.IsDir() || path == "." {
+		if d.IsDir() || p == "." {
 			return nil
 		}
 
-		data, err := decurix.DesktopBuildContext.ReadFile(path)
+		data, err := fs.ReadFile(fsys, p)
 		if err != nil {
 			return err
 		}
 
-		// embed.FS carries no mode or mtime, so synthesize both. The
-		// Dockerfiles chmod +x whatever needs it, so 0644 is enough.
-		header := &tar.Header{
-			Name:    path,
-			Mode:    0o644,
-			Size:    int64(len(data)),
-			ModTime: time.Unix(0, 0),
+		if p == decurix.TheBotSource {
+			return unpackInto(tw, data, decurix.TheBotDir)
 		}
 
-		if err := tw.WriteHeader(header); err != nil {
-			return err
-		}
-
-		_, err = tw.Write(data)
-
-		return err
+		return writeContextFile(tw, p, data)
 	})
 	if err != nil {
 		return err
 	}
 
 	return tw.Close()
+}
+
+// writeContextFile adds one file to the build context.
+func writeContextFile(tw *tar.Writer, name string, data []byte) error {
+	// embed.FS carries no mode or mtime, so synthesize both. The
+	// Dockerfiles chmod +x whatever needs it, so 0644 is enough.
+	header := &tar.Header{
+		Name:    name,
+		Mode:    0o644,
+		Size:    int64(len(data)),
+		ModTime: time.Unix(0, 0),
+	}
+
+	if err := tw.WriteHeader(header); err != nil {
+		return err
+	}
+
+	_, err := tw.Write(data)
+
+	return err
+}
+
+// unpackInto adds the regular files of a .tar.gz to the build context under
+// dir. A name that would leave dir is refused.
+func unpackInto(tw *tar.Writer, archive []byte, dir string) error {
+	zr, err := gzip.NewReader(bytes.NewReader(archive))
+	if err != nil {
+		return fmt.Errorf("%s: %w", decurix.TheBotSource, err)
+	}
+
+	tr := tar.NewReader(zr)
+
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			return nil
+		}
+
+		if err != nil {
+			return fmt.Errorf("%s: %w", decurix.TheBotSource, err)
+		}
+
+		if header.Typeflag != tar.TypeReg {
+			continue
+		}
+
+		if !fs.ValidPath(header.Name) {
+			return fmt.Errorf("%s: unsafe path %q", decurix.TheBotSource, header.Name)
+		}
+
+		data, err := io.ReadAll(tr)
+		if err != nil {
+			return fmt.Errorf("%s: %w", decurix.TheBotSource, err)
+		}
+
+		if err := writeContextFile(tw, path.Join(dir, header.Name), data); err != nil {
+			return err
+		}
+	}
 }
 
 // streamBuildOutput decodes the daemon's JSON build stream, echoing progress

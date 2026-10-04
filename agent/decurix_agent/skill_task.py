@@ -4,8 +4,8 @@ import threading
 import time
 import traceback
 
-from decurix_agent import (binding, config, guidance, llm_client, messaging, progress, state, study, task_context,
-                           usage, verify)
+from decurix_agent import (binding, config, guidance, lessons, llm_client, messaging, progress, request_reading, state,
+                           study, task_context, usage, verify)
 from decurix_agent.computer import (approval, constraints, core, escalation, evidence, experience, launchers, learning,
                                     mimic, recording, replay, skills)
 from decurix_agent.computer import elements as el
@@ -222,15 +222,47 @@ def _engine(content, task_file):
     perform_task(content, task_file)
 
 
+def may_be_taught(content):
+    """
+    Whether a request that mimic.py does not recognise is still worth putting
+    to the hosted model beside what was taught here (request_reading.py): the
+    same task worded another way. Cheap; the model is asked by perform_mimic.
+    """
+
+    try:
+        return request_reading.worth_reading(content)
+    except Exception as exc:
+        log(f"Could not compare the request with the taught tasks: {exc}")
+        return False
+
+
 def perform_mimic(content, task_file=None):
     """
     Do a request the way a person recorded a similar task: the recording's own
-    steps, with only what the request changes put in. The desktop's model is
-    asked only for a value the recording typed in another form, and a person
-    only when the model cannot say.
+    steps, with only what the request changes put in.
+
+    With a hosted model, the model reads the request - which taught task it
+    is, and what to type for each input (request_reading.py); what it says is
+    checked against the request before it is used. Without one, the request is
+    compared word by word with the recorded ticket (computer/mimic.py), the
+    model is asked only for a value typed in another form, and a person only
+    when it cannot say.
     """
 
     _begin(content, task_file)
+
+    reading = None
+    if request_reading.available():
+        progress.emit("Reading the request against what you taught me.")
+        try:
+            reading = request_reading.read(content)
+        except Exception as exc:
+            log(f"Could not read the request with the model ({exc}); comparing it with the recordings instead.")
+            log(traceback.format_exc())
+
+    if reading is not None:
+        _perform_read(content, task_file, reading)
+        return
 
     try:
         found = mimic.plan(content)
@@ -266,22 +298,66 @@ def perform_mimic(content, task_file=None):
                 return
             changed += adapted
 
-        said = f"Doing this the way you recorded \"{found['text']}\""
-        if changed:
-            said += " - typing " + "; ".join(f"\"{new}\" where you typed \"{old}\"" for _, old, new in changed)
-        elif any(span["placed"] for span in found["spans"]):
-            said += " - with " + "; ".join(f"\"{span['new']}\" for \"{span['old']}\"" for span in found["spans"])
-        progress.emit(said + ".")
-        log(f"Mimicking {found['kind']} {found['id']} for {content!r}: {changed or found['spans']}")
-
-        run = {"skill": skill, "values": values, "start": 1, "checked": False, "patches": [], "asked": 0, "stuck": 0,
-               "ladder": _ladder(skill), "asked_ids": [], "mimic": found, "one_off": one_off, "context": content}
-        _prepare(run)
+        _start_mimic(content, found, skill, one_off, values, changed)
     except _Refused as refusal:
         write_final_reply(str(refusal), kind="error", engine=SKILL_ENGINE)
     except Exception as exc:
         log(traceback.format_exc())
         write_final_reply(f"That stopped on an internal error: {exc}", kind="error", engine=SKILL_ENGINE)
+
+
+def _perform_read(content, task_file, reading):
+    """Carry out a request the hosted model read (request_reading.read's answer)."""
+
+    if reading["plan"] is None:
+        # Not something taught here, as the model reads it: the engine's.
+        _engine(content, task_file)
+        return
+
+    try:
+        found, skill, values = dict(reading["plan"]), reading["skill"], dict(reading["values"])
+
+        # What the request changes on a control or a page (never in what is
+        # typed - those are the model's values): "open invoice 1043" clicks
+        # "Invoice 1043". Only the word-by-word comparison knows where the
+        # recording holds such a word, and only when it sees the same task.
+        try:
+            literal = mimic.plan(content)
+        except Exception:
+            literal = None
+        if literal and (literal["kind"], literal["id"]) == (found["kind"], found["id"]):
+            found["spans"] = [span for span in literal["spans"]
+                              if span["placed"] and "typed" not in (span.get("where") or [])]
+
+        changed = [(p.get("label") or p["name"], str(p.get("example")), values[p["name"]])
+                   for p in skill.get("params") or []
+                   if p["name"] in values and p.get("example") is not None and values[p["name"]] != str(p["example"])]
+
+        if reading.get("dropped"):
+            labels = ", ".join((p.get("label") or p["name"]) for p in skill.get("params") or []
+                               if p["name"] in reading["dropped"])
+            progress.emit(f"I could not find {labels} in your request, so I will ask rather than guess.")
+
+        _start_mimic(content, found, skill, reading["one_off"], values, changed)
+    except _Refused as refusal:
+        write_final_reply(str(refusal), kind="error", engine=SKILL_ENGINE)
+    except Exception as exc:
+        log(traceback.format_exc())
+        write_final_reply(f"That stopped on an internal error: {exc}", kind="error", engine=SKILL_ENGINE)
+
+
+def _start_mimic(content, found, skill, one_off, values, changed):
+    said = f"Doing this the way you recorded \"{found['text']}\""
+    if changed:
+        said += " - typing " + "; ".join(f"\"{new}\" where you typed \"{old}\"" for _, old, new in changed)
+    elif any(span["placed"] for span in found["spans"]):
+        said += " - with " + "; ".join(f"\"{span['new']}\" for \"{span['old']}\"" for span in found["spans"])
+    progress.emit(said + ".")
+    log(f"Mimicking {found['kind']} {found['id']} for {content!r}: {changed or found['spans']}")
+
+    run = {"skill": skill, "values": values, "start": 1, "checked": False, "patches": [], "asked": 0, "stuck": 0,
+           "ladder": _ladder(skill), "asked_ids": [], "mimic": found, "one_off": one_off, "context": content}
+    _prepare(run)
 
 
 def _begin(content, task_file):
@@ -503,6 +579,14 @@ def _remember(skill):
     if said:
         lines.append(f"The person who taught it said: {said.rstrip('. ')}.")
 
+    understood = skill.get("understanding") or {}
+    if understood.get("summary"):
+        lines.append(f"What it does: {understood['summary']}")
+    # What was asked and answered while it was taught, word for word: the
+    # lesson is the person's, and memory is where every engine reads it.
+    for said in (understood.get("dialogue") or [])[:12]:
+        lines.append(f"Asked when it was taught: {said['q']} - the person answered: {said['a']}.")
+
     if params:
         wanted = ", ".join(f'{p["name"]} ({p["label"]})' for p in params)
         lines.append(f"Needs a value for: {wanted}.")
@@ -516,7 +600,7 @@ def _remember(skill):
     example = "".join(f' {p["name"]}="..."' for p in params)
     lines.append(f"Run it with `/skill {skill['name']}{example}`, or `gui do {skill['name']}` from a shell.")
 
-    remember(f"Skill: {skill.get('title') or skill['name']}", " ".join(lines), category="skill")
+    remember(f"Skill: {skill.get('title') or skill['name']}", " ".join(lines)[:3800], category="skill")
 
 
 def _learned_text(skill):
@@ -730,6 +814,8 @@ def _approval_text(run, result, values):
 
     if step["kind"] == "type" and values.get(step.get("param")):
         lines.append(f"It would type {el._quote(values[step['param']], 80)}.")
+    if step["kind"] == "select" and values.get(step.get("param")):
+        lines.append(f"It would choose {el._quote(values[step['param']], 80)}.")
 
     if step.get("expect"):
         lines.append("When this was recorded it led to " + " and ".join(replay.describe_check(c) for c in step["expect"]) + ".")
@@ -1110,11 +1196,62 @@ def _stage(run):
 
 
 def _learning_by_model(run):
+    # A recording nobody has taught is mimicked: there is no lesson for a
+    # model to follow, only what the person did - and that, with this run's
+    # values put where theirs were, is exactly what a replay does. The model
+    # is for what a replay cannot do: it takes over where the replay gets
+    # stuck (_execute), and judges the result before anything is reported
+    # (_finish). Found live with the model first: it replayed the recording
+    # as it was, saving an order for the customer of the demonstration, and
+    # only then did the one it was asked for.
+    if run.get("one_off"):
+        return False
+
     return _engine_can_drive() and not run.get("replay_only") and _stage(run) == experience.APPRENTICE
 
 
-def _criteria(skill):
-    """What the person said about the task and what done looks like, for the model and the check."""
+def _for_this_run(text, skill, values):
+    """
+    `text` about the task with each value the demonstration typed replaced by
+    this run's. What was understood from a demonstration is worded in its own
+    values ("a LinkedIn profile is open for Koustubh Rao"): read as it stands
+    it sends the model after the demonstration's result, and - found live -
+    the check called a run for another name done because the demonstration's
+    page was still on the screen.
+    """
+
+    for param in skill.get("params") or []:
+        example, value = param.get("example"), (values or {}).get(param.get("name"))
+        if value not in (None, ""):
+            # A lesson writes an input as its name in braces (study.py).
+            text = text.replace("{" + str(param.get("name")) + "}", str(value))
+        if not example or value in (None, "") or param.get("list") or len(str(example)) < 3:
+            continue
+        text = re.sub(re.escape(str(example)), lambda _m, v=str(value): v, text, flags=re.IGNORECASE)
+    return text
+
+
+# What a result's description still holds of the demonstration once its typed
+# values are replaced.
+EXAMPLE_NOTE = (
+    "READ THIS FIRST. What follows was written while watching ONE demonstration, done with other values than this "
+    "run's. This run's values have been put in where the demonstration's were. Anything else in it that describes "
+    "that demonstration's own result - a place, a date, an amount, a company, a job title, a count - is only an "
+    "example of the KIND of result, and this run's result will show its own instead: do not require it, do not "
+    "look for it, and do not treat its absence as a failure. What must hold is the kind of outcome (the right page "
+    "or record for THIS run's values, saved or opened or answered as the task asks). The demonstration's own result "
+    "still being on the screen is not this run's result."
+)
+
+
+def _criteria(skill, values=None):
+    """
+    What the person said about the task and what done looks like, for the
+    model and the check - in this run's values when they are given.
+    """
+
+    if values:
+        return EXAMPLE_NOTE + "\n" + _for_this_run(_criteria(skill), skill, values)
 
     parts = []
     said = skills.explanation(skill)
@@ -1130,6 +1267,8 @@ def _criteria(skill):
         parts.append(f"Asked when it was taught: {said['q']} - the person answered: {said['a']}")
     for correction in skill.get("corrections") or []:
         parts.append(f"A correction the person made after an earlier run: {correction['text']}")
+    for said in skill.get("run_answers") or []:
+        parts.append(f"Asked during an earlier run: {said['q']} - the person answered: {said['a']}")
     return "\n".join(parts)
 
 
@@ -1153,8 +1292,8 @@ def _procedure(run, from_step=None, note="", ran=False):
 
     understood = skill.get("understanding") or {}
     if understood.get("summary"):
-        lines.append(f"What the task is: {understood['summary']}")
-    criteria = _criteria(skill)
+        lines.append(f"What the task is: {_for_this_run(understood['summary'], skill, run['values'])}")
+    criteria = _criteria(skill, run["values"])
     if criteria:
         lines.append("What the person said, and what was agreed when they taught it (follow it):\n" + criteria)
 
@@ -1190,6 +1329,9 @@ def _procedure(run, from_step=None, note="", ran=False):
             "How to work:",
             f"- `gui recording {run['mimic']['id']}` lists what the person did; work each step with gui observe / "
             "click / type / key, adapting to the screen.",
+            f"- `gui replay {run['mimic']['id']} --from N` replays their steps from step N with THIS run's values "
+            "(they are filled in for you); use it only when the screen matches the recording, and check where it "
+            "stopped. Never redo a step that already ran: it would do the task twice.",
         ]
     else:
         how = ["How to work:"]
@@ -1202,6 +1344,9 @@ def _procedure(run, from_step=None, note="", ran=False):
         "- Otherwise work each step with gui observe / click / type / key as usual.",
     ]
     how += [
+        "- What the person answered - when they taught this and during earlier runs - is settled. Act on it and "
+        "never ask them the same thing again; it also covers the same kind of choice met somewhere else (told to "
+        "take the first of several matching conversations, take the first of several matching people in any list).",
         "- If the request asks for several items (a list), do the task once per item, one after another, unless "
         "the person said otherwise.",
         "- Before you say DONE, look at the screen (gui verify) and make sure it shows the task done for THIS run's "
@@ -1218,15 +1363,24 @@ def _procedure(run, from_step=None, note="", ran=False):
 def _engine_request(run):
     """The request the engine is given for a taught task."""
 
-    if run.get("mimic"):
-        return run["context"] or run["mimic"]["text"]
-
     skill = run["skill"]
-    request = f"Do the task you were taught, \"{skill.get('title') or skill['name']}\" (skill {skill['name']})"
+
+    # A request matched to a recording goes in the same words as a `/skill`
+    # run, with what the person typed after them - never as their words alone.
+    # Found live: `search "sundar pichai"`, matched to a taught search, went to
+    # the engine as typed; its triage called that a question, its chat skill -
+    # no tools - answered "DONE", and nothing had touched the screen. The
+    # engine sends "Do the task you were taught" to its operator, always.
+    if run.get("one_off"):
+        request = f"Do the task you were taught by a recording of \"{run['mimic']['text']}\""
+    else:
+        request = f"Do the task you were taught, \"{skill.get('title') or skill['name']}\" (skill {skill['name']})"
     if run["values"]:
         request += " with " + ", ".join(f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in run["values"].items())
     request += "."
-    if run.get("context"):
+    if run.get("mimic"):
+        request += "\n\nThe person asked: " + (run.get("context") or run["mimic"]["text"])
+    elif run.get("context"):
         request += "\n\n" + run["context"]
     return request
 
@@ -1255,7 +1409,7 @@ def _by_model(run, from_step=None, note="", ran=False):
 def _judge(run, claim):
     skill = run["skill"]
     steps = "; ".join(f"{s['n']}. {s.get('summary')}" for s in skill["steps"])[:1500]
-    return verify.judge(run.get("context") or _engine_request(run), claim=claim, criteria=_criteria(skill),
+    return verify.judge(run.get("context") or _engine_request(run), claim=claim, criteria=_criteria(skill, run["values"]),
                         values=run["values"], steps=steps, live_png=evidence.live(),
                         reference_png=evidence.final_frame(skill), observed=evidence.observed())
 
@@ -1313,6 +1467,172 @@ def _correct(run, text):
     run["skill"]["corrections"] = fresh["corrections"]
 
 
+# ------------------------------------------------------------
+# A question an engine asks in the middle of a task
+#
+# Found live (2026-10-04): taught "if several conversations match, choose the
+# first one", the engine met several *people* matching in the new-message box
+# and asked which. The person answered "always choose first" - and that went
+# to the engine for that run only; nothing kept it, so the next run would ask
+# again. Three things now:
+#   - what a person answers is kept: on the skill, with its question, when the
+#     task is a taught one (learn_answer), and in the worker's memory as a
+#     lesson for every task (lessons.py, from the watcher);
+#   - before a person is paged, the question is put to the hosted model beside
+#     everything they have taught and answered - the skill's lesson and the
+#     worker's kept lessons - and one that is already settled is answered from
+#     it. Never an approval, never a question this module asks itself, at most
+#     MAX_SELF_ANSWERS a task, and only on a confident reading;
+#   - the engine is told the same in its own context (_procedure, and worker
+#     memory), so it should rarely get as far as asking.
+# ------------------------------------------------------------
+
+MAX_SELF_ANSWERS = 2
+MAX_RUN_ANSWERS = 12
+SELF_ANSWER_CONFIDENCE = 0.8
+
+# Who may be answered: an engine working a task. A question from a replay, a
+# lesson, a skill's own run, a ticket or a web lookup is that module's, and
+# its reply goes back to it, not to an engine.
+ENGINES_THAT_ASK = (None, "", "thebot", "azure", "claude", "ollama")
+
+ANSWERED_SYSTEM = """A computer agent working for a person wants to stop its task and ask that person a question. You are given what the person has already told it - what they taught about this task (their own words, the rules agreed, the questions they answered when teaching and during earlier runs) and the lessons kept from their answers in earlier tasks - and the agent's question. Decide whether the person has already answered it.
+
+They have when they answered the same question, or the same kind of choice arising somewhere else (told to take the first of several matching conversations, the first of several matching people in another list is the same choice).
+
+They have NOT when: nothing they said touches it; the earlier answer was about one task's own value (a particular person, amount, file or date) and this one's differs; the agent is asking for approval, a password, a sign-in, a code, a check that it is a human, or a value it was not given; or something has gone wrong (an error, a model or page that does not answer, a control it cannot find). When in doubt they have not: the person is then asked, which costs little.
+
+Reply with JSON only: {"answered": true, "answer": "<what the agent should do, in a sentence or two, in the person's terms>", "from": "<the person's words this rests on, quoted>", "confidence": 0.0-1.0} or {"answered": false}"""
+
+_self_answered = {"task": None, "count": 0}
+
+
+def guided_skill_title():
+    """The taught task the engine is on right now, by its name for a person, or ""."""
+
+    run = (guidance.get() or {}).get("run")
+    if not run or run.get("one_off"):
+        return ""
+    return run["skill"].get("title") or run["skill"]["name"]
+
+
+def _already_told(run):
+    """Everything the person has said that could settle a question: this task's lesson, then the kept lessons."""
+
+    parts = []
+    if run is not None and not run.get("one_off"):
+        taught = _for_this_run(_criteria(run["skill"]), run["skill"], run["values"])
+        if taught.strip():
+            parts.append(f"What the person taught about this task (\"{run['skill'].get('title') or run['skill']['name']}\"):\n{taught}")
+    kept = lessons.known()
+    if kept:
+        parts.append(f"Lessons kept from the person's answers in earlier tasks:\n{kept}")
+    return "\n\n".join(parts)
+
+
+def _question_gate(problem, kind, engine):
+    """messaging's query gate: True when what the person already said answered the engine's question and nobody was asked."""
+
+    if (kind != "query" or engine not in ENGINES_THAT_ASK
+            or state.paused_skill is not None or state.paused_replay is not None):
+        return False
+
+    guided = guidance.get()
+    run = (guided or {}).get("run")
+
+    # What the person's reply, if they are asked, will be the answer to.
+    if run is not None:
+        guided["asked"] = problem
+
+    task = task_context.current() or state.current_task
+    if _self_answered["task"] != task:
+        _self_answered.update(task=task, count=0)
+    if _self_answered["count"] >= MAX_SELF_ANSWERS or not llm_client.available():
+        return False
+
+    told = _already_told(run)
+    if not told:
+        return False
+
+    values = f"This run's values: {json.dumps(run['values'], ensure_ascii=False)}\n\n" if run is not None else ""
+    try:
+        data = study._call(ANSWERED_SYSTEM, f"{told}\n\nThe task: {(state.current_task or '')[:600]}\n\n{values}"
+                                            f"The agent's question:\n{problem[:2000]}", max_tokens=400)
+    except (llm_client.LLMError, ValueError) as exc:
+        log(f"Could not check the question against what the person already said: {exc}")
+        return False
+
+    answer = " ".join(str(data.get("answer") or "").split())[:500]
+    try:
+        confidence = float(data.get("confidence") or 0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if data.get("answered") is not True or not answer or confidence < SELF_ANSWER_CONFIDENCE:
+        return False
+
+    _self_answered["count"] += 1
+    if run is not None:
+        guided["asked"] = None
+    source = " ".join(str(data.get("from") or "").split())[:200]
+    progress.emit(f"Not asking you - you already told me: {answer}" + (f" (from: {source})" if source else ""))
+    log(f"Answered the engine's question from what the person already said: {problem[:200]!r} -> {answer!r}")
+
+    # On a thread of its own: the engine is still inside the call that asked.
+    threading.Thread(target=_answer_engine, args=(answer,), daemon=True).start()
+    return True
+
+
+def _answer_engine(answer):
+    from decurix_agent.harness import continue_after_query
+
+    try:
+        continue_after_query(f"The person already answered this earlier, so they were not asked again: {answer}")
+    except Exception as exc:
+        log(traceback.format_exc())
+        ask_for_query(f"I could not carry on after answering my own question from what you told me earlier ({exc}). "
+                      "Tell me what to do next.", engine=SKILL_ENGINE)
+
+
+def learn_answer(reply):
+    """
+    Keep a person's answer to a question the engine asked during a taught
+    task (the watcher calls this as it hands the reply to the engine), so no
+    later run asks it again.
+    """
+
+    guided = guidance.get()
+    run = (guided or {}).get("run")
+    asked = (guided or {}).pop("asked", None) if guided else None
+    reply = " ".join((reply or "").split())[:500]
+
+    if run is None or run.get("one_off") or not asked or not reply:
+        return
+    if ABANDON_RE.match(reply):
+        return
+
+    try:
+        fresh = skills.load(run["skill"]["name"])
+    except FileNotFoundError:
+        return
+
+    said = {"at": int(time.time()), "q": " ".join(asked.split())[:500], "a": reply}
+    kept = [x for x in fresh.get("run_answers") or [] if (x.get("q"), x.get("a")) != (said["q"], said["a"])]
+    fresh["run_answers"] = (kept + [said])[-MAX_RUN_ANSWERS:]
+    skills.save(fresh)
+    run["skill"]["run_answers"] = fresh["run_answers"]
+    log(f"Skill {fresh['name']}: kept the person's answer to {said['q'][:120]!r}")
+
+
+messaging.set_query_gate(_question_gate)
+
+
+def _acts_on_screen(skill):
+    """Whether a skill's own steps are work on the screen (every recorded skill's are)."""
+
+    return any(step.get("kind") in ("click", "double_click", "right_click", "type", "key", "select", "drag", "scroll",
+                                    "open", "upload") for step in skill.get("steps") or [])
+
+
 def _did_screen_work():
     """Whether the task being worked on acted on the screen (its recording has an action in it)."""
 
@@ -1357,10 +1677,33 @@ def _gate(reply, kind, engine):
             _record_verdict(run, False, why=(reply or "")[:300])
         return False
 
+    # The person said no to the action the task stopped for. Found live
+    # (2026-10-03): told "no, do not send it" at Send, the engine stopped as
+    # asked - and this check, seeing the message unsent, sent it back to do
+    # the whole task again and ask for the same approval. A refusal is the
+    # person's decision about the task, not a failure to repair.
+    said_no = guidance.refused()
+    if said_no:
+        guidance.end()
+        if run is not None:
+            _record_verdict(run, False, why=f"the person said no at an approval: {said_no}"[:300])
+        write_final_reply(f"Stopped there, as you said (\"{said_no}\"): the action I asked about was not carried out.\n\n"
+                          f"{reply}", kind="final", engine=engine, checked=True)
+        return True
+
     progress.emit("Checking the screen to see that the task was really done.")
-    verdict = _judge(run, reply) if run is not None else verify.judge(guided["task"], claim=reply,
-                                                                          live_png=evidence.live(),
-                                                                          observed=evidence.observed())
+    if run is not None and _acts_on_screen(run["skill"]) and not _did_screen_work():
+        # Nothing was opened, clicked or typed during this task, and the task
+        # is done on the screen: no picture of the screen can make that done -
+        # what it shows is left from before (found live: the demonstration's
+        # own page, still open, passed for a run that had done nothing).
+        verdict = {"verdict": verify.NOT_DONE, "confidence": 1.0, "seen": "",
+                   "why": "Nothing was done on the screen during this task: no app was opened, nothing clicked or "
+                          "typed. The task has to be carried out with the gui command."}
+    else:
+        verdict = _judge(run, reply) if run is not None else verify.judge(guided["task"], claim=reply,
+                                                                              live_png=evidence.live(),
+                                                                              observed=evidence.observed())
 
     if verdict["verdict"] == verify.DONE:
         guidance.end()

@@ -153,6 +153,18 @@ func (m *Manager) Screenshot(ctx context.Context, rawID string, maxWidth int) ([
 		return nil, entry.lastErr
 	}
 
+	if m.native != nil {
+		encoded, err := m.native.screenshot(ctx, sanitizedID, maxWidth)
+		if err != nil {
+			entry.lastErr = err
+			entry.errAt = time.Now()
+			return nil, err
+		}
+		m.touchViewed(sanitizedID)
+		entry.data, entry.at, entry.lastErr = encoded, time.Now(), nil
+		return encoded, nil
+	}
+
 	// Only a cache miss pays for the ContainerInspect captureTarget needs to
 	// resolve the desktop's address and password - a cache hit above never
 	// touches Docker at all.
@@ -421,6 +433,12 @@ func vncAuthResponse(challenge []byte, password string) ([]byte, error) {
 	}
 
 	return response, nil
+}
+
+// VNCAuthResponse is the answer VNC authentication expects to a challenge for
+// a password: what a native worker's own VNC endpoint checks a viewer against.
+func VNCAuthResponse(challenge []byte, password string) ([]byte, error) {
+	return vncAuthResponse(challenge, password)
 }
 
 // bits8Reverse reverses the bit order of a single byte.

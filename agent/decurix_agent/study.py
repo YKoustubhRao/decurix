@@ -36,16 +36,18 @@ from decurix_agent.logging_utils import log
 
 MAX_QUESTIONS = 5
 MAX_FOLLOW_UPS = 3
-MAX_PICTURES = 5
+# Every press of the demonstration is shown, ringed (see _pictures), plus the
+# screen it began on and the one it ended on - up to this many pictures.
+MAX_PICTURES = 14
 
-STUDY_SYSTEM = """You are an apprentice learning a computer task by watching a person do it (one or a few demonstrations) on a Linux desktop. Later you will do this task on your own, with other values, on screens that may look different, and your work will be checked. What you work out now, and what you ask now, is all you will have.
+STUDY_SYSTEM = """You are an apprentice learning a computer task by watching a person do it (one or a few demonstrations) on a desktop. Later you will do this task on your own, with other values, on screens that may look different, and your work will be checked. What you work out now, and what you ask now, is all you will have.
 
 Study the recording you are given - the numbered steps (what was clicked, typed, in which window), the person's own notes, and the screenshots - and work out:
 - summary: what the task achieves, in two or three sentences, in the person's terms.
-- steps: what each step is FOR (not what it clicks), by step number.
+- steps: what each step is FOR (not what it clicks), by step number. For every press you are shown the screen at the moment the person pressed, with a red ring on the exact spot: look at what is under the ring and around it, and say what that thing IS in the task ("the first conversation in the search results", "the result for the company that was searched for") - the step list only names the text or control that happened to be under the pointer, which on another run will read differently. If the list's name for a press and what the ring is on disagree, trust the picture and say so.
 - inputs: for each typed value (named by its parameter), what it is and where a future run gets it (the request, a document, always the same...).
 - varies: for each input, true if it will be different on another run, false if it stays the same.
-- done_when: what must be visible on the screen, or true, when the task is finished - concrete enough to check from a screenshot.
+- done_when: what must be visible on the screen, or true, when the task is finished - concrete enough to check from a screenshot, and true of EVERY run, not only this demonstration. Write an input as its parameter in braces ("a profile page for {typed_text} is open"), never as the value the person happened to use, and leave out details that only this demonstration's result has (this person's city, this order's total, today's date): another run's result will not show them. The same goes for the summary.
 - incidental: step numbers that look accidental or not needed (a stray click, scrolling around, closing a popup that may not appear).
 - rules: leave empty unless the notes already state one; each rule is one imperative sentence.
 - questions: what you must ask the person, because you cannot work it out and getting it wrong would make a future run fail or do the wrong thing. Think about: what the request will look like next time (one item or a list? done once per item?), decisions (what if the record is not found, already exists, or the page differs?), which values come from where, preconditions (signed in, which account, which page to start from), steps that send, pay, submit or delete and what to check before them, and anything in the notes you do not understand. Most important first, at most 5. Each is one short, concrete question that can be answered in a line, naming steps by number and what is on the screen. Do not ask what you can see or work out, about passwords, about screen coordinates, or whether to save the task - those are handled separately.
@@ -90,33 +92,87 @@ def _step_line(step, params):
     return line
 
 
-def _pictures(skill):
-    """The screens worth showing: where the task began, where the window changed, where it ended."""
+PRESSES = ("click", "double_click", "right_click", "drag")
 
-    steps = skill.get("steps") or []
-    chosen, last_window = [], None
 
-    for step in steps:
+def _pressed_at(step):
+    """Where on the screen a step pressed: its point, else the middle of the control it was on; None for no press."""
+
+    if step.get("kind") not in PRESSES:
+        return None
+    if step.get("point"):
+        return step["point"]
+    box = (step.get("locate") or {}).get("box")
+    if box and len(box) == 4:
+        return [box[0] + box[2] // 2, box[1] + box[3] // 2]
+    return None
+
+
+def _chosen(steps, budget):
+    """
+    Which steps' screens are shown when there are more presses than pictures:
+    the first step, then presses with no named control under them (only the
+    picture says what they were on), then presses that changed the window,
+    then the rest - and of each kind, the earliest first.
+    """
+
+    ranked, last_window = [], None
+    for index, step in enumerate(steps):
         window = step.get("window") or step.get("phase_label")
-        if not chosen or (window and window != last_window):
-            chosen.append((f"before step {step['n']}", step, "before"))
+        moved = bool(window and window != last_window)
         last_window = window or last_window
 
-    shown = chosen[:MAX_PICTURES - 1]
-    if steps:
-        shown.append((f"after the last step ({steps[-1]['n']})", steps[-1], "after"))
+        pressed = _pressed_at(step)
+        if index == 0:
+            rank = 0
+        elif pressed and not step.get("target"):
+            rank = 1
+        elif pressed and moved:
+            rank = 2
+        elif pressed:
+            rank = 3
+        elif moved:
+            rank = 4
+        else:
+            continue
+        ranked.append((rank, index))
 
+    keep = sorted(index for _, index in sorted(ranked)[:budget])
+    return [steps[index] for index in keep]
+
+
+def _pictures(skill):
+    """
+    What the person saw as they did the task: the screen each press was made
+    on, with a red ring on the spot, where it began and where it ended.
+
+    It used to be the screens where the window changed, five at most. Said by
+    the person who runs this (2026-10-03): "some of the clicks I do you don't
+    see where I clicked or why". Their demonstration's click on the first
+    conversation of a search was in the list as `click text "This message has
+    been deleted."` - the words under the pointer - and no picture of it was
+    shown, so nothing said it was the first result.
+    """
+
+    steps = skill.get("steps") or []
     parts = []
-    for caption, step, which in shown:
-        png = evidence.step_frame(step, which)
-        if png is None and which == "after":
-            png = evidence.step_frame(step, "before")
+
+    for step in _chosen(steps, MAX_PICTURES - 1):
+        png = evidence.step_frame(step, "before")
         if png is None:
             continue
-        if which == "before" and step.get("point"):
-            png = evidence.mark(png, step["point"])
-            caption += " (the red ring is where the person pressed)"
+        caption = f"before step {step['n']} ({step.get('summary') or step['kind']})"
+        pressed = _pressed_at(step)
+        if pressed:
+            png = evidence.mark(png, pressed)
+            caption += " - the red ring is where the person pressed"
         parts += [{"type": "text", "text": f"Screen {caption}:"}, llm_client.image_part(png)]
+
+    if steps:
+        png = evidence.step_frame(steps[-1], "after") or evidence.step_frame(steps[-1], "before")
+        if png is not None:
+            parts += [{"type": "text", "text": f"Screen after the last step ({steps[-1]['n']}):"}, llm_client.image_part(png)]
+
     return parts
 
 

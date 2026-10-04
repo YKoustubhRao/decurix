@@ -143,13 +143,19 @@ func nativeHostGUICmd(ctx context.Context, desktopName string) (*exec.Cmd, error
 	if err != nil {
 		return nil, err
 	}
-	return exec.CommandContext(ctx, ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-DesktopName", desktopName), nil
+	cmd := exec.CommandContext(ctx, ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-DesktopName", desktopName)
+	// The control plane has no console when the app starts it, so PowerShell would open one of its own, on the person's
+	// screen, for as long as the helper lives.
+	desktop.HideWindow(cmd)
+	return cmd, nil
 }
 
 // warmHostGUI starts (or keeps) the helper the next host app will run in. It only makes sense where host apps can run at
 // all: on Windows, or on Linux reaching Windows through WSL.
 func (s *Server) warmHostGUI() {
-	if !hostGUISupported() {
+	// A native worker's apps open on the worker's own desktop, in the helper that holds it: no host app is ever
+	// launched into a spare, so one kept waiting would only be a process left behind.
+	if !hostGUISupported() || s.Desktops.Native() {
 		return
 	}
 	s.hostGUI().Warm()
@@ -158,7 +164,12 @@ func (s *Server) warmHostGUI() {
 // checkHostApps asks the Windows helper which programs it can run on a private desktop, without starting any of them. It
 // uses the same warm helper an app is launched into, so what it learns about the Start menu is not learned twice.
 func (s *Server) checkHostApps(ctx context.Context, targets []winhost.Target) (map[winhost.Target]string, error) {
-	return s.hostGUI().Check(ctx, targets)
+	verdicts, err := s.hostGUI().Check(ctx, targets)
+	if s.Desktops.Native() {
+		// Nothing will be launched into the helper the check used (see warmHostGUI): end it now the scan is done.
+		s.hostGUI().DropSpare()
+	}
+	return verdicts, err
 }
 
 // keptHostApp is one app kept running and ready on the host (winhost.Manager.Keep), as saved in the data directory so a
@@ -396,6 +407,14 @@ func (s *Server) hostGUIWSHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no such session", http.StatusNotFound)
 		return
 	}
+	s.serveSessionSocket(w, r, sess, q.Get("id"), q.Get("desktop"), nil)
+}
+
+// serveSessionSocket is one viewer's WebSocket to a private desktop, for as long as either end keeps it open: the
+// protocol hostGUIWSHandler describes. label names the session in the log; desktopID is the desktop to keep marked as
+// in use meanwhile ("" for none). before, when given, is called with each input before it is applied (a native
+// worker's demonstration recorder, nativerecording.go).
+func (s *Server) serveSessionSocket(w http.ResponseWriter, r *http.Request, sess *winhost.Session, label, desktopID string, before func(hostGUIRequest)) {
 	c, err := wsconn.Upgrade(w, r)
 	if err != nil {
 		return
@@ -404,7 +423,7 @@ func (s *Server) hostGUIWSHandler(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	s.markDesktopViewed(ctx, q.Get("desktop"))
+	s.markDesktopViewed(ctx, desktopID)
 	v := sess.Watch()
 	defer v.Close()
 
@@ -454,9 +473,12 @@ func (s *Server) hostGUIWSHandler(w http.ResponseWriter, r *http.Request) {
 		if json.Unmarshal(msg, &req) != nil {
 			continue
 		}
+		if before != nil {
+			before(req)
+		}
 		text, wantsText, err := applyInput(sess, req)
 		if err != nil {
-			log.Printf("host-gui: input %s on %s: %v", req.Kind, q.Get("id"), err)
+			log.Printf("host-gui: input %s on %s: %v", req.Kind, label, err)
 			continue
 		}
 		if wantsText {

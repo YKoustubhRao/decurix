@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from decurix_agent import logging_utils, progress
-from decurix_agent.computer import approval, audit, browser, cdp, core, privacy, processing, recording, screen, session
+from decurix_agent.computer import approval, audit, browser, cdp, core, privacy, processing, recording, screen, session, shortcuts
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 from decurix_agent.logging_utils import log
@@ -48,11 +48,40 @@ from decurix_agent.logging_utils import log
 # decurix_agent.computer.demonstration <session>), started and signalled by
 # the agent's HTTP API, so a crash in X or AT-SPI code cannot take the agent
 # down with it.
+#
+# On a native Windows worker there is no X server to listen to, and nothing
+# else to listen to either: the worker's screen is a private desktop nobody's
+# keyboard is attached to. A person works it through the dashboard's viewer,
+# whose clicks and keys the control plane posts to the desktop as window
+# messages - so the control plane is where their input is known, and it hands
+# each one to the recorder (POST /demonstration/input -> feed()) *before* it
+# applies it. That order is what makes an action's "before" picture a picture
+# of before. An agent's own actions never come that way (they go through
+# decurix-ui.exe), which is how the person is told from the agent there.
+# With no X connection or signal to isolate, the recorder runs inside the
+# agent on Windows, as a thread; everything after the raw input - merging,
+# privacy, the recording - is the same code.
+#
+# Being handed each input before it is applied also lets the recorder there
+# ask the one question a recording is for - what exactly is this press on? -
+# at the only moment the answer is certain: now, before the press changes
+# anything (Recorder._hit, _front). Measured on a real worker, with the
+# element taken from the last settled look at the screen instead: a click on a
+# page's drop-down, with another app's window behind the browser, was recorded
+# as that other app's text box (a list of every window's controls offers the
+# ones behind as readily as the ones in front); the option then chosen was
+# recorded as the page text under the list; and most clicks of a person who
+# does not wait between them were kept as bare coordinates, "the screen was
+# still changing". Asked at the press: the window on top at that point, its
+# program, and the control of that window under the pointer - for a page, the
+# node the browser itself says is there.
 # ============================================================
+
+WINDOWS = os.name == "nt"
 
 ACTIVE_FILE = recording.ROOT / "active-demonstration.json"
 READY_FILE = recording.ROOT / "active-demonstration.ready"
-LOG_FILE = "/tmp/decurix-demonstration.log"
+LOG_FILE = logging_utils.log_file("decurix-demonstration.log")
 
 # Input quiet this long ends a run of actions: long enough to hold a
 # double-click and a typed word together, short enough to keep up.
@@ -86,6 +115,10 @@ TEXT_ENTRY_ROLES = {"textbox", "combobox", "spinbutton", "cell", "document", "pa
 
 _process = None
 
+# The recorder when it runs inside this process (a native Windows worker).
+_recorder = None
+_thread = None
+
 
 # ============================================================
 # Control, from the agent's HTTP API
@@ -114,6 +147,11 @@ def _clear_active():
 
 
 def _alive(pid):
+    if WINDOWS:
+        # The recorder is a thread of this process. (And os.kill is no way to
+        # ask on Windows: there it ends the process it names.)
+        return pid == os.getpid() and _thread is not None and _thread.is_alive()
+
     # A recorder this process started is its child, and a child that exited
     # stays a zombie - still "there" to kill(0) - until it is reaped.
     if _process is not None and _process.pid == pid:
@@ -184,6 +222,9 @@ def start(title="", description="", task_id=""):
 
     _clear_active()
 
+    if WINDOWS:
+        return _start_in_process(session_id)
+
     env = session.app_env()
     package_root = str(Path(__file__).resolve().parents[2])
     env["PYTHONPATH"] = package_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
@@ -226,6 +267,111 @@ def start(title="", description="", task_id=""):
     raise ComputerError(f"could not start recording: {reason}")
 
 
+def _start_in_process(session_id):
+    """start() on a native Windows worker: the recorder as a thread of the agent."""
+
+    global _recorder, _thread
+
+    _recorder = Recorder(session_id)
+    _thread = threading.Thread(target=_run_in_process, args=(_recorder,), name="demonstration", daemon=True)
+    _thread.start()
+
+    _write_active({"session": session_id, "pid": os.getpid(), "started_at": time.time(), "paused": False})
+
+    deadline = time.monotonic() + START_SECONDS
+    while time.monotonic() < deadline and _thread.is_alive():
+        if _recorder.ready.is_set():
+            return recording.meta(session_id)
+        time.sleep(0.05)
+
+    reason = (recording.meta(session_id) or {}).get("reason") or f"the recorder did not start; see {LOG_FILE}"
+    _recorder.stop_requested.set()
+    _close(session_id, "failed", reason)
+    _clear_active()
+
+    raise ComputerError(f"could not start recording: {reason}")
+
+
+def _run_in_process(recorder):
+    try:
+        recorder.run()
+    except Exception as exc:  # a thread's traceback would otherwise go nowhere
+        log(f"The recorder stopped: {exc!r}")
+        _close(recorder.session_id, "interrupted", f"the recorder stopped unexpectedly: {exc}")
+
+
+def feed(event):
+    """
+    One thing a person did on a native worker's screen, as the dashboard's
+    viewer sent it and before it is applied: {"kind": "down"|"up", "x", "y",
+    "right", "mods"}, {"kind": "wheel", "x", "y", "delta"}, {"kind": "type" |
+    "paste", "text"}, {"kind": "key" | "copy", "vk", "mods"}. Returns whether a
+    demonstration is being recorded - False tells the control plane to stop
+    sending them.
+    """
+
+    recorder = _recorder
+    if not WINDOWS or recorder is None or _thread is None or not _thread.is_alive():
+        return False
+
+    recorder.feed(event)
+    return True
+
+
+# How long opening something may take: a cold browser is the slow case (core.BROWSER_START_SECONDS).
+OPEN_SECONDS = core.BROWSER_START_SECONDS + 30
+
+
+def open_as_person(target):
+    """
+    Open an app, a file or a web address on the worker's screen because a
+    person asked for it from the dashboard's viewer - what the Start menu and
+    the desktop's icons are for on a screen that has them. A native worker's
+    private desktop has neither, so without this a person could not begin a
+    demonstration at all.
+
+    While a demonstration is being recorded it is one of its steps (an "open"
+    by the person, which a replay opens again), in order with their clicks and
+    keys. Paused, or with nothing being recorded, it just opens.
+
+    Only what is named: a program is not given arguments here. A person who
+    wants a command run types it into a window they opened, where they can see
+    it; this is not a way to run one unseen.
+    """
+
+    target = (target or "").strip()
+    if not target:
+        raise ComputerError("say what to open: an app's name, a file, or a web address")
+
+    # The browser is opened by name ("browser", "chrome"): not a program to look
+    # up. Found live: a worker's own browser icon answered "don't know how to
+    # open 'browser'", because this check ran before core._open's own names.
+    if WINDOWS and target.lower() not in core.CHROMIUM_APPS and shortcuts.named(target) is None \
+            and not core.URL_RE.match(target) and not Path(target).expanduser().exists():
+        from decurix_agent.computer import win
+
+        argv = win.open_argv(target)
+        if isinstance(argv, list) and len(argv) > 1:
+            raise ComputerError(f"name the program only - {target.split()[0]!r} cannot be given arguments from here")
+
+    recorder = _recorder
+    recording_now = WINDOWS and recorder is not None and _thread is not None and _thread.is_alive() \
+        and not recorder.paused and not recorder.stop_requested.is_set()
+
+    if not recording_now:
+        return core._open(target, False)
+
+    request = {"type": "open", "t": time.time(), "target": target, "done": threading.Event(), "result": None, "error": None}
+    recorder.raw.put(request)
+
+    if not request["done"].wait(OPEN_SECONDS):
+        raise ComputerError("opening it is taking too long - look at the screen")
+    if request["error"]:
+        raise ComputerError(request["error"])
+
+    return request["result"]
+
+
 def _running():
     active = _read_active()
     if not active or not _alive(active.get("pid", 0)):
@@ -239,7 +385,10 @@ def pause(reason=""):
     active = _running()
     active.update(paused=True, pause_reason=reason or "a private step")
     _write_active(active)
-    os.kill(active["pid"], signal.SIGUSR1)
+    if WINDOWS:
+        _recorder._on_pause()
+    else:
+        os.kill(active["pid"], signal.SIGUSR1)
     return recording.meta(active["session"])
 
 
@@ -247,7 +396,10 @@ def resume():
     active = _running()
     active.update(paused=False)
     _write_active(active)
-    os.kill(active["pid"], signal.SIGUSR2)
+    if WINDOWS:
+        _recorder._on_resume()
+    else:
+        os.kill(active["pid"], signal.SIGUSR2)
     return recording.meta(active["session"])
 
 
@@ -335,7 +487,14 @@ def stop():
 
     pid = active.get("pid", 0)
 
-    if _alive(pid):
+    if WINDOWS:
+        if _alive(pid):
+            # Everything the person did was fed in before this call, in order.
+            _recorder.stop_requested.set()
+            _thread.join(timeout=STOP_SECONDS)
+            if _thread.is_alive():
+                _close(active["session"], "incomplete", "the recorder did not finish writing in time")
+    elif _alive(pid):
         os.kill(pid, signal.SIGTERM)
         deadline = time.monotonic() + STOP_SECONDS
         while _alive(pid) and time.monotonic() < deadline:
@@ -417,6 +576,34 @@ def _masked(frame, boxes):
     return frame.masked(boxes) if frame is not None else None
 
 
+# A native Windows worker's keys arrive as virtual-key codes (the viewer's
+# `key` and `copy` messages). They are recorded under the names the X recorder
+# uses, so a recording reads - and replays - the same wherever it was made.
+WINDOWS_KEYS = {
+    8: "BackSpace", 9: "Tab", 13: "Return", 19: "Pause", 27: "Escape", 32: "space", 33: "Prior", 34: "Next",
+    35: "End", 36: "Home", 37: "Left", 38: "Up", 39: "Right", 40: "Down", 45: "Insert", 46: "Delete", 93: "Menu",
+    186: ";", 187: "=", 188: ",", 189: "-", 190: ".", 191: "/", 192: "`", 219: "[", 220: "\\", 221: "]", 222: "'",
+}
+WINDOWS_KEYS.update({112 + n: f"F{n + 1}" for n in range(12)})
+WINDOWS_KEYS.update({48 + n: str(n) for n in range(10)})
+WINDOWS_KEYS.update({96 + n: str(n) for n in range(10)})  # the number pad
+WINDOWS_KEYS.update({65 + n: chr(97 + n) for n in range(26)})
+
+WINDOWS_MODIFIERS = {"c": "Control_L", "s": "Shift_L", "a": "Alt_L"}
+
+# Characters of typed or pasted text that are keys, not text.
+WINDOWS_TEXT_KEYS = {"\n": "Return", "\t": "Tab"}
+
+
+def windows_key_name(vk):
+    """The recorded name of a Windows virtual-key code, or None for one nothing is known about."""
+
+    try:
+        return WINDOWS_KEYS.get(int(vk))
+    except (TypeError, ValueError):
+        return None
+
+
 # Keys that send focus somewhere a recording cannot follow.
 FOCUS_KEYS = {"Tab", "ISO_Left_Tab", "Return", "KP_Enter", "Escape"}
 
@@ -446,6 +633,95 @@ def _focus_after(action, element, focus):
 
 
 THUMBNAIL_SCALE = audit.THUMBNAIL_SCALE
+
+
+def _native_drop_down(element):
+    """Whether an element is a Windows drop-down list (one a person chooses from, not types into)."""
+
+    handle = (element or {}).get("handle") or {}
+    return (element or {}).get("role") == "combobox" and element.get("source") == "uia" \
+        and "expand" in (handle.get("patterns") or []) and not handle.get("editable")
+
+
+def _place(found):
+    """Which window and program an input is in, from what the screen's helper said of the window (win.hit, win.front)."""
+
+    app = {"name": found["app"], "exe": found["exe"]} if found.get("app") else None
+
+    return {"window": found["title"], "app": app, "url": "", "element": None, "where": ""}
+
+
+def _holds(entry, element, after):
+    """
+    {"role", "name", "value"} when the settled screen shows the field of a
+    typed or chosen value holding exactly that value, else None. Never for
+    text that was withheld, added to what a field already held, or put into
+    a field with no name to find it by again.
+    """
+
+    if after is None or element is None or not element.get("name"):
+        return None
+
+    if entry["kind"] == "type" and not entry.get("append") and not entry.get("withheld"):
+        wanted = entry.get("text")
+    elif entry["kind"] == "select":
+        wanted = entry.get("option")
+    else:
+        return None
+
+    wanted = " ".join((wanted or "").split())
+    if not wanted:
+        return None
+
+    def same_place(seen):
+        # The same tab or window: a page keeps its tab when its title changes
+        # (saving an order retitled the page the field was on).
+        if seen.get("group") and seen.get("group") == element.get("group"):
+            return True
+        return (seen.get("window_title") or "") == (element.get("window_title") or "")
+
+    for seen in after.get("elements") or []:
+        if seen.get("role") == element.get("role") and seen.get("name") == element.get("name") and same_place(seen) \
+                and " ".join((seen.get("value") or "").split()) == wanted:
+            return {"role": seen["role"], "name": seen["name"], "value": entry["text"] if entry["kind"] == "type" else entry["option"]}
+
+    return None
+
+
+# Why an action has no element, by where it landed (Recorder._hit's "where").
+WHERE_NOTES = {
+    "desktop": "it was on the bare desktop, not in a window",
+    "browser": "it was on the browser's own bars, which are found again by how they look",
+    "list": "it was in a list the browser drew over its page",
+}
+
+
+def _unoccluded(elements, windows, x, y):
+    """
+    The elements that can be what a press at x,y was on: not those of a
+    window that another window covers at that point. A look at the screen
+    lists every window's controls, the ones behind as readily as the ones in
+    front - found live, a click on a page was recorded as a text box of the
+    app behind the browser. `windows` is observe's list, topmost last; an
+    element whose window is not in it (a menu) is kept.
+    """
+
+    order = {}
+    for index, window in enumerate(windows or []):
+        if window.get("title"):
+            order[window["title"]] = index
+
+    def covered(element):
+        index = order.get(element.get("window_title") or "")
+        if index is None:
+            return False
+        for above in (windows or [])[index + 1:]:
+            box = above.get("box")
+            if box and box[0] <= x < box[0] + box[2] and box[1] <= y < box[1] + box[3]:
+                return True
+        return False
+
+    return [element for element in elements if not covered(element)]
 
 
 def _report_to_chat(session_id, task_id, event, before, after):
@@ -508,6 +784,204 @@ class Recorder:
         self._pause = None
         self._last_look = 0.0
         self._last_key = 0.0
+        # Set once input is being taken (the in-process recorder's READY_FILE).
+        self.ready = threading.Event()
+        # A native Windows worker's own connection for pictures (win.Camera).
+        self.camera = None
+        # Whether the keyboard may have moved since it was last asked where it is.
+        self._focus_unknown = True
+        # A page's drop-down a person has opened and not yet chosen from (_flush).
+        self._choosing = None
+
+    # ---- a native Windows worker: input handed over by the control plane ----
+
+    def feed(self, event):
+        """
+        What a person did in the dashboard's viewer, about to be applied to the
+        worker's screen (see the note at the top): turned into the raw events
+        the X reader produces, with the screen pictured first where an action
+        begins.
+        """
+
+        if self.paused or self.stop_requested.is_set():
+            return
+
+        now = time.time()
+        kind = event.get("kind")
+
+        if kind in ("down", "up"):
+            raw = {"type": "press" if kind == "down" else "release", "t": now,
+                   "button": 3 if event.get("right") else 1, "x": int(event.get("x") or 0), "y": int(event.get("y") or 0)}
+            if kind == "down":
+                raw["frame"] = self._grab()
+                raw["hit"] = self._hit(raw["x"], raw["y"])
+                # A press can move the keyboard anywhere.
+                self._focus_unknown = True
+            self.raw.put(raw)
+
+        elif kind == "wheel":
+            button = 4 if (event.get("delta") or 0) > 0 else 5
+            press = {"type": "press", "t": now, "button": button,
+                     "x": int(event.get("x") or 0), "y": int(event.get("y") or 0)}
+            if now - self._last_scroll > processing.SCROLL_GAP_SECONDS:
+                press["frame"] = self._grab()
+                press["hit"] = self._hit(press["x"], press["y"])
+            self._last_scroll = now
+            self.raw.put(press)
+            self.raw.put({key: value for key, value in dict(press, type="release").items() if key not in ("frame", "hit")})
+
+        elif kind in ("type", "paste"):
+            for char in event.get("text") or "":
+                if char == "\r":
+                    continue
+                if char in WINDOWS_TEXT_KEYS:
+                    self._fed_key(WINDOWS_TEXT_KEYS[char], None, now)
+                else:
+                    self._fed_key("space" if char == " " else char.lower() if char.isalpha() else char, char, now)
+
+        elif kind in ("key", "copy"):
+            name = windows_key_name(event.get("vk"))
+            if name is None:
+                return
+            mods = "c" if kind == "copy" else (event.get("mods") or "")
+            held = [WINDOWS_MODIFIERS[m] for m in "csa" if m in mods]
+            for modifier in held:
+                self._fed_key_event(modifier, None, True, now)
+            self._fed_key(name, None, now)
+            for modifier in reversed(held):
+                self._fed_key_event(modifier, None, False, now)
+
+    def _fed_key(self, name, char, now):
+        self._fed_key_event(name, char, True, now)
+        self._fed_key_event(name, None, False, now)
+
+    def _fed_key_event(self, name, char, down, now):
+        event = {"type": "key_down" if down else "key_up", "t": now, "key": name, "char": char if down else None}
+        modifier = name in processing.MODIFIERS or name in processing.LOCKS
+
+        if down:
+            burst = not self._keys_held and now - self._last_key > KEY_BURST_SECONDS
+            # The first key of a burst pictures the screen (KEY_BURST_SECONDS).
+            if burst:
+                event["frame"] = self._grab()
+            # Where the keys are about to go is asked whenever it may have
+            # changed since it was last asked: a burst begins, or a click, a
+            # Tab, an Enter or a shortcut came in between. Asked before this
+            # key is applied, so a field's value is what it held before it.
+            if not modifier and (burst or self._focus_unknown):
+                event["focus"] = self._front()
+            if not modifier:
+                # A character leaves the keyboard where it is, and so does
+                # rubbing one out; any other key may move it (Tab, Return, an
+                # arrow in a list, ctrl+l), so the next key asks again.
+                self._focus_unknown = char is None and name not in ("BackSpace", "Delete")
+            self._keys_held.add(name)
+        else:
+            self._keys_held.discard(name)
+        self._last_key = now
+
+        self.raw.put(event)
+
+    def _hit(self, x, y):
+        """
+        What a press at x,y is on, asked now, before the press is applied:
+        {"window", "app", "url", "element", "where"}. `where` says what kind
+        of place it is when there is no element to name: "desktop" (no window
+        there), "browser" (the browser's own bars), "list" (a drop-down the
+        browser drew over its page), or "" for a window whose control under
+        the point has no name. None when the screen could not be asked - the
+        action then falls back to the last look at the screen, as on Linux.
+        """
+
+        if self.camera is None:
+            return None
+
+        from decurix_agent.computer import win
+
+        try:
+            found = win.hit(x, y, ask=self.camera.ask)
+        except ComputerError as exc:
+            log(f"Could not ask what is at {x},{y}: {exc}")
+            return None
+
+        if found is None:
+            return {"window": "", "app": None, "url": "", "element": None, "where": "desktop"}
+
+        hit = _place(found)
+
+        if not found["browser"]:
+            hit["element"] = el.at_point(found["elements"], x, y)
+            # A drop-down's list is a window of its own over the app's.
+            if found["popup"]:
+                hit["where"] = "list"
+            if _native_drop_down(hit["element"]):
+                hit["chosen"] = hit["element"].get("value") or ""
+        elif found["popup"]:
+            hit["where"] = "list"
+        elif not found["on_page"]:
+            hit["where"] = "browser"
+        else:
+            element, context = cdp.hit(x, y, (self.latest or {}).get("elements"))
+            hit["element"] = element
+            if context:
+                hit["window"], hit["url"] = context["title"], context["url"]
+            # A drop-down's own list is drawn by the browser, outside the page:
+            # which option is chosen is read off the drop-down, before and after.
+            if element is not None and (element.get("handle") or {}).get("tag") == "select":
+                hit["chosen"] = cdp.chosen_option(element)
+
+        return hit
+
+    def _front(self):
+        """
+        Where keys are about to go, asked now, before the key is applied: as
+        _hit answers, with the field that has the keyboard as the element -
+        and its value as it is before anything is typed into it.
+        """
+
+        if self.camera is None:
+            return None
+
+        from decurix_agent.computer import win
+
+        try:
+            found = win.front(ask=self.camera.ask)
+        except ComputerError as exc:
+            log(f"Could not ask where the keyboard is: {exc}")
+            return None
+
+        if found is None:
+            return {"window": "", "app": None, "url": "", "element": None, "where": "desktop"}
+
+        front = _place(found)
+
+        if not found["browser"]:
+            front["element"] = next((e for e in found["elements"] if "focused" in e.get("states", [])
+                                     and e["role"] in TEXT_ENTRY_ROLES), None)
+        else:
+            # The browser's own pop-up in front is not always a drop-down's
+            # list: a click into a text field opens its suggestions (what was
+            # typed there before, autofill), and the keys still go to the
+            # field. Found live (2026-10-03): a name typed into a search box
+            # was recorded as typed into nothing, because that pop-up was in
+            # front when the first key came. So the page is asked which field
+            # has the keyboard either way; only when it is none, or a
+            # drop-down, is the pop-up the list keys choose from.
+            element, context = cdp.focused((self.latest or {}).get("elements"))
+            if found["popup"] and (element is None or (element.get("handle") or {}).get("tag") == "select"):
+                front["where"] = "list"
+            else:
+                front["element"] = element
+                if context:
+                    front["window"], front["url"] = context["title"], context["url"]
+
+        if front["element"] is None:
+            # Typing with no field to name is what a replay cannot find again:
+            # say why, so a recording that has it can be explained.
+            log(f"Keys with no field: window {front['window']!r}, where {front['where']!r}, "
+                f"browser {found.get('browser')}, popup {found.get('popup')}, url {front['url']!r}")
+
+        return front
 
     # ---- X input, on its own thread and its own connections ----
 
@@ -561,6 +1035,8 @@ class Recorder:
 
     def _grab(self):
         try:
+            if self.camera is not None:
+                return self.camera.grab()
             return screen.grab(display=self.grabber)
         except ComputerError:
             return None
@@ -705,13 +1181,24 @@ class Recorder:
 
         self._poll_frame = None
 
-    def _element(self, action, observation, frame, focus):
+    def _element(self, action, observation, frame, focus, located=None):
         """
         The element an action was on, and why there is none when there is not.
-        `focus` is (known, element): where keys go, as far as the actions
-        before this one in the same run tell - known is False at the start of
-        a run, when only the observation can say.
+        `located` is what the screen itself said the input was on, the moment
+        it was made (a native Windows worker: _hit for a press, _front for a
+        key) - when there is one, it is the answer. Otherwise the element is
+        worked out from the last look at the screen: `focus` is (known,
+        element), where keys go as far as the actions before this one in the
+        same run tell - known is False at the start of a run, when only the
+        observation can say.
         """
+
+        if located is not None:
+            if action["kind"] in ("type", "key"):
+                return located["element"], None
+            if located["element"] is not None:
+                return located["element"], None
+            return None, WHERE_NOTES.get(located.get("where") or "")
 
         if observation is None:
             return None, "the screen had not been read yet"
@@ -729,7 +1216,8 @@ class Recorder:
         if not fresh:
             return None, "the screen was still changing when this happened"
 
-        element = el.at_point(observation["elements"], *action["point"])
+        element = el.at_point(_unoccluded(observation["elements"], observation.get("windows"), *action["point"]),
+                              *action["point"])
         if element is not None:
             return element, None
 
@@ -747,10 +1235,21 @@ class Recorder:
 
         return None, None
 
-    def _entry(self, action, element, note, observation):
+    def _entry(self, action, element, note, observation, located=None):
         kind = action["kind"]
         point = action.get("point")
         text, withheld = privacy.withhold_text(element, action.get("text")) if kind == "type" else (None, None)
+
+        # Where it happened: what the screen said at the moment, else the last look.
+        if located is not None:
+            window, url = located.get("window") or "", located.get("url") or ""
+        else:
+            window = (observation or {}).get("active_title")
+            url = core._context(observation).get("url") if observation else None
+
+        summary = approval.describe_action(kind, element, action.get("text"), action.get("keys"), point, withheld=withheld)
+        if kind == "select":
+            summary = f"select {el._quote(action.get('option') or '', 60)} in {el.describe(element)}"
 
         entry = {
             "actor": "human",
@@ -764,19 +1263,28 @@ class Recorder:
             "keys": action.get("keys") or [],
             "direction": action.get("direction"),
             "amount": action.get("amount"),
-            "window": privacy.kept_text((observation or {}).get("active_title")),
-            "url": privacy.reduce_url(core._context(observation).get("url")) if observation else None,
+            "window": privacy.kept_text(window),
+            "url": privacy.reduce_url(url) if url else (None if observation is None and located is None else ""),
             "screen": (observation or {}).get("size"),
             "duration": round(action["t_end"] - action["t"], 3),
-            "summary": approval.describe_action(kind, element, action.get("text"), action.get("keys"), point,
-                                                withheld=withheld),
+            "summary": summary,
         }
+
+        if kind == "select":
+            entry["option"] = privacy.kept_text(action.get("option"))
+
+        # The program the window belongs to: what a replay opens when the
+        # window is not there (a recording begun with the app already open
+        # has no step that opened it).
+        if located is not None and located.get("app"):
+            entry["app"] = located["app"]
 
         # Fail closed: text whose field cannot be told, typed while a secret
         # field is on the screen, may have gone into that field.
         if kind == "type" and text is not None and element is None \
                 and privacy.secret_boxes((observation or {}).get("elements")):
             text, withheld = None, "typed while a password field was on screen, into a field that could not be told"
+            entry["text"] = None
 
         if kind == "type":
             # What a person types goes in at the caret. Replayed, it replaces
@@ -785,11 +1293,16 @@ class Recorder:
             # The element comes from the last settled look at the screen, which
             # is usually taken after the typing: the field then reads as exactly
             # what was typed, and that is an empty field that has been typed
-            # into, not one that had something in it (which reads as more).
+            # into, not one that had something in it (which reads as more). A
+            # field asked as the typing began (`located`) holds what it held
+            # before it: measured without that, a look taken part way through
+            # "Acme Ltd" read "Acme Lt", and an empty field was kept as one
+            # every later run should add to.
             value = " ".join((element.get("value") or "").split()) if element is not None else ""
             typed = " ".join((action.get("text") or "").split())
+            before_typing = located is not None and element is located.get("element")
             empty_field = element is not None and element["role"] in ("textbox", "combobox", "spinbutton") \
-                and (not value or value == typed)
+                and (not value or (value == typed and not before_typing))
             entry["append"] = not empty_field
 
         if withheld:
@@ -799,9 +1312,85 @@ class Recorder:
 
         return entry
 
-    def _flush(self, buffer):
+    # A page's drop-down (<select>) draws its list outside the page: the click
+    # that chooses an option lands on nothing the page knows of. Measured: it
+    # was recorded as the page text under the list ("Low", when "India" was
+    # chosen), and a replay then clicked that. What the person did is choose
+    # an option, and the drop-down itself says which - so the click that
+    # opened it is held back until the choosing is over, and the pair is
+    # recorded as one `select`, which a replay sets without opening anything.
+
+    CLOSING_KEYS = {"Return", "KP_Enter", "Escape", "Tab", "ISO_Left_Tab"}
+
+    def _chosen(self, ready, final=False):
+        """`ready` with each choosing of a drop-down's option folded into one select step."""
+
+        out = []
+
+        for item in ready:
+            held = self._choosing
+
+            if held is not None:
+                action, located = item["action"], item["located"] or {}
+                in_list = action["kind"] in ("click", "double_click") and located.get("where") == "list"
+                keys = action["kind"] in ("key", "type") and not held["closed"]
+
+                if in_list or keys:
+                    held["used"] = True
+                    if in_list or set(action.get("keys") or []) & self.CLOSING_KEYS:
+                        held["closed"] = True
+                    continue
+
+                out.extend(self._settle_choice())
+
+            action, element, located = item["action"], item["element"], item["located"] or {}
+            if action["kind"] == "click" and element is not None and located.get("chosen") is not None \
+                    and ((element.get("handle") or {}).get("tag") == "select" or _native_drop_down(element)):
+                self._choosing = dict(item, was=located["chosen"], used=False, closed=False)
+                continue
+
+            out.append(item)
+
+        # Chosen and gone quiet - or the recording is ending.
+        if self._choosing is not None and (self._choosing["closed"] or final):
+            out.extend(self._settle_choice())
+
+        return out
+
+    def _settle_choice(self):
+        held, self._choosing = self._choosing, None
+        item = {key: held[key] for key in ("action", "element", "note", "located", "frame")}
+
+        element = held["element"]
+        now = cdp.chosen_option(element) if element.get("source") == "cdp" else self._native_choice(element)
+        if held["used"] and now is not None:
+            item["action"] = dict(held["action"], kind="select", option=now)
+
+        return [item]
+
+    def _native_choice(self, element):
+        """What a Windows drop-down shows as chosen now, asked of the screen at the drop-down; None if it cannot be told."""
+
+        box = element.get("box")
+        if self.camera is None or not box:
+            return None
+
+        from decurix_agent.computer import win
+
+        x, y = box[0] + box[2] // 2, box[1] + box[3] // 2
+        try:
+            found = win.hit(x, y, ask=self.camera.ask)
+        except ComputerError:
+            return None
+
+        now = el.at_point((found or {}).get("elements") or [], x, y)
+        if now is None or now.get("role") != "combobox" or now.get("name") != element.get("name"):
+            return None
+        return now.get("value") or ""
+
+    def _flush(self, buffer, final=False):
         actions = processing.merge(buffer)
-        if not actions:
+        if not actions and not (final and self._choosing is not None):
             return
 
         before = self.latest
@@ -827,25 +1416,50 @@ class Recorder:
 
         masks = privacy.secret_boxes((before or {}).get("elements")) + privacy.secret_boxes((after or {}).get("elements"))
         focus = (False, None)
+        ready = []
 
-        for index, action in enumerate(actions):
+        for action in actions:
             frame = action.pop("frame", None)
-            following = actions[index + 1].get("frame") if index + 1 < len(actions) else None
+            hit, front = action.pop("hit", None), action.pop("focus", None)
+            located = front if action["kind"] in ("type", "key") else hit
 
-            element, note = self._element(action, before, frame, focus)
-            entry = self._entry(action, element, note, before)
+            element, note = self._element(action, before, frame, focus, located)
             focus = _focus_after(action, element, focus)
+
+            # Keys that follow a click in the same run go where the click put
+            # the keyboard, and are in the window the click was in.
+            if located is None and action["kind"] in ("type", "key") and ready and ready[-1]["located"] is not None:
+                located = dict(ready[-1]["located"], element=element)
+
+            ready.append({"action": action, "element": element, "note": note, "located": located, "frame": frame})
+
+        ready = self._chosen(ready, final)
+
+        for index, item in enumerate(ready):
+            action, element, frame = item["action"], item["element"], item["frame"]
+            following = ready[index + 1]["frame"] if index + 1 < len(ready) else None
+
+            entry = self._entry(action, element, item["note"], before, item["located"])
 
             # The observation after a run of actions describes what the last
             # of them left; the ones before it are followed straight away by
             # the next, whose first frame is their "after".
-            if index == len(actions) - 1 and before is not None and after is not None:
+            if index == len(ready) - 1 and before is not None and after is not None:
                 if overtaken:
                     entry["change_missing"] = "the next action came before the screen could be read"
                 else:
                     change = core.compare(before, after)
                     entry["change"] = core.summarize(change)
                     entry["expect"] = core.expectations(change)
+
+            # A field that holds exactly what was typed into it, or a drop-down
+            # that shows the option chosen, once the screen has settled: seen,
+            # so a replay can check for it with this run's own value.
+            held = _holds(entry, element, after)
+            if held is not None:
+                values = entry.setdefault("expect", {}).setdefault("values", [])
+                if not any(v.get("name") == held["name"] and v.get("role") == held["role"] for v in values):
+                    values.append(held)
 
             after_frame = following if following is not None else (after["frame"] if after else settled)
 
@@ -859,6 +1473,67 @@ class Recorder:
                 log(f"Could not record an action: {exc}")
 
             self._report(event, before_kept, after_kept)
+
+        if after is not None:
+            self.latest = after
+
+
+    def _opened(self, request):
+        """Open what a person asked for (open_as_person) and record it as their step."""
+
+        wanted = request["target"]
+        shown = privacy.reduce_url(wanted) if core.URL_RE.match(wanted) else privacy.kept_text(wanted)
+        before = (self.latest or {}).get("frame") or self._grab()
+
+        try:
+            summary = core._open(wanted, False)
+        except ComputerError as exc:
+            # Nothing opened, so there is nothing to replay: the person is told, and tries again.
+            request["error"] = str(exc)
+            request["done"].set()
+            return
+
+        request["result"] = summary
+        request["done"].set()
+
+        settled = core._wait_for_settle(None)
+        try:
+            after = core.observe(remember=False, frame=settled)
+        except ComputerError as exc:
+            log(f"Could not read the screen after opening {shown}: {exc}")
+            after = None
+
+        # What it opened: the window now in front, and the program it belongs to.
+        front = self._front() or {}
+        window = front.get("window") or (after or {}).get("active_title")
+
+        entry = {
+            "actor": "human",
+            "kind": "open",
+            "outcome": "done",
+            "target": shown,
+            "window": privacy.kept_text(window),
+            "screen": (after or {}).get("size"),
+            "change": summary,
+            "summary": f"open {shown} - {summary}",
+            "expect": {"active_window": privacy.kept_text((after or {}).get("active_title")) or None},
+        }
+        if front.get("app"):
+            entry["app"] = front["app"]
+        # What is opened may take the keyboard.
+        self._focus_unknown = True
+
+        masks = privacy.secret_boxes((after or {}).get("elements"))
+        before_kept = _masked(before, masks)
+        after_kept = _masked((after or {}).get("frame") or settled, masks)
+        event = entry
+
+        try:
+            event = recording.append(self.session_id, entry, at=request["t"], before=before_kept, after=after_kept)
+        except (OSError, ValueError) as exc:
+            log(f"Could not record opening {shown}: {exc}")
+
+        self._report(event, before_kept, after_kept)
 
         if after is not None:
             self.latest = after
@@ -933,7 +1608,15 @@ class Recorder:
 
         while True:
             try:
-                buffer.append(self.raw.get(timeout=0.25))
+                item = self.raw.get(timeout=0.25)
+                if item.get("type") == "open":
+                    # Something the person asked to have opened: a step of
+                    # its own, after everything they did before asking.
+                    self._flush(buffer, final=True)
+                    buffer = []
+                    self._opened(item)
+                    continue
+                buffer.append(item)
                 last_input = time.monotonic()
                 continue
             except queue.Empty:
@@ -941,7 +1624,7 @@ class Recorder:
 
             if self.pause_requested:
                 self.pause_requested = False
-                self._flush(buffer)
+                self._flush(buffer, final=True)
                 buffer = []
                 self._paused()
             elif self.resume_requested:
@@ -951,10 +1634,15 @@ class Recorder:
                 # Whatever the reader put in before it said stop.
                 while True:
                     try:
-                        buffer.append(self.raw.get_nowait())
+                        item = self.raw.get_nowait()
                     except queue.Empty:
                         break
-                self._flush(buffer)
+                    if item.get("type") == "open":
+                        item["error"] = "the recording was ending - open it again"
+                        item["done"].set()
+                        continue
+                    buffer.append(item)
+                self._flush(buffer, final=True)
                 return
             elif buffer and processing.idle(buffer) and time.monotonic() - last_input >= QUIET_SECONDS:
                 self._flush(buffer)
@@ -970,8 +1658,27 @@ class Recorder:
         self.paused = False
         self.resume_requested = True
 
+    def _await_stop(self):
+        """The in-process recorder's "reader": input is fed in, so all there is to wait for is End."""
+
+        self.stop_requested.wait()
+        self.stopping.set()
+
     def run(self):
         session.ensure()
+
+        if WINDOWS:
+            from decurix_agent.computer import win
+
+            self.camera = win.Camera()
+            reader = threading.Thread(target=self._await_stop, daemon=True)
+            reader.start()
+            self.ready.set()
+            log(f"Recording demonstration {self.session_id}; input comes from the dashboard's viewer")
+            try:
+                return self._record(reader)
+            finally:
+                self.camera.close()
 
         try:
             self._select_input()
@@ -993,6 +1700,11 @@ class Recorder:
         # desktop, so it must not hold up the ready handshake.
         READY_FILE.write_text(str(os.getpid()), encoding="utf-8")
         log(f"Recording demonstration {self.session_id}; ignoring input from devices {sorted(self.agent_devices)}")
+
+        return self._record(reader)
+
+    def _record(self, reader):
+        """From input being taken to the recording being closed: the same on both systems."""
 
         try:
             first = core.observe(remember=False)

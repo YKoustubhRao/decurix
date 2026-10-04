@@ -18,6 +18,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"thebot/internal/hostshell"
 )
 
 // inheritedEnv is the real process environment every command starts from.
@@ -113,7 +115,7 @@ func (r *Runner) Run(ctx context.Context, command string, timeout time.Duration)
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(runCtx, "bash", "-c", command)
+	cmd := hostshell.CommandContext(runCtx, command)
 	cmd.Dir = r.Dir
 	if len(r.Env) > 0 {
 		cmd.Env = append(inheritedEnv(), r.Env...)

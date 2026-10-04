@@ -12,6 +12,10 @@ import (
 // EnsureToolsVolume ensures the shared decurix-tools volume exists and is populated
 // with the executables from decurix-tools:latest.
 func (m *Manager) EnsureToolsVolume(ctx context.Context) error {
+	if m.native != nil {
+		return nil
+	}
+
 	m.toolsMu.Lock()
 	defer m.toolsMu.Unlock()
 
@@ -50,6 +54,10 @@ func (m *Manager) EnsureToolsVolume(ctx context.Context) error {
 
 // PopulateToolsVolume populates the decurix-tools volume using the tools image.
 func (m *Manager) PopulateToolsVolume(ctx context.Context) error {
+	if m.native != nil {
+		return nil
+	}
+
 	log.Printf("Populating %s from %s...", ToolsVolumeName, ToolsImage)
 
 	containerName := fmt.Sprintf("decurix_tools_init_%s", randomHex(4))
@@ -98,6 +106,10 @@ func (m *Manager) PopulateToolsVolume(ctx context.Context) error {
 // EnsureCacheVolume ensures the shared decurix-cache volume exists and is writable
 // by desktop containers to deduplicate package caches across desktops.
 func (m *Manager) EnsureCacheVolume(ctx context.Context) error {
+	if m.native != nil {
+		return nil
+	}
+
 	vol, err := m.client.VolumeInspect(ctx, CacheVolumeName)
 	if err == nil && vol.Name == CacheVolumeName {
 		return nil

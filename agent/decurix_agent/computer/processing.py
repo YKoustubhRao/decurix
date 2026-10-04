@@ -47,7 +47,7 @@ MODIFIER_ORDER = {"ctrl": 0, "alt": 1, "shift": 2, "super": 3}
 LOCKS = {"Caps_Lock", "Num_Lock", "Scroll_Lock", "ISO_Level3_Shift", "Mode_switch"}
 
 # Carried from the raw event that starts an action onto the action.
-CARRIED = ("frame",)
+CARRIED = ("frame", "hit", "focus")
 
 
 def _distance(a, b):

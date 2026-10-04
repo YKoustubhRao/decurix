@@ -1,4 +1,5 @@
 import os
+import platform
 
 from decurix_agent import config
 
@@ -20,6 +21,16 @@ from decurix_agent import config
 # long before it is asked to do anything real.
 # ============================================================
 
+def _windows_browser_fact():
+    """Which browser a native worker has: the one picked for it, else the computer's."""
+
+    from decurix_agent.computer import browser
+
+    name = browser.windows_browser_name()
+
+    return f"The browser is {name}. " if name else ""
+
+
 def get_identity_context(engine=""):
     """
     Describe this desktop to its own agent, one fact per line.
@@ -39,15 +50,31 @@ def get_identity_context(engine=""):
     if engine:
         facts.append(f"- Reasoning engine: {engine}")
 
-    facts.extend(
-        [
-            f"- Shell user: {os.environ.get('USER', 'headless')} "
-            f"(home {os.path.expanduser('~')})",
-            f"- Task working directory: {config.WORK_DIR}",
-            "- Machine: a disposable Ubuntu XFCE desktop in a Docker "
-            "container, with Chromium installed, viewed over VNC.",
-        ]
-    )
+    if config.NATIVE_WINDOWS:
+        # A native Windows worker is none of what the lines below say. Found
+        # live: it was told it was an Ubuntu desktop in a container, as user
+        # "headless" - on a person's own Windows computer.
+        facts.extend(
+            [
+                f"- Windows user: {os.environ.get('USERNAME', 'unknown')}",
+                f"- Task working directory (your own folder): {config.WORK_DIR}",
+                f"- Machine: the Windows {platform.release()} computer {os.environ.get('COMPUTERNAME', '')} of the person you work for. "
+                "You have a desktop of your own on it that is not their screen; "
+                f"what you open appears there. {_windows_browser_fact()}"
+                "Commands are Windows PowerShell. Their files and programs are "
+                "theirs: work in your own folder unless a task names another place.",
+            ]
+        )
+    else:
+        facts.extend(
+            [
+                f"- Shell user: {os.environ.get('USER', 'headless')} "
+                f"(home {os.path.expanduser('~')})",
+                f"- Task working directory: {config.WORK_DIR}",
+                "- Machine: a disposable Ubuntu XFCE desktop in a Docker "
+                "container, with Chromium installed, viewed over VNC.",
+            ]
+        )
 
     if config.DESKTOP_SPECIALIZATION:
         facts.append(

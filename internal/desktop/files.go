@@ -34,6 +34,10 @@ const (
 func (m *Manager) CopyFiles(ctx context.Context, desktopID, dir string, files []File) error {
 	const home = "/home/headless"
 
+	if m.native != nil {
+		return m.native.copyFiles(sanitizeName(desktopID), dir, files)
+	}
+
 	clean := path.Clean(dir)
 	if !strings.HasPrefix(clean+"/", home+"/") || clean == home {
 		return fmt.Errorf("copy files: %q is not a folder under %s", dir, home)
@@ -97,6 +101,10 @@ func (m *Manager) CopyFiles(ctx context.Context, desktopID, dir string, files []
 // ErrNotFound; the caller closes the stream.
 func (m *Manager) CopyOut(ctx context.Context, desktopID, p string) (io.ReadCloser, error) {
 	const home = "/home/headless"
+
+	if m.native != nil {
+		return m.native.copyOut(sanitizeName(desktopID), p)
+	}
 
 	clean := path.Clean(p)
 	if !strings.HasPrefix(clean+"/", home+"/") || clean == home {

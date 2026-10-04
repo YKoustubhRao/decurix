@@ -1,9 +1,15 @@
 package skills
 
 import (
+	"regexp"
+
 	"thebot/internal/llm"
 	"thebot/internal/prompt"
 )
+
+// operatorMarkerRe is a reply that opens the way the operator's do: a model
+// that has been told how tasks are worked, answering one in conversation.
+var operatorMarkerRe = regexp.MustCompile(`^\s*\**(DONE|COMMAND)\b\**\s*(:|$)`)
 
 // GeneralSkill is the conversational catch-all - real, basic chat was
 // missing entirely until this was added: every request that didn't match
@@ -78,6 +84,20 @@ func (g *GeneralSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		return Result{
 			Subtask: subtask, SkillName: g.Name(),
 			Output: "Needs to look at this machine to answer.", Verified: false,
+			Meta: map[string]any{"reroute": "operator"},
+		}, nil
+	}
+
+	// A reply in the operator's own words - "DONE", "COMMAND: ..." - is a
+	// model that took the request for work and has no tools to do it with.
+	// Found live: a taught screen task reached this skill, which answered
+	// "DONE", and that was reported as the task's result with nothing done.
+	// It is work: the operator gets it.
+	if operatorMarkerRe.MatchString(resp.Text) {
+		rc.Logf("general", "this is work, not a question - handing it to the operator")
+		return Result{
+			Subtask: subtask, SkillName: g.Name(),
+			Output: "Needs to be done on this machine.", Verified: false,
 			Meta: map[string]any{"reroute": "operator"},
 		}, nil
 	}
