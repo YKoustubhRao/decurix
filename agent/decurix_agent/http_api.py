@@ -81,6 +81,8 @@ from decurix_agent.messaging import save_request
 #   POST /ticket/resume
 #   POST /ticket/note                    {text}: a person's own explanation,
 #                                        recorded at this moment
+#   POST /ticket/attach                  {files: [paths]}: documents added to
+#                                        the open ticket, kept with its recording
 #   POST /ticket/end                     stop capturing (if started) and
 #                                        finish the ticket's task
 #
@@ -391,6 +393,9 @@ class Handler(BaseHTTPRequestHandler):
             record_task.resume()
         elif action == "note":
             record_task.note(_text(data.get("text"), 1000))
+        elif action == "attach":
+            given = data.get("files")
+            record_task.attach([str(p)[:1000] for p in given[:20]] if isinstance(given, list) else [])
         elif action == "end":
             record_task.end()
         else:

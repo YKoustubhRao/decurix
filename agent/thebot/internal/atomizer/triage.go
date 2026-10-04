@@ -101,6 +101,10 @@ var searchLeadRe = regexp.MustCompile(`(?i)^\s*(please\s+)?(search|look\s+up|goo
 // `Do the task you were taught, "<title>" (skill <name>) ...`.
 var taughtTaskRe = regexp.MustCompile(`(?i)^\s*do the task you were taught\b`)
 
+// attachedFilesMark opens the lines of a request that name the files a person
+// attached to it (the control plane's attachmentsMark).
+const attachedFilesMark = "Files attached to this request, saved on this desktop:"
+
 // webAppLeadRe is a request that starts with the name of a web app to ask
 // ("chatgpt ...", "ask ChatGPT ...", "search google for ..."), the services
 // `gui ask` reaches. The name has to lead: "what does google say about x"
@@ -281,6 +285,13 @@ func Triage(prompt string) Route {
 
 	if webAppLeadRe.MatchString(p) {
 		return Route{Kind: RouteOperate, TaskType: matched, Reason: "something to ask a web app - the operator uses it with gui ask"}
+	}
+
+	// A request a person attached files to: the files are what it is about,
+	// and only the operator can read them (office read). The chat skill has
+	// no tools and would answer about a document it never opened.
+	if strings.Contains(p, attachedFilesMark) {
+		return Route{Kind: RouteOperate, TaskType: matched, Reason: "files were attached - the operator reads them with office read"}
 	}
 
 	// Before wantsScreen and the compound check, for the same reason

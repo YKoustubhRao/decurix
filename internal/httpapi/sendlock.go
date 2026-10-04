@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	"github.com/YKoustubhRao/decurix/internal/desktop"
@@ -103,6 +104,13 @@ func (s *Server) SubmitTrackedWithFiles(ctx context.Context, desktopID, content,
 
 	if err := s.Desktops.CopyFiles(ctx, id, dir, out); err != nil {
 		return "", err
+	}
+
+	// The request names the files under /home/headless; a native worker's
+	// home is a folder of this computer, and its agent finds them there.
+	for _, f := range out {
+		named := dir + "/" + f.Name
+		content = strings.ReplaceAll(content, named, s.Desktops.AgentPath(id, named))
 	}
 
 	route, err := s.submitLocked(ctx, desktopID, content)

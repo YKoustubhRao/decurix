@@ -1,7 +1,7 @@
 import re
 import threading
 
-from decurix_agent import progress, state, usage
+from decurix_agent import attachments, progress, state, usage
 from decurix_agent.computer import demonstration, recording
 from decurix_agent.computer.errors import ComputerError
 from decurix_agent.logging_utils import log
@@ -53,24 +53,34 @@ _ended = threading.Event()
 
 
 def parse(content):
-    """The task a "/record" request names ("" when it names none), or None for any other request."""
+    """
+    The task a "/record" request names ("" when it names none), or None for any
+    other request. The files the ticket was opened with are not part of its
+    name (files()).
+    """
 
-    match = COMMAND_RE.match((content or "").strip())
+    match = COMMAND_RE.match(attachments.text(content).strip())
     if not match:
         return None
 
-    return (match.group(1) or "").strip()
+    return " ".join((match.group(1) or "").split())
+
+
+def files(content):
+    """The documents a "/record" request brought: what the person will work from."""
+
+    return attachments.files(content)
 
 
 def status():
     """
     The ticket open on this desktop, for the GUI toolbar: {"task_id",
-    "title", "session_id", "recording", "paused", "events"} - or None when
-    there is none. session_id is None until begin() has been called.
+    "title", "session_id", "files", "recording", "paused", "events"} - or
+    None when there is none. session_id is None until begin() has been called.
     """
 
     with _ticket_lock:
-        ticket = dict(_ticket) if _ticket else None
+        ticket = dict(_ticket, files=list(_ticket.get("files") or [])) if _ticket else None
 
     if ticket is None:
         return None
@@ -100,6 +110,9 @@ def begin():
         # Still the same ticket - end() has not raced ahead of us and closed it.
         if _ticket is ticket:
             ticket["session_id"] = meta["id"]
+        given = list(ticket.get("files") or [])
+
+    _keep_files(meta["id"], given)
 
     # The chat (and the desktop's card) say what the ticket is doing at every
     # turn, not only when an action lands: a person watching from elsewhere
@@ -136,6 +149,43 @@ def note(text):
 
     _require_recording()
     return demonstration.note(text)
+
+
+def attach(paths):
+    """
+    Add documents to the open ticket (the toolbar's Attach): files the control
+    plane has just written into this desktop. They are kept with the ticket's
+    recording, so a lesson taught from it reads them beside what was typed.
+    """
+
+    paths = [str(p) for p in paths or [] if str(p).strip()]
+
+    with _ticket_lock:
+        ticket = _ticket
+        if ticket is None:
+            raise ComputerError("no ticket is open - create one first")
+        ticket["files"] = list(dict.fromkeys((ticket.get("files") or []) + paths))
+        session_id, given = ticket.get("session_id"), list(ticket["files"])
+
+    if session_id:
+        _keep_files(session_id, given)
+
+    if paths:
+        progress.emit(f"Attached to the ticket: {attachments.names(paths)}.")
+
+    return status()
+
+
+def _keep_files(session_id, paths):
+    """Write the ticket's documents into its recording's meta; never fails the ticket."""
+
+    if not paths:
+        return
+
+    try:
+        recording.update(session_id, files=paths)
+    except (OSError, ValueError) as exc:
+        log(f"Could not keep the ticket's files with {session_id}: {exc}")
 
 
 def _require_recording():
@@ -189,14 +239,17 @@ def perform(content, task_file=None):
     title = parse(content) or "Untitled demonstration"
     task_id = state.current_task_id or ""
 
+    given = files(content)
+
     with _ticket_lock:
-        _ticket = {"task_id": task_id, "title": title, "session_id": None}
+        _ticket = {"task_id": task_id, "title": title, "session_id": None, "files": given}
     _ended.clear()
 
-    log(f"Ticket opened for task {task_id or '(none)'}: {title}")
+    log(f"Ticket opened for task {task_id or '(none)'}: {title}" + (f" with {given}" if given else ""))
     progress.emit(
         f"Ticket open for \"{title}\". Press Record on the desktop's screen when you're ready to start capturing, "
         "and End when you're done."
+        + (f" Attached: {attachments.names(given)} - in this desktop's work/inbox folder." if given else "")
     )
 
     _wait_for_end()

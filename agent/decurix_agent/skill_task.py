@@ -4,7 +4,7 @@ import threading
 import time
 import traceback
 
-from decurix_agent import (binding, config, guidance, lessons, llm_client, messaging, progress, request_reading, state,
+from decurix_agent import (attachments, binding, config, guidance, lessons, llm_client, messaging, progress, request_reading, state,
                            study, task_context, usage, verify)
 from decurix_agent.computer import (approval, constraints, core, escalation, evidence, experience, launchers, learning,
                                     mimic, recording, replay, skills)
@@ -208,8 +208,10 @@ def mimics(content):
     to the engine. Reads recordings only - no model.
     """
 
+    # Its words only: the files a request brought are this run's documents
+    # (binding.py reads its values from them), not part of what was asked.
     try:
-        return mimic.plan(content) is not None
+        return mimic.plan(attachments.text(content)) is not None
     except Exception as exc:
         log(f"Could not compare the request with the recordings: {exc}")
         return False
@@ -230,7 +232,7 @@ def may_be_taught(content):
     """
 
     try:
-        return request_reading.worth_reading(content)
+        return request_reading.worth_reading(attachments.text(content))
     except Exception as exc:
         log(f"Could not compare the request with the taught tasks: {exc}")
         return False
@@ -251,11 +253,16 @@ def perform_mimic(content, task_file=None):
 
     _begin(content, task_file)
 
+    # What the person asked, without the files they attached: those are named
+    # in `content`, which the run keeps as its context - a value the words do
+    # not give is read from them (_prepare, binding.py).
+    said = attachments.text(content)
+
     reading = None
     if request_reading.available():
         progress.emit("Reading the request against what you taught me.")
         try:
-            reading = request_reading.read(content)
+            reading = request_reading.read(said)
         except Exception as exc:
             log(f"Could not read the request with the model ({exc}); comparing it with the recordings instead.")
             log(traceback.format_exc())
@@ -265,7 +272,7 @@ def perform_mimic(content, task_file=None):
         return
 
     try:
-        found = mimic.plan(content)
+        found = mimic.plan(said)
         skill, one_off = mimic.load_skill(found) if found else (None, False)
     except (FileNotFoundError, ValueError, OSError) as exc:
         log(f"Could not load what to mimic for {content!r}: {exc}")
@@ -291,7 +298,7 @@ def perform_mimic(content, task_file=None):
             progress.emit("The request changes something the recording typed in another form - "
                           "working out what to type now.")
             ask = _ask_model if state.backend_ready else None
-            values, adapted = mimic.adapt_values(skill, found, content, values, pending, ask)
+            values, adapted = mimic.adapt_values(skill, found, said, values, pending, ask)
             if values is None:
                 log(f"The model would type {found['text']!r}'s values unchanged for {content!r} - the engine does it")
                 _engine(content, task_file)
@@ -322,7 +329,7 @@ def _perform_read(content, task_file, reading):
         # "Invoice 1043". Only the word-by-word comparison knows where the
         # recording holds such a word, and only when it sees the same task.
         try:
-            literal = mimic.plan(content)
+            literal = mimic.plan(attachments.text(content))
         except Exception:
             literal = None
         if literal and (literal["kind"], literal["id"]) == (found["kind"], found["id"]):
@@ -1306,6 +1313,12 @@ def _procedure(run, from_step=None, note="", ran=False):
             shown.append(f"- {key} = {json.dumps(value, ensure_ascii=False)} ({meaning}; the person typed "
                          f"{json.dumps(param.get('example') or '', ensure_ascii=False)})")
         lines.append("This run's values - type these where the person typed theirs:\n" + "\n".join(shown))
+
+    if skill.get("documents"):
+        lines.append("When they showed this, the person worked from these documents: "
+                     + attachments.names(skill["documents"]) + ". They are examples of the kind of document the task "
+                     "starts from - this run's own documents are the files its request names; read those (`office "
+                     "read PATH`) and take this run's values from them, never from the examples.")
 
     steps = []
     for step in skill["steps"]:
