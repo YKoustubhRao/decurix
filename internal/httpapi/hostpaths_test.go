@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -83,31 +84,72 @@ func TestValidateHostPathEndpoint(t *testing.T) {
 	}
 }
 
-func TestHostPathsEndpoints(t *testing.T) {
-	srv := &Server{}
-	mux := http.NewServeMux()
-	srv.RegisterRoutes(mux)
-
-	// Test open-explorer with empty path
-	req := httptest.NewRequest(http.MethodGet, "/api/host-paths/open-explorer", nil)
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200 for open-explorer, got %d: %s", rec.Code, rec.Body.String())
-	}
-	var openResp map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &openResp); err != nil {
+func TestBrowseHostPathAnswersWithWhatWasPickedAndWhereItGoes(t *testing.T) {
+	tmpDir := t.TempDir()
+	file := filepath.Join(tmpDir, "notes.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if openResp["ok"] != true {
-		t.Errorf("expected ok: true, got %v", openResp)
+
+	real := pickHostPaths
+	defer func() { pickHostPaths = real }()
+
+	var askedFolder bool
+	pickHostPaths = func(_ context.Context, folder bool) ([]string, error) {
+		askedFolder = folder
+		return []string{tmpDir, file, filepath.Join(tmpDir, "gone")}, nil
 	}
 
-	// Test browse endpoint returns paths array structure
-	req = httptest.NewRequest(http.MethodGet, "/api/host-paths/browse?type=folder", nil)
-	rec = httptest.NewRecorder()
-	// Note: In non-interactive test environments, browseHostPathHandler handles cancel/empty gracefully
-	// and returns {"ok": true, "paths": ...}
+	srv := &Server{}
+	gated := http.NewServeMux()
+	srv.RegisterRoutes(gated)
+	primary := http.NewServeMux()
+	srv.RegisterRoutes(primary)
+	srv.RegisterLocalRoutes(primary)
+
+	call := func(mux *http.ServeMux, method string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, "/api/host-paths/browse?type=folder", nil)
+		req.RemoteAddr = "127.0.0.1:5000"
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec
+	}
+
+	if rec := call(gated, http.MethodPost); rec.Code != http.StatusNotFound {
+		t.Fatalf("the gated listener must not open a chooser on the host, got %d", rec.Code)
+	}
+	if rec := call(primary, http.MethodGet); rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("a GET must not open a chooser, got %d", rec.Code)
+	}
+
+	rec := call(primary, http.MethodPost)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		OK    bool `json:"ok"`
+		Paths []struct {
+			Path  string `json:"path"`
+			IsDir bool   `json:"is_dir"`
+			Dest  string `json:"dest"`
+		} `json:"paths"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !askedFolder || !resp.OK || len(resp.Paths) != 2 {
+		t.Fatalf("unexpected answer (folder=%v): %s", askedFolder, rec.Body.String())
+	}
+	if !resp.Paths[0].IsDir || resp.Paths[1].IsDir || !strings.HasSuffix(resp.Paths[1].Dest, "/notes.txt") ||
+		!strings.HasPrefix(resp.Paths[1].Dest, "/home/headless/") {
+		t.Fatalf("unexpected paths: %+v", resp.Paths)
+	}
+
+	pickHostPaths = func(context.Context, bool) ([]string, error) { return nil, errNoHostPicker }
+	rec = call(primary, http.MethodPost)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"unavailable":true`) {
+		t.Fatalf("no chooser should be said plainly, got %d: %s", rec.Code, rec.Body.String())
+	}
 }
 
 func TestCreateDesktopWithHostPaths(t *testing.T) {
