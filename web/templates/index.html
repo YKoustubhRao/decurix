@@ -788,6 +788,87 @@
   line-height:1.35;
 }
 
+.host-files-section{
+  padding:12px 14px;
+  background:var(--surface-2);
+  border:1px solid var(--line);
+  border-radius:var(--r-lg);
+  margin-top:6px;
+}
+.host-files-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+}
+.host-files-toggle-wrap{
+  display:inline-flex;
+  align-items:center;
+  cursor:pointer;
+  user-select:none;
+}
+.host-files-toggle{
+  position:relative;
+  width:40px;
+  height:22px;
+  appearance:none;
+  -webkit-appearance:none;
+  background:var(--line-2, rgba(255,255,255,0.15));
+  outline:none;
+  border-radius:12px;
+  cursor:pointer;
+  transition:background .2s ease;
+  border:1px solid var(--line-2);
+  margin:0;
+}
+.host-files-toggle:checked{
+  background:var(--accent, #38bdf8);
+  border-color:var(--accent, #38bdf8);
+}
+.host-files-toggle::after{
+  content:'';
+  position:absolute;
+  top:2px;
+  left:2px;
+  width:16px;
+  height:16px;
+  border-radius:50%;
+  background:#fff;
+  transition:transform .2s ease;
+  box-shadow:0 1px 3px rgba(0,0,0,0.3);
+}
+.host-files-toggle:checked::after{
+  transform:translateX(18px);
+}
+.host-files-panel{
+  margin-top:12px;
+  padding-top:10px;
+  border-top:1px solid var(--line);
+}
+.host-files-rows{
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  max-height:200px;
+  overflow-y:auto;
+}
+.host-file-row{
+  display:flex;
+  gap:8px;
+  align-items:center;
+}
+.host-file-status{
+  font-size:11px;
+  font-weight:500;
+  white-space:nowrap;
+}
+.host-file-status.ok{
+  color:var(--green, #22c55e);
+}
+.host-file-status.err{
+  color:var(--red, #ef4444);
+}
+
 /* ---------- claude login dialog ---------- */
 
 .claude-login-url-row{display:flex;align-items:center;gap:8px}
@@ -1380,6 +1461,28 @@
           </div>
         </div>
       </div>
+
+      <div class="field host-files-section" id="hostFilesSection">
+        <div class="host-files-head">
+          <div>
+            <span class="field-label" style="margin-bottom:2px">Copy files &amp; directories from host</span>
+            <div class="hint">Copy files or folders from this computer into the VM filesystem (e.g. documents, code repositories, datasets).</div>
+          </div>
+          <label class="host-files-toggle-wrap">
+            <input type="checkbox" class="host-files-toggle" id="dCopyHostFiles" name="copy_host_files" value="1">
+          </label>
+        </div>
+
+        <div class="host-files-panel" id="hostFilesPanel" style="display:none">
+          <div class="host-files-rows" id="hostFilesRows">
+            <!-- Dynamic rows with host path, VM destination, and remove button -->
+          </div>
+          <div style="margin-top:8px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+            <button type="button" class="btn btn-quiet btn-xs" id="addHostPathBtn">+ Add another path</button>
+            <span class="hint" style="margin:0;font-size:11px">Destination defaults to /home/headless/&lt;basename&gt;</span>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div class="dialog-foot">
@@ -1577,6 +1680,7 @@
     createDialog.showModal();
     document.getElementById(parent ? "dSpecialization" : "dName").focus();
     resetHostAppsSection();
+    resetHostFilesSection();
   }
 
   document.getElementById("newDesktopBtn").addEventListener("click", function(){ openCreate(); });
@@ -2057,6 +2161,130 @@
     });
   }
 
+  /* ---------------- host files & directories copy ---------------- */
+
+  var dCopyHostFiles = document.getElementById("dCopyHostFiles");
+  var hostFilesPanel = document.getElementById("hostFilesPanel");
+  var hostFilesRows = document.getElementById("hostFilesRows");
+  var addHostPathBtn = document.getElementById("addHostPathBtn");
+
+  function createHostFileRow(srcVal, destVal){
+    var row = document.createElement("div");
+    row.className = "host-file-row";
+    row.style.cssText = "display:flex;gap:8px;align-items:center;margin-bottom:6px";
+
+    var srcInput = document.createElement("input");
+    srcInput.className = "input input-sm host-src-input";
+    srcInput.type = "text";
+    srcInput.placeholder = "Host path (e.g. C:\\projects\\repo or /data)";
+    srcInput.style.cssText = "flex:2;font-family:var(--font-mono);font-size:12px;height:30px";
+    if(srcVal) srcInput.value = srcVal;
+
+    var arrow = document.createElement("span");
+    arrow.textContent = "→";
+    arrow.style.cssText = "color:var(--text-3);font-size:12px;user-select:none";
+
+    var destInput = document.createElement("input");
+    destInput.className = "input input-sm host-dest-input";
+    destInput.type = "text";
+    destInput.placeholder = "VM destination (optional, e.g. Desktop/repo)";
+    destInput.style.cssText = "flex:1.5;font-family:var(--font-mono);font-size:12px;height:30px";
+    if(destVal) destInput.value = destVal;
+
+    var statusSpan = document.createElement("span");
+    statusSpan.className = "host-file-status";
+    statusSpan.style.cssText = "font-size:11px;min-width:65px;text-align:right";
+
+    var removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "btn btn-quiet btn-xs remove-host-path-btn";
+    removeBtn.title = "Remove path";
+    removeBtn.style.cssText = "height:30px;padding:0 8px;line-height:1";
+    removeBtn.textContent = "✕";
+    removeBtn.addEventListener("click", function(){
+      row.remove();
+      if(hostFilesRows.querySelectorAll(".host-file-row").length === 0){
+        createHostFileRow();
+      }
+    });
+
+    var validateTimer = null;
+    function checkPath(){
+      var p = srcInput.value.trim();
+      if(!p){
+        statusSpan.textContent = "";
+        statusSpan.className = "host-file-status";
+        return;
+      }
+      fetch("/api/host-paths/validate?path=" + encodeURIComponent(p))
+        .then(function(res){ return res.json(); })
+        .then(function(data){
+          if(data && data.exists){
+            statusSpan.textContent = data.is_dir ? "📁 Folder" : "📄 File";
+            statusSpan.className = "host-file-status ok";
+          } else {
+            statusSpan.textContent = "✕ Missing";
+            statusSpan.className = "host-file-status err";
+          }
+        })
+        .catch(function(){
+          statusSpan.textContent = "";
+        });
+    }
+
+    srcInput.addEventListener("input", function(){
+      clearTimeout(validateTimer);
+      validateTimer = setTimeout(checkPath, 400);
+    });
+    srcInput.addEventListener("blur", checkPath);
+
+    row.appendChild(srcInput);
+    row.appendChild(arrow);
+    row.appendChild(destInput);
+    row.appendChild(statusSpan);
+    row.appendChild(removeBtn);
+    hostFilesRows.appendChild(row);
+
+    if(srcVal) checkPath();
+    return row;
+  }
+
+  function resetHostFilesSection(){
+    if(dCopyHostFiles){
+      dCopyHostFiles.checked = false;
+    }
+    if(hostFilesPanel){
+      hostFilesPanel.style.display = "none";
+    }
+    if(hostFilesRows){
+      hostFilesRows.innerHTML = "";
+    }
+  }
+
+  if(dCopyHostFiles){
+    dCopyHostFiles.addEventListener("change", function(){
+      var active = dCopyHostFiles.checked;
+      if(hostFilesPanel){
+        hostFilesPanel.style.display = active ? "" : "none";
+      }
+      if(active && hostFilesRows){
+        if(hostFilesRows.querySelectorAll(".host-file-row").length === 0){
+          var row = createHostFileRow();
+          var input = row.querySelector(".host-src-input");
+          if(input) input.focus();
+        }
+      }
+    });
+  }
+
+  if(addHostPathBtn){
+    addHostPathBtn.addEventListener("click", function(){
+      var row = createHostFileRow();
+      var input = row.querySelector(".host-src-input");
+      if(input) input.focus();
+    });
+  }
+
   function insertProvisioningCard(info){
     var grid = document.querySelector(".grid");
     if(!grid){ return null; }
@@ -2191,6 +2419,27 @@
       });
     }
 
+    var copyHostFiles = dCopyHostFiles && dCopyHostFiles.checked;
+    var hostCopyPaths = [];
+    if(copyHostFiles && hostFilesRows){
+      hostFilesRows.querySelectorAll(".host-file-row").forEach(function(row){
+        var srcInput = row.querySelector(".host-src-input");
+        var destInput = row.querySelector(".host-dest-input");
+        var src = srcInput ? srcInput.value.trim() : "";
+        var dest = destInput ? destInput.value.trim() : "";
+        if(src){
+          hostCopyPaths.push({src: src, dest: dest});
+        }
+      });
+      if(hostCopyPaths.length === 0){
+        busy(false);
+        submit.disabled = false;
+        submit.textContent = "Create desktop";
+        toast("Please specify at least one host path to copy, or uncheck the files toggle.", "error");
+        return;
+      }
+    }
+
     // Immediately insert spinning VM card into the dashboard grid
     var card = insertProvisioningCard({
       id: sanitizedID,
@@ -2224,7 +2473,9 @@
         specialization: specialization,
         parent_id: parentId,
         copy_host_apps: copyHostApps ? "1" : "0",
-        host_apps: selectedApps.join(",")
+        host_apps: selectedApps.join(","),
+        copy_host_files: copyHostFiles ? "1" : "0",
+        host_paths: JSON.stringify(hostCopyPaths)
       });
 
       busy(false);
