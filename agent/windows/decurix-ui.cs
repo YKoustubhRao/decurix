@@ -83,6 +83,10 @@ public static class Ui {
         "UAC_InputIndicatorOverlayWnd", "UAC Input Indicator", "Touch Tooltip Window", "MSCTFIME UI", "IME", "Default IME",
         "CicLoaderWndClass", "GDI+ Hook Window Class", "tooltips_class32" };
 
+    const long IdleSeconds = 180;
+    static readonly object turn = new object();
+    static long lastRequest = System.Diagnostics.Stopwatch.GetTimestamp();
+
     public static int Main(string[] args) {
         SetProcessDPIAware(); // positions are physical pixels everywhere: in pictures, in UI Automation and in messages
         screenW = GetSystemMetrics(0); screenH = GetSystemMetrics(1);
@@ -91,9 +95,23 @@ public static class Ui {
         stdout = Console.OpenStandardOutput();
         var stdin = new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false));
 
+        // A worker that is not looking at or working its screen needs no helper: this one ends itself after a few
+        // minutes without a request, and the agent starts another with its next one (it already replaces a helper
+        // that has ended; nothing is remembered here between requests). One per worker used to stay for as long as the
+        // worker ran - 21 MB each, for something an idle worker never asks.
+        var idle = new System.Threading.Thread(() => {
+            for (;;) {
+                System.Threading.Thread.Sleep(15000);
+                lock (turn) if (System.Diagnostics.Stopwatch.GetTimestamp() - lastRequest > IdleSeconds * System.Diagnostics.Stopwatch.Frequency) Environment.Exit(0);
+            }
+        }) { IsBackground = true };
+        idle.Start();
+
         string line;
         while ((line = stdin.ReadLine()) != null) {
             if (line.Trim().Length == 0) continue;
+            System.Threading.Monitor.Enter(turn); // not ended in the middle of a request
+            try {
             byte[] tail = null;
             var reply = new Dictionary<string, object>();
             try {
@@ -111,6 +129,8 @@ public static class Ui {
             byte[] head = Encoding.UTF8.GetBytes(json.Serialize(reply) + "\n");
             stdout.Write(head, 0, head.Length);
             if (tail != null) stdout.Write(tail, 0, tail.Length);
+            stdout.Flush();
+            } finally { lastRequest = System.Diagnostics.Stopwatch.GetTimestamp(); System.Threading.Monitor.Exit(turn); }
             stdout.Flush();
         }
         return 0;

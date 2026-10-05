@@ -34,7 +34,9 @@
 #                            rectangle x,y,w,h (the whole picture when <whole> is 1). Sent only when something changed.
 #   EVENT closed             the app has no window left
 #   EVENT open <id>          a shortcut on the wallpaper was double-clicked
-param([Parameter(Mandatory = $true)][string]$DesktopName)
+# -Build and -Resolve are for the helper when it runs as a program of its own (see "This class as a program" below):
+# -Build <path> compiles that program and ends; -Resolve <request> answers one question of it and ends.
+param([Parameter(Mandatory = $true)][string]$DesktopName, [string]$Build = '', [string]$Resolve = '')
 
 $NativeSource = @'
 using System;
@@ -180,17 +182,22 @@ public class Native {
         desktop = CreateDesktop(desktopName, IntPtr.Zero, IntPtr.Zero, 0, 0x10000000, IntPtr.Zero);
         if (desktop == IntPtr.Zero) return "ERR CreateDesktop failed (" + Marshal.GetLastWin32Error() + ")";
         IntPtr process;
-        string said = Spawn(desktopName, exe, args, workDir, out process);
+        // A worker's desktop is started for its agent, which has no window; a host app is started to be looked at.
+        string said = Spawn(desktopName, exe, args, workDir, out process, fixedScreen);
         if (process != IntPtr.Zero) launched = process;
         return said;
     }
 
     // One more program on the desktop Launch already made: a person opening an app on a worker's screen. It is in the
     // same job, so it ends with the desktop, but it is not what the session was started for - Status still speaks of that.
-    public static string Open(string desktopName, string exe, string args, string workDir) {
+    public static string Open(string desktopName, string exe, string args, string workDir) { return Open(desktopName, exe, args, workDir, null); }
+
+    // sandbox is the one folder the program may work in (see Confined), or null for a program that runs as the person.
+    public static string Open(string desktopName, string exe, string args, string workDir, string sandbox) {
         if (desktop == IntPtr.Zero) return "ERR this desktop has not been started";
         IntPtr process;
-        string said = Spawn(desktopName, exe, args, workDir, out process);
+        string said = string.IsNullOrEmpty(sandbox) ? Spawn(desktopName, exe, args, workDir, out process, false)
+                                                    : Confined(desktopName, exe, args, sandbox, out process);
         if (process != IntPtr.Zero) CloseHandle(process);
         Kick();
         return said;
@@ -199,21 +206,495 @@ public class Native {
     // How many windows a person would see on the desktop: 0 is an empty screen.
     public static int WindowCount() { return AppWindows().Count; }
 
-    static string Spawn(string desktopName, string exe, string args, string workDir, out IntPtr process) {
+    // Whether a program is a console one (cmd, PowerShell, a batch file), read from the file itself. Such a program makes
+    // no window: it is given a console, and by default that is the console of whatever started it.
+    static bool ConsoleProgram(string exe) {
+        try {
+            string ext = System.IO.Path.GetExtension(exe).ToLowerInvariant();
+            if (ext == ".bat" || ext == ".cmd") return true;
+            using (var f = new System.IO.FileStream(exe, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.ReadWrite | System.IO.FileShare.Delete))
+            using (var r = new System.IO.BinaryReader(f)) {
+                if (f.Length < 0x100 || r.ReadUInt16() != 0x5A4D /* MZ */) return false;
+                f.Position = 0x3C; int pe = r.ReadInt32();
+                if (pe <= 0 || pe + 0x5E > f.Length) return false;
+                f.Position = pe; if (r.ReadUInt32() != 0x4550 /* PE */) return false;
+                f.Position = pe + 0x5C; return r.ReadUInt16() == 3; // IMAGE_SUBSYSTEM_WINDOWS_CUI
+            }
+        } catch { return false; }
+    }
+
+    // ---- A program confined to the worker. Everything else on a worker's screen runs as the person whose computer
+    // this is: their PowerPoint, their browser. A terminal must not - a shell on the worker's screen that is the
+    // person's own shell hands their whole computer to whoever can see that screen (it is reachable from a phone), and
+    // to anything typed into it. So it is started in an AppContainer made for the worker: Windows' own sandbox, the one
+    // browsers put their renderers in, which needs no administrator and no feature switched on. Measured on this
+    // computer, for cmd and PowerShell 5.1: the person's profile can be neither read nor written ("Access is denied"),
+    // the control plane on 127.0.0.1 cannot be reached (Windows refuses a container loopback), the only processes
+    // seen are its own, the internet is there (the one capability given), and the folder it is given can be written.
+    // Its home, temp and settings folders are the container's own.
+    [StructLayout(LayoutKind.Sequential)] struct STARTUPINFOEX { public STARTUPINFO si; public IntPtr lpAttributeList; }
+    [StructLayout(LayoutKind.Sequential)] struct SID_AND_ATTRIBUTES { public IntPtr Sid; public uint Attributes; }
+    [StructLayout(LayoutKind.Sequential)] struct SECURITY_CAPABILITIES { public IntPtr AppContainerSid, Capabilities; public uint CapabilityCount, Reserved; }
+    [StructLayout(LayoutKind.Sequential)] struct TRUSTEE { public IntPtr pMultipleTrustee; public int MultipleTrusteeOperation, TrusteeForm, TrusteeType; public IntPtr ptstrName; }
+    [StructLayout(LayoutKind.Sequential)] struct EXPLICIT_ACCESS { public uint grfAccessPermissions; public int grfAccessMode; public uint grfInheritance; public TRUSTEE Trustee; }
+    [DllImport("userenv.dll", CharSet = CharSet.Unicode)] static extern int CreateAppContainerProfile(string name, string display, string description, IntPtr capabilities, uint count, out IntPtr sid);
+    [DllImport("userenv.dll", CharSet = CharSet.Unicode)] static extern int DeriveAppContainerSidFromAppContainerName(string name, out IntPtr sid);
+    [DllImport("userenv.dll", CharSet = CharSet.Unicode)] static extern int GetAppContainerFolderPath(string sid, out IntPtr path);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode)] static extern bool ConvertSidToStringSid(IntPtr sid, out IntPtr text);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode)] static extern bool ConvertStringSidToSid(string text, out IntPtr sid);
+    [DllImport("advapi32.dll")] static extern uint GetSecurityInfo(IntPtr handle, int type, uint info, IntPtr owner, IntPtr group, out IntPtr dacl, IntPtr sacl, out IntPtr descriptor);
+    [DllImport("advapi32.dll")] static extern uint SetSecurityInfo(IntPtr handle, int type, uint info, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
+    [DllImport("advapi32.dll")] static extern uint SetEntriesInAcl(int count, ref EXPLICIT_ACCESS entries, IntPtr old, out IntPtr made);
+    [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr mem);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool InitializeProcThreadAttributeList(IntPtr list, int count, int flags, ref IntPtr size);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool UpdateProcThreadAttribute(IntPtr list, uint flags, IntPtr attribute, IntPtr value, IntPtr size, IntPtr previous, IntPtr returned);
+    [DllImport("kernel32.dll")] static extern void DeleteProcThreadAttributeList(IntPtr list);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, EntryPoint = "CreateProcessW")] static extern bool CreateProcessEx(string app, string cmd, IntPtr pa, IntPtr ta, bool inh, int fl, IntPtr env, string dir, ref STARTUPINFOEX si, out PROCESS_INFORMATION pi);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern uint GetLongPathName(string path, StringBuilder full, uint size);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr OpenWindowStation(string name, bool inherit, uint access);
+    [DllImport("user32.dll")] static extern bool CloseWindowStation(IntPtr station);
+
+    // Lets the container use a window station or desktop: without it nothing in the container can have a window there.
+    static void Admit(IntPtr handle, IntPtr sid, uint rights) {
+        if (handle == IntPtr.Zero) return;
+        IntPtr dacl, descriptor, made;
+        if (GetSecurityInfo(handle, 7 /* SE_WINDOW_OBJECT */, 4 /* DACL */, IntPtr.Zero, IntPtr.Zero, out dacl, IntPtr.Zero, out descriptor) != 0) return;
+        var entry = new EXPLICIT_ACCESS { grfAccessPermissions = rights, grfAccessMode = 1 /* GRANT_ACCESS */, Trustee = new TRUSTEE { TrusteeForm = 0 /* a SID */, TrusteeType = 5, ptstrName = sid } };
+        if (SetEntriesInAcl(1, ref entry, dacl, out made) == 0) { SetSecurityInfo(handle, 7, 4, IntPtr.Zero, IntPtr.Zero, made, IntPtr.Zero); LocalFree(made); }
+        LocalFree(descriptor);
+    }
+
+    // What the confined program is told about the computer: where Windows is and how to find its programs, and
+    // nothing this helper was told - a worker's own settings and addresses are not a terminal's to read.
+    static readonly string[] KeptVariables = { "SystemRoot", "SystemDrive", "windir", "ComSpec", "PATHEXT", "OS", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
+        "PROCESSOR_IDENTIFIER", "PROCESSOR_LEVEL", "PROCESSOR_REVISION", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "CommonProgramFiles",
+        "CommonProgramFiles(x86)", "CommonProgramW6432", "ProgramData", "ALLUSERSPROFILE", "PUBLIC", "COMPUTERNAME", "DriverData" };
+
+    static string Confined(string desktopName, string exe, string args, string folder, out IntPtr process) {
+        process = IntPtr.Zero;
+        string name = ("Decurix.Worker." + desktopName).Replace('_', '-');
+        if (name.Length > 64) name = name.Substring(0, 64);
+        IntPtr sid;
+        if (CreateAppContainerProfile(name, name, "A Decurix worker's own terminal", IntPtr.Zero, 0, out sid) != 0
+            && DeriveAppContainerSidFromAppContainerName(name, out sid) != 0)
+            return "ERR this computer could not make a sandbox for the worker's terminal";
+        IntPtr text, path;
+        if (!ConvertSidToStringSid(sid, out text)) return "ERR this computer could not make a sandbox for the worker's terminal";
+        string sidText = Marshal.PtrToStringUni(text); LocalFree(text);
+        string own = GetAppContainerFolderPath(sidText, out path) == 0 ? Marshal.PtrToStringUni(path) : null;
+        if (string.IsNullOrEmpty(own)) return "ERR this computer could not make a sandbox for the worker's terminal";
+
+        // The one folder of the person's disk it may work in. By its full name: a shortened one ("ADMINI~1") can only
+        // be made sense of by reading the folders above it, which is exactly what the container may not do (measured:
+        // PowerShell started in such a folder could not write a file into it).
+        try {
+            System.IO.Directory.CreateDirectory(folder);
+            var full = new StringBuilder(1024);
+            uint got = GetLongPathName(folder, full, (uint)full.Capacity);
+            if (got > 0 && got < full.Capacity) folder = full.ToString();
+            var who = new System.Security.Principal.SecurityIdentifier(sidText);
+            var acl = System.IO.Directory.GetAccessControl(folder);
+            bool admitted = false;
+            foreach (System.Security.AccessControl.FileSystemAccessRule rule in acl.GetAccessRules(true, false, typeof(System.Security.Principal.SecurityIdentifier)))
+                if (rule.IdentityReference.Equals(who)) admitted = true;
+            if (!admitted) {
+                acl.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(who, System.Security.AccessControl.FileSystemRights.Modify,
+                    System.Security.AccessControl.InheritanceFlags.ContainerInherit | System.Security.AccessControl.InheritanceFlags.ObjectInherit,
+                    System.Security.AccessControl.PropagationFlags.None, System.Security.AccessControl.AccessControlType.Allow));
+                System.IO.Directory.SetAccessControl(folder, acl);
+            }
+        } catch (Exception e) { return "ERR the worker's folder could not be opened to its terminal: " + e.Message; }
+
+        // Its windows: on this worker's desktop, of this window station.
+        Admit(desktop, sid, 0x000F01FF /* DESKTOP_ALL_ACCESS */);
+        IntPtr station = OpenWindowStation("WinSta0", false, 0x00060000 /* READ_CONTROL | WRITE_DAC */);
+        Admit(station, sid, 0x0002037F /* WINSTA_ALL_ACCESS less its own security */);
+        if (station != IntPtr.Zero) CloseWindowStation(station);
+
+        var vars = new List<string>();
+        foreach (string keep in KeptVariables) { string v = Environment.GetEnvironmentVariable(keep); if (!string.IsNullOrEmpty(v)) vars.Add(keep + "=" + v); }
+        string sys = Environment.SystemDirectory, win = Environment.GetEnvironmentVariable("SystemRoot") ?? @"C:\Windows";
+        string temp = System.IO.Path.Combine(own, "Temp");
+        vars.Add("Path=" + sys + ";" + win + ";" + System.IO.Path.Combine(sys, "Wbem") + ";" + System.IO.Path.Combine(sys, @"WindowsPowerShell\v1.0") + ";" + System.IO.Path.Combine(sys, "OpenSSH"));
+        vars.Add("USERPROFILE=" + own); vars.Add("HOME=" + own); vars.Add("HOMEDRIVE=" + System.IO.Path.GetPathRoot(own).TrimEnd('\\')); vars.Add("HOMEPATH=" + own.Substring(2));
+        vars.Add("APPDATA=" + own); vars.Add("LOCALAPPDATA=" + own); vars.Add("TEMP=" + temp); vars.Add("TMP=" + temp);
+        vars.Add("USERNAME=worker"); vars.Add("DECURIX_SANDBOX=1");
+        vars.Sort(StringComparer.OrdinalIgnoreCase);
+        IntPtr env = Marshal.StringToHGlobalUni(string.Join("\0", vars) + "\0\0");
+
+        IntPtr internet; ConvertStringSidToSid("S-1-15-3-1" /* internetClient: out to the internet, nothing else */, out internet);
+        IntPtr capability = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(SID_AND_ATTRIBUTES)));
+        Marshal.StructureToPtr(new SID_AND_ATTRIBUTES { Sid = internet, Attributes = 4 /* SE_GROUP_ENABLED */ }, capability, false);
+        var caps = new SECURITY_CAPABILITIES { AppContainerSid = sid, Capabilities = capability, CapabilityCount = 1 };
+        IntPtr capsAt = Marshal.AllocHGlobal(Marshal.SizeOf(caps)); Marshal.StructureToPtr(caps, capsAt, false);
+        IntPtr size = IntPtr.Zero; InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
+        IntPtr list = Marshal.AllocHGlobal(size);
+        try {
+            if (!InitializeProcThreadAttributeList(list, 1, 0, ref size)
+                || !UpdateProcThreadAttribute(list, 0, (IntPtr)0x00020009 /* PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES */, capsAt, (IntPtr)Marshal.SizeOf(caps), IntPtr.Zero, IntPtr.Zero))
+                return "ERR this computer could not make a sandbox for the worker's terminal (" + Marshal.GetLastWin32Error() + ")";
+            var six = new STARTUPINFOEX();
+            six.si.cb = Marshal.SizeOf(six);
+            six.si.lpDesktop = desktopName;
+            six.si.lpTitle = System.IO.Path.GetFileNameWithoutExtension(exe);
+            six.lpAttributeList = list;
+            PROCESS_INFORMATION pi;
+            string cmd = "\"" + exe + "\"" + (string.IsNullOrEmpty(args) ? "" : " " + args);
+            int flags = 0x400 /* CREATE_UNICODE_ENVIRONMENT */ | 0x00080000 /* EXTENDED_STARTUPINFO_PRESENT */ | 0x10 /* CREATE_NEW_CONSOLE */;
+            bool started = CreateProcessEx(exe, cmd, IntPtr.Zero, IntPtr.Zero, false, flags, env, folder, ref six, out pi);
+            int err = Marshal.GetLastWin32Error();
+            DeleteProcThreadAttributeList(list);
+            if (!started) return "ERR the worker's terminal could not be started in its sandbox (" + err + ")";
+            AssignProcessToJobObject(job, pi.hProcess);
+            CloseHandle(pi.hThread);
+            process = pi.hProcess;
+            return "OK pid=" + pi.dwProcessId + " sandbox=" + sidText;
+        } finally { Marshal.FreeHGlobal(list); Marshal.FreeHGlobal(capsAt); Marshal.FreeHGlobal(capability); Marshal.FreeHGlobal(env); LocalFree(internet); }
+    }
+
+    // Starts a program on the private desktop, in the job. Nothing started here may share this helper's console or its
+    // standard input and output: those are the line protocol with Decurix. Found live: a worker's Terminal (PowerShell
+    // -NoExit) was given them, as Windows gives a console program its parent's - it had no window, read the commands meant
+    // for this helper off the pipe and wrote its prompt in among the answers and pictures, and from then on every click
+    // on that worker's screen was lost or answered with garbage. So a console program gets a console of its own: one
+    // with no window for a worker's agent (windowless), otherwise the classic console window, asked for by name -
+    // left to Windows it would be handed to the person's default terminal app, on their own screen.
+    static string Spawn(string desktopName, string exe, string args, string workDir, out IntPtr process, bool windowless) {
         process = IntPtr.Zero;
         STARTUPINFO si = new STARTUPINFO();
         si.cb = Marshal.SizeOf(si);
         si.lpDesktop = desktopName;
         PROCESS_INFORMATION pi;
+        string app = exe;
         string cmd = "\"" + exe + "\"" + (string.IsNullOrEmpty(args) ? "" : " " + args);
+        int flags = 0x400 /* CREATE_UNICODE_ENVIRONMENT */;
+        bool console = ConsoleProgram(exe);
+        // A PowerShell told to hide its console (the worker's Files browser, which is a window of its own) has none shown.
+        if (console && args != null && System.Text.RegularExpressions.Regex.IsMatch(args, @"(?i)(^|\s)-w(indowstyle)?\s+hidden(\s|$)")) windowless = true;
+        if (console && windowless) flags |= 0x08000000 /* CREATE_NO_WINDOW: a new console, not ours */;
+        else {
+            if (console) {
+                app = System.IO.Path.Combine(Environment.SystemDirectory, "conhost.exe");
+                cmd = "\"" + app + "\" " + cmd;
+            }
+            si.dwFlags = 0x100 /* STARTF_USESTDHANDLES, and none given */;
+        }
         IntPtr env = CleanEnvironment();
-        bool started = CreateProcess(exe, cmd, IntPtr.Zero, IntPtr.Zero, false, 0x400 /* CREATE_UNICODE_ENVIRONMENT */, env, string.IsNullOrEmpty(workDir) ? null : workDir, ref si, out pi);
+        bool started = CreateProcess(app, cmd, IntPtr.Zero, IntPtr.Zero, false, flags, env, string.IsNullOrEmpty(workDir) ? null : workDir, ref si, out pi);
         int err = Marshal.GetLastWin32Error();
         Marshal.FreeHGlobal(env);
         if (!started) return "ERR CreateProcess failed (" + err + ")";
         AssignProcessToJobObject(job, pi.hProcess);
+        CloseHandle(pi.hThread);
         process = pi.hProcess;
         return "OK pid=" + pi.dwProcessId;
+    }
+
+    [StructLayout(LayoutKind.Sequential)] struct JOBPORT { public IntPtr Key, Port; }
+    [DllImport("kernel32.dll")] static extern bool SetInformationJobObject(IntPtr j, int cls, ref JOBPORT info, int len);
+    [DllImport("kernel32.dll")] static extern IntPtr CreateIoCompletionPort(IntPtr file, IntPtr existing, UIntPtr key, uint threads);
+    [DllImport("kernel32.dll")] static extern bool GetQueuedCompletionStatus(IntPtr port, out uint code, out UIntPtr key, out IntPtr value, uint ms);
+    [DllImport("kernel32.dll")] static extern bool TerminateJobObject(IntPtr j, uint code);
+    [DllImport("kernel32.dll")] static extern uint ResumeThread(IntPtr t);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern bool QueryFullProcessImageName(IntPtr p, uint flags, StringBuilder name, ref int size);
+
+    static readonly string[] BrowserPrograms = { "msedge", "chrome", "brave", "firefox", "opera", "vivaldi", "chromium", "iexplore" };
+
+    // Runs a web app's launcher for what it does before it opens the page - starting the app's own server - and stops
+    // it there: any browser it starts is ended the moment it is created, before it can hand the page to the copy the
+    // person has open on their own screen. The page itself is then opened here, in a browser of the worker's own.
+    // Returns once the launcher has ended, has started its browser, or has had its time.
+    public static string RunLauncher(string desktopName, string exe, string workDir, int seconds) {
+        IntPtr guard = CreateJobObject(IntPtr.Zero, null);
+        IntPtr port = CreateIoCompletionPort((IntPtr)(-1), IntPtr.Zero, UIntPtr.Zero, 1);
+        if (guard == IntPtr.Zero || port == IntPtr.Zero) return "ERR could not watch the launcher";
+        try {
+            var watch = new JOBPORT { Key = guard, Port = port };
+            if (!SetInformationJobObject(guard, 7 /* JobObjectAssociateCompletionPortInformation */, ref watch, Marshal.SizeOf(watch))) return "ERR could not watch the launcher";
+            STARTUPINFO si = new STARTUPINFO();
+            si.cb = Marshal.SizeOf(si);
+            si.lpDesktop = desktopName;
+            PROCESS_INFORMATION pi;
+            int flags = 0x400 | 0x4 /* CREATE_SUSPENDED: it is in the job before it runs */;
+            if (ConsoleProgram(exe)) flags |= 0x08000000; else si.dwFlags = 0x100;
+            IntPtr env = CleanEnvironment();
+            bool started = CreateProcess(exe, "\"" + exe + "\"", IntPtr.Zero, IntPtr.Zero, false, flags, env, string.IsNullOrEmpty(workDir) ? null : workDir, ref si, out pi);
+            int err = Marshal.GetLastWin32Error();
+            Marshal.FreeHGlobal(env);
+            if (!started) return "ERR CreateProcess failed (" + err + ")";
+            AssignProcessToJobObject(job, pi.hProcess);
+            if (!AssignProcessToJobObject(guard, pi.hProcess)) { TerminateProcess(pi.hProcess, 0); CloseHandle(pi.hThread); CloseHandle(pi.hProcess); return "ERR could not watch the launcher"; }
+            ResumeThread(pi.hThread);
+            CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+            long until = Stopwatch.GetTimestamp() + Stopwatch.Frequency * seconds;
+            string ended = "timeout";
+            while (Stopwatch.GetTimestamp() < until) {
+                uint code; UIntPtr key; IntPtr value;
+                if (!GetQueuedCompletionStatus(port, out code, out key, out value, 200)) continue;
+                if (code == 4 /* JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO */) { ended = "exited"; break; }
+                if (code != 6 /* JOB_OBJECT_MSG_NEW_PROCESS */ || (int)value == pi.dwProcessId) continue;
+                IntPtr child = OpenProcess(0x1001 /* TERMINATE, QUERY_LIMITED_INFORMATION */, false, (int)value);
+                if (child == IntPtr.Zero) continue;
+                var name = new StringBuilder(1024); int size = name.Capacity;
+                bool browser = QueryFullProcessImageName(child, 0, name, ref size)
+                    && Array.IndexOf(BrowserPrograms, System.IO.Path.GetFileNameWithoutExtension(name.ToString()).ToLowerInvariant()) >= 0;
+                if (browser) TerminateProcess(child, 0);
+                CloseHandle(child);
+                if (browser) { ended = "browser"; break; }
+            }
+            // What it started and left running stays (a server it started is the point); a launcher still at it is ended.
+            if (ended == "timeout") TerminateJobObject(guard, 0);
+            return "OK " + ended;
+        } finally { CloseHandle(port); CloseHandle(guard); }
+    }
+
+    // ---- The command loop. One line in, one line out, for as long as Decurix keeps the pipe open. It runs here, in
+    // compiled code, and hands PowerShell only the few commands that need its functions (finding and starting a
+    // program): every move of the pointer on a worker's screen is a line, and read and dispatched by PowerShell each
+    // cost a couple of milliseconds of interpreting (measured: about a tenth of a core while the pointer moved, on
+    // top of looking at the screen). What is typed arrives as UTF-8, which is what Decurix writes.
+    public static void Serve(Action<string, string> other) {
+        var stdin = new System.IO.StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false), false, 4096);
+        string line;
+        while ((line = stdin.ReadLine()) != null) {
+            int cut = line.IndexOfAny(new[] { ' ', '\t' });
+            string verb = cut < 0 ? line : line.Substring(0, cut), rest = cut < 0 ? "" : line.Substring(cut + 1);
+            try {
+                if (!Answer(verb, rest)) other(verb, rest);
+            } catch (Exception e) {
+                // What PowerShell throws around a .NET failure says less than the failure itself.
+                while (e.InnerException != null && (e is System.Reflection.TargetInvocationException || e.GetType().Name.EndsWith("MethodInvocationException"))) e = e.InnerException;
+                Reply("ERR " + e.Message);
+            }
+            if (verb == "move") Nudge();
+            else if (verb == "down" || verb == "up" || verb == "click" || verb == "wheel" || verb == "type" || verb == "key" || verb == "copy") Kick();
+            if (verb == "quit") break;
+        }
+    }
+
+    static int Int(string text) { return int.Parse(text.Trim(), System.Globalization.CultureInfo.InvariantCulture); }
+
+    // "<x> <y> [right] [+<mods>]", mods being any of c (Ctrl), s (Shift), a (Alt).
+    static string Pointer(string kind, string rest, bool rightToo) {
+        string[] p = rest.Split(' ');
+        string mods = ""; bool right = false;
+        for (int i = 2; i < p.Length; i++) { if (p[i].StartsWith("+")) mods = p[i].Substring(1); if (p[i] == "right") right = true; }
+        return Mouse(kind, Int(p[0]), Int(p[1]), right && rightToo, mods);
+    }
+
+    // Answers one command that needs nothing but this class. False for any other.
+    static bool Answer(string verb, string rest) {
+        string[] p;
+        switch (verb) {
+            case "move": case "down": case "up": Reply(Pointer(verb, rest, true)); return true;
+            case "click": Pointer("down", rest, false); Thread.Sleep(30); Reply(Pointer("up", rest, false)); return true;
+            case "wheel": p = rest.Split(' '); Reply(Wheel(Int(p[0]), Int(p[1]), Int(p[2]))); return true;
+            case "type": foreach (char c in rest) TypeChar(c); Reply("OK"); return true;
+            case "key": p = rest.Split(' '); Reply(Key(Int(p[0]), p.Length > 1 ? p[1] : "")); return true;
+            case "copy": Reply(Copy(Int(rest))); return true;
+            case "count": Reply("COUNT " + WindowCount()); return true;
+            case "shortcuts": p = rest.Split(new[] { '\t' }, 2); SetShortcuts(p[0], p.Length > 1 ? p[1] : ""); Reply("OK"); return true;
+            case "tasks": Reply("TASKS " + Tasks()); return true;
+            case "start": ToggleStart(); Reply("OK"); return true;
+            case "shell": Reply("SHELL " + (ShellTyping() ? 1 : 0)); return true;
+            case "win": p = rest.Split(' '); Reply(WindowDo(p[0], long.Parse(p[1]))); return true;
+            case "over": p = rest.Split(' '); Reply("OVER " + Over(Int(p[0]), Int(p[1]))); return true;
+            case "screen": FixedScreen(); Reply("OK"); return true;
+            case "viewers": SetViewers(rest.Trim().Length == 0 ? 0 : Int(rest)); Reply("OK"); return true;
+            case "keyframe": KeyFrame(); Reply("OK"); return true;
+            case "thumb": Thumb(Int(rest)); return true;
+            case "status": Reply("STATUS " + Status()); return true;
+            case "focus": Reply("FOCUS " + FocusInfo()); return true;
+            case "windows": Reply("WINDOWS " + Windows()); return true;
+            case "quit": return true;
+        }
+        return false;
+    }
+
+    // Starts a web app's own server through its launcher when nothing answers on its port, and gives it a moment.
+    //
+    // A port that answers is not yet an app that does. Found live with ERPNext: its front server listens within
+    // seconds and says "502 Bad Gateway" for a minute more, while what is behind it starts - and the worker's browser
+    // was opened on that. A gateway's own errors (502, 503, 504) and no answer at all mean "not yet", whatever the app
+    // is; any other answer, an error of the app's own included, is the app's to show. So the page is waited for,
+    // up to two minutes, and then opened whatever it says.
+    public static string Prepare(string desktopName, string launcher, string address) {
+        Uri url;
+        if (!Uri.TryCreate(address, UriKind.Absolute, out url)) return "OK";
+        if (!PortOpen(url.Port)) {
+            RunLauncher(desktopName, launcher, System.IO.Path.GetDirectoryName(launcher), 60);
+            for (int i = 0; i < 60 && !PortOpen(url.Port); i++) Thread.Sleep(250); // a server just started takes a moment to listen
+        }
+        long until = Stopwatch.GetTimestamp() + 120 * Stopwatch.Frequency;
+        while (Stopwatch.GetTimestamp() < until) {
+            int status = Status(url);
+            if (status != 0 && status != 502 && status != 503 && status != 504) break;
+            Thread.Sleep(1000);
+        }
+        return "OK";
+    }
+
+    // What a page answers with: its HTTP status, or 0 when nothing answers.
+    static int Status(Uri url) {
+        try {
+            var request = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(url);
+            request.Method = "GET"; request.AllowAutoRedirect = false; request.Timeout = 5000; request.ReadWriteTimeout = 5000;
+            request.Proxy = null; // this computer's own address
+            using (var response = (System.Net.HttpWebResponse)request.GetResponse()) return (int)response.StatusCode;
+        } catch (System.Net.WebException e) {
+            var response = e.Response as System.Net.HttpWebResponse;
+            if (response == null) return 0;
+            using (response) return (int)response.StatusCode;
+        } catch { return 0; }
+    }
+
+    static bool PortOpen(int port) {
+        try {
+            using (var c = new System.Net.Sockets.TcpClient()) {
+                var r = c.BeginConnect("127.0.0.1", port, null, null);
+                if (!r.AsyncWaitHandle.WaitOne(300)) return false;
+                c.EndConnect(r); return true;
+            }
+        } catch { return false; }
+    }
+
+    // ---- This class as a program of its own. PowerShell compiles it once (-Build) and Decurix then starts the program
+    // itself for each worker's desktop: a PowerShell kept running to host this class was 58 MB of every worker's memory
+    // for an interpreter with nothing left to interpret (measured: 76 MB private for the hosted helper, about a third
+    // of that for the program). The script is still what knows how to find a program - a Start-menu entry, a shortcut,
+    // a browser that needs a profile of its own - so for that, and only then, the program runs the script once
+    // (-Resolve) and reads its answer. What a target turned out to be is remembered, so a program with nothing to
+    // prepare (PowerPoint, a terminal) is found once and afterwards started with no PowerShell at all.
+    static string ownDesktop = "", script = "";
+    static readonly Dictionary<string, string[]> found = new Dictionary<string, string[]>();
+
+    [STAThread]
+    public static int Main(string[] args) {
+        if (args.Length == 1 && args[0] == "--selftest") { Init(); Reply("OK"); return 0; }
+        for (int i = 0; i + 1 < args.Length; i += 2) {
+            if (args[i] == "-DesktopName") ownDesktop = args[i + 1];
+            if (args[i] == "-Script") script = args[i + 1];
+        }
+        if (ownDesktop.Length == 0 || script.Length == 0) return 2;
+        Init();
+        try { Serve(Starting); } finally { Shutdown(); }
+        return 0;
+    }
+
+    // One question put to the script: its answer, a line a message.
+    static List<string> Ask(string verb, string rest) {
+        var said = new List<string>();
+        string request = Convert.ToBase64String(Encoding.UTF8.GetBytes(verb + "\t" + rest));
+        var start = new ProcessStartInfo {
+            FileName = System.IO.Path.Combine(Environment.SystemDirectory, @"WindowsPowerShell\v1.0\powershell.exe"),
+            Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" + script + "\" -DesktopName " + ownDesktop + " -Resolve " + request,
+            UseShellExecute = false, CreateNoWindow = true,
+            // All three are its own: it must never be given this program's, which are the line protocol with Decurix.
+            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true
+        };
+        using (var ps = Process.Start(start)) {
+            ps.StandardInput.Close();
+            ps.ErrorDataReceived += (o, e) => { };
+            ps.BeginErrorReadLine();
+            string line;
+            while ((line = ps.StandardOutput.ReadLine()) != null) {
+                try { said.Add(Encoding.UTF8.GetString(Convert.FromBase64String(line.Trim()))); } catch (FormatException) { }
+            }
+            ps.WaitForExit();
+        }
+        if (said.Count == 0) said.Add("ERR the helper's script gave no answer");
+        return said;
+    }
+
+    // What a target is: { "OK", program, arguments, folder, own profile (1/0), name, launcher } or { "ERR", why }.
+    static string[] Found(string target, string args) {
+        string key = target + "\t" + args;
+        string[] r;
+        lock (found) if (found.TryGetValue(key, out r)) return r;
+        var said = Ask("check", key);
+        string last = said[said.Count - 1];
+        if (last.StartsWith("OK\t")) {
+            r = new string[7];
+            string[] f = last.Split('\t');
+            for (int i = 0; i < 7; i++) r[i] = i < f.Length ? f[i] : "";
+        } else r = new[] { "ERR", last.StartsWith("ERR ") ? last.Substring(4) : last };
+        lock (found) found[key] = r;
+        return r;
+    }
+
+    // Starts a program that has been found, after whatever it needs first: a browser's own profile, a web app's server.
+    static string Run(bool open, string exe, string args, string dir, bool ownProfile, string name, string launcher) {
+        if (ownProfile || launcher.Length > 0) {
+            bool ready = false;
+            foreach (string line in Ask("complete", string.Join("\t", exe, args, dir, ownProfile ? "1" : "0", name, launcher))) {
+                string[] f = line.Split('\t');
+                if (f[0] == "PREP" && f.Length >= 3) Prepare(ownDesktop, f[1], f[2]);
+                else if (f[0] == "RUN" && f.Length >= 4) { exe = f[1]; args = f[2]; dir = f[3]; ready = true; }
+                else if (line.StartsWith("ERR ")) return line;
+            }
+            if (!ready) return "ERR the program could not be prepared";
+        }
+        return open ? Open(ownDesktop, exe, args, dir) : Launch(ownDesktop, exe, args, dir);
+    }
+
+    // Opening a program can take a while - finding what a Start-menu entry is (seconds), bringing a browser its
+    // profile (a minute, the first time), waiting for a web app's own server (two) - and this loop is what every click
+    // and key on the worker's screen goes through. Found live: opening an ERP froze the whole screen for half a
+    // minute. So an open is answered at once with "WAIT <n>" and done on a thread of its own, one at a time; how it
+    // ended is said when it has: "EVENT opened <n> <answer>".
+    static int tickets;
+    static readonly object opening = new object();
+
+    static void OpenBehind(string[] f) {
+        int ticket = Interlocked.Increment(ref tickets);
+        Interlocked.Increment(ref opensGoing);
+        Reply("WAIT " + ticket);
+        var th = new Thread(() => {
+            string said;
+            try {
+                lock (opening) {
+                    string[] r = Found(f[0], f.Length > 1 ? f[1] : "");
+                    if (r[0] == "ERR") said = "ERR " + r[1];
+                    // "open <target> <arguments> sandbox <folder>": confined to that folder, and so nothing to prepare.
+                    else if (f.Length > 3 && f[2] == "sandbox") said = Open(ownDesktop, r[1], r[2], r[3], f[3]);
+                    else said = Run(true, r[1], r[2], r[3], r[4] == "1", r[5], r[6]);
+                }
+            } catch (Exception e) { said = "ERR " + e.Message; }
+            Interlocked.Decrement(ref opensGoing);
+            Reply("EVENT opened " + ticket + " " + said.Replace('\r', ' ').Replace('\n', ' '));
+            Kick();
+        }) { IsBackground = true };
+        th.SetApartmentState(ApartmentState.STA);
+        th.Start();
+    }
+
+    // The commands the script answers when it hosts this class ($Commands), answered through it here.
+    static void Starting(string verb, string rest) {
+        string[] f = rest.Split('\t');
+        string[] r;
+        switch (verb) {
+            case "desktop":
+                if (System.Text.RegularExpressions.Regex.IsMatch(rest, "^[A-Za-z0-9_]{1,48}$")) { ownDesktop = rest; Reply("OK"); }
+                else Reply("ERR invalid desktop name");
+                return;
+            case "check":
+                r = Found(f[0], f.Length > 1 ? f[1] : "");
+                Reply(r[0] == "ERR" ? "ERR " + r[1] : "OK\t" + string.Join("\t", r, 1, 5));
+                return;
+            case "open": OpenBehind(f); return;
+            case "launch":
+                r = Found(f[0], f.Length > 1 ? f[1] : "");
+                if (r[0] == "ERR") { Reply("ERR " + r[1]); return; }
+                Reply(Run(false, r[1], r[2], r[3], r[4] == "1", r[5], r[6]));
+                return;
+            case "launchr":
+                // What a check already worked out: nothing is looked up, so this is as fast as starting the program.
+                if (f.Length < 5) { Reply("ERR malformed launchr"); return; }
+                if (!System.IO.File.Exists(f[0])) { Reply("ERR Not found on this computer: " + f[0]); return; }
+                Reply(Run(false, f[0], f[1], f[2], f[3] == "1", f[4], ""));
+                return;
+            default: Reply("ERR unknown command"); return;
+        }
     }
 
     static bool Owner(IntPtr h, IntPtr l) {
@@ -333,57 +814,175 @@ public class Native {
 
     // One picture of everything the app has on screen: every window, painted bottom to top at its own position, over
     // the smallest rectangle that holds them all. A menu or dialog is therefore visible, and clickable, like the rest.
-    // The caller disposes it; null when the app has no window.
-    static Bitmap Compose() {
-        var ws = AppWindows();
-        if (ws.Count == 0 && !fixedScreen) return null;
+    // Null when the app has no window.
+    //
+    // It is made with Windows' own drawing, into memory that is kept: the picture is one surface drawn over at every
+    // look, each window is printed straight into a surface kept for it, and one is copied onto the other with BitBlt.
+    // Through GDI+ bitmaps (as this was first written) every look allocated the whole screen and every window afresh,
+    // copied each window twice more on its way in and out of a device context, and painted the wallpaper through the
+    // resampler: measured on a 1920x1080 worker, 12-18 ms for the wallpaper alone and ~100 ms a look with Excel
+    // maximised - ten pictures a second at best, and 15% of a core to find that nothing had changed. A window that
+    // lies wholly behind another is not printed at all. Whoever calls this holds composeLock while it reads the picture.
+    [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr dc);
+    [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
+    [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr obj);
+    [DllImport("gdi32.dll")] static extern IntPtr CreateDIBSection(IntPtr dc, ref BITMAPINFOHEADER bi, uint usage, out IntPtr bits, IntPtr section, uint offset);
+    [DllImport("gdi32.dll")] static extern bool BitBlt(IntPtr dst, int x, int y, int w, int h, IntPtr src, int sx, int sy, uint rop);
+    [DllImport("gdi32.dll")] static extern bool GdiFlush();
+
+    // A picture Windows can draw into: its memory (32 bits a pixel, top row first), a device context on it, and the same
+    // memory as a GDI+ bitmap for the few things drawn or saved that way.
+    class Surface {
+        public IntPtr Dc, Bits; public int W, H; public Bitmap View;
+        IntPtr bmp, old;
+        public Surface(int w, int h) {
+            W = w; H = h;
+            var bi = new BITMAPINFOHEADER { biSize = 40, biWidth = w, biHeight = -h, biPlanes = 1, biBitCount = 32 };
+            Dc = CreateCompatibleDC(IntPtr.Zero);
+            bmp = CreateDIBSection(Dc, ref bi, 0, out Bits, IntPtr.Zero, 0);
+            if (bmp == IntPtr.Zero) { DeleteDC(Dc); throw new InvalidOperationException("no memory for a picture of " + w + "x" + h); }
+            old = SelectObject(Dc, bmp);
+            View = new Bitmap(w, h, w * 4, PixelFormat.Format32bppRgb, Bits);
+        }
+        public void Free() { View.Dispose(); SelectObject(Dc, old); DeleteObject(bmp); DeleteDC(Dc); }
+    }
+
+    static readonly object composeLock = new object();
+    static Surface canvas, wallpaper;
+    static Bitmap wallpaperOf;
+    static readonly Dictionary<IntPtr, Surface> printed = new Dictionary<IntPtr, Surface>();
+
+    // A window nothing shows through: big, and neither layered nor click-through (a menu's shadow, a tooltip and an
+    // overlay are small or layered, and what is under them is seen).
+    static bool Hides(Win w) {
+        if (w.V.R - w.V.L < 400 || w.V.B - w.V.T < 300) return false;
+        return (GetWindowLong(w.H, -20 /* GWL_EXSTYLE */) & (0x80000 /* WS_EX_LAYERED */ | 0x20 /* WS_EX_TRANSPARENT */)) == 0;
+    }
+
+    // Printing a window is what a look costs: Windows takes 16-34 ms to hand over one big window's picture (measured:
+    // Edge 1315x1000 in 16-24 ms, PowerPoint 1440x740 in 33 ms), whatever is done with it afterwards. So not every
+    // window is printed at every look. The one in front, the one under the pointer, and anything small (a menu, a
+    // tooltip, a dialog: cheap, and where things happen) always are; another big window is printed again when a
+    // quarter of a second has passed since it last was, and otherwise drawn from the picture kept of it. everything
+    // prints them all: a whole picture somebody asked for.
+    static readonly Dictionary<IntPtr, long> printedAt = new Dictionary<IntPtr, long>();
+    static POINT pointer; static bool pointerKnown;
+
+    static Surface Compose(bool everything) {
+        var all = AppWindows();
+        if (all.Count == 0 && !fixedScreen) return null;
         LocateWindow();
         int l = int.MaxValue, t = int.MaxValue, r = int.MinValue, b = int.MinValue;
-        foreach (var w in ws) { l = Math.Min(l, w.V.L); t = Math.Min(t, w.V.T); r = Math.Max(r, w.V.R); b = Math.Max(b, w.V.B); }
+        foreach (var w in all) { l = Math.Min(l, w.V.L); t = Math.Min(t, w.V.T); r = Math.Max(r, w.V.R); b = Math.Max(b, w.V.B); }
         double sc = Scale(mainWindow); // the main window's scale is the picture's, so a DPI-unaware app stays crisp
         if (fixedScreen) { l = 0; t = 0; r = screenW; b = screenH; sc = 1.0; }
         int pw = (int)Math.Round((r - l) * sc), ph = (int)Math.Round((b - t) * sc);
         if (pw <= 0 || ph <= 0 || pw > 8192 || ph > 8192) return null;
-        var bmp = new Bitmap(pw, ph, PixelFormat.Format24bppRgb);
-        try {
-            using (var g = Graphics.FromImage(bmp)) {
-                if (fixedScreen) lock (deskLock) g.DrawImageUnscaled(Backdrop(pw, ph), 0, 0);
-                else g.Clear(Color.FromArgb(0x1b, 0x1b, 0x1b));
-                g.InterpolationMode = InterpolationMode.HighQualityBilinear;
-                // A popup's drop shadow and rounded corners capture as black; over the window beneath them they should show it.
-                var seeThrough = new ImageAttributes();
+
+        // Topmost first: what is wholly inside a window that hides what is under it (less its rounded corners) is left out.
+        var ws = new List<Win>(); var covers = new List<RECT>(); var solid = new HashSet<IntPtr>();
+        foreach (var w in all) {
+            bool hidden = false;
+            foreach (var c in covers) if (w.V.L >= c.L && w.V.T >= c.T && w.V.R <= c.R && w.V.B <= c.B) { hidden = true; break; }
+            if (hidden) continue;
+            ws.Add(w);
+            if (Hides(w)) { solid.Add(w.H); covers.Add(new RECT { L = w.V.L + 12, T = w.V.T + 12, R = w.V.R - 12, B = w.V.B - 12 }); }
+        }
+
+        if (canvas == null || canvas.W != pw || canvas.H != ph) {
+            if (canvas != null) canvas.Free();
+            canvas = new Surface(pw, ph);
+        }
+        const uint Copy = 0x00CC0020; // SRCCOPY
+        if (fixedScreen) lock (deskLock) {
+            Bitmap drawn = Backdrop(pw, ph); // kept until the shortcuts change, and so is its copy here
+            if (wallpaper == null || wallpaperOf != drawn || wallpaper.W != pw || wallpaper.H != ph) {
+                if (wallpaper != null) wallpaper.Free();
+                wallpaper = new Surface(pw, ph); wallpaperOf = drawn;
+                using (var wg = Graphics.FromImage(wallpaper.View)) wg.DrawImageUnscaled(drawn, 0, 0);
+            }
+            BitBlt(canvas.Dc, 0, 0, pw, ph, wallpaper.Dc, 0, 0, Copy);
+        }
+        var seen = new HashSet<IntPtr>();
+        long look = Stopwatch.GetTimestamp();
+        Interlocked.Exchange(ref lookedAt, look);
+        IntPtr front = IntPtr.Zero, under = IntPtr.Zero;
+        foreach (var w in ws) {
+            if (front == IntPtr.Zero && solid.Contains(w.H)) front = w.H;
+            if (under == IntPtr.Zero && pointerKnown && pointer.X >= w.V.L && pointer.X < w.V.R && pointer.Y >= w.V.T && pointer.Y < w.V.B) under = w.H;
+        }
+        using (var g = Graphics.FromHdc(canvas.Dc)) {
+            g.InterpolationMode = InterpolationMode.HighQualityBilinear;
+            if (!fixedScreen) { g.Clear(Color.FromArgb(0x1b, 0x1b, 0x1b)); g.Flush(FlushIntention.Sync); }
+            // A popup's drop shadow and a window's rounded corners capture as black; over what is beneath them they
+            // should show it.
+            using (var seeThrough = new ImageAttributes()) {
                 seeThrough.SetColorKey(Color.FromArgb(0, 0, 0), Color.FromArgb(4, 4, 4));
+                int corner = (int)Math.Round(10 * Dpi()) + 2;
                 for (int i = ws.Count - 1; i >= 0; i--) {
                     var w = ws[i];
                     int bw = (int)Math.Round((w.R.R - w.R.L) * w.Sc), bh = (int)Math.Round((w.R.B - w.R.T) * w.Sc);
                     if (bw <= 0 || bh <= 0) continue;
-                    using (var wb = new Bitmap(bw, bh, PixelFormat.Format24bppRgb)) {
-                        using (var wg = Graphics.FromImage(wb)) {
-                            IntPtr dc = wg.GetHdc();
-                            PrintWindow(w.H, dc, 2 /* PW_RENDERFULLCONTENT */);
-                            wg.ReleaseHdc(dc);
+                    Surface wb; long printedLast;
+                    bool fresh = !printed.TryGetValue(w.H, out wb) || wb.W != bw || wb.H != bh;
+                    if (fresh) {
+                        if (wb != null) wb.Free();
+                        printed.Remove(w.H);
+                        wb = new Surface(bw, bh);
+                        printed[w.H] = wb;
+                    }
+                    seen.Add(w.H);
+                    bool inUse = i == 0 || w.H == front || (pointerKnown && w.H == under) || (long)bw * bh < 250000;
+                    if (fresh || everything || inUse || !printedAt.TryGetValue(w.H, out printedLast) || look - printedLast >= Stopwatch.Frequency / 4) {
+                        PrintWindow(w.H, wb.Dc, 2 /* PW_RENDERFULLCONTENT */);
+                        GdiFlush();
+                        printedAt[w.H] = look;
+                    }
+                    int sx = Math.Max(0, (int)Math.Round((w.V.L - w.R.L) * w.Sc)), sy = Math.Max(0, (int)Math.Round((w.V.T - w.R.T) * w.Sc));
+                    int sw = Math.Min(bw - sx, (int)Math.Round((w.V.R - w.V.L) * w.Sc)), sh = Math.Min(bh - sy, (int)Math.Round((w.V.B - w.V.T) * w.Sc));
+                    if (sw <= 0 || sh <= 0) continue;
+                    var dest = new Rectangle((int)Math.Round((w.V.L - l) * sc), (int)Math.Round((w.V.T - t) * sc),
+                                             (int)Math.Round((w.V.R - w.V.L) * sc), (int)Math.Round((w.V.B - w.V.T) * sc));
+                    bool lowest = i == ws.Count - 1 && !fixedScreen; // nothing is under the lowest window of an app's picture
+                    bool exact = dest.Width == sw && dest.Height == sh;
+                    if (exact && (lowest || (solid.Contains(w.H) && sw > 4 * corner && sh > 4 * corner))) {
+                        // A plain copy. Only the four corners can be see-through, so only they are judged pixel by pixel.
+                        int c = lowest ? 0 : corner;
+                        BitBlt(canvas.Dc, dest.X + c, dest.Y, sw - 2 * c, c, wb.Dc, sx + c, sy, Copy);
+                        BitBlt(canvas.Dc, dest.X, dest.Y + c, sw, sh - 2 * c, wb.Dc, sx, sy + c, Copy);
+                        BitBlt(canvas.Dc, dest.X + c, dest.Y + sh - c, sw - 2 * c, c, wb.Dc, sx + c, sy + sh - c, Copy);
+                        if (c > 0) {
+                            GdiFlush();
+                            foreach (var at in new[] { new Point(0, 0), new Point(sw - c, 0), new Point(0, sh - c), new Point(sw - c, sh - c) })
+                                g.DrawImage(wb.View, new Rectangle(dest.X + at.X, dest.Y + at.Y, c, c), sx + at.X, sy + at.Y, c, c, GraphicsUnit.Pixel, seeThrough);
+                            g.Flush(FlushIntention.Sync);
                         }
-                        int sx = Math.Max(0, (int)Math.Round((w.V.L - w.R.L) * w.Sc)), sy = Math.Max(0, (int)Math.Round((w.V.T - w.R.T) * w.Sc));
-                        int sw = Math.Min(bw - sx, (int)Math.Round((w.V.R - w.V.L) * w.Sc)), sh = Math.Min(bh - sy, (int)Math.Round((w.V.B - w.V.T) * w.Sc));
-                        if (sw <= 0 || sh <= 0) continue;
-                        var dest = new Rectangle((int)Math.Round((w.V.L - l) * sc), (int)Math.Round((w.V.T - t) * sc),
-                                                 (int)Math.Round((w.V.R - w.V.L) * sc), (int)Math.Round((w.V.B - w.V.T) * sc));
-                        if (i == ws.Count - 1) g.DrawImage(wb, dest, sx, sy, sw, sh, GraphicsUnit.Pixel);
-                        else g.DrawImage(wb, dest, sx, sy, sw, sh, GraphicsUnit.Pixel, seeThrough);
+                    } else {
+                        // A menu, a tooltip, a layered window, or one drawn at another scale: through GDI+, as a whole.
+                        if (lowest) g.DrawImage(wb.View, dest, sx, sy, sw, sh, GraphicsUnit.Pixel);
+                        else g.DrawImage(wb.View, dest, sx, sy, sw, sh, GraphicsUnit.Pixel, seeThrough);
+                        g.Flush(FlushIntention.Sync);
                     }
                 }
             }
-            if (fixedScreen) using (var g = Graphics.FromImage(bmp)) lock (deskLock) DrawShell(g);
-            lock (geo) { frameL = l; frameT = t; frameScale = sc; haveFrame = true; }
-            return bmp;
-        } catch { bmp.Dispose(); throw; }
+            if (fixedScreen) lock (deskLock) { DrawShell(g); DrawOpening(g, taskCount); }
+        }
+        GdiFlush();
+        // A window that has gone, or is not looked at any more, gives its memory back.
+        if (printed.Count > seen.Count) {
+            var gone = new List<IntPtr>();
+            foreach (var h in printed.Keys) if (!seen.Contains(h)) gone.Add(h);
+            foreach (var h in gone) { printed[h].Free(); printed.Remove(h); printedAt.Remove(h); }
+        }
+        lock (geo) { frameL = l; frameT = t; frameScale = sc; haveFrame = true; }
+        return canvas;
     }
 
     // A click needs to know where the picture sat, so an input that arrives before the first capture takes one itself.
     static void EnsureGeometry() {
         bool have; lock (geo) have = haveFrame;
         if (have) return;
-        using (var b = Compose()) { }
+        lock (composeLock) Compose(false);
     }
 
     // ---- Capturing. A thread of its own looks at the app and says what changed, so nothing waits on it and a picture is
@@ -408,32 +1007,81 @@ public class Native {
     // Something was just sent to the app: look at the screen again at once, and often for a moment, so its reaction shows quickly.
     public static void Kick() {
         Interlocked.Exchange(ref boostUntil, Stopwatch.GetTimestamp() + Stopwatch.Frequency * 7 / 10);
+        Interlocked.Exchange(ref stillMoves, 0);
         wake.Set();
+    }
+
+    // The pointer moved. Most of a screen does not answer a pointer passing over it, and every move used to be looked
+    // at like a click: sixty looks a second for as long as the pointer was moving (measured: 43% of a core, with not
+    // one picture to send). So a move is looked at soon after, and while moves go on changing nothing, less and less
+    // often; the first one that does change something (a button lighting up, a menu following the pointer) is looked
+    // at like any other input again.
+    static long stillMoves, moveAt;
+
+    public static void Nudge() {
+        Interlocked.Exchange(ref moveAt, Stopwatch.GetTimestamp());
+        if (Interlocked.Read(ref stillMoves) < 3) wake.Set();
+    }
+
+    // Nobody has looked at this screen for a while - no viewer, no card on a dashboard: the pictures kept of it (the
+    // screen, the last one sent, the wallpaper, every window: about 35 MB for a 1920x1080 screen with two apps) are
+    // given back, and so is the memory this process is not using. The next look makes them again.
+    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll")] static extern bool SetProcessWorkingSetSize(IntPtr process, IntPtr min, IntPtr max);
+    static long lookedAt;
+
+    static void Rest() {
+        lock (composeLock) {
+            if (canvas != null) { canvas.Free(); canvas = null; }
+            if (wallpaper != null) { wallpaper.Free(); wallpaper = null; wallpaperOf = null; }
+            if (small != null) { small.Free(); small = null; }
+            foreach (var kept in printed.Values) kept.Free();
+            printed.Clear(); printedAt.Clear();
+            if (prev != IntPtr.Zero) { Marshal.FreeHGlobal(prev); prev = IntPtr.Zero; prevBytes = 0; }
+            if (smallPrev != IntPtr.Zero) { Marshal.FreeHGlobal(smallPrev); smallPrev = IntPtr.Zero; }
+        }
+        GC.Collect();
+        SetProcessWorkingSetSize(GetCurrentProcess(), (IntPtr)(-1), (IntPtr)(-1));
     }
 
     static void CaptureLoop() {
         int delay = 50;
+        long seenMove = 0;
         while (!stopCapture) {
             bool woken = wake.WaitOne(delay);
             if (stopCapture) break;
-            if (desktop == IntPtr.Zero || viewers <= 0) { delay = 200; continue; }
+            if (desktop == IntPtr.Zero || viewers <= 0) {
+                delay = 200;
+                if (canvas != null && Stopwatch.GetTimestamp() - Interlocked.Read(ref lookedAt) > 20 * Stopwatch.Frequency) Rest();
+                continue;
+            }
             if (woken) Thread.Sleep(12); // whatever woke us was only just posted to the app; let it react before looking
+            long move = Interlocked.Read(ref moveAt);
+            bool afterMove = move != seenMove; seenMove = move;
             bool sent;
             try { sent = CaptureOnce(); } catch (Exception) { delay = 250; continue; }
             long now = Stopwatch.GetTimestamp();
-            if (sent) { Interlocked.Exchange(ref lastChange, now); delay = 5; }
-            else if (now < Interlocked.Read(ref boostUntil)) delay = 15;
-            else {
-                double idle = (now - Interlocked.Read(ref lastChange)) / (double)Stopwatch.Frequency;
-                delay = idle < 0.6 ? 40 : (idle < 4 ? 100 : 250);
-            }
+            if (sent) { Interlocked.Exchange(ref lastChange, now); Interlocked.Exchange(ref stillMoves, 0); delay = 5; continue; }
+            if (afterMove) Interlocked.Increment(ref stillMoves);
+            if (now < Interlocked.Read(ref boostUntil)) { delay = 15; continue; }
+            // Nothing is being done to the screen and nothing on it changed: it is looked at less and less often, down
+            // to once a second. Any input, and any change found, brings it straight back.
+            double idle = (now - Interlocked.Read(ref lastChange)) / (double)Stopwatch.Frequency;
+            delay = idle < 0.6 ? 40 : idle < 4 ? 120 : idle < 20 ? 300 : idle < 60 ? 600 : 1000;
+            // A pointer still moving over something that does not answer it is looked at a few times a second.
+            if ((now - move) < Stopwatch.Frequency / 2) delay = Math.Min(delay, 150);
+            if (openingName != null) delay = Math.Min(delay, 200);
         }
     }
 
     // Looks at the app once and sends what changed. False when nothing did.
     static bool CaptureOnce() {
-        Bitmap bmp = Compose();
-        if (bmp == null) {
+        lock (composeLock) return CaptureLocked();
+    }
+
+    static bool CaptureLocked() {
+        Surface pic = Compose(wantKey);
+        if (pic == null) {
             long now = Stopwatch.GetTimestamp();
             if (everHadWindow && !closedSent) {
                 if (noWindowSince == 0) noWindowSince = now;
@@ -442,60 +1090,86 @@ public class Native {
             return false;
         }
         noWindowSince = 0; everHadWindow = true; closedSent = false;
-        using (bmp) {
-            int w = bmp.Width, h = bmp.Height;
-            bool full = wantKey || prev == IntPtr.Zero || prevW != w || prevH != h;
-            Rectangle r = new Rectangle(0, 0, w, h);
-            var bd = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
-            try {
-                if (!full) {
-                    if (!Diff(bd, w, h, out r)) return false;
-                    // A change over most of the picture is cheaper and cleaner to send whole than as one big patch.
-                    if ((long)r.Width * r.Height * 100 > (long)w * h * 55) { full = true; r = new Rectangle(0, 0, w, h); }
-                }
-                int need = bd.Stride * h;
-                if (prev == IntPtr.Zero || prevBytes != need) {
-                    if (prev != IntPtr.Zero) Marshal.FreeHGlobal(prev);
-                    prev = Marshal.AllocHGlobal(need); prevBytes = need;
-                }
-                CopyMemory(prev, bd.Scan0, (UIntPtr)need);
-                prevW = w; prevH = h;
-            } finally { bmp.UnlockBits(bd); }
-            wantKey = false;
+        int w = pic.W, h = pic.H, need = w * 4 * h;
+        bool full = wantKey || prev == IntPtr.Zero || prevW != w || prevH != h;
+        Rectangle r = new Rectangle(0, 0, w, h);
+        if (!full) {
+            if (!Diff(pic.Bits, w, h, out r)) return false;
+            // A change over most of the picture is cheaper and cleaner to send whole than as one big patch.
+            if ((long)r.Width * r.Height * 100 > (long)w * h * 55) { full = true; r = new Rectangle(0, 0, w, h); }
+        }
+        if (prev == IntPtr.Zero || prevBytes != need) {
+            if (prev != IntPtr.Zero) Marshal.FreeHGlobal(prev);
+            prev = Marshal.AllocHGlobal(need); prevBytes = need;
+        }
+        CopyMemory(prev, pic.Bits, (UIntPtr)need);
+        prevW = w; prevH = h;
+        wantKey = false;
 
-            byte[] data;
-            using (var ms = new System.IO.MemoryStream()) {
-                if (full) bmp.Save(ms, jpeg, jpegQuality);
-                else using (var part = bmp.Clone(r, PixelFormat.Format24bppRgb)) part.Save(ms, jpeg, jpegQuality);
-                data = ms.ToArray();
+        byte[] data;
+        using (var ms = new System.IO.MemoryStream()) {
+            if (full) pic.View.Save(ms, jpeg, jpegQuality);
+            else using (var part = pic.View.Clone(r, PixelFormat.Format24bppRgb)) part.Save(ms, jpeg, jpegQuality);
+            data = ms.ToArray();
+        }
+        byte[] head = Encoding.ASCII.GetBytes("FRAME " + w + " " + h + " " + r.X + " " + r.Y + " " + r.Width + " " + r.Height + " " + (full ? 1 : 0) + " " + data.Length + "\n");
+        lock (outLock) { stdout.Write(head, 0, head.Length); stdout.Write(data, 0, data.Length); stdout.Flush(); }
+        return true;
+    }
+
+    // The screen as a small picture, for a dashboard card: "THUMB <w> <h> <n>" and the JPEG, or "THUMB same" when it
+    // shows what the last one of that size did. A card used to be given the whole screen at full size, which the
+    // control plane then decoded, shrank and encoded again - every five seconds for every worker on the dashboard.
+    [DllImport("gdi32.dll")] static extern bool StretchBlt(IntPtr dst, int x, int y, int w, int h, IntPtr src, int sx, int sy, int sw, int sh, uint rop);
+    [DllImport("gdi32.dll")] static extern int SetStretchBltMode(IntPtr dc, int mode);
+    [DllImport("gdi32.dll")] static extern bool SetBrushOrgEx(IntPtr dc, int x, int y, IntPtr old);
+    static Surface small; static IntPtr smallPrev;
+
+    public static void Thumb(int width) {
+        lock (composeLock) {
+            Surface pic = Compose(true);
+            if (pic == null) { Reply("ERR nothing to show"); return; }
+            int tw = Math.Min(Math.Max(width, 64), pic.W), th = Math.Max(1, (int)Math.Round(pic.H * (double)tw / pic.W));
+            if (small == null || small.W != tw || small.H != th) {
+                if (small != null) small.Free();
+                small = new Surface(tw, th);
+                if (smallPrev != IntPtr.Zero) { Marshal.FreeHGlobal(smallPrev); smallPrev = IntPtr.Zero; }
             }
-            byte[] head = Encoding.ASCII.GetBytes("FRAME " + w + " " + h + " " + r.X + " " + r.Y + " " + r.Width + " " + r.Height + " " + (full ? 1 : 0) + " " + data.Length + "\n");
+            SetStretchBltMode(small.Dc, 4 /* HALFTONE: averaged, not picked */); SetBrushOrgEx(small.Dc, 0, 0, IntPtr.Zero);
+            StretchBlt(small.Dc, 0, 0, tw, th, pic.Dc, 0, 0, pic.W, pic.H, 0x00CC0020);
+            GdiFlush();
+            int need = tw * 4 * th;
+            if (smallPrev != IntPtr.Zero && memcmp(small.Bits, smallPrev, (UIntPtr)need) == 0) { Reply("THUMB same"); return; }
+            if (smallPrev == IntPtr.Zero) smallPrev = Marshal.AllocHGlobal(need);
+            CopyMemory(smallPrev, small.Bits, (UIntPtr)need);
+            byte[] data;
+            using (var ms = new System.IO.MemoryStream()) { small.View.Save(ms, jpeg, jpegQuality); data = ms.ToArray(); }
+            byte[] head = Encoding.ASCII.GetBytes("THUMB " + tw + " " + th + " " + data.Length + "\n");
             lock (outLock) { stdout.Write(head, 0, head.Length); stdout.Write(data, 0, data.Length); stdout.Flush(); }
-            return true;
         }
     }
 
     // The rectangle of the picture that differs from the last one sent, grown to whole 16-pixel blocks so a JPEG patch
     // has no seam where it meets what is already on the viewer's screen. False if nothing differs.
-    static bool Diff(BitmapData bd, int w, int h, out Rectangle dirty) {
-        int stride = bd.Stride, row = w * 3;
+    static bool Diff(IntPtr now, int w, int h, out Rectangle dirty) {
+        int stride = w * 4, row = stride;
         dirty = Rectangle.Empty;
         int top = -1;
         for (int y = 0; y < h; y++)
-            if (memcmp(IntPtr.Add(bd.Scan0, y * stride), IntPtr.Add(prev, y * stride), (UIntPtr)row) != 0) { top = y; break; }
+            if (memcmp(IntPtr.Add(now, y * stride), IntPtr.Add(prev, y * stride), (UIntPtr)row) != 0) { top = y; break; }
         if (top < 0) return false;
         int bottom = top;
         for (int y = h - 1; y > top; y--)
-            if (memcmp(IntPtr.Add(bd.Scan0, y * stride), IntPtr.Add(prev, y * stride), (UIntPtr)row) != 0) { bottom = y; break; }
+            if (memcmp(IntPtr.Add(now, y * stride), IntPtr.Add(prev, y * stride), (UIntPtr)row) != 0) { bottom = y; break; }
         int chunks = (w + 15) / 16, minC = chunks, maxC = -1;
         for (int y = top; y <= bottom; y++) {
-            IntPtr a = IntPtr.Add(bd.Scan0, y * stride), b = IntPtr.Add(prev, y * stride);
+            IntPtr a = IntPtr.Add(now, y * stride), b = IntPtr.Add(prev, y * stride);
             for (int c = 0; c < minC; c++) {
-                int off = c * 48, n = Math.Min(48, row - off);
+                int off = c * 64, n = Math.Min(64, row - off);
                 if (memcmp(IntPtr.Add(a, off), IntPtr.Add(b, off), (UIntPtr)n) != 0) { minC = c; break; }
             }
             for (int c = chunks - 1; c > maxC; c--) {
-                int off = c * 48, n = Math.Min(48, row - off);
+                int off = c * 64, n = Math.Min(64, row - off);
                 if (memcmp(IntPtr.Add(a, off), IntPtr.Add(b, off), (UIntPtr)n) != 0) { maxC = c; break; }
             }
         }
@@ -518,6 +1192,7 @@ public class Native {
     [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
     [DllImport("user32.dll")] static extern bool IsZoomed(IntPtr h);
     [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint cmd);
+    [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr h, uint flags);
     [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int index);
     [DllImport("user32.dll")] static extern uint GetClassLong(IntPtr h, int index);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
@@ -816,13 +1491,50 @@ public class Native {
 
     static void Announce(string open) {
         if (string.IsNullOrEmpty(open)) return;
-        if (open[0] == WebMark) Reply("EVENT web " + open.Substring(1)); else Reply("EVENT open " + open);
+        if (open[0] == WebMark) Reply("EVENT web " + open.Substring(1)); else { Opening(open); Reply("EVENT open " + open); }
+    }
+
+    // "Opening PowerPoint..." over the taskbar, from the moment a shortcut is opened until its window is there. A
+    // program takes seconds to show its first window, and a web app's server can take a minute to answer; with
+    // nothing on the screen to say the click was taken, people click again - and get the app twice.
+    static string openingName; static long openingAt; static int openingWindows, opensGoing;
+
+    static void Opening(string id) {
+        string name = null;
+        lock (deskLock) foreach (var sc in shortcuts) if (sc.Id == id) name = sc.Name;
+        if (name == null) return;
+        var list = new List<IntPtr>();
+        if (desktop != IntPtr.Zero) Enum(TaskWindow, list);
+        openingWindows = list.Count; openingAt = Stopwatch.GetTimestamp(); openingName = name;
+        Kick();
+    }
+
+    // Called with deskLock held, when the taskbar is drawn; windows is how many it has a button for.
+    static void DrawOpening(Graphics g, int windows) {
+        string name = openingName;
+        if (name == null) return;
+        double waited = (Stopwatch.GetTimestamp() - openingAt) / (double)Stopwatch.Frequency;
+        if (opensGoing == 0 && ((windows > openingWindows && waited > 0.4) || waited > 25) || waited > 300) { openingName = null; return; }
+        float s = (float)Dpi();
+        using (var font = new Font("Segoe UI", 13f * s, GraphicsUnit.Pixel))
+        using (var centre = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap }) {
+            string text = "Opening " + name + "...";
+            SizeF size = g.MeasureString(text, font);
+            float w = size.Width + 30 * s, h = 34 * s;
+            var box = new RectangleF((screenW - w) / 2f, barRect.Y - h - 14 * s, w, h);
+            var smooth = g.SmoothingMode; g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var shape = Rounded(box, 9 * s)) using (var fill = new SolidBrush(Color.FromArgb(238, 30, 30, 34))) using (var rim = new Pen(Color.FromArgb(90, 255, 255, 255))) { g.FillPath(fill, shape); g.DrawPath(rim, shape); }
+            using (var ink = new SolidBrush(Color.White)) g.DrawString(text, font, ink, box, centre);
+            g.SmoothingMode = smooth;
+        }
     }
 
     static void OpenMenu() { menuOpen = true; calOpen = false; query = ""; menuSel = -1; menuHover = -1; }
 
     // Draws the taskbar (and the Start panel or the calendar while one is open) over the picture. Each is kept as a
     // bitmap until what it shows changes, so a capture only copies it. Called with deskLock held.
+    static int taskCount;
+
     static void DrawShell(Graphics g) {
         if (barH == 0) LayoutBar();
         float s = (float)Dpi();
@@ -830,6 +1542,7 @@ public class Native {
 
         var list = new List<IntPtr>();
         if (desktop != IntPtr.Zero) Enum(TaskWindow, list);
+        taskCount = list.Count;
         var key = new StringBuilder();
         var titles = new List<string>(); var mins = new List<bool>();
         foreach (IntPtr h in list) {
@@ -1262,7 +1975,7 @@ public class Native {
             else pickedAt = now;
             if (hit != picked) { picked = hit; if (backdrop != null) { backdrop.Dispose(); backdrop = null; } }
         }
-        if (open != null) Reply("EVENT open " + open);
+        if (open != null) { Opening(open); Reply("EVENT open " + open); }
     }
 
     // "window" where a window shows this point of the picture, "desktop" where only the wallpaper does.
@@ -1296,11 +2009,48 @@ public class Native {
 
     // What part of a window a point is on, in the window's own words (WM_NCHITTEST): 1 its contents, 2 its title bar,
     // 8/9/20 the minimise, maximise and close buttons, 10-17 its borders.
+    //
+    // A frame that calls its whole top strip "title bar" may still have the three buttons in it. Found live with
+    // PowerPoint and Excel: Office draws its title bar in a child window, and its frame says "title bar" for all of
+    // it - so a press on Close began a drag that went nowhere, and the window could not be closed, minimised or
+    // maximised from its own buttons. The child knows its buttons, but only says so while the real pointer is over
+    // the same spot of the screen (measured: the same point was "close" in one run and "contents" in the next, and
+    // always right for a maximised window) - and the real pointer is the person's, on their own desktop. So when the
+    // child does not say, the buttons are where Windows itself places them for that window.
     static int HitTest(IntPtr top, POINT p) {
         double sc = Scale(top);
+        int at = Ask(top, p, sc);
+        if (at != 2) return at == NoAnswer ? 1 : at;
+        IntPtr inner = Descend(top, p);
+        if (inner != top) {
+            int said = Ask(inner, p, sc);
+            if (said == 8 || said == 9 || said == 20) return said;
+        }
+        RECT w, area;
+        var bar = new TITLEBARINFO(); bar.cbSize = Marshal.SizeOf(typeof(TITLEBARINFO));
+        if (!GetWindowRect(top, out w) || !GetTitleBarInfo(top, ref bar)) return 2;
+        if (DwmGetWindowAttribute(top, 5 /* DWMWA_CAPTION_BUTTON_BOUNDS */, out area, Marshal.SizeOf(typeof(RECT))) != 0 || area.R <= area.L) return 2;
+        int x = p.X - w.L, y = p.Y - w.T;
+        if (x < area.L || x >= area.R || y < area.T || y >= area.B) return 2;
+        // Left to right: minimise, maximise, close - those of them the window has (0x8000: not shown).
+        var shown = new List<int>();
+        if ((bar.rgstate[2] & 0x8000) == 0) shown.Add(8);
+        if ((bar.rgstate[3] & 0x8000) == 0) shown.Add(9);
+        if ((bar.rgstate[5] & 0x8000) == 0) shown.Add(20);
+        if (shown.Count == 0) return 2;
+        return shown[Math.Min(shown.Count - 1, (x - area.L) * shown.Count / (area.R - area.L))];
+    }
+
+    [StructLayout(LayoutKind.Sequential)] struct TITLEBARINFO { public int cbSize; public RECT rcTitleBar; [MarshalAs(UnmanagedType.ByValArray, SizeConst = 6)] public uint[] rgstate; }
+    [DllImport("user32.dll")] static extern bool GetTitleBarInfo(IntPtr h, ref TITLEBARINFO info);
+
+    const int NoAnswer = int.MinValue;
+
+    // One window's own answer to "what part of you is this point" (WM_NCHITTEST), or NoAnswer from one that is busy.
+    static int Ask(IntPtr w, POINT p, double sc) {
         int x = (int)Math.Round(p.X * sc), y = (int)Math.Round(p.Y * sc);
         IntPtr answer;
-        if (SendMessageTimeout(top, 0x0084, IntPtr.Zero, (IntPtr)(((y & 0xFFFF) << 16) | (x & 0xFFFF)), 0x2, 200, out answer) == IntPtr.Zero) return 1;
+        if (SendMessageTimeout(w, 0x0084, IntPtr.Zero, (IntPtr)(((y & 0xFFFF) << 16) | (x & 0xFFFF)), 0x2, 200, out answer) == IntPtr.Zero) return NoAnswer;
         return (int)(long)answer;
     }
 
@@ -1310,11 +2060,23 @@ public class Native {
     }
 
     static IntPtr dragWin, pressWin; static int dragHit, pressHit; static POINT dragFrom; static RECT dragRect;
+    // A press on a title bar that has a window of the app's own in it (Office's: the search box, Save, Undo), until it
+    // is let go: moved, it drags the window; let go where it was pressed, it was a click on what is drawn there.
+    static IntPtr barChild; static POINT barAt;
+
+    static void ClickChild(IntPtr child, POINT p) {
+        if (!IsWindow(child)) return;
+        IntPtr lp = ClientLParam(child, p);
+        PostMessage(child, WM_MOUSEMOVE, IntPtr.Zero, lp);
+        PostMessage(child, WM_LBUTTONDOWN, (IntPtr)1, lp);
+        PostMessage(child, WM_LBUTTONUP, IntPtr.Zero, lp);
+    }
 
     // The window manager's share of a mouse event on a worker's desktop. "OK" when it was all there was to do; null when
     // the event is for the window's own contents.
     static string Manage(string kind, POINT p, bool right, bool twice) {
         if (kind == "move") {
+            if (barChild != IntPtr.Zero && (Math.Abs(p.X - barAt.X) > 4 || Math.Abs(p.Y - barAt.Y) > 4)) barChild = IntPtr.Zero;
             if (dragWin == IntPtr.Zero) return captured == IntPtr.Zero && ShellHover(p) ? "OK" : null;
             int dx = p.X - dragFrom.X, dy = p.Y - dragFrom.Y;
             int l = dragRect.L, t = dragRect.T, r = dragRect.R, b = dragRect.B;
@@ -1330,6 +2092,7 @@ public class Native {
         }
         if (kind == "up") {
             if (shellDown) { shellDown = false; return "OK"; }
+            if (barChild != IntPtr.Zero) { ClickChild(barChild, barAt); barChild = IntPtr.Zero; dragWin = IntPtr.Zero; return "OK"; }
             if (dragWin != IntPtr.Zero) { dragWin = IntPtr.Zero; return "OK"; }
             if (pressWin == IntPtr.Zero) return null;
             IntPtr w = pressWin; int hit = pressHit; pressWin = IntPtr.Zero;
@@ -1346,8 +2109,13 @@ public class Native {
         if (ws.Count > 0 && ws[0].H != top) Activate(top);
         int at = HitTest(top, p);
         if (at == 2 || (at >= 10 && at <= 17)) {
+            barChild = IntPtr.Zero;
             if (at == 2 && twice) Caption(top, 9);
-            else if (!IsZoomed(top)) { dragWin = top; dragHit = at; dragFrom = p; GetWindowRect(top, out dragRect); }
+            else {
+                if (!IsZoomed(top)) { dragWin = top; dragHit = at; dragFrom = p; GetWindowRect(top, out dragRect); }
+                IntPtr inner = at == 2 ? Descend(top, p) : top;
+                if (inner != top) { barChild = inner; barAt = p; }
+            }
             return "OK";
         }
         if (at == 8 || at == 9 || at == 20) { pressWin = top; pressHit = at; return "OK"; }
@@ -1470,6 +2238,7 @@ public class Native {
     public static string Mouse(string kind, int x, int y, bool right, string mods) {
         EnsureGeometry();
         POINT screen = ScreenPoint(x, y);
+        pointer = screen; pointerKnown = true;
         // A second press in the same place within the double-click time. Windows makes a double-click out of real input
         // only, so posted presses never became one: a word could not be selected, nor a file opened from a list.
         bool twice = false;
@@ -1619,10 +2388,22 @@ public class Native {
         return t + " " + cls + (t == lastTarget ? " (last clicked)" : "") + "; last press: " + lastTarget + " " + pressed;
     }
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern short VkKeyScan(char ch);
+    [DllImport("user32.dll")] static extern uint MapVirtualKey(uint code, uint type);
+
     public static void TypeChar(char ch) {
         if (ShellChar(ch)) return;
         IntPtr t = KeyTarget();
-        if (t != IntPtr.Zero) PostMessage(t, WM_CHAR, (IntPtr)ch, (IntPtr)1);
+        if (t == IntPtr.Zero) return;
+        var cls = new StringBuilder(32); GetClassName(t, cls, 32);
+        if (cls.ToString() != "ConsoleWindowClass") { PostMessage(t, WM_CHAR, (IntPtr)ch, (IntPtr)1); return; }
+        // A console takes a character as a key going down, and a second one like it with no key coming up in between
+        // as that key still held: it counts a repeat. Typed into a terminal, every doubled letter came out three times
+        // (measured: "bool" typed as "boool", ">>" as ">>>"). So each character is a key that goes down and comes up.
+        int vk = VkKeyScan(ch) & 0xFF; if (vk == 0xFF) vk = 0;
+        uint scan = vk == 0 ? 0 : MapVirtualKey((uint)vk, 0);
+        PostMessage(t, WM_CHAR, (IntPtr)ch, (IntPtr)(1 | (scan << 16)));
+        PostMessage(t, WM_KEYUP, (IntPtr)vk, (IntPtr)(0xC0000001 | (scan << 16)));
     }
 
     public static string Key(int vk, string mods) {
@@ -1649,11 +2430,28 @@ public class Native {
 }
 '@
 
+if ($Build) {
+    try {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Build) | Out-Null
+        $tmp = "$Build.$PID.tmp.exe" # named as a program: the compiler makes a library of anything else, whatever it is asked
+        Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition $NativeSource -OutputAssembly $tmp -OutputType WindowsApplication
+        Move-Item -LiteralPath $tmp -Destination $Build -Force
+        exit 0
+    } catch {
+        [Console]::Error.WriteLine($_.Exception.Message)
+        exit 1
+    }
+}
+
+# What -Resolve says back, one line a message: as base64 of UTF-8, so a path keeps its letters whatever this console's
+# code page is.
+function Say([string]$text) { [Console]::Out.WriteLine([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($text))) }
+
 # Compiling the C# above takes seconds every time a helper starts, which is most of what starting an app used to cost. It is
 # compiled once, to a DLL named for a hash of the source (so a changed source is never mistaken for an old build), and loaded
 # from there afterwards. Two helpers starting together may both compile; each writes its own temporary file and the last
 # move wins, which is harmless because the contents are identical.
-if (-not ('Native' -as [type])) {
+if (-not $Resolve -and -not ('Native' -as [type])) {
     $bridgeDir = Join-Path $env:LOCALAPPDATA 'Decurix\bridge'
     $hash = [BitConverter]::ToString([Security.Cryptography.SHA1]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($NativeSource))).Replace('-', '').Substring(0, 12)
     $dll = Join-Path $bridgeDir "Native-$hash.dll"
@@ -1788,7 +2586,34 @@ function Resolve-Program([string]$target, [string]$argLine) {
 # on the private desktop it starts that browser on the person's own profile, which hands the page to the copy already open on
 # the visible desktop - so nothing appears in the worker. Such a launcher is recognised by the text a managed or native
 # program keeps in its file (the "--app=" flag and an http(s) address), and replaced by the same page opened in a browser of
-# its own: the program itself is never run. Anything bigger or without both is an ordinary program.
+# its own. Anything bigger or without both is an ordinary program.
+#
+# Such a launcher often does one more thing first: it starts the web app's own server when the page is on this computer
+# and nothing answers there yet (ERPNext's starts its containers). Found live: with the launcher only replaced, the worker's
+# ERP shortcut opened a browser on "localhost refused to connect". So when the page is local and not answering, the launcher
+# is run for that part alone (Start-WebAppServer, Native.Prepare): any browser it goes on to start is ended as it is created.
+function Test-LocalPort([int]$port) {
+    $c = New-Object Net.Sockets.TcpClient
+    try {
+        $r = $c.BeginConnect('127.0.0.1', $port, $null, $null)
+        if (-not $r.AsyncWaitHandle.WaitOne(300)) { return $false }
+        $c.EndConnect($r); return $true
+    } catch { return $false } finally { $c.Close() }
+}
+
+# $p is a resolved program; Launcher is the launcher it stands in for, when it is a web app's.
+function Start-WebAppServer($p) {
+    if (-not $p.Launcher) { return }
+    $m = [regex]::Match([string]$p.Args, '--app=(\S+)')
+    if (-not $m.Success) { return }
+    try { $u = [Uri]$m.Groups[1].Value } catch { return }
+    if (@('localhost', '127.0.0.1', '[::1]') -notcontains $u.Host) { return }
+    # The launcher is run by the process that holds the worker's desktop, so what it starts ends with the worker. That
+    # process also waits for the page itself to answer, which a listening port does not promise.
+    if ($Resolve) { Say ("PREP`t" + $p.Launcher + "`t" + $u.AbsoluteUri) }
+    else { [Native]::Prepare($DesktopName, [string]$p.Launcher, [string]$u.AbsoluteUri) | Out-Null }
+}
+
 function Resolve-WebLauncher([string]$exe) {
     if ([IO.Path]::GetExtension($exe).ToLower() -ne '.exe') { return $null }
     try {
@@ -1842,7 +2667,7 @@ function Resolve-ProgramUncached([string]$target, [string]$argLine) {
     # Never inherit our own working directory: it can be a \\wsl.localhost UNC path, which Electron apps reject.
     if (-not $workDir) { $workDir = [IO.Path]::GetDirectoryName($target) }
     $web = Resolve-WebLauncher $target
-    if ($web) { return @{ Target = $web.Target; Args = $web.Args; WorkDir = [IO.Path]::GetDirectoryName($web.Target); Base = $web.Base; OwnProfile = $true } }
+    if ($web) { return @{ Target = $web.Target; Args = $web.Args; WorkDir = [IO.Path]::GetDirectoryName($web.Target); Base = $web.Base; OwnProfile = $true; Launcher = $target } }
     $base = [IO.Path]::GetFileNameWithoutExtension($target).ToLower()
     return @{ Target = $target; Args = $argLine; WorkDir = $workDir; Base = $base; OwnProfile = ((Test-SingleInstanceApp $target) -and ($argLine -notlike '*user-data-dir*')) }
 }
@@ -1967,6 +2792,7 @@ function Initialize-PrivateBrowserProfile([string]$base, [string]$dir, [string]$
 # flags that keep a first-run or restore prompt from taking the keyboard.
 function Complete-Launch($p) {
     $argLine = $p.Args
+    Start-WebAppServer $p
     if ($p.OwnProfile) {
         $dir = Join-Path $ProfileRoot "$DesktopName-$($p.Base)"
         # The profile the shortcut asks to open is the one whose sign-ins must come across, so import that one.
@@ -1980,6 +2806,11 @@ function Complete-Launch($p) {
         if ($Browsers -contains $p.Base) {
             if ($argLine -notlike '*no-first-run*') { $argLine += ' --no-first-run --no-default-browser-check' }
             $argLine += ' --disable-session-crashed-bubble --hide-crash-restore-bubble'
+            # A worker's browser ends with its last window, and fetches nothing for itself. Measured on a worker whose
+            # only page was a local web app: Edge downloaded 350 MB of its own components into the worker's profile
+            # (component_crx_cache, ProvenanceData), and a browser left "running in the background" after its window is
+            # closed is a few hundred MB that nobody can see to close.
+            $argLine += ' --disable-background-mode --disable-component-update'
             if ($argLine -notlike '*--profile-directory*') {
                 $chosenProfile = Get-ActiveBrowserProfile $dir
                 if ($chosenProfile) { $argLine += " --profile-directory=`"$chosenProfile`"" }
@@ -1996,86 +2827,71 @@ function Resolve-Launch([string]$target, [string]$argLine) {
     return Complete-Launch $p
 }
 
-# "<x> <y> [right] [+<mods>]", mods being any of c (Ctrl), s (Shift), a (Alt).
-function Read-MouseArgs([string]$rest) {
-    $p = $rest.Split(" ")
-    $mods = ''
-    foreach ($t in $p[2..($p.Count - 1)]) { if ($t -like '+*') { $mods = $t.Substring(1) } }
-    return @{ X = [int]$p[0]; Y = [int]$p[1]; Right = ($p -contains 'right'); Mods = $mods }
-}
-
 # Everything said to Decurix goes through Native.Reply, which keeps an answer from landing in the middle of a picture.
 function Reply([string]$text) { [Native]::Reply($text) }
 
-[Native]::Init()
-$stdin = [Console]::In
-try {
-    while (($line = $stdin.ReadLine()) -ne $null) {
-        $verb, $rest = $line.Split([char[]]@(" ", "`t"), 2)
-        try {
-            switch ($verb) {
-                "desktop" {
-                    if ($rest -match '^[A-Za-z0-9_]{1,48}$') { $script:DesktopName = $rest; Reply "OK" } else { Reply "ERR invalid desktop name" }
-                }
-                "launch" {
-                    $f = $rest.Split("`t")
-                    $r = Resolve-Launch $f[0] $(if ($f.Count -gt 1) { $f[1] } else { '' })
-                    if ($r.Error) { Reply "ERR $($r.Error)" }
-                    else { Reply ([Native]::Launch($DesktopName, $r.Target, $r.Args, $r.WorkDir)) }
-                }
-                "check" {
-                    $f = $rest.Split("`t")
-                    $r = Resolve-Program $f[0] $(if ($f.Count -gt 1) { $f[1] } else { '' })
-                    if ($r.Error) { Reply "ERR $($r.Error)" }
-                    else { Reply ("OK`t" + $r.Target + "`t" + $r.Args + "`t" + $r.WorkDir + "`t" + [int]$r.OwnProfile + "`t" + $r.Base) }
-                }
-                "launchr" {
-                    # What a check already worked out: nothing is looked up, so this is as fast as starting the program.
-                    $f = $rest.Split("`t")
-                    if ($f.Count -lt 5) { Reply "ERR malformed launchr" }
-                    elseif (-not (Test-Path -LiteralPath $f[0] -PathType Leaf)) { Reply "ERR Not found on this computer: $($f[0])" }
-                    else {
-                        $l = Complete-Launch @{ Target = $f[0]; Args = $f[1]; WorkDir = $f[2]; OwnProfile = ($f[3] -eq '1'); Base = $f[4] }
-                        Reply ([Native]::Launch($DesktopName, $l.Target, $l.Args, $l.WorkDir))
-                    }
-                }
-                "open" {
-                    $f = $rest.Split("`t")
-                    $r = Resolve-Launch $f[0] $(if ($f.Count -gt 1) { $f[1] } else { '' })
-                    if ($r.Error) { Reply "ERR $($r.Error)" }
-                    else { Reply ([Native]::Open($DesktopName, $r.Target, $r.Args, $r.WorkDir)) }
-                }
-                "count" { Reply ("COUNT " + [Native]::WindowCount()) }
-                "shortcuts" {
-                    $f = $rest.Split("`t", 2)
-                    [Native]::SetShortcuts($f[0], $(if ($f.Count -gt 1) { $f[1] } else { '' })); Reply "OK"
-                }
-                "tasks" { Reply ("TASKS " + [Native]::Tasks()) }
-                "start" { [Native]::ToggleStart(); Reply "OK" }
-                "shell" { Reply ("SHELL " + [int][Native]::ShellTyping()) }
-                "win" { $p = $rest.Split(" "); Reply ([Native]::WindowDo($p[0], [long]$p[1])) }
-                "over" { $p = $rest.Split(" "); Reply ("OVER " + [Native]::Over([int]$p[0], [int]$p[1])) }
-                "screen" { [Native]::FixedScreen(); Reply "OK" }
-                "viewers" { [Native]::SetViewers([int]$rest); Reply "OK" }
-                "keyframe" { [Native]::KeyFrame(); Reply "OK" }
-                "status" { Reply ("STATUS " + [Native]::Status()) }
-                "focus" { Reply ("FOCUS " + [Native]::FocusInfo()) }
-                "windows" { Reply ("WINDOWS " + [Native]::Windows()) }
-                "move"  { $m = Read-MouseArgs $rest; Reply ([Native]::Mouse("move", $m.X, $m.Y, $m.Right, $m.Mods)) }
-                "down"  { $m = Read-MouseArgs $rest; Reply ([Native]::Mouse("down", $m.X, $m.Y, $m.Right, $m.Mods)) }
-                "up"    { $m = Read-MouseArgs $rest; Reply ([Native]::Mouse("up", $m.X, $m.Y, $m.Right, $m.Mods)) }
-                "click" { $m = Read-MouseArgs $rest; [Native]::Mouse("down", $m.X, $m.Y, $false, $m.Mods) | Out-Null; Start-Sleep -Milliseconds 30; Reply ([Native]::Mouse("up", $m.X, $m.Y, $false, $m.Mods)) }
-                "wheel" { $p = $rest.Split(" "); Reply ([Native]::Wheel([int]$p[0], [int]$p[1], [int]$p[2])) }
-                "type"  { foreach ($c in $rest.ToCharArray()) { [Native]::TypeChar($c) }; Reply "OK" }
-                "copy"  { Reply ([Native]::Copy([int]$rest)) }
-                "key"   { $p = $rest.Split(" "); Reply ([Native]::Key([int]$p[0], $(if ($p.Count -gt 1) { $p[1] } else { "" }))) }
-                "quit"  { }
-                default { Reply "ERR unknown command" }
+if ($Resolve) {
+    try {
+        $f = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Resolve)).Split("`t")
+        switch ($f[0]) {
+            'check' {
+                $r = Resolve-Program $f[1] $(if ($f.Count -gt 2) { $f[2] } else { '' })
+                if ($r.Error) { Say "ERR $($r.Error)" }
+                else { Say ("OK`t" + $r.Target + "`t" + $r.Args + "`t" + $r.WorkDir + "`t" + [int]$r.OwnProfile + "`t" + $r.Base + "`t" + $r.Launcher) }
             }
-        } catch { Reply ("ERR " + $_.Exception.Message) }
-        if ($verb -in @("move", "down", "up", "click", "wheel", "type", "key", "copy")) { [Native]::Kick() }
-        if ($verb -eq "quit") { break }
+            'complete' {
+                $l = Complete-Launch @{ Target = $f[1]; Args = $f[2]; WorkDir = $f[3]; OwnProfile = ($f[4] -eq '1'); Base = $f[5]; Launcher = $f[6] }
+                Say ("RUN`t" + $l.Target + "`t" + $l.Args + "`t" + $l.WorkDir)
+            }
+            default { Say 'ERR unknown command' }
+        }
+    } catch { Say ("ERR " + $_.Exception.Message) }
+    exit 0
+}
+
+# The commands that need the functions above; every other is answered by Native.Serve itself, without PowerShell.
+$Commands = [Action[string, string]] {
+    param([string]$verb, [string]$rest)
+    switch ($verb) {
+        "desktop" {
+            if ($rest -match '^[A-Za-z0-9_]{1,48}$') { $script:DesktopName = $rest; Reply "OK" } else { Reply "ERR invalid desktop name" }
+        }
+        "launch" {
+            $f = $rest.Split("`t")
+            $r = Resolve-Launch $f[0] $(if ($f.Count -gt 1) { $f[1] } else { '' })
+            if ($r.Error) { Reply "ERR $($r.Error)" }
+            else { Reply ([Native]::Launch($DesktopName, $r.Target, $r.Args, $r.WorkDir)) }
+        }
+        "check" {
+            $f = $rest.Split("`t")
+            $r = Resolve-Program $f[0] $(if ($f.Count -gt 1) { $f[1] } else { '' })
+            if ($r.Error) { Reply "ERR $($r.Error)" }
+            else { Reply ("OK`t" + $r.Target + "`t" + $r.Args + "`t" + $r.WorkDir + "`t" + [int]$r.OwnProfile + "`t" + $r.Base) }
+        }
+        "launchr" {
+            # What a check already worked out: nothing is looked up, so this is as fast as starting the program.
+            $f = $rest.Split("`t")
+            if ($f.Count -lt 5) { Reply "ERR malformed launchr" }
+            elseif (-not (Test-Path -LiteralPath $f[0] -PathType Leaf)) { Reply "ERR Not found on this computer: $($f[0])" }
+            else {
+                $l = Complete-Launch @{ Target = $f[0]; Args = $f[1]; WorkDir = $f[2]; OwnProfile = ($f[3] -eq '1'); Base = $f[4] }
+                Reply ([Native]::Launch($DesktopName, $l.Target, $l.Args, $l.WorkDir))
+            }
+        }
+        "open" {
+            $f = $rest.Split("`t")
+            $r = Resolve-Launch $f[0] $(if ($f.Count -gt 1) { $f[1] } else { '' })
+            if ($r.Error) { Reply "ERR $($r.Error)" }
+            elseif ($f.Count -gt 3 -and $f[2] -eq 'sandbox') { Reply ([Native]::Open($DesktopName, $r.Target, $r.Args, $r.WorkDir, $f[3])) }
+            else { Reply ([Native]::Open($DesktopName, $r.Target, $r.Args, $r.WorkDir)) }
+        }
+        default { Reply "ERR unknown command" }
     }
+}
+
+[Native]::Init()
+try {
+    [Native]::Serve($Commands)
 } finally {
     [Native]::Shutdown()
 }
