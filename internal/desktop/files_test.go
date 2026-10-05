@@ -1,0 +1,222 @@
+package desktop
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestParseHostCopyPaths(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    []HostCopyPath
+		wantErr bool
+	}{
+		{
+			name:  "empty",
+			input: "",
+			want:  nil,
+		},
+		{
+			name:  "whitespace only",
+			input: "   \n  \t ",
+			want:  nil,
+		},
+		{
+			name:  "json array of objects",
+			input: `[{"src":"C:\\data\\file.txt","dest":"Desktop/file.txt"},{"src":"/var/log","dest":"logs"}]`,
+			want: []HostCopyPath{
+				{Src: `C:\data\file.txt`, Dest: "Desktop/file.txt"},
+				{Src: "/var/log", Dest: "logs"},
+			},
+		},
+		{
+			name:  "json array of string specs",
+			input: `["C:\\data\\file.txt -> myfile.txt", "/home/user/doc.pdf => Desktop/doc.pdf", "/opt/data"]`,
+			want: []HostCopyPath{
+				{Src: `C:\data\file.txt`, Dest: "myfile.txt"},
+				{Src: "/home/user/doc.pdf", Dest: "Desktop/doc.pdf"},
+				{Src: "/opt/data", Dest: ""},
+			},
+		},
+		{
+			name: "multiline with comments and arrows",
+			input: "# Comments to ignore\n" +
+				"C:\\projects\\app -> Desktop/app\n" +
+				"/home/user/report.pdf => report.pdf\n" +
+				"\n" +
+				"/var/data\n",
+			want: []HostCopyPath{
+				{Src: `C:\projects\app`, Dest: "Desktop/app"},
+				{Src: "/home/user/report.pdf", Dest: "report.pdf"},
+				{Src: "/var/data", Dest: ""},
+			},
+		},
+		{
+			name:  "semicolon separated with colons and Windows drive letters",
+			input: `C:\my\file.txt:sub/file.txt; /data/set -> data`,
+			want: []HostCopyPath{
+				{Src: `C:\my\file.txt`, Dest: "sub/file.txt"},
+				{Src: "/data/set", Dest: "data"},
+			},
+		},
+		{
+			name:  "quoted paths",
+			input: `"C:\path with spaces\file.txt" -> "Desktop/target name.txt"`,
+			want: []HostCopyPath{
+				{Src: `C:\path with spaces\file.txt`, Dest: "Desktop/target name.txt"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseHostCopyPaths(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ParseHostCopyPaths() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("ParseHostCopyPaths() got %d items, want %d: %+v", len(got), len(tt.want), got)
+			}
+			for i := range got {
+				if got[i].Src != tt.want[i].Src || got[i].Dest != tt.want[i].Dest {
+					t.Errorf("item[%d] = %+v, want %+v", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestResolveVMDestPath(t *testing.T) {
+	tests := []struct {
+		name    string
+		src     string
+		dest    string
+		isDir   bool
+		want    string
+		wantErr bool
+	}{
+		{
+			name:  "empty dest defaults under /home/headless",
+			src:   "C:/Users/name/document.pdf",
+			dest:  "",
+			isDir: false,
+			want:  "/home/headless/document.pdf",
+		},
+		{
+			name:  "relative dest prepends /home/headless",
+			src:   "/tmp/myfile.txt",
+			dest:  "Desktop/myfile.txt",
+			isDir: false,
+			want:  "/home/headless/Desktop/myfile.txt",
+		},
+		{
+			name:  "explicit /home/headless/ path preserved",
+			src:   "mydata.csv",
+			dest:  "/home/headless/data/mydata.csv",
+			isDir: false,
+			want:  "/home/headless/data/mydata.csv",
+		},
+		{
+			name:  "trailing slash appends basename",
+			src:   "C:/code/project",
+			dest:  "Desktop/",
+			isDir: true,
+			want:  "/home/headless/Desktop/project",
+		},
+		{
+			name:  "directory destination /home/headless/Desktop",
+			src:   "/home/user/images",
+			dest:  "/home/headless/Desktop",
+			isDir: true,
+			want:  "/home/headless/Desktop/images",
+		},
+		{
+			name:    "traversal outside /home/headless fails",
+			src:     "test.txt",
+			dest:    "/etc/shadow",
+			isDir:   false,
+			wantErr: true,
+		},
+		{
+			name:    "relative traversal outside fails",
+			src:     "test.txt",
+			dest:    "../../etc/passwd",
+			isDir:   false,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ResolveVMDestPath(tt.src, tt.dest, tt.isDir)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ResolveVMDestPath() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Errorf("ResolveVMDestPath() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNativeCopyHostPaths(t *testing.T) {
+	m := nativeForTest(t)
+	workerID := "worker1"
+	writeWorker(t, m, nativeMeta{
+		ID:        workerID,
+		Name:      "Worker 1",
+		Profile:   "basic",
+		Harness:   HarnessTheBot,
+		Brain:     BrainOllama,
+		CreatedAt: "2026-10-01T10:00:00Z",
+	})
+
+	// Create a temp host file and temp host dir
+	hostDir := t.TempDir()
+	sampleFile := filepath.Join(hostDir, "hello.txt")
+	if err := os.WriteFile(sampleFile, []byte("hello decurix"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sampleSubDir := filepath.Join(hostDir, "myfolder")
+	if err := os.MkdirAll(sampleSubDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	subFile := filepath.Join(sampleSubDir, "nested.txt")
+	if err := os.WriteFile(subFile, []byte("nested content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	paths := []HostCopyPath{
+		{Src: sampleFile, Dest: "Desktop/hello.txt"},
+		{Src: sampleSubDir, Dest: "myfolder"},
+	}
+
+	if err := m.CopyHostPaths(context.Background(), workerID, paths); err != nil {
+		t.Fatalf("CopyHostPaths failed: %v", err)
+	}
+
+	// Verify file was copied into worker's home
+	homeRoot := filepath.Join(m.native.rt.Root, workerID, "home")
+	copiedFile := filepath.Join(homeRoot, "Desktop", "hello.txt")
+	content, err := os.ReadFile(copiedFile)
+	if err != nil {
+		t.Fatalf("expected copied file at %s: %v", copiedFile, err)
+	}
+	if string(content) != "hello decurix" {
+		t.Errorf("copied file content = %q, want %q", string(content), "hello decurix")
+	}
+
+	// Verify nested folder and file were copied
+	copiedNested := filepath.Join(homeRoot, "myfolder", "nested.txt")
+	nestedContent, err := os.ReadFile(copiedNested)
+	if err != nil {
+		t.Fatalf("expected copied nested file at %s: %v", copiedNested, err)
+	}
+	if string(nestedContent) != "nested content" {
+		t.Errorf("copied nested file content = %q, want %q", string(nestedContent), "nested content")
+	}
+}

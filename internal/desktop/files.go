@@ -4,9 +4,12 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -17,6 +20,13 @@ import (
 type File struct {
 	Name string
 	Data []byte
+}
+
+// HostCopyPath specifies a file or directory on the host filesystem to copy
+// into the VM filesystem when creating a desktop.
+type HostCopyPath struct {
+	Src  string `json:"src"`
+	Dest string `json:"dest"`
 }
 
 // desktopUID/GID own everything the agent works on (the base image's
@@ -165,3 +175,379 @@ func (m *Manager) UsesLocalModel(ctx context.Context) bool {
 
 	return false
 }
+
+// ParseHostCopyPaths parses a string containing host copy paths.
+// Accepts:
+// 1. JSON array of HostCopyPath objects: `[{"src":"/host/a","dest":"a"}]`
+// 2. JSON array of path strings: `["/host/a -> a", "/host/b"]`
+// 3. Multiline or delimiter-separated text (newlines, semicolons):
+//    - `src -> dest` or `src => dest`
+//    - `src:dest` (preserving Windows drive letters like C:\)
+//    - `src` (destination defaults to empty, resolved under /home/headless/<basename>)
+func ParseHostCopyPaths(raw string) ([]HostCopyPath, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+
+	// Try JSON unmarshal as []HostCopyPath
+	if strings.HasPrefix(raw, "[") && strings.HasSuffix(raw, "]") {
+		var list []HostCopyPath
+		if err := json.Unmarshal([]byte(raw), &list); err == nil && len(list) > 0 {
+			var result []HostCopyPath
+			for _, item := range list {
+				item.Src = strings.TrimSpace(item.Src)
+				item.Dest = strings.TrimSpace(item.Dest)
+				if item.Src != "" {
+					result = append(result, item)
+				}
+			}
+			return result, nil
+		}
+
+		var strList []string
+		if err := json.Unmarshal([]byte(raw), &strList); err == nil {
+			var result []HostCopyPath
+			for _, s := range strList {
+				parsed := parseSinglePathEntry(s)
+				if parsed.Src != "" {
+					result = append(result, parsed)
+				}
+			}
+			return result, nil
+		}
+	}
+
+	var result []HostCopyPath
+	lines := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == ';'
+	})
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parsed := parseSinglePathEntry(line)
+		if parsed.Src != "" {
+			result = append(result, parsed)
+		}
+	}
+
+	return result, nil
+}
+
+func parseSinglePathEntry(entry string) HostCopyPath {
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return HostCopyPath{}
+	}
+
+	var src, dest string
+	if idx := strings.Index(entry, "->"); idx != -1 {
+		src = entry[:idx]
+		dest = entry[idx+2:]
+	} else if idx := strings.Index(entry, "=>"); idx != -1 {
+		src = entry[:idx]
+		dest = entry[idx+2:]
+	} else {
+		// Check for colon separator, careful with Windows drive letter (e.g. C:\)
+		colonIdx := -1
+		for i := 0; i < len(entry); i++ {
+			if entry[i] == ':' {
+				if i == 1 && ((entry[0] >= 'a' && entry[0] <= 'z') || (entry[0] >= 'A' && entry[0] <= 'Z')) {
+					continue
+				}
+				colonIdx = i
+				break
+			}
+		}
+		if colonIdx != -1 {
+			src = entry[:colonIdx]
+			dest = entry[colonIdx+1:]
+		} else {
+			src = entry
+			dest = ""
+		}
+	}
+
+	src = strings.Trim(strings.TrimSpace(src), `"'`)
+	dest = strings.Trim(strings.TrimSpace(dest), `"'`)
+
+	return HostCopyPath{Src: src, Dest: dest}
+}
+
+// ResolveVMDestPath computes and validates the destination path within the VM filesystem
+// for a host file or directory.
+//
+// Destinations must reside under /home/headless.
+// If dest is empty:
+//   - for a file: /home/headless/<basename(src)>
+//   - for a dir:  /home/headless/<basename(src)>
+// If dest is relative (e.g. "Desktop/data"):
+//   - resolved as /home/headless/Desktop/data
+// If dest is "/home/headless" or "/home/headless/Desktop" or ends with "/":
+//   - the source basename is placed inside dest.
+func ResolveVMDestPath(src, dest string, isDir bool) (string, error) {
+	const home = "/home/headless"
+
+	srcClean := filepath.Clean(src)
+	srcBase := filepath.Base(srcClean)
+	if srcBase == "." || srcBase == "/" || srcBase == "\\" || srcBase == "" {
+		return "", fmt.Errorf("invalid host source path %q", src)
+	}
+
+	dest = strings.TrimSpace(dest)
+	dest = strings.ReplaceAll(dest, "\\", "/")
+
+	if dest == "" {
+		return path.Join(home, srcBase), nil
+	}
+
+	if !strings.HasPrefix(dest, "/") {
+		dest = home + "/" + dest
+	}
+
+	clean := path.Clean(dest)
+	if !strings.HasPrefix(clean+"/", home+"/") {
+		return "", fmt.Errorf("destination %q must be under %s", dest, home)
+	}
+
+	if clean == home || clean == home+"/Desktop" || strings.HasSuffix(dest, "/") {
+		return path.Join(clean, srcBase), nil
+	}
+
+	return clean, nil
+}
+
+func ensureTarDirs(tw *tar.Writer, dirRel string, seenDirs map[string]bool, now time.Time) error {
+	dirRel = strings.Trim(strings.TrimSpace(dirRel), "/")
+	if dirRel == "" || dirRel == "." {
+		return nil
+	}
+	parts := strings.Split(dirRel, "/")
+	curr := ""
+	for _, p := range parts {
+		if p == "" || p == "." {
+			continue
+		}
+		if curr == "" {
+			curr = p
+		} else {
+			curr = curr + "/" + p
+		}
+		dirName := curr + "/"
+		if !seenDirs[dirName] {
+			seenDirs[dirName] = true
+			if err := tw.WriteHeader(&tar.Header{
+				Typeflag: tar.TypeDir,
+				Name:     dirName,
+				Mode:     0o755,
+				Uid:      desktopUID,
+				Gid:      desktopGID,
+				ModTime:  now,
+			}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// CopyHostPaths copies the specified files and directories from the host filesystem
+// into the VM filesystem for the desktop.
+// Works for both container desktops (using Docker's CopyToContainer API) and
+// native worker desktops (copying directly to the worker's home directory).
+func (m *Manager) CopyHostPaths(ctx context.Context, desktopID string, paths []HostCopyPath) error {
+	if len(paths) == 0 {
+		return nil
+	}
+
+	if m.native != nil {
+		return m.native.copyHostPaths(sanitizeName(desktopID), paths)
+	}
+
+	sanitizedID := sanitizeName(desktopID)
+	containerName := "desktop_" + sanitizedID
+
+	inspect, err := m.client.ContainerInspect(ctx, containerName)
+	if err != nil {
+		if nf := notFound(desktopID, err); nf != err {
+			return nf
+		}
+		return fmt.Errorf("inspect container %s: %w", containerName, err)
+	}
+
+	pr, pw := io.Pipe()
+	copyOpts := container.CopyToContainerOptions{
+		AllowOverwriteDirWithFile: true,
+		CopyUIDGID:                false,
+	}
+
+	copyErrCh := make(chan error, 1)
+	go func() {
+		defer pr.Close()
+		copyErrCh <- m.client.CopyToContainer(ctx, inspect.ID, "/home/headless", pr, copyOpts)
+	}()
+
+	tw := tar.NewWriter(pw)
+	now := time.Now()
+	seenDirs := make(map[string]bool)
+
+	var writeErr error
+	for _, p := range paths {
+		src := strings.TrimSpace(p.Src)
+		if src == "" {
+			continue
+		}
+
+		fi, err := os.Stat(src)
+		if err != nil {
+			writeErr = fmt.Errorf("stat host path %q: %w", src, err)
+			break
+		}
+
+		destVM, err := ResolveVMDestPath(src, p.Dest, fi.IsDir())
+		if err != nil {
+			writeErr = err
+			break
+		}
+
+		rel := strings.TrimPrefix(destVM, "/home/headless/")
+		if rel == "" {
+			continue
+		}
+
+		if fi.IsDir() {
+			if err := ensureTarDirs(tw, rel, seenDirs, now); err != nil {
+				writeErr = err
+				break
+			}
+			err := filepath.Walk(src, func(walkPath string, info os.FileInfo, walkErr error) error {
+				if walkErr != nil {
+					return walkErr
+				}
+				relFromSrc, err := filepath.Rel(src, walkPath)
+				if err != nil {
+					return err
+				}
+				if relFromSrc == "." {
+					return nil
+				}
+
+				entryRel := path.Join(rel, filepath.ToSlash(relFromSrc))
+				if info.IsDir() {
+					return ensureTarDirs(tw, entryRel, seenDirs, now)
+				}
+				if !info.Mode().IsRegular() && (info.Mode()&os.ModeSymlink == 0) {
+					return nil
+				}
+
+				if err := ensureTarDirs(tw, path.Dir(entryRel), seenDirs, now); err != nil {
+					return err
+				}
+
+				if info.Mode()&os.ModeSymlink != 0 {
+					target, err := os.Readlink(walkPath)
+					if err != nil {
+						return err
+					}
+					return tw.WriteHeader(&tar.Header{
+						Typeflag: tar.TypeSymlink,
+						Name:     entryRel,
+						Linkname: filepath.ToSlash(target),
+						ModTime:  now,
+						Uid:      desktopUID,
+						Gid:      desktopGID,
+					})
+				}
+
+				mode := int64(0o644)
+				if info.Mode()&0111 != 0 {
+					mode = 0o755
+				}
+				if err := tw.WriteHeader(&tar.Header{
+					Typeflag: tar.TypeReg,
+					Name:     entryRel,
+					Size:     info.Size(),
+					Mode:     mode,
+					ModTime:  info.ModTime(),
+					Uid:      desktopUID,
+					Gid:      desktopGID,
+				}); err != nil {
+					return err
+				}
+
+				f, err := os.Open(walkPath)
+				if err != nil {
+					return err
+				}
+				_, err = io.Copy(tw, f)
+				_ = f.Close()
+				return err
+			})
+			if err != nil {
+				writeErr = fmt.Errorf("tar directory %q: %w", src, err)
+				break
+			}
+		} else {
+			parentDir := path.Dir(rel)
+			if parentDir != "." && parentDir != "" {
+				if err := ensureTarDirs(tw, parentDir, seenDirs, now); err != nil {
+					writeErr = err
+					break
+				}
+			}
+
+			mode := int64(0o644)
+			if fi.Mode()&0111 != 0 {
+				mode = 0o755
+			}
+			if err := tw.WriteHeader(&tar.Header{
+				Typeflag: tar.TypeReg,
+				Name:     rel,
+				Size:     fi.Size(),
+				Mode:     mode,
+				ModTime:  fi.ModTime(),
+				Uid:      desktopUID,
+				Gid:      desktopGID,
+			}); err != nil {
+				writeErr = err
+				break
+			}
+
+			f, err := os.Open(src)
+			if err != nil {
+				writeErr = fmt.Errorf("open host file %q: %w", src, err)
+				break
+			}
+			_, copyErr := io.Copy(tw, f)
+			_ = f.Close()
+			if copyErr != nil {
+				writeErr = fmt.Errorf("read host file %q: %w", src, copyErr)
+				break
+			}
+		}
+	}
+
+	if writeErr != nil {
+		_ = tw.Close()
+		_ = pw.CloseWithError(writeErr)
+		<-copyErrCh
+		return writeErr
+	}
+
+	if err := tw.Close(); err != nil {
+		_ = pw.CloseWithError(err)
+		<-copyErrCh
+		return err
+	}
+	_ = pw.Close()
+
+	if err := <-copyErrCh; err != nil {
+		return fmt.Errorf("copy host paths into container %s: %w", containerName, err)
+	}
+
+	return nil
+}
+
