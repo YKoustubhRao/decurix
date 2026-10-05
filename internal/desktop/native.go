@@ -766,6 +766,95 @@ func (h *nativeHost) copyFiles(id, dir string, files []File) error {
 	return nil
 }
 
+func (h *nativeHost) copyHostPaths(id string, paths []HostCopyPath) error {
+	if _, err := h.readMeta(id); err != nil {
+		return err
+	}
+
+	for _, p := range paths {
+		src := strings.TrimSpace(p.Src)
+		if src == "" {
+			continue
+		}
+		fi, err := os.Stat(src)
+		if err != nil {
+			return fmt.Errorf("copy host path: stat %q: %w", src, err)
+		}
+
+		destVM, err := ResolveVMDestPath(src, p.Dest, fi.IsDir())
+		if err != nil {
+			return err
+		}
+
+		targetHostPath, err := h.homePath(id, destVM)
+		if err != nil {
+			return fmt.Errorf("copy host path to %s: %w", id, err)
+		}
+
+		if fi.IsDir() {
+			if err := os.MkdirAll(targetHostPath, 0o755); err != nil {
+				return fmt.Errorf("create dir %q: %w", targetHostPath, err)
+			}
+			err := filepath.Walk(src, func(srcPath string, info os.FileInfo, walkErr error) error {
+				if walkErr != nil {
+					return walkErr
+				}
+				rel, err := filepath.Rel(src, srcPath)
+				if err != nil {
+					return err
+				}
+				if rel == "." {
+					return nil
+				}
+				destSubPath := filepath.Join(targetHostPath, rel)
+				if info.IsDir() {
+					return os.MkdirAll(destSubPath, 0o755)
+				}
+				if !info.Mode().IsRegular() {
+					return nil
+				}
+				return copyFileOnDisk(srcPath, destSubPath, info.Mode())
+			})
+			if err != nil {
+				return fmt.Errorf("copy dir %q to %s: %w", src, id, err)
+			}
+		} else {
+			if err := os.MkdirAll(filepath.Dir(targetHostPath), 0o755); err != nil {
+				return fmt.Errorf("create parent dir for %q: %w", targetHostPath, err)
+			}
+			if err := copyFileOnDisk(src, targetHostPath, fi.Mode()); err != nil {
+				return fmt.Errorf("copy file %q to %s: %w", src, id, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+func copyFileOnDisk(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	perm := os.FileMode(0o644)
+	if mode&0111 != 0 {
+		perm = 0o755
+	}
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+
+	return out.Close()
+}
+
 // copyOut tars a folder or file of the worker's home the way Docker's copy
 // does: entries named from the folder's own name down.
 func (h *nativeHost) copyOut(id, p string) (io.ReadCloser, error) {
@@ -975,6 +1064,7 @@ func (m *Manager) nativeProvision(
 	cpus, memoryMB int64,
 	specialization, parentID string,
 	selectedApps []string,
+	hostPaths []HostCopyPath,
 	onStarted func(d *Desktop) error,
 ) (*ProvisioningDesktop, error) {
 	id := sanitizeName(name)
@@ -1040,6 +1130,13 @@ func (m *Manager) nativeProvision(
 			})
 
 			return
+		}
+
+		if len(hostPaths) > 0 {
+			say("Copying files and directories from host...")
+			if err := m.native.copyHostPaths(id, hostPaths); err != nil {
+				log.Printf("native copy host paths for %s: %v", id, err)
+			}
 		}
 
 		if onStarted != nil {
