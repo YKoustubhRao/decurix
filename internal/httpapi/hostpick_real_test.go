@@ -17,7 +17,7 @@ func TestTheRealHostPicker(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	picked, err := pickHostPathsOS(ctx, os.Getenv("DECURIX_TEST_PICKER") == "folder")
+	picked, err := pickHostPathsOS(ctx, os.Getenv("DECURIX_TEST_PICKER") == "folder", os.Getenv("DECURIX_TEST_PICKER") == "any")
 	if err != nil {
 		t.Fatalf("the chooser failed: %v", err)
 	}

@@ -95,7 +95,7 @@ func TestBrowseHostPathAnswersWithWhatWasPickedAndWhereItGoes(t *testing.T) {
 	defer func() { pickHostPaths = real }()
 
 	var askedFolder bool
-	pickHostPaths = func(_ context.Context, folder bool) ([]string, error) {
+	pickHostPaths = func(_ context.Context, folder, _ bool) ([]string, error) {
 		askedFolder = folder
 		return []string{tmpDir, file, filepath.Join(tmpDir, "gone")}, nil
 	}
@@ -145,7 +145,7 @@ func TestBrowseHostPathAnswersWithWhatWasPickedAndWhereItGoes(t *testing.T) {
 		t.Fatalf("unexpected paths: %+v", resp.Paths)
 	}
 
-	pickHostPaths = func(context.Context, bool) ([]string, error) { return nil, errNoHostPicker }
+	pickHostPaths = func(context.Context, bool, bool) ([]string, error) { return nil, errNoHostPicker }
 	rec = call(primary, http.MethodPost)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"unavailable":true`) {
 		t.Fatalf("no chooser should be said plainly, got %d: %s", rec.Code, rec.Body.String())

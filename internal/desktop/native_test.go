@@ -373,8 +373,9 @@ func TestANativeWorkerKeepsItsShortcutsWhenMoreAreAdded(t *testing.T) {
 	}
 
 	apps, err := m.NativeApps("Ada")
-	if err != nil || len(apps) != 2 || apps[0].Target != "https://chatgpt.com/new" || apps[1].ID != "win_code" {
-		t.Fatalf("NativeApps = %+v, %v: want ChatGPT replaced in place and Code added after it", apps, err)
+	// Files is every worker's own, first; then ChatGPT replaced in place and Code after it.
+	if err != nil || len(apps) != 4 || apps[0].ID != NativeFilesAppID || apps[1].ID != NativeTerminalAppID || apps[2].Target != "https://chatgpt.com/new" || apps[3].ID != "win_code" {
+		t.Fatalf("NativeApps = %+v, %v: want Files and Terminal, ChatGPT replaced in place and Code added after it", apps, err)
 	}
 
 	if _, err := m.NativeApps("nobody"); !errors.Is(err, ErrNotFound) {
@@ -384,7 +385,7 @@ func TestANativeWorkerKeepsItsShortcutsWhenMoreAreAdded(t *testing.T) {
 	if m.NativeScreenEmpty("ada") {
 		t.Error("a worker that is not running was reported as an empty screen")
 	}
-	if err := m.OpenNativeProgram("ada", apps[1]); !errors.Is(err, ErrNotRunning) {
+	if err := m.OpenNativeProgram("ada", apps[3]); !errors.Is(err, ErrNotRunning) {
 		t.Errorf("opening a program on a stopped worker = %v, want ErrNotRunning", err)
 	}
 }
