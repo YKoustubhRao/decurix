@@ -207,6 +207,41 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	var hostCopyPaths []desktop.HostCopyPath
+	rawHostPaths := strings.TrimSpace(r.FormValue("host_paths"))
+	if rawHostPaths == "" {
+		rawHostPaths = strings.TrimSpace(r.FormValue("copy_host_paths"))
+	}
+	if rawHostPaths == "" {
+		rawHostPaths = strings.TrimSpace(r.FormValue("copy_paths"))
+	}
+	if rawHostPaths == "" && len(r.Form["host_paths"]) > 0 {
+		rawHostPaths = strings.Join(r.Form["host_paths"], "\n")
+	}
+
+	if rawHostPaths != "" {
+		parsed, err := desktop.ParseHostCopyPaths(rawHostPaths)
+		if err != nil {
+			jsonStatusError(w, http.StatusBadRequest, fmt.Sprintf("invalid host copy paths: %v", err))
+			return
+		}
+		for _, p := range parsed {
+			if strings.TrimSpace(p.Src) == "" {
+				continue
+			}
+			fi, err := os.Stat(p.Src)
+			if err != nil {
+				jsonStatusError(w, http.StatusBadRequest, fmt.Sprintf("host path does not exist: %s", p.Src))
+				return
+			}
+			if _, err := desktop.ResolveVMDestPath(p.Src, p.Dest, fi.IsDir()); err != nil {
+				jsonStatusError(w, http.StatusBadRequest, fmt.Sprintf("invalid destination path for %s: %v", p.Src, err))
+				return
+			}
+			hostCopyPaths = append(hostCopyPaths, p)
+		}
+	}
+
 	if r.Context().Err() != nil {
 		log.Printf("createDesktop: client canceled before creation for %s", name)
 		return
@@ -229,6 +264,7 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		specialization,
 		parentID,
 		selectedApps,
+		hostCopyPaths,
 		func(created *desktop.Desktop) error {
 			if parentID != "" {
 				if err := s.Memory.Link(parentID, created.ID); err != nil {
@@ -522,4 +558,35 @@ func (s *Server) closeOpenTasks(id, why string) {
 
 	// And the chat's turn for it, which nothing else would close now.
 	s.Chat.EndTurn(desktop.SanitizeID(id), why)
+}
+
+// validateHostPathHandler checks whether a path on the host filesystem exists
+// and returns whether it is a file or directory, its size, and name.
+// GET or POST /api/host-paths/validate?path=...
+func (s *Server) validateHostPathHandler(w http.ResponseWriter, r *http.Request) {
+	hostPath := strings.TrimSpace(r.FormValue("path"))
+	if hostPath == "" {
+		jsonStatusError(w, http.StatusBadRequest, "path parameter is required")
+		return
+	}
+
+	fi, err := os.Stat(hostPath)
+	if err != nil {
+		jsonResponse(w, map[string]any{
+			"valid":  false,
+			"exists": false,
+			"path":   hostPath,
+			"error":  "Path not found on host",
+		})
+		return
+	}
+
+	jsonResponse(w, map[string]any{
+		"valid":  true,
+		"exists": true,
+		"is_dir": fi.IsDir(),
+		"name":   fi.Name(),
+		"size":   fi.Size(),
+		"path":   hostPath,
+	})
 }
