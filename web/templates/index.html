@@ -789,17 +789,37 @@
 }
 
 .host-files-section{
-  padding:12px 14px;
+  padding:14px 16px;
   background:var(--surface-2);
   border:1px solid var(--line);
   border-radius:var(--r-lg);
-  margin-top:6px;
+  margin-top:8px;
+  transition:border-color .15s ease;
+}
+.host-files-section:focus-within{
+  border-color:var(--line-2);
 }
 .host-files-head{
   display:flex;
   align-items:center;
   justify-content:space-between;
   gap:12px;
+}
+.host-files-count-badge{
+  display:inline-flex;
+  align-items:center;
+  padding:2px 7px;
+  font-size:11px;
+  font-weight:500;
+  border-radius:999px;
+  background:var(--surface-3);
+  color:var(--text-2);
+  border:1px solid var(--line);
+}
+.host-files-count-badge.active{
+  background:rgba(56, 189, 248, 0.12);
+  color:var(--accent);
+  border-color:rgba(56, 189, 248, 0.25);
 }
 .host-files-toggle-wrap{
   display:inline-flex;
@@ -841,21 +861,101 @@
   transform:translateX(18px);
 }
 .host-files-panel{
-  margin-top:12px;
-  padding-top:10px;
+  margin-top:14px;
+  padding-top:12px;
   border-top:1px solid var(--line);
+}
+.host-files-toolbar{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  margin-bottom:10px;
+  flex-wrap:wrap;
+}
+.host-files-quick-actions{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  flex-wrap:wrap;
+}
+.host-files-dropzone{
+  border:1px dashed var(--line);
+  border-radius:var(--r-md);
+  padding:8px;
+  background:var(--surface-1);
+  min-height:52px;
+  transition:border-color .15s ease, background-color .15s ease;
+  position:relative;
+}
+.host-files-dropzone.dragover{
+  border-color:var(--accent);
+  background:rgba(56, 189, 248, 0.05);
+}
+.host-files-drag-hint{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  padding:14px 12px;
+  color:var(--text-3);
+  font-size:12px;
+  text-align:center;
+  user-select:none;
 }
 .host-files-rows{
   display:flex;
   flex-direction:column;
-  gap:6px;
-  max-height:200px;
+  gap:8px;
+  max-height:240px;
   overflow-y:auto;
+  padding-right:2px;
 }
 .host-file-row{
   display:flex;
-  gap:8px;
+  flex-direction:column;
+  gap:6px;
+  padding:8px 10px;
+  background:var(--surface-2);
+  border:1px solid var(--line);
+  border-radius:var(--r-md);
+  transition:border-color .15s ease;
+}
+.host-file-row:hover{
+  border-color:var(--line-2);
+}
+.host-file-row-main{
+  display:flex;
   align-items:center;
+  gap:8px;
+}
+.host-file-type-icon{
+  font-size:15px;
+  width:22px;
+  text-align:center;
+  flex-shrink:0;
+  user-select:none;
+}
+.host-file-row-meta{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  padding-left:30px;
+  font-size:11px;
+}
+.host-dest-preview-wrap{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  color:var(--text-2);
+  font-family:var(--font-mono);
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.host-dest-preview{
+  color:var(--accent);
 }
 .host-file-status{
   font-size:11px;
@@ -867,6 +967,61 @@
 }
 .host-file-status.err{
   color:var(--red, #ef4444);
+}
+.host-files-more-dropdown-wrap{
+  position:relative;
+  display:inline-block;
+}
+.host-files-more-menu{
+  position:absolute;
+  right:0;
+  top:100%;
+  margin-top:4px;
+  background:var(--surface-3);
+  border:1px solid var(--line-2);
+  border-radius:var(--r-md);
+  box-shadow:0 4px 16px rgba(0,0,0,0.35);
+  min-width:210px;
+  z-index:100;
+  padding:4px 0;
+  display:none;
+}
+.host-files-more-menu.open{
+  display:block;
+}
+.more-menu-item{
+  width:100%;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:7px 12px;
+  background:transparent;
+  border:none;
+  color:var(--text-1);
+  font-size:12px;
+  text-align:left;
+  cursor:pointer;
+}
+.more-menu-item:hover{
+  background:var(--surface-4, rgba(255,255,255,0.08));
+}
+.more-menu-item.text-danger{
+  color:var(--red, #ef4444);
+}
+.more-menu-divider{
+  height:1px;
+  background:var(--line);
+  margin:4px 0;
+}
+.host-custom-dest-input-wrap{
+  display:none;
+  padding-left:30px;
+  margin-top:4px;
+}
+.host-custom-dest-input-wrap.open{
+  display:flex;
+  align-items:center;
+  gap:6px;
 }
 
 /* ---------- claude login dialog ---------- */
@@ -1464,9 +1619,12 @@
 
       <div class="field host-files-section" id="hostFilesSection">
         <div class="host-files-head">
-          <div>
-            <span class="field-label" style="margin-bottom:2px">Copy files &amp; directories from host</span>
-            <div class="hint">Copy files or folders from this computer into the VM filesystem (e.g. documents, code repositories, datasets).</div>
+          <div style="flex:1">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span class="field-label" style="margin-bottom:0">Copy files &amp; directories from host</span>
+              <span class="host-files-count-badge" id="hostFilesBadge" style="display:none">0 selected</span>
+            </div>
+            <div class="hint" style="margin-top:2px">Copy files or folders from this machine into the corresponding VM path (under <code style="font-size:11px;background:var(--surface-3);padding:1px 4px;border-radius:3px">/home/headless</code>).</div>
           </div>
           <label class="host-files-toggle-wrap">
             <input type="checkbox" class="host-files-toggle" id="dCopyHostFiles" name="copy_host_files" value="1">
@@ -1474,12 +1632,47 @@
         </div>
 
         <div class="host-files-panel" id="hostFilesPanel" style="display:none">
-          <div class="host-files-rows" id="hostFilesRows">
-            <!-- Dynamic rows with host path, VM destination, and remove button -->
+          <div class="host-files-toolbar">
+            <div class="host-files-quick-actions">
+              <button type="button" class="btn btn-quiet btn-xs" id="pickHostFolderBtn" title="Choose a folder from your computer">
+                📁 Add Folder…
+              </button>
+              <button type="button" class="btn btn-quiet btn-xs" id="pickHostFileBtn" title="Choose file(s) from your computer">
+                📄 Add File…
+              </button>
+              <button type="button" class="btn btn-quiet btn-xs" id="openHostExplorerBtn" title="Open this machine's File Explorer">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:2px"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>Open File Explorer
+              </button>
+            </div>
+            <div class="host-files-more-dropdown-wrap">
+              <button type="button" class="btn btn-quiet btn-xs" id="hostFilesMoreBtn" title="More options">
+                More ▾
+              </button>
+              <div class="host-files-more-menu" id="hostFilesMoreMenu">
+                <button type="button" class="more-menu-item" id="moreAddManualRow">+ Add path manually</button>
+                <button type="button" class="more-menu-item" id="moreOpenExplorer">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>Open File Explorer
+                </button>
+                <button type="button" class="more-menu-item" id="moreResetDestinations">Reset all destinations to default</button>
+                <div class="more-menu-divider"></div>
+                <button type="button" class="more-menu-item text-danger" id="moreClearAllPaths">Clear all paths</button>
+              </div>
+            </div>
           </div>
+
+          <div class="host-files-dropzone" id="hostFilesDropzone">
+            <div class="host-files-rows" id="hostFilesRows">
+              <!-- Dynamic rows with host path, browse, VM destination, and remove button -->
+            </div>
+            <div class="host-files-drag-hint" id="hostFilesDragHint">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              <span>Drag &amp; drop files or folders here from File Explorer, or use the buttons above</span>
+            </div>
+          </div>
+
           <div style="margin-top:8px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-            <button type="button" class="btn btn-quiet btn-xs" id="addHostPathBtn">+ Add another path</button>
-            <span class="hint" style="margin:0;font-size:11px">Destination defaults to /home/headless/&lt;basename&gt;</span>
+            <button type="button" class="btn btn-quiet btn-xs" id="addHostPathBtn">+ Add row manually</button>
+            <span class="hint" style="margin:0;font-size:11px">Destinations automatically map to the corresponding path in the VM</span>
           </div>
         </div>
       </div>
@@ -2166,122 +2359,448 @@
   var dCopyHostFiles = document.getElementById("dCopyHostFiles");
   var hostFilesPanel = document.getElementById("hostFilesPanel");
   var hostFilesRows = document.getElementById("hostFilesRows");
+  var hostFilesBadge = document.getElementById("hostFilesBadge");
+  var hostFilesDropzone = document.getElementById("hostFilesDropzone");
+  var hostFilesDragHint = document.getElementById("hostFilesDragHint");
   var addHostPathBtn = document.getElementById("addHostPathBtn");
+  var pickHostFolderBtn = document.getElementById("pickHostFolderBtn");
+  var pickHostFileBtn = document.getElementById("pickHostFileBtn");
+  var openHostExplorerBtn = document.getElementById("openHostExplorerBtn");
+  var hostFilesMoreBtn = document.getElementById("hostFilesMoreBtn");
+  var hostFilesMoreMenu = document.getElementById("hostFilesMoreMenu");
+  var moreAddManualRow = document.getElementById("moreAddManualRow");
+  var moreOpenExplorer = document.getElementById("moreOpenExplorer");
+  var moreResetDestinations = document.getElementById("moreResetDestinations");
+  var moreClearAllPaths = document.getElementById("moreClearAllPaths");
 
-  function createHostFileRow(srcVal, destVal){
+  function formatBytes(bytes) {
+    if (!bytes || bytes <= 0) return "0 B";
+    var k = 1024;
+    var sizes = ["B", "KB", "MB", "GB"];
+    var i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+  }
+
+  function updateHostFilesBadge() {
+    if (!hostFilesRows || !hostFilesBadge) return;
+    var rows = hostFilesRows.querySelectorAll(".host-file-row");
+    var validCount = 0;
+    rows.forEach(function(r) {
+      var input = r.querySelector(".host-src-input");
+      if (input && input.value.trim()) validCount++;
+    });
+    if (hostFilesDragHint) {
+      hostFilesDragHint.style.display = rows.length === 0 ? "flex" : "none";
+    }
+    if (validCount > 0) {
+      hostFilesBadge.textContent = validCount + (validCount === 1 ? " path selected" : " paths selected");
+      hostFilesBadge.style.display = "inline-flex";
+      hostFilesBadge.classList.add("active");
+    } else {
+      hostFilesBadge.textContent = "0 selected";
+      hostFilesBadge.style.display = (dCopyHostFiles && dCopyHostFiles.checked) ? "inline-flex" : "none";
+      hostFilesBadge.classList.remove("active");
+    }
+  }
+
+  // Open native OS File Explorer (Explorer on Windows, Finder on macOS, xdg-open on Linux)
+  async function openNativeExplorer(targetPath) {
+    try {
+      if (window.decurixNative && window.decurixNative.openExplorer) {
+        var res = await window.decurixNative.openExplorer(targetPath || "");
+        if (res && res.error) {
+          toast("Could not open File Explorer: " + res.error, "error");
+        }
+        return;
+      }
+      var resp = await fetch("/api/host-paths/open-explorer" + (targetPath ? "?path=" + encodeURIComponent(targetPath) : ""), {
+        method: "POST"
+      });
+      var data = await resp.json();
+      if (!data.ok) {
+        toast("Could not open File Explorer: " + (data.error || "Unknown error"), "error");
+      }
+    } catch (e) {
+      console.warn("openNativeExplorer error", e);
+      toast("Error opening File Explorer: " + e.message, "error");
+    }
+  }
+
+  // Native path picker (dialog.showOpenDialog in Electron, /api/host-paths/browse fallback in browser)
+  async function pickNativePaths(type) {
+    try {
+      if (window.decurixNative && window.decurixNative.pickPaths) {
+        var res = await window.decurixNative.pickPaths({ type: type });
+        if (res && !res.canceled && res.paths && res.paths.length > 0) {
+          return res.paths;
+        }
+        return [];
+      }
+      var resp = await fetch("/api/host-paths/browse?type=" + encodeURIComponent(type));
+      var data = await resp.json();
+      if (data && data.paths) {
+        return data.paths;
+      }
+      return [];
+    } catch (e) {
+      console.warn("pickNativePaths error", e);
+      return [];
+    }
+  }
+
+  function createHostFileRow(srcVal, destVal) {
     var row = document.createElement("div");
     row.className = "host-file-row";
-    row.style.cssText = "display:flex;gap:8px;align-items:center;margin-bottom:6px";
+
+    // Main row: icon, host input, browse btn, open explorer btn, more options btn, delete btn
+    var mainRow = document.createElement("div");
+    mainRow.className = "host-file-row-main";
+
+    var iconSpan = document.createElement("span");
+    iconSpan.className = "host-file-type-icon";
+    iconSpan.textContent = "📄";
 
     var srcInput = document.createElement("input");
     srcInput.className = "input input-sm host-src-input";
     srcInput.type = "text";
     srcInput.placeholder = "Host path (e.g. C:\\projects\\repo or /data)";
-    srcInput.style.cssText = "flex:2;font-family:var(--font-mono);font-size:12px;height:30px";
-    if(srcVal) srcInput.value = srcVal;
+    srcInput.style.cssText = "flex:1;min-width:0;font-family:var(--font-mono);font-size:12px;height:30px";
+    if (srcVal) srcInput.value = srcVal;
 
-    var arrow = document.createElement("span");
-    arrow.textContent = "→";
-    arrow.style.cssText = "color:var(--text-3);font-size:12px;user-select:none";
+    var browseBtn = document.createElement("button");
+    browseBtn.type = "button";
+    browseBtn.className = "btn btn-quiet btn-xs browse-host-path-btn";
+    browseBtn.title = "Browse computer for file or folder";
+    browseBtn.style.cssText = "height:30px;padding:0 8px;font-size:11px";
+    browseBtn.textContent = "Browse…";
+    browseBtn.addEventListener("click", async function() {
+      var paths = await pickNativePaths("file");
+      if (paths && paths.length > 0) {
+        srcInput.value = paths[0];
+        checkPath();
+        for (var i = 1; i < paths.length; i++) {
+          createHostFileRow(paths[i]);
+        }
+      }
+    });
 
-    var destInput = document.createElement("input");
-    destInput.className = "input input-sm host-dest-input";
-    destInput.type = "text";
-    destInput.placeholder = "VM destination (optional, e.g. Desktop/repo)";
-    destInput.style.cssText = "flex:1.5;font-family:var(--font-mono);font-size:12px;height:30px";
-    if(destVal) destInput.value = destVal;
+    var revealBtn = document.createElement("button");
+    revealBtn.type = "button";
+    revealBtn.className = "btn btn-quiet btn-xs reveal-host-path-btn";
+    revealBtn.title = "Show in File Explorer";
+    revealBtn.style.cssText = "height:30px;padding:0 7px;font-size:11px";
+    revealBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>';
+    revealBtn.addEventListener("click", function() {
+      var p = srcInput.value.trim();
+      openNativeExplorer(p);
+    });
 
-    var statusSpan = document.createElement("span");
-    statusSpan.className = "host-file-status";
-    statusSpan.style.cssText = "font-size:11px;min-width:65px;text-align:right";
+    var rowMoreBtn = document.createElement("button");
+    rowMoreBtn.type = "button";
+    rowMoreBtn.className = "btn btn-quiet btn-xs row-more-btn";
+    rowMoreBtn.title = "Customize VM destination";
+    rowMoreBtn.style.cssText = "height:30px;padding:0 6px;font-size:12px";
+    rowMoreBtn.textContent = "•••";
 
     var removeBtn = document.createElement("button");
     removeBtn.type = "button";
     removeBtn.className = "btn btn-quiet btn-xs remove-host-path-btn";
     removeBtn.title = "Remove path";
-    removeBtn.style.cssText = "height:30px;padding:0 8px;line-height:1";
+    removeBtn.style.cssText = "height:30px;padding:0 8px;line-height:1;color:var(--text-3)";
     removeBtn.textContent = "✕";
-    removeBtn.addEventListener("click", function(){
+    removeBtn.addEventListener("click", function() {
       row.remove();
-      if(hostFilesRows.querySelectorAll(".host-file-row").length === 0){
-        createHostFileRow();
-      }
+      updateHostFilesBadge();
     });
 
+    mainRow.appendChild(iconSpan);
+    mainRow.appendChild(srcInput);
+    mainRow.appendChild(browseBtn);
+    mainRow.appendChild(revealBtn);
+    mainRow.appendChild(rowMoreBtn);
+    mainRow.appendChild(removeBtn);
+
+    // Meta row: VM destination preview tag, edit link, status/size tag
+    var metaRow = document.createElement("div");
+    metaRow.className = "host-file-row-meta";
+
+    var destWrap = document.createElement("div");
+    destWrap.className = "host-dest-preview-wrap";
+    destWrap.innerHTML = '<span>↳ VM:</span> <span class="host-dest-preview">/home/headless</span>';
+
+    var editDestLink = document.createElement("a");
+    editDestLink.href = "#";
+    editDestLink.style.cssText = "color:var(--text-3);text-decoration:underline;margin-left:4px;cursor:pointer";
+    editDestLink.textContent = "edit";
+
+    destWrap.appendChild(editDestLink);
+
+    var statusSpan = document.createElement("span");
+    statusSpan.className = "host-file-status";
+    statusSpan.textContent = "";
+
+    metaRow.appendChild(destWrap);
+    metaRow.appendChild(statusSpan);
+
+    // Custom VM destination override drawer
+    var customDestWrap = document.createElement("div");
+    customDestWrap.className = "host-custom-dest-input-wrap";
+
+    var destLabel = document.createElement("span");
+    destLabel.textContent = "Custom VM path:";
+    destLabel.style.cssText = "font-size:11px;color:var(--text-3);white-space:nowrap";
+
+    var destInput = document.createElement("input");
+    destInput.className = "input input-sm host-dest-input";
+    destInput.type = "text";
+    destInput.placeholder = "e.g. Desktop/my-project";
+    destInput.style.cssText = "flex:1;min-width:0;font-family:var(--font-mono);font-size:11px;height:26px";
+    if (destVal) destInput.value = destVal;
+
+    var resetDestBtn = document.createElement("button");
+    resetDestBtn.type = "button";
+    resetDestBtn.className = "btn btn-quiet btn-xs";
+    resetDestBtn.style.cssText = "height:26px;padding:0 6px;font-size:10px";
+    resetDestBtn.textContent = "Reset to default";
+    resetDestBtn.addEventListener("click", function() {
+      destInput.value = "";
+      updateDestPreview();
+    });
+
+    customDestWrap.appendChild(destLabel);
+    customDestWrap.appendChild(destInput);
+    customDestWrap.appendChild(resetDestBtn);
+
+    function toggleCustomDest(e) {
+      if (e) e.preventDefault();
+      customDestWrap.classList.toggle("open");
+      if (customDestWrap.classList.contains("open")) {
+        destInput.focus();
+      }
+    }
+
+    rowMoreBtn.addEventListener("click", toggleCustomDest);
+    editDestLink.addEventListener("click", toggleCustomDest);
+
+    var currentDefaultDest = "/home/headless";
+    function updateDestPreview() {
+      var val = destInput.value.trim();
+      var previewSpan = destWrap.querySelector(".host-dest-preview");
+      if (val) {
+        var clean = val.replace(/\\/g, "/");
+        if (!clean.startsWith("/")) clean = "/home/headless/" + clean;
+        previewSpan.textContent = clean;
+        previewSpan.style.color = "var(--amber, #f59e0b)";
+      } else {
+        previewSpan.textContent = currentDefaultDest || "/home/headless";
+        previewSpan.style.color = "var(--accent)";
+      }
+    }
+
+    destInput.addEventListener("input", updateDestPreview);
+
     var validateTimer = null;
-    function checkPath(){
+    function checkPath() {
       var p = srcInput.value.trim();
-      if(!p){
+      if (!p) {
         statusSpan.textContent = "";
         statusSpan.className = "host-file-status";
+        iconSpan.textContent = "📄";
+        currentDefaultDest = "/home/headless";
+        updateDestPreview();
+        updateHostFilesBadge();
         return;
       }
       fetch("/api/host-paths/validate?path=" + encodeURIComponent(p))
-        .then(function(res){ return res.json(); })
-        .then(function(data){
-          if(data && data.exists){
-            statusSpan.textContent = data.is_dir ? "📁 Folder" : "📄 File";
+        .then(function(res) { return res.json(); })
+        .then(function(data) {
+          if (data && data.exists) {
+            iconSpan.textContent = data.is_dir ? "📁" : "📄";
+            var sizeStr = data.is_dir ? "Folder" : formatBytes(data.size);
+            statusSpan.textContent = sizeStr;
             statusSpan.className = "host-file-status ok";
+            if (data.default_dest) {
+              currentDefaultDest = data.default_dest;
+            }
           } else {
-            statusSpan.textContent = "✕ Missing";
+            iconSpan.textContent = "❓";
+            statusSpan.textContent = "✕ Not found";
             statusSpan.className = "host-file-status err";
+            if (data && data.default_dest) {
+              currentDefaultDest = data.default_dest;
+            }
           }
+          updateDestPreview();
+          updateHostFilesBadge();
         })
-        .catch(function(){
+        .catch(function() {
           statusSpan.textContent = "";
+          updateHostFilesBadge();
         });
     }
 
-    srcInput.addEventListener("input", function(){
+    srcInput.addEventListener("input", function() {
       clearTimeout(validateTimer);
-      validateTimer = setTimeout(checkPath, 400);
+      validateTimer = setTimeout(checkPath, 350);
     });
     srcInput.addEventListener("blur", checkPath);
 
-    row.appendChild(srcInput);
-    row.appendChild(arrow);
-    row.appendChild(destInput);
-    row.appendChild(statusSpan);
-    row.appendChild(removeBtn);
+    row.appendChild(mainRow);
+    row.appendChild(metaRow);
+    row.appendChild(customDestWrap);
     hostFilesRows.appendChild(row);
 
-    if(srcVal) checkPath();
+    if (srcVal) checkPath();
+    updateHostFilesBadge();
     return row;
   }
 
-  function resetHostFilesSection(){
-    if(dCopyHostFiles){
-      dCopyHostFiles.checked = false;
-    }
-    if(hostFilesPanel){
-      hostFilesPanel.style.display = "none";
-    }
-    if(hostFilesRows){
-      hostFilesRows.innerHTML = "";
-    }
+  if (pickHostFolderBtn) {
+    pickHostFolderBtn.addEventListener("click", async function() {
+      var paths = await pickNativePaths("folder");
+      if (paths && paths.length > 0) {
+        paths.forEach(function(p) {
+          createHostFileRow(p);
+        });
+      }
+    });
   }
 
-  if(dCopyHostFiles){
-    dCopyHostFiles.addEventListener("change", function(){
-      var active = dCopyHostFiles.checked;
-      if(hostFilesPanel){
-        hostFilesPanel.style.display = active ? "" : "none";
+  if (pickHostFileBtn) {
+    pickHostFileBtn.addEventListener("click", async function() {
+      var paths = await pickNativePaths("file");
+      if (paths && paths.length > 0) {
+        paths.forEach(function(p) {
+          createHostFileRow(p);
+        });
       }
-      if(active && hostFilesRows){
-        if(hostFilesRows.querySelectorAll(".host-file-row").length === 0){
-          var row = createHostFileRow();
-          var input = row.querySelector(".host-src-input");
-          if(input) input.focus();
+    });
+  }
+
+  if (openHostExplorerBtn) {
+    openHostExplorerBtn.addEventListener("click", function() {
+      openNativeExplorer("");
+    });
+  }
+
+  // More ▾ dropdown
+  if (hostFilesMoreBtn && hostFilesMoreMenu) {
+    hostFilesMoreBtn.addEventListener("click", function(e) {
+      e.stopPropagation();
+      hostFilesMoreMenu.classList.toggle("open");
+    });
+    document.addEventListener("click", function(e) {
+      if (!hostFilesMoreMenu.contains(e.target) && e.target !== hostFilesMoreBtn) {
+        hostFilesMoreMenu.classList.remove("open");
+      }
+    });
+  }
+
+  if (moreAddManualRow) {
+    moreAddManualRow.addEventListener("click", function() {
+      hostFilesMoreMenu.classList.remove("open");
+      var r = createHostFileRow();
+      var input = r.querySelector(".host-src-input");
+      if (input) input.focus();
+    });
+  }
+
+  if (moreOpenExplorer) {
+    moreOpenExplorer.addEventListener("click", function() {
+      hostFilesMoreMenu.classList.remove("open");
+      openNativeExplorer("");
+    });
+  }
+
+  if (moreResetDestinations) {
+    moreResetDestinations.addEventListener("click", function() {
+      hostFilesMoreMenu.classList.remove("open");
+      if (!hostFilesRows) return;
+      hostFilesRows.querySelectorAll(".host-file-row").forEach(function(r) {
+        var destInput = r.querySelector(".host-dest-input");
+        if (destInput) {
+          destInput.value = "";
+          destInput.dispatchEvent(new Event("input"));
+        }
+      });
+      toast("Reset all destinations to default corresponding VM paths.", "info");
+    });
+  }
+
+  if (moreClearAllPaths) {
+    moreClearAllPaths.addEventListener("click", function() {
+      hostFilesMoreMenu.classList.remove("open");
+      if (hostFilesRows) {
+        hostFilesRows.innerHTML = "";
+      }
+      updateHostFilesBadge();
+    });
+  }
+
+  if (addHostPathBtn) {
+    addHostPathBtn.addEventListener("click", function() {
+      var r = createHostFileRow();
+      var input = r.querySelector(".host-src-input");
+      if (input) input.focus();
+    });
+  }
+
+  // Drag & drop handling on hostFilesDropzone
+  if (hostFilesDropzone) {
+    hostFilesDropzone.addEventListener("dragover", function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      hostFilesDropzone.classList.add("dragover");
+    });
+    hostFilesDropzone.addEventListener("dragleave", function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      hostFilesDropzone.classList.remove("dragover");
+    });
+    hostFilesDropzone.addEventListener("drop", function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      hostFilesDropzone.classList.remove("dragover");
+      var files = e.dataTransfer && e.dataTransfer.files;
+      if (files && files.length > 0) {
+        for (var i = 0; i < files.length; i++) {
+          var f = files[i];
+          var hostPath = f.path || f.name;
+          if (hostPath) {
+            createHostFileRow(hostPath);
+          }
         }
       }
     });
   }
 
-  if(addHostPathBtn){
-    addHostPathBtn.addEventListener("click", function(){
-      var row = createHostFileRow();
-      var input = row.querySelector(".host-src-input");
-      if(input) input.focus();
+  function resetHostFilesSection() {
+    if (dCopyHostFiles) {
+      dCopyHostFiles.checked = false;
+    }
+    if (hostFilesPanel) {
+      hostFilesPanel.style.display = "none";
+    }
+    if (hostFilesRows) {
+      hostFilesRows.innerHTML = "";
+    }
+    updateHostFilesBadge();
+  }
+
+  if (dCopyHostFiles) {
+    dCopyHostFiles.addEventListener("change", function() {
+      var active = dCopyHostFiles.checked;
+      if (hostFilesPanel) {
+        hostFilesPanel.style.display = active ? "" : "none";
+      }
+      if (active && hostFilesRows) {
+        if (hostFilesRows.querySelectorAll(".host-file-row").length === 0) {
+          var row = createHostFileRow();
+          var input = row.querySelector(".host-src-input");
+          if (input) input.focus();
+        }
+      }
+      updateHostFilesBadge();
     });
   }
 
