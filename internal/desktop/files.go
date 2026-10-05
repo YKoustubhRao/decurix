@@ -277,13 +277,59 @@ func parseSinglePathEntry(entry string) HostCopyPath {
 	return HostCopyPath{Src: src, Dest: dest}
 }
 
+// ComputeDefaultVMDest computes the corresponding destination path inside the VM filesystem
+// (/home/headless/...) for a host file or directory.
+//
+// 1. If the path resides inside the host user's home directory (e.g. ~/Documents/work or C:\Users\name\Desktop\repo),
+//    the relative hierarchy is preserved (e.g. /home/headless/Documents/work or /home/headless/Desktop/repo).
+// 2. If the path contains standard directories (e.g. Desktop, Documents, Downloads, Pictures, Music, Videos, Projects, Code),
+//    that subtree is preserved under /home/headless/<subtree>.
+// 3. Otherwise, it defaults to /home/headless/<basename>.
+func ComputeDefaultVMDest(src string) string {
+	const home = "/home/headless"
+
+	srcClean := filepath.Clean(src)
+	srcBase := filepath.Base(srcClean)
+	if srcBase == "." || srcBase == "/" || srcBase == "\\" || srcBase == "" {
+		return home
+	}
+
+	// 1. Check if relative to host user's home directory
+	if userHome, err := os.UserHomeDir(); err == nil && userHome != "" {
+		userHomeClean := filepath.Clean(userHome)
+		if rel, err := filepath.Rel(userHomeClean, srcClean); err == nil && rel != "." && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel) {
+			relSlash := filepath.ToSlash(rel)
+			return path.Join(home, relSlash)
+		}
+	}
+
+	// 2. Check for common folder anchors in the path (e.g. /Documents/foo or \Desktop\foo)
+	slashPath := "/" + strings.Trim(filepath.ToSlash(srcClean), "/")
+	commonFolders := []string{"Desktop", "Documents", "Downloads", "Pictures", "Music", "Videos", "Projects", "Code", "workspace", "work"}
+	for _, folder := range commonFolders {
+		pattern := "/" + strings.ToLower(folder) + "/"
+		lowerPath := strings.ToLower(slashPath)
+		if idx := strings.Index(lowerPath, pattern); idx != -1 {
+			sub := slashPath[idx+1:]
+			return path.Join(home, sub)
+		}
+		if strings.HasSuffix(lowerPath, "/"+strings.ToLower(folder)) {
+			suffixIdx := len(lowerPath) - len(folder)
+			sub := slashPath[suffixIdx:]
+			return path.Join(home, sub)
+		}
+	}
+
+	// 3. Fallback to basename under home
+	return path.Join(home, srcBase)
+}
+
 // ResolveVMDestPath computes and validates the destination path within the VM filesystem
 // for a host file or directory.
 //
 // Destinations must reside under /home/headless.
 // If dest is empty:
-//   - for a file: /home/headless/<basename(src)>
-//   - for a dir:  /home/headless/<basename(src)>
+//   - automatically maps to the corresponding VM path via ComputeDefaultVMDest(src).
 // If dest is relative (e.g. "Desktop/data"):
 //   - resolved as /home/headless/Desktop/data
 // If dest is "/home/headless" or "/home/headless/Desktop" or ends with "/":
@@ -301,7 +347,7 @@ func ResolveVMDestPath(src, dest string, isDir bool) (string, error) {
 	dest = strings.ReplaceAll(dest, "\\", "/")
 
 	if dest == "" {
-		return path.Join(home, srcBase), nil
+		return ComputeDefaultVMDest(srcClean), nil
 	}
 
 	if !strings.HasPrefix(dest, "/") {

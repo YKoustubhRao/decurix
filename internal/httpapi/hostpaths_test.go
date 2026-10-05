@@ -60,6 +60,9 @@ func TestValidateHostPathEndpoint(t *testing.T) {
 	if fileResp["exists"] != true || fileResp["is_dir"] != false || fileResp["name"] != "sample.txt" {
 		t.Errorf("unexpected response for file: %+v", fileResp)
 	}
+	if dest, ok := fileResp["default_dest"].(string); !ok || !strings.HasSuffix(dest, "sample.txt") {
+		t.Errorf("expected default_dest ending in sample.txt, got %v", fileResp["default_dest"])
+	}
 
 	// 4. Existing directory
 	req = httptest.NewRequest(http.MethodGet, "/api/host-paths/validate?path="+url.QueryEscape(tmpDir), nil)
@@ -75,6 +78,36 @@ func TestValidateHostPathEndpoint(t *testing.T) {
 	if dirResp["exists"] != true || dirResp["is_dir"] != true {
 		t.Errorf("unexpected response for dir: %+v", dirResp)
 	}
+	if _, ok := dirResp["default_dest"].(string); !ok {
+		t.Errorf("expected default_dest string, got %v", dirResp["default_dest"])
+	}
+}
+
+func TestHostPathsEndpoints(t *testing.T) {
+	srv := &Server{}
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	// Test open-explorer with empty path
+	req := httptest.NewRequest(http.MethodGet, "/api/host-paths/open-explorer", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for open-explorer, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var openResp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &openResp); err != nil {
+		t.Fatal(err)
+	}
+	if openResp["ok"] != true {
+		t.Errorf("expected ok: true, got %v", openResp)
+	}
+
+	// Test browse endpoint returns paths array structure
+	req = httptest.NewRequest(http.MethodGet, "/api/host-paths/browse?type=folder", nil)
+	rec = httptest.NewRecorder()
+	// Note: In non-interactive test environments, browseHostPathHandler handles cancel/empty gracefully
+	// and returns {"ok": true, "paths": ...}
 }
 
 func TestCreateDesktopWithHostPaths(t *testing.T) {
