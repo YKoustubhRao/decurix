@@ -169,6 +169,38 @@ func (m *Manager) Create(
 	parentID string,
 	hostApps ...[]string,
 ) (*Desktop, error) {
+	var selectedApps []string
+	if len(hostApps) > 0 && len(hostApps[0]) > 0 {
+		selectedApps = hostApps[0]
+	}
+	return m.CreateWithPaths(
+		ctx,
+		name,
+		profile,
+		harness,
+		cpus,
+		memoryMB,
+		claudeCredentialsJSON,
+		specialization,
+		parentID,
+		selectedApps,
+		nil,
+	)
+}
+
+func (m *Manager) CreateWithPaths(
+	ctx context.Context,
+	name string,
+	profile string,
+	harness string,
+	cpus int64,
+	memoryMB int64,
+	claudeCredentialsJSON string,
+	specialization string,
+	parentID string,
+	selectedApps []string,
+	hostPaths []HostCopyPath,
+) (*Desktop, error) {
 	defer m.invalidateList()
 
 	if m.native != nil {
@@ -181,6 +213,11 @@ func (m *Manager) Create(
 		meta.Model = desktopModel(buildDesktopEnv(name, harness, specialization, parentID, Brain{}))
 		if err := m.native.create(ctx, meta, nil); err != nil {
 			return nil, err
+		}
+		if len(hostPaths) > 0 {
+			if err := m.native.copyHostPaths(id, hostPaths); err != nil {
+				log.Printf("native copy host paths for %s: %v", id, err)
+			}
 		}
 		created := m.native.desktop(meta)
 		return &created, nil
@@ -258,9 +295,16 @@ func (m *Manager) Create(
 	// This ensures desktop launchers, wrapper scripts, credentials, and SVG
 	// icons exist on disk before XFCE initializes, avoiding icon refresh lag
 	// and startup race conditions.
-	if len(hostApps) > 0 && len(hostApps[0]) > 0 {
-		if err := m.MigrateHostApps(ctx, sanitizeName(name), hostApps[0]); err != nil {
+	if len(selectedApps) > 0 {
+		if err := m.MigrateHostApps(ctx, sanitizeName(name), selectedApps); err != nil {
 			log.Printf("hostapps: pre-start migration for %s: %v", containerName, err)
+		}
+	}
+
+	// Pre-seed files and directories from the host filesystem.
+	if len(hostPaths) > 0 {
+		if err := m.CopyHostPaths(ctx, sanitizeName(name), hostPaths); err != nil {
+			log.Printf("copy host paths for %s: %v", containerName, err)
 		}
 	}
 
@@ -333,12 +377,12 @@ func (m *Manager) BeginProvisioning(
 	specialization string,
 	parentID string,
 	selectedApps []string,
+	hostPaths []HostCopyPath,
 	onStarted func(d *Desktop) error,
 ) (*ProvisioningDesktop, error) {
 	if m.native != nil {
-		// Nothing is copied into a native worker: the apps picked become
-		// shortcuts on its screen to the programs already on this computer.
-		return m.nativeProvision(name, profile, harness, brain, cpus, memoryMB, specialization, parentID, selectedApps, onStarted)
+		// Shortcuts for selected apps; files and folders copied directly into worker home.
+		return m.nativeProvision(name, profile, harness, brain, cpus, memoryMB, specialization, parentID, selectedApps, hostPaths, onStarted)
 	}
 
 	sanitizedID := sanitizeName(name)
@@ -387,7 +431,7 @@ func (m *Manager) BeginProvisioning(
 	snapshot := *prov
 	m.provisioningMu.Unlock()
 
-	go m.runProvisioning(prov, brain, claudeCredentialsJSON, selectedApps, onStarted)
+	go m.runProvisioning(prov, brain, claudeCredentialsJSON, selectedApps, hostPaths, onStarted)
 
 	return &snapshot, nil
 }
@@ -397,6 +441,7 @@ func (m *Manager) runProvisioning(
 	brain Brain,
 	claudeCredentialsJSON string,
 	selectedApps []string,
+	hostPaths []HostCopyPath,
 	onStarted func(d *Desktop) error,
 ) {
 	defer m.invalidateList()
@@ -491,7 +536,15 @@ func (m *Manager) runProvisioning(
 		}
 	}
 
-	// 5. Start Container
+	// 5. Copy Files & Directories from Host
+	if len(hostPaths) > 0 {
+		updateStage("files", "Copying files and directories from host...", 75)
+		if err := m.CopyHostPaths(ctx, sanitizedID, hostPaths); err != nil {
+			log.Printf("copy host paths for %s: %v", containerName, err)
+		}
+	}
+
+	// 6. Start Container
 	updateStage("starting", "Starting desktop environment...", 80)
 	if err := m.client.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
 		fail(fmt.Errorf("start container: %w", err))
