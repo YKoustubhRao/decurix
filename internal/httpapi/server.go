@@ -204,6 +204,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/desktops/suggest", s.suggestDesktopHandler)
 	mux.HandleFunc("/api/host-apps/detect", s.detectHostAppsHandler)
 	mux.HandleFunc("/api/host-paths/validate", s.validateHostPathHandler)
+	mux.HandleFunc("/api/host-paths/open-explorer", s.openHostExplorerHandler)
+	mux.HandleFunc("/api/host-paths/browse", s.browseHostPathHandler)
 	// A linked phone connects here as a paired device (the gate checks its
 	// cookie on the tunnel's listener, the handler checks it on both).
 	mux.HandleFunc("/api/phones/connect", s.phoneConnectHandler)
