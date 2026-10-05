@@ -7,6 +7,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -561,7 +563,7 @@ func (s *Server) closeOpenTasks(id, why string) {
 }
 
 // validateHostPathHandler checks whether a path on the host filesystem exists
-// and returns whether it is a file or directory, its size, and name.
+// and returns whether it is a file or directory, its size, name, and default VM destination.
 // GET or POST /api/host-paths/validate?path=...
 func (s *Server) validateHostPathHandler(w http.ResponseWriter, r *http.Request) {
 	hostPath := strings.TrimSpace(r.FormValue("path"))
@@ -570,23 +572,146 @@ func (s *Server) validateHostPathHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	defaultDest := desktop.ComputeDefaultVMDest(hostPath)
 	fi, err := os.Stat(hostPath)
 	if err != nil {
 		jsonResponse(w, map[string]any{
-			"valid":  false,
-			"exists": false,
-			"path":   hostPath,
-			"error":  "Path not found on host",
+			"valid":        false,
+			"exists":       false,
+			"path":         hostPath,
+			"default_dest": defaultDest,
+			"error":        "Path not found on host",
 		})
 		return
 	}
 
 	jsonResponse(w, map[string]any{
-		"valid":  true,
-		"exists": true,
-		"is_dir": fi.IsDir(),
-		"name":   fi.Name(),
-		"size":   fi.Size(),
-		"path":   hostPath,
+		"valid":        true,
+		"exists":       true,
+		"is_dir":       fi.IsDir(),
+		"name":         fi.Name(),
+		"size":         fi.Size(),
+		"path":         hostPath,
+		"default_dest": defaultDest,
 	})
+}
+
+// openHostExplorerHandler opens the native OS File Explorer (Windows Explorer, macOS Finder, or Linux file manager)
+// for a given host path, or the user's home directory.
+// POST /api/host-paths/open-explorer or GET /api/host-paths/open-explorer?path=...
+func (s *Server) openHostExplorerHandler(w http.ResponseWriter, r *http.Request) {
+	targetPath := strings.TrimSpace(r.FormValue("path"))
+	if targetPath == "" || targetPath == "." {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			targetPath = home
+		} else {
+			targetPath = "."
+		}
+	}
+
+	targetClean := filepath.Clean(targetPath)
+	fi, statErr := os.Stat(targetClean)
+	isFile := statErr == nil && !fi.IsDir()
+
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		if isFile {
+			cmd = exec.Command("explorer.exe", "/select,"+targetClean)
+		} else {
+			cmd = exec.Command("explorer.exe", targetClean)
+		}
+	case "darwin":
+		if isFile {
+			cmd = exec.Command("open", "-R", targetClean)
+		} else {
+			cmd = exec.Command("open", targetClean)
+		}
+	default: // Linux / BSD
+		if isFile {
+			cmd = exec.Command("xdg-open", filepath.Dir(targetClean))
+		} else {
+			cmd = exec.Command("xdg-open", targetClean)
+		}
+	}
+
+	if err := cmd.Start(); err != nil {
+		log.Printf("openHostExplorer %q: %v", targetClean, err)
+		jsonError(w, fmt.Errorf("failed to open file explorer: %w", err))
+		return
+	}
+
+	jsonResponse(w, map[string]any{
+		"ok":   true,
+		"path": targetClean,
+		"os":   runtime.GOOS,
+	})
+}
+
+// browseHostPathHandler opens the native OS file/folder picker dialog.
+// GET or POST /api/host-paths/browse?type=folder or type=file
+func (s *Server) browseHostPathHandler(w http.ResponseWriter, r *http.Request) {
+	browseType := strings.ToLower(strings.TrimSpace(r.FormValue("type")))
+	isFolder := browseType == "folder" || browseType == "dir" || browseType == "directory"
+
+	paths, err := pickHostPathsOS(isFolder)
+	if err != nil {
+		log.Printf("browseHostPath: %v", err)
+	}
+
+	jsonResponse(w, map[string]any{
+		"ok":    true,
+		"paths": paths,
+	})
+}
+
+func pickHostPathsOS(isFolder bool) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		var script string
+		if isFolder {
+			script = `Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.FolderBrowserDialog; $f.Description = 'Select folder to copy into Decurix VM'; if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $f.SelectedPath }`
+		} else {
+			script = `Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.OpenFileDialog; $f.Title = 'Select files to copy into Decurix VM'; $f.Multiselect = $true; if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $f.FileNames | ForEach-Object { Write-Output $_ } }`
+		}
+		cmd = exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	case "darwin":
+		var script string
+		if isFolder {
+			script = `POSIX path of (choose folder with prompt "Select folder to copy into Decurix VM")`
+		} else {
+			script = `set f to choose file with prompt "Select files to copy into Decurix VM" with multiple selections allowed
+set out to ""
+repeat with item_ref in f
+    set out to out & (POSIX path of item_ref) & linefeed
+end repeat
+return out`
+		}
+		cmd = exec.CommandContext(ctx, "osascript", "-e", script)
+	default:
+		if isFolder {
+			cmd = exec.CommandContext(ctx, "zenity", "--file-selection", "--directory", "--title=Select folder to copy into Decurix VM")
+		} else {
+			cmd = exec.CommandContext(ctx, "zenity", "--file-selection", "--multiple", "--separator=\n", "--title=Select files to copy into Decurix VM")
+		}
+	}
+
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	var result []string
+	for _, l := range lines {
+		l = strings.TrimSpace(l)
+		if l != "" {
+			result = append(result, l)
+		}
+	}
+	return result, nil
 }
