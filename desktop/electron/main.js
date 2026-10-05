@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, Menu, powerSaveBlocker, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Menu, powerSaveBlocker, shell } = require('electron');
 const { spawn } = require('node:child_process');
 const dgram = require('node:dgram');
 const fs = require('node:fs');
@@ -531,4 +531,35 @@ if (!app.requestSingleInstanceLock()) {
     app.quit();
   });
   ipcMain.on('retry-startup', () => { if (!starting && window) start(); });
+
+  if (ipcMain.handle) {
+    ipcMain.handle('open-explorer', async (_event, targetPath) => {
+      try {
+        if (targetPath && fs.existsSync(targetPath)) {
+          shell.showItemInFolder(targetPath);
+          return { ok: true };
+        }
+        shell.openPath(os.homedir());
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    });
+
+    ipcMain.handle('pick-paths', async (_event, options = {}) => {
+      try {
+        if (!dialog || !dialog.showOpenDialog) return { canceled: true, paths: [] };
+        const isFolder = options.type === 'folder';
+        const properties = isFolder ? ['openDirectory', 'multiSelections'] : ['openFile', 'multiSelections'];
+        const res = await dialog.showOpenDialog(window, {
+          title: isFolder ? 'Select folder(s) to copy into VM' : 'Select file(s) to copy into VM',
+          properties: properties,
+        });
+        if (res.canceled) return { canceled: true, paths: [] };
+        return { canceled: false, paths: res.filePaths };
+      } catch (err) {
+        return { canceled: true, paths: [], error: err.message };
+      }
+    });
+  }
 }
