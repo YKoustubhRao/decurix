@@ -525,10 +525,57 @@ func (s *Session) Running() string {
 // resolves target the way a launch does (a shortcut, a Start-menu address, a browser given a profile of its own), so
 // what it refuses to hide for a copied app it refuses here too, with the same reason.
 func (s *Session) Open(target, args string) error {
-	if strings.ContainsAny(target+args, "\r\n") || strings.Contains(target, "\t") || strings.TrimSpace(target) == "" {
+	return s.open(target, args, "")
+}
+
+// OpenConfined is Open for a program that must not run as the person whose computer this is - a terminal on a worker's
+// screen: it is started in a sandbox of the worker's own (an AppContainer), where folder is the only part of the
+// person's disk it can read or write, and from which nothing on this computer can be reached over the network.
+func (s *Session) OpenConfined(target, args, folder string) error {
+	if strings.ContainsAny(folder, "\r\n\t") || strings.TrimSpace(folder) == "" {
+		return errors.New("invalid folder")
+	}
+	return s.open(target, args, "\tsandbox\t"+folder)
+}
+
+// opened is where the result of the open with this ticket is put and taken: made by whichever of the two comes first.
+func (s *Session) opened(ticket string) chan string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.opens == nil {
+		s.opens = map[string]chan string{}
+	}
+	ch, ok := s.opens[ticket]
+	if !ok {
+		ch = make(chan string, 1)
+		s.opens[ticket] = ch
+	}
+
+	return ch
+}
+
+func (s *Session) open(target, args, confined string) error {
+	if strings.ContainsAny(target+args, "\r\n") || strings.Contains(target+args, "\t") || strings.TrimSpace(target) == "" {
 		return errors.New("invalid application")
 	}
-	resp, err := s.DoTimeout("open\t"+target+"\t"+args, launchRequestTimeout)
+	resp, err := s.DoTimeout("open\t"+target+"\t"+args+confined, launchRequestTimeout)
+	// The helper may do the opening behind its command loop, so that a slow one (a browser's first start, a web app
+	// whose server is still coming up) does not hold up every click on the screen meanwhile: it answers "WAIT <n>"
+	// at once and says how it ended later.
+	if ticket, waiting := strings.CutPrefix(resp, "WAIT "); err == nil && waiting {
+		ticket = strings.TrimSpace(ticket)
+		select {
+		case resp = <-s.opened(ticket):
+		case <-s.done:
+			return s.deadErr()
+		case <-time.After(launchRequestTimeout):
+			return errors.New("the program did not open in time")
+		}
+		s.mu.Lock()
+		delete(s.opens, ticket)
+		s.mu.Unlock()
+	}
 	if err != nil {
 		return err
 	}
@@ -565,6 +612,38 @@ func (s *Session) Snapshot(ctx context.Context) (Update, error) {
 		case <-ctx.Done():
 			return Update{}, ctx.Err()
 		}
+	}
+}
+
+// maxThumbnail bounds one small picture from the helper.
+const maxThumbnail = 8 << 20
+
+// ErrNoThumbnail is a helper that does not make small pictures (or has none to give): the caller takes a Snapshot.
+var ErrNoThumbnail = errors.New("the host helper gave no thumbnail")
+
+// Thumbnail is the whole picture as it is now, as a JPEG at most width wide - made at that size by the helper, which
+// sends nothing at all when the screen shows what its last thumbnail did. For a dashboard card: a Snapshot is the
+// screen at full size, which had to be decoded, shrunk and encoded again for every card every few seconds.
+func (s *Session) Thumbnail(width int) ([]byte, error) {
+	s.thumbMu.Lock()
+	defer s.thumbMu.Unlock()
+
+	resp, err := s.Do("thumb " + strconv.Itoa(width))
+	if err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	switch {
+	case resp == "THUMB same" && s.thumbKept != nil && s.thumbWidth == width:
+		return s.thumbKept, nil
+	case strings.HasPrefix(resp, "THUMB ") && resp != "THUMB same" && s.thumbSent != nil:
+		s.thumbKept, s.thumbWidth, s.thumbSent = s.thumbSent, width, nil
+		return s.thumbKept, nil
+	default:
+		return nil, ErrNoThumbnail
 	}
 }
 
@@ -749,6 +828,15 @@ type Session struct {
 	goneOnce    sync.Once
 	stopOnce    sync.Once
 	onEvent     func(string) // see OnEvent
+
+	// The last small picture the helper made (see Thumbnail): what it just sent, and the one kept with its width.
+	thumbMu    sync.Mutex
+	thumbSent  []byte
+	thumbKept  []byte
+	thumbWidth int
+
+	// opens are the opens the helper is doing behind its command loop, by ticket (see open).
+	opens map[string]chan string
 }
 
 func newSession(id string, cmd *exec.Cmd) (*Session, error) {
@@ -805,9 +893,36 @@ func (s *Session) read(r *bufio.Reader) {
 					return
 				}
 				s.publish(u.Update)
+			case strings.HasPrefix(line, "THUMB "):
+				// "THUMB <w> <h> <n>" is followed by the picture; "THUMB same" by nothing. Either is the answer to a
+				// thumb command, so the line goes on to whoever asked.
+				if f := strings.Fields(line); len(f) == 4 {
+					n, convErr := strconv.Atoi(f[3])
+					if convErr != nil || n <= 0 || n > maxThumbnail {
+						s.fail(fmt.Errorf("the host helper sent a thumbnail header the control plane could not read: %q", truncate(line, 80)))
+						go s.Stop()
+						return
+					}
+					data := make([]byte, n)
+					if _, err := io.ReadFull(r, data); err != nil {
+						return
+					}
+					s.mu.Lock()
+					s.thumbSent = data
+					s.mu.Unlock()
+				}
+				select {
+				case s.replies <- line:
+				case <-s.done:
+					return
+				}
 			case strings.HasPrefix(line, "EVENT "):
 				if event := strings.TrimPrefix(line, "EVENT "); event == "closed" {
 					s.markAppGone()
+				} else if rest, ok := strings.CutPrefix(event, "opened "); ok {
+					// How an open that was answered "WAIT <n>" ended: for whoever is waiting on that n.
+					ticket, said, _ := strings.Cut(rest, " ")
+					s.opened(ticket) <- said
 				} else {
 					s.event(event)
 				}

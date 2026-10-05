@@ -118,6 +118,10 @@ type NativeApp struct {
 	// Icon is what the icon is drawn from when that is not the program (the
 	// Files shortcut shows a folder, not PowerShell).
 	Icon string `json:"icon,omitempty"`
+	// Confined is a program started in the worker's own sandbox, with the
+	// worker's work folder as the only part of this computer's disk it can
+	// touch (winhost.Session.OpenConfined): the Terminal.
+	Confined bool `json:"confined,omitempty"`
 }
 
 // NativeFilesAppID is the shortcut every native worker has to browse its own
@@ -150,7 +154,19 @@ func (h *nativeHost) withFilesApp(id string, apps []NativeApp) []NativeApp {
 	terminal := NativeApp{
 		ID: NativeTerminalAppID, Name: "Terminal", Kind: NativeAppProgram,
 		Target: powershell,
-		Args:   `-NoLogo -NoExit -Command "Set-Location -LiteralPath '` + filepath.Join(home, "work") + `'"`,
+		// The worker's own terminal, not the person's: confined to the
+		// worker's work folder, where it starts. A worker runs on the
+		// person's computer, and a terminal on its screen that was simply
+		// their PowerShell was a shell on that whole computer for whoever
+		// could see the worker's screen.
+		Confined: true,
+		// Titled here: a console window is otherwise named for what holds it.
+		// PowerShell will not enter a folder whose parents it cannot read
+		// (measured in the sandbox: "Set-Location: Access is denied", and it
+		// starts at C:\ instead) - and the person's folders above the worker's
+		// are exactly what the sandbox keeps from it. So the work folder, which
+		// the sandbox starts it in, is given to it as a drive of its own.
+		Args: `-NoLogo -NoProfile -NoExit -Command "$Host.UI.RawUI.WindowTitle = 'Terminal'; New-PSDrive -Name Work -PSProvider FileSystem -Root ([Environment]::CurrentDirectory) | Out-Null; Set-Location -LiteralPath 'Work:\'"`,
 	}
 
 	out := []NativeApp{files, terminal}
@@ -271,6 +287,10 @@ func (m *Manager) OpenNativeProgram(rawID string, app NativeApp) error {
 
 	if app.Kind != NativeAppProgram {
 		return fmt.Errorf("%s is not a program", app.Name)
+	}
+
+	if app.Confined {
+		return session.OpenConfined(app.Target, app.Args, filepath.Join(m.native.home(sanitizeName(rawID)), "work"))
 	}
 
 	return session.Open(app.Target, app.Args)
@@ -1008,6 +1028,16 @@ func (h *nativeHost) screenshot(ctx context.Context, id string, maxWidth int) ([
 	session, err := h.session(id)
 	if err != nil {
 		return nil, err
+	}
+
+	// The helper makes the small picture itself; only one that cannot (or a
+	// picture wanted at full size) is given the whole screen to shrink here.
+	if maxWidth > 0 {
+		if small, err := session.Thumbnail(maxWidth); err == nil {
+			return small, nil
+		} else if !errors.Is(err, winhost.ErrNoThumbnail) {
+			return nil, err
+		}
 	}
 
 	shotCtx, cancel := context.WithTimeout(ctx, 8*time.Second)

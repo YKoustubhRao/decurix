@@ -131,6 +131,16 @@ func nativeHelper(ctx context.Context, desktopName string) (*exec.Cmd, error) {
 		}
 	}
 
+	// The helper as a program of its own when this computer has it built (it
+	// is built the first time, in a few seconds): a third of the memory of a
+	// PowerShell kept running for each worker.
+	if program := winhost.ScreenProgram(ps, script, hideWindow); program != "" {
+		cmd := exec.CommandContext(ctx, program, "-DesktopName", desktopName, "-Script", script)
+		hideWindow(cmd)
+
+		return cmd, nil
+	}
+
 	cmd := exec.CommandContext(ctx, ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-DesktopName", desktopName)
 	hideWindow(cmd)
 
