@@ -801,73 +801,64 @@
   justify-content:space-between;
   gap:12px;
 }
-.host-files-toggle-wrap{
-  display:inline-flex;
-  align-items:center;
-  cursor:pointer;
-  user-select:none;
-}
-.host-files-toggle{
-  position:relative;
-  width:40px;
-  height:22px;
-  appearance:none;
-  -webkit-appearance:none;
-  background:var(--line-2, rgba(255,255,255,0.15));
-  outline:none;
-  border-radius:12px;
-  cursor:pointer;
-  transition:background .2s ease;
-  border:1px solid var(--line-2);
-  margin:0;
-}
-.host-files-toggle:checked{
-  background:var(--accent, #38bdf8);
-  border-color:var(--accent, #38bdf8);
-}
-.host-files-toggle::after{
-  content:'';
-  position:absolute;
-  top:2px;
-  left:2px;
-  width:16px;
-  height:16px;
-  border-radius:50%;
-  background:#fff;
-  transition:transform .2s ease;
-  box-shadow:0 1px 3px rgba(0,0,0,0.3);
-}
-.host-files-toggle:checked::after{
-  transform:translateX(18px);
-}
-.host-files-panel{
-  margin-top:12px;
-  padding-top:10px;
-  border-top:1px solid var(--line);
-}
 .host-files-rows{
   display:flex;
   flex-direction:column;
   gap:6px;
   max-height:200px;
   overflow-y:auto;
+  margin-top:10px;
 }
+.host-files-rows:empty{display:none}
 .host-file-row{
   display:flex;
-  gap:8px;
+  gap:10px;
   align-items:center;
+  padding:6px 8px 6px 10px;
+  background:var(--surface);
+  border:1px solid var(--line);
+  border-radius:var(--r-md, 8px);
 }
-.host-file-status{
+.host-file-kind{
+  flex:none;
   font-size:11px;
-  font-weight:500;
+  font-weight:600;
+  color:var(--text-3);
+  width:42px;
+}
+.host-file-paths{
+  flex:1;
+  min-width:0;
+  font-family:var(--font-mono);
+  font-size:12px;
+  line-height:1.4;
+}
+.host-file-paths div{
+  overflow:hidden;
+  text-overflow:ellipsis;
   white-space:nowrap;
 }
-.host-file-status.ok{
-  color:var(--green, #22c55e);
+.host-file-dest{color:var(--text-3)}
+.host-files-actions{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  align-items:center;
+  margin-top:10px;
 }
-.host-file-status.err{
-  color:var(--red, #ef4444);
+.host-files-actions [hidden]{display:none}
+.host-files-actions .input{
+  flex:1;
+  min-width:180px;
+  height:30px;
+  font-family:var(--font-mono);
+  font-size:12px;
 }
+.host-files-note{
+  font-size:12px;
+  color:var(--text-3);
+}
+.host-files-note.err{color:var(--red, #ef4444)}
 
 /* ---------- claude login dialog ---------- */
 
@@ -1466,21 +1457,19 @@
         <div class="host-files-head">
           <div>
             <span class="field-label" style="margin-bottom:2px">Copy files &amp; directories from host</span>
-            <div class="hint">Copy files or folders from this computer into the VM filesystem (e.g. documents, code repositories, datasets).</div>
+            <div class="hint">Each one is put at the same place in the desktop's home folder as it has in yours.</div>
           </div>
-          <label class="host-files-toggle-wrap">
-            <input type="checkbox" class="host-files-toggle" id="dCopyHostFiles" name="copy_host_files" value="1">
-          </label>
         </div>
 
-        <div class="host-files-panel" id="hostFilesPanel" style="display:none">
-          <div class="host-files-rows" id="hostFilesRows">
-            <!-- Dynamic rows with host path, VM destination, and remove button -->
-          </div>
-          <div style="margin-top:8px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-            <button type="button" class="btn btn-quiet btn-xs" id="addHostPathBtn">+ Add another path</button>
-            <span class="hint" style="margin:0;font-size:11px">Destination defaults to /home/headless/&lt;basename&gt;</span>
-          </div>
+        <div class="host-files-rows" id="hostFilesRows"></div>
+
+        <div class="host-files-actions">
+          <button type="button" class="btn btn-quiet btn-xs" id="hostFilesMore">+ More</button>
+          <button type="button" class="btn btn-quiet btn-xs" id="hostFilesPickFolder" hidden>Folder…</button>
+          <button type="button" class="btn btn-quiet btn-xs" id="hostFilesPickFile" hidden>Files…</button>
+          <input type="text" class="input input-sm" id="hostFilesTyped" placeholder="Path of a file or folder on the host" hidden>
+          <button type="button" class="btn btn-quiet btn-xs" id="hostFilesTypedAdd" hidden>Add</button>
+          <span class="host-files-note" id="hostFilesNote"></span>
         </div>
       </div>
     </div>
@@ -2163,127 +2152,151 @@
 
   /* ---------------- host files & directories copy ---------------- */
 
-  var dCopyHostFiles = document.getElementById("dCopyHostFiles");
-  var hostFilesPanel = document.getElementById("hostFilesPanel");
+  /* What is copied is chosen in this computer's own file chooser, opened by
+     the control plane; where it goes in the desktop is worked out from where
+     it is here, never typed. A page that cannot have a chooser opened for it
+     (a phone, a control plane in a container) types the host path instead. */
   var hostFilesRows = document.getElementById("hostFilesRows");
-  var addHostPathBtn = document.getElementById("addHostPathBtn");
+  var hostFilesMore = document.getElementById("hostFilesMore");
+  var hostFilesPickFolder = document.getElementById("hostFilesPickFolder");
+  var hostFilesPickFile = document.getElementById("hostFilesPickFile");
+  var hostFilesTyped = document.getElementById("hostFilesTyped");
+  var hostFilesTypedAdd = document.getElementById("hostFilesTypedAdd");
+  var hostFilesNote = document.getElementById("hostFilesNote");
+  var hostFilesChosen = [];
+  var hostFilesNoPicker = false;
 
-  function createHostFileRow(srcVal, destVal){
-    var row = document.createElement("div");
-    row.className = "host-file-row";
-    row.style.cssText = "display:flex;gap:8px;align-items:center;margin-bottom:6px";
+  function hostFilesSay(text, isError){
+    hostFilesNote.textContent = text || "";
+    hostFilesNote.className = "host-files-note" + (isError ? " err" : "");
+  }
 
-    var srcInput = document.createElement("input");
-    srcInput.className = "input input-sm host-src-input";
-    srcInput.type = "text";
-    srcInput.placeholder = "Host path (e.g. C:\\projects\\repo or /data)";
-    srcInput.style.cssText = "flex:2;font-family:var(--font-mono);font-size:12px;height:30px";
-    if(srcVal) srcInput.value = srcVal;
+  function hostFilesShowChoices(show){
+    hostFilesPickFolder.hidden = !show || hostFilesNoPicker;
+    hostFilesPickFile.hidden = !show || hostFilesNoPicker;
+    hostFilesTyped.hidden = !show || !hostFilesNoPicker;
+    hostFilesTypedAdd.hidden = !show || !hostFilesNoPicker;
+    if(show && hostFilesNoPicker){ hostFilesTyped.focus(); }
+  }
 
-    var arrow = document.createElement("span");
-    arrow.textContent = "→";
-    arrow.style.cssText = "color:var(--text-3);font-size:12px;user-select:none";
+  function renderHostFiles(){
+    hostFilesRows.textContent = "";
+    hostFilesChosen.forEach(function(item){
+      var row = document.createElement("div");
+      row.className = "host-file-row";
 
-    var destInput = document.createElement("input");
-    destInput.className = "input input-sm host-dest-input";
-    destInput.type = "text";
-    destInput.placeholder = "VM destination (optional, e.g. Desktop/repo)";
-    destInput.style.cssText = "flex:1.5;font-family:var(--font-mono);font-size:12px;height:30px";
-    if(destVal) destInput.value = destVal;
+      var kind = document.createElement("span");
+      kind.className = "host-file-kind";
+      kind.textContent = item.is_dir ? "Folder" : "File";
 
-    var statusSpan = document.createElement("span");
-    statusSpan.className = "host-file-status";
-    statusSpan.style.cssText = "font-size:11px;min-width:65px;text-align:right";
+      var paths = document.createElement("div");
+      paths.className = "host-file-paths";
+      var src = document.createElement("div");
+      src.textContent = item.path;
+      src.title = item.path;
+      var dest = document.createElement("div");
+      dest.className = "host-file-dest";
+      dest.textContent = "→ " + String(item.dest || "").replace(/^\/home\/headless/, "~");
+      dest.title = "Where it will be in the desktop";
+      paths.appendChild(src);
+      paths.appendChild(dest);
 
-    var removeBtn = document.createElement("button");
-    removeBtn.type = "button";
-    removeBtn.className = "btn btn-quiet btn-xs remove-host-path-btn";
-    removeBtn.title = "Remove path";
-    removeBtn.style.cssText = "height:30px;padding:0 8px;line-height:1";
-    removeBtn.textContent = "✕";
-    removeBtn.addEventListener("click", function(){
-      row.remove();
-      if(hostFilesRows.querySelectorAll(".host-file-row").length === 0){
-        createHostFileRow();
-      }
+      var remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "btn btn-quiet btn-xs";
+      remove.title = "Do not copy this";
+      remove.textContent = "✕";
+      remove.addEventListener("click", function(){
+        hostFilesChosen = hostFilesChosen.filter(function(other){ return other !== item; });
+        renderHostFiles();
+      });
+
+      row.appendChild(kind);
+      row.appendChild(paths);
+      row.appendChild(remove);
+      hostFilesRows.appendChild(row);
     });
+  }
 
-    var validateTimer = null;
-    function checkPath(){
-      var p = srcInput.value.trim();
-      if(!p){
-        statusSpan.textContent = "";
-        statusSpan.className = "host-file-status";
-        return;
-      }
-      fetch("/api/host-paths/validate?path=" + encodeURIComponent(p))
-        .then(function(res){ return res.json(); })
-        .then(function(data){
-          if(data && data.exists){
-            statusSpan.textContent = data.is_dir ? "📁 Folder" : "📄 File";
-            statusSpan.className = "host-file-status ok";
-          } else {
-            statusSpan.textContent = "✕ Missing";
-            statusSpan.className = "host-file-status err";
-          }
-        })
-        .catch(function(){
-          statusSpan.textContent = "";
-        });
-    }
-
-    srcInput.addEventListener("input", function(){
-      clearTimeout(validateTimer);
-      validateTimer = setTimeout(checkPath, 400);
+  function addHostFiles(items){
+    (items || []).forEach(function(item){
+      var known = hostFilesChosen.some(function(other){ return other.path === item.path; });
+      if(item && item.path && !known){ hostFilesChosen.push(item); }
     });
-    srcInput.addEventListener("blur", checkPath);
+    renderHostFiles();
+  }
 
-    row.appendChild(srcInput);
-    row.appendChild(arrow);
-    row.appendChild(destInput);
-    row.appendChild(statusSpan);
-    row.appendChild(removeBtn);
-    hostFilesRows.appendChild(row);
+  function pickHostFiles(type){
+    hostFilesPickFolder.disabled = hostFilesPickFile.disabled = hostFilesMore.disabled = true;
+    hostFilesSay("Choose in the window that opened on this computer…");
 
-    if(srcVal) checkPath();
-    return row;
+    fetch("/api/host-paths/browse?type=" + type, {method: "POST"})
+      .then(function(res){
+        if(res.status === 403 || res.status === 404){ return {unavailable: true}; }
+        if(!res.ok){ throw new Error("failed"); }
+        return res.json();
+      })
+      .then(function(data){
+        hostFilesSay("");
+        if(data.unavailable){
+          hostFilesNoPicker = true;
+          hostFilesShowChoices(true);
+          hostFilesSay("No file chooser can be opened from here. Type the path instead.");
+          return;
+        }
+        if(data.busy){
+          hostFilesSay("A chooser is already open on this computer.", true);
+          return;
+        }
+        addHostFiles(data.paths);
+        hostFilesShowChoices(false);
+      })
+      .catch(function(){
+        hostFilesSay("Could not open the file chooser.", true);
+      })
+      .then(function(){
+        hostFilesPickFolder.disabled = hostFilesPickFile.disabled = hostFilesMore.disabled = false;
+      });
+  }
+
+  function addTypedHostFile(){
+    var typed = hostFilesTyped.value.trim();
+    if(!typed){ return; }
+
+    fetch("/api/host-paths/validate?path=" + encodeURIComponent(typed))
+      .then(function(res){ return res.json(); })
+      .then(function(data){
+        if(!data || !data.exists){
+          hostFilesSay("Nothing is at that path on the host.", true);
+          return;
+        }
+        addHostFiles([{path: data.path, is_dir: data.is_dir, dest: data.default_dest}]);
+        hostFilesTyped.value = "";
+        hostFilesSay("");
+      })
+      .catch(function(){
+        hostFilesSay("Could not check that path.", true);
+      });
   }
 
   function resetHostFilesSection(){
-    if(dCopyHostFiles){
-      dCopyHostFiles.checked = false;
-    }
-    if(hostFilesPanel){
-      hostFilesPanel.style.display = "none";
-    }
-    if(hostFilesRows){
-      hostFilesRows.innerHTML = "";
-    }
+    hostFilesChosen = [];
+    renderHostFiles();
+    hostFilesShowChoices(false);
+    hostFilesTyped.value = "";
+    hostFilesSay("");
   }
 
-  if(dCopyHostFiles){
-    dCopyHostFiles.addEventListener("change", function(){
-      var active = dCopyHostFiles.checked;
-      if(hostFilesPanel){
-        hostFilesPanel.style.display = active ? "" : "none";
-      }
-      if(active && hostFilesRows){
-        if(hostFilesRows.querySelectorAll(".host-file-row").length === 0){
-          var row = createHostFileRow();
-          var input = row.querySelector(".host-src-input");
-          if(input) input.focus();
-        }
-      }
-    });
-  }
-
-  if(addHostPathBtn){
-    addHostPathBtn.addEventListener("click", function(){
-      var row = createHostFileRow();
-      var input = row.querySelector(".host-src-input");
-      if(input) input.focus();
-    });
-  }
+  hostFilesMore.addEventListener("click", function(){
+    var shown = hostFilesNoPicker ? !hostFilesTyped.hidden : !hostFilesPickFolder.hidden;
+    hostFilesShowChoices(!shown);
+  });
+  hostFilesPickFolder.addEventListener("click", function(){ pickHostFiles("folder"); });
+  hostFilesPickFile.addEventListener("click", function(){ pickHostFiles("file"); });
+  hostFilesTypedAdd.addEventListener("click", addTypedHostFile);
+  hostFilesTyped.addEventListener("keydown", function(e){
+    if(e.key === "Enter"){ e.preventDefault(); addTypedHostFile(); }
+  });
 
   function insertProvisioningCard(info){
     var grid = document.querySelector(".grid");
@@ -2419,26 +2432,9 @@
       });
     }
 
-    var copyHostFiles = dCopyHostFiles && dCopyHostFiles.checked;
-    var hostCopyPaths = [];
-    if(copyHostFiles && hostFilesRows){
-      hostFilesRows.querySelectorAll(".host-file-row").forEach(function(row){
-        var srcInput = row.querySelector(".host-src-input");
-        var destInput = row.querySelector(".host-dest-input");
-        var src = srcInput ? srcInput.value.trim() : "";
-        var dest = destInput ? destInput.value.trim() : "";
-        if(src){
-          hostCopyPaths.push({src: src, dest: dest});
-        }
-      });
-      if(hostCopyPaths.length === 0){
-        busy(false);
-        submit.disabled = false;
-        submit.textContent = "Create desktop";
-        toast("Please specify at least one host path to copy, or uncheck the files toggle.", "error");
-        return;
-      }
-    }
+    /* No destination is sent: the control plane maps each path itself. */
+    var hostCopyPaths = hostFilesChosen.map(function(item){ return {src: item.path, dest: ""}; });
+    var copyHostFiles = hostCopyPaths.length > 0;
 
     // Immediately insert spinning VM card into the dashboard grid
     var card = insertProvisioningCard({
