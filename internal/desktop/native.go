@@ -115,6 +115,52 @@ type NativeApp struct {
 	// a shortcut or a Start-menu address) with Args.
 	Target string `json:"target"`
 	Args   string `json:"args,omitempty"`
+	// Icon is what the icon is drawn from when that is not the program (the
+	// Files shortcut shows a folder, not PowerShell).
+	Icon string `json:"icon,omitempty"`
+}
+
+// NativeFilesAppID is the shortcut every native worker has to browse its own
+// folder. A private desktop runs no Explorer, so it starts a small browser
+// (decurix_agent/files_browser.ps1) limited to the worker's home.
+const NativeFilesAppID = "files"
+
+// NativeTerminalAppID is the shortcut every native worker has for a PowerShell
+// window of its own, opened in its work folder.
+const NativeTerminalAppID = "terminal"
+
+// withFilesApp puts the Files shortcut first among a worker's apps, made fresh
+// from where the runtime and the worker's home are now.
+func (h *nativeHost) withFilesApp(id string, apps []NativeApp) []NativeApp {
+	root := os.Getenv("SystemRoot")
+	if root == "" {
+		root = `C:\Windows`
+	}
+
+	script := filepath.Join(h.rt.AgentDir, "decurix_agent", "files_browser.ps1")
+	home := h.home(id)
+	files := NativeApp{
+		ID: NativeFilesAppID, Name: "Files", Kind: NativeAppProgram,
+		Target: filepath.Join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+		Args:   `-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "` + script + `" -Root "` + home + `"`,
+		Icon:   home,
+	}
+
+	powershell := files.Target
+	terminal := NativeApp{
+		ID: NativeTerminalAppID, Name: "Terminal", Kind: NativeAppProgram,
+		Target: powershell,
+		Args:   `-NoLogo -NoExit -Command "Set-Location -LiteralPath '` + filepath.Join(home, "work") + `'"`,
+	}
+
+	out := []NativeApp{files, terminal}
+	for _, app := range apps {
+		if app.ID != NativeFilesAppID && app.ID != NativeTerminalAppID {
+			out = append(out, app)
+		}
+	}
+
+	return out
 }
 
 // nativeApps turns picked entries of the host-app scan into shortcuts. Only
@@ -338,6 +384,8 @@ func (h *nativeHost) readMeta(id string) (nativeMeta, error) {
 	if err := json.Unmarshal(data, &meta); err != nil {
 		return meta, fmt.Errorf("read worker %s: %w", id, err)
 	}
+
+	meta.Apps = h.withFilesApp(id, meta.Apps)
 
 	return meta, nil
 }

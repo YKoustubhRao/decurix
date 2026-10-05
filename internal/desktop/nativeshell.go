@@ -262,6 +262,9 @@ func shortcuts(meta nativeMeta) []winhost.Shortcut {
 		if app.Kind == NativeAppProgram {
 			icon = app.Target
 		}
+		if app.Icon != "" {
+			icon = app.Icon
+		}
 		out = append(out, winhost.Shortcut{ID: app.ID, Name: app.Name, Icon: icon})
 	}
 
