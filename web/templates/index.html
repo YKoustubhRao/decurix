@@ -1456,7 +1456,7 @@
       <div class="field host-files-section" id="hostFilesSection">
         <div class="host-files-head">
           <div>
-            <span class="field-label" style="margin-bottom:2px">Copy files &amp; directories from host</span>
+            <span class="field-label" style="margin-bottom:2px">Copy folders from host</span>
             <div class="hint">Each one is put at the same place in the desktop's home folder as it has in yours.</div>
           </div>
         </div>
@@ -1464,10 +1464,8 @@
         <div class="host-files-rows" id="hostFilesRows"></div>
 
         <div class="host-files-actions">
-          <button type="button" class="btn btn-quiet btn-xs" id="hostFilesMore">+ More</button>
-          <button type="button" class="btn btn-quiet btn-xs" id="hostFilesPickFolder" hidden>Folder…</button>
-          <button type="button" class="btn btn-quiet btn-xs" id="hostFilesPickFile" hidden>Files…</button>
-          <input type="text" class="input input-sm" id="hostFilesTyped" placeholder="Path of a file or folder on the host" hidden>
+          <button type="button" class="btn btn-quiet btn-xs" id="hostFilesPick">+ Add</button>
+          <input type="text" class="input input-sm" id="hostFilesTyped" placeholder="Path of a folder on the host" hidden>
           <button type="button" class="btn btn-quiet btn-xs" id="hostFilesTypedAdd" hidden>Add</button>
           <span class="host-files-note" id="hostFilesNote"></span>
         </div>
@@ -2157,9 +2155,7 @@
      it is here, never typed. A page that cannot have a chooser opened for it
      (a phone, a control plane in a container) types the host path instead. */
   var hostFilesRows = document.getElementById("hostFilesRows");
-  var hostFilesMore = document.getElementById("hostFilesMore");
-  var hostFilesPickFolder = document.getElementById("hostFilesPickFolder");
-  var hostFilesPickFile = document.getElementById("hostFilesPickFile");
+  var hostFilesPick = document.getElementById("hostFilesPick");
   var hostFilesTyped = document.getElementById("hostFilesTyped");
   var hostFilesTypedAdd = document.getElementById("hostFilesTypedAdd");
   var hostFilesNote = document.getElementById("hostFilesNote");
@@ -2172,8 +2168,7 @@
   }
 
   function hostFilesShowChoices(show){
-    hostFilesPickFolder.hidden = !show || hostFilesNoPicker;
-    hostFilesPickFile.hidden = !show || hostFilesNoPicker;
+    hostFilesPick.hidden = hostFilesNoPicker;
     hostFilesTyped.hidden = !show || !hostFilesNoPicker;
     hostFilesTypedAdd.hidden = !show || !hostFilesNoPicker;
     if(show && hostFilesNoPicker){ hostFilesTyped.focus(); }
@@ -2227,7 +2222,7 @@
   }
 
   function pickHostFiles(type){
-    hostFilesPickFolder.disabled = hostFilesPickFile.disabled = hostFilesMore.disabled = true;
+    hostFilesPick.disabled = true;
     hostFilesSay("Choose in the window that opened on this computer…");
 
     fetch("/api/host-paths/browse?type=" + type, {method: "POST"})
@@ -2255,7 +2250,7 @@
         hostFilesSay("Could not open the file chooser.", true);
       })
       .then(function(){
-        hostFilesPickFolder.disabled = hostFilesPickFile.disabled = hostFilesMore.disabled = false;
+        hostFilesPick.disabled = false;
       });
   }
 
@@ -2287,12 +2282,7 @@
     hostFilesSay("");
   }
 
-  hostFilesMore.addEventListener("click", function(){
-    var shown = hostFilesNoPicker ? !hostFilesTyped.hidden : !hostFilesPickFolder.hidden;
-    hostFilesShowChoices(!shown);
-  });
-  hostFilesPickFolder.addEventListener("click", function(){ pickHostFiles("folder"); });
-  hostFilesPickFile.addEventListener("click", function(){ pickHostFiles("file"); });
+  hostFilesPick.addEventListener("click", function(){ pickHostFiles("folder"); });
   hostFilesTypedAdd.addEventListener("click", addTypedHostFile);
   hostFilesTyped.addEventListener("keydown", function(e){
     if(e.key === "Enter"){ e.preventDefault(); addTypedHostFile(); }

@@ -28,7 +28,7 @@ const hostPickTimeout = 15 * time.Minute
 
 // pickHostPaths shows the system's own file chooser and returns what was
 // picked (nothing when it was cancelled). A variable so tests never open one.
-var pickHostPaths = pickHostPathsOS
+var pickHostPaths func(ctx context.Context, folder, either bool) ([]string, error) = pickHostPathsOS
 
 // hostPickOpen keeps a second chooser from opening over the first.
 var hostPickOpen sync.Mutex
@@ -43,7 +43,9 @@ func (s *Server) browseHostPathHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	folder := strings.EqualFold(strings.TrimSpace(r.FormValue("type")), "folder")
+	kind := strings.ToLower(strings.TrimSpace(r.FormValue("type")))
+	folder := kind == "folder"
+	either := kind == "" || kind == "any"
 
 	if !hostPickOpen.TryLock() {
 		jsonResponse(w, map[string]any{"ok": false, "busy": true})
@@ -54,7 +56,7 @@ func (s *Server) browseHostPathHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), hostPickTimeout)
 	defer cancel()
 
-	picked, err := pickHostPaths(ctx, folder)
+	picked, err := pickHostPaths(ctx, folder, either)
 	if errors.Is(err, errNoHostPicker) {
 		jsonResponse(w, map[string]any{"ok": false, "unavailable": true})
 		return
@@ -83,12 +85,15 @@ func (s *Server) browseHostPathHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // pickHostPathsOS runs the chooser of the system the control plane is on.
-func pickHostPathsOS(ctx context.Context, folder bool) ([]string, error) {
+func pickHostPathsOS(ctx context.Context, folder, either bool) ([]string, error) {
 	if _, err := os.Stat("/.dockerenv"); err == nil {
 		return nil, errNoHostPicker
 	}
 
 	title := "Choose files for the new desktop"
+	if either {
+		title = "Choose files, or open a folder and press Open to take it"
+	}
 	if folder {
 		title = "Choose a folder for the new desktop"
 	}
@@ -258,7 +263,27 @@ $owner.Height = 1
 $owner.Opacity = 0
 $owner.Show()
 $owner.Activate()
-$picked = [DecurixPick]::Show($owner.Handle, $folder, $title)
+if ($any) {
+    # Files and folders in one window: the classic dialog, which accepts a folder opened with the placeholder name left in the box.
+    $placeholder = 'Select files or a folder'
+    $dlg = New-Object System.Windows.Forms.OpenFileDialog
+    $dlg.Title = $title
+    $dlg.Multiselect = $true
+    $dlg.CheckFileExists = $false
+    $dlg.CheckPathExists = $true
+    $dlg.ValidateNames = $false
+    $dlg.DereferenceLinks = $false
+    $dlg.FileName = $placeholder
+    $picked = @()
+    if ($dlg.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
+        foreach ($f in $dlg.FileNames) {
+            if ((Split-Path -Leaf $f) -eq $placeholder -and -not (Test-Path -LiteralPath $f)) { $picked += (Split-Path -Parent $f) }
+            elseif (Test-Path -LiteralPath $f) { $picked += $f }
+        }
+    }
+} else {
+    $picked = [DecurixPick]::Show($owner.Handle, $folder, $title)
+}
 $owner.Close()
 $bytes = [System.Text.Encoding]::UTF8.GetBytes(($picked -join [char]10))
 $stdout = [Console]::OpenStandardOutput()

@@ -693,10 +693,10 @@ public class Native {
     // Open is a shortcut's id, or WebMark followed by the words to look up on the web.
     class MenuItem { public Rectangle Box; public string Open; }
     const char WebMark = '\u0001';
-    const int HoverStart = -1, HoverNone = -2, HoverSearch = -3, HoverLang = -4, HoverClock = -5; // barHover, else a window button's index
+    const int HoverStart = -1, HoverNone = -2, HoverSearch = -3, HoverLang = -4, HoverClock = -5, HoverPin = -100; // HoverPin - n is the n-th pinned app; barHover, else a window button's index
     const int MaxQuery = 80;
 
-    static int barH; static Rectangle barRect, startRect, searchRect, langRect, clockRect, menuRect, calRect, calPrev, calNext;
+    static int barH; static List<Rectangle> pinRects = new List<Rectangle>(); static List<Shortcut> pinned = new List<Shortcut>(); static Rectangle barRect, startRect, searchRect, langRect, clockRect, menuRect, calRect, calPrev, calNext;
     static List<TaskButton> barButtons = new List<TaskButton>();
     static List<MenuItem> menuItems = new List<MenuItem>();
     static bool menuOpen, calOpen, shellDown; static int menuHover = -1, menuSel = -1, menuCols = 1, calMonth, barHover = HoverNone;
@@ -839,7 +839,8 @@ public class Native {
         }
         // The time and the date as this computer writes them.
         string clock = DateTime.Now.ToString("t"), day = DateTime.Now.ToString("d");
-        key.Append(clock).Append(day).Append(barHover).Append(menuOpen).Append(calOpen);
+        pinned = shortcuts.FindAll(sc => sc.Id == "files" || sc.Id == "terminal");
+        key.Append(clock).Append(day).Append(barHover).Append(menuOpen).Append(calOpen).Append(pinned.Count);
 
         if (barBmp == null || key.ToString() != barKey || barBmp.Width != barRect.Width) {
             barKey = key.ToString();
@@ -879,7 +880,7 @@ public class Native {
                     float trayLeft = langRect.X - 8 * s;
                     bool wide = barRect.Width >= 900 * s;
                     float searchW = wide ? 190 * s : cell, gap = 6 * s;
-                    float total = cell + searchW + gap + list.Count * cell;
+                    float total = cell + searchW + gap + pinned.Count * cell + list.Count * cell;
                     float x = Math.Max(8 * s, Math.Min((barRect.Width - total) / 2f, trayLeft - total));
                     int icon = (int)Math.Round(24 * s);
 
@@ -905,6 +906,30 @@ public class Native {
                     }
                     x += searchW + gap;
 
+                    // Pinned beside Search: the worker's Files and Terminal, drawn here (a press opens that shortcut).
+                    pinRects.Clear();
+                    for (int pi = 0; pi < pinned.Count; pi++, x += cell) {
+                        pinRects.Add(new Rectangle((int)x, barRect.Y, (int)cell, barRect.Height));
+                        box = new RectangleF(x + pad, pad, tile, tile);
+                        if (barHover == HoverPin - pi) using (var p = Rounded(box, 5 * s)) b.FillPath(hover, p);
+                        if (pinned[pi].Id == "files") {
+                            float fw = 22 * s, fh = 16 * s, fx = box.X + (tile - fw) / 2, fy = box.Y + (tile - fh) / 2 + 1 * s;
+                            using (var back = new SolidBrush(Color.FromArgb(0xd9, 0xa4, 0x2c))) using (var front = new SolidBrush(Color.FromArgb(0xf6, 0xc8, 0x4f))) {
+                                using (var p = Rounded(new RectangleF(fx, fy - 3 * s, fw * 0.45f, 6 * s), 2 * s)) b.FillPath(back, p);
+                                using (var p = Rounded(new RectangleF(fx, fy, fw, fh), 2.5f * s)) b.FillPath(back, p);
+                                using (var p = Rounded(new RectangleF(fx, fy + 3 * s, fw, fh - 3 * s), 2.5f * s)) b.FillPath(front, p);
+                            }
+                        } else {
+                            // A terminal: a dark window with a prompt.
+                            float tw2 = 22 * s, th2 = 16 * s, tx = box.X + (tile - tw2) / 2, ty = box.Y + (tile - th2) / 2;
+                            using (var p = Rounded(new RectangleF(tx, ty, tw2, th2), 3 * s)) { b.FillPath(field, p); b.DrawPath(rim, p); }
+                            using (var pen = new Pen(Ink, 1.6f * s)) {
+                                b.DrawLines(pen, new[] { new PointF(tx + 5 * s, ty + 4.5f * s), new PointF(tx + 9 * s, ty + 8 * s), new PointF(tx + 5 * s, ty + 11.5f * s) });
+                                b.DrawLine(pen, tx + 11 * s, ty + 11.5f * s, tx + 17 * s, ty + 11.5f * s);
+                            }
+                        }
+                    }
+
                     bool first = true;
                     for (int i = 0; i < list.Count && x + cell < trayLeft; i++, x += cell) {
                         box = new RectangleF(x + pad, pad, tile, tile);
@@ -929,6 +954,7 @@ public class Native {
         string tipText = null; float tipAt = 0;
         if (!menuOpen && !calOpen) {
             if (barHover >= 0 && barHover < barButtons.Count) { tipText = barButtons[barHover].Title; tipAt = barButtons[barHover].Box.X + barButtons[barHover].Box.Width / 2f; }
+            else if (barHover <= HoverPin && HoverPin - barHover < pinRects.Count) { int n = HoverPin - barHover; tipText = pinned[n].Name; tipAt = pinRects[n].X + pinRects[n].Width / 2f; }
             else if (barHover == HoverClock) { tipText = DateTime.Now.ToString("D"); tipAt = clockRect.X + clockRect.Width / 2f; }
             else if (barHover == HoverLang) { tipText = langName; tipAt = langRect.X + langRect.Width / 2f; }
         }
@@ -1125,6 +1151,9 @@ public class Native {
             } else if (searchRect.Contains(p.X, p.Y)) {
                 if (!right && !menuOpen) OpenMenu();
                 mine = true;
+            } else if (PinAt(p) >= 0) {
+                if (!right) { open = pinned[PinAt(p)].Id; menuOpen = false; calOpen = false; }
+                mine = true;
             } else if (clockRect.Contains(p.X, p.Y)) {
                 if (!right) { calOpen = !calOpen; calMonth = 0; menuOpen = false; }
                 mine = true;
@@ -1158,12 +1187,19 @@ public class Native {
             else if (inCal) { }
             else if (startRect.Contains(p.X, p.Y)) bar = HoverStart;
             else if (searchRect.Contains(p.X, p.Y)) bar = HoverSearch;
+            else if (PinAt(p) >= 0) bar = HoverPin - PinAt(p);
             else if (clockRect.Contains(p.X, p.Y)) bar = HoverClock;
             else if (langRect.Contains(p.X, p.Y)) bar = HoverLang;
             else if (barRect.Contains(p.X, p.Y)) { for (int i = 0; i < barButtons.Count; i++) if (barButtons[i].Box.Contains(p.X - barRect.X, p.Y - barRect.Y)) bar = i; }
             barHover = bar; menuHover = item;
             return inMenu || inCal || barRect.Contains(p.X, p.Y);
         }
+    }
+
+    // Which pinned app a point is on, or -1. Called with deskLock held.
+    static int PinAt(POINT p) {
+        for (int i = 0; i < pinRects.Count && i < pinned.Count; i++) if (pinRects[i].Contains(p.X, p.Y)) return i;
+        return -1;
     }
 
     // Opens the Start panel, or puts it away: what the Start key does.
@@ -1748,6 +1784,35 @@ function Resolve-Program([string]$target, [string]$argLine) {
     return $r
 }
 
+# A small launcher that only opens a web app in the person's browser ("ERPNext.exe": msedge --app=http://localhost:8000). Run
+# on the private desktop it starts that browser on the person's own profile, which hands the page to the copy already open on
+# the visible desktop - so nothing appears in the worker. Such a launcher is recognised by the text a managed or native
+# program keeps in its file (the "--app=" flag and an http(s) address), and replaced by the same page opened in a browser of
+# its own: the program itself is never run. Anything bigger or without both is an ordinary program.
+function Resolve-WebLauncher([string]$exe) {
+    if ([IO.Path]::GetExtension($exe).ToLower() -ne '.exe') { return $null }
+    try {
+        if ((Get-Item -LiteralPath $exe -ErrorAction Stop).Length -gt 2MB) { return $null }
+        $bytes = [IO.File]::ReadAllBytes($exe)
+    } catch { return $null }
+    # UTF-16 text can start at either byte of a pair, so both alignments are read.
+    $even = $bytes.Length - ($bytes.Length % 2)
+    $odd = $bytes.Length - 1 - (($bytes.Length - 1) % 2)
+    $text = [Text.Encoding]::Unicode.GetString($bytes, 0, $even) + "`n" + [Text.Encoding]::Unicode.GetString($bytes, 1, $odd) + "`n" + [Text.Encoding]::ASCII.GetString($bytes)
+    if ($text -notmatch '--app=') { return $null }
+    $m = [regex]::Match($text, 'https?://[A-Za-z0-9._~:/?#@!$&''()*+,;=%-]+')
+    if (-not $m.Success) { return $null }
+    $url = $m.Value
+    foreach ($b in @(
+        @{ P = "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"; B = 'msedge' },
+        @{ P = "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe"; B = 'msedge' },
+        @{ P = "$env:ProgramFiles\Google\Chrome\Application\chrome.exe"; B = 'chrome' },
+        @{ P = "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe"; B = 'chrome' })) {
+        if (Test-Path -LiteralPath $b.P) { return @{ Target = $b.P; Args = "--app=$url"; Base = $b.B } }
+    }
+    return $null
+}
+
 function Resolve-ProgramUncached([string]$target, [string]$argLine) {
     if ($target -match '^shell:AppsFolder\\(\{[0-9A-Fa-f-]+\})\\(.+)$' -and $KnownFolders.ContainsKey($Matches[1].ToUpper())) {
         $target = Join-Path $KnownFolders[$Matches[1].ToUpper()] $Matches[2]
@@ -1776,6 +1841,8 @@ function Resolve-ProgramUncached([string]$target, [string]$argLine) {
     if ($refusal) { return @{ Error = $refusal } }
     # Never inherit our own working directory: it can be a \\wsl.localhost UNC path, which Electron apps reject.
     if (-not $workDir) { $workDir = [IO.Path]::GetDirectoryName($target) }
+    $web = Resolve-WebLauncher $target
+    if ($web) { return @{ Target = $web.Target; Args = $web.Args; WorkDir = [IO.Path]::GetDirectoryName($web.Target); Base = $web.Base; OwnProfile = $true } }
     $base = [IO.Path]::GetFileNameWithoutExtension($target).ToLower()
     return @{ Target = $target; Args = $argLine; WorkDir = $workDir; Base = $base; OwnProfile = ((Test-SingleInstanceApp $target) -and ($argLine -notlike '*user-data-dir*')) }
 }
