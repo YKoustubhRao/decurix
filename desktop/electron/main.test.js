@@ -18,11 +18,20 @@ const data = path.join('/profile/AppData', 'decurix');
 // 8080) or never does.
 // stopFails: stopping the phone link throws, as it does when the control plane
 // it reports to is gone.
-// platform: 'win32' is the native app; 'darwin' and 'linux' run the control
-// plane in Docker, where dockerRun(args) is each docker command's exit code
-// ('missing': no docker program), files the paths that exist besides what the
-// app writes, and staged the VERSION of a stack an earlier run left behind.
-async function boot(initialState, { backendStarts = true, stopFails = false, platform = 'win32', dockerRun = () => 0, files = [], staged = null } = {}) {
+// platform: 'win32' runs the stack in the app's own WSL distro; 'darwin' and
+// 'linux' in the computer's Docker. dockerRun(args) is each docker command's
+// exit code ('missing': no docker program), files the paths that exist besides
+// what the app writes, and staged the VERSION of a stack an earlier run left
+// behind.
+// wsl (Windows): installed - WSL answers --version (installedAfterAsking: it
+// does once the person allowed turning it on); distro - the app's distro is
+// imported; daemon - its Docker answers before dockerd.sh is started. staged
+// is read from inside the distro there.
+async function boot(initialState, {
+  backendStarts = true, stopFails = false, platform = 'win32', dockerRun = () => 0, files = [], staged = platform === 'win32' ? 'build-2' : null,
+  wsl = {},
+} = {}) {
+  const machine = { installed: true, installedAfterAsking: false, distro: true, daemon: true, setupFails: false, ...wsl };
   const intervals = [];
   const windows = [];
   const spawns = [];
@@ -83,6 +92,39 @@ async function boot(initialState, { backendStarts = true, stopFails = false, pla
     },
   };
 
+  // What one docker command does: says a line and ends; `up` is what makes
+  // the dashboard answer.
+  const runDocker = (args, child) => {
+    const result = dockerRun(args);
+    setImmediate(() => {
+      if (result === 'missing') { child.emit('error', Object.assign(new Error('spawn docker ENOENT'), { code: 'ENOENT' })); return; }
+      child.stdout.emit('data', Buffer.from(`docker ${args[0]} ${args[1]}\n`));
+      if (result === 0 && args.includes('up') && backendStarts) state = 'ready';
+      child.emit('exit', result);
+    });
+  };
+
+  // wsl.exe: WSL itself (--version, --list, --import), or a program in the
+  // app's distro (after -e).
+  const runWsl = (args, child) => {
+    const say = (text, code) => setImmediate(() => {
+      if (text) child.stdout.emit('data', Buffer.from(`${text}\n`));
+      child.emit('exit', code);
+    });
+    if (args[0] === '--version') { say('WSL version: 3.0.1.0', machine.installed ? 0 : 1); return; }
+    if (!machine.installed) { say('Windows Subsystem for Linux is not installed.', 1); return; }
+    if (args[0] === '--list') { say(machine.distro ? 'Ubuntu\nDecurix' : 'Ubuntu', 0); return; }
+    if (args[0] === '--import') { machine.distro = true; say('The operation completed successfully.', 0); return; }
+    const program = args.slice(args.indexOf('-e') + 1);
+    if (!machine.distro) { say(`There is no distribution with the supplied name.`, 1); return; }
+    if (program[0] === 'cat') { say(staged, staged === null ? 1 : 0); return; }
+    if (program[0] === 'sh') { say('decurix-setup: ready', machine.setupFails ? 1 : 0); return; }
+    if (program[0] === '/opt/decurix/dockerd.sh') { machine.daemon = true; return; }
+    const docker = program[0] === 'env' ? program.slice(program.indexOf('docker') + 1) : program.slice(1);
+    if (docker[0] === 'version') { say(machine.daemon ? '29.8.2' : 'Cannot connect to the Docker daemon', machine.daemon ? 0 : 1); return; }
+    runDocker(docker, child);
+  };
+
   const childProcess = {
     spawn(file, args, options) {
       spawns.push({ file, args, options });
@@ -91,21 +133,17 @@ async function boot(initialState, { backendStarts = true, stopFails = false, pla
       child.unref = () => {};
       child.stdout = new EventEmitter();
       child.stderr = new EventEmitter();
-      if (path.basename(file) === 'docker') {
-        // A docker command says a line and ends; `up` is what makes the
-        // dashboard answer.
-        const result = dockerRun(Array.from(args));
-        setImmediate(() => {
-          if (result === 'missing') { child.emit('error', Object.assign(new Error('spawn docker ENOENT'), { code: 'ENOENT' })); return; }
-          child.stdout.emit('data', Buffer.from(`docker ${args[0]} ${args[1]}\n`));
-          if (result === 0 && args.includes('up') && backendStarts) state = 'ready';
-          child.emit('exit', result);
-        });
+      if (path.basename(file) === 'docker') { runDocker(Array.from(args), child); return child; }
+      if (file === 'wsl.exe') { runWsl(Array.from(args), child); return child; }
+      if (file === 'powershell.exe') {
+        // Turning WSL on, when asked to; or ending an earlier version's
+        // Windows control plane.
+        if (Array.from(args).join(' ').includes('--install') && machine.installedAfterAsking) machine.installed = true;
+        // The daemon, started hidden through WMI (startHiddenScript).
+        if (Array.from(args).join(' ').includes('Win32_Process') && Array.from(args).join(' ').includes('/opt/decurix/dockerd.sh')) machine.daemon = true;
+        setImmediate(() => child.emit('exit', 0));
         return child;
       }
-      if (file === 'open') return child;
-      // The control plane answers on 8080 a few polls after it is started.
-      if (backendStarts) setImmediate(() => { state = 'ready'; });
       return child;
     },
   };
@@ -147,7 +185,7 @@ async function boot(initialState, { backendStarts = true, stopFails = false, pla
   };
   vm.runInNewContext(source, {
     require: (name) => modules[name],
-    process: { resourcesPath: '/installed/resources', platform, env: { PATH: '/usr/bin' } },
+    process: { resourcesPath: '/installed/resources', platform, env: { PATH: '/usr/bin', LOCALAPPDATA: '/profile/Local' } },
     URL,
     setTimeout: (callback) => setImmediate(callback),
     // The watch on the control plane: a test makes its clock tick by hand.
@@ -157,37 +195,129 @@ async function boot(initialState, { backendStarts = true, stopFails = false, pla
     __dirname,
   }, { filename: 'main.js' });
   const settle = async (turns = 12) => { for (let i = 0; i < turns; i += 1) await new Promise((resolve) => setImmediate(resolve)); };
-  await settle();
+  await settle(40);
+  const wslWords = (s) => Array.from(s.args).join(' ');
   return {
-    window: windows[0], app, spawns, children, copied, written, external, mobileCalls, settle, blockers, stack, home,
-    // The docker commands run, each as its words.
-    get docker() { return spawns.filter((s) => path.basename(s.file) === 'docker').map((s) => Array.from(s.args).join(' ')); },
+    window: windows[0], app, spawns, children, copied, written, external, mobileCalls, settle, blockers, stack, home, machine,
+    // The docker commands run, each as its words - on Windows, inside the distro.
+    get docker() {
+      return spawns.flatMap((s) => {
+        if (path.basename(s.file) === 'docker') return [Array.from(s.args).join(' ')];
+        if (s.file !== 'wsl.exe') return [];
+        const args = Array.from(s.args);
+        const at = args.indexOf('docker');
+        return at >= 0 && args.includes('-e') ? [args.slice(at + 1).join(' ')] : [];
+      });
+    },
+    // WSL itself and what was run in the distro (not docker), as words.
+    get wsl() { return spawns.filter((s) => s.file === 'wsl.exe').map(wslWords).filter((w) => !w.includes(' docker ')); },
+    // How many times the stack was brought up.
+    get ups() { return this.docker.filter((d) => d === 'compose up -d --no-build').length; },
     // One tick of the watch, and time for what it starts.
-    tick: async (times = 1) => { for (let i = 0; i < times; i += 1) { await Promise.all(intervals.map((run) => run())); await settle(); } },
+    tick: async (times = 1) => { for (let i = 0; i < times; i += 1) { await Promise.all(intervals.map((run) => run())); await settle(40); } },
     setState: (next) => { state = next; },
     get tunnel() { return tunnel; }, get quits() { return quits; },
   };
 }
 
-test('reuses a running dashboard without launching another backend', async () => {
+// ---- Windows: the stack in the app's own WSL distro ----
+
+test('reuses a running dashboard of this build without starting anything', async () => {
   const result = await boot('ready');
   assert.equal(result.window.url, 'http://127.0.0.1:8080');
-  assert.equal(result.spawns.length, 0);
+  // Only the question which build the distro's stack is.
+  assert.deepEqual(result.docker, []);
+  assert.deepEqual(result.wsl, ['-d Decurix -u root --cd / -e cat /var/lib/decurix/stack/VERSION']);
 });
 
-test('starts the shipped Windows control plane when absent, and nothing else', async () => {
+test('a first launch imports the distro, prepares it, starts Docker and the stack', async () => {
+  const result = await boot('absent', { wsl: { distro: false, daemon: false } });
+  assert.equal(result.window.url, 'http://127.0.0.1:8080');
+  const resources = '/installed/resources';
+  const words = result.wsl;
+  const importAt = words.findIndex((w) => w.startsWith('--import'));
+  assert.equal(words[importAt], `--import Decurix ${path.join('/profile/Local', 'Decurix', 'wsl')} ${path.join(resources, 'wsl', 'alpine-minirootfs.tar.gz')} --version 2`);
+  // Prepared with what the app ships, as the distro sees it, and the person's settings.
+  const setup = words.find((w) => w.includes(' -e sh '));
+  assert.equal(setup, `-d Decurix -u root --cd / -e sh ${path.join(resources, 'wsl', 'setup.sh').replace(/\\/g, '/')} ${path.join(resources, 'stack').replace(/\\/g, '/')} ${path.join(data, '.env').replace(/\\/g, '/')}`);
+  assert.ok(words.indexOf(setup) > importAt);
+
+  // The daemon outlives the window and has none: Windows (WMI) starts its
+  // wsl.exe hidden, not this app - no wsl.exe child of the app runs it.
+  const daemon = result.spawns.find((s) => s.file === 'powershell.exe' && Array.from(s.args).join(' ').includes('/opt/decurix/dockerd.sh'));
+  assert.ok(daemon, 'the Docker daemon was not started');
+  const daemonWords = Array.from(daemon.args).join(' ');
+  assert.ok(daemonWords.includes('Win32_Process -MethodName Create') && daemonWords.includes('ShowWindow=[uint16]0'), daemonWords);
+  assert.equal(daemon.options.windowsHide, true);
+  assert.ok(!result.spawns.some((s) => s.file === 'wsl.exe' && Array.from(s.args).includes('/opt/decurix/dockerd.sh')));
+  assert.ok(!result.spawns.some((s) => s.options && s.options.detached), 'nothing is started detached: it would get a window');
+
+  assert.deepEqual(result.docker, [
+    'version --format {{.Server.Version}}',
+    'version --format {{.Server.Version}}',
+    'compose build',
+    'compose run --rm --no-deps -T desktop-manager ./decurix --build-images -images desktop',
+    'compose up -d --no-build',
+    // The tools image only once the dashboard is up, waited for by nothing.
+    'compose run --rm --no-deps -T desktop-manager ./decurix --build-images -images tools',
+  ]);
+  // Compose runs in the staged stack, with the project a checkout's stack has.
+  const up = result.spawns.find((s) => Array.from(s.args).includes('up'));
+  assert.deepEqual(Array.from(up.args).slice(0, 10), ['-d', 'Decurix', '-u', 'root', '--cd', '/var/lib/decurix/stack', '-e', 'env', 'COMPOSE_PROJECT_NAME=decurix', 'DECURIX_HOST_HOME=/home']);
+  assert.equal(up.options.windowsHide, true);
+
+  // The person's settings name the control plane's own model server.
+  const settings = result.written.find((w) => w.file === path.join(data, '.env'));
+  assert.equal(settings.content, 'OLLAMA_URL=http://decurix-ollama:11434\nOLLAMA_MODEL=auto\n');
+  // Nothing of the old Windows control plane is started; it is ended if running.
+  assert.ok(!result.spawns.some((s) => /decurix\.exe$/.test(s.file)));
+  assert.ok(result.spawns.some((s) => s.file === 'powershell.exe' && Array.from(s.args).join(' ').includes('decurix.exe')));
+});
+
+test('a second start finds the distro and its Docker, and only brings the stack up', async () => {
   const result = await boot('absent');
   assert.equal(result.window.url, 'http://127.0.0.1:8080');
-  // One program: no image build, no Docker, no other runtime to prepare.
-  assert.equal(result.spawns.length, 1);
-  assert.equal(result.spawns[0].file, path.join('/installed/resources', 'decurix.exe'));
-  assert.deepEqual(Array.from(result.spawns[0].args), []);
-  assert.equal(result.spawns[0].options.cwd, data);
-  assert.equal(result.spawns[0].options.windowsHide, true);
-  assert.equal(result.spawns[0].options.detached, true);
-  assert.equal(result.copied[0].from, path.join('/installed/resources', '.env.example'));
-  assert.equal(result.written[0].file, path.join(data, '.env'));
-  assert.equal(result.written[0].content, 'OLLAMA_MODEL=auto\n');
+  assert.ok(!result.wsl.some((w) => w.startsWith('--import')));
+  assert.ok(!result.spawns.some((s) => Array.from(s.args).join(' ').includes('/opt/decurix/dockerd.sh')));
+  assert.equal(result.ups, 1);
+});
+
+test('the Windows control plane of an earlier version on 8080 is replaced by the stack', async () => {
+  // The distro was never set up: what answers on 8080 is not this app's stack.
+  const result = await boot('ready', { wsl: { distro: false, daemon: false } });
+  assert.ok(result.wsl.some((w) => w.startsWith('--import')));
+  assert.equal(result.ups, 1);
+  assert.equal(result.window.url, 'http://127.0.0.1:8080');
+});
+
+test('a stack an older build of the app staged is brought up again', async () => {
+  const result = await boot('ready', { staged: 'build-1' });
+  assert.ok(result.wsl.some((w) => w.includes(' -e sh ')));
+  assert.equal(result.ups, 1);
+});
+
+test('turns WSL on when Windows does not have it, and says to restart', async () => {
+  const result = await boot('absent', { wsl: { installed: false } });
+  const ask = result.spawns.find((s) => s.file === 'powershell.exe' && Array.from(s.args).join(' ').includes('--install'));
+  assert.ok(ask, 'WSL was not turned on');
+  assert.match(Array.from(ask.args).join(' '), /-Verb RunAs/);
+  assert.equal(result.window.lastStatus.value.failed, true);
+  assert.match(result.window.lastStatus.value.message, /Restart Windows/);
+  assert.deepEqual(result.docker, []);
+});
+
+test('goes on when turning WSL on needs no restart', async () => {
+  const result = await boot('absent', { wsl: { installed: false, installedAfterAsking: true, distro: false, daemon: false } });
+  assert.equal(result.window.url, 'http://127.0.0.1:8080');
+  assert.ok(result.wsl.some((w) => w.startsWith('--import')));
+});
+
+test('a distro that cannot be prepared stops the start, with the log', async () => {
+  const result = await boot('absent', { wsl: { setupFails: true } });
+  assert.equal(result.window.lastStatus.value.failed, true);
+  assert.match(result.window.lastStatus.value.message, /Could not prepare Linux/);
+  assert.match(result.window.lastStatus.value.detail, /address in use/);
+  assert.deepEqual(result.docker, []);
 });
 
 test('keeps the Electron profile out of the control plane data dir', async () => {
@@ -208,34 +338,32 @@ test('keeps local popups in Electron and sends external links to the browser', a
   assert.deepEqual(result.external, ['https://example.com/']);
 });
 
-test('shows a retry screen with the last log line when the backend never comes up', async () => {
-  const result = await boot('absent', { backendStarts: false });
-  result.children[0].emit('exit', 1);
-  await result.settle(3);
-  assert.equal(result.window.loadFileCount, 2);
+test('shows a retry screen with the last log line when the stack never comes up', async () => {
+  const result = await boot('absent', { dockerRun: (args) => (args.includes('up') ? 1 : 0) });
+  assert.equal(result.window.loadFileCount, 1);
   assert.equal(result.window.lastStatus.value.failed, true);
-  assert.match(result.window.lastStatus.value.message, /exited with code 1/);
+  assert.match(result.window.lastStatus.value.message, /Could not start Decurix in Docker/);
   assert.match(result.window.lastStatus.value.detail, /address in use/);
 });
 
 // Found by killing the control plane under an open window: it had been started
 // by an earlier run of the app, so nothing told this one, and the window went on
 // showing a dashboard that no longer answered.
-test('starts the control plane again when it dies under an open window', async () => {
+test('starts the stack again when it dies under an open window', async () => {
   const result = await boot('ready');
-  assert.equal(result.spawns.length, 0);
+  assert.equal(result.ups, 0);
 
   // One missed answer is a busy moment, not a death.
   result.setState('absent');
   await result.tick(1);
   result.setState('ready');
   await result.tick(3);
-  assert.equal(result.spawns.length, 0);
+  assert.equal(result.ups, 0);
   assert.equal(result.window.loadFileCount, 1);
 
   result.setState('absent');
   await result.tick(3);
-  assert.equal(result.spawns.length, 1, 'the control plane was not started again');
+  assert.equal(result.ups, 1, 'the stack was not started again');
   assert.equal(result.window.url, 'http://127.0.0.1:8080');
   assert.equal(result.window.loadFileCount, 2);
   // The phone link belonged to the one that died, and is opened again.
@@ -248,7 +376,7 @@ test('starts it again even though the phone link cannot be cleared', async () =>
   const result = await boot('ready', { stopFails: true });
   result.setState('absent');
   await result.tick(3);
-  assert.equal(result.spawns.length, 1, 'the control plane was not started again');
+  assert.equal(result.ups, 1, 'the stack was not started again');
   assert.equal(result.window.url, 'http://127.0.0.1:8080');
   assert.deepEqual(result.mobileCalls, ['start', 'stop', 'start']);
 });
@@ -259,11 +387,11 @@ test('one that keeps dying is left stopped, with a Retry', async () => {
     result.setState('absent');
     await result.tick(3);
   }
-  assert.equal(result.spawns.length, 3);
+  assert.equal(result.ups, 3);
 
   result.setState('absent');
   await result.tick(3);
-  assert.equal(result.spawns.length, 3, 'it was started a fourth time');
+  assert.equal(result.ups, 3, 'it was started a fourth time');
   assert.equal(result.window.lastStatus.value.failed, true);
   assert.match(result.window.lastStatus.value.message, /keeps stopping/);
   assert.match(result.window.lastStatus.value.detail, /address in use/);
@@ -275,7 +403,7 @@ test('does not start it again while the app is closing', async () => {
   result.app.emit('window-all-closed');
   result.setState('absent');
   await result.tick(4);
-  assert.equal(result.spawns.length, 0);
+  assert.equal(result.ups, 0);
 });
 
 test('runs the shipped cloudflared for the phone link and stops it when the app closes', async () => {
@@ -301,8 +429,10 @@ test('on a Mac, a first launch builds and starts the control plane in Docker', a
   assert.deepEqual(result.docker, [
     'version --format {{.Server.Version}}',
     'compose build',
-    'compose run --rm --no-deps -T desktop-manager ./decurix --build-images',
+    'compose run --rm --no-deps -T desktop-manager ./decurix --build-images -images desktop',
     'compose up -d --no-build',
+    // The tools image only once the dashboard is up, waited for by nothing.
+    'compose run --rm --no-deps -T desktop-manager ./decurix --build-images -images tools',
   ]);
 
   // Docker is found where Docker Desktop puts it, which an app started from
@@ -351,7 +481,7 @@ test('on Linux a Docker that does not answer is not started, and the person is t
 });
 
 test('a worker image that cannot be built stops the start, with the log', async () => {
-  const dockerRun = (args) => (args.includes('--build-images') ? 1 : 0);
+  const dockerRun = (args) => (args.includes('desktop') && args.includes('--build-images') ? 1 : 0);
   const result = await boot('absent', { platform: 'darwin', files: [dockerOnPath], dockerRun });
   assert.equal(result.window.lastStatus.value.failed, true);
   assert.match(result.window.lastStatus.value.message, /Could not build the worker desktop/);

@@ -16,6 +16,7 @@ import (
 	"io/fs"
 	"log"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"time"
@@ -87,4 +88,30 @@ func main() {
 	}
 
 	log.Printf("%s: %d files", archive, files)
+
+	buildSoul()
+}
+
+// soul is TheBot's engine, compiled here for the desktops (linux/amd64) and
+// carried in the build context, so a computer building the desktop image does
+// not pull the Go image (~900 MB), download TheBot's modules and compile it -
+// minutes of every first start of the app (internal/desktop.prebuiltSoul).
+// The Dockerfiles still compile it from source when it is not there.
+const soul = "agent/thebot-soul"
+
+func buildSoul() {
+	target, err := filepath.Abs(filepath.FromSlash(soul))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	cmd := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w", "-o", target, "./cmd/soul")
+	cmd.Dir = filepath.FromSlash(source)
+	cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0")
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		log.Fatalf("build %s: %v", soul, err)
+	}
+
+	log.Printf("%s: built for linux/amd64", soul)
 }

@@ -219,7 +219,7 @@ const params = new URLSearchParams(location.search);
 // own size alone.
 // A desktop that cannot change its size (a native worker's is this computer's
 // own screen size) is always shown scaled.
-const SCALE = {{.Scale}} || params.get("resize") === "scale";
+const SCALE = params.get("resize") === "scale";
 const VIEW_ONLY = params.get("view_only") === "1" || params.get("view_only") === "true";
 const WS_URL = (location.protocol === "https:" ? "wss://" : "ws://") + location.host +
   "/desktop/" + encodeURIComponent(ID) + "/websockify";

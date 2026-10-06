@@ -37,4 +37,8 @@ var DesktopBuildContext embed.FS
 const (
 	TheBotSource = "agent/thebot.tar.gz"
 	TheBotDir    = "agent/thebot"
+	// TheBotSoul is TheBot's engine compiled for the desktops by `go
+	// generate .`, when it was run; the desktop image then copies it instead of
+	// compiling it (internal/desktop.prebuiltSoul).
+	TheBotSoul = "agent/thebot-soul"
 )

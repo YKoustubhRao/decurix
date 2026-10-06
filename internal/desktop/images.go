@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"path"
+	"strings"
 	"time"
 
 	"github.com/docker/docker/api/types/build"
@@ -34,9 +35,6 @@ var desktopImages = []desktopImage{
 
 // MissingImages returns the desktop image tags that are not present locally.
 func (m *Manager) MissingImages(ctx context.Context) []string {
-	if m.native != nil {
-		return nil
-	}
 
 	var missing []string
 
@@ -52,13 +50,22 @@ func (m *Manager) MissingImages(ctx context.Context) []string {
 // BuildImages builds the unified desktop and shared tools images from the build
 // context embedded in the binary, streaming the daemon's progress to out.
 // It also tags the base image for developer and ai profiles, and populates
-// the shared decurix-tools volume.
-func (m *Manager) BuildImages(ctx context.Context, out io.Writer, onlyMissing bool) error {
-	if m.native != nil {
-		return nil
+// the shared decurix-tools volume. which is "desktop" (the desktop image only),
+// "tools" (the tools image only) or "all": a desktop works without the tools
+// image (its tools volume is filled once the image exists), so the app builds
+// the desktop first and the tools after its dashboard is up.
+func (m *Manager) BuildImages(ctx context.Context, out io.Writer, onlyMissing bool, which string) error {
+	switch which {
+	case "all", "desktop", "tools":
+	default:
+		return fmt.Errorf("images: %q is not desktop, tools or all", which)
 	}
 
 	for _, img := range desktopImages {
+		if isTools := img.Tag == ToolsImage; (which == "desktop" && isTools) || (which == "tools" && !isTools) {
+			continue
+		}
+
 		if onlyMissing {
 			if _, _, err := m.client.ImageInspectWithRaw(ctx, img.Tag); err == nil {
 				fmt.Fprintf(out, "==> %s already exists, skipping\n", img.Tag)
@@ -79,6 +86,10 @@ func (m *Manager) BuildImages(ctx context.Context, out io.Writer, onlyMissing bo
 	_ = m.client.ImageTag(ctx, desktopImageBasic, desktopImageDeveloper)
 	_ = m.client.ImageTag(ctx, desktopImageBasic, desktopImageAI)
 
+	if which == "desktop" {
+		return nil
+	}
+
 	// Ensure the shared tools volume is populated from the tools image.
 	if err := m.PopulateToolsVolume(ctx); err != nil {
 		fmt.Fprintf(out, "==> warning: populate tools volume: %v\n", err)
@@ -95,9 +106,6 @@ func (m *Manager) BuildImages(ctx context.Context, out io.Writer, onlyMissing bo
 // PruneDanglingResources prunes untagged/dangling Docker image layers left behind
 // by builds, reclaiming disk space without affecting any active desktop images.
 func (m *Manager) PruneDanglingResources(ctx context.Context) (uint64, error) {
-	if m.native != nil {
-		return 0, nil
-	}
 
 	pruneFilters := filters.NewArgs()
 	pruneFilters.Add("dangling", "true")
@@ -158,6 +166,9 @@ func writeBuildContext(w io.Writer) error {
 func tarBuildContext(w io.Writer, fsys fs.FS) error {
 	tw := tar.NewWriter(w)
 
+	_, statErr := fs.Stat(fsys, decurix.TheBotSoul)
+	prebuilt := statErr == nil
+
 	err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -176,6 +187,10 @@ func tarBuildContext(w io.Writer, fsys fs.FS) error {
 			return unpackInto(tw, data, decurix.TheBotDir)
 		}
 
+		if prebuilt && strings.HasPrefix(p, "docker/") && strings.HasSuffix(p, ".Dockerfile") {
+			data = []byte(prebuiltSoul(string(data)))
+		}
+
 		return writeContextFile(tw, p, data)
 	})
 	if err != nil {
@@ -183,6 +198,37 @@ func tarBuildContext(w io.Writer, fsys fs.FS) error {
 	}
 
 	return tw.Close()
+}
+
+// prebuiltSoul is a desktop Dockerfile with its TheBot build stage (the
+// `FROM golang... AS <name>` stage, up to the next FROM) replaced by a stage
+// that copies the soul compiled by `go generate .` (decurix.TheBotSoul): a
+// first build of the desktop image then pulls no Go image (~900 MB), downloads
+// no modules and compiles nothing. The stage keeps its name, so the
+// Dockerfile's `COPY --from=` is untouched. A Dockerfile with no such stage
+// is returned as it is.
+func prebuiltSoul(dockerfile string) string {
+	lines := strings.Split(dockerfile, "\n")
+
+	for i, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) != 4 || !strings.EqualFold(fields[0], "FROM") || !strings.HasPrefix(fields[1], "golang:") || !strings.EqualFold(fields[2], "AS") {
+			continue
+		}
+
+		end := len(lines)
+		for j := i + 1; j < len(lines); j++ {
+			if f := strings.Fields(lines[j]); len(f) > 0 && strings.EqualFold(f[0], "FROM") {
+				end = j
+				break
+			}
+		}
+
+		stage := []string{"FROM scratch AS " + fields[3], "COPY " + decurix.TheBotSoul + " /soul", ""}
+		return strings.Join(append(append(append([]string{}, lines[:i]...), stage...), lines[end:]...), "\n")
+	}
+
+	return dockerfile
 }
 
 // writeContextFile adds one file to the build context.

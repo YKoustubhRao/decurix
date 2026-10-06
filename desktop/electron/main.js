@@ -9,20 +9,25 @@ const os = require('node:os');
 const path = require('node:path');
 const { setupMobileAccess } = require('./mobile-access');
 
-// The app is the control plane and a window on its dashboard.
+// The app is a window on the control plane's dashboard, and what starts it.
 //
-// On Windows the control plane is resources\decurix.exe, run as it is. Nothing
-// else has to be installed: its workers are private desktops of this computer,
-// run by what ships in resources\runtime, and it fetches its own local model
-// the first time one is needed.
+// A worker is a Linux desktop (XFCE, shown through noVNC) in a Docker
+// container, and the control plane runs in Docker beside them - a control
+// plane outside Docker cannot reach a desktop (Docker Desktop does not route a
+// container's address to the host). The app carries the Linux control plane
+// with a Dockerfile and a compose file (resources/stack) and runs that, as
+// scripts/linux/build.sh does from a checkout.
 //
-// On a Mac or Linux a worker is a Linux desktop in a container, and a control
-// plane outside Docker cannot reach one (Docker Desktop does not route a
-// container's address to the host). So there the app carries the Linux control
-// plane with a Dockerfile and a compose file (resources/stack) and runs that -
-// what scripts/mac/build.sh does from a checkout - and Docker is the one thing
-// the computer must already have.
-const native = process.platform === 'win32';
+// Where Docker comes from:
+//   - a Mac or Linux uses the Docker the computer has;
+//   - Windows uses a WSL distro of the app's own ("Decurix", Alpine), into
+//     which the app installs Docker Engine and where it runs the daemon
+//     itself (resources/wsl). No Docker Desktop. When Windows has no WSL yet
+//     the app turns it on (one administrator prompt, then a restart).
+const windows = process.platform === 'win32';
+const DISTRO = 'Decurix';
+// Where the stack is staged inside the distro (resources/wsl/setup.sh).
+const DISTRO_STACK = '/var/lib/decurix/stack';
 const dashboard = 'http://127.0.0.1:8080';
 const marker = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Decurix"';
 const dashboardOrigin = new URL(dashboard).origin;
@@ -62,6 +67,20 @@ function dataDir() {
   return path.join(app.getPath('appData'), 'decurix');
 }
 
+// Windows: where the app's WSL distro keeps its disk (its images and the
+// desktops' homes - gigabytes, so not the roaming profile dataDir is in).
+function distroDir() {
+  return path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Decurix', 'wsl');
+}
+
+// linuxPath names a Windows file as the distro sees it: C:\a\b is /mnt/c/a/b
+// (WSL's default automount, which setup.sh leaves alone).
+function linuxPath(file) {
+  const full = file.replace(/\\/g, '/');
+  const drive = /^([A-Za-z]):\/(.*)$/.exec(full);
+  return drive ? `/mnt/${drive[1].toLowerCase()}/${drive[2]}` : full;
+}
+
 // Where programs are looked for. An app started from the Finder or a desktop
 // menu is not given a shell's PATH, and Docker and Homebrew put theirs in
 // folders that the bare one leaves out.
@@ -81,7 +100,7 @@ function findProgram(name) {
 // The phone link's tunnel, against the access-code-gated listener: the copy
 // of cloudflared shipped with the Windows app, else the one the computer has.
 function cloudflared() {
-  return native ? resource('cloudflared.exe') : findProgram('cloudflared');
+  return windows ? resource('cloudflared.exe') : findProgram('cloudflared');
 }
 
 function tunnelCommand(port) {
@@ -147,24 +166,6 @@ function checkDashboard() {
   });
 }
 
-// The control plane. Detached and unref'd: it keeps serving workers and
-// schedules after the window is closed.
-function runBackend() {
-  return new Promise((resolve, reject) => {
-    const log = fs.openSync(logFile(), 'a');
-    const child = spawn(resource('decurix.exe'), [], {
-      cwd: dataDir(),
-      windowsHide: true,
-      detached: true,
-      stdio: ['ignore', log, log],
-    });
-    fs.closeSync(log);
-    child.once('error', reject);
-    child.once('exit', (code) => resolve(code));
-    child.unref();
-  });
-}
-
 async function waitForDashboard(stopped) {
   for (let attempt = 0; attempt < 120 && !stopped(); attempt += 1) {
     const state = await checkDashboard();
@@ -199,7 +200,7 @@ async function backendLost() {
 function watchBackend() {
   if (watching) return;
   watching = true;
-  if (!native) watchKeepAwake();
+  watchKeepAwake();
   setInterval(async () => {
     if (closing || starting || !showingDashboard || !window || window.isDestroyed()) return;
     if (await checkDashboard() === 'ready') { misses = 0; return; }
@@ -210,42 +211,7 @@ function watchBackend() {
   }, WATCH_EVERY_MS);
 }
 
-// startNative runs the Windows control plane. False when it stopped before
-// its dashboard answered (the window already says so).
-async function startNative() {
-  const example = path.join(dataDir(), '.env.example');
-  if (!fs.existsSync(example)) fs.copyFileSync(resource('.env.example'), example);
-  const config = path.join(dataDir(), '.env');
-  if (!fs.existsSync(config)) {
-    // The model is chosen for this computer; the control plane runs its
-    // own model runtime unless OLLAMA_URL names another.
-    fs.writeFileSync(config, 'OLLAMA_MODEL=auto\n', 'utf8');
-  }
-
-  update('Starting Decurix…');
-  let exited = false;
-  const serverExit = runBackend();
-  const showStopped = async (reason) => {
-    exited = true;
-    // Once the dashboard is showing, losing the control plane is the
-    // watch's to deal with (it starts it again); this is for one that
-    // never came up.
-    if (showingDashboard) return;
-    if (!window || window.isDestroyed()) return;
-    const detail = lastLogLine();
-    await stopMobileAccess();
-    await window.loadFile(path.join(__dirname, 'loading.html'));
-    update(`${reason} Check ${logFile()}`, true, detail);
-  };
-  const stopped = serverExit.then(
-    (code) => showStopped(`Decurix exited with code ${code}.`),
-    (error) => showStopped(`Decurix could not start: ${error.message}.`),
-  ).catch((error) => console.error('Could not show backend status:', error));
-  await Promise.race([waitForDashboard(() => exited), stopped]);
-  return !exited;
-}
-
-// ---- Mac and Linux: the control plane in Docker ----
+// ---- the control plane in Docker ----
 
 function stackDir() {
   return path.join(dataDir(), 'stack');
@@ -269,14 +235,14 @@ function stackEnv() {
   return env;
 }
 
-// docker runs one docker command in the stack's folder, its output going to
-// desktop.log, and resolves with its exit code - or 'missing' when there is no
-// docker program at all. onLine is given each line it prints.
-function docker(args, onLine) {
+// run starts one program, its output going to desktop.log, and resolves with
+// its exit code - or 'missing' when there is no such program. onLine is given
+// each line it prints.
+function run(file, args, onLine, options = {}) {
   return new Promise((resolve) => {
     let log = null;
     try { log = fs.openSync(logFile(), 'a'); } catch { /* the log is decoration */ }
-    const child = spawn(findProgram('docker') || 'docker', args, { cwd: stackDir(), env: stackEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(file, args, { windowsHide: true, ...options, stdio: ['ignore', 'pipe', 'pipe'] });
     let rest = '';
     const take = (chunk) => {
       if (log !== null) { try { fs.writeSync(log, chunk); } catch { /* decoration */ } }
@@ -296,9 +262,45 @@ function docker(args, onLine) {
   });
 }
 
+// wsl runs wsl.exe. WSL_UTF8 makes it print UTF-8 rather than UTF-16.
+function wsl(args, onLine) {
+  return run('wsl.exe', args, onLine, { env: { ...process.env, WSL_UTF8: '1' } });
+}
+
+// inDistro runs a program as root inside the app's distro.
+function inDistro(args, onLine, cwd = '/') {
+  return wsl(['-d', DISTRO, '-u', 'root', '--cd', cwd, '-e', ...args], onLine);
+}
+
+// docker runs one docker command in the stack's folder - on Windows inside
+// the app's distro, given what stackEnv gives elsewhere as plain variables.
+function docker(args, onLine) {
+  if (windows) {
+    return inDistro(['env', 'COMPOSE_PROJECT_NAME=decurix', 'DECURIX_HOST_HOME=/home', 'DECURIX_HOST_MNT_C=/mnt/c', 'docker', ...args], onLine, DISTRO_STACK);
+  }
+  return run(findProgram('docker') || 'docker', args, onLine, { cwd: stackDir(), env: stackEnv() });
+}
+
+// ensureSettings makes the person's .env, the one file of settings they edit
+// (in the data folder), and returns its path; each start copies it to where
+// compose and the image read it.
+function ensureSettings() {
+  fs.mkdirSync(dataDir(), { recursive: true });
+  const example = path.join(dataDir(), '.env.example');
+  if (!fs.existsSync(example)) fs.copyFileSync(resource('.env.example'), example);
+  const config = path.join(dataDir(), '.env');
+  if (!fs.existsSync(config)) {
+    // The control plane runs its own model server, in a container, and
+    // chooses the model for this computer. OLLAMA_URL names another.
+    fs.writeFileSync(config, 'OLLAMA_URL=http://decurix-ollama:11434\nOLLAMA_MODEL=auto\n', 'utf8');
+  }
+  return config;
+}
+
 // stageStack puts what the app ships into the data folder, where docker can
 // build from it and the person's own .env sits beside it. Copied again only
-// when the app is another build than the one that staged it.
+// when the app is another build than the one that staged it. (On Windows the
+// distro's setup.sh does this, inside the distro.)
 function stageStack() {
   const from = resource('stack');
   fs.mkdirSync(stackDir(), { recursive: true });
@@ -311,31 +313,29 @@ function stageStack() {
     }
     fs.writeFileSync(path.join(stackDir(), 'VERSION'), shipped, 'utf8');
   }
-
-  const example = path.join(dataDir(), '.env.example');
-  if (!fs.existsSync(example)) fs.copyFileSync(resource('.env.example'), example);
-  // The person's settings are the .env in the data folder, as on Windows;
-  // the image and compose both read the copy made here at each start.
-  const config = path.join(dataDir(), '.env');
-  if (!fs.existsSync(config)) {
-    // The control plane runs its own model server, in a container, and
-    // chooses the model for this computer. OLLAMA_URL names another.
-    fs.writeFileSync(config, 'OLLAMA_URL=http://decurix-ollama:11434\nOLLAMA_MODEL=auto\n', 'utf8');
-  }
-  fs.copyFileSync(config, path.join(stackDir(), '.env'));
+  fs.copyFileSync(ensureSettings(), path.join(stackDir(), '.env'));
 }
 
 // stackIsStale reports whether what is staged (and so what is running) came
-// from another build of the app than this one.
-function stackIsStale() {
-  try {
-    return fs.readFileSync(path.join(stackDir(), 'VERSION'), 'utf8') !== fs.readFileSync(path.join(resource('stack'), 'VERSION'), 'utf8');
-  } catch { return false; }
+// from another build of the app than this one. On Windows a distro that does
+// not answer counts as stale: whatever answers on 8080 then is not this app's
+// stack (the Windows control plane of an earlier version of the app).
+async function stackIsStale() {
+  let shipped;
+  try { shipped = fs.readFileSync(path.join(resource('stack'), 'VERSION'), 'utf8').trim(); } catch { return false; }
+  if (windows) {
+    let staged = '';
+    const code = await inDistro(['cat', `${DISTRO_STACK}/VERSION`], (line) => { staged = line; });
+    return code !== 0 || staged.trim() !== shipped;
+  }
+  try { return fs.readFileSync(path.join(stackDir(), 'VERSION'), 'utf8').trim() !== shipped; } catch { return false; }
 }
 
 // dockerReady waits for a Docker that answers. On a Mac, Docker Desktop is
-// started when it is installed and not running.
+// started when it is installed and not running; on Windows the app's own
+// distro is made ready and its daemon started.
 async function dockerReady() {
+  if (windows) { await linuxReady(); return; }
   const mac = process.platform === 'darwin';
   const needs = mac ? 'Docker Desktop' : 'Docker';
   const ask = () => docker(['version', '--format', '{{.Server.Version}}']);
@@ -356,11 +356,101 @@ async function dockerReady() {
   }
 }
 
+// ---- Windows: the app's own WSL distro ----
+
+// wslInstalled: whether this Windows has WSL 2 - the Store version, which
+// answers --version (the older in-box one does not).
+async function wslInstalled() {
+  return await wsl(['--version']) === 0;
+}
+
+// installWsl turns WSL on: Windows asks the person for an administrator's yes
+// once, and a computer that never had it then needs a restart.
+async function installWsl() {
+  const message = 'Turning on Windows Subsystem for Linux. Windows will ask you to allow it.';
+  update(message);
+  const command = "Start-Process -FilePath wsl.exe -ArgumentList '--install','--no-distribution' -Verb RunAs -Wait";
+  const code = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], (line) => update(message, false, line));
+  if (code !== 0) throw new Error('Windows Subsystem for Linux could not be turned on (was the administrator prompt declined?). Retry to try again.');
+  if (!await wslInstalled()) {
+    throw new Error('Windows Subsystem for Linux is installed. Restart Windows to finish, then open Decurix again.');
+  }
+}
+
+async function distroExists() {
+  const names = [];
+  const code = await wsl(['--list', '--quiet'], (line) => names.push(line.replace(/\0/g, '').trim()));
+  // With no distro at all WSL answers with an error.
+  return code === 0 && names.includes(DISTRO);
+}
+
+// stopEarlierWindowsApp ends what an earlier version of the app ran on Windows
+// itself, which this one replaces: its control plane from the install folder
+// (holding port 8080) and the model server it fetched for itself.
+async function stopEarlierWindowsApp() {
+  const quote = (text) => `'${text.replace(/'/g, "''")}'`;
+  const folder = quote(path.join(process.resourcesPath, 'decurix.exe'));
+  const store = quote(path.join(path.dirname(distroDir()), 'ollama') + path.sep);
+  const script = `$cp = ${folder}; $ol = ${store}; Get-CimInstance Win32_Process | `
+    + "? { $_.ExecutablePath -and ($_.ExecutablePath -ieq $cp -or $_.ExecutablePath.StartsWith($ol, 'CurrentCultureIgnoreCase')) } | "
+    + '% { Stop-Process -Id $_.ProcessId -Force }';
+  await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script]);
+}
+
+// The wsl.exe that runs the daemon (dockerd.sh) is what keeps the distro, the
+// daemon and every desktop running, after this window is closed too - so it
+// must outlive this app, and must have no window. A child of this app cannot
+// do both: libuv puts every child that is not detached in a job that ends it
+// with the app, and a detached one has no console, so wsl.exe makes one, which
+// Windows 11 hands to Windows Terminal - an empty "wsl.exe" window, found on
+// the first run of the app. So Windows' own process service (WMI) starts it:
+// not this app's child, and with a console that is created hidden.
+const DAEMON_COMMAND = `wsl.exe -d ${DISTRO} -u root -e /opt/decurix/dockerd.sh`;
+
+function startHiddenScript(commandLine) {
+  return "$s = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ShowWindow=[uint16]0}; "
+    + `$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='${commandLine.replace(/'/g, "''")}'; ProcessStartupInformation=$s}; `
+    + 'exit [int]$r.ReturnValue';
+}
+
+// linuxReady makes the distro ready and its Docker daemon running: WSL on,
+// the distro imported, Docker Engine installed and the stack staged
+// (setup.sh), then the daemon started (dockerd.sh) and waited for.
+async function linuxReady() {
+  await stopEarlierWindowsApp();
+  if (!await wslInstalled()) await installWsl();
+
+  if (!await distroExists()) {
+    const message = 'Setting up Linux for Decurix…';
+    update(message);
+    fs.mkdirSync(distroDir(), { recursive: true });
+    const code = await wsl(['--import', DISTRO, distroDir(), resource(path.join('wsl', 'alpine-minirootfs.tar.gz')), '--version', '2'], (line) => update(message, false, line));
+    if (code !== 0) throw new Error(`Could not set up Linux for Decurix. Check ${logFile()}`);
+  }
+
+  const message = 'Preparing Linux. The first time, this installs Docker.';
+  update(message);
+  const setup = await inDistro(['sh', linuxPath(resource(path.join('wsl', 'setup.sh'))), linuxPath(resource('stack')), linuxPath(ensureSettings())], (line) => update(message, false, line));
+  if (setup !== 0) throw new Error(`Could not prepare Linux for Decurix. Check ${logFile()}`);
+
+  const ask = () => inDistro(['docker', 'version', '--format', '{{.Server.Version}}']);
+  if (await ask() === 0) return;
+  update('Starting Docker…');
+  if (await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', startHiddenScript(DAEMON_COMMAND)]) !== 0) {
+    throw new Error(`Docker could not be started in Decurix's Linux. Check ${logFile()}`);
+  }
+  for (let attempt = 0; attempt < 60 && !closing; attempt += 1) {
+    if (await ask() === 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  throw new Error(`Docker did not start in Decurix's Linux. Its log is /var/log/dockerd.log there (wsl -d ${DISTRO}).`);
+}
+
 // startStack builds and starts the control plane in Docker, and the worker
 // images it does not have yet. Every step is safe to repeat: a second start
 // finds everything built and takes seconds.
 async function startStack() {
-  stageStack();
+  if (windows) ensureSettings(); else stageStack();
   await dockerReady();
 
   const step = async (message, args, failure) => {
@@ -370,13 +460,29 @@ async function startStack() {
   };
   await step('Preparing Decurix…', ['compose', 'build'], 'Could not build Decurix in Docker.');
   // The desktop images are built by the control plane itself, from the build
-  // context inside it; it skips the ones that exist.
-  await step('Building the worker desktop. The first time, this downloads and installs a whole Linux desktop and can take a long while.',
-    ['compose', 'run', '--rm', '--no-deps', '-T', 'desktop-manager', './decurix', '--build-images'], 'Could not build the worker desktop.');
+  // context inside it; it skips the ones that exist. Only the desktop is
+  // waited for: the tools image (Go, Node, Rust, the coding CLIs) is a long
+  // run of downloads a desktop does not need to start, and is built after the
+  // dashboard is up (buildToolsLater).
+  await step('Building the worker desktop. The first time, this downloads and installs a whole Linux desktop (about ten minutes).',
+    ['compose', 'run', '--rm', '--no-deps', '-T', 'desktop-manager', './decurix', '--build-images', '-images', 'desktop'], 'Could not build the worker desktop.');
   await step('Starting Decurix…', ['compose', 'up', '-d', '--no-build'], 'Could not start Decurix in Docker.');
   await waitForDashboard(() => closing);
-  reportLanAddress();
+  buildToolsLater();
+  // Under WSL's default networking only this computer reaches the distro's
+  // ports, so there is no address on the network to give a phone there; the
+  // tunnel is how a phone gets in.
+  if (!windows) reportLanAddress();
   return true;
+}
+
+// buildToolsLater builds the tools image, if it is missing, without holding
+// anything up; its output goes to desktop.log. A desktop made before it is
+// done starts without the tools, which the shared tools volume gets once the
+// image exists.
+function buildToolsLater() {
+  docker(['compose', 'run', '--rm', '--no-deps', '-T', 'desktop-manager', './decurix', '--build-images', '-images', 'tools'])
+    .then((code) => { if (code !== 0) console.warn('Building the tools image failed; see', logFile()); });
 }
 
 // The gated listener is published on the network by compose, so a phone on
@@ -446,9 +552,8 @@ async function start() {
     if (state === 'occupied') throw new Error('Port 8080 is in use. Close the other server, then retry.');
     // A stack left running by an older build of the app answers too, and is
     // replaced: compose recreates the container from the new image.
-    if (state === 'absent' || (!native && stackIsStale())) {
-      fs.mkdirSync(dataDir(), { recursive: true });
-      if (!(native ? await startNative() : await startStack())) return;
+    if (state === 'absent' || await stackIsStale()) {
+      if (!await startStack()) return;
     }
     if (window && !window.isDestroyed()) {
       await window.loadURL(dashboard);
@@ -458,7 +563,7 @@ async function start() {
       watchBackend();
     }
   } catch (error) {
-    update(error.message, true, native ? '' : lastLogLine());
+    update(error.message, true, lastLogLine());
   } finally {
     starting = false;
   }

@@ -1323,7 +1323,7 @@
     <div class="dialog-head">
       <div>
         <h2 id="createDialogTitle">New desktop</h2>
-        <p id="createDialogSub" data-default="{{if .Native}}A worker with a desktop of its own on this computer. It runs the programs installed here, out of sight: nothing it opens appears on your screen.{{else}}A computer of its own that keeps its files: Chrome, LibreOffice Writer and Calc, Python and text recognition for scans.{{end}}">{{if .Native}}A worker with a desktop of its own on this computer. It runs the programs installed here, out of sight: nothing it opens appears on your screen.{{else}}A computer of its own that keeps its files: Chrome, LibreOffice Writer and Calc, Python and text recognition for scans.{{end}}</p>
+        <p id="createDialogSub" data-default="A computer of its own that keeps its files: Chrome, LibreOffice Writer and Calc, Python and text recognition for scans.">A computer of its own that keeps its files: Chrome, LibreOffice Writer and Calc, Python and text recognition for scans.</p>
       </div>
       <button type="button" class="icon-btn" data-close-dialog aria-label="Close">
         <svg width="16" height="16"><use href="#i-x"/></svg>
@@ -1364,7 +1364,7 @@
           <label class="seg"><input type="radio" name="brain" value="claude"><span>Claude</span></label>
           <label class="seg"><input type="radio" name="brain" value="azure"><span>Azure OpenAI</span></label>
         </div>
-        <div class="hint" id="brainHint">Every desktop runs TheBot, and TheBot adapts to the model: one that reads images is shown the screen and scanned pages, a text-only one gets the screen's element list and OCR. With Ollama it thinks on this machine's own model, free but slower{{if .Native}} (the first worker waits while that model is downloaded, once){{end}}. Claude or Azure OpenAI think faster and better, billed to your account; their keys stay in the control plane and never enter a desktop.</div>
+        <div class="hint" id="brainHint">Every desktop runs TheBot, and TheBot adapts to the model: one that reads images is shown the screen and scanned pages, a text-only one gets the screen's element list and OCR. With Ollama it thinks on this machine's own model, free but slower. Claude or Azure OpenAI think faster and better, billed to your account; their keys stay in the control plane and never enter a desktop.</div>
 
         <div class="brain-status" id="brainStatus" hidden>
           <span id="brainStatusText"></span>
@@ -1395,11 +1395,7 @@
         </div>
       </div>
 
-      <!-- A native worker's programs are ordinary programs of this computer:
-           there is no CPU or memory allocation to choose (the inputs stay for
-           the code that reads them), and nothing is copied in - the apps
-           picked below become shortcuts on its screen. -->
-      <div class="field"{{if .Native}} hidden{{end}}>
+      <div class="field">
         <span class="field-label">CPU</span>
         <div class="segmented" role="radiogroup" aria-label="CPU cores">
           <label class="seg"><input type="radio" name="cpus" value="1" checked><span>1</span></label>
@@ -1409,7 +1405,7 @@
         </div>
       </div>
 
-      <div class="field"{{if .Native}} hidden{{end}}>
+      <div class="field">
         <span class="field-label">Memory</span>
         <div class="segmented" role="radiogroup" aria-label="Memory">
           <label class="seg"><input type="radio" name="memory_mb" value="2048" checked><span>2 GB</span></label>
@@ -1419,16 +1415,11 @@
         </div>
       </div>
 
-      <div class="field host-apps-section" id="hostAppsSection"{{if .Native}} data-native="1"{{end}}>
+      <div class="field host-apps-section" id="hostAppsSection">
         <div class="host-apps-head">
           <div>
-            {{if .Native}}
-            <span class="field-label" style="margin-bottom:2px">Apps from this computer</span>
-            <div class="hint">Pick the apps this worker should have on its screen, such as Chrome or ChatGPT. They open on the worker's own desktop, never on yours; nothing is copied.</div>
-            {{else}}
             <span class="field-label" style="margin-bottom:2px">Copy apps & sessions from desktop</span>
             <div class="hint">Copy login sessions, tokens, and configs with zero duplicate memory. Programs run on your desktop, lightly emulated on the VM.</div>
-            {{end}}
           </div>
           <label class="host-apps-toggle-wrap">
             <input type="checkbox" class="host-apps-toggle" id="dCopyHostApps" name="copy_host_apps" value="1">
@@ -1997,30 +1988,14 @@
 
   var hostAppsLoading = false;
 
-  // A native worker (the Windows app) is given shortcuts, not copies: only a
-  // web version or a program that can run on its desktop means anything there.
-  var hostAppsSection = document.getElementById("hostAppsSection");
-  var nativeWorkers = !!(hostAppsSection && hostAppsSection.dataset.native);
-
   // How each kind of entry shows up in the VM, so the list never suggests more than it delivers.
-  var HOST_APP_MODES = nativeWorkers ? {
-    web: "Opens in its browser",
-    host_gui: "Opens on its screen",
-    unavailable: "Unavailable"
-  } : {
+  var HOST_APP_MODES = {
     web: "Web version",
     host_gui: "Runs on host",
     data: "Files copied",
     helper: "Always installed",
     phone: "Runs on phone",
     unavailable: "Unavailable"
-  };
-
-  // What a native worker's list says under each app, in place of the scan's
-  // own words, which describe a VM.
-  var NATIVE_APP_NOTES = {
-    web: "Opens the web version in the worker's own browser; you sign in there",
-    host_gui: "Opens on the worker's own desktop, out of sight of yours"
   };
 
   async function loadHostApps(refresh){
@@ -2041,20 +2016,12 @@
 
       // Show ONLY apps that were found on the host system
       hostAppsData = (rawData || []).filter(function(item){
-        return item.detected && (!nativeWorkers || HOST_APP_MODES[item.mode]);
+        return item.detected;
       });
-
-      if(nativeWorkers){
-        // What can be opened first, then what cannot, each by name.
-        hostAppsData.sort(function(a, b){
-          var ua = a.mode === "unavailable" ? 1 : 0, ub = b.mode === "unavailable" ? 1 : 0;
-          return ua - ub || String(a.name).localeCompare(String(b.name));
-        });
-      }
 
       hostAppsList.innerHTML = "";
       if(hostAppsData.length === 0){
-        hostAppsList.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-3);font-size:12.5px;">' + (nativeWorkers ? "No app on this computer can be shown on a worker's screen." : "Nothing on your host machine can be brought into a VM properly.") + '</div>';
+        hostAppsList.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-3);font-size:12.5px;">' + "Nothing on your host machine can be brought into a VM properly." + '</div>';
         hostAppsStatusText.textContent = "0 apps detected";
         return;
       }
@@ -2082,7 +2049,7 @@
               (item.category ? '<span class="host-app-cat">' + escapeHTML(item.category) + '</span>' : '') +
               '<span class="host-app-badge ' + (unavailable ? 'missing' : 'detected') + '">' + escapeHTML(HOST_APP_MODES[item.mode] || "Found") + '</span>' +
             '</div>' +
-            '<div class="host-app-desc">' + escapeHTML(item.unavailable_reason || (nativeWorkers && NATIVE_APP_NOTES[item.mode]) || item.description) + '</div>' +
+            '<div class="host-app-desc">' + escapeHTML(item.unavailable_reason || item.description) + '</div>' +
           '</div>';
         hostAppsList.appendChild(row);
       });

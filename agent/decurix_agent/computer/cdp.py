@@ -225,37 +225,12 @@ def _get(path, method="GET", timeout=None):
 BUSY_ANSWER_SECONDS = float(os.environ.get("DECURIX_CDP_ANSWER_SECONDS", "5"))
 
 
-def _nothing_listens():
-    """
-    Whether the DevTools port is free to bind, i.e. no browser has it.
-
-    Only Windows needs asking this way: there a connection to a port nothing
-    listens on is not refused at once but after about two seconds (the system
-    tries three times), and every look at a screen with no browser open paid
-    them - measured, 2.06 s against a few milliseconds on Linux. Binding the
-    port says the same thing immediately.
-    """
-
-    parsed = urllib.parse.urlparse(BASE)
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        probe.bind((parsed.hostname or "127.0.0.1", parsed.port or 80))
-        return True
-    except OSError:
-        return False
-    finally:
-        probe.close()
-
-
 def available():
     """
     Whether the browser's DevTools port answers. A refused connection (nothing
     listening) is known at once; a slow answer is a busy browser, not a missing
     port, and is waited for.
     """
-
-    if os.name == "nt" and _nothing_listens():
-        return False
 
     try:
         _get("/json/version", timeout=BUSY_ANSWER_SECONDS)
@@ -426,14 +401,6 @@ def _viewport(metrics):
     dpr = metrics["dpr"] or 1
     side = metrics["ow"] - metrics["iw"]
     bars = metrics["oh"] - metrics["ih"]
-
-    if os.name == "nt":
-        from decurix_agent.computer import win
-
-        origin = win.browser_viewport()
-        if origin is not None:
-            return origin[0], origin[1], dpr
-        return (metrics["sx"] + side / 2) * dpr, (metrics["sy"] + bars - side / 2) * dpr, dpr
 
     return metrics["sx"] + side, metrics["sy"] + bars, dpr
 
