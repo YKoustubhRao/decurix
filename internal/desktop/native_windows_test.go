@@ -378,6 +378,7 @@ func aConfinedTerminal(t *testing.T, asProgram bool) {
 		`"above=" + [bool](Get-Content -LiteralPath '` + filepath.Join(filepath.Dir(filepath.Dir(work)), "worker.json") + `' -ErrorAction SilentlyContinue) >> out.txt`,
 		`cmd /c "curl.exe -s -m 4 -o NUL ` + listening.URL + `/"; "local=" + $LASTEXITCODE >> out.txt`,
 		`mkdir sub | Out-Null; cd sub; cmd /c "echo made> made.txt"; "native=" + (Get-Content made.txt) + "@" + (Get-Location).Path >> ..\out.txt; cd ..`,
+		`$listing = ls | Out-String; "listingPath=" + $listing.Contains('` + work + `') >> out.txt; "listingFile=" + $listing.Contains('out.txt') >> out.txt`,
 		`"told=" + $env:CONTROL_PLANE_URL + $env:DESKTOP_ID + "|" + $env:USERPROFILE >> out.txt`,
 		`"done" >> out.txt`,
 	}
@@ -406,11 +407,13 @@ func aConfinedTerminal(t *testing.T, asProgram bool) {
 	t.Logf("the terminal said:\n%s", said)
 
 	for name, want := range map[string]string{
-		"where":  `Work:\`,
-		"read":   "False",
-		"write":  "False",
-		"above":  "False",
-		"native": `made@Work:\sub`,
+		"where":       `Work:\`,
+		"read":        "False",
+		"write":       "False",
+		"above":       "False",
+		"native":      `made@Work:\sub`,
+		"listingPath": "False",
+		"listingFile": "True",
 	} {
 		if answers[name] != want {
 			t.Errorf("%s = %q, want %q", name, answers[name], want)

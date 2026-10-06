@@ -160,6 +160,11 @@ if (-not (Test-Path $csc)) { throw "The .NET Framework C# compiler was not found
     (Join-Path $repo 'agent/windows/decurix-ui.cs')
 if ($LASTEXITCODE -ne 0) { throw 'Building the screen helper failed.' }
 
+Write-Host "Building the worker's Files app..."
+& $csc /nologo /target:winexe /platform:x64 /optimize+ "/out:$(Join-Path $runtime 'decurix-files.exe')" `
+    /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Core.dll (Join-Path $repo 'agent/windows/decurix-files.cs')
+if ($LASTEXITCODE -ne 0) { throw 'Building the Files app failed.' }
+
 $oldGoos = $env:GOOS
 $oldGoarch = $env:GOARCH
 $oldCgo = $env:CGO_ENABLED

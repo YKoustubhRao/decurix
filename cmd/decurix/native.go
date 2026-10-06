@@ -67,12 +67,23 @@ func nativeRuntime() (desktop.NativeRuntime, error) {
 		return desktop.NativeRuntime{}, err
 	}
 
+	files := os.Getenv("DECURIX_NATIVE_FILES")
+	if files == "" {
+		candidate := filepath.Join(beside, "decurix-files.exe")
+		if _, err := os.Stat(candidate); err == nil {
+			files = candidate
+		}
+	} else if _, err := os.Stat(files); err != nil {
+		return desktop.NativeRuntime{}, fmt.Errorf("the worker's Files app was not found at %s: %w", files, err)
+	}
+
 	return desktop.NativeRuntime{
 		Root:            filepath.Join(nativeStoreDir(), "workers"),
 		Python:          python,
 		AgentDir:        agent,
 		Soul:            soul,
 		UIHelper:        ui,
+		FilesHelper:     files,
 		ControlPlaneURL: "http://127.0.0.1:" + primaryPort,
 		Helper:          nativeHelper,
 	}, nil
