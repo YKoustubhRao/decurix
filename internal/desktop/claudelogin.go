@@ -161,9 +161,6 @@ func extractClaudeSignInURL(text string) string {
 // enough to capture the CLI's sign-in URL, which the dashboard's popup
 // offers the human to open in their own browser.
 func (m *Manager) StartClaudeLogin(ctx context.Context) (loginID string, signInURL string, err error) {
-	if m.native != nil {
-		return "", "", errNativeNoClaudeLogin
-	}
 
 	if _, _, err := m.client.ImageInspectWithRaw(ctx, desktopImageDeveloper); err != nil {
 		return "", "", fmt.Errorf(
@@ -287,9 +284,6 @@ func (m *Manager) StartClaudeLogin(ctx context.Context) (loginID string, signInU
 // A rejected code returns ErrClaudeLoginInvalidCode with the same loginID
 // still usable for another attempt.
 func (m *Manager) SubmitClaudeLoginCode(ctx context.Context, loginID, code string) (credentialsJSON []byte, email string, err error) {
-	if m.native != nil {
-		return nil, "", errNativeNoClaudeLogin
-	}
 
 	m.claudeLoginMu.Lock()
 	session := m.claudeLogin
@@ -364,9 +358,6 @@ func (m *Manager) SubmitClaudeLoginCode(ctx context.Context, loginID, code strin
 // CancelClaudeLogin tears down an in-progress login attempt - the dashboard
 // calls this when the human closes the popup without finishing.
 func (m *Manager) CancelClaudeLogin(loginID string) {
-	if m.native != nil {
-		return
-	}
 
 	m.claudeLoginMu.Lock()
 	defer m.claudeLoginMu.Unlock()
@@ -516,9 +507,6 @@ func (m *Manager) execCaptured(ctx context.Context, containerID string, cmd []st
 // whoever last completed the dashboard's login popup, without a per-desktop
 // OAuth round trip.
 func (m *Manager) PersistClaudeCredentials(ctx context.Context, desktopID, credentialsJSON string) error {
-	if m.native != nil {
-		return nil
-	}
 
 	containerName := "desktop_" + sanitizeName(desktopID)
 	delimiter := fmt.Sprintf("DECURIX_CLAUDE_CREDENTIALS_%d", time.Now().UnixNano())

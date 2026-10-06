@@ -1,7 +1,6 @@
 package desktop
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -184,64 +183,5 @@ func TestComputeDefaultVMDest(t *testing.T) {
 	wantBase := "/home/headless/file.txt"
 	if gotBase != wantBase {
 		t.Errorf("ComputeDefaultVMDest fallback got %q, want %q", gotBase, wantBase)
-	}
-}
-
-func TestNativeCopyHostPaths(t *testing.T) {
-	m := nativeForTest(t)
-	workerID := "worker1"
-	writeWorker(t, m, nativeMeta{
-		ID:        workerID,
-		Name:      "Worker 1",
-		Profile:   "basic",
-		Harness:   HarnessTheBot,
-		Brain:     BrainOllama,
-		CreatedAt: "2026-10-01T10:00:00Z",
-	})
-
-	// Create a temp host file and temp host dir
-	hostDir := t.TempDir()
-	sampleFile := filepath.Join(hostDir, "hello.txt")
-	if err := os.WriteFile(sampleFile, []byte("hello decurix"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	sampleSubDir := filepath.Join(hostDir, "myfolder")
-	if err := os.MkdirAll(sampleSubDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	subFile := filepath.Join(sampleSubDir, "nested.txt")
-	if err := os.WriteFile(subFile, []byte("nested content"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	paths := []HostCopyPath{
-		{Src: sampleFile, Dest: "Desktop/hello.txt"},
-		{Src: sampleSubDir, Dest: "myfolder"},
-	}
-
-	if err := m.CopyHostPaths(context.Background(), workerID, paths); err != nil {
-		t.Fatalf("CopyHostPaths failed: %v", err)
-	}
-
-	// Verify file was copied into worker's home
-	homeRoot := filepath.Join(m.native.rt.Root, workerID, "home")
-	copiedFile := filepath.Join(homeRoot, "Desktop", "hello.txt")
-	content, err := os.ReadFile(copiedFile)
-	if err != nil {
-		t.Fatalf("expected copied file at %s: %v", copiedFile, err)
-	}
-	if string(content) != "hello decurix" {
-		t.Errorf("copied file content = %q, want %q", string(content), "hello decurix")
-	}
-
-	// Verify nested folder and file were copied
-	copiedNested := filepath.Join(homeRoot, "myfolder", "nested.txt")
-	nestedContent, err := os.ReadFile(copiedNested)
-	if err != nil {
-		t.Fatalf("expected copied nested file at %s: %v", copiedNested, err)
-	}
-	if string(nestedContent) != "nested content" {
-		t.Errorf("copied nested file content = %q, want %q", string(nestedContent), "nested content")
 	}
 }

@@ -379,11 +379,3 @@ def windows():
         })
 
     return result
-
-
-# A native Windows worker has no X server: its screen is a private Win32
-# desktop, read by win.py. Frame and changed_fraction above are the same there.
-if os.name == "nt":
-    from decurix_agent.computer import win as _win
-
-    grab, size, set_size, close_window, windows = _win.grab, _win.size, _win.set_size, _win.close_window, _win.windows

@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"thebot/internal/hostshell"
 	"thebot/internal/llm"
 	"thebot/internal/prompt"
 	"thebot/internal/safety"
@@ -95,16 +94,6 @@ HELP:
 %s%s
 Task: %s`
 
-// windowsRule is added to the contract for a native Windows worker
-// (hostshell.Windows): the contract's "shell command" is PowerShell there, and
-// a small model reaches for the Linux commands it knows best - `uname`, `ls |
-// wc -l`, a heredoc - none of which exist. It names the commands for the same
-// everyday questions the Linux prompt's examples cover.
-const windowsRule = `- This computer runs Windows and every command is Windows PowerShell. Linux commands do not exist here (no bash, grep, cat <<EOF, sudo, apt). Use PowerShell: $env:COMPUTERNAME (this computer's name), (Get-CimInstance Win32_OperatingSystem).Caption (the Windows version), Get-ChildItem <dir> (list), (Get-ChildItem <dir>).Count (count), Get-Content <file> (read), Set-Content -Path <file> -Value "text" (write), Add-Content (append), Select-String -Path <file> -Pattern "x" (search), Get-PSDrive C (disk space), Invoke-WebRequest -UseBasicParsing <url> (fetch a page). Paths use backslashes; ~ is not your work folder. There is no && or ||: send one command per reply, or join them with ; . python and python3 are here.
-- There is no <<'EOF' either: what office reads from stdin is piped to it from a single-quoted string - '{"edits": [{"sheet": "Data", "cell": "B14", "value": 1250}]}' | office update model.xlsx - and for an email's body of several lines a here-string, which starts with @' at the end of a line and ends with '@ at the start of one: @' then the body's lines then '@ | office email --to a@b.com --subject "Invoice".
-- You have a screen of your own on this computer, separate from the person's: what you open is not on their screen. Open a web page, a document or a program on it with gui open (gui open https://example.com, gui open C:\path\report.xlsx, gui open excel, gui open notepad) - never with Start-Process, Invoke-Item, start or explorer, which hand the job to Windows and may put the window on the person's own screen. gui calls the browser's windows "Chromium", whichever browser it is.
-`
-
 // visionRule is added to the contract for a brain that reads images: the
 // screenshot comes with every gui command's result.
 const visionRule = `- The pages of a scanned document that office read finds are shown to you as pictures: read them yourself.
@@ -182,72 +171,6 @@ If the failure itself is the answer (for example, the file really does not exist
 // given ("cat: notes.txt: No such file or directory").
 var missingProgramRe = regexp.MustCompile(`(?m)(?:^|:\s)([A-Za-z0-9_.+-]+): (?:command not found|not found)\s*$|(?:^|\b)(?:xargs|env|nohup|timeout|sudo|exec|nice|bash|sh|dash|zsh)(?:: line \d+)?: ([A-Za-z0-9_.+-]+): No such file or directory\s*$`)
 
-// windowsMissingProgramRe is the same failure on a native Windows worker, in
-// PowerShell's words ("xargs : The term 'xargs' is not recognized as the name
-// of a cmdlet, function, script file, or operable program") and cmd.exe's
-// ("'grep' is not recognized as an internal or external command"). PowerShell
-// exits 1 for it, not 127, so the words are the only signal - and PowerShell
-// wraps them wherever its line is full, so any space may be a line break.
-var windowsMissingProgramRe = regexp.MustCompile(`The\s+term\s+'([^']+)'\s+is\s+not\s+recognized\s+as\s+the\s+name|'([^']+)'\s+is\s+not\s+recognized\s+as\s+an\s+internal`)
-
-// windowsChainRe is PowerShell 5.1 refusing bash's && or ||.
-var windowsChainRe = regexp.MustCompile(`The\s+token\s+'(&&|\|\|)'\s+is\s+not\s+a\s+valid\s+statement\s+separator`)
-
-// windowsCountSwitchRe is PowerShell refusing a counting switch that does not exist (-Count, -FileCount, -Total).
-var windowsCountSwitchRe = regexp.MustCompile(`(?i)parameter\s+cannot\s+be\s+found\s+that\s+matches\s+parameter\s+name\s+'\w*(count|total|number)\w*'`)
-
-// missingOnWindows names the program a Windows shell said it could not find,
-// or "" when the output says no such thing.
-func missingOnWindows(output string) string {
-	m := windowsMissingProgramRe.FindStringSubmatch(output)
-	if m == nil {
-		return ""
-	}
-	if m[1] != "" {
-		return m[1]
-	}
-	return m[2]
-}
-
-// windowsMissingProgramHint is what a model is told when it reached for a
-// Linux command on a Windows worker - the usual reason a program is "missing"
-// there - with the PowerShell way for the ones it reaches for most.
-func windowsMissingProgramHint(program string) string {
-	hint := fmt.Sprintf("\n\n`%s` is not a command on this computer: it runs Windows PowerShell, not bash, and you cannot install software here. Use PowerShell's own commands instead.", program)
-	if use, ok := windowsInsteadOf[strings.TrimSuffix(strings.ToLower(program), ".exe")]; ok {
-		hint += " " + use
-	}
-	return hint
-}
-
-// windowsInsteadOf is the PowerShell for the Linux commands a model reaches
-// for most. Windows PowerShell 5.1 already aliases ls, cat, cp, mv, rm, echo,
-// pwd, ps, kill, curl and wget to its own cmdlets, so those are not here.
-var windowsInsteadOf = map[string]string{
-	"grep":    `To search text: Select-String -Path <file> -Pattern "x" (or <command> | Select-String "x").`,
-	"wc":      "To count: (Get-Content <file>).Count for lines, (Get-ChildItem <dir>).Count for files, or <command> | Measure-Object.",
-	"head":    "For the first lines: Get-Content <file> -TotalCount 10 (or <command> | Select-Object -First 10).",
-	"tail":    "For the last lines: Get-Content <file> -Tail 10 (or <command> | Select-Object -Last 10).",
-	"touch":   "To make an empty file: New-Item -ItemType File <path>.",
-	"which":   "To find a program: (Get-Command <name>).Source.",
-	"uname":   "For the system: (Get-CimInstance Win32_OperatingSystem).Caption and .Version.",
-	"df":      "For disk space: Get-PSDrive C.",
-	"free":    "For memory: Get-CimInstance Win32_OperatingSystem | Select-Object FreePhysicalMemory, TotalVisibleMemorySize.",
-	"sed":     `To replace text in a file: (Get-Content <file>) -replace "old", "new" | Set-Content <file>.`,
-	"awk":     `To take a column: <command> | ForEach-Object { ($_ -split "\s+")[0] }.`,
-	"xargs":   "To run something per item: <command> | ForEach-Object { <program> $_ }.",
-	"jq":      "To read JSON: (Get-Content <file> -Raw | ConvertFrom-Json).<field>.",
-	"sudo":    "There is no sudo: run the command without it.",
-	"apt":     "Nothing can be installed here.",
-	"apt-get": "Nothing can be installed here.",
-	"pip":     "Nothing can be installed here: use Python's standard library.",
-	"pip3":    "Nothing can be installed here: use Python's standard library.",
-	"bash":    "There is no bash: write the command in PowerShell.",
-	"sh":      "There is no sh: write the command in PowerShell.",
-	"test":    "To check a file exists: Test-Path <path>.",
-	"chmod":   "Windows has no chmod, and a file needs none to be read or run.",
-}
-
 // missingModuleRe finds a Python module that is not installed.
 var missingModuleRe = regexp.MustCompile(`No module named '([\w.]+)'`)
 
@@ -258,24 +181,6 @@ var missingModuleRe = regexp.MustCompile(`No module named '([\w.]+)'`)
 func missingProgramHint(output, command string) string {
 	if m := missingModuleRe.FindStringSubmatch(output); m != nil {
 		return fmt.Sprintf("\n\nThe Python module `%s` is not installed, and you cannot install it here. Use Python's standard library instead: urllib.request for web requests (urllib.request.urlopen(url).headers, .status, .read()), json, csv, subprocess.", m[1])
-	}
-	if hostshell.Windows {
-		// Bash's "then" and "or else" are a parse error in Windows
-		// PowerShell 5.1, so nothing in the command ran at all - and a model
-		// writes them by habit.
-		if m := windowsChainRe.FindStringSubmatch(output); m != nil {
-			return fmt.Sprintf("\n\nNothing ran: Windows PowerShell has no `%s`. Run one command per reply, or join them with `;` (`first; if ($?) { second }` to run the second only when the first worked).", m[1])
-		}
-		if program := missingOnWindows(output); program != "" {
-			return windowsMissingProgramHint(program)
-		}
-		// Counting is asked of the result, not of the cmdlet. Found live,
-		// twice: a small model wrote `Get-ChildItem <dir> -Count` (and
-		// `-FileCount`), then listed the folder and counted the lines itself
-		// - 2, for five files.
-		if windowsCountSwitchRe.MatchString(output) {
-			return "\n\nNo cmdlet has a switch that counts. Wrap the command and ask the result for its count: (Get-ChildItem <dir>).Count - and report the number it prints, not one you counted yourself."
-		}
 	}
 	for _, m := range missingProgramRe.FindAllStringSubmatch(output, -1) {
 		program := m[1]
@@ -508,9 +413,6 @@ func (o *OperatorSkill) start(rc RunContext, subtask Subtask) *operatorState {
 		Turns:           caps.OperatorTurns(),
 	}
 	vision := ""
-	if hostshell.Windows {
-		vision += windowsRule
-	}
 	if caps.Hosted {
 		vision += officeRules
 	}

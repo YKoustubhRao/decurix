@@ -44,10 +44,6 @@ const (
 func (m *Manager) CopyFiles(ctx context.Context, desktopID, dir string, files []File) error {
 	const home = "/home/headless"
 
-	if m.native != nil {
-		return m.native.copyFiles(sanitizeName(desktopID), dir, files)
-	}
-
 	clean := path.Clean(dir)
 	if !strings.HasPrefix(clean+"/", home+"/") || clean == home {
 		return fmt.Errorf("copy files: %q is not a folder under %s", dir, home)
@@ -105,33 +101,12 @@ func (m *Manager) CopyFiles(ctx context.Context, desktopID, dir string, files []
 	return nil
 }
 
-// AgentPath is a path under /home/headless as the desktop's own agent names
-// it: unchanged in a container, the real folder for a native worker (whose
-// home is a folder of this computer). What CopyFiles wrote is told to the
-// agent by this name; a path outside the home is returned as given.
-func (m *Manager) AgentPath(desktopID, p string) string {
-	if m.native == nil {
-		return p
-	}
-
-	real, err := m.native.homePath(sanitizeName(desktopID), p)
-	if err != nil {
-		return p
-	}
-
-	return real
-}
-
 // CopyOut reads a folder or file under /home/headless out of a desktop, as the
 // tar stream Docker produces (entries named from the folder's own name down).
 // Like CopyFiles it works on a stopped desktop. A path that is not there is
 // ErrNotFound; the caller closes the stream.
 func (m *Manager) CopyOut(ctx context.Context, desktopID, p string) (io.ReadCloser, error) {
 	const home = "/home/headless"
-
-	if m.native != nil {
-		return m.native.copyOut(sanitizeName(desktopID), p)
-	}
 
 	clean := path.Clean(p)
 	if !strings.HasPrefix(clean+"/", home+"/") || clean == home {
@@ -181,9 +156,9 @@ func (m *Manager) UsesLocalModel(ctx context.Context) bool {
 // 1. JSON array of HostCopyPath objects: `[{"src":"/host/a","dest":"a"}]`
 // 2. JSON array of path strings: `["/host/a -> a", "/host/b"]`
 // 3. Multiline or delimiter-separated text (newlines, semicolons):
-//    - `src -> dest` or `src => dest`
-//    - `src:dest` (preserving Windows drive letters like C:\)
-//    - `src` (destination defaults to empty, resolved under /home/headless/<basename>)
+//   - `src -> dest` or `src => dest`
+//   - `src:dest` (preserving Windows drive letters like C:\)
+//   - `src` (destination defaults to empty, resolved under /home/headless/<basename>)
 func ParseHostCopyPaths(raw string) ([]HostCopyPath, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -280,11 +255,11 @@ func parseSinglePathEntry(entry string) HostCopyPath {
 // ComputeDefaultVMDest computes the corresponding destination path inside the VM filesystem
 // (/home/headless/...) for a host file or directory.
 //
-// 1. If the path resides inside the host user's home directory (e.g. ~/Documents/work or C:\Users\name\Desktop\repo),
-//    the relative hierarchy is preserved (e.g. /home/headless/Documents/work or /home/headless/Desktop/repo).
-// 2. If the path contains standard directories (e.g. Desktop, Documents, Downloads, Pictures, Music, Videos, Projects, Code),
-//    that subtree is preserved under /home/headless/<subtree>.
-// 3. Otherwise, it defaults to /home/headless/<basename>.
+//  1. If the path resides inside the host user's home directory (e.g. ~/Documents/work or C:\Users\name\Desktop\repo),
+//     the relative hierarchy is preserved (e.g. /home/headless/Documents/work or /home/headless/Desktop/repo).
+//  2. If the path contains standard directories (e.g. Desktop, Documents, Downloads, Pictures, Music, Videos, Projects, Code),
+//     that subtree is preserved under /home/headless/<subtree>.
+//  3. Otherwise, it defaults to /home/headless/<basename>.
 func ComputeDefaultVMDest(src string) string {
 	const home = "/home/headless"
 
@@ -330,8 +305,10 @@ func ComputeDefaultVMDest(src string) string {
 // Destinations must reside under /home/headless.
 // If dest is empty:
 //   - automatically maps to the corresponding VM path via ComputeDefaultVMDest(src).
+//
 // If dest is relative (e.g. "Desktop/data"):
 //   - resolved as /home/headless/Desktop/data
+//
 // If dest is "/home/headless" or "/home/headless/Desktop" or ends with "/":
 //   - the source basename is placed inside dest.
 func ResolveVMDestPath(src, dest string, isDir bool) (string, error) {
@@ -407,10 +384,6 @@ func ensureTarDirs(tw *tar.Writer, dirRel string, seenDirs map[string]bool, now 
 func (m *Manager) CopyHostPaths(ctx context.Context, desktopID string, paths []HostCopyPath) error {
 	if len(paths) == 0 {
 		return nil
-	}
-
-	if m.native != nil {
-		return m.native.copyHostPaths(sanitizeName(desktopID), paths)
 	}
 
 	sanitizedID := sanitizeName(desktopID)
@@ -596,4 +569,3 @@ func (m *Manager) CopyHostPaths(ctx context.Context, desktopID string, paths []H
 
 	return nil
 }
-

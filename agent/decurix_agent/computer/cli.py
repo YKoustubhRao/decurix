@@ -3,7 +3,7 @@ import os
 import re
 import sys
 
-from decurix_agent import cliargs, logging_utils, progress
+from decurix_agent import logging_utils, progress
 from decurix_agent.computer import approval, core, replay, skill_engine, skills
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
@@ -635,7 +635,7 @@ def run(argv):
 
 def main(argv=None):
     logging_utils.log_to_file(logging_utils.log_file("decurix-gui.log"))
-    argv = cliargs.from_environment(argv)
+    argv = sys.argv[1:] if argv is None else argv
 
     try:
         code = run(argv)

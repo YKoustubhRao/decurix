@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"thebot/internal/hostshell"
 	"thebot/internal/workspace"
 )
 
@@ -236,14 +235,6 @@ func TestTerminalTreatsOrdinaryNonzeroExitAsARealVerifiedResult(t *testing.T) {
 		"run the command: `false`",
 		"run the command: `test -f definitely_missing_xyz.txt`",
 	}
-	if hostshell.Windows {
-		// The same honest negatives from Windows' own programs: a search
-		// that matches nothing, and a program that exits 1 without a word.
-		steps = []string{
-			"run the command: `findstr zzz_no_such_pattern haystack.txt`",
-			"run the command: `cmd /c exit 1`",
-		}
-	}
 	for _, step := range steps {
 		result, err := NewTerminal().Run(rc, Subtask{Step: step, Type: "terminal"})
 		if err != nil {
@@ -320,9 +311,6 @@ func TestTerminalTreatsNonzeroExitWithRealStderrAsARealFailure(t *testing.T) {
 	// A script that exits 1 (not 126/127) but writes a real, substantive
 	// error message - exactly pip's shape (exit 1, real stderr block).
 	name, script := "fails_with_stderr.sh", "#!/bin/sh\necho 'error: something genuinely went wrong' >&2\nexit 1\n"
-	if hostshell.Windows {
-		name, script = "fails_with_stderr.cmd", "@echo off\r\necho error: something genuinely went wrong 1>&2\r\nexit /b 1\r\n"
-	}
 	if err := os.WriteFile(filepath.Join(ws.Root(), name), []byte(script), 0o755); err != nil {
 		t.Fatalf("could not write fixture: %v", err)
 	}

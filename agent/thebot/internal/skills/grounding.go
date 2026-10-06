@@ -6,7 +6,6 @@ import (
 	"strings"
 	"unicode"
 
-	"thebot/internal/hostshell"
 	"thebot/internal/llm"
 )
 
@@ -406,11 +405,7 @@ func shellWords(s string) []string {
 		case escaped:
 			cur.WriteRune(r)
 			escaped = false
-		case r == '\\' && quote != '\'' && !hostshell.Windows:
-			// PowerShell's escape is the backtick: there a backslash is a path's
-			// separator. Found by bench/native: read as an escape it was dropped
-			// from every Windows path, so a path typed into a Save dialog never
-			// matched the request it was copied from and was refused as a guess.
+		case r == '\\' && quote != '\'':
 			escaped = true
 		case quote != 0:
 			if r == quote {

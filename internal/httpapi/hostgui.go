@@ -153,9 +153,7 @@ func nativeHostGUICmd(ctx context.Context, desktopName string) (*exec.Cmd, error
 // warmHostGUI starts (or keeps) the helper the next host app will run in. It only makes sense where host apps can run at
 // all: on Windows, or on Linux reaching Windows through WSL.
 func (s *Server) warmHostGUI() {
-	// A native worker's apps open on the worker's own desktop, in the helper that holds it: no host app is ever
-	// launched into a spare, so one kept waiting would only be a process left behind.
-	if !hostGUISupported() || s.Desktops.Native() {
+	if !hostGUISupported() {
 		return
 	}
 	s.hostGUI().Warm()
@@ -164,12 +162,7 @@ func (s *Server) warmHostGUI() {
 // checkHostApps asks the Windows helper which programs it can run on a private desktop, without starting any of them. It
 // uses the same warm helper an app is launched into, so what it learns about the Start menu is not learned twice.
 func (s *Server) checkHostApps(ctx context.Context, targets []winhost.Target) (map[winhost.Target]string, error) {
-	verdicts, err := s.hostGUI().Check(ctx, targets)
-	if s.Desktops.Native() {
-		// Nothing will be launched into the helper the check used (see warmHostGUI): end it now the scan is done.
-		s.hostGUI().DropSpare()
-	}
-	return verdicts, err
+	return s.hostGUI().Check(ctx, targets)
 }
 
 // keptHostApp is one app kept running and ready on the host (winhost.Manager.Keep), as saved in the data directory so a

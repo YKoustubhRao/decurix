@@ -248,6 +248,7 @@ func main() {
 	showVersion := flag.Bool("version", false, "print the Decurix version and exit")
 	buildImages := flag.Bool("build-images", false, "build the desktop images from the build context embedded in this binary, then exit")
 	rebuild := flag.Bool("rebuild", false, "with -build-images, rebuild images that already exist instead of skipping them")
+	imagesWhich := flag.String("images", "all", "with -build-images, which images: desktop, tools or all")
 	cliMode := flag.Bool("cli", false, "run an interactive CLI against a running control plane instead of starting the server")
 	cliURL := flag.String("url", "http://127.0.0.1:8080", "with -cli, the control plane's URL")
 	phoneMode := flag.Bool("phone", false, `run as a phone link, in Termux on an Android phone: decurix --phone "<pairing link>" (or with no link, reconnect)`)
@@ -291,46 +292,16 @@ func main() {
 
 	ctx := context.Background()
 
-	// A Windows control plane's workers are native: private desktops of this
-	// computer, with no Docker behind them (see nativeMode). Everything below
-	// that is about containers - images, networks, volumes - is then nothing
-	// to do, and says so itself (desktop.Manager's native guards).
-	native := nativeMode()
-	local := &localModel{}
-
-	var cli *client.Client
-	var desktops *desktop.Manager
-
-	if native {
-		rt, err := nativeRuntime()
-		if err != nil {
-			log.Fatal(err)
-		}
-		rt.LocalModel = local.ensure
-		desktops = desktop.NewNativeManager(rt)
-		log.Printf("Workers run on this computer itself, each on a private desktop (no Docker): %s", rt.Root)
-
-		// Until the local model has been prepared (local.ensure, in the
-		// background below), a worker is pointed at the Ollama the control
-		// plane runs itself - never at host.docker.internal, which means
-		// nothing here - and that Ollama may be pulled into.
-		if u := os.Getenv("OLLAMA_URL"); u == "" || u == ollama.BundledURL {
-			os.Setenv("OLLAMA_URL", ollama.NativeURL)
-			os.Setenv("DECURIX_MODEL_AUTOPULL", "1")
-		}
-	} else {
-		var err error
-		cli, err = client.NewClientWithOpts(
-			client.FromEnv,
-			client.WithAPIVersionNegotiation(),
-		)
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer cli.Close()
-
-		desktops = desktop.NewManager(cli)
+	cli, err := client.NewClientWithOpts(
+		client.FromEnv,
+		client.WithAPIVersionNegotiation(),
+	)
+	if err != nil {
+		log.Fatal(err)
 	}
+	defer cli.Close()
+
+	desktops := desktop.NewManager(cli)
 	// The key that signs the launch tokens in a desktop's host-app launchers (internal/winhost). It lives in the data
 	// directory so launchers already written keep working across restarts; a failure only disables those apps.
 	hostGUISecret, err := winhost.LoadSecret(sqlitedb.DataDir())
@@ -347,12 +318,7 @@ func main() {
 	// Building all three images takes a long time and a lot of disk, so it is
 	// an explicit request rather than something startup does on its own.
 	if *buildImages {
-		if native {
-			log.Println("Nothing to build: this control plane's workers run on this computer itself, not in desktop images.")
-			return
-		}
-
-		if err := desktops.BuildImages(ctx, os.Stdout, !*rebuild); err != nil {
+		if err := desktops.BuildImages(ctx, os.Stdout, !*rebuild, *imagesWhich); err != nil {
 			log.Fatal(err)
 		}
 
@@ -502,9 +468,6 @@ func main() {
 	server.RegisterRoutes(lanMux)
 
 	lanAddr := lanListenAddr()
-	if native {
-		lanAddr = nativeLANAddr(lanAddr)
-	}
 
 	var srvMu sync.Mutex
 	var activeServers []*http.Server
@@ -547,19 +510,6 @@ func main() {
 	})
 
 	go func() {
-		if native {
-			// Workers that were running come back once their model is there:
-			// each start prepares it (rt.LocalModel), and one is enough to
-			// prepare it for all. With no worker on the local model and a
-			// hosted one set up, nothing is downloaded at all.
-			if ollama.Needed() {
-				if err := local.ensure(ctx, nil); err != nil {
-					log.Printf("warning: the local model is not ready: %v", err)
-				}
-			}
-			desktops.StartNativeWorkers(ctx)
-		}
-
 		if !ollama.Needed() {
 			log.Println("Ollama: not preloading - a hosted model is configured and no desktop uses a local-model engine yet.")
 			// Still choose the model (it reads /api/tags and /api/show, and
@@ -584,12 +534,6 @@ func main() {
 	// non-positive, so DECURIX_IDLE_STOP_MINUTES=0 opts out without any
 	// different wiring here.
 	idleThreshold := idleStopThreshold()
-	if native {
-		// Idle-pause exists to give a paused container's CPU and memory back.
-		// A native worker cannot be frozen, and one with nothing to do costs
-		// no CPU; stopping it would close whatever it has open.
-		idleThreshold = 0
-	}
 	idleAction := os.Getenv("DECURIX_IDLE_ACTION")
 	if idleAction == "" {
 		idleAction = "pause"
@@ -701,10 +645,6 @@ func main() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-
-		// A native worker's programs are on a desktop nobody can see: none
-		// may be left behind by the control plane that was showing them.
-		desktops.StopNativeWorkers()
 
 		var wg sync.WaitGroup
 		srvMu.Lock()

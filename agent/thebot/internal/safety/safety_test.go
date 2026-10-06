@@ -2,8 +2,6 @@ package safety
 
 import (
 	"testing"
-
-	"thebot/internal/hostshell"
 )
 
 func TestAssessCommandStopsConsequentialCommands(t *testing.T) {
@@ -36,12 +34,6 @@ func TestAssessCommandStopsConsequentialCommands(t *testing.T) {
 // The gate is only worth having if ordinary work sails through it: a human
 // asked to approve "ls" learns to approve everything without reading.
 func TestAssessCommandLetsOrdinaryWorkThrough(t *testing.T) {
-	// These are a Linux desktop's commands, in a container that is the
-	// worker's alone. On a person's own Windows computer the gate is wider
-	// (windows.go, with tests of its own): there ~ is the person's profile.
-	if hostshell.Windows {
-		t.Skip("the commands of a Linux desktop; a native Windows worker's are tested in windows_test.go")
-	}
 
 	for _, cmd := range []string{
 		`ls -la /etc`,

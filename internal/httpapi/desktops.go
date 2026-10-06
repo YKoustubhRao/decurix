@@ -58,7 +58,6 @@ func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 		LinkedMemory:    linkedMemory,
 		DesktopNames:    desktopNames,
 		TunnelURL:       s.Tunnel.Get(),
-		Native:          s.Desktops.Native(),
 	}
 
 	if err := s.Web.RenderIndex(w, data); err != nil {

@@ -3,7 +3,6 @@ package desktop
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -25,11 +24,6 @@ import (
 // Manager owns the Docker client and the desktop containers it manages.
 type Manager struct {
 	client *client.Client
-
-	// native is set when the desktops are native Windows workers rather than
-	// containers (NewNativeManager, native.go); client is then nil, and every
-	// method below hands over to it before it would touch Docker.
-	native *nativeHost
 
 	// HostGUISecret signs the launch tokens written into launchers for Windows apps that run on the host (see
 	// internal/winhost); set by main before any desktop is created.
@@ -203,26 +197,6 @@ func (m *Manager) CreateWithPaths(
 ) (*Desktop, error) {
 	defer m.invalidateList()
 
-	if m.native != nil {
-		id := sanitizeName(name)
-		meta := nativeMeta{
-			ID: id, Name: name, Profile: profile, Harness: harness, Brain: BrainOllama,
-			CPUs: cpus, MemoryMB: memoryMB, CreatedAt: time.Now().Format(time.RFC3339),
-			Specialization: specialization, ParentID: parentID,
-		}
-		meta.Model = desktopModel(buildDesktopEnv(name, harness, specialization, parentID, Brain{}))
-		if err := m.native.create(ctx, meta, nil); err != nil {
-			return nil, err
-		}
-		if len(hostPaths) > 0 {
-			if err := m.native.copyHostPaths(id, hostPaths); err != nil {
-				log.Printf("native copy host paths for %s: %v", id, err)
-			}
-		}
-		created := m.native.desktop(meta)
-		return &created, nil
-	}
-
 	imageName, err := resolveDesktopImage(profile)
 	if err != nil {
 		return nil, err
@@ -380,10 +354,6 @@ func (m *Manager) BeginProvisioning(
 	hostPaths []HostCopyPath,
 	onStarted func(d *Desktop) error,
 ) (*ProvisioningDesktop, error) {
-	if m.native != nil {
-		// Shortcuts for selected apps; files and folders copied directly into worker home.
-		return m.nativeProvision(name, profile, harness, brain, cpus, memoryMB, specialization, parentID, selectedApps, hostPaths, onStarted)
-	}
 
 	sanitizedID := sanitizeName(name)
 	if sanitizedID == "" {
@@ -608,10 +578,6 @@ func (m *Manager) GetProvisioning(rawID string) (*ProvisioningDesktop, bool) {
 // WaitForGUIReady waits until the desktop container's VNC/websockify port is
 // accepting TCP connections, meaning the GUI is initialized and ready for user interaction.
 func (m *Manager) WaitForGUIReady(ctx context.Context, rawID string, timeout time.Duration) bool {
-	if m.native != nil {
-		// Its screen is the desktop its helper holds, there once it has started.
-		return m.native.run(sanitizeName(rawID)) != nil
-	}
 
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -715,23 +681,6 @@ func (m *Manager) List(ctx context.Context) ([]Desktop, error) {
 func (m *Manager) listUncached(
 	ctx context.Context,
 ) ([]Desktop, error) {
-
-	if m.native != nil {
-		result, err := m.native.list()
-		if err != nil {
-			return nil, err
-		}
-		// A worker's record is written before it is started, so one still
-		// being created is already in the list: it is not "stopped".
-		m.provisioningMu.RLock()
-		for i := range result {
-			if p, ok := m.provisioning[result[i].ID]; ok && p.Status == "provisioning" {
-				result[i].Status = "provisioning"
-			}
-		}
-		m.provisioningMu.RUnlock()
-		return m.withProvisioning(result), nil
-	}
 
 	args := filters.NewArgs()
 
@@ -1028,10 +977,6 @@ func (m *Manager) Start(
 ) error {
 	defer m.invalidateList()
 
-	if m.native != nil {
-		return m.native.start(ctx, sanitizeName(id), nil)
-	}
-
 	name := "desktop_" + sanitizeName(id)
 
 	inspect, err := m.client.ContainerInspect(ctx, name)
@@ -1055,13 +1000,6 @@ func (m *Manager) Pause(
 ) error {
 	defer m.invalidateList()
 
-	if m.native != nil {
-		// Windows has nothing like the cgroup freezer for a tree of ordinary
-		// programs, and an idle worker costs no CPU: it is left running.
-		_, err := m.native.readMeta(sanitizeName(id))
-		return err
-	}
-
 	sanitizedID := sanitizeName(id)
 	m.InvalidateProxyTarget(sanitizedID)
 	name := "desktop_" + sanitizedID
@@ -1084,11 +1022,6 @@ func (m *Manager) Unpause(
 ) error {
 	defer m.invalidateList()
 
-	if m.native != nil {
-		_, err := m.native.readMeta(sanitizeName(id))
-		return err
-	}
-
 	name := "desktop_" + sanitizeName(id)
 	return notFound(id, m.client.ContainerUnpause(ctx, name))
 }
@@ -1099,10 +1032,6 @@ func (m *Manager) Stop(
 	id string,
 ) error {
 	defer m.invalidateList()
-
-	if m.native != nil {
-		return m.native.stop(sanitizeName(id), true)
-	}
 
 	sanitizedID := sanitizeName(id)
 	m.InvalidateProxyTarget(sanitizedID)
@@ -1145,13 +1074,6 @@ func (m *Manager) Restart(
 	id string,
 ) error {
 	defer m.invalidateList()
-
-	if m.native != nil {
-		if err := m.native.stop(sanitizeName(id), false); err != nil {
-			return err
-		}
-		return m.native.start(ctx, sanitizeName(id), nil)
-	}
 
 	sanitizedID := sanitizeName(id)
 	m.InvalidateProxyTarget(sanitizedID)
@@ -1205,23 +1127,6 @@ func (m *Manager) Delete(
 		delete(m.provisioning, sanitizedID)
 	}
 	m.provisioningMu.Unlock()
-
-	if m.native != nil {
-		err := m.native.delete(sanitizedID)
-		if isProvisioning && errors.Is(err, ErrNotFound) {
-			err = nil
-		}
-		if err == nil {
-			m.shotMu.Lock()
-			delete(m.shots, sanitizedID)
-			m.shotMu.Unlock()
-
-			m.viewedMu.Lock()
-			delete(m.viewed, sanitizedID)
-			m.viewedMu.Unlock()
-		}
-		return err
-	}
 
 	inspect, err := m.client.ContainerInspect(
 		ctx,
@@ -1304,14 +1209,6 @@ func (m *Manager) Get(ctx context.Context, id string) (Desktop, error) {
 		return d, nil
 	}
 	m.provisioningMu.RUnlock()
-
-	if m.native != nil {
-		meta, err := m.native.readMeta(desktopID)
-		if err != nil {
-			return Desktop{}, err
-		}
-		return m.native.desktop(meta), nil
-	}
 
 	inspect, err := m.client.ContainerInspect(ctx, "desktop_"+desktopID)
 	if err != nil {
@@ -1436,10 +1333,6 @@ func (m *Manager) SendRequest(
 	desktopID := sanitizeName(id)
 	name := "desktop_" + desktopID
 
-	if m.native != nil {
-		return m.native.sendRequest(ctx, m.httpClient, desktopID, content, taskID)
-	}
-
 	// Verify that the desktop container exists.
 	inspect, err := m.client.ContainerInspect(
 		ctx,
@@ -1554,10 +1447,6 @@ func (m *Manager) PersistMemoryFile(
 	fileContent string,
 ) error {
 
-	if m.native != nil {
-		return m.native.persistMemoryFile(sanitizeName(desktopID), filename, fileContent)
-	}
-
 	containerName := "desktop_" + sanitizeName(desktopID)
 	// A container keeps the image it was created from, so a desktop created
 	// before the agent's directories moved under ~/.decurix still runs an
@@ -1631,17 +1520,6 @@ func (m *Manager) UpdateResources(
 	sanitizedID := sanitizeName(id)
 	name := "desktop_" + sanitizedID
 
-	if m.native != nil {
-		// A native worker's programs are ordinary programs of this computer:
-		// there is no allocation to enforce, only one to record.
-		meta, err := m.native.readMeta(sanitizedID)
-		if err != nil {
-			return err
-		}
-		meta.CPUs, meta.MemoryMB = cpus, memoryMB
-		return m.native.writeMeta(meta)
-	}
-
 	swappinessZero := int64(0)
 	updateConfig := container.UpdateConfig{
 		Resources: container.Resources{
@@ -1675,10 +1553,6 @@ func (m *Manager) Stats(
 ) (*container.StatsResponse, error) {
 	sanitizedID := sanitizeName(id)
 	name := "desktop_" + sanitizedID
-
-	if m.native != nil {
-		return nil, ErrNoStats
-	}
 
 	reader, err := m.client.ContainerStatsOneShot(ctx, name)
 	if err != nil {

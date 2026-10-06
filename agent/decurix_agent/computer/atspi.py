@@ -701,14 +701,3 @@ def set_text(element, text):
     """
 
     return False
-
-
-# A native Windows worker has no AT-SPI: its windows' controls are read and
-# worked through UI Automation (win.py), into the same element shape.
-import os as _os
-
-if _os.name == "nt":
-    from decurix_agent.computer import win as _win
-
-    observe, default_action, place_caret = _win.observe, _win.default_action, _win.place_caret
-    grab_focus, select_option, set_text = _win.grab_focus, _win.select_option, _win.set_text
