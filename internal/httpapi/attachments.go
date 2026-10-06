@@ -179,7 +179,7 @@ func (s *Server) putAttachments(ctx context.Context, desktopID string, files []d
 
 	paths := make([]string, len(files))
 	for i, f := range files {
-		paths[i] = s.Desktops.AgentPath(desktopID, dir+"/"+f.Name)
+		paths[i] = dir + "/" + f.Name
 	}
 
 	return paths, nil

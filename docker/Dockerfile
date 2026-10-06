@@ -23,15 +23,15 @@ RUN CGO_ENABLED=0 GOOS=android GOARCH=arm64 \
     go build -p 1 -trimpath -ldflags "-s -w" -o decurix-android-arm64 ./cmd/decurix
 
 
-FROM debian:bookworm-slim
+FROM alpine:3.24
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    docker.io \
-    ca-certificates \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+# The control plane is one static binary (CGO_ENABLED=0); in here it runs only
+# the docker command (the host-app hop) and bash. Alpine with docker-cli is a
+# few MB from apk; Debian with docker.io (the whole engine) took about five
+# minutes of a first start of the app.
+RUN apk add --no-cache docker-cli bash curl ca-certificates
 
 # The templates are embedded in the binary (web/embed.go), so only .env has
 # to come along.

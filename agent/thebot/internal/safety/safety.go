@@ -19,8 +19,6 @@ package safety
 import (
 	"regexp"
 	"strings"
-
-	"thebot/internal/hostshell"
 )
 
 // Concern is why an action needs a human's approval before it runs.
@@ -84,11 +82,6 @@ func AssessCommand(command string) *Concern {
 			continue
 		}
 		return &Concern{Reason: r.reason}
-	}
-	// A native Windows worker's commands run on the person's own computer,
-	// where more of them are consequential (windows.go).
-	if hostshell.Windows {
-		return assessWindows(command)
 	}
 	return nil
 }

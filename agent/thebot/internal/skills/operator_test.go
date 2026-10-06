@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"thebot/internal/hostshell"
 	"thebot/internal/llm"
 )
 
@@ -214,26 +213,6 @@ func TestUnmarkedCommand(t *testing.T) {
 	}
 }
 
-func TestOperatorRunsACommandSentWithoutItsMarker(t *testing.T) {
-	if !hostshell.Windows {
-		t.Skip("the shapes recognised without a marker are the worker's own commands and PowerShell's")
-	}
-	chat := &scriptedChat{replies: []string{"(Get-ChildItem).Count", "DONE:\nThere are 2 entries."}}
-	rc := operatorContext(t, chat)
-	for _, name := range []string{"a", "b"} {
-		if err := os.WriteFile(filepath.Join(rc.WorkDir, name), nil, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	res, _ := NewOperator().Run(rc, Subtask{Step: "how many files are here?", Type: "operator"})
-	if !res.Verified || res.Output != "There are 2 entries." {
-		t.Fatalf("result = %+v", res)
-	}
-	if shown := chat.calls[1][len(chat.calls[1])-1].Content; !strings.Contains(shown, "exit_code: 0") || !strings.Contains(shown, "2") {
-		t.Errorf("the unmarked command was not run and shown: %s", shown)
-	}
-}
-
 func TestOperatorPausesForApprovalAndResumes(t *testing.T) {
 	chat := &scriptedChat{replies: []string{
 		"COMMAND:\ngit push origin main",
@@ -394,30 +373,8 @@ func TestResolveWritePathUsesTheWorkingDirectory(t *testing.T) {
 		t.Errorf("resolveWritePath = %q, %v", got, err)
 	}
 	outside := "/etc/passwd"
-	if hostshell.Windows {
-		// "/etc/passwd" is not an absolute path on Windows; this is.
-		outside = filepath.Join(os.Getenv("SystemRoot"), "win.ini")
-	}
 	if _, err := resolveWritePath(rc, outside); err == nil {
 		t.Errorf("resolveWritePath allowed %s", outside)
-	}
-}
-
-// A native Windows worker's home is the person's own, with their documents
-// in it: the file-write skill writes in the worker's folder only.
-func TestResolveWritePathKeepsOutOfThePersonsHomeOnWindows(t *testing.T) {
-	if !hostshell.Windows {
-		t.Skip("a Linux desktop's home is the desktop's own")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skip("no home directory")
-	}
-	rc := RunContext{WorkDir: t.TempDir()}
-	for _, p := range []string{filepath.Join(home, "Documents", "notes.txt"), "~/notes.txt"} {
-		if got, err := resolveWritePath(rc, p); err == nil && !strings.HasPrefix(got, rc.WorkDir) {
-			t.Errorf("resolveWritePath(%q) = %q, outside the worker's folder", p, got)
-		}
 	}
 }
 
@@ -517,36 +474,6 @@ func TestMissingProgramHintNamesOnlyAProgramTheCommandRan(t *testing.T) {
 	}
 	// A file the program was given is not a missing program.
 	if hint := missingProgramHint("cat: notes.txt: No such file or directory", "cat notes.txt"); hint != "" {
-		t.Errorf("a missing file was taken for a missing program: %q", hint)
-	}
-}
-
-// A Linux command on a Windows worker is the same failure in PowerShell's
-// words, and the model is told the PowerShell for it.
-func TestMissingProgramHintOnWindowsNamesThePowerShellWay(t *testing.T) {
-	if !hostshell.Windows {
-		t.Skip("PowerShell's wording, on a native Windows worker")
-	}
-	output := "grep : The term 'grep' is not recognized as the name of a cmdlet, function, script file, or operable program. Check \nthe spelling of the name"
-	hint := missingProgramHint(output, "grep -r total report.txt")
-	if !strings.Contains(hint, "`grep` is not a command on this computer") || !strings.Contains(hint, "Select-String") {
-		t.Errorf("grep hint = %q", hint)
-	}
-	if hint := missingProgramHint("'jq' is not recognized as an internal or external command,", "cmd /c jq ."); !strings.Contains(hint, "ConvertFrom-Json") {
-		t.Errorf("jq hint = %q", hint)
-	}
-	// Bash's && is a parse error in PowerShell 5.1: nothing ran at all.
-	chain := "At line:6 char:14\n+ mkdir out && cd out\n+              ~~\nThe token '&&' is not a valid statement separator in this version."
-	if hint := missingProgramHint(chain, "mkdir out && cd out"); !strings.Contains(hint, "has no `&&`") || !strings.Contains(hint, "`;`") {
-		t.Errorf("&& hint = %q", hint)
-	}
-	// A counting switch that does not exist: the count is asked of the result.
-	count := "Get-ChildItem : A parameter cannot be found that matches parameter name 'Count'."
-	if hint := missingProgramHint(count, `Get-ChildItem C:\w -Count`); !strings.Contains(hint, "(Get-ChildItem <dir>).Count") {
-		t.Errorf("count hint = %q", hint)
-	}
-	// A file that is not there is not a missing program.
-	if hint := missingProgramHint("Get-Content : Cannot find path 'C:\\w\\notes.txt' because it does not exist.", "Get-Content notes.txt"); hint != "" {
 		t.Errorf("a missing file was taken for a missing program: %q", hint)
 	}
 }

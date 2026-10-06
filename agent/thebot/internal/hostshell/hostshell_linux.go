@@ -1,5 +1,3 @@
-//go:build !windows
-
 package hostshell
 
 import (
@@ -9,9 +7,6 @@ import (
 
 // Name is what the shell is called, for messages and prompts.
 const Name = "bash"
-
-// Windows reports whether commands are PowerShell rather than bash.
-const Windows = false
 
 func argv(line string) (string, []string) {
 	return "bash", []string{"-c", line}

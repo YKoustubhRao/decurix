@@ -1,7 +1,6 @@
 package winhost
 
 import (
-	"errors"
 	"context"
 	"os/exec"
 	"runtime"
@@ -966,34 +965,5 @@ func TestOpeningAnAppThatIsClosingWaitsForTheNextOne(t *testing.T) {
 	}
 	if first.Alive() {
 		t.Error("a new app was started on the private desktop of one still closing")
-	}
-}
-
-// A dashboard card's picture is made small by the helper, and not sent again while the screen shows the same: the
-// first answer carries the JPEG, the next says only that nothing changed and the one kept is given. A helper that
-// does not make thumbnails is told apart, so the caller can take the whole picture instead.
-func TestAThumbnailIsSentOnceAndKeptWhileTheScreenIsTheSame(t *testing.T) {
-	start, _ := fakeHelper(t, fakeOpts{})
-	m := NewManager(start)
-	defer m.StopAll()
-
-	s, err := m.Start(context.Background(), "thumbs", `C:.exe`, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	first, err := s.Thumbnail(4)
-	if err != nil || string(first) != "XYZ" {
-		t.Fatalf("the first thumbnail = %q, %v", first, err)
-	}
-	again, err := s.Thumbnail(4)
-	if err != nil || string(again) != "XYZ" {
-		t.Fatalf("an unchanged screen's thumbnail = %q, %v; want the one kept", again, err)
-	}
-	if _, err := s.Thumbnail(8); !errors.Is(err, ErrNoThumbnail) {
-		t.Fatalf("a helper that answered a thumbnail request with OK gave %v, want ErrNoThumbnail", err)
-	}
-	if resp, err := s.Do("status"); err != nil || resp != "STATUS running" {
-		t.Fatalf("after thumbnails the next answer was %q, %v: the picture's bytes were taken for an answer", resp, err)
 	}
 }

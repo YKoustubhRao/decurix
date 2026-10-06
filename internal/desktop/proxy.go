@@ -54,20 +54,6 @@ func (m *Manager) resolveProxyTarget(ctx context.Context, rawID, port string) (p
 	sanitizedID = sanitizeName(rawID)
 	cacheKey := sanitizedID + ":" + port
 
-	if m.native != nil {
-		// A worker's ports are its own and change with every start, so
-		// nothing is cached: the lookup is a map read.
-		switch port {
-		case vmAgentPort:
-			proxyURL, err = m.native.agentURL(sanitizedID)
-		case agentPort:
-			proxyURL, err = m.native.soulURL(sanitizedID)
-		default:
-			return nil, sanitizedID, ErrNoVNC
-		}
-		return proxyURL, sanitizedID, err
-	}
-
 	m.proxyTargetMu.RLock()
 	if entry, ok := m.proxyTargets[cacheKey]; ok && time.Now().Before(entry.expires) {
 		cachedURL := entry.proxyURL

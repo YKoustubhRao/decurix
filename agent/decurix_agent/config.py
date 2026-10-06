@@ -65,11 +65,6 @@ THEBOT_URL = os.environ.get(
 AGENT_BIND = os.environ.get("DECURIX_AGENT_BIND", "0.0.0.0")
 AGENT_PORT = int(os.environ.get("DECURIX_AGENT_PORT", "8081"))
 
-# A native Windows worker: a private desktop of the person's own computer, not
-# a Linux desktop container. Commands are PowerShell and the screen is read
-# through UI Automation.
-NATIVE_WINDOWS = os.name == "nt"
-
 # Everything the agent keeps for itself lives under one hidden directory, so
 # the home a human browses on the desktop holds only the work directory.
 # start_agent_terminal.sh moves these in from where older desktops kept them.

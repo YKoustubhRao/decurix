@@ -49,9 +49,6 @@ class Desktop(unittest.TestCase):
             self.windows.append({"id": 7, "title": "Koustubh - Chrome", "active": True})
 
         self.patches = [
-            # A Linux desktop's launchers: .desktop files (a native Windows
-            # worker's are its shortcuts - test_windows_computer.py).
-            patch.object(launchers, "NATIVE", False),
             patch.object(launchers, "PLACES", [place]),
             patch.object(launchers.screen, "windows", side_effect=lambda: list(self.windows)),
             patch.object(launchers.session, "launch", side_effect=launch),

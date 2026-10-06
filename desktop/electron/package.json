@@ -40,16 +40,12 @@
       "icon": "icon.ico",
       "extraResources": [
         {
-          "from": "build/decurix.exe",
-          "to": "decurix.exe"
+          "from": "build/stack",
+          "to": "stack"
         },
         {
-          "from": "build/runtime",
-          "to": "runtime"
-        },
-        {
-          "from": "build/decurix-android-arm64",
-          "to": "decurix-android-arm64"
+          "from": "build/wsl",
+          "to": "wsl"
         },
         {
           "from": "build/cloudflared.exe",

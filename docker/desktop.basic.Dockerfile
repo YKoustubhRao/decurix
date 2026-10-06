@@ -19,15 +19,36 @@ FROM accetto/ubuntu-vnc-xfce-chromium-g3:latest
 
 USER root
 
-# Computer use: what decurix_agent/computer needs to see and work the screen.
-# xdotool sends real input (XTEST); python3-xlib reads the framebuffer and the
-# window list; at-spi2-core, libatk-adaptor and the Atspi bindings expose GTK,
-# XFCE and LibreOffice widgets by role and name. ~3 MB in all. Chromium is read
-# over its DevTools port instead (agent/chromium-browser.init), which needs
-# nothing installed. tesseract-ocr (+ English, ~10 MB) reads the text of a
-# screen that is only pixels - a host app on a canvas - when a replay has to
-# decide whether a step is still needed or where a click lands now
-# (computer/ocr.py); without it those rungs are skipped, nothing breaks.
+# Everything this image takes from Ubuntu, in one step: each apt-get update
+# downloads the package indexes again (~25 MB), and five separate steps did
+# that five times on every fresh build. What each group is for:
+#
+# - Computer use: what decurix_agent/computer needs to see and work the
+#   screen. xdotool sends real input (XTEST); python3-xlib reads the
+#   framebuffer and the window list; at-spi2-core, libatk-adaptor and the
+#   Atspi bindings expose GTK, XFCE and LibreOffice widgets by role and name.
+#   Chromium is read over its DevTools port instead (agent/chromium-browser.init),
+#   which needs nothing installed. tesseract-ocr (+ English) reads the text of
+#   a screen that is only pixels - a host app on a canvas - when a replay has
+#   to decide whether a step is still needed or where a click lands now
+#   (computer/ocr.py); without it those rungs are skipped, nothing breaks.
+# - A modern look for the desktop a human actually opens: Ubuntu's own Yaru
+#   theme (GTK + xfwm4, in a red accent to match Decurix's own palette),
+#   Papirus icons and the Breeze cursor; Inter is a screen-tuned UI font, used
+#   in place of the base image's plain "Sans" (applied by decurix-xsettings.xml
+#   / decurix-xfwm4.xml below); whiskermenu is the taskbar's Start menu.
+# - curl: the first thing a small model reaches for to read a page or an API;
+#   without it a live request failed with "xargs: curl: No such file or
+#   directory" and a person was asked to install it.
+# - Back-office documents (decurix_agent/tools/office.py): poppler-utils reads
+#   a PDF's text and turns a scanned page into a picture the hosted model can
+#   read; openpyxl reads and writes workbooks; pypdf, img2pdf and PIL combine
+#   scans and PDFs into one file; python-docx reads Word files.
+# - LibreOffice Writer and Calc: where a person demonstrates spreadsheet and
+#   document work, what the GUI benchmark's calc-*/writer-* tasks run in, and
+#   what turns a Word or Excel file into a faithful PDF (tools/office.combine_pdf).
+#   The developer/ai Dockerfiles install the full suite, but only this image is
+#   built and tagged as all three.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         xdotool \
@@ -39,7 +60,24 @@ RUN apt-get update && \
         at-spi2-core \
         libatk-adaptor \
         python3-pip \
-        python3-venv && \
+        python3-venv \
+        yaru-theme-gtk \
+        papirus-icon-theme \
+        breeze-cursor-theme \
+        fonts-inter \
+        xfce4-whiskermenu-plugin \
+        curl \
+        ca-certificates \
+        poppler-utils \
+        python3-openpyxl \
+        python3-pypdf \
+        python3-docx \
+        python3-pil \
+        img2pdf \
+        libreoffice-writer \
+        libreoffice-calc \
+        libreoffice-gtk3 \
+        fonts-liberation && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -47,63 +85,6 @@ RUN apt-get update && \
 # panel, Thunar, mousepad, LibreOffice's GTK front end - from publishing its
 # widgets over AT-SPI at all. Without this the accessibility tree is empty.
 ENV NO_AT_BRIDGE=0
-
-# A modern look for the desktop a human actually opens: Ubuntu's own Yaru
-# theme (GTK + xfwm4, in a red accent to match Decurix's own palette),
-# Papirus icons (colorful, actively maintained, much clearer at a glance
-# than the base image's flat default set) and the Breeze cursor. Inter is
-# a screen-tuned UI font, used in place of the base image's plain "Sans".
-# Verified live over VNC: this alone takes the desktop from stock
-# Xubuntu-grey to something that looks intentionally designed - see
-# decurix-xsettings.xml/decurix-xfwm4.xml below for where it's applied.
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        yaru-theme-gtk \
-        papirus-icon-theme \
-        breeze-cursor-theme \
-        fonts-inter \
-        xfce4-whiskermenu-plugin && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
-# curl, which the developer and ai images already have. It is the first thing
-# a small model reaches for to read a page or an API, and without it a live
-# request (`chatgpt "where is ..."`, via the operator) failed with "xargs:
-# curl: No such file or directory" and a person was asked to install it. A
-# layer of its own so the ones above stay cached.
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl ca-certificates && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
-# Back-office documents (decurix_agent/tools/office.py): poppler-utils reads a
-# PDF's text and turns a scanned page into a picture the hosted model can read;
-# openpyxl reads and writes workbooks; pypdf, img2pdf and PIL combine scans and
-# PDFs into one file; python-docx reads Word files. ~40 MB in all.
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        poppler-utils \
-        python3-openpyxl \
-        python3-pypdf \
-        python3-docx \
-        python3-pil \
-        img2pdf && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
-# LibreOffice Writer and Calc: where a person demonstrates spreadsheet and document
-# work, what the GUI benchmark's calc-*/writer-* tasks run in (without it they cannot
-# start), and what turns a Word or Excel file into a faithful PDF
-# (tools/office.combine_pdf). The developer/ai Dockerfiles install the full suite, but
-# only this image is built and tagged as all three, so none of them had it.
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        libreoffice-writer \
-        libreoffice-calc \
-        libreoffice-gtk3 \
-        fonts-liberation && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
 
 # The browser: Google Chrome stable from Google's signed repository, in place of
 # the base image's frozen Chromium 112, behind the one launcher every route to

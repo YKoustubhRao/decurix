@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from decurix_agent import config, filelock, progress
-from decurix_agent.computer import approval, atspi, audit, browser, cdp, privacy, screen, session, shortcuts, volatility, xinput
+from decurix_agent.computer import approval, atspi, audit, browser, cdp, privacy, screen, session, volatility, xinput
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 
@@ -993,8 +993,7 @@ OFFICE_EXTENSIONS = (".odt", ".ods", ".odp", ".docx", ".doc", ".xlsx", ".xls", "
 
 
 def _chromium_argv(url):
-    # On a Linux desktop the launcher adds the profile, the DevTools port and
-    # every other flag; a native Windows worker's are given by browser.py.
+    # The launcher adds the profile, the DevTools port and every other flag.
     return browser.launch_argv(url)
 
 
@@ -1078,23 +1077,6 @@ def _open(target, new_tab):
     # title: a second window of an app that is open has the first one's title.
     before_ids = {w["id"] for w in before}
 
-    # One of this worker's own shortcuts, by its name: what a person opens
-    # from its icon, opened the same way (shortcuts.py).
-    shortcut = shortcuts.named(target)
-    if shortcut is not None and shortcut["kind"] == "browser":
-        target = "browser"
-    elif shortcut is not None and shortcut["kind"] == "web":
-        target = shortcut.get("target") or target
-
-    if os.name == "nt" and shortcut is not None and shortcut["kind"] == "program":
-        existing = [w for w in before if shortcuts.owns_window(shortcut, w)]
-        if existing:
-            # Opening an app from Start or its icon raises its current window.
-            # Waiting for a *new* handle here made single-instance apps take 45 s.
-            window = next((w for w in reversed(existing) if w.get("active")), existing[-1])
-            xinput.activate(window["id"])
-            return f"Brought {el._quote(window['title'], 80)} to the front."
-
     if URL_RE.match(target):
         url = target if "://" in target else "http://" + target
 
@@ -1122,27 +1104,12 @@ def _open(target, new_tab):
         if any(browser.is_browser_title(t) for t in before_titles) or cdp.available():
             _raise_browser()
             return "Brought Chromium to the front."
-        # A Linux desktop's launcher is given a page; a native Windows
-        # worker's browser starts on its own first page, as it does for a
-        # person (browser.windows_argv).
-        session.launch(_chromium_argv("" if os.name == "nt" else "about:blank"))
+        session.launch(_chromium_argv("about:blank"))
         _wait_until(cdp.available, BROWSER_START_SECONDS, "Chromium did not start")
         _raise_browser()
         return "Started Chromium."
 
-    if shortcut is not None and shortcut["kind"] == "program":
-        # Started by the control plane's helper, which holds this desktop.
-        shortcuts.open_program(shortcut)
-        argv = [shortcut.get("exe") or shortcut["name"]]
-    elif os.name == "nt":
-        # What opens what is the computer's own business there (win.py): the
-        # programs installed on it, never the shell.
-        from decurix_agent.computer import win
-
-        argv = win.open_argv(target)
-        if argv[0] == "url":
-            return _open(argv[1], new_tab)
-    elif path.exists():
+    if path.exists():
         if path.suffix.lower() in OFFICE_EXTENSIONS:
             argv = ["soffice", "--nologo", str(path)]
         elif path.is_dir():
@@ -1162,45 +1129,18 @@ def _open(target, new_tab):
             )
         argv = parts
 
-    started = shortcut["name"] if shortcut is not None and shortcut["kind"] == "program" else " ".join(argv)
-    if shortcut is None or shortcut["kind"] != "program":
-        session.launch(argv)
+    started = " ".join(argv)
+    session.launch(argv)
 
     def new_window():
-        current = screen.windows()
-        if os.name == "nt" and shortcut is not None and shortcut["kind"] == "program":
-            matching = [w for w in current if w["title"] and shortcuts.owns_window(shortcut, w)]
-            if matching:
-                return matching
-        return [w for w in current if w["id"] not in before_ids and w["title"]]
+        return [w for w in screen.windows() if w["id"] not in before_ids and w["title"]]
 
     opened = _wait_until(new_window, 45, None)
     if not opened:
         return f"Started {started}, but no new window appeared within 45 seconds - observe to check."
 
-    if os.name != "nt":
-        time.sleep(1.0)
-    title = opened[-1]["title"]
-
-    if os.name == "nt":
-        # A window opened on a private desktop is given the keyboard by nobody
-        # (win.py / decurix-ui.cs GiveFocus), and many name themselves only
-        # once they have loaded ("Notepad", then "Untitled - Notepad").
-        xinput.activate(opened[-1]["id"])
-        title = next((w["title"] for w in screen.windows() if w["id"] == opened[-1]["id"] and w["title"]), title)
-
-        # Windows 11's Notepad opens with the tabs it had when it was last
-        # closed - and that memory is the person's own, so a worker's Notepad
-        # came up showing their unsaved notes, and the worker typed its text
-        # into one of them (found by bench/native). Asked for with no file, it
-        # is given a new, empty tab to work in.
-        if len(argv) == 1 and Path(argv[0]).stem.lower() == "notepad" and not title.lower().startswith("untitled"):
-            xinput.key("ctrl+n")
-            time.sleep(0.8)
-            title = next((w["title"] for w in screen.windows() if w["id"] == opened[-1]["id"] and w["title"]), title)
-            return f"Opened Notepad with a new, empty tab ({el._quote(title, 60)}); its other tabs were already there - leave them alone."
-
-    return f"Opened {el._quote(title, 80)}."
+    time.sleep(1.0)
+    return f"Opened {el._quote(opened[-1]['title'], 80)}."
 
 
 def bring_to_front(title):

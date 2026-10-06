@@ -40,17 +40,6 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A native Windows worker has no VNC server to proxy to: the control plane
-	// is one for it, behind the same viewer (nativescreen.go, nativerfb.go).
-	if s.Desktops.Native() {
-		rest := ""
-		if len(parts) == 2 {
-			rest = parts[1]
-		}
-		s.nativeScreenHandler(w, r, parts[0], rest)
-		return
-	}
-
 	isWebSocket := strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
 
 	// The screen itself is the control plane's page (screen.go); everything

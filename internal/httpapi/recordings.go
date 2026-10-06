@@ -207,10 +207,6 @@ func (s *Server) demonstrationHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A native worker's recorder is fed from here (nativerecording.go): what
-	// is known about it is out of date once this has run.
-	defer s.forgetRecording(id)
-
 	action := r.FormValue("action")
 	if !demonstrationActions[action] {
 		jsonStatusError(w, http.StatusBadRequest, "action must be start, pause, resume or stop")
@@ -337,36 +333,6 @@ func (s *Server) ticketAttachHandler(w http.ResponseWriter, r *http.Request) {
 	s.callAgent(w, r, id, http.MethodPost, "/ticket/attach", map[string]any{"files": paths}, true)
 }
 
-// How long opening something on a worker's screen may take: a browser
-// starting cold is the slow case.
-const openOnScreenTimeout = 2 * time.Minute
-
-// openOnScreenHandler opens an app, a file or a web address on a worker's
-// screen for the person looking at it (POST /api/desktops/open, id + target).
-//
-// A native Windows worker's screen is a private desktop with no Start menu,
-// taskbar or icons, so this is how a person puts something on it - and, while
-// they are recording a demonstration, it is one of the demonstration's steps
-// (the agent's demonstration.open_as_person). Only something named: a
-// program is given no arguments from here.
-func (s *Server) openOnScreenHandler(w http.ResponseWriter, r *http.Request) {
-	id, ok := requireDesktop(w, r, http.MethodPost)
-	if !ok {
-		return
-	}
-
-	target := strings.TrimSpace(r.FormValue("target"))
-	if target == "" || len(target) > 2000 {
-		jsonStatusError(w, http.StatusBadRequest, "say what to open: an app's name, a file, or a web address")
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), openOnScreenTimeout)
-	defer cancel()
-
-	s.callAgent(w, r.WithContext(ctx), id, http.MethodPost, "/open", map[string]string{"target": target}, false)
-}
-
 // ticketStatusHandler reads the ticket open on a desktop, if any: the GUI
 // screen toolbar's poll, so every open tab (and the recordings page) agrees
 // on whether it is armed, recording, or paused.
@@ -391,8 +357,6 @@ func (s *Server) ticketActionHandler(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-
-	defer s.forgetRecording(id)
 
 	action := r.FormValue("action")
 	if !ticketActions[action] {

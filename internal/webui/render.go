@@ -58,10 +58,6 @@ type PageData struct {
 	// the template.
 	DesktopNames map[string]string
 	TunnelURL    string
-	// Native is a control plane whose desktops are native Windows workers
-	// (desktop.Manager.Native): private desktops of this computer rather than
-	// desktop containers, so what the create dialog offers and says differs.
-	Native bool
 }
 
 // QueryNotesPageData is the template data for the query-notes dashboard.
@@ -362,10 +358,6 @@ type ScreenPageData struct {
 	Password string
 	// NoVNC is the path the RFB client module is served at.
 	NoVNC string
-	// Scale fits the picture to the window instead of asking the desktop to
-	// take the window's size: a native worker's screen is the size of this
-	// computer's own and cannot be resized.
-	Scale bool
 	// Controls is the recording ticket toolbar and resource alert markup the
 	// control plane already injected into noVNC's own page (httpapi), mounted
 	// into the viewer's session bar.

@@ -275,7 +275,6 @@ func TestHostRoutesAreOnlyOnThePrimaryListener(t *testing.T) {
 		// The hosted models' keys are set up here, never over the phone link.
 		"/api/llm/settings", "/api/llm/settings/forget",
 		// A worker's agent opening one of its shortcuts starts a program here.
-		"/api/agent/open-app",
 	}
 	srv := &Server{}
 	gated := http.NewServeMux()

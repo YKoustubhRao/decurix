@@ -126,10 +126,6 @@ type Server struct {
 	keptHostAppsMu sync.Mutex
 	keptHostApps   map[string]keptHostApp
 
-	// recordingNow is, per native worker, whether a person's demonstration is being recorded there and when that
-	// was last asked (nativerecording.go).
-	recordingMu  sync.Mutex
-	recordingNow map[string]recordingState
 	// agentRequest stands in for Desktops.AgentRequest there, in tests.
 	agentRequest func(ctx context.Context, id, method, path string, body io.Reader) (*http.Response, error)
 }
@@ -169,14 +165,8 @@ func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memorySt
 	desktop.SetHostAppChecker(srv.checkHostApps)
 	desktop.SetHostAppWarmer(srv.warmHostGUI)
 	desktop.SetHostAppStarter(srv.startHostGUIAppAhead)
-	// Nothing is copied into a native Windows worker - the apps picked for it
-	// are shortcuts to the programs installed on this computer, started on its
-	// own desktop - so there is no spare helper to keep warm, and the app list
-	// is scanned when the create dialog first asks for it.
-	if desktops == nil || !desktops.Native() {
-		desktop.WarmHostApps() // compile and load now, long before the first desktop exists
-		desktop.InitHostAppsScan()
-	}
+	desktop.WarmHostApps() // compile and load now, long before the first desktop exists
+	desktop.InitHostAppsScan()
 	return srv
 }
 
@@ -304,7 +294,6 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/desktops/skills/delete", s.skillDeleteHandler)
 	mux.HandleFunc("/api/desktops/demonstration", s.demonstrationHandler)
 	mux.HandleFunc("/api/desktops/record", s.recordTaskHandler)
-	mux.HandleFunc("/api/desktops/open", s.humansOnly(s.openOnScreenHandler))
 	mux.HandleFunc("/api/desktops/ticket", s.ticketStatusHandler)
 	mux.HandleFunc("/api/desktops/ticket/action", s.ticketActionHandler)
 	mux.HandleFunc("/api/desktops/ticket/attach", s.ticketAttachHandler)
@@ -375,7 +364,4 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/llm/", s.llmProxyHandler)
 	// Drafts from the agents' draft_email; sending them is humansOnly above.
 	mux.HandleFunc("/api/outbox", s.outboxCreateHandler)
-	// A native worker's agent opening one of the worker's own shortcuts: it
-	// starts a program of this computer, so it is on this listener only.
-	mux.HandleFunc("/api/agent/open-app", hostGUIDirectOnly(s.agentOpenAppHandler))
 }
