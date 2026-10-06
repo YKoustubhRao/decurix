@@ -559,7 +559,28 @@ func (s *Session) open(target, args, confined string) error {
 	if strings.ContainsAny(target+args, "\r\n") || strings.Contains(target+args, "\t") || strings.TrimSpace(target) == "" {
 		return errors.New("invalid application")
 	}
-	resp, err := s.DoTimeout("open\t"+target+"\t"+args+confined, launchRequestTimeout)
+	return s.openLine("open\t" + target + "\t" + args + confined)
+}
+
+// OpenDirect starts a built-in program whose executable and arguments the
+// control plane owns. It skips Start-menu discovery and the extra PowerShell
+// resolver. User-picked applications must continue to use Open.
+func (s *Session) OpenDirect(exe, args, dir, sandbox string) error {
+	if !filepath.IsAbs(exe) || !filepath.IsAbs(dir) || strings.ContainsAny(exe+args+dir+sandbox, "\r\n\t") {
+		return errors.New("invalid built-in application")
+	}
+	line := "openr\t" + exe + "\t" + args + "\t" + dir
+	if sandbox != "" {
+		if !filepath.IsAbs(sandbox) {
+			return errors.New("invalid sandbox folder")
+		}
+		line += "\tsandbox\t" + sandbox
+	}
+	return s.openLine(line)
+}
+
+func (s *Session) openLine(line string) error {
+	resp, err := s.DoTimeout(line, launchRequestTimeout)
 	// The helper may do the opening behind its command loop, so that a slow one (a browser's first start, a web app
 	// whose server is still coming up) does not hold up every click on the screen meanwhile: it answers "WAIT <n>"
 	// at once and says how it ended later.

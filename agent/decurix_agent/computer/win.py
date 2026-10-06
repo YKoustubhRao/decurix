@@ -225,6 +225,7 @@ def windows():
             # The program it belongs to ("chrome", "notepad"): what tells a
             # replay whether an app is open at all, whatever its title is now.
             "app": (w.get("app") or "").lower(),
+            "exe": w.get("exe") or "",
             "box": tuple(w["box"]),
             "active": bool(w["active"]),
         })

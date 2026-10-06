@@ -2369,10 +2369,10 @@ esac
 // metrics, or transient crash dumps that cause RAM redundancy and page cache bloat.
 func isCacheOrTransient(name, fullPath string, isDir bool) bool {
 	lower := strings.ToLower(name)
-	lowerPath := strings.ToLower(fullPath)
-
 	// Strictly exclude self / app repository to prevent recursive nesting
-	if strings.Contains(lowerPath, "decurix") || strings.Contains(lowerPath, "migration-toolkit") {
+	// by the directory being visited. An ancestor with "decurix" in its name
+	// does not make every cookie and settings file below it a repository.
+	if isDir && (lower == "decurix" || lower == "migration-toolkit") {
 		return true
 	}
 

@@ -536,6 +536,13 @@ Install it, then launch **Decurix** from the Start menu or desktop shortcut.
   already runs Ollama is used as it is; a worker on Claude or Azure OpenAI
   downloads nothing.
 * Commands a worker runs are Windows PowerShell.
+* **Files and Terminal share `Work:\`.** Files opens the worker's work folder
+  and updates when files change, without scanning while idle. Use Back/Forward,
+  Alt+Up, Ctrl+L to enter a folder, or F5 to refresh. New Windows builds ship
+  a compiled `decurix-files.exe`; older runtimes use the PowerShell fallback.
+* Window controls show hover and pressed feedback and tooltips: Minimize,
+  Maximize/Restore, and a red Close button. Releasing outside a button cancels
+  the action. Opening an app that is already open brings its window forward.
 
 Where things live:
 

@@ -50,12 +50,30 @@ $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $stage = Join-Path $repo 'desktop\electron\build'
 $out = Join-Path $repo 'dist\electron'
 
+# WMI can briefly retain an exited process while another process holds its
+# handle. Such entries no longer lock the build and must not fail shutdown.
+function Test-LiveProcess($ProcessId) {
+    $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if (-not $process) { return $false }
+    try { return -not $process.HasExited } finally { $process.Dispose() }
+}
+
+function Stop-DecurixProcess($ProcessInfo) {
+    try {
+        Stop-Process -Id $ProcessInfo.ProcessId -Force -ErrorAction Stop
+    } catch {
+        if (Test-LiveProcess $ProcessInfo.ProcessId) {
+            return "$($ProcessInfo.Name) (PID $($ProcessInfo.ProcessId)): $($_.Exception.Message)"
+        }
+    }
+}
+
 # Every process of a running Decurix: the window and the control plane are
 # both decurix.exe (the control plane in the app's resources folder), and the
 # workers' agents and engines run from that same app folder. The control
 # plane is detached and outlives the window, so both are looked for.
 function Get-DecurixProcesses {
-    $all = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath })
+    $all = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and (Test-LiveProcess $_.ProcessId) })
     $roots = @($all | Where-Object { $_.Name -ieq 'decurix.exe' } | ForEach-Object {
         $dir = Split-Path -Parent $_.ExecutablePath
         if ((Split-Path -Leaf $dir) -ieq 'resources') { $dir = Split-Path -Parent $dir }
@@ -84,8 +102,12 @@ function Clear-DecurixData {
         $procs = @(Get-DecurixProcesses)
         if ($procs.Count -eq 0) { break }
         if ($try -eq 0) { Write-Host "Closing Decurix ($($procs.Count) processes)" }
-        $procs | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        $stopErrors = @($procs | ForEach-Object { Stop-DecurixProcess $_ })
         Start-Sleep -Seconds 1
+    }
+    $remaining = @(Get-DecurixProcesses)
+    if ($remaining.Count -gt 0) {
+        throw "Could not close Decurix; no data was deleted. $($stopErrors -join '; ') If access was denied, close Decurix from an elevated PowerShell or Task Manager, then retry."
     }
 
     # The model server is started detached from the store and left running
@@ -121,7 +143,7 @@ Write-Host '========================================'
 # closes a running Decurix.
 $unpacked = Join-Path $out 'win-unpacked'
 function Get-UnpackedProcesses {
-    @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($unpacked + '\', [StringComparison]::OrdinalIgnoreCase) })
+    @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($unpacked + '\', [StringComparison]::OrdinalIgnoreCase) -and (Test-LiveProcess $_.ProcessId) })
 }
 $running = Get-UnpackedProcesses
 if ($running.Count -gt 0) {
@@ -132,12 +154,12 @@ if ($running.Count -gt 0) {
 
     Write-Host "Stopping the Decurix the last build left running in the background ($($running.Count) processes)"
     for ($try = 0; $running.Count -gt 0 -and $try -lt 10; $try++) {
-        $running | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        $stopErrors = @($running | ForEach-Object { Stop-DecurixProcess $_ })
         Start-Sleep -Seconds 1
         $running = Get-UnpackedProcesses
     }
     if ($running.Count -gt 0) {
-        throw "Could not stop what is running from $unpacked ($(($running | ForEach-Object { $_.Name } | Select-Object -Unique) -join ', ')). End it in Task Manager, then build again."
+        throw "Could not stop what is running from $unpacked. $($stopErrors -join '; ') If access was denied, close Decurix from an elevated PowerShell or Task Manager, then build again. No data was deleted."
     }
 }
 

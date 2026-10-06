@@ -244,6 +244,7 @@ func TestCacheExclusion(t *testing.T) {
 		{"Migration toolkit recursion", "/home/user/migration-toolkit", true, true},
 		{"Node modules", "/home/user/.config/Code/node_modules", true, true},
 		{"Cookies DB", "/home/user/.config/google-chrome/Default/Cookies", false, false},
+		{"Worker profile under Decurix", "/home/user/Decurix/workers/jaga/home/.config/Default/Cookies", false, false},
 		{"Login Data DB", "/home/user/.config/google-chrome/Default/Login Data", false, false},
 	}
 

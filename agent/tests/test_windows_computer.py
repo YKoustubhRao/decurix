@@ -13,12 +13,13 @@ import sys
 import tempfile
 import textwrap
 import time
+from types import SimpleNamespace
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from decurix_agent import cliargs
-from decurix_agent.computer import browser, cdp, core, demonstration, processing, screen, win
+from decurix_agent.computer import browser, cdp, core, demonstration, processing, screen, shortcuts, win
 from decurix_agent.computer.errors import ComputerError
 
 # A helper that answers like decurix-ui.exe: a JSON line per request, a
@@ -259,6 +260,52 @@ class OpeningThingsOnAWorkersScreen(unittest.TestCase):
             with self.assertRaises(ComputerError) as ctx:
                 win.open_argv("photoshop")
         self.assertIn("notepad", str(ctx.exception))
+
+
+class FastNativeAppOpening(unittest.TestCase):
+    def test_an_open_app_is_raised_without_launching_or_waiting(self):
+        entry = {"id": "code", "kind": "program", "name": "Code", "exe": r"C:\Apps\Code.exe"}
+        window = {"id": 42, "title": "project - Code", "app": "code", "exe": r"c:\apps\code.exe", "active": True}
+        with patch.object(core, "os", SimpleNamespace(name="nt")), \
+                patch.object(shortcuts, "named", return_value=entry), \
+                patch.object(screen, "windows", return_value=[window]), \
+                patch.object(shortcuts, "open_program") as launch, \
+                patch.object(core, "_wait_until") as wait, \
+                patch.object(core.xinput, "activate") as activate:
+            summary = core._open("Code", False)
+        activate.assert_called_once_with(42)
+        launch.assert_not_called()
+        wait.assert_not_called()
+        self.assertIn("front", summary)
+
+    def test_a_reused_handle_counts_as_open_even_when_it_was_there_before(self):
+        entry = {"id": "code", "kind": "program", "name": "Code", "exe": r"C:\Apps\Code.exe"}
+        before = {"id": 42, "title": "starting", "app": "bootstrap", "active": False}
+        opened = {"id": 42, "title": "project - Code", "app": "code", "exe": r"C:\Apps\Code.exe", "active": True}
+        with patch.object(core, "os", SimpleNamespace(name="nt")), \
+                patch.object(shortcuts, "named", return_value=entry), \
+                patch.object(screen, "windows", side_effect=[[before], [opened], [opened]]), \
+                patch.object(shortcuts, "open_program") as launch, \
+                patch.object(core.xinput, "activate") as activate, \
+                patch.object(core.time, "sleep") as sleep:
+            summary = core._open("Code", False)
+        launch.assert_called_once_with(entry)
+        activate.assert_called_once_with(42)
+        sleep.assert_not_called()
+        self.assertIn("Opened", summary)
+
+    def test_similar_titles_and_different_executables_do_not_match(self):
+        entry = {"id": "code", "exe": r"C:\Apps\Code.exe"}
+        self.assertFalse(shortcuts.owns_window(entry, {"title": "Code", "app": "other"}))
+        self.assertFalse(shortcuts.owns_window(entry, {"title": "Code", "app": "code", "exe": r"C:\Other\Code.exe"}))
+
+    def test_files_and_terminal_are_distinct_despite_sharing_powershell(self):
+        files = {"id": "files", "exe": "powershell.exe"}
+        terminal = {"id": "terminal", "exe": "powershell.exe"}
+        self.assertTrue(shortcuts.owns_window(files, {"title": "Files - Work:\\", "app": "powershell"}))
+        self.assertFalse(shortcuts.owns_window(terminal, {"title": "Files - Work:\\", "app": "powershell"}))
+        self.assertTrue(shortcuts.owns_window(terminal, {"title": "Terminal", "app": "conhost"}))
+        self.assertFalse(shortcuts.owns_window(files, {"title": "Terminal", "app": "powershell"}))
 
 
 class ArgumentsPassedByPowerShell(unittest.TestCase):

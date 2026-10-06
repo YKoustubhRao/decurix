@@ -60,6 +60,9 @@ type NativeRuntime struct {
 	// UIHelper is decurix-ui.exe: how the agent sees and works its own
 	// desktop (agent/windows/decurix-ui.cs).
 	UIHelper string
+	// FilesHelper is the compiled worker file browser. Empty keeps the
+	// PowerShell fallback usable with runtimes installed before it shipped.
+	FilesHelper string
 	// ControlPlaneURL is where a worker calls back to: the primary listener
 	// on loopback.
 	ControlPlaneURL string
@@ -146,11 +149,15 @@ func (h *nativeHost) withFilesApp(id string, apps []NativeApp) []NativeApp {
 	files := NativeApp{
 		ID: NativeFilesAppID, Name: "Files", Kind: NativeAppProgram,
 		Target: filepath.Join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
-		Args:   `-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "` + script + `" -Root "` + home + `"`,
+		Args:   `-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "` + script + `" -Root "` + home + `" -StartPath "` + filepath.Join(home, "work") + `"`,
 		Icon:   home,
 	}
+	if h.rt.FilesHelper != "" {
+		files.Target = h.rt.FilesHelper
+		files.Args = `"` + home + `" "` + filepath.Join(home, "work") + `"`
+	}
 
-	powershell := files.Target
+	powershell := filepath.Join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
 	terminal := NativeApp{
 		ID: NativeTerminalAppID, Name: "Terminal", Kind: NativeAppProgram,
 		Target: powershell,
@@ -166,7 +173,7 @@ func (h *nativeHost) withFilesApp(id string, apps []NativeApp) []NativeApp {
 		// starts at C:\ instead) - and the person's folders above the worker's
 		// are exactly what the sandbox keeps from it. So the work folder, which
 		// the sandbox starts it in, is given to it as a drive of its own.
-		Args: `-NoLogo -NoProfile -NoExit -Command "$Host.UI.RawUI.WindowTitle = 'Terminal'; New-PSDrive -Name Work -PSProvider FileSystem -Root ([Environment]::CurrentDirectory) | Out-Null; Set-Location -LiteralPath 'Work:\'"`,
+		Args: `-NoLogo -NoProfile -NoExit -Command "$Host.UI.RawUI.WindowTitle = 'Terminal'; New-PSDrive -Name Work -PSProvider FileSystem -Root ([Environment]::CurrentDirectory) | Out-Null; Set-Location -LiteralPath 'Work:\'; function global:prompt { 'PS ' + $pwd.Path + '> ' }; Remove-Item Alias:ls -Force -ErrorAction SilentlyContinue; function global:ls { Get-ChildItem @args | Select-Object Mode,Length,LastWriteTime,Name | Format-Table -AutoSize }"`,
 	}
 
 	out := []NativeApp{files, terminal}
@@ -287,6 +294,19 @@ func (m *Manager) OpenNativeProgram(rawID string, app NativeApp) error {
 
 	if app.Kind != NativeAppProgram {
 		return fmt.Errorf("%s is not a program", app.Name)
+	}
+
+	// These exact built-ins are authored here, not discovered host apps. Opening
+	// Files/Terminal needs no Start-menu or executable inspection subprocess.
+	for _, builtin := range m.native.withFilesApp(sanitizeName(rawID), nil) {
+		if app == builtin {
+			work := filepath.Join(m.native.home(sanitizeName(rawID)), "work")
+			sandbox := ""
+			if app.Confined {
+				sandbox = work
+			}
+			return session.OpenDirect(app.Target, app.Args, work, sandbox)
+		}
 	}
 
 	if app.Confined {

@@ -1086,6 +1086,15 @@ def _open(target, new_tab):
     elif shortcut is not None and shortcut["kind"] == "web":
         target = shortcut.get("target") or target
 
+    if os.name == "nt" and shortcut is not None and shortcut["kind"] == "program":
+        existing = [w for w in before if shortcuts.owns_window(shortcut, w)]
+        if existing:
+            # Opening an app from Start or its icon raises its current window.
+            # Waiting for a *new* handle here made single-instance apps take 45 s.
+            window = next((w for w in reversed(existing) if w.get("active")), existing[-1])
+            xinput.activate(window["id"])
+            return f"Brought {el._quote(window['title'], 80)} to the front."
+
     if URL_RE.match(target):
         url = target if "://" in target else "http://" + target
 
@@ -1158,13 +1167,19 @@ def _open(target, new_tab):
         session.launch(argv)
 
     def new_window():
-        return [w for w in screen.windows() if w["id"] not in before_ids and w["title"]]
+        current = screen.windows()
+        if os.name == "nt" and shortcut is not None and shortcut["kind"] == "program":
+            matching = [w for w in current if w["title"] and shortcuts.owns_window(shortcut, w)]
+            if matching:
+                return matching
+        return [w for w in current if w["id"] not in before_ids and w["title"]]
 
     opened = _wait_until(new_window, 45, None)
     if not opened:
         return f"Started {started}, but no new window appeared within 45 seconds - observe to check."
 
-    time.sleep(1.0)
+    if os.name != "nt":
+        time.sleep(1.0)
     title = opened[-1]["title"]
 
     if os.name == "nt":
