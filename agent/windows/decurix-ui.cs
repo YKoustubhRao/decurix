@@ -248,7 +248,7 @@ public static class Ui {
             if (!IsApplicationWindow(w)) continue;
             result.Add(new Dictionary<string, object> {
                 { "id", w.H.ToInt64() }, { "title", w.Title }, { "pid", w.Pid }, { "class", w.Class },
-                { "app", ProcessName(w.Pid) },
+                { "app", ProcessName(w.Pid) }, { "exe", ProcessPath(w.Pid) },
                 { "box", new[] { w.V.L, w.V.T, w.V.R - w.V.L, w.V.B - w.V.T } }, { "active", w.H == active } });
         }
         return result;

@@ -100,6 +100,22 @@ def _stem(path):
     return ntpath.splitext(ntpath.basename(path or ""))[0]
 
 
+def owns_window(entry, window):
+    """Match a worker shortcut to its actual process, never just a similar title."""
+
+    # Both built-ins run PowerShell, so process identity alone cannot distinguish them.
+    if entry.get("id") == "terminal":
+        return window.get("title") == "Terminal"
+    if entry.get("id") == "files":
+        return window.get("title", "").startswith("Files - ")
+    executable = entry.get("exe")
+    if not executable:
+        return False
+    if window.get("exe"):
+        return ntpath.normcase(executable) == ntpath.normcase(window["exe"])
+    return _stem(executable).lower() == (window.get("app") or "").lower()
+
+
 def open_program(entry):
     """Have the control plane start a program shortcut on this worker's screen. Raises ComputerError saying why not."""
 

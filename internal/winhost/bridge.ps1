@@ -10,6 +10,7 @@
 #                            (the program it resolved to, for launchr) or "ERR <reason>"
 #   launchr <exe> <args> <dir> <own 0|1> <base>   launch what a check resolved, with nothing left to look up
 #   open <target> <args>     start one more app on the desktop a launch made (a worker's screen), resolved as launch does
+#   openr <exe> <args> <dir> [sandbox <folder>]   start a control-plane-owned built-in, with no discovery
 #   count                    "COUNT <n>": how many windows a person would see on the desktop (0 is an empty screen)
 #   shortcuts <label><TAB>id<US>name<US>icon<TAB>...   the icons on a worker's wallpaper (US is \x1f); label is its corner text
 #   tasks                    "TASKS handle<US>a|m|-<US>title<TAB>...": the windows a taskbar has a button for, front first
@@ -179,6 +180,7 @@ public class Native {
     }
 
     public static string Launch(string desktopName, string exe, string args, string workDir) {
+        ownDesktop = desktopName; // also used when this class is hosted by PowerShell
         desktop = CreateDesktop(desktopName, IntPtr.Zero, IntPtr.Zero, 0, 0x10000000, IntPtr.Zero);
         if (desktop == IntPtr.Zero) return "ERR CreateDesktop failed (" + Marshal.GetLastWin32Error() + ")";
         IntPtr process;
@@ -486,6 +488,13 @@ public class Native {
     static bool Answer(string verb, string rest) {
         string[] p;
         switch (verb) {
+            case "openr":
+                p = rest.Split('\t');
+                if (p.Length < 3 || !System.IO.File.Exists(p[0])) { Reply("ERR built-in program not found"); return true; }
+                if (p.Length > 3 && (p.Length != 5 || p[3] != "sandbox")) { Reply("ERR invalid built-in sandbox"); return true; }
+                OpenBehind(new[] { p[0], p[1], p.Length > 3 ? p[3] : "", p.Length > 4 ? p[4] : "" },
+                    new[] { "OK", p[0], p[1], p[2], "0", "builtin", "" });
+                return true;
             case "move": case "down": case "up": Reply(Pointer(verb, rest, true)); return true;
             case "click": Pointer("down", rest, false); Thread.Sleep(30); Reply(Pointer("up", rest, false)); return true;
             case "wheel": p = rest.Split(' '); Reply(Wheel(Int(p[0]), Int(p[1]), Int(p[2]))); return true;
@@ -623,8 +632,15 @@ public class Native {
     }
 
     // Starts a program that has been found, after whatever it needs first: a browser's own profile, a web app's server.
+    static readonly Dictionary<string, string[]> prepared = new Dictionary<string, string[]>();
     static string Run(bool open, string exe, string args, string dir, bool ownProfile, string name, string launcher) {
-        if (ownProfile || launcher.Length > 0) {
+        string key = exe + "\t" + args + "\t" + dir + "\t" + name;
+        string[] cached = null;
+        // A browser's imported profile and arguments remain valid for this desktop.
+        // Web app launchers still run their readiness check on every open.
+        if (ownProfile && launcher.Length == 0) lock (prepared) prepared.TryGetValue(key, out cached);
+        if (cached != null) { exe = cached[0]; args = cached[1]; dir = cached[2]; }
+        else if (ownProfile || launcher.Length > 0) {
             bool ready = false;
             foreach (string line in Ask("complete", string.Join("\t", exe, args, dir, ownProfile ? "1" : "0", name, launcher))) {
                 string[] f = line.Split('\t');
@@ -633,6 +649,7 @@ public class Native {
                 else if (line.StartsWith("ERR ")) return line;
             }
             if (!ready) return "ERR the program could not be prepared";
+            if (ownProfile && launcher.Length == 0) lock (prepared) prepared[key] = new[] { exe, args, dir };
         }
         return open ? Open(ownDesktop, exe, args, dir) : Launch(ownDesktop, exe, args, dir);
     }
@@ -645,7 +662,8 @@ public class Native {
     static int tickets;
     static readonly object opening = new object();
 
-    static void OpenBehind(string[] f) {
+    static void OpenBehind(string[] f) { OpenBehind(f, null); }
+    static void OpenBehind(string[] f, string[] resolved) {
         int ticket = Interlocked.Increment(ref tickets);
         Interlocked.Increment(ref opensGoing);
         Reply("WAIT " + ticket);
@@ -653,7 +671,7 @@ public class Native {
             string said;
             try {
                 lock (opening) {
-                    string[] r = Found(f[0], f.Length > 1 ? f[1] : "");
+                    string[] r = resolved ?? Found(f[0], f.Length > 1 ? f[1] : "");
                     if (r[0] == "ERR") said = "ERR " + r[1];
                     // "open <target> <arguments> sandbox <folder>": confined to that folder, and so nothing to prepare.
                     else if (f.Length > 3 && f[2] == "sandbox") said = Open(ownDesktop, r[1], r[2], r[3], f[3]);
@@ -963,9 +981,10 @@ public class Native {
                         else g.DrawImage(wb.View, dest, sx, sy, sw, sh, GraphicsUnit.Pixel, seeThrough);
                         g.Flush(FlushIntention.Sync);
                     }
+                    if (fixedScreen && w.H == under) lock (deskLock) DrawCaptionFeedback(g, w.H, l, t, sc);
                 }
             }
-            if (fixedScreen) lock (deskLock) { DrawShell(g); DrawOpening(g, taskCount); }
+            if (fixedScreen) lock (deskLock) { DrawShell(g); DrawOpening(g, taskCount); DrawCaptionTip(g, under); }
         }
         GdiFlush();
         // A window that has gone, or is not looked at any more, gives its memory back.
@@ -989,7 +1008,8 @@ public class Native {
     // never asked for: it is sent when, and only when, it differs from the last one sent - and then only the part that differs.
 
     static volatile int viewers;
-    static volatile bool wantKey, stopCapture;
+    static volatile bool stopCapture;
+    static long requestedKeyframe, capturedKeyframe;
     static long boostUntil, lastChange; // Stopwatch ticks
     static readonly AutoResetEvent wake = new AutoResetEvent(false);
     static Thread capThread;
@@ -998,11 +1018,11 @@ public class Native {
 
     public static void SetViewers(int n) {
         int old = viewers; viewers = n;
-        if (n > 0 && old == 0) wantKey = true; // somebody who has nothing on screen yet needs the whole picture
+        if (n > 0 && old == 0) Interlocked.Increment(ref requestedKeyframe);
         wake.Set();
     }
 
-    public static void KeyFrame() { wantKey = true; wake.Set(); }
+    public static void KeyFrame() { Interlocked.Increment(ref requestedKeyframe); wake.Set(); }
 
     // Something was just sent to the app: look at the screen again at once, and often for a moment, so its reaction shows quickly.
     public static void Kick() {
@@ -1039,6 +1059,14 @@ public class Native {
             printed.Clear(); printedAt.Clear();
             if (prev != IntPtr.Zero) { Marshal.FreeHGlobal(prev); prev = IntPtr.Zero; prevBytes = 0; }
             if (smallPrev != IntPtr.Zero) { Marshal.FreeHGlobal(smallPrev); smallPrev = IntPtr.Zero; }
+            lock (deskLock) {
+                if (backdrop != null) { backdrop.Dispose(); backdrop = null; }
+                if (barBmp != null) { barBmp.Dispose(); barBmp = null; }
+                if (menuBmp != null) { menuBmp.Dispose(); menuBmp = null; }
+                if (calBmp != null) { calBmp.Dispose(); calBmp = null; }
+                foreach (var icon in windowIcons.Values) if (icon != null) icon.Dispose();
+                windowIcons.Clear();
+            }
         }
         GC.Collect();
         SetProcessWorkingSetSize(GetCurrentProcess(), (IntPtr)(-1), (IntPtr)(-1));
@@ -1059,7 +1087,10 @@ public class Native {
             long move = Interlocked.Read(ref moveAt);
             bool afterMove = move != seenMove; seenMove = move;
             bool sent;
-            try { sent = CaptureOnce(); } catch (Exception) { delay = 250; continue; }
+            try { sent = CaptureOnce(); } catch (Exception e) {
+                if (Environment.GetEnvironmentVariable("DECURIX_SCREEN_TRACE") == "1") Reply("EVENT capture-error " + e.ToString().Replace('\r', ' ').Replace('\n', ' '));
+                delay = 250; continue;
+            }
             long now = Stopwatch.GetTimestamp();
             if (sent) { Interlocked.Exchange(ref lastChange, now); Interlocked.Exchange(ref stillMoves, 0); delay = 5; continue; }
             if (afterMove) Interlocked.Increment(ref stillMoves);
@@ -1080,7 +1111,12 @@ public class Native {
     }
 
     static bool CaptureLocked() {
-        Surface pic = Compose(wantKey);
+        // A boolean reset after drawing can erase a request that arrived while
+        // drawing. Keep the generation actually captured, so reconnecting viewers
+        // never wait indefinitely for an unchanged screen's whole frame.
+        long generation = Interlocked.Read(ref requestedKeyframe);
+        bool needKey = generation != capturedKeyframe;
+        Surface pic = Compose(needKey);
         if (pic == null) {
             long now = Stopwatch.GetTimestamp();
             if (everHadWindow && !closedSent) {
@@ -1091,7 +1127,7 @@ public class Native {
         }
         noWindowSince = 0; everHadWindow = true; closedSent = false;
         int w = pic.W, h = pic.H, need = w * 4 * h;
-        bool full = wantKey || prev == IntPtr.Zero || prevW != w || prevH != h;
+        bool full = needKey || prev == IntPtr.Zero || prevW != w || prevH != h;
         Rectangle r = new Rectangle(0, 0, w, h);
         if (!full) {
             if (!Diff(pic.Bits, w, h, out r)) return false;
@@ -1104,7 +1140,6 @@ public class Native {
         }
         CopyMemory(prev, pic.Bits, (UIntPtr)need);
         prevW = w; prevH = h;
-        wantKey = false;
 
         byte[] data;
         using (var ms = new System.IO.MemoryStream()) {
@@ -1114,6 +1149,7 @@ public class Native {
         }
         byte[] head = Encoding.ASCII.GetBytes("FRAME " + w + " " + h + " " + r.X + " " + r.Y + " " + r.Width + " " + r.Height + " " + (full ? 1 : 0) + " " + data.Length + "\n");
         lock (outLock) { stdout.Write(head, 0, head.Length); stdout.Write(data, 0, data.Length); stdout.Flush(); }
+        capturedKeyframe = generation;
         return true;
     }
 
@@ -1436,7 +1472,10 @@ public class Native {
     static Bitmap WindowIcon(IntPtr h, int px) {
         Bitmap have;
         if (windowIcons.TryGetValue(h, out have)) return have;
-        if (windowIcons.Count > 64) windowIcons.Clear();
+        if (windowIcons.Count > 64) {
+            foreach (var icon in windowIcons.Values) if (icon != null) icon.Dispose();
+            windowIcons.Clear();
+        }
         Bitmap bmp = null;
         try {
             IntPtr icon = IntPtr.Zero, answer;
@@ -2018,6 +2057,9 @@ public class Native {
     // always right for a maximised window) - and the real pointer is the person's, on their own desktop. So when the
     // child does not say, the buttons are where Windows itself places them for that window.
     static int HitTest(IntPtr top, POINT p) {
+        RECT button; bool enabled;
+        int caption = CaptionAt(top, p, out button, out enabled);
+        if (caption != 0) return enabled ? caption : 1;
         double sc = Scale(top);
         int at = Ask(top, p, sc);
         if (at != 2) return at == NoAnswer ? 1 : at;
@@ -2044,6 +2086,53 @@ public class Native {
     [StructLayout(LayoutKind.Sequential)] struct TITLEBARINFO { public int cbSize; public RECT rcTitleBar; [MarshalAs(UnmanagedType.ByValArray, SizeConst = 6)] public uint[] rgstate; }
     [DllImport("user32.dll")] static extern bool GetTitleBarInfo(IntPtr h, ref TITLEBARINFO info);
 
+    [StructLayout(LayoutKind.Sequential)] struct TITLEBARINFOEX {
+        public int cbSize; public RECT rcTitleBar;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 6)] public uint[] rgstate;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 6)] public RECT[] rgrect;
+    }
+    static bool Contains(RECT r, POINT p) { return p.X >= r.L && p.X < r.R && p.Y >= r.T && p.Y < r.B; }
+
+    // Windows supplies the actual button rectangles and availability. This is
+    // shared by painting and clicking, including dialogs with no min/max buttons.
+    static int CaptionAt(IntPtr top, POINT p, out RECT box, out bool enabled) {
+        box = new RECT(); enabled = false;
+        RECT window, area;
+        if (!GetWindowRect(top, out window)) return 0;
+        bool dwm = DwmGetWindowAttribute(top, 5, out area, Marshal.SizeOf(typeof(RECT))) == 0 && area.R > area.L && area.B > area.T;
+        if (dwm) {
+            area.L += window.L; area.R += window.L; area.T += window.T; area.B += window.T;
+            if (!Contains(area, p)) return 0; // no cross-process query over the app's contents
+        } else if (p.Y < window.T || p.Y > window.T + 64 * Dpi()) return 0;
+        int size = Marshal.SizeOf(typeof(TITLEBARINFOEX));
+        IntPtr data = Marshal.AllocHGlobal(size);
+        var info = new TITLEBARINFOEX { cbSize = size, rgstate = new uint[6], rgrect = new RECT[6] };
+        try {
+            Marshal.StructureToPtr(info, data, false);
+            IntPtr answer;
+            if (SendMessageTimeout(top, 0x033F /* WM_GETTITLEBARINFOEX */, IntPtr.Zero, data, 0x2, 40, out answer) != IntPtr.Zero) {
+                info = (TITLEBARINFOEX)Marshal.PtrToStructure(data, typeof(TITLEBARINFOEX));
+                foreach (int index in new[] { 2, 3, 5 }) {
+                    RECT r = info.rgrect[index];
+                    if ((info.rgstate[index] & 0x18000) != 0 || r.R <= r.L || r.B <= r.T || !Contains(r, p)) continue;
+                    box = r; enabled = (info.rgstate[index] & 1) == 0;
+                    return index == 2 ? 8 : index == 3 ? 9 : 20;
+                }
+            } else return 0; // a hung app must not hold up pointer input
+        } finally { Marshal.FreeHGlobal(data); }
+        // Custom frames (Office) may expose only the group's DWM rectangle.
+        var bar = new TITLEBARINFO(); bar.cbSize = Marshal.SizeOf(typeof(TITLEBARINFO));
+        if (!dwm || !GetTitleBarInfo(top, ref bar)) return 0;
+        var shown = new List<int>();
+        foreach (int index in new[] { 2, 3, 5 }) if ((bar.rgstate[index] & 0x18000) == 0) shown.Add(index);
+        if (shown.Count == 0) return 0;
+        int slot = Math.Min(shown.Count - 1, (p.X - area.L) * shown.Count / (area.R - area.L));
+        int child = shown[slot];
+        box = area; box.L = area.L + (area.R - area.L) * slot / shown.Count; box.R = area.L + (area.R - area.L) * (slot + 1) / shown.Count;
+        enabled = (bar.rgstate[child] & 1) == 0;
+        return child == 2 ? 8 : child == 3 ? 9 : 20;
+    }
+
     const int NoAnswer = int.MinValue;
 
     // One window's own answer to "what part of you is this point" (WM_NCHITTEST), or NoAnswer from one that is busy.
@@ -2059,6 +2148,63 @@ public class Native {
         PostMessage(w, 0x0112 /* WM_SYSCOMMAND */, (IntPtr)command, IntPtr.Zero);
     }
 
+    static IntPtr captionHoverWin; static int captionHoverHit; static RECT captionHoverBox;
+    static long captionHoverSince;
+    static void CaptionHover(POINT p) {
+        IntPtr top = captured == IntPtr.Zero && dragWin == IntPtr.Zero && !OverShell(p) ? WindowAt(p) : IntPtr.Zero;
+        RECT box = new RECT(); bool enabled = false;
+        int hit = top == IntPtr.Zero ? 0 : CaptionAt(top, p, out box, out enabled);
+        if (!enabled) hit = 0;
+        IntPtr previous, current = hit != 0 ? top : IntPtr.Zero;
+        bool changed;
+        lock (deskLock) {
+            previous = captionHoverWin;
+            changed = previous != current || captionHoverHit != hit || captionHoverBox.L != box.L || captionHoverBox.T != box.T;
+            if (changed) captionHoverSince = Stopwatch.GetTimestamp();
+            captionHoverWin = current; captionHoverHit = hit; captionHoverBox = box;
+        }
+        if (changed) Kick(); // transitions repaint immediately, even after long idle
+        if (previous != IntPtr.Zero && previous != current) PostMessage(previous, 0x02A2 /* WM_NCMOUSELEAVE */, IntPtr.Zero, IntPtr.Zero);
+        if (top != IntPtr.Zero && hit > 1) {
+            double dpi = Scale(top);
+            int x = (int)Math.Round(p.X * dpi), y = (int)Math.Round(p.Y * dpi);
+            PostMessage(top, 0x00A0 /* WM_NCMOUSEMOVE */, (IntPtr)hit, (IntPtr)(((y & 0xFFFF) << 16) | (x & 0xFFFF)));
+        }
+    }
+
+    static void DrawCaptionFeedback(Graphics g, IntPtr window, int l, int t, double scale) {
+        if (window != captionHoverWin || captionHoverHit == 0 || !IsWindow(window)) return;
+        float s = (float)scale;
+        var box = new RectangleF((captionHoverBox.L - l) * s, (captionHoverBox.T - t) * s,
+            (captionHoverBox.R - captionHoverBox.L) * s, (captionHoverBox.B - captionHoverBox.T) * s);
+        bool pressed = pressWin == window && pressHit == captionHoverHit;
+        bool close = captionHoverHit == 20;
+        // Neutral buttons retain the app's frame and glyph. Close is Windows red.
+        using (var fill = new SolidBrush(close ? Color.FromArgb(pressed ? 196 : 232, 17, 35) : Color.FromArgb(pressed ? 64 : 32, 128, 128, 128))) g.FillRectangle(fill, box);
+        if (close) {
+            float cx = box.X + box.Width / 2, cy = box.Y + box.Height / 2, d = Math.Min(box.Width, box.Height) * .16f;
+            using (var pen = new Pen(Color.White, Math.Max(1, s))) {
+                g.DrawLine(pen, cx - d, cy - d, cx + d, cy + d);
+                g.DrawLine(pen, cx + d, cy - d, cx - d, cy + d);
+            }
+        }
+        g.Flush(FlushIntention.Sync);
+    }
+
+    static void DrawCaptionTip(Graphics g, IntPtr under) {
+        if (captionHoverWin == IntPtr.Zero || captionHoverHit == 0 || pressWin != IntPtr.Zero || !IsWindow(captionHoverWin) || IsIconic(captionHoverWin)
+            || OverShell(pointer) || under != captionHoverWin
+            || Stopwatch.GetTimestamp() - captionHoverSince < Stopwatch.Frequency * 6 / 10) return;
+        string text = captionHoverHit == 20 ? "Close" : captionHoverHit == 8 ? "Minimize" : IsZoomed(captionHoverWin) ? "Restore Down" : "Maximize";
+        using (var font = new Font("Segoe UI", 12f * (float)Dpi(), FontStyle.Regular, GraphicsUnit.Pixel)) {
+            SizeF size = g.MeasureString(text, font);
+            var tip = new RectangleF(Math.Max(4, Math.Min(screenW - size.Width - 20, captionHoverBox.R - size.Width - 16)),
+                Math.Min(screenH - barH - size.Height - 12, captionHoverBox.B + 8), size.Width + 16, size.Height + 10);
+            using (var fill = new SolidBrush(Color.FromArgb(250, 250, 250))) g.FillRectangle(fill, tip);
+            using (var rim = new Pen(Color.FromArgb(160, 160, 160))) g.DrawRectangle(rim, tip.X, tip.Y, tip.Width, tip.Height);
+            using (var ink = new SolidBrush(Color.FromArgb(25, 25, 25))) g.DrawString(text, font, ink, tip.X + 8, tip.Y + 5);
+        }
+    }
     static IntPtr dragWin, pressWin; static int dragHit, pressHit; static POINT dragFrom; static RECT dragRect;
     // A press on a title bar that has a window of the app's own in it (Office's: the search box, Save, Undo), until it
     // is let go: moved, it drags the window; let go where it was pressed, it was a click on what is drawn there.
@@ -2076,8 +2222,9 @@ public class Native {
     // the event is for the window's own contents.
     static string Manage(string kind, POINT p, bool right, bool twice) {
         if (kind == "move") {
+            CaptionHover(p);
             if (barChild != IntPtr.Zero && (Math.Abs(p.X - barAt.X) > 4 || Math.Abs(p.Y - barAt.Y) > 4)) barChild = IntPtr.Zero;
-            if (dragWin == IntPtr.Zero) return captured == IntPtr.Zero && ShellHover(p) ? "OK" : null;
+            if (dragWin == IntPtr.Zero) return captured == IntPtr.Zero && (ShellHover(p) || captionHoverWin != IntPtr.Zero) ? "OK" : null;
             int dx = p.X - dragFrom.X, dy = p.Y - dragFrom.Y;
             int l = dragRect.L, t = dragRect.T, r = dragRect.R, b = dragRect.B;
             bool left = dragHit == 10 || dragHit == 13 || dragHit == 16, rightEdge = dragHit == 11 || dragHit == 14 || dragHit == 17;
@@ -2097,7 +2244,11 @@ public class Native {
             if (pressWin == IntPtr.Zero) return null;
             IntPtr w = pressWin; int hit = pressHit; pressWin = IntPtr.Zero;
             // A caption button acts when the press is let go on it, so a press can still be taken back by moving off.
-            if (IsWindow(w) && WindowAt(p) == w && HitTest(w, p) == hit) Caption(w, hit);
+            if (IsWindow(w) && WindowAt(p) == w && HitTest(w, p) == hit) {
+                lock (deskLock) { captionHoverWin = IntPtr.Zero; captionHoverHit = 0; }
+                PostMessage(w, 0x02A2 /* WM_NCMOUSELEAVE */, IntPtr.Zero, IntPtr.Zero);
+                Caption(w, hit);
+            }
             return "OK";
         }
         if (captured != IntPtr.Zero) return null;
@@ -2142,6 +2293,11 @@ public class Native {
         if (desktop != IntPtr.Zero) Enum(TaskWindow, list);
         var sb = new StringBuilder();
         bool front = true;
+        lock (deskLock) {
+            var gone = new List<IntPtr>();
+            foreach (var handle in windowIcons.Keys) if (!list.Contains(handle)) gone.Add(handle);
+            foreach (var handle in gone) { if (windowIcons[handle] != null) windowIcons[handle].Dispose(); windowIcons.Remove(handle); }
+        }
         foreach (IntPtr h in list) {
             var title = new StringBuilder(200); GetWindowText(h, title, 200);
             bool min = IsIconic(h);
@@ -2233,7 +2389,12 @@ public class Native {
 
     // While a button is held, moves and the release go to the control that got the press, like mouse capture. mods is
     // any of c, s, a (Ctrl, Shift, Alt) held during this event.
-    static IntPtr downWin; static long downAt; static POINT downPt;
+    static IntPtr downWin, hoveredClient; static long downAt; static POINT downPt;
+    static void ClientHover(IntPtr target) {
+        if (target == hoveredClient) return;
+        if (hoveredClient != IntPtr.Zero && IsWindow(hoveredClient)) PostMessage(hoveredClient, 0x02A3 /* WM_MOUSELEAVE */, IntPtr.Zero, IntPtr.Zero);
+        hoveredClient = target;
+    }
 
     public static string Mouse(string kind, int x, int y, bool right, string mods) {
         EnsureGeometry();
@@ -2251,14 +2412,18 @@ public class Native {
         }
         if (fixedScreen) {
             string managed = Manage(kind, screen, right, twice);
-            if (managed != null) return managed;
+            if (managed != null) {
+                if (kind == "move" && captured == IntPtr.Zero) ClientHover(IntPtr.Zero);
+                return managed;
+            }
         }
         IntPtr target = captured;
         if (target == IntPtr.Zero) {
             IntPtr top = WindowAt(screen);
-            if (top == IntPtr.Zero) return "OK"; // nothing of the app is there
+            if (top == IntPtr.Zero) { if (kind == "move") ClientHover(IntPtr.Zero); return "OK"; }
             target = Descend(top, screen);
         }
+        if (kind == "move" && captured == IntPtr.Zero) ClientHover(target);
         // Only a window that asked for double-clicks (CS_DBLCLKS) is sent one; any other takes a second press.
         uint leftDown = twice && (GetClassLong(target, -26 /* GCL_STYLE */) & 0x8) != 0 ? 0x0203u /* WM_LBUTTONDBLCLK */ : WM_LBUTTONDOWN;
         IntPtr lp = ClientLParam(target, screen);
