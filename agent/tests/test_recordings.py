@@ -923,3 +923,41 @@ class RecordTask(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PauseWithNothingInIt(unittest.TestCase):
+    """A pause that ends on the screen it began on held no private step - a Reason being written, or Stop and Continue
+    with nothing between - so resuming records no "manual" step for a run to stop at."""
+
+    def recorder(self, before_rgb):
+        from decurix_agent.computer import demonstration
+
+        rec = object.__new__(demonstration.Recorder)
+        rec.session_id = "demo-test"
+        rec.task_id = ""
+        rec.latest = None
+        rec._pause = {"reason": "a note", "frame": screen.Frame(64, 32, before_rgb), "masks": [], "window": "Purchase Invoice"}
+        rec._report = mock.Mock()
+        return rec
+
+    def resume_onto(self, before_rgb, after_rgb):
+        rec = self.recorder(before_rgb)
+        after = {"frame": screen.Frame(64, 32, after_rgb), "elements": [], "active_title": "Purchase Invoice", "size": [64, 32]}
+        with mock.patch.object(core, "_wait_for_settle"), mock.patch.object(core, "observe", return_value=after), \
+                mock.patch.object(recording, "append", return_value={"i": 7}) as append:
+            rec._resumed()
+        return rec, append
+
+    def test_a_pause_over_an_unchanged_screen_records_nothing(self):
+        same = bytes([200, 200, 200]) * (64 * 32)
+        rec, append = self.resume_onto(same, same)
+        append.assert_not_called()
+        rec._report.assert_not_called()
+        self.assertIsNotNone(rec.latest, "the screen after the pause is what the next action is compared with")
+
+    def test_a_pause_over_which_the_screen_changed_is_a_private_step(self):
+        before = bytes([200, 200, 200]) * (64 * 32)
+        after = bytes([20, 20, 20]) * (64 * 32)
+        _, append = self.resume_onto(before, after)
+        append.assert_called_once()
+        self.assertEqual(append.call_args.args[1]["kind"], "manual")

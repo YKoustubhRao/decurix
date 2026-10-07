@@ -16,7 +16,12 @@ import "embed"
 // daemon as-is.
 //
 // go:embed skips names beginning with "." or "_", so agent/__pycache__ and
-// any stray .pyc directories are excluded automatically.
+// any stray .pyc directories are excluded automatically. That also drops the
+// agent's own __init__.py, __main__.py and _pathfix.py, so they are named by
+// pattern below (a pattern that names a file embeds it whatever its name):
+// without decurix_agent/computer/__main__.py the `gui` command, every engine's
+// way to the screen, failed in every desktop the app built.
+// TestEveryAgentFileIsEmbedded checks the checkout against this list.
 //
 // It also skips agent/thebot, without a word: a directory with a go.mod is
 // another module. TheBot's sources ride along as TheBotSource instead, which
@@ -30,6 +35,8 @@ import "embed"
 //go:embed docker/desktop.ai.Dockerfile
 //go:embed docker/tools.Dockerfile
 //go:embed agent
+//go:embed agent/decurix_agent/__init__.py agent/decurix_agent/*/__init__.py agent/decurix_agent/*/__main__.py
+//go:embed agent/browser-agent/*/_pathfix.py
 var DesktopBuildContext embed.FS
 
 // TheBotSource is the archive of agent/thebot inside DesktopBuildContext, and

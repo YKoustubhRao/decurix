@@ -6,9 +6,10 @@
 # exactly one line on stdout, in order:
 #   desktop <name>           name the private desktop this helper will create (before launch)
 #   launch <target> <args>   start the app; "OK pid=<n>" or "ERR <reason>"
-#   check <target> <args>    what launch would decide, without starting anything: "OK<TAB>exe<TAB>args<TAB>dir<TAB>own<TAB>base"
-#                            (the program it resolved to, for launchr) or "ERR <reason>"
-#   launchr <exe> <args> <dir> <own 0|1> <base>   launch what a check resolved, with nothing left to look up
+#   check <target> <args>    what launch would decide, without starting anything:
+#                            "OK<TAB>exe<TAB>args<TAB>dir<TAB>own<TAB>base<TAB>launcher" (the program it resolved to, for
+#                            launchr; launcher is the web-app launcher it stands in for, else empty) or "ERR <reason>"
+#   launchr <exe> <args> <dir> <own 0|1> <base> [launcher]   launch what a check resolved, with nothing left to look up
 #   open <target> <args>     start one more app on the desktop a launch made (a worker's screen), resolved as launch does
 #   openr <exe> <args> <dir> [sandbox <folder>]   start a control-plane-owned built-in, with no discovery
 #   count                    "COUNT <n>": how many windows a person would see on the desktop (0 is an empty screen)
@@ -28,6 +29,9 @@
 #   type <text>              characters, to whatever was clicked last
 #   key <vk> [mods]          one virtual key (Enter 13, Backspace 8, ...), with modifiers held (c s a)
 #   status | focus | windows what is going on, for saying why nothing showed up
+#   tree                     "TREE <fresh 0|1> <base64 JSON>": the app's controls read through UI Automation, in the
+#                            picture's pixels ({w, h, title, nodes: [{role, name, box, value, password, checked, ...}]}),
+#                            from the last read; fresh says that read began after the latest input. Starts the next read.
 #   quit                     end the app and exit (also happens when stdin closes)
 #
 # Between answers the helper also says, on its own:
@@ -476,7 +480,7 @@ public class Native {
                 Reply("ERR " + e.Message);
             }
             if (verb == "move") Nudge();
-            else if (verb == "down" || verb == "up" || verb == "click" || verb == "wheel" || verb == "type" || verb == "key" || verb == "copy") Kick();
+            else if (verb == "down" || verb == "up" || verb == "click" || verb == "wheel" || verb == "type" || verb == "key" || verb == "copy") { NoteInput(); Kick(); }
             if (verb == "quit") break;
         }
     }
@@ -519,6 +523,7 @@ public class Native {
             case "viewers": SetViewers(rest.Trim().Length == 0 ? 0 : Int(rest)); Reply("OK"); return true;
             case "keyframe": KeyFrame(); Reply("OK"); return true;
             case "thumb": Thumb(Int(rest)); return true;
+            case "tree": Reply(Tree()); return true;
             case "status": Reply("STATUS " + Status()); return true;
             case "focus": Reply("FOCUS " + FocusInfo()); return true;
             case "windows": Reply("WINDOWS " + Windows()); return true;
@@ -708,7 +713,7 @@ public class Native {
                 return;
             case "check":
                 r = Found(f[0], f.Length > 1 ? f[1] : "");
-                Reply(r[0] == "ERR" ? "ERR " + r[1] : "OK\t" + string.Join("\t", r, 1, 5));
+                Reply(r[0] == "ERR" ? "ERR " + r[1] : "OK\t" + string.Join("\t", r, 1, 6));
                 return;
             case "open": OpenBehind(f); return;
             case "launch":
@@ -720,7 +725,8 @@ public class Native {
                 // What a check already worked out: nothing is looked up, so this is as fast as starting the program.
                 if (f.Length < 5) { Reply("ERR malformed launchr"); return; }
                 if (!System.IO.File.Exists(f[0])) { Reply("ERR Not found on this computer: " + f[0]); return; }
-                Reply(Run(false, f[0], f[1], f[2], f[3] == "1", f[4], ""));
+                // A web app's launcher still starts its server first (Run), as a launch through check does.
+                Reply(Run(false, f[0], f[1], f[2], f[3] == "1", f[4], f.Length > 5 ? f[5] : ""));
                 return;
             default: Reply("ERR unknown command"); return;
         }
@@ -1171,6 +1177,222 @@ public class Native {
     [DllImport("gdi32.dll")] static extern int SetStretchBltMode(IntPtr dc, int mode);
     [DllImport("gdi32.dll")] static extern bool SetBrushOrgEx(IntPtr dc, int x, int y, IntPtr old);
     static Surface small; static IntPtr smallPrev;
+
+    // ---- What the app's windows hold, read through UI Automation ----
+    // The picture alone is all a VM's agent would otherwise get: no control it can name, no field it can type into by
+    // name, no password field it can tell from any other. Windows' own accessibility tree has them - the same one a
+    // screen reader reads - and it reads on a private desktop as on the visible one (measured: Character Map, 341
+    // elements with their labels), from a thread attached to that desktop. The viewer lays what it finds over the
+    // picture as real elements, the way the phone viewer does with Android's tree.
+    //
+    // A read takes a few hundred milliseconds to seconds (every property is a call into the app), so it never holds up a
+    // command: "tree" answers at once with the last read, and starts the next one on a thread of its own. Whether that
+    // read started after the latest input is said with it, so the viewer can say "not yet" until the controls have
+    // caught up with a click.
+
+    // Where the last picture was cut from the screen, so a control's screen rectangle can be put on it.
+    // The picture the app's windows make now, by the rule Compose cuts it by: its corner on the screen, its size and its
+    // scale. Worked out afresh, not taken from the last picture: with nobody watching nothing is composed, and a window
+    // that has grown since would put every control below its old edge outside the picture (found: Character Map's
+    // advanced view). False when the app shows nothing.
+    static bool Geometry(List<Win> all, out int l, out int t, out int pw, out int ph, out double sc, out IntPtr main) {
+        l = int.MaxValue; t = int.MaxValue; pw = 0; ph = 0; sc = 1.0; main = IntPtr.Zero;
+        int r = int.MinValue, b = int.MinValue;
+        if (all.Count == 0 && !fixedScreen) return false;
+        long best = 0;
+        foreach (var w in all) {
+            l = Math.Min(l, w.V.L); t = Math.Min(t, w.V.T); r = Math.Max(r, w.V.R); b = Math.Max(b, w.V.B);
+            long a = (long)(w.V.R - w.V.L) * (w.V.B - w.V.T);
+            if (a > best) { best = a; main = w.H; }
+        }
+        sc = Scale(main);
+        if (fixedScreen) { l = 0; t = 0; r = screenW; b = screenH; sc = 1.0; }
+        pw = (int)Math.Round((r - l) * sc); ph = (int)Math.Round((b - t) * sc);
+        return pw > 0 && ph > 0 && pw <= 8192 && ph <= 8192;
+    }
+    static long inputSeq;
+    static readonly object treeLock = new object();
+    static string treeJson; static long treeSeq = -1; static bool treeWalking;
+    static Thread uiaThread;
+    static readonly System.Collections.Concurrent.BlockingCollection<Action> uiaWork = new System.Collections.Concurrent.BlockingCollection<Action>();
+    const int MaxNodes = 900;
+
+    public static void NoteInput() { Interlocked.Increment(ref inputSeq); }
+
+    // "TREE <fresh 0|1> <base64 of the JSON>".
+    public static string Tree() {
+        lock (treeLock) {
+            long now = Interlocked.Read(ref inputSeq);
+            if (!treeWalking && desktop != IntPtr.Zero) {
+                treeWalking = true;
+                StartUia();
+                uiaWork.Add(() => Walk(now));
+            }
+            string body = treeJson ?? "{\"w\":0,\"h\":0,\"nodes\":[],\"pending\":true}";
+            bool fresh = treeJson != null && treeSeq == now;
+            return "TREE " + (fresh ? "1" : "0") + " " + Convert.ToBase64String(Encoding.UTF8.GetBytes(body));
+        }
+    }
+
+    static void StartUia() {
+        if (uiaThread != null) return;
+        uiaThread = new Thread(() => {
+            // UI Automation reaches only the windows of the desktop its thread is on; a new thread has no windows, so it
+            // may move.
+            bool attached = SetThreadDesktop(desktop);
+            foreach (var work in uiaWork.GetConsumingEnumerable()) {
+                if (!attached) { attached = SetThreadDesktop(desktop); }
+                work();
+            }
+        }) { IsBackground = true, Name = "uia" };
+        uiaThread.SetApartmentState(ApartmentState.MTA);
+        uiaThread.Start();
+    }
+
+    static void Walk(long seq) {
+        string json;
+        try { json = ReadControls(); }
+        catch (Exception e) { json = "{\"w\":0,\"h\":0,\"nodes\":[],\"error\":" + Js(e.Message) + "}"; }
+        lock (treeLock) { treeJson = json; treeSeq = seq; treeWalking = false; }
+    }
+
+    static System.Windows.Automation.CacheRequest treeCache;
+    static System.Windows.Automation.CacheRequest TreeCache() {
+        if (treeCache != null) return treeCache;
+        var cr = new System.Windows.Automation.CacheRequest();
+        cr.TreeScope = System.Windows.Automation.TreeScope.Element;
+        cr.AutomationElementMode = System.Windows.Automation.AutomationElementMode.None;
+        foreach (var p in new System.Windows.Automation.AutomationProperty[] {
+            System.Windows.Automation.AutomationElement.ControlTypeProperty, System.Windows.Automation.AutomationElement.NameProperty,
+            System.Windows.Automation.AutomationElement.BoundingRectangleProperty, System.Windows.Automation.AutomationElement.IsEnabledProperty,
+            System.Windows.Automation.AutomationElement.IsPasswordProperty, System.Windows.Automation.AutomationElement.HasKeyboardFocusProperty,
+            System.Windows.Automation.AutomationElement.AutomationIdProperty, System.Windows.Automation.AutomationElement.IsKeyboardFocusableProperty,
+            System.Windows.Automation.AutomationElement.IsInvokePatternAvailableProperty,
+            System.Windows.Automation.ValuePattern.ValueProperty, System.Windows.Automation.ValuePattern.IsReadOnlyProperty,
+            System.Windows.Automation.TogglePattern.ToggleStateProperty,
+            System.Windows.Automation.ExpandCollapsePattern.ExpandCollapseStateProperty,
+            System.Windows.Automation.SelectionItemPattern.IsSelectedProperty }) cr.Add(p);
+        return treeCache = cr;
+    }
+
+    static object Cached(System.Windows.Automation.AutomationElement e, System.Windows.Automation.AutomationProperty p) {
+        try {
+            object v = e.GetCachedPropertyValue(p, true);
+            return v == System.Windows.Automation.AutomationElement.NotSupported ? null : v;
+        } catch { return null; }
+    }
+
+    // The role a control is given in the viewer, by what UI Automation says it is; "" for what is only a container.
+    static string RoleOf(System.Windows.Automation.ControlType ct, bool invokable, bool focusable, string name) {
+        if (ct == System.Windows.Automation.ControlType.Button || ct == System.Windows.Automation.ControlType.SplitButton) return "button";
+        if (ct == System.Windows.Automation.ControlType.Hyperlink) return "link";
+        if (ct == System.Windows.Automation.ControlType.MenuItem) return "menuitem";
+        if (ct == System.Windows.Automation.ControlType.TabItem) return "tab";
+        if (ct == System.Windows.Automation.ControlType.ListItem) return "option";
+        if (ct == System.Windows.Automation.ControlType.TreeItem) return "treeitem";
+        if (ct == System.Windows.Automation.ControlType.DataItem) return "cell";
+        if (ct == System.Windows.Automation.ControlType.Edit) return "textbox";
+        if (ct == System.Windows.Automation.ControlType.Document) return focusable ? "textbox" : "text";
+        if (ct == System.Windows.Automation.ControlType.CheckBox) return "checkbox";
+        if (ct == System.Windows.Automation.ControlType.RadioButton) return "radio";
+        if (ct == System.Windows.Automation.ControlType.ComboBox) return "combobox";
+        if (ct == System.Windows.Automation.ControlType.Slider) return "slider";
+        if (ct == System.Windows.Automation.ControlType.Spinner) return "spinbutton";
+        if (ct == System.Windows.Automation.ControlType.Text) return "text";
+        if (ct == System.Windows.Automation.ControlType.HeaderItem) return "columnheader";
+        if (ct == System.Windows.Automation.ControlType.Image) return "image";
+        // A control drawn by the app itself (Custom, a Pane) that can be pressed and says what it is.
+        if ((invokable || focusable) && name.Length > 0 && (ct == System.Windows.Automation.ControlType.Custom || ct == System.Windows.Automation.ControlType.Pane || ct == System.Windows.Automation.ControlType.Group)) return "button";
+        return "";
+    }
+
+    static string ReadControls() {
+        var wins = AppWindows(); // topmost first
+        int l, t, fw, fh; double sc; IntPtr main;
+        if (!Geometry(wins, out l, out t, out fw, out fh, out sc, out main)) return "{\"w\":0,\"h\":0,\"nodes\":[]}";
+        var sb = new StringBuilder();
+        sb.Append("{\"w\":").Append(fw).Append(",\"h\":").Append(fh);
+        string title = "";
+        if (main != IntPtr.Zero) { var tb = new StringBuilder(256); GetWindowText(main, tb, 256); title = tb.ToString(); }
+        sb.Append(",\"title\":").Append(Js(title)).Append(",\"nodes\":[");
+        int count = 0;
+        var notOff = new System.Windows.Automation.PropertyCondition(System.Windows.Automation.AutomationElement.IsOffscreenProperty, false);
+        // Bottom window first: a dialog's controls come after the window it covers, as a page puts its dialog last.
+        for (int i = wins.Count - 1; i >= 0 && count < MaxNodes; i--) {
+            System.Windows.Automation.AutomationElementCollection all;
+            try {
+                var root = System.Windows.Automation.AutomationElement.FromHandle(wins[i].H);
+                using (TreeCache().Activate()) all = root.FindAll(System.Windows.Automation.TreeScope.Descendants, notOff);
+            } catch { continue; }
+            foreach (System.Windows.Automation.AutomationElement e in all) {
+                if (count >= MaxNodes) break;
+                var ctObj = Cached(e, System.Windows.Automation.AutomationElement.ControlTypeProperty) as System.Windows.Automation.ControlType;
+                if (ctObj == null) continue;
+                string name = (Cached(e, System.Windows.Automation.AutomationElement.NameProperty) as string ?? "").Trim();
+                bool invokable = Cached(e, System.Windows.Automation.AutomationElement.IsInvokePatternAvailableProperty) as bool? ?? false;
+                bool focusable = Cached(e, System.Windows.Automation.AutomationElement.IsKeyboardFocusableProperty) as bool? ?? false;
+                string role = RoleOf(ctObj, invokable, focusable, name);
+                if (role == "") continue;
+                // A browser's page is a Document too, and says it is read-only: the page, not a field. An editor's is not, and a
+                // RichEdit field (Character Map's "Search for") is a Document that says nothing either way.
+                if (ctObj == System.Windows.Automation.ControlType.Document && (Cached(e, System.Windows.Automation.ValuePattern.IsReadOnlyProperty) as bool? ?? false)) continue;
+                // Edge's placeholder for an image with no description says nothing about the image.
+                if (role == "image" && name.StartsWith("To get missing image descriptions")) continue;
+                if (name.Length == 0 && role != "textbox" && role != "combobox" && role != "spinbutton" && role != "slider") {
+                    // An unlabelled button is named by its id, as a screen reader falls back to it ("btnSave").
+                    name = (Cached(e, System.Windows.Automation.AutomationElement.AutomationIdProperty) as string ?? "").Trim();
+                    if (name.Length == 0 || role == "text" || role == "image") continue;
+                }
+                object rectObj = Cached(e, System.Windows.Automation.AutomationElement.BoundingRectangleProperty);
+                if (!(rectObj is System.Windows.Rect)) continue;
+                var r = (System.Windows.Rect)rectObj;
+                if (r.IsEmpty || r.Width < 2 || r.Height < 2) continue;
+                // Under a window nearer the top (a dialog over its form): not something that can be clicked now.
+                double cx = r.X + r.Width / 2, cy = r.Y + r.Height / 2;
+                bool covered = false;
+                for (int j = 0; j < i; j++) { var v = wins[j].V; if (cx >= v.L && cx < v.R && cy >= v.T && cy < v.B) { covered = true; break; } }
+                if (covered) continue;
+                int x = (int)Math.Round((r.X - l) * sc), y = (int)Math.Round((r.Y - t) * sc);
+                int w = (int)Math.Round(r.Width * sc), h = (int)Math.Round(r.Height * sc);
+                if (x < 0) { w += x; x = 0; } if (y < 0) { h += y; y = 0; }
+                if (x + w > fw) w = fw - x; if (y + h > fh) h = fh - y;
+                if (w < 2 || h < 2) continue;
+                if (count > 0) sb.Append(',');
+                sb.Append("{\"role\":\"").Append(role).Append("\",\"name\":").Append(Js(Cut(name, 200)));
+                sb.Append(",\"box\":[").Append(x).Append(',').Append(y).Append(',').Append(w).Append(',').Append(h).Append(']');
+                bool password = Cached(e, System.Windows.Automation.AutomationElement.IsPasswordProperty) as bool? ?? false;
+                if (password) sb.Append(",\"password\":true");
+                else {
+                    string value = Cached(e, System.Windows.Automation.ValuePattern.ValueProperty) as string;
+                    if (!string.IsNullOrEmpty(value) && value != name) sb.Append(",\"value\":").Append(Js(Cut(value, 500)));
+                }
+                object toggle = Cached(e, System.Windows.Automation.TogglePattern.ToggleStateProperty);
+                if (toggle is System.Windows.Automation.ToggleState) sb.Append(",\"checked\":").Append((System.Windows.Automation.ToggleState)toggle == System.Windows.Automation.ToggleState.On ? "true" : "false");
+                object expand = Cached(e, System.Windows.Automation.ExpandCollapsePattern.ExpandCollapseStateProperty);
+                if (expand is System.Windows.Automation.ExpandCollapseState && (System.Windows.Automation.ExpandCollapseState)expand != System.Windows.Automation.ExpandCollapseState.LeafNode)
+                    sb.Append(",\"expanded\":").Append((System.Windows.Automation.ExpandCollapseState)expand == System.Windows.Automation.ExpandCollapseState.Expanded ? "true" : "false");
+                if (Cached(e, System.Windows.Automation.SelectionItemPattern.IsSelectedProperty) as bool? ?? false) sb.Append(",\"selected\":true");
+                if (!(Cached(e, System.Windows.Automation.AutomationElement.IsEnabledProperty) as bool? ?? true)) sb.Append(",\"disabled\":true");
+                if (Cached(e, System.Windows.Automation.AutomationElement.HasKeyboardFocusProperty) as bool? ?? false) sb.Append(",\"focused\":true");
+                sb.Append('}');
+                count++;
+            }
+        }
+        sb.Append("]}");
+        return sb.ToString();
+    }
+
+    static string Cut(string s, int n) { return s.Length <= n ? s : s.Substring(0, n); }
+
+    static string Js(string s) {
+        var b = new StringBuilder("\"");
+        foreach (char c in s) {
+            if (c == '"' || c == '\\') b.Append('\\').Append(c);
+            else if (c < 0x20) b.Append("\\u").Append(((int)c).ToString("x4"));
+            else b.Append(c);
+        }
+        return b.Append('"').ToString();
+    }
 
     public static void Thumb(int width) {
         lock (composeLock) {
@@ -2359,10 +2581,12 @@ public class Native {
         return IntPtr.Zero;
     }
 
+    // A mouse message's point, in the target's client area as this (DPI-aware) process sees it: physical pixels. Windows
+    // itself rescales the point of a posted mouse message for a DPI-unaware window - measured at 125%: (269, 96) posted
+    // arrived as (215, 77) - so it must not be scaled here too, or every click on such an app lands short of where it was
+    // aimed (a field's click went to its label).
     static IntPtr ClientLParam(IntPtr target, POINT screen) {
         POINT c = screen; ScreenToClient(target, ref c);
-        double tsc = Scale(target);
-        c.X = (int)Math.Round(c.X * tsc); c.Y = (int)Math.Round(c.Y * tsc);
         return (IntPtr)(((c.Y & 0xFFFF) << 16) | (c.X & 0xFFFF));
     }
 
@@ -2606,11 +2830,14 @@ public class Native {
 }
 '@
 
+# What the C# above uses beyond the core: drawing, and UI Automation (its tree, and System.Windows.Rect from WindowsBase).
+$NativeAssemblies = @('System.Drawing', 'UIAutomationClient', 'UIAutomationTypes', 'WindowsBase')
+
 if ($Build) {
     try {
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Build) | Out-Null
         $tmp = "$Build.$PID.tmp.exe" # named as a program: the compiler makes a library of anything else, whatever it is asked
-        Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition $NativeSource -OutputAssembly $tmp -OutputType WindowsApplication
+        Add-Type -ReferencedAssemblies $NativeAssemblies -TypeDefinition $NativeSource -OutputAssembly $tmp -OutputType WindowsApplication
         Move-Item -LiteralPath $tmp -Destination $Build -Force
         exit 0
     } catch {
@@ -2635,14 +2862,14 @@ if (-not $Resolve -and -not ('Native' -as [type])) {
         try {
             New-Item -ItemType Directory -Force -Path $bridgeDir | Out-Null
             $tmp = "$dll.$PID.tmp"
-            Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition $NativeSource -OutputAssembly $tmp -OutputType Library
+            Add-Type -ReferencedAssemblies $NativeAssemblies -TypeDefinition $NativeSource -OutputAssembly $tmp -OutputType Library
             Move-Item -LiteralPath $tmp -Destination $dll -Force -ErrorAction SilentlyContinue
             Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
         } catch { }
     }
     if (-not ('Native' -as [type])) {
         if (Test-Path -LiteralPath $dll) { try { Add-Type -Path $dll } catch { } }
-        if (-not ('Native' -as [type])) { Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition $NativeSource }
+        if (-not ('Native' -as [type])) { Add-Type -ReferencedAssemblies $NativeAssemblies -TypeDefinition $NativeSource }
     }
 }
 
@@ -2982,6 +3209,10 @@ function Complete-Launch($p) {
         }
         Initialize-PrivateBrowserProfile $p.Base $dir $requested
         $argLine = (($argLine + " --user-data-dir=`"$dir`"").Trim())
+        # Chromium (a browser, an Electron app) builds the accessibility tree of what a page shows only once something
+        # turns it on, and until then UI Automation sees its title bar and nothing in the page: the VM's agent, which
+        # reads the app's controls through that tree (Native.Tree), would see a sign-in page as four buttons.
+        if ($argLine -notlike '*force-renderer-accessibility*') { $argLine += ' --force-renderer-accessibility' }
         if ($Browsers -contains $p.Base) {
             if ($argLine -notlike '*no-first-run*') { $argLine += ' --no-first-run --no-default-browser-check' }
             $argLine += ' --disable-session-crashed-bubble --hide-crash-restore-bubble'
@@ -3045,7 +3276,7 @@ $Commands = [Action[string, string]] {
             $f = $rest.Split("`t")
             $r = Resolve-Program $f[0] $(if ($f.Count -gt 1) { $f[1] } else { '' })
             if ($r.Error) { Reply "ERR $($r.Error)" }
-            else { Reply ("OK`t" + $r.Target + "`t" + $r.Args + "`t" + $r.WorkDir + "`t" + [int]$r.OwnProfile + "`t" + $r.Base) }
+            else { Reply ("OK`t" + $r.Target + "`t" + $r.Args + "`t" + $r.WorkDir + "`t" + [int]$r.OwnProfile + "`t" + $r.Base + "`t" + $r.Launcher) }
         }
         "launchr" {
             # What a check already worked out: nothing is looked up, so this is as fast as starting the program.
@@ -3053,7 +3284,7 @@ $Commands = [Action[string, string]] {
             if ($f.Count -lt 5) { Reply "ERR malformed launchr" }
             elseif (-not (Test-Path -LiteralPath $f[0] -PathType Leaf)) { Reply "ERR Not found on this computer: $($f[0])" }
             else {
-                $l = Complete-Launch @{ Target = $f[0]; Args = $f[1]; WorkDir = $f[2]; OwnProfile = ($f[3] -eq '1'); Base = $f[4] }
+                $l = Complete-Launch @{ Target = $f[0]; Args = $f[1]; WorkDir = $f[2]; OwnProfile = ($f[3] -eq '1'); Base = $f[4]; Launcher = $(if ($f.Count -gt 5) { $f[5] } else { '' }) }
                 Reply ([Native]::Launch($DesktopName, $l.Target, $l.Args, $l.WorkDir))
             }
         }

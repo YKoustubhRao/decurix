@@ -83,6 +83,13 @@ DRAIN_SECONDS = 12
 # " breeding season" and Enter had been read, and they were lost.
 KEY_BURST_SECONDS = 1.0
 
+# A pause that ends on the screen it began on held no private step: the person paused to write a Reason (the toolbar
+# pauses while one is composed), or pressed Stop and Continue with nothing in between. Recording a "manual" step for it
+# made every run stop and ask a person to do something by hand that was never done - found teaching an ERP task whose
+# Reason note came out as "29. a private step done by hand". Below this share of the screen, nothing changed (a clock,
+# a caret).
+UNCHANGED_SCREEN = 0.01
+
 TEXT_ENTRY_ROLES = {"textbox", "combobox", "spinbutton", "cell", "document", "paragraph", "terminal"}
 
 _process = None
@@ -1034,6 +1041,12 @@ class Recorder:
         except ComputerError as exc:
             log(f"Could not read the screen on resuming: {exc}")
             after = None
+
+        if after is not None and pause["frame"] is not None and \
+                screen.changed_fraction(pause["frame"], after.get("frame")) < UNCHANGED_SCREEN:
+            self.latest = after
+            log("Resumed (nothing changed on the screen while paused, so no private step)")
+            return
 
         masks = pause["masks"] + privacy.secret_boxes((after or {}).get("elements"))
 

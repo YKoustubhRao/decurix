@@ -388,7 +388,8 @@ func (s *Server) markDesktopViewed(ctx context.Context, desktopID string) {
 // Server to viewer, binary: one flags byte (bit 0: the rectangle is the whole picture), then six big-endian uint16 - the
 // picture's width and height and the rectangle's x, y, width and height - then the rectangle as a JPEG. Text messages
 // out are JSON: {"closed":true} once the app has no window left, and {"id":n,"text":"..."} answering a copy.
-// Viewer to server, text JSON, one input each (see applyInput); a copy carries an "id" to be answered under.
+// Viewer to server, text JSON, one input each (see applyInput); a copy carries an "id" to be answered under. A
+// {"kind":"controls"} is answered {"id":n,"controls":{...}}: the app's controls to lay over the picture (hostcontrols.go).
 func (s *Server) hostGUIWSHandler(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	if !s.hostGUIAuthorised(q.Get("id"), q.Get("token")) {
@@ -466,9 +467,18 @@ func (s *Server) serveSessionSocket(w http.ResponseWriter, r *http.Request, sess
 		if json.Unmarshal(msg, &req) != nil {
 			continue
 		}
+		if req.Kind == "controls" {
+			// Answered from the last read (a new one is started), so the read loop does not wait on it.
+			out, _ := json.Marshal(map[string]any{"id": req.Seq, "controls": s.sessionControls(sess, sess.ID())})
+			if c.Write(wsconn.OpText, out) != nil {
+				return
+			}
+			continue
+		}
 		if before != nil {
 			before(req)
 		}
+		s.noteHostInput(sess.ID())
 		text, wantsText, err := applyInput(sess, req)
 		if err != nil {
 			log.Printf("host-gui: input %s on %s: %v", req.Kind, label, err)

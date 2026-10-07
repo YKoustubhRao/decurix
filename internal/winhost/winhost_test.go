@@ -2,6 +2,7 @@ package winhost
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -67,6 +68,7 @@ XYZ'; else echo "THUMB same"; fi;;
     "copy 67") echo "CLIP aGVsbG8gd29ybGQ=";;
     "copy 88") echo "CLIP";;
     check*uwp*) echo "ERR This is a Universal Windows (UWP) app";;
+    check*webapp*) printf 'OK\tC:\\Edge\\msedge.exe\t--app=http://localhost:8000\t\t1\tmsedge\tC:\\webapp.exe\n';;
     check*)   IFS=$'\t' read -r _ t a <<< "$l"; printf 'OK\t%s\t%s\t\t0\tx\n' "$t" "$a";;
     quit)     exit 0;;
     *)        echo OK;;
@@ -965,5 +967,62 @@ func TestOpeningAnAppThatIsClosingWaitsForTheNextOne(t *testing.T) {
 	}
 	if first.Alive() {
 		t.Error("a new app was started on the private desktop of one still closing")
+	}
+}
+
+// TestAWebAppsLauncherIsKnownByItsLocalPage: a check that finds a target to be a web app's launcher - a browser opening
+// a page on this computer - says so (the seventh field), and LocalPage gives that page; a plain program, a browser with
+// no launcher behind it and a page on another computer give none.
+func TestAWebAppsLauncherIsKnownByItsLocalPage(t *testing.T) {
+	start, _ := fakeHelper(t, fakeOpts{})
+	m := NewManager(start)
+	defer m.waitIdle()
+	defer m.StopAll()
+	web := Target{Target: `C:\webapp.exe`}
+	plain := Target{Target: `C:\Windows\mspaint.exe`}
+	if _, err := m.Check(context.Background(), []Target{web, plain}); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.LocalPage(web.Target, web.Args); got != "http://localhost:8000" {
+		t.Errorf("web app launcher: LocalPage %q, want its page", got)
+	}
+	if got := m.LocalPage(plain.Target, plain.Args); got != "" {
+		t.Errorf("plain program: LocalPage %q, want none", got)
+	}
+}
+
+// TestLocalPageIsOnlyALaunchersPageOnThisComputer reads what a check resolved, with no helper.
+func TestLocalPageIsOnlyALaunchersPageOnThisComputer(t *testing.T) {
+	m := NewManager(nil)
+	cases := []struct {
+		name     string
+		r        resolvedProgram
+		wantPage string
+	}{
+		{"launcher, localhost", resolvedProgram{exe: "msedge.exe", args: "--app=http://localhost:8000/app", launcher: `C:\erp.exe`}, "http://localhost:8000/app"},
+		{"launcher, 127.0.0.1", resolvedProgram{exe: "chrome.exe", args: `--app="http://127.0.0.1:3000" --x`, launcher: `C:\a.exe`}, "http://127.0.0.1:3000"},
+		{"launcher, another computer", resolvedProgram{exe: "msedge.exe", args: "--app=https://erp.example.com", launcher: `C:\a.exe`}, ""},
+		{"a browser nobody's launcher opened", resolvedProgram{exe: "msedge.exe", args: "--app=http://localhost:8000"}, ""},
+		{"launcher, no page", resolvedProgram{exe: "msedge.exe", args: "--new-window", launcher: `C:\a.exe`}, ""},
+		{"launcher, not a web address", resolvedProgram{exe: "msedge.exe", args: "--app=file:///C:/x.html", launcher: `C:\a.exe`}, ""},
+	}
+	for i, c := range cases {
+		target := fmt.Sprintf(`C:\t%d.exe`, i)
+		m.resolved[Target{Target: target}] = c.r
+		if got := m.LocalPage(target, ""); got != c.wantPage {
+			t.Errorf("%s: LocalPage %q, want %q", c.name, got, c.wantPage)
+		}
+	}
+	if got := m.LocalPage(`C:\never-checked.exe`, ""); got != "" {
+		t.Errorf("a target no check resolved: %q, want none", got)
+	}
+}
+
+// TestALaunchOfAWebAppStillNamesItsLauncher: launchr carries the launcher, so the helper starts the app's server before
+// the page, as a launch it looked up itself would.
+func TestALaunchOfAWebAppStillNamesItsLauncher(t *testing.T) {
+	r := resolvedProgram{exe: `C:\Edge\msedge.exe`, args: "--app=http://localhost:8000", own: "1", base: "msedge", launcher: `C:\erp.exe`}
+	if got, want := r.line(), "launchr\tC:\\Edge\\msedge.exe\t--app=http://localhost:8000\t\t1\tmsedge\tC:\\erp.exe"; got != want {
+		t.Errorf("line %q, want %q", got, want)
 	}
 }
