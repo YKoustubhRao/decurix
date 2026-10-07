@@ -961,3 +961,50 @@ class PauseWithNothingInIt(unittest.TestCase):
         _, append = self.resume_onto(before, after)
         append.assert_called_once()
         self.assertEqual(append.call_args.args[1]["kind"], "manual")
+
+
+class APressReadLate(unittest.TestCase):
+    """A busy desktop reads input late: the screen it then sees may already be what the press made (ERPNext's Save,
+    read 20 s late, recorded as the "Submit" the saved form shows in its place)."""
+
+    def recorder(self):
+        from decurix_agent.computer import demonstration
+        rec = demonstration.Recorder.__new__(demonstration.Recorder)
+        rec._clock_offset = None
+        return rec
+
+    def test_how_late_is_measured_from_the_servers_own_timestamps(self):
+        rec = self.recorder()
+        self.assertEqual(rec._lag(1000.0, 5_000), 0.0)              # the first sets "on time"
+        self.assertAlmostEqual(rec._lag(1001.0, 6_000), 0.0)         # read as it happened
+        self.assertAlmostEqual(rec._lag(1025.0, 7_000), 23.0)        # read 23 s after it happened
+        self.assertEqual(rec._lag(1030.0, 0), 0.0)                   # no timestamp: nothing to go on
+
+    def test_a_late_press_is_not_named_from_a_look_taken_after_it(self):
+        from decurix_agent.computer import demonstration
+        submit = {"role": "button", "name": "Submit", "value": "", "states": [], "box": [1191, 97, 63, 28],
+                  "source": "cdp", "path": "site x > button Submit"}
+        frame = screen.Frame(2, 2, bytes(12))
+        observation = {"frame": frame, "elements": [submit], "active_title": "PINV - Chromium", "seen_at": 470.0}
+
+        late = {"kind": "click", "point": [1229, 111], "late": True, "happened": 449.0}
+        found, note = self.recorder()._element(late, observation, frame, (False, None))
+        self.assertIsNone(found)
+        self.assertEqual(note, demonstration.LATE_NOTE)
+
+        # On time, the same look names it as before.
+        on_time = {"kind": "click", "point": [1229, 111], "happened": 471.0}
+        found, note = self.recorder()._element(on_time, observation, frame, (False, None))
+        self.assertIs(found, submit)
+
+        # Late, but the look was taken before the press: still a good name.
+        early_look = dict(observation, seen_at=440.0)
+        found, note = self.recorder()._element(late, early_look, frame, (False, None))
+        self.assertIs(found, submit)
+
+    def test_a_late_step_gets_no_picture_to_look_for(self):
+        from decurix_agent.computer import demonstration
+        entry = demonstration.Recorder.__new__(demonstration.Recorder)._entry(
+            {"kind": "click", "point": [1229, 111], "t": 1.0, "t_end": 1.0}, None, demonstration.LATE_NOTE, None)
+        self.assertTrue(entry["late"])
+        self.assertEqual(entry["element_missing"], demonstration.LATE_NOTE)

@@ -1212,8 +1212,12 @@ def _retarget(run, step_n, wanted, role=None):
 
 MAX_MODEL_ATTEMPTS = 2
 MAX_CORRECTIONS = 8
-CONFIRM_RE = re.compile(r"^\W*(yes|y|yep|yeah|done|it(?:'s| is)? done|it worked|correct|right|looks (?:right|good|fine)|ok(?:ay)?|good)\b",
+# What confirms an unchecked result: words about the result itself. A bare yes or ok does not: found live, a "yes"
+# meant for an approval asked a moment before arrived after the worker had moved on to "I cannot confirm this is
+# done", and recorded a task nobody had looked at as confirmed by a person.
+CONFIRM_RE = re.compile(r"^\W*(done|it(?:'s| is| was)? done|it worked|correct|confirmed|looks (?:right|good|fine))\b",
                         re.IGNORECASE)
+VAGUE_YES_RE = re.compile(r"^\W*(yes|y|yep|yeah|ok(?:ay)?|good|right|sure|fine|go ahead|proceed)\b", re.IGNORECASE)
 REDO_RE = re.compile(r"^\W*(retry|try again|again|redo|do it again|finish it|keep going|continue)\b", re.IGNORECASE)
 
 
@@ -1817,6 +1821,13 @@ def _confirm_reply(paused, reply):
         if run is not None:
             _record_verdict(run, True, checked_by="person", helped=True)
         return write_final_reply(f"{claim}\n\nYou confirmed it was done.", kind="final", engine=engine, checked=True)
+
+    if VAGUE_YES_RE.match(reply):
+        # Neither a confirmation nor something to correct: the question stays open.
+        state.paused_skill = paused
+        return ask_for_query("To mark it done, reply `done` - a plain yes is not enough here, it may have been meant "
+                             "for another question. Reply `retry` to have it tried again, or say what is wrong.",
+                             kind="query", engine=engine)
 
     if STOP_RE.match(reply) or ABANDON_RE.match(reply) or learning.NO.match(reply):
         if run is not None:

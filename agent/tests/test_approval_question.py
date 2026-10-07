@@ -128,3 +128,31 @@ class TellingTheEngine(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConfirmingAnUncheckedResult(TeachingBase):
+    """"I cannot confirm this is done" is answered by words about the result, not by a yes meant for something else."""
+
+    def ask(self):
+        from decurix_agent import verify
+        unsure = {"verdict": verify.UNSURE, "seen": "the rows are not visible", "why": "", "confidence": 0.4}
+        with mock.patch.object(skill_task.verify, "judge", return_value=unsure), \
+                mock.patch.object(skill_task.evidence, "live", lambda scale=1: None), \
+                mock.patch.object(skill_task.evidence, "observed", lambda task_id=None: []):
+            skill_task.check_unchecked("Entered the bill.", "skill")
+        self.assertIn("cannot confirm", self.asked[-1][0].lower())
+
+    def test_a_plain_yes_asks_again_and_done_confirms(self):
+        self.ask()
+        skill_task.resume("yes - that only opens the list")
+        self.assertEqual(self.finals, [])
+        self.assertIn("reply `done`", self.asked[-1][0])
+        self.assertIsNotNone(state.paused_skill)
+
+        skill_task.resume("done")
+        self.assertIn("You confirmed it was done", self.finals[-1][0])
+
+    def test_saying_it_worked_confirms(self):
+        self.ask()
+        skill_task.resume("it worked")
+        self.assertIn("You confirmed it was done", self.finals[-1][0])

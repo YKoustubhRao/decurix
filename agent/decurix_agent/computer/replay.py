@@ -165,7 +165,10 @@ def compile_program(meta, events, frames=None):
         # coordinate, and a coordinate alone says nothing about what is there
         # now. A picture of what was around it, taken from the frame it was
         # made on, lets the replay check.
-        if kind in LOOK_KINDS and step.get("point") and "target" not in step and event.get("before"):
+        # Not for a press the recorder read only after the screen had changed (demonstration.LATE_NOTE): its frames
+        # show what the press made, and a picture of that would lead the replay to the wrong thing.
+        pictured = event.get("before") and not event.get("late")
+        if kind in LOOK_KINDS and step.get("point") and "target" not in step and pictured:
             png = frames.png(event["before"])
             look = visual.make_look(png, step["point"], event.get("screen") or meta.get("screen")) if png else None
             if look:

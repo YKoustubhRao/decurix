@@ -83,6 +83,10 @@ DRAIN_SECONDS = 12
 # " breeding season" and Enter had been read, and they were lost.
 KEY_BURST_SECONDS = 1.0
 
+# How far behind the input reader may be before a frame it grabs is not the moment of the press (Recorder._lag).
+LATE_SECONDS = 0.5
+LATE_NOTE = "it was read after the screen had already changed, so what was pressed is not known"
+
 # A pause that ends on the screen it began on held no private step: the person paused to write a Reason (the toolbar
 # pauses while one is composed), or pressed Stop and Continue with nothing in between. Recording a "manual" step for it
 # made every run stop and ask a person to do something by hand that was never done - found teaching an ERP task whose
@@ -583,6 +587,8 @@ class Recorder:
         self._poll_frame = None
         self._stable_since = 0.0
         self._last_scroll = 0.0
+        # The smallest gap seen between this machine's clock and the X server's (_lag).
+        self._clock_offset = None
         self._shift = set()
         self._caps = False
         self._keys_held = set()
@@ -698,13 +704,17 @@ class Recorder:
         from Xlib.ext import xinput
 
         now = time.time()
+        lag = self._lag(now, getattr(data, "time", 0))
 
         if evtype in (xinput.RawButtonPress, xinput.RawButtonRelease):
             pointer = root.query_pointer()
             event = {
                 "type": "press" if evtype == xinput.RawButtonPress else "release",
                 "t": now, "button": int(data.detail), "x": pointer.root_x, "y": pointer.root_y,
+                "happened": now - lag,
             }
+            if lag > LATE_SECONDS:
+                event["late"] = True
             if event["type"] == "press":
                 scroll = event["button"] in processing.SCROLL_BUTTONS
                 if not scroll or now - self._last_scroll > processing.SCROLL_GAP_SECONDS:
@@ -751,6 +761,19 @@ class Recorder:
 
         return event
 
+    def _lag(self, now, server_ms):
+        """
+        How long ago (seconds) an input the reader is handling now really happened, from the X server's own timestamp
+        on the event. The smallest gap seen between the two clocks is "on time"; anything more is how far behind the
+        reader is. A busy desktop reads input seconds late, and a frame grabbed then is not the moment of the press.
+        """
+        if not isinstance(server_ms, int) or isinstance(server_ms, bool) or not server_ms:
+            return 0.0
+        offset = now * 1000.0 - server_ms
+        if getattr(self, "_clock_offset", None) is None or offset < self._clock_offset:
+            self._clock_offset = offset
+        return max(0.0, (offset - self._clock_offset) / 1000.0)
+
     # ---- actions, on the main thread ----
 
     def _look(self):
@@ -765,6 +788,7 @@ class Recorder:
             frame = screen.grab()
         except ComputerError:
             return
+        grabbed_at = time.time()
 
         now = time.monotonic()
 
@@ -781,6 +805,7 @@ class Recorder:
 
         try:
             self.latest = core.observe(remember=False, frame=frame)
+            self.latest["seen_at"] = grabbed_at
         except ComputerError as exc:
             log(f"Could not read the screen: {exc}")
 
@@ -807,6 +832,13 @@ class Recorder:
 
         if observation is None:
             return None, "the screen had not been read yet"
+
+        # Read late, and the last look at the screen was taken after the press: what is under the pointer now may be
+        # what the press made. Found live on a 1-vCPU desktop: a click on ERPNext's Save, read 20 s late, was recorded
+        # as the "Submit" the saved form shows in its place - a replay would have submitted the invoice.
+        read_after = (observation.get("seen_at") or 0) > (action.get("happened") or 0)
+        if action["kind"] not in ("type", "key") and action.get("late") and read_after:
+            return None, LATE_NOTE
 
         fresh = frame is None or screen.changed_fraction(observation["frame"], frame) <= STALE_FRACTION
 
@@ -914,6 +946,9 @@ class Recorder:
             entry["withheld"] = {"text": withheld}
         if note:
             entry["element_missing"] = note
+        if note == LATE_NOTE:
+            # Its frames show the screen after the press, so no picture of "what was there" is taken from them.
+            entry["late"] = True
 
         return entry
 
@@ -932,12 +967,14 @@ class Recorder:
 
         before = self.latest
         settled = core._wait_for_settle(None)
+        settled_at = time.time()
 
         # One reading, of the settled frame. It used to read the whole screen
         # twice and keep only the second: ~10 s per click on a 1-vCPU desktop,
         # and every action after it waited its turn to reach the chat.
         try:
             after = core.observe(remember=False, frame=settled)
+            after["seen_at"] = settled_at
         except ComputerError as exc:
             log(f"Could not read the screen after an action: {exc}")
             after = None
