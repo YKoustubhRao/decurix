@@ -192,6 +192,16 @@ def places(skill, limit=3):
         if place and place.lower() not in (p.lower() for p in found):
             found.append(place)
 
+    # The site its steps were on comes first, as an address to open: a recording begun with the site already open
+    # (signed in first, as people do) has no step that opens it. Found live: after a restart closed the browser, the
+    # engine was told the skill "works in New Purchase Invoice - new-purchase-invoice-lovwrytrjs", guessed
+    # erpnext.example.com and erpnext.local, and asked the person where ERPNext was.
+    for step in skill.get("steps") or []:
+        match = re.match(r"(https?://[^/?#]+)", step.get("url") or "")
+        if match:
+            add(match.group(1))
+            break
+
     for step in skill.get("steps") or []:
         target = step.get("open")
         if target:

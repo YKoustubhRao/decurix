@@ -45,6 +45,19 @@ class ApprovalRules(unittest.TestCase):
         self.assertIsNone(approval.assess("click", element("link", "Purchase", path='site x > navigation "Main" > link "Purchase"')))
         self.assertIsNone(approval.assess("click", element("menuitem", "Purchase", path='site x > navigation > menuitem "Purchase"')))
 
+    def test_a_link_named_for_a_kind_of_record_is_not_an_action(self):
+        # ERPNext's sidebar: "Purchase Invoice" opens the list of purchase invoices, wherever the link sits.
+        for name in ("Purchase Invoice", "Purchase Order", "Purchase Receipt", "Transfer Request"):
+            with self.subTest(name=name):
+                self.assertIsNone(approval.assess("click", element("link", name)))
+                self.assertIsNone(approval.assess("click", element("menuitem", name)))
+
+    def test_a_record_name_on_a_button_or_with_an_act_still_stops(self):
+        self.assertIsNotNone(approval.assess("click", element("button", "Purchase Order")))
+        for name in ("Purchase now", "Purchase invoice now", "Send invoice", "Pay invoice", "Post invoice"):
+            with self.subTest(name=name):
+                self.assertIsNotNone(approval.assess("click", element("link", name)))
+
     def test_actions_that_look_like_navigation_still_stop(self):
         # A button is an action wherever it is; so is a multi-word label, and a one-word item outside the navigation bar.
         self.assertIsNotNone(approval.assess("click", element("button", "Purchase", path='site x > navigation > button "Purchase"')))
@@ -405,6 +418,14 @@ class ChoosingInADrawnDropdown(unittest.TestCase):
         self.assertLess(tries.index("Internet Leased Line"), tries.index("Dedicated"))
         self.assertLessEqual(len(tries), core.MAX_SEARCHES)
 
+    def test_a_long_line_is_also_searched_by_its_distinctive_words(self):
+        from decurix_agent.computer import core
+        tries = core._searches("Professional Fees for India Statutory Audit & GST Compliance Filing Q2")
+        self.assertIn("Statutory", tries)
+        self.assertIn("Compliance", tries)
+        self.assertNotIn("for", tries)
+        self.assertLessEqual(len(tries), core.MAX_SEARCHES)
+
     def test_a_variant_offered_only_as_its_general_item_is_explained(self):
         from decurix_agent.computer import core
         with self.assertRaises(core.ComputerError) as ctx:
@@ -722,3 +743,19 @@ class ABusyBrowsersNewTab(unittest.TestCase):
         old = {"id": "a", "type": "page", "webSocketDebuggerUrl": "ws://a"}
         with mock.patch.object(cdp, "_page_targets", return_value=[old]):
             self.assertIsNone(cdp._new_tab_after({"a"}, 0.6))
+
+
+class TypingIntoASuggestField(unittest.TestCase):
+    """Typing a document's whole line into a field that suggests entries: when nothing matches, say select would."""
+
+    def test_a_list_that_only_creates_or_searches_offers_nothing(self):
+        from decurix_agent.computer import core
+        before = {"elements": [{"path": "p/field", "role": "combobox", "name": "Item"}]}
+        only_make = {"elements": before["elements"] + [
+            {"path": "p/o1", "role": "option", "name": "Create a new Item"},
+            {"path": "p/o2", "role": "option", "name": "Advanced Search"}]}
+        real = {"elements": only_make["elements"] + [
+            {"path": "p/o3", "role": "option", "name": "Statutory Audit & GST Compliance"}]}
+        self.assertTrue(core._offers_nothing(before, only_make))
+        self.assertFalse(core._offers_nothing(before, real))
+        self.assertFalse(core._offers_nothing(before, before))   # no list at all: nothing to say

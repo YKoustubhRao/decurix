@@ -436,7 +436,16 @@ CUSTOM_OPEN_SECONDS = 1.5
 _SUGGESTION_ROLES = ("option", "menuitem", "listitem", "link")
 
 # Entries a list offers besides the choices: they make or search, never pick.
-_NOT_A_CHOICE = re.compile(r"^\s*(create|add|search more|new)\b", re.I)
+_NOT_A_CHOICE = re.compile(r"^\s*(create|add|search more|advanced search|new)\b", re.I)
+
+
+def _offers_nothing(before, after):
+    """Whether typing into a suggesting field left a list whose new entries only create or search - none to pick."""
+
+    known = {e.get("path") for e in (before or {}).get("elements") or []}
+    offered = [e for e in (after or {}).get("elements") or []
+               if e.get("path") not in known and e.get("role") in _SUGGESTION_ROLES and e.get("name")]
+    return bool(offered) and all(_NOT_A_CHOICE.match(e["name"]) for e in offered)
 
 
 def _words(text):
@@ -461,7 +470,13 @@ def _pick(candidates, option):
 
 
 # How many searches a suggesting field is given before select says what it offered.
-MAX_SEARCHES = 8
+MAX_SEARCHES = 10
+# A value's head searched as runs of its words only up to this many words; beyond it, by its distinctive words.
+MAX_RUN_WORDS = 6
+MAX_WORD_SEARCHES = 3
+# Words that name nothing on their own.
+FILLER_WORDS = {"about", "after", "their", "there", "these", "those", "which", "where", "while", "under", "other",
+                "between", "within", "without", "through", "including", "against", "during", "before"}
 
 
 def _searches(option):
@@ -477,12 +492,20 @@ def _searches(option):
     words = option.split()
     head = re.split(r"[(,]", option)[0].strip()
     tries = [option.strip(), head]
-    # Runs of the head's words from inside it, longest first: a bill writes "Dedicated Internet Leased Line (ILL)
+    # Runs of a short head's words from inside it, longest first: a bill writes "Dedicated Internet Leased Line (ILL)
     # 1 Gbps" where the ERP's item is "Internet Leased Line" - found live, every search began with "Dedicated" and
     # the item was never offered, so the engine asked a person for something the list had.
     hw = head.split()
-    for n in range(len(hw) - 1, 1, -1):
-        tries += [" ".join(hw[i:i + n]) for i in range(1, len(hw) - n + 1)]
+    if len(hw) <= MAX_RUN_WORDS:
+        for n in range(len(hw) - 1, 1, -1):
+            tries += [" ".join(hw[i:i + n]) for i in range(1, len(hw) - n + 1)]
+    # Then its most distinctive words alone, longest first. A long line holds the system's short name somewhere in
+    # the middle, and a list searches for a piece of text, not for words: found live, "Professional Fees for India
+    # Statutory Audit & GST Compliance Filing Q2" never found "Statutory Audit & GST Compliance" (the "&" breaks
+    # every run of words), and the engine, offered nothing, clicked an unrelated entry of the open list.
+    distinct = sorted({w for w in (re.sub(r"\W", "", w) for w in hw) if len(w) >= 5 and w.lower() not in FILLER_WORDS},
+                      key=lambda w: (-len(w), hw.index(next(x for x in hw if re.sub(r"\W", "", x) == w))))
+    tries += distinct[:MAX_WORD_SEARCHES]
     tries += [" ".join(words[:2]), words[0] if words else ""]
     out = []
     for t in tries:
@@ -809,6 +832,13 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         # cdp.click intercepted it: no dialog is on the screen, nothing was chosen.
         note = (f"\n{target} opens a file chooser; none was shown and no file was chosen. "
                 "To attach a file, use the upload action on this same control with the file path(s).")
+    if kind == "type" and element is not None and element.get("role") == "combobox" and _offers_nothing(before, after):
+        # Found live entering a bill: the engine typed the bill's whole line ("Professional Fees for India Statutory
+        # Audit & GST Compliance Filing Q2") into an Item field, the list offered only "Create a new Item" and
+        # "Advanced Search", and it asked a person - for an item that select, searching parts of the text, finds.
+        note += (f"\nNothing in {target}'s list matches all of that text - it offers only to create or search. "
+                 f"gui select {element.get('ref') or 'REF'} \"...\" searches for parts of the text too and picks "
+                 "the entry that fits; a system's own names are often shorter than a document's.")
     if kind in ("click", "double_click", "right_click") and point is not None and _on_taskbar(point):
         # Found live: an engine clicked 360,690 again and again for a form's row below the page's visible part,
         # and every click landed on the taskbar under the page.
