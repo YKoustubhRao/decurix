@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, Menu, powerSaveBlocker, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, powerSaveBlocker, shell, dialog } = require('electron');
 const { spawn } = require('node:child_process');
 const dgram = require('node:dgram');
 const fs = require('node:fs');
@@ -572,6 +572,45 @@ async function start() {
 function isDashboardURL(url) {
   try { return new URL(url).origin === dashboardOrigin; } catch { return false; }
 }
+
+// The backend runs in Docker, so the app opens the host's native chooser and
+// translates its results to the read-only mounts the backend can actually copy.
+function hostFolderPath(folder) {
+  if (windows) {
+    const normalized = path.win32.normalize(folder);
+    if (!/^C:\\/i.test(normalized)) throw new Error('Only folders on the C: drive are available to copy.');
+    return '/mnt/c/' + normalized.slice(3).replace(/\\/g, '/');
+  }
+  const mounts = stackEnv();
+  for (const [root, mount] of [[mounts.DECURIX_HOST_HOME, '/host-home'], [mounts.DECURIX_HOST_MNT_C, '/mnt/c']]) {
+    const relative = path.relative(root, folder);
+    if (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative)) {
+      return mount + (relative ? '/' + relative.split(path.sep).join('/') : '');
+    }
+  }
+  throw new Error('Choose a folder inside your home folder; other folders are not mounted in Decurix.');
+}
+
+let pickingHostFolders = false;
+ipcMain.handle('pick-host-folders', async (event) => {
+  // Reject remote pages, child frames and windows other than the dashboard.
+  if (!window || event.sender !== window.webContents || !event.senderFrame ||
+      event.senderFrame !== event.sender.mainFrame || !isDashboardURL(event.senderFrame.url)) {
+    throw new Error('Folder selection is only available from the desktop dashboard.');
+  }
+  if (pickingHostFolders) return { busy: true };
+  pickingHostFolders = true;
+  try {
+    const result = await dialog.showOpenDialog(window, {
+      title: 'Choose folders for the new desktop',
+      properties: ['openDirectory', 'multiSelections'],
+    });
+    if (result.canceled) return { paths: [] };
+    return { paths: result.filePaths.map((folder) => ({ path: hostFolderPath(folder), display_path: folder })) };
+  } finally {
+    pickingHostFolders = false;
+  }
+});
 
 function configureNavigation(contents) {
   contents.setWindowOpenHandler(({ url }) => {

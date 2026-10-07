@@ -2178,7 +2178,13 @@ func packDynamicApp(tw *tar.Writer, app HostAppItem, pc packContext) error {
 			iconSlug, svgContent = getAppSVGIcon(icon)
 		}
 
-		if svgContent != "" {
+		if png := windowsAppIcon(app); len(png) > 0 {
+			iconTarget := fmt.Sprintf(".local/share/icons/hicolor/48x48/apps/%s.png", slug)
+			if err := writeStringToTar(tw, iconTarget, string(png), 0644); err != nil {
+				return err
+			}
+			icon = "/home/headless/" + iconTarget
+		} else if svgContent != "" {
 			iconTarget := fmt.Sprintf(".local/share/icons/hicolor/scalable/apps/%s.svg", iconSlug)
 			_ = writeStringToTar(tw, iconTarget, svgContent, 0644)
 			icon = fmt.Sprintf("/home/headless/%s", iconTarget)
@@ -2196,8 +2202,15 @@ func packDynamicApp(tw *tar.Writer, app HostAppItem, pc packContext) error {
 			}
 		}
 
-		if icon == "" {
-			icon = pickAppIcon(app.Name)
+		// Theme names and inaccessible host paths cannot guarantee an icon in
+		// the VM. Package a fallback when no usable image was copied.
+		if !strings.HasPrefix(icon, "/home/headless/.local/share/icons/") {
+			iconTarget := ".local/share/icons/hicolor/scalable/apps/decurix-app.svg"
+			fallback := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><rect x="3" y="3" width="42" height="42" rx="10" fill="#3b6fb6"/><path fill="white" d="M12 12h10v10H12zm14 0h10v10H26zM12 26h10v10H12zm14 0h10v10H26z"/></svg>`
+			if err := writeStringToTar(tw, iconTarget, fallback, 0644); err != nil {
+				return err
+			}
+			icon = "/home/headless/" + iconTarget
 		}
 		cat := getCategoriesForApp(app.Category)
 
