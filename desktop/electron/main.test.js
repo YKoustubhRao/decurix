@@ -11,6 +11,41 @@ const source = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
 const favicon = fs.readFileSync(path.join(__dirname, '..', '..', 'web', 'favicon.svg'), 'utf8');
 const log = Buffer.from('2026/10/01 18:05:17 Decurix dev starting\r\n2026/10/01 18:05:17 listen tcp 127.0.0.1:8080: bind: address in use\r\n\r\n');
 
+test('native folder chooser maps Windows selections to the backend drive mount', async () => {
+  const result = await boot('ready', { pickedFolders: ['C:\\Users\\ana\\Documents\\Project files', 'c:\\Code\\demo'] });
+  const selected = await result.pickFolders();
+  assert.deepEqual(Array.from(selected.paths, (item) => item.path), ['/mnt/c/Users/ana/Documents/Project files', '/mnt/c/Code/demo']);
+  assert.equal(selected.paths[0].display_path, 'C:\\Users\\ana\\Documents\\Project files');
+  assert.equal(result.pickerCalls[0].owner, result.window);
+  assert.deepEqual(Array.from(result.pickerCalls[0].options.properties), ['openDirectory', 'multiSelections']);
+});
+
+test('native folder chooser handles cancel and rejects unmounted Windows drives', async () => {
+  const canceled = await boot('ready', { canceledPicker: true });
+  assert.equal((await canceled.pickFolders()).paths.length, 0);
+  const otherDrive = await boot('ready', { pickedFolders: ['D:\\Projects'] });
+  await assert.rejects(otherDrive.pickFolders(), /Only folders on the C: drive/);
+});
+
+test('native folder chooser only accepts the dashboard main frame', async () => {
+  const result = await boot('ready');
+  await assert.rejects(result.pickFolders('https://example.com/'), /only available from the desktop dashboard/);
+  await assert.rejects(result.pickFolders('http://127.0.0.1:8080/', true), /only available from the desktop dashboard/);
+  assert.equal(result.pickerCalls.length, 0);
+});
+
+test('native folder chooser maps home folders on Mac and Linux, and Linux root mount', async () => {
+  const homeFolder = path.join('/Users/ana', 'Documents', 'demo');
+  for (const platform of ['darwin', 'linux']) {
+    const result = await boot('ready', { platform, pickedFolders: [homeFolder] });
+    assert.equal((await result.pickFolders()).paths[0].path, '/host-home/Documents/demo');
+  }
+  const linux = await boot('ready', { platform: 'linux', pickedFolders: [path.resolve('/opt/demo')] });
+  assert.equal((await linux.pickFolders()).paths[0].path, '/mnt/c/opt/demo');
+  const mac = await boot('ready', { platform: 'darwin', pickedFolders: [path.resolve('/Users/another/demo')] });
+  await assert.rejects(mac.pickFolders(), /inside your home folder/);
+});
+
 // path.join, not literals: on Windows (where this is built) it joins with "\".
 const data = path.join('/profile/AppData', 'decurix');
 
@@ -29,7 +64,7 @@ const data = path.join('/profile/AppData', 'decurix');
 // is read from inside the distro there.
 async function boot(initialState, {
   backendStarts = true, stopFails = false, platform = 'win32', dockerRun = () => 0, files = [], staged = platform === 'win32' ? 'build-2' : null,
-  wsl = {},
+  wsl = {}, pickedFolders = [], canceledPicker = false,
 } = {}) {
   const machine = { installed: true, installedAfterAsking: false, distro: true, daemon: true, setupFails: false, ...wsl };
   const intervals = [];
@@ -40,6 +75,10 @@ async function boot(initialState, {
   const written = [];
   const external = [];
   const mobileCalls = [];
+  const pickerCalls = [];
+  const ipcMain = new EventEmitter();
+  const ipcHandlers = new Map();
+  ipcMain.handle = (name, handler) => ipcHandlers.set(name, handler);
   let tunnel = null;
   let quits = 0;
   const blockers = [];
@@ -167,7 +206,11 @@ async function boot(initialState, {
 
   const modules = {
     electron: {
-      app, BrowserWindow: FakeWindow, ipcMain: new EventEmitter(), shell: { openExternal: (url) => external.push(url) },
+      app, BrowserWindow: FakeWindow, ipcMain, shell: { openExternal: (url) => external.push(url) },
+      dialog: { showOpenDialog: async (owner, options) => {
+        pickerCalls.push({ owner, options });
+        return { canceled: canceledPicker, filePaths: pickedFolders };
+      } },
       powerSaveBlocker: { start: (kind) => { blockers.push(kind); return blockers.length; }, stop: (id) => { blockers.push(`stop ${id}`); } },
     },
     'node:child_process': childProcess,
@@ -198,7 +241,12 @@ async function boot(initialState, {
   await settle(40);
   const wslWords = (s) => Array.from(s.args).join(' ');
   return {
-    window: windows[0], app, spawns, children, copied, written, external, mobileCalls, settle, blockers, stack, home, machine,
+    window: windows[0], app, spawns, children, copied, written, external, mobileCalls, settle, blockers, stack, home, machine, pickerCalls,
+    pickFolders: (url = 'http://127.0.0.1:8080/', childFrame = false) => {
+      const sender = windows[0].webContents;
+      sender.mainFrame = { url };
+      return ipcHandlers.get('pick-host-folders')({ sender, senderFrame: childFrame ? { url } : sender.mainFrame });
+    },
     // The docker commands run, each as its words - on Windows, inside the distro.
     get docker() {
       return spawns.flatMap((s) => {
