@@ -2117,10 +2117,8 @@
 
   /* ---------------- host files & directories copy ---------------- */
 
-  /* What is copied is chosen in this computer's own file chooser, opened by
-     the control plane; where it goes in the desktop is worked out from where
-     it is here, never typed. A page that cannot have a chooser opened for it
-     (a phone, a control plane in a container) types the host path instead. */
+  /* The installed app opens the host chooser; a native control plane can
+     open it itself. Other browsers can enter a path visible to the server. */
   var hostFilesRows = document.getElementById("hostFilesRows");
   var hostFilesPick = document.getElementById("hostFilesPick");
   var hostFilesTyped = document.getElementById("hostFilesTyped");
@@ -2154,8 +2152,8 @@
       var paths = document.createElement("div");
       paths.className = "host-file-paths";
       var src = document.createElement("div");
-      src.textContent = item.path;
-      src.title = item.path;
+      src.textContent = item.display_path || item.path;
+      src.title = item.display_path || item.path;
       var dest = document.createElement("div");
       dest.className = "host-file-dest";
       dest.textContent = "→ " + String(item.dest || "").replace(/^\/home\/headless/, "~");
@@ -2192,13 +2190,31 @@
     hostFilesPick.disabled = true;
     hostFilesSay("Choose in the window that opened on this computer…");
 
-    fetch("/api/host-paths/browse?type=" + type, {method: "POST"})
+    var selection;
+    if(window.decurixHost && typeof window.decurixHost.pickFolders === "function"){
+      selection = window.decurixHost.pickFolders().then(function(data){
+        if(data.busy){ return data; }
+        return Promise.all((data.paths || []).map(function(item){
+          return fetch("/api/host-paths/validate?path=" + encodeURIComponent(item.path))
+            .then(function(res){
+              if(!res.ok){ throw new Error("Could not check the selected folder."); }
+              return res.json();
+            })
+            .then(function(info){
+              if(!info.exists || !info.is_dir){ throw new Error("The selected folder is not accessible to Decurix: " + item.display_path); }
+              return {path: info.path, display_path: item.display_path, is_dir: true, dest: info.default_dest};
+            });
+        })).then(function(paths){ return {paths: paths}; });
+      });
+    } else {
+      selection = fetch("/api/host-paths/browse?type=" + type, {method: "POST"})
       .then(function(res){
         if(res.status === 403 || res.status === 404){ return {unavailable: true}; }
         if(!res.ok){ throw new Error("failed"); }
         return res.json();
-      })
-      .then(function(data){
+      });
+    }
+    selection.then(function(data){
         hostFilesSay("");
         if(data.unavailable){
           hostFilesNoPicker = true;
@@ -2213,8 +2229,8 @@
         addHostFiles(data.paths);
         hostFilesShowChoices(false);
       })
-      .catch(function(){
-        hostFilesSay("Could not open the file chooser.", true);
+      .catch(function(err){
+        hostFilesSay(err.message || "Could not open the file chooser.", true);
       })
       .then(function(){
         hostFilesPick.disabled = false;

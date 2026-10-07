@@ -406,6 +406,7 @@ public class Native {
     // it there: any browser it starts is ended the moment it is created, before it can hand the page to the copy the
     // person has open on their own screen. The page itself is then opened here, in a browser of the worker's own.
     // Returns once the launcher has ended, has started its browser, or has had its time.
+    [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
     public static string RunLauncher(string desktopName, string exe, string workDir, int seconds) {
         IntPtr guard = CreateJobObject(IntPtr.Zero, null);
         IntPtr port = CreateIoCompletionPort((IntPtr)(-1), IntPtr.Zero, UIntPtr.Zero, 1);
@@ -427,12 +428,17 @@ public class Native {
             AssignProcessToJobObject(job, pi.hProcess);
             if (!AssignProcessToJobObject(guard, pi.hProcess)) { TerminateProcess(pi.hProcess, 0); CloseHandle(pi.hThread); CloseHandle(pi.hProcess); return "ERR could not watch the launcher"; }
             ResumeThread(pi.hThread);
-            CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
             long until = Stopwatch.GetTimestamp() + Stopwatch.Frequency * seconds;
             string ended = "timeout";
             while (Stopwatch.GetTimestamp() < until) {
                 uint code; UIntPtr key; IntPtr value;
-                if (!GetQueuedCompletionStatus(port, out code, out key, out value, 200)) continue;
+                if (!GetQueuedCompletionStatus(port, out code, out key, out value, 200)) {
+                    // A launcher may leave a server/WSL keeper running. Once the
+                    // launcher itself exits, keep those children alive.
+                    if (WaitForSingleObject(pi.hProcess, 0) == 0) { ended = "exited"; break; }
+                    continue;
+                }
                 if (code == 4 /* JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO */) { ended = "exited"; break; }
                 if (code != 6 /* JOB_OBJECT_MSG_NEW_PROCESS */ || (int)value == pi.dwProcessId) continue;
                 IntPtr child = OpenProcess(0x1001 /* TERMINATE, QUERY_LIMITED_INFORMATION */, false, (int)value);
@@ -446,6 +452,7 @@ public class Native {
             }
             // What it started and left running stays (a server it started is the point); a launcher still at it is ended.
             if (ended == "timeout") TerminateJobObject(guard, 0);
+            CloseHandle(pi.hProcess);
             return "OK " + ended;
         } finally { CloseHandle(port); CloseHandle(guard); }
     }
@@ -531,16 +538,17 @@ public class Native {
         Uri url;
         if (!Uri.TryCreate(address, UriKind.Absolute, out url)) return "OK";
         if (!PortOpen(url.Port)) {
-            RunLauncher(desktopName, launcher, System.IO.Path.GetDirectoryName(launcher), 60);
+            string started = RunLauncher(desktopName, launcher, System.IO.Path.GetDirectoryName(launcher), 300);
+            if (started.StartsWith("ERR ")) return started;
             for (int i = 0; i < 60 && !PortOpen(url.Port); i++) Thread.Sleep(250); // a server just started takes a moment to listen
         }
         long until = Stopwatch.GetTimestamp() + 120 * Stopwatch.Frequency;
         while (Stopwatch.GetTimestamp() < until) {
             int status = Status(url);
-            if (status != 0 && status != 502 && status != 503 && status != 504) break;
+            if (status != 0 && status != 502 && status != 503 && status != 504) return "OK";
             Thread.Sleep(1000);
         }
-        return "OK";
+        return "ERR The app's server did not become ready at " + address + ". Check its startup logs and try again.";
     }
 
     // What a page answers with: its HTTP status, or 0 when nothing answers.
@@ -644,7 +652,10 @@ public class Native {
             bool ready = false;
             foreach (string line in Ask("complete", string.Join("\t", exe, args, dir, ownProfile ? "1" : "0", name, launcher))) {
                 string[] f = line.Split('\t');
-                if (f[0] == "PREP" && f.Length >= 3) Prepare(ownDesktop, f[1], f[2]);
+                if (f[0] == "PREP" && f.Length >= 3) {
+                    string status = Prepare(ownDesktop, f[1], f[2]);
+                    if (status.StartsWith("ERR ")) return status;
+                }
                 else if (f[0] == "RUN" && f.Length >= 4) { exe = f[1]; args = f[2]; dir = f[3]; ready = true; }
                 else if (line.StartsWith("ERR ")) return line;
             }
@@ -2776,7 +2787,10 @@ function Start-WebAppServer($p) {
     # The launcher is run by the process that holds the worker's desktop, so what it starts ends with the worker. That
     # process also waits for the page itself to answer, which a listening port does not promise.
     if ($Resolve) { Say ("PREP`t" + $p.Launcher + "`t" + $u.AbsoluteUri) }
-    else { [Native]::Prepare($DesktopName, [string]$p.Launcher, [string]$u.AbsoluteUri) | Out-Null }
+    else {
+        $status = [Native]::Prepare($DesktopName, [string]$p.Launcher, [string]$u.AbsoluteUri)
+        if ($status.StartsWith('ERR ')) { throw $status.Substring(4) }
+    }
 }
 
 function Resolve-WebLauncher([string]$exe) {
