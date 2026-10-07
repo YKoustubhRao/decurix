@@ -22,6 +22,11 @@ func TestTriageRoutesRequestsByShape(t *testing.T) {
 		{"browser test message one", RouteChat},
 		{"ping - just reply pong", RouteChat},
 
+		// Says how to work a screen, in an app no surface word names.
+		{"On Purchase Invoice PINV-26-00009 the Supplier Invoice Date is empty. Open it, type 03-10-2026 into Supplier Invoice Date, press Escape, save.", RouteOperate},
+		{"press ctrl+s in the editor", RouteOperate},
+		{"what does the escape key do?", RouteChat},
+
 		// On this machine: the operator works it out.
 		{"what is the current kernel version?", RouteOperate},
 		{"how many files are in /etc?", RouteOperate},

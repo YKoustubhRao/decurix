@@ -128,7 +128,7 @@ USAGE = """gui - see and use this desktop's screen
   gui type TARGET "text"         replace a field's text (--append to add; \\n = new line)
   gui type "text"                type into whatever has focus
   gui key KEYS...                press keys: enter, tab, ctrl+s, alt+f4 ...
-  gui scroll [TARGET] down [N]   scroll up/down/left/right
+  gui scroll [TARGET] down [N]   scroll up/down/left/right, N notches (about 100 px each)
   gui select TARGET "option"     choose an option in a dropdown
   gui open URL|FILE|APP          open a web page, a document, or an app
   gui front TITLE                bring an open window to the front (a few words of its title)
@@ -155,6 +155,33 @@ TARGET is a ref from observe (e12), a role and name ('button "Save"'),
 a name ("Save"), or screen coordinates (640,360) as a last resort.
 Buttons that send, pay, buy or publish stop for human approval (exit 3).
 """
+
+
+# One wheel notch moves a page about 100 px; an amount above NOTCHES_UP_TO is read as pixels.
+# Engines write `gui scroll X,Y 420` meaning pixels and `-522` meaning up: as notches, 420 was
+# a 13-second burst that threw the page to its end, and a negative amount was not read at all.
+NOTCHES_UP_TO = 30
+PIXELS_PER_NOTCH = 100
+MAX_NOTCHES = 25
+
+
+def scroll_words(words):
+    """`gui scroll`'s words -> (target words, direction, notches or None)."""
+    words = list(words)
+    amount = None
+    if words and re.fullmatch(r"[+-]?\d+", words[-1]):
+        amount = int(words.pop())
+    direction = None
+    if words and words[-1].lower() in ("up", "down", "left", "right"):
+        direction = words.pop().lower()
+    if amount is not None and amount < 0:
+        amount = -amount
+        direction = {"down": "up", "up": "down", "right": "left", "left": "right"}.get(direction or "down")
+    if amount is not None:
+        if amount > NOTCHES_UP_TO:
+            amount = round(amount / PIXELS_PER_NOTCH)
+        amount = min(max(amount, 1), MAX_NOTCHES)
+    return words, direction or "down", amount
 
 
 def _target(value, args):
@@ -554,6 +581,12 @@ def run(argv):
 
     if command in ("click", "double-click", "right-click"):
         words = _strip_descriptor(list(args.target))
+        if len(words) > 1 and all(el.parse_point(w) for w in words):
+            # Found live: an engine wrote `gui click 360,690 360,710 360,730 ...` to search for a row below the
+            # screen's edge, only the first point was clicked, and it never learnt the rest were not.
+            raise ComputerError(f"{command} takes one target, and {len(words)} points were given; nothing was "
+                                "clicked. To reach something below the visible part of a page, gui scroll it "
+                                "(gui scroll down 5), then gui observe and click it by its ref.")
         if words and not (_is_target(words[0]) or (len(words) == 2 and _is_role_word(words[0]))):
             words = [" ".join(words)]
         if len(words) == 2 and _is_role_word(words[0]):
@@ -582,13 +615,7 @@ def run(argv):
         result = core.act("key", keys=args.keys, **target)
 
     elif command == "scroll":
-        words = list(args.words)
-        amount = None
-        if words and words[-1].isdigit():
-            amount = int(words.pop())
-        direction = "down"
-        if words and words[-1].lower() in ("up", "down", "left", "right"):
-            direction = words.pop().lower()
+        words, direction, amount = scroll_words(args.words)
         target = _target(words[0], args) if words else _target(None, args)
         result = core.act("scroll", direction=direction, amount=amount, **target)
 

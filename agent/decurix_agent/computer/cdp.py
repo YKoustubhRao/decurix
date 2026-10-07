@@ -1339,6 +1339,71 @@ def _object(page, backend_id):
     return resolved["object"]["objectId"]
 
 
+# A line longer than this is pasted (insertText) rather than typed key by key: nothing a form field takes is that long,
+# and a key event per character would take a while.
+KEYS_UP_TO = 500
+
+
+def _type_line(page, object_id, line):
+    """
+    Type one line into the focused single-line field the way a keyboard does: a key down and up per character. A field
+    a page builds itself often listens for keys, not for text arriving: ERPNext's date field stayed empty when the line
+    was inserted with Input.insertText (measured: value '' after insertText, '04-10-2026' and the form's date set after
+    key events), so a worker typed a bill's date four times, never saw it held, and asked a person what to do. If the
+    keys left the field without the line (a field that swallows key events), it is inserted as before.
+    """
+
+    if len(line) > KEYS_UP_TO:
+        page.call("Input.insertText", {"text": line})
+        return
+
+    before = _field_value(page, object_id)
+    for char in line:
+        down = {"type": "keyDown", "key": char, "text": char, "unmodifiedText": char}
+        up = {"type": "keyUp", "key": char}
+        # The key's code too, as a keyboard sends it: a page that reads keyCode/which (ERPNext's date field) treated a
+        # key with none as no key at all, and cleared what had been typed a moment later.
+        code = _key_code(char)
+        if code:
+            for event in (down, up):
+                event["code"], event["windowsVirtualKeyCode"], event["nativeVirtualKeyCode"] = code
+        page.call("Input.dispatchKeyEvent", down)
+        page.call("Input.dispatchKeyEvent", up)
+    after = _field_value(page, object_id)
+    if after is not None and line not in after and after == (before or ""):
+        page.call("Input.insertText", {"text": line})
+
+
+_PUNCTUATION = {" ": ("Space", 32), "-": ("Minus", 189), "/": ("Slash", 191), ".": ("Period", 190), ",": ("Comma", 188),
+                ":": ("Semicolon", 186), "@": ("Digit2", 50), "_": ("Minus", 189), "+": ("Equal", 187), "=": ("Equal", 187)}
+
+
+def _key_code(char):
+    """(code, keyCode, keyCode) of the US-keyboard key that types char, or None for one with no plain key."""
+
+    if "0" <= char <= "9":
+        return ("Digit" + char, ord(char), ord(char))
+    if char.isascii() and char.isalpha():
+        return ("Key" + char.upper(), ord(char.upper()), ord(char.upper()))
+    if char in _PUNCTUATION:
+        code, vk = _PUNCTUATION[char]
+        return (code, vk, vk)
+    return None
+
+
+def _field_value(page, object_id):
+    """The field's value now, or None when it has none to read (not an input)."""
+
+    try:
+        value = page.call("Runtime.callFunctionOn", {
+            "objectId": object_id, "returnByValue": True,
+            "functionDeclaration": "function() { return typeof this.value === 'string' ? this.value : null; }",
+        }).get("result", {}).get("value")
+    except ComputerError:
+        return None
+    return value
+
+
 def type_text(element, text, replace=True):
     page = _page_for(element)
 
@@ -1376,7 +1441,7 @@ def type_text(element, text, replace=True):
             lines = text.split("\n")
             for index, line in enumerate(lines):
                 if line:
-                    page.call("Input.insertText", {"text": line})
+                    _type_line(page, object_id, line)
                 elif replace and index == 0 and len(lines) == 1:
                     # Replacing with nothing: delete the selection.
                     press_key(page, "Backspace")
@@ -1574,6 +1639,69 @@ def scroll(element, direction, amount=3):
         page.close()
 
 
+def _navigate_unless_asked_to_stay(page, url):
+    """
+    Page.navigate's answer, or None when the page asked before leaving ("Leave site? Changes you made may not be
+    saved") - which this answers Cancel, so nothing is lost. Found live: a form left unsaved in ERPNext, a `gui open`
+    on its tab, and Chrome's own dialog held every DevTools call after it ("did not answer Page.navigate within 20s")
+    with the browser frozen behind it. A person reading that dialog keeps their work; so does this.
+    """
+
+    page.call("Page.enable")
+    # A dialog already showing is announced when the domain is enabled: the same answer, before anything else.
+    showing = [m for m in page.events if m.get("method") == "Page.javascriptDialogOpening"]
+    page.events = [m for m in page.events if m not in showing]
+    if any((m.get("params") or {}).get("type") == "beforeunload" for m in showing):
+        page.call("Page.handleJavaScriptDialog", {"accept": False})
+        return None
+    page.seq += 1
+    mine = page.seq
+    page.ws.send(json.dumps({"id": mine, "method": "Page.navigate", "params": {"url": url}}))
+    deadline = time.monotonic() + CALL_TIMEOUT
+    stayed = False
+
+    while time.monotonic() < deadline:
+        page.ws.sock.settimeout(max(0.1, deadline - time.monotonic()))
+        try:
+            message = json.loads(page.ws.receive())
+        except socket.timeout:
+            break
+        if message.get("method") == "Page.javascriptDialogOpening" and \
+                (message.get("params") or {}).get("type") == "beforeunload":
+            page.seq += 1
+            page.ws.send(json.dumps({"id": page.seq, "method": "Page.handleJavaScriptDialog",
+                                     "params": {"accept": False}}))
+            stayed = True
+            continue
+        if message.get("id") == mine:
+            if stayed:
+                return None
+            if "error" in message:
+                raise ComputerError(f"Page.navigate: {message['error'].get('message')}")
+            return message.get("result", {})
+
+    if stayed:
+        return None
+    raise ComputerError(f"Chromium did not answer Page.navigate within {CALL_TIMEOUT}s")
+
+
+NEW_TAB_WAIT_SECONDS = 30
+
+
+def _new_tab_after(before, seconds):
+    """A page target that was not among `before`, waited for up to `seconds`, or None."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            for t in _page_targets():
+                if t.get("id") not in before:
+                    return t
+        except (OSError, ValueError, ComputerError):
+            pass
+        time.sleep(0.5)
+    return None
+
+
 def navigate(url, new_tab=False):
     """Load a URL in the active tab (or a new one) and wait for it to load."""
 
@@ -1585,20 +1713,33 @@ def navigate(url, new_tab=False):
 
     if new_tab:
         try:
+            before = {t.get("id") for t in _page_targets()}
+        except ComputerError:
+            before = set()
+        try:
             # The whole URL is escaped, % included: DevTools decodes this query
             # once, and a URL's own escapes left as they were came out decoded -
             # found live, `chatgpt.com/?q=what%20is%207%2B8` opened as
             # `?q=what%20is%207+8`, and ChatGPT was asked "what is 7 8?".
             target = _get("/json/new?" + urllib.parse.quote(url, safe=""), method="PUT", timeout=10)
         except (OSError, ValueError) as exc:
-            raise ComputerError(f"could not open a new tab: {exc}")
+            # A busy browser (a 1-vCPU desktop just restarted, a heavy web app in other tabs) answers after the
+            # tab is made: found live, "timed out" here, the tab there a moment later, and every retry opened
+            # another one. Take the tab when it comes rather than ask for a second.
+            target = _new_tab_after(before, NEW_TAB_WAIT_SECONDS)
+            if target is None:
+                raise ComputerError(f"could not open a new tab: {exc}")
         page = Page(target)
     else:
         page = active_page()
 
     try:
         if not new_tab:
-            result = page.call("Page.navigate", {"url": url})
+            result = _navigate_unless_asked_to_stay(page, url)
+            if result is None:
+                # The page has unsaved work and asked before leaving: keep it, open the address beside it.
+                page.close()
+                return navigate(url, new_tab=True)
             if result.get("errorText"):
                 raise ComputerError(f"could not load {url}: {result['errorText']}")
 

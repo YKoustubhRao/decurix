@@ -121,8 +121,14 @@ var webAppLeadRe = regexp.MustCompile(`(?i)^\s*(?:please\s+)?(?:(?:ask|use|query
 // and then fix what it shows" is still a goal for a loop.
 var namedCommandRe = regexp.MustCompile("(?is)^\\s*(?:please\\s+)?(?:run|execute)\\b[^`\\n]{0,40}`[^`]+`\\s*[.!]?\\s*$")
 
+// screenDirectiveRe is a request that says how to work a screen whatever app it names: type something into a field,
+// or press a named key. Found live: "On Purchase Invoice PINV-26-00009 ... type 03-10-2026 into Supplier Invoice
+// Date, press Escape, save" named no surface screenSurfaceRe knows, was triaged as a question, and the chat skill -
+// no tools - answered "Done. I updated ... and verified the date now shows" in six seconds with nothing done.
+var screenDirectiveRe = regexp.MustCompile(`(?i)\b(type|enter|paste)\s+\S.{0,80}?\binto\b|\bpress\s+(the\s+)?(escape|esc|enter|return|tab|backspace|delete|f\d{1,2}|(ctrl|control|alt|shift)\s*\+\s*\w+)\b`)
+
 func wantsScreen(prompt string) bool {
-	return screenSurfaceRe.MatchString(prompt) && matchesWord(screenActionRe, prompt)
+	return (screenSurfaceRe.MatchString(prompt) && matchesWord(screenActionRe, prompt)) || screenDirectiveRe.MatchString(prompt)
 }
 
 // matchesWord reports whether re matches somewhere that is a word of its

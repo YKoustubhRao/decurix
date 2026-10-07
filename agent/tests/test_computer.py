@@ -7,7 +7,9 @@ benchmark's oracle run (bench/gui/run.py --engine oracle).
     PYTHONPATH=agent python3 -m unittest discover -s agent/tests
 """
 
+import json
 import tempfile
+import sys
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -282,6 +284,8 @@ class BrowserAvailability(unittest.TestCase):
         finally:
             server.shutdown()
 
+    @unittest.skipIf(sys.platform == "win32", "Windows retries a refused loopback connection for about 2 s; "
+                                              "the desktops, where this matters, are Linux")
     def test_no_browser_is_known_at_once(self):
         import socket, time as _t
         from unittest import mock
@@ -394,6 +398,13 @@ class ChoosingInADrawnDropdown(unittest.TestCase):
         self.assertEqual(core._searches("Customizable Desk (White, Aluminium)"),
                          ["Customizable Desk (White, Aluminium)", "Customizable Desk", "Customizable"])
 
+    def test_searches_also_try_runs_of_words_from_inside_the_value(self):
+        from decurix_agent.computer import core
+        tries = core._searches("Dedicated Internet Leased Line (ILL) 1 Gbps 1:1 Symmetric Bandwidth")
+        self.assertIn("Internet Leased Line", tries)
+        self.assertLess(tries.index("Internet Leased Line"), tries.index("Dedicated"))
+        self.assertLessEqual(len(tries), core.MAX_SEARCHES)
+
     def test_a_variant_offered_only_as_its_general_item_is_explained(self):
         from decurix_agent.computer import core
         with self.assertRaises(core.ComputerError) as ctx:
@@ -471,3 +482,243 @@ class ADialogsOwnControl(unittest.TestCase):
         # With no dialog open, two Confirms are still for the engine to tell apart.
         with self.assertRaises(el.ComputerError):
             el.find([page, mine], role="button", name="Confirm")
+
+
+class ARedrawnControlIsFoundAgain(unittest.TestCase):
+    """A page that draws a control anew as it is touched (ERPNext's Supplier box) fails an action with a detached node:
+    the same control is read again and the action tried once more - never another control."""
+
+    def _obs(self, name):
+        box = {"role": "combobox", "name": name, "source": "cdp", "ref": "e5", "path": "site x > combobox Supplier",
+               "box": [300, 240, 280, 30], "states": [], "group": "cdp:1"}
+        return {"elements": [box], "frame": None, "windows": [], "groups": [{"id": "cdp:1", "title": "x"}],
+                "active_title": "New Purchase Invoice", "size": [1280, 720]}
+
+    def _act(self, after_name):
+        from types import SimpleNamespace
+        from decurix_agent.computer import approval, audit, core
+        looks = [self._obs("Supplier"), self._obs(after_name), self._obs(after_name)]
+        stale = core.ComputerError("DOM.scrollIntoViewIfNeeded: Node is detached from document")
+        with patch.object(core, "observe", side_effect=lambda *a, **k: looks.pop(0) if looks else self._obs(after_name)), \
+             patch.object(core, "_perform", side_effect=[stale, "cdp"]) as perform, \
+             patch.object(core, "_wait_for_settle"), patch.object(audit, "record"), \
+             patch.object(approval, "check", return_value=SimpleNamespace(allowed=True, approved=False)):
+            result = core.act("select", ref="e5", option="NexGen Hardware Labs Pvt Ltd")
+        return result, perform
+
+    def test_the_same_control_drawn_anew_is_acted_on(self):
+        result, perform = self._act("Supplier")
+        self.assertEqual(perform.call_count, 2)
+        self.assertEqual(result["status"], "done")
+
+    def test_a_different_control_in_its_place_is_not(self):
+        from decurix_agent.computer import core
+        with self.assertRaises(core.ComputerError) as ctx:
+            self._act("Company")
+        self.assertIn("detached", str(ctx.exception))
+
+
+class TypingIsKeys(unittest.TestCase):
+    """A single-line field is typed key by key, as a keyboard does: ERPNext's date field ignored text inserted with
+    Input.insertText and stayed empty. A field that ignores keys still gets the text, inserted."""
+
+    class FakePage:
+        def __init__(self, takes_keys):
+            self.takes_keys, self.value, self.calls = takes_keys, "", []
+
+        def call(self, method, params=None):
+            self.calls.append(method)
+            params = params or {}
+            if method == "Input.dispatchKeyEvent" and params.get("type") == "keyDown" and self.takes_keys:
+                self.value += params["text"]
+            elif method == "Input.insertText":
+                self.value += params["text"]
+            elif method == "Runtime.callFunctionOn":
+                if "this.value" in params.get("functionDeclaration", "") and "multiline" not in params["functionDeclaration"]:
+                    return {"result": {"value": self.value}}
+                return {"result": {"value": {"multiline": False}}}
+            return {}
+
+        def close(self):
+            pass
+
+    def run_type(self, takes_keys):
+        from unittest import mock
+        from decurix_agent.computer import cdp
+        page = self.FakePage(takes_keys)
+        element = {"handle": {"backend_id": 7}}
+        with mock.patch.object(cdp, "_page_for", return_value=page), mock.patch.object(cdp, "_object", return_value="obj"):
+            cdp.type_text(element, "04-10-2026")
+        return page
+
+    def test_a_field_that_listens_for_keys_gets_keys(self):
+        page = self.run_type(takes_keys=True)
+        self.assertEqual(page.value, "04-10-2026")
+        self.assertNotIn("Input.insertText", page.calls)
+        self.assertEqual(page.calls.count("Input.dispatchKeyEvent"), 20)
+
+    def test_a_field_that_ignores_keys_still_gets_the_text(self):
+        page = self.run_type(takes_keys=False)
+        self.assertEqual(page.value, "04-10-2026")
+        self.assertIn("Input.insertText", page.calls)
+
+
+class LeavingAPageWithUnsavedWork(unittest.TestCase):
+    """A navigation the page answers with "Leave site?" is cancelled - the unsaved work stays - and the address is
+    opened in a new tab; it used to freeze every DevTools call behind Chrome's dialog."""
+
+    class FakeSocket:
+        def __init__(self, dialog_on_navigate=True, already_showing=False):
+            import collections
+            self.out, self.sent = collections.deque(), []
+            self.dialog_on_navigate, self.already_showing = dialog_on_navigate, already_showing
+            self.sock = self
+
+        def settimeout(self, t):
+            pass
+
+        def send(self, raw):
+            m = json.loads(raw)
+            self.sent.append(m["method"])
+            if m["method"] == "Page.enable":
+                if self.already_showing:
+                    self.out.append({"method": "Page.javascriptDialogOpening", "params": {"type": "beforeunload"}})
+                self.out.append({"id": m["id"], "result": {}})
+            elif m["method"] == "Page.navigate":
+                if self.dialog_on_navigate:
+                    self.out.append({"method": "Page.javascriptDialogOpening", "params": {"type": "beforeunload"}})
+                    self.pending = m["id"]
+                else:
+                    self.out.append({"id": m["id"], "result": {"frameId": "f"}})
+            elif m["method"] == "Page.handleJavaScriptDialog":
+                self.out.append({"id": m["id"], "result": {}})
+                if getattr(self, "pending", None):
+                    self.out.append({"id": self.pending, "result": {"frameId": "f", "errorText": "net::ERR_ABORTED"}})
+
+        def receive(self):
+            import socket
+            if not self.out:
+                raise socket.timeout()
+            return json.dumps(self.out.popleft())
+
+    def page(self, **kw):
+        from decurix_agent.computer import cdp
+        p = object.__new__(cdp.Page)
+        p.ws, p.seq, p.events, p.target = self.FakeSocket(**kw), 0, [], {}
+        return p
+
+    def test_a_page_that_asks_before_leaving_is_kept(self):
+        from decurix_agent.computer import cdp
+        p = self.page()
+        self.assertIsNone(cdp._navigate_unless_asked_to_stay(p, "http://x/new"))
+        self.assertIn("Page.handleJavaScriptDialog", p.ws.sent)
+
+    def test_a_dialog_already_showing_is_answered_first(self):
+        from decurix_agent.computer import cdp
+        p = self.page(already_showing=True, dialog_on_navigate=False)
+        self.assertIsNone(cdp._navigate_unless_asked_to_stay(p, "http://x/new"))
+        self.assertNotIn("Page.navigate", p.ws.sent)
+
+    def test_a_page_with_nothing_unsaved_is_simply_navigated(self):
+        from decurix_agent.computer import cdp
+        p = self.page(dialog_on_navigate=False)
+        self.assertEqual(cdp._navigate_unless_asked_to_stay(p, "http://x/new"), {"frameId": "f"})
+        self.assertNotIn("Page.handleJavaScriptDialog", p.ws.sent)
+
+
+class AFieldThePageResetIsTypedAgain(unittest.TestCase):
+    """A page still setting itself up can re-draw a field and drop what was just typed (ERPNext's new invoice): the
+    field is typed once more. A field that kept it, or a password field, is not."""
+
+    def _act(self, values_after, role="textbox"):
+        from types import SimpleNamespace
+        from decurix_agent.computer import approval, audit, core
+        field = {"role": role, "name": "Supplier Invoice Date", "source": "cdp", "ref": "e9",
+                 "path": "site x > textbox Supplier Invoice Date", "box": [700, 490, 400, 30], "states": [], "value": ""}
+        looks = [{"elements": [dict(field)], "frame": None, "windows": [], "groups": [], "size": [1280, 720]}]
+        for value in values_after:
+            looks.append({"elements": [dict(field, value=value)], "frame": None, "windows": [], "groups": [], "size": [1280, 720]})
+        with patch.object(core, "observe", side_effect=lambda *a, **k: looks.pop(0) if len(looks) > 1 else looks[0]), \
+             patch.object(core, "_perform", return_value="cdp") as perform, \
+             patch.object(core, "_wait_for_settle"), patch.object(core, "RETYPE_PAUSE", 0), patch.object(audit, "record"), \
+             patch.object(approval, "check", return_value=SimpleNamespace(allowed=True, approved=False)):
+            result = core.act("type", ref="e9", text="04-10-2026")
+        return result, perform
+
+    def test_a_field_the_page_cleared_is_typed_again(self):
+        result, perform = self._act(["", "04-10-2026"])
+        self.assertEqual(perform.call_count, 2)
+        self.assertIn("typed again", result["text"])
+
+    def test_a_field_that_kept_it_is_typed_once(self):
+        _, perform = self._act(["04-10-2026"])
+        self.assertEqual(perform.call_count, 1)
+
+    def test_a_password_field_is_never_judged(self):
+        _, perform = self._act(["", ""], role="password")
+        self.assertEqual(perform.call_count, 1)
+
+
+class ScrollWords(unittest.TestCase):
+    """How `gui scroll` reads what an engine wrote."""
+
+    def test_the_plain_forms(self):
+        from decurix_agent.computer.cli import scroll_words
+        self.assertEqual(scroll_words([]), ([], "down", None))
+        self.assertEqual(scroll_words(["e12", "up", "3"]), (["e12"], "up", 3))
+        self.assertEqual(scroll_words(["down"]), ([], "down", None))
+
+    def test_a_negative_amount_scrolls_the_other_way(self):
+        from decurix_agent.computer.cli import scroll_words
+        self.assertEqual(scroll_words(["1268,248", "-5"]), (["1268,248"], "up", 5))
+        self.assertEqual(scroll_words(["up", "-2"]), ([], "down", 2))
+
+    def test_a_large_amount_is_pixels(self):
+        from decurix_agent.computer.cli import scroll_words
+        self.assertEqual(scroll_words(["1238,664", "420"]), (["1238,664"], "down", 4))
+        self.assertEqual(scroll_words(["1268,248", "-522"]), (["1268,248"], "up", 5))
+        self.assertEqual(scroll_words(["9000"]), ([], "down", 25))
+        self.assertEqual(scroll_words(["0"]), ([], "down", 1))
+
+
+class ClickingBelowThePage(unittest.TestCase):
+    """What an engine is told when it clicks for something below the visible part of a page."""
+
+    def test_several_points_are_refused_and_nothing_is_clicked(self):
+        from unittest import mock
+        from decurix_agent.computer import cli
+        with mock.patch.object(cli.core, "act") as act:
+            with self.assertRaises(cli.ComputerError) as caught:
+                cli.run(["click", "360,690", "360,710", "360,730"])
+        act.assert_not_called()
+        self.assertIn("gui scroll", str(caught.exception))
+
+    def test_a_point_on_the_taskbar_is_known(self):
+        from unittest import mock
+        from decurix_agent.computer import core
+        with mock.patch.object(core.screen, "docks", return_value=[(0, 690, 1280, 30)]):
+            self.assertTrue(core._on_taskbar((360, 700)))
+            self.assertFalse(core._on_taskbar((360, 600)))
+        with mock.patch.object(core.screen, "docks", side_effect=OSError("no display")):
+            self.assertFalse(core._on_taskbar((360, 700)))
+
+
+class ABusyBrowsersNewTab(unittest.TestCase):
+    """A new tab the browser makes after its answer timed out is taken, not asked for again."""
+
+    def test_the_late_tab_is_used(self):
+        from unittest import mock
+        from decurix_agent.computer import cdp
+        old = {"id": "a", "type": "page", "webSocketDebuggerUrl": "ws://a"}
+        new = {"id": "b", "type": "page", "webSocketDebuggerUrl": "ws://b"}
+        lists = iter([[old], [old], [old, new]])
+        with mock.patch.object(cdp, "_page_targets", side_effect=lambda: next(lists)), \
+                mock.patch.object(cdp.time, "sleep"):
+            self.assertEqual(cdp._new_tab_after({"a"}, 5), new)
+
+    def test_no_tab_is_none(self):
+        from unittest import mock
+        from decurix_agent.computer import cdp
+        old = {"id": "a", "type": "page", "webSocketDebuggerUrl": "ws://a"}
+        with mock.patch.object(cdp, "_page_targets", return_value=[old]):
+            self.assertIsNone(cdp._new_tab_after({"a"}, 0.6))

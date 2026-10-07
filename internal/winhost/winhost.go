@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -137,10 +138,12 @@ type keptApp struct {
 // resolvedProgram is what the helper's check worked out for a target.
 type resolvedProgram struct {
 	exe, args, dir, own, base string
+	// launcher is the web-app launcher this program stands in for (a browser opening its page), else "".
+	launcher string
 }
 
 func (r resolvedProgram) line() string {
-	return "launchr\t" + r.exe + "\t" + r.args + "\t" + r.dir + "\t" + r.own + "\t" + r.base
+	return "launchr\t" + r.exe + "\t" + r.args + "\t" + r.dir + "\t" + r.own + "\t" + r.base + "\t" + r.launcher
 }
 
 // startCall is a Start in progress, so a second request for the same app waits for it instead of launching another.
@@ -429,9 +432,14 @@ func (m *Manager) Check(ctx context.Context, targets []Target) (map[Target]strin
 		}
 		if strings.HasPrefix(resp, "OK") {
 			verdicts[t] = ""
-			if f := strings.Split(resp, "\t"); len(f) == 6 && f[1] != "" {
+			// Six fields from a helper that predates the launcher field, seven since.
+			if f := strings.Split(resp, "\t"); len(f) >= 6 && f[1] != "" {
+				r := resolvedProgram{exe: f[1], args: f[2], dir: f[3], own: f[4], base: f[5]}
+				if len(f) > 6 {
+					r.launcher = f[6]
+				}
 				m.mu.Lock()
-				m.resolved[t] = resolvedProgram{exe: f[1], args: f[2], dir: f[3], own: f[4], base: f[5]}
+				m.resolved[t] = r
 				m.mu.Unlock()
 			}
 			continue
@@ -444,6 +452,35 @@ func (m *Manager) Check(ctx context.Context, targets []Target) (map[Target]strin
 	}
 	m.keepWarm(h)
 	return verdicts, nil
+}
+
+// appPage is the address in a browser's --app= argument.
+var appPage = regexp.MustCompile(`--app=(\S+)`)
+
+// LocalPage is the page a checked target only opens, when that target is a web app's launcher (a small program that
+// starts the app's server and opens its page in a browser) and the page is on this computer - "" otherwise, and for a
+// target no check has resolved. Such an app is a web page, which a VM's own browser can show and an agent can read
+// field by field, where the hidden host browser's picture is all a worker would get.
+func (m *Manager) LocalPage(target, args string) string {
+	m.mu.Lock()
+	r, ok := m.resolved[Target{target, args}]
+	m.mu.Unlock()
+	if !ok || r.launcher == "" {
+		return ""
+	}
+	match := appPage.FindStringSubmatch(r.args)
+	if match == nil {
+		return ""
+	}
+	u, err := url.Parse(strings.Trim(match[1], `"`))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return ""
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case "localhost", "127.0.0.1", "::1":
+		return u.String()
+	}
+	return ""
 }
 
 // maxThumbnail bounds one small picture from the helper.

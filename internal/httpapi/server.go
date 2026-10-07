@@ -125,6 +125,9 @@ type Server struct {
 	HostGUIDataDir string
 	keptHostAppsMu sync.Mutex
 	keptHostApps   map[string]keptHostApp
+	// hostVision is each host app's vision fallback for reading its controls (hostcontrols.go).
+	hostVisionMu sync.Mutex
+	hostVision   map[string]*hostVision
 
 	// agentRequest stands in for Desktops.AgentRequest there, in tests.
 	agentRequest func(ctx context.Context, id, method, path string, body io.Reader) (*http.Response, error)
@@ -165,6 +168,7 @@ func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memorySt
 	desktop.SetHostAppChecker(srv.checkHostApps)
 	desktop.SetHostAppWarmer(srv.warmHostGUI)
 	desktop.SetHostAppStarter(srv.startHostGUIAppAhead)
+	desktop.SetHostAppPageFinder(func(target, args string) string { return srv.hostGUI().LocalPage(target, args) })
 	desktop.WarmHostApps() // compile and load now, long before the first desktop exists
 	desktop.InitHostAppsScan()
 	return srv

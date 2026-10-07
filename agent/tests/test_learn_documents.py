@@ -74,7 +74,7 @@ class GroupedValuesQuestion(unittest.TestCase):
 
         # Kept per step, so a lesson resumed later asks only about the rest.
         self.assertEqual(sum(1 for k in self.skill["answers"] if k.startswith("variable:")), 3)
-        self.assertEqual(learning.next_question(self.skill)["kind"], "confirm")
+        self.assertEqual(learning.next_question(self.skill)["kind"], "approval")
 
     def test_named_ones_change_and_the_rest_stay(self):
         question = learning.next_question(self.skill)
@@ -194,6 +194,23 @@ class RunFilledFromTheDocument(TeachingBase):
         self.assertTrue(self.asked, "the missing PO number was not asked for")
         self.assertIn(names["Customer Reference"], self.asked[-1][0])
         self.assertNotIn(names["Customer"] + " (", self.asked[-1][0])
+
+    def test_a_model_doing_the_task_is_not_stopped_by_what_the_documents_do_not_have(self):
+        # One demonstration fixes the shape it showed (two lines); a bill of one line has no second item to give.
+        # The model reads the documents and the lesson itself, so the run goes to it instead of asking.
+        skill = self.teach_po_skill()
+        names = {p["label"]: p["name"] for p in skill["params"]}
+        self.asked.clear()
+
+        with mock.patch.object(binding, "available", return_value=True), \
+                mock.patch.object(binding, "fill", return_value=({names["Customer"]: "Wood Corner"}, {})), \
+                mock.patch.object(skill_task, "_learning_by_model", return_value=True), \
+                mock.patch.object(skill_task, "_by_model") as by_model:
+            skill_task.perform(f"/skill {skill['name']}\nsee ~/work/PO.pdf")
+
+        self.assertFalse([q for q in self.asked if "I need" in q[0]], "a value was asked for")
+        by_model.assert_called_once()
+        self.assertEqual(by_model.call_args.args[0]["values"].get(names["Customer"]), "Wood Corner")
 
 
 class ValuesAreSpelledAsTheDocumentWritesThem(unittest.TestCase):

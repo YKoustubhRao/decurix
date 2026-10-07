@@ -136,6 +136,12 @@ type Request struct {
 	// Resume, when set, continues that paused job instead of starting a new
 	// one, with Prompt as the human's reply to it.
 	Resume *Checkpoint
+	// Approved says the person already said yes to this request as a kind of
+	// task - they taught it and chose to have it run without asking each
+	// time. It lifts only the check on the request's own words (AssessRequest,
+	// which cannot tell "Purchase Invoice" the document from "purchase" the
+	// act); every consequential command and screen action is still stopped.
+	Approved bool
 }
 
 type Scheduler struct {

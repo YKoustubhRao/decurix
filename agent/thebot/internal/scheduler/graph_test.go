@@ -245,6 +245,20 @@ func TestSchedulerStopsAConsequentialRequestBeforeAnythingRuns(t *testing.T) {
 	}
 }
 
+// A person who taught a task and chose to have it run without asking has already said yes to it: the words of the
+// request are not asked about again. Commands are still checked on their own.
+func TestSchedulerDoesNotAskAgainForARequestThePersonAlreadyApproved(t *testing.T) {
+	registerGraphFixtures()
+	provider := &funcProvider{fn: func(m []llm.Message) string { return "DONE:\nPaid." }}
+	sched := newTestScheduler(t, provider)
+
+	job, _ := sched.Execute(context.Background(),
+		Request{Prompt: "pay the 400 dollar invoice in ~/work/invoice.pdf", Approved: true}, func(string) {})
+	if job.Outcome == OutcomeNeedsApproval {
+		t.Fatalf("job = %+v, want it to run: the person had already approved this kind of request", job)
+	}
+}
+
 // A conversational answer that needs the machine hands the same words to
 // the operator instead of answering without looking.
 func TestSchedulerReroutesChatThatNeedsToolsToTheOperator(t *testing.T) {

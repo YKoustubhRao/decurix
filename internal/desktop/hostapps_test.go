@@ -1155,3 +1155,73 @@ func TestAPhoneAppOpensThePhoneViewerNotItsWebVersion(t *testing.T) {
 		t.Errorf("launcher entry: %s", files["Desktop/whatsapp-host.desktop"])
 	}
 }
+
+// localPageRun runs a local page's launcher with stand-ins first on PATH: curl answers with code (000 is "nothing
+// there") and logs its arguments, the browser prints what it was given. It returns what the browser was given and what
+// curl was asked.
+func localPageRun(t *testing.T, code string) (browser, curls string) {
+	t.Helper()
+	requireBash(t)
+	dir := t.TempDir()
+	stub := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/usr/bin/env bash\n"+body), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stub("curl", `printf '%s\n' "$*" >> "`+dir+`/curl.log"; case "$*" in *http_code*) printf '`+code+`';; esac`)
+	stub("chromium-browser", `printf '%s\n' "$@" >> "`+dir+`/browser.log"`)
+	stub("sleep", "")
+	script := localPageLauncher(testPack, "erp", "ERP", `C:\erp\launcher.exe`, "", "http://host.docker.internal:8000/app")
+	wrapper := filepath.Join(dir, "erp-host")
+	if err := os.WriteFile(wrapper, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(wrapper)
+	cmd.Env = []string{"PATH=" + dir + ":/usr/bin:/bin", "CONTROL_PLANE_URL=http://cp.test:8080"}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("launcher failed: %v\n%s", err, out)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "browser.log"))
+	c, _ := os.ReadFile(filepath.Join(dir, "curl.log"))
+	return string(b), string(c)
+}
+
+// TestALocalWebAppOpensInTheVMsOwnBrowser: a page that answers from the VM is opened there, in an app window, and
+// nothing is started on the host.
+func TestALocalWebAppOpensInTheVMsOwnBrowser(t *testing.T) {
+	browser, curls := localPageRun(t, "200")
+	if !strings.Contains(browser, "--app=http://host.docker.internal:8000/app") {
+		t.Errorf("browser was given %q, want the page in an app window", browser)
+	}
+	if strings.Contains(curls, "/api/host-gui/start") {
+		t.Errorf("the app was started on the host although its page answered: %s", curls)
+	}
+}
+
+// TestALocalWebAppWhosePageNeverAnswersIsShownThroughTheViewer: the app is started on the host (its launcher starts the
+// server), and a page that still does not answer from the VM falls back to the viewer.
+func TestALocalWebAppWhosePageNeverAnswersIsShownThroughTheViewer(t *testing.T) {
+	browser, curls := localPageRun(t, "000")
+	if !strings.Contains(curls, "http://cp.test:8080/api/host-gui/start") || !strings.Contains(curls, "token=") {
+		t.Errorf("the app was not started on the host with its token: %s", curls)
+	}
+	if !strings.Contains(browser, "--app=http://cp.test:8080/host-gui/view?") {
+		t.Errorf("browser was given %q, want the viewer", browser)
+	}
+	if strings.Contains(browser, "host.docker.internal:8000") {
+		t.Errorf("the unreachable page was opened: %q", browser)
+	}
+}
+
+func TestVMPageURLReachesTheHostsLoopback(t *testing.T) {
+	for in, want := range map[string]string{
+		"http://localhost:8000":         "http://host.docker.internal:8000",
+		"http://127.0.0.1:3000/app?x=1": "http://host.docker.internal:3000/app?x=1",
+		"http://localhost/":             "http://host.docker.internal/",
+		"https://erp.example.com":       "",
+	} {
+		if got := vmPageURL(in); got != want {
+			t.Errorf("vmPageURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
