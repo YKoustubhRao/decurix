@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -66,16 +68,25 @@ func (m *Manager) BuildImages(ctx context.Context, out io.Writer, onlyMissing bo
 			continue
 		}
 
+		hash, err := contextHash(decurix.DesktopBuildContext, img)
+		if err != nil {
+			return fmt.Errorf("build %s: %w", img.Tag, err)
+		}
+
 		if onlyMissing {
-			if _, _, err := m.client.ImageInspectWithRaw(ctx, img.Tag); err == nil {
-				fmt.Fprintf(out, "==> %s already exists, skipping\n", img.Tag)
-				continue
+			if inspect, _, err := m.client.ImageInspectWithRaw(ctx, img.Tag); err == nil {
+				if inspect.Config != nil && inspect.Config.Labels[contextLabel] == hash {
+					fmt.Fprintf(out, "==> %s is up to date, skipping\n", img.Tag)
+					continue
+				}
+
+				fmt.Fprintf(out, "==> %s was built from other sources than this decurix carries\n", img.Tag)
 			}
 		}
 
 		fmt.Fprintf(out, "==> Building %s from %s\n", img.Tag, img.Dockerfile)
 
-		if err := m.buildImage(ctx, out, img); err != nil {
+		if err := m.buildImage(ctx, out, img, hash); err != nil {
 			return fmt.Errorf("build %s: %w", img.Tag, err)
 		}
 
@@ -120,7 +131,7 @@ func (m *Manager) PruneDanglingResources(ctx context.Context) (uint64, error) {
 
 // buildImage streams the embedded build context to the daemon and reports the
 // resulting build output.
-func (m *Manager) buildImage(ctx context.Context, out io.Writer, img desktopImage) error {
+func (m *Manager) buildImage(ctx context.Context, out io.Writer, img desktopImage, hash string) error {
 	if _, err := fs.Stat(decurix.DesktopBuildContext, decurix.TheBotSource); err != nil {
 		return errNoTheBotSource
 	}
@@ -140,6 +151,7 @@ func (m *Manager) buildImage(ctx context.Context, out io.Writer, img desktopImag
 		Tags:       []string{img.Tag},
 		Dockerfile: img.Dockerfile,
 		Remove:     true,
+		Labels:     map[string]string{contextLabel: hash},
 	})
 	if err != nil {
 		return err
@@ -148,6 +160,56 @@ func (m *Manager) buildImage(ctx context.Context, out io.Writer, img desktopImag
 	defer resp.Body.Close()
 
 	return streamBuildOutput(out, resp.Body)
+}
+
+// contextLabel is the image label holding contextHash of what the image was
+// built from. "Skip what exists" alone kept every image an earlier binary had
+// built: a new app reused yesterday's desktop image, agent and all, and went on
+// creating desktops with code it no longer carried. An image whose label differs
+// is built again; the daemon's layer cache keeps the unchanged steps.
+const contextLabel = "decurix.context"
+
+// contextHash is a SHA-256 over the files img is built from: the tools image
+// reads only its own Dockerfile; a desktop image reads the whole context except
+// the tools Dockerfile. Paths are part of the hash, in WalkDir's lexical order.
+func contextHash(fsys fs.FS, img desktopImage) (string, error) {
+	h := sha256.New()
+
+	if img.Tag == ToolsImage {
+		data, err := fs.ReadFile(fsys, img.Dockerfile)
+		if err != nil {
+			return "", err
+		}
+
+		h.Write(data)
+
+		return hex.EncodeToString(h.Sum(nil)), nil
+	}
+
+	err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+
+		if strings.HasPrefix(p, "docker/") && strings.HasSuffix(p, ".Dockerfile") && p != img.Dockerfile {
+			return nil
+		}
+
+		data, err := fs.ReadFile(fsys, p)
+		if err != nil {
+			return err
+		}
+
+		fmt.Fprintf(h, "%s|%d|", p, len(data))
+		h.Write(data)
+
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // errNoTheBotSource is a binary built without `go generate .`: go:embed left

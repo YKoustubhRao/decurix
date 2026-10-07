@@ -460,6 +460,10 @@ def _pick(candidates, option):
     return None
 
 
+# How many searches a suggesting field is given before select says what it offered.
+MAX_SEARCHES = 8
+
+
 def _searches(option):
     """
     What to type into a searching dropdown, most specific first: the value,
@@ -471,12 +475,20 @@ def _searches(option):
     """
 
     words = option.split()
-    tries = [option.strip(), re.split(r"[(,]", option)[0].strip(), " ".join(words[:2]), words[0] if words else ""]
+    head = re.split(r"[(,]", option)[0].strip()
+    tries = [option.strip(), head]
+    # Runs of the head's words from inside it, longest first: a bill writes "Dedicated Internet Leased Line (ILL)
+    # 1 Gbps" where the ERP's item is "Internet Leased Line" - found live, every search began with "Dedicated" and
+    # the item was never offered, so the engine asked a person for something the list had.
+    hw = head.split()
+    for n in range(len(hw) - 1, 1, -1):
+        tries += [" ".join(hw[i:i + n]) for i in range(1, len(hw) - n + 1)]
+    tries += [" ".join(words[:2]), words[0] if words else ""]
     out = []
     for t in tries:
         if len(t) >= 3 and t not in out:
             out.append(t)
-    return out
+    return out[:MAX_SEARCHES]
 
 
 def _select_custom(element, option):
@@ -515,7 +527,8 @@ def _select_custom(element, option):
         candidates = [e for e in now if e["path"] not in known and e["role"] in _SUGGESTION_ROLES
                       and e.get("source") == "cdp" and e.get("box")
                       and not _NOT_A_CHOICE.match(e.get("name") or "")]
-        seen = [e.get("name") or "" for e in candidates] or seen
+        # Everything any search offered, in order: the engine chooses among real entries when none is the value.
+        seen += [n for n in (e.get("name") or "" for e in candidates) if n and n not in seen]
         hit = _pick(candidates, option)
         if hit is not None:
             cdp.click(hit)
@@ -532,7 +545,9 @@ def _select_custom(element, option):
     if expanded()[1]:
         cdp.close_list(element)
     if seen:
-        message = f"{el.describe(element)} has no option {option!r}. It offers: " + ", ".join(seen[:30])
+        message = (f"{el.describe(element)} has no option {option!r}. Searching for it and for parts of it, it "
+                   f"offers: " + ", ".join(seen[:30]) + ". If one of these is the same thing under this system's own "
+                   "name, select it by that name; if none is, say so")
         # A value written with its variant ("Stool (Navy)") against an entry
         # that is only its general item ("Stool", shown with its code as
         # "StoolD_0045"): say so, and what selecting it leads to.
@@ -543,6 +558,63 @@ def _select_custom(element, option):
                         f"variant of - select {head!r} (or that entry), then choose the variant in what the page asks next")
         raise ComputerError(message)
     raise ComputerError(f"{el.describe(element)} showed no options for {option!r}")
+
+
+# How long to give a page that reset a field before typing into it again.
+RETYPE_PAUSE = 1.0
+
+
+def _same_field(element, observation):
+    """The field typed into, as a fresh observation has it (found by its path), or None."""
+
+    if element.get("source") != "cdp" or not element.get("path"):
+        return None
+    try:
+        again = el.find(observation["elements"], path=element["path"])
+    except ComputerError:
+        return None
+    if again is None or again.get("role") != element.get("role"):
+        return None
+    return again
+
+
+def _typing_lost(field, text):
+    """Whether a field no longer holds what was just typed into it. A password field shows no text, so it is never
+    judged; nor is a field the page does not report a value for."""
+
+    if field.get("role") in ("password", "password text") or privacy.secret_field(field):
+        return False
+    value = field.get("value")
+    line = (text.split("\n")[0]).strip()
+    return value is not None and bool(line) and line not in value
+
+
+# What the browser says when the node an action was aimed at is no longer the one on the page.
+STALE_NODE = ("is detached from document", "does not have a layout object", "no node with given id",
+              "could not find node with given id")
+
+
+def _redrawn(exc, element, ref, role, name, path):
+    """
+    The same control again, read afresh, when an action failed because the page drew it anew between the look and the
+    act - or None. A page built by a framework re-draws a field the moment it is touched: ERPNext's Supplier box, live,
+    failed `gui select` with "Node is detached from document" and the engine spent turns finding its way back. Only the
+    same control counts (found by the same ref, role, name or path, and still the same role and name), so an approval
+    judged for one control can never pass to another.
+    """
+
+    if element is None or element.get("source") != "cdp" or not (ref or role or name or path):
+        return None
+    if not any(s in str(exc).lower() for s in STALE_NODE):
+        return None
+    fresh = observe()
+    try:
+        again = el.find(fresh["elements"], ref=ref, role=role, name=name, path=path, active_group=active_group(fresh))
+    except ComputerError:
+        return None
+    if again is None or again.get("role") != element.get("role") or again.get("name") != element.get("name"):
+        return None
+    return again
 
 
 def act(kind, ref=None, role=None, name=None, path=None, point=None,
@@ -659,7 +731,14 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         }
 
     try:
-        backend = _perform(kind, element, point, text, keys, direction, amount, option, append, end, files=files)
+        try:
+            backend = _perform(kind, element, point, text, keys, direction, amount, option, append, end, files=files)
+        except ComputerError as exc:
+            again = _redrawn(exc, element, ref, role, name, path)
+            if again is None:
+                raise
+            element = again
+            backend = _perform(kind, element, point, text, keys, direction, amount, option, append, end, files=files)
     except ComputerError as exc:
         entry.update({
             "outcome": "failed",
@@ -671,6 +750,22 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
 
     settled = _wait_for_settle(before["frame"])
     after = observe()
+
+    # A page still setting itself up re-draws its fields from what its form holds, and what was typed a moment before
+    # (not yet committed - that happens when the field loses focus) is gone. Found live in ERPNext: typed into a new
+    # invoice's date field within seconds of the page appearing, the same keys held in one run and were wiped within
+    # half a second in the next, and a worker typed a bill's date four times without seeing it hold. Typed once more,
+    # after a moment, the field keeps it.
+    retyped = False
+    if kind == "type" and element is not None and text and not append:
+        again = _same_field(element, after)
+        if again is not None and _typing_lost(again, text):
+            time.sleep(RETYPE_PAUSE)
+            _perform(kind, again, point, text, keys, direction, amount, option, append, end, files=files)
+            settled = _wait_for_settle(before["frame"])
+            after = observe()
+            retyped = True
+
     change = compare(before, after)
     change_text = summarize(change)
 
@@ -695,6 +790,8 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     summary = f"{verb} {target or 'the focused window'}"
     if kind == "type":
         summary = f"Typed {privacy.shown_text(text, withheld)} into {target or 'the focused element'}"
+        if retyped:
+            summary += " (the page cleared it a moment after the first typing, so it was typed again)"
     elif kind == "drag":
         summary = f"Dragged {target} to {end[0]},{end[1]}"
     elif kind == "key":
@@ -712,6 +809,11 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         # cdp.click intercepted it: no dialog is on the screen, nothing was chosen.
         note = (f"\n{target} opens a file chooser; none was shown and no file was chosen. "
                 "To attach a file, use the upload action on this same control with the file path(s).")
+    if kind in ("click", "double_click", "right_click") and point is not None and _on_taskbar(point):
+        # Found live: an engine clicked 360,690 again and again for a form's row below the page's visible part,
+        # and every click landed on the taskbar under the page.
+        note += (f"\n{point[0]},{point[1]} is on the desktop's taskbar, below the windows. To reach something "
+                 "below the visible part of a page, scroll it (gui scroll down 5) and observe again.")
 
     return {
         "status": "done",
@@ -720,6 +822,15 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         "change": change,
         "observation": after,
     }
+
+
+def _on_taskbar(point):
+    """Whether a screen point is on one of the desktop's own bars (screen.docks)."""
+    try:
+        boxes = screen.docks()
+    except Exception:
+        return False
+    return any(x <= point[0] < x + w and y <= point[1] < y + h for x, y, w, h in boxes)
 
 
 # ============================================================

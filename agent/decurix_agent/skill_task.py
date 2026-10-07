@@ -706,9 +706,29 @@ def _prepare(run):
             _prepare(run)
             return
 
+    # A task the model does while it is still learning it takes its values as guidance, and reads the run's own
+    # documents itself: a value the request and its documents do not have is no reason to stop. One demonstration
+    # fixes the task's shape to what it showed - a bill of two lines - and the next bill had one: found live, the run
+    # asked for the "second item" before anything else, and "there is no second line" could not answer that question.
+    if missing and not problem and run.get("filled") and run["start"] == 1 and _learning_by_model(run):
+        progress.emit("The documents do not give " + ", ".join(p["name"] for p in missing)
+                      + " - working from the documents themselves.")
+        _by_model(run)
+        return
+
     if missing:
         _pause(run, "values", (problem + " " if problem else "") + _need_text(skill, missing),
                missing=[p["name"] for p in missing])
+        return
+
+    # What the person chose when they taught it: some tasks are theirs to start (they spend money, commit them to
+    # something), and the words of a request cannot tell which. A skill taught before this was asked has no answer
+    # and runs as it always did.
+    if run["start"] == 1 and skill.get("approval") == "ask" and not run.get("approved") and not run.get("one_off"):
+        shown = "; ".join(f"{k} = {el._quote(str(v), 60)}" for k, v in run["values"].items())
+        _pause(run, "go", f"You taught me to check with you before I start \"{skill.get('title') or skill['name']}\"."
+               + (f" This run would use: {shown}." if shown else "")
+               + " Reply `yes` to start, or `no` to stop.", ask_kind="approval")
         return
 
     if run["start"] == 1 and _learning_by_model(run):
@@ -1007,6 +1027,12 @@ def _run_reply(paused, reply, approval_outcome):
 
     if kind == "confirm":
         return _confirm_reply(dict(paused, claim=paused["result"]["text"]), reply)
+
+    if kind == "go":
+        if approval.is_approval(reply) or learning.YES.match(reply or ""):
+            run["approved"] = True
+            return _prepare(run)
+        return write_final_reply("Stopped before starting, as you asked. Nothing was done.", kind="final", engine=SKILL_ENGINE)
 
     if kind == "start":
         if learning.YES.match(reply or ""):
@@ -1353,7 +1379,12 @@ def _procedure(run, from_step=None, note="", ran=False):
         "pressed ringed in red. Use it for any step recorded as a point on the screen, and whenever you are unsure "
         "what a step meant.",
         f"- `gui do {name} --from N` replays from step N exactly as recorded, stopping at the first step it cannot "
-        "do; use it only when the screen matches the recording, and check where it stopped.",
+        "do; use it only when the screen matches the recording AND every clicked option still matches this run. "
+        "Suggestion options in the recording name the example's own choices (a person, a product, a category): "
+        "changing a typed parameter does not change those clicks. When this run's choices, amounts or number of "
+        "rows differ from the example's, use gui observe / select / type to choose this run's matching options and "
+        "fill each row yourself; do not replay the example or click its coordinates. Check where any replay "
+        "stopped.",
         "- Otherwise work each step with gui observe / click / type / key as usual.",
     ]
     how += [
@@ -1416,7 +1447,13 @@ def _by_model(run, from_step=None, note="", ran=False):
                       "(it is still learning this task).")
     log(f"Skill {skill['name']}: handed to the engine ({'takeover at ' + str(from_step) if from_step else 'learning'})")
 
-    _engine(request, state.current_task_file)
+    # A person who taught this task and said to go ahead (or said yes just now) has approved it as a kind of task;
+    # the engine's check on the request's own words is not asked of them again.
+    state.request_preapproved = skill.get("approval") == "go" or bool(run.get("approved"))
+    try:
+        _engine(request, state.current_task_file)
+    finally:
+        state.request_preapproved = False
 
 
 def _judge(run, claim):

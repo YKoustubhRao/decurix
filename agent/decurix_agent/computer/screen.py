@@ -327,6 +327,30 @@ def _window_name(d, window):
     return name or ""
 
 
+def docks():
+    """The boxes (x, y, w, h) of the desktop's own bars - the taskbar - which windows() leaves out."""
+
+    from Xlib import X
+
+    d = _connect()
+    root = d.screen().root
+    dock = d.intern_atom("_NET_WM_WINDOW_TYPE_DOCK")
+    boxes = []
+    for wid in _prop(d, root, "_NET_CLIENT_LIST_STACKING", X.AnyPropertyType) or []:
+        window = d.create_resource_object("window", wid)
+        try:
+            if window.get_attributes().map_state != X.IsViewable:
+                continue
+            if dock not in (_prop(d, window, "_NET_WM_WINDOW_TYPE", X.AnyPropertyType) or []):
+                continue
+            geometry = window.get_geometry()
+            origin = window.translate_coords(root, 0, 0)
+        except Exception:
+            continue
+        boxes.append((-origin.x, -origin.y, geometry.width, geometry.height))
+    return boxes
+
+
 def windows():
     """
     Top-level application windows, as the window manager lists them:

@@ -404,6 +404,7 @@ def summary(skill, detail=False):
         "steps": len(steps),
         "gated": sum(1 for s in steps if s.get("consequential")),
         "health": experience.health(skill),
+        "approval": skill.get("approval"),
         "by_hand": sum(1 for s in steps if s["kind"] == "manual"),
         "params": [{"name": p["name"], "label": p["label"], "list": bool(p.get("list")), "example": p.get("example")}
                    for p in required(skill)],

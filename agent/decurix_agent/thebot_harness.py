@@ -416,6 +416,8 @@ def _run_thebot(request, reply, extra_context=""):
                 # paused job (if any) under it.
                 "sessionId": config.DESKTOP_ID or "decurix-desktop",
                 "reply": reply,
+                # Said yes already, as a kind of task: soul does not ask about the request's own words again.
+                "approved": bool(state.request_preapproved) and not reply,
             },
         )
     except (urllib.error.URLError, OSError, ValueError) as exc:
