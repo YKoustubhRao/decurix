@@ -25,6 +25,15 @@ class WhereASkillWorks(unittest.TestCase):
         self.assertIn("works in sales.html, Sales", skill_engine.summary_line(SKILL))
         self.assertIn("Works in: sales.html, Sales", skill_engine.render_text(SKILL))
 
+    def test_a_skill_recorded_on_a_site_already_open_names_its_address(self):
+        # Signed in before recording: no step opens the site, but the steps were on it.
+        steps = [{"n": 1, "id": "s1", "kind": "click", "window": "", "summary": "click 99,416"},
+                 {"n": 2, "id": "s2", "kind": "click", "window": "New Purchase Invoice - Chromium",
+                  "url": "http://host.docker.internal:8000/desk/purchase-invoice/new-1", "summary": "click Save"}]
+        found = skills.places(dict(SKILL, steps=steps))
+        self.assertEqual(found[0], "http://host.docker.internal:8000")
+        self.assertIn("New Purchase Invoice", found)
+
     def test_a_skill_with_no_place_says_nothing(self):
         bare = dict(SKILL, steps=[{"n": 1, "id": "s1", "kind": "key", "window": "", "summary": "press Enter"}])
         self.assertEqual(skills.places(bare), [])
