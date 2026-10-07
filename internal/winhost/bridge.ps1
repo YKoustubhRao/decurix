@@ -529,7 +529,7 @@ public class Native {
 
     // Starts a web app's own server through its launcher when nothing answers on its port, and gives it a moment.
     //
-    // A port that answers is not yet an app that does. Found live with ERPNext: its front server listens within
+    // A port that answers is not yet an app that does. Found live with a self-hosted ERP: its front server listens within
     // seconds and says "502 Bad Gateway" for a minute more, while what is behind it starts - and the worker's browser
     // was opened on that. A gateway's own errors (502, 503, 504) and no answer at all mean "not yet", whatever the app
     // is; any other answer, an error of the app's own included, is the app's to show. So the page is waited for,
@@ -2758,15 +2758,15 @@ function Resolve-Program([string]$target, [string]$argLine) {
     return $r
 }
 
-# A small launcher that only opens a web app in the person's browser ("ERPNext.exe": msedge --app=http://localhost:8000). Run
+# A small launcher that only opens a web app in the person's browser (e.g. msedge --app=http://localhost:8000). Run
 # on the private desktop it starts that browser on the person's own profile, which hands the page to the copy already open on
 # the visible desktop - so nothing appears in the worker. Such a launcher is recognised by the text a managed or native
 # program keeps in its file (the "--app=" flag and an http(s) address), and replaced by the same page opened in a browser of
 # its own. Anything bigger or without both is an ordinary program.
 #
 # Such a launcher often does one more thing first: it starts the web app's own server when the page is on this computer
-# and nothing answers there yet (ERPNext's starts its containers). Found live: with the launcher only replaced, the worker's
-# ERP shortcut opened a browser on "localhost refused to connect". So when the page is local and not answering, the launcher
+# and nothing answers there yet (starting its containers, say). Found live: with the launcher only replaced, the worker's
+# app shortcut opened a browser on "localhost refused to connect". So when the page is local and not answering, the launcher
 # is run for that part alone (Start-WebAppServer, Native.Prepare): any browser it goes on to start is ended as it is created.
 function Test-LocalPort([int]$port) {
     $c = New-Object Net.Sockets.TcpClient
