@@ -200,6 +200,33 @@ svg{display:block;flex:none}
   border-bottom:1px solid var(--line)
 }
 
+
+/* Electron overlays the Windows caption buttons inside the existing header. */
+.desktop-windows .topbar{
+  -webkit-app-region:drag;
+  padding-right:max(150px,calc(100vw - env(titlebar-area-width,100vw) + 12px));
+  user-select:none;
+}
+.desktop-windows .topbar a,
+.desktop-windows .topbar button,
+.desktop-windows .topbar input,
+.desktop-windows .topbar select,
+.desktop-windows .topbar .menu-panel,
+.desktop-windows .topbar .nav{-webkit-app-region:no-drag}
+.desktop-windows .nav{
+  flex:1 1 auto;
+  min-width:0;
+  overflow-x:auto;
+  scrollbar-width:none;
+}
+.desktop-windows .nav::-webkit-scrollbar{display:none}
+.desktop-windows .nav a{flex:none;white-space:nowrap}
+.desktop-windows .topbar-right{flex:none}
+@media (max-width:1100px){
+  .desktop-windows .brand-name{display:none}
+  .desktop-windows .topbar{gap:8px}
+}
+
 .brand{
   display:flex;
   align-items:center;

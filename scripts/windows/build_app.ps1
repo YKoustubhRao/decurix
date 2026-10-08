@@ -112,6 +112,10 @@ function Clear-DecurixData {
         throw "Could not close Decurix; no data was deleted. $($stopErrors -join '; ') If access was denied, close Decurix from an elevated PowerShell or Task Manager, then retry."
     }
 
+    # A shared WSL distro keeps other applications: reset only our resources.
+    & powershell.exe -NoProfile -NonInteractive -File (Join-Path $repo 'desktop/electron/wsl/cleanup-existing.ps1') -Action reset
+    if ($LASTEXITCODE -ne 0) { throw 'Could not reset the saved WSL runtime; its data and runtime record were kept.' }
+
     # The distro holds every worker and the records, and the worker images.
     # Fresh means no workers and no records - not building the images again,
     # which is ten minutes of downloads: reset.sh deletes every container and

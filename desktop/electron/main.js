@@ -20,12 +20,15 @@ const { setupMobileAccess } = require('./mobile-access');
 //
 // Where Docker comes from:
 //   - a Mac or Linux uses the Docker the computer has;
-//   - Windows uses a WSL distro of the app's own ("Decurix", Alpine), into
+//   - Windows reuses a compatible WSL Docker Engine on new installs, or uses
+//     a WSL distro of the app's own ("Decurix", Alpine), into
 //     which the app installs Docker Engine and where it runs the daemon
 //     itself (resources/wsl). No Docker Desktop. When Windows has no WSL yet
 //     the app turns it on (one administrator prompt, then a restart).
 const windows = process.platform === 'win32';
 const DISTRO = 'Decurix';
+let runtimeDistro = DISTRO;
+let runtimeSelected = false;
 // Where the stack is staged inside the distro (resources/wsl/setup.sh).
 const DISTRO_STACK = '/var/lib/decurix/stack';
 const dashboard = 'http://127.0.0.1:8080';
@@ -184,6 +187,7 @@ async function backendLost() {
   // error ended the restart before it began, and the window stayed dead.
   try { await stopMobileAccess(); } catch (error) { console.warn('Could not stop quick tunnel:', error.message); }
   if (closing || !window || window.isDestroyed()) return;
+  if (windows) window.setTitleBarOverlay({ color: '#111827', symbolColor: '#f9fafb' });
   await window.loadFile(path.join(__dirname, 'loading.html'));
 
   const now = Date.now();
@@ -263,20 +267,20 @@ function run(file, args, onLine, options = {}) {
 }
 
 // wsl runs wsl.exe. WSL_UTF8 makes it print UTF-8 rather than UTF-16.
-function wsl(args, onLine) {
-  return run('wsl.exe', args, onLine, { env: { ...process.env, WSL_UTF8: '1' } });
+function wsl(args, onLine, options = {}) {
+  return run('wsl.exe', args, onLine, { ...options, env: { ...process.env, WSL_UTF8: '1' } });
 }
 
-// inDistro runs a program as root inside the app's distro.
+// inDistro runs a program as root inside the selected WSL distro.
 function inDistro(args, onLine, cwd = '/') {
-  return wsl(['-d', DISTRO, '-u', 'root', '--cd', cwd, '-e', ...args], onLine);
+  return wsl(['-d', runtimeDistro, '-u', 'root', '--cd', cwd, '-e', ...args], onLine);
 }
 
 // docker runs one docker command in the stack's folder - on Windows inside
 // the app's distro, given what stackEnv gives elsewhere as plain variables.
 function docker(args, onLine) {
   if (windows) {
-    return inDistro(['env', 'COMPOSE_PROJECT_NAME=decurix', 'DECURIX_HOST_HOME=/home', 'DECURIX_HOST_MNT_C=/mnt/c', 'docker', ...args], onLine, DISTRO_STACK);
+    return inDistro(['env', 'COMPOSE_PROJECT_NAME=decurix', 'DECURIX_HOST_HOME=/home', 'DECURIX_HOST_MNT_C=/mnt/c', 'docker', ...(runtimeDistro !== DISTRO ? ['--host', 'unix:///var/run/docker.sock'] : []), ...args], onLine, DISTRO_STACK);
   }
   return run(findProgram('docker') || 'docker', args, onLine, { cwd: stackDir(), env: stackEnv() });
 }
@@ -331,11 +335,62 @@ async function stackIsStale() {
   try { return fs.readFileSync(path.join(stackDir(), 'VERSION'), 'utf8').trim() !== shipped; } catch { return false; }
 }
 
+// Keep a chosen runtime across launches: switching daemons would hide the
+// person's workers and records. Older installs keep their Decurix distro.
+async function selectWindowsRuntime() {
+  if (!windows || runtimeSelected) return;
+  const file = path.join(dataDir(), 'windows-runtime.json');
+  try {
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (typeof saved.distro !== 'string' || !saved.distro.trim() || /[\r\n\0]/.test(saved.distro) || /^docker-desktop/i.test(saved.distro)) {
+      throw new Error('Invalid saved WSL runtime');
+    }
+    runtimeDistro = saved.distro;
+    runtimeSelected = true;
+    return;
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw new Error('Could not read the saved WSL runtime. Check ' + file);
+  }
+
+  const names = [];
+  const listed = await wsl(['--list', '--quiet'], (line) => names.push(line.replace(/\0/g, '').trim()), { timeout: 15000 });
+  if (listed === 0 && !names.includes(DISTRO)) {
+    update('Checking existing WSL runtimes…');
+    for (const name of names.filter((name) => name && !/^docker-desktop/i.test(name))) {
+      // The app needs a local Linux Docker Engine, Compose, Windows interop,
+      // and host mounts. Docker Desktop's proxy socket leads to another VM
+      // where our host-app bridge cannot run, so it is not compatible here.
+      const probe = 'test -S /var/run/docker.sock && test -d /mnt/c && command -v bash && command -v wslpath && ' +
+        'docker --host unix:///var/run/docker.sock version --format "{{.Server.Version}}" && ' +
+        'docker --host unix:///var/run/docker.sock compose version && ' +
+        'os=$(docker --host unix:///var/run/docker.sock info --format "{{.OperatingSystem}}") && ' +
+        'case "$os" in *[Dd]ocker" "[Dd]esktop*) exit 1;; *) exit 0;; esac';
+      if (await wsl(['-d', name, '-u', 'root', '--cd', '/', '-e', 'sh', '-c', probe], undefined, { timeout: 15000 }) === 0) {
+        runtimeDistro = name;
+        break;
+      }
+    }
+  }
+  fs.mkdirSync(dataDir(), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ distro: runtimeDistro }) + '\n', 'utf8');
+  runtimeSelected = true;
+}
+
 // dockerReady waits for a Docker that answers. On a Mac, Docker Desktop is
-// started when it is installed and not running; on Windows the app's own
-// distro is made ready and its daemon started.
+// started when it is installed and not running; Windows uses its saved WSL
+// runtime, or prepares the app-owned fallback and starts its daemon.
 async function dockerReady() {
-  if (windows) { await linuxReady(); return; }
+  if (windows) {
+    await selectWindowsRuntime();
+    if (runtimeDistro === DISTRO) { await linuxReady(); return; }
+    await stopEarlierWindowsApp();
+    const message = 'Using your existing WSL runtime (' + runtimeDistro + ')…';
+    update(message);
+    const ready = await inDistro(['sh', linuxPath(resource(path.join('wsl', 'stage-existing.sh'))), linuxPath(resource('stack')), linuxPath(ensureSettings())],
+      (line) => update(message, false, line));
+    if (ready !== 0) throw new Error('The saved WSL runtime (' + runtimeDistro + ') is unavailable or incompatible. Start its Docker Engine, then retry. Your workers remain in that runtime.');
+    return;
+  }
   const mac = process.platform === 'darwin';
   const needs = mac ? 'Docker Desktop' : 'Docker';
   const ask = () => docker(['version', '--format', '{{.Server.Version}}']);
@@ -464,7 +519,7 @@ async function startStack() {
   // waited for: the tools image (Go, Node, Rust, the coding CLIs) is a long
   // run of downloads a desktop does not need to start, and is built after the
   // dashboard is up (buildToolsLater).
-  await step('Building the worker desktop. The first time, this downloads and installs a whole Linux desktop (about ten minutes).',
+  await step('Checking the worker desktop image. A missing or outdated image is built once; existing images and cached layers are reused.',
     ['compose', 'run', '--rm', '--no-deps', '-T', 'desktop-manager', './decurix', '--build-images', '-images', 'desktop'], 'Could not build the worker desktop.');
   await step('Starting Decurix…', ['compose', 'up', '-d', '--no-build'], 'Could not start Decurix in Docker.');
   await waitForDashboard(() => closing);
@@ -550,6 +605,7 @@ async function start() {
   try {
     const state = await checkDashboard();
     if (state === 'occupied') throw new Error('Port 8080 is in use. Close the other server, then retry.');
+    await selectWindowsRuntime();
     // A stack left running by an older build of the app answers too, and is
     // replaced: compose recreates the container from the new image.
     if (state === 'absent' || await stackIsStale()) {
@@ -612,6 +668,16 @@ ipcMain.handle('pick-host-folders', async (event) => {
   }
 });
 
+// Only the dashboard's main frame may change the caption button palette.
+ipcMain.on('window-titlebar-theme', (event, palette) => {
+  if (!windows || !window || window.isDestroyed() || event.sender !== window.webContents ||
+      !event.senderFrame || event.senderFrame !== event.sender.mainFrame ||
+      !isDashboardURL(event.senderFrame.url)) return;
+  if (!palette || !/^#[0-9a-f]{6}$/i.test(palette.color) ||
+      !/^#[0-9a-f]{6}$/i.test(palette.symbolColor)) return;
+  window.setTitleBarOverlay({ color: palette.color, symbolColor: palette.symbolColor });
+});
+
 function configureNavigation(contents) {
   contents.setWindowOpenHandler(({ url }) => {
     if (isDashboardURL(url)) return { action: 'allow' };
@@ -638,6 +704,11 @@ function openWindow() {
     minWidth: 800,
     minHeight: 600,
     title: 'Decurix',
+    // Keep native Windows controls (including Snap Layouts) inside the app header.
+    ...(windows ? {
+      titleBarStyle: 'hidden',
+      titleBarOverlay: { color: '#111827', symbolColor: '#f9fafb', height: 52 },
+    } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,

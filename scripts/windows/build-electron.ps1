@@ -115,7 +115,7 @@ foreach ($download in $downloads) {
 if (Test-Path $wsl) { Remove-Item $wsl -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $wsl | Out-Null
 Copy-Item (Join-Path $stage 'alpine-minirootfs.tar.gz') $wsl
-Copy-Item (Join-Path $electron 'wsl/setup.sh'), (Join-Path $electron 'wsl/dockerd.sh') $wsl
+Copy-Item (Join-Path $electron 'wsl/setup.sh'), (Join-Path $electron 'wsl/dockerd.sh'), (Join-Path $electron 'wsl/stage-existing.sh'), (Join-Path $electron 'wsl/maintain-existing.sh'), (Join-Path $electron 'wsl/cleanup-existing.ps1') $wsl
 
 if (Test-Path $stack) { Remove-Item $stack -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $stack | Out-Null
