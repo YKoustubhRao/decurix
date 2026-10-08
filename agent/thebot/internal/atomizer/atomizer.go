@@ -52,7 +52,7 @@ func Classify(step string) string {
 // BrowserAvailable says whether the browser-agent extension is installed on
 // this machine (soul sets it at startup). Without it, work in a web page is
 // the operator's, driving the browser with gui: found live, a recovery plan
-// sent "create the quotation in Odoo" to the browser skill on a desktop with
+// sent "create the request in the web app" to the browser skill on a desktop with
 // no extension, which waited 30 s and failed the whole task.
 var BrowserAvailable = true
 

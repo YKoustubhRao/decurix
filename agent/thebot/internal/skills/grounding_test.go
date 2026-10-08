@@ -315,7 +315,7 @@ func TestAnAttachedFileIsADocumentOfTheRequest(t *testing.T) {
 // A bill writes its figures with separators and paise; the form takes the plain number. The same number in another
 // spelling is traced; a number the bill does not hold is still a guess.
 func TestGroundingKnowsANumberHoweverItIsWritten(t *testing.T) {
-	st := groundingState("Enter /w/BILL_03.pdf in ERPNext.", "office read /w/BILL_03.pdf")
+	st := groundingState("Enter /w/BILL_03.pdf in the project portal.", "office read /w/BILL_03.pdf")
 	st.noteSeen("Mesh Chairs  Qty: 2 Chairs | Rate: Rs. 6,000.00 | Amount: Rs. 12,000.00\nGRAND TOTAL: Rs. 1,88,800.00")
 
 	for _, cmd := range []string{`gui type e892 "6000"`, `gui type e892 "6000.00"`, `gui type e892 "₹6,000"`, `gui type e1 "188800"`} {
@@ -332,7 +332,7 @@ func TestGroundingKnowsANumberHoweverItIsWritten(t *testing.T) {
 }
 
 func TestGroundingKnowsADateHoweverItIsWritten(t *testing.T) {
-	st := groundingState("Enter /w/BILL_04.pdf in ERPNext.", "office read /w/BILL_04.pdf")
+	st := groundingState("Enter /w/BILL_04.pdf in the project portal.", "office read /w/BILL_04.pdf")
 	st.noteSeen("Invoice No: SC/TAX/26-27/088\nInvoice Date: 04-Oct-2026\nDue: 3 November 2026")
 
 	for _, cmd := range []string{`gui type e1 "04-10-2026"`, `gui type e1 "2026-10-04"`, `gui type e1 "4/10/2026"`,

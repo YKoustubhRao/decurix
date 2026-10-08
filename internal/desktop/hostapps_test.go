@@ -1171,8 +1171,8 @@ func localPageRun(t *testing.T, code string) (browser, curls string) {
 	stub("curl", `printf '%s\n' "$*" >> "`+dir+`/curl.log"; case "$*" in *http_code*) printf '`+code+`';; esac`)
 	stub("chromium-browser", `printf '%s\n' "$@" >> "`+dir+`/browser.log"`)
 	stub("sleep", "")
-	script := localPageLauncher(testPack, "erp", "ERP", `C:\erp\launcher.exe`, "", "http://host.docker.internal:8000/app")
-	wrapper := filepath.Join(dir, "erp-host")
+	script := localPageLauncher(testPack, "portal", "Portal", `C:\portal\launcher.exe`, "", "http://host.docker.internal:8000/app")
+	wrapper := filepath.Join(dir, "portal-host")
 	if err := os.WriteFile(wrapper, []byte(script), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -1218,7 +1218,7 @@ func TestVMPageURLReachesTheHostsLoopback(t *testing.T) {
 		"http://localhost:8000":         "http://host.docker.internal:8000",
 		"http://127.0.0.1:3000/app?x=1": "http://host.docker.internal:3000/app?x=1",
 		"http://localhost/":             "http://host.docker.internal/",
-		"https://erp.example.com":       "",
+		"https://portal.example.com":    "",
 	} {
 		if got := vmPageURL(in); got != want {
 			t.Errorf("vmPageURL(%q) = %q, want %q", in, got, want)

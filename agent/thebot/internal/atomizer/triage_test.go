@@ -23,7 +23,7 @@ func TestTriageRoutesRequestsByShape(t *testing.T) {
 		{"ping - just reply pong", RouteChat},
 
 		// Says how to work a screen, in an app no surface word names.
-		{"On Purchase Invoice PINV-26-00009 the Supplier Invoice Date is empty. Open it, type 03-10-2026 into Supplier Invoice Date, press Escape, save.", RouteOperate},
+		{"On Request REQ-26-00009 the Due Date is empty. Open it, type 03-10-2026 into Due Date, press Escape, save.", RouteOperate},
 		{"press ctrl+s in the editor", RouteOperate},
 		{"what does the escape key do?", RouteChat},
 
@@ -206,7 +206,7 @@ func TestWebPageWorkGoesToTheOperatorWithoutTheExtension(t *testing.T) {
 	if r := Triage(req); r.Kind != RouteOperate || r.TaskType != "operator" {
 		t.Fatalf("without the extension: %+v", r)
 	}
-	if typ := shapeStep("browser", "Open the Odoo Sales app and create the quotation").Type; typ != "operator" {
+	if typ := shapeStep("browser", "Open the project portal and create the request").Type; typ != "operator" {
 		t.Errorf("a planned [browser] step without the extension runs as %q", typ)
 	}
 }

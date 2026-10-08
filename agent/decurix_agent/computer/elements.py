@@ -235,7 +235,7 @@ def find(elements, ref=None, role=None, name=None, path=None, active_group=None)
         matches = in_active or matches
 
     # While a dialog is open over a page, its "Confirm" is the one meant - the
-    # page's own (an Odoo quotation's, which turns it into an order) sits under
+    # page's own (an the web app quotation's, which turns it into an order) sits under
     # the dialog and cannot be reached. Only when exactly one match is inside
     # the dialog on top.
     if len(matches) > 1:

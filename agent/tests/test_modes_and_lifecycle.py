@@ -211,21 +211,21 @@ class TestModesAndLifecycle(unittest.TestCase):
         self.assertGreaterEqual(len(catalog_list), 20)
 
         finance_skills = catalog.get_catalog_by_department("finance")
-        self.assertTrue(any(s["name"] == "invoice-processing" for s in finance_skills))
+        self.assertTrue(any(s["name"] == "expense-approval" for s in finance_skills))
 
         item = catalog.get_catalog_skill("morning-brief")
         self.assertIsNotNone(item)
         self.assertEqual(item["department"], "executive_assistant")
 
         # Install skill into Decurix ready store
-        installed = catalog.install_catalog_skill("invoice-processing")
-        self.assertEqual(installed["name"], "invoice-processing")
+        installed = catalog.install_catalog_skill("morning-brief")
+        self.assertEqual(installed["name"], "morning-brief")
         self.assertEqual(installed["status"], skills.READY)
 
         # Verify it is loaded by Decurix skills system
-        loaded = skills.load("invoice-processing")
-        self.assertEqual(loaded["name"], "invoice-processing")
-        self.assertEqual(loaded["title"], "Process Invoices")
+        loaded = skills.load("morning-brief")
+        self.assertEqual(loaded["name"], "morning-brief")
+        self.assertEqual(loaded["title"], item["title"])
 
 
 if __name__ == "__main__":

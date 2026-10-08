@@ -40,13 +40,13 @@ class ApprovalRules(unittest.TestCase):
                 self.assertIsNone(approval.assess("click", element("button", name)))
 
     def test_navigating_to_a_module_is_not_an_action(self):
-        # Odoo's menu search lists its apps as options; its navbar as one-word links.
+        # Portal's menu search lists its apps as options; its navbar as one-word links.
         self.assertIsNone(approval.assess("click", element("option", "Purchase")))
         self.assertIsNone(approval.assess("click", element("link", "Purchase", path='site x > navigation "Main" > link "Purchase"')))
         self.assertIsNone(approval.assess("click", element("menuitem", "Purchase", path='site x > navigation > menuitem "Purchase"')))
 
     def test_a_link_named_for_a_kind_of_record_is_not_an_action(self):
-        # ERPNext's sidebar: "Purchase Invoice" opens the list of purchase invoices, wherever the link sits.
+        # the web app's sidebar: "Purchase Invoice" opens the list of purchase invoices, wherever the link sits.
         for name in ("Purchase Invoice", "Purchase Order", "Purchase Receipt", "Transfer Request"):
             with self.subTest(name=name):
                 self.assertIsNone(approval.assess("click", element("link", name)))
@@ -202,8 +202,8 @@ class BrowserIdentityTests(unittest.TestCase):
     def test_the_product_segment_is_reported_under_one_name(self):
         from decurix_agent.computer import browser
 
-        self.assertEqual(browser.canonical_title("Invoices - Odoo - Google Chrome"), "Invoices - Odoo - Chromium")
-        self.assertEqual(browser.canonical_title("Invoices - Odoo - Chromium"), "Invoices - Odoo - Chromium")
+        self.assertEqual(browser.canonical_title("Invoices - Portal - Google Chrome"), "Invoices - Portal - Chromium")
+        self.assertEqual(browser.canonical_title("Invoices - Portal - Chromium"), "Invoices - Portal - Chromium")
         self.assertEqual(browser.canonical_title("Google Chrome"), "Chromium")
         self.assertEqual(browser.canonical_title("Report — Google Chrome for Testing"), "Report - Chromium")
 
@@ -217,8 +217,8 @@ class BrowserIdentityTests(unittest.TestCase):
     def test_a_recorded_window_check_matches_the_new_browser(self):
         from decurix_agent.computer import browser, replay
 
-        recorded = replay._stable_title("Customers - Odoo - Chromium")
-        live = browser.canonical_title("Customers - Odoo - Google Chrome")
+        recorded = replay._stable_title("Customers - Portal - Chromium")
+        live = browser.canonical_title("Customers - Portal - Google Chrome")
         self.assertTrue(replay.title_matches(recorded, live))
 
 
@@ -236,7 +236,7 @@ class OneFieldPerTyping(unittest.TestCase):
 
 
 class ColumnNamedFields(unittest.TestCase):
-    """An unlabelled field in a table cell is named by its column's header (Odoo's order lines)."""
+    """An unlabelled field in a table cell is named by its column's header (Portal's order lines)."""
 
     def test_an_unnamed_field_takes_its_columns_header(self):
         from decurix_agent.computer import cdp
@@ -500,7 +500,7 @@ class ObservingOneWindow(unittest.TestCase):
     OBS = {
         "size": [1280, 720], "active_title": "Requests for Quotation - Chromium",
         "windows": [{"title": "Requests for Quotation - Chromium", "active": True}],
-        "groups": [{"id": "cdp:1", "title": 'Chromium tab "Requests for Quotation" https://x.odoo.com/odoo/purchase',
+        "groups": [{"id": "cdp:1", "title": 'Chromium tab "Requests for Quotation" https://x.portal.example.com/requests',
                     "window_title": "Requests for Quotation - Chromium"},
                    {"id": "atspi:panel", "title": "xfce4-panel window \"\""}],
         "elements": [{"role": "row", "name": "P00002 | Gemini Furniture", "group": "cdp:1", "ref": "e1",
@@ -536,19 +536,19 @@ class ADialogsOwnControl(unittest.TestCase):
 
 
 class ARedrawnControlIsFoundAgain(unittest.TestCase):
-    """A page that draws a control anew as it is touched (ERPNext's Supplier box) fails an action with a detached node:
+    """A page that draws a control anew as it is touched (the web app's Owner box) fails an action with a detached node:
     the same control is read again and the action tried once more - never another control."""
 
     def _obs(self, name):
-        box = {"role": "combobox", "name": name, "source": "cdp", "ref": "e5", "path": "site x > combobox Supplier",
+        box = {"role": "combobox", "name": name, "source": "cdp", "ref": "e5", "path": "site x > combobox Owner",
                "box": [300, 240, 280, 30], "states": [], "group": "cdp:1"}
         return {"elements": [box], "frame": None, "windows": [], "groups": [{"id": "cdp:1", "title": "x"}],
-                "active_title": "New Purchase Invoice", "size": [1280, 720]}
+                "active_title": "New Request", "size": [1280, 720]}
 
     def _act(self, after_name):
         from types import SimpleNamespace
         from decurix_agent.computer import approval, audit, core
-        looks = [self._obs("Supplier"), self._obs(after_name), self._obs(after_name)]
+        looks = [self._obs("Owner"), self._obs(after_name), self._obs(after_name)]
         stale = core.ComputerError("DOM.scrollIntoViewIfNeeded: Node is detached from document")
         with patch.object(core, "observe", side_effect=lambda *a, **k: looks.pop(0) if looks else self._obs(after_name)), \
              patch.object(core, "_perform", side_effect=[stale, "cdp"]) as perform, \
@@ -558,7 +558,7 @@ class ARedrawnControlIsFoundAgain(unittest.TestCase):
         return result, perform
 
     def test_the_same_control_drawn_anew_is_acted_on(self):
-        result, perform = self._act("Supplier")
+        result, perform = self._act("Owner")
         self.assertEqual(perform.call_count, 2)
         self.assertEqual(result["status"], "done")
 
@@ -570,7 +570,7 @@ class ARedrawnControlIsFoundAgain(unittest.TestCase):
 
 
 class TypingIsKeys(unittest.TestCase):
-    """A single-line field is typed key by key, as a keyboard does: ERPNext's date field ignored text inserted with
+    """A single-line field is typed key by key, as a keyboard does: the web app's date field ignored text inserted with
     Input.insertText and stayed empty. A field that ignores keys still gets the text, inserted."""
 
     class FakePage:
@@ -694,14 +694,14 @@ class LeavingAPageWithUnsavedWork(unittest.TestCase):
 
 
 class AFieldThePageResetIsTypedAgain(unittest.TestCase):
-    """A page still setting itself up can re-draw a field and drop what was just typed (ERPNext's new invoice): the
+    """A page still setting itself up can re-draw a field and drop what was just typed (the web app's new invoice): the
     field is typed once more. A field that kept it, or a password field, is not."""
 
     def _act(self, values_after, role="textbox"):
         from types import SimpleNamespace
         from decurix_agent.computer import approval, audit, core
-        field = {"role": role, "name": "Supplier Invoice Date", "source": "cdp", "ref": "e9",
-                 "path": "site x > textbox Supplier Invoice Date", "box": [700, 490, 400, 30], "states": [], "value": ""}
+        field = {"role": role, "name": "Due Date", "source": "cdp", "ref": "e9",
+                 "path": "site x > textbox Due Date", "box": [700, 490, 400, 30], "states": [], "value": ""}
         looks = [{"elements": [dict(field)], "frame": None, "windows": [], "groups": [], "size": [1280, 720]}]
         for value in values_after:
             looks.append({"elements": [dict(field, value=value)], "frame": None, "windows": [], "groups": [], "size": [1280, 720]})
