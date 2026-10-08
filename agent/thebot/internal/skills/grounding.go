@@ -413,7 +413,7 @@ func canonicalNumber(v string) (string, bool) {
 }
 
 // numbersIn is every number written in text, each in canonicalNumber's form. A bill writes a rate as "Rs. 6,000.00"
-// and the form it goes into takes 6000: found live, the plain text match refused the chair's rate on an ERP bill and
+// and the form it goes into takes 6000: found live, the plain text match refused the chair's rate on an application bill and
 // the operator stopped to ask whether to type the bill's own figure.
 func numbersIn(text string) map[string]bool {
 	out := map[string]bool{}
@@ -516,7 +516,7 @@ type dateSet struct {
 	orders map[string]bool
 }
 
-// datesIn is every date written in text. A bill writes "04-Oct-2026" and ERPNext's date field takes 04-10-2026:
+// datesIn is every date written in text. A bill writes "04-Oct-2026" and the web app's date field takes 04-10-2026:
 // found live, the plain text match refused the bill's own date and the operator asked a person to approve typing it.
 func datesIn(text string) *dateSet {
 	set := &dateSet{days: map[string]bool{}, orders: map[string]bool{}}

@@ -999,9 +999,9 @@ func TestLocalPageIsOnlyALaunchersPageOnThisComputer(t *testing.T) {
 		r        resolvedProgram
 		wantPage string
 	}{
-		{"launcher, localhost", resolvedProgram{exe: "msedge.exe", args: "--app=http://localhost:8000/app", launcher: `C:\erp.exe`}, "http://localhost:8000/app"},
+		{"launcher, localhost", resolvedProgram{exe: "msedge.exe", args: "--app=http://localhost:8000/app", launcher: `C:\portal.exe`}, "http://localhost:8000/app"},
 		{"launcher, 127.0.0.1", resolvedProgram{exe: "chrome.exe", args: `--app="http://127.0.0.1:3000" --x`, launcher: `C:\a.exe`}, "http://127.0.0.1:3000"},
-		{"launcher, another computer", resolvedProgram{exe: "msedge.exe", args: "--app=https://erp.example.com", launcher: `C:\a.exe`}, ""},
+		{"launcher, another computer", resolvedProgram{exe: "msedge.exe", args: "--app=https://portal.example.com", launcher: `C:\a.exe`}, ""},
 		{"a browser nobody's launcher opened", resolvedProgram{exe: "msedge.exe", args: "--app=http://localhost:8000"}, ""},
 		{"launcher, no page", resolvedProgram{exe: "msedge.exe", args: "--new-window", launcher: `C:\a.exe`}, ""},
 		{"launcher, not a web address", resolvedProgram{exe: "msedge.exe", args: "--app=file:///C:/x.html", launcher: `C:\a.exe`}, ""},
@@ -1021,8 +1021,8 @@ func TestLocalPageIsOnlyALaunchersPageOnThisComputer(t *testing.T) {
 // TestALaunchOfAWebAppStillNamesItsLauncher: launchr carries the launcher, so the helper starts the app's server before
 // the page, as a launch it looked up itself would.
 func TestALaunchOfAWebAppStillNamesItsLauncher(t *testing.T) {
-	r := resolvedProgram{exe: `C:\Edge\msedge.exe`, args: "--app=http://localhost:8000", own: "1", base: "msedge", launcher: `C:\erp.exe`}
-	if got, want := r.line(), "launchr\tC:\\Edge\\msedge.exe\t--app=http://localhost:8000\t\t1\tmsedge\tC:\\erp.exe"; got != want {
+	r := resolvedProgram{exe: `C:\Edge\msedge.exe`, args: "--app=http://localhost:8000", own: "1", base: "msedge", launcher: `C:\portal.exe`}
+	if got, want := r.line(), "launchr\tC:\\Edge\\msedge.exe\t--app=http://localhost:8000\t\t1\tmsedge\tC:\\portal.exe"; got != want {
 		t.Errorf("line %q, want %q", got, want)
 	}
 }

@@ -155,7 +155,7 @@ def is_external_action(kind, element=None, text=None, keys=None, context=None):
     return False
 
 
-# Where a click goes somewhere rather than does something. Found live in Odoo:
+# Where a click goes somewhere rather than does something. Found live in the web app:
 # picking the "Purchase" app from its menu search (an option in a listbox) was
 # stopped as a purchase, so no purchasing workflow could get past the menu.
 # - An option is a choice in a list; it commits nothing. The button that
@@ -166,7 +166,7 @@ def is_external_action(kind, element=None, text=None, keys=None, context=None):
 NAVIGATION_PATH = re.compile(r"(^|>\s*)navigation\b")
 
 # A link named for a kind of record whose first word only looks like an act: "Purchase Invoice", "Purchase Order",
-# "Transfer Request". Not "post": posting an invoice is the act of booking it. Found live in ERPNext: its sidebar link "Purchase Invoice" was stopped as a purchase,
+# "Transfer Request". Not "post": posting an invoice is the act of booking it. Found live in the web app: its sidebar link "Purchase Invoice" was stopped as a purchase,
 # and every bill a worker entered began with a person asked to approve opening a list. Only those first words, only
 # for links, menu items and tabs, and only a record noun after them - "Send invoice" and "Pay now" still stop.
 RECORD_NAME = re.compile(

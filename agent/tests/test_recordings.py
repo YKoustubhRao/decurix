@@ -936,13 +936,13 @@ class PauseWithNothingInIt(unittest.TestCase):
         rec.session_id = "demo-test"
         rec.task_id = ""
         rec.latest = None
-        rec._pause = {"reason": "a note", "frame": screen.Frame(64, 32, before_rgb), "masks": [], "window": "Purchase Invoice"}
+        rec._pause = {"reason": "a note", "frame": screen.Frame(64, 32, before_rgb), "masks": [], "window": "Request"}
         rec._report = mock.Mock()
         return rec
 
     def resume_onto(self, before_rgb, after_rgb):
         rec = self.recorder(before_rgb)
-        after = {"frame": screen.Frame(64, 32, after_rgb), "elements": [], "active_title": "Purchase Invoice", "size": [64, 32]}
+        after = {"frame": screen.Frame(64, 32, after_rgb), "elements": [], "active_title": "Request", "size": [64, 32]}
         with mock.patch.object(core, "_wait_for_settle"), mock.patch.object(core, "observe", return_value=after), \
                 mock.patch.object(recording, "append", return_value={"i": 7}) as append:
             rec._resumed()
@@ -964,7 +964,7 @@ class PauseWithNothingInIt(unittest.TestCase):
 
 
 class APressReadLate(unittest.TestCase):
-    """A busy desktop reads input late: the screen it then sees may already be what the press made (ERPNext's Save,
+    """A busy desktop reads input late: the screen it then sees may already be what the press made (the web app's Save,
     read 20 s late, recorded as the "Submit" the saved form shows in its place)."""
 
     def recorder(self):
