@@ -27,6 +27,8 @@
     ${ifNot} ${FileExists} $R6
       StrCpy $R6 "$SYSDIR\wsl.exe"
     ${endIf}
+    nsExec::Exec `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -File "$INSTDIR\resources\wsl\cleanup-existing.ps1" -Action stop`
+    Pop $R8
     nsExec::Exec `"$R6" --terminate Decurix`
     Pop $R8
     nsExec::Exec `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -C "$$store = Join-Path $$env:LOCALAPPDATA 'Decurix\ollama\'; Get-CimInstance -ClassName Win32_Process | ? { $$_.Path -and $$_.Path.StartsWith($$store, 'CurrentCultureIgnoreCase') } | % { Stop-Process -Id $$_.ProcessId -Force }"`
@@ -46,18 +48,25 @@
     ClearErrors
 
     ${if} $R9 == "1"
-      ; Unregistering the distro deletes its disk.
-      nsExec::Exec `"$R6" --unregister Decurix`
+      ; A shared WSL distro is kept: delete only Decurix-owned resources.
+      nsExec::Exec `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -File "$INSTDIR\resources\wsl\cleanup-existing.ps1" -Action delete`
       Pop $R8
-      Sleep 1500
-      ${if} $installMode == "all"
-        SetShellVarContext current
-      ${endif}
-      RMDir /r "$LOCALAPPDATA\Decurix"
-      RMDir /r "$APPDATA\decurix"
-      ${if} $installMode == "all"
-        SetShellVarContext all
-      ${endif}
+      ${if} $R8 != "0"
+        MessageBox MB_OK|MB_ICONEXCLAMATION "The shared WSL runtime could not be cleaned up. Its workers and saved runtime settings were kept. Start its Docker Engine before trying to delete the data again." /SD IDOK
+      ${else}
+        ; Unregistering the app-owned distro deletes its disk.
+        nsExec::Exec `"$R6" --unregister Decurix`
+        Pop $R8
+        Sleep 1500
+        ${if} $installMode == "all"
+          SetShellVarContext current
+        ${endif}
+        RMDir /r "$LOCALAPPDATA\Decurix"
+        RMDir /r "$APPDATA\decurix"
+        ${if} $installMode == "all"
+          SetShellVarContext all
+        ${endif}
+      ${endIf}
     ${endIf}
   ${endIf}
 !macroend
