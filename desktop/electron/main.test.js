@@ -64,9 +64,9 @@ const data = path.join('/profile/AppData', 'decurix');
 // is read from inside the distro there.
 async function boot(initialState, {
   backendStarts = true, stopFails = false, platform = 'win32', dockerRun = () => 0, files = [], staged = platform === 'win32' ? 'build-2' : null,
-  wsl = {}, pickedFolders = [], canceledPicker = false,
+  wsl = {}, pickedFolders = [], canceledPicker = false, savedRuntime,
 } = {}) {
-  const machine = { installed: true, installedAfterAsking: false, distro: true, daemon: true, setupFails: false, ...wsl };
+  const machine = { installed: true, installedAfterAsking: false, distro: true, daemon: true, setupFails: false, existing: {}, ...wsl };
   const intervals = [];
   const windows = [];
   const spawns = [];
@@ -97,6 +97,7 @@ async function boot(initialState, {
       this.loadFile = async () => { this.loadFileCount = (this.loadFileCount || 0) + 1; };
       this.loadURL = async (url) => { this.url = url; };
       this.isDestroyed = () => false;
+      this.setTitleBarOverlay = (palette) => { this.captionPalette = palette; };
       windows.push(this);
     }
   }
@@ -152,14 +153,19 @@ async function boot(initialState, {
     });
     if (args[0] === '--version') { say('WSL version: 3.0.1.0', machine.installed ? 0 : 1); return; }
     if (!machine.installed) { say('Windows Subsystem for Linux is not installed.', 1); return; }
-    if (args[0] === '--list') { say(machine.distro ? 'Ubuntu\nDecurix' : 'Ubuntu', 0); return; }
+    if (args[0] === '--list') { say([...new Set(['Ubuntu', ...Object.keys(machine.existing), ...(machine.distro ? ['Decurix'] : [])])].join('\n'), 0); return; }
     if (args[0] === '--import') { machine.distro = true; say('The operation completed successfully.', 0); return; }
     const program = args.slice(args.indexOf('-e') + 1);
-    if (!machine.distro) { say(`There is no distribution with the supplied name.`, 1); return; }
+    const distro = args[args.indexOf('-d') + 1];
+    const available = distro === 'Decurix' ? machine.distro : Object.hasOwn(machine.existing, distro);
+    if (!available) { say(`There is no distribution with the supplied name.`, 1); return; }
+    if (program[0] === 'sh' && program[1] === '-c') { say('runtime probe', machine.existing[distro] ? 0 : 1); return; }
+    if (distro !== 'Decurix' && !machine.existing[distro]) { say('Docker is not running', 1); return; }
     if (program[0] === 'cat') { say(staged, staged === null ? 1 : 0); return; }
     if (program[0] === 'sh') { say('decurix-setup: ready', machine.setupFails ? 1 : 0); return; }
     if (program[0] === '/opt/decurix/dockerd.sh') { machine.daemon = true; return; }
-    const docker = program[0] === 'env' ? program.slice(program.indexOf('docker') + 1) : program.slice(1);
+    let docker = program[0] === 'env' ? program.slice(program.indexOf('docker') + 1) : program.slice(1);
+    if (docker[0] === '--host') docker = docker.slice(2);
     if (docker[0] === 'version') { say(machine.daemon ? '29.8.2' : 'Cannot connect to the Docker daemon', machine.daemon ? 0 : 1); return; }
     runDocker(docker, child);
   };
@@ -194,6 +200,7 @@ async function boot(initialState, {
     writeFileSync(file, content) { written.push({ file, content }); },
     writeSync() {},
     readFileSync(file) {
+      if (file === path.join(data, 'windows-runtime.json') && savedRuntime !== undefined) return savedRuntime;
       if (file === path.join('/installed/resources', 'stack', 'VERSION')) return 'build-2';
       if (file === path.join(stack, 'VERSION') && staged !== null) return staged;
       throw Object.assign(new Error('no such file'), { code: 'ENOENT' });
@@ -242,6 +249,14 @@ async function boot(initialState, {
   const wslWords = (s) => Array.from(s.args).join(' ');
   return {
     window: windows[0], app, spawns, children, copied, written, external, mobileCalls, settle, blockers, stack, home, machine, pickerCalls,
+    titleBarTheme: (palette, url = 'http://127.0.0.1:8080/', { childFrame = false, otherWindow = false } = {}) => {
+      const sender = windows[0].webContents;
+      sender.mainFrame = { url };
+      ipcMain.emit('window-titlebar-theme', {
+        sender: otherWindow ? {} : sender,
+        senderFrame: childFrame ? { url } : sender.mainFrame,
+      }, palette);
+    },
     pickFolders: (url = 'http://127.0.0.1:8080/', childFrame = false) => {
       const sender = windows[0].webContents;
       sender.mainFrame = { url };
@@ -254,7 +269,9 @@ async function boot(initialState, {
         if (s.file !== 'wsl.exe') return [];
         const args = Array.from(s.args);
         const at = args.indexOf('docker');
-        return at >= 0 && args.includes('-e') ? [args.slice(at + 1).join(' ')] : [];
+        let command = args.slice(at + 1);
+        if (command[0] === '--host') command = command.slice(2);
+        return at >= 0 && args.includes('-e') ? [command.join(' ')] : [];
       });
     },
     // WSL itself and what was run in the distro (not docker), as words.
@@ -275,7 +292,7 @@ test('reuses a running dashboard of this build without starting anything', async
   assert.equal(result.window.url, 'http://127.0.0.1:8080');
   // Only the question which build the distro's stack is.
   assert.deepEqual(result.docker, []);
-  assert.deepEqual(result.wsl, ['-d Decurix -u root --cd / -e cat /var/lib/decurix/stack/VERSION']);
+  assert.deepEqual(result.wsl, ['--list --quiet', '-d Decurix -u root --cd / -e cat /var/lib/decurix/stack/VERSION']);
 });
 
 test('a first launch imports the distro, prepares it, starts Docker and the stack', async () => {
@@ -556,4 +573,80 @@ test('the phone link there uses the cloudflared the computer has, and is left ou
   const withOne = await boot('ready', { platform: 'darwin', files: [cloudflaredOnPath] });
   assert.deepEqual(withOne.mobileCalls, ['start']);
   assert.equal(withOne.tunnel.file, cloudflaredOnPath);
+});
+
+test('Windows caption controls overlay the app header without changing other platforms', async () => {
+  const windows = await boot('ready');
+  assert.equal(windows.window.options.titleBarStyle, 'hidden');
+  assert.equal(windows.window.options.titleBarOverlay.height, 52);
+  for (const platform of ['darwin', 'linux']) {
+    const result = await boot('ready', { platform });
+    assert.equal(result.window.options.titleBarStyle, undefined);
+    assert.equal(result.window.options.titleBarOverlay, undefined);
+  }
+});
+
+test('caption colors follow the dashboard theme and reject untrusted frames or invalid colors', async () => {
+  const result = await boot('ready');
+  const dark = { color: '#191817', symbolColor: '#f2f0ea' };
+  result.titleBarTheme(dark);
+  assert.equal(result.window.captionPalette.color, dark.color);
+  assert.equal(result.window.captionPalette.symbolColor, dark.symbolColor);
+  result.window.captionPalette = undefined;
+  result.titleBarTheme(dark, 'https://example.com/');
+  result.titleBarTheme(dark, undefined, { childFrame: true });
+  result.titleBarTheme(dark, undefined, { otherWindow: true });
+  result.titleBarTheme({ color: 'invalid', symbolColor: '#ffffff' });
+  result.titleBarTheme(null);
+  assert.equal(result.window.captionPalette, undefined);
+  const light = { color: '#fffefc', symbolColor: '#1a1917' };
+  result.titleBarTheme(light);
+  assert.equal(result.window.captionPalette.color, light.color);
+});
+
+test('new Windows installs reuse a compatible existing WSL runtime without importing or installing Linux', async () => {
+  const result = await boot('absent', { wsl: { distro: false, existing: { Ubuntu: true } } });
+  assert.equal(result.window.url, 'http://127.0.0.1:8080');
+  assert.ok(!result.wsl.some((w) => w.startsWith('--import')));
+  assert.ok(!result.spawns.some((s) => Array.from(s.args).join(' ').includes('--install')));
+  assert.ok(!result.spawns.some((s) => Array.from(s.args).join(' ').includes('/opt/decurix/dockerd.sh')));
+  assert.ok(result.wsl.some((w) => w.includes('stage-existing.sh')));
+  assert.ok(!result.wsl.some((w) => /[\\/]wsl[\\/]setup.sh/.test(w)));
+  const up = result.spawns.find((s) => Array.from(s.args).includes('up'));
+  assert.equal(up.args[1], 'Ubuntu');
+  assert.ok(Array.from(up.args).includes('unix:///var/run/docker.sock'));
+  const saved = result.written.find((w) => w.file === path.join(data, 'windows-runtime.json'));
+  assert.deepEqual(JSON.parse(saved.content), { distro: 'Ubuntu' });
+});
+
+test('existing app-owned workers stay in Decurix even when another WSL runtime is available', async () => {
+  const result = await boot('absent', { wsl: { existing: { Ubuntu: true } } });
+  const up = result.spawns.find((s) => Array.from(s.args).includes('up'));
+  assert.equal(up.args[1], 'Decurix');
+  assert.ok(!result.wsl.some((w) => w.includes('stage-existing.sh')));
+});
+
+test('an incompatible WSL distro falls back to the managed distro', async () => {
+  const result = await boot('absent', { wsl: { distro: false, existing: { Ubuntu: false, 'docker-desktop': true } } });
+  assert.equal(result.window.url, 'http://127.0.0.1:8080');
+  assert.ok(result.wsl.some((w) => w.startsWith('--import Decurix')));
+  assert.ok(!result.spawns.some((s) => s.file === 'wsl.exe' && s.args[0] === '-d' && s.args[1] === 'docker-desktop'));
+});
+
+test('the saved existing runtime is reused and never silently replaced when it is unavailable', async () => {
+  const savedRuntime = JSON.stringify({ distro: 'Ubuntu' });
+  const result = await boot('absent', { savedRuntime, wsl: { existing: { Ubuntu: true } } });
+  assert.equal(result.window.url, 'http://127.0.0.1:8080');
+  assert.ok(result.wsl.some((w) => w.includes('stage-existing.sh')));
+  const unavailable = await boot('absent', { savedRuntime, wsl: { existing: { Ubuntu: false } } });
+  assert.equal(unavailable.window.url, undefined);
+  assert.match(unavailable.window.lastStatus.value.message, /saved WSL runtime.*unavailable/);
+  assert.ok(!unavailable.wsl.some((w) => w.startsWith('--import')));
+  assert.equal(unavailable.ups, 0);
+});
+
+test('invalid runtime records stop startup instead of changing where workers live', async () => {
+  const result = await boot('absent', { savedRuntime: '{invalid' });
+  assert.equal(result.ups, 0);
+  assert.match(result.window.lastStatus.value.message, /Could not read the saved WSL runtime/);
 });

@@ -521,10 +521,14 @@ do.
 
 Install it, then launch **Decurix** from the Start menu or desktop shortcut.
 
-* The first start sets up the WSL distro `Decurix`, installs Docker Engine in
-  it, builds the control plane and the worker desktop image (a whole Linux
-  desktop: this takes a long while, once), and starts the bundled model server.
-  Later starts take seconds.
+* On a new install, the app first looks for a compatible existing WSL distro
+  with a running local Docker Engine, Compose, and Windows host integration.
+  Otherwise it sets up its own `Decurix` distro and installs Docker Engine.
+  Existing app-owned installations keep that distro and their worker data.
+* WSL/Hyper-V provides virtualization; each worker still needs Decurix's
+  Linux desktop image. Up-to-date images and cached build layers are reused;
+  a missing image is built once, which can take several minutes. The app
+  also starts the bundled model server. Later starts take seconds.
 * Docker keeps running in that distro after you close the window, so workers
   and schedules continue; opening the app again reconnects.
 * A worker is a Linux desktop of its own: Chrome, a terminal, a file manager,
@@ -535,11 +539,17 @@ Where things live:
 * `%LOCALAPPDATA%\Decurix\wsl\` - the distro's disk: Docker, the images, every
   worker and its files, the records and the models. `wsl -d Decurix` opens a
   shell in it.
-* `%APPDATA%\decurix\` - the editable `.env` (and an example), and
-  `desktop.log`, the app's log.
+* `%APPDATA%\decurix\` - the editable `.env` (and an example),
+  `desktop.log`, and `windows-runtime.json`, which records the chosen distro.
+  When reusing an existing WSL runtime, worker data and images live in that
+  runtime's Docker Engine. The app stages only its files in
+  `/var/lib/decurix/stack`; it does not change WSL or daemon settings.
+  If the saved runtime is unavailable, startup asks you to start its Docker
+  Engine rather than silently switching to another runtime.
 
 Uninstalling (Settings > Apps, or the Start menu's own uninstaller) stops the
-distro and removes the program. It asks whether to delete the distro and your
+app-owned distro (or only Decurix containers in a shared runtime) and removes
+the program. Shared distros and unrelated Docker resources are kept. It asks whether to delete the distro and your
 settings as well, and keeps them unless you say yes, so installing again picks
 up where you left off. A silent uninstall (`"Uninstall Decurix.exe" /S`) keeps
 them; add `--delete-app-data` to remove them. Deleting a single worker from the
