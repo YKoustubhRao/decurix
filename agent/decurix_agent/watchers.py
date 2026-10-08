@@ -276,6 +276,11 @@ def _pass():
             # would strand the complete request for the life of this process.
             continue
 
+        # A task queued before a question was asked is not its answer.
+        # Only messages marked as replies at receipt may resume that task.
+        if state.waiting_for_query and not is_reply_file(path.name):
+            continue
+
         # The reasoning backend has not been reached yet - Ollama
         # is still starting, or is briefly unreachable. Leave the
         # file in the command directory and come back to it on a

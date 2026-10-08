@@ -259,11 +259,15 @@ func stripNonCodeFilenames(s string) string {
 // isCoding is the real gate for the coding harness: a genuine
 // build-me-software request, never a question about software and never a
 // single command or an environment chore.
+// Strip prohibitions before looking for software requests: a GUI task can
+// explicitly forbid scripts without asking the coding harness to write them.
+var codingProhibitionRe = regexp.MustCompile(`(?i)\b(?:do not|don't|never)\s+(?:build|implement|write|create|code|develop|make|program|generate|design|use)\b[^.?!\n]*`)
+
 func isCoding(step string) bool {
 	if codingExcludeRe.MatchString(step) || codingOpsRe.MatchString(step) {
 		return false
 	}
-	cleaned := stripNonCodeFilenames(codingURLRe.ReplaceAllString(step, " "))
+	cleaned := stripNonCodeFilenames(codingURLRe.ReplaceAllString(codingProhibitionRe.ReplaceAllString(step, " "), " "))
 	return codingRe.MatchString(cleaned)
 }
 
@@ -275,7 +279,7 @@ func describesSoftware(step string) bool {
 	if codingExcludeRe.MatchString(step) || codingOpsRe.MatchString(step) {
 		return false
 	}
-	cleaned := stripNonCodeFilenames(codingURLRe.ReplaceAllString(step, " "))
+	cleaned := stripNonCodeFilenames(codingURLRe.ReplaceAllString(codingProhibitionRe.ReplaceAllString(step, " "), " "))
 	return codingRe.MatchString(cleaned) || codingRe.MatchString("build "+cleaned)
 }
 

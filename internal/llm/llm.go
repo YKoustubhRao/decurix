@@ -133,6 +133,20 @@ func (c *Client) Chat(ctx context.Context, body []byte) (int, []byte, http.Heade
 
 	req["model"] = model
 
+	// Reasoning deployments reject the legacy token budget and sampling knobs.
+	// Normalize at the provider boundary for every harness using this proxy.
+	if isReasoningModel(model) {
+		if limit, ok := req["max_tokens"]; ok {
+			if _, explicit := req["max_completion_tokens"]; !explicit {
+				req["max_completion_tokens"] = limit
+			}
+			delete(req, "max_tokens")
+		}
+		for _, field := range []string{"temperature", "top_p", "presence_penalty", "frequency_penalty", "logprobs", "top_logprobs"} {
+			delete(req, field)
+		}
+	}
+
 	out, err := json.Marshal(req)
 	if err != nil {
 		return 0, nil, nil, err
@@ -165,4 +179,13 @@ func (c *Client) Chat(ctx context.Context, body []byte) (int, []byte, http.Heade
 	}
 
 	return resp.StatusCode, data, retry, nil
+}
+
+// isReasoningModel recognizes the supported reasoning deployment families.
+func isReasoningModel(model string) bool {
+	name := strings.ToLower(model)
+	return strings.HasPrefix(name, "gpt-5") || strings.HasPrefix(name, "gpt-6") ||
+		name == "o1" || strings.HasPrefix(name, "o1-") ||
+		name == "o3" || strings.HasPrefix(name, "o3-") ||
+		name == "o4" || strings.HasPrefix(name, "o4-")
 }
