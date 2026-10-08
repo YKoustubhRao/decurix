@@ -216,9 +216,15 @@ def _described(skill):
     return "\n".join(lines)
 
 
-def _call(system, content, max_tokens=2500):
+def _token_budget(skill):
+    # Reasoning-model completion budgets include reasoning as well as JSON.
+    # Long demonstrations need room for one purpose per step plus inputs.
+    return min(24000, max(6000, 4000 + 80 * len(skill.get("steps") or [])))
+
+
+def _call(system, content, max_tokens=6000):
     message, spent = llm_client.chat([{"role": "system", "content": system}, {"role": "user", "content": content}],
-                                     max_tokens=max_tokens)
+                                     max_tokens=max_tokens, response_format={"type": "json_object"})
     try:
         usage.add(input_tokens=spent.get("prompt_tokens") or 0, output_tokens=spent.get("completion_tokens") or 0)
     except Exception:
@@ -259,7 +265,8 @@ def study(skill):
     if not available():
         return None
     try:
-        data = _call(STUDY_SYSTEM, [{"type": "text", "text": _described(skill)}] + _documents(skill) + _pictures(skill))
+        data = _call(STUDY_SYSTEM, [{"type": "text", "text": _described(skill)}] + _documents(skill) + _pictures(skill),
+                     max_tokens=_token_budget(skill))
     except (llm_client.LLMError, ValueError) as exc:
         log(f"study: could not study {skill.get('name')}: {exc}")
         return None
@@ -308,7 +315,7 @@ def absorb(skill, question, answer):
         f"You asked: {question}\nThe person answered: {answer}")}]
 
     try:
-        data = _call(ABSORB_SYSTEM, content)
+        data = _call(ABSORB_SYSTEM, content, max_tokens=_token_budget(skill))
     except (llm_client.LLMError, ValueError) as exc:
         log(f"study: could not take in the answer: {exc}")
         understanding.setdefault("rules", []).append(f"(Asked: {question}) The person said: {answer}")

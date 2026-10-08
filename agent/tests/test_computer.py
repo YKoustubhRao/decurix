@@ -395,6 +395,20 @@ class ChoosingInADrawnDropdown(unittest.TestCase):
             core._select_custom({"role": role, "name": "Nationality"}, want)
         return clicked, typed
 
+    def test_search_uses_the_dropdown_handle_after_redraw(self):
+        from decurix_agent.computer import core
+        old = element("combobox", "Item", handle={"backend_id": 1})
+        fresh = dict(old, handle={"backend_id": 2})
+        option = self._opt("Managed Database Hosting")
+        looks = iter([{"elements": [fresh]}, {"elements": [fresh]},
+                      {"elements": [fresh, option]}])
+        typed = []
+        with patch.object(core, "observe", side_effect=lambda: next(looks)), \
+             patch.object(core.cdp, "click"), patch.object(core.cdp, "type_text", side_effect=lambda e, t: typed.append(e)), \
+             patch.object(core, "CUSTOM_OPEN_SECONDS", -1):
+            core._select_custom(old, "Managed Database Hosting")
+        self.assertEqual(typed[0]["handle"]["backend_id"], 2)
+
     def test_the_exact_label_is_clicked(self):
         clicked, _ = self._run([self._opt("British Indian Ocean"), self._opt("Indian"), self._opt("Indonesian")], "indian")
         self.assertEqual(clicked, ["Nationality", "Indian"])
@@ -449,6 +463,22 @@ class ChoosingInADrawnDropdown(unittest.TestCase):
         with self.assertRaises(core.ComputerError) as ctx:
             self._run([self._opt("Single"), self._opt("Married")], "Divorced", role="text")
         self.assertIn("Married", str(ctx.exception))
+
+
+class TypingAtAPointSyntax(unittest.TestCase):
+    def test_click_at_coordinate_is_a_point(self):
+        from decurix_agent.computer import cli
+        with patch.object(cli.core, "act", return_value={"status": "done", "text": "clicked"}) as act:
+            cli.run(["click", "at", "801,192"])
+        self.assertEqual(act.call_args.kwargs["point"], (801, 192))
+
+
+    def test_at_coordinate_is_a_target_not_text_for_the_previous_field(self):
+        from decurix_agent.computer import cli
+        with patch.object(cli.core, "act", return_value={"status": "done", "text": "typed"}) as act:
+            cli.run(["type", "at", "323,61", "invoice number"])
+        self.assertEqual(act.call_args.kwargs["point"], (323, 61))
+        self.assertEqual(act.call_args.kwargs["text"], "invoice number")
 
 
 class TypingNeedsAField(unittest.TestCase):
@@ -628,6 +658,22 @@ class LeavingAPageWithUnsavedWork(unittest.TestCase):
         p.ws, p.seq, p.events, p.target = self.FakeSocket(**kw), 0, [], {}
         return p
 
+    def test_observation_cancels_an_existing_unsaved_work_dialog(self):
+        from decurix_agent.computer import cdp
+        p = self.page(already_showing=True, dialog_on_navigate=False)
+        self.assertTrue(cdp._cancel_pending_leave_dialog(p))
+        self.assertIn("Page.handleJavaScriptDialog", p.ws.sent)
+        self.assertNotIn("Page.navigate", p.ws.sent)
+        self.assertFalse(any(m.get("method") == "Page.javascriptDialogOpening" for m in p.events))
+
+    def test_observation_leaves_other_dialogs_for_the_workflow(self):
+        from decurix_agent.computer import cdp
+        p = self.page(dialog_on_navigate=False)
+        p.events.append({"method": "Page.javascriptDialogOpening", "params": {"type": "alert"}})
+        self.assertFalse(cdp._cancel_pending_leave_dialog(p))
+        self.assertNotIn("Page.handleJavaScriptDialog", p.ws.sent)
+        self.assertEqual(p.events[0]["params"]["type"], "alert")
+
     def test_a_page_that_asks_before_leaving_is_kept(self):
         from decurix_agent.computer import cdp
         p = self.page()
@@ -678,6 +724,27 @@ class AFieldThePageResetIsTypedAgain(unittest.TestCase):
     def test_a_password_field_is_never_judged(self):
         _, perform = self._act(["", ""], role="password")
         self.assertEqual(perform.call_count, 1)
+
+    def test_a_field_that_drops_both_attempts_fails(self):
+        from decurix_agent.computer.errors import ComputerError
+        with self.assertRaisesRegex(ComputerError, "did not retain"):
+            self._act(["", ""])
+
+    def test_numeric_formatting_is_not_lost_input(self):
+        from decurix_agent.computer import core
+        self.assertFalse(core._typing_lost(element("textbox", "Rate", value="40,000.00"), "40000"))
+        self.assertTrue(core._typing_lost(element("textbox", "Rate", value="40,001.00"), "40000"))
+
+    def test_unresolved_browser_point_never_types(self):
+        from decurix_agent.computer import core
+        from decurix_agent.computer.errors import ComputerError
+        look = {"elements": [], "page_url": "https://example.test/invoice", "frame": None,
+                "windows": [], "groups": [], "size": [1280, 720]}
+        with patch.object(core, "observe", return_value=look), patch.object(core, "_perform") as perform:
+            with self.assertRaisesRegex(ComputerError, "does not resolve"):
+                core.act("type", point=(280, 433), text="Invoice description")
+        perform.assert_not_called()
+
 
 
 class ScrollWords(unittest.TestCase):
@@ -759,3 +826,58 @@ class TypingIntoASuggestField(unittest.TestCase):
         self.assertTrue(core._offers_nothing(before, only_make))
         self.assertFalse(core._offers_nothing(before, real))
         self.assertFalse(core._offers_nothing(before, before))   # no list at all: nothing to say
+
+
+class RichTextFields(unittest.TestCase):
+    def test_focusable_generic_editor_is_a_textbox(self):
+        from decurix_agent.computer import cdp
+        node = {"role": {"value": "generic"}, "properties": [
+            {"name": "editable", "value": {"value": "richtext"}},
+            {"name": "focusable", "value": {"value": True}}]}
+        self.assertEqual(cdp._ax_role(node), "textbox")
+        node["properties"].pop()
+        self.assertEqual(cdp._ax_role(node), "generic")
+
+    def test_plain_input_shadow_and_paragraphs_are_not_duplicate_fields(self):
+        from decurix_agent.computer import cdp
+        for role, editable in [("generic", "plaintext"), ("paragraph", "richtext")]:
+            node = {"role": {"value": role}, "properties": [
+                {"name": "editable", "value": {"value": editable}},
+                {"name": "focusable", "value": {"value": True}}]}
+            self.assertEqual(cdp._ax_role(node), role)
+
+
+class CoveredClickTargets(unittest.TestCase):
+    def test_sticky_header_is_avoided_before_click_coordinates(self):
+        from decurix_agent.computer import cdp
+        class Page:
+            def call(self, method, params=None):
+                if method == "DOM.getContentQuads":
+                    return {"quads": [[10, 300, 30, 300, 30, 320, 10, 320]]}
+                return {}
+        with patch.object(cdp, "_object", return_value="obj"), patch.object(cdp, "_unobscured", side_effect=[False, True]):
+            self.assertEqual(cdp._center(Page(), 1), (20, 310))
+
+    def test_overlay_still_covering_target_refuses_click(self):
+        from decurix_agent.computer import cdp
+        from decurix_agent.computer.errors import ComputerError
+        class Page:
+            def call(self, method, params=None):
+                if method == "DOM.getContentQuads":
+                    return {"quads": [[10, 10, 30, 10, 30, 30, 10, 30]]}
+                return {}
+        with patch.object(cdp, "_object", return_value="obj"), patch.object(cdp, "_unobscured", return_value=False):
+            with self.assertRaisesRegex(ComputerError, "covered"):
+                cdp._center(Page(), 1)
+
+
+class AlreadyExpandedDropdown(unittest.TestCase):
+    def test_selecting_existing_option_keeps_enclosing_editor_open(self):
+        from decurix_agent.computer import core, cdp
+        field = element("combobox", "Item", states=["expanded"], ref="e1")
+        choice = element("option", "Cloud Compute Instances", ref="e2")
+        with patch.object(core, "observe", return_value={"elements": [field, choice]}), \
+                patch.object(cdp, "close_list") as close, patch.object(cdp, "click") as click:
+            core._select_custom(field, "Cloud Compute Instances")
+        close.assert_not_called()
+        click.assert_called_once_with(choice)

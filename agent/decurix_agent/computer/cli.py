@@ -198,6 +198,8 @@ def _target(value, args):
         return keywords
 
     value = value.strip()
+    if value.lower().startswith("at ") and el.parse_point(value[3:].strip()) is not None:
+        value = value[3:].strip()
     point = el.parse_point(value)
 
     if el.REF_RE.match(value):
@@ -599,6 +601,8 @@ def run(argv):
 
     elif command == "type":
         words = _strip_descriptor(list(args.words))
+        if len(words) >= 3 and words[0].lower() == "at" and el.parse_point(words[1]) is not None:
+            words = words[1:]
         if len(words) == 3 and _is_role_word(words[0]) and not (args.role or args.name):
             # gui type textbox "Site title" "Decurix Test Site"
             args.role, args.name, words = words[0], words[1], [words[2]]

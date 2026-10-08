@@ -527,26 +527,36 @@ def _select_custom(element, option):
     line with no product at all.
     """
 
+    def refresh(now):
+        nonlocal element
+        if not element.get("path"):
+            return
+        fresh = next((e for e in now if e.get("path") == element["path"]
+                      and e.get("role") == element.get("role") and e.get("name") == element.get("name")), None)
+        if fresh is not None:
+            element = fresh
+
     def expanded():
         now = observe()["elements"]
+        refresh(now)
         me = next((e for e in now if e.get("path") == element.get("path")), None)
         return now, bool(me and "expanded" in (me.get("states") or []))
 
     # A list already open (an earlier try left it) would count as on the page
     # before the click, so none of its entries would count as appearing.
     now, is_open = expanded()
-    if is_open:
-        cdp.close_list(element)
-        time.sleep(0.3)
-        now, _ = expanded()
-    known = {e["path"] for e in now}
-    cdp.click(element)
+    # Escape can close the enclosing row editor as well as its dropdown
+    # (ERPNext). Use already-visible options instead of dismissing the list.
+    known = {e["path"] for e in now if not (is_open and e["role"] in ("option", "menuitem"))}
+    if not is_open:
+        cdp.click(element)
     searches = _searches(option) if element["role"] in ("combobox", "textbox", "searchbox") else []
     deadline = time.monotonic() + CUSTOM_OPEN_SECONDS
     seen = []
 
     while True:
         now = observe()["elements"]
+        refresh(now)
         candidates = [e for e in now if e["path"] not in known and e["role"] in _SUGGESTION_ROLES
                       and e.get("source") == "cdp" and e.get("box")
                       and not _NOT_A_CHOICE.match(e.get("name") or "")]
@@ -609,7 +619,17 @@ def _typing_lost(field, text):
         return False
     value = field.get("value")
     line = (text.split("\n")[0]).strip()
-    return value is not None and bool(line) and line not in value
+    if value is None or not line or line in value:
+        return False
+    # Numeric form fields commonly add grouping and decimal places after typing.
+    # Treat that formatting as the same value, without hiding genuinely lost input.
+    import decimal
+    import re
+    numeric = r"^[+-]?(?:\d+(?:,\d{3})*)(?:\.\d+)?$"
+    wanted, shown = line.strip(), str(value).strip()
+    if re.fullmatch(numeric, wanted) and re.fullmatch(numeric, shown):
+        return decimal.Decimal(wanted.replace(",", "")) != decimal.Decimal(shown.replace(",", ""))
+    return True
 
 
 # What the browser says when the node an action was aimed at is no longer the one on the page.
@@ -668,6 +688,11 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
                           active_group=active_group(before))
     elif point is not None:
         element = el.at_point(before["elements"], point[0], point[1])
+
+    if kind == "type" and point is not None and element is None and before.get("page_url"):
+        raise ComputerError("that point does not resolve to a browser field to type into - click the editor, "
+                            "observe, then type into its field by ref; typing at an unresolved point can trigger "
+                            "page shortcuts instead of entering text")
 
     keys = [k for k in (keys or []) if k and k.strip()]
     target = el.describe(element) if element else (f"{point[0]},{point[1]}" if point else "")
@@ -788,6 +813,17 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
             settled = _wait_for_settle(before["frame"])
             after = observe()
             retyped = True
+
+    if kind == "type" and element is not None and text and not append and element.get("role") == "textbox":
+        retained = _same_field(element, after)
+        if retained is not None and _typing_lost(retained, text):
+            reason = (f"{target} did not retain the requested text after retrying. Observe the field again and "
+                      "commit it or use its picker; do not assume the value was entered.")
+            entry.update({"outcome": "failed", "backend": backend, "reason": reason,
+                          "summary": described + " - failed: " + reason})
+            audit.record(entry, before=before["frame"], after=after["frame"] or settled,
+                         masks=masks + privacy.secret_boxes(after["elements"]))
+            raise ComputerError(reason)
 
     change = compare(before, after)
     change_text = summarize(change)
