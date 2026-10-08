@@ -29,6 +29,7 @@ class FramedPage:
         self.frame_scroll = frame_scroll
         self.frame_tree = frame_tree
         self.closed = False
+        self.events = []
 
     def evaluate(self, expression):
         if expression == cdp._READY:

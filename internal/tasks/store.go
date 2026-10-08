@@ -470,9 +470,8 @@ func (s *Store) Plan(workerID, text string) (Route, error) {
 //
 // A replay is refused while any is. The desktop's watcher would take a replay
 // sent to a paused agent as the reply to its pause, and one queued behind a
-// running task would be swallowed as the reply if that task then paused
-// (absorbQueuedReply) - either way the records would describe a replay that
-// never ran.
+// running task cannot run until that task finishes. Refuse it so the person
+// gets a concrete busy result instead of an unstarted replay.
 func (s *Store) Busy(workerID string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -948,10 +947,6 @@ func (s *Store) RecordOutcome(workerID, taskID string, outcome Outcome) (string,
 			return "", err
 		}
 
-		if err := absorbQueuedReply(tx, workerID, ref, now); err != nil {
-			return "", err
-		}
-
 	default:
 		status := StatusDone
 		if outcome.Kind == OutcomeError {
@@ -1010,50 +1005,6 @@ func promoteNext(tx *sql.Tx, workerID string, now time.Time) error {
 	}
 
 	return promote(tx, &ref, now)
-}
-
-// absorbQueuedReply mirrors what the desktop does with a request that was
-// held behind a task which then stopped to ask a human: its command watcher
-// hands that held request to the paused task as the reply. The records say
-// the same - the queued "task" becomes the reply it really was.
-func absorbQueuedReply(tx *sql.Tx, workerID string, paused executionRef, now time.Time) error {
-	var queuedID, queuedTask, request string
-
-	err := tx.QueryRow(
-		`SELECT e.id, e.task_id, t.request FROM executions e JOIN tasks t ON t.id = e.task_id
-		 WHERE e.worker_id = ? AND e.status = ? AND e.id != ?
-		 ORDER BY e.started_ns LIMIT 1`,
-		workerID, StatusQueued, paused.id,
-	).Scan(&queuedID, &queuedTask, &request)
-	if err == sql.ErrNoRows {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("tasks: matching held reply: %w", err)
-	}
-
-	if _, err := tx.Exec(
-		`UPDATE interventions SET reply = ?, replied_ns = ?
-		 WHERE id = (SELECT id FROM interventions WHERE execution_id = ? ORDER BY requested_ns DESC LIMIT 1)`,
-		request, sqlitedb.ToNS(now), paused.id,
-	); err != nil {
-		return fmt.Errorf("tasks: matching held reply: %w", err)
-	}
-
-	if err := setExecutionStatus(tx, paused.id, paused.taskID, StatusRunning, now); err != nil {
-		return err
-	}
-
-	if _, err := tx.Exec(`DELETE FROM executions WHERE id = ?`, queuedID); err != nil {
-		return fmt.Errorf("tasks: matching held reply: %w", err)
-	}
-
-	_, err = tx.Exec(
-		`DELETE FROM tasks WHERE id = ? AND NOT EXISTS (SELECT 1 FROM executions WHERE task_id = ?)`,
-		queuedTask, queuedTask,
-	)
-
-	return err
 }
 
 func setExecutionStatus(tx *sql.Tx, executionID, taskID, status string, now time.Time) error {

@@ -365,6 +365,7 @@ def active_page():
             continue
 
         try:
+            _cancel_pending_leave_dialog(page)
             if page.evaluate("document.visibilityState") == "visible":
                 if fallback is not None:
                     fallback.close()
@@ -638,12 +639,26 @@ def _prop(node, key):
     return None
 
 
+def _ax_role(node):
+    role = ((node.get("role") or {}).get("value") or "").lower()
+    # Quill and other contenteditable editors expose a focusable generic
+    # rich-text node, rather than a textbox. Its descendants also inherit
+    # editable, so only the focusable editor itself becomes a field.
+    if role == "generic" and _prop(node, "editable") == "richtext" and _prop(node, "focusable"):
+        return "textbox"
+    return role
+
+
 def observe():
     """Return (elements, group) for the active Chromium tab."""
 
     page = active_page()
 
     try:
+        # Keyboard reloads and address-bar navigation can leave Chrome's own
+        # unsaved-work dialog open, blocking every Runtime/AX read. Keep the
+        # page before reading it, just as navigate() does for gui open.
+        _cancel_pending_leave_dialog(page)
         # A page still loading has an accessibility tree with nothing in it
         # yet; reading it then reports an empty page the engine would act on.
         # A page that mirrors something else's controls (a phone app's
@@ -798,7 +813,7 @@ def observe():
             break
 
         role = (node.get("role") or {}).get("value", "")
-        lower = role.lower()
+        lower = _ax_role(node)
         name = " ".join(((node.get("name") or {}).get("value", "") or "").split())
         backend_id = node.get("backendDOMNodeId")
         ignored = node.get("ignored", False)
@@ -1011,7 +1026,7 @@ def _describe(page, metrics, backend_id, known, controls_only=False):
 
     while current is not None and hops < 60:
         hops += 1
-        role = ((current.get("role") or {}).get("value") or "").lower()
+        role = _ax_role(current)
         name = " ".join(((current.get("name") or {}).get("value") or "").split())
         here = current.get("backendDOMNodeId")
         value = (current.get("value") or {}).get("value")
@@ -1267,10 +1282,34 @@ def _center(page, backend_id):
     if not quads:
         raise ComputerError("that element has no size on the page (it may be hidden)")
 
+    object_id = _object(page, backend_id)
+    if not _unobscured(page, object_id):
+        page.call("Runtime.callFunctionOn", {
+            "objectId": object_id,
+            "functionDeclaration": "function() { const node = this.nodeType === 3 ? this.parentElement : this; node.scrollIntoView({block: 'center', inline: 'center', behavior: 'instant'}); }",
+        })
+        quads = page.call("DOM.getContentQuads", {"backendNodeId": backend_id}).get("quads") or []
+        if not quads or not _unobscured(page, object_id):
+            raise ComputerError("that element is covered by another control - close the overlay or scroll it into view")
+
     quad = quads[0]
     xs, ys = quad[0::2], quad[1::2]
 
     return sum(xs) / 4, sum(ys) / 4
+
+
+def _unobscured(page, object_id):
+    return bool(page.call("Runtime.callFunctionOn", {
+        "objectId": object_id, "returnByValue": True,
+        "functionDeclaration": """function() {
+            const node = this.nodeType === 3 ? this.parentElement : this;
+            const rect = node.getBoundingClientRect();
+            const doc = node.ownerDocument;
+            const hit = doc.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+            return !!hit && (node === hit || node.contains(hit) ||
+                (hit !== doc.body && hit !== doc.documentElement && hit.contains(node)));
+        }""",
+    }).get("result", {}).get("value"))
 
 
 # How long a click waits for a file chooser after its barrier (below). The
@@ -1637,6 +1676,18 @@ def scroll(element, direction, amount=3):
         })
     finally:
         page.close()
+
+
+def _cancel_pending_leave_dialog(page):
+    """Cancel only beforeunload dialogs; leave other dialogs for the normal workflow."""
+    page.call("Page.enable")
+    showing = [m for m in page.events if m.get("method") == "Page.javascriptDialogOpening"]
+    pending = [m for m in showing if (m.get("params") or {}).get("type") == "beforeunload"]
+    if not pending:
+        return False
+    page.call("Page.handleJavaScriptDialog", {"accept": False})
+    page.events = [m for m in page.events if m not in pending]
+    return True
 
 
 def _navigate_unless_asked_to_stay(page, url):
