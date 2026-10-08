@@ -104,7 +104,7 @@ def _refusal(skill, reason, missing=()):
 FITS_SYSTEM = (
     "You decide whether a taught procedure can do a request. The procedure was demonstrated in one app or "
     "site (where it works) and replays clicks there. The same kind of work asked for in a DIFFERENT app, "
-    "site or system (another ERP, another web app, one the request names or says is open) is not this "
+    "site or system (another desktop app, another web app, one the request names or says is open) is not this "
     "procedure's to do. Reply with JSON only: {\"same_system\": true|false, \"requested_system\": \"<the "
     "app or site the request is for, or empty>\"}. When the request names no system, it is the same."
 )
@@ -114,10 +114,8 @@ def other_system(skill, request):
     """
     The app or site the request is for, when that is not where the skill works;
     "" when it is, when it cannot be told, or with no hosted model to ask.
-    Found live: asked to enter a purchase order "in our ERP - it is Odoo", the
-    engine looked up the skills for "customer po" and ran the one taught in a
-    local sales app, which opened that app over the Odoo tab and saved the
-    order there - twice, after being told in words where the skill works.
+    A procedure demonstrated in one application must not open it over the
+    application requested by the user and save the result in the wrong place.
     """
 
     request = (request or "").strip()

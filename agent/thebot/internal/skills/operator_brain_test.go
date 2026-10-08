@@ -134,9 +134,9 @@ func TestDocumentPagesSurviveLaterScreenshots(t *testing.T) {
 	}
 }
 
-// A hosted brain is given the back-office rules the Office engine learned
-// live; a local brain's contract stays as small as before.
-func TestAHostedBrainIsGivenTheBackOfficeRules(t *testing.T) {
+// A hosted brain gets source and application verification rules for any task;
+// a local brain's contract stays as small as before.
+func TestAHostedBrainIsGivenGenericTaskRules(t *testing.T) {
 	for _, tc := range []struct {
 		caps llm.Capabilities
 		want bool
@@ -147,11 +147,11 @@ func TestAHostedBrainIsGivenTheBackOfficeRules(t *testing.T) {
 		chat := &scriptedChat{replies: []string{"DONE:\nok"}}
 		rc := operatorContext(t, chat)
 		rc.Brain = llm.NewBrain(tc.caps)
-		if _, err := NewOperator().Run(rc, Subtask{Step: "onboard the new joiner", Type: "operator"}); err != nil {
+		if _, err := NewOperator().Run(rc, Subtask{Step: "update the project request", Type: "operator"}); err != nil {
 			t.Fatal(err)
 		}
 		contract := chat.calls[0][len(chat.calls[0])-1].Content
-		if got := strings.Contains(contract, "Documents belong to someone"); got != tc.want {
+		if got := strings.Contains(contract, "Match records using identifiers and relevant attributes"); got != tc.want {
 			t.Errorf("%s: rules in the contract = %v, want %v", tc.caps.Brain, got, tc.want)
 		}
 	}

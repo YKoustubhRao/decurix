@@ -432,7 +432,7 @@ TYPING_ROLES = {"textbox", "document", "combobox", "searchbox", "spinbutton", "p
 CUSTOM_OPTIONS_SECONDS = 4.0
 CUSTOM_OPEN_SECONDS = 1.5
 
-# What a dropdown's list shows: its options, and in many kits (Odoo) plain links.
+# What a dropdown's list shows: its options, and in many kits (the web app) plain links.
 _SUGGESTION_ROLES = ("option", "menuitem", "listitem", "link")
 
 # Entries a list offers besides the choices: they make or search, never pick.
@@ -484,7 +484,7 @@ def _searches(option):
     What to type into a searching dropdown, most specific first: the value,
     what comes before its first bracket or comma, its first two words, its
     first word. A list searches for the typed text as one piece, so a variant
-    written in another order ("Desk (White, Aluminium)" for Odoo's "Desk
+    written in another order ("Desk (White, Aluminium)" for the web app's "Desk
     (Aluminium, White)") finds nothing until the search is shorter; the pick is
     still judged against the whole value (_pick).
     """
@@ -493,7 +493,7 @@ def _searches(option):
     head = re.split(r"[(,]", option)[0].strip()
     tries = [option.strip(), head]
     # Runs of a short head's words from inside it, longest first: a bill writes "Dedicated Internet Leased Line (ILL)
-    # 1 Gbps" where the ERP's item is "Internet Leased Line" - found live, every search began with "Dedicated" and
+    # 1 Gbps" where the application's item is "Internet Leased Line" - found live, every search began with "Dedicated" and
     # the item was never offered, so the engine asked a person for something the list had.
     hw = head.split()
     if len(hw) <= MAX_RUN_WORDS:
@@ -517,13 +517,13 @@ def _searches(option):
 def _select_custom(element, option):
     """
     Pick `option` in a dropdown a page drew itself (no <select>: OrangeHRM's
-    "-- Select --", Odoo's customer and product fields, most component kits)
+    "-- Select --", the web app's customer and product fields, most component kits)
     the way a person does: open it - typing the value, then shorter searches,
     when it only suggests once typed into - then click the matching entry
     among what appeared. Only what appeared counts, so a link elsewhere on the
     page with the same words is never taken; "Create ..." and "Search
     More..." are never choices; two entries that fit equally are not guessed
-    between. Live, typing a product and clicking the next field left Odoo's
+    between. Live, typing a product and clicking the next field left the web app's
     line with no product at all.
     """
 
@@ -546,7 +546,7 @@ def _select_custom(element, option):
     # before the click, so none of its entries would count as appearing.
     now, is_open = expanded()
     # Escape can close the enclosing row editor as well as its dropdown
-    # (ERPNext). Use already-visible options instead of dismissing the list.
+    # (the web app). Use already-visible options instead of dismissing the list.
     known = {e["path"] for e in now if not (is_open and e["role"] in ("option", "menuitem"))}
     if not is_open:
         cdp.click(element)
@@ -640,7 +640,7 @@ STALE_NODE = ("is detached from document", "does not have a layout object", "no 
 def _redrawn(exc, element, ref, role, name, path):
     """
     The same control again, read afresh, when an action failed because the page drew it anew between the look and the
-    act - or None. A page built by a framework re-draws a field the moment it is touched: ERPNext's Supplier box, live,
+    act - or None. A page built by a framework re-draws a field the moment it is touched: the web app's Supplier box, live,
     failed `gui select` with "Node is detached from document" and the engine spent turns finding its way back. Only the
     same control counts (found by the same ref, role, name or path, and still the same role and name), so an approval
     judged for one control can never pass to another.
@@ -698,7 +698,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     target = el.describe(element) if element else (f"{point[0]},{point[1]}" if point else "")
 
     # Typing needs a field. Aimed at a page's row, button or link, the text goes
-    # to whatever still has focus: live, a product name typed "into" an Odoo
+    # to whatever still has focus: live, a product name typed "into" an the web app
     # order row at a coordinate landed in the previous line's Unit Price.
     # The same on a Windows worker's screen, where it was found live: a small
     # model sent `gui type e40 "Hello World"` with e40 a toolbar button of
@@ -800,7 +800,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     after = observe()
 
     # A page still setting itself up re-draws its fields from what its form holds, and what was typed a moment before
-    # (not yet committed - that happens when the field loses focus) is gone. Found live in ERPNext: typed into a new
+    # (not yet committed - that happens when the field loses focus) is gone. Found live in the web app: typed into a new
     # invoice's date field within seconds of the page appearing, the same keys held in one run and were wiped within
     # half a second in the next, and a worker typed a bill's date four times without seeing it hold. Typed once more,
     # after a moment, the field keeps it.

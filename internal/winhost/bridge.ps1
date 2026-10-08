@@ -534,7 +534,7 @@ public class Native {
 
     // Starts a web app's own server through its launcher when nothing answers on its port, and gives it a moment.
     //
-    // A port that answers is not yet an app that does. Found live with a self-hosted ERP: its front server listens within
+    // A port that answers is not yet an app that does. Found live with a self-hosted application: its front server listens within
     // seconds and says "502 Bad Gateway" for a minute more, while what is behind it starts - and the worker's browser
     // was opened on that. A gateway's own errors (502, 503, 504) and no answer at all mean "not yet", whatever the app
     // is; any other answer, an error of the app's own included, is the app's to show. So the page is waited for,
@@ -672,7 +672,7 @@ public class Native {
 
     // Opening a program can take a while - finding what a Start-menu entry is (seconds), bringing a browser its
     // profile (a minute, the first time), waiting for a web app's own server (two) - and this loop is what every click
-    // and key on the worker's screen goes through. Found live: opening an ERP froze the whole screen for half a
+    // and key on the worker's screen goes through. Found live: opening an application froze the whole screen for half a
     // minute. So an open is answered at once with "WAIT <n>" and done on a thread of its own, one at a time; how it
     // ended is said when it has: "EVENT opened <n> <answer>".
     static int tickets;

@@ -765,7 +765,7 @@ def questions(skill):
 
     # Every typed value nobody has said changes or stays is asked about in
     # one question too: a demonstration of keying a document into a system
-    # (a PO into an ERP, a new joiner into an HRMS) types ten fields, and ten
+    # (a PO into an application, a new joiner into an HRMS) types ten fields, and ten
     # questions in a row, each answered "changes", is what made teaching one
     # tedious. Answers are still kept per step (`variable:<id>`).
     undecided_values = [step for step in skill["steps"]

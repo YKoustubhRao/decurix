@@ -10,7 +10,7 @@ import (
 
 // maxRateLimitRetries bounds how often one call is sent again after a 429. The call's own deadline is the real limit:
 // a hosted model's per-minute token quota is a one-minute window, and four tries (about 30 s of waiting with no hint)
-// gave up on a busy minute while two thirds of the operator's 180 s deadline was left - found live, an ERP bill on
+// gave up on a busy minute while two thirds of the operator's 180 s deadline was left - found live, an application bill on
 // Azure ended "exceeded token rate limit" twice.
 const maxRateLimitRetries = 10
 

@@ -3,8 +3,8 @@ Which windows are the desktop's web browser, whatever build it is.
 
 On a Linux desktop the browser is Google Chrome behind /usr/bin/chromium-browser
 (agent/install-browser.sh); desktops made before that ran Chromium 112.
-Their windows differ only in the title's last segment - "Invoices - Odoo -
-Google Chrome" against "Invoices - Odoo - Chromium" - and every recording,
+Their windows differ only in the title's last segment - "Requests - Portal -
+Google Chrome" against "Requests - Portal - Chromium" - and every recording,
 skill and result check made so far says "- Chromium". So screen.windows()
 reports a browser window's title with that segment as CANONICAL
 (canonical_title), and the DevTools layer names its page windows the same way:

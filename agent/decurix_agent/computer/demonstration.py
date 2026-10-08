@@ -89,7 +89,7 @@ LATE_NOTE = "it was read after the screen had already changed, so what was press
 
 # A pause that ends on the screen it began on held no private step: the person paused to write a Reason (the toolbar
 # pauses while one is composed), or pressed Stop and Continue with nothing in between. Recording a "manual" step for it
-# made every run stop and ask a person to do something by hand that was never done - found teaching an ERP task whose
+# made every run stop and ask a person to do something by hand that was never done - found teaching an application task whose
 # Reason note came out as "29. a private step done by hand". Below this share of the screen, nothing changed (a clock,
 # a caret).
 UNCHANGED_SCREEN = 0.01
@@ -834,7 +834,7 @@ class Recorder:
             return None, "the screen had not been read yet"
 
         # Read late, and the last look at the screen was taken after the press: what is under the pointer now may be
-        # what the press made. Found live on a 1-vCPU desktop: a click on ERPNext's Save, read 20 s late, was recorded
+        # what the press made. Found live on a 1-vCPU desktop: a click on the web app's Save, read 20 s late, was recorded
         # as the "Submit" the saved form shows in its place - a replay would have submitted the invoice.
         read_after = (observation.get("seen_at") or 0) > (action.get("happened") or 0)
         if action["kind"] not in ("type", "key") and action.get("late") and read_after:

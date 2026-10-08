@@ -29,7 +29,7 @@
 # --renderer-process-limit / --disk-cache-*: a desktop has 1-2 vCPUs and ~2.5 GB;
 #   the cache lives in /tmp so it never fills the persistent home volume.
 # Not set on purpose: MemorySaverMode (it discards background tabs - a half-filled
-#   ERP form in another tab) and a V8 heap cap (ERP single-page apps need more).
+#   application form in another tab) and a V8 heap cap (application single-page apps need more).
 CHROMIUM_FLAGS="--disable-gpu --start-maximized --remote-debugging-port=9222 --password-store=basic --no-default-browser-check --no-first-run --disable-breakpad --hide-crash-restore-bubble --renderer-process-limit=2 --disk-cache-dir=/tmp/chromium-cache --disk-cache-size=67108864 --disable-features=AudioServiceOutOfProcess,Translate,AutofillServerCommunication,OptimizationHints,MediaRouter --disable-background-networking --disable-component-update --disable-domain-reliability --disable-sync --no-pings --mute-audio"
 
 # The warning bar is left alone in that case: the browser really is

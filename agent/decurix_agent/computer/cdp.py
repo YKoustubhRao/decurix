@@ -219,7 +219,7 @@ def _get(path, method="GET", timeout=None):
 
 
 # How long a browser whose DevTools port is open may take to answer. It was
-# half a second, and a Chrome busy rendering an ERP page (Odoo's quotation form,
+# half a second, and a Chrome busy rendering an application page (the web app's quotation form,
 # with another desktop loading beside it) answered later: the layer reported
 # "open without its debugging port" and showed the agent an empty screen.
 BUSY_ANSWER_SECONDS = float(os.environ.get("DECURIX_CDP_ANSWER_SECONDS", "5"))
@@ -432,7 +432,7 @@ _INNER_FRAMES = """if (depth < 3) for (const f of document.querySelectorAll('ifr
 
 
 # A form control inside a table cell with no label of its own is named by its
-# column's header, the way a screen reader announces it. Found in Odoo's order
+# column's header, the way a screen reader announces it. Found in the web app's order
 # lines: after "Add Line" the row's cells were five unnamed textboxes and
 # comboboxes, and nothing said which took the product and which the quantity.
 _COLUMN_NAMES = """JSON.stringify((() => {
@@ -1347,7 +1347,7 @@ def click(element, button="left", count=1):
     file chooser, else {}.
 
     A native file chooser is a GTK dialog outside the page: live, an agent
-    that clicked Odoo's "Upload Bill" spent a minute double-clicking inside
+    that clicked the web app's "Upload Bill" spent a minute double-clicking inside
     "Open Files" and never chose the invoice. So file choosers are
     intercepted for the click - none is shown - and the caller is told, so
     the engine uses the upload action (set_file_input_files) instead.
@@ -1386,7 +1386,7 @@ KEYS_UP_TO = 500
 def _type_line(page, object_id, line):
     """
     Type one line into the focused single-line field the way a keyboard does: a key down and up per character. A field
-    a page builds itself often listens for keys, not for text arriving: ERPNext's date field stayed empty when the line
+    a page builds itself often listens for keys, not for text arriving: the web app's date field stayed empty when the line
     was inserted with Input.insertText (measured: value '' after insertText, '04-10-2026' and the form's date set after
     key events), so a worker typed a bill's date four times, never saw it held, and asked a person what to do. If the
     keys left the field without the line (a field that swallows key events), it is inserted as before.
@@ -1400,7 +1400,7 @@ def _type_line(page, object_id, line):
     for char in line:
         down = {"type": "keyDown", "key": char, "text": char, "unmodifiedText": char}
         up = {"type": "keyUp", "key": char}
-        # The key's code too, as a keyboard sends it: a page that reads keyCode/which (ERPNext's date field) treated a
+        # The key's code too, as a keyboard sends it: a page that reads keyCode/which (the web app's date field) treated a
         # key with none as no key at all, and cleared what had been typed a moment later.
         code = _key_code(char)
         if code:
@@ -1560,7 +1560,7 @@ def set_file_input_files(element, files):
     The page decides which input that is, so it is asked: an element that is
     a file input, holds one or is the label of one is set directly; anything
     else (a styled "Upload" or "Browse" button, whose input may only be made
-    when it is clicked - Odoo's "Upload Bill") is clicked with the page's
+    when it is clicked - the web app's "Upload Bill") is clicked with the page's
     file chooser intercepted, and the files go to the input the page opened
     it for. Only when clicking opens no chooser is a lone file input near the
     element used. DOM.setFileInputFiles fires the input's own input/change
@@ -1693,7 +1693,7 @@ def _cancel_pending_leave_dialog(page):
 def _navigate_unless_asked_to_stay(page, url):
     """
     Page.navigate's answer, or None when the page asked before leaving ("Leave site? Changes you made may not be
-    saved") - which this answers Cancel, so nothing is lost. Found live: a form left unsaved in ERPNext, a `gui open`
+    saved") - which this answers Cancel, so nothing is lost. Found live: a form left unsaved in the web app, a `gui open`
     on its tab, and Chrome's own dialog held every DevTools call after it ("did not answer Page.navigate within 20s")
     with the browser frozen behind it. A person reading that dialog keeps their work; so does this.
     """

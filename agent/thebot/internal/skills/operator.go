@@ -102,18 +102,14 @@ const visionRule = `- The pages of a scanned document that office read finds are
 - After every gui command you are also shown a screenshot of the screen as it is now. Use it to check what really happened and to find what the element list does not name (a picture, a canvas, an unlabelled icon, a message painted on the page). Still act by ref from gui observe wherever there is one; use x,y coordinates only for something that has no ref. The screenshot has a ruler drawn on it: dotted pink lines every 100 pixels, each numbered with its real screen position at the top and left edges and again half way across. Read a position off those numbers (a point between the 300 and 400 lines is 300-and-something) - never estimate it from the picture's own size, which is not the screen's. After a click by coordinates, check in the next screenshot that it landed; if nothing changed, read the position again more carefully before trying another.
 `
 
-// officeRules is added to the contract for a hosted brain: the lessons the
-// Office (GPT) engine was given after running back-office work live, which
-// TheBot lacked. Found by bench/backoffice wf3: onboarding a new joiner in
-// OrangeHRM, the operator filed an ID scan that was someone else's and left
-// three requested fields empty, then reported it done.
-const officeRules = `- Documents belong to someone: check the name and number on an ID, certificate, letter or invoice against the person or company the task is for before you use or upload it. One that is someone else's is not used anywhere - not typed from, not uploaded; leave it out, finish the rest of the task, and say so in your DONE (it is a finding, not a reason to stop and ask).
-- The same name up to capitals, punctuation or spacing ("ACME CORPORATION" / "Acme Corporation"), or the same code, tax number or email, is the same record. A company's contact people listed under it are not rival records. A different name, or several records that fit, is a question for the person.
-- Checking documents against each other is not finding a record: there "matches" means the same characters, ignoring only capitals and spacing. Report every other difference in a name, number or address, however small, with both spellings and which documents they are in - a missing letter in a cheque's account name makes a payment bounce.
-- Two lists name the same item differently (a supplier's part number against your code; "EP2 grease 1kg" against "EP2 Lithium Grease 1 kg"): match items by description, size and unit as well as code, and before calling one missing from a list or new to it, look for it that way.
-- A document's own figures go on what is made from it, even when the system proposes another (a list price, a default tax); say which differed. Every figure has a unit and a basis (per gram or per 10 g, per unit or per box, with or without tax): read which one the source uses and convert to what was asked.
-- In a web app: fields further down a page need a scroll (gui scroll down 5, then gui observe) - look before deciding something is not there; never click the screen's bottom edge or a scrollbar to move a page. A form is saved only when the page says so; field errors ("Required", "Should be a valid date") mean nothing on it was saved. A record page with several sections has a Save in each: use the one in the section you filled. A drop-down ("-- Select --", a combobox) or a field that suggests entries as you type is set with gui select REF "value", which finds the entry by its text - never by clicking at coordinates in its open list, which picks whatever happens to be there. An order or bill line's product is such a field even when its column reads "Description": gui select it - typed text and Tab leave the line with no product. If the list offers only the general product (no variant), select that and complete the dialog that opens: set every attribute the document names (colour, material, size) before its Confirm, then check the line shows the document's variant. Type a date in the format its field shows, converting it yourself - that is not a question for the person: "yyyy-dd-mm" is year-day-month, so 14 March 1998 (1998-03-14) is typed 1998-14-03; then check the field holds it.
-- Before DONE, go through the request part by part - every record, field, document, file and email it asks for - and check each on the screen or in the file. Your DONE lists them, each done or not, and anything left undone and why.
+// taskRules adds source grounding and application verification for hosted brains.
+const taskRules = `- Use documents only when their names, identifiers and contents belong to the person, organization or task requested. Leave unrelated sources out, finish the rest, and report what you excluded.
+- Match records using identifiers and relevant attributes from the request and sources. Capitalization, punctuation or spacing alone need not make a different record. Similar names alone are not enough; if several candidates fit, ask the person with the distinguishing evidence.
+- When comparing documents, compare the requested fields, ignoring only capitals and spacing unless the task permits other normalization. Report differences with both values and their sources.
+- Two lists may describe the same entry differently: compare descriptions, identifiers, attributes and units before calling an entry missing or new.
+- Use the source's values when making a draft from it, and report differences from application defaults. Every figure has a unit and basis: read them, convert to what was asked, and check the result.
+- In an application, scroll and observe before deciding a field is missing. Never click the screen's bottom edge or a scrollbar to move a page. A form is saved only when the application says so; fix field errors and save again. On a page with several forms, use Save within the form you filled. Set dropdowns and suggestion fields with gui select REF "value", then verify the selected entry; typing and Tab may leave the field unset. Complete any configuration dialog using the requested attributes and verify the result. Type dates in the format the field shows, then check that they hold.
+- Before DONE, check every part of the request in the application or output files. List what was completed, how you verified it, and anything left undone with its reason.
 `
 
 // successQueryNudge answers a HELP that arrives straight after a command
@@ -414,7 +410,7 @@ func (o *OperatorSkill) start(rc RunContext, subtask Subtask) *operatorState {
 	}
 	vision := ""
 	if caps.Hosted {
-		vision += officeRules
+		vision += taskRules
 	}
 	if st.Vision {
 		vision += visionRule
