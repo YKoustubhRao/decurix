@@ -205,8 +205,19 @@ func (m *Manager) EnsureReady(ctx context.Context) error {
 		)
 
 		// Choose before preloading: this is the model the preload loads.
-		SelectModel(ctx)
-		m.preloadModel(ctx, dialableURL(ctx, url), DesktopModel())
+		if err := SelectModel(ctx); err != nil {
+			return fmt.Errorf("select model on inference host: %w", err)
+		}
+		base := dialableURL(ctx, url)
+		if os.Getenv("DECURIX_MODEL_AUTOPULL") == "1" {
+			if err := ensureRemoteModel(ctx, base, DesktopModel()); err != nil {
+				return err
+			}
+			if err := ensureRemoteModel(ctx, base, EmbedModel); err != nil {
+				log.Printf("Could not prepare embedding model: %v", err)
+			}
+		}
+		m.preloadModel(ctx, base, DesktopModel())
 
 		return nil
 	}
@@ -885,4 +896,62 @@ func resident(ctx context.Context, baseURL, model string) bool {
 	}
 
 	return false
+}
+
+// ensureRemoteModel provisions an explicitly opted-in native/remote server
+// through its API, without starting a second model server in Linux.
+func ensureRemoteModel(ctx context.Context, baseURL, name string) error {
+	body, err := json.Marshal(map[string]any{"model": name})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/show", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	check := &http.Client{Timeout: 5 * time.Second}
+	resp, err := check.Do(req)
+	if err != nil {
+		return fmt.Errorf("check native Ollama model %s: %w", name, err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		return nil
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		return fmt.Errorf("check native Ollama model %s: HTTP %d", name, resp.StatusCode)
+	}
+
+	log.Printf("Downloading Ollama model %s to %s...", name, baseURL)
+	req, err = http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/pull", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	pull := &http.Client{Timeout: 60 * time.Minute}
+	resp, err = pull.Do(req)
+	if err != nil {
+		return fmt.Errorf("pull native Ollama model %s: %w", name, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("pull native Ollama model %s: HTTP %d", name, resp.StatusCode)
+	}
+	decoder := json.NewDecoder(resp.Body)
+	for {
+		var progress struct {
+			Status string
+			Error  string
+		}
+		if err := decoder.Decode(&progress); err != nil {
+			return fmt.Errorf("pull native Ollama model %s: %w", name, err)
+		}
+		if progress.Error != "" {
+			return fmt.Errorf("pull native Ollama model %s: %s", name, progress.Error)
+		}
+		if progress.Status == "success" {
+			return nil
+		}
+	}
 }

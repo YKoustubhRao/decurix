@@ -8,6 +8,8 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const { setupMobileAccess } = require('./mobile-access');
+const windowsRuntime = require('./windows-runtime');
+const { createLocalModels } = require('./local-models');
 
 // The app is a window on the control plane's dashboard, and what starts it.
 //
@@ -253,7 +255,7 @@ function run(file, args, onLine, options = {}) {
       if (!onLine) return;
       const lines = (rest + chunk.toString()).split(/[\r\n]+/);
       rest = lines.pop();
-      for (const line of lines) if (line.trim()) onLine(line.trim().slice(0, 240));
+      for (const line of lines) if (line.trim()) onLine(line.trim().slice(0, 4096));
     };
     child.stdout.on('data', take);
     child.stderr.on('data', take);
@@ -294,9 +296,11 @@ function ensureSettings() {
   if (!fs.existsSync(example)) fs.copyFileSync(resource('.env.example'), example);
   const config = path.join(dataDir(), '.env');
   if (!fs.existsSync(config)) {
-    // The control plane runs its own model server, in a container, and
-    // chooses the model for this computer. OLLAMA_URL names another.
-    fs.writeFileSync(config, 'OLLAMA_URL=http://decurix-ollama:11434\nOLLAMA_MODEL=auto\n', 'utf8');
+    // Windows uses native Ollama; other platforms keep the container default.
+    // An explicit remote OLLAMA_URL still names another server.
+    fs.writeFileSync(config, windows
+      ? 'DECURIX_WINDOWS_NATIVE_OLLAMA=1\nOLLAMA_MODEL=auto\n'
+      : 'OLLAMA_URL=http://decurix-ollama:11434\nOLLAMA_MODEL=auto\n', 'utf8');
   }
   return config;
 }
@@ -441,13 +445,12 @@ async function distroExists() {
 
 // stopEarlierWindowsApp ends what an earlier version of the app ran on Windows
 // itself, which this one replaces: its control plane from the install folder
-// (holding port 8080) and the model server it fetched for itself.
+// (holding port 8080). The native model server is now kept running.
 async function stopEarlierWindowsApp() {
   const quote = (text) => `'${text.replace(/'/g, "''")}'`;
   const folder = quote(path.join(process.resourcesPath, 'decurix.exe'));
-  const store = quote(path.join(path.dirname(distroDir()), 'ollama') + path.sep);
-  const script = `$cp = ${folder}; $ol = ${store}; Get-CimInstance Win32_Process | `
-    + "? { $_.ExecutablePath -and ($_.ExecutablePath -ieq $cp -or $_.ExecutablePath.StartsWith($ol, 'CurrentCultureIgnoreCase')) } | "
+  const script = `$cp = ${folder}; Get-CimInstance Win32_Process | `
+    + "? { $_.ExecutablePath -and $_.ExecutablePath -ieq $cp } | "
     + '% { Stop-Process -Id $_.ProcessId -Force }';
   await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script]);
 }
@@ -501,12 +504,103 @@ async function linuxReady() {
   throw new Error(`Docker did not start in Decurix's Linux. Its log is /var/log/dockerd.log there (wsl -d ${DISTRO}).`);
 }
 
+// Windows gets a native model server; only the control plane and desktops use
+// Linux. Stage derived settings separately so the user's remote URL and auto
+// model choice are never overwritten by a changing WSL gateway address.
+let windowsResourcePlan;
+let nativeModelHost = '';
+const localModels = createLocalModels({
+  readPreference() {
+    try { return JSON.parse(fs.readFileSync(path.join(dataDir(), 'local-hosting.json'), 'utf8')).enabled === true; }
+    catch (error) { if (error.code !== 'ENOENT') console.warn('Could not read local hosting preference:', error.message); return false; }
+  },
+  writePreference(enabled) {
+    fs.mkdirSync(dataDir(), { recursive: true });
+    fs.writeFileSync(path.join(dataDir(), 'local-hosting.json'), JSON.stringify({ enabled }), 'utf8');
+  },
+  async operate(action, report, signal) {
+    if (action !== 'install' && !nativeModelHost) throw new Error('Native hosting is unavailable with this Ollama URL or Windows network configuration.');
+    const code = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+      '-File', resource(path.join('wsl', 'native-ollama.ps1')), '-Action', action,
+      '-BindAddress', nativeModelHost || '127.0.0.1', '-SettingsFile', ensureSettings()], line => {
+        if (line.startsWith('DECURIX_STATE ')) {
+          try { report(JSON.parse(line.slice(14))); } catch { report(line); }
+        } else report(line);
+      }, { signal });
+    if (code !== 0) throw new Error('Local model ' + action + ' failed. Check ' + logFile());
+    if (action === 'ensure') {
+      report('Checking Linux workers can reach Windows Ollama…');
+      for (const endpoint of ['http://' + nativeModelHost + ':11435/api/tags', 'http://' + nativeModelHost + ':11436/health']) {
+        const reachable = await docker(['compose', 'exec', '-T', 'desktop-manager', 'curl', '--fail', '--silent', '--show-error',
+          '--connect-timeout', '5', '--max-time', '10', endpoint]);
+        if (reachable !== 0) throw new Error('Linux cannot reach Windows Ollama or its selector. Check the private WSL adapter and firewall.');
+      }
+    }
+  },
+});
+
+for (const [channel, action] of [
+  ['local-model-status', () => localModels.status()],
+  ['local-model-hosting', value => localModels.setEnabled(value)],
+  ['local-model-prepare', () => localModels.prepare()],
+]) {
+  ipcMain.handle(channel, (event, value) => {
+    if (!windows || !window || event.sender !== window.webContents || !event.senderFrame ||
+        event.senderFrame !== event.sender.mainFrame || !isDashboardURL(event.senderFrame.url)) {
+      throw new Error('Local hosting is only available from the Windows desktop dashboard.');
+    }
+    return action(value);
+  });
+}
+function prepareWindowsResources() {
+  const settings = windowsRuntime.readSettings(fs.readFileSync(ensureSettings(), 'utf8'));
+  windowsResourcePlan = windowsRuntime.configureResources(path.join(os.homedir(), '.wslconfig'), settings, runtimeDistro === DISTRO,
+    (message) => { update(message); console.log(message); });
+}
+
+async function prepareWindowsModels() {
+  const settingsFile = ensureSettings();
+  const original = fs.readFileSync(settingsFile, 'utf8');
+  const settings = windowsRuntime.readSettings(original);
+  if (!windowsResourcePlan) prepareWindowsResources();
+  const plan = windowsResourcePlan;
+  // Both the Linux filesystem and its backing Windows disk need actual free
+  // space. The expandable VHD limit is not a disk reservation.
+  const minGB = Number(settings.DECURIX_MIN_DISK_FREE_GB || 10);
+  if (!Number.isFinite(minGB) || minGB <= 0) throw new Error('DECURIX_MIN_DISK_FREE_GB must be positive.');
+  const disk = fs.statfsSync(runtimeDistro === DISTRO ? distroDir() : (process.env.LOCALAPPDATA || os.homedir()));
+  if (Number(disk.bavail) * Number(disk.bsize) < minGB * 1024 ** 3) {
+    throw new Error('Less than ' + minGB + ' GB is free on the Windows disk. Free space before starting more workers or downloading models.');
+  }
+  let freeKB = 0;
+  const checked = await inDistro(['sh', '-c', "docker_root=$(docker --host unix:///var/run/docker.sock info --format '{{.DockerRootDir}}') && df -Pk \"$docker_root\" | awk 'NR==2 {print $4}'"], line => { freeKB = Number(line); });
+  if (checked !== 0 || !freeKB) throw new Error('Could not check the worker disk capacity in WSL.');
+  if (freeKB < minGB * 1024 ** 2) throw new Error('Less than ' + minGB + ' GB is free on the WSL worker disk. Free space or expand its VHD before starting more workers.');
+  let host = '';
+  if (windowsRuntime.usesWindowsOllama(settings)) {
+    let route = '';
+    if (await inDistro(['sh', '-c', 'ip -4 route show default'], line => { route += line + '\n'; }) !== 0) {
+      throw new Error('Could not discover the Windows model server address from WSL.');
+    }
+    host = windowsRuntime.windowsHost(route, undefined, settings.DECURIX_WINDOWS_OLLAMA_HOST);
+    nativeModelHost = host;
+  }
+  const derived = path.join(dataDir(), 'windows-stack.env');
+  fs.writeFileSync(derived, windowsRuntime.stackSettings(original, settings, plan, host), 'utf8');
+  const copied = await inDistro(['sh', '-c', 'tr -d "\\r" < "$1" > "$2"', 'decurix-settings', linuxPath(derived), DISTRO_STACK + '/.env']);
+  if (copied !== 0) throw new Error('Could not stage the Windows model settings in WSL.');
+  return host ? 'http://' + host + ':11435' : '';
+
+}
+
 // startStack builds and starts the control plane in Docker, and the worker
 // images it does not have yet. Every step is safe to repeat: a second start
 // finds everything built and takes seconds.
 async function startStack() {
   if (windows) ensureSettings(); else stageStack();
+  if (windows) prepareWindowsResources();
   await dockerReady();
+  if (windows) await prepareWindowsModels();
 
   const step = async (message, args, failure) => {
     update(message);
@@ -610,10 +704,14 @@ async function start() {
     // replaced: compose recreates the container from the new image.
     if (state === 'absent' || await stackIsStale()) {
       if (!await startStack()) return;
+    } else if (windows) {
+      // Refresh routing without installing or waiting for the model server.
+      await prepareWindowsModels();
     }
     if (window && !window.isDestroyed()) {
       await window.loadURL(dashboard);
       showingDashboard = true;
+      if (windows) localModels.resume().catch(error => console.warn(error.message));
       misses = 0;
       startMobileAccess();
       watchBackend();
