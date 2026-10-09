@@ -357,7 +357,7 @@ def taught_context():
         "these, do it the way the person said - their words are how they want it done, even "
         "when the request is worded differently. A taught task works in the app or site it "
         "was taught in (its \"works in\"): a request for the same kind of work in another "
-        "system - a different app, site or ERP, named in the request or already open - is not "
+        "system - a different app or site, named in the request or already open - is not "
         "that task; do it there with gui. `gui skill NAME` shows one's steps, "
         "`gui do NAME --param name=value` runs it as recorded.",
     ]
@@ -416,6 +416,8 @@ def _run_thebot(request, reply, extra_context=""):
                 # paused job (if any) under it.
                 "sessionId": config.DESKTOP_ID or "decurix-desktop",
                 "reply": reply,
+                # Said yes already, as a kind of task: soul does not ask about the request's own words again.
+                "approved": bool(state.request_preapproved) and not reply,
             },
         )
     except (urllib.error.URLError, OSError, ValueError) as exc:

@@ -1,0 +1,27 @@
+{
+  "_note": "Targets on two real 1280x720 worker screens (desktop Chrome 154). Boxes are from the page's own accessibility tree where it has the control, else measured on the picture (browser chrome, the avatar, the photo). The PNGs are not committed: TestLiveGrounding takes their folder from DECURIX_GROUNDER_SHOTS.",
+  "screens": {
+    "erp.png": [
+      {"say": "the Buying app icon", "box": [786, 219, 127, 126]},
+      {"say": "the notifications bell icon", "box": [1182, 97, 28, 30]},
+      {"say": "the search box at the top of the page", "box": [469, 96, 300, 32]},
+      {"say": "the Stock app", "box": [786, 361, 127, 126]},
+      {"say": "the round user avatar with the letter A at the top right", "box": [1220, 97, 32, 32]},
+      {"say": "the browser's reload page button", "box": [82, 50, 26, 26]},
+      {"say": "the Manufacturing app icon", "box": [214, 361, 127, 126]},
+      {"say": "the ERPNext Settings gear icon", "box": [214, 503, 127, 126]}
+    ],
+    "wiki.png": [
+      {"say": "the Search button next to the search field", "box": [669, 104, 70, 32]},
+      {"say": "the hamburger main menu button", "box": [38, 104, 32, 32]},
+      {"say": "the Log in link", "box": [1178, 112, 38, 16]},
+      {"say": "the Dark radio button under Color", "box": [1038, 616, 64, 24]},
+      {"say": "the Wide option under Width", "box": [1038, 474, 64, 24]},
+      {"say": "the link Nobel Prize in Physics", "box": [604, 512, 159, 17]},
+      {"say": "the View history tab", "box": [893, 177, 75, 32]},
+      {"say": "the three-dot more menu next to View history", "box": [982, 178, 22, 30]},
+      {"say": "the photo of Margaret Hamilton", "box": [871, 406, 121, 161]},
+      {"say": "the hide button of the Appearance panel", "box": [1133, 223, 38, 22]}
+    ]
+  }
+}

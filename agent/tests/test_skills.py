@@ -52,7 +52,7 @@ def answer_all(skill, replies=None):
     """Answer every question with `replies` (by question kind) or a sensible default; return the last result."""
 
     replies = dict({"goal": "the customer shows in the list", "start": "yes", "variable": "changes",
-                    "optional": "sometimes", "coordinates": "keep", "unsupported": "manual", "confirm": "yes"}, **(replies or {}))
+                    "optional": "sometimes", "coordinates": "keep", "unsupported": "manual", "approval": "go ahead", "confirm": "yes"}, **(replies or {}))
     result = None
 
     while (question := learning.next_question(skill)) is not None:
@@ -71,7 +71,7 @@ class Building(unittest.TestCase):
         self.assertEqual([(p["name"], p["varies"], p["default"]) for p in skill["params"]],
                          [("customer_name", None, "Acme")])
         self.assertEqual([q["id"] for q in learning.questions(skill)],
-                         ["goal", "start", f"variable:{skill['steps'][1]['id']}", "confirm"])
+                         ["goal", "start", f"variable:{skill['steps'][1]['id']}", "approval", "confirm"])
 
     def test_a_secret_field_becomes_a_step_a_person_does(self):
         skill = learning.build([demo("demo-20260914T101500-aaaaaa", "Acme")])
@@ -405,13 +405,20 @@ class TeachingBase(unittest.TestCase):
         patches = [
             mock.patch.object(skill_task, "remember", lambda title, summary, category="workflow": self.remembered.append((title, summary, category))),
             mock.patch.object(skill_task, "_remember_async", lambda skill: skill_task._remember(skill)),
-            mock.patch.object(skill_task, "ask_for_query", lambda text, kind="query", engine=None: self.asked.append((text, kind))),
+            mock.patch.object(skill_task, "ask_for_query", self._ask_for_query),
             mock.patch.object(skill_task, "write_final_reply", lambda text, kind="final", engine=None, **kw: self.finals.append((text, kind))),
             mock.patch.object(skill_task.usage, "add"),
         ]
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)
+
+    def _ask_for_query(self, text, kind="query", engine=None, **kw):
+        # Whether to start the task without asking is its own question (learning._approval): these lessons are
+        # about everything else, so the person here always says go ahead. test_approval_question.py asks it.
+        if learning.APPROVAL_OPENING in text:
+            return skill_task.resume("go ahead")
+        self.asked.append((text, kind))
 
     def tearDown(self):
         (recording.ROOT, skills.ROOT, replay.core, skill_task.core,
@@ -696,7 +703,7 @@ class Loops(unittest.TestCase):
         (loop,) = skill["loops"]
         self.assertEqual((loop["length"], loop["reps"], loop["enabled"]), (2, 3, None))
         # The typed fields are not asked about one by one until the loop is decided.
-        self.assertEqual([q["id"] for q in learning.questions(skill)], ["goal", "start", "loop:l1", "confirm"])
+        self.assertEqual([q["id"] for q in learning.questions(skill)], ["goal", "start", "loop:l1", "approval", "confirm"])
         self.assertIn("Pens", learning.questions(skill)[2]["text"])
 
     def test_the_same_text_each_time_is_not_data_and_not_a_loop(self):
@@ -727,7 +734,7 @@ class Loops(unittest.TestCase):
         self.assertEqual(len(skill["steps"]), 8)
         # The three typed fields are asked about together (test_learn_documents), not one by one.
         left = [q for q in learning.questions(skill) if q["id"] not in skill["answers"]]
-        self.assertEqual([q["kind"] for q in left], ["variables", "confirm"])
+        self.assertEqual([q["kind"] for q in left], ["variables", "approval", "confirm"])
         self.assertEqual(len(left[0]["values"]), 3)
 
     def looped(self):

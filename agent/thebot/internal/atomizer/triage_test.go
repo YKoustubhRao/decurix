@@ -22,6 +22,11 @@ func TestTriageRoutesRequestsByShape(t *testing.T) {
 		{"browser test message one", RouteChat},
 		{"ping - just reply pong", RouteChat},
 
+		// Says how to work a screen, in an app no surface word names.
+		{"On Request REQ-26-00009 the Due Date is empty. Open it, type 03-10-2026 into Due Date, press Escape, save.", RouteOperate},
+		{"press ctrl+s in the editor", RouteOperate},
+		{"what does the escape key do?", RouteChat},
+
 		// On this machine: the operator works it out.
 		{"what is the current kernel version?", RouteOperate},
 		{"how many files are in /etc?", RouteOperate},
@@ -201,7 +206,7 @@ func TestWebPageWorkGoesToTheOperatorWithoutTheExtension(t *testing.T) {
 	if r := Triage(req); r.Kind != RouteOperate || r.TaskType != "operator" {
 		t.Fatalf("without the extension: %+v", r)
 	}
-	if typ := shapeStep("browser", "Open the Odoo Sales app and create the quotation").Type; typ != "operator" {
+	if typ := shapeStep("browser", "Open the project portal and create the request").Type; typ != "operator" {
 		t.Errorf("a planned [browser] step without the extension runs as %q", typ)
 	}
 }
@@ -230,5 +235,18 @@ func TestTriageSendsAThingToLookUpToTheWebSkill(t *testing.T) {
 		if got := Triage(prompt); got.Kind == RouteSkill && got.TaskType == "web" && got.Reason == "something to look up - searching the web" {
 			t.Errorf("Triage(%q) went to the web skill as a bare search", prompt)
 		}
+	}
+}
+
+// A request a person attached files to is the operator's, whatever it asks:
+// only the operator can read a file, and the chat skill would answer about a
+// document it never opened.
+func TestTriageSendsARequestWithAttachedFilesToTheOperator(t *testing.T) {
+	p := "what does this say?\n\n" + attachedFilesMark + "\n  /home/headless/work/inbox/up-1/notes.txt"
+	if got := Triage(p); got.Kind != RouteOperate {
+		t.Fatalf("Triage(%q) = %v (%s), want operate", p, got.Kind, got.Reason)
+	}
+	if got := Triage("what does this say?"); got.Kind == RouteOperate {
+		t.Errorf("the same question with no file went to the operator (%s)", got.Reason)
 	}
 }

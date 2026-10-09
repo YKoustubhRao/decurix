@@ -181,7 +181,7 @@ def places(skill, limit=3):
     """
     Where a skill does its work: the sites and files it opens, and the windows
     its steps are in ("sales.html", "Sales"). Found live: a skill taught in a
-    local sales app was run for a request to enter an order in Odoo - nothing
+    local app was run for a request to enter a record in a different app - nothing
     it was shown said which system the skill works in.
     """
 
@@ -191,6 +191,16 @@ def places(skill, limit=3):
         place = (place or "").strip()
         if place and place.lower() not in (p.lower() for p in found):
             found.append(place)
+
+    # The site its steps were on comes first, as an address to open: a recording begun with the site already open
+    # (signed in first, as people do) has no step that opens it. Found live: after a restart closed the browser, the
+    # engine was told the skill "works in New Request - new-request-123", guessed
+    # portal.example.com and portal.local, and asked the person where the web app was.
+    for step in skill.get("steps") or []:
+        match = re.match(r"(https?://[^/?#]+)", step.get("url") or "")
+        if match:
+            add(match.group(1))
+            break
 
     for step in skill.get("steps") or []:
         target = step.get("open")
@@ -404,6 +414,7 @@ def summary(skill, detail=False):
         "steps": len(steps),
         "gated": sum(1 for s in steps if s.get("consequential")),
         "health": experience.health(skill),
+        "approval": skill.get("approval"),
         "by_hand": sum(1 for s in steps if s["kind"] == "manual"),
         "params": [{"name": p["name"], "label": p["label"], "list": bool(p.get("list")), "example": p.get("example")}
                    for p in required(skill)],

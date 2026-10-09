@@ -155,7 +155,7 @@ def is_external_action(kind, element=None, text=None, keys=None, context=None):
     return False
 
 
-# Where a click goes somewhere rather than does something. Found live in Odoo:
+# Where a click goes somewhere rather than does something. Found live in the web app:
 # picking the "Purchase" app from its menu search (an option in a listbox) was
 # stopped as a purchase, so no purchasing workflow could get past the menu.
 # - An option is a choice in a list; it commits nothing. The button that
@@ -164,6 +164,17 @@ def is_external_action(kind, element=None, text=None, keys=None, context=None):
 #   place ("Purchase", "Sales", "Invoicing"). A menu item in an action menu, a
 #   button, and any label of more words ("Send & Print", "Pay now") still stop.
 NAVIGATION_PATH = re.compile(r"(^|>\s*)navigation\b")
+
+# A link named for a kind of record whose first word only looks like an act: "Purchase Invoice", "Purchase Order",
+# "Transfer Request". Not "post": posting an invoice is the act of booking it. Found live in the web app: its sidebar link "Purchase Invoice" was stopped as a purchase,
+# and every bill a worker entered began with a person asked to approve opening a list. Only those first words, only
+# for links, menu items and tabs, and only a record noun after them - "Send invoice" and "Pay now" still stop.
+RECORD_NAME = re.compile(
+    r"^\s*(purchase|transfer)\s+(invoices?|orders?|receipts?|requests?|returns?|ledgers?|registers?|reports?|"
+    r"analytics|history|list|settings|entr(?:y|ies)|summary|trends|quotations?|requisitions?|analysis|items?|taxes|"
+    r"records?|notes?|vouchers?|bills?)\s*$",
+    re.IGNORECASE,
+)
 
 
 def searches(element):
@@ -182,8 +193,11 @@ def _navigates(element):
     if role == "option":
         return True
     name = (element.get("name") or "").strip()
-    return (role in ("link", "menuitem", "tab") and len(name.split()) == 1
-            and bool(NAVIGATION_PATH.search(element.get("path") or "")))
+    if role not in ("link", "menuitem", "tab"):
+        return False
+    if RECORD_NAME.match(name):
+        return True
+    return len(name.split()) == 1 and bool(NAVIGATION_PATH.search(element.get("path") or ""))
 
 
 def assess(kind, element, text=None, keys=None, context=None):

@@ -20,6 +20,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/dag"
 	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/devices"
+	"github.com/YKoustubhRao/decurix/internal/grounder"
 	"github.com/YKoustubhRao/decurix/internal/idlepause"
 	"github.com/YKoustubhRao/decurix/internal/keepawake"
 	"github.com/YKoustubhRao/decurix/internal/lanaccess"
@@ -78,6 +79,9 @@ type Server struct {
 	// IdleChecker is optionally assigned by cmd/decurix/main.go after construction,
 	// allowing task completion events to request fast-idle transitions.
 	IdleChecker *idlepause.Checker
+	// Grounder is the GUI-grounding model (internal/grounder), set from
+	// .env by cmd/decurix/main.go; nil means none is set up.
+	Grounder *grounder.Client
 	// Mail and MailRunner are the email triggers (internal/mailtrigger);
 	// KeepAwake keeps this machine from idle-sleeping while they or a
 	// schedule need it (internal/keepawake). All three are assigned by
@@ -125,11 +129,10 @@ type Server struct {
 	HostGUIDataDir string
 	keptHostAppsMu sync.Mutex
 	keptHostApps   map[string]keptHostApp
+	// hostVision is each host app's vision fallback for reading its controls (hostcontrols.go).
+	hostVisionMu sync.Mutex
+	hostVision   map[string]*hostVision
 
-	// recordingNow is, per native worker, whether a person's demonstration is being recorded there and when that
-	// was last asked (nativerecording.go).
-	recordingMu  sync.Mutex
-	recordingNow map[string]recordingState
 	// agentRequest stands in for Desktops.AgentRequest there, in tests.
 	agentRequest func(ctx context.Context, id, method, path string, body io.Reader) (*http.Response, error)
 }
@@ -169,14 +172,9 @@ func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memorySt
 	desktop.SetHostAppChecker(srv.checkHostApps)
 	desktop.SetHostAppWarmer(srv.warmHostGUI)
 	desktop.SetHostAppStarter(srv.startHostGUIAppAhead)
-	// Nothing is copied into a native Windows worker - the apps picked for it
-	// are shortcuts to the programs installed on this computer, started on its
-	// own desktop - so there is no spare helper to keep warm, and the app list
-	// is scanned when the create dialog first asks for it.
-	if desktops == nil || !desktops.Native() {
-		desktop.WarmHostApps() // compile and load now, long before the first desktop exists
-		desktop.InitHostAppsScan()
-	}
+	desktop.SetHostAppPageFinder(func(target, args string) string { return srv.hostGUI().LocalPage(target, args) })
+	desktop.WarmHostApps() // compile and load now, long before the first desktop exists
+	desktop.InitHostAppsScan()
 	return srv
 }
 
@@ -203,6 +201,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/desktops/send", s.sendRequestHandler)
 	mux.HandleFunc("/api/desktops/suggest", s.suggestDesktopHandler)
 	mux.HandleFunc("/api/host-apps/detect", s.detectHostAppsHandler)
+	mux.HandleFunc("/api/host-paths/validate", s.validateHostPathHandler)
 	// A linked phone connects here as a paired device (the gate checks its
 	// cookie on the tunnel's listener, the handler checks it on both).
 	mux.HandleFunc("/api/phones/connect", s.phoneConnectHandler)
@@ -303,9 +302,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/desktops/skills/delete", s.skillDeleteHandler)
 	mux.HandleFunc("/api/desktops/demonstration", s.demonstrationHandler)
 	mux.HandleFunc("/api/desktops/record", s.recordTaskHandler)
-	mux.HandleFunc("/api/desktops/open", s.humansOnly(s.openOnScreenHandler))
 	mux.HandleFunc("/api/desktops/ticket", s.ticketStatusHandler)
 	mux.HandleFunc("/api/desktops/ticket/action", s.ticketActionHandler)
+	mux.HandleFunc("/api/desktops/ticket/attach", s.ticketAttachHandler)
 	mux.HandleFunc("/api/tunnel", s.tunnelHandler)
 	mux.HandleFunc("/api/model", s.modelHandler)
 	mux.HandleFunc("/api/claude-auth/status", s.claudeAuthStatusHandler)
@@ -351,6 +350,9 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	// reaching this listener directly with a token signed for that app.
 	mux.HandleFunc("/phone-app/view", hostGUIDirectOnly(s.phoneAppViewHandler))
 	mux.HandleFunc("/api/phone-app/ws", hostGUIDirectOnly(s.phoneAppWSHandler))
+	// The file chooser opens on this computer's own screen: for the person
+	// sitting at it, never a phone or a desktop's agent.
+	mux.HandleFunc("/api/host-paths/browse", s.humansOnly(s.browseHostPathHandler))
 	mux.HandleFunc("/api/lan-access/status", s.lanAccessStatusHandler)
 	mux.HandleFunc("/api/lan-access/rotate", s.lanAccessRotateHandler)
 	mux.HandleFunc("/api/lan-access/devices", s.lanAccessDevicesHandler)
@@ -368,9 +370,10 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/llm/settings", s.humansOnly(s.llmSettingsHandler))
 	mux.HandleFunc("/api/llm/settings/forget", s.humansOnly(s.llmForgetHandler))
 	mux.HandleFunc("/api/llm/", s.llmProxyHandler)
+	// Where something is on a screenshot, for a desktop's `gui` (grounder.go).
+	mux.HandleFunc("/api/grounder", s.grounderStatusHandler)
+	mux.HandleFunc("/api/grounder/locate", s.grounderLocateHandler)
+	mux.HandleFunc("/api/native-ollama/", s.nativeOllamaHandler)
 	// Drafts from the agents' draft_email; sending them is humansOnly above.
 	mux.HandleFunc("/api/outbox", s.outboxCreateHandler)
-	// A native worker's agent opening one of the worker's own shortcuts: it
-	// starts a program of this computer, so it is on this listener only.
-	mux.HandleFunc("/api/agent/open-app", hostGUIDirectOnly(s.agentOpenAppHandler))
 }

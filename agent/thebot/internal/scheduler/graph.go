@@ -176,7 +176,7 @@ func (e *execution) fresh() {
 
 	// The request is itself the consequential act. Stop before any of it
 	// runs; the plan is already made, so approving costs nothing extra.
-	if concern := safety.AssessRequest(p); concern != nil {
+	if concern := safety.AssessRequest(p); concern != nil && !e.req.Approved {
 		e.log("safety: " + concern.Reason + " - asking before doing anything")
 		e.pause = &pause{kind: pauseApproval, action: requestAction, reason: concern.Reason}
 	}

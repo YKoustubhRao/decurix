@@ -155,6 +155,7 @@ func (s *Server) createPersonaDesktopHandler(w http.ResponseWriter, r *http.Requ
 		"",
 		nil,
 		nil,
+		nil,
 	)
 	if err != nil {
 		jsonError(w, err)
@@ -255,6 +256,7 @@ func (s *Server) deployTeamHandler(w http.ResponseWriter, r *http.Request) {
 			"",
 			p.Specialization,
 			parentID,
+			nil,
 			nil,
 			nil,
 		)

@@ -6,7 +6,20 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   html, body { margin: 0; height: 100%; background: #1b1b1b; overflow: hidden; }
-  #screen { display: none; margin: 0 auto; max-width: 100%; max-height: 100vh; width: auto; height: auto; user-select: none; outline: none; }
+  #stage { display: none; position: relative; width: fit-content; margin: 0 auto; line-height: 0; user-select: none; }
+  #screen { display: block; max-width: 100vw; max-height: 100vh; width: auto; height: auto; outline: none; }
+  /* The app's own controls, laid exactly over the picture: invisible to a person, but real buttons and fields to the
+     VM's browser - what the desktop's agents read, what its approval gate judges, and what a recording names. They
+     come from Windows' accessibility tree (or, for an app that has none, a vision model's reading of the picture). A
+     click on one is a click on the app at that place. */
+  #ax { position: absolute; inset: 0; overflow: hidden; }
+  #ax > * { position: absolute; box-sizing: border-box; margin: 0; padding: 0; border: 0; background: transparent;
+            color: transparent; caret-color: transparent; font-size: 10px; line-height: 1; overflow: hidden;
+            white-space: nowrap; outline: none; appearance: none; -webkit-appearance: none; cursor: default; }
+  #ax > .t { pointer-events: none; }
+  #ax > input::placeholder { color: transparent; } /* a field's name, for the VM's browser to read; never drawn */
+  #note { position: fixed; left: 8px; bottom: 6px; color: #9a9a9a; font: 11px/1.3 system-ui, sans-serif; max-width: 40%;
+          background: rgba(27,27,27,.8); padding: 2px 6px; border-radius: 4px; pointer-events: none; }
   #msg { color: #d8d8d8; font: 15px/1.5 system-ui, sans-serif; padding: 28px; max-width: 560px; }
   #msg.error { color: #ffb4a8; }
   #msg small { display: block; margin-top: 10px; color: #8a8a8a; }
@@ -17,11 +30,16 @@
 </head>
 <body>
 <div id="msg" style="display:none"><span class="spin"></span>Starting {{.Title}} on the host&hellip;<small id="hint" style="display:none">The first start in a desktop sets the app up on the host (a browser brings your profile over), which can take a minute or two. Later starts are instant.</small></div>
-<canvas id="screen" tabindex="0"></canvas>
+<div id="stage">
+  <canvas id="screen" tabindex="0" aria-hidden="true"></canvas>
+  <div id="ax"></div>
+</div>
+<div id="note" hidden></div>
 <script>
 (function () {
   var ID = {{.ID}}, TOKEN = {{.Token}}, DESKTOP = {{.Desktop}}, TARGET = {{.Target}}, ARGS = {{.Args}};
   var msg = document.getElementById('msg'), img = document.getElementById('screen');
+  var stage = document.getElementById('stage'), ax = document.getElementById('ax'), note = document.getElementById('note');
   // No alpha and no synchronisation with the page's own paint: the picture is opaque and only ever replaced, and this runs in
   // a desktop with little CPU to spare.
   var gfx = img.getContext('2d', { alpha: false, desynchronized: true });
@@ -32,7 +50,7 @@
     return fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), keepalive: true });
   }
   function fail(text) {
-    live = false; msg.className = 'error'; msg.textContent = text; msg.style.display = 'block'; img.style.display = 'none';
+    live = false; msg.className = 'error'; msg.textContent = text; msg.style.display = 'block'; stage.style.display = 'none'; note.hidden = true;
   }
 
   // The person closed the app from inside it: this window was only ever showing it, so it closes too, rather than asking
@@ -72,6 +90,7 @@
     if (pendingMove) { outbox.push(JSON.stringify(pendingMove)); pendingMove = null; }
     outbox.push(JSON.stringify(ev));
     flush();
+    if (ev.kind !== 'controls') inputMade();
   }
 
   // ---- Drawing. A patch is decoded off the main thread and drawn where it belongs. Decodes finish in any order, so they are
@@ -98,7 +117,7 @@
   function connect() {
     ws = new WebSocket(wsURL());
     ws.binaryType = 'arraybuffer';
-    ws.onopen = function () { retries = 0; flush(); };
+    ws.onopen = function () { retries = 0; flush(); askControls(); };
     ws.onmessage = function (e) {
       if (typeof e.data !== 'string') { onPatch(e.data); return; }
       var m; try { m = JSON.parse(e.data); } catch (x) { return; }
@@ -113,6 +132,165 @@
     };
   }
 
+  // ---- The app's controls ----
+  // Asked for over the same connection, answered from the host's last read of them (which starts the next one). After an
+  // input they are asked for often until a read made after it arrives; while that has not arrived the page carries
+  // data-decurix-busy, which the desktop's agent waits out before it reads the page (computer/cdp.py), so its approval
+  // gate judges the control that is on the screen now, not the one before the click.
+  var hasControls = false, busyTimer = 0, lastInput = 0, asking = false, treeW = 0, treeH = 0, lastPointer = 0;
+
+  function markBusy() {
+    if (!hasControls) return;
+    document.documentElement.setAttribute('data-decurix-busy', '');
+    clearTimeout(busyTimer);
+    busyTimer = setTimeout(clearBusy, 8000);
+  }
+  function clearBusy() { clearTimeout(busyTimer); document.documentElement.removeAttribute('data-decurix-busy'); }
+  function inputMade() { lastInput = Date.now(); markBusy(); }
+
+  function askControls() {
+    if (asking || !ws || ws.readyState !== 1) return;
+    asking = true;
+    var id = ++seqOut;
+    answers[id] = function (m) { asking = false; if (m.controls) showControls(m.controls); };
+    outbox.push(JSON.stringify({ kind: 'controls', seq: id })); flush();
+    setTimeout(function () { if (answers[id]) { delete answers[id]; asking = false; } }, 10000);
+  }
+  // Soon after input, every few seconds otherwise (an app also changes by itself).
+  (function poll() {
+    var since = Date.now() - lastInput;
+    if (live) askControls();
+    setTimeout(poll, document.documentElement.hasAttribute('data-decurix-busy') ? 400 : since < 10000 ? 1200 : 3000);
+  })();
+
+  var ROLE = { button: 'button', link: 'link', menuitem: 'menuitem', tab: 'tab', option: 'option', treeitem: 'treeitem',
+               cell: 'gridcell', checkbox: 'checkbox', radio: 'radio', combobox: 'combobox', slider: 'slider',
+               spinbutton: 'spinbutton', columnheader: 'columnheader', image: 'img' };
+
+  function isField(t) { return !!t && t.parentNode === ax && t.tagName === 'INPUT'; }
+
+  function place(elem, n) {
+    elem.style.left = (n.box[0] / treeW * 100) + '%';
+    elem.style.top = (n.box[1] / treeH * 100) + '%';
+    elem.style.width = (n.box[2] / treeW * 100) + '%';
+    elem.style.height = (n.box[3] / treeH * 100) + '%';
+    elem.dataset.box = JSON.stringify(n.box);
+  }
+
+  // What changes about a control between two reads.
+  function update(elem, n) {
+    place(elem, n);
+    if (n.role === 'textbox') {
+      var type = n.password ? 'password' : 'text';
+      if (elem.type !== type) elem.type = type;
+      // What was typed a moment ago stays until the app's field has had time to show it.
+      if (Date.now() - Number(elem.dataset.edited || 0) > 2000 && elem.value !== (n.value || '')) elem.value = n.value || '';
+    } else if (n.role !== 'text' && n.role !== 'image') {
+      // What a drop-down, a cell or a spin box shows is its text, as a page's would be.
+      var shown = n.value || '';
+      if (elem.textContent !== shown) elem.textContent = shown;
+    }
+    if (n.checked !== undefined && n.checked !== null) elem.setAttribute('aria-checked', n.checked ? 'true' : 'false'); else elem.removeAttribute('aria-checked');
+    if (n.expanded !== undefined && n.expanded !== null) elem.setAttribute('aria-expanded', n.expanded ? 'true' : 'false'); else elem.removeAttribute('aria-expanded');
+    if (n.selected) elem.setAttribute('aria-selected', 'true'); else elem.removeAttribute('aria-selected');
+    if (n.disabled) elem.setAttribute('aria-disabled', 'true'); else elem.removeAttribute('aria-disabled');
+  }
+
+  function build(n) {
+    var elem;
+    if (n.role === 'textbox') {
+      elem = document.createElement('input');
+      elem.setAttribute('autocomplete', 'off');
+      elem.tabIndex = -1;
+      if (n.name) { elem.setAttribute('aria-label', n.name); elem.placeholder = n.name; }
+    } else if (n.role === 'text') {
+      elem = document.createElement('span');
+      elem.className = 't';
+      elem.textContent = n.name;
+    } else {
+      elem = document.createElement('div');
+      elem.setAttribute('role', ROLE[n.role] || 'button');
+      if (n.role === 'image' || n.role === 'columnheader') elem.className = 't'; else elem.tabIndex = -1;
+      if (n.name) elem.setAttribute('aria-label', n.name);
+    }
+    update(elem, n);
+    return elem;
+  }
+
+  function showControls(t) {
+    if (t.pending && !(t.nodes || []).length) return; // nothing read yet: keep what is shown
+    if (t.error) {
+      hasControls = false; clearBusy(); ax.textContent = '';
+      note.textContent = 'Picture only: ' + t.error; note.hidden = false;
+      return;
+    }
+    treeW = t.w || img.width; treeH = t.h || img.height;
+    if (!treeW || !treeH) return;
+    var nodes = t.nodes || [];
+    var usable = nodes.filter(function (n) { return n.role !== 'text' && n.role !== 'image' && n.role !== 'columnheader'; }).length;
+    hasControls = usable > 0;
+    if (t.source === 'vision') { note.textContent = 'Controls read from the picture by the vision model'; note.hidden = false; }
+    else if (!hasControls) { note.textContent = 'Picture only: this app shows no controls the VM can read.'; note.hidden = false; }
+    else note.hidden = true;
+
+    // A control the app still shows keeps its element: an agent that has just read the page acts on the element it read
+    // (a rebuilt one is a different node, and its click fails as "detached"), and the field someone is typing in keeps the
+    // browser's focus. Same role and name is the same control; the Nth of several alike is matched to the Nth.
+    var old = {};
+    Array.prototype.forEach.call(ax.children, function (e) { old[e.dataset.key] = e; });
+    var active = document.activeElement, counts = {};
+    var frag = document.createDocumentFragment();
+    nodes.forEach(function (n) {
+      var base = n.role + '\u0001' + (n.name || '');
+      counts[base] = (counts[base] || 0) + 1;
+      var key = base + '\u0001' + counts[base];
+      var elem = old[key];
+      if (elem) { delete old[key]; update(elem, n); } else { elem = build(n); elem.dataset.key = key; }
+      frag.appendChild(elem);
+    });
+    ax.textContent = '';
+    ax.appendChild(frag);
+    if (active && active.parentNode === ax && document.activeElement !== active) {
+      refocusing = true;
+      try { active.focus({ preventScroll: true }); } finally { refocusing = false; }
+    }
+    if (t.fresh) clearBusy();
+  }
+
+  // The middle of a control, in the app's pixels.
+  function middleOf(elem) {
+    var b = JSON.parse(elem.dataset.box), fx = img.width / (treeW || img.width), fy = img.height / (treeH || img.height);
+    return { x: Math.round((b[0] + b[2] / 2) * fx), y: Math.round((b[1] + b[3] / 2) * fy) };
+  }
+  function clickAt(p) { emit({ kind: 'down', x: p.x, y: p.y, right: false, mods: '' }); emit({ kind: 'up', x: p.x, y: p.y, right: false, mods: '' }); }
+
+  // A field focused without a pointer (an agent's DOM focus) is clicked in the app, so what is typed lands there.
+  var refocusing = false;
+  ax.addEventListener('focusin', function (e) {
+    if (isField(e.target) && !refocusing && Date.now() - lastPointer > 500) clickAt(middleOf(e.target));
+  });
+
+  // Text typed into a field goes to the app as text; replacing all of it is Ctrl+A then Delete, as it is in the app.
+  function clearField() { emit({ kind: 'key', vk: 65, mods: 'c' }); emit({ kind: 'key', vk: 46, mods: '' }); }
+  ax.addEventListener('beforeinput', function (e) {
+    var t = e.target;
+    if (!isField(t)) return;
+    var whole = t.value.length > 0 && t.selectionStart === 0 && t.selectionEnd === t.value.length;
+    var type = e.inputType || '';
+    t.dataset.edited = String(Date.now());
+    if (type.indexOf('insert') === 0 && type !== 'insertLineBreak' && type !== 'insertParagraph') {
+      var data = e.data || (e.dataTransfer && e.dataTransfer.getData('text/plain')) || '';
+      if (whole) clearField();
+      if (data) emit({ kind: 'type', text: data });
+    } else if (type === 'insertLineBreak' || type === 'insertParagraph') {
+      emit({ kind: 'key', vk: 13, mods: '' });
+    } else if (type.indexOf('deleteContentBackward') === 0 || type.indexOf('deleteWordBackward') === 0) {
+      if (whole) clearField(); else emit({ kind: 'key', vk: 8, mods: '' });
+    } else if (type.indexOf('delete') === 0) {
+      if (whole) clearField(); else emit({ kind: 'key', vk: 46, mods: '' });
+    }
+  });
+
   // The VM's clipboard, set from a hidden text box: navigator.clipboard needs a secure origin and this page is plain http.
   function setLocalClipboard(text) {
     var box = document.createElement('textarea');
@@ -125,25 +303,30 @@
   // Which of Ctrl, Shift and Alt are held: the letters c, s, a the host expects.
   function mods(e) { return (e.ctrlKey ? 'c' : '') + (e.shiftKey ? 's' : '') + (e.altKey ? 'a' : ''); }
 
+  // The whole picture, controls included, is the app: a press on a control is a press on the app at that place. A field
+  // keeps the browser's focus (typing goes through it); anything else hands it to the picture.
   var down = false;
-  img.addEventListener('mousedown', function (e) {
-    e.preventDefault(); img.focus(); down = true;
+  stage.addEventListener('mousedown', function (e) {
+    lastPointer = Date.now();
+    if (!isField(e.target)) { e.preventDefault(); img.focus(); }
+    down = true;
     var p = pos(e); emit({ kind: 'down', x: p.x, y: p.y, right: e.button === 2, mods: mods(e) });
   });
   window.addEventListener('mouseup', function (e) {
-    if (!down) return; down = false;
+    if (!down) return; down = false; lastPointer = Date.now();
     var p = pos(e); emit({ kind: 'up', x: p.x, y: p.y, right: e.button === 2, mods: mods(e) });
   });
-  img.addEventListener('mousemove', function (e) { if (down) { var p = pos(e); emit({ kind: 'move', x: p.x, y: p.y, right: e.buttons === 2, mods: mods(e) }); } });
-  img.addEventListener('contextmenu', function (e) { e.preventDefault(); });
-  img.addEventListener('wheel', function (e) {
+  stage.addEventListener('mousemove', function (e) { if (down) { var p = pos(e); emit({ kind: 'move', x: p.x, y: p.y, right: e.buttons === 2, mods: mods(e) }); } });
+  stage.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  stage.addEventListener('wheel', function (e) {
     e.preventDefault();
     var p = pos(e); emit({ kind: 'wheel', x: p.x, y: p.y, delta: e.deltaY > 0 ? -1 : 1 });
   }, { passive: false });
 
   // A key that is not simply a character (Enter, arrows, F-keys) or that is held with Ctrl or Alt (a shortcut) is sent as a
   // virtual-key code with its modifiers; the browser's keyCode is the Windows virtual-key code. A plain character, or one
-  // typed with Shift or AltGr (which a keyboard reports as Ctrl+Alt), is sent as the text it produces.
+  // typed with Shift or AltGr (which a keyboard reports as Ctrl+Alt), is sent as the text it produces. In a field, text and
+  // deleting come through beforeinput instead.
   var NAMED = { Backspace: 1, Tab: 1, Enter: 1, Escape: 1, PageUp: 1, PageDown: 1, End: 1, Home: 1, ArrowLeft: 1, ArrowUp: 1, ArrowRight: 1, ArrowDown: 1, Insert: 1, Delete: 1 };
   window.addEventListener('keydown', function (e) {
     if (!live) return;
@@ -152,6 +335,7 @@
     var altGr = e.ctrlKey && e.altKey && text; // AltGr on many layouts
     var shortcut = (e.ctrlKey || e.altKey) && !altGr;
     var k = e.key.toLowerCase();
+    var inField = isField(e.target);
     // Copy and cut are done in the app, then what it copied is brought back into this desktop's clipboard. Paste is the
     // browser's own paste event (below), typed into the app: the host's clipboard is the person's, and never goes in.
     if (e.ctrlKey && !e.altKey && !e.shiftKey && (k === 'c' || k === 'x')) {
@@ -162,6 +346,7 @@
       return;
     }
     if ((e.ctrlKey && !e.altKey && k === 'v') || (e.shiftKey && e.key === 'Insert')) return; // handled by the paste event
+    if (inField && !shortcut && (text || e.key === 'Backspace' || e.key === 'Delete' || e.key === 'Enter')) return; // beforeinput
     if (NAMED[e.key] || /^F([1-9]|1[0-2])$/.test(e.key) || (shortcut && e.keyCode > 0)) {
       e.preventDefault(); emit({ kind: 'key', vk: e.keyCode, mods: mods(e) }); return;
     }
@@ -170,6 +355,7 @@
 
   window.addEventListener('paste', function (e) {
     if (!live) return;
+    if (isField(document.activeElement)) return; // the field's beforeinput sends it
     var text = e.clipboardData ? e.clipboardData.getData('text') : '';
     e.preventDefault();
     if (text) emit({ kind: 'paste', text: text });
@@ -188,7 +374,7 @@
     clearTimeout(slow); clearTimeout(slower);
     if (!res.ok) { fail(res.body && res.body.error ? res.body.error : 'Could not start the app.'); return; }
     live = true; msg.style.display = 'none';
-    img.style.display = 'block';
+    stage.style.display = 'block';
     img.width = res.body.w || img.width; img.height = res.body.h || img.height;
     img.focus();
     connect();

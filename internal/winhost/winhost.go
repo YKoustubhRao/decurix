@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -137,10 +138,12 @@ type keptApp struct {
 // resolvedProgram is what the helper's check worked out for a target.
 type resolvedProgram struct {
 	exe, args, dir, own, base string
+	// launcher is the web-app launcher this program stands in for (a browser opening its page), else "".
+	launcher string
 }
 
 func (r resolvedProgram) line() string {
-	return "launchr\t" + r.exe + "\t" + r.args + "\t" + r.dir + "\t" + r.own + "\t" + r.base
+	return "launchr\t" + r.exe + "\t" + r.args + "\t" + r.dir + "\t" + r.own + "\t" + r.base + "\t" + r.launcher
 }
 
 // startCall is a Start in progress, so a second request for the same app waits for it instead of launching another.
@@ -238,22 +241,6 @@ func (m *Manager) keepWarm(h *Session) {
 		h.Stop()
 	})
 	m.mu.Unlock()
-}
-
-// DropSpare ends the helper kept waiting for the next launch, if there is one: for a caller that only wanted a Check and
-// will launch nothing into it.
-func (m *Manager) DropSpare() {
-	m.mu.Lock()
-	spare := m.spare
-	m.spare = nil
-	if m.spareTmr != nil {
-		m.spareTmr.Stop()
-		m.spareTmr = nil
-	}
-	m.mu.Unlock()
-	if spare != nil {
-		spare.Stop()
-	}
 }
 
 // Warm makes sure a helper is up and waiting for the next app, so nobody waits for one: it starts one in the background if
@@ -445,9 +432,14 @@ func (m *Manager) Check(ctx context.Context, targets []Target) (map[Target]strin
 		}
 		if strings.HasPrefix(resp, "OK") {
 			verdicts[t] = ""
-			if f := strings.Split(resp, "\t"); len(f) == 6 && f[1] != "" {
+			// Six fields from a helper that predates the launcher field, seven since.
+			if f := strings.Split(resp, "\t"); len(f) >= 6 && f[1] != "" {
+				r := resolvedProgram{exe: f[1], args: f[2], dir: f[3], own: f[4], base: f[5]}
+				if len(f) > 6 {
+					r.launcher = f[6]
+				}
 				m.mu.Lock()
-				m.resolved[t] = resolvedProgram{exe: f[1], args: f[2], dir: f[3], own: f[4], base: f[5]}
+				m.resolved[t] = r
 				m.mu.Unlock()
 			}
 			continue
@@ -462,111 +454,37 @@ func (m *Manager) Check(ctx context.Context, targets []Target) (map[Target]strin
 	return verdicts, nil
 }
 
-// OpenDesktop starts a private desktop of its own and runs exe on it, for a native Windows worker: the desktop is the
-// worker's screen and exe its agent, and everything that agent starts shows up there. Unlike an app started by a
-// Manager, the session is nobody's spare and is never ended for being unwatched or for having no window - it lives
-// until Stop, or until the helper itself ends. env is added to the helper's environment, which exe inherits. exe is
-// started as it is given: nothing is looked up, and none of the rules for hiding a person's own apps apply to it.
-func OpenDesktop(ctx context.Context, start Starter, id string, env []string, exe, args, dir string) (*Session, error) {
-	if strings.ContainsAny(exe+args+dir, "\r\n\t") || strings.TrimSpace(exe) == "" {
-		return nil, errors.New("invalid program to start")
-	}
-	name := desktopName(id)
+// appPage is the address in a browser's --app= argument.
+var appPage = regexp.MustCompile(`--app=(\S+)`)
 
-	// The helper outlives the request that started it, so it is not tied to ctx.
-	cmd, err := start(context.Background(), name)
-	if err != nil {
-		return nil, err
+// LocalPage is the page a checked target only opens, when that target is a web app's launcher (a small program that
+// starts the app's server and opens its page in a browser) and the page is on this computer - "" otherwise, and for a
+// target no check has resolved. Such an app is a web page, which a VM's own browser can show and an agent can read
+// field by field, where the hidden host browser's picture is all a worker would get.
+func (m *Manager) LocalPage(target, args string) string {
+	m.mu.Lock()
+	r, ok := m.resolved[Target{target, args}]
+	m.mu.Unlock()
+	if !ok || r.launcher == "" {
+		return ""
 	}
-	if cmd.Env == nil {
-		cmd.Env = os.Environ()
+	match := appPage.FindStringSubmatch(r.args)
+	if match == nil {
+		return ""
 	}
-	cmd.Env = append(cmd.Env, env...)
-
-	s, err := newSession(id, cmd)
-	if err != nil {
-		return nil, err
+	u, err := url.Parse(strings.Trim(match[1], `"`))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return ""
 	}
-	for _, line := range []string{"viewers 0", "desktop " + name, "screen"} {
-		if resp, err := s.Do(line); err != nil || !strings.HasPrefix(resp, "OK") {
-			s.Stop()
-			return nil, firstErr(err, fmt.Errorf("the host helper refused %q: %s", line, resp))
-		}
-	}
-	if err := ctx.Err(); err != nil {
-		s.Stop()
-		return nil, err
-	}
-	resp, err := s.DoTimeout("launchr\t"+exe+"\t"+args+"\t"+dir+"\t0\tworker", launchRequestTimeout)
-	if err != nil {
-		s.Stop()
-		return nil, err
-	}
-	if !strings.HasPrefix(resp, "OK") {
-		s.Stop()
-		return nil, errors.New(strings.TrimSpace(strings.TrimPrefix(resp, "ERR")))
-	}
-	return s, nil
-}
-
-// Running reports whether the program the session was started for is still running ("" when it is), or how it ended.
-func (s *Session) Running() string {
-	st, err := s.Do("status")
-	if err != nil {
-		return err.Error()
-	}
-	if strings.HasPrefix(st, "STATUS exited") {
-		return "it " + strings.TrimPrefix(st, "STATUS ")
+	switch strings.ToLower(u.Hostname()) {
+	case "localhost", "127.0.0.1", "::1":
+		return u.String()
 	}
 	return ""
 }
 
-// Open starts one more program on the session's desktop - a person opening an app on a worker's screen. The helper
-// resolves target the way a launch does (a shortcut, a Start-menu address, a browser given a profile of its own), so
-// what it refuses to hide for a copied app it refuses here too, with the same reason.
-func (s *Session) Open(target, args string) error {
-	if strings.ContainsAny(target+args, "\r\n") || strings.Contains(target, "\t") || strings.TrimSpace(target) == "" {
-		return errors.New("invalid application")
-	}
-	resp, err := s.DoTimeout("open\t"+target+"\t"+args, launchRequestTimeout)
-	if err != nil {
-		return err
-	}
-	if !strings.HasPrefix(resp, "OK") {
-		return errors.New(strings.TrimSpace(strings.TrimPrefix(resp, "ERR")))
-	}
-	return nil
-}
-
-// Empty reports whether the session's desktop has no window a person would see: a worker's screen with nothing open.
-func (s *Session) Empty() (bool, error) {
-	resp, err := s.Do("count")
-	if err != nil {
-		return false, err
-	}
-	return strings.TrimSpace(resp) == "COUNT 0", nil
-}
-
-// Snapshot is the whole picture as it is now.
-func (s *Session) Snapshot(ctx context.Context) (Update, error) {
-	v := s.Watch()
-	defer v.Close()
-	for {
-		select {
-		case u, ok := <-v.C:
-			if !ok {
-				return Update{}, s.deadErr()
-			}
-			if u.Whole {
-				return u, nil
-			}
-		case <-s.done:
-			return Update{}, s.deadErr()
-		case <-ctx.Done():
-			return Update{}, ctx.Err()
-		}
-	}
-}
+// maxThumbnail bounds one small picture from the helper.
+const maxThumbnail = 8 << 20
 
 // Target is one program a launcher would ask the host to run.
 type Target struct {
@@ -749,6 +667,15 @@ type Session struct {
 	goneOnce    sync.Once
 	stopOnce    sync.Once
 	onEvent     func(string) // see OnEvent
+
+	// The last small picture the helper made (see Thumbnail): what it just sent, and the one kept with its width.
+	thumbMu    sync.Mutex
+	thumbSent  []byte
+	thumbKept  []byte
+	thumbWidth int
+
+	// opens are the opens the helper is doing behind its command loop, by ticket (see open).
+	opens map[string]chan string
 }
 
 func newSession(id string, cmd *exec.Cmd) (*Session, error) {
@@ -805,11 +732,32 @@ func (s *Session) read(r *bufio.Reader) {
 					return
 				}
 				s.publish(u.Update)
+			case strings.HasPrefix(line, "THUMB "):
+				// "THUMB <w> <h> <n>" is followed by the picture; "THUMB same" by nothing. Either is the answer to a
+				// thumb command, so the line goes on to whoever asked.
+				if f := strings.Fields(line); len(f) == 4 {
+					n, convErr := strconv.Atoi(f[3])
+					if convErr != nil || n <= 0 || n > maxThumbnail {
+						s.fail(fmt.Errorf("the host helper sent a thumbnail header the control plane could not read: %q", truncate(line, 80)))
+						go s.Stop()
+						return
+					}
+					data := make([]byte, n)
+					if _, err := io.ReadFull(r, data); err != nil {
+						return
+					}
+					s.mu.Lock()
+					s.thumbSent = data
+					s.mu.Unlock()
+				}
+				select {
+				case s.replies <- line:
+				case <-s.done:
+					return
+				}
 			case strings.HasPrefix(line, "EVENT "):
-				if event := strings.TrimPrefix(line, "EVENT "); event == "closed" {
+				if strings.TrimPrefix(line, "EVENT ") == "closed" {
 					s.markAppGone()
-				} else {
-					s.event(event)
 				}
 			default:
 				select {

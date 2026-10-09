@@ -7,10 +7,10 @@ from decurix_agent.computer import skills
 # ============================================================
 # Skill Catalog: IrisGo AI Standard Library & Cura Department Skills
 #
-# A curated catalog of 22 ready-to-run, parameterizable skills
+# A curated catalog of optional, parameterizable skills
 # covering key business departments:
 #
-#   Finance:        invoice-processing, expense-approval, billing-reconciliation
+#   Finance:        expense-approval, billing-reconciliation
 #   Support:        email-triage, ticket-router, customer-faq-reply
 #   Sales:          lead-scoring, customer-research, follow-up-sender, pipeline-update
 #   Productivity:   morning-brief, meeting-notes, workflow-trigger
@@ -23,26 +23,6 @@ from decurix_agent.computer import skills
 
 CATALOG_SKILLS = [
     # --- Finance ---
-    {
-        "name": "invoice-processing",
-        "title": "Process Invoices",
-        "department": "finance",
-        "goal": "Extract invoice amounts, vendor details, and line items from invoices and reconcile them in the finance ledger.",
-        "done_when": "The invoice is recorded in the ledger and matched against the purchase order.",
-        "params": [
-            {"name": "invoice_path", "label": "Invoice File Path", "default": "~/work/invoices", "step": 1},
-            {"name": "ledger_file", "label": "Ledger Spreadsheet", "default": "~/work/ledger.csv", "step": 2},
-        ],
-        "optimization": {
-            "command": "python3 -c 'import csv, sys; print(\"Invoices processed and reconciled successfully\")'",
-            "post_check": {"contains_text": "Invoices processed"},
-        },
-        "steps": [
-            {"n": 1, "kind": "open", "summary": "Open invoice directory and load invoice documents", "value": "~/work/invoices"},
-            {"n": 2, "kind": "type", "summary": "Extract invoice number, date, vendor, total and tax into ledger", "value": "INV-DATA"},
-            {"n": 3, "kind": "click", "summary": "Save ledger entry and verify balance matches PO", "target": {"role": "button", "name": "Save"}},
-        ],
-    },
     {
         "name": "expense-approval",
         "title": "Review and Approve Expenses",

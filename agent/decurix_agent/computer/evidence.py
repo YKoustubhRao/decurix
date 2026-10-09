@@ -99,6 +99,41 @@ def live(scale=1):
         return None
 
 
+def live_text(limit=4000):
+    """
+    The text the fields on the screen hold now, read from the apps themselves:
+    exact, where small print in a picture is not. Found by the GUI benchmark:
+    asked whether every "colour" in a file had become "color", the check read
+    the screenshot as showing all three changed when the third was not. Each
+    field's whole text (a secret field's never), the window with the keyboard
+    first; "" when the screen cannot be read.
+    """
+
+    try:
+        from decurix_agent.computer import core, privacy
+        from decurix_agent.computer import elements as el
+
+        observation = core.observe(remember=False)
+    except Exception as exc:
+        log(f"evidence: could not read the screen's text: {exc}")
+        return ""
+
+    out = [f"Window with the keyboard: {observation.get('active_title') or '(none)'}"]
+    active = core.active_group(observation)
+    fields = [e for e in observation.get("elements", [])
+              if e.get("role") in core.TYPING_ROLES and (e.get("value") or "").strip()
+              and "offscreen" not in e.get("states", []) and not privacy.secret_field(e)]
+    fields.sort(key=lambda e: e.get("group") != active)
+    for e in fields:
+        text, withheld = privacy.withhold_text(e, e["value"])
+        if withheld or not text:
+            continue
+        label = f"{e['role']} {el._quote(e.get('name') or '', 60)}"
+        out.append(f"{label} holds:" + ("\n" + text.strip() if "\n" in text.strip() else " " + text.strip()))
+    text = "\n".join(out)
+    return text[:limit] + (" ..." if len(text) > limit else "") if len(out) > 1 else ""
+
+
 # ============================================================
 # What the tools saw during a task
 #

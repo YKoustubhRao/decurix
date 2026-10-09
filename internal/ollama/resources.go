@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
@@ -47,6 +48,11 @@ func (r Resources) HasGPU() bool { return r.VRAMFreeGB > 0 }
 // the moment it was loaded, and the choice would shrink every time it was
 // re-checked.
 func ProbeResources(ctx context.Context, baseURL string, useGPU bool) (Resources, error) {
+	// Native Windows inference is measured on Windows, not through Linux /proc.
+	if native := os.Getenv("DECURIX_WINDOWS_OLLAMA_URL"); native != "" && strings.TrimRight(baseURL, "/") == strings.TrimRight(native, "/") {
+		result, err := windowsSelection(ctx, "")
+		return result.Resources, err
+	}
 	total, avail, err := readMemory()
 	if err != nil {
 		return Resources{}, err
@@ -105,7 +111,6 @@ func probeGPU(ctx context.Context, cur Resources) (name string, totalGB, freeGB 
 	cmd := exec.CommandContext(ctx, "nvidia-smi",
 		"--query-gpu=name,memory.total,memory.free",
 		"--format=csv,noheader,nounits")
-	hide(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", 0, 0, false, false

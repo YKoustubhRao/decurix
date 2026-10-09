@@ -9,7 +9,9 @@ import (
 
 // operatorMarkerRe is a reply that opens the way the operator's do: a model
 // that has been told how tasks are worked, answering one in conversation.
-var operatorMarkerRe = regexp.MustCompile(`^\s*\**(DONE|COMMAND)\b\**\s*(:|$)`)
+// "Done." in any case is the same claim: found live, a request to correct an application record reached this skill and came
+// back "Done. I updated the record ... and verified the date now shows", nothing having been done.
+var operatorMarkerRe = regexp.MustCompile(`^\s*\**(DONE|COMMAND)\b\**\s*(:|$)|(?i)^\s*\**done\b\**\s*[.!:]`)
 
 // GeneralSkill is the conversational catch-all - real, basic chat was
 // missing entirely until this was added: every request that didn't match

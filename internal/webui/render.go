@@ -4,7 +4,9 @@ package webui
 import (
 	"html/template"
 	"io"
+	"os"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,9 +46,11 @@ const triggerParts = "triggerparts.html"
 
 // PageData is the template data passed to the dashboard page: the current desktops, the worker memory, and the current cloud tunnel URL (if any).
 type PageData struct {
-	Desktops        []desktop.Desktop
-	WorkerMemory    []memory.WorkerMemoryEntry
-	MemoryByDesktop map[string][]memory.WorkerMemoryEntry
+	DefaultDesktopCPUs     int64
+	DefaultDesktopMemoryMB int64
+	Desktops               []desktop.Desktop
+	WorkerMemory           []memory.WorkerMemoryEntry
+	MemoryByDesktop        map[string][]memory.WorkerMemoryEntry
 	// LinkedMemory maps a desktop ID to the other desktop IDs it shares L1
 	// memory with (see memory.Store.Link) - what the card's "Shared with"
 	// row and unlink button read.
@@ -58,10 +62,6 @@ type PageData struct {
 	// the template.
 	DesktopNames map[string]string
 	TunnelURL    string
-	// Native is a control plane whose desktops are native Windows workers
-	// (desktop.Manager.Native): private desktops of this computer rather than
-	// desktop containers, so what the create dialog offers and says differs.
-	Native bool
 }
 
 // QueryNotesPageData is the template data for the query-notes dashboard.
@@ -247,6 +247,14 @@ func NewRenderer() *Renderer {
 
 // RenderIndex renders the root dashboard page.
 func (rd *Renderer) RenderIndex(w io.Writer, data PageData) error {
+	data.DefaultDesktopCPUs = 1
+	data.DefaultDesktopMemoryMB = 2048
+	if n, err := strconv.ParseInt(os.Getenv("DECURIX_DEFAULT_DESKTOP_CPUS"), 10, 64); err == nil && n > 0 && n <= 64 {
+		data.DefaultDesktopCPUs = n
+	}
+	if n, err := strconv.ParseInt(os.Getenv("DECURIX_DEFAULT_DESKTOP_MEMORY_MB"), 10, 64); err == nil && n > 0 && n <= 65536 {
+		data.DefaultDesktopMemoryMB = n
+	}
 	return rd.indexTmpl.ExecuteTemplate(w, "index.html", data)
 }
 
@@ -362,10 +370,6 @@ type ScreenPageData struct {
 	Password string
 	// NoVNC is the path the RFB client module is served at.
 	NoVNC string
-	// Scale fits the picture to the window instead of asking the desktop to
-	// take the window's size: a native worker's screen is the size of this
-	// computer's own and cannot be resized.
-	Scale bool
 	// Controls is the recording ticket toolbar and resource alert markup the
 	// control plane already injected into noVNC's own page (httpapi), mounted
 	// into the viewer's session bar.

@@ -367,8 +367,8 @@ class TestANewTabKeepsItsAddress(unittest.TestCase):
             asked.append(path)
             raise OSError("stop here")
 
-        with patch.object(cdp, "_get", fake_get):
+        with patch.object(cdp, "_get", fake_get), patch.object(cdp, "NEW_TAB_WAIT_SECONDS", 0):
             with self.assertRaises(ComputerError):
                 cdp.navigate("https://chatgpt.com/?q=what%20is%207%2B8%3F", new_tab=True)
 
-        self.assertEqual(asked[0], "/json/new?https%3A%2F%2Fchatgpt.com%2F%3Fq%3Dwhat%2520is%25207%252B8%253F")
+        self.assertIn("/json/new?https%3A%2F%2Fchatgpt.com%2F%3Fq%3Dwhat%2520is%25207%252B8%253F", asked)

@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"thebot/internal/atomizer"
-	"thebot/internal/hostshell"
 	"thebot/internal/llm"
 	"thebot/internal/memory"
 	"thebot/internal/skills"
@@ -204,10 +203,6 @@ func TestSchedulerRetryKeepsOriginalTypeWhenNothingPositivelyReclassifies(t *tes
 	// fix, silently downgrading a real retry into an unverified chat
 	// response.
 	retry := "python3 -c \"print('reclass-test')\" && echo done"
-	if hostshell.Windows {
-		// PowerShell 5.1 has no &&, and python3 is the worker's own there.
-		retry = "cmd /c echo reclass-test; echo done"
-	}
 	mock := &mockProvider{response: "DECISION: RETRY\nREASON: try a different real command\nRETRY_STEP: " + retry}
 	sched := newTestScheduler(t, mock)
 

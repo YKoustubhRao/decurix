@@ -153,9 +153,7 @@ func nativeHostGUICmd(ctx context.Context, desktopName string) (*exec.Cmd, error
 // warmHostGUI starts (or keeps) the helper the next host app will run in. It only makes sense where host apps can run at
 // all: on Windows, or on Linux reaching Windows through WSL.
 func (s *Server) warmHostGUI() {
-	// A native worker's apps open on the worker's own desktop, in the helper that holds it: no host app is ever
-	// launched into a spare, so one kept waiting would only be a process left behind.
-	if !hostGUISupported() || s.Desktops.Native() {
+	if !hostGUISupported() {
 		return
 	}
 	s.hostGUI().Warm()
@@ -164,12 +162,7 @@ func (s *Server) warmHostGUI() {
 // checkHostApps asks the Windows helper which programs it can run on a private desktop, without starting any of them. It
 // uses the same warm helper an app is launched into, so what it learns about the Start menu is not learned twice.
 func (s *Server) checkHostApps(ctx context.Context, targets []winhost.Target) (map[winhost.Target]string, error) {
-	verdicts, err := s.hostGUI().Check(ctx, targets)
-	if s.Desktops.Native() {
-		// Nothing will be launched into the helper the check used (see warmHostGUI): end it now the scan is done.
-		s.hostGUI().DropSpare()
-	}
-	return verdicts, err
+	return s.hostGUI().Check(ctx, targets)
 }
 
 // keptHostApp is one app kept running and ready on the host (winhost.Manager.Keep), as saved in the data directory so a
@@ -395,7 +388,8 @@ func (s *Server) markDesktopViewed(ctx context.Context, desktopID string) {
 // Server to viewer, binary: one flags byte (bit 0: the rectangle is the whole picture), then six big-endian uint16 - the
 // picture's width and height and the rectangle's x, y, width and height - then the rectangle as a JPEG. Text messages
 // out are JSON: {"closed":true} once the app has no window left, and {"id":n,"text":"..."} answering a copy.
-// Viewer to server, text JSON, one input each (see applyInput); a copy carries an "id" to be answered under.
+// Viewer to server, text JSON, one input each (see applyInput); a copy carries an "id" to be answered under. A
+// {"kind":"controls"} is answered {"id":n,"controls":{...}}: the app's controls to lay over the picture (hostcontrols.go).
 func (s *Server) hostGUIWSHandler(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	if !s.hostGUIAuthorised(q.Get("id"), q.Get("token")) {
@@ -473,9 +467,18 @@ func (s *Server) serveSessionSocket(w http.ResponseWriter, r *http.Request, sess
 		if json.Unmarshal(msg, &req) != nil {
 			continue
 		}
+		if req.Kind == "controls" {
+			// Answered from the last read (a new one is started), so the read loop does not wait on it.
+			out, _ := json.Marshal(map[string]any{"id": req.Seq, "controls": s.sessionControls(sess, sess.ID())})
+			if c.Write(wsconn.OpText, out) != nil {
+				return
+			}
+			continue
+		}
 		if before != nil {
 			before(req)
 		}
+		s.noteHostInput(sess.ID())
 		text, wantsText, err := applyInput(sess, req)
 		if err != nil {
 			log.Printf("host-gui: input %s on %s: %v", req.Kind, label, err)

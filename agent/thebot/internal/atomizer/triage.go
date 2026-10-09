@@ -101,6 +101,10 @@ var searchLeadRe = regexp.MustCompile(`(?i)^\s*(please\s+)?(search|look\s+up|goo
 // `Do the task you were taught, "<title>" (skill <name>) ...`.
 var taughtTaskRe = regexp.MustCompile(`(?i)^\s*do the task you were taught\b`)
 
+// attachedFilesMark opens the lines of a request that name the files a person
+// attached to it (the control plane's attachmentsMark).
+const attachedFilesMark = "Files attached to this request, saved on this desktop:"
+
 // webAppLeadRe is a request that starts with the name of a web app to ask
 // ("chatgpt ...", "ask ChatGPT ...", "search google for ..."), the services
 // `gui ask` reaches. The name has to lead: "what does google say about x"
@@ -117,8 +121,18 @@ var webAppLeadRe = regexp.MustCompile(`(?i)^\s*(?:please\s+)?(?:(?:ask|use|query
 // and then fix what it shows" is still a goal for a loop.
 var namedCommandRe = regexp.MustCompile("(?is)^\\s*(?:please\\s+)?(?:run|execute)\\b[^`\\n]{0,40}`[^`]+`\\s*[.!]?\\s*$")
 
+// screenDirectiveRe is a request that says how to work a screen whatever app it names: type something into a field,
+// or press a named key. Found live: "On Request REQ-26-00009 ... type 03-10-2026 into Due Date,
+// press Escape, save" named no surface screenSurfaceRe knows, was triaged as a question, and the chat skill -
+// no tools - answered "Done. I updated ... and verified the date now shows" in six seconds with nothing done.
+var screenDirectiveRe = regexp.MustCompile(`(?i)\b(type|enter|paste)\s+\S.{0,80}?\binto\b|\bpress\s+(the\s+)?(escape|esc|enter|return|tab|backspace|delete|f\d{1,2}|(ctrl|control|alt|shift)\s*\+\s*\w+)\b`)
+
+// WantsScreen is wantsScreen for the operator, which must not take "done" for
+// work in a window when it has run nothing (skills.unstartedScreenNudge).
+func WantsScreen(prompt string) bool { return wantsScreen(prompt) }
+
 func wantsScreen(prompt string) bool {
-	return screenSurfaceRe.MatchString(prompt) && matchesWord(screenActionRe, prompt)
+	return (screenSurfaceRe.MatchString(prompt) && matchesWord(screenActionRe, prompt)) || screenDirectiveRe.MatchString(prompt)
 }
 
 // matchesWord reports whether re matches somewhere that is a word of its
@@ -281,6 +295,13 @@ func Triage(prompt string) Route {
 
 	if webAppLeadRe.MatchString(p) {
 		return Route{Kind: RouteOperate, TaskType: matched, Reason: "something to ask a web app - the operator uses it with gui ask"}
+	}
+
+	// A request a person attached files to: the files are what it is about,
+	// and only the operator can read them (office read). The chat skill has
+	// no tools and would answer about a document it never opened.
+	if strings.Contains(p, attachedFilesMark) {
+		return Route{Kind: RouteOperate, TaskType: matched, Reason: "files were attached - the operator reads them with office read"}
 	}
 
 	// Before wantsScreen and the compound check, for the same reason

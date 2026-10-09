@@ -86,6 +86,29 @@ class Base(unittest.TestCase):
 
 class Replies(Base):
 
+    def test_queued_task_is_not_consumed_as_a_later_query_reply(self):
+        path = self.request("process the next bill")
+        state.current_task = "process the first bill"
+        state.current_task_id = TASK
+        state.waiting_for_query = True
+        watchers._pass()
+        self.assertEqual(FakeThread.started, [])
+        self.assertTrue(path.exists())
+        self.assertNotIn(path.name, state.processed_commands)
+
+        state.waiting_for_query = False
+        state.current_task = None
+        watchers._pass()
+        self.assertEqual(FakeThread.started[0][0], watchers.perform_task)
+
+    def test_different_task_id_is_not_marked_as_a_reply(self):
+        state.waiting_for_query = True
+        state.current_task_id = TASK
+        new = messaging.save_request("another bill", "t1111111111111111")
+        self.assertFalse(watchers.is_reply_file(new.name))
+        reply = messaging.save_request("retry", TASK)
+        self.assertTrue(watchers.is_reply_file(reply.name))
+
     def test_a_reply_saved_while_waiting_is_marked_as_one(self):
         state.waiting_for_query = True
         path = messaging.save_request("keep", TASK)

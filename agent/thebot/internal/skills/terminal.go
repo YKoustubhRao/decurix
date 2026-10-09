@@ -318,21 +318,6 @@ func (t *TerminalSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		// `sudo apt-get install curl`, and on the next run asked the person
 		// what to do. The operator works the same goal out command by
 		// command, told the program is not there.
-		// On a Windows worker the same thing is PowerShell not recognising
-		// the name (exit 1, so only its words say so) - nearly always a
-		// Linux command, which the operator is told the PowerShell for.
-		if program := missingOnWindows(stderr); program != "" && hostshell.Windows {
-			rc.Logf("terminal", "`%s` is not a command here - working it out another way", program)
-			return Result{
-				Subtask: subtask, SkillName: t.Name(),
-				Output:   fmt.Sprintf("Command: %s\nWorking directory: %s\nExit code: %d (`%s` is not a command on this computer)", command, cwd, exitCode, program),
-				Verified: false,
-				Meta: map[string]any{"command": command, "source": source, "exitCode": exitCode, "cwd": cwd,
-					"reroute":     "operator",
-					"rerouteNote": strings.TrimSpace(windowsMissingProgramHint(program))},
-				DurationMs: duration,
-			}, nil
-		}
 		if exitCode == commandNotFound {
 			program := missingProgram(stderr, command)
 			rc.Logf("terminal", "`%s` is not installed here - working it out another way", program)

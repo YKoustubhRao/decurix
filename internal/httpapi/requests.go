@@ -61,6 +61,14 @@ func (s *Server) sendRequestHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	limitUpload(w, r)
+
+	files, err := readAttachments(r)
+	if err != nil {
+		uploadError(w, err)
+		return
+	}
+
 	desktopID := strings.TrimSpace(r.FormValue("id"))
 	content := r.FormValue("content")
 
@@ -69,7 +77,8 @@ func (s *Server) sendRequestHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if content == "" {
+	// Files alone are a request too: the answer to "send me the PO".
+	if content == "" && len(files) == 0 {
 		http.Error(w, "empty request", http.StatusBadRequest)
 		return
 	}
@@ -79,16 +88,44 @@ func (s *Server) sendRequestHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	route, err := s.submitRequest(r.Context(), desktopID, content)
+	route, sent, err := s.submitRequestWithFiles(r.Context(), desktopID, content, files)
 	if err != nil {
-		sendRequestError(w, err)
+		uploadError(w, err)
 		return
 	}
 
+	// content is the request as it was sent - with the files it brought named
+	// in it - so the chat can tell its own copy from the transcript's.
 	jsonResponse(w, map[string]string{
 		"status":  "sent",
 		"task_id": route.TaskID,
+		"content": sent,
 	})
+}
+
+// submitRequestWithFiles is submitRequest for a request a person attached
+// files to: under the desktop's send lock the files are written into the
+// desktop first, so they are there when its agent reads the request that
+// names them. It returns the request as sent.
+func (s *Server) submitRequestWithFiles(ctx context.Context, desktopID, content string, files []desktop.File) (tasks.Route, string, error) {
+	id := desktop.SanitizeID(desktopID)
+
+	unlock := s.lockDesktop(id)
+	defer unlock()
+
+	paths, err := s.putAttachments(ctx, id, files)
+	if err != nil {
+		return tasks.Route{}, "", err
+	}
+
+	content = strings.TrimLeft(withAttachments(content, paths), "\n")
+	if len(content) > maxRequestBytes {
+		return tasks.Route{}, "", &errUpload{http.StatusBadRequest, "request too long"}
+	}
+
+	route, err := s.submitLocked(ctx, desktopID, content)
+
+	return route, content, err
 }
 
 // submitRequest sends content to a desktop through the same path every

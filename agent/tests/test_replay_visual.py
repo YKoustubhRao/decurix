@@ -82,6 +82,11 @@ class Anchored(unittest.TestCase):
         self.assertEqual(step["point"], list(CLICK))
         self.assertEqual(step["look"]["screen"], [WIDTH, HEIGHT])
 
+    def test_a_press_read_after_the_screen_changed_gets_no_look(self):
+        # Its frame shows what the press made, not what was pressed (demonstration.LATE_NOTE).
+        events = [dict(self.events[0], late=True)]
+        self.assertNotIn("look", replay.compile_program(self.meta, events)["steps"][0])
+
     def test_a_click_that_had_an_element_needs_no_look(self):
         events = [dict(self.events[0], element={"role": "button", "name": "OK", "path": "w > OK"})]
         self.assertNotIn("look", replay.compile_program(self.meta, events)["steps"][0])

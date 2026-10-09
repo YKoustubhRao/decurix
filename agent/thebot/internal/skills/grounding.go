@@ -3,10 +3,11 @@ package skills
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 
-	"thebot/internal/hostshell"
+	"thebot/internal/atomizer"
 	"thebot/internal/llm"
 )
 
@@ -46,6 +47,37 @@ var (
 	// paramRe is one --param NAME=VALUE of gui do or gui replay.
 	paramRe = regexp.MustCompile(`--param\s+[\w.-]+=("(?:[^"\\]|\\.)*"|'[^']*'|\S+)`)
 )
+
+// attachedFilesMark opens the lines of a request that name the files a
+// person attached to it, one path a line (the control plane's
+// attachmentsMark, the desktop agent's attachments.MARK).
+const attachedFilesMark = "Files attached to this request, saved on this desktop:"
+
+// requestDocuments returns the documents a request names: paths with a
+// document's extension anywhere in it, and every file attached to it,
+// whatever its kind - a person attaches a file for it to be read.
+func requestDocuments(request string) []string {
+	docs := documentPathRe.FindAllString(request, -1)
+
+	if _, rest, found := strings.Cut(request, attachedFilesMark); found {
+		for _, line := range strings.Split(rest, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+
+			known := false
+			for _, doc := range docs {
+				known = known || doc == line
+			}
+			if !known {
+				docs = append(docs, line)
+			}
+		}
+	}
+
+	return docs
+}
 
 // noteSeen adds text the operator has now seen (the request, a command's
 // output, a person's reply), keeping the most recent maxSeenChars.
@@ -100,7 +132,7 @@ func groundingNudge(st *operatorState, command string) string {
 	}
 
 	var unread []string
-	for _, doc := range documentPathRe.FindAllString(st.Request, -1) {
+	for _, doc := range requestDocuments(st.Request) {
 		if !readBefore(st.Commands, doc) {
 			unread = append(unread, doc)
 		}
@@ -114,19 +146,79 @@ func groundingNudge(st *operatorState, command string) string {
 		return "" // read from a picture: the words are not text to search
 	}
 	seen := normalise(st.Seen)
+	var numbers map[string]bool
+	var dates *dateSet
 	var untraced []string
 	for _, v := range values {
-		if !strings.Contains(seen, normalise(v)) && !strings.Contains(seen, normalise(withoutNewlineMarks(v))) {
-			untraced = append(untraced, fmt.Sprintf("%q", v))
+		if strings.Contains(seen, normalise(v)) || strings.Contains(seen, normalise(withoutNewlineMarks(v))) {
+			continue
 		}
+		if n, ok := canonicalNumber(v); ok {
+			if numbers == nil {
+				numbers = numbersIn(st.Seen)
+			}
+			if numbers[n] {
+				continue
+			}
+		}
+		if literals, ok := formulaLiterals(v); ok {
+			if numbers == nil {
+				numbers = numbersIn(st.Seen)
+			}
+			traced := true
+			for _, n := range literals {
+				traced = traced && numbers[n]
+			}
+			if traced {
+				continue
+			}
+		}
+		if d, ok := canonicalDate(v); ok {
+			if dates == nil {
+				dates = datesIn(st.Seen)
+			}
+			if dates.holds(d) {
+				continue
+			}
+		}
+		untraced = append(untraced, fmt.Sprintf("%q", v))
 	}
 	if len(untraced) == 0 {
 		return capitalsNudge(st.Seen, values)
 	}
 	return fmt.Sprintf("Not run: %s appear nowhere in the request or in anything a command has shown you, so they "+
 		"would be guesses. Find each value in the document or the page it comes from and use it exactly as written "+
-		"there. If you converted one (a date's format, a unit), or it cannot be found, ask with HELP instead.",
+		"there. A date may be typed in the format its field takes. If you converted one otherwise (a unit), or it cannot be found, ask with HELP instead.",
 		strings.Join(untraced, ", "))
+}
+
+var (
+	cellRefRe        = regexp.MustCompile(`\$?[A-Za-z]{1,3}\$?[0-9]{1,7}`)
+	formulaNumberRe  = regexp.MustCompile(`[0-9]+(?:\.[0-9]+)?`)
+	formulaQuotedRe  = regexp.MustCompile(`"[^"]*"`)
+	formulaAllowedRe = regexp.MustCompile(`^=[A-Za-z0-9_.$:;,()+\-*/^%<>=&! 	]+$`)
+)
+
+// formulaLiterals reads a spreadsheet formula (=SUM(B2:B5)): the worker's own
+// construction, not a value copied from somewhere, so it is not looked for in
+// what was read. Found by the GUI benchmark: asked to total B2 to B5 with a
+// formula, the operator was refused =SUM(B2:B5) as a value "that appears
+// nowhere", and went on to close the spreadsheet. What a formula may not
+// carry is a figure nobody has seen: its literal numbers (not cell
+// references) are returned to be traced like any typed number, and a formula
+// holding quoted text is not excused at all.
+func formulaLiterals(v string) ([]string, bool) {
+	v = strings.TrimSpace(withoutNewlineMarks(v))
+	if !strings.HasPrefix(v, "=") || len(v) < 2 || formulaQuotedRe.MatchString(v) || !formulaAllowedRe.MatchString(v) {
+		return nil, false
+	}
+	var out []string
+	for _, n := range formulaNumberRe.FindAllString(cellRefRe.ReplaceAllString(v, " "), -1) {
+		if c, ok := canonicalNumber(n); ok {
+			out = append(out, c)
+		}
+	}
+	return out, true
 }
 
 // withoutNewlineMarks is a typed value without the \n that gui type reads as
@@ -216,13 +308,41 @@ func earlyDoneNudge(st *operatorState, history []llm.Message, answer string) str
 			"conversation may no longer hold - the screen and the files may have changed since. Look first " +
 			"(gui observe, or the command that shows it), then do what is asked:\n" + st.Request
 	}
-	for _, doc := range documentPathRe.FindAllString(st.Request, -1) {
+	for _, doc := range requestDocuments(st.Request) {
 		if !readBefore(st.Commands, doc) {
 			return fmt.Sprintf("Not taken: the request names %s and nothing has read it or done anything yet. "+
 				"Do the task first (office read %s to start), and answer DONE only with what the commands showed.", doc, doc)
 		}
 	}
 	return ""
+}
+
+// unstartedScreenNudge is what to tell the operator instead of taking a DONE
+// for work in a window when no command has run at all, or "" to take it.
+// Found by the GUI benchmark, on a hosted brain: asked to rename a sheet in
+// the spreadsheet on the screen, the operator's first and only reply was
+// "DONE: Renamed the sheet from Sheet1 to Budget 2026 and saved the file.
+// Verified in Calc that the tab now reads Budget 2026" - three seconds, not
+// one command, the sheet untouched. It was its answer to the same request an
+// hour before, reworded, so earlyDoneNudge (which looks for the same words)
+// let it through, and nothing checks a task that never touched the screen.
+// Work in a window cannot be done, or known to be done, without looking: a
+// request the triage sends here as screen work needs at least one command.
+func unstartedScreenNudge(st *operatorState) string {
+	if st.CommandsRun > 0 || !atomizer.WantsScreen(st.Request) {
+		return ""
+	}
+	return "Not taken: nothing has been run for this request, so nothing on this screen has been looked at or " +
+		"changed. Whatever you remember from earlier in this conversation, the screen and the files are as they " +
+		"are NOW. Look first, then do what is asked:\n" + st.Request + "\n\nReply now with exactly:\nCOMMAND:\ngui observe"
+}
+
+// unstartedScreenDoubt is what a person is asked when the operator says done
+// again and still has run nothing.
+func unstartedScreenDoubt(claim string) string {
+	return fmt.Sprintf("I cannot confirm this is done: I reported %q, but I ran no command for this request, so "+
+		"nothing on the screen was looked at or changed. Reply \"done\" if it really is done already, or tell me "+
+		"to do it.", claim)
 }
 
 var (
@@ -342,6 +462,170 @@ func readBefore(commands []string, doc string) bool {
 	return false
 }
 
+// numberRe is a number as documents write it: digits with thousands separators (1,88,800 or 188,800) and decimals.
+var numberRe = regexp.MustCompile(`\d[\d,]*(?:\.\d+)?`)
+
+// canonicalNumber is a value that is only a number - an amount, a rate, a quantity, with any currency mark or
+// separators - written one way (6,000.00, Rs. 6000 and 6000 are all "6000"), or false.
+func canonicalNumber(v string) (string, bool) {
+	// Any currency mark before the digits: a symbol (₹ $ € £ ¥) or a code or abbreviation (Rs., INR, USD, EUR, Fr.).
+	v = strings.TrimLeftFunc(strings.TrimSpace(v), func(r rune) bool {
+		return !unicode.IsDigit(r) && (unicode.IsLetter(r) || unicode.IsSymbol(r) || unicode.IsSpace(r) || r == '.')
+	})
+	if !numberRe.MatchString(v) || numberRe.FindString(v) != v {
+		return "", false
+	}
+	f, err := strconv.ParseFloat(strings.ReplaceAll(v, ",", ""), 64)
+	if err != nil {
+		return "", false
+	}
+	return strconv.FormatFloat(f, 'f', -1, 64), true
+}
+
+// numbersIn is every number written in text, each in canonicalNumber's form. A bill writes a rate as "Rs. 6,000.00"
+// and the form it goes into takes 6000: found live, the plain text match refused the chair's rate on an application bill and
+// the operator stopped to ask whether to type the bill's own figure.
+func numbersIn(text string) map[string]bool {
+	out := map[string]bool{}
+	for _, m := range numberRe.FindAllString(text, -1) {
+		if n, ok := canonicalNumber(m); ok {
+			out[n] = true
+		}
+	}
+	return out
+}
+
+// dateRe is a date as documents and forms write it: 04-10-2026, 4/10/2026, 2026-10-04, 04-Oct-2026, 4 October 2026,
+// October 4, 2026.
+var dateRe = regexp.MustCompile(`(?i)\b(?:` +
+	`(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})` +
+	`|(\d{1,2})[-/. ](\d{1,2})[-/. ](\d{4})` +
+	`|(\d{1,2})(?:st|nd|rd|th)?[-/. ]+([a-z]{3,9})\.?[-/., ]+(\d{4})` +
+	`|([a-z]{3,9})\.?[ ]+(\d{1,2})(?:st|nd|rd|th)?,?[ ]+(\d{4})` +
+	`)\b`)
+
+var monthNames = map[string]int{"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6, "jul": 7, "aug": 8,
+	"sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12}
+
+// monthOf is a month's number from its name or abbreviation, or 0.
+func monthOf(name string) int {
+	name = strings.ToLower(name)
+	if m, ok := monthNames[name]; ok {
+		return m
+	}
+	if len(name) > 3 {
+		if m, ok := monthNames[name[:3]]; ok {
+			return m
+		}
+	}
+	return 0
+}
+
+// dateValue is a date as written. days holds what it surely means (yyyy-mm-dd): a month named, the year first, or
+// all digits where one field is past 12 or the two are equal. An all-digit date whose first two fields could be
+// either day or month (04-10-2026) is ambiguous: days is empty and order keeps the fields as written.
+type dateValue struct {
+	days  []string
+	order string
+}
+
+// dateOf is what a match of dateRe means.
+func dateOf(m []string) dateValue {
+	day := func(y, mo, d int) (string, bool) {
+		if mo < 1 || mo > 12 || d < 1 || d > 31 {
+			return "", false
+		}
+		return fmt.Sprintf("%04d-%02d-%02d", y, mo, d), true
+	}
+	atoi := func(x string) int { n, _ := strconv.Atoi(x); return n }
+	var v dateValue
+	add := func(y, mo, d int) {
+		if s, ok := day(y, mo, d); ok {
+			v.days = append(v.days, s)
+		}
+	}
+	switch {
+	case m[1] != "": // year first
+		add(atoi(m[1]), atoi(m[2]), atoi(m[3]))
+	case m[6] != "": // all digits
+		a, b, y := atoi(m[4]), atoi(m[5]), atoi(m[6])
+		switch {
+		case a > 12 || a == b:
+			add(y, b, a)
+		case b > 12:
+			add(y, a, b)
+		default:
+			v.order = fmt.Sprintf("%d/%d/%d", a, b, y)
+		}
+	case m[9] != "": // 4 October 2026
+		if mo := monthOf(m[8]); mo > 0 {
+			add(atoi(m[9]), mo, atoi(m[7]))
+		}
+	case m[12] != "": // October 4, 2026
+		if mo := monthOf(m[10]); mo > 0 {
+			add(atoi(m[12]), mo, atoi(m[11]))
+		}
+	}
+	return v
+}
+
+// canonicalDate is a value that is only a date, read as dateOf reads it, or false.
+func canonicalDate(v string) (dateValue, bool) {
+	v = strings.TrimSpace(v)
+	loc := dateRe.FindStringSubmatchIndex(v)
+	if loc == nil || loc[0] != 0 || loc[1] != len(v) {
+		return dateValue{}, false
+	}
+	d := dateOf(dateRe.FindStringSubmatch(v))
+	return d, len(d.days) > 0 || d.order != ""
+}
+
+// dateSet is the dates a document writes.
+type dateSet struct {
+	days   map[string]bool
+	orders map[string]bool
+}
+
+// datesIn is every date written in text. A bill writes "04-Oct-2026" and the web app's date field takes 04-10-2026:
+// found live, the plain text match refused the bill's own date and the operator asked a person to approve typing it.
+func datesIn(text string) *dateSet {
+	set := &dateSet{days: map[string]bool{}, orders: map[string]bool{}}
+	for _, m := range dateRe.FindAllStringSubmatch(text, -1) {
+		d := dateOf(m)
+		for _, day := range d.days {
+			set.days[day] = true
+		}
+		if d.order != "" {
+			set.orders[d.order] = true
+		}
+	}
+	return set
+}
+
+// holds says whether the document writes the date v means. A typed date that is ambiguous is read both ways round
+// against the days the document names outright (a form that wants month-first is fed the same bill), but against a
+// document date that is itself ambiguous only the same field order counts: 10-04-2026 is not 04-10-2026 written
+// another way, and a swapped day and month is the quiet error this check exists to stop. The converse - an
+// unambiguous value (2026-10-04) from an ambiguous document date - is not traced either; the operator asks.
+func (s *dateSet) holds(v dateValue) bool {
+	for _, day := range v.days {
+		if s.days[day] {
+			return true
+		}
+	}
+	if v.order == "" {
+		return false
+	}
+	if s.orders[v.order] {
+		return true
+	}
+	var a, b, y int
+	if _, err := fmt.Sscanf(v.order, "%d/%d/%d", &a, &b, &y); err != nil {
+		return false
+	}
+	return s.days[fmt.Sprintf("%04d-%02d-%02d", y, b, a)] || s.days[fmt.Sprintf("%04d-%02d-%02d", y, a, b)]
+}
+
 // normalise lowercases and collapses whitespace, so a value matches however
 // a document spaced or capitalised it.
 func normalise(s string) string {
@@ -375,11 +659,7 @@ func shellWords(s string) []string {
 		case escaped:
 			cur.WriteRune(r)
 			escaped = false
-		case r == '\\' && quote != '\'' && !hostshell.Windows:
-			// PowerShell's escape is the backtick: there a backslash is a path's
-			// separator. Found by bench/native: read as an escape it was dropped
-			// from every Windows path, so a path typed into a Save dialog never
-			// matched the request it was copied from and was refused as a guess.
+		case r == '\\' && quote != '\'':
 			escaped = true
 		case quote != 0:
 			if r == quote {

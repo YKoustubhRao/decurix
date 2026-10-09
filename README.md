@@ -494,16 +494,12 @@ Decurix is building toward that future.
 
 ### Windows desktop app (Electron)
 
-A Windows app that needs **nothing else installed**: no Docker, no WSL, no
-Python, no model server. It is one installer; everything it runs ships inside
-it or is fetched by the app itself.
-
-On Windows a worker is *native*: not a Linux desktop in a container, but a
-**private desktop of the computer itself**, with the worker's agent running on
-it. Whatever the worker opens - a browser, a document, any program installed on
-the computer - opens on that desktop, out of sight: nothing appears on your own
-screen. You watch and use a worker's desktop from the dashboard (its card's
-thumbnail, and its screen page).
+A Windows app that runs the same thing as everywhere else - Linux desktops
+(XFCE, shown in the browser through noVNC) in Docker - without Docker Desktop.
+It brings its own: a small Linux (Alpine) in **WSL**, into which it installs
+Docker Engine the first time it starts. On a PC that has never had WSL, the
+app turns it on (Windows asks once for an administrator's yes) and asks you to
+restart Windows.
 
 To build it, install Go 1.26+ and Node.js/npm, then run this from a
 **Windows PowerShell** window in a checkout on a Windows drive (for example
@@ -525,77 +521,131 @@ do.
 
 Install it, then launch **Decurix** from the Start menu or desktop shortcut.
 
-* The app starts its own control plane (`resources\decurix.exe`) and opens the
-  dashboard in its window. The control plane keeps running when you close the
-  window, so workers and schedules continue; opening the app again reconnects.
-* **New desktop** creates a worker: a private desktop, the agent
-  (`resources\runtime\`: an embedded Python, the agent, TheBot's engine).
-* **The local model is the app's own too.** The first worker on the Ollama
-  model waits while the app downloads a small model runtime (about 35 MB) and a
-  model chosen for the computer's free memory (1-5 GB), once. A computer that
-  already runs Ollama is used as it is; a worker on Claude or Azure OpenAI
-  downloads nothing.
-* Commands a worker runs are Windows PowerShell.
+* On a new install, the app first looks for a compatible existing WSL distro
+  with a running local Docker Engine, Compose, and Windows host integration.
+  Otherwise it sets up its own `Decurix` distro and installs Docker Engine.
+  Existing app-owned installations keep that distro and their worker data.
+* WSL/Hyper-V provides virtualization; each worker still needs Decurix's
+  Linux desktop image. Up-to-date images and cached build layers are reused;
+  a missing image is built once, which can take several minutes. The app
+  installs **native Windows Ollama** in the background on first launch. The
+  dashboard stays usable while its SHA-256-verified runtime downloads.
+  The closeable **Local model setup** sidebar controls inference. Its chip
+  icon stays in the left activity rail; Ctrl+Shift+L toggles the panel.
+  Closing the panel keeps hosting running, and its visibility is remembered. Turning **Host locally** on scans Windows
+  RAM, GPU and CPU capacity, selects a suitable model (or uses your pinned
+  OLLAMA_MODEL), downloads it plus embeddings, and loads it into memory.
+  Turning it off cancels model setup, unloads models, stops the app-owned
+  server, and deletes its managed model files. The Ollama runtime stays
+  installed; the next on cycle scans again and downloads models again.
+  Runtime installation, model preparation and live hosting have separate
+  status indicators. New workers use a stable model alias, so reselection
+  after an off/on cycle does not change their configured model endpoint.
+  Models stay loaded while hosting is on unless OLLAMA_KEEP_ALIVE overrides
+  this. Hosted-provider workers can run while local hosting is off.
+* Docker keeps running in that distro after you close the window, so workers
+  and schedules continue; opening the app again reconnects.
+* A worker is a Linux desktop of its own: Chrome, a terminal, a file manager,
+  LibreOffice. Its screen opens from its card, in the browser.
 
 Where things live:
 
-* `%APPDATA%\decurix\` - the database, the keys, the editable `.env` (and an
-  example), and `desktop.log`, the control plane's log.
-* `%LOCALAPPDATA%\Decurix\` - the workers (`workers\<id>\`: `home\work` is a
-  worker's work folder, `logs\` what its agent and engine print) and the local
-  model runtime with its models (`ollama\`).
+* `%LOCALAPPDATA%\Decurix\wsl\` - the distro's disk: Docker, the images, every
+  worker and its files, and the records. `wsl -d Decurix` opens a
+  shell in it.
+* `%LOCALAPPDATA%\Decurix\ollama\` - native Ollama, models and server.log.
+  The server uses port 11435 on the private WSL-facing Windows address and
+  stays running after closing the window. Installed user Ollama on port 11434
+  is left alone. OLLAMA_MODELS can move models to another Windows disk.
+* `%APPDATA%\decurix\` - the editable `.env` (and an example),
+  `desktop.log`, and `windows-runtime.json`, which records the chosen distro.
+  When reusing an existing WSL runtime, worker data and images live in that
+  runtime's Docker Engine. The app stages only its files in
+  `/var/lib/decurix/stack`; it does not change shared WSL or daemon settings
+  unless you explicitly set a DECURIX_WSL_* resource override.
+  If the saved runtime is unavailable, startup asks you to start its Docker
+  Engine rather than silently switching to another runtime.
 
-Uninstalling (Settings > Apps, or the Start menu's own uninstaller) closes the
-app, ends every worker and the local model runtime, and removes the program. It
-asks whether to delete those two folders as well - your workers, their files,
-the downloaded model and your settings - and keeps them unless you say yes, so
-installing again picks up where you left off. A silent uninstall
-(`"Uninstall Decurix.exe" /S`) keeps them; add `--delete-app-data` to remove
-them. Deleting a single worker from the dashboard deletes its files, its chat
-and everything it learned; take a backup first (**Back up**) to restore its
-skills and memory into another worker.
+
+#### Windows resource sizing for several workers
+
+The app gives its own WSL runtime half of physical RAM by default. Its memory
+setting is an upper limit, not RAM reserved from Windows; higher existing
+limits do not block startup with a fixed model-memory requirement. Linux can use all
+logical processors; CPU time is shared with Windows. New workers default to
+2 logical CPUs and 2 GB RAM, configurable in both the create dialog and .env.
+The launcher reports an approximate active-worker count after reserving 1 GB
+for Linux/control-plane overhead. This is a RAM estimate, not a throughput or
+capacity guarantee; browser-heavy workers often need 4 GB or more.
+
+For example, on a **32 GB machine** with enough processors, these settings in
+`%APPDATA%\decurix\.env` leave 16 GB outside WSL and allow roughly seven active
+2 GB workers, subject to other Linux workloads:
+
+```dotenv
+DECURIX_WSL_MEMORY_MB=16384
+DECURIX_WSL_CPUS=8
+DECURIX_WSL_SWAP_MB=4096
+DECURIX_WSL_DISK_GB=256
+DECURIX_DEFAULT_DESKTOP_CPUS=2
+DECURIX_DEFAULT_DESKTOP_MEMORY_MB=2048
+OLLAMA_NUM_PARALLEL=1
+```
+
+The app preserves existing .wslconfig values and unrelated settings, backing up
+that file as .wslconfig.decurix.bak before changing it. Shared runtimes are not
+tuned automatically. Explicit overrides affect **all WSL 2 distros**. To apply
+changes to an already running WSL VM, finish/stop its workloads, run
+`wsl --shutdown` in PowerShell, then reopen Decurix. The app never shuts down
+other distros for you. Memory reclamation returns idle cache to Windows.
+See [Microsoft's WSL settings](https://learn.microsoft.com/windows/wsl/wsl-config).
+
+The disk limit is an expandable VHD maximum for **new** distros, not space
+reserved per worker. Worker homes are persistent Docker volumes on the Linux
+filesystem, with shared image layers and tools. Keep enough real space for
+worker files, images and model downloads; startup checks for 10 GB free on the
+Windows app disk and Linux Docker filesystem. Changing the limit does not
+resize an existing disk; use `wsl --manage Decurix --resize 512GB` with a
+supported WSL version when an existing app-owned disk needs expansion. In a
+shared distro also check the physical Windows disk containing its VHD.
+
+The existing resource-based model selector runs natively on Windows alongside
+Ollama. With OLLAMA_MODEL=auto, it samples available Windows RAM, CPU load and
+supported GPU memory, lists installed models and chooses the best fit using
+the same policy as the other platforms. The Linux dashboard requests fresh
+Windows evaluations, rather than treating a WSL limit or a startup snapshot
+as available model memory. Loaded-model memory is added back by the existing
+probe, so the current model does not look too large simply because it is
+already resident. Selection remains stable while existing workers depend on
+the chosen model; the dashboard still reports what fits now. The companion
+listens on port 11436 on the same private adapter, and logs to selector.log.
+By default several workers share a queued model server, avoiding one loaded
+LLM per worker. Increase OLLAMA_NUM_PARALLEL only when RAM/VRAM can hold the
+extra contexts. A pinned OLLAMA_MODEL remains your choice. For mirrored WSL
+networking set DECURIX_WINDOWS_OLLAMA_HOST to a Windows IPv4 adapter reachable
+from WSL; use a private adapter because Ollama's API has no authentication.
+See [Ollama's Windows runtime documentation](https://docs.ollama.com/windows).
+
+A remote OLLAMA_URL continues to use that server. Set
+DECURIX_WINDOWS_NATIVE_OLLAMA=0 to retain the old Linux model-server behavior.
+Older workers retain their original model URL until recreated; their volumes
+and model downloads are never deleted automatically. The old Linux Ollama
+container is left running while those workers still depend on it. After moving
+all of them, stop it with `wsl -d <runtime> -u root -- docker stop decurix-ollama`
+to release its memory. Idle worker stopping still works as before.
+
+Uninstalling (Settings > Apps, or the Start menu's own uninstaller) stops the
+app-owned distro (or only Decurix containers in a shared runtime) and removes
+the program. Shared distros and unrelated Docker resources are kept. It asks whether to delete the distro and your
+settings as well, and keeps them unless you say yes, so installing again picks
+up where you left off. A silent uninstall (`"Uninstall Decurix.exe" /S`) keeps
+them; add `--delete-app-data` to remove them. Deleting a single worker from the
+dashboard deletes its files, its chat and everything it learned; take a backup
+first (**Back up**) to restore its skills and memory into another worker.
 
 For a phone, the app opens a temporary Cloudflare link to the access-code-gated
-listener while its window is open (`cloudflared` ships with the app). That
-listener is bound to this computer only - a listener on the whole network makes
-Windows Firewall ask about the app - so the link is the phone's way in; set
-`DECURIX_LAN_BIND=0.0.0.0` in `.env` to open it to your Wi-Fi as well. The
+listener while its window is open (`cloudflared` ships with the app). The
 unauthenticated dashboard on port 8080 is never exposed.
-
-**What a native worker does.** Everything a Linux desktop's worker does, with
-the computer's own programs:
-
-* **Works apps on its screen by itself** - it reads a window's controls
-  (Windows' UI Automation) and web pages (Microsoft Edge), clicks, types and
-  chooses, stops for your approval before a Send/Pay-like control, and keeps a
-  before/after picture of every action in the chat.
-* **Learns from you.** A worker's screen has no Start menu or icons, so its
-  screen page has an **Open** box (an app's name, a file, a web address) and a
-  **Record** toolbar: open a ticket, press Record, do the task in the page, End.
-  The recording can be replayed, and taught as a skill (`/learn`) that is then
-  run with new values (`/skill`).
-* **Reads and makes documents** with the `office` tools: PDFs, scans (Windows'
-  own text recognition), Word and Excel files, workbooks with their charts kept,
-  combined PDFs. Turning a Word, Excel or PowerPoint file into a PDF uses
-  Microsoft Office or LibreOffice if the computer has one of them.
-
-A native worker is not a sandbox: its commands run on your computer, as you.
-It asks before anything destructive, the same rules as everywhere, and more
-widely here (deleting outside its own folder, the registry, shutting down,
-ending your programs) - but it is your machine it works on. Apps keep their own
-state too: Windows 11 Notepad reopens what it had last time, and an app's
-settings are yours. How much a worker can do unaided depends on its model: the
-small local model picked for an 8 GB computer handles questions, commands and
-single steps, and asks you to check screen work it cannot verify; a hosted
-model (Claude, Azure OpenAI) carries out long tasks on its own.
-
-To move an existing installation's history here, download a backup from the old
-dashboard and restore it while the app's control plane is stopped (end
-`decurix.exe` in Task Manager):
-
-```powershell
-& "$env:LOCALAPPDATA\Programs\Decurix\resources\decurix.exe" --restore-backup "<backup.tar.gz>"
-```
 
 ### Mac and Linux desktop app
 
