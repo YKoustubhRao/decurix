@@ -4,7 +4,9 @@ package webui
 import (
 	"html/template"
 	"io"
+	"os"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,9 +46,11 @@ const triggerParts = "triggerparts.html"
 
 // PageData is the template data passed to the dashboard page: the current desktops, the worker memory, and the current cloud tunnel URL (if any).
 type PageData struct {
-	Desktops        []desktop.Desktop
-	WorkerMemory    []memory.WorkerMemoryEntry
-	MemoryByDesktop map[string][]memory.WorkerMemoryEntry
+	DefaultDesktopCPUs     int64
+	DefaultDesktopMemoryMB int64
+	Desktops               []desktop.Desktop
+	WorkerMemory           []memory.WorkerMemoryEntry
+	MemoryByDesktop        map[string][]memory.WorkerMemoryEntry
 	// LinkedMemory maps a desktop ID to the other desktop IDs it shares L1
 	// memory with (see memory.Store.Link) - what the card's "Shared with"
 	// row and unlink button read.
@@ -243,6 +247,14 @@ func NewRenderer() *Renderer {
 
 // RenderIndex renders the root dashboard page.
 func (rd *Renderer) RenderIndex(w io.Writer, data PageData) error {
+	data.DefaultDesktopCPUs = 1
+	data.DefaultDesktopMemoryMB = 2048
+	if n, err := strconv.ParseInt(os.Getenv("DECURIX_DEFAULT_DESKTOP_CPUS"), 10, 64); err == nil && n > 0 && n <= 64 {
+		data.DefaultDesktopCPUs = n
+	}
+	if n, err := strconv.ParseInt(os.Getenv("DECURIX_DEFAULT_DESKTOP_MEMORY_MB"), 10, 64); err == nil && n > 0 && n <= 65536 {
+		data.DefaultDesktopMemoryMB = n
+	}
 	return rd.indexTmpl.ExecuteTemplate(w, "index.html", data)
 }
 

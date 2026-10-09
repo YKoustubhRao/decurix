@@ -87,6 +87,11 @@ func evaluate(ctx context.Context, current string) (sel Selection, res Resources
 		return Selection{}, Resources{}, "remote", nil
 	}
 
+	if native := os.Getenv("DECURIX_WINDOWS_OLLAMA_URL"); native != "" && strings.TrimRight(raw, "/") == strings.TrimRight(native, "/") {
+		result, err := windowsSelection(ctx, current)
+		return result.Selection, result.Resources, "auto", err
+	}
+
 	base := raw
 	if !bundled {
 		base = dialableURL(ctx, raw)
@@ -107,16 +112,16 @@ func evaluate(ctx context.Context, current string) (sel Selection, res Resources
 
 // SelectModel makes the pick for this run and records it; EnsureReady calls
 // it once the Ollama the desktops use can be asked what it has installed.
-func SelectModel(ctx context.Context) {
+func SelectModel(ctx context.Context) error {
 	auto.mu.Lock()
 	on := auto.enabled
 	auto.mu.Unlock()
 
 	if !on || pinnedModel() != "" {
-		return
+		return nil
 	}
 
-	apply(ctx)
+	return apply(ctx)
 }
 
 // Reselect refreshes the pick. The caller says whether any desktop exists,
@@ -130,23 +135,23 @@ func Reselect(ctx context.Context, desktopsExist bool) {
 	SelectModel(ctx)
 }
 
-func apply(ctx context.Context) {
+func apply(ctx context.Context) error {
 	cur, _ := autoModel()
 
 	sel, res, mode, err := evaluate(ctx, cur)
 	if err != nil {
 		log.Printf("Model selection: could not measure this machine: %v - keeping %s", err, DesktopModel())
-		return
+		return err
 	}
 
 	if mode == "remote" {
 		log.Printf("Model selection: the Ollama at %s is not on this machine - using %s as configured.", DesktopURL(), DesktopModel())
-		return
+		return nil
 	}
 
 	if sel.Model.Name == "" {
 		log.Printf("Model selection: no model to choose from - using %s.", DesktopModel())
-		return
+		return nil
 	}
 
 	auto.mu.Lock()
@@ -166,6 +171,7 @@ func apply(ctx context.Context) {
 	if sel.Best.Name != "" && sel.Best.Name != sel.Model.Name {
 		log.Printf("Model selection: %s would fit better but is not installed - `ollama pull %s` to use it.", sel.Best.Name, sel.Best.Name)
 	}
+	return nil
 }
 
 func gpuNote(r Resources) string {
@@ -385,6 +391,12 @@ func parseParamSize(s string) float64 {
 // the name a container uses for its host, or an address of one of this
 // machine's own interfaces.
 func isLocalURL(raw string) bool {
+	// The Windows launcher resolves the WSL gateway on each start. Its
+	// explicitly marked native server uses a separate Windows RAM budget.
+	if native := os.Getenv("DECURIX_WINDOWS_OLLAMA_URL"); native != "" && strings.TrimRight(raw, "/") == strings.TrimRight(native, "/") {
+		return true
+	}
+
 	u, err := neturl.Parse(raw)
 	if err != nil {
 		return false

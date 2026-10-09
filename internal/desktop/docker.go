@@ -274,6 +274,9 @@ func buildDesktopEnv(name, harness, specialization, parentID string, brain Brain
 	// Both come from package ollama, which preloads the model on this same
 	// server at startup - the two must never disagree about which one it is.
 	ollamaURL := ollama.DesktopURL()
+	if os.Getenv("DECURIX_WINDOWS_OLLAMA_URL") != "" {
+		ollamaURL = strings.TrimRight(controlPlaneURL(), "/") + "/api/native-ollama"
+	}
 	ollamaModel := ollama.DesktopModel()
 
 	env := []string{

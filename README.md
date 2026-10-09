@@ -528,7 +528,21 @@ Install it, then launch **Decurix** from the Start menu or desktop shortcut.
 * WSL/Hyper-V provides virtualization; each worker still needs Decurix's
   Linux desktop image. Up-to-date images and cached build layers are reused;
   a missing image is built once, which can take several minutes. The app
-  also starts the bundled model server. Later starts take seconds.
+  installs **native Windows Ollama** in the background on first launch. The
+  dashboard stays usable while its SHA-256-verified runtime downloads.
+  The closeable **Local model setup** sidebar controls inference. Its chip
+  icon stays in the left activity rail; Ctrl+Shift+L toggles the panel.
+  Closing the panel keeps hosting running, and its visibility is remembered. Turning **Host locally** on scans Windows
+  RAM, GPU and CPU capacity, selects a suitable model (or uses your pinned
+  OLLAMA_MODEL), downloads it plus embeddings, and loads it into memory.
+  Turning it off cancels model setup, unloads models, stops the app-owned
+  server, and deletes its managed model files. The Ollama runtime stays
+  installed; the next on cycle scans again and downloads models again.
+  Runtime installation, model preparation and live hosting have separate
+  status indicators. New workers use a stable model alias, so reselection
+  after an off/on cycle does not change their configured model endpoint.
+  Models stay loaded while hosting is on unless OLLAMA_KEEP_ALIVE overrides
+  this. Hosted-provider workers can run while local hosting is off.
 * Docker keeps running in that distro after you close the window, so workers
   and schedules continue; opening the app again reconnects.
 * A worker is a Linux desktop of its own: Chrome, a terminal, a file manager,
@@ -537,15 +551,88 @@ Install it, then launch **Decurix** from the Start menu or desktop shortcut.
 Where things live:
 
 * `%LOCALAPPDATA%\Decurix\wsl\` - the distro's disk: Docker, the images, every
-  worker and its files, the records and the models. `wsl -d Decurix` opens a
+  worker and its files, and the records. `wsl -d Decurix` opens a
   shell in it.
+* `%LOCALAPPDATA%\Decurix\ollama\` - native Ollama, models and server.log.
+  The server uses port 11435 on the private WSL-facing Windows address and
+  stays running after closing the window. Installed user Ollama on port 11434
+  is left alone. OLLAMA_MODELS can move models to another Windows disk.
 * `%APPDATA%\decurix\` - the editable `.env` (and an example),
   `desktop.log`, and `windows-runtime.json`, which records the chosen distro.
   When reusing an existing WSL runtime, worker data and images live in that
   runtime's Docker Engine. The app stages only its files in
-  `/var/lib/decurix/stack`; it does not change WSL or daemon settings.
+  `/var/lib/decurix/stack`; it does not change shared WSL or daemon settings
+  unless you explicitly set a DECURIX_WSL_* resource override.
   If the saved runtime is unavailable, startup asks you to start its Docker
   Engine rather than silently switching to another runtime.
+
+
+#### Windows resource sizing for several workers
+
+The app gives its own WSL runtime half of physical RAM by default. Its memory
+setting is an upper limit, not RAM reserved from Windows; higher existing
+limits do not block startup with a fixed model-memory requirement. Linux can use all
+logical processors; CPU time is shared with Windows. New workers default to
+2 logical CPUs and 2 GB RAM, configurable in both the create dialog and .env.
+The launcher reports an approximate active-worker count after reserving 1 GB
+for Linux/control-plane overhead. This is a RAM estimate, not a throughput or
+capacity guarantee; browser-heavy workers often need 4 GB or more.
+
+For example, on a **32 GB machine** with enough processors, these settings in
+`%APPDATA%\decurix\.env` leave 16 GB outside WSL and allow roughly seven active
+2 GB workers, subject to other Linux workloads:
+
+```dotenv
+DECURIX_WSL_MEMORY_MB=16384
+DECURIX_WSL_CPUS=8
+DECURIX_WSL_SWAP_MB=4096
+DECURIX_WSL_DISK_GB=256
+DECURIX_DEFAULT_DESKTOP_CPUS=2
+DECURIX_DEFAULT_DESKTOP_MEMORY_MB=2048
+OLLAMA_NUM_PARALLEL=1
+```
+
+The app preserves existing .wslconfig values and unrelated settings, backing up
+that file as .wslconfig.decurix.bak before changing it. Shared runtimes are not
+tuned automatically. Explicit overrides affect **all WSL 2 distros**. To apply
+changes to an already running WSL VM, finish/stop its workloads, run
+`wsl --shutdown` in PowerShell, then reopen Decurix. The app never shuts down
+other distros for you. Memory reclamation returns idle cache to Windows.
+See [Microsoft's WSL settings](https://learn.microsoft.com/windows/wsl/wsl-config).
+
+The disk limit is an expandable VHD maximum for **new** distros, not space
+reserved per worker. Worker homes are persistent Docker volumes on the Linux
+filesystem, with shared image layers and tools. Keep enough real space for
+worker files, images and model downloads; startup checks for 10 GB free on the
+Windows app disk and Linux Docker filesystem. Changing the limit does not
+resize an existing disk; use `wsl --manage Decurix --resize 512GB` with a
+supported WSL version when an existing app-owned disk needs expansion. In a
+shared distro also check the physical Windows disk containing its VHD.
+
+The existing resource-based model selector runs natively on Windows alongside
+Ollama. With OLLAMA_MODEL=auto, it samples available Windows RAM, CPU load and
+supported GPU memory, lists installed models and chooses the best fit using
+the same policy as the other platforms. The Linux dashboard requests fresh
+Windows evaluations, rather than treating a WSL limit or a startup snapshot
+as available model memory. Loaded-model memory is added back by the existing
+probe, so the current model does not look too large simply because it is
+already resident. Selection remains stable while existing workers depend on
+the chosen model; the dashboard still reports what fits now. The companion
+listens on port 11436 on the same private adapter, and logs to selector.log.
+By default several workers share a queued model server, avoiding one loaded
+LLM per worker. Increase OLLAMA_NUM_PARALLEL only when RAM/VRAM can hold the
+extra contexts. A pinned OLLAMA_MODEL remains your choice. For mirrored WSL
+networking set DECURIX_WINDOWS_OLLAMA_HOST to a Windows IPv4 adapter reachable
+from WSL; use a private adapter because Ollama's API has no authentication.
+See [Ollama's Windows runtime documentation](https://docs.ollama.com/windows).
+
+A remote OLLAMA_URL continues to use that server. Set
+DECURIX_WINDOWS_NATIVE_OLLAMA=0 to retain the old Linux model-server behavior.
+Older workers retain their original model URL until recreated; their volumes
+and model downloads are never deleted automatically. The old Linux Ollama
+container is left running while those workers still depend on it. After moving
+all of them, stop it with `wsl -d <runtime> -u root -- docker stop decurix-ollama`
+to release its memory. Idle worker stopping still works as before.
 
 Uninstalling (Settings > Apps, or the Start menu's own uninstaller) stops the
 app-owned distro (or only Decurix containers in a shared runtime) and removes

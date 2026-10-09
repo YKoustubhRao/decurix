@@ -4,16 +4,14 @@
 ; cloudflared) and removes that folder. What lives elsewhere:
 ;
 ;   the WSL distro "Decurix"  Docker, the control plane, every worker desktop
-;                             and its files, the records, the worker images and
-;                             the models; its disk is %LOCALAPPDATA%\Decurix\wsl.
+;                             and its files, the records and worker images; its disk is %LOCALAPPDATA%\Decurix\wsl.
 ;                             Kept running by a wsl.exe the app started, which
 ;                             is not in the install folder - so it is stopped
 ;                             here, or the workers would go on running.
 ;   %APPDATA%\decurix         .env, the logs, the window's own profile
 ;
-; An earlier version ran its control plane and a model server on Windows
-; itself; the model server lived in %LOCALAPPDATA%\Decurix\ollama and is ended
-; too. A person's own Ollama (another folder, port 11434) is not touched.
+; The shared native model server lives in %LOCALAPPDATA%\Decurix\ollama
+; outside WSL, and is ended here too. A person's own Ollama (another folder, port 11434) is not touched.
 ;
 ; The data is the person's: kept unless they say otherwise. Asked once, default
 ; No; a silent uninstall keeps it unless run with --delete-app-data. Never on

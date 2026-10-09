@@ -304,3 +304,23 @@ func TestRenderEveryPage(t *testing.T) {
 		t.Fatalf("RenderDag: %v", err)
 	}
 }
+
+func TestWorkerResourceDefaultsInDashboard(t *testing.T) {
+	t.Setenv("DECURIX_DEFAULT_DESKTOP_CPUS", "3")
+	t.Setenv("DECURIX_DEFAULT_DESKTOP_MEMORY_MB", "6144")
+	var out bytes.Buffer
+	if err := NewRenderer().RenderIndex(&out, PageData{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, checked := range []string{
+		"name=\"cpus\" value=\"3\" checked",
+		"name=\"memory_mb\" value=\"6144\" checked",
+	} {
+		if !strings.Contains(out.String(), checked) {
+			t.Fatalf("configured default missing: %s", checked)
+		}
+	}
+	if strings.Contains(out.String(), "name=\"cpus\" value=\"1\" checked") {
+		t.Fatal("hardcoded CPU default overrides configuration")
+	}
+}

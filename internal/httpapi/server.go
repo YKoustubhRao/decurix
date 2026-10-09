@@ -366,6 +366,7 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/llm/settings", s.humansOnly(s.llmSettingsHandler))
 	mux.HandleFunc("/api/llm/settings/forget", s.humansOnly(s.llmForgetHandler))
 	mux.HandleFunc("/api/llm/", s.llmProxyHandler)
+	mux.HandleFunc("/api/native-ollama/", s.nativeOllamaHandler)
 	// Drafts from the agents' draft_email; sending them is humansOnly above.
 	mux.HandleFunc("/api/outbox", s.outboxCreateHandler)
 }

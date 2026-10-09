@@ -1398,20 +1398,22 @@
       <div class="field">
         <span class="field-label">CPU</span>
         <div class="segmented" role="radiogroup" aria-label="CPU cores">
-          <label class="seg"><input type="radio" name="cpus" value="1" checked><span>1</span></label>
-          <label class="seg"><input type="radio" name="cpus" value="2"><span>2</span></label>
-          <label class="seg"><input type="radio" name="cpus" value="4"><span>4</span></label>
-          <label class="seg"><input type="radio" name="cpus" value="8"><span>8</span></label>
+          {{if and (ne .DefaultDesktopCPUs 1) (ne .DefaultDesktopCPUs 2) (ne .DefaultDesktopCPUs 4) (ne .DefaultDesktopCPUs 8)}}<label class="seg"><input type="radio" name="cpus" value="{{.DefaultDesktopCPUs}}" checked><span>{{.DefaultDesktopCPUs}}</span></label>{{end}}
+          <label class="seg"><input type="radio" name="cpus" value="1" {{if eq .DefaultDesktopCPUs 1}}checked{{end}}><span>1</span></label>
+          <label class="seg"><input type="radio" name="cpus" value="2" {{if eq .DefaultDesktopCPUs 2}}checked{{end}}><span>2</span></label>
+          <label class="seg"><input type="radio" name="cpus" value="4" {{if eq .DefaultDesktopCPUs 4}}checked{{end}}><span>4</span></label>
+          <label class="seg"><input type="radio" name="cpus" value="8" {{if eq .DefaultDesktopCPUs 8}}checked{{end}}><span>8</span></label>
         </div>
       </div>
 
       <div class="field">
         <span class="field-label">Memory</span>
         <div class="segmented" role="radiogroup" aria-label="Memory">
-          <label class="seg"><input type="radio" name="memory_mb" value="2048" checked><span>2 GB</span></label>
-          <label class="seg"><input type="radio" name="memory_mb" value="4096"><span>4 GB</span></label>
-          <label class="seg"><input type="radio" name="memory_mb" value="8192"><span>8 GB</span></label>
-          <label class="seg"><input type="radio" name="memory_mb" value="16384"><span>16 GB</span></label>
+          {{if and (ne .DefaultDesktopMemoryMB 2048) (ne .DefaultDesktopMemoryMB 4096) (ne .DefaultDesktopMemoryMB 8192) (ne .DefaultDesktopMemoryMB 16384)}}<label class="seg"><input type="radio" name="memory_mb" value="{{.DefaultDesktopMemoryMB}}" checked><span>{{.DefaultDesktopMemoryMB}} MB</span></label>{{end}}
+          <label class="seg"><input type="radio" name="memory_mb" value="2048" {{if eq .DefaultDesktopMemoryMB 2048}}checked{{end}}><span>2 GB</span></label>
+          <label class="seg"><input type="radio" name="memory_mb" value="4096" {{if eq .DefaultDesktopMemoryMB 4096}}checked{{end}}><span>4 GB</span></label>
+          <label class="seg"><input type="radio" name="memory_mb" value="8192" {{if eq .DefaultDesktopMemoryMB 8192}}checked{{end}}><span>8 GB</span></label>
+          <label class="seg"><input type="radio" name="memory_mb" value="16384" {{if eq .DefaultDesktopMemoryMB 16384}}checked{{end}}><span>16 GB</span></label>
         </div>
       </div>
 
