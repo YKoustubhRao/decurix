@@ -40,8 +40,13 @@ SYSTEM = (
     "procedure was taught - an EXAMPLE of the kind of thing to read (for instance a customer name, a PO "
     "number, a quantity), never the answer. A value marked list takes one entry per item (line) of the "
     "document, in the document's order, all lists the same length. Read values exactly as the documents "
-    "show them (keep codes and numbers as written; convert a date only when the example shows another "
-    "format). A value marked file is a file to upload: its answer is the full path of one of this run's "
+    "show them (keep codes and numbers as written). A date is the exception: the example shows the form "
+    "the field takes, so write the document's date in the example's form - the same order of day, month "
+    "and year, digits where the example has digits, the same separators (example 01-10-2026, document "
+    "04-Oct-2026: answer 04-10-2026). Found live: a date typed as the document wrote it was refused by "
+    "its field, and the record was saved with today's date. A value's \"meaning\", when given, is what "
+    "the person who taught the procedure said about it; follow it. "
+    "A value marked file is a file to upload: its answer is the full path of one of this run's "
     "files (listed in the request), the one that plays the part the example did - e.g. the new offer "
     "letter where an offer letter was uploaded; several files are separated by ';'. "
     "If a document does not show a value, leave it out - do not guess, and never return the "
@@ -68,13 +73,15 @@ def referenced_files(text):
     return found
 
 
-def _describe(param):
+def _describe(param, meaning=""):
     line = {
         "name": param["name"],
         "field": param.get("label") or param["name"],
         "example": param.get("example") or "",
         "list": bool(param.get("list")),
     }
+    if meaning:
+        line["meaning"] = str(meaning)[:300]
     if param.get("file"):
         line["file"] = True
     if param.get("list") and param.get("examples"):
@@ -127,11 +134,12 @@ def fill(skill, params, context):
 
 
 def _prompt(skill, params, context):
+    meanings = (skill.get("understanding") or {}).get("inputs") or {}
     return "\n".join([
         f"Procedure: {skill.get('title') or skill.get('name')}",
         f"Its goal: {skill.get('goal') or skill.get('done_when') or '(not stated)'}",
         "Values to fill:",
-        json.dumps([_describe(p) for p in params], ensure_ascii=False, indent=1),
+        json.dumps([_describe(p, meanings.get(p["name"])) for p in params], ensure_ascii=False, indent=1),
         "",
         "The request that started this run (it may include an email, and it names the files attached):",
         (context or "")[:6000],

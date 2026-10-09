@@ -133,6 +133,34 @@ def for_window(title, places=None):
     return scored[0][2]
 
 
+def by_name(words, places=None):
+    """
+    The one launcher a person would mean by `words` - its name, or the words
+    its name starts with ("Books" for "Books (Company Edition) (Host)"; part
+    of a word is not a name) - or None; never a guess between two.
+    """
+
+    wanted = _norm(words)
+    if not wanted:
+        return None
+
+    exact, partial = [], []
+    for entry in entries(places):
+        full, name = " ".join(entry["name"].lower().split()), _norm(entry["name"])
+        if wanted in (full, name):
+            exact.append(entry)
+        elif name.startswith(wanted + " ") or full.startswith(wanted + " "):
+            partial.append(entry)
+
+    for found in (exact, partial):
+        commands = {entry["exec"] for entry in found}
+        if len(commands) == 1:
+            return found[0]
+        if commands:
+            return None
+    return None
+
+
 def argv(entry):
     """The command a launcher runs, without its %U-style field codes."""
 

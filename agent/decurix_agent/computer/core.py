@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from decurix_agent import config, filelock, progress
-from decurix_agent.computer import approval, atspi, audit, browser, cdp, grounder, privacy, screen, session, volatility, xinput
+from decurix_agent.computer import approval, atspi, audit, browser, cdp, grounder, launchers, privacy, screen, session, volatility, xinput
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 
@@ -1399,12 +1399,20 @@ def _open(target, new_tab):
             argv = ["mousepad", str(path)]
     elif lower in APPS:
         argv = APPS[lower]
+    elif launchers.by_name(target) is not None:
+        # An app that is an icon on this desktop, opened by its name: what a
+        # double click on the icon does. Found live, an engine told to open an
+        # app a person had copied here was refused, then double-clicked at
+        # guessed points around the icon on every run.
+        argv = launchers.argv(launchers.by_name(target))
     else:
         parts = target.split()
         if not shutil.which(parts[0]):
+            icons = sorted({entry["name"] for entry in launchers.entries()})
             raise ComputerError(
                 f"don't know how to open {target!r}: give a URL, an existing file path, or one of "
                 + ", ".join(sorted(APPS))
+                + ("; or the name of an app on this desktop: " + ", ".join(icons) if icons else "")
             )
         argv = parts
 
