@@ -56,6 +56,14 @@ JUDGE_SYSTEM = (
     "reads yyyy-dd-mm (year-day-month) shows 14 March 1998 as 1998-14-03; a number may show thousands "
     "separators or a currency. Judge the value, not its format (found live: a correct date of birth was "
     "called wrong).\n"
+    "A thing a document describes in its own words is entered as the application's own record of it: the worker "
+    "picks, from what the application offers, the existing record - a company, a product, an account, a person - "
+    "that is the same thing, and that record's name is usually shorter or worded differently than the document's "
+    "line (a document's \"Executive A4 Printing Paper 75 GSM (Box of 10 Reams)\" is the record \"A4 Printing "
+    "Paper\"). That is this run's value entered correctly, not another value - above all when the person who "
+    "taught the task said to pick the matching existing record. Only a record for a different thing is a "
+    "mismatch (found live: correct entries were refused for their records' names, and each retry entered the "
+    "document a second time).\n"
     "Answer \"unsure\" whenever you cannot tell from what you are shown. Never guess \"done\".\n"
     "Reply with JSON only: {\"verdict\": \"done\"|\"not_done\"|\"unsure\", \"confidence\": 0.0-1.0, "
     "\"seen\": \"what the screen now shows, one sentence\", \"why\": \"one sentence\"}"
@@ -81,7 +89,7 @@ def judge(task, claim="", criteria="", values=None, steps="", live_png=None, ref
     if values:
         lines.append("This run's values: " + "; ".join(f"{k} = {v}" for k, v in values.items() if v not in (None, ""))[:1200])
     if criteria:
-        lines.append(f"What the person who taught this task said about it (and what done looks like): {criteria.strip()[:1500]}")
+        lines.append(f"What the person who taught this task said about it (and what done looks like): {criteria.strip()[:6000]}")
     if steps:
         lines.append(f"What the worker did: {steps.strip()[:2000]}")
     if observed:

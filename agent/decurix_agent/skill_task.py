@@ -1327,6 +1327,23 @@ def _procedure(run, from_step=None, note="", ran=False):
                      "own), so do it yourself, with care: follow what the person did and said, and adapt to what the "
                      "screen shows now - the screen is the truth, the recording is the guide.")
 
+    if run.get("attempt_note"):
+        # Found live, three documents running: sent back after the check, the
+        # engine did the whole task again from an empty form and left a second
+        # record beside the first. Told only at the end of its instructions to
+        # "fix that", it still did - so it is told first, with what it reported.
+        again = ["THIS IS YOUR SECOND ATTEMPT AT THIS REQUEST. Your first attempt finished and reported:"]
+        if run.get("attempt_report"):
+            again.append(run["attempt_report"])
+        again.append(f"A check of the screen then found: {run['attempt_note']}")
+        again.append("Whatever the first attempt saved, created or sent STILL EXISTS. Do not start again from an "
+                     "empty form and do not create anything a second time - that enters the request twice. Open the "
+                     "record the first attempt made (find it by the name or number in the report above, or by "
+                     "searching for this request's own reference), look at what it holds, and correct only what the "
+                     "check found wrong or could not see. If you cannot find that record, ask (HELP) before making "
+                     "another.")
+        lines.append("\n".join(again))
+
     understood = skill.get("understanding") or {}
     if understood.get("summary"):
         lines.append(f"What the task is: {_for_this_run(understood['summary'], skill, run['values'])}")
@@ -1400,9 +1417,13 @@ def _procedure(run, from_step=None, note="", ran=False):
         "- Before you say DONE, look at the screen (gui verify) and make sure it shows the task done for THIS run's "
         "values. If it does not, keep working, or ask (HELP) - never report DONE for what the screen does not show. "
         "Your report is checked against the screen, and a false DONE is the worst outcome.",
+        "- When the task ends by closing or leaving the page that shows the result, read the result off that page "
+        "FIRST (gui observe, or gui verify --text with each value that matters: the reference, the date, the "
+        "total). The check sees only the screen as you leave it and what your tools read before - a value nobody "
+        "read cannot be confirmed afterwards, and the task comes back to you.",
+        "- A value a field refuses (it does not keep what you typed) is not entered: type it again in the form "
+        "the field shows it takes, and read the field back. Never pick a date from a calendar by guessing a day.",
     ]
-    if run.get("attempt_note"):
-        how.append(f"- A check after your previous attempt found: {run['attempt_note']} Fix that.")
     lines.append("\n".join(how))
 
     return "\n\n".join(lines)
@@ -1776,7 +1797,7 @@ def _gate(reply, kind, engine):
     if verdict["verdict"] == verify.NOT_DONE and attempts < MAX_MODEL_ATTEMPTS and _engine_can_drive():
         note = " ".join(x for x in (verdict.get("seen"), verdict.get("why")) if x)
         if run is not None:
-            run["attempt_note"] = note
+            run["attempt_note"], run["attempt_report"] = note, (reply or "").strip()[:1500]
             progress.emit(f"Not done yet: {note} Trying again.")
             _by_model(run)
         else:
@@ -1845,7 +1866,7 @@ def _confirm_reply(paused, reply):
         note = (seen or "it was not done") if redo else f"the person said: {reply}"
         progress.emit("Trying again." if redo else "Trying again with what you said.")
         if run is not None:
-            run["attempt_note"], run["attempts"] = note, 0
+            run["attempt_note"], run["attempts"], run["attempt_report"] = note, 0, claim.strip()[:1500]
             return _by_model(run)
         return _retry_engine({"task": paused.get("task") or claim, "attempt": 0}, note)
 
