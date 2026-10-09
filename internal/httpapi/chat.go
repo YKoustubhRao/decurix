@@ -201,7 +201,7 @@ func (s *Server) agentEventHandler(w http.ResponseWriter, r *http.Request) {
 		step := tasks.Step{Text: text}
 
 		if req.Action == nil {
-			s.Chat.AppendStep(desktopID, text)
+			s.Chat.AppendTaskStep(desktopID, reportedTaskID(req.TaskID), text, nil)
 		} else {
 			action := conversation.Action{
 				RecordID: clip(req.Action.ID, 64),
@@ -215,7 +215,7 @@ func (s *Server) agentEventHandler(w http.ResponseWriter, r *http.Request) {
 				After:    s.stepImageURL(desktopID, req.AfterPNG),
 			}
 
-			s.Chat.AppendActionStep(desktopID, text, action)
+			s.Chat.AppendTaskStep(desktopID, reportedTaskID(req.TaskID), text, &action)
 
 			recorded := tasks.Action(action)
 			step.Action = &recorded

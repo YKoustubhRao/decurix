@@ -35,6 +35,10 @@ type Activity struct {
 	// colour on the next poll instead of on the next page load.
 	Status string `json:"status,omitempty"`
 	Crash  string `json:"crash,omitempty"`
+
+	CreatedAt string `json:"created_at,omitempty"`
+	CPUs      int64  `json:"cpus,omitempty"`
+	MemoryMB  int64  `json:"memory_mb,omitempty"`
 }
 
 // activityHandler answers GET /api/desktops/activity?ids=a,b,c with each
@@ -72,6 +76,7 @@ func (s *Server) activityHandler(w http.ResponseWriter, r *http.Request) {
 		a := activityOf(s.Chat.Snapshot(id))
 		if d, ok := known[id]; ok {
 			a.Status, a.Crash = d.Status, d.Crash
+			a.CreatedAt, a.CPUs, a.MemoryMB = d.CreatedAt, d.CPUs, d.MemoryMB
 		}
 		out[id] = a
 	}
