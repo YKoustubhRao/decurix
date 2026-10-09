@@ -133,6 +133,18 @@
       </div>
 
       <div class="field">
+        <div>
+          <button type="button" class="btn btn-default btn-sm" id="attach">
+            <svg width="14" height="14"><use href="#i-clip"/></svg>
+            <span>Attach files</span>
+          </button>
+        </div>
+        <div class="attach-list" id="attachList" hidden></div>
+        <div class="hint">From this computer: a PDF, a scan, a spreadsheet. They are saved in the desktop's
+          <span class="mono">work/inbox</span> folder and its agent reads them for this request. Only for a request sent now.</div>
+      </div>
+
+      <div class="field">
         <label class="repeat-row">
           <input type="checkbox" id="repeat">
           <span>Repeat on a schedule</span>
@@ -340,6 +352,10 @@
 
   syncRepeatUI();
 
+  /* ---------------- attachments ---------------- */
+
+  var attached = Decurix.attachmentPicker(document.getElementById("attach"), document.getElementById("attachList"));
+
   /* ---------------- character count ---------------- */
 
   content.addEventListener("input", function(){
@@ -372,6 +388,13 @@
     var once = runOnce.checked;
     var email = onEmail.checked;
     var cron = cronInput.value.trim();
+    var files = attached.files();
+
+    /* A trigger sends the request later, perhaps many times; the files would
+       have to be kept until then. Said, rather than quietly sent without them. */
+    if(files.length && (repeating || once || email)){
+      return toast("Files can only be attached to a request sent now - remove them, or send this one now.", "error");
+    }
     var runAtLocal = runAtInput.value;
 
     if(repeating && !cron){
@@ -425,8 +448,9 @@
         syncRepeatUI();
         markSent("Email trigger saved");
       }else{
-        await post("/api/desktops/send", {id: select.value, content: text});
-        markSent("Delivered to the desktop");
+        await Decurix.postFiles("/api/desktops/send", {id: select.value, content: text}, files);
+        attached.clear();
+        markSent(files.length ? "Delivered to the desktop with " + files.length + (files.length === 1 ? " file" : " files") : "Delivered to the desktop");
       }
 
       content.value = "";

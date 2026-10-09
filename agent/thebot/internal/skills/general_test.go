@@ -180,7 +180,7 @@ func TestGeneralRunWithNoSessionHistoryStillWorks(t *testing.T) {
 // with nothing done. A reply that opens like the operator's is work, and is
 // handed to the operator.
 func TestGeneralHandsAnOperatorStyleReplyToTheOperator(t *testing.T) {
-	for _, reply := range []string{"DONE", "DONE: opened the profile", "**DONE**", "COMMAND: gui observe"} {
+	for _, reply := range []string{"DONE", "DONE: opened the profile", "**DONE**", "COMMAND: gui observe", "Done. I updated the invoice and verified it.", "done!"} {
 		stub := &stubChatProvider{response: reply}
 		rc := RunContext{Ctx: context.Background(), Provider: stub, Model: "test-model", OnLog: func(string) {}}
 

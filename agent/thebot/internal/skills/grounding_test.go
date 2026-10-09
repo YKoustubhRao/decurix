@@ -289,3 +289,138 @@ func TestEarlyDoneNudgeIsNarrow(t *testing.T) {
 		t.Errorf("a short answer said again is still an echo when it is the whole earlier answer")
 	}
 }
+
+// A file a person attached is a document of the request whatever its kind,
+// and an answer given before anything read it is sent back.
+func TestAnAttachedFileIsADocumentOfTheRequest(t *testing.T) {
+	request := "what does this say?\n\n" + attachedFilesMark +
+		"\n  /home/headless/work/inbox/up-1/notes.txt\n  /home/headless/work/inbox/up-1/PO.pdf"
+
+	docs := requestDocuments(request)
+	if len(docs) != 2 || docs[0] != "/home/headless/work/inbox/up-1/PO.pdf" || docs[1] != "/home/headless/work/inbox/up-1/notes.txt" {
+		t.Fatalf("documents = %q", docs)
+	}
+
+	st := groundingState("what does this say?\n\n" + attachedFilesMark + "\n  /home/headless/work/inbox/up-1/notes.txt")
+	if n := earlyDoneNudge(st, nil, "It is a shopping list."); !strings.Contains(n, "office read /home/headless/work/inbox/up-1/notes.txt") {
+		t.Errorf("an unread attachment was answered about: %q", n)
+	}
+
+	st.Commands = []string{"office read /home/headless/work/inbox/up-1/notes.txt"}
+	if n := earlyDoneNudge(st, nil, "It is a shopping list."); n != "" {
+		t.Errorf("an answer after reading the attachment was pushed back: %q", n)
+	}
+}
+
+// A bill writes its figures with separators and paise; the form takes the plain number. The same number in another
+// spelling is traced; a number the bill does not hold is still a guess.
+func TestGroundingKnowsANumberHoweverItIsWritten(t *testing.T) {
+	st := groundingState("Enter /w/BILL_03.pdf in the project portal.", "office read /w/BILL_03.pdf")
+	st.noteSeen("Mesh Chairs  Qty: 2 Chairs | Rate: Rs. 6,000.00 | Amount: Rs. 12,000.00\nGRAND TOTAL: Rs. 1,88,800.00")
+
+	for _, cmd := range []string{`gui type e892 "6000"`, `gui type e892 "6000.00"`, `gui type e892 "₹6,000"`, `gui type e1 "188800"`} {
+		if n := groundingNudge(st, cmd); n != "" {
+			t.Errorf("%s was refused: %q", cmd, n)
+		}
+	}
+	if n := groundingNudge(st, `gui type e892 "7000"`); !strings.Contains(n, `"7000"`) {
+		t.Errorf("a figure the bill does not hold was let through: %q", n)
+	}
+	if n := groundingNudge(st, `gui type e5 "6000 chairs"`); !strings.Contains(n, `"6000 chairs"`) {
+		t.Errorf("text that is not only a number was matched as one: %q", n)
+	}
+}
+
+func TestGroundingKnowsADateHoweverItIsWritten(t *testing.T) {
+	st := groundingState("Enter /w/BILL_04.pdf in the project portal.", "office read /w/BILL_04.pdf")
+	st.noteSeen("Invoice No: SC/TAX/26-27/088\nInvoice Date: 04-Oct-2026\nDue: 3 November 2026")
+
+	for _, cmd := range []string{`gui type e1 "04-10-2026"`, `gui type e1 "2026-10-04"`, `gui type e1 "4/10/2026"`,
+		`gui type e1 "03-11-2026"`, `gui type e1 "11/03/2026"`} {
+		if n := groundingNudge(st, cmd); n != "" {
+			t.Errorf("%s was refused: %q", cmd, n)
+		}
+	}
+	if n := groundingNudge(st, `gui type e1 "05-10-2026"`); !strings.Contains(n, `"05-10-2026"`) {
+		t.Errorf("a date the bill does not hold was let through: %q", n)
+	}
+	if n := groundingNudge(st, `gui type e1 "04-10-2026 paid"`); !strings.Contains(n, `"04-10-2026 paid"`) {
+		t.Errorf("text that is more than a date was matched as one: %q", n)
+	}
+}
+
+func TestGroundingKnowsAnyCurrencyMark(t *testing.T) {
+	st := groundingState("Enter /w/I.pdf.", "office read /w/I.pdf")
+	st.noteSeen("Total due: EUR 1,250.50  Fee: £75.00  Net: USD 3,000")
+	for _, cmd := range []string{`gui type e1 "1250.5"`, `gui type e1 "€1,250.50"`, `gui type e1 "75"`, `gui type e1 "$3000"`} {
+		if n := groundingNudge(st, cmd); n != "" {
+			t.Errorf("%s was refused: %q", cmd, n)
+		}
+	}
+	if n := groundingNudge(st, `gui type e1 "1250.6"`); !strings.Contains(n, `"1250.6"`) {
+		t.Errorf("a figure the document does not hold was let through: %q", n)
+	}
+}
+
+func TestGroundingDoesNotLetADateBeSwappedAcrossDayAndMonth(t *testing.T) {
+	// A document that writes 04-10-2026 in digits does not say which field is the month.
+	st := groundingState("Enter /w/I.pdf.", "office read /w/I.pdf")
+	st.noteSeen("Issued: 04-10-2026")
+	for _, cmd := range []string{`gui type e1 "04-10-2026"`, `gui type e1 "4/10/2026"`, `gui type e1 "04.10.2026"`} {
+		if n := groundingNudge(st, cmd); n != "" {
+			t.Errorf("%s (same order as the document) was refused: %q", cmd, n)
+		}
+	}
+	for _, cmd := range []string{`gui type e1 "10-04-2026"`, `gui type e1 "2026-10-04"`, `gui type e1 "2026-04-10"`} {
+		if n := groundingNudge(st, cmd); n == "" {
+			t.Errorf("%s was let through although the document's own order is not known", cmd)
+		}
+	}
+
+	// One that cannot be misread (a day past 12, or the month named) is converted freely.
+	st = groundingState("Enter /w/I.pdf.", "office read /w/I.pdf")
+	st.noteSeen("Issued: 25-10-2026   Due: 3 Nov 2026")
+	for _, cmd := range []string{`gui type e1 "2026-10-25"`, `gui type e1 "10/25/2026"`, `gui type e1 "25.10.2026"`,
+		`gui type e1 "03-11-2026"`, `gui type e1 "11/03/2026"`} {
+		if n := groundingNudge(st, cmd); n != "" {
+			t.Errorf("%s was refused: %q", cmd, n)
+		}
+	}
+	if n := groundingNudge(st, `gui type e1 "2026-25-10"`); n == "" {
+		t.Errorf("an impossible date was let through")
+	}
+}
+
+// A formula is the worker's own construction: not looked for in what was read,
+// though a figure inside it still is.
+func TestGroundingLetsAFormulaThrough(t *testing.T) {
+	st := groundingState("Put the total of the Q1 column (B2 to B5) in cell B6 using a formula, then save.")
+	st.noteSeen("Rent 1200\nPayroll 5400")
+
+	for _, ok := range []string{`gui type e30 "=SUM(B2:B5)"`, `gui type e30 "=SUM(B2:B5)\n"`, `gui type "=B2+B3*$C$1"`, `gui type e3 "=B2+1200"`} {
+		if n := groundingNudge(st, ok); n != "" {
+			t.Errorf("%s was refused: %q", ok, n)
+		}
+	}
+	for _, bad := range []string{`gui type e30 "=B2+9999"`, `gui type e30 "=\"Acme Ltd\""`, `gui type e30 "=cmd|' /C calc'!A0"`} {
+		if n := groundingNudge(st, bad); n == "" {
+			t.Errorf("%s was let through", bad)
+		}
+	}
+}
+
+// Work in a window cannot be reported done before a single command has run.
+func TestScreenWorkIsNotDoneBeforeAnythingRan(t *testing.T) {
+	st := groundingState("Rename the sheet in the spreadsheet open in LibreOffice Calc from Sheet1 to Budget 2026, then save the file.")
+	if n := unstartedScreenNudge(st); !strings.Contains(n, "nothing has been run") || !strings.Contains(n, "gui observe") {
+		t.Fatalf("a done with nothing run was taken: %q", n)
+	}
+	st.CommandsRun = 1
+	if n := unstartedScreenNudge(st); n != "" {
+		t.Fatalf("pushed back after a command ran: %q", n)
+	}
+	// A request that needs no window is answered as before.
+	if n := unstartedScreenNudge(groundingState("ping - just reply pong")); n != "" {
+		t.Fatalf("a plain answer was refused: %q", n)
+	}
+}

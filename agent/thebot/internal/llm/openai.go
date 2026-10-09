@@ -103,7 +103,7 @@ func (o *OpenAIProvider) Chat(ctx context.Context, model string, messages []Mess
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+o.APIKey)
 
-	resp, err := o.Client.Do(req)
+	resp, err := rateLimitedRequest(o.Client, req)
 	if err != nil {
 		return Result{}, fmt.Errorf("openai: request failed: %w", err)
 	}

@@ -27,7 +27,7 @@ def save_request(request, task_id=""):
     """
 
     stem = time.strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
-    if state.waiting_for_query:
+    if state.waiting_for_query and (not task_id or not state.current_task_id or task_id == state.current_task_id):
         stem += REPLY_MARK
 
     filename = task_context.command_filename(stem, task_id)

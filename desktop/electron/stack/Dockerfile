@@ -1,17 +1,16 @@
-# The control plane's image, as the Mac and Linux apps build it on the person's
-# computer (desktop/electron/main.js, startStack). It is the runtime stage of
-# docker/Dockerfile with the binary already built: scripts/*/build_app.sh
-# compile it and ship it in the app beside this file, so the computer needs
-# Docker and nothing else - no Go, no checkout. Keep the two in step.
-FROM debian:bookworm-slim
+# The control plane's image, as the app builds it on the person's computer
+# (desktop/electron/main.js, startStack). It is the runtime stage of
+# docker/Dockerfile with the binary already built: scripts/*/build_app.* compile
+# it and ship it in the app beside this file, so the computer needs nothing
+# else - no Go, no checkout. Keep the two in step.
+FROM alpine:3.24
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    docker.io \
-    ca-certificates \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+# A static binary that runs only docker (the host-app hop) and bash in here:
+# Alpine's docker-cli is a few MB from apk, where Debian's docker.io took about
+# five minutes of a first start.
+RUN apk add --no-cache docker-cli bash curl ca-certificates
 
 # decurix-android-arm64 is the phone build /phone/decurix hands out.
 COPY decurix decurix-android-arm64 ./

@@ -106,6 +106,11 @@ def _states(Atspi, node):
     return flags, shown
 
 
+# How much of a text field's, and of a document paragraph's, text is read (gui read shows it all).
+FIELD_TEXT_LIMIT = 20000
+PARAGRAPH_TEXT_LIMIT = 2000
+
+
 def _text(Atspi, node, limit=200):
     try:
         count = Atspi.Text.get_character_count(node)
@@ -313,7 +318,9 @@ def _walk(Atspi, root, index_path, path, group_id, window_title, app_name, pid, 
 
         value = ""
         if role in TEXT_ROLES or raw_role in ("paragraph", "heading"):
-            value = _text(Atspi, node).strip()
+            # A field's text whole: an editor's value is its document, and 200 characters of it
+            # (the limit for everything else) hid most of a file from the engine editing it.
+            value = _text(Atspi, node, FIELD_TEXT_LIMIT if role in TEXT_ROLES else PARAGRAPH_TEXT_LIMIT).strip()
 
         # A LibreOffice Writer table cell is named by its coordinate ("B1");
         # its words are in the paragraph inside it.
@@ -701,14 +708,3 @@ def set_text(element, text):
     """
 
     return False
-
-
-# A native Windows worker has no AT-SPI: its windows' controls are read and
-# worked through UI Automation (win.py), into the same element shape.
-import os as _os
-
-if _os.name == "nt":
-    from decurix_agent.computer import win as _win
-
-    observe, default_action, place_caret = _win.observe, _win.default_action, _win.place_caret
-    grab_focus, select_option, set_text = _win.grab_focus, _win.select_option, _win.set_text

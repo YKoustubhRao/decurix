@@ -75,6 +75,13 @@ FIXED = re.compile(r"\b(fixed|once|as recorded|just those|only those|exactly|no|
 NOTHING = re.compile(r"^\W*(skip|none|n/?a|nothing|no|-)\W*$", re.I)
 # The last question takes a name, so a yes or a no there has to be the whole
 # reply: "Save invoice" and "Delete old files" are names, not answers.
+# Whether a person wants to be asked before each run of a task, or to have it go ahead on its own. "don't ask" and
+# "without asking" are a go-ahead, so ask is only an ask when nothing negates it.
+ASK_FIRST = re.compile(r"(?<!n't )(?<!not )(?<!never )(?<!without )(?<!need to )(?<!have to )\bask(?:ing)?\b|check with me|\bconfirm|"
+                       r"each time|every time|\bapprov|my (?:ok|yes|go)\b|\bwait for me\b", re.I)
+GO_AHEAD = re.compile(r"\bgo(?: ahead)?\b|on your own|\b(?:don'?t|do not|never|without)\s+ask(?:ing)?\b|no need|"
+                      r"just do it|\bproceed\b|automatic(?:ally)?|by yourself", re.I)
+
 KEEP_NAME = re.compile(
     r"^\W*(?:(?:yes|y|yeah|yep|ok|okay|sure|confirm|looks good|go ahead)"
     r"(?:[\s,.!-]+(?:please|thanks?|save(?: it)?|keep(?: it)?))*|(?:save|keep)(?: it| that)?)\W*$", re.I)
@@ -96,6 +103,7 @@ CHOICES = {
     "start": [("yes", YES), ("no", NO)],
     "loop": [("each", EACH), ("fixed", FIXED)],
     "confirm": [("yes", KEEP_NAME), ("no", THROW_AWAY)],
+    "approval": [("ask", ASK_FIRST), ("go", GO_AHEAD)],
 }
 
 # What is assumed when a question was not understood twice: the answer that
@@ -110,6 +118,8 @@ CAUTIOUS = {
     # by one, like any others.
     "loop": "fixed",
     "confirm": "hold",
+    # Asking costs a person one reply; a task that should have asked costs more.
+    "approval": "ask",
 }
 
 
@@ -174,6 +184,7 @@ def build(sources, name=None):
         "starts": _starts(steps, programs),
         "done_when": None,
         "notes": _notes(steps, programs),
+        "documents": _documents(programs),
         "params": params,
         "steps": steps,
         "loops": loops,
@@ -181,6 +192,8 @@ def build(sources, name=None):
         "tidied": tidied,
         "answers": {},
         "unclear": {},
+        # None for a skill taught before this was asked; "ask" or "go" once a person has said.
+        "approval": None,
     }
 
     return skills.renumber(skill)
@@ -613,6 +626,22 @@ def _starts(steps, programs):
     return {"window": window, "url": url, "check": None}
 
 
+def _documents(programs):
+    """
+    The documents the person worked from, as paths on this desktop: the files
+    each demonstration's ticket was given (record_task.py keeps them in the
+    recording's meta), in order, each once. A lesson's model reads them beside
+    what was typed (study.py), and a later run is told they were examples.
+    """
+
+    found = []
+    for meta, _, _ in programs:
+        for path in meta.get("files") or []:
+            if isinstance(path, str) and path and path not in found:
+                found.append(path)
+    return found
+
+
 def _notes(steps, programs):
     """A person's own written explanations, each with the step it came before."""
 
@@ -736,7 +765,7 @@ def questions(skill):
 
     # Every typed value nobody has said changes or stays is asked about in
     # one question too: a demonstration of keying a document into a system
-    # (a PO into an ERP, a new joiner into an HRMS) types ten fields, and ten
+    # (a PO into an application, a new joiner into an HRMS) types ten fields, and ten
     # questions in a row, each answered "changes", is what made teaching one
     # tedious. Answers are still kept per step (`variable:<id>`).
     undecided_values = [step for step in skill["steps"]
@@ -764,6 +793,7 @@ def questions(skill):
         elif step["id"] == first_positional:
             found.append(_coordinates(positional))
 
+    found.append(_approval(skill))
     found.append(_confirm(skill))
     return found
 
@@ -1066,6 +1096,21 @@ def _unsupported(step):
     return _question(f"unsupported:{step['id']}", "unsupported", text, step["id"])
 
 
+# How the question about starting a task opens (the tests' stand-in for a person finds it by this).
+APPROVAL_OPENING = "Once you ask me to do this task"
+
+
+def _approval(skill):
+    """Whether a later request for this task waits for the person's yes. Decided here, once, by the person who knows
+    what the task does - not by words in a request (a "Purchase Invoice" is a document; "purchase" is an act)."""
+
+    text = (APPROVAL_OPENING + ", should I check with you before I start, or go ahead on my own? "
+            "Reply `ask first` or `go ahead`. Either way I always stop and ask before a step that sends, pays or "
+            "publishes - this is about starting the task at all, so say `ask first` if it spends money or commits "
+            "you to something.")
+    return _question("approval", "approval", text)
+
+
 def _confirm(skill):
     parts = ["That is everything I wanted to ask."]
 
@@ -1076,6 +1121,11 @@ def _confirm(skill):
     by_hand = [step for step in skill["steps"] if step["kind"] == "manual"]
     if by_hand:
         parts.append("I will stop and let you do: " + "; ".join(f"{s['n']}. {s['summary']}" for s in by_hand) + ".")
+
+    if skill.get("approval") == "go":
+        parts.append("When asked, I will start this task without checking with you first.")
+    else:
+        parts.append("When asked, I will check with you for a yes before I start.")
 
     needed = [p for p in skill["params"] if p["varies"]]
     if needed:
@@ -1344,6 +1394,9 @@ def _apply(skill, question, choice):
     elif kind in ("coordinates", "unsupported"):
         _apply_step_choice(skill, step, choice)
         skills.renumber(skill)
+
+    elif kind == "approval":
+        skill["approval"] = choice
 
     elif kind == "confirm":
         if choice == "yes":

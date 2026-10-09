@@ -165,7 +165,10 @@ def compile_program(meta, events, frames=None):
         # coordinate, and a coordinate alone says nothing about what is there
         # now. A picture of what was around it, taken from the frame it was
         # made on, lets the replay check.
-        if kind in LOOK_KINDS and step.get("point") and "target" not in step and event.get("before"):
+        # Not for a press the recorder read only after the screen had changed (demonstration.LATE_NOTE): its frames
+        # show what the press made, and a picture of that would lead the replay to the wrong thing.
+        pictured = event.get("before") and not event.get("late")
+        if kind in LOOK_KINDS and step.get("point") and "target" not in step and pictured:
             png = frames.png(event["before"])
             look = visual.make_look(png, step["point"], event.get("screen") or meta.get("screen")) if png else None
             if look:
@@ -701,13 +704,7 @@ def _find(step, ladder=None, report=None):
         # it from the launcher that makes it, once. Found live: `skip` on the
         # double click that opened "Koustubh - Chrome" stopped the very next
         # step for the window not being there.
-        #
-        # A recording says which program each step's window belonged to. When
-        # no window of that program is open at all - the recording began with
-        # the app already open, so no step of it opens it - the app is opened
-        # the way a person would: from its shortcut, or the browser on the
-        # page the step was recorded on.
-        if not brought and (reason.startswith(NOT_IN_FRONT) or _app_gone(step)):
+        if not brought and reason.startswith(NOT_IN_FRONT):
             brought = True
             window = _stable_title(step.get("window"))
             done = launchers.bring_forward(window, title_matches, app=step.get("app"), url=step.get("url")) \
@@ -751,20 +748,6 @@ def _find(step, ladder=None, report=None):
             raise _Halt(reason, _screen_brief(observation), missing=missing, observation=observation)
 
         time.sleep(POLL_SECONDS)
-
-
-def _app_gone(step):
-    """Whether the program a step was recorded in has no window open: only where a recording says the program."""
-
-    app = step.get("app")
-    # Only a native Windows worker's screen says which program a window is.
-    if not launchers.NATIVE or not app or not _stable_title(step.get("window")):
-        return False
-
-    if (app.get("name") or "").lower() in launchers.BROWSER_PROGRAMS:
-        return not any(browser.is_browser_title(w["title"]) for w in screen.windows())
-
-    return not launchers.app_open(app)
 
 
 def _on_desktop(step):
@@ -1006,7 +989,7 @@ def _recover(steps, index, step, halt, values, ladder, report):
 
     if step.get("point") and not step.get("target") and halt.reason == LOOK_MISSING:
         try:
-            point = ladder.ground_point(step, now, _recorded_frame(step))
+            point = ladder.ground_point(step, now, _recorded_frame(step), halt.observation.get("elements"))
         except Exception as exc:
             log(f"replay: could not ground step {step['n']}: {exc}")
             point = None

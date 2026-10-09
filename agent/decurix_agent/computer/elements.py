@@ -235,7 +235,7 @@ def find(elements, ref=None, role=None, name=None, path=None, active_group=None)
         matches = in_active or matches
 
     # While a dialog is open over a page, its "Confirm" is the one meant - the
-    # page's own (an Odoo quotation's, which turns it into an order) sits under
+    # page's own (an the web app quotation's, which turns it into an order) sits under
     # the dialog and cannot be reached. Only when exactly one match is inside
     # the dialog on top.
     if len(matches) > 1:
@@ -300,6 +300,10 @@ def element_line(element, coords=False):
     value = element.get("value")
     if value not in (None, "") and value != element.get("name"):
         line += " value=" + _quote(value, 60)
+        if len(" ".join(str(value).split())) > 60:
+            # The engine cannot see the rest, and must know there is a rest (gui read).
+            lines = str(value).strip().count("\n") + 1
+            line += f" ({len(value)} chars{f', {lines} lines' if lines > 1 else ''} - gui read {element['ref']} shows all)"
 
     states = [s for s in element.get("states", []) if s != "offscreen"]
     if states:

@@ -314,6 +314,51 @@ func startHostAppAhead(desktopID, id, target, args string) {
 	}
 }
 
+// hostAppPage, when set, says which page a checked Windows target only opens: a web app's launcher for a page on this
+// computer (winhost.Manager.LocalPage), "" for anything else.
+var (
+	hostAppPageMu sync.RWMutex
+	hostAppPage   func(target, args string) string
+)
+
+// SetHostAppPageFinder installs what localPageFor asks.
+func SetHostAppPageFinder(f func(target, args string) string) {
+	hostAppPageMu.Lock()
+	hostAppPage = f
+	hostAppPageMu.Unlock()
+}
+
+// localPageFor is the page on this computer that a Windows app only opens in a browser, or "".
+func localPageFor(target, args string) string {
+	hostAppPageMu.RLock()
+	f := hostAppPage
+	hostAppPageMu.RUnlock()
+	if f == nil {
+		return ""
+	}
+	return f(target, args)
+}
+
+// vmPageURL is page as a VM reaches it: the host's loopback address becomes host.docker.internal, which every desktop
+// resolves to the machine it runs on (the same name CONTROL_PLANE_URL uses). "" when page is not a loopback address.
+func vmPageURL(page string) string {
+	u, err := url.Parse(page)
+	if err != nil {
+		return ""
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case "localhost", "127.0.0.1", "::1":
+	default:
+		return ""
+	}
+	host := "host.docker.internal"
+	if port := u.Port(); port != "" {
+		host += ":" + port
+	}
+	u.Host = host
+	return u.String()
+}
+
 // SetHostAppChecker installs the way Windows apps are checked. Without one, no Windows program is offered - one that
 // cannot be checked is not one that can be promised.
 func SetHostAppChecker(c HostAppChecker) {
@@ -430,7 +475,9 @@ func vetHostApps(apps []HostAppItem) []HostAppItem {
 			continue
 		}
 		app.Mode = ModeHostGUI
-		if isBrowserApp(app.Name) {
+		if localPageFor(targets[i].Target, targets[i].Args) != "" {
+			app.Description = "A web app: opens in the VM's browser, its server runs on this computer"
+		} else if isBrowserApp(app.Name) {
 			app.Description = "Runs privately on this computer; your signed-in browser profile is copied the first time it opens"
 		} else {
 			app.Description = "Runs on this computer on a hidden desktop; you see and use it in the VM"
@@ -454,13 +501,6 @@ func isBrowserApp(name string) bool {
 // strips cache bloat to maintain zero redundant memory, streams them into the container's
 // /home/headless volume, and installs the host execution bridge launchers.
 func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selectedIDs []string) error {
-	if m.native != nil {
-		// Nothing to copy: the apps become shortcuts on the worker's screen.
-		if _, err := m.native.readMeta(sanitizeName(desktopID)); err != nil || len(selectedIDs) == 0 {
-			return err
-		}
-		return m.native.addAndRedress(sanitizeName(desktopID), nativeApps(selectedIDs, DetectHostApps()))
-	}
 
 	if len(selectedIDs) == 0 {
 		return nil
@@ -2085,6 +2125,50 @@ func hostFallback(pc packContext, slug string, app HostAppItem) string {
 	if target, args, ok := windowsTarget(app.HostCmd); ok {
 		return hostGUILauncher(pc, slug, app.Name, target, args)
 	}
+	return hostRunFallback(pc, app)
+}
+
+// localPageLauncher is the launcher for a Windows app that is only a web app's launcher (localPageFor): its page, opened
+// in the VM's own browser, where an agent reads it field by field - the hidden host browser's picture is all a worker
+// would get, a demonstration there is bare coordinates, and a password typed into it is not known to be one. The page is
+// reached at host.docker.internal; when nothing answers there the app is started on the host as it would be for the
+// viewer (its launcher starts the server first: winhost's Prepare) and the page waited for. Only a page the VM still
+// cannot reach - a server that listens on the host's loopback alone - is shown through the viewer, as before.
+func localPageLauncher(pc packContext, slug, title, target, args, vmPage string) string {
+	id := pc.sessionID(slug)
+	q := url.Values{"id": {id}, "desktop": {pc.DesktopID}, "target": {target}, "args": {args}}
+	if len(pc.Secret) > 0 {
+		q.Set("token", winhost.Token(pc.Secret, id, target, args))
+	}
+	before := fmt.Sprintf(`PAGE=%s
+CP="${CONTROL_PLANE_URL:-http://host.docker.internal:8080}"
+
+# Any answer at all is a server: a sign-in page, a redirect, even an error page.
+answers() {
+    local code
+    code=$(curl -s -o /dev/null -m 5 -w '%%{http_code}' "$PAGE" 2>/dev/null)
+    [ -n "$code" ] && [ "$code" != 000 ]
+}
+
+host_viewer() {
+%s}
+
+if ! answers; then
+    # Its server is not up: start the app on the host, as the viewer would, which starts the server first.
+    curl -s -m 600 -o /dev/null -X POST "$CP/api/host-gui/start" -d %s 2>/dev/null
+    for _ in $(seq 1 90); do
+        answers && break
+        sleep 2
+    done
+    answers || host_viewer
+fi
+
+`, shellQuote(vmPage), hostGUILauncher(pc, slug, title, target, args), shellQuote(q.Encode()))
+	return webAppWrapperWith(slug, vmPage, before, hostGUILauncher(pc, slug, title, target, args))
+}
+
+// hostRunFallback is host-run of exactly the app's command, signed for this desktop.
+func hostRunFallback(pc packContext, app HostAppItem) string {
 	// Signed for exactly this command line: the control plane runs it as written and refuses anything else, so a
 	// launcher's own arguments ($@) are not passed on.
 	words := splitWords(app.HostCmd)
@@ -2120,12 +2204,17 @@ func startupNotifyEntries(webURL string) string {
 // already open, ignores clicks while a launch is in flight (flock), and keeps the launch in flight until the window
 // has appeared. fallback runs only when no browser is installed.
 func webAppWrapper(slug, webURL, fallback string) string {
+	return webAppWrapperWith(slug, webURL, "", fallback)
+}
+
+// webAppWrapperWith is webAppWrapper with before run first, once the display is set.
+func webAppWrapperWith(slug, webURL, before, fallback string) string {
 	host := webAppHost(webURL)
 	return fmt.Sprintf(`#!/usr/bin/env bash
 export DISPLAY="${DISPLAY:-:1}"
 APP=%s
 HOST_RE=%s
-
+%s
 app_window() {
     command -v xdotool >/dev/null 2>&1 || return 1
     xdotool search --classname "$HOST_RE" 2>/dev/null | head -1
@@ -2154,7 +2243,7 @@ for browser in chromium-browser google-chrome chromium; do
         exit 0
     fi
 done
-%s`, shellQuote(webURL), shellQuote("^"+regexp.QuoteMeta(host)), slug, fallback)
+%s`, shellQuote(webURL), shellQuote("^"+regexp.QuoteMeta(host)), before, slug, fallback)
 }
 
 // shellQuote single-quotes s for a bash script.
@@ -2185,7 +2274,13 @@ func packDynamicApp(tw *tar.Writer, app HostAppItem, pc packContext) error {
 			iconSlug, svgContent = getAppSVGIcon(icon)
 		}
 
-		if svgContent != "" {
+		if png := windowsAppIcon(app); len(png) > 0 {
+			iconTarget := fmt.Sprintf(".local/share/icons/hicolor/48x48/apps/%s.png", slug)
+			if err := writeStringToTar(tw, iconTarget, string(png), 0644); err != nil {
+				return err
+			}
+			icon = "/home/headless/" + iconTarget
+		} else if svgContent != "" {
 			iconTarget := fmt.Sprintf(".local/share/icons/hicolor/scalable/apps/%s.svg", iconSlug)
 			_ = writeStringToTar(tw, iconTarget, svgContent, 0644)
 			icon = fmt.Sprintf("/home/headless/%s", iconTarget)
@@ -2203,8 +2298,15 @@ func packDynamicApp(tw *tar.Writer, app HostAppItem, pc packContext) error {
 			}
 		}
 
-		if icon == "" {
-			icon = pickAppIcon(app.Name)
+		// Theme names and inaccessible host paths cannot guarantee an icon in
+		// the VM. Package a fallback when no usable image was copied.
+		if !strings.HasPrefix(icon, "/home/headless/.local/share/icons/") {
+			iconTarget := ".local/share/icons/hicolor/scalable/apps/decurix-app.svg"
+			fallback := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><rect x="3" y="3" width="42" height="42" rx="10" fill="#3b6fb6"/><path fill="white" d="M12 12h10v10H12zm14 0h10v10H26zM12 26h10v10H12zm14 0h10v10H26z"/></svg>`
+			if err := writeStringToTar(tw, iconTarget, fallback, 0644); err != nil {
+				return err
+			}
+			icon = "/home/headless/" + iconTarget
 		}
 		cat := getCategoriesForApp(app.Category)
 
@@ -2219,6 +2321,12 @@ func packDynamicApp(tw *tar.Writer, app HostAppItem, pc packContext) error {
 		} else if webURL = getWebAppURLForApp(app.Name, app.HostCmd); webURL != "" {
 			wrapperScript = webAppWrapper(slug, webURL, hostFallback(pc, slug, app))
 			startup = startupNotifyEntries(webURL)
+		} else if target, args, ok := windowsTarget(app.HostCmd); ok && vmPageURL(localPageFor(target, args)) != "" {
+			vmPage := vmPageURL(localPageFor(target, args))
+			wrapperScript = localPageLauncher(pc, slug, app.Name, target, args, vmPage)
+			startup = startupNotifyEntries(vmPage)
+			// Kept ready on the host as any Windows app is: that is what starts the page's server, ahead of a click.
+			startHostAppAhead(pc.DesktopID, pc.sessionID(slug), target, args)
 		} else {
 			wrapperScript = "#!/usr/bin/env bash\n" + hostFallback(pc, slug, app)
 			// This is the exact launcher a host_gui app's icon runs the first time someone opens it - start it now
@@ -2369,10 +2477,10 @@ esac
 // metrics, or transient crash dumps that cause RAM redundancy and page cache bloat.
 func isCacheOrTransient(name, fullPath string, isDir bool) bool {
 	lower := strings.ToLower(name)
-	lowerPath := strings.ToLower(fullPath)
-
 	// Strictly exclude self / app repository to prevent recursive nesting
-	if strings.Contains(lowerPath, "decurix") || strings.Contains(lowerPath, "migration-toolkit") {
+	// by the directory being visited. An ancestor with "decurix" in its name
+	// does not make every cookie and settings file below it a repository.
+	if isDir && (lower == "decurix" || lower == "migration-toolkit") {
 		return true
 	}
 

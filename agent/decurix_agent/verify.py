@@ -66,7 +66,8 @@ def available():
     return llm_client.available()
 
 
-def judge(task, claim="", criteria="", values=None, steps="", live_png=None, reference_png=None, observed=None):
+def judge(task, claim="", criteria="", values=None, steps="", live_png=None, reference_png=None, observed=None,
+          screen_text=""):
     """
     {"verdict", "confidence", "seen", "why"} for whether `task` was done. With
     no model, or when the model cannot be read, the verdict is "unsure" - the
@@ -86,6 +87,10 @@ def judge(task, claim="", criteria="", values=None, steps="", live_png=None, ref
     if observed:
         lines.append("What the worker's tools did and read off the screen during this task, as it happened (observed, "
                      "not claimed - a report that matches these is backed by them):\n" + "\n".join(observed)[-6000:])
+    if screen_text:
+        lines.append("The text the fields on the screen hold NOW, read from the apps themselves (exact - where it and "
+                     "the picture's small print disagree, this is right; a report that says a text was changed is "
+                     "backed only if this shows it):\n" + screen_text)
     lines.append(f"What the worker reports: {(claim or '(nothing)').strip()[:2500]}")
     doc_text, doc_pictures = _documents(task)
     if doc_text:

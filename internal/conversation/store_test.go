@@ -379,3 +379,41 @@ func TestEndTurnClosesWorkThatWillNeverBeReported(t *testing.T) {
 		t.Error("EndTurn added a reply to a thread with no running turn")
 	}
 }
+
+func TestTaskTaggedLateStepDoesNotReopenTurn(t *testing.T) {
+	s := newStore(t)
+	s.AppendUserRequest("box", "task-1", "learn")
+	s.AppendAgentReply("box", "task-1", KindEntry, "Learned")
+	// Past the fallback timing window: the ID, not the clock, owns the event.
+	s.mu.Lock()
+	s.threadFor("box").entries[1].CreatedAt = time.Now().Add(-time.Hour)
+	s.mu.Unlock()
+	s.AppendTaskStep("box", "task-1", "looked at the screen", nil)
+	thread := s.Snapshot("box")
+	if thread.Running || len(thread.Steps) != 0 || len(thread.Entries[1].Steps) != 1 {
+		t.Fatalf("late event reopened turn: %+v", thread)
+	}
+	// Late events from an older task must not contaminate a newer turn.
+	s.AppendUserRequest("box", "task-2", "next bill")
+	s.AppendTaskStep("box", "task-1", "old action", &Action{Kind: "click"})
+	thread = s.Snapshot("box")
+	if !thread.Running || len(thread.Steps) != 0 || len(thread.Entries[1].Steps) != 2 {
+		t.Fatalf("old event contaminated new turn: %+v", thread)
+	}
+	s.AppendTaskStep("box", "task-2", "new action", nil)
+	if len(s.Snapshot("box").Steps) != 1 {
+		t.Fatal("new task lost progress")
+	}
+}
+
+func TestTaskTaggedStepAfterQueryResumesLiveTurn(t *testing.T) {
+	s := newStore(t)
+	s.AppendUserRequest("box", "task-1", "learn")
+	s.AppendAgentReply("box", "task-1", KindQuery, "Save?")
+	s.AppendUserRequest("box", "task-1", "yes")
+	s.AppendTaskStep("box", "task-1", "saving", nil)
+	thread := s.Snapshot("box")
+	if !thread.Running || len(thread.Steps) != 1 {
+		t.Fatalf("resumed teaching lost progress: %+v", thread)
+	}
+}
