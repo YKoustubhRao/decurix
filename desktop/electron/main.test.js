@@ -64,7 +64,7 @@ const data = path.join('/profile/AppData', 'decurix');
 // is read from inside the distro there.
 async function boot(initialState, {
   backendStarts = true, stopFails = false, platform = 'win32', dockerRun = () => 0, files = [], staged = platform === 'win32' ? 'build-2' : null,
-  wsl = {}, pickedFolders = [], canceledPicker = false, savedRuntime,
+  wsl = {}, pickedFolders = [], canceledPicker = false, savedRuntime, hosting = false, holdOllama = false, ollamaFails = false,
 } = {}) {
   const machine = { installed: true, installedAfterAsking: false, distro: true, daemon: true, setupFails: false, existing: {}, ...wsl };
   const intervals = [];
@@ -159,7 +159,12 @@ async function boot(initialState, {
     const distro = args[args.indexOf('-d') + 1];
     const available = distro === 'Decurix' ? machine.distro : Object.hasOwn(machine.existing, distro);
     if (!available) { say(`There is no distribution with the supplied name.`, 1); return; }
-    if (program[0] === 'sh' && program[1] === '-c') { say('runtime probe', machine.existing[distro] ? 0 : 1); return; }
+    if (program[0] === 'sh' && program[1] === '-c') {
+      if (program[2] === 'ip -4 route show default') { say('default via 172.28.0.1 dev eth0', 0); return; }
+      if (program[2].startsWith('docker_root=')) { say('104857600', 0); return; }
+      if (program[2].startsWith('tr ')) { say('', 0); return; }
+      say('runtime probe', machine.existing[distro] ? 0 : 1); return;
+    }
     if (distro !== 'Decurix' && !machine.existing[distro]) { say('Docker is not running', 1); return; }
     if (program[0] === 'cat') { say(staged, staged === null ? 1 : 0); return; }
     if (program[0] === 'sh') { say('decurix-setup: ready', machine.setupFails ? 1 : 0); return; }
@@ -181,6 +186,10 @@ async function boot(initialState, {
       if (path.basename(file) === 'docker') { runDocker(Array.from(args), child); return child; }
       if (file === 'wsl.exe') { runWsl(Array.from(args), child); return child; }
       if (file === 'powershell.exe') {
+        if (Array.from(args).join(' ').includes('native-ollama.ps1')) {
+          if (!holdOllama) setImmediate(() => child.emit('exit', ollamaFails ? 1 : 0));
+          return child;
+        }
         // Turning WSL on, when asked to; or ending an earlier version's
         // Windows control plane.
         if (Array.from(args).join(' ').includes('--install') && machine.installedAfterAsking) machine.installed = true;
@@ -200,6 +209,9 @@ async function boot(initialState, {
     writeFileSync(file, content) { written.push({ file, content }); },
     writeSync() {},
     readFileSync(file) {
+      const saved = written.findLast(entry => entry.file === file);
+      if (saved) return saved.content;
+      if (file === path.join(data, 'local-hosting.json')) return JSON.stringify({ enabled: hosting });
       if (file === path.join(data, 'windows-runtime.json') && savedRuntime !== undefined) return savedRuntime;
       if (file === path.join('/installed/resources', 'stack', 'VERSION')) return 'build-2';
       if (file === path.join(stack, 'VERSION') && staged !== null) return staged;
@@ -207,6 +219,7 @@ async function boot(initialState, {
     },
     openSync() { return 1; },
     closeSync() {},
+    statfsSync() { return { bavail: 100 * 1024 * 1024, bsize: 1024 }; },
     fstatSync() { return { size: log.length }; },
     readSync(_file, buffer, _offset, length, position) { return log.copy(buffer, 0, position, position + length); },
   };
@@ -227,6 +240,14 @@ async function boot(initialState, {
     'node:fs': fileSystem,
     'node:http': http,
     'node:path': path,
+    './local-models': require('./local-models'),
+    './windows-runtime': {
+      readSettings: () => ({ DECURIX_WINDOWS_NATIVE_OLLAMA: '1' }),
+      configureResources: () => ({ memoryMB: 8192, workerCPUs: 2, workerMB: 2048, cpus: 8, modelMB: 6144 }),
+      usesWindowsOllama: () => true,
+      windowsHost: () => '172.28.0.1',
+      stackSettings: () => 'OLLAMA_URL=http://172.28.0.1:11435\n',
+    },
     './mobile-access': { setupMobileAccess: async (_dir, tunnelCommand) => {
       mobileCalls.push('start');
       tunnel = tunnelCommand(8090);
@@ -237,6 +258,7 @@ async function boot(initialState, {
     require: (name) => modules[name],
     process: { resourcesPath: '/installed/resources', platform, env: { PATH: '/usr/bin', LOCALAPPDATA: '/profile/Local' } },
     URL,
+    AbortController,
     setTimeout: (callback) => setImmediate(callback),
     // The watch on the control plane: a test makes its clock tick by hand.
     setInterval: (callback) => { intervals.push(callback); },
@@ -261,6 +283,11 @@ async function boot(initialState, {
       const sender = windows[0].webContents;
       sender.mainFrame = { url };
       return ipcHandlers.get('pick-host-folders')({ sender, senderFrame: childFrame ? { url } : sender.mainFrame });
+    },
+    modelAction: (channel, value, url = 'http://127.0.0.1:8080/', childFrame = false) => {
+      const sender = windows[0].webContents;
+      sender.mainFrame = { url };
+      return ipcHandlers.get(channel)({ sender, senderFrame: childFrame ? { url } : sender.mainFrame }, value);
     },
     // The docker commands run, each as its words - on Windows, inside the distro.
     get docker() {
@@ -287,12 +314,15 @@ async function boot(initialState, {
 
 // ---- Windows: the stack in the app's own WSL distro ----
 
-test('reuses a running dashboard of this build without starting anything', async () => {
+test('reuses a running dashboard and installs only the Ollama runtime in the background', async () => {
   const result = await boot('ready');
   assert.equal(result.window.url, 'http://127.0.0.1:8080');
   // Only the question which build the distro's stack is.
   assert.deepEqual(result.docker, []);
-  assert.deepEqual(result.wsl, ['--list --quiet', '-d Decurix -u root --cd / -e cat /var/lib/decurix/stack/VERSION']);
+  assert.ok(result.wsl.includes('-d Decurix -u root --cd / -e cat /var/lib/decurix/stack/VERSION'));
+  assert.ok(result.spawns.some(s => Array.from(s.args).join(' ').includes('native-ollama.ps1') && Array.from(s.args).includes('install')));
+  assert.ok(!result.spawns.some(s => Array.from(s.args).includes('ensure')));
+  assert.ok(!result.spawns.some(s => Array.from(s.args).includes('serve')));
 });
 
 test('a first launch imports the distro, prepares it, starts Docker and the stack', async () => {
@@ -333,7 +363,7 @@ test('a first launch imports the distro, prepares it, starts Docker and the stac
 
   // The person's settings name the control plane's own model server.
   const settings = result.written.find((w) => w.file === path.join(data, '.env'));
-  assert.equal(settings.content, 'OLLAMA_URL=http://decurix-ollama:11434\nOLLAMA_MODEL=auto\n');
+  assert.equal(settings.content, 'DECURIX_WINDOWS_NATIVE_OLLAMA=1\nOLLAMA_MODEL=auto\n');
   // Nothing of the old Windows control plane is started; it is ended if running.
   assert.ok(!result.spawns.some((s) => /decurix\.exe$/.test(s.file)));
   assert.ok(result.spawns.some((s) => s.file === 'powershell.exe' && Array.from(s.args).join(' ').includes('decurix.exe')));
@@ -649,4 +679,46 @@ test('invalid runtime records stop startup instead of changing where workers liv
   const result = await boot('absent', { savedRuntime: '{invalid' });
   assert.equal(result.ups, 0);
   assert.match(result.window.lastStatus.value.message, /Could not read the saved WSL runtime/);
+});
+
+
+test('an unreachable native server does not block Windows startup', async () => {
+  const result = await boot('absent', { dockerRun: args => args.includes('curl') ? 7 : 0 });
+  assert.equal(result.window.url, 'http://127.0.0.1:8080');
+  assert.ok(result.docker.some(command => command.includes('--build-images')));
+  assert.equal(result.ups, 1);
+});
+
+test('persisted local hosting starts after the dashboard opens and cannot block it', async () => {
+  const result = await boot('absent', { hosting: true, holdOllama: true });
+  assert.equal(result.window.url, 'http://127.0.0.1:8080');
+  const state = await result.modelAction('local-model-status');
+  assert.equal(state.busy, true);
+  assert.equal(state.phase, 'install');
+  assert.equal(result.ups, 1);
+});
+
+test('hosting controls persist the choice and keep setup failures in the dashboard', async () => {
+  const result = await boot('ready', { ollamaFails: true });
+  const state = await result.modelAction('local-model-hosting', true);
+  assert.equal(state.phase, 'error');
+  assert.equal(state.busy, false);
+  assert.equal(result.window.url, 'http://127.0.0.1:8080');
+  assert.ok(result.written.some(entry => entry.file.endsWith('local-hosting.json') && JSON.parse(entry.content).enabled));
+});
+
+test('only the trusted dashboard can control local hosting', async () => {
+  const result = await boot('ready');
+  for (const channel of ['local-model-status', 'local-model-hosting', 'local-model-prepare']) {
+    assert.throws(() => result.modelAction(channel, true, 'https://example.test'), /only available/);
+    assert.throws(() => result.modelAction(channel, true, 'http://127.0.0.1:8080/', true), /only available/);
+  }
+});
+
+test('native connectivity errors affect hosting status after the dashboard opens', async () => {
+  const result = await boot('absent', { hosting: true, dockerRun: args => args.includes('curl') ? 7 : 0 });
+  assert.equal(result.window.url, 'http://127.0.0.1:8080');
+  const state = await result.modelAction('local-model-status');
+  assert.equal(state.phase, 'error');
+  assert.match(state.detail, /Linux cannot reach/);
 });
