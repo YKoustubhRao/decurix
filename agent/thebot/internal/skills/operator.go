@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 	"time"
 
 	"thebot/internal/llm"
@@ -245,8 +246,104 @@ func parseControl(reply string) (action, value string) {
 		}
 		value = strings.TrimSpace(strings.Trim(value, "`"))
 		value = strings.TrimSpace(strings.TrimPrefix(value, "$ "))
+		value = withoutLeakedCall(value)
 	}
 	return action, value
+}
+
+// leakedCallRe is the trace a hosted model leaves when part of its own
+// tool-call framing spills into the text of a reply: " to=<channel>" followed
+// by the fields of a call or of its result.
+var (
+	leakedToRe     = regexp.MustCompile(`\s+to=[A-Za-z_][\w.:]*`)
+	leakedFieldsRe = regexp.MustCompile(`^(?:\s+\S+)*?\s+(?:code=\d+|stdout=|stderr=|code_block\b|format=[a-z]+)`)
+)
+
+// leakedCall is where a spill of call framing starts in a line, or -1: a
+// " to=<channel>" that is not inside a quoted argument and is either followed
+// by a call's fields or comes straight after text in another script glued on
+// by the model (`"65000.00" <Thai>assistant to=all:final code`).
+func leakedCall(line string) int {
+	for _, loc := range leakedToRe.FindAllStringIndex(line, -1) {
+		before := line[:loc[0]]
+		if strings.Count(before, `"`)%2 == 1 || strings.Count(before, `'`)%2 == 1 {
+			continue
+		}
+		if leakedFieldsRe.MatchString(line[loc[1]:]) {
+			return loc[0]
+		}
+		words := strings.Fields(before)
+		if len(words) == 0 {
+			continue
+		}
+		last := words[len(words)-1]
+		if strings.IndexFunc(last, func(r rune) bool { return r > unicode.MaxASCII }) >= 0 {
+			return loc[0]
+		}
+		// A channel's name before it and a payload's kind after it: both, or
+		// it is an ordinary argument ("./final to=backup:/srv").
+		if leakedRoleRe.MatchString(last) && leakedKindRe.MatchString(line[loc[1]:]) {
+			return loc[0]
+		}
+	}
+	return -1
+}
+
+// leakedRoleRe is a word that ends in the name of one of the model's own
+// channels, as the word before a spilled " to=" does ("...analysis
+// to=commentary").
+var (
+	leakedRoleRe = regexp.MustCompile(`(?i)(analysis|assistant|commentary|final)$`)
+	leakedKindRe = regexp.MustCompile(`^\s+(?:code|code_block|json)\b`)
+)
+
+// withoutLeakedCall cuts a command back to what the model meant when its
+// reply ran on into leaked call framing. Found live, several times a day on
+// one hosted model:
+//
+//	gui key enter<Thai text> to=gui.key  <Chinese text> code=0 stdout="Pressed enter. ...
+//	gui key Tab【<Thai text>analysis to=final code_block format=plaintext ...
+//
+// The whole line went to the shell: the key was not pressed (or the wrong
+// keys were), the field after it was never filled, and the task carried on
+// as if it had been. The cut is made at the framing, and then any trailing
+// characters outside ASCII glued to the command's last word are dropped with
+// it - they are the start of the spill, never part of a key or a ref. A
+// command with no such framing is returned untouched, whatever script its
+// text is in.
+func withoutLeakedCall(command string) string {
+	lines := strings.Split(command, "\n")
+	for i, line := range lines {
+		at := leakedCall(line)
+		if at < 0 {
+			continue
+		}
+		kept := strings.Fields(line[:at])
+		for len(kept) > 0 {
+			// The word the spill began in: its channel name goes, then
+			// everything from its first character outside ASCII; a word
+			// left with no letter or digit was all spill.
+			last := leakedRoleRe.ReplaceAllString(kept[len(kept)-1], "")
+			spilled := last != kept[len(kept)-1]
+			if cut := strings.IndexFunc(last, func(r rune) bool { return r > unicode.MaxASCII }); cut >= 0 {
+				last, spilled = last[:cut], true
+			}
+			if !spilled {
+				break
+			}
+			if strings.IndexFunc(last, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) < 0 {
+				kept = kept[:len(kept)-1]
+				continue
+			}
+			kept[len(kept)-1] = last
+			break
+		}
+		lines[i] = strings.Join(kept, " ")
+		// What follows the spill on later lines is more of it.
+		lines = lines[:i+1]
+		break
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
 // unmarkedCommandRe is a reply that is one command and nothing else, in a

@@ -34,6 +34,9 @@ from decurix_agent.messaging import remember
 CATEGORY = "lesson"
 MAX_KNOWN_CHARS = 3000
 MAX_LESSON_CHARS = 600
+# A person's answer kept whole beside its lesson up to this length; of a longer one, only the part quoted.
+MAX_SAID_WHOLE = 160
+MAX_SAID_PART = 300
 
 # A reply that only steers the run it was given in: nothing to learn from.
 OPERATIONAL = re.compile(
@@ -52,9 +55,11 @@ Keep a lesson when the answer tells the worker how the person wants things done,
 
 Keep nothing when: the answer only settles this one run (a bare yes or no, an approval, "the second one", a value for this task alone such as one name, amount or file); it gives a password, code or other secret; it is already covered by what the worker knows (listed below); or it is unclear what was meant.
 
+An answer often does both: it says what to do NOW to get this run back on its feet, and it gives a rule that will hold again. Keep only the rule. What belongs to this run alone is never part of a lesson: how to recover (discard this, close that, leave, start over, try again, carry on, nothing more to do), what state this run is in (it was or was not saved, it is already correct, it is finished), and anything that names one particular record, document or item of this run - its number or reference, its name, its amounts, which choice was right for it. A lesson that mentions one of those would be read on every later task as if it were still true (found live: "the record is 00030 and already correct, do nothing more" was kept, and so was "close the window and choose Leave"). If the answer holds only such things, keep nothing. A particular case may be used as the example of a rule only when the person gave it as an example.
+
 Write the lesson so it stands on its own, without the question: say when it applies and what to do, in the person's terms, in one or two sentences. Generalise only as far as the person's words allow - "always" from them means always; an answer about one case stays about that kind of case. Do not add advice of your own.
 
-Reply with JSON only: {"keep": true, "title": "<3-8 words>", "lesson": "<the instruction>"} or {"keep": false, "why": "<a few words>"}"""
+Reply with JSON only: {"keep": true, "title": "<3-8 words>", "lesson": "<the instruction>", "said": "<the part of the person's answer the lesson comes from, copied word for word, without anything about this run alone>"} or {"keep": false, "why": "<a few words>"}"""
 
 
 def known(limit=MAX_KNOWN_CHARS):
@@ -130,9 +135,19 @@ def distil(question, reply, task="", skill=""):
             if not lesson:
                 return None
             title = _squash(data.get("title"), 80) or lesson[:60]
-            return title, (f"{lesson}\n\nLearned when the worker asked: \"{_squash(question, 300)}\" "
-                           f"and the person answered: \"{_squash(reply, 300)}\"."
-                           + (f" (Task: {_squash(skill or task, 120)})" if skill or task else ""))
+            # The person's own words stay beside the lesson - but only the
+            # words the lesson comes from. The whole exchange was kept until
+            # it was found being read as instructions on every later task:
+            # what the person told one run to do ("discard this draft, close
+            # the window and choose Leave") and the worker's question about
+            # one record, long after either was true. A short answer is the
+            # rule itself; of a long one, the part the model quotes is kept
+            # when it really is in the answer, word for word.
+            said = reply if len(reply) <= MAX_SAID_WHOLE else _squash(data.get("said"), MAX_SAID_PART)
+            if said and said not in reply:
+                said = ""
+            return title, (lesson + (f"\n\nThe person answered: \"{said}\"." if said else "")
+                           + (f" (Learned while doing: {_squash(skill or task, 120)})" if skill or task else ""))
 
     title = _squash(question, 60)
     return title, (f"When the worker asked: \"{_squash(question, 500)}\" the person answered: \"{reply}\"."

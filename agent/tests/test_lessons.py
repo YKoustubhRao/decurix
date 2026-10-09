@@ -53,9 +53,28 @@ class TestKeeping(_Memory):
         title, text, category = self.kept[0]
         self.assertEqual((title, category), ("Lesson: Several people match a name", "lesson"))
         self.assertIn("always choose the first one", text)
-        self.assertIn('the person answered: "always choose first"', text)      # their own words stay beside it
+        self.assertIn('The person answered: "always choose first"', text)      # their own words stay beside it
         self.assertIn("always choose first", self.shown[0])
         self.assertIn("always choose the first one", lessons.known())
+
+    def test_of_a_long_answer_only_the_words_the_lesson_comes_from_are_kept(self):
+        # Found live: an answer that told one run how to recover and also gave a rule was kept whole, and every
+        # later task read "discard this draft, close the window and choose Leave" as if it were said to it.
+        rule = "For each line type one key word and choose the entry by its name."
+        reply = ("Discard this draft (close the window and choose Leave, nothing was saved) and start one fresh "
+                 "record; the right one for this document was number 00030. " + rule)
+        self.says = {"keep": True, "title": "Choose entries by name", "lesson": "Choose a list's entry by its name.",
+                     "said": rule}
+        self.assertTrue(self.note("I clicked the wrong entry. Discard or fix?", reply, skill="enter-a-record"))
+        text = self.kept[-1][1]
+        self.assertIn(f'The person answered: "{rule}"', text)
+        for gone in ("Leave", "Discard", "00030", "I clicked the wrong entry"):
+            self.assertNotIn(gone, text)
+
+        # A quote that is not in the answer is not kept as the person's words.
+        self.says = {"keep": True, "title": "Another", "lesson": "Do the other thing.", "said": "words never said"}
+        self.assertTrue(self.note("Which way?", reply + " And another thing entirely, said at length here.", skill="x"))
+        self.assertNotIn("The person answered", self.kept[-1][1])
 
     def test_the_model_is_shown_what_is_already_known_and_may_keep_nothing(self):
         self.says = {"keep": True, "title": "First match", "lesson": "Take the first match."}

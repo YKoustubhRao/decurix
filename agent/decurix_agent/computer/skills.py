@@ -280,6 +280,27 @@ def needed_from(skill, start):
     return [p for p in required(skill) if p["step"] >= start]
 
 
+# Roles of an entry picked from a list an application shows.
+LIST_ENTRY_ROLES = ("option", "listitem", "menuitem", "treeitem")
+
+
+def chosen_from_list(skill):
+    """
+    The names of the values the demonstration typed and then picked from a
+    list: a typing step straight followed by a click on an entry of a list.
+    The typed words found the entry; the entry is the value - so such a value
+    is searched for, never left in the field as typed, and what is entered
+    goes by the entry's own name.
+    """
+
+    chosen, steps = set(), skill.get("steps") or []
+    for step, following in zip(steps, steps[1:]):
+        if step.get("kind") == "type" and step.get("param") and following.get("kind") == "click" \
+                and ((following.get("target") or {}).get("role") or "") in LIST_ENTRY_ROLES:
+            chosen.add(step["param"].split("__")[0])
+    return chosen
+
+
 def split_items(text):
     """The items of a list given for a loop: separated by ";" or a new line, none empty."""
 
