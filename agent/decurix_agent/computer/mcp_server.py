@@ -69,8 +69,13 @@ TOOLS = [
                 "name": {"type": "string"},
                 "x": {"type": "integer"},
                 "y": {"type": "integer"},
+                "see": {"type": "string", "description": "For click/type on something with no ref: describe it "
+                        "(\"the bell icon at the top right\") and a grounding model finds it on the screen - "
+                        "better than x/y read off the picture. The result says which element it landed on."},
                 "text": {"type": "string", "description": "For type."},
                 "append": {"type": "boolean", "description": "For type: add to the field instead of replacing it."},
+                "replace_all": {"type": "boolean", "description": "For type into a field that holds several lines "
+                                "(a document): really replace all of it. Without this such a type is refused."},
                 "keys": {"type": "array", "items": {"type": "string"}, "description": "For key."},
                 "direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
                 "amount": {"type": "integer"},
@@ -232,12 +237,14 @@ def call_tool(name, arguments):
             role=arguments.get("role"),
             name=arguments.get("name"),
             point=point,
+            see=arguments.get("see"),
             text=arguments.get("text"),
             keys=keys,
             direction=arguments.get("direction"),
             amount=arguments.get("amount"),
             option=arguments.get("option"),
             append=bool(arguments.get("append")),
+            replace_all=bool(arguments.get("replace_all")),
             end=end,
             files=_absolute(arguments.get("files")),
         )

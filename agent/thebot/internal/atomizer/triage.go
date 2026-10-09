@@ -127,6 +127,10 @@ var namedCommandRe = regexp.MustCompile("(?is)^\\s*(?:please\\s+)?(?:run|execute
 // no tools - answered "Done. I updated ... and verified the date now shows" in six seconds with nothing done.
 var screenDirectiveRe = regexp.MustCompile(`(?i)\b(type|enter|paste)\s+\S.{0,80}?\binto\b|\bpress\s+(the\s+)?(escape|esc|enter|return|tab|backspace|delete|f\d{1,2}|(ctrl|control|alt|shift)\s*\+\s*\w+)\b`)
 
+// WantsScreen is wantsScreen for the operator, which must not take "done" for
+// work in a window when it has run nothing (skills.unstartedScreenNudge).
+func WantsScreen(prompt string) bool { return wantsScreen(prompt) }
+
 func wantsScreen(prompt string) bool {
 	return (screenSurfaceRe.MatchString(prompt) && matchesWord(screenActionRe, prompt)) || screenDirectiveRe.MatchString(prompt)
 }

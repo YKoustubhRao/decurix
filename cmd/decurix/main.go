@@ -27,6 +27,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/dag"
 	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/devices"
+	"github.com/YKoustubhRao/decurix/internal/grounder"
 	"github.com/YKoustubhRao/decurix/internal/httpapi"
 	"github.com/YKoustubhRao/decurix/internal/idlepause"
 	"github.com/YKoustubhRao/decurix/internal/keepawake"
@@ -434,6 +435,12 @@ func main() {
 		log.Printf("warning: %s: %v; the model API keys will be stored unencrypted", llm.KeyFile, err)
 	}
 	server.LLM = must(llm.NewHub(db, llmKey))
+	// A GUI-grounding model, when .env names one (DECURIX_GROUNDER_MODEL):
+	// where on the screen a desktop's `gui click --see "..."` clicks.
+	if g := grounder.FromEnv(ollama.DesktopURL()); g != nil {
+		server.Grounder = g
+		log.Printf("grounding model: %s (%s, %s)", g.Model, g.API, g.Coords)
+	}
 	// The Windows apps copied into VMs are kept running on the host, ready to show the moment one is opened.
 	server.HostGUIDataDir = sqlitedb.DataDir()
 	go server.RestoreHostApps(context.Background())

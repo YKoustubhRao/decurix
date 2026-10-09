@@ -20,6 +20,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/dag"
 	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/devices"
+	"github.com/YKoustubhRao/decurix/internal/grounder"
 	"github.com/YKoustubhRao/decurix/internal/idlepause"
 	"github.com/YKoustubhRao/decurix/internal/keepawake"
 	"github.com/YKoustubhRao/decurix/internal/lanaccess"
@@ -78,6 +79,9 @@ type Server struct {
 	// IdleChecker is optionally assigned by cmd/decurix/main.go after construction,
 	// allowing task completion events to request fast-idle transitions.
 	IdleChecker *idlepause.Checker
+	// Grounder is the GUI-grounding model (internal/grounder), set from
+	// .env by cmd/decurix/main.go; nil means none is set up.
+	Grounder *grounder.Client
 	// Mail and MailRunner are the email triggers (internal/mailtrigger);
 	// KeepAwake keeps this machine from idle-sleeping while they or a
 	// schedule need it (internal/keepawake). All three are assigned by
@@ -366,6 +370,9 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/llm/settings", s.humansOnly(s.llmSettingsHandler))
 	mux.HandleFunc("/api/llm/settings/forget", s.humansOnly(s.llmForgetHandler))
 	mux.HandleFunc("/api/llm/", s.llmProxyHandler)
+	// Where something is on a screenshot, for a desktop's `gui` (grounder.go).
+	mux.HandleFunc("/api/grounder", s.grounderStatusHandler)
+	mux.HandleFunc("/api/grounder/locate", s.grounderLocateHandler)
 	mux.HandleFunc("/api/native-ollama/", s.nativeOllamaHandler)
 	// Drafts from the agents' draft_email; sending them is humansOnly above.
 	mux.HandleFunc("/api/outbox", s.outboxCreateHandler)
