@@ -1571,16 +1571,20 @@
     if(mb && mb % 1024 === 0){ el.textContent = (mb / 1024) + " GB"; }
   });
 
-  document.querySelectorAll("[data-created]").forEach(function(el){
-    var raw = el.dataset.created;
-    if(!raw){ return; }
+  function paintCreated(){
+    document.querySelectorAll("[data-created]").forEach(function(el){
+      var raw = el.dataset.created;
+      if(!raw){ return; }
 
-    var date = new Date(raw);
-    if(isNaN(date.getTime())){ return; }
+      var date = new Date(raw);
+      if(isNaN(date.getTime())){ return; }
 
-    el.textContent = relative(date);
-    el.title = date.toLocaleString();
-  });
+      el.textContent = relative(date);
+      el.title = date.toLocaleString();
+    });
+  }
+  paintCreated();
+  setInterval(paintCreated, 1000);
 
   function relative(date){
     var seconds = Math.round((Date.now() - date.getTime()) / 1000);
@@ -3073,21 +3077,48 @@
     });
   }
 
+  function paintCardDetails(){
+    document.querySelectorAll(".dcard[data-desktop-id]").forEach(function(card){
+      var now = activity[card.dataset.desktopId] || {};
+      var cpu = card.querySelector("[data-cpu-val]");
+      var mem = card.querySelector("[data-mem-val]");
+      var created = card.querySelector("[data-created]");
+      if(cpu && now.cpus > 0){ cpu.textContent = now.cpus + (now.cpus === 1 ? " core" : " cores"); }
+      if(mem && now.memory_mb > 0){
+        mem.dataset.mb = now.memory_mb;
+        mem.textContent = now.memory_mb % 1024 === 0 ? (now.memory_mb / 1024) + " GB" : now.memory_mb + " MB";
+      }
+      if(created && now.created_at){ created.dataset.created = now.created_at; }
+      card.querySelectorAll("[data-status-pill]").forEach(function(pill){
+        if(now.status){ pill.dataset.baseStatus = now.status; pill.dataset.crash = now.crash || ""; }
+      });
+    });
+    paintCreated();
+  }
+
+  var activityPolling = false;
   async function pollActivity(){
+    if(activityPolling){ return; }
     var ids = Array.prototype.map.call(document.querySelectorAll("[data-activity]"), function(el){ return el.dataset.activity; });
     if(!ids.length){ return; }
 
+    activityPolling = true;
     try{
       var response = await fetch("/api/desktops/activity?" + new URLSearchParams({ids: ids.join(",")}), {cache: "no-store"});
       if(!response.ok){ return; }
       activity = await response.json() || {};
+      paintCardDetails();
       paintActivity();
       paintPills();
     }catch(e){ /* keep what the cards show */ }
+    finally{ activityPolling = false; }
   }
 
   pollActivity();
   setInterval(pollActivity, 2500);
+  document.addEventListener("visibilitychange", function(){
+    if(document.visibilityState === "visible"){ pollActivity(); paintCreated(); }
+  });
   setInterval(paintActivity, 1000);
 
   async function loadNotes(){
