@@ -55,6 +55,9 @@ func TestRateLimitRetriesStopAndLeaveOtherErrorsAlone(t *testing.T) {
 			if status == 429 {
 				want = maxRateLimitRetries + 1
 			}
+			if status == 500 {
+				want = maxServerErrorRetries + 1 // the provider's own failure is asked again a few times
+			}
 			if err == nil || calls != want || !strings.Contains(err.Error(), "rejected") {
 				t.Fatalf("calls %d, err %v", calls, err)
 			}
@@ -112,5 +115,27 @@ func TestTheFallbackWaitIsCapped(t *testing.T) {
 		if got := retryDelay(http.Header{}, time.Now(), attempt); got != want {
 			t.Errorf("attempt %d: %v, want %v", attempt, got, want)
 		}
+	}
+}
+
+// One failure of the provider's own does not end a task: the call is sent again and its answer used.
+func TestAProvidersOwnFailureIsAskedAgain(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			w.Header().Set("Retry-After-Ms", "0")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			io.WriteString(w, "upstream connect error or disconnect/reset before headers")
+			return
+		}
+		io.WriteString(w, `{"choices":[{"message":{"content":"ok"}}]}`)
+	}))
+	defer server.Close()
+	p := NewOpenAI("test", "")
+	p.BaseURL = server.URL
+	out, err := p.Chat(context.Background(), "demo", nil, Options{})
+	if err != nil || calls != 2 || out.Text != "ok" {
+		t.Fatalf("calls %d, out %+v, err %v", calls, out, err)
 	}
 }

@@ -17,9 +17,22 @@ const maxRateLimitRetries = 10
 // maxFallbackDelay caps the wait when the provider gives no hint.
 const maxFallbackDelay = 30 * time.Second
 
-// rateLimitedRequest retries a rejected chat request within its existing deadline.
-// Only 429 is retried: no successful call or uncertain network failure is repeated.
+// maxServerErrorRetries bounds how often one call is sent again after the provider itself failed (500, 502, 503,
+// 504). Found by the GUI benchmark: a single "HTTP 500: Internal server error" from a hosted model, and a gateway's
+// "upstream connect error" a few minutes later, each ended a task half done - a find-and-replace with its dialog
+// open - as "a step failed in a way retrying cannot fix". A chat call changes nothing anywhere, so asking again is
+// safe; a provider that is really down still fails, three tries and about fifteen seconds later.
+const maxServerErrorRetries = 3
+
+func transientServerError(status int) bool {
+	return status == http.StatusInternalServerError || status == http.StatusBadGateway ||
+		status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout
+}
+
+// rateLimitedRequest retries a rejected chat request within its existing deadline: a 429 as long as the deadline
+// allows, the provider's own failure a few times. No successful call or uncertain network failure is repeated.
 func rateLimitedRequest(client *http.Client, req *http.Request) (*http.Response, error) {
+	serverErrors := 0
 	for attempt := 0; ; attempt++ {
 		current := req.Clone(req.Context())
 		if attempt > 0 {
@@ -30,8 +43,16 @@ func rateLimitedRequest(client *http.Client, req *http.Request) (*http.Response,
 			current.Body = body
 		}
 		resp, err := client.Do(current)
-		if err != nil || resp.StatusCode != http.StatusTooManyRequests || attempt >= maxRateLimitRetries {
+		if err != nil {
 			return resp, err
+		}
+		if transientServerError(resp.StatusCode) {
+			if serverErrors >= maxServerErrorRetries {
+				return resp, nil
+			}
+			serverErrors++
+		} else if resp.StatusCode != http.StatusTooManyRequests || attempt >= maxRateLimitRetries {
+			return resp, nil
 		}
 		delay := retryDelay(resp.Header, time.Now(), attempt)
 		// If the provider asks for longer than our deadline, return its useful 429.
