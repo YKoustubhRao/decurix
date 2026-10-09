@@ -45,6 +45,14 @@ SCREEN_COMMANDS = {
 }
 
 
+# Other spellings of a command's name.
+COMMAND_ALIASES = {
+    "dblclick": "double-click", "doubleclick": "double-click", "double_click": "double-click",
+    "dbl-click": "double-click", "rightclick": "right-click", "right_click": "right-click",
+    "press": "key", "keys": "key", "look": "observe",
+}
+
+
 def _look(skill, n):
     """
     `gui skill NAME --look N`: the screen the person did step N on, left where a
@@ -547,6 +555,10 @@ def run(argv):
         print(USAGE)
         return EXIT_OK
 
+    # A command under the name an engine reaches for. Found live: `gui dblclick` and `gui doubleclick`, refused
+    # on run after run before the engine wrote it the way the usage does.
+    argv = [COMMAND_ALIASES.get(argv[0].lower(), argv[0])] + list(argv[1:])
+
     # A flag written between a command's words (`gui type e13 --append "text"`) is still its flag:
     # argparse stops collecting a command's words at the first one.
     if argv[0] == "type":
@@ -561,7 +573,11 @@ def run(argv):
         observation = core.observe()
         core.report_observation(observation)
         budget = TEXT_BUDGET * 3 if args.window else TEXT_BUDGET
-        print(el.render(observation, budget=budget, coords=args.coords, only_group=args.window))
+        shown = el.render(observation, budget=budget, coords=args.coords, only_group=args.window)
+        print(shown)
+        # What this look read is evidence of the task: the page may be closed before the task is checked.
+        from decurix_agent.computer import evidence
+        evidence.note_look(shown)
         from decurix_agent.computer import grounder
         if grounder.available():
             # Said here, by the tool, only where it is true: told in an engine's fixed instructions, a worker
@@ -589,6 +605,8 @@ def run(argv):
     if command == "verify":
         result = core.verify(expect_text=args.text, role=args.role, name=args.name)
         print(result["text"])
+        from decurix_agent.computer import evidence
+        evidence.note("a check of the screen then - " + result["text"][:1200])
         return EXIT_VERIFY_FAILED if result["ok"] is False else EXIT_OK
 
     if command == "recordings":
@@ -687,7 +705,8 @@ def run(argv):
         target = _target(words[0] if words else None, args)
         if not target:
             raise ComputerError(f"{command} what? Give a ref like e12 (run gui observe first).")
-        result = core.act(command.replace("-", "_"), **target)
+        # named: a press on a control that has a name is made by its ref, not by where it is (core.act).
+        result = core.act(command.replace("-", "_"), named=True, **target)
 
     elif command == "type":
         words = _strip_descriptor(list(args.words))

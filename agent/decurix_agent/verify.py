@@ -51,7 +51,8 @@ JUDGE_SYSTEM = (
     "were asked for.\n"
     "When the task names a document and you are shown what it says, the values entered or reported must be the "
     "document's: a customer, reference, product, quantity or amount that is not in it (or differs from it) is "
-    "\"not_done\", however complete the screen looks.\n"
+    "\"not_done\", however complete the screen looks - except that a thing the document describes is entered "
+    "as the application's own record of it (see below), which is not a difference.\n"
     "The same value written in the format its field uses is not a difference: a date field whose placeholder "
     "reads yyyy-dd-mm (year-day-month) shows 14 March 1998 as 1998-14-03; a number may show thousands "
     "separators or a currency. Judge the value, not its format (found live: a correct date of birth was "
@@ -75,7 +76,7 @@ def available():
 
 
 def judge(task, claim="", criteria="", values=None, steps="", live_png=None, reference_png=None, observed=None,
-          screen_text=""):
+          screen_text="", chosen=()):
     """
     {"verdict", "confidence", "seen", "why"} for whether `task` was done. With
     no model, or when the model cannot be read, the verdict is "unsure" - the
@@ -87,14 +88,33 @@ def judge(task, claim="", criteria="", values=None, steps="", live_png=None, ref
 
     lines = [f"The task as asked: {task.strip()[:1500]}"]
     if values:
-        lines.append("This run's values: " + "; ".join(f"{k} = {v}" for k, v in values.items() if v not in (None, ""))[:1200])
+        typed = {k: v for k, v in values.items() if v not in (None, "") and k.split("__")[0] not in chosen}
+        looked_up = {k: v for k, v in values.items() if v not in (None, "") and k.split("__")[0] in chosen}
+        if typed:
+            lines.append("This run's values: " + "; ".join(f"{k} = {v}" for k, v in typed.items())[:3000])
+        if looked_up:
+            # Apart from the values to compare, and never as "k = v". Found
+            # live after the note beside each was added: with "item = Office
+            # Mesh Chairs" among the run's values, the check still refused a
+            # correct record "Ergonomic Office Chair" as not the value.
+            lines.append("Things this run had to find in the application's own lists and choose (NOT values to "
+                         "compare by name - the worker searched and took the existing record of each thing, and a "
+                         "record has its own name; judge only whether the record taken is that kind of thing): "
+                         + "; ".join(f"for {k}, the document says: {v}" for k, v in looked_up.items())[:2000])
     if criteria:
         lines.append(f"What the person who taught this task said about it (and what done looks like): {criteria.strip()[:6000]}")
     if steps:
-        lines.append(f"What the worker did: {steps.strip()[:2000]}")
+        # Not "what the worker did". Found live: these are the demonstration's
+        # steps, whose clicks on list entries name the demonstration's own
+        # choices; under that label the check kept reporting that a correct
+        # run had "selected the wrong company and the wrong products".
+        lines.append("The steps of the person's demonstration, which this run followed with its own values (a click "
+                     "on a list entry here names the DEMONSTRATION's choice, not this run's - what this run chose "
+                     f"is in the tools' record below): {steps.strip()[:2000]}")
     if observed:
         lines.append("What the worker's tools did and read off the screen during this task, as it happened (observed, "
-                     "not claimed - a report that matches these is backed by them):\n" + "\n".join(observed)[-6000:])
+                     "not claimed - a report that matches these is backed by them; a look at the screen listed here "
+                     "shows what was on it at that moment, a page since closed included):\n" + "\n".join(observed)[-16000:])
     if screen_text:
         lines.append("The text the fields on the screen hold NOW, read from the apps themselves (exact - where it and "
                      "the picture's small print disagree, this is right; a report that says a text was changed is "

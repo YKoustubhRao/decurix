@@ -1247,6 +1247,83 @@ def _learning_by_model(run):
     return _engine_can_drive() and not run.get("replay_only") and _stage(run) == experience.APPRENTICE
 
 
+# What the engine and the check are told about a value the person typed only
+# to search with. Found live: the words read from a document for such a value
+# ("Executive A4 Printing Paper 75 GSM", then "Printing Paper") were typed
+# whole, matched nothing, and the correct record picked in the end ("A4
+# Printing Paper") was refused by the check as "another value".
+CHOSEN_NOTE = ("a search, not the text to end up in the field: the person typed a few words, a list of the "
+               "application's existing entries appeared, and they chose one. Do it with `gui select FIELD \"these "
+               "words\"`: it searches for them and for parts of them and takes the one existing entry whose own "
+               "name is these words or lies within them, and says which it took. When it takes none it lists what "
+               "the searches offered - then choose one of those by its ref only if it is plainly the same thing, "
+               "and ask (HELP) if none is. Never type these words and click in the list by position")
+
+
+def _chosen_from_list(skill):
+    """
+    The values the demonstration typed and then picked from a list: a typing
+    step straight followed by a click on an entry of a list. The typed words
+    found the entry; the entry is the value.
+    """
+
+    return skills.chosen_from_list(skill)
+
+
+def _same_value(wanted, typed):
+    """Whether what was typed is the value wanted: the same text, or the same number however it is written."""
+
+    a, b = " ".join(str(wanted).split()).casefold(), " ".join(str(typed).split()).casefold()
+    if a == b:
+        return True
+
+    def number(text):
+        digits = re.sub(r"[^\d.,-]", "", text).replace(",", "")
+        try:
+            return float(digits) if re.search(r"\d", digits) and not re.search(r"[a-z]", text) else None
+        except ValueError:
+            return None
+
+    x, y = number(a), number(b)
+    return x is not None and x == y
+
+
+def _never_entered(run):
+    """
+    This run's values that no tool typed or selected, as {name: value}. Found
+    live: a row's rate was never typed, the application's own default stood in
+    its place, and the run reported the row as entered. A value that goes into
+    a field by typing leaves a typing behind; one that does not was not
+    entered, whatever the report says. Values picked from a list are left to
+    the check (the entry taken goes by its own name), and so are files.
+    """
+
+    # Only what this run read from its documents: a value the skill carries
+    # from the demonstration (a fixed search, a default) may be reached
+    # another way - the app opened by its name, a page by its address.
+    skill = run["skill"]
+    values = {name: value for name, value in (run.get("values") or {}).items() if name in (run.get("evidence") or {})}
+    if not values:
+        return {}
+    chosen = _chosen_from_list(skill)
+    files = {p["name"] for p in skill.get("params") or [] if p.get("file")}
+    done = evidence.entered()
+    if not done:
+        # Nothing at all was recorded as typed: the task was done another way, or not on the screen.
+        return {}
+
+    missing = {}
+    for name, value in values.items():
+        if name.split("__")[0] in chosen or name in files or value in (None, ""):
+            continue
+        items = skills.split_items(value) if any(p.get("name") == name and p.get("list")
+                                                 for p in skill.get("params") or []) else [value]
+        for item in items:
+            if not any(_same_value(item, typed) for typed in done):
+                missing[name] = item
+    return missing
+
+
 def _for_this_run(text, skill, values):
     """
     `text` about the task with each value the demonstration typed replaced by
@@ -1353,12 +1430,14 @@ def _procedure(run, from_step=None, note="", ran=False):
 
     if run["values"]:
         params = {p["name"]: p for p in skill.get("params") or []}
+        chosen = _chosen_from_list(skill)
         shown = []
         for key, value in run["values"].items():
             param = params.get(key) or {}
             meaning = (understood.get("inputs") or {}).get(key) or param.get("label") or key
             shown.append(f"- {key} = {json.dumps(value, ensure_ascii=False)} ({meaning}; the person typed "
-                         f"{json.dumps(param.get('example') or '', ensure_ascii=False)})")
+                         f"{json.dumps(param.get('example') or '', ensure_ascii=False)}"
+                         + (f"; {CHOSEN_NOTE}" if key in chosen else "") + ")")
         lines.append("This run's values - type these where the person typed theirs:\n" + "\n".join(shown))
 
     if skill.get("documents"):
@@ -1447,6 +1526,15 @@ def _engine_request(run):
     if run["values"]:
         request += " with " + ", ".join(f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in run["values"].items())
     request += "."
+    if run.get("attempt_note"):
+        # In the request itself, not only in the guidance: found live, with it
+        # in the guidance alone the engine still entered the document again.
+        request += ("\n\nTHIS IS A SECOND ATTEMPT - DO NOT ENTER IT AGAIN. Your first attempt already saved its work"
+                    + (f" (it reported: {' '.join(run['attempt_report'].split())[:400]})" if run.get("attempt_report") else "")
+                    + f". A check then found: {run['attempt_note']} Open what the first attempt saved, read what it "
+                      "holds, and correct only what is really wrong there. If it is all correct, change nothing: read "
+                      "its values off the screen and report them. Creating a second record is the one thing you must "
+                      "not do.")
     if run.get("mimic"):
         request += "\n\nThe person asked: " + (run.get("context") or run["mimic"]["text"])
     elif run.get("context"):
@@ -1486,7 +1574,8 @@ def _judge(run, claim):
     steps = "; ".join(f"{s['n']}. {s.get('summary')}" for s in skill["steps"])[:1500]
     return verify.judge(run.get("context") or _engine_request(run), claim=claim, criteria=_criteria(skill, run["values"]),
                         values=run["values"], steps=steps, live_png=evidence.live(),
-                        reference_png=evidence.final_frame(skill), observed=evidence.observed(), screen_text=evidence.live_text())
+                        reference_png=evidence.final_frame(skill), observed=evidence.observed(), screen_text=evidence.live_text(),
+                        chosen=_chosen_from_list(skill))
 
 
 REPORT_CHARS = 4000
@@ -1775,6 +1864,14 @@ def _gate(reply, kind, engine):
         verdict = {"verdict": verify.NOT_DONE, "confidence": 1.0, "seen": "",
                    "why": "Nothing was done on the screen during this task: no app was opened, nothing clicked or "
                           "typed. The task has to be carried out with the gui command."}
+    elif run is not None and _never_entered(run):
+        # No model is asked: a value nothing typed is not on the screen to be judged.
+        missing = _never_entered(run)
+        verdict = {"verdict": verify.NOT_DONE, "confidence": 1.0, "seen": "",
+                   "why": "These values of this request were never typed into anything during the task: "
+                          + "; ".join(f"{name} = {value}" for name, value in missing.items())
+                          + ". Each has to be in its own field of the record - open it and look at those fields; "
+                            "what stands there now is not what was asked unless it reads exactly that."}
     else:
         verdict = _judge(run, reply) if run is not None else verify.judge(guided["task"], claim=reply,
                                                                               live_png=evidence.live(),

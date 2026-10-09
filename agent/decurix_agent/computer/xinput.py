@@ -46,7 +46,27 @@ KEY_ALIASES = {
     "win": "super",
     "cmd": "ctrl",
     "meta": "super",
+    "arrowup": "Up",
+    "arrowdown": "Down",
+    "arrowleft": "Left",
+    "arrowright": "Right",
+    "page_up": "Prior",
+    "page_down": "Next",
 }
+
+# A key written as the character it types: X names these keys in words.
+# Found live: `gui key ctrl+a Backspace 1 5 0 0 0 . 0 0` failed on the "."
+# after the field had already been emptied.
+PUNCTUATION_KEYS = {
+    ".": "period", ",": "comma", "-": "minus", "+": "plus", "/": "slash", "\\": "backslash", ";": "semicolon",
+    ":": "colon", "'": "apostrophe", "\"": "quotedbl", "=": "equal", "_": "underscore", "@": "at", "#": "numbersign",
+    "$": "dollar", "%": "percent", "&": "ampersand", "*": "asterisk", "(": "parenleft", ")": "parenright",
+    "!": "exclam", "?": "question", "<": "less", ">": "greater", "[": "bracketleft", "]": "bracketright",
+    "{": "braceleft", "}": "braceright", "|": "bar", "~": "asciitilde", "`": "grave", "^": "asciicircum",
+}
+
+# A key's name: a word, or words joined by "_" (Page_Up, KP_Enter).
+KEY_NAME = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*")
 
 
 def _run(args, timeout=30):
@@ -79,6 +99,9 @@ def normalize_combo(combo):
     "Ctrl+S" -> "ctrl+s", "enter" -> "Return", "ctrl+shift+Tab" kept whole.
     """
 
+    if combo.strip() in PUNCTUATION_KEYS:
+        return PUNCTUATION_KEYS[combo.strip()]
+
     parts = [p for p in re.split(r"\s*\+\s*", combo.strip()) if p]
 
     if not parts:
@@ -89,6 +112,13 @@ def normalize_combo(combo):
         alias = KEY_ALIASES.get(part.lower())
         if alias:
             out.append(alias)
+        elif part in PUNCTUATION_KEYS:
+            out.append(PUNCTUATION_KEYS[part])
+        elif len(part) > 1 and not KEY_NAME.fullmatch(part):
+            # Text handed over as a key ("2-Oct-2026", "350.00"): pressing part of it and failing on the rest
+            # leaves a field half typed. Nothing is pressed.
+            raise ComputerError(f"{part!r} is text, not a key; nothing was pressed. Keys are named one by one "
+                                "(enter, tab, ctrl+a); to put text into a field use gui type REF \"the text\"")
         elif len(part) == 1:
             out.append(part.lower() if len(parts) > 1 else part)
         elif re.fullmatch(r"[fF]\d{1,2}", part):

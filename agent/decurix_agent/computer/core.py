@@ -363,6 +363,10 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
     if kind == "key":
         if not keys:
             raise ComputerError("no key given")
+        # All of them are read before the first is pressed: a list that fails half way (a word that is not a
+        # key) would leave a field emptied by its ctrl+a and Backspace and nothing typed after.
+        for combo in keys:
+            xinput.normalize_combo(combo)
         if element is not None:
             _focus_window(element)
             if element["source"] != "cdp":
@@ -448,6 +452,19 @@ def _offers_nothing(before, after):
     return bool(offered) and all(_NOT_A_CHOICE.match(e["name"]) for e in offered)
 
 
+# How many of a suggesting field's entries are named after typing into it.
+OFFERED_SHOWN = 8
+
+
+def _offered(after):
+    """The entries a suggesting field's list shows now that can be picked - not its "create" or "search" lines."""
+
+    # Options only: a page's links and menu items are there whatever is typed.
+    return [e for e in (after or {}).get("elements") or []
+            if e.get("role") == "option" and e.get("name") and not _NOT_A_CHOICE.match(e["name"])
+            and "offscreen" not in (e.get("states") or [])]
+
+
 def _words(text):
     return set(re.findall(r"\w+", (text or "").lower()))
 
@@ -468,6 +485,56 @@ def _pick(candidates, option):
                                 + " - pick one yourself")
     return None
 
+
+_PLAIN_NUMBER = re.compile(r"[+-]?\d[\d,]*(?:\.\d+)?")
+
+
+def _decorated_number(text, held):
+    """Whether `text` is a number written with something a number field does not take, for a field that held a plain one."""
+
+    text, held = (text or "").strip(), str(held or "").strip()
+    if not held or not _PLAIN_NUMBER.fullmatch(held) or _PLAIN_NUMBER.fullmatch(text):
+        return False
+    return bool(re.search(r"\d", text)) and len(re.sub(r"[\d.,\s+-]", "", text)) <= 4
+
+
+def _stem(word):
+    """A word as compared across a singular and a plural: "Chairs" and "Chair" are one."""
+
+    word = word.lower()
+    return word[:-1] if len(word) > 3 and word.endswith("s") and not word.endswith("ss") else word
+
+
+def _own_name(label):
+    """
+    The words of an entry's own name. A list often shows an entry as its name
+    and then its description, which begins with the name again ("Leased Line
+    Leased Line, Services"): the part said twice is the name.
+    """
+
+    tokens = [_stem(t) for t in re.findall(r"\w+", label or "")]
+    for size in range(len(tokens) // 2, 0, -1):
+        if tokens[:size] == tokens[size:2 * size]:
+            return tokens[:size]
+    return tokens
+
+
+def _named_within(label, text):
+    """
+    Whether an entry's whole name lies within `text`: every word of the name
+    is a word of the text, and the name has at least two. A document describes
+    a thing in more words than the application's record of it has - "Executive
+    A4 Printing Paper 75 GSM (Box of 10 Reams)" for a record named "A4
+    Printing Paper" - so the record is found inside the description, never the
+    other way round. One shared word proves nothing and is not enough.
+    """
+
+    name = set(_own_name(label))
+    return len(name) >= 2 and name <= {_stem(w) for w in re.findall(r"\w+", text or "")}
+
+
+# What select chose, when it was not an entry spelt as it was asked for: act() says so in its result.
+_selected = {"name": None, "why": ""}
 
 # How many searches a suggesting field is given before select says what it offered.
 MAX_SEARCHES = 10
@@ -505,7 +572,9 @@ def _searches(option):
     # every run of words), and the engine, offered nothing, clicked an unrelated entry of the open list.
     distinct = sorted({w for w in (re.sub(r"\W", "", w) for w in hw) if len(w) >= 5 and w.lower() not in FILLER_WORDS},
                       key=lambda w: (-len(w), hw.index(next(x for x in hw if re.sub(r"\W", "", x) == w))))
-    tries += distinct[:MAX_WORD_SEARCHES]
+    # Searched in the singular: a list matches the typed text as a piece, and a document's "Monitors" is not in a
+    # record named "Monitor" (found live: the plural found nothing, and the record was one letter away).
+    tries += [w[:-1] if _stem(w) != w.lower() else w for w in distinct[:MAX_WORD_SEARCHES]]
     tries += [" ".join(words[:2]), words[0] if words else ""]
     out = []
     for t in tries:
@@ -553,26 +622,60 @@ def _select_custom(element, option):
     searches = _searches(option) if element["role"] in ("combobox", "textbox", "searchbox") else []
     deadline = time.monotonic() + CUSTOM_OPEN_SECONDS
     seen = []
+    # Entries whose own name lies within the value, with the search that showed each.
+    within, typed = {}, None
+    _selected.update(name=None, why="")
+
+    def offered(now):
+        return [e for e in now if e["path"] not in known and e["role"] in _SUGGESTION_ROLES
+                and e.get("source") == "cdp" and e.get("box")
+                and not _NOT_A_CHOICE.match(e.get("name") or "")]
 
     while True:
         now = observe()["elements"]
         refresh(now)
-        candidates = [e for e in now if e["path"] not in known and e["role"] in _SUGGESTION_ROLES
-                      and e.get("source") == "cdp" and e.get("box")
-                      and not _NOT_A_CHOICE.match(e.get("name") or "")]
+        candidates = offered(now)
         # Everything any search offered, in order: the engine chooses among real entries when none is the value.
         seen += [n for n in (e.get("name") or "" for e in candidates) if n and n not in seen]
         hit = _pick(candidates, option)
         if hit is not None:
             cdp.click(hit)
             return
+        for entry in candidates:
+            if _named_within(entry["name"], option):
+                # The latest search that showed it: the list as it first opened is not one that can be typed again.
+                within[entry["name"]] = typed if typed is not None else within.get(entry["name"])
 
         if time.monotonic() > deadline:
             if not searches:
                 break
-            cdp.type_text(element, searches.pop(0))
+            typed = searches.pop(0)
+            cdp.type_text(element, typed)
             deadline = time.monotonic() + CUSTOM_OPTIONS_SECONDS
         time.sleep(0.3)
+
+    # No entry is spelt as the value is - but exactly one entry of all the
+    # searches has a name that lies wholly within it: the application's record
+    # of the thing the value describes. Found live, again and again: handed a
+    # document's line for a value, an engine searched with the wrong words,
+    # clicked entries by where it expected them and asked a person for a
+    # record the list had. Two such entries are not chosen between.
+    if len(within) == 1:
+        (name, search), = within.items()
+        if search is not None:
+            cdp.type_text(element, search)
+        deadline = time.monotonic() + CUSTOM_OPTIONS_SECONDS
+        while True:
+            now = observe()["elements"]
+            refresh(now)
+            entry = next((e for e in offered(now) if e.get("name") == name), None)
+            if entry is not None:
+                cdp.click(entry)
+                _selected.update(name=name, why="the one entry offered whose own name lies within the text given")
+                return
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.3)
 
     # Leave the page as it was found: an open list covers what is under it.
     if expanded()[1]:
@@ -581,6 +684,9 @@ def _select_custom(element, option):
         message = (f"{el.describe(element)} has no option {option!r}. Searching for it and for parts of it, it "
                    f"offers: " + ", ".join(seen[:30]) + ". If one of these is the same thing under this system's own "
                    "name, select it by that name; if none is, say so")
+        if len(within) > 1:
+            message += (". More than one of them is named within that text (" + ", ".join(sorted(within)[:6])
+                        + "), so none was taken")
         # A value written with its variant ("Stool (Navy)") against an entry
         # that is only its general item ("Stool", shown with its code as
         # "StoolD_0045"): say so, and what selecting it leads to.
@@ -660,9 +766,15 @@ def _redrawn(exc, element, ref, role, name, path):
     return again
 
 
+# Controls whose press does something or chooses something. An engine that
+# presses one says which, by its ref or name - see `named` in act().
+PRESSED_ROLES = ("button", "link", "option", "menuitem", "listitem", "treeitem", "tab", "checkbox", "radio",
+                 "switch", "toggle")
+
+
 def act(kind, ref=None, role=None, name=None, path=None, point=None,
         text=None, keys=None, direction=None, amount=None, option=None, append=False, end=None, files=None,
-        see=None, replace_all=False):
+        see=None, replace_all=False, named=False):
     """
     Do one thing on the screen and report what changed. `end` is the point a
     drag drops at. `see` describes the target in words for the grounding model
@@ -708,8 +820,24 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
                 raise
             point = grounder.locate(before["frame"], wanted)
             grounded = wanted
+    aimed_by_point = point is not None and element is None and not grounded
     if point is not None and element is None:
         element = el.at_point(before["elements"], point[0], point[1])
+
+    # An engine's click on a control that has a name is made by that name
+    # (`named`: the gui command and the MCP tools ask for it; a replay and a
+    # person's own actions do not). A point says where, not what: found live,
+    # an engine choosing from a list of suggestions clicked where it expected
+    # an entry to be - and took another record once, the list's "create a new
+    # one" line once, and a button it had taken for empty space once. Told
+    # what is at the point, it clicks that by its ref, or sees it is not what
+    # it meant. Fields, cells and bare points are still clicked where they are.
+    if named and aimed_by_point and kind in ("click", "double_click", "right_click") and element is not None \
+            and element.get("role") in PRESSED_ROLES and (element.get("name") or "").strip() and element.get("ref"):
+        raise ComputerError(
+            f"{point[0]},{point[1]} is {el.describe(element)} - nothing was clicked. A click by coordinates does "
+            f"not say what you mean to press. If this is it, press it by its ref: gui {kind.replace('_', '-')} "
+            f"{element['ref']}. If it is not, observe and choose the control you mean by its ref or name.")
 
     if kind == "type" and point is not None and element is None and before.get("page_url"):
         raise ComputerError("that point does not resolve to a browser field to type into - click the editor, "
@@ -892,6 +1020,10 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         summary = f"Pressed {' '.join(keys)}" + (f" on {target}" if target else "")
     elif kind == "select":
         summary = f"Selected {el._quote(option or '')} in {target}"
+        if backend == "cdp:custom" and _selected["name"]:
+            # Not the text asked for: say which entry it was and why, so the engine and the check can object.
+            summary = (f"Selected the entry {el._quote(_selected['name'], 90)} in {target} for "
+                       f"{el._quote(option or '', 90)} ({_selected['why']})")
     elif kind == "upload":
         files_str = ", ".join(os.path.basename(f) for f in (files or []))
         summary = f"Uploaded {files_str} to {target or 'the file input'}"
@@ -910,6 +1042,23 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         note += (f"\nNothing in {target}'s list matches all of that text - it offers only to create or search. "
                  f"gui select {element.get('ref') or 'REF'} \"...\" searches for parts of the text too and picks "
                  "the entry that fits; a system's own names are often shorter than a document's.")
+    elif kind == "type" and element is not None and element.get("role") == "combobox" and _offered(after):
+        # Found live: typing a word narrowed a list that was already open, so nothing "appeared" and the result
+        # named none of its entries. The engine typed two more words over the one that had found the record,
+        # then told a person the list offered nothing.
+        offered = _offered(after)
+        note += (f"\n{target}'s list now offers: "
+                 + "; ".join(f"{e.get('ref') or '?'} {el._quote(e['name'], 70)}" for e in offered[:OFFERED_SHOWN])
+                 + (f" (+{len(offered) - OFFERED_SHOWN} more)" if len(offered) > OFFERED_SHOWN else "")
+                 + ". If one of them is the same thing, choose it now (gui click REF) - typing again replaces the "
+                   "list.")
+    if kind == "type" and element is not None and text and _decorated_number(text, element.get("value")):
+        # Found live: a number typed with its currency sign into a field that had read "15,000.00" - the form kept the text until it
+        # was saved, then read it as nothing, and the line was saved at zero.
+        note += (f"\n{target} held a plain number ({el._quote(str(element.get('value')), 30)}) and was given "
+                 f"{el._quote(text, 30)}. A number field takes digits (and a decimal point) only - a currency sign "
+                 "or a unit can make it read as nothing when the form is saved. Type the bare number, and read the "
+                 "field back after saving.")
     if grounded:
         # Where it was found, and what is there: the engine checks the model's answer against the element.
         found_on = f"; that is {el.describe(element)}" if element else "; nothing in the element list is there"
