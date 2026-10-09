@@ -440,29 +440,67 @@ CUSTOM_OPEN_SECONDS = 1.5
 _SUGGESTION_ROLES = ("option", "menuitem", "listitem", "link")
 
 # Entries a list offers besides the choices: they make or search, never pick.
-_NOT_A_CHOICE = re.compile(r"^\s*(create|add|search more|advanced search|new)\b", re.I)
+_NOT_A_CHOICE = re.compile(r"^\s*(create|add|search more|advanced search|new|filter(?:ed)? by|no (?:results|matches))\b", re.I)
 
 
-def _offers_nothing(before, after):
+def _offers_nothing(before, after, field=None):
     """Whether typing into a suggesting field left a list whose new entries only create or search - none to pick."""
 
     known = {e.get("path") for e in (before or {}).get("elements") or []}
     offered = [e for e in (after or {}).get("elements") or []
                if e.get("path") not in known and e.get("role") in _SUGGESTION_ROLES and e.get("name")]
-    return bool(offered) and all(_NOT_A_CHOICE.match(e["name"]) for e in offered)
+    if offered and all(_NOT_A_CHOICE.match(e["name"]) for e in offered):
+        return True
+    # A list that was open before the typing shows nothing "new": judge what it holds now. Found live - the
+    # field had been clicked first, so its create and search lines were already on the page, and the typing
+    # that emptied the list of every real entry was not seen to have left none.
+    shown = _list_under(field, after)
+    return bool(shown) and all(_NOT_A_CHOICE.match(e["name"]) for e in shown)
+
+
+# How far below a field its list of suggestions may reach.
+LIST_REACH = 420
+
+
+def _list_under(field, observation):
+    """
+    The options of the list a field has open: those drawn right under it (or
+    over it), in its own column. A page holds other options too - every
+    <select> on a form has its own, wherever it is - and found live they made
+    an emptied list of suggestions look as if it still offered something.
+    """
+
+    box = (field or {}).get("box")
+    if not box:
+        return []
+    left, top, right, bottom = box[0], box[1], box[0] + box[2], box[1] + box[3]
+    out = []
+    for e in (observation or {}).get("elements") or []:
+        b = e.get("box")
+        if e.get("role") != "option" or not e.get("name") or not b or "offscreen" in (e.get("states") or []):
+            continue
+        if b[0] < right and b[0] + b[2] > left and bottom - 12 <= b[1] <= bottom + LIST_REACH:
+            out.append(e)
+    if out:
+        return out
+    # No room below: a list drawn over its field ends at the field's top.
+    return [e for e in (observation or {}).get("elements") or []
+            if e.get("role") == "option" and e.get("name") and e.get("box")
+            and "offscreen" not in (e.get("states") or [])
+            and e["box"][0] < right and e["box"][0] + e["box"][2] > left
+            and top - LIST_REACH <= e["box"][1] and e["box"][1] + e["box"][3] <= top + 12
+            and top - (e["box"][1] + e["box"][3]) <= 160]
 
 
 # How many of a suggesting field's entries are named after typing into it.
 OFFERED_SHOWN = 8
 
 
-def _offered(after):
+def _offered(after, field=None):
     """The entries a suggesting field's list shows now that can be picked - not its "create" or "search" lines."""
 
     # Options only: a page's links and menu items are there whatever is typed.
-    return [e for e in (after or {}).get("elements") or []
-            if e.get("role") == "option" and e.get("name") and not _NOT_A_CHOICE.match(e["name"])
-            and "offscreen" not in (e.get("states") or [])]
+    return [e for e in _list_under(field, after) if not _NOT_A_CHOICE.match(e["name"])]
 
 
 def _words(text):
@@ -1035,18 +1073,36 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         # cdp.click intercepted it: no dialog is on the screen, nothing was chosen.
         note = (f"\n{target} opens a file chooser; none was shown and no file was chosen. "
                 "To attach a file, use the upload action on this same control with the file path(s).")
-    if kind == "type" and element is not None and element.get("role") == "combobox" and _offers_nothing(before, after):
+    if kind == "type" and element is not None and element.get("role") == "combobox" and _offers_nothing(before, after, _same_field(element, after) or element):
         # Found live entering a bill: the engine typed the bill's whole line ("Professional Fees for India Statutory
         # Audit & GST Compliance Filing Q2") into an Item field, the list offered only "Create a new Item" and
         # "Advanced Search", and it asked a person - for an item that select, searching parts of the text, finds.
-        note += (f"\nNothing in {target}'s list matches all of that text - it offers only to create or search. "
-                 f"gui select {element.get('ref') or 'REF'} \"...\" searches for parts of the text too and picks "
-                 "the entry that fits; a system's own names are often shorter than a document's.")
-    elif kind == "type" and element is not None and element.get("role") == "combobox" and _offered(after):
+        # The search an engine was told to make with `select`, made for it. Found live on a build that had the
+        # hint below: the engine read it, opened the list's own "advanced search" instead, clicked around the
+        # list and asked a person for a record the list had. Only the one entry whose own name lies within the
+        # text is ever taken; when there is none, the text is put back as it was typed.
+        field = _same_field(element, after) or element
+        try:
+            _select_custom(field, text)
+        except ComputerError as exc:
+            picked = None
+            try:
+                cdp.type_text(_same_field(element, observe()) or field, text)
+            except ComputerError:
+                pass
+            note += (f"\nNothing in {target}'s list matches all of that text - it offers only to create or search. "
+                     f"{exc}. Choose one of those by gui select {element.get('ref') or 'REF'} \"its name\" only if "
+                     "it is plainly the same thing; if none is, ask.")
+        else:
+            picked = _selected["name"] or text
+            note += (f"\nNothing in {target}'s list matched all of that text, so its parts were searched for and "
+                     f"the entry {el._quote(picked, 90)} was selected ({_selected['why'] or 'it is that text'}). "
+                     "The field now holds that entry - do not type into it again.")
+    elif kind == "type" and element is not None and element.get("role") == "combobox" and _offered(after, _same_field(element, after) or element):
         # Found live: typing a word narrowed a list that was already open, so nothing "appeared" and the result
         # named none of its entries. The engine typed two more words over the one that had found the record,
         # then told a person the list offered nothing.
-        offered = _offered(after)
+        offered = _offered(after, _same_field(element, after) or element)
         note += (f"\n{target}'s list now offers: "
                  + "; ".join(f"{e.get('ref') or '?'} {el._quote(e['name'], 70)}" for e in offered[:OFFERED_SHOWN])
                  + (f" (+{len(offered) - OFFERED_SHOWN} more)" if len(offered) > OFFERED_SHOWN else "")

@@ -1244,7 +1244,17 @@ def _learning_by_model(run):
     if run.get("one_off"):
         return False
 
-    return _engine_can_drive() and not run.get("replay_only") and _stage(run) == experience.APPRENTICE
+    if not _engine_can_drive() or run.get("replay_only"):
+        return False
+    if _stage(run) == experience.APPRENTICE:
+        return True
+
+    # A task with a value picked from a list is the model's however often it
+    # has gone well: a replay clicks the entry the demonstration chose, and
+    # types this run's words where a search belongs. Found live: trusted after
+    # three runs, the next request - a document with one line where the
+    # demonstration had two - was met with "I need item_2, accepted_qty_2".
+    return bool(skills.chosen_from_list(run["skill"]))
 
 
 # What the engine and the check are told about a value the person typed only
@@ -1769,6 +1779,11 @@ def learn_answer(reply):
     asked = (guided or {}).pop("asked", None) if guided else None
     reply = " ".join((reply or "").split())[:500]
 
+    if run is not None and asked:
+        # A run a person had to answer was helped, however well it then went (_gate). Found live: three runs
+        # in a row, two of them answered by a person, counted as three clean runs and the skill was trusted.
+        run["asked_person"] = True
+
     if run is None or run.get("one_off") or not asked or not reply:
         return
     if ABANDON_RE.match(reply):
@@ -1883,7 +1898,8 @@ def _gate(reply, kind, engine):
             # A takeover, or a run the check had to send back, worked in the
             # end but did not run smoothly: it does not count towards trust.
             _record_verdict(run, True, checked_by="model",
-                            helped=guided["mode"] == "takeover" or run.get("attempts", 1) > 1)
+                            helped=guided["mode"] == "takeover" or run.get("attempts", 1) > 1
+                            or bool(run.get("asked_person")))
         text = f"{reply}\n\nChecked on the screen: {verdict['seen']}" if verdict.get("seen") else reply
         write_final_reply(text + _evidence_text(run), kind="final", engine=engine, checked=True)
         return True
