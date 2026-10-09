@@ -110,13 +110,21 @@ def live_text(limit=4000):
     """
 
     try:
-        from decurix_agent.computer import core, privacy
-        from decurix_agent.computer import elements as el
+        from decurix_agent.computer import core
 
         observation = core.observe(remember=False)
     except Exception as exc:
         log(f"evidence: could not read the screen's text: {exc}")
         return ""
+
+    return fields_text(observation, limit)
+
+
+def fields_text(observation, limit=4000):
+    """What the fields of one look at the screen hold, as text (see live_text); "" when none holds anything."""
+
+    from decurix_agent.computer import core, privacy
+    from decurix_agent.computer import elements as el
 
     out = [f"Window with the keyboard: {observation.get('active_title') or '(none)'}"]
     active = core.active_group(observation)
@@ -149,7 +157,7 @@ def live_text(limit=4000):
 
 NOTES_DIR = config.DECURIX_DIR / "computer" / "evidence"
 NOTES_KEEP_SECONDS = 2 * 24 * 3600
-MAX_NOTE = 4000
+MAX_NOTE = 8000
 MAX_OBSERVED = 40
 
 
@@ -168,6 +176,26 @@ def note(text):
         log(f"evidence: could not keep a note: {exc}")
 
 
+# How much of one look at the screen is kept as a note.
+MAX_LOOK = 7000
+
+
+def note_look(shown):
+    """
+    Keep what a tool's look at the screen read, for the task being worked on:
+    the list of windows and elements exactly as the engine was shown it (read
+    only values are in it as text, which a list of fields would miss). Found
+    live: a worker read a saved record's date and total off its page (`gui
+    observe`), closed the page as the task asks, and reported both - and the
+    check, shown the closed screen and a list of actions, could not confirm a
+    value nobody had kept. A look is evidence only if what it saw is written
+    down. Never raises.
+    """
+
+    if shown and shown.strip():
+        note("a look at the screen then, as the tool listed it:\n" + shown.strip()[:MAX_LOOK])
+
+
 def _prune():
     cutoff = time.time() - NOTES_KEEP_SECONDS
     for path in NOTES_DIR.glob("*.jsonl"):
@@ -176,6 +204,25 @@ def _prune():
                 path.unlink()
         except OSError:
             pass
+
+
+def entered(task_id=None):
+    """
+    What a task's tools put into fields, oldest first: the text of each typing
+    that went through, and each option selected. A text that was withheld (a
+    secret) is not among them.
+    """
+
+    task_id = task_id or task_context.current()
+    if not task_id:
+        return []
+    try:
+        _, events = recording.load(recording.session_for_task(task_id))
+    except (FileNotFoundError, OSError, ValueError):
+        return []
+    return [str(value) for event in events if event.get("outcome") in (None, "done")
+            for value in (event.get("text") if event.get("kind") == "type" else None,
+                          event.get("option") if event.get("kind") == "select" else None) if value]
 
 
 def observed(task_id=None):

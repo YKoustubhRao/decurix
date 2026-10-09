@@ -46,6 +46,13 @@ SYSTEM = (
     "04-Oct-2026: answer 04-10-2026). Found live: a date typed as the document wrote it was refused by "
     "its field, and the record was saved with today's date. A value's \"meaning\", when given, is what "
     "the person who taught the procedure said about it; follow it. "
+    "A value marked lookup is not typed and left: it is searched for in a list of the application's own "
+    "records, and the record found is what gets entered. For such a value give the document's whole wording "
+    "of the thing, exactly and unshortened (the full line or name as the document writes it) - never a "
+    "shortened or reworded form, and never a guess at what the application calls it: the search matches the "
+    "application's record inside the document's words, and words left out cannot be matched (found live: "
+    "\"Office Mesh Chairs\" was given for a line reading \"High Back Ergonomic Lumbar Support Office Mesh "
+    "Chairs\", and the record \"Ergonomic Office Chair\" could no longer be found in it). "
     "A value marked file is a file to upload: its answer is the full path of one of this run's "
     "files (listed in the request), the one that plays the part the example did - e.g. the new offer "
     "letter where an offer letter was uploaded; several files are separated by ';'. "
@@ -73,7 +80,7 @@ def referenced_files(text):
     return found
 
 
-def _describe(param, meaning=""):
+def _describe(param, meaning="", lookup=False):
     line = {
         "name": param["name"],
         "field": param.get("label") or param["name"],
@@ -82,6 +89,8 @@ def _describe(param, meaning=""):
     }
     if meaning:
         line["meaning"] = str(meaning)[:300]
+    if lookup:
+        line["lookup"] = True
     if param.get("file"):
         line["file"] = True
     if param.get("list") and param.get("examples"):
@@ -134,12 +143,16 @@ def fill(skill, params, context):
 
 
 def _prompt(skill, params, context):
+    from decurix_agent.computer import skills
+
     meanings = (skill.get("understanding") or {}).get("inputs") or {}
+    chosen = skills.chosen_from_list(skill)
     return "\n".join([
         f"Procedure: {skill.get('title') or skill.get('name')}",
         f"Its goal: {skill.get('goal') or skill.get('done_when') or '(not stated)'}",
         "Values to fill:",
-        json.dumps([_describe(p, meanings.get(p["name"])) for p in params], ensure_ascii=False, indent=1),
+        json.dumps([_describe(p, meanings.get(p["name"]), p["name"].split("__")[0] in chosen) for p in params],
+                   ensure_ascii=False, indent=1),
         "",
         "The request that started this run (it may include an email, and it names the files attached):",
         (context or "")[:6000],
