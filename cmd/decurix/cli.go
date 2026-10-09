@@ -275,16 +275,22 @@ func printTable(rows [][]string) {
 // createFlags maps a create command's flag spelling to the form field
 // internal/httpapi/desktops.go's createDesktopHandler reads it as.
 var createFlags = map[string]string{
-	"--profile":   "profile",
-	"--harness":   "harness",
-	"--cpus":      "cpus",
-	"--memory-mb": "memory_mb",
-	"--apps":      "host_apps",
+	"--profile":    "profile",
+	"--harness":    "harness",
+	"--cpus":       "cpus",
+	"--memory-mb":  "memory_mb",
+	"--apps":       "host_apps",
+	"--path":       "host_paths",
+	"--paths":      "host_paths",
+	"--copy-path":  "host_paths",
+	"--copy-paths": "host_paths",
+	"--host-path":  "host_paths",
+	"--host-paths": "host_paths",
 }
 
 func cliCreate(ctx context.Context, c *apiClient, args []string) {
 	if len(args) == 0 {
-		fmt.Println("usage: create <name> [--profile basic|developer|ai] [--harness thebot|claude|ollama] [--cpus N] [--memory-mb N] [--copy-apps] [--apps chrome,gh,ssh]")
+		fmt.Println("usage: create <name> [--profile basic|developer|ai] [--harness thebot|claude|ollama] [--cpus N] [--memory-mb N] [--copy-apps] [--apps chrome,gh,ssh] [--path <host_path>[-><vm_path>]]")
 		return
 	}
 
@@ -294,6 +300,10 @@ func cliCreate(ctx context.Context, c *apiClient, args []string) {
 	for i := 0; i < len(rest); i++ {
 		if rest[i] == "--copy-apps" || rest[i] == "--copy-host-apps" {
 			form.Set("copy_host_apps", "1")
+			continue
+		}
+		if rest[i] == "--copy-files" || rest[i] == "--copy-host-files" {
+			form.Set("copy_host_files", "1")
 			continue
 		}
 
@@ -309,7 +319,12 @@ func cliCreate(ctx context.Context, c *apiClient, args []string) {
 			return
 		}
 
-		form.Set(field, rest[i])
+		if field == "host_paths" {
+			form.Add("host_paths", rest[i])
+			form.Set("copy_host_files", "1")
+		} else {
+			form.Set(field, rest[i])
+		}
 		if field == "host_apps" {
 			form.Set("copy_host_apps", "1")
 		}

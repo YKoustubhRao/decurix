@@ -6,7 +6,9 @@ import re
 from decurix_agent.computer import detour as detours
 from decurix_agent.computer import elements as el
 from decurix_agent.computer import healing
+from decurix_agent.computer import grounder
 from decurix_agent.computer import ocr
+from decurix_agent.computer.errors import ComputerError
 
 
 # ============================================================
@@ -392,13 +394,57 @@ class Ladder:
                     f"the screen now looks like the recording's at step {then['n']} ({verdict}, {found['margin']:.2f})")
         return found["to"]
 
-    def ground_point(self, step, now_frame, recorded_frame):
+    def ground_point(self, step, now_frame, recorded_frame, elements=None):
         """
         Where to click for a point step whose picture is not on the screen:
         the engine reads what the recording clicked (ocr.py) and picks the line
-        that plays that part now. (x, y) or None. Never for a strict step.
+        that plays that part now; failing that, a grounding model looks for
+        what the person said the step does (_point_by_eye). (x, y) or None.
+        Never for a strict step.
         """
 
+        point = self._point_by_text(step, now_frame, recorded_frame)
+        if point is None:
+            point = self._point_by_eye(step, now_frame, elements)
+        return point
+
+    def _point_by_eye(self, step, now_frame, elements):
+        """
+        A grounding model (grounder.py) finds what the person's own words for
+        the step describe - "clicks the first search result" - on the screen
+        now: an icon or a picture has no text for _point_by_text to go by. Only
+        a point that lands on a control in the element list is taken; a model
+        always answers somewhere, and a click on the wrong thing is not undone.
+        """
+
+        intent = " ".join((step.get("intent") or "").split())
+        if (not intent or now_frame is None or healing.strict(step) or self.calls_left <= 0
+                or step.get("kind") not in ("click", "double_click") or not grounder.available()):
+            return None
+
+        self.calls_left -= 1
+        self.model_calls += 1
+        try:
+            point = grounder.locate(now_frame, intent)
+        except ComputerError as exc:
+            self.trail.append(f"the grounding model could not place step {step['n']} ({str(exc)[:80]})")
+            return None
+
+        under = el.at_point(elements or [], point[0], point[1])
+        if under is None or under.get("role") not in el.INTERACTIVE_ROLES:
+            self.trail.append(f"the grounding model put step {step['n']} at {point[0]},{point[1]}, where there is "
+                              "no control - not clicking a guess")
+            return None
+
+        self.grounded.append({"id": self.key(step), "n": step["n"], "was": intent, "now": el.describe(under),
+                              "how": "grounder"})
+        self.trail.append(f"the grounding model found {el.describe(under)} for {el._quote(intent, 60)}")
+        self.report(f"Step {step['n']}: what was clicked is not on the screen as recorded - clicking "
+                    f"{el.describe(under)} at {point[0]},{point[1]}, which a grounding model found for what you "
+                    f"said this step does ({el._quote(intent, 80)})")
+        return point
+
+    def _point_by_text(self, step, now_frame, recorded_frame):
         if not self._may_ground(step) or now_frame is None or recorded_frame is None or not ocr.available():
             return None
         if step.get("kind") not in ("click", "double_click"):

@@ -7,7 +7,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node --test main.test.js mobile-access.test.js",
+    "test": "node --test main.test.js mobile-access.test.js wsl.test.js windows-runtime.test.js local-models.test.js native-ollama.test.js preload.test.js",
     "dist:win": "electron-builder --win nsis --x64",
     "dist:mac": "electron-builder --mac dir",
     "dist:linux": "electron-builder --linux AppImage"
@@ -27,7 +27,9 @@
       "mobile-access.js",
       "preload.js",
       "loading.html",
-      "package.json"
+      "package.json",
+      "windows-runtime.js",
+      "local-models.js"
     ],
     "extraResources": [
       {
@@ -40,16 +42,12 @@
       "icon": "icon.ico",
       "extraResources": [
         {
-          "from": "build/decurix.exe",
-          "to": "decurix.exe"
+          "from": "build/stack",
+          "to": "stack"
         },
         {
-          "from": "build/runtime",
-          "to": "runtime"
-        },
-        {
-          "from": "build/decurix-android-arm64",
-          "to": "decurix-android-arm64"
+          "from": "build/wsl",
+          "to": "wsl"
         },
         {
           "from": "build/cloudflared.exe",

@@ -12,11 +12,12 @@
         win-unpacked\Decurix.exe        the same app, run where it is, with
                                         nothing installed
 
-    The app needs nothing else on the computer - no Docker, no WSL, no Python.
+    The app runs its Linux workers (Docker, XFCE, noVNC) in a WSL distro of
+    its own, which it sets up itself on its first start - no Docker Desktop.
 
-    It does not touch your data: workers, their files, chats and settings live
-    in %APPDATA%\decurix and %LOCALAPPDATA%\Decurix and are picked up by the
-    new build. Installing over a running app closes it first. -Fresh is the
+    It does not touch your data: workers, their files, chats and task history
+    live in that distro (%LOCALAPPDATA%\Decurix\wsl), settings and logs in
+    %APPDATA%\decurix, and the new build picks them up. Installing over a running app closes it first. -Fresh is the
     exception: it deletes all of it, so the new build starts as on a computer
     that never had Decurix.
 
@@ -33,9 +34,10 @@
 .PARAMETER Fresh
     Also delete everything Decurix has kept on this computer, for good: every
     worker and its files, chats, task history, taught skills, settings and
-    keys, paired devices, the profiles of apps copied into workers, and the
-    local model server with the models it downloaded (over a gigabyte, fetched
-    again when the app first needs them). Closes a running Decurix first, an
+    keys, and paired devices. The next start is as on a computer that never
+    had Decurix - except that the worker images and downloaded models are
+    kept (they are a build and a download, not anyone's data), so it takes
+    a minute, not the image build. Closes a running Decurix first, an
     installed one too.
 #>
 param(
@@ -50,12 +52,30 @@ $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $stage = Join-Path $repo 'desktop\electron\build'
 $out = Join-Path $repo 'dist\electron'
 
+# WMI can briefly retain an exited process while another process holds its
+# handle. Such entries no longer lock the build and must not fail shutdown.
+function Test-LiveProcess($ProcessId) {
+    $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if (-not $process) { return $false }
+    try { return -not $process.HasExited } finally { $process.Dispose() }
+}
+
+function Stop-DecurixProcess($ProcessInfo) {
+    try {
+        Stop-Process -Id $ProcessInfo.ProcessId -Force -ErrorAction Stop
+    } catch {
+        if (Test-LiveProcess $ProcessInfo.ProcessId) {
+            return "$($ProcessInfo.Name) (PID $($ProcessInfo.ProcessId)): $($_.Exception.Message)"
+        }
+    }
+}
+
 # Every process of a running Decurix: the window and the control plane are
 # both decurix.exe (the control plane in the app's resources folder), and the
 # workers' agents and engines run from that same app folder. The control
 # plane is detached and outlives the window, so both are looked for.
 function Get-DecurixProcesses {
-    $all = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath })
+    $all = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and (Test-LiveProcess $_.ProcessId) })
     $roots = @($all | Where-Object { $_.Name -ieq 'decurix.exe' } | ForEach-Object {
         $dir = Split-Path -Parent $_.ExecutablePath
         if ((Split-Path -Leaf $dir) -ieq 'resources') { $dir = Split-Path -Parent $dir }
@@ -84,16 +104,53 @@ function Clear-DecurixData {
         $procs = @(Get-DecurixProcesses)
         if ($procs.Count -eq 0) { break }
         if ($try -eq 0) { Write-Host "Closing Decurix ($($procs.Count) processes)" }
-        $procs | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        $stopErrors = @($procs | ForEach-Object { Stop-DecurixProcess $_ })
         Start-Sleep -Seconds 1
     }
+    $remaining = @(Get-DecurixProcesses)
+    if ($remaining.Count -gt 0) {
+        throw "Could not close Decurix; no data was deleted. $($stopErrors -join '; ') If access was denied, close Decurix from an elevated PowerShell or Task Manager, then retry."
+    }
 
-    # The model server is started detached from the store and left running
-    # between runs of the app. A person's own Ollama is elsewhere.
+    # A shared WSL distro keeps other applications: reset only our resources.
+    & powershell.exe -NoProfile -NonInteractive -File (Join-Path $repo 'desktop/electron/wsl/cleanup-existing.ps1') -Action reset
+    if ($LASTEXITCODE -ne 0) { throw 'Could not reset the saved WSL runtime; its data and runtime record were kept.' }
+
+    # The distro holds every worker and the records, and the worker images.
+    # Fresh means no workers and no records - not building the images again,
+    # which is ten minutes of downloads: reset.sh deletes every container and
+    # every volume but the caches and the models, and keeps the images. The
+    # distro is then stopped, so the app starts its daemon afresh. Should that
+    # fail, the distro is unregistered: fresh all the same, only slower.
+    $env:WSL_UTF8 = '1'
+    $distros = @(& wsl.exe --list --quiet 2>$null | ForEach-Object { ($_ -replace "`0", '').Trim() })
+    if ($distros -contains 'Decurix') {
+        $reset = (Join-Path $repo 'desktop\electron\wsl\reset.sh') -replace '\\', '/'
+        $reset = '/mnt/' + $reset.Substring(0, 1).ToLower() + $reset.Substring(2)
+        Write-Host 'Deleting the workers and records in Decurix''s Linux (its built images are kept)'
+        & wsl.exe -d Decurix -u root --cd / -e sh $reset
+        if ($LASTEXITCODE -eq 0) {
+            & wsl.exe --terminate Decurix 2>$null | Out-Null
+        } else {
+            Write-Host 'That did not work; deleting Decurix''s Linux whole instead'
+            & wsl.exe --unregister Decurix 2>$null | Out-Null
+        }
+    }
+
+    # An earlier version ran a model server on Windows itself, started detached
+    # from the store. A person's own Ollama is elsewhere.
     Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($store + '\', [StringComparison]::OrdinalIgnoreCase) } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
-    foreach ($target in @($data, $store)) {
+    # The store, but not the disk of a distro that was kept (its wsl folder).
+    $targets = @($data)
+    $distros = @(& wsl.exe --list --quiet 2>$null | ForEach-Object { ($_ -replace "`0", '').Trim() })
+    if ($distros -contains 'Decurix') {
+        $targets += @(Get-ChildItem $store -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'wsl' } | ForEach-Object { $_.FullName })
+    } else {
+        $targets += $store
+    }
+    foreach ($target in $targets) {
         if (-not (Test-Path $target)) { continue }
         Write-Host "Deleting $target"
         for ($try = 0; (Test-Path $target) -and $try -lt 10; $try++) {
@@ -121,7 +178,7 @@ Write-Host '========================================'
 # closes a running Decurix.
 $unpacked = Join-Path $out 'win-unpacked'
 function Get-UnpackedProcesses {
-    @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($unpacked + '\', [StringComparison]::OrdinalIgnoreCase) })
+    @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($unpacked + '\', [StringComparison]::OrdinalIgnoreCase) -and (Test-LiveProcess $_.ProcessId) })
 }
 $running = Get-UnpackedProcesses
 if ($running.Count -gt 0) {
@@ -132,12 +189,12 @@ if ($running.Count -gt 0) {
 
     Write-Host "Stopping the Decurix the last build left running in the background ($($running.Count) processes)"
     for ($try = 0; $running.Count -gt 0 -and $try -lt 10; $try++) {
-        $running | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        $stopErrors = @($running | ForEach-Object { Stop-DecurixProcess $_ })
         Start-Sleep -Seconds 1
         $running = Get-UnpackedProcesses
     }
     if ($running.Count -gt 0) {
-        throw "Could not stop what is running from $unpacked ($(($running | ForEach-Object { $_.Name } | Select-Object -Unique) -join ', ')). End it in Task Manager, then build again."
+        throw "Could not stop what is running from $unpacked. $($stopErrors -join '; ') If access was denied, close Decurix from an elevated PowerShell or Task Manager, then build again. No data was deleted."
     }
 }
 
@@ -155,7 +212,7 @@ try {
 
 try {
     # From scratch: nothing an earlier build compiled, staged or packaged is
-    # reused. The pinned downloads (Python, cloudflared, the wheels) are kept -
+    # reused. The pinned downloads (cloudflared, Alpine's rootfs) are kept -
     # each is checked against its SHA-256 before it is used, so a kept one is as
     # good as a fresh one and the build does not need them again.
     Write-Host ''
@@ -165,7 +222,16 @@ try {
     # to the path 'Decurix.exe' is denied" right after the ten processes of the
     # last build were ended, and the file was free a few seconds later. So a
     # delete that fails is tried again for a while before it is an error.
-    $targets = @('runtime', 'stack', 'decurix.exe', 'decurix-android-arm64' | ForEach-Object { Join-Path $stage $_ }) + $out
+    # An Explorer window showing the output - which the end of the last build
+    # opened itself - holds the folder, and the delete below fails on it.
+    try {
+        foreach ($w in @((New-Object -ComObject Shell.Application).Windows())) {
+            $where = try { $w.Document.Folder.Self.Path } catch { '' }
+            if ($where -and $where.StartsWith($out, [StringComparison]::OrdinalIgnoreCase)) { $w.Quit() }
+        }
+    } catch { }
+
+    $targets = @('runtime', 'stack', 'wsl', 'decurix.exe', 'decurix-android-arm64' | ForEach-Object { Join-Path $stage $_ }) + $out
     foreach ($path in $targets) {
         for ($try = 0; (Test-Path $path) -and $try -lt 15; $try++) {
             if ($try -gt 0) { Start-Sleep -Seconds 1 }

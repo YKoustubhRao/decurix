@@ -52,7 +52,7 @@ func Classify(step string) string {
 // BrowserAvailable says whether the browser-agent extension is installed on
 // this machine (soul sets it at startup). Without it, work in a web page is
 // the operator's, driving the browser with gui: found live, a recovery plan
-// sent "create the quotation in Odoo" to the browser skill on a desktop with
+// sent "create the request in the web app" to the browser skill on a desktop with
 // no extension, which waited 30 s and failed the whole task.
 var BrowserAvailable = true
 
@@ -259,11 +259,15 @@ func stripNonCodeFilenames(s string) string {
 // isCoding is the real gate for the coding harness: a genuine
 // build-me-software request, never a question about software and never a
 // single command or an environment chore.
+// Strip prohibitions before looking for software requests: a GUI task can
+// explicitly forbid scripts without asking the coding harness to write them.
+var codingProhibitionRe = regexp.MustCompile(`(?i)\b(?:do not|don't|never)\s+(?:build|implement|write|create|code|develop|make|program|generate|design|use)\b[^.?!\n]*`)
+
 func isCoding(step string) bool {
 	if codingExcludeRe.MatchString(step) || codingOpsRe.MatchString(step) {
 		return false
 	}
-	cleaned := stripNonCodeFilenames(codingURLRe.ReplaceAllString(step, " "))
+	cleaned := stripNonCodeFilenames(codingURLRe.ReplaceAllString(codingProhibitionRe.ReplaceAllString(step, " "), " "))
 	return codingRe.MatchString(cleaned)
 }
 
@@ -275,7 +279,7 @@ func describesSoftware(step string) bool {
 	if codingExcludeRe.MatchString(step) || codingOpsRe.MatchString(step) {
 		return false
 	}
-	cleaned := stripNonCodeFilenames(codingURLRe.ReplaceAllString(step, " "))
+	cleaned := stripNonCodeFilenames(codingURLRe.ReplaceAllString(codingProhibitionRe.ReplaceAllString(step, " "), " "))
 	return codingRe.MatchString(cleaned) || codingRe.MatchString("build "+cleaned)
 }
 

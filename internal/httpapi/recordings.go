@@ -207,10 +207,6 @@ func (s *Server) demonstrationHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A native worker's recorder is fed from here (nativerecording.go): what
-	// is known about it is out of date once this has run.
-	defer s.forgetRecording(id)
-
 	action := r.FormValue("action")
 	if !demonstrationActions[action] {
 		jsonStatusError(w, http.StatusBadRequest, "action must be start, pause, resume or stop")
@@ -238,12 +234,21 @@ func (s *Server) demonstrationHandler(w http.ResponseWriter, r *http.Request) {
 // task of their own. Refused while the agent is busy, for the reason a replay
 // is: sent to a paused agent it would be taken as the reply.
 func (s *Server) recordTaskHandler(w http.ResponseWriter, r *http.Request) {
+	limitUpload(w, r)
+
+	files, err := readAttachments(r)
+	if err != nil {
+		uploadError(w, err)
+		return
+	}
+
 	id, ok := requireDesktop(w, r, http.MethodPost)
 	if !ok {
 		return
 	}
 
-	task := strings.TrimSpace(r.FormValue("task"))
+	// One line: what follows the task's line is the files it was given.
+	task := strings.Join(strings.Fields(r.FormValue("task")), " ")
 	if task == "" {
 		jsonStatusError(w, http.StatusBadRequest, "say what task you are about to do")
 		return
@@ -269,6 +274,21 @@ func (s *Server) recordTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The documents the person will work from (a PO to key in, an invoice to
+	// file): kept with the ticket's recording, so a lesson taught from it
+	// reads them beside what was typed (record_task.py, study.py).
+	paths, err := s.putAttachments(r.Context(), worker, files)
+	if err != nil {
+		uploadError(w, err)
+		return
+	}
+
+	content = withAttachments(content, paths)
+	if len(content) > maxRequestBytes {
+		jsonStatusError(w, http.StatusBadRequest, "request too long")
+		return
+	}
+
 	route := s.routeRequest(worker, content)
 
 	if err := s.deliverRequest(r.Context(), id, content, route.TaskID); err != nil {
@@ -281,34 +301,36 @@ func (s *Server) recordTaskHandler(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string]string{"status": "sent", "task_id": route.TaskID, "content": content})
 }
 
-// How long opening something on a worker's screen may take: a browser
-// starting cold is the slow case.
-const openOnScreenTimeout = 2 * time.Minute
+// ticketAttachHandler adds files to the ticket open on a desktop (POST
+// /api/desktops/ticket/attach, multipart: id + files): a document the person
+// reaches for part way through, kept with the ticket's recording like the
+// ones it was opened with.
+func (s *Server) ticketAttachHandler(w http.ResponseWriter, r *http.Request) {
+	limitUpload(w, r)
 
-// openOnScreenHandler opens an app, a file or a web address on a worker's
-// screen for the person looking at it (POST /api/desktops/open, id + target).
-//
-// A native Windows worker's screen is a private desktop with no Start menu,
-// taskbar or icons, so this is how a person puts something on it - and, while
-// they are recording a demonstration, it is one of the demonstration's steps
-// (the agent's demonstration.open_as_person). Only something named: a
-// program is given no arguments from here.
-func (s *Server) openOnScreenHandler(w http.ResponseWriter, r *http.Request) {
+	files, err := readAttachments(r)
+	if err != nil {
+		uploadError(w, err)
+		return
+	}
+
 	id, ok := requireDesktop(w, r, http.MethodPost)
 	if !ok {
 		return
 	}
 
-	target := strings.TrimSpace(r.FormValue("target"))
-	if target == "" || len(target) > 2000 {
-		jsonStatusError(w, http.StatusBadRequest, "say what to open: an app's name, a file, or a web address")
+	if len(files) == 0 {
+		jsonStatusError(w, http.StatusBadRequest, "choose a file to attach")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), openOnScreenTimeout)
-	defer cancel()
+	paths, err := s.putAttachments(r.Context(), desktop.SanitizeID(id), files)
+	if err != nil {
+		uploadError(w, err)
+		return
+	}
 
-	s.callAgent(w, r.WithContext(ctx), id, http.MethodPost, "/open", map[string]string{"target": target}, false)
+	s.callAgent(w, r, id, http.MethodPost, "/ticket/attach", map[string]any{"files": paths}, true)
 }
 
 // ticketStatusHandler reads the ticket open on a desktop, if any: the GUI
@@ -335,8 +357,6 @@ func (s *Server) ticketActionHandler(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-
-	defer s.forgetRecording(id)
 
 	action := r.FormValue("action")
 	if !ticketActions[action] {

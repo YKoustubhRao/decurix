@@ -3,7 +3,7 @@ import threading
 import time
 import traceback
 
-from decurix_agent import (ask_task, config, guidance, lessons, progress, record_task, replay_task, skill_task, state,
+from decurix_agent import (ask_task, attachments, config, guidance, lessons, progress, record_task, replay_task, skill_task, state,
                            task_context, usage)
 from decurix_agent.computer import approval
 from decurix_agent.harness import continue_after_query, perform_task
@@ -64,7 +64,17 @@ def _needs_no_backend(content):
     """Whether a request is handled without the reasoning backend ("/replay", "/record", "/learn", "/skill", a recorded task done again, or a question for a web app)."""
 
     return (bool(replay_task.parse(content)) or record_task.parse(content) is not None or skill_task.handles(content)
-            or skill_task.mimics(content) or ask_task.handles(content))
+            or skill_task.mimics(content) or _asks_a_web_app(content))
+
+
+def _asks_a_web_app(content):
+    """
+    Whether a request is only a question for a web app (ask_task.py). One that
+    brought files is not: the files are part of the job, and only an engine
+    can read them.
+    """
+
+    return not attachments.files(content) and ask_task.handles(content)
 
 
 def _can_run_without_backend(content):
@@ -266,6 +276,11 @@ def _pass():
             # would strand the complete request for the life of this process.
             continue
 
+        # A task queued before a question was asked is not its answer.
+        # Only messages marked as replies at receipt may resume that task.
+        if state.waiting_for_query and not is_reply_file(path.name):
+            continue
+
         # The reasoning backend has not been reached yet - Ollama
         # is still starting, or is briefly unreachable. Leave the
         # file in the command directory and come back to it on a
@@ -437,13 +452,13 @@ def _pass():
             # what differs changed - not worked out again by an
             # engine (computer/mimic.py).
             target = skill_task.perform_mimic
-        elif not ask_task.handles(content) and state.backend_ready and skill_task.may_be_taught(content):
+        elif not _asks_a_web_app(content) and state.backend_ready and skill_task.may_be_taught(content):
             # Not the recorded ticket's words, but maybe its task said
             # another way: with a hosted model, the model reads the
             # request against what was taught here, and the engine
             # gets it when it is none of those (request_reading.py).
             target = skill_task.perform_mimic
-        elif ask_task.handles(content):
+        elif _asks_a_web_app(content):
             # `chatgpt "where is x"`, `google x`, `search youtube for x`:
             # the request is the whole plan - open the service with the
             # question, read its answer off the page (ask_task.py).

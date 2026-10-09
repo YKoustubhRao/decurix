@@ -219,32 +219,10 @@ def _get(path, method="GET", timeout=None):
 
 
 # How long a browser whose DevTools port is open may take to answer. It was
-# half a second, and a Chrome busy rendering an ERP page (Odoo's quotation form,
+# half a second, and a Chrome busy rendering an application page (the web app's quotation form,
 # with another desktop loading beside it) answered later: the layer reported
 # "open without its debugging port" and showed the agent an empty screen.
 BUSY_ANSWER_SECONDS = float(os.environ.get("DECURIX_CDP_ANSWER_SECONDS", "5"))
-
-
-def _nothing_listens():
-    """
-    Whether the DevTools port is free to bind, i.e. no browser has it.
-
-    Only Windows needs asking this way: there a connection to a port nothing
-    listens on is not refused at once but after about two seconds (the system
-    tries three times), and every look at a screen with no browser open paid
-    them - measured, 2.06 s against a few milliseconds on Linux. Binding the
-    port says the same thing immediately.
-    """
-
-    parsed = urllib.parse.urlparse(BASE)
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        probe.bind((parsed.hostname or "127.0.0.1", parsed.port or 80))
-        return True
-    except OSError:
-        return False
-    finally:
-        probe.close()
 
 
 def available():
@@ -253,9 +231,6 @@ def available():
     listening) is known at once; a slow answer is a busy browser, not a missing
     port, and is waited for.
     """
-
-    if os.name == "nt" and _nothing_listens():
-        return False
 
     try:
         _get("/json/version", timeout=BUSY_ANSWER_SECONDS)
@@ -390,6 +365,7 @@ def active_page():
             continue
 
         try:
+            _cancel_pending_leave_dialog(page)
             if page.evaluate("document.visibilityState") == "visible":
                 if fallback is not None:
                     fallback.close()
@@ -427,14 +403,6 @@ def _viewport(metrics):
     side = metrics["ow"] - metrics["iw"]
     bars = metrics["oh"] - metrics["ih"]
 
-    if os.name == "nt":
-        from decurix_agent.computer import win
-
-        origin = win.browser_viewport()
-        if origin is not None:
-            return origin[0], origin[1], dpr
-        return (metrics["sx"] + side / 2) * dpr, (metrics["sy"] + bars - side / 2) * dpr, dpr
-
     return metrics["sx"] + side, metrics["sy"] + bars, dpr
 
 
@@ -464,7 +432,7 @@ _INNER_FRAMES = """if (depth < 3) for (const f of document.querySelectorAll('ifr
 
 
 # A form control inside a table cell with no label of its own is named by its
-# column's header, the way a screen reader announces it. Found in Odoo's order
+# column's header, the way a screen reader announces it. Found in the web app's order
 # lines: after "Add Line" the row's cells were five unnamed textboxes and
 # comboboxes, and nothing said which took the product and which the quantity.
 _COLUMN_NAMES = """JSON.stringify((() => {
@@ -671,12 +639,26 @@ def _prop(node, key):
     return None
 
 
+def _ax_role(node):
+    role = ((node.get("role") or {}).get("value") or "").lower()
+    # Quill and other contenteditable editors expose a focusable generic
+    # rich-text node, rather than a textbox. Its descendants also inherit
+    # editable, so only the focusable editor itself becomes a field.
+    if role == "generic" and _prop(node, "editable") == "richtext" and _prop(node, "focusable"):
+        return "textbox"
+    return role
+
+
 def observe():
     """Return (elements, group) for the active Chromium tab."""
 
     page = active_page()
 
     try:
+        # Keyboard reloads and address-bar navigation can leave Chrome's own
+        # unsaved-work dialog open, blocking every Runtime/AX read. Keep the
+        # page before reading it, just as navigate() does for gui open.
+        _cancel_pending_leave_dialog(page)
         # A page still loading has an accessibility tree with nothing in it
         # yet; reading it then reports an empty page the engine would act on.
         # A page that mirrors something else's controls (a phone app's
@@ -831,7 +813,7 @@ def observe():
             break
 
         role = (node.get("role") or {}).get("value", "")
-        lower = role.lower()
+        lower = _ax_role(node)
         name = " ".join(((node.get("name") or {}).get("value", "") or "").split())
         backend_id = node.get("backendDOMNodeId")
         ignored = node.get("ignored", False)
@@ -1044,7 +1026,7 @@ def _describe(page, metrics, backend_id, known, controls_only=False):
 
     while current is not None and hops < 60:
         hops += 1
-        role = ((current.get("role") or {}).get("value") or "").lower()
+        role = _ax_role(current)
         name = " ".join(((current.get("name") or {}).get("value") or "").split())
         here = current.get("backendDOMNodeId")
         value = (current.get("value") or {}).get("value")
@@ -1300,10 +1282,34 @@ def _center(page, backend_id):
     if not quads:
         raise ComputerError("that element has no size on the page (it may be hidden)")
 
+    object_id = _object(page, backend_id)
+    if not _unobscured(page, object_id):
+        page.call("Runtime.callFunctionOn", {
+            "objectId": object_id,
+            "functionDeclaration": "function() { const node = this.nodeType === 3 ? this.parentElement : this; node.scrollIntoView({block: 'center', inline: 'center', behavior: 'instant'}); }",
+        })
+        quads = page.call("DOM.getContentQuads", {"backendNodeId": backend_id}).get("quads") or []
+        if not quads or not _unobscured(page, object_id):
+            raise ComputerError("that element is covered by another control - close the overlay or scroll it into view")
+
     quad = quads[0]
     xs, ys = quad[0::2], quad[1::2]
 
     return sum(xs) / 4, sum(ys) / 4
+
+
+def _unobscured(page, object_id):
+    return bool(page.call("Runtime.callFunctionOn", {
+        "objectId": object_id, "returnByValue": True,
+        "functionDeclaration": """function() {
+            const node = this.nodeType === 3 ? this.parentElement : this;
+            const rect = node.getBoundingClientRect();
+            const doc = node.ownerDocument;
+            const hit = doc.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+            return !!hit && (node === hit || node.contains(hit) ||
+                (hit !== doc.body && hit !== doc.documentElement && hit.contains(node)));
+        }""",
+    }).get("result", {}).get("value"))
 
 
 # How long a click waits for a file chooser after its barrier (below). The
@@ -1341,7 +1347,7 @@ def click(element, button="left", count=1):
     file chooser, else {}.
 
     A native file chooser is a GTK dialog outside the page: live, an agent
-    that clicked Odoo's "Upload Bill" spent a minute double-clicking inside
+    that clicked the web app's "Upload Bill" spent a minute double-clicking inside
     "Open Files" and never chose the invoice. So file choosers are
     intercepted for the click - none is shown - and the caller is told, so
     the engine uses the upload action (set_file_input_files) instead.
@@ -1370,6 +1376,71 @@ def click(element, button="left", count=1):
 def _object(page, backend_id):
     resolved = page.call("DOM.resolveNode", {"backendNodeId": backend_id})
     return resolved["object"]["objectId"]
+
+
+# A line longer than this is pasted (insertText) rather than typed key by key: nothing a form field takes is that long,
+# and a key event per character would take a while.
+KEYS_UP_TO = 500
+
+
+def _type_line(page, object_id, line):
+    """
+    Type one line into the focused single-line field the way a keyboard does: a key down and up per character. A field
+    a page builds itself often listens for keys, not for text arriving: the web app's date field stayed empty when the line
+    was inserted with Input.insertText (measured: value '' after insertText, '04-10-2026' and the form's date set after
+    key events), so a worker typed a bill's date four times, never saw it held, and asked a person what to do. If the
+    keys left the field without the line (a field that swallows key events), it is inserted as before.
+    """
+
+    if len(line) > KEYS_UP_TO:
+        page.call("Input.insertText", {"text": line})
+        return
+
+    before = _field_value(page, object_id)
+    for char in line:
+        down = {"type": "keyDown", "key": char, "text": char, "unmodifiedText": char}
+        up = {"type": "keyUp", "key": char}
+        # The key's code too, as a keyboard sends it: a page that reads keyCode/which (the web app's date field) treated a
+        # key with none as no key at all, and cleared what had been typed a moment later.
+        code = _key_code(char)
+        if code:
+            for event in (down, up):
+                event["code"], event["windowsVirtualKeyCode"], event["nativeVirtualKeyCode"] = code
+        page.call("Input.dispatchKeyEvent", down)
+        page.call("Input.dispatchKeyEvent", up)
+    after = _field_value(page, object_id)
+    if after is not None and line not in after and after == (before or ""):
+        page.call("Input.insertText", {"text": line})
+
+
+_PUNCTUATION = {" ": ("Space", 32), "-": ("Minus", 189), "/": ("Slash", 191), ".": ("Period", 190), ",": ("Comma", 188),
+                ":": ("Semicolon", 186), "@": ("Digit2", 50), "_": ("Minus", 189), "+": ("Equal", 187), "=": ("Equal", 187)}
+
+
+def _key_code(char):
+    """(code, keyCode, keyCode) of the US-keyboard key that types char, or None for one with no plain key."""
+
+    if "0" <= char <= "9":
+        return ("Digit" + char, ord(char), ord(char))
+    if char.isascii() and char.isalpha():
+        return ("Key" + char.upper(), ord(char.upper()), ord(char.upper()))
+    if char in _PUNCTUATION:
+        code, vk = _PUNCTUATION[char]
+        return (code, vk, vk)
+    return None
+
+
+def _field_value(page, object_id):
+    """The field's value now, or None when it has none to read (not an input)."""
+
+    try:
+        value = page.call("Runtime.callFunctionOn", {
+            "objectId": object_id, "returnByValue": True,
+            "functionDeclaration": "function() { return typeof this.value === 'string' ? this.value : null; }",
+        }).get("result", {}).get("value")
+    except ComputerError:
+        return None
+    return value
 
 
 def type_text(element, text, replace=True):
@@ -1409,7 +1480,7 @@ def type_text(element, text, replace=True):
             lines = text.split("\n")
             for index, line in enumerate(lines):
                 if line:
-                    page.call("Input.insertText", {"text": line})
+                    _type_line(page, object_id, line)
                 elif replace and index == 0 and len(lines) == 1:
                     # Replacing with nothing: delete the selection.
                     press_key(page, "Backspace")
@@ -1489,7 +1560,7 @@ def set_file_input_files(element, files):
     The page decides which input that is, so it is asked: an element that is
     a file input, holds one or is the label of one is set directly; anything
     else (a styled "Upload" or "Browse" button, whose input may only be made
-    when it is clicked - Odoo's "Upload Bill") is clicked with the page's
+    when it is clicked - the web app's "Upload Bill") is clicked with the page's
     file chooser intercepted, and the files go to the input the page opened
     it for. Only when clicking opens no chooser is a lone file input near the
     element used. DOM.setFileInputFiles fires the input's own input/change
@@ -1607,6 +1678,81 @@ def scroll(element, direction, amount=3):
         page.close()
 
 
+def _cancel_pending_leave_dialog(page):
+    """Cancel only beforeunload dialogs; leave other dialogs for the normal workflow."""
+    page.call("Page.enable")
+    showing = [m for m in page.events if m.get("method") == "Page.javascriptDialogOpening"]
+    pending = [m for m in showing if (m.get("params") or {}).get("type") == "beforeunload"]
+    if not pending:
+        return False
+    page.call("Page.handleJavaScriptDialog", {"accept": False})
+    page.events = [m for m in page.events if m not in pending]
+    return True
+
+
+def _navigate_unless_asked_to_stay(page, url):
+    """
+    Page.navigate's answer, or None when the page asked before leaving ("Leave site? Changes you made may not be
+    saved") - which this answers Cancel, so nothing is lost. Found live: a form left unsaved in the web app, a `gui open`
+    on its tab, and Chrome's own dialog held every DevTools call after it ("did not answer Page.navigate within 20s")
+    with the browser frozen behind it. A person reading that dialog keeps their work; so does this.
+    """
+
+    page.call("Page.enable")
+    # A dialog already showing is announced when the domain is enabled: the same answer, before anything else.
+    showing = [m for m in page.events if m.get("method") == "Page.javascriptDialogOpening"]
+    page.events = [m for m in page.events if m not in showing]
+    if any((m.get("params") or {}).get("type") == "beforeunload" for m in showing):
+        page.call("Page.handleJavaScriptDialog", {"accept": False})
+        return None
+    page.seq += 1
+    mine = page.seq
+    page.ws.send(json.dumps({"id": mine, "method": "Page.navigate", "params": {"url": url}}))
+    deadline = time.monotonic() + CALL_TIMEOUT
+    stayed = False
+
+    while time.monotonic() < deadline:
+        page.ws.sock.settimeout(max(0.1, deadline - time.monotonic()))
+        try:
+            message = json.loads(page.ws.receive())
+        except socket.timeout:
+            break
+        if message.get("method") == "Page.javascriptDialogOpening" and \
+                (message.get("params") or {}).get("type") == "beforeunload":
+            page.seq += 1
+            page.ws.send(json.dumps({"id": page.seq, "method": "Page.handleJavaScriptDialog",
+                                     "params": {"accept": False}}))
+            stayed = True
+            continue
+        if message.get("id") == mine:
+            if stayed:
+                return None
+            if "error" in message:
+                raise ComputerError(f"Page.navigate: {message['error'].get('message')}")
+            return message.get("result", {})
+
+    if stayed:
+        return None
+    raise ComputerError(f"Chromium did not answer Page.navigate within {CALL_TIMEOUT}s")
+
+
+NEW_TAB_WAIT_SECONDS = 30
+
+
+def _new_tab_after(before, seconds):
+    """A page target that was not among `before`, waited for up to `seconds`, or None."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            for t in _page_targets():
+                if t.get("id") not in before:
+                    return t
+        except (OSError, ValueError, ComputerError):
+            pass
+        time.sleep(0.5)
+    return None
+
+
 def navigate(url, new_tab=False):
     """Load a URL in the active tab (or a new one) and wait for it to load."""
 
@@ -1618,20 +1764,33 @@ def navigate(url, new_tab=False):
 
     if new_tab:
         try:
+            before = {t.get("id") for t in _page_targets()}
+        except ComputerError:
+            before = set()
+        try:
             # The whole URL is escaped, % included: DevTools decodes this query
             # once, and a URL's own escapes left as they were came out decoded -
             # found live, `chatgpt.com/?q=what%20is%207%2B8` opened as
             # `?q=what%20is%207+8`, and ChatGPT was asked "what is 7 8?".
             target = _get("/json/new?" + urllib.parse.quote(url, safe=""), method="PUT", timeout=10)
         except (OSError, ValueError) as exc:
-            raise ComputerError(f"could not open a new tab: {exc}")
+            # A busy browser (a 1-vCPU desktop just restarted, a heavy web app in other tabs) answers after the
+            # tab is made: found live, "timed out" here, the tab there a moment later, and every retry opened
+            # another one. Take the tab when it comes rather than ask for a second.
+            target = _new_tab_after(before, NEW_TAB_WAIT_SECONDS)
+            if target is None:
+                raise ComputerError(f"could not open a new tab: {exc}")
         page = Page(target)
     else:
         page = active_page()
 
     try:
         if not new_tab:
-            result = page.call("Page.navigate", {"url": url})
+            result = _navigate_unless_asked_to_stay(page, url)
+            if result is None:
+                # The page has unsaved work and asked before leaving: keep it, open the address beside it.
+                page.close()
+                return navigate(url, new_tab=True)
             if result.get("errorText"):
                 raise ComputerError(f"could not load {url}: {result['errorText']}")
 

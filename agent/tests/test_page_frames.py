@@ -29,6 +29,7 @@ class FramedPage:
         self.frame_scroll = frame_scroll
         self.frame_tree = frame_tree
         self.closed = False
+        self.events = []
 
     def evaluate(self, expression):
         if expression == cdp._READY:
@@ -336,51 +337,6 @@ class TestAPressOnWordsInsideAPlainBlock(unittest.TestCase):
 
     def test_words_are_not_a_control(self):
         self.assertIsNone(cdp._describe(self.Page(), self.METRICS, 117, {}, controls_only=True))
-
-
-class TestKeysWithTheBrowsersOwnPopUpInFront(unittest.TestCase):
-    """
-    demonstration.Recorder._front: a click into a text field opens the
-    browser's suggestions, a pop-up window of its own; the keys go to the field.
-    """
-
-    def front(self, focused):
-        from decurix_agent.computer import demonstration
-
-        class Camera:
-            def ask(self, op, **fields):
-                return {"ok": True, "window": {
-                    "hwnd": 2, "title": "", "popup": True, "browser": True, "app": "msedge", "exe": "msedge.exe",
-                    "box": [0, 0, 300, 200], "owner": {"title": "Messaging | Slack clone - Microsoft Edge"}}}
-
-        with mock.patch.object(demonstration.recording, "meta", return_value={}):
-            recorder = demonstration.Recorder("demo-test")
-        recorder.camera = Camera()
-
-        context = {"title": "Messaging | Slack clone - Chromium", "url": "http://site/messaging/"}
-        with mock.patch.object(demonstration.cdp, "focused", return_value=(focused, context)):
-            return recorder._front()
-
-    def test_typing_goes_to_the_field_the_page_says_has_the_keyboard(self):
-        field = {"role": "textbox", "name": "Search messages", "handle": {"tag": "input"}}
-
-        front = self.front(field)
-
-        self.assertEqual(front["element"], field)
-        self.assertEqual(front["where"], "")
-        self.assertEqual(front["url"], "http://site/messaging/")
-
-    def test_keys_in_an_open_drop_down_still_choose_from_its_list(self):
-        front = self.front({"role": "combobox", "name": "Country", "handle": {"tag": "select"}})
-
-        self.assertIsNone(front["element"])
-        self.assertEqual(front["where"], "list")
-
-    def test_a_pop_up_with_no_field_behind_it_is_a_list(self):
-        front = self.front(None)
-
-        self.assertIsNone(front["element"])
-        self.assertEqual(front["where"], "list")
 
 
 class TestANoAtAnApprovalEndsTheTask(unittest.TestCase):

@@ -55,11 +55,11 @@ func (c Capabilities) ScreenTextChars() int {
 }
 
 // OperatorTurns is how many commands one goal may take. A hosted model can
-// carry a long on-screen workflow (an ERP form, a multi-page upload) to the
+// carry a long on-screen workflow (an application form, a multi-page upload) to the
 // end; a local one that has not finished in 16 is lost, not nearly done.
 func (c Capabilities) OperatorTurns() int {
 	if c.Hosted {
-		// 40 ran out live entering a three-line order in Odoo (a product
+		// 40 ran out live entering a three-line order in the web app (a product
 		// variant dialog per line): every click and field is a turn.
 		return 80
 	}

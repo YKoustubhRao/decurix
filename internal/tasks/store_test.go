@@ -312,9 +312,8 @@ func TestARequestSentWhileBusyIsQueued(t *testing.T) {
 	}
 }
 
-// What the desktop's command watcher really does with a request held behind a
-// task that then pauses: hands it to the paused task as the reply.
-func TestAHeldRequestBecomesTheReplyWhenTheTaskPauses(t *testing.T) {
+// A separately queued task must survive a later question on the active task.
+func TestAHeldRequestRemainsQueuedWhenTheTaskPauses(t *testing.T) {
 	c := newClock()
 	s := openStore(t, c)
 	box := worker("box", "ollama")
@@ -324,14 +323,21 @@ func TestAHeldRequestBecomesTheReplyWhenTheTaskPauses(t *testing.T) {
 
 	outcome(t, s, "box", first.TaskID, Outcome{Kind: OutcomeQuery, Reply: "Should I send this email to the landlord?"})
 
-	if _, err := s.Get(held.TaskID); err != ErrNotFound {
-		t.Fatalf("the held request is still its own task (err=%v)", err)
+	if got := get(t, s, held.TaskID).Status; got != StatusQueued {
+		t.Fatalf("held task is %s, want queued", got)
 	}
 
 	detail := get(t, s, first.TaskID)
 
-	if detail.Status != StatusRunning || detail.Executions[0].Interventions[0].Reply != "use the gmail account" {
+	if detail.Status != StatusWaiting || detail.Executions[0].Interventions[0].Reply != "" {
 		t.Fatalf("detail = %+v, interventions = %+v", detail.Task, detail.Executions[0].Interventions)
+	}
+	answer := send(t, s, box, "yes")
+	if answer.Kind != RouteReply || answer.TaskID != first.TaskID {
+		t.Fatalf("answer routed as %+v", answer)
+	}
+	if get(t, s, held.TaskID).Status != StatusQueued {
+		t.Fatal("answer consumed the queued task")
 	}
 }
 

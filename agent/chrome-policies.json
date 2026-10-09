@@ -10,5 +10,7 @@
   "DefaultSearchProviderName": "Google",
   "DefaultSearchProviderSearchURL": "https://www.google.com/search?q={searchTerms}",
   "RemoteDebuggingAllowed": true,
-  "DeveloperToolsAvailability": 1
+  "DeveloperToolsAvailability": 1,
+  "PasswordManagerEnabled": false,
+  "PasswordLeakDetectionEnabled": false
 }

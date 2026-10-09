@@ -122,7 +122,7 @@ func TestCreateDesktopDefaultCPU(t *testing.T) {
 // the value it holds then moves on by itself.
 func TestBeginProvisioningReturnsASnapshotNotTheLiveRecord(t *testing.T) {
 	mgr := fakeDesktopManager(t)
-	prov, err := mgr.BeginProvisioning("snap-1", "basic", "thebot", desktop.Brain{}, 1, 2048, "", "", "", nil, func(*desktop.Desktop) error { return nil })
+	prov, err := mgr.BeginProvisioning("snap-1", "basic", "thebot", desktop.Brain{}, 1, 2048, "", "", "", nil, nil, func(*desktop.Desktop) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}

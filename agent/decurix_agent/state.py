@@ -16,6 +16,10 @@ state_lock = threading.Lock()
 current_task = None
 current_task_file = None
 
+# The person already said yes to the request being handed to the engine, as a kind of task (skill_task: they taught
+# it and chose to have it start without asking, or just answered yes). Read once by the engine's harness.
+request_preapproved = False
+
 # The control plane's ID for the task running now (task_context.py), which
 # every progress line and reply carries back. "" when the request had none.
 current_task_id = ""

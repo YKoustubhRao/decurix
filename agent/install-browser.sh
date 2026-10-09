@@ -6,8 +6,8 @@
 # Why not the base image's Chromium: it is Ubuntu 18.04's last deb (112, 2023),
 # frozen there - Ubuntu 24.04 ships Chromium only as a snap, which cannot run in
 # a container. 112 lacks what current web apps assume (Promise.withResolvers,
-# Object.groupBy): Odoo's web client loaded a blank page in it. Chrome stable is
-# the build ERP vendors certify against, carries H.264 (a phone app's picture;
+# Object.groupBy), causing modern web clients to load a blank page. Chrome stable
+# supports these APIs, carries H.264 (a phone app's picture;
 # the old image needed a codec swap pinned to 112), and is updated by rebuilding
 # the image.
 #

@@ -34,7 +34,7 @@ var defaultPersonas = []Persona{
 		Title:          "Senior Financial Operations Specialist",
 		Description:    "Extracts and reconciles invoices, reviews expenses against policy limits, audits billing, and manages AP/AR records.",
 		Specialization: "Finance and accounting operations: invoice processing, expense approvals, payment matching, and billing reconciliation",
-		DefaultSkills:  []string{"invoice-processing", "expense-approval", "billing-reconciliation"},
+		DefaultSkills:  []string{"expense-approval", "billing-reconciliation"},
 		Channels:       []string{"email", "slack", "webhook"},
 		Icon:           "receipt",
 	},

@@ -1,19 +1,13 @@
 """
-Ten back-office workflows, end to end, each verified from what it produced.
+Application and document workflows, each verified from what it produced.
 
-Every workflow gets realistic inputs, is asked for in plain words through the
-chat API (the same door the chat page uses), and is then checked by this
-script - the files it wrote, the Outbox drafts it left, and for the ERP and the
-HRMS the records read back through those systems' own APIs from the desktop's
-signed-in browser. The agent's own report is printed, never trusted.
+Every workflow gets realistic inputs through the chat API and is checked
+from output files, Outbox drafts or saved application data. The agent's own
+report is printed, never trusted. The optional HR workflow uses OrangeHRM's
+public demo; the file workflows use generated inputs and need no enterprise
+application.
 
-The live systems are public demos: Odoo (https://demo.odoo.com, a fresh
-database per visitor) and OrangeHRM (https://opensource-demo.orangehrmlive.com,
-Admin/admin123 as its login page says). Nothing about them is hardcoded: the
-customer, products and purchase order used are read from the instance first,
-and the PO / invoice PDFs are generated from them.
-
-    python3 bench/backoffice/e2e.py <desktop id> [--only wf1,wf4,...]
+    python3 bench/backoffice/e2e.py <desktop id> [--only wf4,wf5,...]
 
 Needs the control plane on 127.0.0.1:8080 with AZURE_* set, a running desktop
 on the "azure" harness, and LibreOffice + poppler on this machine (fixtures).
@@ -177,135 +171,7 @@ finally:
 """, timeout=timeout + 30)
 
 
-# ------------------------------------------------------------------ Odoo
-
-ODOO_CALL = """(async () => {
-  const r = await fetch('/web/dataset/call_kw', {method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({jsonrpc: '2.0', method: 'call', params: {model: %s, method: %s, args: %s, kwargs: %s}})});
-  const j = await r.json(); return j.error ? {error: j.error.data ? j.error.data.message : j.error.message} : j.result;
-})()"""
-
-
-def odoo(model, method, args, kwargs=None):
-    js = ODOO_CALL % (json.dumps(model), json.dumps(method), json.dumps(args), json.dumps(kwargs or {}))
-    out = browser_rpc("odoo.com", js)
-    if isinstance(out, dict) and out.get("error"):
-        raise SystemExit(f"odoo {model}.{method}: {out['error']}")
-    return out
-
-
-def open_odoo():
-    """A fresh Odoo demo database in the desktop's browser, signed in; returns its origin."""
-
-    # A previous workflow's demo database stays open in its own tab; reading
-    # that tab instead of the fresh one made the next workflow fail to start.
-    py("""
-import json, urllib.request
-for t in json.loads(urllib.request.urlopen("http://127.0.0.1:9222/json/list").read()):
-    if t.get("type") == "page" and "odoo.com" in t.get("url", ""):
-        urllib.request.urlopen("http://127.0.0.1:9222/json/close/" + t["id"]).read()
-""")
-    sh("gui open https://demo.odoo.com", timeout=240)
-    state = None
-    for _ in range(60):
-        state = browser_rpc("odoo.com", "location.origin + ' ' + location.pathname + ' ' + document.body.innerText.length")
-        if state and "/odoo" in state and int(state.split()[-1]) > 100:
-            return state.split()[0]
-        time.sleep(5)
-    raise SystemExit(f"the Odoo demo did not open: {state}")
-
-
 # ------------------------------------------------------------------ workflows
-
-def wf1_po_to_sales_order(work):
-    open_odoo()
-    customer = odoo("res.partner", "search_read", [[["customer_rank", ">", 0], ["is_company", "=", True]]],
-                    {"fields": ["name"], "limit": 1})[0]
-    # A real PO names the exact item: a product with variants ("Stool" in Gray, Green, Navy) is written with its
-    # variant, as Odoo's own display name has it - "Stool" alone is a question the agent rightly asks.
-    candidates = odoo("product.product", "search_read", [[["sale_ok", "=", True], ["list_price", ">", 10]]],
-                      {"fields": ["display_name", "name", "list_price"], "limit": 40})
-    products = list({p["name"]: p for p in candidates}.values())[:3]
-    for p in products:
-        p["name"] = p["display_name"].split("] ", 1)[-1]
-    po = f"PO-{random.randint(10000, 99999)}"
-    lines = [(p["name"], random.randint(1, 9), round(p["list_price"], 2)) for p in products]
-    rows = "".join(f"<tr><td>{n}</td><td>{q}</td><td>{p:,.2f}</td><td>{q * p:,.2f}</td></tr>" for n, q, p in lines)
-    pdf = html_to_pdf(f"<h2>{customer['name'].upper()}</h2><h3>PURCHASE ORDER</h3><p>PO Number: <b>{po}</b> &nbsp; "
-                      f"Date: {TODAY:%d/%m/%Y}</p><p>Supplier: YourCompany</p><table border=1 cellpadding=5>"
-                      f"<tr><th>Description</th><th>Qty</th><th>Unit Price</th><th>Amount</th></tr>{rows}</table>",
-                      po, work)
-    remote = put(pdf, f"{HOME}/work/wf1")
-    print(f"  PO {po} from {customer['name']}: {lines}")
-
-    reply, took = ask(f"A customer emailed us a purchase order: {remote}. Create the corresponding sales order in our ERP as a "
-                      "DRAFT quotation - it is Odoo, already open and signed in in the browser. Use the PO's quantities and "
-                      "prices, put the customer's PO number in the customer reference, and do not confirm or send it.")
-    print(f"  ({took:.0f}s) {reply.get('content', '')[:700]}")
-
-    orders = odoo("sale.order", "search_read", [[["client_order_ref", "=", po]]],
-                  {"fields": ["name", "state", "partner_id", "order_line"]})
-    check("one quotation carries the PO number", len(orders) == 1, orders)
-    if orders:
-        o = orders[0]
-        check("it is a draft (not confirmed or sent)", o["state"] == "draft", o["state"])
-        check("for the PO's customer", o["partner_id"][1].startswith(customer["name"]), o["partner_id"])
-        got = odoo("sale.order.line", "search_read", [[["order_id", "=", o["id"]], ["display_type", "=", False]]],
-                   {"fields": ["product_id", "product_uom_qty", "price_unit"]})
-        want = sorted((n, float(q), p) for n, q, p in lines)
-        # A line left with no product (an empty row the agent added) is a
-        # line the PO does not have - reported, not a crash.
-        have = sorted(((l["product_id"][1].split("] ")[-1] if l["product_id"] else "(no product)"),
-                       l["product_uom_qty"], round(l["price_unit"], 2)) for l in got)
-        check("with the PO's exact products, quantities and prices", len(have) == len(want) and
-              all(any(h[0] == w[0] and h[1] == w[1] and abs(h[2] - w[2]) < 0.01 for h in have) for w in want),
-              f"want {want} have {have}")
-
-
-def wf2_invoice_to_bill(work):
-    open_odoo()
-    pos = odoo("purchase.order", "search_read", [[["state", "in", ["purchase", "done"]], ["invoice_status", "=", "to invoice"]]],
-               {"fields": ["name", "partner_id", "order_line"], "limit": 1})
-    if not pos:
-        pos = odoo("purchase.order", "search_read", [[["state", "in", ["purchase", "done"]]]],
-                   {"fields": ["name", "partner_id", "order_line"], "limit": 1})
-    po = pos[0]
-    lines = odoo("purchase.order.line", "search_read", [[["order_id", "=", po["id"]], ["display_type", "=", False]]],
-                 {"fields": ["product_id", "product_qty", "price_unit"]})
-    inv = f"INV-{random.randint(100000, 999999)}"
-    # One price differs from the PO: a real invoice's commonest problem, which must be reported, not smoothed over.
-    billed = [(l["product_id"][1], l["product_qty"], round(l["price_unit"] * (1.05 if i == 0 else 1), 2)) for i, l in enumerate(lines)]
-    rows = "".join(f"<tr><td>{n}</td><td>{q:g}</td><td>{p:,.2f}</td><td>{q * p:,.2f}</td></tr>" for n, q, p in billed)
-    subtotal = sum(q * p for _, q, p in billed)
-    pdf = html_to_pdf(f"<h2>{po['partner_id'][1].upper()}</h2><h3>TAX INVOICE</h3><p>Invoice No: <b>{inv}</b> &nbsp; Date: "
-                      f"{TODAY:%d/%m/%Y}</p><p>Bill to: YourCompany &nbsp; Your order: {po['name']}</p><table border=1 cellpadding=5>"
-                      f"<tr><th>Item</th><th>Qty</th><th>Rate</th><th>Amount</th></tr>{rows}<tr><td colspan=3>Subtotal (before tax)</td>"
-                      f"<td>{subtotal:,.2f}</td></tr></table>", inv, work)
-    scan = scan_of(pdf, inv + "_scan", work)
-    remote = put(scan, f"{HOME}/work/wf2")
-    print(f"  invoice {inv} for {po['name']} ({po['partner_id'][1]}): {billed}")
-
-    reply, took = ask(f"Supplier invoice received (a scan): {remote}. Extract the invoice, find the matching purchase order in our "
-                      "ERP (Odoo, already open and signed in in the browser) and prepare a DRAFT vendor bill for it from that PO - "
-                      "do not post or pay it. Report every difference between the invoice and the PO.")
-    content = reply.get("content", "")
-    print(f"  ({took:.0f}s) {content[:700]}")
-
-    bills = odoo("account.move", "search_read", [[["move_type", "=", "in_invoice"], ["ref", "ilike", inv]]],
-                 {"fields": ["name", "state", "partner_id", "invoice_origin", "invoice_line_ids"]})
-    check("one vendor bill carries the invoice number", len(bills) == 1, bills)
-    if bills:
-        b = bills[0]
-        check("it is a draft (not posted)", b["state"] == "draft", b["state"])
-        check("for the PO's vendor", b["partner_id"] and b["partner_id"][0] == po["partner_id"][0], b["partner_id"])
-        linked = odoo("account.move.line", "search_read", [[["move_id", "=", b["id"]], ["purchase_line_id", "!=", False]]],
-                      {"fields": ["purchase_line_id"]})
-        check("its lines are linked to the PO (not typed in loose)", bool(linked) or po["name"] in (b.get("invoice_origin") or ""),
-              b.get("invoice_origin"))
-    first = billed[0][0].split("] ")[-1]
-    check("the price difference was reported", re.search(r"price|rate|unit cost", content, re.I) and first.split()[0].lower() in content.lower()
-          and f"{billed[0][2]:.2f}" in content.replace(",", ""), content[:300])
-
 
 def wf3_employee_onboarding(work):
     first, last = random.choice(["Ananya", "Meera", "Kavya", "Ishita"]), random.choice(["Kulkarni", "Deshpande", "Iyer", "Menon"])
@@ -485,7 +351,7 @@ def wf6_onboarding_file(work):
     check("the cheque's account name mismatch is reported", re.search(r"TOOL LLP|singular|account name", content, re.I), content[:300])
 
 
-def wf7_tally_report(work):
+def wf7_export_report(work):
     py(f"""
 import json, os, openpyxl
 os.makedirs('{HOME}/work/wf7', exist_ok=True)
@@ -498,21 +364,21 @@ rows = [('02-08-2026','Sai Motors','Sales','S/101',None,118000),('05-08-2026','K
         ('21-08-2026','Rao Engineering','Sales','S/104',None,177000),('28-08-2026','Kiran Pumps','Credit Note','CN/8',23600,None)]
 for r in rows: ws.append(list(r))
 ws.append([None, 'Grand Total', None, None, 35400, 590000])
-wb.save('{HOME}/work/wf7/Tally_SalesRegister_Aug2026.xlsx'); print(json.dumps('ok'))
+wb.save('{HOME}/work/wf7/SalesRegister_Aug2026.xlsx'); print(json.dumps('ok'))
 """)
     t0 = time.time()
-    reply, took = ask(f"Ship out the August sales register exported from Tally: {HOME}/work/wf7/Tally_SalesRegister_Aug2026.xlsx. "
-                      "Clean it up for the accounts team: drop Tally's header lines, keep only the sales vouchers (no credit "
-                      "notes), with a total that you check against Tally's own figures, save it as a new Excel file, and draft "
+    reply, took = ask(f"Ship out the August sales register exported from the reporting app: {HOME}/work/wf7/SalesRegister_Aug2026.xlsx. "
+                      "Clean it up for the accounts team: drop the export's header lines, keep only the sales vouchers (no credit "
+                      "notes), with a total that you check against the export's own figures, save it as a new Excel file, and draft "
                       "an email to accounts@ourco.example with it attached.")
     print(f"  ({took:.0f}s) {reply.get('content', '')[:500]}")
-    files = made_since(t0, ".xlsx", exclude=("Tally_SalesRegister_Aug2026.xlsx",))
+    files = made_since(t0, ".xlsx", exclude=("SalesRegister_Aug2026.xlsx",))
     check("a cleaned workbook was written", files, files)
     if files:
         sheets = xlsx_rows(files[0])
         rows = next(iter(sheets.values()))
         text = json.dumps(rows)
-        check("Tally's header lines are gone (the table starts at the top)", rows and "Date" in [str(c) for c in rows[0] if c], rows[:2])
+        check("the export's header lines are gone (the table starts at the top)", rows and "Date" in [str(c) for c in rows[0] if c], rows[:2])
         check("only the four sales vouchers remain", all(v in text for v in ("S/101", "S/102", "S/103", "S/104"))
               and "CN/7" not in text and "CN/8" not in text)
         # The total may be a formula (=SUM(...)): what counts is what it comes to when the file is opened.
@@ -541,7 +407,7 @@ for r in [('SI-0701','2026-07-03','2026-08-02','Rao Engineering','accounts@raoen
 wb.save('{HOME}/work/wf8/open_invoices_export.xlsx'); print(json.dumps('ok'))
 """)
     t0 = time.time()
-    reply, took = ask(f"Accounts-receivable follow-up. The ERP export of open invoices is {HOME}/work/wf8/open_invoices_export.xlsx. "
+    reply, took = ask(f"Accounts-receivable follow-up. The spreadsheet export of open invoices is {HOME}/work/wf8/open_invoices_export.xlsx. "
                       f"Today is {TODAY:%d %B %Y}. For every customer with overdue invoices (due before today), excluding disputed "
                       "invoices, prepare a customer statement (Excel, one per customer, with their open invoices, outstanding "
                       "amounts and days overdue) and draft a personalised reminder email to that customer with their statement "
@@ -589,13 +455,11 @@ wb.save('{HOME}/work/wf10/commodity_trends.xlsx'); print(json.dumps('ok'))
 
 
 WORKFLOWS = [
-    ("wf1", "Purchase order to a draft sales order (Odoo, in the browser)", wf1_po_to_sales_order),
-    ("wf2", "Scanned supplier invoice to a draft bill against its PO (Odoo)", wf2_invoice_to_bill),
     ("wf3", "Employee onboarding in the HRMS (OrangeHRM)", wf3_employee_onboarding),
     ("wf4", "Supplier price sheet to price changes for review", wf4_price_update),
     ("wf5", "Monthly MIS model update and distribution", wf5_mis),
     ("wf6", "Customer onboarding file from scans", wf6_onboarding_file),
-    ("wf7", "Tally report cleaned up and shipped out", wf7_tally_report),
+    ("wf7", "Exported report cleaned up and shipped out", wf7_export_report),
     ("wf8", "Customer statements and overdue reminders", wf8_9_receivables),
     ("wf10", "Daily commodity prices from the web", wf10_commodities),
 ]

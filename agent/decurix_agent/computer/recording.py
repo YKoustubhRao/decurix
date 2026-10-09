@@ -189,7 +189,11 @@ def ensure(session_id, **fields):
 
 
 def update(session_id, **fields):
-    """Change what a person edits (title, description) or a lifecycle sets (status, ended_at, reason)."""
+    """
+    Change what a person edits (title, description), a lifecycle sets (status,
+    ended_at, reason), or a ticket was given (files: the documents the person
+    worked from, as paths on this desktop).
+    """
 
     directory = _dir(session_id)
 
@@ -209,7 +213,7 @@ def update(session_id, **fields):
         if title is not None and title != meta.get("title") and meta.get("title") and not meta.get("task"):
             meta["task"] = meta["title"]
 
-        for key in ("title", "description", "status", "ended_at", "reason"):
+        for key in ("title", "description", "status", "ended_at", "reason", "files"):
             if fields.get(key) is not None:
                 meta[key] = fields[key]
 

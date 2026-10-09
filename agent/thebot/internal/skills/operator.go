@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"thebot/internal/hostshell"
 	"thebot/internal/llm"
 	"thebot/internal/prompt"
 	"thebot/internal/safety"
@@ -88,43 +87,29 @@ HELP:
 - HELP only when no command can unblock you: the human has to choose, give you a secret, or do something outside this machine. Not knowing yet is not being blocked - run a command and find out.
 - Before a payment, sending a message as the human, publishing, or deleting something that cannot be recovered, reply HELP saying exactly what you would do. Drafting an email with office email is not sending it (a person sends it from the Outbox): do that without asking.
 - Commands run in %s with no terminal attached: never open editors or pagers, and pass -y to installers.
-- For anything in a window (a web page in the browser, LibreOffice, a text editor) use the gui command: gui observe lists the screen's elements with refs like e12, then gui click e12, gui type e12 "text", gui key ctrl+s, gui select e12 "option", gui open <url|file|app>. Every gui action prints what changed. gui recordings <words> finds a recorded demonstration of a task, and gui replay <id> runs it again. gui skills <words> finds a task this desktop was taught: gui skill <name> says what it needs and gui do <name> --param name=value does it with no model - prefer it to working the task out yourself, but only in the app or site it works in (gui skill says where): the same kind of work in another system is done there with gui. A value gui skill calls a list takes every item of the document in one run, in the document's order, separated by \"; \" (--param product=\"Desk; Chair\" --param quantity=\"3; 1\") - never only the first item. gui ask chatgpt "QUESTION" (or google, duckduckgo, wikipedia, youtube) puts one question to that service in the browser and prints its answer - run it once per question.
+- For anything in a window (a web page in the browser, LibreOffice, a text editor) use the gui command: gui observe lists the screen's elements with refs like e12, then gui click e12, gui type e12 "text", gui key ctrl+s, gui select e12 "option", gui open <url|file|app>, gui scroll down 5 (or up; 5 is wheel notches, about 100 pixels each - over the part of the page to move, gui scroll x,y down 5). Every gui action prints what changed. gui read e12 prints the whole text of a field or document with line numbers - gui observe shows only its first 60 characters - so read a text before you change it and again after, and report a change as made only when gui read shows it: \"replace every X\" is done when no X is left in the text, so use the app's Find and Replace with its replace-all option (a button, or a checkbox to tick first), not one Replace at a time. gui type on a field that holds several lines is refused, because it would replace the whole document; change part of it through the app, or with --append where the cursor is. gui recordings <words> finds a recorded demonstration of a task, and gui replay <id> runs it again. gui skills <words> finds a task this desktop was taught: gui skill <name> says what it needs and gui do <name> --param name=value does it with no model - prefer it to working the task out yourself, but only in the app or site it works in (gui skill says where): the same kind of work in another system is done there with gui. A value gui skill calls a list takes every item of the document in one run, in the document's order, separated by \"; \" (--param product=\"Desk; Chair\" --param quantity=\"3; 1\") - never only the first item. gui ask chatgpt "QUESTION" (or google, duckduckgo, wikipedia, youtube) puts one question to that service in the browser and prints its answer - run it once per question.
 - To read a document (PDF, scan, Word, Excel, email, picture) run office read <file> [pages]; never guess at a file's contents.
 - To change an existing spreadsheet, never rewrite it with a script (that drops its charts): run office update <file.xlsx> - with a JSON spec on stdin, e.g. office update model.xlsx - <<'EOF' then {"edits": [{"sheet": "Data", "cell": "B14", "value": 1250}], "replace_refs": [{"from": "Data!$B$2:$B$13", "to": "Data!$B$2:$B$14"}]} then EOF. replace_refs makes charts and totals take in rows you added. office create <file.xlsx> - makes a new one from {"sheets": [{"name": "Invoices", "rows": [["Invoice", "Amount"], ["INV-1", 1200]], "cells": {"B3": "=SUM(B2:B2)"}}]} (rows fill from A1; cells set one address each).
 - To prepare an email, run office email --to <address> --subject "<subject>" [--attach <file>] with the body on stdin (a heredoc). It goes to the Outbox for the human to review and send - it is never sent, so drafting one needs no approval. There is no way for you to send email yourself.
 %s%s
 Task: %s`
 
-// windowsRule is added to the contract for a native Windows worker
-// (hostshell.Windows): the contract's "shell command" is PowerShell there, and
-// a small model reaches for the Linux commands it knows best - `uname`, `ls |
-// wc -l`, a heredoc - none of which exist. It names the commands for the same
-// everyday questions the Linux prompt's examples cover.
-const windowsRule = `- This computer runs Windows and every command is Windows PowerShell. Linux commands do not exist here (no bash, grep, cat <<EOF, sudo, apt). Use PowerShell: $env:COMPUTERNAME (this computer's name), (Get-CimInstance Win32_OperatingSystem).Caption (the Windows version), Get-ChildItem <dir> (list), (Get-ChildItem <dir>).Count (count), Get-Content <file> (read), Set-Content -Path <file> -Value "text" (write), Add-Content (append), Select-String -Path <file> -Pattern "x" (search), Get-PSDrive C (disk space), Invoke-WebRequest -UseBasicParsing <url> (fetch a page). Paths use backslashes; ~ is not your work folder. There is no && or ||: send one command per reply, or join them with ; . python and python3 are here.
-- There is no <<'EOF' either: what office reads from stdin is piped to it from a single-quoted string - '{"edits": [{"sheet": "Data", "cell": "B14", "value": 1250}]}' | office update model.xlsx - and for an email's body of several lines a here-string, which starts with @' at the end of a line and ends with '@ at the start of one: @' then the body's lines then '@ | office email --to a@b.com --subject "Invoice".
-- You have a screen of your own on this computer, separate from the person's: what you open is not on their screen. Open a web page, a document or a program on it with gui open (gui open https://example.com, gui open C:\path\report.xlsx, gui open excel, gui open notepad) - never with Start-Process, Invoke-Item, start or explorer, which hand the job to Windows and may put the window on the person's own screen. gui calls the browser's windows "Chromium", whichever browser it is.
-`
-
 // visionRule is added to the contract for a brain that reads images: the
 // screenshot comes with every gui command's result.
 const visionRule = `- The pages of a scanned document that office read finds are shown to you as pictures: read them yourself.
-- Windows: gui observe names the active window and the open ones. Before working in a window that is not the active one, bring it forward with gui front "a few words of its title" (for the browser: gui front browser) - there is no taskbar to click, and alt+tab does nothing here. Close one you no longer need with gui key alt+f4 once it is in front, unless the task wants it left open.
+- Windows: gui observe names the active window and the open ones. Before working in a window that is not the active one, bring it forward with gui front "a few words of its title" (for the browser: gui front browser) - never click the taskbar at the bottom of the screen for it, and alt+tab does nothing here. Close one you no longer need with gui key alt+f4 once it is in front, unless the task wants it left open.
 - A page that asks whoever is there to prove they are a person (a CAPTCHA, "I'm not a robot", "unusual traffic") is for the person, never for you: reply HELP asking them to complete it on this worker's screen and to reply when done. Do not click at it.
-- After every gui command you are also shown a screenshot of the screen as it is now. Use it to check what really happened and to find what the element list does not name (a picture, a canvas, an unlabelled icon, a message painted on the page). Still act by ref from gui observe wherever there is one; use x,y coordinates only for something that has no ref. The screenshot has a ruler drawn on it: dotted pink lines every 100 pixels, each numbered with its real screen position at the top and left edges and again half way across. Read a position off those numbers (a point between the 300 and 400 lines is 300-and-something) - never estimate it from the picture's own size, which is not the screen's. After a click by coordinates, check in the next screenshot that it landed; if nothing changed, read the position again more carefully before trying another.
+- After every gui command you are also shown a screenshot of the screen as it is now. Use it to check what really happened and to find what the element list does not name (a picture, a canvas, an unlabelled icon, a message painted on the page). Still act by ref from gui observe wherever there is one; use x,y coordinates only for something that has no ref (and where gui observe offers gui click --see, describe the thing with that instead of reading a position). The screenshot has a ruler drawn on it: dotted pink lines every 100 pixels, each numbered with its real screen position at the top and left edges and again half way across. Read a position off those numbers (a point between the 300 and 400 lines is 300-and-something) - never estimate it from the picture's own size, which is not the screen's. After a click by coordinates, check in the next screenshot that it landed; if nothing changed, read the position again more carefully before trying another.
 `
 
-// officeRules is added to the contract for a hosted brain: the lessons the
-// Office (GPT) engine was given after running back-office work live, which
-// TheBot lacked. Found by bench/backoffice wf3: onboarding a new joiner in
-// OrangeHRM, the operator filed an ID scan that was someone else's and left
-// three requested fields empty, then reported it done.
-const officeRules = `- Documents belong to someone: check the name and number on an ID, certificate, letter or invoice against the person or company the task is for before you use or upload it. One that is someone else's is not used anywhere - not typed from, not uploaded; leave it out, finish the rest of the task, and say so in your DONE (it is a finding, not a reason to stop and ask).
-- The same name up to capitals, punctuation or spacing ("ACME CORPORATION" / "Acme Corporation"), or the same code, tax number or email, is the same record. A company's contact people listed under it are not rival records. A different name, or several records that fit, is a question for the person.
-- Checking documents against each other is not finding a record: there "matches" means the same characters, ignoring only capitals and spacing. Report every other difference in a name, number or address, however small, with both spellings and which documents they are in - a missing letter in a cheque's account name makes a payment bounce.
-- Two lists name the same item differently (a supplier's part number against your code; "EP2 grease 1kg" against "EP2 Lithium Grease 1 kg"): match items by description, size and unit as well as code, and before calling one missing from a list or new to it, look for it that way.
-- A document's own figures go on what is made from it, even when the system proposes another (a list price, a default tax); say which differed. Every figure has a unit and a basis (per gram or per 10 g, per unit or per box, with or without tax): read which one the source uses and convert to what was asked.
-- In a web app: fields further down a page need a scroll - look before deciding something is not there. A form is saved only when the page says so; field errors ("Required", "Should be a valid date") mean nothing on it was saved. A record page with several sections has a Save in each: use the one in the section you filled. A drop-down ("-- Select --", a combobox) or a field that suggests entries as you type is set with gui select REF "value", which finds the entry by its text - never by clicking at coordinates in its open list, which picks whatever happens to be there. An order or bill line's product is such a field even when its column reads "Description": gui select it - typed text and Tab leave the line with no product. If the list offers only the general product (no variant), select that and complete the dialog that opens: set every attribute the document names (colour, material, size) before its Confirm, then check the line shows the document's variant. Type a date in the format its field shows, converting it yourself - that is not a question for the person: "yyyy-dd-mm" is year-day-month, so 14 March 1998 (1998-03-14) is typed 1998-14-03; then check the field holds it.
-- Before DONE, go through the request part by part - every record, field, document, file and email it asks for - and check each on the screen or in the file. Your DONE lists them, each done or not, and anything left undone and why.
+// taskRules adds source grounding and application verification for hosted brains.
+const taskRules = `- Use documents only when their names, identifiers and contents belong to the person, organization or task requested. Leave unrelated sources out, finish the rest, and report what you excluded.
+- Match records using identifiers and relevant attributes from the request and sources. Capitalization, punctuation or spacing alone need not make a different record. Similar names alone are not enough; if several candidates fit, ask the person with the distinguishing evidence.
+- When comparing documents, compare the requested fields, ignoring only capitals and spacing unless the task permits other normalization. Report differences with both values and their sources.
+- Two lists may describe the same entry differently: compare descriptions, identifiers, attributes and units before calling an entry missing or new.
+- Use the source's values when making a draft from it, and report differences from application defaults. Every figure has a unit and basis: read them, convert to what was asked, and check the result.
+- In an application, scroll and observe before deciding a field is missing. Never click the screen's bottom edge or a scrollbar to move a page. A form is saved only when the application says so; fix field errors and save again. On a page with several forms, use Save within the form you filled. Set dropdowns and suggestion fields with gui select REF "value", then verify the selected entry; typing and Tab may leave the field unset. Complete any configuration dialog using the requested attributes and verify the result. Type dates in the format the field shows, then check that they hold.
+- Before DONE, check every part of the request in the application or output files. List what was completed, how you verified it, and anything left undone with its reason.
 `
 
 // successQueryNudge answers a HELP that arrives straight after a command
@@ -182,72 +167,6 @@ If the failure itself is the answer (for example, the file really does not exist
 // given ("cat: notes.txt: No such file or directory").
 var missingProgramRe = regexp.MustCompile(`(?m)(?:^|:\s)([A-Za-z0-9_.+-]+): (?:command not found|not found)\s*$|(?:^|\b)(?:xargs|env|nohup|timeout|sudo|exec|nice|bash|sh|dash|zsh)(?:: line \d+)?: ([A-Za-z0-9_.+-]+): No such file or directory\s*$`)
 
-// windowsMissingProgramRe is the same failure on a native Windows worker, in
-// PowerShell's words ("xargs : The term 'xargs' is not recognized as the name
-// of a cmdlet, function, script file, or operable program") and cmd.exe's
-// ("'grep' is not recognized as an internal or external command"). PowerShell
-// exits 1 for it, not 127, so the words are the only signal - and PowerShell
-// wraps them wherever its line is full, so any space may be a line break.
-var windowsMissingProgramRe = regexp.MustCompile(`The\s+term\s+'([^']+)'\s+is\s+not\s+recognized\s+as\s+the\s+name|'([^']+)'\s+is\s+not\s+recognized\s+as\s+an\s+internal`)
-
-// windowsChainRe is PowerShell 5.1 refusing bash's && or ||.
-var windowsChainRe = regexp.MustCompile(`The\s+token\s+'(&&|\|\|)'\s+is\s+not\s+a\s+valid\s+statement\s+separator`)
-
-// windowsCountSwitchRe is PowerShell refusing a counting switch that does not exist (-Count, -FileCount, -Total).
-var windowsCountSwitchRe = regexp.MustCompile(`(?i)parameter\s+cannot\s+be\s+found\s+that\s+matches\s+parameter\s+name\s+'\w*(count|total|number)\w*'`)
-
-// missingOnWindows names the program a Windows shell said it could not find,
-// or "" when the output says no such thing.
-func missingOnWindows(output string) string {
-	m := windowsMissingProgramRe.FindStringSubmatch(output)
-	if m == nil {
-		return ""
-	}
-	if m[1] != "" {
-		return m[1]
-	}
-	return m[2]
-}
-
-// windowsMissingProgramHint is what a model is told when it reached for a
-// Linux command on a Windows worker - the usual reason a program is "missing"
-// there - with the PowerShell way for the ones it reaches for most.
-func windowsMissingProgramHint(program string) string {
-	hint := fmt.Sprintf("\n\n`%s` is not a command on this computer: it runs Windows PowerShell, not bash, and you cannot install software here. Use PowerShell's own commands instead.", program)
-	if use, ok := windowsInsteadOf[strings.TrimSuffix(strings.ToLower(program), ".exe")]; ok {
-		hint += " " + use
-	}
-	return hint
-}
-
-// windowsInsteadOf is the PowerShell for the Linux commands a model reaches
-// for most. Windows PowerShell 5.1 already aliases ls, cat, cp, mv, rm, echo,
-// pwd, ps, kill, curl and wget to its own cmdlets, so those are not here.
-var windowsInsteadOf = map[string]string{
-	"grep":    `To search text: Select-String -Path <file> -Pattern "x" (or <command> | Select-String "x").`,
-	"wc":      "To count: (Get-Content <file>).Count for lines, (Get-ChildItem <dir>).Count for files, or <command> | Measure-Object.",
-	"head":    "For the first lines: Get-Content <file> -TotalCount 10 (or <command> | Select-Object -First 10).",
-	"tail":    "For the last lines: Get-Content <file> -Tail 10 (or <command> | Select-Object -Last 10).",
-	"touch":   "To make an empty file: New-Item -ItemType File <path>.",
-	"which":   "To find a program: (Get-Command <name>).Source.",
-	"uname":   "For the system: (Get-CimInstance Win32_OperatingSystem).Caption and .Version.",
-	"df":      "For disk space: Get-PSDrive C.",
-	"free":    "For memory: Get-CimInstance Win32_OperatingSystem | Select-Object FreePhysicalMemory, TotalVisibleMemorySize.",
-	"sed":     `To replace text in a file: (Get-Content <file>) -replace "old", "new" | Set-Content <file>.`,
-	"awk":     `To take a column: <command> | ForEach-Object { ($_ -split "\s+")[0] }.`,
-	"xargs":   "To run something per item: <command> | ForEach-Object { <program> $_ }.",
-	"jq":      "To read JSON: (Get-Content <file> -Raw | ConvertFrom-Json).<field>.",
-	"sudo":    "There is no sudo: run the command without it.",
-	"apt":     "Nothing can be installed here.",
-	"apt-get": "Nothing can be installed here.",
-	"pip":     "Nothing can be installed here: use Python's standard library.",
-	"pip3":    "Nothing can be installed here: use Python's standard library.",
-	"bash":    "There is no bash: write the command in PowerShell.",
-	"sh":      "There is no sh: write the command in PowerShell.",
-	"test":    "To check a file exists: Test-Path <path>.",
-	"chmod":   "Windows has no chmod, and a file needs none to be read or run.",
-}
-
 // missingModuleRe finds a Python module that is not installed.
 var missingModuleRe = regexp.MustCompile(`No module named '([\w.]+)'`)
 
@@ -258,24 +177,6 @@ var missingModuleRe = regexp.MustCompile(`No module named '([\w.]+)'`)
 func missingProgramHint(output, command string) string {
 	if m := missingModuleRe.FindStringSubmatch(output); m != nil {
 		return fmt.Sprintf("\n\nThe Python module `%s` is not installed, and you cannot install it here. Use Python's standard library instead: urllib.request for web requests (urllib.request.urlopen(url).headers, .status, .read()), json, csv, subprocess.", m[1])
-	}
-	if hostshell.Windows {
-		// Bash's "then" and "or else" are a parse error in Windows
-		// PowerShell 5.1, so nothing in the command ran at all - and a model
-		// writes them by habit.
-		if m := windowsChainRe.FindStringSubmatch(output); m != nil {
-			return fmt.Sprintf("\n\nNothing ran: Windows PowerShell has no `%s`. Run one command per reply, or join them with `;` (`first; if ($?) { second }` to run the second only when the first worked).", m[1])
-		}
-		if program := missingOnWindows(output); program != "" {
-			return windowsMissingProgramHint(program)
-		}
-		// Counting is asked of the result, not of the cmdlet. Found live,
-		// twice: a small model wrote `Get-ChildItem <dir> -Count` (and
-		// `-FileCount`), then listed the folder and counted the lines itself
-		// - 2, for five files.
-		if windowsCountSwitchRe.MatchString(output) {
-			return "\n\nNo cmdlet has a switch that counts. Wrap the command and ask the result for its count: (Get-ChildItem <dir>).Count - and report the number it prints, not one you counted yourself."
-		}
 	}
 	for _, m := range missingProgramRe.FindAllStringSubmatch(output, -1) {
 		program := m[1]
@@ -393,6 +294,7 @@ type operatorState struct {
 	UngroundedNudged  bool
 	EarlyDoneNudged   bool // a DONE before any command was pushed back
 	ScreenNudged      bool // a DONE for typing or clicking no command did was pushed back
+	UnstartedNudged   bool // a DONE for work on the screen with no command run at all was pushed back
 	ScreenConfirmed   bool // ...and, said again, was put to the person: their answer stands
 	LastCommand       string
 	LastResult        *shellResult
@@ -508,11 +410,8 @@ func (o *OperatorSkill) start(rc RunContext, subtask Subtask) *operatorState {
 		Turns:           caps.OperatorTurns(),
 	}
 	vision := ""
-	if hostshell.Windows {
-		vision += windowsRule
-	}
 	if caps.Hosted {
-		vision += officeRules
+		vision += taskRules
 	}
 	if st.Vision {
 		vision += visionRule
@@ -826,6 +725,21 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 					st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: nudge})
 					continue
 				}
+			}
+			if nudge := unstartedScreenNudge(st); nudge != "" && !st.ScreenConfirmed {
+				if !st.UnstartedNudged {
+					st.UnstartedNudged = true
+					rc.Logf("operator", "said done for work on the screen without running anything - pushing back once")
+					st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: nudge})
+					continue
+				}
+				rc.Logf("operator", "still says done with nothing run - asking the person")
+				st.ScreenConfirmed = true
+				question := unstartedScreenDoubt(value)
+				st.Messages = append(st.Messages, reply)
+				res, _ := finish(question, false, map[string]any{"needsUserInput": true, "question": question, "failureReasoning": question})
+				res.Checkpoint = st
+				return res, nil
 			}
 			if nudge := unperformedScreenNudge(st); nudge != "" && !st.ScreenConfirmed {
 				if !st.ScreenNudged {

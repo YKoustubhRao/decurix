@@ -1,9 +1,5 @@
-// Package hostshell is the one place that knows which shell this machine has.
-//
-// A worker in a Linux desktop runs commands with bash. A native Windows worker
-// has no bash: its commands are PowerShell, the shell every Windows has. What
-// differs between the two - the program, how a command and everything it
-// started is killed - is here, so the skills that run commands stay the same.
+// Package hostshell runs a command line in the desktop's shell (bash), in a
+// process group of its own so that everything it started can be killed.
 package hostshell
 
 import (

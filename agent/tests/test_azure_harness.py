@@ -107,7 +107,7 @@ class TestAzureHarnessLoop(unittest.TestCase):
         self.assertIn("did not approve", [m for m in self.sent[-1] if m.get("tool_call_id") == "d1"][0]["content"])
 
     def test_a_failed_finish_is_reported_as_an_error(self):
-        self.replies = [_msg(_call("f", "finish", report="ERP was down", status="failed", checklist=[{"item": "enter the order", "done": False, "note": "ERP was down"}]))]
+        self.replies = [_msg(_call("f", "finish", report="App was down", status="failed", checklist=[{"item": "enter the order", "done": False, "note": "App was down"}]))]
         azure_harness.perform_task("x", None)
         self.assertEqual(self.finals[0][1], "error")
         self.assertIn("NOT DONE: enter the order", self.finals[0][0])
