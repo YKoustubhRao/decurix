@@ -377,17 +377,23 @@ func (s *Store) appendAgentReplyLocked(desktopID, taskID, kind, content string) 
 // desktop started on its own is visible rather than silently dropped — unless
 // it trails a turn that only just closed, in which case it belongs to that one.
 func (s *Store) AppendStep(desktopID, text string) Step {
-	return s.appendStep(desktopID, text, nil)
+	return s.appendStep(desktopID, "", text, nil)
 }
 
 // AppendActionStep records one on-screen action as a step of the running turn,
 // under the same rules as AppendStep.
 func (s *Store) AppendActionStep(desktopID, text string, action Action) Step {
-	return s.appendStep(desktopID, text, &action)
+	return s.appendStep(desktopID, "", text, &action)
 }
 
-// appendStep is AppendStep and AppendActionStep's shared body.
-func (s *Store) appendStep(desktopID, text string, action *Action) Step {
+// AppendTaskStep keeps a task-tagged late event with its completed reply,
+// even outside the short timing window used by older, untagged reporters.
+func (s *Store) AppendTaskStep(desktopID, taskID, text string, action *Action) Step {
+	return s.appendStep(desktopID, taskID, text, action)
+}
+
+// appendStep is the step reporters' shared body.
+func (s *Store) appendStep(desktopID, taskID, text string, action *Action) Step {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -402,8 +408,26 @@ func (s *Store) appendStep(desktopID, text string, action *Action) Step {
 
 	var dropped []Step
 
-	if last := current.lastEntry(); !current.running && last != nil &&
-		last.Role == RoleAgent && step.CreatedAt.Sub(last.CreatedAt) < lateStepWindow {
+	var last *Entry
+	if taskID != "" {
+		for i := len(current.entries) - 1; i >= 0; i-- {
+			entry := &current.entries[i]
+			if entry.TaskID != taskID {
+				continue
+			}
+			// A later user reply resumes a teaching/query turn on the same task.
+			if entry.Role == RoleAgent && entry.Kind != KindQuery && entry.Kind != KindApproval {
+				last = entry
+			}
+			break
+		}
+	}
+	if last == nil && !current.running {
+		if entry := current.lastEntry(); entry != nil && entry.Role == RoleAgent && step.CreatedAt.Sub(entry.CreatedAt) < lateStepWindow {
+			last = entry
+		}
+	}
+	if last != nil {
 		last.Steps, dropped = appendCapped(last.Steps, step, maxSteps)
 
 		s.persist(desktopID, current, func(tx *sql.Tx) error {
