@@ -989,7 +989,7 @@ def _recover(steps, index, step, halt, values, ladder, report):
 
     if step.get("point") and not step.get("target") and halt.reason == LOOK_MISSING:
         try:
-            point = ladder.ground_point(step, now, _recorded_frame(step))
+            point = ladder.ground_point(step, now, _recorded_frame(step), halt.observation.get("elements"))
         except Exception as exc:
             log(f"replay: could not ground step {step['n']}: {exc}")
             point = None

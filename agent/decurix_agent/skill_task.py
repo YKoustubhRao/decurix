@@ -1465,7 +1465,7 @@ def _judge(run, claim):
     steps = "; ".join(f"{s['n']}. {s.get('summary')}" for s in skill["steps"])[:1500]
     return verify.judge(run.get("context") or _engine_request(run), claim=claim, criteria=_criteria(skill, run["values"]),
                         values=run["values"], steps=steps, live_png=evidence.live(),
-                        reference_png=evidence.final_frame(skill), observed=evidence.observed())
+                        reference_png=evidence.final_frame(skill), observed=evidence.observed(), screen_text=evidence.live_text())
 
 
 REPORT_CHARS = 4000
@@ -1757,7 +1757,7 @@ def _gate(reply, kind, engine):
     else:
         verdict = _judge(run, reply) if run is not None else verify.judge(guided["task"], claim=reply,
                                                                               live_png=evidence.live(),
-                                                                              observed=evidence.observed())
+                                                                              observed=evidence.observed(), screen_text=evidence.live_text())
 
     if verdict["verdict"] == verify.DONE:
         guidance.end()
@@ -1798,7 +1798,7 @@ def check_unchecked(claim, engine):
     """
 
     progress.emit("Checking the screen to see that the task was really done.")
-    verdict = verify.judge(state.current_task or "", claim=claim, live_png=evidence.live(), observed=evidence.observed())
+    verdict = verify.judge(state.current_task or "", claim=claim, live_png=evidence.live(), observed=evidence.observed(), screen_text=evidence.live_text())
     if verdict["verdict"] == verify.DONE:
         return write_final_reply(f"{claim}\n\nChecked on the screen: {verdict['seen']}", kind="final", engine=engine,
                                  checked=True)

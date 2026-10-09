@@ -53,14 +53,45 @@ def docker(*args, user="headless", stdin=None, timeout=600, check=False):
         command += ["-u", user]
     command += list(args)
 
+    # Idle-pause freezes a desktop seconds after its task ends, and an exec into a frozen container
+    # does not fail - it hangs until its timeout (measured: a 600 s "reset timed out").
+    subprocess.run(["docker", "unpause", args[0]], capture_output=True, timeout=60)
+
     process = subprocess.run(
         command, input=stdin, capture_output=True, text=True, timeout=timeout,
     )
+
+    # Idle-pause freezes a desktop seconds after its task ends, and exec refuses a paused container.
+    if process.returncode != 0 and "is paused" in (process.stderr or ""):
+        subprocess.run(["docker", "unpause", args[0]], capture_output=True, timeout=60)
+        process = subprocess.run(command, input=stdin, capture_output=True, text=True, timeout=timeout)
 
     if check and process.returncode != 0:
         raise RuntimeError(f"{' '.join(command)} failed: {process.stderr.strip() or process.stdout.strip()}")
 
     return process
+
+
+def keep_awake(plane, desktop_id, container):
+    """
+    Keep a desktop from being idle-paused for the length of a run, the way an
+    open screen tab does: a thumbnail fetch is the control plane's "someone
+    has this open" signal. Between two tasks nothing is running, which is
+    exactly when idle-pause acts - in the middle of a reset.
+    """
+
+    import threading
+
+    def loop():
+        while True:
+            try:
+                urllib.request.urlopen(f"{plane.base}/api/desktops/screenshot?id={urllib.parse.quote(desktop_id)}", timeout=10).read()
+            except (OSError, ValueError):
+                pass
+            subprocess.run(["docker", "unpause", container], capture_output=True)
+            time.sleep(5)
+
+    threading.Thread(target=loop, daemon=True).start()
 
 
 def install_fixtures(container):
@@ -71,12 +102,24 @@ def install_fixtures(container):
 
 
 def reset_task(container, task):
-    process = docker(container, "python3", f"{REMOTE}/bench.py", "reset", task["id"], timeout=180)
+    process = docker(container, "python3", f"{REMOTE}/bench.py", "reset", task["id"], timeout=600)
     if process.returncode != 0:
         raise RuntimeError(f"reset {task['id']} failed: {process.stdout[-500:]}{process.stderr[-500:]}")
 
 
+def own_words(answer):
+    """
+    The agent's answer without the note the final check adds under it
+    ("Checked on the screen: ... orders 1002, 1004 ..."): that note is the
+    system's, and a task that asks for "just the number" is judged on the
+    answer.
+    """
+
+    return (answer or "").split("\n\nChecked on the screen:")[0]
+
+
 def check_task(container, task, answer):
+    answer = own_words(answer)
     docker(container, "sh", "-c", "cat > /tmp/bench-answer.txt", stdin=answer or "", check=True)
     process = docker(container, "python3", f"{REMOTE}/bench.py", "check", task["id"], "--answer-file", "/tmp/bench-answer.txt")
     try:
@@ -115,8 +158,11 @@ class ControlPlane:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8") or "{}")
 
-    def create(self, name, profile, harness):
-        return self._request("/api/desktops/create", {"name": name, "profile": profile, "harness": harness}, timeout=300)
+    def create(self, name, profile, harness, brain=None):
+        form = {"name": name, "profile": profile, "harness": harness}
+        if brain:
+            form["brain"] = brain
+        return self._request("/api/desktops/create", form, timeout=300)
 
     def delete(self, desktop_id):
         return self._request("/api/desktops/delete", {"id": desktop_id}, timeout=120)
@@ -156,7 +202,7 @@ def wait_for_reply(plane, desktop_id, after, timeout):
         except (OSError, ValueError):
             time.sleep(5)
             continue
-        messages = thread.get("messages") or []
+        messages = thread.get("entries") or thread.get("messages") or []
         for message in messages[after:]:
             if message.get("role") == "agent":
                 return message, thread
@@ -243,13 +289,15 @@ def run_engine_task(plane, desktop_id, task, timeout):
         "paused_for_approval": (reply or {}).get("kind") == "approval",
         "gate_fired": gate_fired(reply),
         "screen_actions": screen_actions(reply),
+        # What the agent did, kept with the result: the chat is cleared for the next task.
+        "transcript": [(step.get("text") or "")[:400] for step in (reply or {}).get("steps") or []],
         "errors": [],
     }
 
     if reply is None:
         result["errors"].append(f"no reply within {timeout}s")
     elif task.get("approve") and result["paused_for_approval"]:
-        count = len(thread.get("messages") or [])
+        count = len(thread.get("entries") or thread.get("messages") or [])
         plane.send(desktop_id, task["approve"])
         second, _ = wait_for_reply(plane, desktop_id, count + 1, timeout)
         if second is None:
@@ -258,6 +306,7 @@ def run_engine_task(plane, desktop_id, task, timeout):
             result["answer"] = second.get("content", "")
             result["reply_kind"] = second.get("kind")
             result["screen_actions"] += screen_actions(second)
+            result["transcript"] += [(step.get("text") or "")[:400] for step in second.get("steps") or []]
 
     result["seconds"] = round(time.time() - started, 1)
     return result
@@ -275,7 +324,7 @@ def agent_is_idle(run):
     may still be running. Either way the next task needs a fresh agent.
     """
 
-    return not run.get("errors") and run.get("reply_kind") in ("message", "error")
+    return not run.get("errors") and run.get("reply_kind") in ("entry", "message", "error")
 
 
 def restart_agent(plane, desktop_id, container):
@@ -321,8 +370,12 @@ def main():
     parser.add_argument("--container", help="oracle only: the desktop container to run in")
     parser.add_argument("--control-plane", default=os.environ.get("DECURIX_URL", "http://localhost:8080"))
     parser.add_argument("--profile", default="developer", choices=["basic", "developer", "ai"])
+    parser.add_argument("--brain", choices=["ollama", "claude", "azure"],
+                        help="thebot only: the model it thinks with (a hosted one must be set up on the control plane)")
     parser.add_argument("--timeout", type=int, default=900, help="seconds to wait for one reply")
     parser.add_argument("--keep", action="store_true", help="keep the desktops created for real engines")
+    parser.add_argument("--desktop", help="a real engine: run on this existing desktop id instead of creating one "
+                                          "(it is kept) - for a desktop patched with code under test")
     parser.add_argument("--out", default=str(HERE / "results"))
     args = parser.parse_args()
 
@@ -338,7 +391,7 @@ def main():
 
     plane = ControlPlane(args.control_plane)
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    report = {"started": stamp, "profile": args.profile, "engines": {}}
+    report = {"started": stamp, "profile": args.profile, "brain": args.brain, "engines": {}}
 
     for engine in args.engine:
         created = None
@@ -349,11 +402,18 @@ def main():
             container = args.container
         else:
             name = f"bench-{engine}-{stamp}"
-            print(f"[{engine}] creating desktop {name} ({args.profile})", flush=True)
-            created = plane.create(name, args.profile, engine)
+            brain = args.brain if engine == "thebot" else None
+            if args.desktop:
+                created, args.keep = {"id": args.desktop}, True
+                print(f"[{engine}] using desktop {args.desktop}", flush=True)
+            else:
+                print(f"[{engine}] creating desktop {name} ({args.profile}{', brain ' + brain if brain else ''})", flush=True)
+                created = plane.create(name, args.profile, engine, brain)
             container = f"desktop_{created['id']}"
 
         try:
+            if created:
+                keep_awake(plane, created["id"], container)
             wait_for_agent(container)
             install_fixtures(container)
 

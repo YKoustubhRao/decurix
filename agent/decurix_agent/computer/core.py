@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from decurix_agent import config, filelock, progress
-from decurix_agent.computer import approval, atspi, audit, browser, cdp, privacy, screen, session, volatility, xinput
+from decurix_agent.computer import approval, atspi, audit, browser, cdp, grounder, privacy, screen, session, volatility, xinput
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 
@@ -661,10 +661,12 @@ def _redrawn(exc, element, ref, role, name, path):
 
 
 def act(kind, ref=None, role=None, name=None, path=None, point=None,
-        text=None, keys=None, direction=None, amount=None, option=None, append=False, end=None, files=None):
+        text=None, keys=None, direction=None, amount=None, option=None, append=False, end=None, files=None,
+        see=None, replace_all=False):
     """
     Do one thing on the screen and report what changed. `end` is the point a
-    drag drops at.
+    drag drops at. `see` describes the target in words for the grounding model
+    to find on the screen (grounder.py), when nothing in the element list is it.
 
     Returns a dict: status ("done" | "needs_approval"), text (one
     paragraph for the engine), element, change, observation (the "after"
@@ -683,10 +685,30 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     before = observe()
 
     element = None
-    if ref or role or name or path:
-        element = el.find(before["elements"], ref=ref, role=role, name=name, path=path,
-                          active_group=active_group(before))
-    elif point is not None:
+    grounded = None
+    if see:
+        # A description that is simply an element's name ("cell B6", "Save") is that element: exact, and
+        # free. Only what the list does not have is looked for in the picture.
+        element = _named_by(see, before)
+        if element is None:
+            point = grounder.locate(before["frame"], see)
+            grounded = see
+    elif ref or role or name or path:
+        try:
+            element = el.find(before["elements"], ref=ref, role=role, name=name, path=path,
+                              active_group=active_group(before))
+        except ComputerError as exc:
+            # A control the element list does not have (an icon drawn on a canvas, a page whose tree is
+            # empty, a toolkit with no accessibility) is looked for by eye, when a grounding model is set
+            # up - only for a click by name, and only when nothing matched at all: two matches are a
+            # choice for the engine, not for a picture.
+            wanted = " ".join(p for p in (role, name) if p)
+            if not (name and not ref and not path and kind in GROUNDED_KINDS
+                    and str(exc).startswith("nothing on the screen matches") and grounder.available()):
+                raise
+            point = grounder.locate(before["frame"], wanted)
+            grounded = wanted
+    if point is not None and element is None:
         element = el.at_point(before["elements"], point[0], point[1])
 
     if kind == "type" and point is not None and element is None and before.get("page_url"):
@@ -696,6 +718,19 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
 
     keys = [k for k in (keys or []) if k and k.strip()]
     target = el.describe(element) if element else (f"{point[0]},{point[1]}" if point else "")
+
+    # Typing replaces a field's text - and a field holding several lines is a document. Found by the GUI benchmark:
+    # asked to replace a word in Mousepad, the engine ran `gui type e13 "color"` on the editor, the whole file became
+    # "color", and an undo brought back only part of it. Replacing a whole document has to be said outright.
+    if kind == "type" and element is not None and not append and not replace_all:
+        held = element.get("value") or ""
+        if "\n" in held.strip() and not privacy.secret_field(element):
+            lines = held.strip().count("\n") + 1
+            raise ComputerError(
+                f"{target} holds {lines} lines of text, and typing into it replaces all of them; nothing was typed. "
+                f"To change part of it use the app's own Find and Replace, or click where the change goes and "
+                f"type with --append. gui read {element.get('ref') or 'REF'} shows the whole text. Only to replace "
+                f"everything: gui type {element.get('ref') or 'REF'} --replace-all \"...\"")
 
     # Typing needs a field. Aimed at a page's row, button or link, the text goes
     # to whatever still has focus: live, a product name typed "into" an the web app
@@ -875,6 +910,10 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         note += (f"\nNothing in {target}'s list matches all of that text - it offers only to create or search. "
                  f"gui select {element.get('ref') or 'REF'} \"...\" searches for parts of the text too and picks "
                  "the entry that fits; a system's own names are often shorter than a document's.")
+    if grounded:
+        # Where it was found, and what is there: the engine checks the model's answer against the element.
+        found_on = f"; that is {el.describe(element)}" if element else "; nothing in the element list is there"
+        summary = f"{summary} (found {el._quote(grounded, 80)} at {point[0]},{point[1]} by looking at the screen{found_on})"
     if kind in ("click", "double_click", "right_click") and point is not None and _on_taskbar(point):
         # Found live: an engine clicked 360,690 again and again for a form's row below the page's visible part,
         # and every click landed on the taskbar under the page.
@@ -888,6 +927,69 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         "change": change,
         "observation": after,
     }
+
+
+def _named_by(description, observation):
+    """
+    The one element a description names outright - by its name, or its role
+    and name, as `gui click NAME` would find it - or None. "checkbox Replace
+    all in" is the checkbox "Replace all in:"; two that fit are not chosen
+    between.
+    """
+
+    words = " ".join((description or "").split()).strip("\"'")
+    for prefix in ("the ", "a ", "an "):
+        if words.lower().startswith(prefix):
+            words = words[len(prefix):]
+    if not words:
+        return None
+
+    tries = [{"name": words}]
+    first, _, rest = words.partition(" ")
+    if rest and any(e["role"] == el.normalize_role(first) for e in observation["elements"]):
+        tries.insert(0, {"role": first, "name": rest.strip("\"'")})
+    visible = [e for e in observation["elements"] if "offscreen" not in e.get("states", [])]
+    for target in tries:
+        try:
+            return el.find(visible, active_group=active_group(observation), **target)
+        except ComputerError:
+            continue
+    return None
+
+
+# What a description is looked for on the screen for: clicks, and typing (the field to click into first).
+GROUNDED_KINDS = ("click", "double_click", "right_click", "type")
+
+
+def text_change(old, new, spans=3, context=18):
+    """
+    What an edit did to a field's text, for an engine to check: the changed
+    spans with a little of what stands around them. A whole-value quote cut
+    at 40 characters showed the first line of a document and hid every change
+    after it (found by the GUI benchmark: a word replaced in the third line of
+    a file was invisible, and the engine reported every one replaced).
+    """
+
+    old, new = old or "", new or ""
+    if len(old) <= 40 and len(new) <= 40:
+        return f"{el._quote(old, 40)} -> {el._quote(new, 40)}"
+
+    import difflib
+    changes = [op for op in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes() if op[0] != "equal"]
+    if not changes:
+        return "unchanged"
+
+    def quoted(text, i, j):
+        start, end = max(0, i - context), min(len(text), j + context)
+        piece = " ".join(text[start:end].replace("\n", " / ").split())
+        return '"' + ("…" if start else "") + piece.replace('"', "'") + ("…" if end < len(text) else "") + '"'
+
+    shown = []
+    for tag, i1, i2, j1, j2 in changes[:spans]:
+        line = old.count("\n", 0, i1) + 1
+        shown.append(f"line {line}: {quoted(old, i1, i2)} -> {quoted(new, j1, j2)}")
+    more = f" (+{len(changes) - spans} more changes)" if len(changes) > spans else ""
+    return f"changed in {len(changes)} place{'s' if len(changes) != 1 else ''}: " + "; ".join(shown) + more
 
 
 def _on_taskbar(point):
@@ -977,7 +1079,7 @@ def summarize(change, limit=6):
             if field == "value" and privacy.secret_field(element):
                 parts.append(f"{el.describe(element)} value changed")
             elif field == "value":
-                parts.append(f"{el.describe(element)} value {el._quote(old, 40)} -> {el._quote(new, 40)}")
+                parts.append(f"{el.describe(element)} value " + text_change(old, new))
             else:
                 parts.append(f"{el.describe(element)} [{old}] -> [{new}]")
 

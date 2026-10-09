@@ -242,7 +242,7 @@ def start_app(start):
             "--no-default-browser-check", "--disable-gpu", "--start-maximized",
             "--password-store=basic", url,
         ])
-        wait_for_window(r"Chromium")
+        wait_for_window(r"Chromium|Google Chrome")
         wait_for_page(path)
         return
 

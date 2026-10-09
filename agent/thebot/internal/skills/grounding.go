@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode"
 
+	"thebot/internal/atomizer"
 	"thebot/internal/llm"
 )
 
@@ -160,6 +161,18 @@ func groundingNudge(st *operatorState, command string) string {
 				continue
 			}
 		}
+		if literals, ok := formulaLiterals(v); ok {
+			if numbers == nil {
+				numbers = numbersIn(st.Seen)
+			}
+			traced := true
+			for _, n := range literals {
+				traced = traced && numbers[n]
+			}
+			if traced {
+				continue
+			}
+		}
 		if d, ok := canonicalDate(v); ok {
 			if dates == nil {
 				dates = datesIn(st.Seen)
@@ -177,6 +190,35 @@ func groundingNudge(st *operatorState, command string) string {
 		"would be guesses. Find each value in the document or the page it comes from and use it exactly as written "+
 		"there. A date may be typed in the format its field takes. If you converted one otherwise (a unit), or it cannot be found, ask with HELP instead.",
 		strings.Join(untraced, ", "))
+}
+
+var (
+	cellRefRe        = regexp.MustCompile(`\$?[A-Za-z]{1,3}\$?[0-9]{1,7}`)
+	formulaNumberRe  = regexp.MustCompile(`[0-9]+(?:\.[0-9]+)?`)
+	formulaQuotedRe  = regexp.MustCompile(`"[^"]*"`)
+	formulaAllowedRe = regexp.MustCompile(`^=[A-Za-z0-9_.$:;,()+\-*/^%<>=&! 	]+$`)
+)
+
+// formulaLiterals reads a spreadsheet formula (=SUM(B2:B5)): the worker's own
+// construction, not a value copied from somewhere, so it is not looked for in
+// what was read. Found by the GUI benchmark: asked to total B2 to B5 with a
+// formula, the operator was refused =SUM(B2:B5) as a value "that appears
+// nowhere", and went on to close the spreadsheet. What a formula may not
+// carry is a figure nobody has seen: its literal numbers (not cell
+// references) are returned to be traced like any typed number, and a formula
+// holding quoted text is not excused at all.
+func formulaLiterals(v string) ([]string, bool) {
+	v = strings.TrimSpace(withoutNewlineMarks(v))
+	if !strings.HasPrefix(v, "=") || len(v) < 2 || formulaQuotedRe.MatchString(v) || !formulaAllowedRe.MatchString(v) {
+		return nil, false
+	}
+	var out []string
+	for _, n := range formulaNumberRe.FindAllString(cellRefRe.ReplaceAllString(v, " "), -1) {
+		if c, ok := canonicalNumber(n); ok {
+			out = append(out, c)
+		}
+	}
+	return out, true
 }
 
 // withoutNewlineMarks is a typed value without the \n that gui type reads as
@@ -273,6 +315,34 @@ func earlyDoneNudge(st *operatorState, history []llm.Message, answer string) str
 		}
 	}
 	return ""
+}
+
+// unstartedScreenNudge is what to tell the operator instead of taking a DONE
+// for work in a window when no command has run at all, or "" to take it.
+// Found by the GUI benchmark, on a hosted brain: asked to rename a sheet in
+// the spreadsheet on the screen, the operator's first and only reply was
+// "DONE: Renamed the sheet from Sheet1 to Budget 2026 and saved the file.
+// Verified in Calc that the tab now reads Budget 2026" - three seconds, not
+// one command, the sheet untouched. It was its answer to the same request an
+// hour before, reworded, so earlyDoneNudge (which looks for the same words)
+// let it through, and nothing checks a task that never touched the screen.
+// Work in a window cannot be done, or known to be done, without looking: a
+// request the triage sends here as screen work needs at least one command.
+func unstartedScreenNudge(st *operatorState) string {
+	if st.CommandsRun > 0 || !atomizer.WantsScreen(st.Request) {
+		return ""
+	}
+	return "Not taken: nothing has been run for this request, so nothing on this screen has been looked at or " +
+		"changed. Whatever you remember from earlier in this conversation, the screen and the files are as they " +
+		"are NOW. Look first, then do what is asked:\n" + st.Request + "\n\nReply now with exactly:\nCOMMAND:\ngui observe"
+}
+
+// unstartedScreenDoubt is what a person is asked when the operator says done
+// again and still has run nothing.
+func unstartedScreenDoubt(claim string) string {
+	return fmt.Sprintf("I cannot confirm this is done: I reported %q, but I ran no command for this request, so "+
+		"nothing on the screen was looked at or changed. Reply \"done\" if it really is done already, or tell me "+
+		"to do it.", claim)
 }
 
 var (

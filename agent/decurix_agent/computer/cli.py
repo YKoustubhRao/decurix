@@ -125,8 +125,15 @@ USAGE = """gui - see and use this desktop's screen
   gui observe                    list windows and elements, each with a ref like e12
   gui observe --window TITLE     one window's elements in full
   gui click TARGET               click (also: double-click, right-click)
+  gui click --see "DESCRIPTION"  click what the description says, found by looking at the
+                                 screen ("the bell icon at the top right"): for what has no
+                                 ref. Also gui type --see "the Notes field" "text"
   gui type TARGET "text"         replace a field's text (--append to add; \\n = new line)
+                                 A field holding several lines is a document: replacing
+                                 all of it needs --replace-all
   gui type "text"                type into whatever has focus
+  gui read [TARGET]              the whole text of a field or document, with line numbers
+                                 (observe shows only its first 60 characters)
   gui key KEYS...                press keys: enter, tab, ctrl+s, alt+f4 ...
   gui scroll [TARGET] down [N]   scroll up/down/left/right, N notches (about 100 px each)
   gui select TARGET "option"     choose an option in a dropdown
@@ -334,12 +341,20 @@ def build_parser():
         p.add_argument("target", nargs="*")
         p.add_argument("--role")
         p.add_argument("--name")
+        p.add_argument("--see")
 
     typing = sub.add_parser("type", add_help=False)
     typing.add_argument("words", nargs="+")
     typing.add_argument("--role")
     typing.add_argument("--name")
+    typing.add_argument("--see")
     typing.add_argument("--append", action="store_true")
+    typing.add_argument("--replace-all", dest="replace_all", action="store_true")
+
+    reader = sub.add_parser("read", add_help=False)
+    reader.add_argument("target", nargs="*")
+    reader.add_argument("--role")
+    reader.add_argument("--name")
 
     keys = sub.add_parser("key", add_help=False)
     keys.add_argument("keys", nargs="+")
@@ -472,12 +487,71 @@ def _print_act(result):
         print(el.render(observation, budget=TEXT_BUDGET - 500, only_group=observation["groups"][0]["title"]))
 
 
+def read_text(args):
+    """
+    `gui read TARGET`: the whole text a field or document holds, line by line.
+
+    observe shows the first 60 characters of a value, which for an editor is
+    half of its first line: an engine asked to change every "colour" in a
+    file could see one of three, and could not check its own edit afterwards
+    (found by the GUI benchmark). With no target, the field that has the
+    keyboard. A secret field's text is never shown.
+    """
+
+    from decurix_agent.computer import privacy
+
+    observation = core.observe()
+    words = _strip_descriptor(list(args.target))
+    if words and not (_is_target(words[0]) or (len(words) == 2 and _is_role_word(words[0]))):
+        words = [" ".join(words)]
+    if len(words) == 2 and _is_role_word(words[0]):
+        args.role, args.name = args.role or words[0], args.name or words[1]
+        words = []
+    target = _target(words[0] if words else None, args)
+
+    if target.get("point"):
+        element = el.at_point(observation["elements"], *target["point"])
+    elif target:
+        element = el.find(observation["elements"], active_group=core.active_group(observation), **target)
+    else:
+        element = next((e for e in observation["elements"] if "focused" in e.get("states", [])), None)
+    if element is None:
+        raise ComputerError("read what? Give a ref like e12 (run gui observe first).")
+
+    if privacy.secret_field(element):
+        return f"{el.describe(element)} is a secret field; its text is not shown."
+
+    value = element.get("value")
+    if value in (None, ""):
+        value = element.get("name") or ""
+    if not value:
+        return f"{el.describe(element)} holds no text."
+
+    budget = TEXT_BUDGET * 3
+    lines = str(value).split("\n")
+    out = [f"{el.describe(element)} holds {len(value)} characters in {len(lines)} line{'s' if len(lines) != 1 else ''}:"]
+    used = 0
+    for n, line in enumerate(lines, 1):
+        if used + len(line) > budget:
+            out.append(f"... ({len(lines) - n + 1} more lines not shown)")
+            break
+        out.append(f"{n:>3}| {line}")
+        used += len(line) + 6
+    return "\n".join(out)
+
+
 def run(argv):
     parser = build_parser()
 
     if not argv or argv[0] in ("-h", "--help", "help"):
         print(USAGE)
         return EXIT_OK
+
+    # A flag written between a command's words (`gui type e13 --append "text"`) is still its flag:
+    # argparse stops collecting a command's words at the first one.
+    if argv[0] == "type":
+        flags = [a for a in argv[1:] if a in ("--append", "--replace-all")]
+        argv = [argv[0]] + flags + [a for a in argv[1:] if a not in flags]
 
     args = parser.parse_args(argv)
 
@@ -488,10 +562,20 @@ def run(argv):
         core.report_observation(observation)
         budget = TEXT_BUDGET * 3 if args.window else TEXT_BUDGET
         print(el.render(observation, budget=budget, coords=args.coords, only_group=args.window))
+        from decurix_agent.computer import grounder
+        if grounder.available():
+            # Said here, by the tool, only where it is true: told in an engine's fixed instructions, a worker
+            # with no grounding model tried --see first and lost its way when it failed (GUI benchmark).
+            print('Something on the screen with no ref above (an icon, a picture, a drawn control): '
+                  'gui click --see "what it looks like and where" finds it by looking.')
         if args.screenshot:
             with open(args.screenshot, "wb") as f:
                 f.write(observation["frame"].png())
             print(f"Screenshot saved to {args.screenshot}")
+        return EXIT_OK
+
+    if command == "read":
+        print(read_text(args))
         return EXIT_OK
 
     if command == "open":
@@ -583,6 +667,12 @@ def run(argv):
 
     if command in ("click", "double-click", "right-click"):
         words = _strip_descriptor(list(args.target))
+        if args.see:
+            if words:
+                raise ComputerError(f"{command} takes a target or --see \"what to look for\", not both")
+            result = core.act(command.replace("-", "_"), see=args.see)
+            _print_act(result)
+            return EXIT_NEEDS_APPROVAL if result["status"] == "needs_approval" else EXIT_OK
         if len(words) > 1 and all(el.parse_point(w) for w in words):
             # Found live: an engine wrote `gui click 360,690 360,710 360,730 ...` to search for a row below the
             # screen's edge, only the first point was clicked, and it never learnt the rest were not.
@@ -606,13 +696,15 @@ def run(argv):
         if len(words) == 3 and _is_role_word(words[0]) and not (args.role or args.name):
             # gui type textbox "Site title" "Decurix Test Site"
             args.role, args.name, words = words[0], words[1], [words[2]]
-        if args.role or args.name:
+        if args.see:
+            target, text = {"see": args.see}, " ".join(words)
+        elif args.role or args.name:
             target, text = _target(None, args), " ".join(words)
         elif len(words) >= 2 and (_is_target(words[0]) or len(words) == 2):
             target, text = _target(words[0], args), " ".join(words[1:])
         else:
             target, text = {}, " ".join(words)
-        result = core.act("type", text=_unescape(text), append=args.append, **target)
+        result = core.act("type", text=_unescape(text), append=args.append, replace_all=args.replace_all, **target)
 
     elif command == "key":
         target = _target(args.on, args) if args.on else {}

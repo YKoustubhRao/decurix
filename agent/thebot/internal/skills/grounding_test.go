@@ -390,3 +390,37 @@ func TestGroundingDoesNotLetADateBeSwappedAcrossDayAndMonth(t *testing.T) {
 		t.Errorf("an impossible date was let through")
 	}
 }
+
+// A formula is the worker's own construction: not looked for in what was read,
+// though a figure inside it still is.
+func TestGroundingLetsAFormulaThrough(t *testing.T) {
+	st := groundingState("Put the total of the Q1 column (B2 to B5) in cell B6 using a formula, then save.")
+	st.noteSeen("Rent 1200\nPayroll 5400")
+
+	for _, ok := range []string{`gui type e30 "=SUM(B2:B5)"`, `gui type e30 "=SUM(B2:B5)\n"`, `gui type "=B2+B3*$C$1"`, `gui type e3 "=B2+1200"`} {
+		if n := groundingNudge(st, ok); n != "" {
+			t.Errorf("%s was refused: %q", ok, n)
+		}
+	}
+	for _, bad := range []string{`gui type e30 "=B2+9999"`, `gui type e30 "=\"Acme Ltd\""`, `gui type e30 "=cmd|' /C calc'!A0"`} {
+		if n := groundingNudge(st, bad); n == "" {
+			t.Errorf("%s was let through", bad)
+		}
+	}
+}
+
+// Work in a window cannot be reported done before a single command has run.
+func TestScreenWorkIsNotDoneBeforeAnythingRan(t *testing.T) {
+	st := groundingState("Rename the sheet in the spreadsheet open in LibreOffice Calc from Sheet1 to Budget 2026, then save the file.")
+	if n := unstartedScreenNudge(st); !strings.Contains(n, "nothing has been run") || !strings.Contains(n, "gui observe") {
+		t.Fatalf("a done with nothing run was taken: %q", n)
+	}
+	st.CommandsRun = 1
+	if n := unstartedScreenNudge(st); n != "" {
+		t.Fatalf("pushed back after a command ran: %q", n)
+	}
+	// A request that needs no window is answered as before.
+	if n := unstartedScreenNudge(groundingState("ping - just reply pong")); n != "" {
+		t.Fatalf("a plain answer was refused: %q", n)
+	}
+}
