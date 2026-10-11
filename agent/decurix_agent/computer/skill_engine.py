@@ -174,6 +174,14 @@ def run(skill, params=None, start=1):
 
     missing = [p for p in skills.needed_from(skill, start) if not values.get(p["name"])]
     if missing:
+        # Given, and empty: this run has nothing to put there (a document that leaves a field out). That is not a
+        # value to ask a person for - found live: "ask the human" for a number the document said did not exist.
+        blank = [p for p in missing if values.get(p["name"]) == "" and p["name"] in values]
+        if blank and len(blank) == len(missing):
+            names = ", ".join(f"{p['name']} ({p['label']})" for p in blank)
+            return _refusal(skill, f"{names} was given empty, and a replay cannot leave a field out. If this run really "
+                                   "has nothing for it, do the steps yourself with gui, following the skill's steps, and "
+                                   "leave that field as the application has it; if you do not know, ask the human")
         wanted = ", ".join(f"{p['name']} ({p['label']})" for p in missing)
         return _refusal(skill, f"it needs {wanted} - ask the human for the value, then pass it with --param", [p["name"] for p in missing])
 

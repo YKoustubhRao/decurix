@@ -272,7 +272,24 @@ def at_point(elements, x, y):
     best = None
     best_area = None
 
+    # A dialog drawn over a page takes every point inside it: what the page
+    # has at that spot is underneath and cannot be pressed. Found live: with a
+    # form open in a dialog, a point on the dialog was reported as a link of
+    # the page behind it ("430,371 is link ...") and a scroll over the dialog
+    # as a scroll of that link.
+    order = {id(e): i for i, e in enumerate(elements)}
+    dialogs = [e for e in elements if e["role"] in ("dialog", "alertdialog") and e.get("box")
+               and "offscreen" not in (e.get("states") or [])]
+    top = dialogs[-1] if dialogs else None
+    if top is not None:
+        tx, ty, tw, th = top["box"]
+        if not (tx <= x < tx + tw and ty <= y < ty + th):
+            top = None
+
     for element in elements:
+        if top is not None and element is not top and (
+                element.get("group") != top.get("group") or order[id(element)] < order[id(top)]):
+            continue
         box = element.get("box")
         if not box or "offscreen" in element.get("states", []):
             continue
@@ -310,7 +327,10 @@ def element_line(element, coords=False):
         line += " [" + ", ".join(states) + "]"
 
     if "offscreen" in element.get("states", []):
-        line += " (scroll to reach)"
+        # A page's element is brought into view by acting on it. Found live: told "scroll to reach", an engine
+        # scrolled a form by hand, lost the fields above, clicked at guessed points and gave the form up for
+        # another way in - leaving half of it unfilled.
+        line += " (out of view - use its ref, no scrolling needed)" if element.get("source") == "cdp" else " (scroll to reach)"
 
     if coords:
         point = center(element)

@@ -198,7 +198,9 @@ def words_text(observation, limit=MAX_WORDS):
     active = core.active_group(observation)
     out, last = [], None
     for e in observation.get("elements", []):
-        if e.get("group") != active or e.get("role") not in READ_ROLES:
+        # (Which window is in front cannot always be told - an app that is a page in a window of its own is
+        # titled otherwise than its page: then every window's words are kept. Found live: nothing was.)
+        if (active is not None and e.get("group") != active) or e.get("role") not in READ_ROLES:
             continue
         name = " ".join((e.get("name") or "").split())
         if not name or name == last:
