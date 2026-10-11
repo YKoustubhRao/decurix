@@ -596,6 +596,14 @@ def _handle_job(job, error, resuming=False):
         return
 
     if outcome == "needs_input":
+        # The person has just called the task off: what the engine asks next
+        # is not put to them. Found live: told `stop`, the engine stopped -
+        # and then asked whether its stopping counted as the task done.
+        from decurix_agent import guidance
+        called_off = guidance.refused()
+        if called_off:
+            write_final_reply(f"Stopped, as you said (\"{called_off}\"). {answer or ''}".strip())
+            return
         _escalate(question)
         return
 

@@ -53,7 +53,11 @@ class ApprovalRules(unittest.TestCase):
                 self.assertIsNone(approval.assess("click", element("menuitem", name)))
 
     def test_a_record_name_on_a_button_or_with_an_act_still_stops(self):
-        self.assertIsNotNone(approval.assess("click", element("button", "Purchase Order")))
+        for name in ("Purchase Order", "Purchase Items", "Transfer Request", "Purchase"):
+            self.assertIsNotNone(approval.assess("click", element("button", name)), name)
+        # A button whose whole label is a document nobody can buy opens that kind of document.
+        for name in ("Purchase Invoice", "Purchase Receipt", "Purchase Register"):
+            self.assertIsNone(approval.assess("click", element("button", name)), name)
         for name in ("Purchase now", "Purchase invoice now", "Send invoice", "Pay invoice", "Post invoice"):
             with self.subTest(name=name):
                 self.assertIsNotNone(approval.assess("click", element("link", name)))

@@ -674,6 +674,12 @@ def _prepare(run):
 
     missing = [p for p in skills.required(skill) if not run["values"].get(p["name"])]
 
+    # A row the demonstration had and this run's document does not is not a value to find or to ask for.
+    if run.get("rows") and _learning_by_model(run):
+        used = {name for row in run["rows"]["names"] for name in row}
+        absent = {name for row in (skills.repeated_rows(skill) or {"rows": []})["rows"] for name in row} - used
+        missing = [p for p in missing if p["name"] not in absent]
+
     # Lists that do not line up are asked for again, whole - which item a
     # value belongs to is not something to guess.
     problem = None if missing else skills.list_problem(skill, run["values"])
@@ -698,7 +704,14 @@ def _prepare(run):
     if missing and not run.get("filled") and binding.available() and run.get("context"):
         run["filled"] = True
         progress.emit("Reading the values this task needs from its documents.")
-        found, evidence = binding.fill(skill, missing, run["context"])
+        read = binding.fill(skill, missing, run["context"], with_rows=True)
+        found, evidence, rows = read[0], read[1], (read[2] if len(read) > 2 else None)
+        if rows:
+            # How many entries this run's document has of the part the demonstration repeated.
+            run["rows"] = rows
+            for row in (skills.repeated_rows(skill) or {"rows": []})["rows"][rows["count"]:]:
+                for name in row:
+                    run["values"].pop(name, None)
         if found:
             run["values"].update(found)
             run.setdefault("evidence", {}).update(evidence)
@@ -1280,6 +1293,29 @@ def _chosen_from_list(skill):
     return skills.chosen_from_list(skill)
 
 
+def _chosen_for(run):
+    """The names of this run's values that are picked from a list: the skill's, and those of the rows added for this run."""
+
+    chosen = set(_chosen_from_list(run["skill"]))
+    for name, base in ((run.get("rows") or {}).get("base") or {}).items():
+        if base in chosen:
+            chosen.add(name)
+    return chosen
+
+
+def _rows_note(run):
+    """What this run's document says about the part the demonstration repeated, for the engine and the check."""
+
+    rows = run.get("rows")
+    if not rows:
+        return ""
+    return (f"The fields {', '.join(rows['fields'])} are one row, entered once per entry of the document. This run's "
+            f"document has {rows['count']} such entr{'y' if rows['count'] == 1 else 'ies'} (the demonstration's had "
+            f"{rows['demo']}), so exactly {rows['count']} row{'' if rows['count'] == 1 else 's'} belong"
+            f"{'s' if rows['count'] == 1 else ''} in the record: one per entry, none more and none fewer. A row for "
+            "every entry of the document is right, however many the demonstration showed.")
+
+
 def _same_value(wanted, typed):
     """Whether what was typed is the value wanted: the same text, or the same number however it is written."""
 
@@ -1315,21 +1351,39 @@ def _never_entered(run):
     values = {name: value for name, value in (run.get("values") or {}).items() if name in (run.get("evidence") or {})}
     if not values:
         return {}
-    chosen = _chosen_from_list(skill)
+    chosen = _chosen_for(run)
     files = {p["name"] for p in skill.get("params") or [] if p.get("file")}
     done = evidence.entered()
     if not done:
         # Nothing at all was recorded as typed: the task was done another way, or not on the screen.
         return {}
 
+    # A value the tools read off the screen is there too, typed or not. Found
+    # live: a field the application had filled with the very figure the
+    # document gives was read, left alone - and the run was refused for a
+    # value "never typed".
+    seen = evidence.read()
+    seen_numbers = {float(n.replace(",", "")) for n in re.findall(r"(?<![\w.])\d[\d,]*(?:\.\d+)?(?![\w])", seen)
+                    if re.search(r"\d", n)}
+
+    def was_read(item):
+        text = " ".join(str(item).split())
+        if text.casefold() in " ".join(seen.split()).casefold():
+            return True
+        digits = re.sub(r"[^\d.,-]", "", text).replace(",", "")
+        try:
+            return not re.search(r"[A-Za-z]", text) and float(digits) in seen_numbers
+        except ValueError:
+            return False
+
     missing = {}
     for name, value in values.items():
-        if name.split("__")[0] in chosen or name in files or value in (None, ""):
+        if name in chosen or name.split("__")[0] in chosen or name in files or value in (None, ""):
             continue
         items = skills.split_items(value) if any(p.get("name") == name and p.get("list")
                                                  for p in skill.get("params") or []) else [value]
         for item in items:
-            if not any(_same_value(item, typed) for typed in done):
+            if not any(_same_value(item, typed) for typed in done) and not was_read(item):
                 missing[name] = item
     return missing
 
@@ -1440,15 +1494,20 @@ def _procedure(run, from_step=None, note="", ran=False):
 
     if run["values"]:
         params = {p["name"]: p for p in skill.get("params") or []}
-        chosen = _chosen_from_list(skill)
+        chosen = _chosen_for(run)
+        bases = (run.get("rows") or {}).get("base") or {}
         shown = []
         for key, value in run["values"].items():
-            param = params.get(key) or {}
-            meaning = (understood.get("inputs") or {}).get(key) or param.get("label") or key
+            param = params.get(key) or params.get(bases.get(key)) or {}
+            meaning = ((understood.get("inputs") or {}).get(key) or (understood.get("inputs") or {}).get(bases.get(key))
+                       or param.get("label") or key)
             shown.append(f"- {key} = {json.dumps(value, ensure_ascii=False)} ({meaning}; the person typed "
                          f"{json.dumps(param.get('example') or '', ensure_ascii=False)}"
                          + (f"; {CHOSEN_NOTE}" if key in chosen else "") + ")")
         lines.append("This run's values - type these where the person typed theirs:\n" + "\n".join(shown))
+        if _rows_note(run):
+            lines.append(_rows_note(run) + " Add a row for each entry after the first the way the person added "
+                         "theirs, and never add one after the last.")
 
     if skill.get("documents"):
         lines.append("When they showed this, the person worked from these documents: "
@@ -1582,13 +1641,28 @@ def _by_model(run, from_step=None, note="", ran=False):
 def _judge(run, claim):
     skill = run["skill"]
     steps = "; ".join(f"{s['n']}. {s.get('summary')}" for s in skill["steps"])[:1500]
-    return verify.judge(run.get("context") or _engine_request(run), claim=claim, criteria=_criteria(skill, run["values"]),
+    return verify.judge(run.get("context") or _engine_request(run), claim=claim,
+                        criteria=(_rows_note(run) + "\n" if _rows_note(run) else "") + _criteria(skill, run["values"]),
                         values=run["values"], steps=steps, live_png=evidence.live(),
                         reference_png=evidence.final_frame(skill), observed=evidence.observed(), screen_text=evidence.live_text(),
-                        chosen=_chosen_from_list(skill))
+                        chosen=_chosen_for(run))
 
 
 REPORT_CHARS = 4000
+
+
+def _says_it_could_not(run, reply):
+    """Whether the check reads the engine's report as "I could not do this, because ..." (one model call)."""
+
+    try:
+        verdict = _judge(run, reply)
+    except Exception as exc:
+        log(f"Skill {run['skill']['name']}: could not ask whether the report claims success: {exc}")
+        return False
+    if verdict["verdict"] != verify.CANNOT:
+        return False
+    run["_verdict"] = verdict
+    return True
 
 
 def _doubt_text(claim, verdict):
@@ -1674,11 +1748,15 @@ ANSWERED_SYSTEM = """A computer agent working for a person wants to stop its tas
 
 They have when they answered the same question, or the same kind of choice arising somewhere else (told to take the first of several matching conversations, the first of several matching people in another list is the same choice).
 
-They have NOT when: nothing they said touches it; the earlier answer was about one task's own value (a particular person, amount, file or date) and this one's differs; the agent is asking for approval, a password, a sign-in, a code, a check that it is a human, or a value it was not given; or something has gone wrong (an error, a model or page that does not answer, a control it cannot find). When in doubt they have not: the person is then asked, which costs little.
+They have NOT when: nothing they said touches it; the earlier answer was about one task's own value (a particular person, amount, file or date) and this one's differs; the agent is asking for approval, a password, a sign-in, a code, a check that it is a human, or a value it was not given; or something has gone wrong (an error, a model or page that does not answer, a control it cannot find); or what the person said about this situation is to ask them - then asking is exactly what they want, and the question goes to them. When in doubt they have not: the person is then asked, which costs little.
 
 Reply with JSON only: {"answered": true, "answer": "<what the agent should do, in a sentence or two, in the person's terms>", "from": "<the person's words this rests on, quoted>", "confidence": 0.0-1.0} or {"answered": false}"""
 
 _self_answered = {"task": None, "count": 0}
+
+# An "answer" that only sends the question back to the person.
+ASK_THEM = re.compile(r"\b(ask|check with|confirm with|wait for|refer (?:it )?to|escalate to)\s+(?:the\s+)?"
+                      r"(person|user|human|me|them|him|her|you|someone)\b", re.IGNORECASE)
 
 
 def guided_skill_title():
@@ -1742,6 +1820,13 @@ def _question_gate(problem, kind, engine):
     except (TypeError, ValueError):
         confidence = 0.0
     if data.get("answered") is not True or not answer or confidence < SELF_ANSWER_CONFIDENCE:
+        return False
+    # "Ask the person" is not an answer to a question for the person. Found
+    # live: a lesson said to ask when nothing offered was the same kind of
+    # thing; the agent asked; this gate answered it "stop and ask the person",
+    # and the task ended with nobody asked.
+    if ASK_THEM.search(answer):
+        log(f"What the person said is to ask them: the question goes to them ({answer[:200]!r}).")
         return False
 
     _self_answered["count"] += 1
@@ -1852,6 +1937,31 @@ def _gate(reply, kind, engine):
 
     if kind != "final":
         guidance.end()
+        # An engine that failed after it had worked on the screen may have left the work done - or half done.
+        # Found live: the hosted model's rate limit ended a task seconds after its record was saved; the report
+        # read "did not answer ... send the request again", and sent again it would have been entered twice.
+        # The screen and what the tools read are judged as they stand, and the person is told which it is.
+        if kind == "error" and run is not None and _did_screen_work():
+            try:
+                verdict = _judge(run, "(The worker's model stopped answering before it could report. Judge only "
+                                      "from what the tools did and read.)")
+            except Exception as exc:
+                log(f"Skill {run['skill']['name']}: could not check what a failed run left: {exc}")
+                verdict = {"verdict": verify.UNSURE, "seen": "", "why": ""}
+            if verdict["verdict"] == verify.DONE:
+                _record_verdict(run, True, checked_by="model", helped=True)
+                write_final_reply("The work is done, though my model stopped answering before I could report it. "
+                                  f"Checked on the screen and in what my tools read: {verdict.get('seen') or verdict.get('why')}"
+                                  f"\n\n(What went wrong at the end: {(reply or '').strip()[:400]})" + _evidence_text(run),
+                                  kind="final", engine=engine, checked=True)
+                return True
+            _record_verdict(run, False, why=(reply or "")[:300])
+            write_final_reply(f"{(reply or '').strip()}\n\nBefore you send this again: this attempt had already worked on "
+                              "the screen, so part of it may be in place"
+                              + (f" ({verdict['seen']})" if verdict.get("seen") else "")
+                              + ". Look at what it left first, or the same thing may be entered twice.",
+                              kind="error", engine=engine, checked=True)
+            return True
         if run is not None:
             _record_verdict(run, False, why=(reply or "")[:300])
         return False
@@ -1866,7 +1976,7 @@ def _gate(reply, kind, engine):
         guidance.end()
         if run is not None:
             _record_verdict(run, False, why=f"the person said no at an approval: {said_no}"[:300])
-        write_final_reply(f"Stopped there, as you said (\"{said_no}\"): the action I asked about was not carried out.\n\n"
+        write_final_reply(f"Stopped there, as you said (\"{said_no}\"): I did not carry on with it.\n\n"
                           f"{reply}", kind="final", engine=engine, checked=True)
         return True
 
@@ -1879,7 +1989,7 @@ def _gate(reply, kind, engine):
         verdict = {"verdict": verify.NOT_DONE, "confidence": 1.0, "seen": "",
                    "why": "Nothing was done on the screen during this task: no app was opened, nothing clicked or "
                           "typed. The task has to be carried out with the gui command."}
-    elif run is not None and _never_entered(run):
+    elif run is not None and _never_entered(run) and not _says_it_could_not(run, reply):
         # No model is asked: a value nothing typed is not on the screen to be judged.
         missing = _never_entered(run)
         verdict = {"verdict": verify.NOT_DONE, "confidence": 1.0, "seen": "",
@@ -1888,9 +1998,22 @@ def _gate(reply, kind, engine):
                           + ". Each has to be in its own field of the record - open it and look at those fields; "
                             "what stands there now is not what was asked unless it reads exactly that."}
     else:
-        verdict = _judge(run, reply) if run is not None else verify.judge(guided["task"], claim=reply,
+        verdict = (run.pop("_verdict", None) or _judge(run, reply)) if run is not None else verify.judge(guided["task"], claim=reply,
                                                                               live_png=evidence.live(),
                                                                               observed=evidence.observed(), screen_text=evidence.live_text())
+
+    if verdict["verdict"] == verify.CANNOT:
+        # The worker says it could not do it, and why. Not a success and not a check that failed: the person
+        # is told, and what they answer is what it goes on with.
+        guidance.end()
+        if run is not None:
+            _record_verdict(run, False, why=(reply or "")[:300])
+        state.paused_skill = {"mode": "confirm", "run": run, "claim": reply, "verdict": verdict, "engine": engine,
+                              "task": guided["task"], "blocked": True}
+        report = (reply or "").strip()
+        ask_for_query("I could not finish this.\n\n" + (report[:REPORT_CHARS] or verdict.get("why") or "")
+                      + "\n\nTell me what to do about it and I will carry on with that, or reply `stop`.", kind="query", engine=engine)
+        return True
 
     if verdict["verdict"] == verify.DONE:
         guidance.end()
@@ -1969,8 +2092,9 @@ def _confirm_reply(paused, reply):
         return write_final_reply("Not done - marked as a failure. " + seen, kind="error", engine=engine, checked=True)
 
     redo = bool(REDO_RE.match(reply))
-    if not redo and run is not None:
-        # What is wrong, in their words: kept for every later run.
+    if not redo and run is not None and not paused.get("blocked"):
+        # What is wrong, in their words: kept for every later run. (Not what they answer a run that said it
+        # could not go on - that is for this run; what holds again is kept as a lesson by the watcher.)
         _correct(run, reply)
         _record_verdict(run, False, why=reply)
 

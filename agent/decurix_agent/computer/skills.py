@@ -301,6 +301,47 @@ def chosen_from_list(skill):
     return chosen
 
 
+def repeated_rows(skill):
+    """
+    The part of a task that was entered once per entry of something - one row
+    per line of a document - as the demonstration shows it: the same run of
+    fields, by their labels, filled two or more times one after another.
+    {"fields": [labels], "rows": [[names of row 1], [names of row 2], ...]},
+    or None. A demonstration shows however many entries its own document had;
+    the next document has its own number, and each needs every field of a row
+    (found live: taught on two lines, a document of three had no place for
+    the third, and a correct third row was called "extra" and removed).
+    """
+
+    params = sorted(required(skill), key=lambda p: p.get("step") or 0)
+    labels = [(p.get("label") or p["name"]).strip().lower() for p in params]
+    best = None
+    for start in range(len(labels)):
+        for size in range(1, (len(labels) - start) // 2 + 1):
+            block = labels[start:start + size]
+            if len(set(block)) != size:
+                continue
+            reps = 1
+            while labels[start + reps * size:start + (reps + 1) * size] == block:
+                reps += 1
+            if reps >= 2 and (best is None or reps * size > best[1] * best[2]):
+                best = (start, size, reps)
+    if best is None:
+        return None
+    start, size, reps = best
+    names = [p["name"] for p in params]
+    return {"fields": [params[start + k].get("label") or params[start + k]["name"] for k in range(size)],
+            "rows": [names[start + r * size:start + (r + 1) * size] for r in range(reps)]}
+
+
+def row_names(group, n):
+    """The names of row `n` (from 0) of a repeated part: the demonstration's own, or made after its first row's."""
+
+    if n < len(group["rows"]):
+        return list(group["rows"][n])
+    return [f"{name}_{n + 1}" for name in group["rows"][0]]
+
+
 def split_items(text):
     """The items of a list given for a loop: separated by ";" or a new line, none empty."""
 
