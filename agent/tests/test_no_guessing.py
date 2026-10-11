@@ -179,6 +179,24 @@ class ACellThatBecomesItsEditor(unittest.TestCase):
         with patch.object(core, "observe", return_value={"elements": [cell, other]}), patch.object(core, "EDITOR_SECONDS", 0):
             self.assertIsNone(core._editor_opened_by(cell))
 
+    def test_a_point_on_a_dialog_is_the_dialogs_and_never_the_page_behind_it(self):
+        from decurix_agent.computer import elements as el
+        behind = {"role": "link", "name": "Reports", "box": [400, 350, 80, 40], "group": "g", "states": []}
+        dialog = {"role": "dialog", "name": "New record", "box": [345, 65, 575, 610], "group": "g", "states": []}
+        field = {"role": "textbox", "name": "Name", "box": [360, 236, 540, 30], "group": "g", "states": []}
+        outside = {"role": "link", "name": "Home", "box": [20, 180, 80, 30], "group": "g", "states": []}
+        page = [behind, outside, dialog, field]
+        self.assertIs(el.at_point(page, 420, 360), dialog)        # on the dialog, over the link behind: the dialog
+        self.assertIs(el.at_point(page, 400, 250), field)
+        self.assertIs(el.at_point(page, 40, 190), outside)        # beside the dialog: the page
+        self.assertIs(el.at_point([behind, outside], 420, 360), behind)
+
+    def test_a_pages_field_out_of_view_is_used_by_its_ref_not_scrolled_for(self):
+        from decurix_agent.computer import elements as el
+        field = {"ref": "e7", "role": "textbox", "name": "First Name", "states": ["offscreen"], "source": "cdp"}
+        self.assertIn("use its ref", el.element_line(field))
+        self.assertIn("scroll to reach", el.element_line(dict(field, source="atspi")))
+
     def test_a_look_keeps_the_words_a_saved_record_shows_outside_its_fields(self):
         from decurix_agent.computer import evidence
         page = [{"role": "heading", "name": "Record 42", "group": "g"},
@@ -190,6 +208,10 @@ class ACellThatBecomesItsEditor(unittest.TestCase):
         with patch.object(core, "active_group", return_value="g"):
             self.assertEqual(evidence.words_text({"elements": page}), "Record 42 | Office Chair | 12,000.00")
             self.assertEqual(evidence.words_text({"elements": []}), "")
+        # The front window cannot be told: every window's words are kept, never none.
+        with patch.object(core, "active_group", return_value=None):
+            self.assertEqual(evidence.words_text({"elements": page}),
+                             "Record 42 | Office Chair | 12,000.00 | another window")
 
     def test_an_entry_is_brought_back_by_its_own_name_as_the_list_writes_it(self):
         self.assertEqual(core._own_label("USB-C Monitor USB-C Monitor, Products"), "USB-C Monitor")
