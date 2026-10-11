@@ -11,6 +11,15 @@ from decurix_agent.logging_utils import log
 from decurix_agent.messaging import REPLY_MARK, send_query, write_final_reply
 
 
+def _called_off(reply):
+    """Ends the task a person called off at one of its questions, without another action."""
+
+    state.waiting_for_query = False
+    progress.emit("Stopping, as you said. Nothing more is done.")
+    write_final_reply(f"I did nothing more after your \"{' '.join(str(reply).split())[:100]}\". "
+                      f"Anything done before the question is still as it was left.")
+
+
 # ============================================================
 # Command watcher
 # ============================================================
@@ -329,6 +338,14 @@ def _pass():
 
             _mark_handled(path)
 
+            # What a search failed to find binds its field until a person
+            # has spoken (core: "Nothing else in its place"). They have.
+            try:
+                from decurix_agent.computer import core as _core
+                _core.forget_failed_search()
+            except Exception as exc:
+                log(f"Could not clear the failed search: {exc}")
+
             # A paused replay, or a taught skill's question, takes its
             # own reply; it is still a reply either way, which is all
             # tasks.Plan mirrors.
@@ -362,6 +379,15 @@ def _pass():
                     except Exception as exc:
                         log(f"Could not keep the answer on the skill: {exc}")
                 target, args = continue_after_query, (content,)
+                # A reply that only calls the task off ends it here: the
+                # engine is not handed it. Found live: told `stop` at a
+                # question about which record to use, the engine took it
+                # as an answer, ran twelve more commands and saved the
+                # record with the entry the person had just been asked
+                # about. (The engine's own paused job is dropped when the
+                # next request starts.)
+                if guidance.STOP_ONLY.match(content or ""):
+                    target, args = _called_off, (content,)
 
             thread = threading.Thread(
                 target=target,

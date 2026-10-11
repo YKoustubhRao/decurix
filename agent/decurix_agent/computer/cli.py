@@ -2,6 +2,7 @@ import argparse
 import os
 import re
 import sys
+import time
 
 from decurix_agent import logging_utils, progress
 from decurix_agent.computer import approval, core, replay, skill_engine, skills
@@ -44,6 +45,11 @@ SCREEN_COMMANDS = {
     "select", "open", "upload", "drag", "verify", "replay", "do", "front",
 }
 
+
+# A page with fewer elements than this is taken to be still drawing itself, and looked at again.
+EMPTY_PAGE_ELEMENTS = 6
+EMPTY_PAGE_LOOKS = 5
+EMPTY_PAGE_PAUSE = 3.0
 
 # Other spellings of a command's name.
 COMMAND_ALIASES = {
@@ -559,6 +565,11 @@ def run(argv):
     # on run after run before the engine wrote it the way the usage does.
     argv = [COMMAND_ALIASES.get(argv[0].lower(), argv[0])] + list(argv[1:])
 
+    # "click X twice" / "click X double-click": the double click it asks for. Found live: the trailing word was
+    # taken for part of the target, or the click was made once.
+    if argv[0] == "click" and len(argv) > 2 and argv[-1].lower() in ("twice", "double", "double-click", "doubleclick", "dblclick"):
+        argv = ["double-click"] + list(argv[1:-1])
+
     # A flag written between a command's words (`gui type e13 --append "text"`) is still its flag:
     # argparse stops collecting a command's words at the first one.
     if argv[0] == "type":
@@ -571,13 +582,27 @@ def run(argv):
 
     if command == "observe":
         observation = core.observe()
+        # A page that draws itself after it has "loaded" shows next to nothing for a while. Found live on a slow
+        # host: an engine looked at a record just saved, was shown an empty page, reloaded it, and then could not
+        # say whether its work had been saved. An almost empty page is looked at again before it is reported.
+        loading = False
+        for _ in range(EMPTY_PAGE_LOOKS):
+            on_page = [e for e in observation.get("elements") or [] if e.get("source") == "cdp"]
+            loading = bool(observation.get("page_url")) and len(on_page) < EMPTY_PAGE_ELEMENTS
+            if not loading:
+                break
+            time.sleep(EMPTY_PAGE_PAUSE)
+            observation = core.observe()
         core.report_observation(observation)
         budget = TEXT_BUDGET * 3 if args.window else TEXT_BUDGET
         shown = el.render(observation, budget=budget, coords=args.coords, only_group=args.window)
         print(shown)
+        if loading:
+            print("The page shows almost nothing: it is still loading, or drawing itself. Wait and observe again - do not "
+                  "reload it, close it or open it a second time; what was saved before stays saved.")
         # What this look read is evidence of the task: the page may be closed before the task is checked.
         from decurix_agent.computer import evidence
-        evidence.note_look(shown)
+        evidence.note_look(shown, observation)
         from decurix_agent.computer import grounder
         if grounder.available():
             # Said here, by the tool, only where it is true: told in an engine's fixed instructions, a worker

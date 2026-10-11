@@ -58,7 +58,12 @@ SYSTEM = (
     "letter where an offer letter was uploaded; several files are separated by ';'. "
     "If a document does not show a value, leave it out - do not guess, and never return the "
     "example itself unless the document really says it. "
-    'Reply with JSON only: {"values": {"<name>": "<value>" or ["<item value>", ...]}, '
+    "When \"repeating rows\" are described, those fields were filled once per entry of the document (once per "
+    "line of a table, say) and the demonstration's document had its own number of entries. Give them under "
+    "\"rows\": one object per entry of THIS document, in the document's order, each with every field of a row - "
+    "as many rows as the document has entries, be it one or ten, never padded or cut to the demonstration's "
+    "number - and leave those names out of \"values\". "
+    'Reply with JSON only: {"values": {"<name>": "<value>" or ["<item value>", ...]}, "rows": [{"<field name>": "<value>", ...}, ...], '
     '"evidence": {"<name>": "<which document, which label or line>"}, "missing": ["<name>", ...]}'
 )
 
@@ -100,14 +105,14 @@ def _describe(param, meaning="", lookup=False):
     return line
 
 
-def fill(skill, params, context):
+def fill(skill, params, context, with_rows=False):
     """
     ({name: value}, {name: evidence}) for the params the run's context shows;
     ({}, {}) when there is no model, nothing to read, or the model fails.
     """
 
     if not params or not available():
-        return {}, {}
+        return ({}, {}, None) if with_rows else ({}, {})
 
     files = referenced_files(context)
     parts = [{"type": "text", "text": _prompt(skill, params, context)}]
@@ -137,9 +142,11 @@ def fill(skill, params, context):
         answer = json.loads(message.get("content") or "{}")
     except (llm_client.LLMError, ValueError) as exc:
         log(f"binding: could not fill values for {skill.get('name')}: {exc}")
-        return {}, {}
+        return ({}, {}, None) if with_rows else ({}, {})
 
-    return _clean(params, answer, texts)
+    values, evidence = _clean(params, answer, texts)
+    rows = _rows(skill, params, answer, texts, values, evidence)
+    return (values, evidence, rows) if with_rows else (values, evidence)
 
 
 def _prompt(skill, params, context):
@@ -154,6 +161,7 @@ def _prompt(skill, params, context):
         json.dumps([_describe(p, meanings.get(p["name"]), p["name"].split("__")[0] in chosen) for p in params],
                    ensure_ascii=False, indent=1),
         "",
+        _rows_text(skill, params),
         "The request that started this run (it may include an email, and it names the files attached):",
         (context or "")[:6000],
     ])
@@ -218,3 +226,61 @@ def report(evidence, values):
 
     return "\n".join(f"- {name} = \"{values[name]}\" ({evidence.get(name) or 'from the documents'})"
                      for name in values)
+
+
+def _group(skill, params):
+    """The skill's repeated part, when the values asked for include it; else None."""
+
+    from decurix_agent.computer import skills
+
+    group = skills.repeated_rows(skill) if skill.get("params") else None
+    asked = {p["name"] for p in params}
+    if group is None or not any(name in asked for row in group["rows"] for name in row):
+        return None
+    return group
+
+
+def _rows_text(skill, params):
+    group = _group(skill, params)
+    if group is None:
+        return ""
+    return ("Repeating rows: the fields " + ", ".join(f"{name} ({label})" for name, label in zip(group["rows"][0], group["fields"]))
+            + f" are one row, filled once per entry of the document; the demonstration's document had {len(group['rows'])} "
+            "entries (its other rows are " + "; ".join(", ".join(row) for row in group["rows"][1:]) + "). Give this "
+            "document's entries under \"rows\", each with the names " + ", ".join(group["rows"][0]) + ".\n")
+
+
+def _rows(skill, params, answer, texts, values, evidence):
+    """
+    Puts the document's rows into `values` under each row's names (the
+    demonstration's own for its rows, made after the first row's beyond them)
+    and returns {"count", "demo", "fields", "names": [[row names]], "base": {name: first-row name}}, or None.
+    """
+
+    from decurix_agent.computer import skills
+
+    group = _group(skill, params)
+    rows = answer.get("rows") if isinstance(answer, dict) else None
+    if group is None or not isinstance(rows, list) or not rows:
+        return None
+
+    first = group["rows"][0]
+    by_name = {p["name"]: p for p in skill.get("params") or []}
+    names, base = [], {}
+    why = answer.get("evidence") if isinstance(answer.get("evidence"), dict) else {}
+    for n, row in enumerate(r for r in rows if isinstance(r, dict)):
+        mine = skills.row_names(group, n)
+        names.append(mine)
+        for field, name in zip(first, mine):
+            base[name] = field
+            value = row.get(field)
+            if value in (None, "", []) or isinstance(value, (list, dict)):
+                continue
+            values[name] = as_written(str(value).strip(), (by_name.get(field) or {}).get("example"), texts)
+            evidence[name] = str(why.get(name) or why.get(field) or f"entry {n + 1} of the document")[:200]
+    # A row the document does not have is not a value of this run.
+    for row in group["rows"][len(names):]:
+        for name in row:
+            values.pop(name, None)
+            evidence.pop(name, None)
+    return {"count": len(names), "demo": len(group["rows"]), "fields": group["fields"], "names": names, "base": base}

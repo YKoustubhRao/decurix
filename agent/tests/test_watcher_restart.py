@@ -118,6 +118,26 @@ class Replies(Base):
         state.waiting_for_query = False
         self.assertFalse(watchers.is_reply_file(messaging.save_request("a new request", TASK).name))
 
+    def test_a_reply_that_only_calls_the_task_off_never_reaches_the_engine(self):
+        for words, target in (("stop", "_called_off"), ("Cancel it.", "_called_off"),
+                              ("stop and use the first one", "continue_after_query")):
+            with self.subTest(words=words):
+                FakeThread.started = []
+                state.processed_commands.clear()
+                state.waiting_for_query = True
+                state.current_task = "enter the attached document"
+                state.current_task_id = TASK
+                path = self.request(words, reply=True)
+                with mock.patch.object(watchers.lessons, "note"), mock.patch.object(watchers.skill_task, "learn_answer"):
+                    watchers._pass()
+                self.assertEqual(FakeThread.started[0][0], getattr(watchers, target))
+                for leftover in self.command_dir.iterdir():
+                    leftover.unlink()
+
+        watchers._called_off("stop")
+        self.assertIn("nothing more", self.finals[-1][0])
+        self.assertFalse(state.waiting_for_query)
+
     def test_an_empty_reply_is_retried_when_its_writer_finishes(self):
         state.waiting_for_query = True
         state.current_task = "/learn demo-x"

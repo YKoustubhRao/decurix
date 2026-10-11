@@ -24,6 +24,7 @@
 # ============================================================
 
 import json
+import re
 
 from decurix_agent import config, task_context
 
@@ -58,6 +59,10 @@ def get():
 # A person's "no" to an approval this task asked for: (task id, their words).
 _refused = None
 
+# A reply that only calls the task off.
+STOP_ONLY = re.compile(r"^\W*(stop|cancel|abort|quit|never ?mind|leave it|forget it)(\s+(it|this|that|the task|now|please))*\W*$",
+                       re.IGNORECASE)
+
 
 def note_reply(reply, outcome):
     """
@@ -72,7 +77,11 @@ def note_reply(reply, outcome):
 
     from decurix_agent.computer import approval
 
-    if outcome == "declined" and approval.is_refusal(reply):
+    # A bare "stop" to any question of the task ends it the same way. Found
+    # live: told `stop` at a question, the engine wound up, the final check
+    # found the work unfinished - and sent it back to finish what the person
+    # had just called off.
+    if (outcome == "declined" and approval.is_refusal(reply)) or STOP_ONLY.match(str(reply or "")):
         _refused = (task_context.current(), " ".join(str(reply).split())[:300])
     else:
         _refused = None
@@ -128,6 +137,20 @@ def run_values(skill=None, recording=None):
         return dict(values) if isinstance(values, dict) else {}
 
     return {}
+
+
+def handed(skill):
+    """
+    Whether the task being worked on was handed to the engine as this skill
+    (by the person, or by the reading of their request). Read from any process.
+    """
+
+    try:
+        kept = json.loads(RUN_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(kept, dict) and bool(kept.get("task_id")) and kept.get("task_id") == task_context.current() \
+        and kept.get("skill") == skill
 
 
 def with_run_values(given, params, skill=None, recording=None):
