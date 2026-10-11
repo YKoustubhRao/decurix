@@ -26,7 +26,7 @@ from decurix_agent.logging_utils import log
 
 DONE_CONFIDENCE = 0.8
 
-DONE, NOT_DONE, UNSURE = "done", "not_done", "unsure"
+DONE, NOT_DONE, UNSURE, CANNOT = "done", "not_done", "unsure", "cannot"
 
 JUDGE_SYSTEM = (
     "You check a computer worker's work before anyone is told it succeeded. You are shown the task as it was "
@@ -65,8 +65,14 @@ JUDGE_SYSTEM = (
     "taught the task said to pick the matching existing record. Only a record for a different thing is a "
     "mismatch (found live: correct entries were refused for their records' names, and each retry entered the "
     "document a second time).\n"
+    "Answer \"cannot\" when the worker's own report does not claim the task was done: it says the worker stopped, "
+    "or could not go on, and gives the reason (something the task needs is not there, a rule it was given forbids "
+    "the only way forward, the application refused). That is the worker being honest, not a check that failed: "
+    "the person is told what it said (found live: \"this cannot be entered, there is no such record and I must "
+    "not create one\" was sent back to be tried again, and the worker then typed into the half-filled form). "
+    "A report that claims success is never \"cannot\".\n"
     "Answer \"unsure\" whenever you cannot tell from what you are shown. Never guess \"done\".\n"
-    "Reply with JSON only: {\"verdict\": \"done\"|\"not_done\"|\"unsure\", \"confidence\": 0.0-1.0, "
+    "Reply with JSON only: {\"verdict\": \"done\"|\"not_done\"|\"cannot\"|\"unsure\", \"confidence\": 0.0-1.0, "
     "\"seen\": \"what the screen now shows, one sentence\", \"why\": \"one sentence\"}"
 )
 
@@ -114,7 +120,7 @@ def judge(task, claim="", criteria="", values=None, steps="", live_png=None, ref
     if observed:
         lines.append("What the worker's tools did and read off the screen during this task, as it happened (observed, "
                      "not claimed - a report that matches these is backed by them; a look at the screen listed here "
-                     "shows what was on it at that moment, a page since closed included):\n" + "\n".join(observed)[-16000:])
+                     "shows what was on it at that moment, a page since closed included):\n" + "\n".join(observed)[-24000:])
     if screen_text:
         lines.append("The text the fields on the screen hold NOW, read from the apps themselves (exact - where it and "
                      "the picture's small print disagree, this is right; a report that says a text was changed is "
@@ -190,7 +196,7 @@ def _parse(text):
         raise ValueError(f"the check did not answer in JSON: {text[:200]!r}")
     data = json.loads(match.group(0))
     verdict = str(data.get("verdict") or "").strip().lower().replace(" ", "_")
-    if verdict not in (DONE, NOT_DONE, UNSURE):
+    if verdict not in (DONE, NOT_DONE, UNSURE, CANNOT):
         verdict = UNSURE
     try:
         confidence = max(0.0, min(1.0, float(data.get("confidence", 0))))

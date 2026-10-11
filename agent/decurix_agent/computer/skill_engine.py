@@ -147,13 +147,30 @@ def run(skill, params=None, start=1):
     if skill.get("status") != skills.READY:
         return _refusal(skill, "it was never finished being taught - a person confirms a skill in the chat with /learn")
 
-    elsewhere = other_system(skill, task_context.current_request())
+    # A task that was handed over as this very skill is not asked whether it
+    # belongs to it. Found live on every run: the skill's places were window
+    # titles ("Desktop", "New record - new-record-x"), the request named the
+    # application, and the model said they were different systems.
+    from decurix_agent import guidance
+    elsewhere = "" if guidance.handed(skill["name"]) else other_system(skill, task_context.current_request())
     if elsewhere:
         return _refusal(skill, f"this request is for {elsewhere}, and the skill works in "
                                f"{', '.join(skills.places(skill)) or 'another app'} - do the task in {elsewhere} with gui "
                                "instead (the skill's steps show what the work involves)")
 
     values = skills.initial_values(skill, params)
+
+    # A replay clicks the entries the demonstration chose from its lists. With
+    # another thing to choose this run, it would type this run's words and
+    # then take the demonstration's entry - or stop half way through a form.
+    chosen = skills.chosen_from_list(skill)
+    differs = [p["name"] for p in skill.get("params") or []
+               if p["name"].split("__")[0] in chosen and values.get(p["name"]) not in (None, "", p.get("example"))]
+    if differs:
+        return _refusal(skill, "this run chooses other entries from the application's lists than the demonstration did ("
+                               + ", ".join(differs[:4]) + "), and a replay would take the demonstration's. Do the "
+                               "steps yourself with gui, following the skill's steps: for each of those values use gui "
+                               "select FIELD \"the value\", which finds the existing entry")
 
     missing = [p for p in skills.needed_from(skill, start) if not values.get(p["name"])]
     if missing:

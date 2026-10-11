@@ -169,6 +169,18 @@ class TestAnsweringFromLessons(_Memory):
         self.assertEqual(self.told, ["Take the first one."])
         self.assertIn("always choose the first one", self.judged[0])
 
+    def test_a_lesson_that_says_to_ask_does_not_answer_the_question_for_the_person(self):
+        self.lesson()
+        for answer in ("Stop and ask the person; do not create a new entry.", "Check with them before choosing.",
+                       "Ask me which one to use."):
+            with self.subTest(answer=answer):
+                self.answer = dict(self.answer, answer=answer)
+                self.assertFalse(skill_task._question_gate("Nothing offered is the same thing. Which one?", "query", None))
+        self.assertEqual(self.told, [])
+        # It did not use up the task's two answers either.
+        self.answer = dict(self.answer, answer="Take the first one.")
+        self.assertTrue(skill_task._question_gate("Which one?", "query", None))
+
     def test_with_nothing_kept_the_person_is_asked_and_no_model_is(self):
         self.assertFalse(skill_task._question_gate("Two people are called Priya Shah. Which one?", "query", None))
         self.assertEqual((self.told, self.judged), ([], []))

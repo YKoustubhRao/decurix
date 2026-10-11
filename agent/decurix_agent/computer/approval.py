@@ -177,6 +177,13 @@ RECORD_NAME = re.compile(
 )
 
 
+DOCUMENT_NAME = re.compile(
+    r"^\s*(purchase|transfer)\s+(invoices?|receipts?|ledgers?|registers?|reports?|quotations?|requisitions?|"
+    r"vouchers?)\s*$",
+    re.IGNORECASE,
+)
+
+
 def searches(element):
     """Whether Enter in this field runs a search rather than sending what was typed."""
 
@@ -193,6 +200,13 @@ def _navigates(element):
     if role == "option":
         return True
     name = (element.get("name") or "").strip()
+    if role == "button":
+        # A button whose whole label is a kind of document opens that kind
+        # of document. Found live: a page's shortcut button to its list of
+        # purchase invoices stopped a task for a yes. Only nouns nobody can
+        # buy or move - "Purchase items" and "Purchase order" on a button
+        # can be acts, and still stop.
+        return bool(DOCUMENT_NAME.match(name))
     if role not in ("link", "menuitem", "tab"):
         return False
     if RECORD_NAME.match(name):
