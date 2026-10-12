@@ -3,12 +3,21 @@ import threading
 import time
 import traceback
 
-from decurix_agent import (ask_task, attachments, config, guidance, lessons, progress, record_task, replay_task, skill_task, state,
-                           task_context, usage)
+from decurix_agent import (ask_task, attachments, config, guidance, lessons, playbooks, progress, record_task, replay_task,
+                           skill_task, state, task_context, tool_task, usage)
 from decurix_agent.computer import approval
 from decurix_agent.harness import continue_after_query, perform_task
 from decurix_agent.logging_utils import log
 from decurix_agent.messaging import REPLY_MARK, send_query, write_final_reply
+
+
+def _called_off(reply):
+    """Ends the task a person called off at one of its questions, without another action."""
+
+    state.waiting_for_query = False
+    progress.emit("Stopping, as you said. Nothing more is done.")
+    write_final_reply(f"I did nothing more after your \"{' '.join(str(reply).split())[:100]}\". "
+                      f"Anything done before the question is still as it was left.")
 
 
 # ============================================================
@@ -329,6 +338,14 @@ def _pass():
 
             _mark_handled(path)
 
+            # What a search failed to find binds its field until a person
+            # has spoken (core: "Nothing else in its place"). They have.
+            try:
+                from decurix_agent.computer import core as _core
+                _core.forget_failed_search()
+            except Exception as exc:
+                log(f"Could not clear the failed search: {exc}")
+
             # A paused replay, or a taught skill's question, takes its
             # own reply; it is still a reply either way, which is all
             # tasks.Plan mirrors.
@@ -362,6 +379,15 @@ def _pass():
                     except Exception as exc:
                         log(f"Could not keep the answer on the skill: {exc}")
                 target, args = continue_after_query, (content,)
+                # A reply that only calls the task off ends it here: the
+                # engine is not handed it. Found live: told `stop` at a
+                # question about which record to use, the engine took it
+                # as an answer, ran twelve more commands and saved the
+                # record with the entry the person had just been asked
+                # about. (The engine's own paused job is dropped when the
+                # next request starts.)
+                if guidance.STOP_ONLY.match(content or ""):
+                    target, args = _called_off, (content,)
 
             thread = threading.Thread(
                 target=target,
@@ -424,6 +450,7 @@ def _pass():
         task_context.start(task_id, request=content)
         task_context.mark_active(task_id, content)
         usage.reset()
+        playbooks.begin()
 
         _mark_handled(path)
 
@@ -452,6 +479,11 @@ def _pass():
             # what differs changed - not worked out again by an
             # engine (computer/mimic.py).
             target = skill_task.perform_mimic
+        elif state.backend_ready and tool_task.handles(content):
+            # A kind of request this desktop has done by hand, written a
+            # script for, proven it and used it: the script does it, and
+            # the engine only when it cannot (tool_task.py).
+            target = tool_task.perform
         elif not _asks_a_web_app(content) and state.backend_ready and skill_task.may_be_taught(content):
             # Not the recorded ticket's words, but maybe its task said
             # another way: with a hosted model, the model reads the

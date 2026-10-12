@@ -287,6 +287,30 @@ def _name_by_column(found, columns, metrics, origin_x, origin_y, dpr):
             element["path"] = (head + " > " if head else "") + f"{element['role']} {el._quote(match, 40)}"
 
 
+def _number_rows(found, rows, metrics, origin_x, origin_y, dpr):
+    """Say which row of a table of entries a field is in (_ROW_NUMBERS): `row` on the element, and in its path."""
+
+    boxes = []
+    for entry in rows if isinstance(rows, list) else []:
+        if (not isinstance(entry, list) or len(entry) != 5 or isinstance(entry[4], bool) or not isinstance(entry[4], int)
+                or not all(isinstance(v, (int, float)) for v in entry[:4]) or not 0 < entry[4] < 100000):
+            continue
+        x, y, w, h, n = entry
+        sx, sy = origin_x + (x - metrics["scx"]) * dpr, origin_y + (y - metrics["scy"]) * dpr
+        boxes.append((sx + w * dpr / 2, sy + h * dpr / 2, n))
+
+    for element in found:
+        if element["role"] not in _NAMEABLE_FIELDS | {"checkbox"} or not element.get("box"):
+            continue
+        bx, by, bw, bh = element["box"]
+        cx, cy = bx + bw / 2, by + bh / 2
+        n = next((n for hx, hy, n in boxes if abs(hx - cx) <= 3 and abs(hy - cy) <= 3), None)
+        if n:
+            element["row"] = n
+            head, _, last = element["path"].rpartition(" > ")
+            element["path"] = (head + " > " if head else "") + f"row {n} > {last}"
+
+
 def _name_by_group(found, labels, metrics, origin_x, origin_y, dpr):
     """
     Name a field whose only name is its placeholder (or none) by its group's
@@ -469,6 +493,96 @@ _COLUMN_NAMES = """JSON.stringify((() => {
   return out;
 })())""".replace("__INNER_FRAMES__", _INNER_FRAMES)
 
+# Which row of a table of entries a field is in. A table a person fills line
+# by line shows the same fields in every row - or, more often, shows them only
+# in the one row being edited and moves them when Tab leaves its last cell.
+# Either way the fields of two rows had one path, so one ref. Found live: an
+# engine filled the first row of a table, pressed Tab, and was told the three
+# values it had just entered had each changed to "" - they were the
+# next row's fields, under the first row's refs. It added a third row, lost its
+# place and asked a person. So a field's row is part of what it is.
+#
+# A row is found by shape, not by markup (most such tables are <div>s with no
+# roles): the nearest ancestor whose children sit side by side (the cells),
+# raised to the level where it has siblings of its own kind stacked under one
+# another (the rows). Sibling rows that show fields must show the same ones - a
+# form laid out in rows of columns has different fields in each, and is not a
+# table. Returns [x, y, w, h, row number] for each field that is in one.
+_ROW_NUMBERS = """JSON.stringify((() => {
+  const out = [];
+  const each = (document, ox, oy, depth) => {
+  const selector = 'input:not([type=hidden]), select, textarea, [contenteditable="true"], ' +
+    '[role=combobox], [role=textbox], [role=spinbutton], [role=searchbox]';
+  const shown = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const kind = el => el.tagName + '.' + String(el.className && el.className.baseVal === undefined ? el.className : '').trim().split(/\\s+/)[0];
+  const sideBySide = el => {
+    const boxes = [...el.children].filter(shown).map(c => c.getBoundingClientRect());
+    if (boxes.length < 3) return false;
+    let run = 1;
+    for (let i = 1; i < boxes.length; i++) {
+      run = (Math.abs(boxes[i].top - boxes[i - 1].top) <= 8 && boxes[i].left >= boxes[i - 1].right - 2) ? run + 1 : 1;
+      if (run >= 3) return true;
+    }
+    return false;
+  };
+  const key = f => [f.tagName, f.getAttribute('type') || '', f.getAttribute('role') || '',
+    (f.getAttribute('aria-label') || f.getAttribute('placeholder') || '').replace(/\\d+/g, ''),
+    (f.getAttribute('name') || f.getAttribute('data-fieldname') || f.id || '').replace(/\\d+/g, '')].join('|');
+  const fieldsOf = row => [...row.querySelectorAll(selector)].filter(shown).map(key);
+  // The row being edited shows more fields than the others (which may show only a tick box): one's fields
+  // must all be among the other's.
+  const alike = (a, b) => { const [few, many] = a.length <= b.length ? [a, b] : [b, a]; return few.every(k => many.includes(k)); };
+  const cellsOf = row => {
+    let at = row;
+    for (let d = 0; at && d < 4; d++) {
+      if (sideBySide(at)) return [...at.children].filter(shown).length;
+      const kids = [...at.children].filter(shown);
+      if (kids.length !== 1) return 0;
+      at = kids[0];
+    }
+    return 0;
+  };
+  const rowOf = new Map();
+  for (const el of document.querySelectorAll(selector)) {
+    if (!shown(el)) continue;
+    let cells = el.parentElement;
+    for (let d = 0; cells && d < 6 && !sideBySide(cells); d++) cells = cells.parentElement;
+    if (!cells || cells === document.body || !sideBySide(cells)) continue;
+    let row = cells, peers = [];
+    for (let d = 0; row && row.parentElement && d < 3; d++, row = row.parentElement) {
+      peers = [...row.parentElement.children].filter(c => kind(c) === kind(row) && shown(c));
+      if (peers.length > 1) break;
+    }
+    if (!row || peers.length < 2 || !row.parentElement) continue;
+    const stacked = peers.every((p, i) => i === 0 ||
+      p.getBoundingClientRect().top >= peers[i - 1].getBoundingClientRect().bottom - 2);
+    if (!stacked) continue;
+    if (!rowOf.has(row)) {
+      const mine = fieldsOf(row);
+      // Rows of one table have the same number of cells. (Found live: a form's sections, stacked the same way,
+      // passed for rows when the others showed no fields at all, and a lone tick box was called "row 1".)
+      const cells = cellsOf(row);
+      const shaped = cells >= 3 && peers.filter(p => cellsOf(p) === cells).length >= Math.ceil(peers.length * 0.8);
+      const same = shaped && peers.every(p => p === row || alike(fieldsOf(p), mine));
+      let n = 0;
+      if (same) {
+        const stated = parseInt(row.getAttribute('aria-rowindex') || (row.dataset && row.dataset.idx) || '', 10);
+        const heads = peers.filter(p => p.querySelector('th') && !p.querySelector('td')).length;
+        n = stated > 0 ? stated : peers.indexOf(row) + 1 - (row.querySelector('th') && !row.querySelector('td') ? 0 : heads);
+      }
+      rowOf.set(row, n);
+    }
+    const n = rowOf.get(row);
+    if (!(n > 0)) continue;
+    const r = el.getBoundingClientRect();
+    out.push([r.left + ox, r.top + oy, r.width, r.height, n]);
+  }
+  __INNER_FRAMES__
+  };
+  each(document, scrollX, scrollY, 0);
+  return out;
+})())""".replace("__INNER_FRAMES__", _INNER_FRAMES)
+
 # A field with no label of its own - named, at best, by its placeholder - in
 # a form whose label is a sibling element instead of a <label for> (OrangeHRM,
 # many Vue/React kits): every date field there read `textbox "yyyy-dd-mm"`, and
@@ -524,6 +638,12 @@ _FORMAT_PLACEHOLDER = re.compile(r"^[ymdhsa]{1,4}([-/.: ][ymdhsa]{1,4})+$", re.I
 
 
 # The roles a column header may name.
+# How many accessibility nodes of one page are walked. It was 6000, and a form of some forty fields - most of
+# them not shown - has more: found live, the walk ended before it reached a message the application had put up
+# over the form, which is the last thing in the page; the screen showed the message, the look did not, and
+# nothing said the look was cut short. A walk costs about a millisecond per hundred nodes.
+MAX_VISITS = 60000
+
 _NAMEABLE_FIELDS = {"textbox", "combobox", "spinbutton", "searchbox", "listbox", "checkbox"}
 
 
@@ -675,7 +795,7 @@ def observe():
         loader = _loader(tree)
         frames = _inner_frames(page, tree)
         _splice_frames(page, nodes, frames)
-        snapshot = page.call("DOMSnapshot.captureSnapshot", {"computedStyles": []})
+        snapshot = page.call("DOMSnapshot.captureSnapshot", {"computedStyles": ["opacity"]})
         try:
             columns = json.loads(page.evaluate(_COLUMN_NAMES) or "[]")
         except (ComputerError, ValueError):
@@ -684,6 +804,10 @@ def observe():
             labels = json.loads(page.evaluate(_GROUP_LABELS) or "[]")
         except (ComputerError, ValueError):
             labels = []
+        try:
+            rows = json.loads(page.evaluate(_ROW_NUMBERS) or "[]")
+        except (ComputerError, ValueError):
+            rows = []
     finally:
         page.close()
 
@@ -692,6 +816,7 @@ def observe():
     # autocomplete="cc-number" - which the accessibility tree does not carry
     # and privacy.py needs to keep a secret out of the recording.
     declared = {}
+    transparent = set()
     strings = snapshot.get("strings", [])
     by_frame = {frame["id"]: frame for frame in frames}
     # Which frame's document a node is in (absent: the page's own).
@@ -707,6 +832,22 @@ def observe():
             frame = dict(frame, scroll=(document.get("scrollOffsetX") or 0, document.get("scrollOffsetY") or 0))
         backend_ids = document.get("nodes", {}).get("backendNodeId", [])
         layout = document.get("layout", {})
+        # Text drawn fully transparent (itself, or anything it is inside) is not on the screen. Found live: a
+        # form kit keeps a field's internal name in a tooltip of opacity 0 beside every field, and each was
+        # listed as text - a fifth of the page's lines, while the fields being filled fell past the cut.
+        parents = document.get("nodes", {}).get("parentIndex", [])
+        clear = set()
+        for node_index, style in zip(layout.get("nodeIndex", []), layout.get("styles", [])):
+            if style and isinstance(style[0], int) and 0 <= style[0] < len(strings) and strings[style[0]] in ("0", "0.0"):
+                clear.add(node_index)
+        if clear:
+            for node_index in range(len(backend_ids)):
+                at, hops = node_index, 0
+                while isinstance(at, int) and 0 <= at < len(parents) and hops < 60:
+                    if at in clear:
+                        transparent.add(backend_ids[node_index])
+                        break
+                    at, hops = parents[at], hops + 1
         for node_index, rect in zip(layout.get("nodeIndex", []), layout.get("bounds", [])):
             if node_index < len(backend_ids):
                 bounds[backend_ids[node_index]] = rect
@@ -809,7 +950,9 @@ def observe():
     while stack:
         node, segments, inside_row, bar = stack.pop()
         visits += 1
-        if visits > 6000:
+        if visits > MAX_VISITS:
+            # Whatever is left is what the page put last - which is where a dialog on top of everything is.
+            log(f"cdp: a page of more than {MAX_VISITS} accessibility nodes was not read to its end")
             break
 
         role = (node.get("role") or {}).get("value", "")
@@ -824,6 +967,8 @@ def observe():
         if not ignored and backend_id is not None:
             if lower in INTERACTIVE:
                 include = True
+            elif backend_id in transparent:
+                include = False  # words nobody can see (a control drawn clear over a styled one still counts)
             elif lower == "row":
                 display_name = " | ".join(cell_texts(node))
                 include = bool(display_name)
@@ -897,6 +1042,8 @@ def observe():
         if not ignored and lower in ("navigation", "toolbar", "menubar", "tablist"):
             child_bar = name or lower
 
+        if lower == "statictext":
+            continue  # its children are its own text again, line by line: nothing to list, a third of a page to walk
         for child_id in reversed(node.get("childIds", [])):
             child = by_id.get(child_id)
             if child is not None:
@@ -904,6 +1051,7 @@ def observe():
 
     _name_by_column(found, columns, metrics, origin_x, origin_y, dpr)
     _name_by_group(found, labels, metrics, origin_x, origin_y, dpr)
+    _number_rows(found, rows, metrics, origin_x, origin_y, dpr)
     el.dedupe_paths(found)
 
     return found, group

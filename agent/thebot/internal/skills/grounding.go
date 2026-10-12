@@ -328,21 +328,55 @@ func earlyDoneNudge(st *operatorState, history []llm.Message, answer string) str
 // let it through, and nothing checks a task that never touched the screen.
 // Work in a window cannot be done, or known to be done, without looking: a
 // request the triage sends here as screen work needs at least one command.
+//
+// The same holds for work on a file the request names. Found live
+// (2026-10-12): the fourth "summarize sales_<month>.csv into
+// summary_<month>.xlsx" of a conversation was answered in three seconds with
+// "summary_feb.xlsx is complete ... I verified the workbook by reading it
+// back", figures and all - no command run, no file written, the totals
+// invented. The words were new, the file was named without a path (so it was
+// no "document" of the request), and a task that wrote no file has nothing a
+// final check could read back.
 func unstartedScreenNudge(st *operatorState) string {
-	if st.CommandsRun > 0 || !atomizer.WantsScreen(st.Request) {
+	if st.CommandsRun > 0 {
 		return ""
+	}
+	if !atomizer.WantsScreen(st.Request) {
+		if !namesFileWork(st.Request) {
+			return ""
+		}
+		return "Not taken: nothing has been run for this request, so no file has been read, written or changed " +
+			"for it. Whatever you remember from earlier in this conversation, the files are as they are NOW, and " +
+			"an answer about a file comes only from a command that read or wrote it. Do what is asked, with " +
+			"commands:\n" + st.Request
 	}
 	return "Not taken: nothing has been run for this request, so nothing on this screen has been looked at or " +
 		"changed. Whatever you remember from earlier in this conversation, the screen and the files are as they " +
 		"are NOW. Look first, then do what is asked:\n" + st.Request + "\n\nReply now with exactly:\nCOMMAND:\ngui observe"
 }
 
+var (
+	// fileNameRe is a file named in a request, with or without a path.
+	fileNameRe = regexp.MustCompile(`(?i)(?:^|[\s"'(=])[\w~./\\-]*[\w-]\.(?:csv|tsv|xlsx|xlsm|xls|ods|docx|doc|odt|pdf|pptx|txt|md|json|xml|ya?ml|html?|eml|log|ini|conf|py|sh|sql|png|jpe?g|zip)\b`)
+	// fileWorkRe is something to be done with one, as against asked about one.
+	fileWorkRe = regexp.MustCompile(`(?i)\b(creat\w*|writ\w*|sav\w*|summari[sz]\w*|updat\w*|convert\w*|combin\w*|read\w*|extract\w*|total\w*|merg\w*|append\w*|generat\w*|export\w*|fill\w*|compar\w*|into|renam\w*|delet\w*|remov\w*|mov\w*|cop(?:y|ies|ied)|edit\w*|chang\w*|add\w*|build\w*|mak\w*|count\w*|sort\w*|filter\w*|clean\w*|pars\w*|load\w*|import\w*)\b`)
+)
+
+// namesFileWork reports whether a request names a file and says to do
+// something with it: work that cannot be done, or known to be done, without a
+// command. "what is a .csv file?" names no file; "is notes.txt a good name?"
+// asks for nothing to be done to it.
+func namesFileWork(request string) bool {
+	own, _, _ := strings.Cut(request, attachedFilesMark)
+	return fileNameRe.MatchString(own) && fileWorkRe.MatchString(own)
+}
+
 // unstartedScreenDoubt is what a person is asked when the operator says done
 // again and still has run nothing.
 func unstartedScreenDoubt(claim string) string {
 	return fmt.Sprintf("I cannot confirm this is done: I reported %q, but I ran no command for this request, so "+
-		"nothing on the screen was looked at or changed. Reply \"done\" if it really is done already, or tell me "+
-		"to do it.", claim)
+		"nothing on the screen or in any file was looked at or changed. Reply \"done\" if it really is done "+
+		"already, or tell me to do it.", claim)
 }
 
 var (

@@ -137,6 +137,7 @@ var taskFuncs = template.FuncMap{
 	"reasonLabel": tasks.ReasonLabel,
 	"duration":    tasks.FormatDuration,
 	"cost":        tasks.FormatCost,
+	"tokens":      tasks.FormatTokens,
 	"isApproval":  tasks.IsApprovalReason,
 	"since": func(from, to time.Time) time.Duration {
 		if from.IsZero() || to.IsZero() {

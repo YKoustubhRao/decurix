@@ -147,7 +147,12 @@ def run(skill, params=None, start=1):
     if skill.get("status") != skills.READY:
         return _refusal(skill, "it was never finished being taught - a person confirms a skill in the chat with /learn")
 
-    elsewhere = other_system(skill, task_context.current_request())
+    # A task that was handed over as this very skill is not asked whether it
+    # belongs to it. Found live on every run: the skill's places were window
+    # titles ("Desktop", "New record - new-record-x"), the request named the
+    # application, and the model said they were different systems.
+    from decurix_agent import guidance
+    elsewhere = "" if guidance.handed(skill["name"]) else other_system(skill, task_context.current_request())
     if elsewhere:
         return _refusal(skill, f"this request is for {elsewhere}, and the skill works in "
                                f"{', '.join(skills.places(skill)) or 'another app'} - do the task in {elsewhere} with gui "
@@ -155,8 +160,23 @@ def run(skill, params=None, start=1):
 
     values = skills.initial_values(skill, params)
 
-    missing = [p for p in skills.needed_from(skill, start) if not values.get(p["name"])]
+    # This run's own program: its number of rows, and its own choices from the application's lists
+    # (skills.fit). It used to be refused whenever it chose another entry than the demonstration did.
+    count, _ = skills.run_rows(skill, values)
+    absent = set()
+    if count:
+        absent = {name for row in (skills.repeated_rows(skill) or {"rows": []})["rows"][count:] for name in row}
+
+    missing = [p for p in skills.needed_from(skill, start) if not values.get(p["name"]) and p["name"] not in absent]
     if missing:
+        # Given, and empty: this run has nothing to put there (a document that leaves a field out). That is not a
+        # value to ask a person for - found live: "ask the human" for a number the document said did not exist.
+        blank = [p for p in missing if values.get(p["name"]) == "" and p["name"] in values]
+        if blank and len(blank) == len(missing):
+            names = ", ".join(f"{p['name']} ({p['label']})" for p in blank)
+            return _refusal(skill, f"{names} was given empty, and a replay cannot leave a field out. If this run really "
+                                   "has nothing for it, do the steps yourself with gui, following the skill's steps, and "
+                                   "leave that field as the application has it; if you do not know, ask the human")
         wanted = ", ".join(f"{p['name']} ({p['label']})" for p in missing)
         return _refusal(skill, f"it needs {wanted} - ask the human for the value, then pass it with --param", [p["name"] for p in missing])
 

@@ -2,7 +2,7 @@ import json
 import os
 import re
 
-from decurix_agent import llm_client, usage
+from decurix_agent import llm_client
 from decurix_agent.logging_utils import log
 
 
@@ -26,7 +26,7 @@ from decurix_agent.logging_utils import log
 
 DONE_CONFIDENCE = 0.8
 
-DONE, NOT_DONE, UNSURE = "done", "not_done", "unsure"
+DONE, NOT_DONE, UNSURE, CANNOT = "done", "not_done", "unsure", "cannot"
 
 JUDGE_SYSTEM = (
     "You check a computer worker's work before anyone is told it succeeded. You are shown the task as it was "
@@ -46,19 +46,47 @@ JUDGE_SYSTEM = (
     "apply to this run: a search taught on one person whose profile showed \"Udupi, Karnataka\" is done for "
     "another person when THAT person's profile is open, whatever city it shows. Never answer not_done or unsure "
     "because such a detail differs or is missing (found live: a correct run was refused for exactly that).\n"
+    "Go through the request part by part before you answer. Each thing it names - which company, account, "
+    "person or record, a date, a reference, the state to leave the result in (a draft, not submitted) - must be "
+    "shown, or reported, with that value. A report or a screen that has ANOTHER value for a part of the request "
+    "than the request gave is \"not_done\" however complete the rest is: say which part, what was asked and what "
+    "was done instead (found live: asked for one company, a record saved under a similarly named other one was "
+    "reported in passing and passed).\n"
     "Answer \"not_done\" when you can see it was not: an error, a validation message, the wrong page or record, "
     "another value than asked, a half-filled form, a sign-in page, a CAPTCHA, nothing changed, fewer items than "
     "were asked for.\n"
     "When the task names a document and you are shown what it says, the values entered or reported must be the "
     "document's: a customer, reference, product, quantity or amount that is not in it (or differs from it) is "
-    "\"not_done\", however complete the screen looks.\n"
+    "\"not_done\", however complete the screen looks - except that a thing the document describes is entered "
+    "as the application's own record of it (see below), which is not a difference.\n"
     "The same value written in the format its field uses is not a difference: a date field whose placeholder "
     "reads yyyy-dd-mm (year-day-month) shows 14 March 1998 as 1998-14-03; a number may show thousands "
     "separators or a currency. Judge the value, not its format (found live: a correct date of birth was "
     "called wrong).\n"
+    "A thing a document describes in its own words is entered as the application's own record of it: the worker "
+    "picks, from what the application offers, the existing record - a company, a product, an account, a person - "
+    "that is the same thing, and that record's name is usually shorter or worded differently than the document's "
+    "line (a document's \"Executive A4 Printing Paper 75 GSM (Box of 10 Reams)\" is the record \"A4 Printing "
+    "Paper\"). That is this run's value entered correctly, not another value - above all when the person who "
+    "taught the task said to pick the matching existing record. Only a record for a different thing is a "
+    "mismatch (found live: correct entries were refused for their records' names, and each retry entered the "
+    "document a second time).\n"
+    "Answer \"cannot\" when the worker's own report does not claim the task was done: it says the worker stopped, "
+    "or could not go on, and gives the reason (something the task needs is not there, a rule it was given forbids "
+    "the only way forward, the application refused). That is the worker being honest, not a check that failed: "
+    "the person is told what it said (found live: \"this cannot be entered, there is no such record and I must "
+    "not create one\" was sent back to be tried again, and the worker then typed into the half-filled form). "
+    "A report that claims success is never \"cannot\".\n"
+    "When you are shown the files the worker wrote during the task, they are the result, exact as they read now: "
+    "every figure, status and statement the report makes about a file must be what that file shows, and the file "
+    "must hold what the task asked for. A report that says something the file contradicts (\"these two were "
+    "matched\" where the file lists them as unmatched, a total the file does not have, a sheet or column that is "
+    "not there) is \"not_done\" - say which file and what differs, so the worker can correct the file or the "
+    "report. A file shown cut short is judged on the part shown.\n"
     "Answer \"unsure\" whenever you cannot tell from what you are shown. Never guess \"done\".\n"
-    "Reply with JSON only: {\"verdict\": \"done\"|\"not_done\"|\"unsure\", \"confidence\": 0.0-1.0, "
-    "\"seen\": \"what the screen now shows, one sentence\", \"why\": \"one sentence\"}"
+    "Reply with JSON only: {\"verdict\": \"done\"|\"not_done\"|\"cannot\"|\"unsure\", \"confidence\": 0.0-1.0, "
+    "\"seen\": \"what the screen now shows (or, with no screen, what the files show), one sentence\", "
+    "\"why\": \"one sentence\"}"
 )
 
 
@@ -67,11 +95,13 @@ def available():
 
 
 def judge(task, claim="", criteria="", values=None, steps="", live_png=None, reference_png=None, observed=None,
-          screen_text=""):
+          screen_text="", chosen=(), produced="", screen=True):
     """
     {"verdict", "confidence", "seen", "why"} for whether `task` was done. With
     no model, or when the model cannot be read, the verdict is "unsure" - the
-    caller then asks a person.
+    caller then asks a person. `produced` is what the files the task wrote say
+    now (produced.text); `screen=False` is a task that never touched the
+    screen, judged on its files alone.
     """
 
     if not available():
@@ -79,19 +109,41 @@ def judge(task, claim="", criteria="", values=None, steps="", live_png=None, ref
 
     lines = [f"The task as asked: {task.strip()[:1500]}"]
     if values:
-        lines.append("This run's values: " + "; ".join(f"{k} = {v}" for k, v in values.items() if v not in (None, ""))[:1200])
+        typed = {k: v for k, v in values.items() if v not in (None, "") and k.split("__")[0] not in chosen}
+        looked_up = {k: v for k, v in values.items() if v not in (None, "") and k.split("__")[0] in chosen}
+        if typed:
+            lines.append("This run's values: " + "; ".join(f"{k} = {v}" for k, v in typed.items())[:3000])
+        if looked_up:
+            # Apart from the values to compare, and never as "k = v". Found
+            # live after the note beside each was added: with "item = Office
+            # Mesh Chairs" among the run's values, the check still refused a
+            # correct record "Ergonomic Office Chair" as not the value.
+            lines.append("Things this run had to find in the application's own lists and choose (NOT values to "
+                         "compare by name - the worker searched and took the existing record of each thing, and a "
+                         "record has its own name; judge only whether the record taken is that kind of thing): "
+                         + "; ".join(f"for {k}, the document says: {v}" for k, v in looked_up.items())[:2000])
     if criteria:
-        lines.append(f"What the person who taught this task said about it (and what done looks like): {criteria.strip()[:1500]}")
+        lines.append(f"What the person who taught this task said about it (and what done looks like): {criteria.strip()[:6000]}")
     if steps:
-        lines.append(f"What the worker did: {steps.strip()[:2000]}")
+        # Not "what the worker did". Found live: these are the demonstration's
+        # steps, whose clicks on list entries name the demonstration's own
+        # choices; under that label the check kept reporting that a correct
+        # run had "selected the wrong company and the wrong products".
+        lines.append("The steps of the person's demonstration, which this run followed with its own values (a click "
+                     "on a list entry here names the DEMONSTRATION's choice, not this run's - what this run chose "
+                     f"is in the tools' record below): {steps.strip()[:2000]}")
     if observed:
         lines.append("What the worker's tools did and read off the screen during this task, as it happened (observed, "
-                     "not claimed - a report that matches these is backed by them):\n" + "\n".join(observed)[-6000:])
+                     "not claimed - a report that matches these is backed by them; a look at the screen listed here "
+                     "shows what was on it at that moment, a page since closed included):\n" + "\n".join(observed)[-24000:])
     if screen_text:
         lines.append("The text the fields on the screen hold NOW, read from the apps themselves (exact - where it and "
                      "the picture's small print disagree, this is right; a report that says a text was changed is "
                      "backed only if this shows it):\n" + screen_text)
-    lines.append(f"What the worker reports: {(claim or '(nothing)').strip()[:2500]}")
+    lines.append(f"What the worker reports: {(claim or '(nothing)').strip()[:4000]}")
+    if produced:
+        lines.append("The files the worker wrote during this task, as they read NOW (the result itself - the report "
+                     "must agree with them):\n" + produced)
     doc_text, doc_pictures = _documents(task)
     if doc_text:
         lines.append("The documents the task names, as they read (the values must come from these):\n" + doc_text)
@@ -101,6 +153,9 @@ def judge(task, claim="", criteria="", values=None, steps="", live_png=None, ref
         content += [{"type": "text", "text": "A page of a document the task names:"}, llm_client.image_part(path=picture)]
     if live_png:
         content += [{"type": "text", "text": "The screen NOW:"}, llm_client.image_part(live_png)]
+    elif not screen:
+        content.append({"type": "text", "text": "(This task did not work on the screen: judge it on the files and on "
+                                                "what the tools read.)"})
     else:
         content.append({"type": "text", "text": "(The screen now could not be read.)"})
     if reference_png:
@@ -110,7 +165,6 @@ def judge(task, claim="", criteria="", values=None, steps="", live_png=None, ref
     try:
         message, spent = llm_client.chat([{"role": "system", "content": JUDGE_SYSTEM},
                                           {"role": "user", "content": content}], max_tokens=600)
-        _count(spent)
         found = _parse(message.get("content") or "")
     except (llm_client.LLMError, ValueError) as exc:
         log(f"verify: could not judge: {exc}")
@@ -162,7 +216,7 @@ def _parse(text):
         raise ValueError(f"the check did not answer in JSON: {text[:200]!r}")
     data = json.loads(match.group(0))
     verdict = str(data.get("verdict") or "").strip().lower().replace(" ", "_")
-    if verdict not in (DONE, NOT_DONE, UNSURE):
+    if verdict not in (DONE, NOT_DONE, UNSURE, CANNOT):
         verdict = UNSURE
     try:
         confidence = max(0.0, min(1.0, float(data.get("confidence", 0))))
@@ -172,9 +226,3 @@ def _parse(text):
             "seen": " ".join(str(data.get("seen") or "").split())[:400],
             "why": " ".join(str(data.get("why") or "").split())[:400]}
 
-
-def _count(spent):
-    try:
-        usage.add(input_tokens=spent.get("prompt_tokens") or 0, output_tokens=spent.get("completion_tokens") or 0)
-    except Exception:
-        pass

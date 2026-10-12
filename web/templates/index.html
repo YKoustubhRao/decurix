@@ -1126,7 +1126,9 @@
         </span>
       </a>
 
-      <details class="mem"{{if index $.MemoryByDesktop .ID}} open{{end}}>
+      {{/* Kept current by pollMemory below: what an agent learns (a taught
+           skill, a lesson from a reply) arrives while the page is open. */}}
+      <details class="mem" data-mem-list="{{.ID}}" data-mem-sig="{{range index $.MemoryByDesktop .ID}}{{.ID}},{{end}}"{{if index $.MemoryByDesktop .ID}} open{{end}}>
         <summary class="mem-summary">
           <svg class="mem-chevron" width="15" height="15"><use href="#i-chevron"/></svg>
           Learned memory
@@ -1134,6 +1136,7 @@
         </summary>
 
         <div class="mem-body">
+          <div data-mem-entries>
           {{if index $.MemoryByDesktop .ID}}
           <ul class="mem-list">
             {{range index $.MemoryByDesktop .ID}}
@@ -1147,6 +1150,7 @@
           {{else}}
           <div class="mem-none">Nothing saved yet. Rules you add here are read by the agent before every task.</div>
           {{end}}
+          </div>
 
           <details class="mem-add">
             <summary>
@@ -2796,6 +2800,78 @@
       }
     });
   });
+
+  /* A card's learned memory follows the control plane, like its pill and its
+     activity line: one request for every card, and a card is redrawn only
+     when its entries changed, so reading a long entry is not interrupted. */
+  function paintMemory(details, entries){
+    var sig = entries.map(function(entry){ return entry.id + ","; }).join("");
+    if(details.dataset.memSig === sig){ return; }
+
+    var had = details.dataset.memSig !== "";
+    details.dataset.memSig = sig;
+
+    var count = details.querySelector(".mem-count");
+    count.textContent = entries.length;
+    count.classList.toggle("filled", entries.length > 0);
+
+    var holder = details.querySelector("[data-mem-entries]");
+    holder.textContent = "";
+
+    if(!entries.length){
+      var none = document.createElement("div");
+      none.className = "mem-none";
+      none.textContent = "Nothing saved yet. Rules you add here are read by the agent before every task.";
+      holder.appendChild(none);
+      return;
+    }
+
+    var list = document.createElement("ul");
+    list.className = "mem-list";
+
+    entries.forEach(function(entry){
+      var item = document.createElement("li");
+      item.className = "mem-item";
+
+      [["mem-cat", entry.category], ["mem-title", entry.title], ["mem-summary-text", entry.summary]].forEach(function(part){
+        var el = document.createElement("div");
+        el.className = part[0];
+        el.textContent = part[1] || "";
+        item.appendChild(el);
+      });
+
+      list.appendChild(item);
+    });
+
+    holder.appendChild(list);
+
+    // The first thing a worker learns opens its list, as a page load would.
+    if(!had){ details.open = true; }
+  }
+
+  var memoryPolling = false;
+  async function pollMemory(){
+    if(memoryPolling || document.visibilityState !== "visible"){ return; }
+    var lists = document.querySelectorAll("[data-mem-list]");
+    if(!lists.length){ return; }
+
+    memoryPolling = true;
+    try{
+      var response = await fetch("/api/desktops/memory", {cache: "no-store"});
+      if(!response.ok){ return; }
+
+      var byDesktop = {};
+      (await response.json() || []).forEach(function(entry){
+        (byDesktop[entry.desktop_id] = byDesktop[entry.desktop_id] || []).push(entry);
+      });
+
+      lists.forEach(function(details){ paintMemory(details, byDesktop[details.dataset.memList] || []); });
+    }catch(e){ /* keep what the cards show */ }
+    finally{ memoryPolling = false; }
+  }
+
+  setInterval(pollMemory, 4000);
+  document.addEventListener("visibilitychange", pollMemory);
 
   document.querySelectorAll("[data-link-memory-form]").forEach(function(form){
     form.addEventListener("submit", async function(event){

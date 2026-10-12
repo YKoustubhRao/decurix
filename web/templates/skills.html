@@ -127,6 +127,12 @@
     <div class="cards" id="draftCards"></div>
   </div>
 
+  <div id="own" class="section" hidden>
+    <h2 class="section-title">Worked out by itself</h2>
+    <p class="hint own-hint">Kept from requests it did without being taught, once the result was checked. The next request of the same kind uses what is here instead of being worked out again. Forget one and that kind of request is worked out afresh.</p>
+    <div class="cards" id="ownCards"></div>
+  </div>
+
   <div class="placeholder" id="loading">Loading…</div>
   {{end}}
 
@@ -397,6 +403,114 @@
     return card;
   }
 
+  /* ---- what it worked out for itself ---- */
+
+  var HOW = {
+    tool: "Runs a script it wrote, with no model turn once it has been used",
+    replay: "Replays its own checked run on the screen, with no model turn",
+    way: "Gives its model the commands that worked"
+  };
+
+  function tokens(n){
+    if(n === null || n === undefined){ return "—"; }
+    if(n < 1000){ return String(n); }
+    if(n < 1000000){ return (n / 1000).toFixed(1) + "k"; }
+    return (n / 1000000).toFixed(2) + "M";
+  }
+
+  function ownCard(item){
+    var card = node("article", "panel skill");
+    var head = node("div", "skill-head");
+
+    head.appendChild(node("div", "skill-name", item.name));
+    head.appendChild(node("h3", "skill-title", item.request || item.name));
+
+    var meta = node("div", "skill-meta");
+    meta.appendChild(node("span", "", HOW[item.how] || item.how));
+    if(item.uses){ meta.appendChild(node("span", "", "Used " + plural(item.uses, "time", "times"))); }
+    if(item.made_at){ meta.appendChild(node("span", "", when(item.made_at))); }
+    head.appendChild(meta);
+
+    var row = node("div", "chips");
+    if(item.first){ row.appendChild(node("span", "chip", "first time " + tokens(item.first) + " tokens")); }
+    if(item.now !== null && item.now !== undefined){ row.appendChild(node("span", "chip", "now " + tokens(item.now) + " tokens")); }
+    if(item.saved_percent !== null && item.saved_percent !== undefined && item.saved_percent > 0){
+      row.appendChild(node("span", "chip", item.saved_percent + "% less"));
+    }
+    if(item.uses && item.ok < item.uses){ row.appendChild(node("span", "chip warn", (item.uses - item.ok) + " of " + item.uses + " not done")); }
+    head.appendChild(row);
+
+    var actions = node("div", "skill-actions");
+    var showBtn = button("What it kept", "btn-default");
+    var deleteBtn = button("Forget", "btn-danger", "trash");
+    actions.append(showBtn, deleteBtn);
+    head.appendChild(actions);
+    card.appendChild(head);
+
+    var body = node("div", "learned");
+    body.hidden = true;
+    card.appendChild(body);
+
+    showBtn.addEventListener("click", async function(){
+      if(!body.hidden){ body.hidden = true; return; }
+      try{
+        var data = await getJSON("/api/desktops/playbooks/get?" + query({name: item.name}));
+        var kept = data.playbook;
+        body.replaceChildren();
+        if(kept.script){
+          body.appendChild(node("b", "", "Its script" + (kept.usage ? " — " + kept.usage : "")));
+          var script = node("pre", "", kept.script);
+          script.style.whiteSpace = "pre-wrap";
+          body.appendChild(script);
+        }
+        if(kept.steps && kept.steps.length){
+          body.appendChild(node("b", "", kept.script ? "Written from these commands" : "The commands that worked"));
+          kept.steps.forEach(function(step, i){
+            var line = node("pre", "", (i + 1) + ". " + step);
+            line.style.whiteSpace = "pre-wrap";
+            body.appendChild(line);
+          });
+        }
+        if(kept.recording){
+          var link = node("a", "", "See the run it replays");
+          link.href = "/recordings/" + encodeURIComponent(desktopID) + "#" + kept.recording;
+          body.appendChild(link);
+        }
+        body.hidden = false;
+      }catch(err){
+        toast(err.message, "error");
+      }
+    });
+
+    deleteBtn.addEventListener("click", async function(){
+      if(!window.confirm("Forget how it does this? The next request of this kind is worked out again from nothing.")){ return; }
+      Decurix.busy(true);
+      try{
+        await post("/api/desktops/playbooks/delete", {id: desktopID, name: item.name});
+        toast("Forgotten.");
+        refresh();
+      }catch(err){
+        toast(err.message, "error");
+      }finally{
+        Decurix.busy(false);
+      }
+    });
+
+    return card;
+  }
+
+  async function refreshOwn(){
+    try{
+      var data = await getJSON("/api/desktops/playbooks?" + query({}));
+      var items = data.playbooks || [];
+      document.getElementById("own").hidden = !items.length;
+      document.getElementById("ownCards").replaceChildren.apply(document.getElementById("ownCards"), items.map(ownCard));
+    }catch(err){
+      /* A desktop from an older image has no such list: the section stays hidden. */
+      document.getElementById("own").hidden = true;
+    }
+  }
+
   /* ---- the page ---- */
 
   async function refresh(){
@@ -413,6 +527,8 @@
 
       document.getElementById("drafts").hidden = !drafts.length;
       document.getElementById("draftCards").replaceChildren.apply(document.getElementById("draftCards"), drafts.map(draftCard));
+
+      refreshOwn();
     }catch(err){
       loading.hidden = false;
       loading.textContent = "Could not read this desktop's skills: " + err.message;

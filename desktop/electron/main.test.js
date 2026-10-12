@@ -65,6 +65,7 @@ const data = path.join('/profile/AppData', 'decurix');
 async function boot(initialState, {
   backendStarts = true, stopFails = false, platform = 'win32', dockerRun = () => 0, files = [], staged = platform === 'win32' ? 'build-2' : null,
   wsl = {}, pickedFolders = [], canceledPicker = false, savedRuntime, hosting = false, holdOllama = false, ollamaFails = false,
+  release = '10.0.26200', arch = 'x64', freeGB = 100,
 } = {}) {
   const machine = { installed: true, installedAfterAsking: false, distro: true, daemon: true, setupFails: false, existing: {}, ...wsl };
   const intervals = [];
@@ -154,7 +155,11 @@ async function boot(initialState, {
     if (args[0] === '--version') { say('WSL version: 3.0.1.0', machine.installed ? 0 : 1); return; }
     if (!machine.installed) { say('Windows Subsystem for Linux is not installed.', 1); return; }
     if (args[0] === '--list') { say([...new Set(['Ubuntu', ...Object.keys(machine.existing), ...(machine.distro ? ['Decurix'] : [])])].join('\n'), 0); return; }
-    if (args[0] === '--import') { machine.distro = true; say('The operation completed successfully.', 0); return; }
+    if (args[0] === '--import') {
+      machine.imports = (machine.imports || 0) + 1;
+      if (machine.importSays && !(machine.importWorksAfterAsking && machine.askedForPlatform)) { say(machine.importSays, 1); return; }
+      machine.distro = true; say('The operation completed successfully.', 0); return;
+    }
     const program = args.slice(args.indexOf('-e') + 1);
     const distro = args[args.indexOf('-d') + 1];
     const available = distro === 'Decurix' ? machine.distro : Object.hasOwn(machine.existing, distro);
@@ -193,6 +198,7 @@ async function boot(initialState, {
         // Turning WSL on, when asked to; or ending an earlier version's
         // Windows control plane.
         if (Array.from(args).join(' ').includes('--install') && machine.installedAfterAsking) machine.installed = true;
+        if (Array.from(args).join(' ').includes('--install')) machine.askedForPlatform = true;
         // The daemon, started hidden through WMI (startHiddenScript).
         if (Array.from(args).join(' ').includes('Win32_Process') && Array.from(args).join(' ').includes('/opt/decurix/dockerd.sh')) machine.daemon = true;
         setImmediate(() => child.emit('exit', 0));
@@ -219,7 +225,7 @@ async function boot(initialState, {
     },
     openSync() { return 1; },
     closeSync() {},
-    statfsSync() { return { bavail: 100 * 1024 * 1024, bsize: 1024 }; },
+    statfsSync() { return { bavail: freeGB * 1024 * 1024, bsize: 1024 }; },
     fstatSync() { return { size: log.length }; },
     readSync(_file, buffer, _offset, length, position) { return log.copy(buffer, 0, position, position + length); },
   };
@@ -236,7 +242,7 @@ async function boot(initialState, {
     'node:child_process': childProcess,
     // Finding this computer's address on the network is not what is tested here.
     'node:dgram': { createSocket: () => ({ once() {}, connect() {}, close() {} }) },
-    'node:os': { homedir: () => home },
+    'node:os': { homedir: () => home, tmpdir: () => path.join(home, 'tmp'), release: () => release },
     'node:fs': fileSystem,
     'node:http': http,
     'node:path': path,
@@ -256,7 +262,7 @@ async function boot(initialState, {
   };
   vm.runInNewContext(source, {
     require: (name) => modules[name],
-    process: { resourcesPath: '/installed/resources', platform, env: { PATH: '/usr/bin', LOCALAPPDATA: '/profile/Local' } },
+    process: { resourcesPath: '/installed/resources', platform, arch, env: { PATH: '/usr/bin', LOCALAPPDATA: '/profile/Local' } },
     URL,
     AbortController,
     setTimeout: (callback) => setImmediate(callback),
@@ -405,6 +411,51 @@ test('goes on when turning WSL on needs no restart', async () => {
   const result = await boot('absent', { wsl: { installed: false, installedAfterAsking: true, distro: false, daemon: false } });
   assert.equal(result.window.url, 'http://127.0.0.1:8080');
   assert.ok(result.wsl.some((w) => w.startsWith('--import')));
+});
+
+// ---- a computer that never had Decurix: said in plain words, before anything is set up ----
+
+test('a first install refuses an ARM computer, an old Windows and a full disk, and sets nothing up', async () => {
+  for (const [options, says] of [
+    [{ arch: 'arm64' }, /ARM processor/],
+    [{ release: '10.0.18363' }, /Windows 10 version 2004 or newer.*build 18363/],
+    [{ freeGB: 12 }, /about 20 GB of free disk space.*has 12 GB/],
+  ]) {
+    const result = await boot('absent', { wsl: { distro: false, daemon: false }, ...options });
+    assert.equal(result.window.lastStatus.value.failed, true);
+    assert.match(result.window.lastStatus.value.message, says);
+    assert.ok(!result.wsl.some((w) => w.startsWith('--import')));
+    assert.ok(!result.spawns.some((s) => Array.from(s.args).join(' ').includes('--install')));
+  }
+});
+
+test('an installed Decurix is not held to the first install\'s disk space', async () => {
+  const result = await boot('absent', { freeGB: 12 });
+  assert.equal(result.window.url, 'http://127.0.0.1:8080');
+});
+
+test('a Windows that cannot start Linux is asked to turn the platform on, then goes on', async () => {
+  const result = await boot('absent', { wsl: { distro: false, daemon: false, importWorksAfterAsking: true,
+    importSays: 'WSL2 is not supported with your current machine configuration. Please enable the "Virtual Machine Platform" optional component' } });
+  const ask = result.spawns.find((s) => s.file === 'powershell.exe' && Array.from(s.args).join(' ').includes('--install'));
+  assert.match(Array.from(ask.args).join(' '), /-Verb RunAs/);
+  assert.equal(result.machine.imports, 2);
+  assert.equal(result.window.url, 'http://127.0.0.1:8080');
+});
+
+test('virtualization that stays off says to restart, then where it is switched on', async () => {
+  const result = await boot('absent', { wsl: { distro: false, daemon: false,
+    importSays: 'Error code: Wsl/Service/CreateInstance/CreateVm/HCS/HCS_E_HYPERV_NOT_INSTALLED' } });
+  assert.equal(result.window.lastStatus.value.failed, true);
+  assert.match(result.window.lastStatus.value.message, /Restart Windows.*BIOS\/UEFI/);
+  assert.deepEqual(result.docker, []);
+});
+
+test('a distro that cannot be imported for another reason names the log, and asks for nothing', async () => {
+  const result = await boot('absent', { wsl: { distro: false, daemon: false, importSays: 'The disk is full.' } });
+  assert.match(result.window.lastStatus.value.message, /Could not set up Linux/);
+  assert.equal(result.machine.imports, 1);
+  assert.ok(!result.spawns.some((s) => Array.from(s.args).join(' ').includes('--install')));
 });
 
 test('a distro that cannot be prepared stops the start, with the log', async () => {

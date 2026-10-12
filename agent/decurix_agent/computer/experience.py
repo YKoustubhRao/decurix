@@ -142,20 +142,46 @@ def commit(skill, ladder, outcome, success, asked=None):
     return learned
 
 
-def note_verdict(skill, mode, ok, checked_by=None, helped=False, why=""):
+def note_verdict(skill, mode, ok, checked_by=None, helped=False, why="", tokens=None):
     """
     Record how one run of a skill ended, for stage(): `mode` "model" (the
     engine did it, guided by the skill) or "replay"; `ok` only for a success
     that was checked - by the screen (`checked_by` "screen"), the model looking
     at it ("model") or a person ("person"); `helped` when a person had to step
-    in. The caller saves.
+    in. `tokens` is what the run's model calls read and wrote in all (None
+    when nobody counted): what economy() compares. The caller saves.
     """
 
     experience = skill.setdefault("experience", {"runs": [], "steps": {}})
-    experience["verdicts"] = (experience.get("verdicts", []) + [{
+    verdict = {
         "at": int(time.time()), "mode": mode, "ok": bool(ok), "checked_by": checked_by,
         "helped": bool(helped), "why": (why or "")[:300],
-    }])[-RUN_HISTORY:]
+    }
+    if tokens is not None:
+        verdict["tokens"] = int(tokens)
+        # The first good run's cost outlives the short history: it is what
+        # every later run is measured against.
+        if ok and "first_tokens" not in experience:
+            experience["first_tokens"] = int(tokens)
+    experience["verdicts"] = (experience.get("verdicts", []) + [verdict])[-RUN_HISTORY:]
+
+
+def economy(skill):
+    """
+    What a skill costs to run now against its first good run: {"first",
+    "now" (the mean of its last three good runs), "saved_percent"} in tokens,
+    each None until it is known. A skill that is working as intended costs
+    less with use: learned with the model, then replayed without it.
+    """
+
+    experience = skill.get("experience") or {}
+    first = experience.get("first_tokens")
+    good = [v["tokens"] for v in experience.get("verdicts") or [] if v.get("ok") and "tokens" in v]
+    # The first run is the baseline, not also the measure of now.
+    recent = good[-3:] if len(good) > 1 else []
+    now = round(sum(recent) / len(recent)) if recent else None
+    saved = round(100 * (first - now) / first) if first and now is not None else None
+    return {"first": first, "now": now, "saved_percent": saved}
 
 
 def clean_streak(skill):
@@ -198,7 +224,8 @@ def health(skill):
 
     return {"fragile": sorted(fragile, key=lambda e: e["n"]), "drifting": sorted(drifting, key=lambda e: e["n"]),
             "recent": [r["outcome"] for r in experience.get("runs") or []],
-            "stage": stage(skill), "clean_runs": clean_streak(skill), "trust_after": TRUST_AFTER}
+            "stage": stage(skill), "clean_runs": clean_streak(skill), "trust_after": TRUST_AFTER,
+            "tokens": economy(skill)}
 
 
 def advice(skill):
