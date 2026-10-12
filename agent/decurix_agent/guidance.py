@@ -153,6 +153,42 @@ def handed(skill):
         and kept.get("skill") == skill
 
 
+def persons_words():
+    """
+    What a person has said that bears on the task being worked on, as text:
+    the lesson of the skill it was handed as (their explanation, what was
+    agreed, their answers and later corrections), what they answered in
+    earlier tasks (the worker's memory) and the request itself. Read from any
+    process; "" when nothing is known.
+    """
+
+    parts = [task_context.current_request()]
+
+    try:
+        kept = json.loads(RUN_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        kept = None
+    name = kept.get("skill") if isinstance(kept, dict) and kept.get("task_id") == task_context.current() else None
+    if name:
+        try:
+            from decurix_agent.computer import skills
+            skill = skills.load(name) or {}
+            parts.append(skills.explanation(skill) or "")
+            for key in ("understanding", "answers", "dialogue", "corrections", "run_answers"):
+                if skill.get(key):
+                    parts.append(json.dumps(skill[key], ensure_ascii=False))
+        except Exception:  # a skill that cannot be read says nothing
+            pass
+
+    try:
+        from decurix_agent import memory_context
+        parts.append(memory_context.get_memory_context() or "")
+    except Exception:
+        pass
+
+    return "\n".join(part for part in parts if part)
+
+
 def with_run_values(given, params, skill=None, recording=None):
     """
     `given` (what an engine passed a replay) with this run's own value for

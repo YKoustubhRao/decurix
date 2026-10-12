@@ -752,6 +752,7 @@ def run(argv):
 
     elif command == "key":
         target = _target(args.on, args) if args.on else {}
+        _refuse_blind_walk(args.keys)
         result = core.act("key", keys=args.keys, **target)
 
     elif command == "scroll":
@@ -800,6 +801,31 @@ def run(argv):
     return EXIT_NEEDS_APPROVAL if result["status"] == "needs_approval" else EXIT_OK
 
 
+# Keys that move the keyboard from one control to the next, and how many in a
+# row one command may press.
+WALKING_KEYS = {"tab", "shift+tab"}
+MAX_WALK = 5
+
+
+def _refuse_blind_walk(keys):
+    """
+    Refuse a long run of Tab: it is walking a page without looking. Found
+    live: to get from a field at the top of a form to a table further down,
+    an engine pressed Tab some forty times in one command; the keyboard ran
+    through the table, leaving its last cell made a new row each time, and the
+    rest of the task went on deleting rows.
+    """
+
+    run = longest = 0
+    for key in keys:
+        run = run + 1 if str(key).strip().lower() in WALKING_KEYS else 0
+        longest = max(longest, run)
+    if longest > MAX_WALK:
+        raise ComputerError(f"that is {longest} Tab presses in a row, and nothing was pressed: Tab moves through every "
+                            "control on the way, and in a table of entries it adds rows. Go to the field itself - "
+                            "gui click REF, or gui type REF \"text\" - with a ref from gui observe.")
+
+
 def main(argv=None):
     logging_utils.log_to_file(logging_utils.log_file("decurix-gui.log"))
     argv = sys.argv[1:] if argv is None else argv
@@ -811,6 +837,14 @@ def main(argv=None):
         code = EXIT_ERROR
     except KeyboardInterrupt:
         code = EXIT_ERROR
+    except BrokenPipeError:
+        # The reader took what it wanted and left (gui observe | head): the action itself was done. Found by hand:
+        # the engine was handed two tracebacks for a look that had worked. Nothing more can be printed there.
+        try:
+            sys.stdout = open(os.devnull, "w")
+        except OSError:
+            pass
+        code = EXIT_OK
     except Exception as exc:
         # A bug here must not hand an engine a traceback to reason about.
         import traceback

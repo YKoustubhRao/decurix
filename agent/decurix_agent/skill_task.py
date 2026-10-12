@@ -4,8 +4,8 @@ import threading
 import time
 import traceback
 
-from decurix_agent import (attachments, binding, config, guidance, lessons, llm_client, messaging, progress, request_reading, state,
-                           study, task_context, usage, verify)
+from decurix_agent import (attachments, binding, config, guidance, lessons, llm_client, messaging, produced, progress,
+                           request_reading, state, study, task_context, usage, verify)
 from decurix_agent.computer import (approval, constraints, core, escalation, evidence, experience, launchers, learning,
                                     mimic, recording, replay, skills)
 from decurix_agent.computer import elements as el
@@ -1293,6 +1293,15 @@ def _chosen_from_list(skill):
     return skills.chosen_from_list(skill)
 
 
+def _replay_fits(run):
+    """Whether a replay could do this run: none of its values picks another list entry than the demonstration's (skill_engine.run refuses otherwise)."""
+
+    chosen = skills.chosen_from_list(run["skill"])
+    values = run.get("values") or {}
+    return not any(p["name"].split("__")[0] in chosen and values.get(p["name"]) not in (None, "", p.get("example"))
+                   for p in run["skill"].get("params") or [])
+
+
 def _chosen_for(run):
     """The names of this run's values that are picked from a list: the skill's, and those of the rows added for this run."""
 
@@ -1398,6 +1407,13 @@ def _for_this_run(text, skill, values):
     page was still on the screen.
     """
 
+    # What the demonstration typed to search a list is not a value the lesson speaks of: it is a few letters of
+    # the entry that was then picked. Found live: the demonstration typed the first word of a two-word entry; a
+    # run whose document named another kind had that word replaced all through the person's own words, so the rule
+    # that named the entry read as a mix of the two - an entry the list never had - and the check failed a
+    # correct record for not showing it.
+    searched = skills.chosen_from_list(skill)
+
     for param in skill.get("params") or []:
         example, value = param.get("example"), (values or {}).get(param.get("name"))
         if value not in (None, ""):
@@ -1405,7 +1421,11 @@ def _for_this_run(text, skill, values):
             text = text.replace("{" + str(param.get("name")) + "}", str(value))
         if not example or value in (None, "") or param.get("list") or len(str(example)) < 3:
             continue
-        text = re.sub(re.escape(str(example)), lambda _m, v=str(value): v, text, flags=re.IGNORECASE)
+        if str(param.get("name") or "").split("__")[0] in searched:
+            continue
+        # As a whole word or phrase only - never the letters of it inside another word.
+        text = re.sub(r"(?<!\w)" + re.escape(str(example)) + r"(?!\w)", lambda _m, v=str(value): v, text,
+                      flags=re.IGNORECASE)
     return text
 
 
@@ -1468,7 +1488,17 @@ def _procedure(run, from_step=None, note="", ran=False):
                      "own), so do it yourself, with care: follow what the person did and said, and adapt to what the "
                      "screen shows now - the screen is the truth, the recording is the guide.")
 
-    if run.get("attempt_note"):
+    if run.get("attempt_note") and run.get("attempt_blank"):
+        # The first attempt never touched the screen, so there is nothing of it to find and correct. Found live:
+        # told all the same that its "first attempt already saved its work", the engine took the record an
+        # EARLIER task had left open for that work, saw it was another record, and three times over did nothing.
+        lines.append("YOUR FIRST ATTEMPT AT THIS REQUEST DID NOTHING ON THE SCREEN"
+                     + (f" (it reported: {' '.join(run['attempt_report'].split())[:500]})" if run.get("attempt_report") else "")
+                     + ". Nothing of this request has been entered: no record of it exists yet, and whatever is open on "
+                       "the screen now is from before - leave that as it is. Do the task now, from its first step, "
+                       "yourself: one gui command at a time, following the steps below. Where gui do refused to "
+                       "replay it, that is not a reason to stop - it means the steps are yours to do.")
+    elif run.get("attempt_note"):
         # Found live, three documents running: sent back after the check, the
         # engine did the whole task again from an empty form and left a second
         # record beside the first. Told only at the end of its instructions to
@@ -1543,10 +1573,17 @@ def _procedure(run, from_step=None, note="", ran=False):
         ]
     else:
         how = ["How to work:"]
-    how += [] if one_off else [
-        f"- `gui skill {name} --look N` shows the screen as it was when the person did step N, with the spot they "
-        "pressed ringed in red. Use it for any step recorded as a point on the screen, and whenever you are unsure "
-        "what a step meant.",
+    look = (f"- `gui skill {name} --look N` shows the screen as it was when the person did step N, with the spot they "
+            "pressed ringed in red. Use it for any step recorded as a point on the screen, and whenever you are unsure "
+            "what a step meant.")
+    if not one_off and not _replay_fits(run):
+        # Not offered where it is sure to be refused. Found live: offered it, an engine ran `gui do`, was refused
+        # (this run picks another entry from a list than the demonstration did), and reported without doing a step.
+        how += [look, f"- Do every step yourself with gui observe / click / type / select / key: this run chooses "
+                      "other entries from the application's lists than the demonstration did, so the recording cannot "
+                      f"be replayed for it (`gui do {name}` would be refused)."]
+    how += [] if one_off or not _replay_fits(run) else [
+        look,
         f"- `gui do {name} --from N` replays from step N exactly as recorded, stopping at the first step it cannot "
         "do; use it only when the screen matches the recording AND every clicked option still matches this run. "
         "Suggestion options in the recording name the example's own choices (a person, a product, a category): "
@@ -1595,7 +1632,11 @@ def _engine_request(run):
     if run["values"]:
         request += " with " + ", ".join(f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in run["values"].items())
     request += "."
-    if run.get("attempt_note"):
+    if run.get("attempt_note") and run.get("attempt_blank"):
+        request += ("\n\nYOUR FIRST ATTEMPT DID NOTHING ON THE SCREEN, so nothing of this request is entered yet. Whatever "
+                    "is open now is from an earlier task: leave it alone. Do this request now from its first step, "
+                    "with gui commands of your own.")
+    elif run.get("attempt_note"):
         # In the request itself, not only in the guidance: found live, with it
         # in the guidance alone the engine still entered the document again.
         request += ("\n\nTHIS IS A SECOND ATTEMPT - DO NOT ENTER IT AGAIN. Your first attempt already saved its work"
@@ -1665,12 +1706,12 @@ def _says_it_could_not(run, reply):
     return True
 
 
-def _doubt_text(claim, verdict):
+def _doubt_text(claim, verdict, on_screen=True):
     lead = {verify.NOT_DONE: "I do not think this is done.",
             verify.UNSURE: "I cannot confirm this is done."}.get(verdict["verdict"], "I cannot confirm this is done.")
     parts = [lead]
     if verdict.get("seen"):
-        parts.append(f"The screen shows: {verdict['seen']}")
+        parts.append(f"{'The screen shows' if on_screen else 'What I wrote shows'}: {verdict['seen']}")
     if verdict.get("why"):
         parts.append(f"({verdict['why']})")
     head = " ".join(parts)
@@ -1680,7 +1721,8 @@ def _doubt_text(claim, verdict):
     report = (claim or "").strip()
     if len(report) > REPORT_CHARS:
         report = report[:REPORT_CHARS].rstrip() + " ..."
-    return (f"{head}\n\nWhat was reported:\n{report}\n\nLook at the screen. Reply `done` if it is done, `retry` "
+    return (f"{head}\n\nWhat was reported:\n{report}\n\nLook at {'the screen' if on_screen else 'the files'}. "
+            "Reply `done` if it is done, `retry` "
             "to have it tried again, or tell me what is wrong - I will remember it for next time.")
 
 
@@ -1890,6 +1932,10 @@ def learn_answer(reply):
 messaging.set_query_gate(_question_gate)
 
 
+# Reports that are not an engine's account of a task it did.
+NOT_AN_ENGINE = {"human", "replay", "web", LEARN_ENGINE, SKILL_ENGINE}
+
+
 def _acts_on_screen(skill):
     """Whether a skill's own steps are work on the screen (every recorded skill's are)."""
 
@@ -1915,8 +1961,9 @@ def _retry_engine(guided, note):
 
     progress.emit(f"Not done yet: {note} Trying again.")
     guidance.begin(skill=None, task=guided["task"], run=None, mode="engine", attempt=guided.get("attempt", 1) + 1,
-                   text=f"A check of the screen after the previous attempt at this task found: {note} Finish the "
-                        "task; do not report DONE until the screen shows it done.")
+                   text=f"A check of the result after the previous attempt at this task found: {note} Finish the "
+                        "task - correct what is wrong where it is, do not start it over - and do not report DONE "
+                        "until the screen or the files you wrote show it done. Report only what they show.")
     _engine(guided["task"], state.current_task_file)
 
 
@@ -1929,7 +1976,11 @@ def _gate(reply, kind, engine):
 
     guided = guidance.get()
     if guided is None:
-        if kind != "final" or not verify.available() or not _did_screen_work():
+        if kind != "final" or not verify.available():
+            return False
+        # A task that only wrote files is checked too: what it wrote is read back against its report.
+        # (An engine's task only: a ticket, a replay, a lesson or a web lookup reports for itself.)
+        if not _did_screen_work() and (engine in NOT_AN_ENGINE or not produced.files(reply)):
             return False
         guided = guidance.begin(skill=None, task=state.current_task or "", text="", mode="engine", run=None)
 
@@ -1980,7 +2031,10 @@ def _gate(reply, kind, engine):
                           f"{reply}", kind="final", engine=engine, checked=True)
         return True
 
-    progress.emit("Checking the screen to see that the task was really done.")
+    on_screen = run is not None or _did_screen_work()
+    made = [] if run is not None else produced.files(reply)
+    progress.emit("Checking the screen to see that the task was really done." if on_screen
+                  else "Reading back what I wrote to check it against my report.")
     if run is not None and _acts_on_screen(run["skill"]) and not _did_screen_work():
         # Nothing was opened, clicked or typed during this task, and the task
         # is done on the screen: no picture of the screen can make that done -
@@ -1998,9 +2052,15 @@ def _gate(reply, kind, engine):
                           + ". Each has to be in its own field of the record - open it and look at those fields; "
                             "what stands there now is not what was asked unless it reads exactly that."}
     else:
-        verdict = (run.pop("_verdict", None) or _judge(run, reply)) if run is not None else verify.judge(guided["task"], claim=reply,
-                                                                              live_png=evidence.live(),
-                                                                              observed=evidence.observed(), screen_text=evidence.live_text())
+        verdict = (run.pop("_verdict", None) or _judge(run, reply)) if run is not None else verify.judge(
+            guided["task"], claim=reply, live_png=evidence.live() if on_screen else None, observed=evidence.observed(),
+            screen_text=evidence.live_text() if on_screen else "", produced=produced.text(made), screen=on_screen)
+
+    if not on_screen and verdict["verdict"] in (verify.UNSURE, verify.CANNOT):
+        # File work the check could not settle goes out as the worker reported it, marked not checked: only a
+        # report its own files contradict is worth a second attempt or a person's time.
+        guidance.end()
+        return False
 
     if verdict["verdict"] == verify.CANNOT:
         # The worker says it could not do it, and why. Not a success and not a check that failed: the person
@@ -2023,7 +2083,8 @@ def _gate(reply, kind, engine):
             _record_verdict(run, True, checked_by="model",
                             helped=guided["mode"] == "takeover" or run.get("attempts", 1) > 1
                             or bool(run.get("asked_person")))
-        text = f"{reply}\n\nChecked on the screen: {verdict['seen']}" if verdict.get("seen") else reply
+        where = "Checked on the screen" if on_screen else "Checked against the files I wrote"
+        text = f"{reply}\n\n{where}: {verdict['seen']}" if verdict.get("seen") else reply
         write_final_reply(text + _evidence_text(run), kind="final", engine=engine, checked=True)
         return True
 
@@ -2034,6 +2095,7 @@ def _gate(reply, kind, engine):
         note = " ".join(x for x in (verdict.get("seen"), verdict.get("why")) if x)
         if run is not None:
             run["attempt_note"], run["attempt_report"] = note, (reply or "").strip()[:1500]
+            run["attempt_blank"] = not _did_screen_work()
             progress.emit(f"Not done yet: {note} Trying again.")
             _by_model(run)
         else:
@@ -2043,7 +2105,7 @@ def _gate(reply, kind, engine):
     guidance.end()
     state.paused_skill = {"mode": "confirm", "run": run, "claim": reply, "verdict": verdict, "engine": engine,
                           "task": guided["task"]}
-    ask_for_query(_doubt_text(reply, verdict), kind="query", engine=engine)
+    ask_for_query(_doubt_text(reply, verdict, on_screen=on_screen), kind="query", engine=engine)
     return True
 
 
@@ -2071,6 +2133,19 @@ def _confirm_reply(paused, reply):
     engine = paused.get("engine") or SKILL_ENGINE
     seen = paused["verdict"].get("seen") or ""
     reply = (reply or "").strip()
+
+    if attachments.files(reply):
+        # A message that brings files is the next piece of work, not a word about the last one. Found live: the
+        # next document was sent while "I cannot confirm this is done" was still open; its whole request was kept
+        # as "what is wrong" - a correction every later run would read - and the earlier task was tried again
+        # with it. Nothing is remembered and nothing is run: the earlier task is closed as not confirmed.
+        if run is not None:
+            _record_verdict(run, False, why="left unconfirmed: a new request came instead of an answer")
+        return write_final_reply("That message came with files, so I took it for a new request and not for an answer "
+                                 "about the task before it. I have closed that task as NOT confirmed - "
+                                 + (seen or "look at what it left before relying on it")
+                                 + "\n\nSend the new request again and I will start on it.",
+                                 kind="error", engine=engine, checked=True)
 
     if CONFIRM_RE.match(reply) and not re.search(r"\b(not|n't|isn'?t|wrong|but)\b", reply, re.IGNORECASE):
         if run is not None and paused.get("result") is not None:
@@ -2104,6 +2179,7 @@ def _confirm_reply(paused, reply):
         progress.emit("Trying again." if redo else "Trying again with what you said.")
         if run is not None:
             run["attempt_note"], run["attempts"], run["attempt_report"] = note, 0, claim.strip()[:1500]
+            run["attempt_blank"] = not _did_screen_work()
             return _by_model(run)
         return _retry_engine({"task": paused.get("task") or claim, "attempt": 0}, note)
 
