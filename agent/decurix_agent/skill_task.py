@@ -4,8 +4,8 @@ import threading
 import time
 import traceback
 
-from decurix_agent import (attachments, binding, config, guidance, lessons, llm_client, messaging, produced, progress,
-                           request_reading, state, study, task_context, usage, verify)
+from decurix_agent import (attachments, binding, config, guidance, lessons, llm_client, messaging, playbooks, produced,
+                           progress, request_reading, state, study, task_context, usage, verify)
 from decurix_agent.computer import (approval, constraints, core, escalation, evidence, experience, launchers, learning,
                                     mimic, recording, replay, skills)
 from decurix_agent.computer import elements as el
@@ -675,7 +675,7 @@ def _prepare(run):
     missing = [p for p in skills.required(skill) if not run["values"].get(p["name"])]
 
     # A row the demonstration had and this run's document does not is not a value to find or to ask for.
-    if run.get("rows") and _learning_by_model(run):
+    if run.get("rows"):
         used = {name for row in run["rows"]["names"] for name in row}
         absent = {name for row in (skills.repeated_rows(skill) or {"rows": []})["rows"] for name in row} - used
         missing = [p for p in missing if p["name"] not in absent]
@@ -833,6 +833,7 @@ def _execute(run):
         # The run then counts as one that needed the model, so the skill goes
         # back to being learned with it (experience.stage).
         run["taken_over"] = True
+        _own_run(run, False)
         _settle(run, outcome)
         ran = result["resume_from"] == result["step"] + 1
         _by_model(run, from_step=result["step"], note=result["text"], ran=ran)
@@ -969,7 +970,65 @@ def _finish(run, result):
         # more than that. The screen is the proof it always was.
         return _succeed(run, result, "screen")
 
+    # A replay that ran to its end and still cannot be confirmed is the model's to finish before a person
+    # is asked - and the sign that this task needs more than its recorded steps (_supervise).
+    if not run.get("one_off") and not run.get("taken_over") and _engine_can_drive():
+        run["taken_over"] = True
+        note = " ".join(x for x in (verdict.get("seen"), verdict.get("why")) if x) or "the result could not be confirmed"
+        _supervise(run, note)
+        run["attempt_note"], run["attempt_report"], run["attempts"] = note, result["text"].strip()[:1500], 1
+        run["attempt_blank"] = False
+        progress.emit(f"The steps ran, but I cannot confirm the result ({note[:160]}). Looking into it myself.")
+        return _by_model(run)
+
     _pause(run, "confirm", _doubt_text(result["text"], verdict), result=result, verdict=verdict)
+
+
+# What a person says when a task has something to look at before it starts.
+CHECK_FIRST = re.compile(
+    r"\bbefore (?:you |i |we )?(?:start|begin|enter|creat|sav|add|do)\w*|\bfirst(?:,)? (?:check|search|look|make sure|verify)\b|"
+    r"\b(?:check|search|look|make sure|verify)\b[^.\n]{0,60}\bfirst\b|\balready (?:exists?|entered|there|present|in)\b|"
+    r"\bduplicates?\b|\bonly if\b|\bunless\b", re.IGNORECASE)
+
+
+def _asks_for_a_check_first(skill):
+    """
+    Whether the person's own words for a task call for something no recorded
+    step does: a look before starting, or a condition on doing it at all
+    ("before you start, search for ...", "if one already exists, do not ...",
+    "only if ..."). Such a task is the model's from its first run on (see
+    _supervise) - telling it by the words spares the one replay that finds
+    it out the hard way, and errs towards more thought, never less.
+    """
+
+    said = [skills.explanation(skill) or ""]
+    said += [str(x.get("answer") or "") for x in skill.get("dialogue") or [] if isinstance(x, dict)]
+    said += [str(x.get("text") or "") for x in skill.get("corrections") or [] if isinstance(x, dict)]
+    return bool(CHECK_FIRST.search("\n".join(said)))
+
+
+def _supervise(run, why):
+    """
+    Mark a skill as one the model has to do, with the replay as its tool,
+    however often it has gone well. Found by design and then live: a person
+    taught "before you start, search for a bill with the same number" - which
+    no recorded step does and only something that reads the rule can - so a
+    bare replay of the trusted skill entered the bill and the final check,
+    rightly, would not confirm a run in which nothing showed that search. A
+    task whose rules ask for more than its steps is not made cheaper by
+    dropping the part that keeps the rules: it stays the model's, which runs
+    the steps with one command (the numbered procedure in _procedure) and
+    does the rest itself. Correctness first, then cost.
+    """
+
+    run["skill"]["supervised"] = why[:300]
+    try:
+        fresh = skills.load(run["skill"]["name"])
+        fresh["supervised"] = why[:300]
+        skills.save(fresh)
+        log(f"Skill {fresh['name']} is now always done under the model's eye: {why[:200]}")
+    except (FileNotFoundError, OSError) as exc:
+        log(f"Could not mark the skill as supervised: {exc}")
 
 
 def _evidence_text(run):
@@ -984,9 +1043,25 @@ def _evidence_text(run):
     return "\n\nValues read from the documents:\n" + binding.report(run["evidence"], filled)
 
 
+def _own_run(run, worked):
+    """Count a replay of the worker's own earlier run for or against keeping it as the way (playbooks.own_replayed)."""
+
+    if run.get("one_off") and run["skill"].get("own") and run.get("mimic"):
+        try:
+            playbooks.own_replayed(run["mimic"]["id"], worked)
+        except Exception as exc:
+            log(f"Could not count a replay of this desktop's own run: {exc}")
+
+
 def _succeed(run, result, checked_by, seen="", helped=False):
     skill = run["skill"]
     text = result["text"]
+    _own_run(run, True)
+
+    if skill.get("own"):
+        # Its steps were held to their controls only, so "0 were confirmed, look at the result" is not
+        # what there is to say: the result was looked at, by the check, and that is what is reported.
+        text = f"Done the way I did it before, with this request's values ({result.get('total') or len(skill['steps'])} steps)."
 
     if checked_by == "model" and seen:
         text += f"\n\nChecked on the screen: {seen}"
@@ -1224,6 +1299,16 @@ def _retarget(run, step_n, wanted, role=None):
 # ============================================================
 
 MAX_MODEL_ATTEMPTS = 2
+# What a second attempt is told beside what the check found. Found live: a bill charged two tax rates, the
+# application had one template, and its total could not equal the bill's. The rows were entered correctly; the
+# check said the totals differ; and the second attempt, told to correct what was wrong, ticked "included in basic
+# rate" on a tax row - against the person's own "leave the tax template as it is" - and left the draft wrong.
+NOT_YOURS_TO_FORCE = ("Correct only what was entered from this request. A figure the application works out for "
+                      "itself - a total, a tax, a balance - is not yours to force: do not change a setting, a "
+                      "template, a rate or a tick box that the task never touched or that the person said to leave, "
+                      "in order to make such a figure match a document. When the values are entered as the document "
+                      "has them and what the application computes still differs from the document, that is a finding "
+                      "to report, not a fault to repair: say both figures, say what you entered, and ask (HELP).")
 MAX_CORRECTIONS = 8
 # What confirms an unchecked result: words about the result itself. A bare yes or ok does not: found live, a "yes"
 # meant for an approval asked a moment before arrived after the worker had moved on to "I cannot confirm this is
@@ -1261,13 +1346,20 @@ def _learning_by_model(run):
         return False
     if _stage(run) == experience.APPRENTICE:
         return True
+    # A task whose rules ask for more than its recorded steps (_supervise) - found out when a replay of it
+    # could not be confirmed, or plain from the person's own words.
+    if run["skill"].get("supervised") or _asks_for_a_check_first(run["skill"]):
+        return True
 
-    # A task with a value picked from a list is the model's however often it
-    # has gone well: a replay clicks the entry the demonstration chose, and
-    # types this run's words where a search belongs. Found live: trusted after
-    # three runs, the next request - a document with one line where the
-    # demonstration had two - was met with "I need item_2, accepted_qty_2".
-    return bool(skills.chosen_from_list(run["skill"]))
+    # Trusted: replayed. A task with a value picked from a list, or with a row
+    # per entry of a document, used to stay the model's however often it had
+    # gone well - a replay clicked the entry the demonstration chose and
+    # entered the demonstration's number of rows. The program is now fitted to
+    # the run (skills.fit): it searches each list for this run's entry and
+    # enters this run's rows, and stops where it cannot. Its result is judged
+    # before it is reported (_finish), and a replay that stops is the model's
+    # to carry on (_execute).
+    return False
 
 
 # What the engine and the check are told about a value the person typed only
@@ -1294,12 +1386,63 @@ def _chosen_from_list(skill):
 
 
 def _replay_fits(run):
-    """Whether a replay could do this run: none of its values picks another list entry than the demonstration's (skill_engine.run refuses otherwise)."""
+    """Whether a replay could do this run. It can: the program is fitted to this run's rows and choices (skills.fit)."""
 
-    chosen = skills.chosen_from_list(run["skill"])
-    values = run.get("values") or {}
-    return not any(p["name"].split("__")[0] in chosen and values.get(p["name"]) not in (None, "", p.get("example"))
-                   for p in run["skill"].get("params") or [])
+    return True
+
+
+def _first_step_inside(run):
+    """
+    The first step of the task that is done inside the application: the one
+    after those that open it from the desktop. An engine that has the
+    application open already (it has just made a check in it) starts there.
+    """
+
+    steps = run["skill"].get("steps") or []
+    for step in steps:
+        opens = step.get("kind") == "open" or (step.get("kind") in ("click", "double_click")
+                                               and step.get("point") and not step.get("target"))
+        if not opens:
+            return step.get("n") or 1
+    return 1
+
+
+def _start_page(run):
+    """The address of the page the application showed when the person began working in it, or ""."""
+
+    inside = _first_step_inside(run)
+    for step in (run["skill"].get("steps") or [])[:max(inside - 1, 1)]:
+        for check in step.get("expect") or []:
+            if check.get("type") == "url" and check.get("value") and "*" not in check["value"] and "{" not in check["value"]:
+                return check["value"]
+    return ""
+
+
+def _back_to_start(run):
+    """
+    The command that puts an application that is already open back on the
+    page the person's steps begin on, to run before the steps. Found live: a
+    worker made its before-you-start check, which left the application on the
+    record of the last task; the steps begin on its opening page, where the
+    controls they use are, and the replay rightly refused to start from
+    anywhere else - so the worker asked a person what to do.
+    """
+
+    page = _start_page(run)
+    return f"gui open {page} && " if page else ""
+
+
+def _do_line(run, start=None):
+    """`gui do` for this run, with its values written out: what the engine runs to have the steps done for it."""
+
+    import shlex
+
+    parts = [f"gui do {run['skill']['name']}"]
+    parts += [f"--param {shlex.quote(name + '=' + str(value))}" for name, value in (run.get("values") or {}).items()
+              if value not in (None, "")]
+    if start and start > 1:
+        parts.append(f"--from {start}")
+    return " ".join(parts)
 
 
 def _chosen_for(run):
@@ -1513,6 +1656,7 @@ def _procedure(run, from_step=None, note="", ran=False):
                      "searching for this request's own reference), look at what it holds, and correct only what the "
                      "check found wrong or could not see. If you cannot find that record, ask (HELP) before making "
                      "another.")
+        again.append(NOT_YOURS_TO_FORCE)
         lines.append("\n".join(again))
 
     understood = skill.get("understanding") or {}
@@ -1584,14 +1728,26 @@ def _procedure(run, from_step=None, note="", ran=False):
                       f"be replayed for it (`gui do {name}` would be refused)."]
     how += [] if one_off or not _replay_fits(run) else [
         look,
-        f"- `gui do {name} --from N` replays from step N exactly as recorded, stopping at the first step it cannot "
-        "do; use it only when the screen matches the recording AND every clicked option still matches this run. "
-        "Suggestion options in the recording name the example's own choices (a person, a product, a category): "
-        "changing a typed parameter does not change those clicks. When this run's choices, amounts or number of "
-        "rows differ from the example's, use gui observe / select / type to choose this run's matching options and "
-        "fill each row yourself; do not replay the example or click its coordinates. Check where any replay "
-        "stopped.",
-        "- Otherwise work each step with gui observe / click / type / key as usual.",
+        "- Do it in this order. It is the order the person works in, and each part has its command:\n"
+        "  1. Read this request's document(s) (office read), if you have not.\n"
+        "  2. Do what the person's rules say to check BEFORE starting - a rule about what ALREADY EXISTS (below) "
+        "is one - with the application's own search or list. A check made after the record exists is too late.\n"
+        "  3. Have the person's steps done for you, with THIS run's values, by running exactly ONE of these. It "
+        "searches each list for this run's entry and takes it only when it is plainly the same thing, and it "
+        "enters one row per entry of this run's document:\n"
+        "       when the application is not open:      " + _do_line(run) + "\n"
+        "       when it is already open (after step 2): " + _back_to_start(run)
+        + _do_line(run, start=_first_step_inside(run)) + "\n"
+        "     Do not enter the fields by hand instead: found live, a worker made its check and then typed the whole "
+        "record itself, ten times the work, and that is where wrong values get in.\n"
+        "  4. It stops at the first step it cannot do, and says which step and why. Look (gui observe), do THAT "
+        "ONE step yourself with gui, and carry on with the same command and `--from N` for the next step number - "
+        "never from the start again: what it entered is there, and starting over enters the request twice. If it "
+        "stopped because a list has no entry for something, that is a question for the person (HELP), not "
+        "something to work around.\n"
+        "  5. When it has run to the end it has checked nothing. Read the result off the screen (gui observe) "
+        "against this run's values and the person's rules, and report what you read.",
+        "- Work a step by hand with gui observe / click / type / select / key wherever the command cannot.",
     ]
     how += [
         "- What the person answered - when they taught this and during earlier runs - is settled. Act on it and "
@@ -1599,6 +1755,14 @@ def _procedure(run, from_step=None, note="", ran=False):
         "take the first of several matching conversations, take the first of several matching people in any list).",
         "- If the request asks for several items (a list), do the task once per item, one after another, unless "
         "the person said otherwise.",
+        # Found live: taught "if a bill with the same number is already entered, do not enter it again", the
+        # worker entered the bill and then reported that it had not checked. No step of a demonstration shows
+        # a check that found nothing, so the rule has to say what keeping it takes.
+        "- A rule of the person's about what ALREADY EXISTS (\"if one with the same number is already entered, do "
+        "not enter it again\") is kept by looking BEFORE you create anything: search the application for it - its "
+        "search box, or the list of such records filtered by that number or name - and only then start. Say in "
+        "your report what you searched for and what you found. If it exists, stop and tell the person; do not "
+        "open a new form.",
         "- Before you say DONE, look at the screen (gui verify) and make sure it shows the task done for THIS run's "
         "values. If it does not, keep working, or ask (HELP) - never report DONE for what the screen does not show. "
         "Your report is checked against the screen, and a false DONE is the worst outcome.",
@@ -1644,7 +1808,8 @@ def _engine_request(run):
                     + f". A check then found: {run['attempt_note']} Open what the first attempt saved, read what it "
                       "holds, and correct only what is really wrong there. If it is all correct, change nothing: read "
                       "its values off the screen and report them. Creating a second record is the one thing you must "
-                      "not do.")
+                      "not do. In your report, call that record what it is - the one this request produced, with its "
+                      "number - never something that \"was already entered\". " + NOT_YOURS_TO_FORCE)
     if run.get("mimic"):
         request += "\n\nThe person asked: " + (run.get("context") or run["mimic"]["text"])
     elif run.get("context"):
@@ -1735,8 +1900,11 @@ def _record_verdict(run, ok, checked_by=None, helped=False, why="", mode=None):
         fresh = skills.load(run["skill"]["name"])
     except FileNotFoundError:
         return
+    spent = usage.snapshot()
+    tokens = (spent.get("input_tokens", 0) + spent.get("output_tokens", 0)
+              if "input_tokens" in spent or "output_tokens" in spent else None)
     experience.note_verdict(fresh, mode or ("model" if run.get("attempts") else "replay"), ok, checked_by=checked_by,
-                            helped=helped, why=why)
+                            helped=helped, why=why, tokens=tokens)
     if ok:
         fresh["runs"] = fresh.get("runs", 0) + 1
     skills.save(fresh)
@@ -1790,7 +1958,7 @@ ANSWERED_SYSTEM = """A computer agent working for a person wants to stop its tas
 
 They have when they answered the same question, or the same kind of choice arising somewhere else (told to take the first of several matching conversations, the first of several matching people in another list is the same choice).
 
-They have NOT when: nothing they said touches it; the earlier answer was about one task's own value (a particular person, amount, file or date) and this one's differs; the agent is asking for approval, a password, a sign-in, a code, a check that it is a human, or a value it was not given; or something has gone wrong (an error, a model or page that does not answer, a control it cannot find); or what the person said about this situation is to ask them - then asking is exactly what they want, and the question goes to them. When in doubt they have not: the person is then asked, which costs little.
+They have NOT when: nothing they said touches it; the earlier answer was about one task's own value (a particular person, amount, file or date) and this one's differs; the agent is asking for approval, a password, a sign-in, a code, a check that it is a human, or a value it was not given; or something has gone wrong (an error, a model or page that does not answer, a control it cannot find); or what the person said about this situation is to ask them - then asking is exactly what they want, and the question goes to them; or the agent says that the thing it needs (a record, an item, a customer, a file) is not among what the application offers, and asks which to use instead - a rule the person gave about what counts as the same kind of thing answers that only when it names this very thing and an entry that is offered; a general "use the closest one" never chooses a record for a thing the person has not spoken of. When in doubt they have not: the person is then asked, which costs little.
 
 Reply with JSON only: {"answered": true, "answer": "<what the agent should do, in a sentence or two, in the person's terms>", "from": "<the person's words this rests on, quoted>", "confidence": 0.0-1.0} or {"answered": false}"""
 
@@ -1933,7 +2101,7 @@ messaging.set_query_gate(_question_gate)
 
 
 # Reports that are not an engine's account of a task it did.
-NOT_AN_ENGINE = {"human", "replay", "web", LEARN_ENGINE, SKILL_ENGINE}
+NOT_AN_ENGINE = {"human", "replay", "web", "tool", LEARN_ENGINE, SKILL_ENGINE}
 
 
 def _acts_on_screen(skill):
@@ -1963,8 +2131,21 @@ def _retry_engine(guided, note):
     guidance.begin(skill=None, task=guided["task"], run=None, mode="engine", attempt=guided.get("attempt", 1) + 1,
                    text=f"A check of the result after the previous attempt at this task found: {note} Finish the "
                         "task - correct what is wrong where it is, do not start it over - and do not report DONE "
-                        "until the screen or the files you wrote show it done. Report only what they show.")
+                        "until the screen or the files you wrote show it done. Report only what they show. "
+                        + NOT_YOURS_TO_FORCE)
     _engine(guided["task"], state.current_task_file)
+
+
+def _playbook(done, task="", skill=None, why=""):
+    """Count a checked result for or against the playbook the engine was given, and keep a good run's way (playbooks.py)."""
+
+    try:
+        if not done:
+            playbooks.missed(why)
+        elif playbooks.keep(task, skill=skill):
+            progress.emit("Kept how this was done, for the next request like it.")
+    except Exception as exc:  # what is kept for next time must never cost this task its report
+        log(f"Could not update this task's playbook: {exc}")
 
 
 def _gate(reply, kind, engine):
@@ -1974,13 +2155,18 @@ def _gate(reply, kind, engine):
     it acted on the screen. True when this took the report over.
     """
 
+    if kind == "error":
+        # A task that failed with a playbook in hand counts against the playbook.
+        _playbook(False)
+
     guided = guidance.get()
     if guided is None:
         if kind != "final" or not verify.available():
             return False
         # A task that only wrote files is checked too: what it wrote is read back against its report.
         # (An engine's task only: a ticket, a replay, a lesson or a web lookup reports for itself.)
-        if not _did_screen_work() and (engine in NOT_AN_ENGINE or not produced.files(reply)):
+        # (An email it drafted is something it made, like a file: the draft is read back too.)
+        if not _did_screen_work() and (engine in NOT_AN_ENGINE or not (produced.files(reply) or produced.drafts())):
             return False
         guided = guidance.begin(skill=None, task=state.current_task or "", text="", mode="engine", run=None)
 
@@ -2054,7 +2240,8 @@ def _gate(reply, kind, engine):
     else:
         verdict = (run.pop("_verdict", None) or _judge(run, reply)) if run is not None else verify.judge(
             guided["task"], claim=reply, live_png=evidence.live() if on_screen else None, observed=evidence.observed(),
-            screen_text=evidence.live_text() if on_screen else "", produced=produced.text(made), screen=on_screen)
+            screen_text=evidence.live_text() if on_screen else "", screen=on_screen,
+            produced="\n".join(x for x in (produced.text(made), produced.drafts_text()) if x))
 
     if not on_screen and verdict["verdict"] in (verify.UNSURE, verify.CANNOT):
         # File work the check could not settle goes out as the worker reported it, marked not checked: only a
@@ -2077,6 +2264,10 @@ def _gate(reply, kind, engine):
 
     if verdict["verdict"] == verify.DONE:
         guidance.end()
+        # The way this run took is kept for the next request like it - not a
+        # takeover's, which is only the end of a task a replay began.
+        if guided["mode"] != "takeover":
+            _playbook(True, guided["task"], guided.get("skill"))
         if run is not None:
             # A takeover, or a run the check had to send back, worked in the
             # end but did not run smoothly: it does not count towards trust.
@@ -2091,6 +2282,8 @@ def _gate(reply, kind, engine):
     # The model said done and the screen says not: one more go, told what the
     # check saw, before a person is asked.
     attempts = run.get("attempts", 0) if run is not None else guided.get("attempt", 1)
+    if verdict["verdict"] == verify.NOT_DONE:
+        _playbook(False, why=" ".join(x for x in (verdict.get("seen"), verdict.get("why")) if x))
     if verdict["verdict"] == verify.NOT_DONE and attempts < MAX_MODEL_ATTEMPTS and _engine_can_drive():
         note = " ".join(x for x in (verdict.get("seen"), verdict.get("why")) if x)
         if run is not None:

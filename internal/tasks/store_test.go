@@ -614,3 +614,58 @@ func TestTaskResultUnknownID(t *testing.T) {
 		t.Fatal("TaskResult ok = true for an unknown task, want false")
 	}
 }
+
+func TestAReportShowsWhatTasksCostInTokens(t *testing.T) {
+	c := newClock()
+	s := openStore(t, c)
+	w := worker("box", "thebot")
+
+	// The same kind of request three times: found out, then with what was kept from the first.
+	for _, used := range [][2]int64{{180000, 2400}, {60000, 900}, {58000, 700}} {
+		route := send(t, s, w, "enter the attached order")
+		c.advance(time.Minute)
+		outcome(t, s, "box", route.TaskID, Outcome{Kind: OutcomeDone, Reply: "ok", InputTokens: ptrInt(used[0]), OutputTokens: ptrInt(used[1])})
+	}
+
+	// One that paused: each attempt's totals are added, as cost is.
+	paused := send(t, s, w, "pay invoice INV-7")
+	outcome(t, s, "box", paused.TaskID, Outcome{Kind: OutcomeError, Reply: "timed out", InputTokens: ptrInt(1000), OutputTokens: ptrInt(10)})
+	send(t, s, w, "pay invoice INV-7")
+	outcome(t, s, "box", paused.TaskID, Outcome{Kind: OutcomeDone, Reply: "Paid", InputTokens: ptrInt(2000), OutputTokens: ptrInt(20)})
+
+	// And one whose engine reported nothing: unknown, not zero.
+	silent := send(t, s, w, "uname -r")
+	outcome(t, s, "box", silent.TaskID, Outcome{Kind: OutcomeDone, Reply: "6.6"})
+
+	report, list, err := s.ReportAndList(Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	byID := map[string]Summary{}
+	for _, sum := range list {
+		byID[sum.ID] = sum
+	}
+	if got := byID[paused.TaskID].Tokens; got == nil || *got != 3030 {
+		t.Fatalf("a task's tokens over two attempts = %v, want 3030", got)
+	}
+	if got := byID[silent.TaskID].Tokens; got != nil {
+		t.Fatalf("a task nobody counted reports %d tokens, want none", *got)
+	}
+
+	if report.Totals.Tokens == nil || *report.Totals.Tokens != 182400+60900+58700+3030 || report.Totals.TokenTasks != 4 {
+		t.Fatalf("totals = %v over %d tasks", report.Totals.Tokens, report.Totals.TokenTasks)
+	}
+	if got := report.Totals.TokensPerTask(); got != "76.3k" {
+		t.Fatalf("tokens per task = %q, want 76.3k", got)
+	}
+
+	for want, n := range map[string]int64{"950": 950, "12.4k": 12400, "1.25M": 1250000} {
+		if got := FormatTokens(&n); got != want {
+			t.Fatalf("FormatTokens(%d) = %q, want %q", n, got, want)
+		}
+	}
+	if FormatTokens(nil) != "—" {
+		t.Fatal("no count must not read as a number")
+	}
+}

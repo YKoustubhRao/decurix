@@ -215,7 +215,7 @@ class TestAnAppFoundOpenAlready(Desktop):
         with patch.object(replay.core, "observe", return_value=observation), \
                 patch.object(replay.visual, "find", return_value={"status": replay.visual.MISSING}), \
                 patch.object(replay, "FIND_SECONDS", 0), patch.object(replay, "_fit_screen"), \
-                patch.object(replay, "_await_checks", side_effect=lambda checks, observation, values: ([], observation)):
+                patch.object(replay, "_await_checks", side_effect=lambda checks, observation, values, seconds=None: ([], observation)):
             return replay.run({"steps": steps, "params": [], "title": "mutra"}, report=self.lines.append)
 
     def test_the_halt_says_the_app_was_open_already(self):
@@ -239,7 +239,7 @@ class TestAnAppFoundOpenAlready(Desktop):
         with patch.object(replay.core, "observe", return_value=observation), \
                 patch.object(replay.visual, "find", return_value={"status": replay.visual.MISSING}), \
                 patch.object(replay, "FIND_SECONDS", 0), patch.object(replay, "_fit_screen"), \
-                patch.object(replay, "_await_checks", side_effect=lambda checks, observation, values: ([], observation)):
+                patch.object(replay, "_await_checks", side_effect=lambda checks, observation, values, seconds=None: ([], observation)):
             result = replay.run({"steps": steps, "params": [], "title": "mutra"}, report=self.lines.append)
         self.assertIsNone(result["reopen"])
 
@@ -306,7 +306,7 @@ class TestRestartIsOnlyOfferedBeforeAnythingWorkedThere(Desktop):
                 patch.object(replay.core, "act", return_value={"status": "done", "observation": observation}), \
                 patch.object(replay.visual, "find", return_value={"status": replay.visual.MISSING}), \
                 patch.object(replay, "FIND_SECONDS", 0), patch.object(replay, "_fit_screen"), \
-                patch.object(replay, "_await_checks", side_effect=lambda checks, observation, values: ([], observation)):
+                patch.object(replay, "_await_checks", side_effect=lambda checks, observation, values, seconds=None: ([], observation)):
             result = replay.run({"steps": steps, "params": [], "title": "mutra"}, report=self.lines.append)
         self.assertEqual((result["outcome"], result["step"]), (replay.HALTED, 3))
         self.assertIsNone(result["reopen"])

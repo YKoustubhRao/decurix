@@ -330,19 +330,36 @@ def _param_name(label, used):
     return name
 
 
+# What a window is titled while its page or document has not loaded: a moment
+# of the run that was recorded, not a result. Found live: the worker's own
+# `gui open URL` was looked at while the tab still read "Untitled - Chromium",
+# and a replay of that run waited for "Untitled" in front until it gave up.
+NOT_LOADED_TITLE = re.compile(r"^(untitled|new tab|about:blank|loading\W*|https?://\S*|[\w.-]+\.[a-z]{2,}(:\d+)?[_/]\S*|[\w.-]+_/\S*)$",
+                              re.IGNORECASE)
+
+
 def _stable_title(title, reference=None):
     """
     The parts of a window title a replay can expect to see again: segments
     with no digits in them ("Untitled 2 - LibreOffice Calc" -> "LibreOffice
-    Calc") that are not volatile. None when nothing is left.
+    Calc") that are not volatile and do not only say the page is still
+    loading. None when nothing is left.
     """
 
     if not title:
         return None
 
     kept = []
-    for segment in TITLE_SPLIT.split(volatility.without_counters(title.lstrip("*"))):
-        segment = segment.strip()
+    segments = [x.strip() for x in TITLE_SPLIT.split(volatility.without_counters(title.lstrip("*")))]
+    # What another segment says again as an address-style name with a token after it ("New Purchase Invoice"
+    # beside "new-purchase-invoice-sumgovbtbp") is the id of that one unsaved record: every new one has
+    # another. Found live: a replay stopped at a step recorded "in" such a window, with the same form open.
+    slugs = {"-".join(x.lower().split()) for x in segments if " " in x}
+    for segment in segments:
+        if NOT_LOADED_TITLE.match(segment):
+            continue
+        if any(segment.lower().startswith(slug + "-") and " " not in segment for slug in slugs):
+            continue
         if segment and not re.search(r"\d", segment) and volatility.classify(segment, reference) != "clock_time":
             if volatility.classify(segment, reference) in (None, "too_short") and len(segment) >= 3:
                 kept.append(segment)
@@ -687,6 +704,7 @@ def _find(step, ladder=None, report=None):
         if element is not None or point is not None:
             return element, point, observation, None
 
+
         # The screen was put back to the recorded size before the run, and a
         # viewer that reconnected since resized it to its browser again: fit
         # it once more rather than halt on a size the run can simply set.
@@ -738,15 +756,64 @@ def _find(step, ladder=None, report=None):
             # between them, and neither may an optional step.
             missing = "does not guess" not in reason
 
-            if ladder is not None:
-                repair = ladder.recover(step, observation, reason)
-                if repair["element"] is not None:
-                    return repair["element"], None, observation, repair
+            repair = ladder.recover(step, observation, reason) if ladder is not None else None
+            if repair and repair["element"] is not None:
+                return repair["element"], None, observation, repair
+
+            # Not there, and not there under another name either (found live: the field was there all
+            # along, called "Rate" where the recording said "Rate (INR)" - which healing finds, and a
+            # press on the recorded spot does not): a field that only exists once its place is pressed.
+            if _appears_when_pressed(step, observation, reason):
+                (report or progress.emit)(f"Step {step['n']}: {_summary(step)} is not on the screen until its place "
+                                          "is pressed - pressing where the person pressed")
+                observation["pressed_cell"] = True
+                return None, tuple(step["point"]), observation, None
+
+            if repair:
                 raise _Halt(reason, _screen_brief(observation), missing=missing, options=repair["options"],
                             observation=observation)
 
             raise _Halt(reason, _screen_brief(observation), missing=missing, observation=observation)
 
+        time.sleep(POLL_SECONDS)
+
+
+# How long a named field is looked for before its recorded spot is pressed instead.
+CELL_SECONDS = 3.0
+# What a table shows for the cell being edited, and only for that one.
+CELL_FIELD_ROLES = ("combobox", "textbox", "searchbox", "spinbutton")
+
+
+def _appears_when_pressed(step, observation, reason):
+    """
+    Whether a click's named field is one that exists only once its place is
+    pressed, so that pressing where the person pressed is how it is reached.
+    Found live: a table's cell is plain text until pressed, and the recorder
+    named the press by the field that then appeared - which a replay looked
+    for, did not find, and stopped at, on the first row of every document.
+    The recorded spot is pressed only for a plain click on a field's role,
+    never for a step that could do harm, only on a screen of the recorded
+    size, and only when the field is simply not there (not when two are) -
+    and the step then has to produce that field, or it halts (_run_step).
+    """
+
+    target = step.get("target") or {}
+    return (step.get("kind") in ("click", "double_click") and bool(step.get("point"))
+            and target.get("role") in CELL_FIELD_ROLES
+            and not step.get("consequential") and not step.get("optional")
+            and (reason or "").endswith("is not on the screen")
+            and bool(step.get("screen")) and list(step["screen"]) == list(observation.get("size") or []))
+
+
+def _field_appeared(step):
+    """Whether the field a press was to bring up is there now, looked for a few seconds."""
+
+    until = time.monotonic() + CELL_SECONDS * 2
+    while True:
+        if resolve(step, core.observe())[0] is not None:
+            return True
+        if time.monotonic() >= until:
+            return False
         time.sleep(POLL_SECONDS)
 
 
@@ -809,6 +876,8 @@ def _run_step(step, values, ladder=None, report=None, next_step=None):
     if step.get("unresolved"):
         raise _Halt(f"the recording names a control it cannot identify: {step['unresolved']}")
 
+    pressed_cell = False
+
     try:
         if kind == "open":
             core.open_target(step["open"], new_tab=step.get("new_tab", False))
@@ -841,6 +910,7 @@ def _run_step(step, values, ladder=None, report=None, next_step=None):
         if step.get("target") or step.get("point"):
             element, point, seen, repair = _find(step, ladder, report)
             target = {"path": element["path"]} if element is not None else {"point": tuple(point)}
+            pressed_cell = bool(seen.get("pressed_cell"))
 
             if element is None and seen.get("kin"):
                 kin = seen["kin"]
@@ -867,7 +937,7 @@ def _run_step(step, values, ladder=None, report=None, next_step=None):
             # Several files are given the way list values are: separated by ';'.
             files = val if isinstance(val, list) else [f.strip() for f in str(val).split(";") if f.strip()]
 
-        return core.act(
+        done = core.act(
             kind,
             text=values.get(step.get("param")) if kind == "type" else None,
             keys=step.get("keys"),
@@ -879,16 +949,41 @@ def _run_step(step, values, ladder=None, report=None, next_step=None):
             files=files,
             **target,
         )
+        if pressed_cell and not _field_appeared(step):
+            raise _Halt(f"pressed where {_summary(step).split(' ', 1)[-1]} was when this was recorded, and no such field "
+                        "appeared there - the page is laid out differently now")
+        return done
     except ComputerError as exc:
         raise _Halt(str(exc))
 
 
-def _await_checks(checks, observation, values):
-    """Wait, up to EXPECT_SECONDS, for a step's checks: (unmet checks, last observation)."""
+SELECT_ALL = {"ctrl+a", "control+a", "cmd+a", "meta+a"}
+
+
+def _replaces_selection(previous, step):
+    """
+    Whether typing recorded as added to what a field held in fact replaced it:
+    the person had just selected everything in that field. Found live: a rate
+    field came pre-filled, the person pressed Ctrl+A and typed the bill's rate;
+    the recorder saw text typed into a field that held some, the replay put
+    the caret at the end, and "25,000.00" became "25,000.0030000" - which the
+    application threw away, saving its own default as the bill's rate.
+    """
+
+    if previous is None or step.get("kind") != "type" or not step.get("append") or previous.get("kind") != "key":
+        return False
+    if not SELECT_ALL & {str(k).lower() for k in previous.get("keys") or []}:
+        return False
+    mine, theirs = step.get("target") or {}, previous.get("target") or {}
+    return (mine.get("role"), mine.get("name")) == (theirs.get("role"), theirs.get("name"))
+
+
+def _await_checks(checks, observation, values, seconds=None):
+    """Wait, up to EXPECT_SECONDS (or `seconds`), for a step's checks: (unmet checks, last observation)."""
 
     observation = observation or core.observe()
     missing = unmet(checks, observation, values)
-    deadline = time.monotonic() + EXPECT_SECONDS
+    deadline = time.monotonic() + (seconds or EXPECT_SECONDS)
 
     while missing and time.monotonic() < deadline:
         time.sleep(POLL_SECONDS)
@@ -1177,6 +1272,9 @@ def run(program, params=None, start=1, report=None, ladder=None):
         if changed_at is not None and step["n"] > changed_at and step.get("look"):
             step = dict(step, follows_change=True, session=step.get("session") or program.get("session"))
 
+        if _replaces_selection(steps[index - 1] if index else None, step):
+            step = dict(step, append=False)
+
         report(f"Replay step {step['n']}/{total}: {step['summary']}")
 
         if step["kind"] == "manual":
@@ -1236,7 +1334,11 @@ def run(program, params=None, start=1, report=None, ladder=None):
             counts["unverified"] += 1
             continue
 
-        missing, observation = _await_checks(step["expect"], result.get("observation"), values)
+        # A press on a desktop icon is given the time an app takes to show its window, as `gui open` is.
+        # Found live: the icon was double-clicked, the app's window came up a few seconds after the ten
+        # this waits for a page, and the run had already stopped at its first step.
+        opening = core.OPEN_SECONDS if step["kind"] in ("click", "double_click") and _on_desktop(step) else None
+        missing, observation = _await_checks(step["expect"], result.get("observation"), values, seconds=opening)
 
         if missing:
             described = [describe_check(c) for c in missing]
