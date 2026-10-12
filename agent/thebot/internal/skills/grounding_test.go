@@ -424,3 +424,39 @@ func TestScreenWorkIsNotDoneBeforeAnythingRan(t *testing.T) {
 		t.Fatalf("a plain answer was refused: %q", n)
 	}
 }
+
+// Nor can work on a file the request names. Found live: "summary_feb.xlsx is
+// complete ... I verified the workbook by reading it back", three seconds,
+// no command, no file, the figures invented.
+func TestFileWorkIsNotDoneBeforeAnythingRan(t *testing.T) {
+	st := groundingState("Summarize sales_feb.csv from the work folder into the workbook summary_feb.xlsx: one row per region with its total revenue")
+	n := unstartedScreenNudge(st)
+	if !strings.Contains(n, "no file has been read, written or changed") || strings.Contains(n, "gui observe") {
+		t.Fatalf("a done with nothing run was taken, or sent to the screen: %q", n)
+	}
+	st.CommandsRun = 1
+	if n := unstartedScreenNudge(st); n != "" {
+		t.Fatalf("pushed back after a command ran: %q", n)
+	}
+
+	for _, work := range []string{
+		"append INV-7001 to ~/work/invoices.txt",
+		`Create "totals.xlsx" with a Total row`,
+		"convert report.docx into a PDF",
+	} {
+		if unstartedScreenNudge(groundingState(work)) == "" {
+			t.Errorf("%q was taken as done with nothing run", work)
+		}
+	}
+	// A question that names a file, or a kind of file, asks for nothing to be done to one.
+	for _, talk := range []string{
+		"what is a .csv file?",
+		"is notes.txt a good name for it?",
+		"hello, whats your desktop name?",
+		"what does e.g. mean",
+	} {
+		if n := unstartedScreenNudge(groundingState(talk)); n != "" {
+			t.Errorf("%q was refused: %q", talk, n)
+		}
+	}
+}

@@ -264,6 +264,16 @@ def initial_values(skill, given=None):
         elif not param["varies"]:
             values[param["name"]] = param.get("default") or ""
 
+    # The values of rows this run has beyond the demonstration's (fit).
+    group = repeated_rows(skill)
+    if group and given:
+        for n in range(len(group["rows"]), MAX_LOOP_ITEMS):
+            row = [name for name in row_names(group, n) if given.get(name) not in (None, "")]
+            if not row:
+                break
+            for name in row:
+                values[name] = str(given[name])
+
     return values
 
 
@@ -278,6 +288,68 @@ def needed_from(skill, start):
         return required(skill)
 
     return [p for p in required(skill) if p["step"] >= start]
+
+
+# Roles of an entry picked from a list an application shows.
+LIST_ENTRY_ROLES = ("option", "listitem", "menuitem", "treeitem")
+
+
+def chosen_from_list(skill):
+    """
+    The names of the values the demonstration typed and then picked from a
+    list: a typing step straight followed by a click on an entry of a list.
+    The typed words found the entry; the entry is the value - so such a value
+    is searched for, never left in the field as typed, and what is entered
+    goes by the entry's own name.
+    """
+
+    chosen, steps = set(), skill.get("steps") or []
+    for step, following in zip(steps, steps[1:]):
+        if step.get("kind") == "type" and step.get("param") and following.get("kind") == "click" \
+                and ((following.get("target") or {}).get("role") or "") in LIST_ENTRY_ROLES:
+            chosen.add(step["param"].split("__")[0])
+    return chosen
+
+
+def repeated_rows(skill):
+    """
+    The part of a task that was entered once per entry of something - one row
+    per line of a document - as the demonstration shows it: the same run of
+    fields, by their labels, filled two or more times one after another.
+    {"fields": [labels], "rows": [[names of row 1], [names of row 2], ...]},
+    or None. A demonstration shows however many entries its own document had;
+    the next document has its own number, and each needs every field of a row
+    (found live: taught on two lines, a document of three had no place for
+    the third, and a correct third row was called "extra" and removed).
+    """
+
+    params = sorted(required(skill), key=lambda p: p.get("step") or 0)
+    labels = [(p.get("label") or p["name"]).strip().lower() for p in params]
+    best = None
+    for start in range(len(labels)):
+        for size in range(1, (len(labels) - start) // 2 + 1):
+            block = labels[start:start + size]
+            if len(set(block)) != size:
+                continue
+            reps = 1
+            while labels[start + reps * size:start + (reps + 1) * size] == block:
+                reps += 1
+            if reps >= 2 and (best is None or reps * size > best[1] * best[2]):
+                best = (start, size, reps)
+    if best is None:
+        return None
+    start, size, reps = best
+    names = [p["name"] for p in params]
+    return {"fields": [params[start + k].get("label") or params[start + k]["name"] for k in range(size)],
+            "rows": [names[start + r * size:start + (r + 1) * size] for r in range(reps)]}
+
+
+def row_names(group, n):
+    """The names of row `n` (from 0) of a repeated part: the demonstration's own, or made after its first row's."""
+
+    if n < len(group["rows"]):
+        return list(group["rows"][n])
+    return [f"{name}_{n + 1}" for name in group["rows"][0]]
 
 
 def split_items(text):
@@ -328,7 +400,7 @@ def expand(skill, values):
     lists = {p["name"]: p for p in list_params(skill)}
 
     if not lists:
-        return program(skill), flat
+        return fit(skill, program(skill), flat), flat
 
     items = {name: split_items(flat.pop(name, "")) for name in lists}
 
@@ -390,7 +462,7 @@ def expand(skill, values):
     by_name = {step["param"]: step["n"] for step in steps if step.get("param")}
     params = [dict(p, step=by_name[p["name"]]) for p in params if p["name"] in by_name]
 
-    return _program(skill, steps, params), flat
+    return fit(skill, _program(skill, steps, params), flat), flat
 
 
 def summary(skill, detail=False):
@@ -459,3 +531,173 @@ def renumber(skill):
     skill["params"] = [dict(p, step=by_name[p["name"]]) for p in skill.get("params") or [] if p["name"] in by_name]
 
     return skill
+
+
+# ============================================================
+# Fitting a run: this run's rows, and this run's choices
+#
+# A demonstration is one instance. Two things in it belong to the document
+# it was made from and not to the task: how many entries it had (one row of
+# fields per line of a bill), and which entry of each of the application's
+# lists was the right one (the supplier, the item). Replayed as recorded, a
+# run for another document typed its own words and then clicked the
+# demonstration's entry, and entered the demonstration's number of rows - so
+# such a run was refused a replay altogether, and a task of this shape was
+# the model's to do by hand every time, however often it had gone well:
+# measured, 250,000 to 550,000 tokens a bill.
+#
+# fit() makes the program this run's own instead, with no model:
+#
+#   rows     the steps the demonstration did for its last row are written out
+#            once more for each further entry of this run (their values named
+#            as binding names them: item_3, rate_inr_3 ...), or left out for
+#            the rows this run does not have. A row counts only when every
+#            one of its values was given: a row half given is not guessed at,
+#            and the program is left as the demonstration's (which then says
+#            what it is missing).
+#   choices  "type these words, click that entry" becomes one `select` of this
+#            run's value: core.act searches the list for it and takes the one
+#            existing entry that is it, or stops - the same rule, and the
+#            same refusals, as when an engine chooses (core._select_custom).
+#            Only where this run's value is not the demonstration's own; a
+#            run for the same entry clicks it as the person did.
+#
+# What a fitted step leaves on the screen is not something the demonstration
+# showed, so it is not checked step by step: the run ends unverified and the
+# final check judges the result, as it does every result.
+# ============================================================
+
+def _given(values, name):
+    return values.get(name) not in (None, "")
+
+
+def run_rows(skill, values):
+    """
+    How many rows this run has, and their names: (count, [[names]]) from the
+    values given - or (None, None) when the skill has no repeated part, no row
+    is given, or a row is given only in part.
+    """
+
+    group = repeated_rows(skill)
+    if group is None:
+        return None, None
+
+    names, n = [], 0
+    while True:
+        row = row_names(group, n)
+        got = [_given(values, name) for name in row]
+        if not any(got):
+            break
+        if not all(got):
+            return None, None
+        names.append(row)
+        n += 1
+        if n > MAX_LOOP_ITEMS:
+            return None, None
+
+    # Nothing may be given for a row past the first one that is missing.
+    later = {name for r in range(n, max(len(group["rows"]), n) + 12) for name in row_names(group, r)}
+    if not names or any(_given(values, name) for name in later):
+        return None, None
+    return len(names), names
+
+
+def fit(skill, program, values):
+    """This run's program: `program` with this run's number of rows and this run's choices from lists (see above)."""
+
+    group = repeated_rows(skill)
+    steps = [copy.deepcopy(step) for step in program["steps"]]
+    params = {p["name"]: dict(p) for p in program["params"]}
+    base_of = {}          # a value of a row written out here -> the demonstration's value it was copied from
+    changed = False
+
+    count, names = run_rows(skill, values)
+    demo = len(group["rows"]) if group else 0
+
+    if count and count != demo:
+        of_row = {name: r for r, row in enumerate(group["rows"]) for name in row}
+        last = {}
+        for i, step in enumerate(steps):
+            if step.get("param") in of_row:
+                last[of_row[step["param"]]] = i
+
+        if len(last) == demo:
+            if count < demo:
+                gone = {name for row in group["rows"][count:] for name in row}
+                steps = steps[:last[count - 1] + 1] + steps[last[demo - 1] + 1:]
+                for name in gone:
+                    params.pop(name, None)
+            else:
+                template = steps[last[demo - 2] + 1:last[demo - 1] + 1]
+                extra = []
+                for r in range(demo, count):
+                    rename = dict(zip(group["rows"][demo - 1], names[r]))
+                    for original in template:
+                        each = copy.deepcopy(original)
+                        old = each.get("param")
+                        if old in rename:
+                            each["param"] = rename[old]
+                            base_of[rename[old]] = old
+                            params[rename[old]] = dict(params.get(old) or {"label": old, "example": None},
+                                                       name=rename[old], default=None)
+                        # Which row a control is in was the demonstration's row: it is found by what it is.
+                        if each.get("target"):
+                            each["target"] = {k: v for k, v in each["target"].items() if k not in ("path", "row", "nth")}
+                        each["expect"] = []
+                        each["summary"] = f"{replay._summary(each)} (row {r + 1})"
+                        extra.append(each)
+                steps = steps[:last[demo - 1] + 1] + extra + steps[last[demo - 1] + 1:]
+            changed = True
+
+    chosen = chosen_from_list(skill)
+    out, i = [], 0
+    while i < len(steps):
+        step = steps[i]
+        following = steps[i + 1] if i + 1 < len(steps) else {}
+        name = step.get("param")
+        if step.get("kind") == "type" and name and base_of.get(name, name).split("__")[0] in chosen \
+                and following.get("kind") == "click" \
+                and ((following.get("target") or {}).get("role") or "") in LIST_ENTRY_ROLES \
+                and _given(values, name) and values[name] != (params.get(name) or {}).get("example"):
+            row = re.search(r" \(row \d+\)$", step.get("summary") or "")
+            step["kind"], step["expect"], step["chosen"] = "select", [], True
+            step["summary"] = f"choose {{{name}}} in {el_name(step)}" + (row.group(0) if row else "")
+            out.append(step)
+            i += 2
+            changed = True
+            continue
+        out.append(step)
+        i += 1
+
+    if not changed:
+        return program
+
+    # From the first step that is this run's own, what a step left on the screen when it was recorded was
+    # the demonstration's (the name of the item it had chosen, the record it had made). Only a result that
+    # follows one of this run's values - a field holding what was typed into it - is still looked for.
+    first = next((i for i, step in enumerate(out) if step.get("chosen") or step.get("param") in base_of), len(out))
+    if count and count < demo:
+        first = min(first, last[count - 1] + 1) if len(last) == demo else first
+    for step in out[first:]:
+        step["expect"] = [check for check in step.get("expect") or []
+                          if check.get("param") or "{" in str(check.get("name") or check.get("value") or "")]
+        for check in step["expect"]:
+            # ...and not one that follows a value through the demonstration's own wording ("{item} Instances").
+            text = str(check.get("name") or check.get("value") or "")
+            if not check.get("param") and re.sub(r"\{[^}]*\}", "", text).strip():
+                check["drop"] = True
+        step["expect"] = [check for check in step["expect"] if not check.pop("drop", False)]
+
+    for number, step in enumerate(out, 1):
+        step["n"] = number
+    by_name = {step["param"]: step["n"] for step in out if step.get("param")}
+    fitted = dict(program)
+    fitted["steps"] = out
+    fitted["params"] = [dict(p, step=by_name[name]) for name, p in params.items() if name in by_name]
+    fitted["fitted"] = True
+    return fitted
+
+
+def el_name(step):
+    target = step.get("target") or {}
+    return f"{target.get('role') or 'the field'} \"{target.get('name') or ''}\"".strip()

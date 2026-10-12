@@ -4,7 +4,7 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler
 
-from decurix_agent import record_task, replay_task, skill_task
+from decurix_agent import playbooks, record_task, replay_task, skill_task
 from decurix_agent.computer import (
     catalog,
     demonstration,
@@ -175,6 +175,16 @@ class Handler(BaseHTTPRequestHandler):
             if parts == ["skills"]:
                 return self._json(200, {"skills": [skills.summary(s) for s in skills.all_skills()]})
 
+            # What this desktop worked out for itself and kept (playbooks.py).
+            if parts == ["playbooks"]:
+                return self._json(200, {"playbooks": playbooks.listing()})
+
+            if len(parts) == 2 and parts[0] == "playbooks":
+                found = playbooks.detail(parts[1]) if playbooks.NAME.match(parts[1]) else None
+                if found is None:
+                    raise FileNotFoundError(parts[1])
+                return self._json(200, {"playbook": found})
+
             if len(parts) == 2 and parts[0] == "skills":
                 return self._json(200, {"skill": skills.summary(skills.load(parts[1]), detail=True)})
 
@@ -300,6 +310,11 @@ class Handler(BaseHTTPRequestHandler):
 
                 if action == "learn":
                     return self._learn(session_id, data)
+
+            if len(parts) == 3 and parts[0] == "playbooks" and parts[2] == "delete":
+                if not playbooks.NAME.match(parts[1]) or not playbooks.forget(parts[1]):
+                    raise FileNotFoundError(parts[1])
+                return self._json(200, {"status": "deleted"})
 
             if len(parts) == 3 and parts[0] == "skills":
                 if parts[2] == "delete":

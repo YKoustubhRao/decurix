@@ -134,7 +134,9 @@ class WithTheModel(ts.TeachingBase):
 
         self.assertEqual(self.judged, [])                      # no picture was asked to prove anything
         self.assertEqual(len(self.engine_calls), 2)            # sent back once...
-        self.assertIn("Nothing was done on the screen", self.engine_calls[1][1])
+        # Sent back as a first attempt, not as work to find and correct: nothing of it exists.
+        self.assertIn("DID NOTHING ON THE SCREEN", self.engine_calls[1][1])
+        self.assertNotIn("SECOND ATTEMPT", self.engine_calls[1][1])
         self.assertEqual(self.finals, [])                      # ...and never reported done
         self.assertIn("I do not think this is done", self.asked[-1][0])
 
@@ -394,8 +396,12 @@ class WithTheModel(ts.TeachingBase):
 
         skill_task.perform(f"/skill {name}")
 
+        # The model looks into it before a person is asked; with nothing more to go on, the person then is -
+        # and the skill is one the model does from now on, with the replay as its tool.
+        self.assertEqual(len(self.engine_calls), 1)
         self.assertEqual(self.finals, [])
-        self.assertIn("an error: name required", self.asked[-1][0])
+        self.assertIn("I cannot confirm this is done", self.asked[-1][0])
+        self.assertIn("an error: name required", skills.load(name)["supervised"])
 
 
 class WithoutAModel(ts.TeachingBase):

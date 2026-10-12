@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, Menu, powerSaveBlocker, shell, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, nativeTheme, powerSaveBlocker, shell, dialog } = require('electron');
 const { spawn } = require('node:child_process');
 const dgram = require('node:dgram');
 const fs = require('node:fs');
@@ -132,6 +132,14 @@ async function stopMobileAccess() {
   await access?.stop();
 }
 
+// The startup screen's paper and ink (loading.html, the dashboard's own
+// tokens), for the window behind it and the caption buttons over it.
+function startupPalette() {
+  return nativeTheme && nativeTheme.shouldUseDarkColors
+    ? { color: '#100f0e', symbolColor: '#f2f0ea' }
+    : { color: '#f6f5f2', symbolColor: '#1a1917' };
+}
+
 function update(message, failed = false, detail = '') {
   if (window && !window.isDestroyed()) {
     window.webContents.send('startup-status', { message, failed, detail });
@@ -189,7 +197,7 @@ async function backendLost() {
   // error ended the restart before it began, and the window stayed dead.
   try { await stopMobileAccess(); } catch (error) { console.warn('Could not stop quick tunnel:', error.message); }
   if (closing || !window || window.isDestroyed()) return;
-  if (windows) window.setTitleBarOverlay({ color: '#111827', symbolColor: '#f9fafb' });
+  if (windows) window.setTitleBarOverlay(startupPalette());
   await window.loadFile(path.join(__dirname, 'loading.html'));
 
   const now = Date.now();
@@ -248,7 +256,10 @@ function run(file, args, onLine, options = {}) {
   return new Promise((resolve) => {
     let log = null;
     try { log = fs.openSync(logFile(), 'a'); } catch { /* the log is decoration */ }
-    const child = spawn(file, args, { windowsHide: true, ...options, stdio: ['ignore', 'pipe', 'pipe'] });
+    // Not in the app's own folder: a program that outlives the app (a
+    // download a helper script started) would keep that folder from being
+    // replaced by an update or removed by the uninstaller.
+    const child = spawn(file, args, { windowsHide: true, cwd: os.tmpdir(), ...options, stdio: ['ignore', 'pipe', 'pipe'] });
     let rest = '';
     const take = (chunk) => {
       if (log !== null) { try { fs.writeSync(log, chunk); } catch { /* decoration */ } }
@@ -436,6 +447,66 @@ async function installWsl() {
   }
 }
 
+// What a first install needs of the computer, asked before anything is set up
+// so a person is told in plain words rather than left with a log to read. The
+// distro is x86-64 Linux (the worker images are amd64), WSL 2 needs Windows 10
+// 2004 (build 19041), and the first start downloads and builds the worker
+// desktop: FIRST_INSTALL_GB is that, Docker, and room to work in.
+const MIN_WINDOWS_BUILD = 19041;
+const FIRST_INSTALL_GB = 20;
+
+function checkThisComputer() {
+  const arch = [process.arch, process.env.PROCESSOR_ARCHITECTURE, process.env.PROCESSOR_ARCHITEW6432].filter(Boolean).join(' ');
+  if (/arm64/i.test(arch)) {
+    throw new Error('Decurix needs a 64-bit Intel or AMD computer. This one has an ARM processor, which its workers cannot run on.');
+  }
+  const build = Number(os.release().split('.')[2]);
+  if (build && build < MIN_WINDOWS_BUILD) {
+    throw new Error(`Decurix needs Windows 10 version 2004 or newer, or Windows 11. Update Windows (this is build ${build}), then open Decurix again.`);
+  }
+  let free = Infinity;
+  try {
+    fs.mkdirSync(distroDir(), { recursive: true });
+    const disk = fs.statfsSync(distroDir());
+    free = Number(disk.bavail) * Number(disk.bsize);
+  } catch { /* a disk that cannot be asked is not known to be full */ }
+  if (free < FIRST_INSTALL_GB * 1024 ** 3) {
+    throw new Error(`Setting up Decurix needs about ${FIRST_INSTALL_GB} GB of free disk space, and this computer has ${Math.floor(free / 1024 ** 3)} GB. Free some space, then retry.`);
+  }
+}
+
+// What WSL says when it cannot start a Linux at all: the Virtual Machine
+// Platform feature is off, or the processor's virtualization is switched off
+// in the computer's firmware.
+const NO_VIRTUALIZATION = /virtuali[sz]ation|virtual machine platform|HCS_E_HYPERV_NOT_INSTALLED|0x80370102|0x80370114|0x8004032d|WSL2 is not supported/i;
+
+// importDistro makes the app's distro from the rootfs it ships. A Windows
+// whose Virtual Machine Platform is off is asked to turn it on (the same
+// administrator prompt as turning WSL on), once; that needs a restart, and
+// what a restart does not cure is the firmware's setting.
+async function importDistro() {
+  const message = 'Setting up Linux for Decurix…';
+  const attempt = async () => {
+    update(message);
+    let said = '';
+    const code = await wsl(['--import', DISTRO, distroDir(), resource(path.join('wsl', 'alpine-minirootfs.tar.gz')), '--version', '2'],
+      (line) => { said += line.replace(/\0/g, '') + '\n'; update(message, false, line); });
+    return { code, said };
+  };
+  const first = await attempt();
+  if (first.code === 0) return;
+  if (!NO_VIRTUALIZATION.test(first.said)) throw new Error(`Could not set up Linux for Decurix. Check ${logFile()}`);
+
+  const asking = 'Turning on Windows\' Virtual Machine Platform. Windows will ask you to allow it.';
+  update(asking);
+  const command = "Start-Process -FilePath wsl.exe -ArgumentList '--install','--no-distribution' -Verb RunAs -Wait";
+  await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], (line) => update(asking, false, line));
+  if ((await attempt()).code === 0) return;
+  throw new Error('Windows cannot run Linux on this computer yet. Restart Windows, then open Decurix again. '
+    + 'If you see this again after the restart, virtualization is switched off in the computer\'s BIOS/UEFI settings '
+    + '(Intel VT-x, AMD-V or SVM): turn it on there.');
+}
+
 async function distroExists() {
   const names = [];
   const code = await wsl(['--list', '--quiet'], (line) => names.push(line.replace(/\0/g, '').trim()));
@@ -476,14 +547,11 @@ function startHiddenScript(commandLine) {
 // (setup.sh), then the daemon started (dockerd.sh) and waited for.
 async function linuxReady() {
   await stopEarlierWindowsApp();
-  if (!await wslInstalled()) await installWsl();
-
-  if (!await distroExists()) {
-    const message = 'Setting up Linux for Decurix…';
-    update(message);
-    fs.mkdirSync(distroDir(), { recursive: true });
-    const code = await wsl(['--import', DISTRO, distroDir(), resource(path.join('wsl', 'alpine-minirootfs.tar.gz')), '--version', '2'], (line) => update(message, false, line));
-    if (code !== 0) throw new Error(`Could not set up Linux for Decurix. Check ${logFile()}`);
+  const hasWsl = await wslInstalled();
+  if (!hasWsl || !await distroExists()) {
+    checkThisComputer();
+    if (!hasWsl) await installWsl();
+    await importDistro();
   }
 
   const message = 'Preparing Linux. The first time, this installs Docker.';
@@ -802,10 +870,12 @@ function openWindow() {
     minWidth: 800,
     minHeight: 600,
     title: 'Decurix',
+    // What shows before a page has painted: never a white flash.
+    backgroundColor: startupPalette().color,
     // Keep native Windows controls (including Snap Layouts) inside the app header.
     ...(windows ? {
       titleBarStyle: 'hidden',
-      titleBarOverlay: { color: '#111827', symbolColor: '#f9fafb', height: 52 },
+      titleBarOverlay: { ...startupPalette(), height: 52 },
     } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),

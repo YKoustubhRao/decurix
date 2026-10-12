@@ -180,6 +180,30 @@ Decurix is being built toward a world where AI workers can:
 
 ---
 
+## 🪟 Install on Windows (no setup, no Docker Desktop)
+
+Download `Decurix Setup <version>.exe`, double-click it, and open Decurix from the Start menu. The app sets everything else up itself.
+
+**What the computer needs**
+
+* Windows 10 version 2004 or newer, or Windows 11, on a 64-bit Intel or AMD processor (not ARM).
+* Virtualization switched on in the BIOS/UEFI (Intel VT-x, AMD-V/SVM). Most PCs ship with it on.
+* About 20 GB of free disk space and 8 GB of RAM or more.
+* An internet connection for the first start.
+
+**What happens on the first start**
+
+1. The installer is not code-signed yet, so Windows SmartScreen may say "Windows protected your PC": choose **More info**, then **Run anyway**.
+2. If Windows Subsystem for Linux is not on, Decurix turns it on. Windows asks for an administrator's yes once, and a PC that never had it needs one restart; open Decurix again afterwards.
+3. Decurix sets up its own small Linux, installs Docker in it and builds the worker desktop. This takes roughly 10 to 20 minutes once, with progress shown in the window. Later starts take seconds.
+4. The dashboard opens. Create a worker, and in the create dialog choose its brain: a hosted model (paste your Claude or Azure key there) or the local model.
+
+Your workers and settings live in `%LOCALAPPDATA%\Decurix` and `%APPDATA%\decurix`; updating by running a newer installer keeps them, and the uninstaller asks before deleting them. If a start fails, the window says why, and the details are in `%APPDATA%\decurix\desktop.log`.
+
+To build the installer yourself: `scripts\windows\build_app.ps1` (needs Go and Node.js); it is written to `dist\electron\`.
+
+---
+
 ## ⚙️ Getting Started (running it locally)
 
 Decurix has two moving pieces: a Go **control plane** (the dashboard + Docker orchestration) and per-worker **desktop images** (disposable VNC desktops the control plane spins up). Both run in Docker.

@@ -1,7 +1,7 @@
 import json
 import re
 
-from decurix_agent import attachments, llm_client, usage
+from decurix_agent import attachments, llm_client
 from decurix_agent.computer import evidence, learning, replay
 from decurix_agent.logging_utils import log
 
@@ -225,10 +225,6 @@ def _token_budget(skill):
 def _call(system, content, max_tokens=6000):
     message, spent = llm_client.chat([{"role": "system", "content": system}, {"role": "user", "content": content}],
                                      max_tokens=max_tokens, response_format={"type": "json_object"})
-    try:
-        usage.add(input_tokens=spent.get("prompt_tokens") or 0, output_tokens=spent.get("completion_tokens") or 0)
-    except Exception:
-        pass
     text = message.get("content") or ""
     match = re.search(r"\{.*\}", text, re.DOTALL)
     if not match:
