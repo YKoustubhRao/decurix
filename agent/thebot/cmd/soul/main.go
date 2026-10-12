@@ -45,12 +45,14 @@ type jobRecord struct {
 	// Outcome, Question, Route and Steps are the scheduler's structured
 	// account of the job - what a host needs to act on it without parsing
 	// FinalAnswer (see scheduler.Outcome).
-	Outcome     scheduler.Outcome
-	Question    string
-	Route       string
-	Steps       []scheduler.StepRecord
-	Resumed     bool
-	Log         []string
+	Outcome  scheduler.Outcome
+	Question string
+	Route    string
+	Steps    []scheduler.StepRecord
+	Resumed  bool
+	Log      []string
+	// Usage is what this job's model calls read and wrote (llm.Metered).
+	Usage       *llm.Usage
 	cancel      context.CancelFunc
 	done        chan struct{}
 	subscribers map[chan string]bool
@@ -118,12 +120,14 @@ func (j *jobRecord) unsubscribe(ch chan string) {
 func (j *jobRecord) snapshot() map[string]any {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	promptTokens, responseTokens, calls := j.Usage.Snapshot()
 	return map[string]any{
 		"id": j.ID, "prompt": j.Prompt, "status": j.Status,
 		"plan": j.Plan, "results": j.Results, "finalAnswer": j.FinalAnswer,
 		"usedSkill": j.UsedSkill, "proposedSkill": j.ProposedSkill,
 		"outcome": j.Outcome, "question": j.Question, "route": j.Route,
 		"steps": j.Steps, "resumed": j.Resumed,
+		"usage": map[string]int{"promptTokens": promptTokens, "responseTokens": responseTokens, "calls": calls},
 	}
 }
 
@@ -412,8 +416,10 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	ctx, used := llm.WithUsage(ctx)
 	job.mu.Lock()
 	job.cancel = cancel
+	job.Usage = used
 	job.mu.Unlock()
 
 	go func() {
@@ -683,7 +689,7 @@ func main() {
 	rawProvider, models, embedder := buildProvider(cfg)
 	// Every chat call in the process - scheduler steps running side by
 	// side, L1's judge, the coding harness - shares one concurrency limit.
-	provider := llm.Limited(rawProvider, modelConcurrency(cfg))
+	provider := llm.Limited(llm.Metered(rawProvider), modelConcurrency(cfg))
 	log.Printf("[soul] model concurrency: %d", modelConcurrency(cfg))
 
 	// Which model does which job, said out loud at startup. A hybrid setup

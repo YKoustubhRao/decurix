@@ -35,6 +35,9 @@ var engineLabels = map[string]string{
 	// A question put to a web app (ChatGPT, Google, ...) in the desktop's
 	// browser and its answer read off the page (agent ask_task.py).
 	"web": "Web app (no model)",
+	// A request done by a script the desktop wrote for itself from work it
+	// had done by hand (agent tool_task.py, playbooks.py): no engine turn.
+	"tool": "Own tool",
 }
 
 // EngineLabel is the human-readable name of an engine.
@@ -64,8 +67,13 @@ type Summary struct {
 	Duration       time.Duration `json:"duration_ns"`
 	WaitingOnHuman time.Duration `json:"waiting_on_human_ns"`
 	CostUSD        *float64      `json:"cost_usd"`
-	Settled        bool          `json:"settled"`
-	Autonomous     bool          `json:"autonomous"`
+	// Tokens is what the task's model calls read and wrote in all, over every
+	// attempt; nil when no engine reported a count. A hosted model's cost is
+	// on the provider's bill and never reported here, so this is the figure
+	// that shows whether a worker is getting cheaper at its work.
+	Tokens     *int64 `json:"tokens"`
+	Settled    bool   `json:"settled"`
+	Autonomous bool   `json:"autonomous"`
 
 	// SteppedIn lists, as reason keys, every time a human had to act on this
 	// task: each intervention, each failed attempt, a stop, a wrong verdict.
@@ -229,6 +237,20 @@ func (s *Store) summaries(since time.Time) ([]Summary, error) {
 			summary.CostUSD = &total
 		}
 
+		if execution.InputTokens != nil || execution.OutputTokens != nil {
+			var total int64
+			if summary.Tokens != nil {
+				total = *summary.Tokens
+			}
+			if execution.InputTokens != nil {
+				total += *execution.InputTokens
+			}
+			if execution.OutputTokens != nil {
+				total += *execution.OutputTokens
+			}
+			summary.Tokens = &total
+		}
+
 		switch execution.Status {
 		case StatusError:
 			summary.Errors++
@@ -301,7 +323,11 @@ type Group struct {
 
 	MedianSeconds float64  `json:"median_seconds"`
 	CostUSD       *float64 `json:"cost_usd"`
-	TopReason     string   `json:"top_reason,omitempty"`
+	// Tokens is the group's reported token use; TokenTasks how many of its
+	// tasks reported one, so a mean is over those and not over all.
+	Tokens     *int64 `json:"tokens"`
+	TokenTasks int    `json:"token_tasks"`
+	TopReason  string `json:"top_reason,omitempty"`
 
 	durations []time.Duration
 	reasons   map[string]int
@@ -326,6 +352,20 @@ func (g Group) Median() string {
 // Cost is the group's reported spend, for display.
 func (g Group) Cost() string {
 	return FormatCost(g.CostUSD)
+}
+
+// TokensUsed is the group's reported token use, for display.
+func (g Group) TokensUsed() string {
+	return FormatTokens(g.Tokens)
+}
+
+// TokensPerTask is the mean token use of the group's tasks that reported one, for display.
+func (g Group) TokensPerTask() string {
+	if g.Tokens == nil || g.TokenTasks == 0 {
+		return FormatTokens(nil)
+	}
+	mean := *g.Tokens / int64(g.TokenTasks)
+	return FormatTokens(&mean)
 }
 
 // Reason is one row of "why humans stepped in".
@@ -537,6 +577,15 @@ func (g *Group) add(summary Summary) {
 		g.CostUSD = &total
 	}
 
+	if summary.Tokens != nil {
+		total := *summary.Tokens
+		if g.Tokens != nil {
+			total += *g.Tokens
+		}
+		g.Tokens = &total
+		g.TokenTasks++
+	}
+
 	if !summary.Settled {
 		return
 	}
@@ -651,6 +700,20 @@ func FormatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dm %02ds", int(d.Minutes()), int(d.Seconds())%60)
 	default:
 		return fmt.Sprintf("%dh %02dm", int(d.Hours()), int(d.Minutes())%60)
+	}
+}
+
+// FormatTokens renders a reported token count; nil means none was reported.
+func FormatTokens(tokens *int64) string {
+	switch {
+	case tokens == nil:
+		return "—"
+	case *tokens < 1000:
+		return fmt.Sprintf("%d", *tokens)
+	case *tokens < 1000000:
+		return fmt.Sprintf("%.1fk", float64(*tokens)/1000)
+	default:
+		return fmt.Sprintf("%.2fM", float64(*tokens)/1000000)
 	}
 }
 

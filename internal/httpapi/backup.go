@@ -42,7 +42,12 @@ import (
 // primary listener and only to a person (RegisterLocalRoutes, humansOnly).
 
 // backupParts are the folders of a desktop's ~/.decurix a backup always takes.
-var backupParts = []string{"skills", "memory"}
+//
+// playbooks and tools are what a desktop worked out for itself: the way
+// through a kind of request, and the scripts it wrote from work it had done by
+// hand (the agent's playbooks.py). They are know-how like a taught skill, and
+// a worker that takes over from another should not have to find it out again.
+var backupParts = []string{"skills", "memory", "playbooks", "tools"}
 
 // backupMaxDataFile bounds a data-dir file copied beside the database; the
 // database itself is never skipped.

@@ -110,19 +110,27 @@ def live_text(limit=4000):
     """
 
     try:
-        from decurix_agent.computer import core, privacy
-        from decurix_agent.computer import elements as el
+        from decurix_agent.computer import core
 
         observation = core.observe(remember=False)
     except Exception as exc:
         log(f"evidence: could not read the screen's text: {exc}")
         return ""
 
+    return fields_text(observation, limit)
+
+
+def fields_text(observation, limit=4000, offscreen=False):
+    """What the fields of one look at the screen hold, as text (see live_text); "" when none holds anything."""
+
+    from decurix_agent.computer import core, privacy
+    from decurix_agent.computer import elements as el
+
     out = [f"Window with the keyboard: {observation.get('active_title') or '(none)'}"]
     active = core.active_group(observation)
     fields = [e for e in observation.get("elements", [])
               if e.get("role") in core.TYPING_ROLES and (e.get("value") or "").strip()
-              and "offscreen" not in e.get("states", []) and not privacy.secret_field(e)]
+              and (offscreen or "offscreen" not in e.get("states", [])) and not privacy.secret_field(e)]
     fields.sort(key=lambda e: e.get("group") != active)
     for e in fields:
         text, withheld = privacy.withhold_text(e, e["value"])
@@ -149,7 +157,7 @@ def live_text(limit=4000):
 
 NOTES_DIR = config.DECURIX_DIR / "computer" / "evidence"
 NOTES_KEEP_SECONDS = 2 * 24 * 3600
-MAX_NOTE = 4000
+MAX_NOTE = 18000
 MAX_OBSERVED = 40
 
 
@@ -168,6 +176,69 @@ def note(text):
         log(f"evidence: could not keep a note: {exc}")
 
 
+# How much of one look at the screen is kept as a note.
+MAX_LOOK = 2000
+MAX_FIELDS = 8000
+MAX_WORDS = 7000
+# What a page says without it being a field: a saved record shows its rows and totals as plain words.
+READ_ROLES = ("text", "link", "cell", "gridcell", "heading", "status", "alert", "rowheader", "columnheader", "listitem")
+
+
+def words_text(observation, limit=MAX_WORDS):
+    """
+    The words the front window's page shows that are not fields, in the page's
+    order, the part out of view included; "" when it shows none. Found live:
+    once a record is saved its rows and totals are no longer fields but plain
+    words, so a look that kept only fields left the check unable to confirm a
+    correct record ("does not show the entered row or the total").
+    """
+
+    from decurix_agent.computer import core
+
+    active = core.active_group(observation)
+    out, last = [], None
+    for e in observation.get("elements", []):
+        # (Which window is in front cannot always be told - an app that is a page in a window of its own is
+        # titled otherwise than its page: then every window's words are kept. Found live: nothing was.)
+        if (active is not None and e.get("group") != active) or e.get("role") not in READ_ROLES:
+            continue
+        name = " ".join((e.get("name") or "").split())
+        if not name or name == last:
+            continue
+        out.append(name[:200])
+        last = name
+    text = " | ".join(out)
+    return text[:limit] + (" ..." if len(text) > limit else "")
+
+
+def note_look(shown, observation=None):
+    """
+    Keep what a tool's look at the screen read, for the task being worked on:
+    the list of windows and elements exactly as the engine was shown it (read
+    only values are in it as text, which a list of fields would miss). Found
+    live: a worker read a saved record's date and total off its page (`gui
+    observe`), closed the page as the task asks, and reported both - and the
+    check, shown the closed screen and a list of actions, could not confirm a
+    value nobody had kept. A look is evidence only if what it saw is written
+    down. Never raises.
+    """
+
+    # Every field of the page with what it holds, the part scrolled out of sight included: a total at the foot of
+    # a long form is on the page when its top is on the screen. Found live: a correct record could not be
+    # confirmed because the look that read it listed only the part in view.
+    held = words = ""
+    if observation is not None:
+        try:
+            held = fields_text(observation, MAX_FIELDS, offscreen=True)
+            words = words_text(observation)
+        except Exception as exc:
+            log(f"evidence: could not list the fields of a look: {exc}")
+    if (shown and shown.strip()) or held or words:
+        note("a look at the screen then. What every field of the page held (in view or not):\n" + (held or "(none)")
+             + "\nThe words the page showed outside its fields, in its order (in view or not):\n" + (words or "(none)")
+             + "\nThe part in view, as the tool listed it:\n" + (shown or "").strip()[:MAX_LOOK])
+
+
 def _prune():
     cutoff = time.time() - NOTES_KEEP_SECONDS
     for path in NOTES_DIR.glob("*.jsonl"):
@@ -176,6 +247,44 @@ def _prune():
                 path.unlink()
         except OSError:
             pass
+
+
+def entered(task_id=None):
+    """
+    What a task's tools put into fields, oldest first: the text of each typing
+    that went through, and each option selected. A text that was withheld (a
+    secret) is not among them.
+    """
+
+    task_id = task_id or task_context.current()
+    if not task_id:
+        return []
+    try:
+        _, events = recording.load(recording.session_for_task(task_id))
+    except (FileNotFoundError, OSError, ValueError):
+        return []
+    return [str(value) for event in events if event.get("outcome") in (None, "done")
+            for value in (event.get("text") if event.get("kind") == "type" else None,
+                          event.get("option") if event.get("kind") == "select" else None) if value]
+
+
+def read(task_id=None):
+    """Everything a task's tools read off the screen, as one text ("" when nothing was kept)."""
+
+    task_id = task_id or task_context.current()
+    if not task_id:
+        return ""
+    out = []
+    try:
+        with open(NOTES_DIR / f"{task_id}.jsonl", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    out.append(json.loads(line)["text"])
+                except (ValueError, KeyError):
+                    continue
+    except OSError:
+        pass
+    return "\n".join(out)
 
 
 def observed(task_id=None):

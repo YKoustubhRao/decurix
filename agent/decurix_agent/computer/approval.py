@@ -172,7 +172,18 @@ NAVIGATION_PATH = re.compile(r"(^|>\s*)navigation\b")
 RECORD_NAME = re.compile(
     r"^\s*(purchase|transfer)\s+(invoices?|orders?|receipts?|requests?|returns?|ledgers?|registers?|reports?|"
     r"analytics|history|list|settings|entr(?:y|ies)|summary|trends|quotations?|requisitions?|analysis|items?|taxes|"
-    r"records?|notes?|vouchers?|bills?)\s*$",
+    r"records?|notes?|vouchers?|bills?)"
+    # ...and the places such records are looked at: "Purchase Invoice List", "Purchase Order Report". Found live:
+    # a worker looking for an earlier copy of a bill before entering it was stopped for a yes at the list of them.
+    r"(?:\s+(?:list|lists|report|reports|register|summary|analytics|analysis|history|trends|dashboard|view|"
+    r"search|settings))?\s*$",
+    re.IGNORECASE,
+)
+
+
+DOCUMENT_NAME = re.compile(
+    r"^\s*(purchase|transfer)\s+(invoices?|receipts?|ledgers?|registers?|reports?|quotations?|requisitions?|"
+    r"vouchers?)\s*$",
     re.IGNORECASE,
 )
 
@@ -193,6 +204,13 @@ def _navigates(element):
     if role == "option":
         return True
     name = (element.get("name") or "").strip()
+    if role == "button":
+        # A button whose whole label is a kind of document opens that kind
+        # of document. Found live: a page's shortcut button to its list of
+        # purchase invoices stopped a task for a yes. Only nouns nobody can
+        # buy or move - "Purchase items" and "Purchase order" on a button
+        # can be acts, and still stop.
+        return bool(DOCUMENT_NAME.match(name))
     if role not in ("link", "menuitem", "tab"):
         return False
     if RECORD_NAME.match(name):

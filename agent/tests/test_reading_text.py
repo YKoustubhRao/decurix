@@ -143,7 +143,7 @@ class TheCheckReadsTheTextItself(unittest.TestCase):
             seen["text"] = messages[1]["content"][0]["text"]
             return {"content": '{"verdict": "not_done", "confidence": 0.9, "seen": "", "why": "one left"}'}, {}
 
-        with patch.object(verify, "available", return_value=True), patch.object(llm_client, "chat", side_effect=chat),              patch.object(verify, "_count"):
+        with patch.object(verify, "available", return_value=True), patch.object(llm_client, "chat", side_effect=chat):
             verify.judge("replace every colour with color", claim="all replaced", screen_text="textbox holds: colour")
         self.assertIn("read from the apps themselves", seen["text"])
         self.assertIn("textbox holds: colour", seen["text"])

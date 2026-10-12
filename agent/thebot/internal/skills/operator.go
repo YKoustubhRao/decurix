@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 	"time"
 
 	"thebot/internal/llm"
@@ -106,7 +107,8 @@ const visionRule = `- The pages of a scanned document that office read finds are
 const taskRules = `- Use documents only when their names, identifiers and contents belong to the person, organization or task requested. Leave unrelated sources out, finish the rest, and report what you excluded.
 - Match records using identifiers and relevant attributes from the request and sources. Capitalization, punctuation or spacing alone need not make a different record. Similar names alone are not enough; if several candidates fit, ask the person with the distinguishing evidence.
 - When comparing documents, compare the requested fields, ignoring only capitals and spacing unless the task permits other normalization. Report differences with both values and their sources.
-- Two lists may describe the same entry differently: compare descriptions, identifiers, attributes and units before calling an entry missing or new.
+- Two lists may describe the same entry differently: compare descriptions, identifiers, attributes and units before calling an entry missing or new. When each of two lists has an entry left over that agrees on who, when and how much but whose reference is written differently (a leading zero, punctuation, a prefix), report the pair as a probable match with both spellings - not as matched, and not as two missing entries. Whatever you say about a file you wrote must be what the file holds: read it back before DONE.
+- A table of entries on a page shows its fields for one row at a time, and gui observe says which (textbox "Quantity" [row 2]). Tab out of a row's last field moves to the next row, making it if there is none: look before adding a row, fill each row's fields by that row's own refs, and delete a row left empty before saving. A form opens with defaults already chosen (a company, an account, a date, a tax): set every one the request names, and compare the rest with the request before saving.
 - Use the source's values when making a draft from it, and report differences from application defaults. Every figure has a unit and basis: read them, convert to what was asked, and check the result.
 - In an application, scroll and observe before deciding a field is missing. Never click the screen's bottom edge or a scrollbar to move a page. A form is saved only when the application says so; fix field errors and save again. On a page with several forms, use Save within the form you filled. Set dropdowns and suggestion fields with gui select REF "value", then verify the selected entry; typing and Tab may leave the field unset. Complete any configuration dialog using the requested attributes and verify the result. Type dates in the format the field shows, then check that they hold.
 - Before DONE, check every part of the request in the application or output files. List what was completed, how you verified it, and anything left undone with its reason.
@@ -245,8 +247,104 @@ func parseControl(reply string) (action, value string) {
 		}
 		value = strings.TrimSpace(strings.Trim(value, "`"))
 		value = strings.TrimSpace(strings.TrimPrefix(value, "$ "))
+		value = withoutLeakedCall(value)
 	}
 	return action, value
+}
+
+// leakedCallRe is the trace a hosted model leaves when part of its own
+// tool-call framing spills into the text of a reply: " to=<channel>" followed
+// by the fields of a call or of its result.
+var (
+	leakedToRe     = regexp.MustCompile(`\s+to=[A-Za-z_][\w.:]*`)
+	leakedFieldsRe = regexp.MustCompile(`^(?:\s+\S+)*?\s+(?:code=\d+|stdout=|stderr=|code_block\b|format=[a-z]+)`)
+)
+
+// leakedCall is where a spill of call framing starts in a line, or -1: a
+// " to=<channel>" that is not inside a quoted argument and is either followed
+// by a call's fields or comes straight after text in another script glued on
+// by the model (`"65000.00" <Thai>assistant to=all:final code`).
+func leakedCall(line string) int {
+	for _, loc := range leakedToRe.FindAllStringIndex(line, -1) {
+		before := line[:loc[0]]
+		if strings.Count(before, `"`)%2 == 1 || strings.Count(before, `'`)%2 == 1 {
+			continue
+		}
+		if leakedFieldsRe.MatchString(line[loc[1]:]) {
+			return loc[0]
+		}
+		words := strings.Fields(before)
+		if len(words) == 0 {
+			continue
+		}
+		last := words[len(words)-1]
+		if strings.IndexFunc(last, func(r rune) bool { return r > unicode.MaxASCII }) >= 0 {
+			return loc[0]
+		}
+		// A channel's name before it and a payload's kind after it: both, or
+		// it is an ordinary argument ("./final to=backup:/srv").
+		if leakedRoleRe.MatchString(last) && leakedKindRe.MatchString(line[loc[1]:]) {
+			return loc[0]
+		}
+	}
+	return -1
+}
+
+// leakedRoleRe is a word that ends in the name of one of the model's own
+// channels, as the word before a spilled " to=" does ("...analysis
+// to=commentary").
+var (
+	leakedRoleRe = regexp.MustCompile(`(?i)(analysis|assistant|commentary|final)$`)
+	leakedKindRe = regexp.MustCompile(`^\s+(?:code|code_block|json)\b`)
+)
+
+// withoutLeakedCall cuts a command back to what the model meant when its
+// reply ran on into leaked call framing. Found live, several times a day on
+// one hosted model:
+//
+//	gui key enter<Thai text> to=gui.key  <Chinese text> code=0 stdout="Pressed enter. ...
+//	gui key Tab【<Thai text>analysis to=final code_block format=plaintext ...
+//
+// The whole line went to the shell: the key was not pressed (or the wrong
+// keys were), the field after it was never filled, and the task carried on
+// as if it had been. The cut is made at the framing, and then any trailing
+// characters outside ASCII glued to the command's last word are dropped with
+// it - they are the start of the spill, never part of a key or a ref. A
+// command with no such framing is returned untouched, whatever script its
+// text is in.
+func withoutLeakedCall(command string) string {
+	lines := strings.Split(command, "\n")
+	for i, line := range lines {
+		at := leakedCall(line)
+		if at < 0 {
+			continue
+		}
+		kept := strings.Fields(line[:at])
+		for len(kept) > 0 {
+			// The word the spill began in: its channel name goes, then
+			// everything from its first character outside ASCII; a word
+			// left with no letter or digit was all spill.
+			last := leakedRoleRe.ReplaceAllString(kept[len(kept)-1], "")
+			spilled := last != kept[len(kept)-1]
+			if cut := strings.IndexFunc(last, func(r rune) bool { return r > unicode.MaxASCII }); cut >= 0 {
+				last, spilled = last[:cut], true
+			}
+			if !spilled {
+				break
+			}
+			if strings.IndexFunc(last, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) < 0 {
+				kept = kept[:len(kept)-1]
+				continue
+			}
+			kept[len(kept)-1] = last
+			break
+		}
+		lines[i] = strings.Join(kept, " ")
+		// What follows the spill on later lines is more of it.
+		lines = lines[:i+1]
+		break
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
 // unmarkedCommandRe is a reply that is one command and nothing else, in a
@@ -296,6 +394,11 @@ type operatorState struct {
 	ScreenNudged      bool // a DONE for typing or clicking no command did was pushed back
 	UnstartedNudged   bool // a DONE for work on the screen with no command run at all was pushed back
 	ScreenConfirmed   bool // ...and, said again, was put to the person: their answer stands
+	// Hosted is whether the model is a hosted one, fixed when the goal starts.
+	// The host then judges the screen itself before a result is reported, so
+	// the commands need not stand in as the evidence (unperformedScreenNudge).
+	Hosted bool
+	BudgetWarned      bool // told that its turns are nearly used up
 	LastCommand       string
 	LastResult        *shellResult
 	Commands          []string
@@ -408,6 +511,7 @@ func (o *OperatorSkill) start(rc RunContext, subtask Subtask) *operatorState {
 		ScreenScale:     caps.ScreenshotScale(),
 		ScreenTextChars: caps.ScreenTextChars(),
 		Turns:           caps.OperatorTurns(),
+		Hosted:          caps.Hosted,
 	}
 	vision := ""
 	if caps.Hosted {
@@ -662,19 +766,32 @@ func screenApprovalReason(r shellResult) string {
 func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) (Result, error) {
 	invalid := 0
 	repeats := 0
+	turnsUsed := 0
 
 	finish := func(output string, verified bool, meta map[string]any) (Result, error) {
 		if meta == nil {
 			meta = map[string]any{}
 		}
 		meta["commands"] = st.Commands
+		// What exited 0, in order: the way through this task that worked. A
+		// host keeps it once the result has been checked, so the same kind of
+		// request need not be found out again from nothing.
+		meta["worked"] = st.Worked
+		meta["turns"] = turnsUsed
 		meta["userFacing"] = true
 		return Result{Subtask: subtask, SkillName: o.Name(), Output: output, Verified: verified, Meta: meta}, nil
 	}
 
 	for turn := 0; turn < o.turns(st); turn++ {
+		turnsUsed = turn + 1
 		if err := rc.Ctx.Err(); err != nil {
 			return finish("Stopped before finishing: "+err.Error(), false, map[string]any{"error": err.Error(), "fatal": true})
+		}
+
+		if left := o.turns(st) - turn; left == closingTurns && o.turns(st) >= 4*closingTurns && !st.BudgetWarned {
+			st.BudgetWarned = true
+			rc.Logf("operator", "nearly out of turns - told to finish or to ask")
+			appendToLastUser(st, fmt.Sprintf(closingNote, left))
 		}
 
 		resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, st.Messages, llm.Options{TimeoutMs: 180000, Temperature: 0.2})
@@ -741,7 +858,11 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				res.Checkpoint = st
 				return res, nil
 			}
-			if nudge := unperformedScreenNudge(st); nudge != "" && !st.ScreenConfirmed {
+			// Only where nothing else will look: with a hosted model the host's final check judges the
+			// screen. Found live there: sent back to a record it had entered correctly, the operator
+			// rightly changed nothing and said so - and "the task says to type, and nothing was typed"
+			// refused that twice and paged a person about a finished record.
+			if nudge := unperformedScreenNudge(st); nudge != "" && !st.ScreenConfirmed && !st.Hosted {
 				if !st.ScreenNudged {
 					st.ScreenNudged = true
 					rc.Logf("operator", "said done, but no command did the typing or clicking the task asks for - pushing back once")
@@ -922,10 +1043,72 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 		}
 	}
 
+	if changedTheScreen(st) {
+		// Work on the screen that ran out of turns is put to the person as it stands, with the goal kept so
+		// their reply carries it on. Found live: a form was filled and could not be saved for want of one value
+		// the request did not give; the plain failure went to the scheduler, whose recovery plan was to enter
+		// the whole document again from the start - into an application that already held most of it.
+		question := fmt.Sprintf("I ran out of steps (%d commands) before this was finished, and stopped rather than "+
+			"start over.", st.CommandsRun)
+		appendToLastUser(st, outOfTurnsNote)
+		resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, st.Messages, llm.Options{TimeoutMs: 120000, Temperature: 0.2})
+		if err == nil {
+			if _, said := parseControl(resp.Text); strings.TrimSpace(said) != "" {
+				st.Messages = append(st.Messages, llm.Message{Role: "assistant", Content: resp.Text})
+				question += "\n\n" + strings.TrimSpace(said)
+			}
+		}
+		question += "\n\nTell me how to go on, or reply `stop`."
+		res, _ := finish(question, false, map[string]any{"needsUserInput": true, "question": question, "failureReasoning": question})
+		res.Checkpoint = st
+		return res, nil
+	}
+
 	res, _ := finish(fmt.Sprintf("I ran out of turns (%d) before finishing, after running %d command(s).", o.turns(st), st.CommandsRun), false,
 		map[string]any{"needsUserInput": true, "failureReasoning": "ran out of turns without finishing - probably repeating an approach that cannot work"})
 	res.Checkpoint = st
 	return res, nil
+}
+
+// closingTurns is how many turns from the end the operator is told its
+// budget is nearly spent (only for a budget of at least four times that).
+const closingTurns = 8
+
+// closingNote is said once, closingTurns from the end. Found live: an
+// application refused to save for want of a value the request did not give,
+// and the operator spent its last twenty-five turns scrolling and clicking
+// for it without ever asking.
+const closingNote = "\n\n(You have %d turns left for this task. Do not begin anything new. If the application is asking " +
+	"for something the request and its documents do not give - a value, a choice between candidates - reply HELP now: " +
+	"say what it asks for, in its own words, and what you have entered and saved so far. Otherwise finish, save and reply DONE.)"
+
+// outOfTurnsNote asks for the state of the work when the turns are used up.
+const outOfTurnsNote = "\n\n(No turns are left and no more commands will be run. Reply HELP: with three things, briefly - " +
+	"what is entered or changed so far and whether it is saved; what is still missing; and the one thing you need from " +
+	"the person to finish. Report only what the screen showed you.)"
+
+// appendToLastUser adds a note to the newest message when it is the user's
+// (a command's result), else as a message of its own: two user turns in a
+// row are not accepted by every provider.
+func appendToLastUser(st *operatorState, note string) {
+	if n := len(st.Messages); n > 0 && st.Messages[n-1].Role == "user" {
+		st.Messages[n-1].Content += note
+		return
+	}
+	st.Messages = append(st.Messages, llm.Message{Role: "user", Content: strings.TrimSpace(note)})
+}
+
+// screenChangeRe is a gui command that acts on the screen, as against one that only looks at it.
+var screenChangeRe = regexp.MustCompile(`^\s*gui\s+(click|double-click|doubleclick|dblclick|right-click|type|select|key|drag|upload|do|replay|open)\b`)
+
+// changedTheScreen reports whether a command that worked acted on the screen.
+func changedTheScreen(st *operatorState) bool {
+	for _, command := range st.Worked {
+		if screenChangeRe.MatchString(command) {
+			return true
+		}
+	}
+	return false
 }
 
 // invalidReplyNudge quotes the model's own opening back to it. The generic

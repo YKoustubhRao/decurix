@@ -40,13 +40,30 @@ SYSTEM = (
     "procedure was taught - an EXAMPLE of the kind of thing to read (for instance a customer name, a PO "
     "number, a quantity), never the answer. A value marked list takes one entry per item (line) of the "
     "document, in the document's order, all lists the same length. Read values exactly as the documents "
-    "show them (keep codes and numbers as written; convert a date only when the example shows another "
-    "format). A value marked file is a file to upload: its answer is the full path of one of this run's "
+    "show them (keep codes and numbers as written). A date is the exception: the example shows the form "
+    "the field takes, so write the document's date in the example's form - the same order of day, month "
+    "and year, digits where the example has digits, the same separators (example 01-10-2026, document "
+    "04-Oct-2026: answer 04-10-2026). Found live: a date typed as the document wrote it was refused by "
+    "its field, and the record was saved with today's date. A value's \"meaning\", when given, is what "
+    "the person who taught the procedure said about it; follow it. "
+    "A value marked lookup is not typed and left: it is searched for in a list of the application's own "
+    "records, and the record found is what gets entered. For such a value give the document's whole wording "
+    "of the thing, exactly and unshortened (the full line or name as the document writes it) - never a "
+    "shortened or reworded form, and never a guess at what the application calls it: the search matches the "
+    "application's record inside the document's words, and words left out cannot be matched (found live: "
+    "\"Office Mesh Chairs\" was given for a line reading \"High Back Ergonomic Lumbar Support Office Mesh "
+    "Chairs\", and the record \"Ergonomic Office Chair\" could no longer be found in it). "
+    "A value marked file is a file to upload: its answer is the full path of one of this run's "
     "files (listed in the request), the one that plays the part the example did - e.g. the new offer "
     "letter where an offer letter was uploaded; several files are separated by ';'. "
     "If a document does not show a value, leave it out - do not guess, and never return the "
     "example itself unless the document really says it. "
-    'Reply with JSON only: {"values": {"<name>": "<value>" or ["<item value>", ...]}, '
+    "When \"repeating rows\" are described, those fields were filled once per entry of the document (once per "
+    "line of a table, say) and the demonstration's document had its own number of entries. Give them under "
+    "\"rows\": one object per entry of THIS document, in the document's order, each with every field of a row - "
+    "as many rows as the document has entries, be it one or ten, never padded or cut to the demonstration's "
+    "number - and leave those names out of \"values\". "
+    'Reply with JSON only: {"values": {"<name>": "<value>" or ["<item value>", ...]}, "rows": [{"<field name>": "<value>", ...}, ...], '
     '"evidence": {"<name>": "<which document, which label or line>"}, "missing": ["<name>", ...]}'
 )
 
@@ -68,13 +85,17 @@ def referenced_files(text):
     return found
 
 
-def _describe(param):
+def _describe(param, meaning="", lookup=False):
     line = {
         "name": param["name"],
         "field": param.get("label") or param["name"],
         "example": param.get("example") or "",
         "list": bool(param.get("list")),
     }
+    if meaning:
+        line["meaning"] = str(meaning)[:300]
+    if lookup:
+        line["lookup"] = True
     if param.get("file"):
         line["file"] = True
     if param.get("list") and param.get("examples"):
@@ -84,14 +105,14 @@ def _describe(param):
     return line
 
 
-def fill(skill, params, context):
+def fill(skill, params, context, with_rows=False):
     """
     ({name: value}, {name: evidence}) for the params the run's context shows;
     ({}, {}) when there is no model, nothing to read, or the model fails.
     """
 
     if not params or not available():
-        return {}, {}
+        return ({}, {}, None) if with_rows else ({}, {})
 
     files = referenced_files(context)
     parts = [{"type": "text", "text": _prompt(skill, params, context)}]
@@ -121,18 +142,26 @@ def fill(skill, params, context):
         answer = json.loads(message.get("content") or "{}")
     except (llm_client.LLMError, ValueError) as exc:
         log(f"binding: could not fill values for {skill.get('name')}: {exc}")
-        return {}, {}
+        return ({}, {}, None) if with_rows else ({}, {})
 
-    return _clean(params, answer, texts)
+    values, evidence = _clean(params, answer, texts)
+    rows = _rows(skill, params, answer, texts, values, evidence)
+    return (values, evidence, rows) if with_rows else (values, evidence)
 
 
 def _prompt(skill, params, context):
+    from decurix_agent.computer import skills
+
+    meanings = (skill.get("understanding") or {}).get("inputs") or {}
+    chosen = skills.chosen_from_list(skill)
     return "\n".join([
         f"Procedure: {skill.get('title') or skill.get('name')}",
         f"Its goal: {skill.get('goal') or skill.get('done_when') or '(not stated)'}",
         "Values to fill:",
-        json.dumps([_describe(p) for p in params], ensure_ascii=False, indent=1),
+        json.dumps([_describe(p, meanings.get(p["name"]), p["name"].split("__")[0] in chosen) for p in params],
+                   ensure_ascii=False, indent=1),
         "",
+        _rows_text(skill, params),
         "The request that started this run (it may include an email, and it names the files attached):",
         (context or "")[:6000],
     ])
@@ -168,7 +197,35 @@ def _clean(params, answer, texts=()):
     return values, evidence
 
 
+# A figure as a document writes it: one number, with the money it is in before it ("Rs. 360.00", "INR 1,250",
+# "$40") and the unit it counts after it ("20 Reams", "2 Units", "1.5 kg", "360.00/-").
+FIGURE = re.compile(r"^\s*(?:(?:Rs\.?|INR|USD|EUR|GBP|AED|SGD|[₹$€£])\s*)?(-?\d[\d,]*(?:\.\d+)?)\s*(?:/-|[A-Za-z][A-Za-z .()/-]{0,30})?\s*$",
+                    re.IGNORECASE)
+BARE_NUMBER = re.compile(r"^\s*-?\d[\d,]*(?:\.\d+)?\s*$")
+
+
+def as_number(value, example):
+    """
+    A figure written with its unit or its currency, as the number alone, when
+    the field was shown to take a bare number. Found live: a bill's "20
+    Reams", "2 Chairs" and "Rs. 360.00" were read whole for fields the
+    demonstration typed "1" and "40000" into; the number check refused them
+    and a person was asked for figures the bill states plainly. One number,
+    with nothing around it but the mark of its currency and the words of its
+    unit, is that number - nothing is guessed. Anything else is left as read.
+    """
+
+    if example is None or not BARE_NUMBER.match(str(example)):
+        return value
+    found = FIGURE.match(value or "")
+    return found.group(1) if found else value
+
+
 def as_written(value, example, texts):
+    return _own_spelling(as_number(value, example), example, texts)
+
+
+def _own_spelling(value, example, texts):
     """
     The document's own spelling of an all-capitals value, when the example was
     not in capitals. Found live: a PO's letterhead read "WOOD CORNER" and its
@@ -197,3 +254,61 @@ def report(evidence, values):
 
     return "\n".join(f"- {name} = \"{values[name]}\" ({evidence.get(name) or 'from the documents'})"
                      for name in values)
+
+
+def _group(skill, params):
+    """The skill's repeated part, when the values asked for include it; else None."""
+
+    from decurix_agent.computer import skills
+
+    group = skills.repeated_rows(skill) if skill.get("params") else None
+    asked = {p["name"] for p in params}
+    if group is None or not any(name in asked for row in group["rows"] for name in row):
+        return None
+    return group
+
+
+def _rows_text(skill, params):
+    group = _group(skill, params)
+    if group is None:
+        return ""
+    return ("Repeating rows: the fields " + ", ".join(f"{name} ({label})" for name, label in zip(group["rows"][0], group["fields"]))
+            + f" are one row, filled once per entry of the document; the demonstration's document had {len(group['rows'])} "
+            "entries (its other rows are " + "; ".join(", ".join(row) for row in group["rows"][1:]) + "). Give this "
+            "document's entries under \"rows\", each with the names " + ", ".join(group["rows"][0]) + ".\n")
+
+
+def _rows(skill, params, answer, texts, values, evidence):
+    """
+    Puts the document's rows into `values` under each row's names (the
+    demonstration's own for its rows, made after the first row's beyond them)
+    and returns {"count", "demo", "fields", "names": [[row names]], "base": {name: first-row name}}, or None.
+    """
+
+    from decurix_agent.computer import skills
+
+    group = _group(skill, params)
+    rows = answer.get("rows") if isinstance(answer, dict) else None
+    if group is None or not isinstance(rows, list) or not rows:
+        return None
+
+    first = group["rows"][0]
+    by_name = {p["name"]: p for p in skill.get("params") or []}
+    names, base = [], {}
+    why = answer.get("evidence") if isinstance(answer.get("evidence"), dict) else {}
+    for n, row in enumerate(r for r in rows if isinstance(r, dict)):
+        mine = skills.row_names(group, n)
+        names.append(mine)
+        for field, name in zip(first, mine):
+            base[name] = field
+            value = row.get(field)
+            if value in (None, "", []) or isinstance(value, (list, dict)):
+                continue
+            values[name] = as_written(str(value).strip(), (by_name.get(field) or {}).get("example"), texts)
+            evidence[name] = str(why.get(name) or why.get(field) or f"entry {n + 1} of the document")[:200]
+    # A row the document does not have is not a value of this run.
+    for row in group["rows"][len(names):]:
+        for name in row:
+            values.pop(name, None)
+            evidence.pop(name, None)
+    return {"count": len(names), "demo": len(group["rows"]), "fields": group["fields"], "names": names, "base": base}

@@ -87,6 +87,26 @@ class TestFindingTheLauncher(Desktop):
         (Path(self.tmp.name) / "other.desktop").write_text(HOST_CHROME.replace("koustubh-chrome-host", "other-chrome"))
         self.assertIsNone(launchers.for_window("Koustubh - Chrome"))
 
+    def test_an_app_is_found_by_the_name_a_person_would_say(self):
+        # Found live: an engine asked to open an app by its name was refused, and double-clicked around its icon instead.
+        (Path(self.tmp.name) / "books-host.desktop").write_text(
+            "[Desktop Entry]\nType=Application\nName=Books (India Compliance) (Host)\nExec=/home/headless/.local/bin/books-host %U\n")
+        self.assertEqual(launchers.by_name("books")["name"], "Books (India Compliance) (Host)")
+        self.assertEqual(launchers.by_name("Books (India Compliance) (Host)")["name"], "Books (India Compliance) (Host)")
+        self.assertEqual(launchers.by_name("Chromium Web Browser")["name"], "Chromium Web Browser")
+        self.assertEqual(launchers.by_name("chromium")["name"], "Chromium Web Browser")
+        self.assertIsNone(launchers.by_name("chrom"))
+        self.assertIsNone(launchers.by_name("Mousepad"))
+        self.assertIsNone(launchers.by_name(""))
+
+    def test_a_name_two_apps_share_is_not_guessed_between(self):
+        place = Path(self.tmp.name)
+        (place / "a.desktop").write_text("[Desktop Entry]\nType=Application\nName=Books (Host)\nExec=/bin/a\n")
+        (place / "b.desktop").write_text("[Desktop Entry]\nType=Application\nName=Books Viewer\nExec=/bin/b\n")
+        self.assertEqual(launchers.by_name("books")["exec"], "/bin/a")
+        (place / "c.desktop").write_text("[Desktop Entry]\nType=Application\nName=Books (Test)\nExec=/bin/c\n")
+        self.assertIsNone(launchers.by_name("books"))
+
     def test_the_command_loses_its_field_codes(self):
         self.assertEqual(launchers.argv(launchers.for_window("Koustubh - Chrome")),
                          ["/home/headless/.local/bin/koustubh-chrome-host"])
@@ -195,7 +215,7 @@ class TestAnAppFoundOpenAlready(Desktop):
         with patch.object(replay.core, "observe", return_value=observation), \
                 patch.object(replay.visual, "find", return_value={"status": replay.visual.MISSING}), \
                 patch.object(replay, "FIND_SECONDS", 0), patch.object(replay, "_fit_screen"), \
-                patch.object(replay, "_await_checks", side_effect=lambda checks, observation, values: ([], observation)):
+                patch.object(replay, "_await_checks", side_effect=lambda checks, observation, values, seconds=None: ([], observation)):
             return replay.run({"steps": steps, "params": [], "title": "mutra"}, report=self.lines.append)
 
     def test_the_halt_says_the_app_was_open_already(self):
@@ -219,7 +239,7 @@ class TestAnAppFoundOpenAlready(Desktop):
         with patch.object(replay.core, "observe", return_value=observation), \
                 patch.object(replay.visual, "find", return_value={"status": replay.visual.MISSING}), \
                 patch.object(replay, "FIND_SECONDS", 0), patch.object(replay, "_fit_screen"), \
-                patch.object(replay, "_await_checks", side_effect=lambda checks, observation, values: ([], observation)):
+                patch.object(replay, "_await_checks", side_effect=lambda checks, observation, values, seconds=None: ([], observation)):
             result = replay.run({"steps": steps, "params": [], "title": "mutra"}, report=self.lines.append)
         self.assertIsNone(result["reopen"])
 
@@ -286,7 +306,7 @@ class TestRestartIsOnlyOfferedBeforeAnythingWorkedThere(Desktop):
                 patch.object(replay.core, "act", return_value={"status": "done", "observation": observation}), \
                 patch.object(replay.visual, "find", return_value={"status": replay.visual.MISSING}), \
                 patch.object(replay, "FIND_SECONDS", 0), patch.object(replay, "_fit_screen"), \
-                patch.object(replay, "_await_checks", side_effect=lambda checks, observation, values: ([], observation)):
+                patch.object(replay, "_await_checks", side_effect=lambda checks, observation, values, seconds=None: ([], observation)):
             result = replay.run({"steps": steps, "params": [], "title": "mutra"}, report=self.lines.append)
         self.assertEqual((result["outcome"], result["step"]), (replay.HALTED, 3))
         self.assertIsNone(result["reopen"])

@@ -60,6 +60,51 @@ function Test-LiveProcess($ProcessId) {
     try { return -not $process.HasExited } finally { $process.Dispose() }
 }
 
+# The folder a process is working in. A program of Windows' own that the app
+# started (curl.exe downloading Ollama, found holding win-unpacked ten minutes
+# after the app was stopped) runs from System32, so its path says nothing - but
+# it works in the app's folder, and Windows will not delete a folder that is
+# somebody's working directory. Read from the process itself (64-bit layout);
+# '' for one that cannot be read.
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class DecurixWorkingDirectory {
+    [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(int access, bool inherit, int pid);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    [DllImport("ntdll.dll")] static extern int NtQueryInformationProcess(IntPtr handle, int what, byte[] buffer, int size, out int returned);
+    [DllImport("kernel32.dll")] static extern bool ReadProcessMemory(IntPtr handle, IntPtr address, byte[] buffer, IntPtr size, out IntPtr read);
+    public static string Of(int pid) {
+        if (IntPtr.Size != 8) return "";
+        IntPtr handle = OpenProcess(0x0410, false, pid);
+        if (handle == IntPtr.Zero) return "";
+        try {
+            byte[] basic = new byte[48]; int returned; IntPtr read;
+            if (NtQueryInformationProcess(handle, 0, basic, basic.Length, out returned) != 0) return "";
+            long peb = BitConverter.ToInt64(basic, 8);
+            if (peb == 0) return "";
+            byte[] pointer = new byte[8];
+            if (!ReadProcessMemory(handle, (IntPtr)(peb + 0x20), pointer, (IntPtr)8, out read)) return "";
+            byte[] text = new byte[16];
+            if (!ReadProcessMemory(handle, (IntPtr)(BitConverter.ToInt64(pointer, 0) + 0x38), text, (IntPtr)16, out read)) return "";
+            int length = BitConverter.ToUInt16(text, 0);
+            byte[] path = new byte[length];
+            if (length == 0 || !ReadProcessMemory(handle, (IntPtr)BitConverter.ToInt64(text, 8), path, (IntPtr)length, out read)) return "";
+            return Encoding.Unicode.GetString(path);
+        } catch { return ""; } finally { CloseHandle(handle); }
+    }
+}
+'@
+
+# Whether a process runs from, or works in, a folder.
+function Test-ProcessIn($ProcessInfo, $Folder) {
+    $prefix = $Folder.TrimEnd('\') + '\'
+    if ($ProcessInfo.ExecutablePath -and $ProcessInfo.ExecutablePath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    $cwd = [DecurixWorkingDirectory]::Of([int]$ProcessInfo.ProcessId)
+    return [bool]$cwd -and ($cwd.TrimEnd('\') + '\').StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
+}
+
 function Stop-DecurixProcess($ProcessInfo) {
     try {
         Stop-Process -Id $ProcessInfo.ProcessId -Force -ErrorAction Stop
@@ -139,7 +184,9 @@ function Clear-DecurixData {
 
     # An earlier version ran a model server on Windows itself, started detached
     # from the store. A person's own Ollama is elsewhere.
-    Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($store + '\', [StringComparison]::OrdinalIgnoreCase) } |
+    # A download into the store (curl.exe fetching Ollama) is Windows' own
+    # program with one of the store's files open: found by its command line.
+    Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and ((Test-ProcessIn $_ $store) -or ($_.Name -ieq 'curl.exe' -and $_.CommandLine -and $_.CommandLine.IndexOf($store + '\', [StringComparison]::OrdinalIgnoreCase) -ge 0)) } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
     # The store, but not the disk of a distro that was kept (its wsl folder).
@@ -178,11 +225,11 @@ Write-Host '========================================'
 # closes a running Decurix.
 $unpacked = Join-Path $out 'win-unpacked'
 function Get-UnpackedProcesses {
-    @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($unpacked + '\', [StringComparison]::OrdinalIgnoreCase) -and (Test-LiveProcess $_.ProcessId) })
+    @(Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and (Test-ProcessIn $_ $unpacked) -and (Test-LiveProcess $_.ProcessId) })
 }
 $running = Get-UnpackedProcesses
 if ($running.Count -gt 0) {
-    $window = @($running | Where-Object { (Split-Path -Parent $_.ExecutablePath).TrimEnd('\') -ieq $unpacked })
+    $window = @($running | Where-Object { $_.ExecutablePath -and (Split-Path -Parent $_.ExecutablePath).TrimEnd('\') -ieq $unpacked })
     if ($window.Count -gt 0 -and -not $Fresh) {
         throw "The app built last time is open (from $unpacked). Close its window, then build again."
     }

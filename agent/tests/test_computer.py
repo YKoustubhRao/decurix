@@ -53,7 +53,11 @@ class ApprovalRules(unittest.TestCase):
                 self.assertIsNone(approval.assess("click", element("menuitem", name)))
 
     def test_a_record_name_on_a_button_or_with_an_act_still_stops(self):
-        self.assertIsNotNone(approval.assess("click", element("button", "Purchase Order")))
+        for name in ("Purchase Order", "Purchase Items", "Transfer Request", "Purchase"):
+            self.assertIsNotNone(approval.assess("click", element("button", name)), name)
+        # A button whose whole label is a document nobody can buy opens that kind of document.
+        for name in ("Purchase Invoice", "Purchase Receipt", "Purchase Register"):
+            self.assertIsNone(approval.assess("click", element("button", name)), name)
         for name in ("Purchase now", "Purchase invoice now", "Send invoice", "Pay invoice", "Post invoice"):
             with self.subTest(name=name):
                 self.assertIsNotNone(approval.assess("click", element("link", name)))
@@ -463,6 +467,87 @@ class ChoosingInADrawnDropdown(unittest.TestCase):
         with self.assertRaises(core.ComputerError) as ctx:
             self._run([self._opt("Single"), self._opt("Married")], "Divorced", role="text")
         self.assertIn("Married", str(ctx.exception))
+
+    def test_the_one_entry_named_within_a_longer_description_is_taken_and_said(self):
+        # Found live: handed a document's line for a value, an engine searched with the wrong words, clicked
+        # entries by where it expected them, and asked a person for a record the list had.
+        from decurix_agent.computer import core
+        opts = [self._opt("A4 Printing Paper A4 Printing Paper, Consumable"), self._opt("Printer Ink Printer Ink, Consumable"),
+                self._opt(" Create a new one"), self._opt("Advanced Search")]
+        clicked, _ = self._run(opts, "Executive A4 Printing Paper 75 GSM (Box of 10 Reams)")
+        self.assertEqual(clicked[-1], "A4 Printing Paper A4 Printing Paper, Consumable")
+        self.assertEqual(core._selected["name"], "A4 Printing Paper A4 Printing Paper, Consumable")
+
+        # A plural in the description is the record's singular.
+        clicked, _ = self._run([self._opt("Office Chair Office Chair, Products")], "High Back Office Mesh Chairs")
+        self.assertEqual(clicked[-1], "Office Chair Office Chair, Products")
+
+    def test_two_entries_named_within_the_description_are_not_chosen_between(self):
+        from decurix_agent.computer import core
+        with self.assertRaises(core.ComputerError) as ctx:
+            self._run([self._opt("Office Chair"), self._opt("Mesh Chair")], "High Back Office Mesh Chairs")
+        self.assertIn("none was taken", str(ctx.exception))
+
+    def test_one_shared_word_or_a_different_variant_is_not_a_match(self):
+        from decurix_agent.computer import core
+        self.assertFalse(core._named_within("Stool", "Stool (Navy)"))                    # one word proves nothing
+        self.assertFalse(core._named_within("Desk Aluminium Black", "Desk (White, Aluminium)"))
+        self.assertFalse(core._named_within("Laptop Laptop, Products", "Developer Workstations and Laptop bags"))
+        self.assertTrue(core._named_within("Leased Line Leased Line, Services", "Dedicated Leased Line 1 Gbps"))
+
+
+class APressIsMadeByName(unittest.TestCase):
+    """An engine's click by coordinates on a control that has a name is refused, and told what is there."""
+
+    def _look(self, role, name="Add line"):
+        entry = {"role": role, "name": name, "source": "cdp", "ref": "e9", "path": f"site x > {role} {name}",
+                 "box": [300, 420, 80, 24], "states": []}
+        return {"elements": [entry], "frame": None, "windows": []}
+
+    def test_a_point_on_a_named_button_is_not_clicked(self):
+        # Found live: an engine meaning to click "an empty part of the page" pressed a button that added a line,
+        # and another time took a list's "create a new one" line for the entry it wanted.
+        from decurix_agent.computer import core
+        with patch.object(core, "observe", return_value=self._look("button")), patch.object(core, "_perform") as perform:
+            with self.assertRaises(core.ComputerError) as ctx:
+                core.act("click", point=(330, 428), named=True)
+            perform.assert_not_called()
+        self.assertIn("gui click e9", str(ctx.exception))
+        self.assertIn("Add line", str(ctx.exception))
+
+    def test_the_gui_command_asks_for_it(self):
+        from decurix_agent.computer import cli
+        with patch.object(cli.core, "act", return_value={"status": "done", "text": "clicked"}) as act:
+            cli.run(["click", "330,428"])
+            self.assertTrue(act.call_args.kwargs["named"])
+            cli.run(["dblclick", "70,262"])                    # the spelling engines reach for
+            self.assertEqual(act.call_args.args[0], "double_click")
+
+    def test_a_field_and_a_replay_are_clicked_where_they_are(self):
+        from decurix_agent.computer import core
+        for look, named in ((self._look("textbox", "Rate"), True), (self._look("button"), False)):
+            with patch.object(core, "observe", return_value=look), \
+                    patch.object(core, "_perform", side_effect=RuntimeError("reached")):
+                with self.assertRaises(RuntimeError):
+                    core.act("click", point=(330, 428), named=named)
+
+
+class KeysAreKeys(unittest.TestCase):
+    def test_punctuation_and_other_spellings_are_keys(self):
+        from decurix_agent.computer import xinput
+        self.assertEqual(xinput.normalize_combo("."), "period")
+        self.assertEqual(xinput.normalize_combo("ArrowDown"), "Down")
+        self.assertEqual(xinput.normalize_combo("ctrl+shift+Tab"), "ctrl+shift+Tab")
+
+    def test_text_is_not_pressed_as_a_key_and_nothing_before_it_is_pressed_either(self):
+        # Found live: `gui key ctrl+a Backspace 350.00` emptied the field and then failed on the text.
+        from decurix_agent.computer import core, xinput
+        with self.assertRaises(core.ComputerError):
+            xinput.normalize_combo("2-Oct-2026")
+        with patch.object(xinput, "key") as pressed:
+            with self.assertRaises(core.ComputerError):
+                core._perform("key", None, None, None, ["ctrl+a", "Backspace", "350.00"], None, None, None, False, None)
+            pressed.assert_not_called()
 
 
 class TypingAtAPointSyntax(unittest.TestCase):
