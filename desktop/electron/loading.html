@@ -6,40 +6,210 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
   <title>Starting Decurix</title>
   <style>
-    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #111827; color: #f9fafb; font: 16px system-ui, sans-serif; }
+    /* The dashboard's own tokens (web/templates/theme.html), so the window does
+       not change palette when the dashboard takes over. Keep the two in step. */
+    :root {
+      color-scheme: light dark;
+      --paper: #f6f5f2; --surface: #fffefc; --surface-2: #eeece7; --line: #e1dfd8;
+      --text: #1a1917; --text-2: #5b584f; --text-3: #8b8779;
+      --accent: #136c4b; --accent-soft: rgba(19,108,75,.10); --ring: rgba(19,108,75,.30);
+      --danger: #a03528; --danger-soft: rgba(160,53,40,.09);
+      --btn: #1c1b18; --btn-hover: #35322b; --btn-text: #fbfaf7;
+      --shadow: 0 1px 3px rgba(24,22,18,.07), 0 12px 28px -14px rgba(24,22,18,.24);
+      --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --paper: #100f0e; --surface: #191817; --surface-2: #221f1d; --line: #2c2a26;
+        --text: #f2f0ea; --text-2: #a9a59a; --text-3: #7b766b;
+        --accent: #4fbd8b; --accent-soft: rgba(79,189,139,.13); --ring: rgba(79,189,139,.34);
+        --danger: #e8836f; --danger-soft: rgba(232,131,111,.13);
+        --btn: #f2f0ea; --btn-hover: #ffffff; --btn-text: #161513;
+        --shadow: 0 1px 3px rgba(0,0,0,.5), 0 12px 28px -14px rgba(0,0,0,.8);
+      }
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: grid; place-items: center;
+      background: var(--paper); color: var(--text);
+      font: 15px/1.5 var(--sans); -webkit-font-smoothing: antialiased;
+    }
+    /* A soft wash of the accent behind the card; decoration only. */
+    body::before {
+      content: ""; position: fixed; inset: 0; pointer-events: none;
+      background: radial-gradient(520px 360px at 50% 34%, var(--accent-soft), transparent 70%);
+    }
+
     .startup-titlebar { display: none; }
-    .desktop-windows .startup-titlebar { position: fixed; inset: 0 0 auto; height: 53px; display: flex; align-items: center; padding: 0 150px 0 20px; font-size: 13px; -webkit-app-region: drag; user-select: none; }
-    main { width: min(540px, calc(100vw - 64px)); }
-    h1 { font-size: 2rem; margin: 0 0 12px; }
-    p { color: #cbd5e1; line-height: 1.5; }
-    #detail { min-height: 3em; color: #94a3b8; font: 13px ui-monospace, Consolas, monospace; overflow-wrap: anywhere; }
-    button { display: none; margin-top: 20px; padding: 11px 18px; background: #a7f3d0; color: #052e21; border: 0; border-radius: 8px; font: inherit; cursor: pointer; }
+    .desktop-windows .startup-titlebar {
+      position: fixed; inset: 0 0 auto; height: 53px; display: flex; align-items: center; gap: 9px;
+      padding: 0 150px 0 18px; font-size: 13px; font-weight: 600; letter-spacing: -.1px;
+      color: var(--text-2); -webkit-app-region: drag; user-select: none;
+    }
+    .startup-titlebar svg { width: 18px; height: 18px; color: var(--accent); }
+
+    main { position: relative; width: min(520px, calc(100vw - 48px)); padding: 24px 0; }
+
+    .mark {
+      width: 60px; height: 60px; display: grid; place-items: center; margin-bottom: 26px;
+      border-radius: 16px; background: var(--accent); color: var(--paper); box-shadow: var(--shadow);
+    }
+    .mark svg { width: 50px; height: 50px; }
+    .petals { transform-origin: 12px 12px; animation: turn 14s linear infinite; }
+    .petals circle { animation: breathe 2.4s ease-in-out infinite; }
+    .petals circle:nth-child(2) { animation-delay: .2s; }
+    .petals circle:nth-child(3) { animation-delay: .4s; }
+    .petals circle:nth-child(4) { animation-delay: .6s; }
+    .petals circle:nth-child(5) { animation-delay: .8s; }
+    .failed .petals, .failed .petals circle { animation: none; }
+    .failed .mark { background: var(--danger); }
+
+    .kicker {
+      margin: 0 0 8px; font-size: 11px; font-weight: 600; letter-spacing: 1.4px;
+      text-transform: uppercase; color: var(--accent);
+    }
+    .failed .kicker { color: var(--danger); }
+    h1 { margin: 0; font-size: 26px; line-height: 1.22; font-weight: 600; letter-spacing: -.6px; text-wrap: balance; }
+    #note { margin: 10px 0 0; color: var(--text-2); font-size: 14px; overflow-wrap: anywhere; }
+    #note:empty { display: none; }
+
+    .bar { height: 3px; margin: 26px 0 0; border-radius: 99px; background: var(--surface-2); overflow: hidden; }
+    .bar i { display: block; width: 34%; height: 100%; border-radius: inherit; background: var(--accent); animation: slide 1.6s ease-in-out infinite; }
+    .failed .bar { display: none; }
+
+    .panel {
+      margin-top: 18px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px;
+      background: var(--surface); box-shadow: var(--shadow);
+    }
+    .failed .panel { border-color: var(--danger); background: var(--danger-soft); box-shadow: none; }
+    #steps { list-style: none; margin: 0; padding: 0; }
+    #steps li { display: flex; align-items: flex-start; gap: 10px; padding: 3px 0; font-size: 13px; color: var(--text-3); }
+    #steps svg { flex: none; width: 14px; height: 14px; margin-top: 3px; color: var(--accent); }
+    #steps:not(:empty) { padding-bottom: 10px; margin-bottom: 10px; border-bottom: 1px solid var(--line); }
+    .meta { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+    #detail {
+      margin: 0; min-height: 2.9em; max-height: 4.4em; overflow: hidden; flex: 1;
+      color: var(--text-2); font: 12px/1.45 var(--mono); overflow-wrap: anywhere;
+    }
+    #detail:empty::before { content: "Working…"; color: var(--text-3); }
+    .failed #detail:empty::before { content: ""; }
+    #elapsed { flex: none; color: var(--text-3); font: 12px var(--mono); font-variant-numeric: tabular-nums; }
+
+    #hint { margin: 14px 2px 0; font-size: 12.5px; color: var(--text-3); }
+    #hint[hidden] { display: none; }
+
+    button {
+      display: none; margin-top: 22px; padding: 10px 20px; border: 0; border-radius: 9px;
+      background: var(--btn); color: var(--btn-text); font: 600 14px var(--sans); cursor: pointer;
+    }
+    button:hover { background: var(--btn-hover); }
+    button:focus-visible { outline: 3px solid var(--ring); outline-offset: 2px; }
+
+    @keyframes turn { to { transform: rotate(360deg); } }
+    @keyframes breathe { 50% { opacity: .45; } }
+    @keyframes slide { 0% { transform: translateX(-110%); } 100% { transform: translateX(310%); } }
+    @media (prefers-reduced-motion: reduce) {
+      .petals, .petals circle { animation: none; }
+      .bar i { animation: none; width: 100%; opacity: .45; }
+    }
   </style>
 </head>
 <body>
-  <header class="startup-titlebar">Decurix</header>
+  <header class="startup-titlebar">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><g fill="currentColor"><g opacity=".78"><circle cx="12" cy="7.25" r="2.85"/><circle cx="16.52" cy="10.53" r="2.85"/><circle cx="14.79" cy="15.84" r="2.85"/><circle cx="9.21" cy="15.84" r="2.85"/><circle cx="7.48" cy="10.53" r="2.85"/></g><circle cx="12" cy="12" r="2.2"/></g></svg>
+    Decurix
+  </header>
   <main>
-    <h1>Starting Decurix</h1>
-    <p id="status" role="status">Connecting to the local dashboard…</p>
-    <p id="detail"></p>
+    <div class="mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><g fill="currentColor"><g class="petals" opacity=".78"><circle cx="12" cy="7.25" r="2.85"/><circle cx="16.52" cy="10.53" r="2.85"/><circle cx="14.79" cy="15.84" r="2.85"/><circle cx="9.21" cy="15.84" r="2.85"/><circle cx="7.48" cy="10.53" r="2.85"/></g><circle cx="12" cy="12" r="2.2"/></g></svg>
+    </div>
+    <p class="kicker" id="kicker">Starting Decurix</p>
+    <h1 id="status" role="status">Connecting to the local dashboard…</h1>
+    <p id="note"></p>
+    <div class="bar" aria-hidden="true"><i></i></div>
+    <div class="panel">
+      <ul id="steps" aria-label="Finished steps"></ul>
+      <div class="meta">
+        <p id="detail"></p>
+        <span id="elapsed" aria-hidden="true"></span>
+      </div>
+    </div>
+    <p id="hint" hidden>A first start downloads and builds the worker desktop, which can take ten minutes or more. Later starts take seconds.</p>
     <button id="retry" type="button">Retry</button>
   </main>
   <script>
-    const status = document.getElementById('status');
-    const retry = document.getElementById('retry');
-    const detail = document.getElementById('detail');
+    const $ = (id) => document.getElementById(id);
+    const status = $('status'), note = $('note'), detail = $('detail'), retry = $('retry');
+    const steps = $('steps'), elapsed = $('elapsed'), hint = $('hint'), kicker = $('kicker');
+    const TICK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg>';
+    const KEPT_STEPS = 4;      // finished steps shown above the current one
+    const HINT_AFTER_MS = 20000;
+
+    // A status is one or more sentences: the first is the headline, the rest
+    // explains it. A path's own dots are not followed by a space.
+    const split = (message) => {
+      const cut = message.search(/[.…]\s+\S/);
+      return cut < 0 ? [message, ''] : [message.slice(0, cut + 1), message.slice(cut + 1).trim()];
+    };
+
+    let current = '';          // the step being worked on, as main sent it
+    let since = Date.now();
+    let failedNow = false;
+
+    const show = (message) => {
+      const [head, rest] = split(message);
+      status.textContent = head;
+      note.textContent = rest;
+    };
+
+    const finish = (message) => {
+      const item = document.createElement('li');
+      item.innerHTML = TICK;
+      item.append(split(message)[0].replace(/…$/, ''));
+      steps.append(item);
+      while (steps.children.length > KEPT_STEPS) steps.firstChild.remove();
+    };
+
     window.decurixStartup.onStatus(({ message, failed, detail: line, button }) => {
-      status.textContent = message;
+      if (message !== current) {
+        // A step is finished only when another step follows it, never an error.
+        if (current && !failedNow && !failed) finish(current);
+        current = message;
+        since = Date.now();
+        hint.hidden = true;
+      }
+      failedNow = Boolean(failed);
+      document.body.classList.toggle('failed', failedNow);
+      kicker.textContent = failedNow ? 'Decurix could not start' : 'Starting Decurix';
+      show(message);
       detail.textContent = line || '';
       retry.textContent = button || 'Retry';
-      retry.style.display = failed ? 'inline-block' : 'none';
+      retry.style.display = failedNow ? 'inline-block' : 'none';
+      if (failedNow) { elapsed.textContent = ''; hint.hidden = true; }
     });
+
     retry.addEventListener('click', () => {
       retry.style.display = 'none';
-      status.textContent = 'One moment…';
+      document.body.classList.remove('failed');
+      kicker.textContent = 'Starting Decurix';
+      failedNow = false;
+      current = '';
+      since = Date.now();
+      steps.textContent = '';
+      show('One moment…');
       detail.textContent = '';
       window.decurixStartup.retry();
     });
+
+    setInterval(() => {
+      if (failedNow) return;
+      const ms = Date.now() - since;
+      const s = Math.floor(ms / 1000);
+      elapsed.textContent = s < 3 ? '' : Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+      hint.hidden = ms < HINT_AFTER_MS;
+    }, 1000);
   </script>
 </body>
 </html>

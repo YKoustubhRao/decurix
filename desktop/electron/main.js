@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, Menu, powerSaveBlocker, shell, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, nativeTheme, powerSaveBlocker, shell, dialog } = require('electron');
 const { spawn } = require('node:child_process');
 const dgram = require('node:dgram');
 const fs = require('node:fs');
@@ -132,6 +132,14 @@ async function stopMobileAccess() {
   await access?.stop();
 }
 
+// The startup screen's paper and ink (loading.html, the dashboard's own
+// tokens), for the window behind it and the caption buttons over it.
+function startupPalette() {
+  return nativeTheme && nativeTheme.shouldUseDarkColors
+    ? { color: '#100f0e', symbolColor: '#f2f0ea' }
+    : { color: '#f6f5f2', symbolColor: '#1a1917' };
+}
+
 function update(message, failed = false, detail = '') {
   if (window && !window.isDestroyed()) {
     window.webContents.send('startup-status', { message, failed, detail });
@@ -189,7 +197,7 @@ async function backendLost() {
   // error ended the restart before it began, and the window stayed dead.
   try { await stopMobileAccess(); } catch (error) { console.warn('Could not stop quick tunnel:', error.message); }
   if (closing || !window || window.isDestroyed()) return;
-  if (windows) window.setTitleBarOverlay({ color: '#111827', symbolColor: '#f9fafb' });
+  if (windows) window.setTitleBarOverlay(startupPalette());
   await window.loadFile(path.join(__dirname, 'loading.html'));
 
   const now = Date.now();
@@ -802,10 +810,12 @@ function openWindow() {
     minWidth: 800,
     minHeight: 600,
     title: 'Decurix',
+    // What shows before a page has painted: never a white flash.
+    backgroundColor: startupPalette().color,
     // Keep native Windows controls (including Snap Layouts) inside the app header.
     ...(windows ? {
       titleBarStyle: 'hidden',
-      titleBarOverlay: { color: '#111827', symbolColor: '#f9fafb', height: 52 },
+      titleBarOverlay: { ...startupPalette(), height: 52 },
     } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
