@@ -152,6 +152,10 @@ class Person:
         self.width, self.height = struct.unpack(">HH", self._read(4))
         self._read(16)
         self._read(struct.unpack(">I", self._read(4))[0])
+        # Raw, plus the two "the screen changed size" pseudo-encodings: on a screen a viewer has resized,
+        # TigerVNC 1.16 closes a client that does not take them a moment after its first input
+        # ("Client does not support desktop size changes"), and the rest of what was typed is lost.
+        self.sock.sendall(struct.pack(">BBHiii", 2, 0, 3, 0, -223, -308))
         # No framebuffer is ever asked for, so the server sends nothing back.
 
     def _pointer(self, x, y, buttons=0):
