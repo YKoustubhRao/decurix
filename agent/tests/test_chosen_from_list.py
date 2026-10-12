@@ -39,8 +39,7 @@ class TestValuesChosenFromAList(unittest.TestCase):
 
         with patch.object(verify.llm_client, "available", return_value=True), \
                 patch.object(verify.llm_client, "chat", side_effect=chat), \
-                patch.object(verify, "_documents", return_value=("", [])), \
-                patch.object(verify, "_count"):
+                patch.object(verify, "_documents", return_value=("", [])):
             verify.judge("enter it", values={"company": "Wood Corner Ltd", "reference": "R-1"}, chosen={"company"})
 
         values = next(line for line in seen["text"].split("\n") if line.startswith("This run's values"))

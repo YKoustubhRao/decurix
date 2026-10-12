@@ -197,7 +197,35 @@ def _clean(params, answer, texts=()):
     return values, evidence
 
 
+# A figure as a document writes it: one number, with the money it is in before it ("Rs. 360.00", "INR 1,250",
+# "$40") and the unit it counts after it ("20 Reams", "2 Units", "1.5 kg", "360.00/-").
+FIGURE = re.compile(r"^\s*(?:(?:Rs\.?|INR|USD|EUR|GBP|AED|SGD|[₹$€£])\s*)?(-?\d[\d,]*(?:\.\d+)?)\s*(?:/-|[A-Za-z][A-Za-z .()/-]{0,30})?\s*$",
+                    re.IGNORECASE)
+BARE_NUMBER = re.compile(r"^\s*-?\d[\d,]*(?:\.\d+)?\s*$")
+
+
+def as_number(value, example):
+    """
+    A figure written with its unit or its currency, as the number alone, when
+    the field was shown to take a bare number. Found live: a bill's "20
+    Reams", "2 Chairs" and "Rs. 360.00" were read whole for fields the
+    demonstration typed "1" and "40000" into; the number check refused them
+    and a person was asked for figures the bill states plainly. One number,
+    with nothing around it but the mark of its currency and the words of its
+    unit, is that number - nothing is guessed. Anything else is left as read.
+    """
+
+    if example is None or not BARE_NUMBER.match(str(example)):
+        return value
+    found = FIGURE.match(value or "")
+    return found.group(1) if found else value
+
+
 def as_written(value, example, texts):
+    return _own_spelling(as_number(value, example), example, texts)
+
+
+def _own_spelling(value, example, texts):
     """
     The document's own spelling of an all-capitals value, when the example was
     not in capitals. Found live: a PO's letterhead read "WOOD CORNER" and its

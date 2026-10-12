@@ -394,6 +394,10 @@ type operatorState struct {
 	ScreenNudged      bool // a DONE for typing or clicking no command did was pushed back
 	UnstartedNudged   bool // a DONE for work on the screen with no command run at all was pushed back
 	ScreenConfirmed   bool // ...and, said again, was put to the person: their answer stands
+	// Hosted is whether the model is a hosted one, fixed when the goal starts.
+	// The host then judges the screen itself before a result is reported, so
+	// the commands need not stand in as the evidence (unperformedScreenNudge).
+	Hosted bool
 	BudgetWarned      bool // told that its turns are nearly used up
 	LastCommand       string
 	LastResult        *shellResult
@@ -507,6 +511,7 @@ func (o *OperatorSkill) start(rc RunContext, subtask Subtask) *operatorState {
 		ScreenScale:     caps.ScreenshotScale(),
 		ScreenTextChars: caps.ScreenTextChars(),
 		Turns:           caps.OperatorTurns(),
+		Hosted:          caps.Hosted,
 	}
 	vision := ""
 	if caps.Hosted {
@@ -761,17 +766,24 @@ func screenApprovalReason(r shellResult) string {
 func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) (Result, error) {
 	invalid := 0
 	repeats := 0
+	turnsUsed := 0
 
 	finish := func(output string, verified bool, meta map[string]any) (Result, error) {
 		if meta == nil {
 			meta = map[string]any{}
 		}
 		meta["commands"] = st.Commands
+		// What exited 0, in order: the way through this task that worked. A
+		// host keeps it once the result has been checked, so the same kind of
+		// request need not be found out again from nothing.
+		meta["worked"] = st.Worked
+		meta["turns"] = turnsUsed
 		meta["userFacing"] = true
 		return Result{Subtask: subtask, SkillName: o.Name(), Output: output, Verified: verified, Meta: meta}, nil
 	}
 
 	for turn := 0; turn < o.turns(st); turn++ {
+		turnsUsed = turn + 1
 		if err := rc.Ctx.Err(); err != nil {
 			return finish("Stopped before finishing: "+err.Error(), false, map[string]any{"error": err.Error(), "fatal": true})
 		}
@@ -846,7 +858,11 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				res.Checkpoint = st
 				return res, nil
 			}
-			if nudge := unperformedScreenNudge(st); nudge != "" && !st.ScreenConfirmed {
+			// Only where nothing else will look: with a hosted model the host's final check judges the
+			// screen. Found live there: sent back to a record it had entered correctly, the operator
+			// rightly changed nothing and said so - and "the task says to type, and nothing was typed"
+			// refused that twice and paged a person about a finished record.
+			if nudge := unperformedScreenNudge(st); nudge != "" && !st.ScreenConfirmed && !st.Hosted {
 				if !st.ScreenNudged {
 					st.ScreenNudged = true
 					rc.Logf("operator", "said done, but no command did the typing or clicking the task asks for - pushing back once")

@@ -341,7 +341,13 @@ def _candidates():
                           "places": lambda s=skill: _places_from_skill(s)})
 
     for meta in recording.sessions():
-        if meta.get("kind") != "demonstration" or meta.get("status") != "complete" or not meta.get("event_count"):
+        # A person's finished demonstration - or the worker's own run of a
+        # request on the screen, once its result was checked done on a first,
+        # unhelped attempt (playbooks.keep marks it `proven`): what it did
+        # then is replayed for the next request like it, as a person's would be.
+        own = meta.get("kind") == "task" and meta.get("proven")
+        shown = meta.get("kind") == "demonstration" and meta.get("status") == "complete"
+        if not (own or shown) or not meta.get("event_count"):
             continue
         text = (meta.get("task") or meta.get("title") or "").strip()
         if text:
@@ -440,6 +446,22 @@ def load_skill(found):
     meta, events = recording.load(found["id"])
     skill = learning.build([(meta, events)])
     skill["status"] = skills.READY
+
+    if meta.get("kind") == "task":
+        # The worker's own run, not a person's demonstration. What a person
+        # waits to see before their next press is the step's result; what an
+        # engine happened to have on the screen when it looked is not - found
+        # live, its own run was replayed as far as a click whose "result" was
+        # a link that page shows only some of the time, and stopped there. So
+        # a step of its own run is held to finding its exact control, not to
+        # what followed it, and the run ends unverified: the final check
+        # judges the screen before anything is reported. A step that could do
+        # harm keeps its check - its result missing is never passed over.
+        for step in skill.get("steps") or []:
+            if not step.get("consequential"):
+                step["expect"] = []
+        skill["own"] = True
+
     return skill, True
 
 

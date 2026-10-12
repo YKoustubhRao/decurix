@@ -172,7 +172,11 @@ NAVIGATION_PATH = re.compile(r"(^|>\s*)navigation\b")
 RECORD_NAME = re.compile(
     r"^\s*(purchase|transfer)\s+(invoices?|orders?|receipts?|requests?|returns?|ledgers?|registers?|reports?|"
     r"analytics|history|list|settings|entr(?:y|ies)|summary|trends|quotations?|requisitions?|analysis|items?|taxes|"
-    r"records?|notes?|vouchers?|bills?)\s*$",
+    r"records?|notes?|vouchers?|bills?)"
+    # ...and the places such records are looked at: "Purchase Invoice List", "Purchase Order Report". Found live:
+    # a worker looking for an earlier copy of a bill before entering it was stopped for a yes at the list of them.
+    r"(?:\s+(?:list|lists|report|reports|register|summary|analytics|analysis|history|trends|dashboard|view|"
+    r"search|settings))?\s*$",
     re.IGNORECASE,
 )
 

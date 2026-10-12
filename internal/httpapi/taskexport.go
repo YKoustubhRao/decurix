@@ -24,7 +24,7 @@ import (
 var exportColumns = []string{
 	"task_id", "created_at", "worker", "request", "type", "status", "attempts",
 	"engine", "model", "checked", "autonomous", "stepped_in", "interventions",
-	"approvals", "verdict", "verdict_note", "cost_usd", "duration_seconds", "final_reply",
+	"approvals", "verdict", "verdict_note", "cost_usd", "tokens", "duration_seconds", "final_reply",
 }
 
 // taskExportHandler serves the export.
@@ -113,6 +113,10 @@ func exportRow(sum tasks.Summary, d tasks.Detail) []string {
 		checked = map[bool]string{true: "yes", false: "no"}[*last.Checked]
 	}
 
+	used := ""
+	if sum.Tokens != nil {
+		used = fmt.Sprintf("%d", *sum.Tokens)
+	}
 	cost := ""
 	if sum.CostUSD != nil {
 		cost = fmt.Sprintf("%.4f", *sum.CostUSD)
@@ -122,7 +126,7 @@ func exportRow(sum tasks.Summary, d tasks.Detail) []string {
 		sum.ID, sum.CreatedAt.UTC().Format(time.RFC3339), sum.WorkerName, sum.Request, sum.Type, sum.Status,
 		fmt.Sprint(sum.Executions), sum.Engine, sum.Model, checked, autonomy(sum),
 		strings.Join(sum.SteppedIn, "; "), fmt.Sprint(sum.Interventions), fmt.Sprint(sum.Approvals),
-		sum.Verdict, sum.VerdictNote, cost, fmt.Sprintf("%.0f", sum.Duration.Seconds()), last.FinalReply,
+		sum.Verdict, sum.VerdictNote, cost, used, fmt.Sprintf("%.0f", sum.Duration.Seconds()), last.FinalReply,
 	}
 	for i := range row {
 		row[i] = spreadsheetSafe(row[i])

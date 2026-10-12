@@ -579,7 +579,6 @@ def _system_message(task=""):
 def _step(messages, tools):
     _trim_images(messages)
     message, used = llm_client.chat(messages, tools=tools, max_tokens=6000)
-    usage.add(input_tokens=used.get("prompt_tokens"), output_tokens=used.get("completion_tokens"))
 
     assistant = {"role": "assistant", "content": message.get("content") or ""}
     if message.get("tool_calls"):

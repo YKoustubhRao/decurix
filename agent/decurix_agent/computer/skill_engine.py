@@ -160,19 +160,14 @@ def run(skill, params=None, start=1):
 
     values = skills.initial_values(skill, params)
 
-    # A replay clicks the entries the demonstration chose from its lists. With
-    # another thing to choose this run, it would type this run's words and
-    # then take the demonstration's entry - or stop half way through a form.
-    chosen = skills.chosen_from_list(skill)
-    differs = [p["name"] for p in skill.get("params") or []
-               if p["name"].split("__")[0] in chosen and values.get(p["name"]) not in (None, "", p.get("example"))]
-    if differs:
-        return _refusal(skill, "this run chooses other entries from the application's lists than the demonstration did ("
-                               + ", ".join(differs[:4]) + "), and a replay would take the demonstration's. Do the "
-                               "steps yourself with gui, following the skill's steps: for each of those values use gui "
-                               "select FIELD \"the value\", which finds the existing entry")
+    # This run's own program: its number of rows, and its own choices from the application's lists
+    # (skills.fit). It used to be refused whenever it chose another entry than the demonstration did.
+    count, _ = skills.run_rows(skill, values)
+    absent = set()
+    if count:
+        absent = {name for row in (skills.repeated_rows(skill) or {"rows": []})["rows"][count:] for name in row}
 
-    missing = [p for p in skills.needed_from(skill, start) if not values.get(p["name"])]
+    missing = [p for p in skills.needed_from(skill, start) if not values.get(p["name"]) and p["name"] not in absent]
     if missing:
         # Given, and empty: this run has nothing to put there (a document that leaves a field out). That is not a
         # value to ask a person for - found live: "ask the human" for a number the document said did not exist.

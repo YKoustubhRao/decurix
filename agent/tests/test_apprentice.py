@@ -396,8 +396,12 @@ class WithTheModel(ts.TeachingBase):
 
         skill_task.perform(f"/skill {name}")
 
+        # The model looks into it before a person is asked; with nothing more to go on, the person then is -
+        # and the skill is one the model does from now on, with the replay as its tool.
+        self.assertEqual(len(self.engine_calls), 1)
         self.assertEqual(self.finals, [])
-        self.assertIn("an error: name required", self.asked[-1][0])
+        self.assertIn("I cannot confirm this is done", self.asked[-1][0])
+        self.assertIn("an error: name required", skills.load(name)["supervised"])
 
 
 class WithoutAModel(ts.TeachingBase):

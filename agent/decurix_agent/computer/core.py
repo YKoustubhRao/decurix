@@ -94,6 +94,39 @@ def _desktop_apps():
     return list(dict.fromkeys(names))[:MAX_APPS_SHOWN]
 
 
+# What a browser draws in place of a page whose process has died.
+_CRASHED_PAGE = re.compile(r"aw,?\s*snap|something went wrong while displaying this webpage|"
+                           r"this page isn.t responding|page unresponsive|out of memory", re.IGNORECASE)
+CRASHED_PAGE_NOTE = ("THE PAGE IN THE BROWSER HAS CRASHED (the browser shows its own \"Aw, Snap!\" page in its "
+                     "place). Nothing on it can be read or pressed, and anything typed into it that was not saved is "
+                     "gone. Reload it - gui key F5 - then look again, and check what was saved before entering "
+                     "anything a second time.")
+
+
+def _dead_page_note(frame):
+    """
+    What to say when the browser's page does not answer because the page is
+    dead, or None when the screen does not show that. Found live on a host
+    short of memory: the page's process died, the browser drew "Aw, Snap!",
+    and all a worker was told was that Chromium "did not answer Page.enable
+    within 20s" - every look after that the same, with nothing to act on. The
+    screen says what happened, in the browser's own words; they are read off
+    it (only on this path - a look that works costs nothing more).
+    """
+
+    try:
+        from decurix_agent.computer import ocr
+        # The browser draws that page light on dark, which the reader (made for dark text on a light
+        # page) sees as blank: it is read as it is and with its tones turned over.
+        rgb = bytes(frame.rgb)
+        shown = (ocr.text(ocr.read(frame.width, frame.height, rgb), limit=4000) + "\n"
+                 + ocr.text(ocr.read(frame.width, frame.height, bytes(255 - c for c in rgb)), limit=4000))
+    except Exception:
+        # No reader on this desktop: the plain "did not answer" note is what there is.
+        return None
+    return CRASHED_PAGE_NOTE if _CRASHED_PAGE.search(shown or "") else None
+
+
 def observe(remember=True, frame=None):
     """
     Look at the screen: a screenshot, the open windows, and every accessible
@@ -121,7 +154,7 @@ def observe(remember=True, frame=None):
             found.extend(page_elements)
             groups.append(page_group)
         except ComputerError as exc:
-            notes.append(f"could not read the browser tab: {exc}")
+            notes.append(_dead_page_note(frame) or f"could not read the browser tab: {exc}")
     elif any(browser.is_browser_title(w["title"]) for w in windows):
         notes.append(
             "The browser is open without its debugging port, so its page cannot be read. "
@@ -681,6 +714,14 @@ def _in_place_of(element, entry_name):
     return wanted
 
 
+def _typed_in_place_of(element, text):
+    """What was searched for in a field that looks records up and not found, when `text` typed into it now is another thing; else None."""
+
+    if element is None or not text or element.get("role") not in _SEARCHED_ROLES:
+        return None
+    return _in_place_of(element, text)
+
+
 def _person_said(wanted, entry_name):
     """
     Whether the person's own words for this task name `entry_name` for what
@@ -1093,6 +1134,16 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         replaced = _in_place_of(None, element.get("name") or "")
         if replaced:
             raise ComputerError(SUBSTITUTE.format(field="The list", wanted=replaced, entry=element.get("name")))
+
+    # ...and neither may one typed into the field itself. Found live: a bill's line had no item in the
+    # application; selecting another item in its place was refused, clicking one in the list was refused -
+    # and the engine typed another item's name into the field and pressed Tab, which a field that looks
+    # records up takes as a choice. The draft was saved with a database-hosting item on a server's line.
+    # What is typed there again must still be the thing that was searched for.
+    if named and kind == "type":
+        replaced = _typed_in_place_of(element, text)
+        if replaced:
+            raise ComputerError(SUBSTITUTE.format(field=el.describe(element), wanted=replaced, entry=text))
 
     if kind == "type" and point is not None and element is None and before.get("page_url"):
         raise ComputerError("that point does not resolve to a browser field to type into - click the editor, "

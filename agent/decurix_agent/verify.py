@@ -2,7 +2,7 @@ import json
 import os
 import re
 
-from decurix_agent import llm_client, usage
+from decurix_agent import llm_client
 from decurix_agent.logging_utils import log
 
 
@@ -165,7 +165,6 @@ def judge(task, claim="", criteria="", values=None, steps="", live_png=None, ref
     try:
         message, spent = llm_client.chat([{"role": "system", "content": JUDGE_SYSTEM},
                                           {"role": "user", "content": content}], max_tokens=600)
-        _count(spent)
         found = _parse(message.get("content") or "")
     except (llm_client.LLMError, ValueError) as exc:
         log(f"verify: could not judge: {exc}")
@@ -227,9 +226,3 @@ def _parse(text):
             "seen": " ".join(str(data.get("seen") or "").split())[:400],
             "why": " ".join(str(data.get("why") or "").split())[:400]}
 
-
-def _count(spent):
-    try:
-        usage.add(input_tokens=spent.get("prompt_tokens") or 0, output_tokens=spent.get("completion_tokens") or 0)
-    except Exception:
-        pass
