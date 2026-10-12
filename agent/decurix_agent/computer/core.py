@@ -75,6 +75,25 @@ def _state_lock():
         yield
 
 
+MAX_APPS_SHOWN = 10
+
+
+def _desktop_apps():
+    """
+    The names of the apps that are icons on this desktop, as `open` takes
+    them. Found live: with its app closed, an engine double-clicked guessed
+    points around the icon, tried the app's address on this machine, then read
+    the launcher's script - twelve commands before the window was open. An
+    icon has no element to press; its name opens it.
+    """
+
+    try:
+        names = [entry["name"] for entry in launchers.entries([launchers.PLACES[0]])]
+    except Exception:  # a look must never fail for the sake of this line
+        return []
+    return list(dict.fromkeys(names))[:MAX_APPS_SHOWN]
+
+
 def observe(remember=True, frame=None):
     """
     Look at the screen: a screenshot, the open windows, and every accessible
@@ -139,6 +158,7 @@ def observe(remember=True, frame=None):
             "notes": notes,
             "page_url": page_group.get("url") if page_group else "",
             "frame": frame,
+            "apps": _desktop_apps(),
         }
 
         if remember:
@@ -656,7 +676,41 @@ def _in_place_of(element, entry_name):
     wanted = kept.get("wanted") or ""
     if _telling_words(wanted) & _telling_words(" ".join(_own_name(entry_name)) or entry_name):
         return None
+    if _person_said(wanted, entry_name):
+        return None
     return wanted
+
+
+def _person_said(wanted, entry_name):
+    """
+    Whether the person's own words for this task name `entry_name` for what
+    was searched for: one sentence of theirs that holds both. Found live: a
+    person taught "a van, a truck and a lorry are all the kind Goods Vehicle";
+    the document said lorry, the list had no lorry, and the entry they had named
+    for it was refused as "another thing in its place" - so the worker asked
+    them what they had already said. A list's entry nobody named for it is
+    still refused.
+    """
+
+    try:
+        from decurix_agent import guidance
+        said = guidance.persons_words()
+    except Exception:
+        return False
+
+    entry = " ".join(re.findall(r"\w+", (entry_name or "").lower()))
+    own = " ".join(_own_name(entry_name))
+    # The words that are the searched value's own, not the entry's: the sentence must tie one of them to the entry.
+    telling = _telling_words(wanted) - _telling_words(entry_name)
+    if not said or not entry or not telling:
+        return False
+
+    for sentence in re.split(r"[.;!?\n]+|\",\s*\"", said):
+        words = re.findall(r"\w+", sentence.lower())
+        plain, stemmed = " " + " ".join(words) + " ", " " + " ".join(_stem(w) for w in words) + " "
+        if (f" {entry} " in plain or (own and f" {own} " in stemmed)) and telling & set(stemmed.split()):
+            return True
+    return False
 
 
 SUBSTITUTE = ("{field} has no entry for {wanted!r} - the search for it found none - and {entry!r} shares no word with "

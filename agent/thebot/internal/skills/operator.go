@@ -107,7 +107,8 @@ const visionRule = `- The pages of a scanned document that office read finds are
 const taskRules = `- Use documents only when their names, identifiers and contents belong to the person, organization or task requested. Leave unrelated sources out, finish the rest, and report what you excluded.
 - Match records using identifiers and relevant attributes from the request and sources. Capitalization, punctuation or spacing alone need not make a different record. Similar names alone are not enough; if several candidates fit, ask the person with the distinguishing evidence.
 - When comparing documents, compare the requested fields, ignoring only capitals and spacing unless the task permits other normalization. Report differences with both values and their sources.
-- Two lists may describe the same entry differently: compare descriptions, identifiers, attributes and units before calling an entry missing or new.
+- Two lists may describe the same entry differently: compare descriptions, identifiers, attributes and units before calling an entry missing or new. When each of two lists has an entry left over that agrees on who, when and how much but whose reference is written differently (a leading zero, punctuation, a prefix), report the pair as a probable match with both spellings - not as matched, and not as two missing entries. Whatever you say about a file you wrote must be what the file holds: read it back before DONE.
+- A table of entries on a page shows its fields for one row at a time, and gui observe says which (textbox "Quantity" [row 2]). Tab out of a row's last field moves to the next row, making it if there is none: look before adding a row, fill each row's fields by that row's own refs, and delete a row left empty before saving. A form opens with defaults already chosen (a company, an account, a date, a tax): set every one the request names, and compare the rest with the request before saving.
 - Use the source's values when making a draft from it, and report differences from application defaults. Every figure has a unit and basis: read them, convert to what was asked, and check the result.
 - In an application, scroll and observe before deciding a field is missing. Never click the screen's bottom edge or a scrollbar to move a page. A form is saved only when the application says so; fix field errors and save again. On a page with several forms, use Save within the form you filled. Set dropdowns and suggestion fields with gui select REF "value", then verify the selected entry; typing and Tab may leave the field unset. Complete any configuration dialog using the requested attributes and verify the result. Type dates in the format the field shows, then check that they hold.
 - Before DONE, check every part of the request in the application or output files. List what was completed, how you verified it, and anything left undone with its reason.
@@ -393,6 +394,7 @@ type operatorState struct {
 	ScreenNudged      bool // a DONE for typing or clicking no command did was pushed back
 	UnstartedNudged   bool // a DONE for work on the screen with no command run at all was pushed back
 	ScreenConfirmed   bool // ...and, said again, was put to the person: their answer stands
+	BudgetWarned      bool // told that its turns are nearly used up
 	LastCommand       string
 	LastResult        *shellResult
 	Commands          []string
@@ -774,6 +776,12 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 			return finish("Stopped before finishing: "+err.Error(), false, map[string]any{"error": err.Error(), "fatal": true})
 		}
 
+		if left := o.turns(st) - turn; left == closingTurns && o.turns(st) >= 4*closingTurns && !st.BudgetWarned {
+			st.BudgetWarned = true
+			rc.Logf("operator", "nearly out of turns - told to finish or to ask")
+			appendToLastUser(st, fmt.Sprintf(closingNote, left))
+		}
+
 		resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, st.Messages, llm.Options{TimeoutMs: 180000, Temperature: 0.2})
 		if err != nil {
 			// The model itself is unusable. Retrying the same goal through
@@ -1019,10 +1027,72 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 		}
 	}
 
+	if changedTheScreen(st) {
+		// Work on the screen that ran out of turns is put to the person as it stands, with the goal kept so
+		// their reply carries it on. Found live: a form was filled and could not be saved for want of one value
+		// the request did not give; the plain failure went to the scheduler, whose recovery plan was to enter
+		// the whole document again from the start - into an application that already held most of it.
+		question := fmt.Sprintf("I ran out of steps (%d commands) before this was finished, and stopped rather than "+
+			"start over.", st.CommandsRun)
+		appendToLastUser(st, outOfTurnsNote)
+		resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, st.Messages, llm.Options{TimeoutMs: 120000, Temperature: 0.2})
+		if err == nil {
+			if _, said := parseControl(resp.Text); strings.TrimSpace(said) != "" {
+				st.Messages = append(st.Messages, llm.Message{Role: "assistant", Content: resp.Text})
+				question += "\n\n" + strings.TrimSpace(said)
+			}
+		}
+		question += "\n\nTell me how to go on, or reply `stop`."
+		res, _ := finish(question, false, map[string]any{"needsUserInput": true, "question": question, "failureReasoning": question})
+		res.Checkpoint = st
+		return res, nil
+	}
+
 	res, _ := finish(fmt.Sprintf("I ran out of turns (%d) before finishing, after running %d command(s).", o.turns(st), st.CommandsRun), false,
 		map[string]any{"needsUserInput": true, "failureReasoning": "ran out of turns without finishing - probably repeating an approach that cannot work"})
 	res.Checkpoint = st
 	return res, nil
+}
+
+// closingTurns is how many turns from the end the operator is told its
+// budget is nearly spent (only for a budget of at least four times that).
+const closingTurns = 8
+
+// closingNote is said once, closingTurns from the end. Found live: an
+// application refused to save for want of a value the request did not give,
+// and the operator spent its last twenty-five turns scrolling and clicking
+// for it without ever asking.
+const closingNote = "\n\n(You have %d turns left for this task. Do not begin anything new. If the application is asking " +
+	"for something the request and its documents do not give - a value, a choice between candidates - reply HELP now: " +
+	"say what it asks for, in its own words, and what you have entered and saved so far. Otherwise finish, save and reply DONE.)"
+
+// outOfTurnsNote asks for the state of the work when the turns are used up.
+const outOfTurnsNote = "\n\n(No turns are left and no more commands will be run. Reply HELP: with three things, briefly - " +
+	"what is entered or changed so far and whether it is saved; what is still missing; and the one thing you need from " +
+	"the person to finish. Report only what the screen showed you.)"
+
+// appendToLastUser adds a note to the newest message when it is the user's
+// (a command's result), else as a message of its own: two user turns in a
+// row are not accepted by every provider.
+func appendToLastUser(st *operatorState, note string) {
+	if n := len(st.Messages); n > 0 && st.Messages[n-1].Role == "user" {
+		st.Messages[n-1].Content += note
+		return
+	}
+	st.Messages = append(st.Messages, llm.Message{Role: "user", Content: strings.TrimSpace(note)})
+}
+
+// screenChangeRe is a gui command that acts on the screen, as against one that only looks at it.
+var screenChangeRe = regexp.MustCompile(`^\s*gui\s+(click|double-click|doubleclick|dblclick|right-click|type|select|key|drag|upload|do|replay|open)\b`)
+
+// changedTheScreen reports whether a command that worked acted on the screen.
+func changedTheScreen(st *operatorState) bool {
+	for _, command := range st.Worked {
+		if screenChangeRe.MatchString(command) {
+			return true
+		}
+	}
+	return false
 }
 
 // invalidReplyNudge quotes the model's own opening back to it. The generic
