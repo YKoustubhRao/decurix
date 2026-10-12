@@ -256,7 +256,10 @@ function run(file, args, onLine, options = {}) {
   return new Promise((resolve) => {
     let log = null;
     try { log = fs.openSync(logFile(), 'a'); } catch { /* the log is decoration */ }
-    const child = spawn(file, args, { windowsHide: true, ...options, stdio: ['ignore', 'pipe', 'pipe'] });
+    // Not in the app's own folder: a program that outlives the app (a
+    // download a helper script started) would keep that folder from being
+    // replaced by an update or removed by the uninstaller.
+    const child = spawn(file, args, { windowsHide: true, cwd: os.tmpdir(), ...options, stdio: ['ignore', 'pipe', 'pipe'] });
     let rest = '';
     const take = (chunk) => {
       if (log !== null) { try { fs.writeSync(log, chunk); } catch { /* decoration */ } }

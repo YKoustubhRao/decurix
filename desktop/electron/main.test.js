@@ -236,7 +236,7 @@ async function boot(initialState, {
     'node:child_process': childProcess,
     // Finding this computer's address on the network is not what is tested here.
     'node:dgram': { createSocket: () => ({ once() {}, connect() {}, close() {} }) },
-    'node:os': { homedir: () => home },
+    'node:os': { homedir: () => home, tmpdir: () => path.join(home, 'tmp') },
     'node:fs': fileSystem,
     'node:http': http,
     'node:path': path,
