@@ -96,6 +96,8 @@ def describe(element):
         return "the screen"
 
     label = f"{element['role']} {_quote(element.get('name') or '')}"
+    if element.get("row"):
+        label += f" in row {element['row']}"
     if element.get("ref"):
         label += f" ({element['ref']})"
     return label
@@ -323,6 +325,9 @@ def element_line(element, coords=False):
             line += f" ({len(value)} chars{f', {lines} lines' if lines > 1 else ''} - gui read {element['ref']} shows all)"
 
     states = [s for s in element.get("states", []) if s != "offscreen"]
+    if element.get("row"):
+        # Which line of a table of entries this field belongs to (cdp._ROW_NUMBERS).
+        states = [f"row {element['row']}"] + states
     if states:
         line += " [" + ", ".join(states) + "]"
 
@@ -449,6 +454,11 @@ def render(observation, budget=3500, coords=False, only_group=None):
     titles = [w["title"] for w in observation.get("windows", []) if w.get("title")]
     if titles:
         lines.append("Open windows: " + ", ".join(_quote(t, 60) for t in reversed(titles)))
+
+    apps = observation.get("apps") or []
+    if apps:
+        lines.append("Apps on this desktop (an icon is opened by its name: gui open \"NAME\"): "
+                     + ", ".join(_quote(name, 50) for name in apps))
 
     for note in observation.get("notes", []):
         lines.append("Note: " + note)

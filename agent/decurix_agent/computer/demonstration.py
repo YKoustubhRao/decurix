@@ -433,11 +433,24 @@ def _masked(frame, boxes):
 FOCUS_KEYS = {"Tab", "ISO_Left_Tab", "Return", "KP_Enter", "Escape"}
 
 
+# Chords that work on the text of the field the keyboard is in and leave it
+# there: select all, copy, cut, paste, undo, redo, and moving or selecting
+# with the arrow keys.
+EDITING_KEYS = {"a", "c", "v", "x", "z", "y", "left", "right", "up", "down", "home", "end", "backspace", "delete"}
+
+
+def _edits_in_place(key):
+    parts = str(key).lower().split("+")
+    return len(parts) > 1 and set(parts[:-1]) <= {"ctrl", "control", "shift"} and parts[-1] in EDITING_KEYS
+
+
 def _focus_after(action, element, focus):
     """
     Where keys go after `action`: (known, element). Clicking a field focuses
     it; clicking anything else, Tab, Return, Escape or a shortcut moves focus
-    somewhere unknown; typing leaves it where it was.
+    somewhere unknown; typing leaves it where it was - and so does a chord
+    that only edits (found live: a date replaced with Ctrl+A and then typed
+    was recorded as typed "into the screen", twice in one demonstration).
     """
 
     kind = action["kind"]
@@ -447,7 +460,7 @@ def _focus_after(action, element, focus):
 
     if kind == "key":
         keys = action.get("keys") or []
-        if any("+" in k or k in FOCUS_KEYS for k in keys):
+        if any(("+" in k and not _edits_in_place(k)) or k in FOCUS_KEYS for k in keys):
             return True, None
         return (True, element) if focus[0] else focus
 

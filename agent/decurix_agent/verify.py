@@ -46,6 +46,12 @@ JUDGE_SYSTEM = (
     "apply to this run: a search taught on one person whose profile showed \"Udupi, Karnataka\" is done for "
     "another person when THAT person's profile is open, whatever city it shows. Never answer not_done or unsure "
     "because such a detail differs or is missing (found live: a correct run was refused for exactly that).\n"
+    "Go through the request part by part before you answer. Each thing it names - which company, account, "
+    "person or record, a date, a reference, the state to leave the result in (a draft, not submitted) - must be "
+    "shown, or reported, with that value. A report or a screen that has ANOTHER value for a part of the request "
+    "than the request gave is \"not_done\" however complete the rest is: say which part, what was asked and what "
+    "was done instead (found live: asked for one company, a record saved under a similarly named other one was "
+    "reported in passing and passed).\n"
     "Answer \"not_done\" when you can see it was not: an error, a validation message, the wrong page or record, "
     "another value than asked, a half-filled form, a sign-in page, a CAPTCHA, nothing changed, fewer items than "
     "were asked for.\n"
@@ -71,9 +77,16 @@ JUDGE_SYSTEM = (
     "the person is told what it said (found live: \"this cannot be entered, there is no such record and I must "
     "not create one\" was sent back to be tried again, and the worker then typed into the half-filled form). "
     "A report that claims success is never \"cannot\".\n"
+    "When you are shown the files the worker wrote during the task, they are the result, exact as they read now: "
+    "every figure, status and statement the report makes about a file must be what that file shows, and the file "
+    "must hold what the task asked for. A report that says something the file contradicts (\"these two were "
+    "matched\" where the file lists them as unmatched, a total the file does not have, a sheet or column that is "
+    "not there) is \"not_done\" - say which file and what differs, so the worker can correct the file or the "
+    "report. A file shown cut short is judged on the part shown.\n"
     "Answer \"unsure\" whenever you cannot tell from what you are shown. Never guess \"done\".\n"
     "Reply with JSON only: {\"verdict\": \"done\"|\"not_done\"|\"cannot\"|\"unsure\", \"confidence\": 0.0-1.0, "
-    "\"seen\": \"what the screen now shows, one sentence\", \"why\": \"one sentence\"}"
+    "\"seen\": \"what the screen now shows (or, with no screen, what the files show), one sentence\", "
+    "\"why\": \"one sentence\"}"
 )
 
 
@@ -82,11 +95,13 @@ def available():
 
 
 def judge(task, claim="", criteria="", values=None, steps="", live_png=None, reference_png=None, observed=None,
-          screen_text="", chosen=()):
+          screen_text="", chosen=(), produced="", screen=True):
     """
     {"verdict", "confidence", "seen", "why"} for whether `task` was done. With
     no model, or when the model cannot be read, the verdict is "unsure" - the
-    caller then asks a person.
+    caller then asks a person. `produced` is what the files the task wrote say
+    now (produced.text); `screen=False` is a task that never touched the
+    screen, judged on its files alone.
     """
 
     if not available():
@@ -125,7 +140,10 @@ def judge(task, claim="", criteria="", values=None, steps="", live_png=None, ref
         lines.append("The text the fields on the screen hold NOW, read from the apps themselves (exact - where it and "
                      "the picture's small print disagree, this is right; a report that says a text was changed is "
                      "backed only if this shows it):\n" + screen_text)
-    lines.append(f"What the worker reports: {(claim or '(nothing)').strip()[:2500]}")
+    lines.append(f"What the worker reports: {(claim or '(nothing)').strip()[:4000]}")
+    if produced:
+        lines.append("The files the worker wrote during this task, as they read NOW (the result itself - the report "
+                     "must agree with them):\n" + produced)
     doc_text, doc_pictures = _documents(task)
     if doc_text:
         lines.append("The documents the task names, as they read (the values must come from these):\n" + doc_text)
@@ -135,6 +153,9 @@ def judge(task, claim="", criteria="", values=None, steps="", live_png=None, ref
         content += [{"type": "text", "text": "A page of a document the task names:"}, llm_client.image_part(path=picture)]
     if live_png:
         content += [{"type": "text", "text": "The screen NOW:"}, llm_client.image_part(live_png)]
+    elif not screen:
+        content.append({"type": "text", "text": "(This task did not work on the screen: judge it on the files and on "
+                                                "what the tools read.)"})
     else:
         content.append({"type": "text", "text": "(The screen now could not be read.)"})
     if reference_png:
