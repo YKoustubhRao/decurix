@@ -3,8 +3,8 @@ import threading
 import time
 import traceback
 
-from decurix_agent import (ask_task, attachments, config, guidance, lessons, progress, record_task, replay_task, skill_task, state,
-                           task_context, usage)
+from decurix_agent import (ask_task, attachments, config, guidance, lessons, playbooks, progress, record_task, replay_task,
+                           skill_task, state, task_context, tool_task, usage)
 from decurix_agent.computer import approval
 from decurix_agent.harness import continue_after_query, perform_task
 from decurix_agent.logging_utils import log
@@ -450,6 +450,7 @@ def _pass():
         task_context.start(task_id, request=content)
         task_context.mark_active(task_id, content)
         usage.reset()
+        playbooks.begin()
 
         _mark_handled(path)
 
@@ -478,6 +479,11 @@ def _pass():
             # what differs changed - not worked out again by an
             # engine (computer/mimic.py).
             target = skill_task.perform_mimic
+        elif state.backend_ready and tool_task.handles(content):
+            # A kind of request this desktop has done by hand, written a
+            # script for, proven it and used it: the script does it, and
+            # the engine only when it cannot (tool_task.py).
+            target = tool_task.perform
         elif not _asks_a_web_app(content) and state.backend_ready and skill_task.may_be_taught(content):
             # Not the recorded ticket's words, but maybe its task said
             # another way: with a hosted model, the model reads the

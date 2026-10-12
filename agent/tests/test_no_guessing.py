@@ -46,11 +46,12 @@ def skill(chosen):
 
 
 class WhoDoesATaughtTask(unittest.TestCase):
-    def test_a_task_with_a_value_picked_from_a_list_stays_with_the_model_once_trusted(self):
-        # Found live: trusted, the next document - one line where the demonstration had two - was met with
-        # "I need item_2", because a replay needs every value the demonstration typed.
+    def test_a_trusted_task_is_replayed_whether_or_not_it_picks_from_a_list(self):
+        # It used to stay with the model for good: found live, trusted, the next document - one line where the
+        # demonstration had two - was met with "I need item_2", because a replay needed every value the
+        # demonstration typed. The program is now fitted to the run's rows and choices (skills.fit, test_fit.py).
         with patch.object(skill_task, "_engine_can_drive", return_value=True):
-            self.assertTrue(skill_task._learning_by_model({"skill": skill(True)}))
+            self.assertFalse(skill_task._learning_by_model({"skill": skill(True)}))
             self.assertFalse(skill_task._learning_by_model({"skill": skill(False)}))
             self.assertFalse(skill_task._learning_by_model({"skill": skill(True), "replay_only": True}))
 
@@ -160,6 +161,21 @@ class NothingElseInItsPlace(unittest.TestCase):
             self.assertIsNotNone(core._in_place_of(self.field, "Summit Traders Ltd."))
         with patch.object(core, "_task_now", return_value="t2"):
             self.assertIsNone(core._in_place_of(self.field, "Summit Traders Ltd."))
+
+    def test_another_records_name_typed_into_the_field_is_refused_like_selecting_it(self):
+        # Found live: select refused, the click in the list refused - then "Managed Database Hosting" was typed
+        # into the Item field of a server chassis' line, Tab took it as the choice, and the draft was saved.
+        item = {"role": "combobox", "name": "Item", "row": 2}
+        core._note_failed_search(item, "2U Rack Server Chassis with Redundant Power Supply")
+        self.assertEqual(core._typed_in_place_of(item, "Managed Database Hosting"),
+                         "2U Rack Server Chassis with Redundant Power Supply")
+        # Searching again for the thing itself, or part of it, is still what the field is for.
+        self.assertIsNone(core._typed_in_place_of(item, "Rack Server"))
+        self.assertIsNone(core._typed_in_place_of(item, "2U Rack Server Chassis with Redundant Power Supply"))
+        # Another field, and a field that looks nothing up, are not bound by it.
+        self.assertIsNone(core._typed_in_place_of({"role": "textbox", "name": "Rate (INR)"}, "48,000.00"))
+        self.assertIsNone(core._typed_in_place_of({"role": "button", "name": "Item"}, "Managed Database Hosting"))
+        self.assertIn("ask the person", core.SUBSTITUTE)
 
     def test_words_that_only_say_what_kind_of_body_it_is_do_not_count(self):
         core._note_failed_search(self.field, "Zenith Stationers Pvt Ltd")

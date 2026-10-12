@@ -218,6 +218,11 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
         <div class="fact-value">{{$report.Totals.Cost}}</div>
         <div class="fact-sub">API cost reported by the engines. Local models cost $0.</div>
       </div>
+      <div class="fact">
+        <div class="eyebrow">Tokens per task</div>
+        <div class="fact-value">{{$report.Totals.TokensPerTask}}</div>
+        <div class="fact-sub">{{$report.Totals.TokensUsed}} in all. What a worker's model read and wrote: this should fall as it learns its work.</div>
+      </div>
     </div>
   </div>
 
@@ -382,6 +387,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
             <th class="num">Step-ins</th>
             <th>Verdict</th>
             <th class="num">Time</th>
+            <th class="num">Tokens</th>
             <th class="num">Spend</th>
           </tr>
         </thead>
@@ -398,6 +404,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
             <td class="num">{{len .SteppedIn}}</td>
             <td>{{if .Verdict}}<span class="verdict {{.Verdict}}">{{.Verdict}}</span>{{else if eq .Status "done"}}<span class="muted">unchecked</span>{{else}}<span class="muted">—</span>{{end}}</td>
             <td class="num">{{duration .Duration}}</td>
+            <td class="num">{{tokens .Tokens}}</td>
             <td class="num">{{cost .CostUSD}}</td>
           </tr>
           {{end}}

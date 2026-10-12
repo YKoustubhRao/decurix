@@ -21,7 +21,7 @@ import time
 import urllib.error
 import urllib.request
 
-from decurix_agent import config
+from decurix_agent import config, usage
 from decurix_agent.logging_utils import log
 
 PROVIDER = {"1": "azure"}.get(
@@ -131,7 +131,13 @@ def chat(messages, tools=None, model="default", max_tokens=4000, temperature=Non
     if not choices:
         raise LLMError(f"the hosted model gave no answer: {json.dumps(answer)[:400]}")
 
-    return choices[0].get("message") or {}, answer.get("usage") or {}
+    # Counted here, for every caller: reading a request, filling a skill's
+    # values, the final check and a kept lesson are model calls like the
+    # engine's own, and a task's record used to show only some of them.
+    spent = answer.get("usage") or {}
+    usage.add(input_tokens=spent.get("prompt_tokens"), output_tokens=spent.get("completion_tokens"))
+
+    return choices[0].get("message") or {}, spent
 
 
 def ask_once(system, prompt, model="default"):

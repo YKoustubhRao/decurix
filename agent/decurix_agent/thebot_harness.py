@@ -5,7 +5,7 @@ import time
 import urllib.error
 import urllib.request
 
-from decurix_agent import config, guidance, progress, state, usage
+from decurix_agent import config, guidance, playbooks, progress, state, usage
 from decurix_agent.computer import approval
 from decurix_agent.identity import get_identity_context
 from decurix_agent.logging_utils import log
@@ -312,6 +312,20 @@ def _build_context(extra=""):
     if guided:
         parts.append(guided)
 
+    # What worked the last time this desktop did a request like this one
+    # (playbooks.py): the way through, so it is not found out again. Only for
+    # a hosted brain: a small local model's window has no room for it, and
+    # its turns are not what is being paid for.
+    try:
+        run = guidance.get() or {}
+        known = (playbooks.context(run.get("task") or state.current_task or "", skill=run.get("skill"))
+                 if config.HOSTED_BRAIN else "")
+    except Exception as exc:  # a way to save turns must never cost the task
+        log(f"TheBot: could not look for a playbook: {exc}")
+        known = ""
+    if known:
+        parts.append(known)
+
     parts.append(SAFETY_PREAMBLE)
 
     if extra:
@@ -559,6 +573,22 @@ def _fail_on_backend(reason):
     write_final_reply(_backend_note(reason), kind="error")
 
 
+def _count(job):
+    """
+    Add what a finished job's model calls used to the task's totals, and note
+    the commands that worked. soul reports both with the job (a soul from an
+    older image reports neither, and the figures stay unknown as before).
+    """
+
+    spent = job.get("usage") or {}
+    if spent.get("calls"):
+        usage.add(input_tokens=spent.get("promptTokens"), output_tokens=spent.get("responseTokens"))
+    try:
+        playbooks.note_job(job)
+    except Exception as exc:
+        log(f"TheBot: could not note this job's commands: {exc}")
+
+
 def _handle_job(job, error, resuming=False):
     if error:
         # _run_thebot's own error return means the request never produced
@@ -583,6 +613,8 @@ def _handle_job(job, error, resuming=False):
             return
         _fail_on_backend(error)
         return
+
+    _count(job)
 
     outcome = job.get("outcome") or ""
     answer = (job.get("finalAnswer") or "").strip()
@@ -716,9 +748,9 @@ def perform_task(task, task_file):
     log(task)
     log("========================================")
 
-    # soul does not report token counts back, so those stay unknown. The
-    # local model costs nothing per call; a hosted one's spend is on the
-    # provider's own bill.
+    # soul reports each job's token counts with the job (_count). The local
+    # model costs nothing per call; a hosted one's spend is on the provider's
+    # own bill, so its cost stays unknown and its tokens are what is tracked.
     usage.set_model(config.BRAIN_MODEL if config.HOSTED_BRAIN else config.OLLAMA_MODEL)
     if not config.HOSTED_BRAIN:
         usage.add(cost_usd=0)
@@ -738,6 +770,10 @@ def continue_after_query(query_response):
         return
 
     state.waiting_for_query = False
+
+    # What a person answers steers the rest of the task: its way is not the request's (playbooks.py).
+    if getattr(state, "last_query_kind", "") != "approval":
+        playbooks.answered()
 
     log("========================================")
     log("RECEIVED HUMAN REPLY TO QUERY (TheBot harness)")

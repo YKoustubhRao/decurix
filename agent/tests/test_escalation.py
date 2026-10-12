@@ -542,7 +542,8 @@ class Flow(ts.TeachingBase):
         name = self.taught()
         shown = skills.summary(skills.load(name))
         self.assertEqual(shown["health"], {"fragile": [], "drifting": [], "recent": [],
-                                           "stage": "apprentice", "clean_runs": 0, "trust_after": 3})
+                                           "stage": "apprentice", "clean_runs": 0, "trust_after": 3,
+                                           "tokens": {"first": None, "now": None, "saved_percent": None}})
 
 
 if __name__ == "__main__":

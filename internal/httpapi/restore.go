@@ -36,8 +36,10 @@ const (
 
 // restoreParts maps a backup's folder to where it goes in a desktop.
 var restoreParts = map[string]string{
-	"skills": "/home/headless/.decurix/skills",
-	"memory": "/home/headless/.decurix/memory",
+	"skills":    "/home/headless/.decurix/skills",
+	"memory":    "/home/headless/.decurix/memory",
+	"playbooks": "/home/headless/.decurix/playbooks",
+	"tools":     "/home/headless/.decurix/tools",
 }
 
 type restoreResult struct {

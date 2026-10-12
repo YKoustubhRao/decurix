@@ -103,6 +103,32 @@ def files(report="", started=None, root=None):
     return [path for _, path in sorted(made, reverse=True)[:MAX_FILES]]
 
 
+def drafts():
+    """The emails this task drafted into the Outbox (tools/outbox.py keeps a note of each)."""
+
+    from decurix_agent.tools import outbox
+
+    try:
+        return outbox.drafted()
+    except Exception as exc:
+        log(f"produced: could not read this task's drafts: {exc}")
+        return []
+
+
+def drafts_text(made=None):
+    """Those drafts as the check reads them, or ""."""
+
+    parts = []
+    for n, draft in enumerate(drafts() if made is None else made, 1):
+        body = str(draft.get("body") or "")
+        if len(body) > MAX_FILE_CHARS:
+            body = body[:MAX_FILE_CHARS] + "\n[cut here]"
+        parts.append(f"--- email draft {n} (in the Outbox, not sent)\nTo: {', '.join(draft.get('to') or [])}\n"
+                     f"Cc: {', '.join(draft.get('cc') or []) or '-'}\nSubject: {draft.get('subject') or ''}\n"
+                     f"Attached: {', '.join(draft.get('attachments') or []) or 'nothing'}\n\n{body}")
+    return "\n".join(parts)
+
+
 def text(paths):
     """What those files say now, read the way the worker's own tools read them; unreadable ones say so."""
 

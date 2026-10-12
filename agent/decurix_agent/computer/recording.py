@@ -213,7 +213,7 @@ def update(session_id, **fields):
         if title is not None and title != meta.get("title") and meta.get("title") and not meta.get("task"):
             meta["task"] = meta["title"]
 
-        for key in ("title", "description", "status", "ended_at", "reason", "files"):
+        for key in ("title", "description", "status", "ended_at", "reason", "files", "task", "proven", "misses"):
             if fields.get(key) is not None:
                 meta[key] = fields[key]
 
@@ -441,7 +441,9 @@ def prune(keep=None):
         return
 
     for meta in reversed(found):
-        if meta.get("kind") == "demonstration" or meta["id"] == keep:
+        # A task's recording the worker kept as its own way of doing that kind
+        # of request (playbooks.py) is kept like a demonstration.
+        if meta.get("kind") == "demonstration" or meta.get("proven") or meta["id"] == keep:
             continue
 
         size = _size(meta)
