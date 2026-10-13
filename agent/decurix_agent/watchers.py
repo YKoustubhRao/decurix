@@ -3,7 +3,7 @@ import threading
 import time
 import traceback
 
-from decurix_agent import (ask_task, attachments, config, guidance, lessons, playbooks, progress, record_task, replay_task,
+from decurix_agent import (ask_task, attachments, config, guidance, lessons, playbooks, procedures, progress, record_task, replay_task,
                            skill_task, state, task_context, tool_task, usage)
 from decurix_agent.computer import approval
 from decurix_agent.harness import continue_after_query, perform_task
@@ -449,6 +449,7 @@ def _pass():
         task_id = task_context.task_id_from_filename(path.name)
         task_context.start(task_id, request=content)
         task_context.mark_active(task_id, content)
+        attachments.keep_originals(content, task_id)
         usage.reset()
         playbooks.begin()
 
@@ -497,6 +498,19 @@ def _pass():
             target = ask_task.perform
         else:
             target = perform_task
+            # Recurring work the person taught by saying how it is done: a request
+            # that gives the procedure has it kept, and a later "as usual" gets it
+            # back under its own words - for the engine, and for the check of
+            # what it hands in (procedures.py).
+            if state.backend_ready:
+                applied = procedures.apply(content)
+                if applied == content:
+                    if procedures.sets_procedure(content):
+                        threading.Thread(target=procedures.note, args=(content, task_id), daemon=True).start()
+                else:
+                    content = applied
+                    with state.state_lock:
+                        state.current_task = content
 
         thread = threading.Thread(
             target=target,

@@ -586,11 +586,18 @@ def run(argv):
         # host: an engine looked at a record just saved, was shown an empty page, reloaded it, and then could not
         # say whether its work had been saved. An almost empty page is looked at again before it is reported.
         loading = False
+        before = None
         for _ in range(EMPTY_PAGE_LOOKS):
             on_page = [e for e in observation.get("elements") or [] if e.get("source") == "cdp"]
             loading = bool(observation.get("page_url")) and len(on_page) < EMPTY_PAGE_ELEMENTS
-            if not loading:
+            # A small page that reads the same on two looks has settled: it is small, not loading. Found live:
+            # a sign-in page (a heading, two fields, a button) was called "almost nothing, still loading" after
+            # fifteen seconds of looks, and the engine was told not to touch it.
+            shape = [(e.get("role"), e.get("name")) for e in on_page]
+            if not loading or (on_page and shape == before):
+                loading = False
                 break
+            before = shape
             time.sleep(EMPTY_PAGE_PAUSE)
             observation = core.observe()
         core.report_observation(observation)

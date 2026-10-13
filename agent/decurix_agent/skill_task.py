@@ -4,7 +4,7 @@ import threading
 import time
 import traceback
 
-from decurix_agent import (attachments, binding, config, guidance, lessons, llm_client, messaging, playbooks, produced,
+from decurix_agent import (attachments, binding, config, guidance, lessons, llm_client, messaging, playbooks, procedures, produced,
                            progress, request_reading, state, study, task_context, usage, verify)
 from decurix_agent.computer import (approval, constraints, core, escalation, evidence, experience, launchers, learning,
                                     mimic, recording, replay, skills)
@@ -2135,8 +2135,24 @@ def _retry_engine(guided, note):
                    text=f"A check of the result after the previous attempt at this task found: {note} Finish the "
                         "task - correct what is wrong where it is, do not start it over - and do not report DONE "
                         "until the screen or the files you wrote show it done. Report only what they show. "
-                        + NOT_YOURS_TO_FORCE)
+                        + NOT_YOURS_TO_FORCE + _drafts_note())
     _engine(guided["task"], state.current_task_file)
+
+
+def _drafts_note():
+    """For a task sent back: the emails it already drafted, which are still in the Outbox, and how to correct one."""
+
+    try:
+        from decurix_agent.tools import outbox
+        made = outbox.drafted()
+    except Exception:
+        return ""
+    if not made:
+        return ""
+    listing = "; ".join(f"{d.get('id') or '?'} to {', '.join(d.get('to') or [])} ({d.get('subject') or ''})" for d in made)
+    return (f" The emails you drafted in the previous attempt are still in the Outbox: {listing}. Do not draft any of them a "
+            "second time unless it is wrong; to correct one, draft it again with the same recipients and subject (or pass "
+            "--replaces <its id>) - the corrected draft takes the place of the earlier one.")
 
 
 def _playbook(done, task="", skill=None, why=""):
@@ -2166,10 +2182,19 @@ def _gate(reply, kind, engine):
     if guided is None:
         if kind != "final" or not verify.available():
             return False
+        # A ticket, a replay, a lesson, a web lookup or a proven script reports for itself, screen work or not. Found
+        # live (2026-10-13): a person ended a recording ticket with the form not yet saved; the check judged it "not
+        # done" and handed "/record ..." to the engine, which started filling in the person's form on its own.
+        if engine in NOT_AN_ENGINE:
+            return False
         # A task that only wrote files is checked too: what it wrote is read back against its report.
         # (An engine's task only: a ticket, a replay, a lesson or a web lookup reports for itself.)
         # (An email it drafted is something it made, like a file: the draft is read back too.)
-        if not _did_screen_work() and (engine in NOT_AN_ENGINE or not (produced.files(reply) or produced.drafts())):
+        # A task that followed a kept procedure is checked even when it wrote nothing: the procedure says what
+        # it hands in, and found live (2026-10-13) a month-end reconciliation was answered in the chat with no
+        # workbook at all.
+        if not _did_screen_work() and (engine in NOT_AN_ENGINE or not (produced.files(reply) or produced.drafts()
+                                                                        or procedures.in_request(state.current_task))):
             return False
         guided = guidance.begin(skill=None, task=state.current_task or "", text="", mode="engine", run=None)
 
@@ -2332,9 +2357,13 @@ CONFIRM_TAIL = re.compile(
     # "done" / "correct" / "complete" on their own, or with what is done ("the record is done") ...
     r"^\W*(?:(?:the|this|that|it|its|it's)\s+(?:\w+\s+){0,2}?(?:is\s+|was\s+|'s\s+|looks\s+|seems\s+)?)?(done|correct|complete|completed)\W*$"
     # ... and the softer words only with a subject: a bare "ok" or "good" may answer some other question.
-    r"|^\W*(?:the|this|that|it|its|it's)\s+(?:\w+\s+){0,2}?(?:is\s+|was\s+|'s\s+|looks\s+|seems\s+)(right|fine|good)\W*$",
+    r"|^\W*(?:the|this|that|it|its|it's)\s+(?:\w+\s+){0,2}?(?:is\s+|was\s+|'s\s+|looks\s+|seems\s+)(right|fine|good)\W*$"
+    # ... or the sentence ends on it after a dash or comma: "I'll discard the extra copies myself - done."
+    r"|\s[-–—,;:]\s*(?:it'?s\s+|that'?s\s+|all\s+)?(done|correct|complete)\W*$",
     re.IGNORECASE)
 NEGATION = re.compile(r"\b(not|n't|isn'?t|wrong|but)\b", re.IGNORECASE)
+ASKS_FOR_CHANGE = re.compile(r"\b(fix|change|update|add|remove|delete|redo|replace|move|rename|should|must|need|needs|please|"
+                             r"instead)\b", re.IGNORECASE)
 
 
 def _confirms(reply):
@@ -2355,8 +2384,12 @@ def _confirms(reply):
     sentences = [x.strip() for x in re.split(r"(?<=[.!?])\s+|\n+", reply) if x.strip()]
     last = sentences[-1] if sentences else ""
     # A question ("it is done?") is not a confirmation.
-    return bool(last and not last.endswith("?") and not NEGATION.search(last)
-                and (CONFIRM_TAIL.match(last) or CONFIRM_RE.match(last)))
+    if not last or last.endswith("?") or NEGATION.search(last):
+        return False
+    if CONFIRM_TAIL.match(last) or CONFIRM_RE.match(last):
+        return True
+    # "... - done" closing a sentence that asks for nothing ("Fix row 3 - done" asks for a fix).
+    return bool(CONFIRM_TAIL.search(last) and not ASKS_FOR_CHANGE.search(last))
 
 
 def _confirm_reply(paused, reply):

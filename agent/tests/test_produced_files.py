@@ -149,6 +149,14 @@ class FileWorkIsChecked(ts.TeachingBase):
             self.assertFalse(skill_task._gate("Recording saved.", "final", engine))
         self.assertEqual(self.judged, [])
 
+    def test_a_person_s_recording_is_not_judged_even_though_it_is_all_screen_work(self):
+        # Found live: a ticket ended with the form not yet saved was judged "not done" and handed to the engine,
+        # which started typing into the person's form.
+        with mock.patch.object(skill_task, "_did_screen_work", lambda: True), \
+                mock.patch.object(skill_task, "_engine", lambda *a, **k: self.fail("handed to the engine")):
+            self.assertFalse(skill_task._gate("Recorded 20 steps of \"Enter this order\".", "final", "human"))
+        self.assertEqual(self.judged, [])
+
 
 class ANewRequestIsNotAnAnswer(ts.TeachingBase):
     """A message with files, arriving while a doubt about the last task is open, is not kept as what was wrong with it."""

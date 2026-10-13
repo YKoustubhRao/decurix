@@ -147,6 +147,25 @@ class AFileSavedOverTheAttachmentIsNotInTheWorkFolder(unittest.TestCase):
             (root / "grades.xlsx").unlink()
             self.assertEqual(produced.misplaced("sort grades.xlsx", root=root), "")
 
+    def test_an_input_the_request_only_names_is_not_a_misplaced_result(self):
+        import os
+        import time
+        from unittest import mock
+        from decurix_agent import produced
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "inbox" / "up-1").mkdir(parents=True)
+            paid = root / "inbox" / "up-1" / "already_paid.csv"
+            paid.write_text("vendor,invoice_no\n")
+            old = time.time() - 600
+            os.utime(paid, (old, old))
+            request = ("Build ap_register.xlsx in my work folder; DUPLICATE if the invoice is already in already_paid.csv")
+            (root / "ap_register.xlsx").write_text("x")
+            with mock.patch.object(produced, "since", return_value=time.time() - 60):
+                self.assertEqual(produced.misplaced(request, root=root), "")
+                paid.write_text("saved over during the task")
+                self.assertIn("already_paid.csv", produced.misplaced(request, root=root))
+
 
 class AChartIsMadeByTheTool(unittest.TestCase):
     def test_a_workbook_with_a_chart_reads_back_with_it(self):

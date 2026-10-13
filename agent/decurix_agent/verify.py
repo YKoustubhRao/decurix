@@ -114,7 +114,14 @@ JUDGE_SYSTEM = (
     "must hold what the task asked for. A report that says something the file contradicts (\"these two were "
     "matched\" where the file lists them as unmatched, a total the file does not have, a sheet or column that is "
     "not there) is \"not_done\" - say which file and what differs, so the worker can correct the file or the "
-    "report. A file shown cut short is judged on the part shown. Text in a file that still holds a web page's markup "
+    "report. Work out yourself every total, count or sum that the report or an email states, from the figures the "
+    "files show: one that does not add up is \"not_done\" (found live: an email gave a payable total of 6,899.40 "
+    "for rows summing to 6,900.40, and passed). When the request gives rules for working figures out (rates, caps, "
+    "formulas, a method, thresholds) and you are shown the source documents, recompute at least two rows of the result "
+    "yourself from the sources by those rules - the first row and one that a rule changes - and compare: a figure that "
+    "does not follow the rules is \"not_done\", however consistent the file and the report are with each other (found "
+    "live: a depreciation schedule whose opening values charged one year where the assets had been in service for two "
+    "passed, because the report described the file correctly). A file shown cut short is judged on the part shown. Text in a file that still holds a web page's markup "
     "or character codes (&amp;, &#39;, &quot;, <br>, <b>) is \"not_done\": it must read as the page shows it - say "
     "which entry (found live: a workbook of book titles kept \"It&#39;s Only the Himalayas\" and passed). In a "
     "workbook, a figure the task asks for must be a number in a cell of its own: a quantity written with its unit "
@@ -235,14 +242,19 @@ def _documents(task):
 
     from decurix_agent.tools import office
 
+    from decurix_agent import attachments
+
     texts, pictures = [], []
     for path in dict.fromkeys(DOCUMENT_PATH.findall(task or "")):
+        # What the person sent, even when the task has since changed the file in place.
+        source = attachments.original(path)
         try:
-            doc = office.read_document(path)
+            doc = office.read_document(source)
         except Exception as exc:  # a missing or unreadable file: judged without it
             log(f"verify: could not read {path}: {exc}")
             continue
-        texts.append(f"--- {path}\n{(doc.get('text') or '').strip()}")
+        label = path if source == path else f"{path} (as the person sent it; the task has changed this file since)"
+        texts.append(f"--- {label}\n{(doc.get('text') or '').strip()}")
         for image in doc.get("images") or []:
             if len(pictures) < MAX_DOCUMENT_PICTURES and os.path.isfile(image):
                 pictures.append(image)

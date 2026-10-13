@@ -133,14 +133,32 @@ def misplaced(request, root=None):
     if not WORK_FOLDER.search(text):
         return ""
     root = Path(root or config.WORK_DIR)
+    began = since()
     out = []
-    for name in dict.fromkeys(REQUESTED_FILE.findall(text)):
+    # Only a file named in a sentence that says where it goes: "update last_invoice_number.txt when done" in the same
+    # request as "save the invoices in my work folder" asks for the attachment itself to be updated (found live).
+    placed = " ".join(s for s in re.split(r"(?<=[.!?])\s+|\n+", text) if WORK_FOLDER.search(s))
+    for name in dict.fromkeys(REQUESTED_FILE.findall(placed)):
         if (root / name).exists():
             continue
         elsewhere = sorted((root / "inbox").glob(f"*/{name}")) if (root / "inbox").is_dir() else []
+        # An attachment this task never wrote is one of its inputs ("... already in paid.csv"), not a
+        # result saved in the wrong place. Found live (2026-10-13): a correct register was refused for
+        # want of the paid list the request had only named.
+        if began is not None:
+            elsewhere = [p for p in elsewhere if _written_since(p, began)]
         if elsewhere:
             out.append(f"{name} is not in the work folder ({root}); it was saved at {elsewhere[-1]}")
     return "; ".join(out)
+
+
+def _written_since(path, began):
+    """Whether a file was last written after the task began (a second's slack for the copy that put it there)."""
+
+    try:
+        return path.stat().st_mtime > began + 1
+    except OSError:
+        return False
 
 
 def drafts():
