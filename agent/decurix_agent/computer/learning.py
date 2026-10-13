@@ -1337,8 +1337,25 @@ def _answer_positional(skill, question, text):
     """The reply to the grouped positional question (see _coordinate_choices), applied to each step it covers."""
 
     qid = question["id"]
-    choices = _coordinate_choices(question, text)
+    # A person often says what a click was while choosing for it: "keep (11 is the Product drop-down of line 1, 16 is
+    # the Add line button)". What they say a step is goes on the step as its intent - what finds it again when the
+    # screen has moved - and is not read as choices: its "line 1" made the whole reply unreadable (found live).
+    said = {}
+    for piece in re.findall(r"\(([^)]*)\)", text) + re.findall(r"(?:^|[;,])\s*((?:step\s*)?\d+\s+(?:is|=)\s+[^,;()]+)", text, re.I):
+        for part in re.split(r"[;,]|\band\b(?=\s*(?:step\s*)?\d+\s+(?:is|=))", piece):
+            mt = re.match(r"\s*(?:step\s*)?(\d+)\s*(?:is|=|:|-)\s*(.+?)\s*$", part, re.I)
+            if mt and any(s["n"] == int(mt.group(1)) for s in question["steps"]):
+                said[int(mt.group(1))] = mt.group(2)
+    bare = re.sub(r"\([^)]*\)", " ", text)
+    for n, what in said.items():
+        bare = re.sub(rf"(?:^|(?<=[;,]))\s*(?:step\s*)?{n}\s+(?:is|=)\s+{re.escape(what)}", " ", bare, flags=re.I)
+    choices = _coordinate_choices(question, bare)
     note = ""
+    for step in question["steps"]:
+        if step["n"] in said:
+            found = _step_by_id(skill, step["id"])
+            if found is not None:
+                found["intent"] = ((found["intent"] + " ") if found.get("intent") else "") + f"It is {said[step['n']]}."[:MAX_INTENT]
 
     if choices is None:
         tries = skill["unclear"][qid] = skill["unclear"].get(qid, 0) + 1

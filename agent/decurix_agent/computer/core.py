@@ -1061,6 +1061,9 @@ def _typing_lost(field, text):
 
     if field.get("role") in ("password", "password text") or privacy.secret_field(field):
         return False
+    # A date field shows its date its own way ("10/06/2026" for "6 Oct 2026"); cdp.type_text checked it held.
+    if set(field.get("states") or ()) & {"date", "date and time", "time", "month", "week"}:
+        return False
     value = field.get("value")
     line = (text.split("\n")[0]).strip()
     if value is None or not line or line in value:

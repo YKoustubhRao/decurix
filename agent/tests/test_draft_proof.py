@@ -57,7 +57,7 @@ class WhatATaskDraftedIsKnownOnTheDesktop(_Desk):
     def test_a_draft_goes_to_the_outbox_and_is_noted_for_its_task_without_its_attachments_data(self):
         self.assertIn("NOT been sent", self.draft())
         self.assertEqual(len(self.posted), 1)
-        self.assertEqual(outbox.drafted(), [DRAFT])
+        self.assertEqual(outbox.drafted(), [dict(DRAFT, id=7)])
         self.assertNotIn("data", json.dumps(outbox.drafted()))
 
         self.assertEqual(outbox.drafted("t00000000000000bb"), [])        # another task drafted nothing
