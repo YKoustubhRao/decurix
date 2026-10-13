@@ -1169,6 +1169,28 @@ def _fit_screen(steps, report):
         time.sleep(1)
 
 
+def _with_opening_press(steps, start):
+    """
+    Where a run asked to start at `start` really starts: one step earlier when
+    `start` types into or chooses in the very control the step before it
+    pressed. Found live (2026-10-13): an engine entered a bill's header by
+    hand and resumed the replay at "choose {item} in Item" - a table cell that
+    is a field only once pressed, which the step before does - so the replay
+    halted at once and the rest was done by hand, 15 more model turns.
+    Pressing a field again before typing into it changes nothing else.
+    """
+
+    if not 1 < start <= len(steps):
+        return start
+    step, before = steps[start - 1], steps[start - 2]
+    target, pressed = step.get("target") or {}, before.get("target") or {}
+    if (step.get("kind") in ("type", "select") and before.get("kind") == "click" and not before.get("param")
+            and target.get("name") and target.get("role") == pressed.get("role")
+            and target.get("name") == pressed.get("name")):
+        return start - 1
+    return start
+
+
 def run(program, params=None, start=1, report=None, ladder=None):
     """
     Run a program from step `start` and say how it ended: {"outcome",
@@ -1188,7 +1210,7 @@ def run(program, params=None, start=1, report=None, ladder=None):
     steps = program.get("steps") or []
     total = len(steps)
     given = {name: str(value) for name, value in (params or {}).items()}
-    start = max(1, int(start or 1))
+    start = _with_opening_press(steps, max(1, int(start or 1)))
 
     values, absent = {}, []
     for param in program.get("params") or []:

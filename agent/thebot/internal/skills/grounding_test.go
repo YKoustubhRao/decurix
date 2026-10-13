@@ -460,3 +460,23 @@ func TestFileWorkIsNotDoneBeforeAnythingRan(t *testing.T) {
 		}
 	}
 }
+
+// Typing into the application's own search box finds a page; it records nothing (found live, 2026-10-13).
+func TestGroundingLetsTheOperatorSearchTheApplication(t *testing.T) {
+	st := groundingState("Record this customer payment: /w/REMIT_01.pdf", "office read /w/REMIT_01.pdf")
+	st.noteSeen("Remittance advice WVS/RA/0457 ... 229,000.00")
+	st.noteSeen("e9071 combobox \"Search\" [focused]\ne9100 textbox \"Reference No\"")
+
+	if n := groundingNudge(st, `gui type e9071 "Payment Entry"`); n != "" {
+		t.Fatalf("a search for a page was refused: %q", n)
+	}
+	// A field that keeps what is typed is guarded as before.
+	if n := groundingNudge(st, `gui type e9100 "Payment Entry"`); !strings.Contains(n, `"Payment Entry"`) {
+		t.Fatalf("an untraced value typed into a field was let through: %q", n)
+	}
+	// Named as an action's result names it, too.
+	st.noteSeen(`type "x" into searchbox "Find" (e9200)`)
+	if n := groundingNudge(st, `gui type e9200 "Supplier List"`); n != "" {
+		t.Fatalf("a search box named in an action's result was not recognised: %q", n)
+	}
+}

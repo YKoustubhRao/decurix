@@ -599,6 +599,12 @@ def _stem(word):
     return word[:-1] if len(word) > 3 and word.endswith("s") and not word.endswith("ss") else word
 
 
+def _singular(word):
+    """A plural word in the singular, as typed into a search ("Mugs" -> "Mug", "T-shirts" -> "T-shirt"); else as it is."""
+
+    return word[:-1] if _stem(word) != word.lower() else word
+
+
 def _own_name(label):
     """
     The words of an entry's own name. A list often shows an entry as its name
@@ -711,7 +717,43 @@ def _in_place_of(element, entry_name):
         return None
     if _person_said(wanted, entry_name):
         return None
+    if _in_documents(entry_name):
+        return None
     return wanted
+
+
+_DOCUMENT_WORDS = {}
+
+
+def _in_documents(entry_name):
+    """
+    Whether one of the documents this task's request brought names `entry_name`
+    (every telling word of its own name is in the document). Such an entry is
+    this run's value, not something in its place. Found live (2026-10-13): a
+    worker read a remittance's addressee ("To: Example Inc - Accounts
+    Receivable") as the paying customer, searched for it, found nothing - and
+    the guard then refused the payer the remittance itself names, so the
+    worker could not correct its own misreading and asked a person.
+    """
+
+    words = _telling_words(" ".join(_own_name(entry_name)) or entry_name)
+    if not words:
+        return False
+    try:
+        from decurix_agent import task_context
+        from decurix_agent.tools import office
+        paths = task_context.current_files()[:4]
+    except Exception:
+        return False
+    for path in paths:
+        if path not in _DOCUMENT_WORDS:
+            try:
+                _DOCUMENT_WORDS[path] = _telling_words(office.read_document(path).get("text") or "")
+            except Exception:
+                _DOCUMENT_WORDS[path] = set()
+        if words <= _DOCUMENT_WORDS[path]:
+            return True
+    return False
 
 
 def _typed_in_place_of(element, text):
@@ -792,16 +834,24 @@ def _searches(option):
     hw = head.split()
     if len(hw) <= MAX_RUN_WORDS:
         for n in range(len(hw) - 1, 1, -1):
-            tries += [" ".join(hw[i:i + n]) for i in range(1, len(hw) - n + 1)]
+            for i in range(1, len(hw) - n + 1):
+                run = " ".join(hw[i:i + n])
+                tries.append(run)
+                # ...and in the singular right after it: a list matches text as a piece, so an order's "coffee
+                # mugs" never finds the record "Coffee Mug" (found live, 2026-10-13).
+                if _singular(hw[i + n - 1]) != hw[i + n - 1]:
+                    tries.append(" ".join(hw[i:i + n - 1] + [_singular(hw[i + n - 1])]))
     # Then its most distinctive words alone, longest first. A long line holds the system's short name somewhere in
     # the middle, and a list searches for a piece of text, not for words: found live, "Professional Fees for India
     # Statutory Audit & GST Compliance Filing Q2" never found "Statutory Audit & GST Compliance" (the "&" breaks
     # every run of words), and the engine, offered nothing, clicked an unrelated entry of the open list.
-    distinct = sorted({w for w in (re.sub(r"\W", "", w) for w in hw) if len(w) >= 5 and w.lower() not in FILLER_WORDS},
-                      key=lambda w: (-len(w), hw.index(next(x for x in hw if re.sub(r"\W", "", x) == w))))
+    # A word keeps the punctuation inside it ("T-shirts"): stripped to "Tshirt" it matched nothing (found live).
+    bare = lambda w: re.sub(r"^\W+|\W+$", "", w)
+    distinct = sorted({w for w in (bare(w) for w in hw) if len(re.sub(r"\W", "", w)) >= 5 and w.lower() not in FILLER_WORDS},
+                      key=lambda w: (-len(w), hw.index(next(x for x in hw if bare(x) == w))))
     # Searched in the singular: a list matches the typed text as a piece, and a document's "Monitors" is not in a
     # record named "Monitor" (found live: the plural found nothing, and the record was one letter away).
-    tries += [w[:-1] if _stem(w) != w.lower() else w for w in distinct[:MAX_WORD_SEARCHES]]
+    tries += [_singular(w) for w in distinct[:MAX_WORD_SEARCHES]]
     tries += [" ".join(words[:2]), words[0] if words else ""]
     out = []
     for t in tries:
@@ -1894,10 +1944,20 @@ def _open(target, new_tab):
         argv = parts
 
     started = " ".join(argv)
+    raises = launchers.by_name(target) is not None and not path.exists() and lower not in APPS
+    front_before = next((w["id"] for w in before if w.get("active")), None)
     session.launch(argv)
 
     def new_window():
-        return [w for w in screen.windows() if w["id"] not in before_ids and w["title"]]
+        now = screen.windows()
+        opened = [w for w in now if w["id"] not in before_ids and w["title"]]
+        if opened or not raises:
+            return opened
+        # A launcher brings its app forward when it is open already, and opens nothing. Found live (2026-10-13):
+        # a web app's launcher raised the app's window from behind the browser, and the open was reported as "no
+        # new window appeared within 90 seconds" - the engine took the app for broken and tried addresses that
+        # do not reach it.
+        return [w for w in now if w.get("active") and w["id"] != front_before and w["title"]]
 
     opened = _wait_until(new_window, OPEN_SECONDS, None)
     if not opened:
