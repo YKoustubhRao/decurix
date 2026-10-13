@@ -1,0 +1,16 @@
+.git
+.env
+.env.*
+!.env.example
+.aws
+.codex
+.agents
+.claude
+**/__pycache__
+**/node_modules
+**/results
+dist
+desktop/electron/build
+agent/thebot.tar.gz
+agent/thebot-soul
+decurix.exe

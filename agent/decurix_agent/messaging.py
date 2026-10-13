@@ -389,6 +389,14 @@ def write_final_reply(reply, kind="final", engine=None, quiet=False, interrupted
     recording that now sits in the desktop card's recordings list.
     """
 
+    # Durable workflow stages report through the same harness as ordinary work.
+    # Consume even a checked stage report: only the run's own artifact checks
+    # can advance the workflow, and stage replies must never close its chat turn.
+    if not interrupted:
+        from decurix_agent import workflow_task
+        if workflow_task.final_gate(reply, kind, engine):
+            return
+
     if _final_gate is not None and not checked and not interrupted:
         try:
             if _final_gate(reply, kind, engine):

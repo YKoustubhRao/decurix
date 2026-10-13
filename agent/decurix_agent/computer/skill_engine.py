@@ -136,7 +136,7 @@ def other_system(skill, request):
     return ""
 
 
-def run(skill, params=None, start=1):
+def run(skill, params=None, start=1, source_files=None):
     """
     Run a ready skill with no model and say how it ended, in replay.run's shape.
     A skill that is not ready, is missing a value the recording could not
@@ -146,6 +146,11 @@ def run(skill, params=None, start=1):
 
     if skill.get("status") != skills.READY:
         return _refusal(skill, "it was never finished being taught - a person confirms a skill in the chat with /learn")
+    if source_files is not None:
+        try:
+            skill = skills.bind_sources(skill, source_files)
+        except ValueError as exc:
+            return _refusal(skill, str(exc))
 
     # A task that was handed over as this very skill is not asked whether it
     # belongs to it. Found live on every run: the skill's places were window

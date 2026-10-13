@@ -204,6 +204,12 @@ COPY --from=thebot-builder /soul /opt/soul
 # (PDF/DOCX/etc) fails per-file, honestly, without breaking anything
 # else; plain text/code and every other skill don't need Python at all.
 COPY agent/thebot/scripts /opt/thebot-scripts
+# Presentation support uses a venv: python3-pptx is unavailable in Ubuntu noble.
+# System site packages retain apt-provided GI, openpyxl and document readers.
+RUN python3 -m venv --system-site-packages /opt/office-venv && \
+    /opt/office-venv/bin/pip install --no-cache-dir python-pptx==1.0.2
+ENV PATH="/opt/office-venv/bin:${PATH}"
+
 # browser-agent: extension_pipeline/ext_server.py, the backend for the
 # extension loaded into this desktop's Chromium (see
 # agent/chromium-browser.init's --load-extension). Only core/, extension/
