@@ -13,9 +13,11 @@
 ; The shared native model server lives in %LOCALAPPDATA%\Decurix\ollama
 ; outside WSL, and is ended here too. A person's own Ollama (another folder, port 11434) is not touched.
 ;
-; The data is the person's: kept unless they say otherwise. Asked once, default
-; No; a silent uninstall keeps it unless run with --delete-app-data. Never on
-; an update, which runs this same uninstaller of the version being replaced.
+; Uninstalling deletes all of it, without asking, so the next install starts
+; fresh: it used to ask with No as the default, and a person who clicked
+; through found their old workers in the new install. --keep-app-data keeps it
+; (a reinstall that should keep the workers). Never on an update, which runs
+; this same uninstaller of the version being replaced.
 
 !macro customUnInstall
   ${ifNot} ${isUpdated}
@@ -32,16 +34,12 @@
     nsExec::Exec `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -C "$$store = Join-Path $$env:LOCALAPPDATA 'Decurix\ollama\'; Get-CimInstance -ClassName Win32_Process | ? { $$_.Path -and $$_.Path.StartsWith($$store, 'CurrentCultureIgnoreCase') } | % { Stop-Process -Id $$_.ProcessId -Force }"`
     Pop $R8
 
-    StrCpy $R9 "0"
+    StrCpy $R9 "1"
     ClearErrors
     ${GetParameters} $R7
-    ${GetOptions} $R7 "--delete-app-data" $R8
+    ${GetOptions} $R7 "--keep-app-data" $R8
     ${ifNot} ${Errors}
-      StrCpy $R9 "1"
-    ${else}
-      MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "Also delete your workers and their files, task history, the downloaded worker desktop and model, and your settings?$\r$\n$\r$\nChoose No to keep them for the next time Decurix is installed." /SD IDNO IDNO decurixKeepData
-      StrCpy $R9 "1"
-      decurixKeepData:
+      StrCpy $R9 "0"
     ${endIf}
     ClearErrors
 
@@ -50,21 +48,22 @@
       nsExec::Exec `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -File "$INSTDIR\resources\wsl\cleanup-existing.ps1" -Action delete`
       Pop $R8
       ${if} $R8 != "0"
-        MessageBox MB_OK|MB_ICONEXCLAMATION "The shared WSL runtime could not be cleaned up. Its workers and saved runtime settings were kept. Start its Docker Engine before trying to delete the data again." /SD IDOK
-      ${else}
-        ; Unregistering the app-owned distro deletes its disk.
-        nsExec::Exec `"$R6" --unregister Decurix`
-        Pop $R8
-        Sleep 1500
-        ${if} $installMode == "all"
-          SetShellVarContext current
-        ${endif}
-        RMDir /r "$LOCALAPPDATA\Decurix"
-        RMDir /r "$APPDATA\decurix"
-        ${if} $installMode == "all"
-          SetShellVarContext all
-        ${endif}
+        ; That runtime's Docker did not answer: Decurix's workers there stay,
+        ; and the person is told. Everything Decurix owns outright still goes.
+        MessageBox MB_OK|MB_ICONEXCLAMATION "Decurix's workers in your own WSL runtime could not be removed (its Docker Engine did not answer). Everything else was deleted. To remove those too, start that Docker Engine and delete its desktop_* containers and volumes." /SD IDOK
       ${endIf}
+      ; Unregistering the app-owned distro deletes its disk.
+      nsExec::Exec `"$R6" --unregister Decurix`
+      Pop $R8
+      Sleep 1500
+      ${if} $installMode == "all"
+        SetShellVarContext current
+      ${endif}
+      RMDir /r "$LOCALAPPDATA\Decurix"
+      RMDir /r "$APPDATA\decurix"
+      ${if} $installMode == "all"
+        SetShellVarContext all
+      ${endif}
     ${endIf}
   ${endIf}
 !macroend

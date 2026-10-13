@@ -65,7 +65,8 @@ const data = path.join('/profile/AppData', 'decurix');
 async function boot(initialState, {
   backendStarts = true, stopFails = false, platform = 'win32', dockerRun = () => 0, files = [], staged = platform === 'win32' ? 'build-2' : null,
   wsl = {}, pickedFolders = [], canceledPicker = false, savedRuntime, hosting = false, holdOllama = false, ollamaFails = false,
-  release = '10.0.26200', arch = 'x64', freeGB = 100,
+  release = '10.0.26200', arch = 'x64', freeGB = 100, restartAsked = null, restartedSince = true,
+  lanAddress = null, lanForwards = true, settings = '',
 } = {}) {
   const machine = { installed: true, installedAfterAsking: false, distro: true, daemon: true, setupFails: false, existing: {}, ...wsl };
   const intervals = [];
@@ -113,7 +114,18 @@ async function boot(initialState, {
   app.whenReady = () => Promise.resolve();
   app.quit = () => { quits += 1; };
 
+  const posts = [];
+  const lanCalls = [];
   const http = {
+    request(url, _options, callback) {
+      const request = new EventEmitter();
+      request.destroy = () => {};
+      request.end = (body) => {
+        posts.push({ url, body });
+        queueMicrotask(() => { const response = new EventEmitter(); response.resume = () => {}; callback(response); });
+      };
+      return request;
+    },
     get(_url, _options, callback) {
       const request = new EventEmitter();
       request.destroy = () => request.emit('error', new Error('timeout'));
@@ -215,9 +227,12 @@ async function boot(initialState, {
     writeFileSync(file, content) { written.push({ file, content }); },
     writeSync() {},
     readFileSync(file) {
+      if (settings && file === path.join(data, '.env')) return settings;
       const saved = written.findLast(entry => entry.file === file);
       if (saved) return saved.content;
       if (file === path.join(data, 'local-hosting.json')) return JSON.stringify({ enabled: hosting });
+      // An earlier start asked for a restart (restartedSince: and Windows has booted since).
+      if (file === path.join(data, 'restart-asked.json') && restartAsked) return JSON.stringify({ reason: restartAsked, at: restartedSince ? 0 : Date.now() });
       if (file === path.join(data, 'windows-runtime.json') && savedRuntime !== undefined) return savedRuntime;
       if (file === path.join('/installed/resources', 'stack', 'VERSION')) return 'build-2';
       if (file === path.join(stack, 'VERSION') && staged !== null) return staged;
@@ -241,8 +256,8 @@ async function boot(initialState, {
     },
     'node:child_process': childProcess,
     // Finding this computer's address on the network is not what is tested here.
-    'node:dgram': { createSocket: () => ({ once() {}, connect() {}, close() {} }) },
-    'node:os': { homedir: () => home, tmpdir: () => path.join(home, 'tmp'), release: () => release },
+    'node:dgram': { createSocket: () => ({ once() {}, connect(_port, _host, callback) { if (lanAddress) setImmediate(callback); }, address: () => ({ address: lanAddress }), close() {} }) },
+    'node:os': { homedir: () => home, tmpdir: () => path.join(home, 'tmp'), release: () => release, uptime: () => 60 },
     'node:fs': fileSystem,
     'node:http': http,
     'node:path': path,
@@ -254,6 +269,7 @@ async function boot(initialState, {
       windowsHost: () => '172.28.0.1',
       stackSettings: () => 'OLLAMA_URL=http://172.28.0.1:11435\n',
     },
+    './windows-lan': { ensureLanForward: async (dir, address, port) => { lanCalls.push({ dir, address, port }); return lanForwards; } },
     './mobile-access': { setupMobileAccess: async (_dir, tunnelCommand) => {
       mobileCalls.push('start');
       tunnel = tunnelCommand(8090);
@@ -276,7 +292,7 @@ async function boot(initialState, {
   await settle(40);
   const wslWords = (s) => Array.from(s.args).join(' ');
   return {
-    window: windows[0], app, spawns, children, copied, written, external, mobileCalls, settle, blockers, stack, home, machine, pickerCalls,
+    window: windows[0], app, spawns, children, copied, written, external, mobileCalls, posts, lanCalls, intervals, settle, blockers, stack, home, machine, pickerCalls,
     titleBarTheme: (palette, url = 'http://127.0.0.1:8080/', { childFrame = false, otherWindow = false } = {}) => {
       const sender = windows[0].webContents;
       sender.mainFrame = { url };
@@ -407,6 +423,23 @@ test('turns WSL on when Windows does not have it, and says to restart', async ()
   assert.deepEqual(result.docker, []);
 });
 
+test('asks for a restart for WSL once: after it, fetches WSL from GitHub and says what is wrong', async () => {
+  const first = await boot('absent', { wsl: { installed: false } });
+  assert.ok(first.written.some((w) => w.file.endsWith('restart-asked.json') && w.content.includes('"wsl"')));
+
+  // WSL comes from GitHub, never the Store, from the first prompt on.
+  const ask = first.spawns.find((s) => s.file === 'powershell.exe' && Array.from(s.args).join(' ').includes('--install'));
+  assert.match(Array.from(ask.args).join(' '), /--install --no-distribution --web-download & wsl\.exe --update --web-download/);
+
+  const after = await boot('absent', { wsl: { installed: false }, restartAsked: 'wsl' });
+  assert.equal(after.window.lastStatus.value.failed, true);
+  assert.match(after.window.lastStatus.value.message, /even after a restart.*wsl --update --web-download/);
+
+  // Not restarted yet: asked again, the same way.
+  const notYet = await boot('absent', { wsl: { installed: false }, restartAsked: 'wsl', restartedSince: false });
+  assert.match(notYet.window.lastStatus.value.message, /^Windows Subsystem for Linux is installed\. Restart Windows/);
+});
+
 test('goes on when turning WSL on needs no restart', async () => {
   const result = await boot('absent', { wsl: { installed: false, installedAfterAsking: true, distro: false, daemon: false } });
   assert.equal(result.window.url, 'http://127.0.0.1:8080');
@@ -451,6 +484,16 @@ test('virtualization that stays off says to restart, then where it is switched o
   assert.deepEqual(result.docker, []);
 });
 
+test('virtualization still off after the restart is not answered with another restart', async () => {
+  const result = await boot('absent', { restartAsked: 'platform', wsl: { distro: false, daemon: false,
+    importSays: 'Error code: Wsl/Service/CreateInstance/CreateVm/HCS/HCS_E_HYPERV_NOT_INSTALLED' } });
+  assert.equal(result.window.lastStatus.value.failed, true);
+  assert.doesNotMatch(result.window.lastStatus.value.message, /Restart Windows, then/);
+  assert.match(result.window.lastStatus.value.message, /after the restart.*HCS_E_HYPERV_NOT_INSTALLED.*BIOS\/UEFI.*hypervisorlaunchtype/);
+  assert.equal(result.machine.imports, 1);
+  assert.ok(!result.spawns.some((s) => Array.from(s.args).join(' ').includes('--install')));
+});
+
 test('a distro that cannot be imported for another reason names the log, and asks for nothing', async () => {
   const result = await boot('absent', { wsl: { distro: false, daemon: false, importSays: 'The disk is full.' } });
   assert.match(result.window.lastStatus.value.message, /Could not set up Linux/);
@@ -464,6 +507,38 @@ test('a distro that cannot be prepared stops the start, with the log', async () 
   assert.match(result.window.lastStatus.value.message, /Could not prepare Linux/);
   assert.match(result.window.lastStatus.value.detail, /address in use/);
   assert.deepEqual(result.docker, []);
+});
+
+test('Windows gets the plain IP link once the address is forwarded to WSL', async () => {
+  const result = await boot('absent', { lanAddress: '192.168.1.40' });
+  await result.settle(20);
+  assert.deepEqual(result.lanCalls.map((c) => [c.address, c.port]), [['192.168.1.40', 8090]]);
+  const post = result.posts.find((p) => p.url.endsWith('/api/tunnel'));
+  assert.equal(post.body, JSON.stringify({ lan_url: 'http://192.168.1.40:8090' }));
+});
+
+test('the IP link is reported when the stack was already running, and again each minute without asking again', async () => {
+  const result = await boot('ready', { lanAddress: '192.168.1.40' });
+  await result.settle(20);
+  assert.equal(result.lanCalls.length, 1);
+  const tunnelPosts = () => result.posts.filter((p) => p.url.endsWith('/api/tunnel')).length;
+  assert.equal(tunnelPosts(), 1);
+  for (const tick of result.intervals) tick();
+  await result.settle(20);
+  assert.equal(tunnelPosts(), 2);
+  assert.equal(result.lanCalls.length, 1);
+});
+
+test('no IP link is given when the forwarding was declined, or turned off in .env', async () => {
+  const declined = await boot('absent', { lanAddress: '192.168.1.40', lanForwards: false });
+  await declined.settle(20);
+  assert.equal(declined.lanCalls.length, 1);
+  assert.ok(!declined.posts.some((p) => p.url.endsWith('/api/tunnel')));
+
+  const off = await boot('absent', { lanAddress: '192.168.1.40', settings: 'DECURIX_WSL_LAN_FORWARD=0\n' });
+  await off.settle(20);
+  assert.equal(off.lanCalls.length, 0);
+  assert.ok(!off.posts.some((p) => p.url.endsWith('/api/tunnel')));
 });
 
 test('keeps the Electron profile out of the control plane data dir', async () => {
