@@ -1746,7 +1746,10 @@ def _procedure(run, from_step=None, note="", ran=False):
         "stopped because a list has no entry for something, that is a question for the person (HELP), not "
         "something to work around.\n"
         "  5. When it has run to the end it has checked nothing. Read the result off the screen (gui observe) "
-        "against this run's values and the person's rules, and report what you read.",
+        "against this run's values and the person's rules, and report what you read. Do not press its last "
+        "step again to make sure: it ran. Found live - a save shortcut pressed a second time on a record just "
+        "saved is, in some applications, the next action on it (submit, post), and it opened \"Permanently "
+        "Submit?\". Change only a value you read as wrong.",
         "- Work a step by hand with gui observe / click / type / select / key wherever the command cannot.",
     ]
     how += [
@@ -2319,6 +2322,38 @@ def check_unchecked(claim, engine):
     ask_for_query(_doubt_text(claim, verdict), kind="query", engine=engine)
 
 
+# The last sentence of a reply that says the work stands: "The record is done.", "That is correct", "it's fine now".
+CONFIRM_TAIL = re.compile(
+    # "done" / "correct" / "complete" on their own, or with what is done ("the record is done") ...
+    r"^\W*(?:(?:the|this|that|it|its|it's)\s+(?:\w+\s+){0,2}?(?:is\s+|was\s+|'s\s+|looks\s+|seems\s+)?)?(done|correct|complete|completed)\W*$"
+    # ... and the softer words only with a subject: a bare "ok" or "good" may answer some other question.
+    r"|^\W*(?:the|this|that|it|its|it's)\s+(?:\w+\s+){0,2}?(?:is\s+|was\s+|'s\s+|looks\s+|seems\s+)(right|fine|good)\W*$",
+    re.IGNORECASE)
+NEGATION = re.compile(r"\b(not|n't|isn'?t|wrong|but)\b", re.IGNORECASE)
+
+
+def _confirms(reply):
+    """
+    Whether a reply to "I cannot confirm this is done" says it is done. Either
+    the whole reply opens with it ("done", "correct"), or its last sentence
+    says so and that sentence has no "not"/"but" - a person often explains
+    first. Found live (2026-10-13): "An LLP is a partnership firm, not a
+    company - keep Supplier Type as Partnership ... The record is done." was
+    taken for "what is wrong" because of the "not" in the explanation, and the
+    finished record was done all over again. The explanation itself is kept as
+    a lesson by the watcher, as any answer to a worker's question is.
+    """
+
+    reply = (reply or "").strip()
+    if CONFIRM_RE.match(reply) and not NEGATION.search(reply):
+        return True
+    sentences = [x.strip() for x in re.split(r"(?<=[.!?])\s+|\n+", reply) if x.strip()]
+    last = sentences[-1] if sentences else ""
+    # A question ("it is done?") is not a confirmation.
+    return bool(last and not last.endswith("?") and not NEGATION.search(last)
+                and (CONFIRM_TAIL.match(last) or CONFIRM_RE.match(last)))
+
+
 def _confirm_reply(paused, reply):
     """The person's answer to "I cannot confirm this is done" - after an engine's run or a replay's."""
 
@@ -2340,7 +2375,7 @@ def _confirm_reply(paused, reply):
                                  + "\n\nSend the new request again and I will start on it.",
                                  kind="error", engine=engine, checked=True)
 
-    if CONFIRM_RE.match(reply) and not re.search(r"\b(not|n't|isn'?t|wrong|but)\b", reply, re.IGNORECASE):
+    if _confirms(reply):
         if run is not None and paused.get("result") is not None:
             return _succeed(run, paused["result"], "person", helped=True)
         if run is not None:
