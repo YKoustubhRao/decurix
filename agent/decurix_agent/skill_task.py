@@ -2221,7 +2221,7 @@ def _gate(reply, kind, engine):
         return True
 
     on_screen = run is not None or _did_screen_work()
-    made = [] if run is not None else produced.files(reply)
+    made = [] if run is not None else produced.files(reply, request=state.current_task or "")
     progress.emit("Checking the screen to see that the task was really done." if on_screen
                   else "Reading back what I wrote to check it against my report.")
     if run is not None and _acts_on_screen(run["skill"]) and not _did_screen_work():
@@ -2232,6 +2232,11 @@ def _gate(reply, kind, engine):
         verdict = {"verdict": verify.NOT_DONE, "confidence": 1.0, "seen": "",
                    "why": "Nothing was done on the screen during this task: no app was opened, nothing clicked or "
                           "typed. The task has to be carried out with the gui command."}
+    elif run is None and produced.misplaced(state.current_task or ""):
+        # No model is asked: whether a file is where the request said is a fact about the disk.
+        verdict = {"verdict": verify.NOT_DONE, "confidence": 1.0, "seen": produced.misplaced(state.current_task or ""),
+                   "why": "The result has to be saved where the request said - use Save As (or a new path) to put it "
+                          "in the work folder, and leave the attached original as it was."}
     elif run is not None and _never_entered(run) and not _says_it_could_not(run, reply):
         # No model is asked: a value nothing typed is not on the screen to be judged.
         missing = _never_entered(run)

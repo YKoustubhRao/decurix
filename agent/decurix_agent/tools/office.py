@@ -269,6 +269,12 @@ def read_workbook(path, sheet=None, cells=None, max_rows=DEFAULT_ROWS):
     for name in names:
         ws_f, ws_v = formulas[name], values[name]
         out.append(f"\n=== Sheet {name!r}: used range {ws_f.dimensions} ({ws_f.max_row} rows x {ws_f.max_column} columns) ===")
+        # How the sheet is laid out for a reader, not only what it holds: a task that says to freeze the header
+        # or make it bold is checked against this. Found live (2026-10-13): a header "frozen" with row 1 selected
+        # (which freezes nothing) was reported done three times - the read-back showed values only.
+        bold_header = [c.coordinate for c in ws_f[1] if c.value is not None and c.font is not None and c.font.b]
+        out.append(f"Frozen panes: {('rows above / columns left of ' + ws_f.freeze_panes) if ws_f.freeze_panes else 'none'}; "
+                   f"bold in row 1: {', '.join(bold_header) if bold_header else 'none'}")
 
         if cells:
             rows = ws_f[cells]
@@ -328,7 +334,107 @@ def _workbook_objects(p):
 # Workbooks: creating
 # ------------------------------------------------------------------
 
-SHEET_KEYS = {"name", "rows", "cells", "header", "widths", "number_format"}
+SHEET_KEYS = {"name", "rows", "cells", "header", "widths", "number_format", "charts"}
+CHART_KINDS = {"bar", "column", "line", "pie"}
+
+
+def _add_chart(ws, spec):
+    """
+    A chart on `ws` from {"type": "bar"|"column"|"line"|"pie", "title": "...", "data": "B1:B4" (with its header
+    cell, which names the series), "categories": "A2:A4", "anchor": "E2"}. Found live (2026-10-13): asked for a
+    chart, a worker had no tool that made one - office update edits cells - and reported the workbook with none.
+    """
+
+    from openpyxl.chart import BarChart, LineChart, PieChart, Reference
+    from openpyxl.utils.cell import range_boundaries
+
+    if not isinstance(spec, dict) or str(spec.get("type", "bar")).lower() not in CHART_KINDS or not spec.get("data"):
+        raise OfficeError('a chart is {"type": "bar|column|line|pie", "title": "...", "data": "B1:B4", '
+                          '"categories": "A2:A4", "anchor": "E2"}')
+    kind = str(spec.get("type", "bar")).lower()
+    chart = {"bar": BarChart, "column": BarChart, "line": LineChart, "pie": PieChart}[kind]()
+    if kind in ("bar", "column"):
+        chart.type = "col"
+    chart.title = spec.get("title") or None
+
+    def ref(text):
+        try:
+            min_col, min_row, max_col, max_row = range_boundaries(str(text).replace("$", "").split("!")[-1])
+        except ValueError as exc:
+            raise OfficeError(f"{text!r} is not a cell range like B1:B4") from exc
+        if max_row > ws.max_row or max_col > ws.max_column:
+            raise OfficeError(f"{text} reaches past the data on sheet {ws.title!r} ({ws.dimensions})")
+        return Reference(ws, min_col=min_col, min_row=min_row, max_col=max_col, max_row=max_row)
+
+    chart.add_data(ref(spec["data"]), titles_from_data=True)
+    if spec.get("categories"):
+        chart.set_categories(ref(spec["categories"]))
+    ws.add_chart(chart, str(spec.get("anchor") or "E2"))
+
+
+DOCUMENT_BLOCKS = {"heading", "paragraph", "bullets", "table", "page_break"}
+
+
+def create_document(path, blocks):
+    """
+    A new Word document (.docx), made with python-docx so it is always valid.
+    `blocks` is a list, in order, of {"heading": "...", "level": 1},
+    {"paragraph": "...", "bold": false}, {"bullets": ["...", ...]},
+    {"table": [["Header", ...], ["cell", ...], ...], "header": true} and
+    {"page_break": true}. Refuses to overwrite a file and refuses a block it
+    does not read. Found live (2026-10-13): asked for a table of contract
+    changes, a worker wrote the document's XML by hand, left out the table's
+    required grid, and reported a file Word cannot read as "created and
+    verified" - its own read-back had failed.
+    """
+
+    from docx import Document
+
+    p = _path(path)
+    if p.suffix.lower() != ".docx":
+        raise OfficeError(f"{p.name}: office create makes .docx documents and .xlsx workbooks")
+    if p.exists():
+        raise OfficeError(f"{p} already exists - choose another name, or delete it first if that is what was asked")
+    if not isinstance(blocks, list) or not blocks:
+        raise OfficeError('give "blocks": a list of {"heading"}, {"paragraph"}, {"bullets"}, {"table"} or {"page_break"}')
+
+    doc, tables, words = Document(), 0, 0
+    for n, block in enumerate(blocks, 1):
+        kind = [k for k in block if k in DOCUMENT_BLOCKS] if isinstance(block, dict) else []
+        if len(kind) != 1:
+            raise OfficeError(f"block {n}: give exactly one of {sorted(DOCUMENT_BLOCKS)}, got {block!r}"[:300])
+        kind = kind[0]
+        if kind == "heading":
+            doc.add_heading(str(block["heading"]), level=int(block.get("level", 1)))
+        elif kind == "paragraph":
+            para = doc.add_paragraph()
+            para.add_run(str(block["paragraph"])).bold = bool(block.get("bold"))
+            words += len(str(block["paragraph"]).split())
+        elif kind == "bullets":
+            for item in block["bullets"]:
+                doc.add_paragraph(str(item), style="List Bullet")
+                words += len(str(item).split())
+        elif kind == "table":
+            rows = block["table"]
+            if not rows or not all(isinstance(r, list) for r in rows):
+                raise OfficeError(f"block {n}: a table is a list of rows, each a list of cells")
+            width = max(len(r) for r in rows)
+            table = doc.add_table(rows=0, cols=width)
+            table.style = "Table Grid"
+            for i, row in enumerate(rows):
+                cells = table.add_row().cells
+                for j in range(width):
+                    cells[j].text = "" if j >= len(row) or row[j] is None else str(row[j])
+                    if i == 0 and block.get("header", True):
+                        for run in cells[j].paragraphs[0].runs:
+                            run.bold = True
+            tables += 1
+        elif kind == "page_break":
+            doc.add_page_break()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(str(p))
+    _read_docx(p)  # what is written must read back
+    return f"Created {p} - {len(blocks)} blocks, {tables} table(s), {words} words of text."
 
 
 def create_workbook(path, sheets):
@@ -406,6 +512,9 @@ def create_workbook(path, sheets):
                 longest = max((len(str(c.value)) for c in column if c.value is not None), default=8)
                 ws.column_dimensions[column[0].column_letter].width = min(max(10, longest + 2), 60)
 
+        for chart in spec.get("charts") or []:
+            _add_chart(ws, chart)
+
     p.parent.mkdir(parents=True, exist_ok=True)
     wb.save(str(p))
     # Say what is in it, so a reader of this result sees an empty or short
@@ -413,7 +522,8 @@ def create_workbook(path, sheets):
     parts = []
     for ws in wb:
         filled = sum(1 for r in ws.iter_rows() for c in r if c.value not in (None, ""))
-        parts.append(f"{ws.title}: {ws.max_row} rows x {ws.max_column} columns, {filled} cells filled")
+        parts.append(f"{ws.title}: {ws.max_row} rows x {ws.max_column} columns, {filled} cells filled"
+                     + (f", {len(ws._charts)} chart(s)" if ws._charts else ""))
     return f"Created {p} - " + "; ".join(parts) + ". Run office read on it to check the values."
 
 
@@ -820,7 +930,13 @@ USAGE = """office - documents, spreadsheets and email drafts, from the shell
   office create BOOK.xlsx SPEC          a new workbook. SPEC: {"sheets": [{"name": "Sheet1", "rows": [[...]],
                                         "cells": {"C5": "=SUM(C2:C4)"}, "header": true, "widths": {"A": 20},
                                         "number_format": {"C": "#,##0.00"}}]} - rows fill from A1, cells set
-                                        one address each; a sheet needs one or the other
+                                        one address each; a sheet needs one or the other; a sheet's
+                                        "charts": [{"type": "column|bar|line|pie", "title": "Revenue",
+                                        "data": "B1:B4", "categories": "A2:A4", "anchor": "E2"}] (data starts
+                                        at its header cell)
+  office create DOC.docx SPEC           a new Word document. SPEC: {"blocks": [{"heading": "Title", "level": 1},
+                                        {"paragraph": "text"}, {"bullets": ["a", "b"]},
+                                        {"table": [["Header", "..."], ["cell", "..."]]}, {"page_break": true}]}
   office combine OUT.pdf IN...          one PDF from PDFs, pictures and office documents, in order
   office email --to ADDR [--cc ADDR] --subject S [--attach FILE]... [--body TEXT | body on stdin]
                                         put an email in the Outbox for a person to review and send.
@@ -911,8 +1027,12 @@ def main(argv=None):
             print(update_workbook(argv[0], spec.get("edits"), spec.get("replace_refs"), spec.get("output_path")))
         elif cmd == "create":
             if len(argv) < 2:
-                raise OfficeError("usage: office create BOOK.xlsx SPEC (JSON, or - to read it from stdin)")
-            print(create_workbook(argv[0], _spec(argv[1]).get("sheets") or []))
+                raise OfficeError("usage: office create BOOK.xlsx|DOC.docx SPEC (JSON, or - to read it from stdin)")
+            spec = _spec(argv[1])
+            if argv[0].lower().endswith(".docx"):
+                print(create_document(argv[0], spec.get("blocks") or []))
+            else:
+                print(create_workbook(argv[0], spec.get("sheets") or []))
         elif cmd == "combine":
             print(combine_pdf(argv[0], argv[1:]))
         elif cmd == "email":
