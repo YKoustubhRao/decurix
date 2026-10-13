@@ -64,6 +64,8 @@ JUDGE_SYSTEM = (
     "A period the document gives (valid for 30 days, due in 15 days) must be the record's date counted from its "
     "own start date: count the days - an application's default of \"one month\" is 30 or 31 days by the calendar, "
     "and a day off is \"not_done\" (found live: a quote asked to be valid 30 days was saved valid for 31).\n"
+    "A result must be where the request said to put it: a file saved in another folder (over the attached "
+    "original in an inbox folder instead of in the work folder named) is \"not_done\" - say where it is.\n"
     "Read what the report itself says was left undone. A value the document gives that the record has a place "
     "for, left out because the worker did not find or did not look for its field (\"no visible field on the part "
     "of the form I completed\"), is \"not_done\": say which value - a form keeps most of its fields further down "
@@ -112,7 +114,11 @@ JUDGE_SYSTEM = (
     "must hold what the task asked for. A report that says something the file contradicts (\"these two were "
     "matched\" where the file lists them as unmatched, a total the file does not have, a sheet or column that is "
     "not there) is \"not_done\" - say which file and what differs, so the worker can correct the file or the "
-    "report. A file shown cut short is judged on the part shown.\n"
+    "report. A file shown cut short is judged on the part shown. Text in a file that still holds a web page's markup "
+    "or character codes (&amp;, &#39;, &quot;, <br>, <b>) is \"not_done\": it must read as the page shows it - say "
+    "which entry (found live: a workbook of book titles kept \"It&#39;s Only the Himalayas\" and passed). In a "
+    "workbook, a figure the task asks for must be a number in a cell of its own: a quantity written with its unit "
+    "(\"2 Units\") or several figures in one text cell (\"Subtotal: 50000; Tax: 9000\") is \"not_done\".\n"
     "Answer \"unsure\" whenever you cannot tell from what you are shown. Never guess \"done\".\n"
     "Reply with JSON only: {\"verdict\": \"done\"|\"not_done\"|\"cannot\"|\"unsure\", \"confidence\": 0.0-1.0, "
     "\"seen\": \"what the screen now shows (or, with no screen, what the files show), one sentence\", "
@@ -212,7 +218,10 @@ def judge(task, claim="", criteria="", values=None, steps="", live_png=None, ref
 # refuses to type values from before reading (internal/skills/grounding.go).
 # A native Windows worker's documents are named C:\...\po.pdf.
 DOCUMENT_PATH = re.compile(r"(?:~|/|\b[a-z]:[\\/])[\w.~/\\-]*[\w-]\.(?:pdf|xlsx|xlsm|docx|csv|eml|png|jpe?g)\b", re.I)
-MAX_DOCUMENT_CHARS = 4000
+# Shared fairly among the task's documents, so none is cut to nothing. Found live (2026-10-13): three bills
+# read together in 4000 characters left the last one cut off, and the check could only answer "unsure"; a
+# 12-page policy needs all of itself to confirm "every limit" (as much as office.read_document gives).
+MAX_DOCUMENT_CHARS = 30000
 MAX_DOCUMENT_PICTURES = 2
 
 
@@ -237,7 +246,8 @@ def _documents(task):
         for image in doc.get("images") or []:
             if len(pictures) < MAX_DOCUMENT_PICTURES and os.path.isfile(image):
                 pictures.append(image)
-    return "\n".join(texts)[:MAX_DOCUMENT_CHARS], pictures
+    share = MAX_DOCUMENT_CHARS // max(len(texts), 1)
+    return "\n".join(t if len(t) <= share else t[:share] + " [...]" for t in texts), pictures
 
 
 def _parse(text):

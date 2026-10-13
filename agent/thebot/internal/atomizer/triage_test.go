@@ -250,3 +250,16 @@ func TestTriageSendsARequestWithAttachedFilesToTheOperator(t *testing.T) {
 		t.Errorf("the same question with no file went to the operator (%s)", got.Reason)
 	}
 }
+
+// A file whose contents must come from a website goes to the operator, never to the
+// tool-less file-write skill (found live, 2026-10-13: it wrote rows from the model's head).
+func TestTriageSendsAFileFromAWebsiteToTheOperator(t *testing.T) {
+	p := "On https://books.toscrape.com, the Mystery category runs over more than one page. Find every Mystery book that costs less than 20 pounds and save them to mystery_under_20.csv in my work folder (title, price), cheapest first."
+	if got := Triage(p); got.Kind != RouteOperate {
+		t.Fatalf("Triage = %s (%s), want operate", got.Kind, got.Reason)
+	}
+	// Writing a file from the request's own words is still the file-write skill's.
+	if got := Triage("write hello world to notes.txt"); got.Kind == RouteOperate && got.TaskType != "file-write" {
+		t.Fatalf("a plain file write was rerouted: %s (%s)", got.Kind, got.Reason)
+	}
+}

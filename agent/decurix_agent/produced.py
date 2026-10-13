@@ -3,7 +3,7 @@ import os
 import re
 from pathlib import Path
 
-from decurix_agent import config
+from decurix_agent import attachments, config
 from decurix_agent.logging_utils import log
 
 
@@ -33,6 +33,8 @@ MAX_ENTRIES = 4000
 # Folders that hold tools' own files, never a task's result.
 SKIP_DIRS = {"node_modules", "__pycache__", "venv", "site-packages", "target", "dist", "build"}
 
+# A file a request asks for by name ("make contract_changes.docx in my work folder").
+REQUESTED_FILE = re.compile(r"\b[\w-][\w.-]*\.(?:xlsx|xlsm|docx|pdf|csv|tsv|txt|md|json|xml|html?|eml)\b", re.I)
 NAMED_PATH = re.compile(r"(?:~|/|\b[a-z]:[\\/])[\w.~/\\-]*[\w-]\.[a-z0-9]{2,5}\b", re.I)
 
 
@@ -73,13 +75,22 @@ def _walk(root):
                 continue
 
 
-def files(report="", started=None, root=None):
+def files(report="", started=None, root=None, request=""):
     """
     The readable files this task wrote, newest first, at most MAX_FILES:
     those in the work folder and those the report names, last written after
     the task began. Empty when the task's start is not known - never a guess
     from the files that happen to be there.
+
+    When the request names the files it wants (contract_changes.docx), those
+    and the ones the report names are the result; a working file the worker
+    made on the way - a JSON spec it fed a tool, a script - is not judged as
+    one. Found live (2026-10-13): a correct document was refused because an
+    earlier draft of its spec, still in the work folder, "conflicted" with it.
     """
+
+    wanted = {name.lower() for name in REQUESTED_FILE.findall(attachments.text(request or ""))}
+    named = {Path(os.path.expanduser(p)).name.lower() for p in NAMED_PATH.findall(report or "")}
 
     started = since() if started is None else started
     if started is None:
@@ -97,10 +108,39 @@ def files(report="", started=None, root=None):
             stat = path.stat()
         except OSError:
             continue
+        if wanted and path.name.lower() not in wanted and path.name.lower() not in named:
+            continue
         if stat.st_mtime > started and stat.st_size > 0:
             made.append((stat.st_mtime, str(path)))
 
     return [path for _, path in sorted(made, reverse=True)[:MAX_FILES]]
+
+
+WORK_FOLDER = re.compile(r"\b(?:in|to|into)\s+(?:my|the|our)\s+work\s+folder\b", re.I)
+
+
+def misplaced(request, root=None):
+    """
+    Where a file the request said to put in the work folder ended up instead,
+    or "": a file it names that exists under an inbox folder (an attachment
+    saved over in place) and not in the work folder itself. Decided with no
+    model. Found live (2026-10-13): asked to "save it as grades.xlsx in my work
+    folder", a worker pressed Ctrl+S on the attachment - twice - and reported
+    "saved in the work folder"; the check took the report's word for it.
+    """
+
+    text = attachments.text(request or "")
+    if not WORK_FOLDER.search(text):
+        return ""
+    root = Path(root or config.WORK_DIR)
+    out = []
+    for name in dict.fromkeys(REQUESTED_FILE.findall(text)):
+        if (root / name).exists():
+            continue
+        elsewhere = sorted((root / "inbox").glob(f"*/{name}")) if (root / "inbox").is_dir() else []
+        if elsewhere:
+            out.append(f"{name} is not in the work folder ({root}); it was saved at {elsewhere[-1]}")
+    return "; ".join(out)
 
 
 def drafts():
