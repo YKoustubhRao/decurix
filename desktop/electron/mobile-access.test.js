@@ -12,8 +12,8 @@ const source = fs.readFileSync(path.join(__dirname, 'mobile-access.js'), 'utf8')
 // What main.js passes: the cloudflared shipped with the app.
 const tunnelCommand = (port) => ({ file: 'cloudflared.exe', args: ['tunnel', '--url', `http://127.0.0.1:${port}`] });
 
-function harness(namedConfigured = false) {
-  const state = { lan_url: '', lan_tunnel_url: '' };
+function harness(namedConfigured = false, held = '') {
+  const state = { lan_url: '', lan_tunnel_url: held };
   const spawns = [];
   const warnings = [];
   let child;
@@ -59,6 +59,7 @@ function harness(namedConfigured = false) {
     process: { env: {} },
     Buffer,
     setTimeout,
+    clearTimeout,
     console: { warn: (...args) => warnings.push(args) },
   }, { filename: 'mobile-access.js' });
   return { api: module.exports, state, spawns, warnings, get child() { return child; } };
@@ -91,6 +92,33 @@ test('does not start a quick tunnel when a named tunnel is configured', async ()
   const access = await h.api.setupMobileAccess('/profile/AppData/decurix', tunnelCommand);
   assert.equal(access, null);
   assert.equal(h.spawns.length, 0);
+});
+
+test('a link the control plane still holds is cleared and a new tunnel started', async () => {
+  const h = harness(false, 'https://old-dead.trycloudflare.com');
+  const access = await h.api.setupMobileAccess('/profile/AppData/decurix', tunnelCommand);
+  assert.equal(h.spawns.length, 1);
+  for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.state.lan_tunnel_url, '');
+  await access.stop();
+});
+
+test('a tunnel that ends on its own drops its link and is started again', async () => {
+  const h = harness();
+  const access = await h.api.setupMobileAccess('/profile/AppData/decurix', tunnelCommand, { retryMs: 1 });
+  h.child.stderr.emit('data', 'https://blue-flower.trycloudflare.com');
+  for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.state.lan_tunnel_url, 'https://blue-flower.trycloudflare.com');
+  h.child.emit('close', 1);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(h.state.lan_tunnel_url, '');
+  assert.equal(h.spawns.length, 2);
+  h.child.stderr.emit('data', 'https://green-tree.trycloudflare.com');
+  for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.state.lan_tunnel_url, 'https://green-tree.trycloudflare.com');
+  await access.stop();
+  assert.equal(h.state.lan_tunnel_url, '');
+  assert.equal(h.spawns.length, 2);
 });
 
 test('ignores Cloudflare API hostnames in tunnel output', () => {
