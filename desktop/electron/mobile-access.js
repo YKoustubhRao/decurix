@@ -44,64 +44,82 @@ function requestJSON(route, method = 'GET', body) {
 }
 
 // tunnelCommand(port) is the command line that runs cloudflared against the
-// gated listener: main.js runs the copy shipped with the app.
+// gated listener: main.js runs the copy shipped with the app. The plain-IP link
+// is not made here: windows-lan.js and main.js's reportLanAddress do that.
 //
-// No LAN address is published. On a person's own computer the gated listener
-// is bound to loopback (cmd/decurix nativeLANAddr: a listener on every
-// interface makes Windows Firewall ask about it), so a phone on the same
-// Wi-Fi cannot reach it and the tunnel is the phone's way in.
-async function setupMobileAccess(dataDir, tunnelCommand) {
+// The quick tunnel is this app's own. A link the control plane already holds
+// is not trusted: the control plane outlives the window, and a link left from a
+// tunnel that has since ended is dead - an earlier version saw it, started no
+// tunnel, and the Mobile menu handed out that dead link for good. So the old
+// link is cleared at once and a new tunnel started; a tunnel that ends on its
+// own (the network dropped) takes its link with it and is started again.
+async function setupMobileAccess(dataDir, tunnelCommand, { retryMs = 5000, maxRetryMs = 60000 } = {}) {
   const port = lanPort(dataDir);
 
   try {
     const named = await requestJSON('/api/cftunnel');
     if (named.configured) return null;
-    const current = await requestJSON('/api/tunnel');
-    if (current.lan_tunnel_url) return null;
   } catch (error) {
     console.warn('Could not check existing tunnels:', error.message);
     return null;
   }
 
-  // Only the code-gated listener is exposed. The primary :8080 dashboard
-  // remains local to this machine and its own worker containers.
-  const { file, args } = tunnelCommand(port);
-  const child = spawn(file, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-
-  let output = '';
-  let published = false;
   let stopping = false;
+  let child = null;
+  let timer = null;
+  let delay = retryMs;
   let lastURL = '';
+  let published = true; // whatever link the control plane holds is cleared first
   let publish = Promise.resolve();
-  const onOutput = (chunk) => {
-    if (stopping) return;
-    output = (output + chunk.toString()).slice(-8192);
-    const match = output.match(quickTunnelPattern);
-    if (!match || match[0] === lastURL) return;
-    lastURL = match[0];
-    const discoveredURL = lastURL;
-    output = '';
-    publish = publish.then(() => requestJSON('/api/tunnel', 'POST', { lan_tunnel_url: discoveredURL }))
-      .then(() => { published = true; })
+  const setURL = (url) => {
+    publish = publish.then(() => requestJSON('/api/tunnel', 'POST', { lan_tunnel_url: url }))
+      .then(() => { published = Boolean(url); })
       .catch((error) => console.warn('Could not publish quick tunnel URL:', error.message));
   };
-  child.stdout?.on('data', onOutput);
-  child.stderr?.on('data', onOutput);
-  child.on('error', (error) => console.warn('Quick tunnel unavailable:', error.message));
+  setURL('');
+
+  // Only the code-gated listener is exposed. The primary :8080 dashboard
+  // remains local to this machine and its own worker containers.
+  const launch = () => {
+    timer = null;
+    if (stopping) return;
+    const { file, args } = tunnelCommand(port);
+    let output = '';
+    const tunnel = spawn(file, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    child = tunnel;
+    const onOutput = (chunk) => {
+      if (stopping) return;
+      output = (output + chunk.toString()).slice(-8192);
+      const match = output.match(quickTunnelPattern);
+      if (!match || match[0] === lastURL) return;
+      lastURL = match[0];
+      output = '';
+      delay = retryMs;
+      setURL(lastURL);
+    };
+    tunnel.stdout?.on('data', onOutput);
+    tunnel.stderr?.on('data', onOutput);
+    tunnel.on('error', (error) => console.warn('Quick tunnel unavailable:', error.message));
+    tunnel.once('close', () => {
+      if (stopping || child !== tunnel) return;
+      if (lastURL) { lastURL = ''; setURL(''); }
+      timer = setTimeout(launch, delay);
+      delay = Math.min(delay * 2, maxRetryMs);
+    });
+  };
+  launch();
 
   const stop = async () => {
     if (stopping) return;
     stopping = true;
-    child.kill();
+    if (timer) clearTimeout(timer);
+    child?.kill();
     await publish;
     if (published) {
       await requestJSON('/api/tunnel', 'POST', { lan_tunnel_url: '' });
       published = false;
     }
   };
-  child.once('close', () => {
-    stop().catch((error) => console.warn('Could not clear quick tunnel URL:', error.message));
-  });
   return { stop };
 }
 

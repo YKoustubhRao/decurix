@@ -660,10 +660,12 @@ to release its memory. Idle worker stopping still works as before.
 
 Uninstalling (Settings > Apps, or the Start menu's own uninstaller) stops the
 app-owned distro (or only Decurix containers in a shared runtime) and removes
-the program. Shared distros and unrelated Docker resources are kept. It asks whether to delete the distro and your
-settings as well, and keeps them unless you say yes, so installing again picks
-up where you left off. A silent uninstall (`"Uninstall Decurix.exe" /S`) keeps
-them; add `--delete-app-data` to remove them. Deleting a single worker from the
+the program. Shared distros and unrelated Docker resources are kept. It also
+deletes the app's distro, every worker, your records and your settings, without
+asking, so installing again starts fresh. To keep them for a reinstall, take a
+backup first (**Back up**), or uninstall from a terminal with
+`"Uninstall Decurix.exe" /S --keep-app-data`. An update installed over the app
+keeps everything. Deleting a single worker from the
 dashboard deletes its files, its chat and everything it learned; take a backup
 first (**Back up**) to restore its skills and memory into another worker.
 
