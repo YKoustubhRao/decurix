@@ -877,6 +877,7 @@ def _run_step(step, values, ladder=None, report=None, next_step=None):
         raise _Halt(f"the recording names a control it cannot identify: {step['unresolved']}")
 
     pressed_cell = False
+    repair = element = None
 
     try:
         if kind == "open":
@@ -952,6 +953,13 @@ def _run_step(step, values, ladder=None, report=None, next_step=None):
         if pressed_cell and not _field_appeared(step):
             raise _Halt(f"pressed where {_summary(step).split(' ', 1)[-1]} was when this was recorded, and no such field "
                         "appeared there - the page is laid out differently now")
+        # A deterministic healing renamed this exact control. Carry its
+        # identity to same-step value checks; checking the old label after
+        # typing into the healed field would incorrectly reject transfer.
+        # A model-grounded guess does not receive an exact-check alias.
+        if repair and repair.get("how") == "healed" and element is not None and element.get("role") == (step.get("target") or {}).get("role"):
+            done = dict(done, target_alias={"was": dict(step["target"]),
+                                           "now": {"role": element.get("role"), "name": element.get("name")}})
         return done
     except ComputerError as exc:
         raise _Halt(str(exc))
@@ -1360,7 +1368,14 @@ def run(program, params=None, start=1, report=None, ladder=None):
         # Found live: the icon was double-clicked, the app's window came up a few seconds after the ten
         # this waits for a page, and the run had already stopped at its first step.
         opening = core.OPEN_SECONDS if step["kind"] in ("click", "double_click") and _on_desktop(step) else None
-        missing, observation = _await_checks(step["expect"], result.get("observation"), values, seconds=opening)
+        checks = step["expect"]
+        alias = result.get("target_alias")
+        if alias:
+            checks = [dict(check, name=alias["now"]["name"])
+                      if check.get("type") in {"value", "element"}
+                      and (check.get("role"), check.get("name")) == (alias["was"].get("role"), alias["was"].get("name"))
+                      else check for check in checks]
+        missing, observation = _await_checks(checks, result.get("observation"), values, seconds=opening)
 
         if missing:
             described = [describe_check(c) for c in missing]

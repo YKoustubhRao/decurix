@@ -4,17 +4,28 @@ import time
 import traceback
 
 from decurix_agent import (ask_task, attachments, config, guidance, lessons, playbooks, procedures, progress, record_task, replay_task,
-                           skill_task, state, task_context, tool_task, usage)
+                           skill_task, state, task_context, tool_task, usage, workflow_task)
 from decurix_agent.computer import approval
 from decurix_agent.harness import continue_after_query, perform_task
 from decurix_agent.logging_utils import log
 from decurix_agent.messaging import REPLY_MARK, send_query, write_final_reply
 
 
+def _run_handler(target, args):
+    try:
+        return target(*args)
+    finally:
+        # Learned skills/replay can pause without going through harness.py.
+        workflow_task.engine_returned()
+
+
 def _called_off(reply):
     """Ends the task a person called off at one of its questions, without another action."""
 
     state.waiting_for_query = False
+    workflow_task.cancel_active()
+    state.paused_skill = None
+    state.paused_replay = None
     progress.emit("Stopping, as you said. Nothing more is done.")
     write_final_reply(f"I did nothing more after your \"{' '.join(str(reply).split())[:100]}\". "
                       f"Anything done before the question is still as it was left.")
@@ -72,7 +83,7 @@ def _report_queued(name):
 def _needs_no_backend(content):
     """Whether a request is handled without the reasoning backend ("/replay", "/record", "/learn", "/skill", a recorded task done again, or a question for a web app)."""
 
-    return (bool(replay_task.parse(content)) or record_task.parse(content) is not None or skill_task.handles(content)
+    return (workflow_task.needs_no_backend(content) or bool(replay_task.parse(content)) or record_task.parse(content) is not None or skill_task.handles(content)
             or skill_task.mimics(content) or _asks_a_web_app(content))
 
 
@@ -94,7 +105,7 @@ def _can_run_without_backend(content):
         # replay and teaching questions are deterministic. Never leave a
         # person's Learn answer waiting for Ollama: it only saves the answer
         # and either asks the next fixed question or writes the skill.
-        return state.paused_replay is not None or state.paused_skill is not None
+        return workflow_task.query_control(content) or state.paused_replay is not None or state.paused_skill is not None
 
     return _needs_no_backend(content)
 
@@ -143,7 +154,7 @@ def _report_interrupted():
     log(f"Task {record['task_id']} was interrupted by a restart; reporting it.")
     task_context.start(record["task_id"], request=record.get("request"))
     state.current_task = record.get("request") or None
-    note = INTERRUPTED
+    note = workflow_task.interrupted_note(record["task_id"]) or INTERRUPTED
     if skill_task.parse_learn(record.get("request") or "") is not None:
         note += " A lesson keeps every answer you gave, so the same `/learn` carries on from there."
     try:
@@ -322,6 +333,11 @@ def _pass():
             if not state.current_task_id:
                 task_context.start(task_context.task_id_from_filename(path.name))
 
+            if workflow_task.query_control(content):
+                _mark_handled(path)
+                threading.Thread(target=workflow_task.perform_control, args=(content,), daemon=True).start()
+                continue
+
             # If what it is waiting on is an on-screen action the
             # approval gate stopped, this reply is what settles it:
             # a yes becomes a one-shot grant for exactly that action,
@@ -389,9 +405,12 @@ def _pass():
                 if guidance.STOP_ONLY.match(content or ""):
                     target, args = _called_off, (content,)
 
+            if guidance.STOP_ONLY.match(content or ""):
+                target, args = _called_off, (content,)
+
             thread = threading.Thread(
-                target=target,
-                args=args,
+                target=_run_handler if workflow_task.has_active() else target,
+                args=(target, args) if workflow_task.has_active() else args,
                 daemon=True,
             )
 
@@ -467,7 +486,9 @@ def _pass():
         # records a person doing it, "/learn <recording>" teaches a
         # skill from one and "/skill <name>" runs it; none of them
         # goes to an engine.
-        if replay_task.parse(content):
+        if workflow_task.handles(content):
+            target = workflow_task.perform
+        elif replay_task.parse(content):
             target = replay_task.perform
         elif record_task.parse(content) is not None:
             target = record_task.perform
@@ -514,10 +535,7 @@ def _pass():
 
         thread = threading.Thread(
             target=target,
-            args=(
-                content,
-                path,
-            ),
+            args=(content, path),
             daemon=True,
         )
 

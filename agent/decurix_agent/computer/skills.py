@@ -8,6 +8,38 @@ from decurix_agent import config
 from decurix_agent.computer import experience, replay
 
 
+def bind_sources(skill, bindings):
+    """Explicitly bind recorded local input opens to new files, on a run copy.
+
+    No URLs, app launch names, extension changes, implicit basename matching,
+    typed values or save destinations are rebound. Callers choose every mapping.
+    """
+    if not isinstance(bindings, dict):
+        raise ValueError("source-file bindings must be an object")
+    bound = copy.deepcopy(skill)
+    opens = {step["open"] for step in bound.get("steps", []) if step.get("kind") == "open" and isinstance(step.get("open"), str)}
+    for source, destination in bindings.items():
+        if not isinstance(source, str) or not isinstance(destination, str):
+            raise ValueError("source-file bindings need path strings")
+        old, new = Path(source), Path(destination)
+        if source not in opens or not old.is_absolute() or not new.is_absolute() or not new.is_file():
+            raise ValueError("source-file binding must name a recorded local file open and an existing absolute file")
+        if not old.suffix or old.suffix.lower() != new.suffix.lower():
+            raise ValueError("source-file binding must preserve file type")
+        if isinstance((bound.get("starts") or {}).get("window"), str):
+            bound["starts"]["window"] = bound["starts"]["window"].replace(old.name, new.name)
+        for step in bound["steps"]:
+            if step.get("kind") == "open" and step.get("open") == source:
+                step["open"] = str(new)
+            for key in ("window", "phase_label"):
+                if isinstance(step.get(key), str):
+                    step[key] = step[key].replace(old.name, new.name)
+            for check in step.get("expect", []):
+                if check.get("type") in {"window", "active_window"}:
+                    check["value"] = check["value"].replace(old.name, new.name)
+    return bound
+
+
 # ============================================================
 # Skills
 #

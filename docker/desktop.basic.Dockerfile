@@ -76,6 +76,7 @@ RUN apt-get update && \
         img2pdf \
         libreoffice-writer \
         libreoffice-calc \
+        libreoffice-impress \
         libreoffice-gtk3 \
         fonts-liberation && \
     apt-get clean && \
@@ -96,6 +97,12 @@ COPY agent/chrome-policies.json /etc/opt/chrome/policies/managed/decurix.json
 COPY agent/install-browser.sh /tmp/install-browser.sh
 RUN chmod 644 /etc/opt/chrome/policies/managed/decurix.json \
     && sh /tmp/install-browser.sh && rm -f /tmp/install-browser.sh /tmp/chromium-browser
+
+# Presentation support uses a venv: python3-pptx is unavailable in Ubuntu noble.
+# System site packages retain apt-provided GI, openpyxl and document readers.
+RUN python3 -m venv --system-site-packages /opt/office-venv && \
+    /opt/office-venv/bin/pip install --no-cache-dir python-pptx==1.0.2
+ENV PATH="/opt/office-venv/bin:${PATH}"
 
 # browser-agent: extension_pipeline/ext_server.py, the backend for the
 # browser-agent extension. No desktop loads the extension today (the Chrome
