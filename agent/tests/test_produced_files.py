@@ -101,7 +101,7 @@ class FileWorkIsChecked(ts.TeachingBase):
         for patch in (mock.patch.object(skill_task.verify, "available", lambda: True),
                       mock.patch.object(skill_task.verify, "judge", judge),
                       mock.patch.object(skill_task, "_did_screen_work", lambda: False),
-                      mock.patch.object(skill_task.produced, "files", lambda report="": list(self.made)),
+                      mock.patch.object(skill_task.produced, "files", lambda report="", **kw: list(self.made)),
                       mock.patch.object(skill_task.produced, "text", lambda paths: "A7='only in the first list'"),
                       mock.patch.object(skill_task, "_engine_can_drive", lambda: False)):
             patch.start()

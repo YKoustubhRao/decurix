@@ -333,6 +333,17 @@ func Triage(prompt string) Route {
 		return Route{Kind: RouteOperate, TaskType: matched, Reason: "an Office document or PDF to make - the operator builds it with the office command"}
 	}
 
+	// A file whose contents are to come from a website is not something the
+	// file-write skill can write: it has no tools and writes what the model
+	// already holds. Found live (2026-10-13): "On https://books.toscrape.com
+	// ... find every Mystery book under 20 pounds and save them to
+	// mystery_under_20.csv" was triaged file-write, and the skill wrote four
+	// rows from the model's head - twice, the second time on the retry. The
+	// operator reads the site (fetching it, or on the screen) first.
+	if matched == "file-write" && webDestinationRe.MatchString(p) {
+		return Route{Kind: RouteOperate, TaskType: matched, Reason: "a file whose contents come from a website - the operator reads the site first"}
+	}
+
 	if wantsEmailDraft(p) && !researchRe.MatchString(p) {
 		return Route{Kind: RouteOperate, TaskType: matched, Reason: "an email to prepare - the operator drafts it into the Outbox"}
 	}

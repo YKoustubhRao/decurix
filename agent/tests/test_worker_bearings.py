@@ -95,5 +95,71 @@ class AnEntryTheDocumentsNameIsNotAStandIn(unittest.TestCase):
         core._DOCUMENT_WORDS.clear()
 
 
+class AWordDocumentIsMadeByTheTool(unittest.TestCase):
+    """office create DOC.docx: a valid document from headings, paragraphs, bullets and tables (found live: hand-written XML)."""
+
+    def test_it_reads_back_with_its_table(self):
+        from decurix_agent.tools import office
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "changes.docx")
+            said = office.create_document(path, [{"heading": "Contract changes", "level": 1},
+                                                 {"table": [["Clause", "Version 1", "Version 2"], ["2", "45 days", "30 days"]]},
+                                                 {"bullets": ["one", "two"]}])
+            self.assertIn("1 table(s)", said)
+            text = office.read_document(path)["text"]
+            self.assertIn("2 | 45 days | 30 days", text)
+            with self.assertRaises(office.OfficeError):
+                office.create_document(path, [{"paragraph": "again"}])          # never overwrites
+            with self.assertRaises(office.OfficeError):
+                office.create_document(str(Path(tmp) / "x.docx"), [{"tabel": []}])  # a block it does not read
+
+
+class TheResultIsWhatTheRequestNamed(unittest.TestCase):
+    """A working file (a JSON spec fed to a tool) is not judged as the result when the request names its output."""
+
+    def test_only_the_named_output_and_what_the_report_names(self):
+        import time
+        from decurix_agent import produced
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ("contract_changes.docx", "spec.json", "notes.txt"):
+                (root / name).write_text("x", encoding="utf-8")
+            request = "Compare the two versions and make contract_changes.docx in my work folder"
+            got = [Path(p).name for p in produced.files("Created " + str(root / "notes.txt"), started=time.time() - 60,
+                                                        root=root, request=request)]
+            self.assertEqual(sorted(got), ["contract_changes.docx", "notes.txt"])
+            # A request that names no file: everything written is looked at, as before.
+            self.assertEqual(len(produced.files("", started=time.time() - 60, root=root, request="tidy up")), 3)
+
+
+class AFileSavedOverTheAttachmentIsNotInTheWorkFolder(unittest.TestCase):
+    def test_it_is_found_with_no_model(self):
+        from decurix_agent import produced
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "inbox" / "up-1").mkdir(parents=True)
+            (root / "inbox" / "up-1" / "grades.xlsx").write_text("x")
+            request = "Open grades.xlsx in LibreOffice Calc, sort it and save it as grades.xlsx in my work folder"
+            self.assertIn("not in the work folder", produced.misplaced(request, root=root))
+            (root / "grades.xlsx").write_text("x")
+            self.assertEqual(produced.misplaced(request, root=root), "")
+            # A request that does not say where says nothing about this.
+            (root / "grades.xlsx").unlink()
+            self.assertEqual(produced.misplaced("sort grades.xlsx", root=root), "")
+
+
+class AChartIsMadeByTheTool(unittest.TestCase):
+    def test_a_workbook_with_a_chart_reads_back_with_it(self):
+        from decurix_agent.tools import office
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "r.xlsx")
+            said = office.create_workbook(path, [{"name": "Monthly", "rows": [["Month", "Revenue"], ["Jul", 100], ["Aug", 120]],
+                                                  "charts": [{"type": "column", "title": "Revenue", "data": "B1:B3", "categories": "A2:A3"}]}])
+            self.assertIn("1 chart(s)", said)
+            self.assertIn("chart", office.read_workbook(path))
+            with self.assertRaises(office.OfficeError):  # a range past the data
+                office.create_workbook(str(Path(tmp) / "x.xlsx"), [{"name": "S", "rows": [["a", 1]], "charts": [{"data": "B1:B9"}]}])
+
+
 if __name__ == "__main__":
     unittest.main()
