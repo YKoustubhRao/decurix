@@ -1,6 +1,7 @@
 import json
 import os
 import queue
+import re
 import select
 import signal
 import subprocess
@@ -86,6 +87,9 @@ KEY_BURST_SECONDS = 1.0
 # How far behind the input reader may be before a frame it grabs is not the moment of the press (Recorder._lag).
 LATE_SECONDS = 0.5
 LATE_NOTE = "it was read after the screen had already changed, so what was pressed is not known"
+# A date/time field as a look lists it (cdp.DATE_ROLES), and the values such a field holds.
+DATE_STATES = {"date", "date and time", "time", "month", "week"}
+DATE_VALUE = re.compile(r"\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2})?|\d{2}:\d{2}|\d{4}-\d{2}|\d{4}-W\d{2}")
 
 # A pause that ends on the screen it began on held no private step: the person paused to write a Reason (the toolbar
 # pauses while one is composed), or pressed Stop and Continue with nothing in between. Recording a "manual" step for it
@@ -954,6 +958,14 @@ class Recorder:
             empty_field = element is not None and element["role"] in ("textbox", "combobox", "spinbutton") \
                 and (not value or (value == typed and not before_typing))
             entry["append"] = not empty_field
+            # A date field takes its keys segment by segment in the browser's own order ("10062026" for 6 October);
+            # what the person entered is the date it now holds, in the field's fixed format - which is what a
+            # replay can put back (cdp.type_text / datefields). The keys themselves would be refused there.
+            if element is not None and set(element.get("states") or ()) & DATE_STATES and not before_typing \
+                    and DATE_VALUE.fullmatch(value) and not withheld:
+                entry["text"] = value
+                entry["append"] = False
+                entry["summary"] = approval.describe_action(kind, element, value, action.get("keys"), point)
 
         if withheld:
             entry["withheld"] = {"text": withheld}
@@ -1019,6 +1031,9 @@ class Recorder:
                 located = dict(ready[-1]["located"], element=element)
 
             ready.append({"action": action, "element": element, "note": note, "located": located, "frame": frame})
+
+        ready = _keyboard_choices(ready, after)
+        ready = _dates_entered(ready, after)
 
         for index, item in enumerate(ready):
             action, element, frame = item["action"], item["element"], item["frame"]
@@ -1229,6 +1244,70 @@ class Recorder:
         return 0
 
 
+
+def _native_choice(element):
+    """Whether an element is a page's own drop-down (<select>): a combobox nothing can be typed into."""
+
+    handle = (element or {}).get("handle") or {}
+    return (element or {}).get("role") == "combobox" and handle.get("editable") is False and element.get("source") == "cdp"
+
+
+def _dates_entered(ready, after):
+    """
+    The keys a person typed into a date field are its segments in the browser's own order ("10062026"); what they
+    entered is the date the field holds once the screen settled, read from the look after the run (the field's own
+    look before it was taken before the typing when another action followed in the same run). Found live: of two
+    dates typed one after the other, the first was kept as "10062026", which a replay cannot put back.
+    """
+
+    if after is None:
+        return ready
+    shown = {e.get("path"): e for e in after.get("elements") or [] if e.get("path")}
+    out = []
+    for item in ready:
+        action, element = item["action"], item["element"] or {}
+        now = shown.get(element.get("path")) if action["kind"] == "type" else None
+        value = (now or {}).get("value") or ""
+        if now is not None and set(now.get("states") or ()) & DATE_STATES and DATE_VALUE.fullmatch(value):
+            item = dict(item, action=dict(action, text=value), element=dict(element, value=value, states=now.get("states")))
+        out.append(item)
+    return out
+
+
+def _keyboard_choices(ready, after):
+    """
+    A person choosing in a page's drop-down with the keyboard - open it, type the first letters, Enter - is a choice,
+    not typing: the keys only move which option is chosen. Found live (2026-10-13): "open the product list, type MUG,
+    Enter" was kept as typing "MUG" into the field plus a Return, and the option it chose ("MUG-12 - Ceramic mug
+    12oz") was nowhere in the recording. The run of keys is recorded as one `select` of the option the drop-down
+    shows once the screen settled, and the click that opened it (in the same run) is folded into it, as a choice
+    made with the mouse already is.
+    """
+
+    if after is None:
+        return ready
+    shown = {e.get("path"): e for e in after.get("elements") or [] if e.get("path")}
+    out = []
+    for item in ready:
+        action, element = item["action"], item["element"]
+        target = element or {}
+        if action["kind"] == "type" and _native_choice(element):
+            now = shown.get(target.get("path"))
+            option = (now or {}).get("value")
+            if option:
+                if out and out[-1]["action"]["kind"] == "click" and (out[-1]["element"] or {}).get("path") == target.get("path"):
+                    opened = out.pop()
+                    action = dict(action, t=opened["action"]["t"])
+                choice = {k: v for k, v in action.items() if k != "text"}
+                choice.update(kind="select", option=option)
+                out.append(dict(item, action=choice))
+                continue
+        if action["kind"] == "key" and out and out[-1]["action"]["kind"] == "select"                 and (out[-1]["element"] or {}).get("path") == target.get("path")                 and set(action.get("keys") or []) <= {"Return", "Enter", "KP_Enter"}:
+            continue  # the Enter that closed the list is part of the choice
+        out.append(item)
+    return out
+
+
 def main(argv=None):
     logging_utils.log_to_file(LOG_FILE)
     args = sys.argv[1:] if argv is None else argv
@@ -1242,3 +1321,4 @@ def main(argv=None):
 
 if __name__ == "__main__":
     sys.exit(main())
+

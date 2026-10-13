@@ -13,6 +13,8 @@ import base64
 import json
 import mimetypes
 import os
+import re
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -75,11 +77,33 @@ def drafted(task_id=None):
 
     task_id = task_id if task_id is not None else task_context.current()
     # A draft made outside any task (a command run by hand) is no task's.
-    return read_log(_log_path(task_id)) if task_id else []
+    records = read_log(_log_path(task_id)) if task_id else []
+    # A draft a later one of the same task replaced is no longer in the Outbox, and no longer this task's work.
+    gone = {r.get("replaces") for r in records if r.get("replaces")}
+    return [r for r in records if not r.get("id") or r.get("id") not in gone]
+
+
+def _subject_words(subject):
+    return re.findall(r"[a-z0-9]+", (subject or "").lower())
+
+
+def _same_email(record, to, subject):
+    """The same letter: the same recipients, and a subject with the same words (found live: a second attempt
+    wrote "Final notice - overdue invoices" where the first had "Final notice: overdue invoices")."""
+
+    return (sorted(a.lower() for a in record.get("to") or []) == sorted(a.lower() for a in to)
+            and _subject_words(record.get("subject")) == _subject_words(subject))
 
 
 class DraftError(Exception):
     """A draft that was not made, and why, in words for the model."""
+
+
+def _reason(exc):
+    try:
+        return json.loads(exc.read().decode("utf-8") or "{}").get("error") or str(exc)
+    except (ValueError, OSError):
+        return str(exc)
 
 
 def _recipients(values):
@@ -91,16 +115,28 @@ def _recipients(values):
     return out
 
 
-def draft(to, subject, body, cc=None, attachments=None):
+def draft(to, subject, body, cc=None, attachments=None, replaces=None):
     """
     Put one email in the Outbox. Returns a sentence saying what was drafted;
     raises DraftError (nothing drafted) when a recipient or an attachment is
     missing, the attachments are too large, or the control plane refused it.
+
+    `replaces` names an earlier draft of this same task that the new one takes
+    the place of (the control plane discards it; it was never sent). A draft to
+    the same recipients with the same subject as one this task already made
+    replaces it on its own: found live (2026-10-13), a worker sent back to fix
+    two figures drafted all seven of its letters a second time.
     """
 
     to = _recipients(to)
     if not to:
         raise DraftError("give at least one recipient.")
+    task_id = task_context.current() or ""
+    explicit = bool(replaces)
+    if not replaces and task_id:
+        earlier = [r for r in drafted(task_id) if r.get("id") and _same_email(r, to, subject)]
+        if earlier:
+            replaces = earlier[-1]["id"]
 
     files = []
     total = 0
@@ -132,7 +168,8 @@ def draft(to, subject, body, cc=None, attachments=None):
 
     payload = {
         "desktop_id": config.DESKTOP_ID,
-        "task_id": task_context.current() or "",
+        "task_id": task_id,
+        "replaces": replaces or "",
         "to": to,
         "cc": _recipients(cc),
         "subject": (subject or "").strip(),
@@ -140,23 +177,42 @@ def draft(to, subject, body, cc=None, attachments=None):
         "attachments": files,
     }
 
-    request = urllib.request.Request(
-        OUTBOX_URL, data=json.dumps(payload).encode("utf-8"), method="POST",
-        headers={"Content-Type": "application/json"},
-    )
-    try:
+    def post(body):
+        request = urllib.request.Request(
+            OUTBOX_URL, data=json.dumps(body).encode("utf-8"), method="POST",
+            headers={"Content-Type": "application/json"},
+        )
         with urllib.request.urlopen(request, timeout=60) as response:
-            answer = json.loads(response.read().decode("utf-8") or "{}")
+            return json.loads(response.read().decode("utf-8") or "{}")
+
+    try:
+        try:
+            answer = post(payload)
+        except urllib.error.HTTPError as exc:
+            if not payload["replaces"] or exc.code not in (404, 409):
+                raise
+            reason = _reason(exc)
+            if explicit:
+                raise DraftError(f"it cannot replace {payload['replaces']}: {reason}. Nothing was drafted.") from exc
+            # The earlier draft is gone already (a person discarded or sent it): this one is simply a new draft.
+            payload["replaces"] = ""
+            answer = post(payload)
+    except DraftError:
+        raise
     except Exception as exc:  # the control plane is down, or refused it
         raise DraftError(f"the control plane did not take the draft ({exc}).") from exc
 
+    record["id"] = answer.get("id") or ""
+    if answer.get("replaced"):
+        record["replaces"] = answer["replaced"]
     try:
-        if task_context.current():
-            _note(_log_path(task_context.current()), record)
+        if task_id:
+            _note(_log_path(task_id), record)
             _trim_logs()
     except OSError:
         pass   # the draft is made; only this desktop's own note of it is missing
 
     progress.emit(f"Drafted an email to {', '.join(to)}: {payload['subject']}")
+    replaced = f" It replaces the earlier draft {answer['replaced']}, which is no longer in the Outbox." if answer.get("replaced") else ""
     return (f"Drafted (id {answer.get('id', '?')}) to {', '.join(to)}, subject {payload['subject']!r}, with {names}. "
-            "It waits in the Outbox for a person to send it - it has NOT been sent.")
+            "It waits in the Outbox for a person to send it - it has NOT been sent." + replaced)

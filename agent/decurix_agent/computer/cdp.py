@@ -12,6 +12,7 @@ import urllib.request
 from decurix_agent.computer import browser
 from decurix_agent.logging_utils import log
 from decurix_agent.computer import elements as el
+from decurix_agent.computer import datefields
 from decurix_agent.computer.errors import ComputerError
 
 
@@ -759,8 +760,17 @@ def _prop(node, key):
     return None
 
 
+# Chrome's roles for a native date or time input (<input type=date|time|datetime-local|month|week>). The
+# accessibility tree names the field by its label and splits it into Month/Day/Year spin buttons; listed as
+# none of those, a form's dates were missing from every look (found 2026-10-13 on an order form). Each is
+# listed once, as a field, and typed into through its value (type_text).
+DATE_ROLES = {"date", "datetime", "inputtime", "datetimelocal", "month", "week"}
+
+
 def _ax_role(node):
     role = ((node.get("role") or {}).get("value") or "").lower()
+    if role in DATE_ROLES:
+        return "textbox"
     # Quill and other contenteditable editors expose a focusable generic
     # rich-text node, rather than a textbox. Its descendants also inherit
     # editable, so only the focusable editor itself becomes a field.
@@ -1003,6 +1013,9 @@ def observe():
                     states.append("selected")
                 if not on_screen:
                     states.append("offscreen")
+                if role.lower() in DATE_ROLES:
+                    states.append("date" if role.lower() == "date" else "date and time" if "datetime" in role.lower()
+                                  else role.lower().replace("input", ""))
 
                 value = (node.get("value") or {}).get("value", "")
                 norm = el.normalize_role(lower)
@@ -1026,6 +1039,8 @@ def observe():
                         "target_id": page.target.get("id"),
                         "loader": loader,
                         "dom_role": lower,
+                        # A native drop-down (<select>) is a combobox nothing can be typed into: keys only move its choice.
+                        "editable": bool(_prop(node, "editable")),
                         "input_type": declared.get(backend_id, {}).get("type", ""),
                         "autocomplete": declared.get(backend_id, {}).get("autocomplete", ""),
                     },
@@ -1044,6 +1059,8 @@ def observe():
 
         if lower == "statictext":
             continue  # its children are its own text again, line by line: nothing to list, a third of a page to walk
+        if role.lower() in DATE_ROLES:
+            continue  # its Month/Day/Year spin buttons and picker button are parts of the one field just listed
         for child_id in reversed(node.get("childIds", [])):
             child = by_id.get(child_id)
             if child is not None:
@@ -1617,11 +1634,14 @@ def type_text(element, text, replace=True):
                 } else if (typeof this.setSelectionRange === 'function' && this.value !== undefined) {
                     try { this.setSelectionRange(this.value.length, this.value.length); } catch (e) {}
                 }
-                return {multiline: multiline};
+                return {multiline: multiline, input: this.tagName === 'INPUT' ? (this.type || '') : ''};
             }""",
             "arguments": [{"value": bool(replace)}],
         }).get("result", {}).get("value") or {}
 
+        if info.get("input") in datefields.FORMATS:
+            datefields.put(page, object_id, info["input"], text)
+            return
         if info.get("multiline"):
             page.call("Input.insertText", {"text": text})
         else:

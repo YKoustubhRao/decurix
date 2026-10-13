@@ -866,6 +866,33 @@ def combine_pdf(output_path, inputs):
 OFFICE_TYPES = {".docx", ".doc", ".odt", ".rtf", ".xlsx", ".xls", ".ods", ".pptx", ".odp"}
 
 
+def create_pdf(path, blocks):
+    """
+    A new PDF document from the same blocks as create_document (headings, paragraphs, bullets, tables): made as a
+    Word document and printed through LibreOffice, so it has real text. Found live (2026-10-13): asked for quotations
+    as PDFs, a worker printed HTML with a headless browser, which hung for three minutes, and then sent customers
+    screenshots wrapped in PDFs.
+    """
+
+    p = _path(path)
+    if p.suffix.lower() != ".pdf":
+        raise OfficeError(f"{p.name}: create_pdf makes .pdf files")
+    if p.exists():
+        raise OfficeError(f"{p} already exists - pick another name")
+    tmp = Path(tempfile.mkdtemp(prefix="decurix-pdf-"))
+    try:
+        doc = tmp / (p.stem + ".docx")
+        create_document(str(doc), blocks)
+        pdf = _office_to_pdf(doc, tmp / "out")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(pdf, p)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    from pypdf import PdfReader
+    pages = len(PdfReader(str(p)).pages)
+    return f"Created {p} ({pages} page(s), real text - office read shows what it says)."
+
+
 def _office_to_pdf(src, out_dir):
     """A Word/Excel/LibreOffice document as a PDF, laid out as LibreOffice prints it."""
 
@@ -937,8 +964,9 @@ USAGE = """office - documents, spreadsheets and email drafts, from the shell
   office create DOC.docx SPEC           a new Word document. SPEC: {"blocks": [{"heading": "Title", "level": 1},
                                         {"paragraph": "text"}, {"bullets": ["a", "b"]},
                                         {"table": [["Header", "..."], ["cell", "..."]]}, {"page_break": true}]}
+  office create DOC.pdf SPEC            a new PDF document (an invoice, a quote, a letter): the same SPEC as .docx
   office combine OUT.pdf IN...          one PDF from PDFs, pictures and office documents, in order
-  office email --to ADDR [--cc ADDR] --subject S [--attach FILE]... [--body TEXT | body on stdin]
+  office email --to ADDR [--cc ADDR] --subject S [--attach FILE]... [--replaces DRAFT_ID] [--body TEXT | body on stdin]
                                         put an email in the Outbox for a person to review and send.
                                         It is never sent from here.
 """
@@ -979,6 +1007,7 @@ def _email(argv):
     parser.add_argument("--cc", action="append", default=[])
     parser.add_argument("--subject", default="")
     parser.add_argument("--attach", action="append", default=[])
+    parser.add_argument("--replaces", default="")
     parser.add_argument("--body")
     args, rest = parser.parse_known_args(argv)
     if rest:
@@ -993,7 +1022,7 @@ def _email(argv):
         raise OfficeError("the email has no body: pass --body or send it on stdin")
 
     try:
-        return outbox.draft(args.to, args.subject, body, cc=args.cc, attachments=args.attach)
+        return outbox.draft(args.to, args.subject, body, cc=args.cc, attachments=args.attach, replaces=args.replaces or None)
     except outbox.DraftError as exc:
         raise OfficeError(f"not drafted: {exc}") from exc
 
@@ -1027,10 +1056,12 @@ def main(argv=None):
             print(update_workbook(argv[0], spec.get("edits"), spec.get("replace_refs"), spec.get("output_path")))
         elif cmd == "create":
             if len(argv) < 2:
-                raise OfficeError("usage: office create BOOK.xlsx|DOC.docx SPEC (JSON, or - to read it from stdin)")
+                raise OfficeError("usage: office create BOOK.xlsx|DOC.docx|DOC.pdf SPEC (JSON, or - to read it from stdin)")
             spec = _spec(argv[1])
             if argv[0].lower().endswith(".docx"):
                 print(create_document(argv[0], spec.get("blocks") or []))
+            elif argv[0].lower().endswith(".pdf"):
+                print(create_pdf(argv[0], spec.get("blocks") or []))
             else:
                 print(create_workbook(argv[0], spec.get("sheets") or []))
         elif cmd == "combine":

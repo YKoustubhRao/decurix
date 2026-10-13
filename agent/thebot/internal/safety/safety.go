@@ -32,9 +32,14 @@ type rule struct {
 	reason string
 }
 
+// atCommand names the rules about which program runs. They are matched
+// against the command with its quoted arguments blanked out: in
+// `grep -E 'outbox|mail'` the bar is part of a pattern, not a pipe into mail.
+var atCommand = map[string]bool{"it sends email": true, "it shuts down or restarts the machine": true}
+
 // commandRules are checked against a shell command about to run.
 var commandRules = []rule{
-	{regexp.MustCompile(`(?i)(^|[;&|]\s*|\bsudo\s+)(sendmail|mailx?|mutt|ssmtp|msmtp|swaks)\b`),
+	{regexp.MustCompile(`(?i)(^|[;&|]\s*|\bsudo\s+|['"]\s*)(sendmail|mailx?|mutt|ssmtp|msmtp|swaks)\b`),
 		"it sends email"},
 	{regexp.MustCompile(`(?i)\b(twilio|whatsapp|telegram-send|slack-cli|signal-cli)\b`),
 		"it sends a message on someone's behalf"},
@@ -50,7 +55,7 @@ var commandRules = []rule{
 		"it recursively deletes a home or root directory"},
 	{regexp.MustCompile(`(?i)\bmkfs(\.\w+)?\b|\bdd\b[^|;&]*\bof=/dev/|\bwipefs\b|\bshred\b`),
 		"it can destroy a disk or file permanently"},
-	{regexp.MustCompile(`(?i)(^|[;&|]\s*|\bsudo\s+)(shutdown|reboot|poweroff|halt)\b|\binit\s+[06]\b`),
+	{regexp.MustCompile(`(?i)(^|[;&|]\s*|\bsudo\s+|['"]\s*)(shutdown|reboot|poweroff|halt)\b|\binit\s+[06]\b`),
 		"it shuts down or restarts the machine"},
 	{regexp.MustCompile(`:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:`),
 		"it is a fork bomb"},
@@ -74,8 +79,13 @@ func AssessCommand(command string) *Concern {
 	if command == "" {
 		return nil
 	}
+	unquoted := blankQuoted(command)
 	for _, r := range commandRules {
-		if !r.re.MatchString(command) {
+		target := command
+		if atCommand[r.reason] {
+			target = unquoted
+		}
+		if !r.re.MatchString(target) {
 			continue
 		}
 		if r.reason == "it sends data to a web service" && localTargetRe.MatchString(command) && !externalURLRe.MatchString(stripLocalURLs(command)) {
@@ -87,6 +97,33 @@ func AssessCommand(command string) *Concern {
 }
 
 var externalURLRe = regexp.MustCompile(`(?i)https?://`)
+
+// quotedRe is a single- or double-quoted stretch of a shell line.
+var quotedRe = regexp.MustCompile(`'[^'\n]*'|"(?:[^"\\\n]|\\.)*"`)
+
+// runsQuotedRe ends where a quoted stretch would be run as shell code itself:
+// `sh -c '...'`, `bash -lc "..."`, `eval '...'`, `ssh host '...'`.
+var runsQuotedRe = regexp.MustCompile(`(?i)(\b(sh|bash|zsh|dash|ksh|su)\s+(-\w+\s+)*-\w*c\w*\s+|\beval\s+|\bssh\s+(-\S+\s+)*\S+\s+|\bxargs\s+(-\S+\s+)*)$`)
+
+// blankQuoted replaces each quoted argument of a command with an empty pair of
+// quotes, so what is left is the shell's own words and operators. A quoted
+// stretch that is itself run as shell code (`sh -c '... | mail ...'`) is kept:
+// its pipes are real.
+func blankQuoted(command string) string {
+	var b strings.Builder
+	last := 0
+	for _, m := range quotedRe.FindAllStringIndex(command, -1) {
+		b.WriteString(command[last:m[0]])
+		if runsQuotedRe.MatchString(command[:m[0]]) {
+			b.WriteString(command[m[0]:m[1]])
+		} else {
+			b.WriteString("''")
+		}
+		last = m[1]
+	}
+	b.WriteString(command[last:])
+	return b.String()
+}
 
 func stripLocalURLs(s string) string { return localTargetRe.ReplaceAllString(s, " ") }
 
