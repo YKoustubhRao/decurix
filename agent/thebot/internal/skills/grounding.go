@@ -123,11 +123,55 @@ func typedValues(command string) []string {
 	return out
 }
 
+// searchFieldRe names a field typed into to find something - a page, a
+// record, a menu entry - not to record a value.
+var searchFieldRe = regexp.MustCompile(`(?i)^(search|find|filter|look ?up|go to|jump to)\b`)
+
+// typesIntoSearch reports whether command is a gui type into a field the
+// operator has been shown as a search box (searchbox, or a field named
+// "Search ..."), found by its ref in what was seen. Typing there finds where
+// to go; it records nothing. Found live (2026-10-13): to reach a new Payment
+// Entry the operator typed "Payment Entry" into the application's search bar,
+// and was refused twice as typing "a value that appears nowhere" - then asked
+// a person where the words came from.
+func typesIntoSearch(st *operatorState, command string) bool {
+	words := shellWords(command)
+	if len(words) < 2 || words[0] != "gui" || words[1] != "type" {
+		return false
+	}
+	args := positional(words[2:])
+	if len(args) < 2 || !refRe.MatchString(args[0]) {
+		return false
+	}
+	ref := regexp.QuoteMeta(args[0])
+	// As gui observe lists it (e12 combobox "Search") and as an action's result names it (combobox "Search" (e12)).
+	var role, name string
+	best := -1
+	for _, re := range []*regexp.Regexp{
+		regexp.MustCompile(`(?m)(?:^|\s)` + ref + ` ([a-z]+)(?: "([^"]*)")?`),
+		regexp.MustCompile(`([a-z]+) "([^"]*)" \(` + ref + `\)`),
+	} {
+		for _, m := range re.FindAllStringSubmatchIndex(st.Seen, -1) {
+			if m[0] > best {
+				best, role = m[0], st.Seen[m[2]:m[3]]
+				name = ""
+				if m[4] >= 0 {
+					name = st.Seen[m[4]:m[5]]
+				}
+			}
+		}
+	}
+	return best >= 0 && (role == "searchbox" || searchFieldRe.MatchString(strings.TrimSpace(name)))
+}
+
+// refRe is an element's ref as gui observe gives it.
+var refRe = regexp.MustCompile(`^e[0-9]+$`)
+
 // groundingNudge is what to tell the operator instead of running command, or
 // "" when every value it would type can be traced.
 func groundingNudge(st *operatorState, command string) string {
 	values := typedValues(command)
-	if len(values) == 0 {
+	if len(values) == 0 || typesIntoSearch(st, command) {
 		return ""
 	}
 

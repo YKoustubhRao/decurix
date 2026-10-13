@@ -209,6 +209,18 @@
     row.appendChild(node("span", "chip", plural(skill.steps, "step", "steps")));
     if(skill.gated){ row.appendChild(node("span", "chip warn", "asks approval at " + plural(skill.gated, "step", "steps"))); }
     if(skill.by_hand){ row.appendChild(node("span", "chip warn", plural(skill.by_hand, "step", "steps") + " done by you")); }
+    /* Who does it now, and what it costs: a skill is learning until it has run cleanly a few times in a row, and
+       its runs' tokens are its own record (experience.economy) - shown as they are, a rise included. */
+    var health = skill.health || {};
+    if(health.stage === "trusted"){ row.appendChild(node("span", "chip", "replays on its own")); }
+    else if(health.stage){ row.appendChild(node("span", "chip", "learning: " + (health.clean_runs || 0) + " of " + (health.trust_after || 0) + " clean runs")); }
+    var cost = health.tokens || {};
+    if(cost.first){ row.appendChild(node("span", "chip", "first good run " + tokens(cost.first) + " tokens")); }
+    if(cost.now !== null && cost.now !== undefined && cost.first){
+      var pct = cost.saved_percent;
+      var trend = pct === null || pct === undefined ? "" : pct >= 0 ? ", " + pct + "% less" : ", " + (-pct) + "% more";
+      row.appendChild(node("span", "chip", "lately " + tokens(cost.now) + trend));
+    }
     return row;
   }
 
@@ -408,7 +420,7 @@
   var HOW = {
     tool: "Runs a script it wrote, with no model turn once it has been used",
     replay: "Replays its own checked run on the screen, with no model turn",
-    way: "Gives its model the commands that worked"
+    way: "Worked out by its model each time; kept what worked, to compare runs and write a script from"
   };
 
   function tokens(n){

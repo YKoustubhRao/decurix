@@ -161,6 +161,22 @@ def by_name(words, places=None):
     return None
 
 
+WRAPPER_PAGE = re.compile(r"""^APP=['"](https?://[^'"\s]+)['"]""", re.MULTILINE)
+
+
+def address(entry):
+    """The web address an app on this desktop opens, when its launcher is a web app's wrapper (APP=...), else None."""
+
+    try:
+        program = Path(argv(entry)[0]).expanduser()
+        if program.is_file() and program.stat().st_size < 64 * 1024:
+            found = WRAPPER_PAGE.search(program.read_text(encoding="utf-8", errors="replace"))
+            return found.group(1) if found else None
+    except (OSError, IndexError, ValueError):
+        pass
+    return None
+
+
 def argv(entry):
     """The command a launcher runs, without its %U-style field codes."""
 
