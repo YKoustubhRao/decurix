@@ -427,6 +427,7 @@ def build_parser():
     doer = sub.add_parser("do", add_help=False)
     doer.add_argument("name")
     doer.add_argument("--param", action="append", default=[])
+    doer.add_argument("--source-file", action="append", default=[])
     doer.add_argument("--from", dest="start", type=int, default=1)
 
     asker = sub.add_parser("ask", add_help=False)
@@ -712,7 +713,7 @@ def run(argv):
         from decurix_agent import guidance
 
         params = guidance.with_run_values(_params(args.param), skill.get("params"), skill=skill["name"])
-        return _print_replay(skill_engine.run(skill, params=params, start=args.start),
+        return _print_replay(skill_engine.run(skill, params=params, start=args.start, source_files=_params(args.source_file)),
                              command=f"gui do {skill['name']}")
 
     if command in ("click", "double-click", "right-click"):

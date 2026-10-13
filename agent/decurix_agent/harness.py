@@ -93,4 +93,26 @@ def ask_model(system, prompt):
     return _ask_once(system, prompt)
 
 
+# Start the next durable stage only after the previous engine call has returned
+# and released its per-turn state. This also handles stages paused on a query.
+_engine_perform_task = perform_task
+_engine_continue_after_query = continue_after_query
+
+
+def perform_task(task, task_file):
+    from decurix_agent import workflow_task
+    try:
+        return _engine_perform_task(task, task_file)
+    finally:
+        workflow_task.engine_returned()
+
+
+def continue_after_query(query_response):
+    from decurix_agent import workflow_task
+    try:
+        return _engine_continue_after_query(query_response)
+    finally:
+        workflow_task.engine_returned()
+
+
 __all__ = ["perform_task", "continue_after_query", "wait_for_backend", "ask_model"]

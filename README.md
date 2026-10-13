@@ -134,6 +134,7 @@ A rundown of what's actually built and working, grouped by area. See [`CLAUDE.md
 * An autonomy dashboard (**Tasks**) breaking down autonomy rate by engine, worker and task type, and the most common reasons a human had to step in — with a single, precise definition of "autonomous"
 
 **Scheduling & automation**
+* **Durable business workflows** (`/workflow`): 25 editable examples plus arbitrary custom workflow specifications and learned-skill stages; stage checkpoints, bounded retries, approval boundaries and independently checked output artifacts. See [usage and validation](bench/workflows/README.md) for Excel/Word/PowerPoint handoffs, recovery, offline soak tests and the live desktop runner.
 * Recurring requests on a standard 5-field cron expression, or a one-time request for a future moment — set up from the Requests page and fired automatically by a built-in scheduler (no external cron dependency)
 * **DAG workflows** (`/dags`): a drag-and-drop canvas for wiring multiple workers' requests into a directed graph, where a node's output can be referenced in a downstream node's request text, dispatch is gated on every upstream node succeeding, and a failed node skips everything only reachable through it — runnable on its own cron trigger or on demand
 * A worker-recommender that suggests the best desktop for a newly typed request, based on which worker is most recently active or whose past memory most closely matches the request (embedding similarity), with recency as the always-available fallback

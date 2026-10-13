@@ -88,6 +88,8 @@ def read_document(path, pages=None, as_images=False):
         return {"text": read_workbook(p), "images": []}
     if ext == ".docx":
         return {"text": _clip(_read_docx(p)), "images": []}
+    if ext == ".pptx":
+        return {"text": _clip(_read_pptx(p)), "images": []}
     if ext == ".eml":
         return {"text": _clip(_read_eml(p)), "images": []}
     if ext in TEXT_TYPES or _looks_textual(p):
@@ -196,6 +198,41 @@ def _docx_text_from_xml(p):
         xml = z.read("word/document.xml").decode("utf-8", errors="replace")
     xml = re.sub(r"</w:p>", "\n", xml)
     return f"{p.name}:\n" + re.sub(r"<[^>]+>", "", xml)
+
+
+def _read_pptx(p):
+    """Read slide text in presentation order, including table cells.
+
+    This is content inspection; visual layout still requires opening or rendering
+    the deck. Reading XML needs no optional presentation library.
+    """
+    import posixpath
+    from xml.etree import ElementTree as ET
+
+    ns = {"p": "http://schemas.openxmlformats.org/presentationml/2006/main",
+          "a": "http://schemas.openxmlformats.org/drawingml/2006/main"}
+    rid = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
+    try:
+        with zipfile.ZipFile(p) as z:
+            presentation = ET.fromstring(z.read("ppt/presentation.xml"))
+            rels = ET.fromstring(z.read("ppt/_rels/presentation.xml.rels"))
+            targets = {r.get("Id"): r.get("Target") for r in rels
+                       if r.get("TargetMode") != "External"}
+            parts = [f"{p.name}:"]
+            for n, slide in enumerate(presentation.findall("p:sldIdLst/p:sldId", ns), 1):
+                target = targets[slide.get(rid)]
+                member = posixpath.normpath(posixpath.join("ppt", target)) if not target.startswith("/") else target.lstrip("/")
+                if not member.startswith("ppt/slides/"):
+                    raise ValueError("invalid slide relationship")
+                root = ET.fromstring(z.read(member))
+                parts.append(f"\n[Slide {n}]")
+                for paragraph in root.findall(".//a:p", ns):
+                    text = "".join(t.text or "" for t in paragraph.findall(".//a:t", ns))
+                    if text.strip():
+                        parts.append(text)
+            return "\n".join(parts)
+    except (OSError, zipfile.BadZipFile, KeyError, TypeError, ValueError, ET.ParseError) as exc:
+        raise OfficeError(f"{p.name}: cannot read PowerPoint presentation: {exc}") from exc
 
 
 def _read_eml(p):
