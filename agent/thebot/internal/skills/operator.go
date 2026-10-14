@@ -7,8 +7,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"unicode"
 	"time"
+	"unicode"
 
 	"thebot/internal/llm"
 	"thebot/internal/prompt"
@@ -89,8 +89,8 @@ HELP:
 - Before a payment, sending a message as the human, publishing, or deleting something that cannot be recovered, reply HELP saying exactly what you would do. Drafting an email with office email is not sending it (a person sends it from the Outbox): do that without asking.
 - Commands run in %s with no terminal attached: never open editors or pagers, and pass -y to installers.
 - For anything in a window (a web page in the browser, LibreOffice, a text editor) use the gui command: gui observe lists the screen's elements with refs like e12, then gui click e12, gui type e12 "text", gui key ctrl+s, gui select e12 "option", gui open <url|file|app>, gui scroll down 5 (or up; 5 is wheel notches, about 100 pixels each - over the part of the page to move, gui scroll x,y down 5). Every gui action prints what changed. gui read e12 prints the whole text of a field or document with line numbers - gui observe shows only its first 60 characters - so read a text before you change it and again after, and report a change as made only when gui read shows it: \"replace every X\" is done when no X is left in the text, so use the app's Find and Replace with its replace-all option (a button, or a checkbox to tick first), not one Replace at a time. gui type on a field that holds several lines is refused, because it would replace the whole document; change part of it through the app, or with --append where the cursor is. gui recordings <words> finds a recorded demonstration of a task, and gui replay <id> runs it again. gui skills <words> finds a task this desktop was taught: gui skill <name> says what it needs and gui do <name> --param name=value does it with no model - prefer it to working the task out yourself, but only in the app or site it works in (gui skill says where): the same kind of work in another system is done there with gui. A value gui skill calls a list takes every item of the document in one run, in the document's order, separated by \"; \" (--param product=\"Desk; Chair\" --param quantity=\"3; 1\") - never only the first item. gui ask chatgpt "QUESTION" (or google, duckduckgo, wikipedia, youtube) puts one question to that service in the browser and prints its answer - run it once per question.
-- To read a document (PDF, scan, Word, Excel, email, picture) run office read <file> [pages]; never guess at a file's contents.
-- To change an existing spreadsheet, never rewrite it with a script (that drops its charts): run office update <file.xlsx> - with a JSON spec on stdin, e.g. office update model.xlsx - <<'EOF' then {"edits": [{"sheet": "Data", "cell": "B14", "value": 1250}], "replace_refs": [{"from": "Data!$B$2:$B$13", "to": "Data!$B$2:$B$14"}]} then EOF. replace_refs makes charts and totals take in rows you added. office create <file.xlsx> - makes a new one from {"sheets": [{"name": "Invoices", "rows": [["Invoice", "Amount"], ["INV-1", 1200]], "cells": {"B3": "=SUM(B2:B2)"}}]} (rows fill from A1; cells set one address each). A chart is a sheet's "charts": [{"type": "column", "title": "Revenue by month", "data": "B1:B4", "categories": "A2:A4", "anchor": "E2"}] (data starts at its header cell); office read lists the charts a workbook has. A new Word document is office create <file.docx> - with {"blocks": [{"heading": "Title", "level": 1}, {"paragraph": "text"}, {"bullets": ["a", "b"]}, {"table": [["Header", "Header"], ["cell", "cell"]]}]} - never write a document's XML yourself. A PDF document (an invoice, a quote, a letter, a payslip) is office create <file.pdf> - with the same blocks: it has real text. Never make one by printing HTML with a browser or by wrapping pictures of pages in a PDF. A file you wrote that office read cannot open is broken: make it again, and never call it verified.
+- To read a document (PDF, scan, Word, Excel, PowerPoint, email, picture) run office read <file> [pages]; never guess at a file's contents.
+- To change an existing spreadsheet, never rewrite it with a script (that drops its charts): run office update <file.xlsx> - with a JSON spec on stdin, e.g. office update model.xlsx - <<'EOF' then {"edits": [{"sheet": "Data", "cell": "B14", "value": 1250}], "replace_refs": [{"from": "Data!$B$2:$B$13", "to": "Data!$B$2:$B$14"}]} then EOF. replace_refs makes charts and totals take in rows you added. office create <file.xlsx> - makes a new one from {"sheets": [{"name": "Invoices", "rows": [["Invoice", "Amount"], ["INV-1", 1200]], "cells": {"B3": "=SUM(B2:B2)"}}]} (rows fill from A1; cells set one address each). A chart is a sheet's "charts": [{"type": "column", "title": "Revenue by month", "data": "B1:B4", "categories": "A2:A4", "anchor": "E2"}] (data starts at its header cell); office read lists the charts a workbook has. A new Word document is office create <file.docx> - with {"blocks": [{"heading": "Title", "level": 1}, {"paragraph": "text"}, {"bullets": ["a", "b"]}, {"table": [["Header", "Header"], ["cell", "cell"]]}]} - never write a document's XML yourself. A PDF document (an invoice, a quote, a letter, a payslip) is office create <file.pdf> - with the same blocks: it has real text. Never make one by printing HTML with a browser or by wrapping pictures of pages in a PDF. A slide deck is office create <file.pptx> - with {"slides": [{"title": "Q3 review", "subtitle": "Finance"}, {"title": "Highlights", "bullets": ["a", {"text": "detail", "level": 1}], "notes": "speaker notes"}, {"title": "By region", "table": [["Region", "Revenue"], ["North", 1200]]}, {"title": "Trend", "chart": {"type": "column", "categories": ["Jul", "Aug"], "series": [{"name": "Revenue", "values": [10, 12]}]}}, {"title": "Site", "image": "photo.png"}]} (one table, chart or image a slide); change an existing deck with office update <file.pptx> - and {"edits": [{"slide": 2, "find": "Q2", "replace": "Q3"}, {"slide": 3, "table": 1, "row": 2, "column": 2, "value": "1,250"}, {"slide": 4, "chart": 1, "categories": [...], "series": [...]}, {"slide": 1, "title": "..."}, {"slide": 5, "notes": "..."}]} - it keeps the deck's layout; never rebuild a deck someone gave you. office read shows each slide's text, tables, chart figures and notes. A file you wrote that office read cannot open is broken: make it again, and never call it verified.
 - To prepare an email, run office email --to <address> --subject "<subject>" [--attach <file>] with the body on stdin (a heredoc). It goes to the Outbox for the human to review and send - it is never sent, so drafting one needs no approval. There is no way for you to send email yourself. Drafting the same email again (same recipients and subject) in the same task replaces your earlier draft of it; to correct a draft under another subject, pass --replaces <its draft id>. Never leave two copies of one email.
 %s%s
 Task: %s`
@@ -115,12 +115,15 @@ const taskRules = `- Use documents only when their names, identifiers and conten
 - A PDF of a document is made reliably with office combine OUT.pdf IN.docx (it converts through LibreOffice); in an app it is File > Export as PDF, never another export format. In LibreOffice a paragraph style (Heading 1, Title...) is set with the cursor in that paragraph and gui select on the Formatting toolbar's paragraph-style box; check the box shows it before you save. LibreOffice freezes the rows above and the columns left of the selected cell: to keep the header row visible select A2 first (or View > Freeze Cells > Freeze First Row) - with row 1 selected nothing is frozen.
 - A dialog or menu you opened by mistake is closed (Cancel, or gui key Escape) and you carry on - never ask the person about undoing your own slip.
 - A file attached to the request (in ~/work/inbox/...) is the person's original. Save your result where the request says - "in my work folder" is ~/work - with Save As (in an app) or a new path, never over the original.
+- When a source lacks something the result is built on - a column, a month, a rate, a target, a record - do not fill it with 0, a blank, "n/a" or last period's figure, and do not make or draft anything from it yet: check first (read the whole file, look for the data elsewhere in what you were given), then ask the person with exactly what is missing and where you looked. Found live: a deck was made with every target 0 and its email drafted, and only then did the report say the targets were not in the workbook.
 - Every total, count, sum or difference you write - in a file, an email or your report - is worked out by a command (python3 over the same figures you saved) and copied from its output, never added up in your head: found live, an email said a batch's payable total was 6,899.40 where its own register summed to 6,900.40.
+- A figure made of parts by rules (a score from a rubric, a fee, a commission, a penalty) is worked out part by part: for each entry, find each part in its source (quote the line that shows it), write the parts where the person can see them (their own columns, or "8 + 15 + 2 + 3 = 28" in your report), and add them up by command. Found live: candidates' scores were off by a skill the CV listed and a cap the rubric set, and nobody could see why.
 - In a workbook every figure is a number in a cell of its own: a quantity's unit goes in a column of its own ("2" and "Units", never "2 Units"), and a subtotal, tax or total row puts each figure in its own numeric cell under the column it belongs to, with its label in a text cell - never several figures written into one text cell.
 - Text taken from a web page's source reads as the page shows it: decode its character references (&amp; is &, &#39; is ', &nbsp; a space - python3's html.unescape) and strip its tags before writing it anywhere. A page that runs over several pages is read to its last page (follow "next" until there is none).
 - Use the source's values when making a draft from it, and report differences from application defaults. A figure the application computes - taxes from its own template, a grand total - may differ from the document's (a document often states a total before tax): that is not a reason to stop or ask. Enter the document's lines as it has them, leave the application's taxes and settings as it sets them, save, and report both figures. Every figure has a unit and basis: read them, convert to what was asked, and check the result.
 - When the document names a record by its number (an invoice, an order) and a helper of the application says there is none (a "get outstanding" dialog, a filtered list - they apply their own date and status filters), open that record by its number before concluding anything: its own page says whether it exists and what is open on it. A table that refers to records can usually be filled by hand with the record's type and number.
 - In an application, scroll and observe before deciding a field is missing. Never click the screen's bottom edge or a scrollbar to move a page. A form is saved only when the application says so; fix field errors you made (a typo, a wrong format) and save again. When the application refuses a value exactly as the source gives it (a tax number, an ID, an amount it calls invalid), the source and the application disagree and that is the person's to settle: do not remove, shorten or change the value, do not pick another option to get past the check, and do not save without it - ask, quoting the application's message and the value. On a page with several forms, use Save within the form you filled. Set dropdowns and suggestion fields with gui select REF "value", then verify the selected entry; typing and Tab may leave the field unset. Complete any configuration dialog using the requested attributes and verify the result. Type dates in the format the field shows, then check that they hold. A period the document gives ("valid for 30 days", "due in 15 days") is a date you work out from the record's own date - count the days; an application's default ("one month") is not it.
+- A form in several steps (1. Personal, 2. Job, 3. Review) keeps what was entered in earlier steps only while you move through it with its own Back and Next: never go to a step by typing its address, which can start an empty form. On its review step, read every value against the source before submitting - a value that is empty there was lost. Found live: a step reached by its address lost the first step's name and date of birth, and the record was saved without them.
 - What is on the screen when you start may be left over from an earlier task, stopped part way: a half-filled form, an error, a dialog. It is not this task's work. Never save, submit or change a record you did not open in this task, and never fix its errors - open what this request needs (a new record, another page; gui open the address) and leave the leftover as it is. If leaving it is refused (a "Leave site?" or "unsaved changes" prompt), keep it and open this task's page in a new tab.
 - Before DONE, check every part of the request in the application or output files. List what was completed, how you verified it, and anything left undone with its reason.
 `
@@ -408,11 +411,11 @@ type operatorState struct {
 	// Hosted is whether the model is a hosted one, fixed when the goal starts.
 	// The host then judges the screen itself before a result is reported, so
 	// the commands need not stand in as the evidence (unperformedScreenNudge).
-	Hosted bool
-	BudgetWarned      bool // told that its turns are nearly used up
-	LastCommand       string
-	LastResult        *shellResult
-	Commands          []string
+	Hosted       bool
+	BudgetWarned bool // told that its turns are nearly used up
+	LastCommand  string
+	LastResult   *shellResult
+	Commands     []string
 	// Worked is the commands that exited 0: what was actually done, as
 	// against what was tried (unperformedScreenNudge reads it).
 	Worked []string
@@ -611,14 +614,14 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 		result += typingFieldHint(st, command, res.Output)
 	}
 	msg := llm.Message{Role: "user", Content: result}
-	if pages := st.documentPictures(res.Output); len(pages) > 0 {
+	if pages, labels := st.documentPictures(res.Output); len(pages) > 0 {
 		st.forgetOldPictures(pagesNote, maxDocumentPictures-len(pages))
 		st.ShownPages = true
-		msg.Images = pages
+		msg.Images, msg.ImageLabels = pages, labels
 		msg.Content += pagesNote
 	} else if shot := st.takeScreenshot(started); shot != nil {
 		st.forgetOldPictures(screenshotNote, 0)
-		msg.Images = [][]byte{shot}
+		msg.Images, msg.ImageLabels = [][]byte{shot}, []string{"the screen as this command left it"}
 		msg.Content += screenshotNote
 	}
 	st.Messages = append(st.Messages, msg)
@@ -633,7 +636,7 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 // what it had already read.
 const (
 	screenshotNote = "\n\n(The screenshot shows the screen now.)"
-	pagesNote      = "\n\n(The document's pages are shown as pictures.)"
+	pagesNote      = "\n\n(The document's pages are shown as pictures, each labelled with its file and page.)"
 	// maxDocumentPictures bounds the document pages kept in the transcript.
 	maxDocumentPictures = 6
 )
@@ -641,26 +644,51 @@ const (
 // pageImageRe finds the pictures office read lists for a scan.
 var pageImageRe = regexp.MustCompile(`(?m)^\[page image: ([^\]\n]+)\]\s*$`)
 
+// documentHeaderRe is the line office read starts a document with ("scan_0030.pdf: PDF, 1 page(s); ...").
+var documentHeaderRe = regexp.MustCompile(`(?m)^([^\n:]+\.[A-Za-z0-9]{2,5}): [A-Za-z]`)
+
+// pageNumberRe reads the page number off a page picture's file name (page-2.png).
+var pageNumberRe = regexp.MustCompile(`page-(\d+)\.png$`)
+
 // documentPictures loads the page pictures a command's output names, for a
-// brain that can see (at most maxDocumentPictures).
-func (st *operatorState) documentPictures(output string) [][]byte {
+// brain that can see (at most maxDocumentPictures), with what each one is:
+// the document it came from (the header office read printed above it) and its
+// page. Several scans read in one command must never be told apart by their
+// order alone.
+func (st *operatorState) documentPictures(output string) ([][]byte, []string) {
 	if !st.Vision {
-		return nil
+		return nil, nil
 	}
+	headers := documentHeaderRe.FindAllStringSubmatchIndex(output, -1)
 	var out [][]byte
-	for _, m := range pageImageRe.FindAllStringSubmatch(output, -1) {
+	var labels []string
+	for _, m := range pageImageRe.FindAllStringSubmatchIndex(output, -1) {
 		if len(out) == maxDocumentPictures {
 			break
 		}
-		info, err := os.Stat(strings.TrimSpace(m[1]))
+		path := strings.TrimSpace(output[m[2]:m[3]])
+		info, err := os.Stat(path)
 		if err != nil || info.Size() == 0 || info.Size() > maxScreenshotBytes {
 			continue
 		}
-		if data, err := os.ReadFile(strings.TrimSpace(m[1])); err == nil {
-			out = append(out, data)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
 		}
+		doc := "a scanned document"
+		for _, h := range headers {
+			if h[0] < m[0] {
+				doc = output[h[2]:h[3]]
+			}
+		}
+		label := doc
+		if p := pageNumberRe.FindStringSubmatch(path); p != nil {
+			label += ", page " + p[1]
+		}
+		out = append(out, data)
+		labels = append(labels, label)
 	}
-	return out
+	return out, labels
 }
 
 // guiEnv is what Decurix's gui command is told about this brain: how much of
@@ -733,10 +761,13 @@ func (st *operatorState) forgetOldPictures(note string, keep int) {
 			// Some of this message's pictures still fit: it keeps its note,
 			// so a later pass can still drop the rest.
 			m.Images = m.Images[:keep]
+			if len(m.ImageLabels) > keep {
+				m.ImageLabels = m.ImageLabels[:keep]
+			}
 			keep = 0
 			continue
 		}
-		m.Images = nil
+		m.Images, m.ImageLabels = nil, nil
 		m.Content = strings.TrimSuffix(m.Content, note) + "\n(Pictures that were shown here are no longer shown - run the command again to see them.)"
 	}
 }

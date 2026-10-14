@@ -157,13 +157,27 @@ var (
 	// fails to match "C++" - caught by this suite on "implement quicksort
 	// in C++", which classified as "general" and would have been answered
 	// in chat instead of built.
+	//
+	// Names that are also ordinary English words (go, dash, rust, express,
+	// echo, react, ...) count only with a code context: "in Go", "using
+	// Dash", "a Rust program". Found live (2026-10-14): a price-list request
+	// - "Create the price list ... the supplier's code is ours without the
+	// dash" - matched build verb + "dash" and the coding harness spent 970 s
+	// designing a Python package; "Dept Code ... do not go into the model"
+	// matched the same way on "go".
 	codeLangPattern = `\bc\+\+|\bc#|` +
-		`\b(python|go|golang|javascript|typescript|node(?:\.?js)?|` +
-		`cpp|rust|java|ruby|php|sql|bash script|shell script|` +
-		`fastapi|flask|django|streamlit|dash|dask|gradio|react|vue|svelte|express|gin|echo|` +
-		`pandas|numpy|polars|pytorch|tensorflow|scikit-learn|sqlalchemy|pydantic|` +
-		`sqlite|postgres(?:ql)?|mysql|mongodb|redis|kafka|celery|` +
-		`docker|dockerfile|docker-compose|kubernetes|terraform|grpc|graphql|websockets?)\b`
+		`\b(python|golang|javascript|typescript|node(?:\.?js)?|` +
+		`cpp|php|sql|bash script|shell script|` +
+		`fastapi|django|streamlit|dask|gradio|vue|svelte|` +
+		`numpy|pytorch|tensorflow|scikit-learn|sqlalchemy|pydantic|` +
+		`sqlite|postgres(?:ql)?|mysql|mongodb|redis|kafka|` +
+		`docker|dockerfile|docker-compose|kubernetes|terraform|grpc|graphql|websockets?)\b|` +
+		`\b(?:in|using|with)\s+` + codeWordLangs + `\b|` +
+		`\b` + codeWordLangs + `\s+(?:program|app|application|service|server|script|api|module|package|project|code|backend|frontend|cli|binary|library|component|dataframe)s?\b`
+
+	// codeWordLangs are languages and libraries whose names are everyday
+	// words: they mean code only with a code context around them.
+	codeWordLangs = `(?:go|rust|java|ruby|flask|dash|react|express|gin|echo|pandas|polars|celery)`
 
 	// The classic structures and algorithms people ask for by name. They
 	// are unambiguously code even when the sentence names no language and
@@ -179,6 +193,17 @@ var (
 	codeExtPattern = `\.(?:py|go|js|jsx|mjs|ts|tsx|cpp|cc|cxx|hpp|rs|java|rb|php|cs|swift|kt|scala|sql)\b`
 
 	codeVerbPattern = `\b(build|implement|write|create|code|develop|make|program|generate|design|set ?up|scaffold|port|migrate)\b`
+
+	// businessCodeRe is "code" as a noun of business data - a supplier's
+	// code, a Dept Code, product codes, the code column - which is taken out
+	// before the coding patterns look for "code" as a verb or an object.
+	businessCodeRe = regexp.MustCompile(`(?i)\b[\w-]+'s\s+codes?\b|` +
+		`\b(?:product|item|supplier|vendor|customer|client|dept|department|account|cost|tax|zip|postal|post|country|` +
+		`currency|discount|promo|coupon|reference|ref|sku|part|gl|hs|area|region|status|error|reason|shipping|branch|` +
+		`employee|staff|project|unit|bank|swift|sort|access|pin|verification|confirmation|activation|bar|qr|tracking|` +
+		`category|cost centre|cost center|ledger|nominal|vat|hsn|sac|article|material|location|warehouse|store|site|` +
+		`service|job|expense|payroll|pay|leave|airport|dial|area|language|colou?r|size|style|batch|lot|serial|model)\s+codes?\b|` +
+		`\bcodes?\s+(?:column|field|value|list|number|table|mapping|map|lookup)s?\b|\bcodes\b`)
 
 	codingRe = regexp.MustCompile(`(?i)` +
 		codeVerbPattern + `[\s\S]{0,80}?` + codeNounPattern +
@@ -268,7 +293,7 @@ func isCoding(step string) bool {
 		return false
 	}
 	cleaned := stripNonCodeFilenames(codingURLRe.ReplaceAllString(codingProhibitionRe.ReplaceAllString(step, " "), " "))
-	return codingRe.MatchString(cleaned)
+	return codingRe.MatchString(businessCodeRe.ReplaceAllString(cleaned, " "))
 }
 
 // describesSoftware reports whether a step the planner tagged [code] names
@@ -279,7 +304,7 @@ func describesSoftware(step string) bool {
 	if codingExcludeRe.MatchString(step) || codingOpsRe.MatchString(step) {
 		return false
 	}
-	cleaned := stripNonCodeFilenames(codingURLRe.ReplaceAllString(codingProhibitionRe.ReplaceAllString(step, " "), " "))
+	cleaned := businessCodeRe.ReplaceAllString(stripNonCodeFilenames(codingURLRe.ReplaceAllString(codingProhibitionRe.ReplaceAllString(step, " "), " ")), " ")
 	return codingRe.MatchString(cleaned) || codingRe.MatchString("build "+cleaned)
 }
 

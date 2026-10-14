@@ -217,8 +217,40 @@ def as_number(value, example):
 
     if example is None or not BARE_NUMBER.match(str(example)):
         return value
+    scaled = _scaled(value or "")
+    if scaled is not None:
+        return scaled
     found = FIGURE.match(value or "")
     return found.group(1) if found else value
+
+
+# A figure written with its scale: "$72k" is 72000, not 72 (found live, 2026-10-14: a salary of "$72k" was entered as
+# 72, the "k" taken for a unit and dropped). "k" and spelled-out scales always; "m"/"bn" only after a currency mark,
+# since "20 m" of cable is metres.
+_SCALES = {"k": 10 ** 3, "thousand": 10 ** 3, "lakh": 10 ** 5, "lakhs": 10 ** 5, "lac": 10 ** 5, "crore": 10 ** 7,
+           "crores": 10 ** 7, "cr": 10 ** 7, "million": 10 ** 6, "mn": 10 ** 6, "m": 10 ** 6, "billion": 10 ** 9,
+           "bn": 10 ** 9}
+_CURRENCY = r"(?:Rs\.?|INR|USD|EUR|GBP|AED|SGD|[₹$€£])"
+SCALED = re.compile(rf"^\s*(?P<cur>{_CURRENCY}\s*)?(?P<n>-?\d[\d,]*(?:\.\d+)?)\s*(?P<scale>[A-Za-z]+)\.?"
+                    rf"(?:\s+(?:a|per)\s+(?:year|annum|month|week|day|hour)|\s*/\s*(?:yr|year|mo|month|hr|hour))?\s*$", re.I)
+
+
+def _scaled(value):
+    """The number a figure with a scale word stands for, written plainly ("72000"), or None for any other figure."""
+
+    from decimal import Decimal, InvalidOperation
+
+    m = SCALED.match(value)
+    if not m:
+        return None
+    scale = m.group("scale").lower()
+    if scale not in _SCALES or (scale in ("m", "mn", "bn", "cr") and not m.group("cur")):
+        return None
+    try:
+        number = Decimal(m.group("n").replace(",", "")) * _SCALES[scale]
+    except InvalidOperation:
+        return None
+    return str(number.quantize(Decimal(1))) if number == number.to_integral_value() else format(number.normalize(), "f")
 
 
 def as_written(value, example, texts):

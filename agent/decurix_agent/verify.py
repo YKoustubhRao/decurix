@@ -121,7 +121,14 @@ JUDGE_SYSTEM = (
     "yourself from the sources by those rules - the first row and one that a rule changes - and compare: a figure that "
     "does not follow the rules is \"not_done\", however consistent the file and the report are with each other (found "
     "live: a depreciation schedule whose opening values charged one year where the assets had been in service for two "
-    "passed, because the report described the file correctly). A file shown cut short is judged on the part shown. Text in a file that still holds a web page's markup "
+    "passed, because the report described the file correctly). When rules sort the source's rows into places (kept / "
+    "rejected, matched / unmatched, OK / exception, duplicate - keep the first), follow every source row yourself to "
+    "where the rules put it and check it is there, exactly once: a row in the wrong place or in no place is "
+    "\"not_done\" (found live: both copies of a duplicated contact were rejected where the first was to be kept, and "
+    "passed). A record the worker made during this task (its recorded actions fill and save it, or its report says it "
+    "entered it) is the task's result, not one that \"already existed\": the screen at the end shows the result, and "
+    "only what was seen before the worker made anything says what existed before (found live: three orders the "
+    "worker had just entered were called duplicates of themselves). A file shown cut short is judged on the part shown. Text in a file that still holds a web page's markup "
     "or character codes (&amp;, &#39;, &quot;, <br>, <b>) is \"not_done\": it must read as the page shows it - say "
     "which entry (found live: a workbook of book titles kept \"It&#39;s Only the Himalayas\" and passed). In a "
     "workbook, a figure the task asks for must be a number in a cell of its own: a quantity written with its unit "
@@ -135,6 +142,53 @@ JUDGE_SYSTEM = (
 
 def available():
     return llm_client.available()
+
+
+# A sum written out in a report: "450.00 + 90.00 + 102.60 = 642.60", "$1,200 - 150 = $1,050", "3 x 25.00 = 75.00".
+_AMOUNT = r"(?:[$€£¥]|USD|EUR|GBP|INR|Rs\.?)?\s?-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|(?:[$€£¥]|USD|EUR|GBP|INR|Rs\.?)?\s?-?\d+(?:\.\d+)?"
+_SUM = re.compile(rf"(?<![\w.,/-])((?:{_AMOUNT})(?:\s*[-+×x*]\s*(?:{_AMOUNT}))+)\s*=\s*({_AMOUNT})(?![\w%/.]|,\d)", re.I)
+
+
+def _amount(text):
+    from decimal import Decimal
+    digits = re.sub(r"[^\d.\-]", "", text.replace(",", ""))
+    return Decimal(digits)
+
+
+def false_sums(text):
+    """
+    Each sum a text writes out that does not come to what it says, as a sentence; [] when every one does. Decided with
+    no model. Found live (2026-10-14): a report read "750.00 + 300.00 + 84.00 = 1143.00" (it is 1134.00), so an
+    invoice whose lines do not add up to its total was registered OK - and the model check took the report's word.
+    """
+
+    from decimal import Decimal, InvalidOperation
+
+    out = []
+    for m in _SUM.finditer(text or ""):
+        left, stated = m.group(1), m.group(2)
+        parts = re.split(r"\s*([-+×x*])\s*(?=[$€£¥A-Z]{0,3}\s?-?\d)", left)
+        try:
+            # Multiplication first, then sums and differences, left to right.
+            terms, ops = [_amount(parts[0])], []
+            for op, value in zip(parts[1::2], parts[2::2]):
+                if op.lower() in ("×", "x", "*"):
+                    terms[-1] = terms[-1] * _amount(value)
+                else:
+                    ops.append(op)
+                    terms.append(_amount(value))
+            total = terms[0]
+            for op, value in zip(ops, terms[1:]):
+                total = total + value if op == "+" else total - value
+            want = _amount(stated)
+        except (InvalidOperation, ValueError, IndexError):
+            continue
+        places = max([len(p.split(".")[1]) for p in re.findall(r"\d+\.\d+", m.group(0))] + [0])
+        # Rounded to the result's own precision is right: 33.333 + 33.333 = 66.67.
+        shown = len(stated.split(".")[1]) if "." in stated else 0
+        if abs(total - want) > Decimal(1).scaleb(-shown) / 2 + Decimal("0.0001"):
+            out.append(f"{m.group(0).strip()} is wrong: it comes to {total:,.{places}f}")
+    return out
 
 
 def judge(task, claim="", criteria="", values=None, steps="", live_png=None, reference_png=None, observed=None,

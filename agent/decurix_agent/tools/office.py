@@ -27,6 +27,22 @@ from email import policy
 from email.parser import BytesParser
 from pathlib import Path
 
+# Libraries the desktop image keeps in a venv of its own (python-pptx: Ubuntu has no package for it). The image's
+# ENV PATH names the venv, but the agent and soul are started by the desktop session, whose PATH is its own: found
+# live (2026-10-14), every deck failed with "No module named 'pptx'" in a desktop that had it. The venv's packages
+# are added after the system's, so a package both have is still the system's.
+OFFICE_VENV = os.environ.get("DECURIX_OFFICE_VENV", "/opt/office-venv")
+
+
+def _use_office_venv(root=OFFICE_VENV):
+    import glob
+    for site in sorted(glob.glob(os.path.join(root, "lib", "python3*", "site-packages"))):
+        if site not in sys.path:
+            sys.path.append(site)
+
+
+_use_office_venv()
+
 # How much of one document is handed to the model as text.
 MAX_TEXT_CHARS = int(os.environ.get("DECURIX_DOC_TEXT_CHARS", "30000"))
 # A scanned document is shown as pictures, at most this many pages at once.
@@ -201,7 +217,8 @@ def _docx_text_from_xml(p):
 
 
 def _read_pptx(p):
-    """Read slide text in presentation order, including table cells.
+    """Read a deck in presentation order: each slide's text, its tables row by row, its pictures, its charts'
+    data and its speaker notes.
 
     This is content inspection; visual layout still requires opening or rendering
     the deck. Reading XML needs no optional presentation library.
@@ -214,6 +231,7 @@ def _read_pptx(p):
     rid = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
     try:
         with zipfile.ZipFile(p) as z:
+            names = set(z.namelist())
             presentation = ET.fromstring(z.read("ppt/presentation.xml"))
             rels = ET.fromstring(z.read("ppt/_rels/presentation.xml.rels"))
             targets = {r.get("Id"): r.get("Target") for r in rels
@@ -226,13 +244,113 @@ def _read_pptx(p):
                     raise ValueError("invalid slide relationship")
                 root = ET.fromstring(z.read(member))
                 parts.append(f"\n[Slide {n}]")
-                for paragraph in root.findall(".//a:p", ns):
-                    text = "".join(t.text or "" for t in paragraph.findall(".//a:t", ns))
-                    if text.strip():
-                        parts.append(text)
+                parts.extend(_slide_lines(root))
+                # What the slide's own text does not hold: its charts' data and its speaker notes (found
+                # 2026-10-14: a deck read back as slide text alone could not show a chart's figures, so an
+                # update of them could not be checked).
+                for kind, part in _slide_parts(z, names, member):
+                    if kind == "chart":
+                        parts.extend(_chart_lines(ET.fromstring(z.read(part))))
+                    elif kind == "notes":
+                        notes = _notes_text(ET.fromstring(z.read(part)))
+                        if notes:
+                            parts.append("Speaker notes: " + notes)
             return "\n".join(parts)
     except (OSError, zipfile.BadZipFile, KeyError, TypeError, ValueError, ET.ParseError) as exc:
         raise OfficeError(f"{p.name}: cannot read PowerPoint presentation: {exc}") from exc
+
+
+_A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+_P = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
+_C = "{http://schemas.openxmlformats.org/drawingml/2006/chart}"
+
+
+def _paragraph_text(node):
+    return "".join(t.text or "" for t in node.iter(_A + "t"))
+
+
+def _slide_lines(root):
+    """A slide's text in document order: paragraphs, a table as one line per row, a picture as [picture]."""
+
+    out = []
+
+    def walk(node):
+        if node.tag == _A + "tbl":
+            for row in node.iter(_A + "tr"):
+                cells = [" ".join(_paragraph_text(p) for p in tc.iter(_A + "p")).strip() for tc in row.findall(_A + "tc")]
+                out.append("| " + " | ".join(cells) + " |")
+            return
+        if node.tag == _A + "p":
+            text = _paragraph_text(node)
+            if text.strip():
+                out.append(text)
+            return
+        if node.tag == _P + "pic":
+            props = node.find(f"{_P}nvPicPr/{_P}cNvPr")
+            said = (props.get("descr") or "") if props is not None else ""
+            out.append(f"[picture{': ' + said if said else ''}]")
+            return
+        for child in node:
+            walk(child)
+
+    walk(root)
+    return out
+
+
+def _slide_parts(z, names, member):
+    """(kind, part) for a slide's charts and notes, from its relationships."""
+
+    import posixpath
+    from xml.etree import ElementTree as ET
+
+    rels = posixpath.join(posixpath.dirname(member), "_rels", posixpath.basename(member) + ".rels")
+    if rels not in names:
+        return []
+    out = []
+    for rel in ET.fromstring(z.read(rels)):
+        kind = (rel.get("Type") or "").rsplit("/", 1)[-1]
+        target = rel.get("Target") or ""
+        if rel.get("TargetMode") == "External" or kind not in ("chart", "notesSlide"):
+            continue
+        part = posixpath.normpath(posixpath.join(posixpath.dirname(member), target))
+        if part in names:
+            out.append(("chart" if kind == "chart" else "notes", part))
+    return out
+
+
+def _cached(node):
+    """The values a chart caches for a series' categories or values, in point order."""
+
+    if node is None:
+        return []
+    points = sorted(node.iter(_C + "pt"), key=lambda pt: int(pt.get("idx") or 0))
+    return [(pt.findtext(_C + "v") or "") for pt in points]
+
+
+def _chart_lines(root):
+    title = root.find(f".//{_C}chart/{_C}title")
+    head = "Chart" + (f" \"{_paragraph_text(title)}\"" if title is not None and _paragraph_text(title).strip() else "")
+    kinds = [child.tag.replace(_C, "") for plot in root.iter(_C + "plotArea") for child in plot if child.tag.endswith("Chart")]
+    out = [head + (f" ({', '.join(kinds)})" if kinds else "") + ":"]
+    for n, series in enumerate(root.iter(_C + "ser"), 1):
+        name = " ".join(_cached(series.find(_C + "tx"))) or f"series {n}"
+        categories = _cached(series.find(_C + "cat"))
+        values = _cached(series.find(_C + "val")) or _cached(series.find(_C + "yVal"))
+        if n == 1 and categories:
+            out.append("  categories: " + ", ".join(categories))
+        out.append(f"  {name}: " + ", ".join(values))
+    return out
+
+
+def _notes_text(root):
+    """The text of a notes page's body placeholder (not its slide picture or number)."""
+
+    lines = []
+    for shape in root.iter(_P + "sp"):
+        ph = shape.find(f"{_P}nvSpPr/{_P}nvPr/{_P}ph")
+        if ph is not None and ph.get("type") == "body":
+            lines += [_paragraph_text(p) for p in shape.iter(_A + "p") if _paragraph_text(p).strip()]
+    return " / ".join(lines)
 
 
 def _read_eml(p):
@@ -294,6 +412,15 @@ def read_workbook(path, sheet=None, cells=None, max_rows=DEFAULT_ROWS):
 
     formulas = openpyxl.load_workbook(str(p), data_only=False)
     values = openpyxl.load_workbook(str(p), data_only=True)
+    # A formula written by a tool (this one, openpyxl) has no saved value until a spreadsheet program opens the file:
+    # read back, every total showed "-> None". Found live (2026-10-14): a correct model was refused by the final check
+    # for its "blank cached Summary values" - nothing could show what the formulas came to. They are worked out by
+    # LibreOffice on a copy, and shown as calculated.
+    calculated, saved = False, values
+    if _formulas_without_values(formulas, values):
+        recalculated = _recalculated_values(p, openpyxl)
+        if recalculated is not None:
+            values, calculated = recalculated, True
 
     names = formulas.sheetnames
     if sheet:
@@ -303,8 +430,13 @@ def read_workbook(path, sheet=None, cells=None, max_rows=DEFAULT_ROWS):
 
     out = [f"{p.name}: sheets {formulas.sheetnames}"]
 
+    if calculated:
+        out.append("(The file holds no saved results for its formulas; the values after -> were calculated by "
+                   "LibreOffice from the formulas as they are now.)")
+
     for name in names:
-        ws_f, ws_v = formulas[name], values[name]
+        ws_f = formulas[name]
+        ws_v = values[name] if name in values.sheetnames else saved[name]
         out.append(f"\n=== Sheet {name!r}: used range {ws_f.dimensions} ({ws_f.max_row} rows x {ws_f.max_column} columns) ===")
         # How the sheet is laid out for a reader, not only what it holds: a task that says to freeze the header
         # or make it bold is checked against this. Found live (2026-10-13): a header "frozen" with row 1 selected
@@ -554,6 +686,7 @@ def create_workbook(path, sheets):
 
     p.parent.mkdir(parents=True, exist_ok=True)
     wb.save(str(p))
+    stored = _store_results(p)
     # Say what is in it, so a reader of this result sees an empty or short
     # sheet for what it is instead of taking "Created" for the whole job.
     parts = []
@@ -561,7 +694,8 @@ def create_workbook(path, sheets):
         filled = sum(1 for r in ws.iter_rows() for c in r if c.value not in (None, ""))
         parts.append(f"{ws.title}: {ws.max_row} rows x {ws.max_column} columns, {filled} cells filled"
                      + (f", {len(ws._charts)} chart(s)" if ws._charts else ""))
-    return f"Created {p} - " + "; ".join(parts) + ". Run office read on it to check the values."
+    return (f"Created {p} - " + "; ".join(parts) + "." + (" Formula results are calculated and saved in it." if stored else "")
+            + " Run office read on it to check the values.")
 
 
 def _cell_value(v):
@@ -693,6 +827,7 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None):
         for name in order:
             z.writestr(name, entries[name])
     os.replace(tmp, dst)
+    stored = _store_results(dst)
 
     msg = f"Updated {dst}: {len(changed)} cell(s)"
     if changed:
@@ -701,7 +836,7 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None):
         msg += f"; {swaps} range reference(s) rewritten"
         if not swaps:
             msg += " - none matched: read the workbook to see the exact ranges its charts use"
-    return msg + ". Formulas recalculate when the file is opened."
+    return msg + (". Formula results are recalculated and saved in it." if stored else ". Formulas recalculate when the file is opened.")
 
 
 def _other_sheet_quoting(ref):
@@ -930,6 +1065,130 @@ def create_pdf(path, blocks):
     return f"Created {p} ({pages} page(s), real text - office read shows what it says)."
 
 
+def _formulas_without_values(formulas, values):
+    """Whether any formula in a workbook has no saved result."""
+
+    for ws_f in formulas.worksheets:
+        ws_v = values[ws_f.title]
+        for row in ws_f.iter_rows():
+            for c in row:
+                if isinstance(c.value, str) and c.value.startswith("=") and ws_v[c.coordinate].value is None:
+                    return True
+    return False
+
+
+# LibreOffice keeps a workbook's saved results unless told to work them out again on load (Tools > Options >
+# Formula > Recalculation on file load); "always" for Excel and ODF files, set in the conversion's own profile.
+_RECALC_PROFILE = """<?xml version="1.0" encoding="UTF-8"?>
+<oor:items xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<item oor:path="/org.openoffice.Office.Calc/Formula/Load"><prop oor:name="OOXMLRecalcMode" oor:op="fuse"><value>0</value></prop></item>
+<item oor:path="/org.openoffice.Office.Calc/Formula/Load"><prop oor:name="ODFRecalcMode" oor:op="fuse"><value>0</value></prop></item>
+</oor:items>
+"""
+
+
+def _recalculated_values(p, openpyxl):
+    """The workbook's values as LibreOffice calculates them, from a converted copy; None when that cannot be done."""
+
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if not soffice:
+        return None
+    tmp = Path(tempfile.mkdtemp(prefix="office-recalc-"))
+    try:
+        user = tmp / "profile" / "user"
+        user.mkdir(parents=True)
+        (user / "registrymodifications.xcu").write_text(_RECALC_PROFILE, encoding="utf-8")
+        src = tmp / ("source" + p.suffix.lower())
+        shutil.copyfile(p, src)
+        out = tmp / "out"
+        out.mkdir()
+        subprocess.run([soffice, f"-env:UserInstallation=file://{tmp / 'profile'}", "--headless", "--convert-to",
+                        "xlsx:Calc MS Excel 2007 XML", "--outdir", str(out), str(src)],
+                       capture_output=True, text=True, timeout=180)
+        made = out / "source.xlsx"
+        if not made.exists():
+            return None
+        return openpyxl.load_workbook(str(made), data_only=True)
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError) as exc:
+        print(f"office: could not calculate {p.name}'s formulas: {exc}", file=sys.stderr)
+        return None
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+_CELL_XML = re.compile(r"<c\b([^>]*?)(?:/>|>(.*?)</c>)", re.S)
+
+
+def _result_xml(attrs, inner, value, openpyxl):
+    """One formula cell's XML with `value` as its saved result (none when it is unknown)."""
+
+    import datetime
+    from xml.sax.saxutils import escape
+
+    inner = re.sub(r"<v>.*?</v>|<v\s*/>", "", inner, flags=re.S)
+    attrs = re.sub(r'\s+t="[^"]*"', "", attrs)
+    if value is None:
+        return f"<c{attrs}>{inner}</c>"
+    if isinstance(value, bool):
+        attrs, text = attrs + ' t="b"', "1" if value else "0"
+    elif isinstance(value, (int, float)):
+        text = repr(value)
+    elif isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
+        from openpyxl.utils.datetime import to_excel
+        text = repr(to_excel(value))
+    else:
+        value = str(value)
+        attrs += ' t="e"' if re.fullmatch(r"#[A-Z0-9/!?]+", value) else ' t="str"'
+        text = escape(value)
+    return f"<c{attrs}>{inner}<v>{text}</v></c>"
+
+
+def _store_results(p):
+    """
+    Save every formula's result in the workbook, calculated by LibreOffice - in place, so charts, styles and
+    everything else stay as written. A formula a tool writes has no saved result, and one that depends on a cell
+    `update` changed keeps the old one: Excel and LibreOffice work them out on open, but a preview, a phone, a
+    script reading the file (and the final check) see blanks or stale totals. Found live (2026-10-14). Returns
+    whether it did; nothing changes when LibreOffice is not there or cannot calculate the file.
+    """
+
+    openpyxl = _openpyxl()
+    try:
+        formulas = openpyxl.load_workbook(str(p))
+    except Exception:
+        return False
+    if not any(isinstance(c.value, str) and c.value.startswith("=") for ws in formulas.worksheets
+               for row in ws.iter_rows() for c in row):
+        return False
+    values = _recalculated_values(p, openpyxl)
+    if values is None:
+        return False
+
+    with zipfile.ZipFile(p) as z:
+        entries = {i.filename: z.read(i.filename) for i in z.infolist()}
+        order = [i.filename for i in z.infolist()]
+    for sheet, name in _sheet_files(entries).items():
+        if sheet not in values.sheetnames or name not in entries:
+            continue
+        ws = values[sheet]
+
+        def fill(m):
+            attrs, inner = m.group(1), m.group(2)
+            ref = re.search(r'\br="([A-Z]{1,3}\d+)"', attrs)
+            if inner is None or "<f" not in inner or not ref:
+                return m.group(0)
+            return _result_xml(attrs, inner, ws[ref.group(1)].value, openpyxl)
+
+        entries[name] = _CELL_XML.sub(fill, entries[name].decode("utf-8")).encode("utf-8")
+
+    tmp = p.with_name(p.name + ".tmp")
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
+        for name in order:
+            z.writestr(name, entries[name])
+    os.replace(tmp, p)
+    return True
+
+
 def _office_to_pdf(src, out_dir):
     """A Word/Excel/LibreOffice document as a PDF, laid out as LibreOffice prints it."""
 
@@ -978,12 +1237,387 @@ def _ocr_file(path, limit=MAX_TEXT_CHARS):
 
 
 # ------------------------------------------------------------------
+# Presentations: creating, and updating in place
+# ------------------------------------------------------------------
+
+SLIDE_KEYS = {"title", "subtitle", "text", "bullets", "table", "header", "chart", "image", "notes"}
+SLIDE_VISUALS = ("table", "chart", "image")
+DECK_CHART_KEYS = {"type", "title", "categories", "series"}
+DECK_CHART_TYPES = {"column": "COLUMN_CLUSTERED", "bar": "BAR_CLUSTERED", "line": "LINE_MARKERS", "pie": "PIE"}
+DECK_IMAGE_TYPES = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff"}
+DECK_EDIT_KEYS = {"slide", "find", "replace", "title", "table", "row", "column", "value", "chart", "categories",
+                  "series", "notes"}
+SLIDE_SIZE_INCHES = (13.333, 7.5)  # 16:9
+
+
+def _number(value, where):
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise OfficeError(f"{where}: {value!r} is not a number")
+    try:
+        return float(str(value).replace(",", "")) if isinstance(value, str) else value
+    except ValueError as exc:
+        raise OfficeError(f"{where}: {value!r} is not a number") from exc
+
+
+def _deck_chart_data(spec, where):
+    """CategoryChartData from {"categories": [...], "series": [{"name": ..., "values": [...]}]}, checked first."""
+
+    from pptx.chart.data import CategoryChartData
+
+    categories, series = spec.get("categories"), spec.get("series")
+    if not isinstance(categories, list) or not categories:
+        raise OfficeError(f"{where}: give \"categories\": the labels along the axis, e.g. [\"Jan\", \"Feb\"]")
+    if not isinstance(series, list) or not series:
+        raise OfficeError(f"{where}: give \"series\": [{{\"name\": \"Revenue\", \"values\": [10, 12]}}]")
+    data = CategoryChartData()
+    data.categories = [str(c) for c in categories]
+    for n, s in enumerate(series, 1):
+        if not isinstance(s, dict) or set(s) - {"name", "values"} or not isinstance(s.get("values"), list):
+            raise OfficeError(f"{where}: series {n} is {{\"name\": \"...\", \"values\": [...]}}")
+        if len(s["values"]) != len(categories):
+            raise OfficeError(f"{where}: series {n} has {len(s['values'])} values for {len(categories)} categories")
+        data.add_series(str(s.get("name") or f"Series {n}"),
+                        [None if v is None else _number(v, f"{where} series {n}") for v in s["values"]])
+    return data
+
+
+def _check_slide(spec, n):
+    """Refuse a slide this does not know how to make, before anything is written."""
+
+    if not isinstance(spec, dict):
+        raise OfficeError(f"slide {n}: a slide is an object like {{\"title\": \"...\", \"bullets\": [\"...\"]}}")
+    unknown = sorted(set(spec) - SLIDE_KEYS)
+    if unknown:
+        raise OfficeError(f"slide {n} does not take {', '.join(map(repr, unknown))}; a slide takes "
+                          f"{', '.join(sorted(SLIDE_KEYS))}")
+    visuals = [k for k in SLIDE_VISUALS if k in spec]
+    if len(visuals) > 1:
+        raise OfficeError(f"slide {n}: one of table, chart or image per slide (it has {', '.join(visuals)}) - "
+                          "put the other on a slide of its own")
+    if "subtitle" in spec and (visuals or "bullets" in spec or "text" in spec):
+        raise OfficeError(f"slide {n}: a subtitle goes on a title slide, which has no text, bullets, table, chart or image")
+    if not any(k in spec for k in ("title", "subtitle", "text", "bullets") + SLIDE_VISUALS):
+        raise OfficeError(f"slide {n} is empty: give it a title and its content")
+    if "bullets" in spec:
+        if not isinstance(spec["bullets"], list) or not spec["bullets"]:
+            raise OfficeError(f"slide {n}: \"bullets\" is a list of lines (or {{\"text\": ..., \"level\": 1}})")
+        for item in spec["bullets"]:
+            if isinstance(item, dict) and (set(item) - {"text", "level"} or "text" not in item):
+                raise OfficeError(f"slide {n}: a bullet is a line or {{\"text\": \"...\", \"level\": 0-4}}")
+    if "table" in spec:
+        rows = spec["table"]
+        if not isinstance(rows, list) or not rows or not all(isinstance(r, list) and r for r in rows):
+            raise OfficeError(f"slide {n}: a table is a list of rows, each a list of cells")
+    if "chart" in spec:
+        chart = spec["chart"]
+        if not isinstance(chart, dict) or set(chart) - DECK_CHART_KEYS:
+            raise OfficeError(f"slide {n}: a chart is {{\"type\": \"column|bar|line|pie\", \"title\": \"...\", "
+                              "\"categories\": [...], \"series\": [{\"name\": \"...\", \"values\": [...]}]}")
+        if str(chart.get("type", "column")).lower() not in DECK_CHART_TYPES:
+            raise OfficeError(f"slide {n}: a chart's type is one of {', '.join(DECK_CHART_TYPES)}")
+        _deck_chart_data(chart, f"slide {n} chart")
+    if "image" in spec:
+        image = Path(os.path.expanduser(str(spec["image"])))
+        if not image.is_file():
+            raise OfficeError(f"slide {n}: the picture {spec['image']} does not exist")
+        if image.suffix.lower() not in DECK_IMAGE_TYPES:
+            raise OfficeError(f"slide {n}: {image.name} is not a picture a deck can hold ({', '.join(sorted(DECK_IMAGE_TYPES))})")
+
+
+def _widen_layouts(prs, factor):
+    """Stretch the template's placeholders across a wider slide (its layouts are drawn for 4:3)."""
+
+    for owner in [prs.slide_master] + list(prs.slide_layouts):
+        for shape in owner.shapes:
+            if shape.left is not None and shape.width is not None:
+                shape.left, shape.width = int(shape.left * factor), int(shape.width * factor)
+
+
+def _fill_lines(frame, spec, size=None):
+    """A slide's "text" (paragraphs) then its "bullets" into one text frame."""
+
+    from pptx.util import Pt
+
+    lines = [(line, 0, False) for line in str(spec.get("text") or "").split("\n") if line.strip()]
+    for item in spec.get("bullets") or []:
+        text, level = (item.get("text"), item.get("level", 0)) if isinstance(item, dict) else (item, 0)
+        lines.append((str(text), max(0, min(4, int(level or 0))), True))
+    frame.word_wrap = True
+    first = True
+    for text, level, bullet in lines:
+        para = frame.paragraphs[0] if first else frame.add_paragraph()
+        first = False
+        # A text box has no bullet marks of its own; a content placeholder draws them itself.
+        para.text = ("\u2022 " + text) if bullet and size else text
+        para.level = level
+        if size:
+            para.font.size = Pt(size - 2 * level)
+
+
+def create_presentation(path, slides):
+    """
+    A new PowerPoint deck (.pptx), 16:9, made with python-pptx. `slides` is a
+    list, in order, of objects with any of: "title", "subtitle" (a title slide),
+    "text" (paragraphs), "bullets" (lines, or {"text", "level"}), one of
+    "table" ([[header...], [cell...]], "header": true), "chart" ({"type":
+    column|bar|line|pie, "title", "categories": [...], "series": [{"name",
+    "values"}]}) or "image" (a picture file), and "notes" (speaker notes).
+    Refuses to overwrite a file, a key it does not read, and a chart whose
+    series do not match its categories - all before anything is written - and
+    reads the deck back before saying it is made. Found live (2026-10-14):
+    asked for a review deck, a worker had no tool that made one.
+    """
+
+    from pptx import Presentation
+    from pptx.chart.data import CategoryChartData  # noqa: F401 - fail here, not half way, without python-pptx
+    from pptx.enum.chart import XL_CHART_TYPE
+    from pptx.util import Inches
+
+    p = _path(path)
+    if p.suffix.lower() != ".pptx":
+        raise OfficeError(f"{p.name}: create_presentation makes .pptx decks")
+    if p.exists():
+        raise OfficeError(f"{p} already exists - choose another name, or use office update to change it")
+    if not isinstance(slides, list) or not slides:
+        raise OfficeError('give "slides": a list like [{"title": "Q3 review", "subtitle": "Finance"}, '
+                          '{"title": "Highlights", "bullets": ["..."]}]')
+    for n, spec in enumerate(slides, 1):
+        _check_slide(spec, n)
+
+    prs = Presentation()
+    width, height = (Inches(v) for v in SLIDE_SIZE_INCHES)
+    _widen_layouts(prs, width / prs.slide_width)
+    prs.slide_width, prs.slide_height = width, height
+    margin, top = Inches(0.5), Inches(1.5)
+    counts = {"table": 0, "chart": 0, "image": 0, "notes": 0}
+
+    for spec in slides:
+        visual = next((k for k in SLIDE_VISUALS if k in spec), None)
+        body = "text" in spec or "bullets" in spec
+        if "subtitle" in spec or not (visual or body):
+            slide = prs.slides.add_slide(prs.slide_layouts[0])          # Title Slide
+            if "subtitle" in spec:
+                slide.placeholders[1].text = str(spec["subtitle"])
+            else:
+                sub = slide.placeholders[1]
+                sub._element.getparent().remove(sub._element)
+        elif not visual:
+            slide = prs.slides.add_slide(prs.slide_layouts[1])          # Title and Content
+            _fill_lines(slide.placeholders[1].text_frame, spec)
+        else:
+            slide = prs.slides.add_slide(prs.slide_layouts[5])          # Title Only
+        if slide.shapes.title is not None:
+            if spec.get("title"):
+                slide.shapes.title.text = str(spec["title"])
+            else:
+                slide.shapes.title._element.getparent().remove(slide.shapes.title._element)
+
+        if visual:
+            left, box_w, box_h = margin, width - 2 * margin, height - top - margin
+            if body:  # words on the left, the table, chart or picture on the right
+                words = slide.shapes.add_textbox(margin, top, int(box_w * 0.38), box_h)
+                _fill_lines(words.text_frame, spec, size=18)
+                left, box_w = margin + int(box_w * 0.42), int(box_w * 0.58)
+            if visual == "table":
+                rows = spec["table"]
+                cols = max(len(r) for r in rows)
+                table = slide.shapes.add_table(len(rows), cols, left, top, box_w,
+                                               min(box_h, Inches(0.4) * len(rows))).table
+                table.first_row = bool(spec.get("header", True))
+                for i, row in enumerate(rows):
+                    for j in range(cols):
+                        value = row[j] if j < len(row) else None
+                        table.cell(i, j).text = "" if value is None else str(value)
+            elif visual == "chart":
+                chart_spec = spec["chart"]
+                kind = getattr(XL_CHART_TYPE, DECK_CHART_TYPES[str(chart_spec.get("type", "column")).lower()])
+                chart = slide.shapes.add_chart(kind, left, top, box_w, box_h,
+                                               _deck_chart_data(chart_spec, "chart")).chart
+                chart.has_legend = len(chart_spec["series"]) > 1 or kind == XL_CHART_TYPE.PIE
+                if chart_spec.get("title"):
+                    chart.has_title = True
+                    chart.chart_title.text_frame.text = str(chart_spec["title"])
+            else:
+                picture = slide.shapes.add_picture(os.path.expanduser(str(spec["image"])), left, top)
+                scale = min(box_w / picture.width, box_h / picture.height)
+                picture.width, picture.height = int(picture.width * scale), int(picture.height * scale)
+                picture.left = int(left + (box_w - picture.width) / 2)
+                picture.top = int(top + (box_h - picture.height) / 2)
+            counts[visual] += 1
+        if spec.get("notes"):
+            slide.notes_slide.notes_text_frame.text = str(spec["notes"])
+            counts["notes"] += 1
+
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(p.name + ".tmp")
+    prs.save(str(tmp))
+    os.replace(tmp, p)
+    # What is written must read back, every slide with its title.
+    text = _read_pptx(p)
+    missing = [str(s["title"]) for s in slides if s.get("title") and str(s["title"]) not in text]
+    if text.count("[Slide ") != len(slides) or missing:
+        raise OfficeError(f"{p.name} was written but does not read back as made (missing: {', '.join(missing) or 'slides'})")
+    made = ", ".join(f"{v} {k if k == 'notes' else k + '(s)'}" for k, v in counts.items() if v)
+    return f"Created {p} - {len(slides)} slides" + (f", {made}" if made else "") + ". Run office read on it to check what it says."
+
+
+def _set_text(frame, value):
+    """Put `value` in a text frame or table cell in the formatting of its first run; other paragraphs go."""
+
+    paragraphs = frame.text_frame.paragraphs if hasattr(frame, "text_frame") else frame.paragraphs
+    first = paragraphs[0]
+    for extra in paragraphs[1:]:
+        extra._p.getparent().remove(extra._p)
+    runs = first.runs
+    if not runs:
+        first.add_run().text = str(value)
+        return
+    runs[0].text = str(value)
+    for run in runs[1:]:
+        run._r.getparent().remove(run._r)
+
+
+def _frames(shapes):
+    """Every text frame on a slide, with those in groups and table cells."""
+
+    from pptx.shapes.group import GroupShape
+
+    for shape in shapes:
+        if isinstance(shape, GroupShape):
+            yield from _frames(shape.shapes)
+            continue
+        if getattr(shape, "has_text_frame", False) and shape.has_text_frame:
+            yield shape.text_frame
+        if getattr(shape, "has_table", False) and shape.has_table:
+            for row in shape.table.rows:
+                for cell in row.cells:
+                    yield cell.text_frame
+
+
+def _replace_in_frame(frame, find, replace):
+    """Replace `find` in a frame's paragraphs, run by run where it lies inside one run (formatting kept)."""
+
+    count = 0
+    for para in frame.paragraphs:
+        whole = "".join(r.text for r in para.runs)
+        hits = whole.count(find)
+        if not hits:
+            continue
+        inside = sum(r.text.count(find) for r in para.runs)
+        if inside == hits:
+            for run in para.runs:
+                if find in run.text:
+                    run.text = run.text.replace(find, replace)
+        else:  # it runs across runs: the paragraph takes its first run's formatting
+            para.runs[0].text = whole.replace(find, replace)
+            for run in para.runs[1:]:
+                run._r.getparent().remove(run._r)
+        count += hits
+    return count
+
+
+def update_presentation(path, edits, output_path=None):
+    """
+    Change an existing deck in place, keeping its layout, theme, pictures and
+    everything not named. Each edit names a "slide" (from 1) and one change:
+    {"find": "Q2", "replace": "Q3"} (every slide when no slide is named),
+    {"title": "..."}, {"table": 1, "row": 2, "column": 3, "value": "..."}
+    (table and its row/column from 1), {"chart": 1, "categories": [...],
+    "series": [{"name", "values"}]} (the chart's data; its look stays), or
+    {"notes": "..."}. Every edit is checked before anything is written: a text
+    that is not there, a slide, table or chart that does not exist, or a key
+    this does not read changes nothing. Writes `output_path` (default: the
+    file itself, after keeping the original as <name>.orig.pptx the first time).
+    """
+
+    from pptx import Presentation
+
+    src = _path(path)
+    if src.suffix.lower() != ".pptx" or not src.exists():
+        raise OfficeError(f"{src} is not an existing .pptx deck")
+    dst = _path(output_path) if output_path else src
+    if not isinstance(edits, list) or not edits:
+        raise OfficeError('give "edits": [{"slide": 2, "find": "old", "replace": "new"}, {"slide": 3, "table": 1, '
+                          '"row": 2, "column": 2, "value": "1,250"}, {"slide": 4, "chart": 1, "categories": [...], '
+                          '"series": [...]}, {"slide": 1, "title": "..."}, {"slide": 5, "notes": "..."}]')
+    try:
+        prs = Presentation(str(src))
+    except Exception as exc:
+        raise OfficeError(f"{src.name}: cannot open the deck ({exc})") from exc
+    slides = list(prs.slides)
+    done = []
+
+    for n, edit in enumerate(edits, 1):
+        if not isinstance(edit, dict) or set(edit) - DECK_EDIT_KEYS:
+            raise OfficeError(f"edit {n}: {edit!r} - an edit takes {', '.join(sorted(DECK_EDIT_KEYS))}"[:400])
+        actions = [k for k in ("find", "title", "value", "categories", "notes") if k in edit]
+        if len(actions) != 1:
+            raise OfficeError(f"edit {n}: give exactly one change - find/replace, title, a table cell's value, a chart's "
+                              "categories and series, or notes")
+        action = actions[0]
+        number = edit.get("slide")
+        if number is None and action != "find":
+            raise OfficeError(f"edit {n}: say which \"slide\" (from 1)")
+        if number is not None and (isinstance(number, bool) or not isinstance(number, int) or not 1 <= number <= len(slides)):
+            raise OfficeError(f"edit {n}: there is no slide {number!r}; the deck has {len(slides)}")
+        slide = slides[number - 1] if number else None
+
+        if action == "find":
+            if "replace" not in edit or not str(edit["find"]):
+                raise OfficeError(f"edit {n}: find needs a text and \"replace\" its new text")
+            hits = sum(_replace_in_frame(frame, str(edit["find"]), str(edit["replace"]))
+                       for s in ([slide] if slide else slides) for frame in _frames(s.shapes))
+            if not hits:
+                where = f"slide {number}" if slide else "the deck"
+                raise OfficeError(f"edit {n}: {edit['find']!r} is not in {where}'s text - read the deck for its exact words")
+            done.append(f"{'slide ' + str(number) if slide else 'deck'}: {edit['find']!r} -> {edit['replace']!r} x{hits}")
+        elif action == "title":
+            if slide.shapes.title is None:
+                raise OfficeError(f"edit {n}: slide {number} has no title placeholder - use find/replace on its text")
+            _set_text(slide.shapes.title, edit["title"])
+            done.append(f"slide {number} title")
+        elif action == "value":
+            tables = [s.table for s in slide.shapes if getattr(s, "has_table", False) and s.has_table]
+            which, row, col = edit.get("table", 1), edit.get("row"), edit.get("column")
+            if not isinstance(which, int) or not 1 <= which <= len(tables):
+                raise OfficeError(f"edit {n}: slide {number} has {len(tables)} table(s), not table {which!r}")
+            table = tables[which - 1]
+            if not isinstance(row, int) or not isinstance(col, int) or not (1 <= row <= len(table.rows)
+                                                                          and 1 <= col <= len(table.columns)):
+                raise OfficeError(f"edit {n}: give \"row\" and \"column\" from 1 within the table's "
+                                  f"{len(table.rows)} x {len(table.columns)}")
+            _set_text(table.cell(row - 1, col - 1).text_frame, "" if edit["value"] is None else edit["value"])
+            done.append(f"slide {number} table {which} row {row} column {col}")
+        elif action == "categories":
+            charts = [s.chart for s in slide.shapes if getattr(s, "has_chart", False) and s.has_chart]
+            which = edit.get("chart", 1)
+            if not isinstance(which, int) or not 1 <= which <= len(charts):
+                raise OfficeError(f"edit {n}: slide {number} has {len(charts)} chart(s), not chart {which!r}")
+            charts[which - 1].replace_data(_deck_chart_data(edit, f"edit {n}"))
+            done.append(f"slide {number} chart {which} data")
+        else:
+            slide.notes_slide.notes_text_frame.text = str(edit["notes"])
+            done.append(f"slide {number} notes")
+
+    if dst == src:
+        backup = src.with_name(src.stem + ".orig" + src.suffix)
+        if not backup.exists():
+            shutil.copy2(src, backup)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(dst.name + ".tmp")
+    prs.save(str(tmp))
+    os.replace(tmp, dst)
+    _read_pptx(dst)  # what is written must read back
+    return f"Updated {dst}: {len(done)} change(s) ({'; '.join(done)}). Run office read on it to check what it says."
+
+
+# ------------------------------------------------------------------
 # Command line, for the other harnesses' shell loops: `office read x.pdf`
 # ------------------------------------------------------------------
 
 USAGE = """office - documents, spreadsheets and email drafts, from the shell
 
-  office read FILE [PAGES]              read a PDF, scan, picture, Word, Excel or .eml file
+  office read FILE [PAGES]              read a PDF, scan, picture, Word, Excel, PowerPoint or .eml file
   office update BOOK.xlsx SPEC          change cells of an existing workbook, keeping its charts,
                                         formatting and everything else. SPEC (JSON, - for stdin):
                                         {"edits": [{"sheet": "Data", "cell": "B14", "value": 1250.5}],
@@ -1002,6 +1636,21 @@ USAGE = """office - documents, spreadsheets and email drafts, from the shell
                                         {"paragraph": "text"}, {"bullets": ["a", "b"]},
                                         {"table": [["Header", "..."], ["cell", "..."]]}, {"page_break": true}]}
   office create DOC.pdf SPEC            a new PDF document (an invoice, a quote, a letter): the same SPEC as .docx
+  office create DECK.pptx SPEC          a new 16:9 deck. SPEC: {"slides": [{"title": "Q3 review", "subtitle": "Finance"},
+                                        {"title": "Highlights", "bullets": ["a", {"text": "detail", "level": 1}],
+                                         "notes": "speaker notes"},
+                                        {"title": "Figures", "table": [["Region", "Revenue"], ["North", 1200]]},
+                                        {"title": "Trend", "chart": {"type": "column|bar|line|pie", "title": "Revenue",
+                                         "categories": ["Jul", "Aug"], "series": [{"name": "2026", "values": [10, 12]}]}},
+                                        {"title": "Site", "image": "photo.png", "text": "words beside it"}]}
+                                        - one of table, chart or image per slide
+  office update DECK.pptx SPEC          change an existing deck, keeping its layout and everything else. SPEC:
+                                        {"edits": [{"slide": 2, "find": "Q2", "replace": "Q3"}, {"slide": 1, "title": "..."},
+                                         {"slide": 3, "table": 1, "row": 2, "column": 2, "value": "1,250"},
+                                         {"slide": 4, "chart": 1, "categories": [...], "series": [...]},
+                                         {"slide": 5, "notes": "..."}], "output_path": "optional.pptx"}
+                                        find/replace with no slide changes every slide; rows, columns, tables
+                                        and charts count from 1
   office combine OUT.pdf IN...          one PDF from PDFs, pictures and office documents, in order
   office email --to ADDR [--cc ADDR] --subject S [--attach FILE]... [--replaces DRAFT_ID] [--body TEXT | body on stdin]
                                         put an email in the Outbox for a person to review and send.
@@ -1031,6 +1680,14 @@ def _spec(arg):
     if not isinstance(spec, dict):
         raise OfficeError("the spec must be a JSON object")
     return spec
+
+
+def _only(spec, keys):
+    """Refuse a spec key nothing reads: it would be dropped, and the result reported made without it."""
+
+    unknown = sorted(set(spec) - keys)
+    if unknown:
+        raise OfficeError(f"the spec does not take {', '.join(map(repr, unknown))}; it takes {', '.join(sorted(keys))}")
 
 
 def _email(argv):
@@ -1088,14 +1745,21 @@ def main(argv=None):
                     print(f"[page image: {img}]")
         elif cmd == "update":
             if len(argv) < 2:
-                raise OfficeError("usage: office update BOOK.xlsx SPEC (JSON, or - to read it from stdin)")
+                raise OfficeError("usage: office update BOOK.xlsx|DECK.pptx SPEC (JSON, or - to read it from stdin)")
             spec = _spec(argv[1])
-            print(update_workbook(argv[0], spec.get("edits"), spec.get("replace_refs"), spec.get("output_path")))
+            if argv[0].lower().endswith(".pptx"):
+                _only(spec, {"edits", "output_path"})
+                print(update_presentation(argv[0], spec.get("edits"), spec.get("output_path")))
+            else:
+                print(update_workbook(argv[0], spec.get("edits"), spec.get("replace_refs"), spec.get("output_path")))
         elif cmd == "create":
             if len(argv) < 2:
-                raise OfficeError("usage: office create BOOK.xlsx|DOC.docx|DOC.pdf SPEC (JSON, or - to read it from stdin)")
+                raise OfficeError("usage: office create BOOK.xlsx|DOC.docx|DOC.pdf|DECK.pptx SPEC (JSON, or - to read it from stdin)")
             spec = _spec(argv[1])
-            if argv[0].lower().endswith(".docx"):
+            if argv[0].lower().endswith(".pptx"):
+                _only(spec, {"slides"})
+                print(create_presentation(argv[0], spec.get("slides")))
+            elif argv[0].lower().endswith(".docx"):
                 print(create_document(argv[0], spec.get("blocks") or []))
             elif argv[0].lower().endswith(".pdf"):
                 print(create_pdf(argv[0], spec.get("blocks") or []))

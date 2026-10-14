@@ -626,3 +626,31 @@ func TestAtomizeLogReflectsWhichClassifierMatchedForCompoundRequests(t *testing.
 		t.Errorf("log never named which classifier actually matched. logs:\n%s", joined)
 	}
 }
+
+// Found live (2026-10-14): back-office requests whose words include "code"
+// as a noun and a language name that is also an everyday word ("dash", "go")
+// were sent to the coding harness, which built a Python package with tests
+// for a price list and delivered nothing that was asked for.
+func TestClassifyBusinessWordsAreNotCode(t *testing.T) {
+	for _, step := range []string{
+		"Create the new price list. Rules: the supplier's code is ours without the dash.",
+		"Build the monthly model. Posted lines whose Dept Code is not in Depts do not go into the model.",
+		"make the product codes match the supplier list and write the result",
+		"write a summary of the quarter and let it go to the board",
+		"create the summary sheet, then react to the overdue items and express the totals in euros",
+	} {
+		if got := Classify(step); got == "coding" {
+			t.Errorf("Classify(%q) = coding, want anything but coding", step)
+		}
+	}
+	for _, step := range []string{
+		"write a Go program that prints the time",
+		"build it in go with a small http server",
+		"create a Rust CLI that counts lines",
+		"code a web scraper using pandas",
+	} {
+		if got := Classify(step); got != "coding" {
+			t.Errorf("Classify(%q) = %q, want coding", step, got)
+		}
+	}
+}

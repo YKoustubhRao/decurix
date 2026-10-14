@@ -117,6 +117,19 @@ class _Frames:
         return self._seen[name]
 
 
+_GROUP_SEGMENT = re.compile(r'(?:group|radiogroup) "([^"]+)"$')
+
+
+def radio_group(element):
+    """The name of the group a radio button is in ("Employment type"), from its path; "" for anything else."""
+
+    if (element or {}).get("role") != "radio" or not element.get("name"):
+        return ""
+    parent = (element.get("path") or "").rsplit(" > ", 1)[0] if " > " in (element.get("path") or "") else ""
+    m = _GROUP_SEGMENT.search(parent)
+    return m.group(1) if m else ""
+
+
 def compile_program(meta, events, frames=None):
     """
     A recording as a program: {"session", "title", "kind", "params", "steps"}.
@@ -148,6 +161,13 @@ def compile_program(meta, events, frames=None):
             continue
 
         element = event.get("element") or {}
+        # A click on one radio button of a named group is a choice in that group, like an option of a drop-down:
+        # "Employment type: Full-time" done again for a contractor chooses Contractor. Found live (2026-10-14): kept as
+        # a click on "Full-time", every later run entered Full-time and the worker had to ask.
+        group = radio_group(element)
+        if kind == "click" and group:
+            event = dict(event, kind="select", option=element["name"], group=group)
+            kind = "select"
         step = {"n": len(steps) + 1, "event": event.get("i"), "kind": kind, "actor": event.get("actor") or "agent"}
 
         # A control a recording knew only by its label (one imported from a
@@ -157,7 +177,7 @@ def compile_program(meta, events, frames=None):
             step["target"] = {key: element[key] for key in ("role", "name", "path", "window_title", "source", "nth")
                               if element.get(key) is not None}
 
-        for key in ("point", "end", "keys", "option", "direction", "amount", "append", "files"):
+        for key in ("point", "end", "keys", "option", "direction", "amount", "append", "files", "group"):
             if event.get(key) not in (None, [], ""):
                 step[key] = event[key]
 
@@ -208,11 +228,13 @@ def compile_program(meta, events, frames=None):
         if kind == "select" and event.get("option") and element.get("name"):
             # What was chosen in a drop-down is a value of the task as much as
             # what was typed into a field: "an order for Acme in India" done
-            # again for Japan chooses Japan. Named after the drop-down.
-            step["param"] = _param_name(element["name"], used)
+            # again for Japan chooses Japan. Named after the drop-down (a radio
+            # button's choice, after its group).
+            label = event.get("group") or element["name"]
+            step["param"] = _param_name(label, used)
             params.append({
                 "name": step["param"],
-                "label": element["name"],
+                "label": label,
                 "default": event["option"],
                 "secret": False,
                 "reason": None,
@@ -471,6 +493,8 @@ def _summary(step):
         return f"scroll {step.get('direction', 'down')}" + (f" on {what}" if what else "")
     if kind == "select":
         chosen = f"{{{step['param']}}}" if step.get("param") else el._quote(step.get("option") or "")
+        if step.get("group"):
+            what = f"the radio buttons {el._quote(step['group'])}"
         return f"select {chosen} in {what}"
     if kind == "drag":
         end = step.get("end") or ["?", "?"]

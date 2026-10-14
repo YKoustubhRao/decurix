@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -86,7 +87,10 @@ func (a *AnthropicProvider) Chat(ctx context.Context, model string, messages []M
 		msg := anthropicMessage{Role: m.Role, Content: m.Content}
 		if len(m.Images) > 0 {
 			blocks := []map[string]any{}
-			for _, img := range base64All(m.Images) {
+			for j, img := range base64All(m.Images) {
+				if label := m.ImageLabel(j); label != "" {
+					blocks = append(blocks, map[string]any{"type": "text", "text": "Picture " + strconv.Itoa(j+1) + ": " + label})
+				}
 				blocks = append(blocks, map[string]any{"type": "image", "source": map[string]string{"type": "base64", "media_type": "image/png", "data": img}})
 			}
 			msg.Content = append(blocks, map[string]any{"type": "text", "text": m.Content})

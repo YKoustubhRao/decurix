@@ -1449,6 +1449,9 @@ def _chosen_for(run):
     """The names of this run's values that are picked from a list: the skill's, and those of the rows added for this run."""
 
     chosen = set(_chosen_from_list(run["skill"]))
+    # A value set in a drop-down is one of its entries too, by the entry's own name. Found live (2026-10-14): a form
+    # saying "IT department" was entered as the drop-down's "IT", and the check refused the correct record.
+    chosen |= {s["param"].split("__")[0] for s in run["skill"].get("steps") or [] if s.get("kind") == "select" and s.get("param")}
     for name, base in ((run.get("rows") or {}).get("base") or {}).items():
         if base in chosen:
             chosen.add(name)
@@ -1720,13 +1723,21 @@ def _procedure(run, from_step=None, note="", ran=False):
     look = (f"- `gui skill {name} --look N` shows the screen as it was when the person did step N, with the spot they "
             "pressed ringed in red. Use it for any step recorded as a point on the screen, and whenever you are unsure "
             "what a step meant.")
-    if not one_off and not _replay_fits(run):
+    if run.get("attempt_note") and not run.get("attempt_blank"):
+        # Found live (2026-10-14): sent back over one value of a record it had saved, the engine ran the replay from
+        # the start - which ends by saving - and a second employee record was made. A second attempt corrects; it
+        # never replays the task (gui do refuses it too, for a skill already replayed to its end in this task).
+        how += [look, f"- Do NOT run `gui do {name}` again for this request: the first attempt already did the task, "
+                      "and the replay starts a new record and saves it. Open the record the first attempt made and "
+                      "correct it by hand with gui observe / click / type / select / key."]
+    elif not one_off and not _replay_fits(run):
         # Not offered where it is sure to be refused. Found live: offered it, an engine ran `gui do`, was refused
         # (this run picks another entry from a list than the demonstration did), and reported without doing a step.
         how += [look, f"- Do every step yourself with gui observe / click / type / select / key: this run chooses "
                       "other entries from the application's lists than the demonstration did, so the recording cannot "
                       f"be replayed for it (`gui do {name}` would be refused)."]
-    how += [] if one_off or not _replay_fits(run) else [
+    corrects = bool(run.get("attempt_note") and not run.get("attempt_blank"))
+    how += [] if one_off or corrects or not _replay_fits(run) else [
         look,
         "- Do it in this order. It is the order the person works in, and each part has its command:\n"
         "  1. Read this request's document(s) (office read), if you have not.\n"
@@ -2262,6 +2273,13 @@ def _gate(reply, kind, engine):
         verdict = {"verdict": verify.NOT_DONE, "confidence": 1.0, "seen": produced.misplaced(state.current_task or ""),
                    "why": "The result has to be saved where the request said - use Save As (or a new path) to put it "
                           "in the work folder, and leave the attached original as it was."}
+    elif verify.false_sums("\n".join((reply or "", produced.drafts_text()))):
+        # No model is asked: a sum the report (or an email it drafted) writes out either comes to what it says or not.
+        wrong = verify.false_sums("\n".join((reply or "", produced.drafts_text())))
+        verdict = {"verdict": verify.NOT_DONE, "confidence": 1.0, "seen": "; ".join(wrong)[:600],
+                   "why": "A sum you wrote is wrong. Work every total out with a command over the source figures, "
+                          "correct whatever was decided from it (a status, an exception, a total in a file or an "
+                          "email) where it is, and report the corrected figures."}
     elif run is not None and _never_entered(run) and not _says_it_could_not(run, reply):
         # No model is asked: a value nothing typed is not on the screen to be judged.
         missing = _never_entered(run)
@@ -2276,9 +2294,12 @@ def _gate(reply, kind, engine):
             screen_text=evidence.live_text() if on_screen else "", screen=on_screen,
             produced="\n".join(x for x in (produced.text(made), produced.drafts_text()) if x))
 
-    if not on_screen and verdict["verdict"] in (verify.UNSURE, verify.CANNOT):
+    if not on_screen and verdict["verdict"] == verify.UNSURE:
         # File work the check could not settle goes out as the worker reported it, marked not checked: only a
-        # report its own files contradict is worth a second attempt or a person's time.
+        # report its own files contradict is worth a second attempt or a person's time. A report that says it could
+        # NOT be done is not one of those: found live (2026-10-14), "the workbook has no November targets ... the
+        # deck cannot be completed" went out as the task's result and was recorded done, with a deck of zero targets
+        # and its email drafted. It goes to the person below, like screen work that could not be finished.
         guidance.end()
         return False
 
