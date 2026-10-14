@@ -480,3 +480,37 @@ func TestGroundingLetsTheOperatorSearchTheApplication(t *testing.T) {
 		t.Fatalf("a search box named in an action's result was not recognised: %q", n)
 	}
 }
+
+// Found live (2026-10-14): a phone photo of a clear invoice was called illegible by a worker that only opened it with
+// a Python script and never looked at it.
+func TestAPictureMustBeLookedAtBeforeTheWorkIsDone(t *testing.T) {
+	req := "Run today's intake.\n\nFiles attached to this request, saved on this desktop:\n  /home/headless/work/inbox/up-1/IMG_4471.png\n  /home/headless/work/inbox/up-1/notes.txt"
+	st := groundingState(req, "python3 - <<'PY'\nfrom PIL import Image\nImage.open('/home/headless/work/inbox/up-1/IMG_4471.png')\nPY")
+	unseen := unseenPictures(st)
+	if len(unseen) != 1 || !strings.HasSuffix(unseen[0], "IMG_4471.png") {
+		t.Fatalf("unseen = %v", unseen)
+	}
+	if n := unseenPicturesNudge(unseen); !strings.Contains(n, "office read /home/headless/work/inbox/up-1/IMG_4471.png") {
+		t.Fatalf("nudge = %q", n)
+	}
+	st.Commands = append(st.Commands, "office read /home/headless/work/inbox/up-1/IMG_4471.png")
+	if unseen := unseenPictures(st); len(unseen) != 0 {
+		t.Fatalf("after office read, unseen = %v", unseen)
+	}
+}
+
+// Found live (2026-10-14): a Thai spam phrase typed into a customer field paged a person after two refusals.
+func TestTextInAScriptTheTaskNeverUsesIsASlip(t *testing.T) {
+	st := groundingState("Enter the orders from /w/order_batch_A.xlsx", "office read /w/order_batch_A.xlsx")
+	st.noteSeen("Customer: Riverside Dental, PO NB-24102")
+	if n := strayScript(st, `gui type e71 "สูตรบาคาร่า"`); !strings.Contains(n, "was a slip") {
+		t.Fatalf("nudge = %q", n)
+	}
+	if n := strayScript(st, `gui type e71 "Riverside Dental"`); n != "" {
+		t.Fatalf("a value from the document was taken for a slip: %q", n)
+	}
+	st.noteSeen("Kunde: Müller, Адрес: Москва")
+	if n := strayScript(st, `gui type e9 "Москва"`); n != "" {
+		t.Fatalf("a script the task does use was taken for a slip: %q", n)
+	}
+}

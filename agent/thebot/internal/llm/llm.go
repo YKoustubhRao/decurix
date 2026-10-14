@@ -122,3 +122,38 @@ type Provider interface {
 	Chat(ctx context.Context, model string, messages []Message, opts Options) (Result, error)
 	IsReachable(ctx context.Context) bool
 }
+
+// ContentFiltered reports whether an error is a provider's content filter refusing the request.
+func ContentFiltered(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "content management policy") || strings.Contains(msg, "content_filter") ||
+		strings.Contains(msg, "responsibleaipolicyviolation")
+}
+
+func hasImages(messages []Message) bool {
+	for _, m := range messages {
+		if len(m.Images) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// WithoutImages is the messages with every picture taken out and named in its message's text, saying why.
+func WithoutImages(messages []Message, why string) []Message {
+	out := make([]Message, len(messages))
+	for i, m := range messages {
+		out[i] = Message{Role: m.Role, Content: m.Content}
+		for j := range m.Images {
+			what := "a picture"
+			if label := m.ImageLabel(j); label != "" {
+				what = "the picture of " + label
+			}
+			out[i].Content += fmt.Sprintf("\n[%s was left out: %s. Read the file as text (office read) if you need it.]", what, why)
+		}
+	}
+	return out
+}
