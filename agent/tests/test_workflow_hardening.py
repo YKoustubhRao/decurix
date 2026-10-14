@@ -78,6 +78,28 @@ class WorkflowHardening(unittest.TestCase):
             WorkflowRunner(self.temp.name).complete("run", "produce")
         self.assertEqual(self.runner.complete("run", "produce")["steps"]["produce"]["status"], "completed")
 
+    def test_resume_does_not_mark_live_non_idempotent_worker_uncertain(self):
+        self.runner.create(spec(retry_safe=False), {}, "external")
+        state, _ = self.runner.claim("external")
+        observer = WorkflowRunner(self.temp.name)
+        observed, stage = observer.claim("external", recover=True)
+        self.assertIsNone(stage)
+        self.assertEqual(observed["status"], "running")
+        self.assertEqual(observed["steps"]["produce"]["attempts"], 1)
+        self.output(state)
+        self.assertEqual(self.runner.complete("external", "produce")["steps"]["produce"]["status"], "completed")
+
+    def test_dead_non_idempotent_worker_still_requires_reconciliation(self):
+        self.runner.create(spec(retry_safe=False), {}, "external")
+        self.runner.claim("external")
+        path = Path(self.temp.name) / "external" / "checkpoint.json"
+        state = json.loads(path.read_text())
+        state["steps"]["produce"]["lease"]["pid"] = 2147483647
+        path.write_text(json.dumps(state))
+        observed, stage = WorkflowRunner(self.temp.name).claim("external", recover=True)
+        self.assertIsNone(stage)
+        self.assertEqual(observed["status"], "uncertain")
+
     def test_live_owner_is_protected_even_after_expiration_and_explicit_recover(self):
         self.runner.claim("run")
         self.mutate(lambda s: s["steps"]["produce"]["lease"].update(expires_at=0))

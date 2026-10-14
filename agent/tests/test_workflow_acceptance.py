@@ -5,6 +5,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from decurix_agent.workflow_runner import WorkflowRunner, validate
 
@@ -122,7 +123,9 @@ class WorkflowProductAcceptance(unittest.TestCase):
     def test_interrupted_external_action_requires_reconciliation(self):
         self.create(step("one", retry_safe=False))
         self.runner.claim("run1")
-        state = WorkflowRunner(self.root, self.executor).advance("run1")
+        # A second runner is only an observer until the actual owning process dies.
+        with patch("decurix_agent.workflow_runner._alive", return_value=False):
+            state = WorkflowRunner(self.root, self.executor).advance("run1")
         self.assertEqual(state["status"], "uncertain")
         self.assertEqual(self.calls, [])
 
