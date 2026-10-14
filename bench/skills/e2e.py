@@ -200,6 +200,10 @@ def run():
         # it also says when the task is finished, so it is matched before "finished" is.
         if "Save it as" in text or "What should I call it" in text:
             answer = "yes"
+        elif "ask first" in text and "go ahead" in text:
+            # The fixture only saves a local synthetic form; this explicitly
+            # answers the teaching contract's start-autonomy question.
+            answer = "go ahead"
         elif "Which of them change" in text:
             answer = "all change"
         elif "same every time" in text:
@@ -214,7 +218,7 @@ def run():
             raise SystemExit(f"a question this script does not know how to answer:\n{text}")
         conversation.append((text[:90].replace("\n", " "), answer))
         seen += 1
-        send(answer, "t00000000000000b2")
+        send(answer, "t00000000000000b1")
         show(f"answer -> {answer!r}; next", wait_reply(seen))
 
     print("\nteaching ended:", last.get("kind"))
@@ -248,10 +252,10 @@ def run():
     show("it asks", q)
     assert "customer_name" in q["reply"] and q["kind"] == "query"
 
-    send("Initech", "t00000000000000c2")
+    send("Initech", "t00000000000000c1")
     done = wait_reply(before + 2, timeout=180)
     show("result", done)
-    done = confirmed(done, before + 2, "t00000000000000c3", "Saved Initech")
+    done = confirmed(done, before + 2, "t00000000000000c1", "Saved Initech")
     assert done["kind"] == "final", "the skill run did not complete"
 
     v = bash("gui verify --text 'Saved Initech'", check=False)
@@ -268,7 +272,7 @@ def run():
     healed = wait_reply(before + 1, timeout=180)
     show("result", healed)
     repaired = "repaired step 3" in healed["reply"]
-    healed = confirmed(healed, before + 1, "t00000000000000d2", "Saved Umbrella")
+    healed = confirmed(healed, before + 1, "t00000000000000d1", "Saved Umbrella")
     assert healed["kind"] == "final" and (repaired or "repaired step 3" in healed["reply"]), "the rename was not healed"
 
     v = bash("gui verify --text 'Saved Umbrella'", check=False)
@@ -285,10 +289,10 @@ def run():
     show("it asks", stuck)
     assert stuck["kind"] == "query" and "is not on the screen" in stuck["reply"]
 
-    send('use "Go"', "t00000000000000e2")
+    send('use "Go"', "t00000000000000e1")
     fixed = wait_reply(before + 2, timeout=180)
     show("result", fixed)
-    fixed = confirmed(fixed, before + 2, "t00000000000000e3", "Saved Wayne")
+    fixed = confirmed(fixed, before + 2, "t00000000000000e1", "Saved Wayne")
     assert fixed["kind"] == "final" and "remembered" in fixed["reply"]
 
     v = bash("gui verify --text 'Saved Wayne'", check=False)

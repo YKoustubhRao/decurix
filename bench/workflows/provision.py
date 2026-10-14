@@ -16,6 +16,7 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 def command(args, **kwargs):
+    kwargs.setdefault("timeout", 180)
     return subprocess.run(args, check=True, **kwargs)
 
 
@@ -48,15 +49,22 @@ def main():
         created = True
         print(f"Created isolated desktop {name}", flush=True)
         deadline = time.monotonic() + 300
+        readiness_error = "agent has not answered"
         while time.monotonic() < deadline:
-            ready = subprocess.run(["docker", "exec", name, "python3", "-c",
-                "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8081/skills',timeout=2).status)"],
-                capture_output=True, text=True, timeout=10)
+            try:
+                ready = subprocess.run(["docker", "exec", name, "python3", "-c",
+                    "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8081/skills',timeout=2).status)"],
+                    capture_output=True, text=True, timeout=10)
+            except (subprocess.TimeoutExpired, OSError) as exc:
+                readiness_error = str(exc)
+                time.sleep(2)
+                continue
             if ready.returncode == 0:
                 break
+            readiness_error = ready.stderr[-1000:]
             time.sleep(2)
         else:
-            raise RuntimeError("Desktop agent did not become ready within 300 seconds")
+            raise RuntimeError("Desktop agent did not become ready within 300 seconds: " + readiness_error)
         manifest["status"] = "running"
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         if args.suite in {"transfer", "native"}:
@@ -68,7 +76,8 @@ def main():
             if args.only:
                 cmd += ["--only", args.only]
         else:
-            cmd = [sys.executable, str(REPO / "bench/gui/run.py"), "--engine", "oracle", "--container", name]
+            cmd = [sys.executable, str(REPO / "bench/gui/run.py"), "--engine", "oracle", "--container", name,
+                   "--out", str(args.output / name / "gui")]
             if args.only:
                 cmd += ["--tasks", args.only]
         result = subprocess.run(cmd)
@@ -82,18 +91,25 @@ def main():
             # Keep reports even when the test failed, timed out or was cancelled.
             target = args.output / name
             target.mkdir(exist_ok=True)
+            def collect(argv):
+                try:
+                    return subprocess.run(argv, capture_output=True, text=True, timeout=30)
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    manifest.setdefault("collection_errors", []).append(str(exc))
+                    return None
             for remote, local in [("/home/headless/work/live-transfer.json", "transfer.json"),
                                   ("/home/headless/work/native-transfer.json", "native-transfer.json"),
                                   ("/home/headless/work/transfer-screens", "screens"),
                                   ("/home/headless/work/native-transfer-screens", "native-screens"),
                                   ("/home/headless/.decurix/skills", "skills"),
                                   ("/home/headless/.decurix/recordings", "recordings")]:
-                subprocess.run(["docker", "cp", f"{name}:{remote}", str(target / local)], capture_output=True)
-            logs = subprocess.run(["docker", "logs", "--tail", "100", name], capture_output=True, text=True)
-            (target / "container.log").write_text(logs.stdout + logs.stderr, encoding="utf-8")
+                collect(["docker", "cp", f"{name}:{remote}", str(target / local)])
+            logs = collect(["docker", "logs", "--tail", "100", name])
+            if logs is not None:
+                (target / "container.log").write_text(logs.stdout + logs.stderr, encoding="utf-8")
             manifest["kept"] = args.keep
             if not args.keep:
-                subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+                collect(["docker", "rm", "-f", name])
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         print(json.dumps(manifest), flush=True)
 

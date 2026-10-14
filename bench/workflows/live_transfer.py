@@ -82,7 +82,7 @@ def teach(case, session):
         response = learning.answer(learned, question, answers[question["kind"]])
         if response.get("decision"):
             break
-    learned["name"] = "lab-" + case["id"]
+    learned["name"] = "lab-" + session.removeprefix("task-t")[:8] + "-" + case["id"]
     skills.save(learned)
     return skills.load(learned["name"]), len(events)
 
@@ -124,7 +124,7 @@ def run_case(case, port, variants):
         actual = RESULTS.get(case["id"], {})
         passed = (result.get("outcome") in replay.SUCCESS and ui.get("ok") is True and
                   actual.get("result") == case["expected"] and actual.get("input") == case["holdout"])
-        screenshot = Path("/home/headless/work/transfer-screens") / f"{case['id']}-{variant}.png"
+        screenshot = Path("/home/headless/work/transfer-screens") / session / f"{case['id']}-{variant}.png"
         screenshot.parent.mkdir(parents=True, exist_ok=True)
         screenshot.write_bytes(core.observe()["frame"].png())
         outcomes.append({"variant": variant, "passed": passed, "outcome": result.get("outcome"),
@@ -161,8 +161,9 @@ def main():
                 print(json.dumps(outcomes[-1]), flush=True)
             report = {"mode": "live_chromium_fixture_record_learn_transfer", "live_apps_tested": True,
                       "application": "Chromium with local deterministic fixture", "families": len(outcomes),
+                      "expected_families": len(cases), "completed": len(outcomes) == len(cases),
                       "elapsed_seconds": round(time.monotonic()-started, 3),
-                      "passed": all(r["passed"] for r in outcomes), "results": outcomes}
+                      "passed": len(outcomes) == len(cases) and all(r["passed"] for r in outcomes), "results": outcomes}
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(report, indent=2), encoding="utf-8")
     finally:

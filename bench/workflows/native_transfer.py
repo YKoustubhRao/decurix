@@ -51,11 +51,17 @@ def key(*keys):
     return action("key", keys=list(keys))
 
 
-def named(kind, names, roles, text=None):
+def named(kind, names, roles, text=None, window=None):
     """Resolve only a unique accessible native control, never click by guessed position."""
     from decurix_agent.computer import core
     def locate():
-        elements = core.observe().get("elements", [])
+        observation = core.observe()
+        elements = observation.get("elements", [])
+        active = core.active_group(observation)
+        if window:
+            elements = [element for element in elements if element.get("window_title") == window]
+        elif active:
+            elements = [element for element in elements if element.get("group") == active]
         candidates = [e for e in elements if e.get("role") in roles and
                       str(e.get("name", "")).strip().rstrip(":").lower() in {n.lower() for n in names}]
         return candidates[0] if len(candidates) == 1 else None
@@ -65,11 +71,16 @@ def named(kind, names, roles, text=None):
 
 def reset(case, root, holdout=False):
     """Replace only this benchmark's generated fixture after closing its native app."""
-    app = case["app"]
-    executables = ["soffice.bin"] if app in {"calc", "writer", "impress"} else ["Thunar", "thunar"]
-    for executable in executables:
+    # This is an isolated qualification VM. Reuse the established fixture
+    # cleanup, which clears LibreOffice's recovery records after closing apps.
+    # A kill alone leaves a recovery modal over every subsequent test case.
+    import bench as gui_fixtures
+    gui_fixtures.kill_apps()
+    # Some XFCE setups launch Thunar outside the session bus selected by
+    # `thunar --quit`; close that isolated fixture process by exact name too.
+    for executable in ("Thunar", "thunar"):
         subprocess.run(["pkill", "-TERM", "-x", executable], capture_output=True, timeout=10)
-    time.sleep(0.75)
+    app = case["app"]
     folder = root / case["id"]
     folder.mkdir(parents=True, exist_ok=True)
     if app == "calc":
@@ -123,7 +134,9 @@ def demonstrate(case):
         from decurix_agent.computer import core
         if any(e.get("role") == "button" and e.get("name") == "OK" for e in core.observe().get("elements", [])):
             action("click", role="button", name="OK")
-        named("click", ["Close"], ["button"])
+        # Impress returns focus to the slide after Replace All while leaving
+        # its modeless search dialog open; address that exact dialog explicitly.
+        named("click", ["Close"], ["button"], window="Find and Replace")
         key("ctrl+s")
         if id == "impress-replace":
             time.sleep(1)
@@ -148,15 +161,15 @@ def verify(case, path, holdout):
         grid = sheets["Sheet1"]
         if id == "calc-values":
             cells = [odf.cell(grid, ref) for ref in ("C2", "C3", "C4")]
-            actual = [float(cell.get("value")) for cell in cells]
+            actual = [float(cell["value"]) if cell and cell.get("value") is not None else None for cell in cells]
             expected = [101, 202, 303] if holdout else [11, 22, 33]
             return actual == expected, actual
         cell = odf.cell(grid, "C2")
-        return float(cell.get("value", "nan")) == (120 if holdout else 60) and "SUM" in cell.get("formula", ""), cell
+        return float((cell or {}).get("value") or "nan") == (120 if holdout else 60) and "SUM" in (cell or {}).get("formula", ""), cell
     if case["app"] == "writer":
         paragraphs, tables = odf.read_odt(path)
         if id == "writer-form":
-            values = [odf.cell(tables[0], ref).get("text") for ref in ("B1", "B2", "B3")]
+            values = [(odf.cell(tables[0], ref) or {}).get("text") for ref in ("B1", "B2", "B3")]
             return values == (list(case["demo"].values()) if holdout else list(case["demo"])), values
         text = "\n".join(paragraphs)
         expected = "Holdout replacement" if holdout else "Demo replacement"
@@ -184,7 +197,7 @@ def learn(case, session):
                    "variable": "changes", "variables": "all change", "confirm": "yes", "optional": "always",
                    "coordinates": "keep", "unsupported": "manual", "loop": "fixed", "approval": "go ahead"}
         learning.answer(skill, question, answers[question["kind"]])
-    skill["name"] = "native-transfer-" + case["id"]
+    skill["name"] = "native-" + case["id"] + "-" + session.rsplit("-", 1)[-1]
     skills.save(skill)
     return skills.load(skill["name"]), len(events)
 
@@ -221,9 +234,13 @@ def run_case(case, root):
                        "; requested params=" + json.dumps(params) + "; requested sources=" + json.dumps(bindings))
     outcome = skill_engine.run(skill, params=params, source_files=bindings)
     time.sleep(1.5)
+    observation = core.observe()
+    if "Document Recovery" in observation.get("active_title", ""):
+        raise RuntimeError("Holdout blocked by LibreOffice Document Recovery; replay outcome=" +
+                           str(outcome.get("outcome")) + "; " + outcome.get("text", "")[:1000])
     passed, actual = verify(case, path, True)
-    original_preserved = verify(case, demonstration_path, False)[0] if bindings else True
-    screenshot = Path("/home/headless/work/native-transfer-screens") / (case["id"] + ".png")
+    original_preserved = verify(case, demonstration_path, False)[0] if bindings else passed
+    screenshot = Path("/home/headless/work/native-transfer-screens") / (case["id"] + "-" + session.rsplit("-", 1)[-1] + ".png")
     screenshot.parent.mkdir(parents=True, exist_ok=True)
     screenshot.write_bytes(core.observe()["frame"].png())
     task_context.start("", "")
@@ -231,6 +248,7 @@ def run_case(case, root):
             "skill": skill["name"], "outcome": outcome.get("outcome"), "detail": outcome.get("text", "")[:1500],
             "artifact_verified": passed, "actual": actual, "teacher_actual": baseline, "source_file_bindings": bindings,
             "original_preserved": original_preserved,
+            "preservation_scope": "teacher_file_unchanged" if bindings else "original_contents_at_renamed_path",
             "passed": passed and original_preserved and outcome.get("outcome") in replay.SUCCESS, "screenshot": str(screenshot)}
 
 
@@ -255,17 +273,19 @@ def main():
                 observation = core.observe()
                 folder = Path("/home/headless/work/native-transfer-screens")
                 folder.mkdir(parents=True, exist_ok=True)
-                image = folder / (case["id"] + "-failure.png")
+                image = folder / (case["id"] + "-" + args.root.name + "-failure.png")
                 image.write_bytes(observation["frame"].png())
-                tree = folder / (case["id"] + "-failure.json")
+                tree = folder / (case["id"] + "-" + args.root.name + "-failure.json")
                 tree.write_text(json.dumps({key: value for key, value in observation.items() if key != "frame"}, default=str, indent=2))
                 row.update(screenshot=str(image), observation=str(tree))
             except Exception as evidence_error:
                 row["evidence_error"] = str(evidence_error)
         results.append(row)
         print(json.dumps(row, default=str), flush=True)
+        completed = len(results) == len(cases)
         report = {"mode": "live_native_record_learn_holdout", "live_apps_tested": True,
-                  "root": str(args.root), "passed": all(row["passed"] for row in results), "results": results}
+                  "root": str(args.root), "expected_cases": len(cases), "completed": completed,
+                  "passed": completed and all(row["passed"] for row in results), "results": results}
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(report, indent=2, default=str))
     return 0 if report["passed"] else 1

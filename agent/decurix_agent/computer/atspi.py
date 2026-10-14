@@ -307,6 +307,8 @@ def _walk(Atspi, root, index_path, path, group_id, window_title, app_name, pid, 
         # find dialog) has no name of its own; the combo box carries it.
         if not name and role == "textbox" and parent_role == "combobox":
             name = parent_name
+        if not name and role == "textbox" and flags.get("editable"):
+            name = _container_label(Atspi, node)
 
         box = _box(Atspi, node)
         actions = _actions(Atspi, node)
@@ -523,6 +525,53 @@ def _label_of(Atspi, node):
                 label = (target.get_name() or "").strip().rstrip(":")
                 if label:
                     return label
+    except Exception:
+        pass
+    return ""
+
+
+def _container_label(Atspi, node):
+    """A missing LABELLED_BY relation can be recovered from a single-field row.
+
+    Native find dialogs sometimes expose the label and entry as siblings in
+    their own panel. Use the real visible label only when that bounded panel
+    has exactly one editable text field and one label; ambiguity stays unnamed.
+    """
+    parent = node
+    try:
+        for _ in range(4):
+            parent = parent.get_parent()
+            if parent is None or parent.get_role_name() in TOP_LEVEL_ROLES:
+                break
+            if parent.get_role_name() not in {"panel", "filler", "combo box", "grouping", "group", "section"}:
+                continue
+            stack, labels, fields, visited = [(parent, 0)], [], 0, 0
+            bounded = True
+            while stack:
+                child, depth = stack.pop()
+                visited += 1
+                if visited > 64 or depth > 4:
+                    bounded = False
+                    break
+                flags, _ = _states(Atspi, child)
+                if not flags.get("showing"):
+                    continue
+                role = el.normalize_role(child.get_role_name())
+                if role == "textbox" and flags.get("editable"):
+                    fields += 1
+                if role == "label":
+                    label = (child.get_name() or "").strip().rstrip(":")
+                    if label:
+                        labels.append(label)
+                count = child.get_child_count()
+                if count > 32:
+                    bounded = False
+                    break
+                stack.extend((child.get_child_at_index(index), depth + 1) for index in range(count))
+            if bounded and fields == 1 and len(labels) == 1:
+                return labels[0]
+            if fields > 1 or len(labels) > 1:
+                return ""
     except Exception:
         pass
     return ""
