@@ -24,6 +24,13 @@ func TestAssessCommandStopsConsequentialCommands(t *testing.T) {
 		`curl --data "msg=hi" https://hooks.slack.com/services/x`,
 		`wget --post-data "a=1" https://example.com/form`,
 		`chmod -R 777 /`,
+		`echo "$(mail -s hi boss@example.com < note.txt)"`,
+		"x=\x60mail -s hi boss@example.com < note.txt\x60",
+		`sh -c 'cat f | mail -s x a@b.example'`,
+		"cat <<EOF | mail -s x a@b.example\nhello\nEOF",
+		"bash <<'SH'\nmail -s x a@b.example < f\nSH",
+		"cd ~/work\nmail -s report boss@example.com < r.txt",
+		"python3 - <<'PY'\nimport smtplib\ns = smtplib.SMTP('mx')\ns.send_message(msg)\nPY",
 	} {
 		if AssessCommand(cmd) == nil {
 			t.Errorf("AssessCommand(%q) = nil, want a concern", cmd)
@@ -51,6 +58,12 @@ func TestAssessCommandLetsOrdinaryWorkThrough(t *testing.T) {
 		`curl -d @body.json 127.0.0.1:5050/api`,
 		`grep -r "mail" .`,
 		`python3 -c "print('shutdown sequence')"`,
+		`grep -E 'outbox|mail' notes.txt`,
+		`echo "$(date) mail checked" >> log.txt`,
+		// Found live (2026-10-14): a variable named mail in a Python here-document stopped a price check for an
+		// approval "because it sends email".
+		"python3 - <<'PY'\nout='/w/a.xlsx'\nmail='/w/flagged.txt'\nopen(mail, 'w').write('x')\nPY",
+		"python3 - <<PY\nmail = compose()\nshutdown = False\nPY\necho done",
 	} {
 		if c := AssessCommand(cmd); c != nil {
 			t.Errorf("AssessCommand(%q) = %q, want nil", cmd, c.Reason)

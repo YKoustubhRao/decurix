@@ -5,7 +5,11 @@
 // scheduler, skills) needing to change - they only ever see Provider.
 package llm
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"strings"
+)
 
 type Message struct {
 	Role    string // "system" | "user" | "assistant"
@@ -13,6 +17,35 @@ type Message struct {
 	// Images are PNGs shown with a user message - only ever set for a brain
 	// with Capabilities.Vision. Every provider sends them in its own shape.
 	Images [][]byte `json:",omitempty"`
+	// ImageLabels says what each picture is ("scan_0030.pdf, page 1"), by
+	// index; shown right before its picture where the provider lets text and
+	// pictures interleave. Found live (2026-10-14): two scans read in one
+	// command reached the model as two unlabelled pictures after the text, it
+	// took one invoice for the other - and "verified" the swap by looking again.
+	ImageLabels []string `json:",omitempty"`
+}
+
+// ImageLabel is the label of picture i of a message, or "".
+func (m Message) ImageLabel(i int) string {
+	if i < len(m.ImageLabels) {
+		return m.ImageLabels[i]
+	}
+	return ""
+}
+
+// LabelledContent is a message's text with its pictures' labels listed in
+// order after it - for a provider that cannot put text between pictures.
+func (m Message) LabelledContent() string {
+	var labels []string
+	for i := range m.Images {
+		if l := m.ImageLabel(i); l != "" {
+			labels = append(labels, fmt.Sprintf("%d) %s", i+1, l))
+		}
+	}
+	if len(labels) == 0 {
+		return m.Content
+	}
+	return m.Content + "\n\n(The pictures, in order: " + strings.Join(labels, "; ") + ")"
 }
 
 type Result struct {

@@ -60,6 +60,17 @@ class WorkflowHarnessIntegration(unittest.TestCase):
         self.assertIn(": completed", self.reports[0][0])
         self.assertIn('"outputs": {"extract":', self.prompts[1])
 
+    def test_each_stages_own_report_reaches_the_one_final_reply(self):
+        # Found in review (2026-10-14): final_gate consumed every stage's report
+        # and the person's one reply listed only statuses - what each stage said
+        # it did was lost.
+        workflow_task.perform('/workflow start-json ' + json.dumps({"spec": self.spec()}))
+        reply = self.reports[0][0]
+        self.assertIn("What each stage reported:", reply)
+        self.assertEqual(reply.count("I finished the stage"), 3)
+        state = self.runner.status(workflow_task.runner().root.glob("*/checkpoint.json").__next__().parent.name)
+        self.assertEqual(state["steps"]["extract"]["report"], "I finished the stage")
+
     def test_harness_self_claim_without_artifacts_cannot_complete(self):
         self.harness.perform_task = lambda *args: workflow_task.final_gate("All done!", "final")
         workflow_task.perform('/workflow start-json ' + json.dumps({"spec": self.spec()}))

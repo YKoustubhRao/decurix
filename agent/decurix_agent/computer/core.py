@@ -445,6 +445,8 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
     if kind == "select":
         if element is None or not option:
             raise ComputerError("select needs a dropdown and the option to pick")
+        if element.get("role") == "radio":
+            return _choose_radio(element, option)
         if element["source"] == "cdp":
             try:
                 cdp.select_option(element, option)
@@ -876,6 +878,32 @@ def _editor_opened_by(element):
         if time.monotonic() >= deadline:
             return None
         time.sleep(0.3)
+
+
+def _choose_radio(element, option):
+    """
+    Choose `option` among the radio buttons of the group `element` is in: the one named it, else the one whose name
+    it starts with, else the one radio whose whole name lies within it ("Contractor (12 months)" -> Contractor) - never
+    one of two.
+    """
+
+    group = (element.get("path") or "").rsplit(" > ", 1)[0]
+    radios = [e for e in observe(remember=False)["elements"]
+              if e.get("role") == "radio" and (e.get("path") or "").rsplit(" > ", 1)[0] == group]
+    want = " ".join(option.lower().split())
+    words = lambda s: " " + re.sub(r"[^a-z0-9]+", " ", s.lower()).strip() + " "
+    hit = ([e for e in radios if " ".join((e.get("name") or "").lower().split()) == want]
+           or [e for e in radios if (e.get("name") or "").lower().startswith(want)]
+           or [e for e in radios if words(e.get("name") or "").strip() and words(e.get("name") or "") in words(option)])
+    if len(hit) != 1:
+        offered = ", ".join(el._quote(e.get("name") or "") for e in radios) or "none"
+        raise ComputerError(f"no single radio button in that group is {el._quote(option)} - it offers {offered}")
+    if element.get("source") == "cdp":
+        cdp.click(hit[0])
+        return "cdp"
+    x, y = el.center(hit[0])
+    xinput.click(x, y)
+    return "xdotool"
 
 
 def _select_custom(element, option):

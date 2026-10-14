@@ -59,12 +59,38 @@ class ADraftAgainReplacesTheTasksEarlierOne(unittest.TestCase):
         # What the task made, as the final check reads it: one letter each.
         self.assertEqual([d["body"] for d in outbox.drafted()], ["v1", "v2 with the corrected total"])
 
+    def test_separate_letters_with_other_files_are_not_taken_for_one(self):
+        a, b = Path(self.tmp.name) / "INV-1.pdf", Path(self.tmp.name) / "INV-2.pdf"
+        a.write_bytes(b"%PDF-1")
+        b.write_bytes(b"%PDF-2")
+        outbox.draft(["billing@globex.example"], "Invoice", "first", attachments=[str(a)])
+        said = outbox.draft(["billing@globex.example"], "Invoice", "second", attachments=[str(b)])
+        self.assertNotIn("replaces", said)
+        self.assertEqual(self.cp.live(), ["mail_1", "mail_2"])
+        # The same letter with the same file drafted again still replaces it.
+        self.assertIn("replaces the earlier draft mail_2",
+                      outbox.draft(["billing@globex.example"], "Invoice", "second, fixed", attachments=[str(b)]))
+
     def test_an_earlier_draft_a_person_already_discarded_leaves_a_new_draft(self):
         outbox.draft(["ap@globex.example"], "Payment reminder", "v1")
         self.cp.drafts["mail_1"]["status"] = "discarded"
         self.assertIn("Drafted (id mail_2)", outbox.draft(["ap@globex.example"], "Payment reminder", "v2"))
         with self.assertRaises(outbox.DraftError):
             outbox.draft(["ap@globex.example"], "Other", "v3", replaces="mail_1")
+
+
+    def test_a_control_plane_that_ignores_replaces_is_said_to(self):
+        outbox.draft(["ap@globex.example"], "Payment reminder", "v1")
+        def old_control_plane(request, timeout=None):
+            # Files the draft and answers as a control plane from before `replaces` existed: no "replaced" at all.
+            self.cp.n += 1
+            answer = json.dumps({"id": f"mail_{self.cp.n}", "status": "draft"}).encode()
+            return mock.MagicMock(__enter__=lambda s: io.BytesIO(answer), __exit__=lambda *a: False)
+
+        with mock.patch.object(outbox.urllib.request, "urlopen", old_control_plane):
+            said = outbox.draft(["ap@globex.example"], "Payment reminder", "v2")
+        self.assertIn("did not take it as a replacement", said)
+        self.assertIn("mail_1", said)
 
 
 if __name__ == "__main__":
