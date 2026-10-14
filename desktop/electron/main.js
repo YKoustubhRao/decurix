@@ -109,7 +109,16 @@ function cloudflared() {
   return windows ? resource('cloudflared.exe') : findProgram('cloudflared');
 }
 
-function tunnelCommand(port) {
+function tunnelCommand(port, provider = 'cloudflare') {
+  if (provider === 'localhost-run') {
+    return { file: windows ? path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe') : 'ssh', args: [
+      '-T', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new',
+      '-o', `UserKnownHostsFile=${path.join(dataDir(), 'tunnel-known-hosts')}`,
+      '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=3',
+      '-o', 'ExitOnForwardFailure=yes', '-o', 'ConnectTimeout=15',
+      '-R', `80:127.0.0.1:${port}`, 'nokey@localhost.run',
+    ] };
+  }
   return { file: cloudflared(), args: ['tunnel', '--protocol', 'http2', '--url', `http://127.0.0.1:${port}`] };
 }
 
@@ -117,7 +126,7 @@ function startMobileAccess() {
   if (mobileAccessPromise || closing) return;
   // No cloudflared, no tunnel: the dashboard works without one.
   if (!cloudflared()) return;
-  mobileAccessPromise = setupMobileAccess(dataDir(), tunnelCommand).then(async (access) => {
+  mobileAccessPromise = setupMobileAccess(dataDir(), tunnelCommand, { log: logLine }).then(async (access) => {
     if (closing) await access?.stop();
     else mobileAccess = access;
   }).catch((error) => console.warn('Mobile access setup failed:', error.message));
@@ -772,18 +781,27 @@ function buildToolsLater() {
 // the link - and again every LAN_REPORT_EVERY_MS. Whether the forward is in
 // place is asked once per address (lanForward), not every minute.
 const LAN_REPORT_EVERY_MS = 60000;
-let lanForward = { address: '', ok: false };
+let lanForward = { address: '', port: 0, ok: false };
+
+function publishLanURL(url) {
+  const body = JSON.stringify({ lan_url: url });
+  const req = http.request(`${dashboard}/api/tunnel`, { method: 'POST', timeout: 5000, headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, (res) => res.resume());
+  req.on('timeout', () => req.destroy());
+  req.on('error', () => {});
+  req.end(body);
+}
 
 function reportLanAddress() {
   const socket = dgram.createSocket('udp4');
   const give = () => { try { socket.close(); } catch { /* closed */ } };
-  socket.once('error', give);
+  socket.once('error', () => { give(); publishLanURL(''); });
   socket.connect(80, '1.1.1.1', async () => {
     let address = '';
     try { address = socket.address().address; } catch { /* no network */ }
     give();
     if (!address || address.startsWith('127.')) {
       if (windows && lanForward.address !== '-') { lanForward = { address: '-', ok: false }; logLine('LAN link: this computer has no network address'); }
+      publishLanURL('');
       return;
     }
     let port = '8090';
@@ -791,19 +809,15 @@ function reportLanAddress() {
     try { settings = fs.readFileSync(path.join(dataDir(), '.env'), 'utf8'); } catch { /* the defaults */ }
     port = settings.match(/^\s*DECURIX_LAN_PORT\s*=\s*['"]?(\d+)/m)?.[1] || port;
     if (windows) {
-      if (/^\s*DECURIX_WSL_LAN_FORWARD\s*=\s*['"]?0/m.test(settings)) return;
-      if (lanForward.address !== address) {
-        lanForward = { address, ok: false };
+      if (/^\s*DECURIX_WSL_LAN_FORWARD\s*=\s*['"]?0/m.test(settings)) { publishLanURL(''); return; }
+      if (lanForward.address !== address || lanForward.port !== Number(port) || !lanForward.ok) {
+        lanForward = { address, port: Number(port), ok: false };
         try { lanForward.ok = await ensureLanForward(dataDir(), address, Number(port), logLine); }
         catch (error) { logLine(`LAN link: could not forward ${address}: ${error.message}`); }
       }
-      if (!lanForward.ok) return;
+      if (!lanForward.ok) { publishLanURL(''); return; }
     }
-    const body = JSON.stringify({ lan_url: `http://${address}:${port}` });
-    const req = http.request(`${dashboard}/api/tunnel`, { method: 'POST', timeout: 5000, headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, (res) => res.resume());
-    req.on('timeout', () => req.destroy());
-    req.on('error', () => {});
-    req.end(body);
+    publishLanURL(`http://${address}:${port}`);
   });
 }
 

@@ -39,8 +39,8 @@ function forwardedIn(table, address, port) {
 }
 
 async function isForwarded(address, port) {
-  const { out } = await powershell(`netsh interface portproxy show v4tov4; if (Get-NetFirewallRule -DisplayName '${ruleName(port)}' -ErrorAction SilentlyContinue) { 'DECURIX-FIREWALL-OK' }`);
-  return forwardedIn(out, address, port) && out.includes('DECURIX-FIREWALL-OK');
+  const { out } = await powershell(`netsh interface portproxy show v4tov4; if (Get-NetFirewallRule -DisplayName '${ruleName(port)}' -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq 'True' -and $_.Direction -eq 'Inbound' -and $_.Action -eq 'Allow' }) { 'DECURIX-FIREWALL-OK' }; try { $r = Invoke-WebRequest -UseBasicParsing -Uri 'http://${address}:${port}/' -TimeoutSec 3; if ($r.StatusCode -eq 200 -and $r.Content.Contains('/__decurix_access/login')) { 'DECURIX-LISTENER-OK' } } catch { }`);
+  return forwardedIn(out, address, port) && out.includes('DECURIX-FIREWALL-OK') && out.includes('DECURIX-LISTENER-OK');
 }
 
 // The elevated half: replaces any rule on address:port (an older one may point
@@ -50,8 +50,12 @@ async function isForwarded(address, port) {
 // there - lan-forward.log in the data folder.
 function forwardScript(address, port, transcript = '') {
   const steps = [
+    "$ErrorActionPreference = 'Stop'",
+    'Set-Service iphlpsvc -StartupType Automatic',
+    'Start-Service iphlpsvc',
     `netsh interface portproxy delete v4tov4 listenaddress=${address} listenport=${port}`,
     `netsh interface portproxy add v4tov4 listenaddress=${address} listenport=${port} connectaddress=127.0.0.1 connectport=${port}`,
+    "if ($LASTEXITCODE -ne 0) { throw 'Could not create the LAN port forward' }",
     `Remove-NetFirewallRule -DisplayName '${ruleName(port)}' -ErrorAction SilentlyContinue`,
     `New-NetFirewallRule -DisplayName '${ruleName(port)}' -Direction Inbound -Protocol TCP -LocalPort ${port} -Action Allow | Out-Null`,
     'Get-Service iphlpsvc | Format-List Name,Status,StartType',
@@ -93,7 +97,11 @@ async function ensureLanForward(dataDir, address, port, log = () => {}) {
   if (asked.code !== 0) {
     const why = (asked.err || asked.out).trim().split(/\r?\n/)[0] || `exit ${asked.code}`;
     log(`LAN link: the administrator prompt was declined or could not be shown: ${why}`);
-    try { fs.writeFileSync(file, JSON.stringify({ declined: address }) + '\n', 'utf8'); } catch { /* asked again next start */ }
+    // Only cancellation is a refusal. Missing elevation or a script error
+    // must not disable LAN forwarding permanently for this address.
+    if (/cancel[l]?ed|1223|0x800704c7/i.test(asked.err || asked.out)) {
+      try { fs.writeFileSync(file, JSON.stringify({ declined: address }) + '\n', 'utf8'); } catch { /* asked again next start */ }
+    }
   } else {
     let said = '';
     try { said = fs.readFileSync(transcript, 'utf8').replace(/\0/g, '').replace(/\s+/g, ' ').trim().slice(0, 600); } catch { /* no transcript */ }

@@ -3,10 +3,56 @@
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const http = require('node:http');
+const https = require('node:https');
+const dns = require('node:dns');
 const path = require('node:path');
 
 const dashboard = 'http://127.0.0.1:8080';
 const quickTunnelPattern = /https:\/\/[a-z0-9]+(?:-[a-z0-9]+)+\.trycloudflare\.com/i;
+const alternativePattern = /https:\/\/[a-z0-9-]+\.(?:lhr\.life|lhr\.rocks|localhost\.run)\b/i;
+
+// A newly allocated hostname can be negatively cached by the router/ISP.
+// Retry failed system lookups against Cloudflare DNS for this request only.
+function tunnelLookup(hostname, options, callback) {
+  dns.lookup(hostname, options, (error, address, family) => {
+    if (!error || !['ENOTFOUND', 'EAI_AGAIN'].includes(error.code)) return callback(error, address, family);
+    const resolver = new dns.Resolver({ timeout: 2500, tries: 1 });
+    resolver.setServers(['1.1.1.1', '1.0.0.1']);
+    resolver.resolve4(hostname, (fallbackError, addresses) => {
+      if (fallbackError || !addresses?.length) return callback(fallbackError || error);
+      if (options.all) return callback(null, addresses.map((value) => ({ address: value, family: 4 })));
+      callback(null, addresses[0], 4);
+    });
+  });
+}
+
+function tunnelProvider(dataDir, env = process.env) {
+  let value = env.DECURIX_TUNNEL_PROVIDER;
+  if (!value) {
+    try { value = fs.readFileSync(path.join(dataDir, '.env'), 'utf8').match(/^\s*DECURIX_TUNNEL_PROVIDER\s*=\s*['"]?([\w-]+)/m)?.[1]; } catch { /* default */ }
+  }
+  return ['auto', 'cloudflare', 'localhost-run'].includes(value) ? value : 'cloudflare';
+}
+
+// An unauthenticated request must reach our actual access-code page, rather
+// than a provider's error page. Never send the pairing code to a health check.
+function probeURL(url, log = () => {}) {
+  return new Promise((resolve) => {
+    const req = https.get(url, { timeout: 8000, family: 4, lookup: tunnelLookup }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { body = (body + chunk).slice(0, 65536); });
+      res.on('error', () => resolve(false));
+      res.on('end', () => {
+        const ok = res.statusCode === 200 && body.includes('/__decurix_access/login');
+        if (!ok) log(`Public link check: HTTP ${res.statusCode}, access page ${body.includes('/__decurix_access/login')}`);
+        resolve(ok);
+      });
+    });
+    req.on('error', (error) => { log(`Public link check: ${error.code || error.message}`); resolve(false); });
+    req.on('timeout', () => req.destroy());
+  });
+}
 
 function lanPort(dataDir, env = process.env) {
   let value = env.DECURIX_LAN_PORT;
@@ -53,7 +99,11 @@ function requestJSON(route, method = 'GET', body) {
 // tunnel, and the Mobile menu handed out that dead link for good. So the old
 // link is cleared at once and a new tunnel started; a tunnel that ends on its
 // own (the network dropped) takes its link with it and is started again.
-async function setupMobileAccess(dataDir, tunnelCommand, { retryMs = 5000, maxRetryMs = 60000 } = {}) {
+async function setupMobileAccess(dataDir, tunnelCommand, {
+  retryMs = 5000, maxRetryMs = 60000, startupMs = 45000, checkMs = 15000,
+  probe, provider = tunnelProvider(dataDir), log = () => {},
+} = {}) {
+  probe = probe || ((url) => probeURL(url, log));
   const port = lanPort(dataDir);
 
   try {
@@ -67,6 +117,9 @@ async function setupMobileAccess(dataDir, tunnelCommand, { retryMs = 5000, maxRe
   let stopping = false;
   let child = null;
   let timer = null;
+  let healthTimer = null;
+  let startupTimer = null;
+  let currentProvider = provider === 'localhost-run' ? provider : 'cloudflare';
   let delay = retryMs;
   let lastURL = '';
   let published = true; // whatever link the control plane holds is cleared first
@@ -83,28 +136,65 @@ async function setupMobileAccess(dataDir, tunnelCommand, { retryMs = 5000, maxRe
   const launch = () => {
     timer = null;
     if (stopping) return;
-    const { file, args } = tunnelCommand(port);
+    const { file, args } = tunnelCommand(port, currentProvider);
+    log(`Public link: starting ${currentProvider} on gated port ${port}`);
     let output = '';
+    let candidate = '';
+    let checking = false;
+    let failures = 0;
     const tunnel = spawn(file, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     child = tunnel;
+    const retire = () => {
+      if (stopping || child !== tunnel) return;
+      child = null;
+      clearTimeout(startupTimer);
+      clearTimeout(healthTimer);
+      if (lastURL) { lastURL = ''; setURL(''); }
+      tunnel.kill();
+      // A live cloudflared can retry forever when DNS or port 7844 is
+      // blocked. Switch providers even when that process never exits.
+      if (provider === 'auto') currentProvider = currentProvider === 'cloudflare' ? 'localhost-run' : 'cloudflare';
+      timer = setTimeout(launch, delay);
+      delay = Math.min(delay * 2, maxRetryMs);
+    };
+    const check = async () => {
+      if (checking || !candidate || stopping || child !== tunnel) return;
+      checking = true;
+      let ok = false;
+      try { ok = await probe(candidate); } catch { /* retry */ }
+      checking = false;
+      if (stopping || child !== tunnel) return;
+      if (ok) {
+        failures = 0;
+        clearTimeout(startupTimer);
+        delay = retryMs;
+        if (lastURL !== candidate) { lastURL = candidate; setURL(candidate); log(`Public link ready: ${candidate}`); }
+      } else if (lastURL && ++failures >= 3) {
+        console.warn('Public tunnel no longer reachable; reconnecting:', currentProvider);
+        retire();
+        return;
+      }
+      healthTimer = setTimeout(check, checkMs);
+    };
+    startupTimer = setTimeout(() => {
+      console.warn('Public tunnel did not become reachable; reconnecting:', currentProvider);
+      retire();
+    }, startupMs);
     const onOutput = (chunk) => {
       if (stopping) return;
       output = (output + chunk.toString()).slice(-8192);
-      const match = output.match(quickTunnelPattern);
-      if (!match || match[0] === lastURL) return;
-      lastURL = match[0];
+      const match = output.match(currentProvider === 'cloudflare' ? quickTunnelPattern : alternativePattern);
+      if (!match || match[0] === candidate) return;
+      candidate = match[0];
+      log(`Public link: checking ${candidate}`);
       output = '';
-      delay = retryMs;
-      setURL(lastURL);
+      check();
     };
     tunnel.stdout?.on('data', onOutput);
     tunnel.stderr?.on('data', onOutput);
     tunnel.on('error', (error) => console.warn('Quick tunnel unavailable:', error.message));
     tunnel.once('close', () => {
-      if (stopping || child !== tunnel) return;
-      if (lastURL) { lastURL = ''; setURL(''); }
-      timer = setTimeout(launch, delay);
-      delay = Math.min(delay * 2, maxRetryMs);
+      retire();
     });
   };
   launch();
@@ -113,6 +203,8 @@ async function setupMobileAccess(dataDir, tunnelCommand, { retryMs = 5000, maxRe
     if (stopping) return;
     stopping = true;
     if (timer) clearTimeout(timer);
+    clearTimeout(startupTimer);
+    clearTimeout(healthTimer);
     child?.kill();
     await publish;
     if (published) {
@@ -123,4 +215,4 @@ async function setupMobileAccess(dataDir, tunnelCommand, { retryMs = 5000, maxRe
   return { stop };
 }
 
-module.exports = { lanPort, quickTunnelPattern, setupMobileAccess };
+module.exports = { lanPort, quickTunnelPattern, alternativePattern, tunnelProvider, tunnelLookup, setupMobileAccess };

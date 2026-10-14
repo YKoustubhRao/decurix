@@ -19,14 +19,14 @@ const maxTunnelRequestBytes = 8192
 // menu). A field left out of a POST body leaves that address unchanged -
 // the admin/LAN URLs and the two tunnel URLs are reported by separate calls,
 // and none of them should be able to blank out another. An explicit empty
-// lan_tunnel_url clears a stopped temporary tunnel from the Mobile menu.
+// lan_url or lan_tunnel_url clears an unavailable link from the Mobile menu.
 func (s *Server) tunnelHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
 		var req struct {
 			URL          string  `json:"url"`
 			AdminURL     string  `json:"admin_url"`
-			LANURL       string  `json:"lan_url"`
+			LANURL       *string `json:"lan_url"`
 			LANTunnelURL *string `json:"lan_tunnel_url"`
 		}
 
@@ -44,8 +44,8 @@ func (s *Server) tunnelHandler(w http.ResponseWriter, r *http.Request) {
 			s.Tunnel.SetAdminURL(req.AdminURL)
 		}
 
-		if req.LANURL != "" {
-			s.Tunnel.SetLANURL(req.LANURL)
+		if req.LANURL != nil {
+			s.Tunnel.SetLANURL(*req.LANURL)
 		}
 
 		if req.LANTunnelURL != nil && (*req.LANTunnelURL == "" || tunnelAddress(*req.LANTunnelURL)) {

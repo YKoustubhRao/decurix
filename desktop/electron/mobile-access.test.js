@@ -12,7 +12,7 @@ const source = fs.readFileSync(path.join(__dirname, 'mobile-access.js'), 'utf8')
 // What main.js passes: the cloudflared shipped with the app.
 const tunnelCommand = (port) => ({ file: 'cloudflared.exe', args: ['tunnel', '--url', `http://127.0.0.1:${port}`] });
 
-function harness(namedConfigured = false, held = '') {
+function harness(namedConfigured = false, held = '', dns = {}) {
   const state = { lan_url: '', lan_tunnel_url: held };
   const spawns = [];
   const warnings = [];
@@ -49,6 +49,8 @@ function harness(namedConfigured = false, held = '') {
     'node:child_process': childProcess,
     'node:fs': { readFileSync: () => 'DECURIX_LAN_PORT=8123\n' },
     'node:http': http,
+    'node:https': {},
+    'node:dns': dns,
     'node:path': path,
   };
   const module = { exports: {} };
@@ -62,6 +64,8 @@ function harness(namedConfigured = false, held = '') {
     clearTimeout,
     console: { warn: (...args) => warnings.push(args) },
   }, { filename: 'mobile-access.js' });
+  const setup = module.exports.setupMobileAccess;
+  module.exports.setupMobileAccess = (dir, command, options) => setup(dir, command, { probe: async () => true, provider: 'cloudflare', ...options });
   return { api: module.exports, state, spawns, warnings, get child() { return child; } };
 }
 
@@ -137,4 +141,91 @@ test('a tunnel that cannot start leaves the app running', async () => {
   assert.equal(h.state.lan_tunnel_url, '');
   assert.match(h.warnings[0][1], /ENOENT/);
   await access.stop();
+});
+
+const settle = async () => { for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setImmediate(resolve)); };
+const until = async (condition) => {
+  const end = Date.now() + 2000;
+  while (!condition() && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(condition(), 'condition did not become true');
+};
+
+test('failed system DNS falls back without changing machine DNS settings', async () => {
+  const servers = [];
+  const h = harness(false, '', {
+    lookup: (_host, _options, done) => done(Object.assign(new Error('cached NXDOMAIN'), { code: 'ENOTFOUND' })),
+    Resolver: class {
+      setServers(values) { servers.push(...values); }
+      resolve4(_host, done) { done(null, ['104.16.230.132']); }
+    },
+  });
+  const result = await new Promise((resolve, reject) => h.api.tunnelLookup('new.trycloudflare.com', { all: true }, (error, values) => error ? reject(error) : resolve(values)));
+  assert.deepEqual(servers, ['1.1.1.1', '1.0.0.1']);
+  assert.equal(result[0].address, '104.16.230.132');
+  assert.equal(result[0].family, 4);
+});
+
+test('a working system DNS answer is used without contacting another resolver', async () => {
+  const h = harness(false, '', {
+    lookup: (_host, _options, done) => done(null, '192.0.2.1', 4),
+    Resolver: class { constructor() { throw new Error('unexpected fallback'); } },
+  });
+  const result = await new Promise((resolve, reject) => h.api.tunnelLookup('new.trycloudflare.com', {}, (error, address) => error ? reject(error) : resolve(address)));
+  assert.equal(result, '192.0.2.1');
+});
+
+test('does not advertise a URL until its access-code page is reachable', async () => {
+  const h = harness();
+  let ready = false;
+  const access = await h.api.setupMobileAccess('/data', tunnelCommand, { checkMs: 5, probe: async () => ready });
+  try {
+    h.child.stderr.emit('data', 'https://blue-flower.trycloudflare.com');
+    await settle();
+    assert.equal(h.state.lan_tunnel_url, '');
+    ready = true;
+    await until(() => Boolean(h.state.lan_tunnel_url));
+    assert.equal(h.state.lan_tunnel_url, 'https://blue-flower.trycloudflare.com');
+  } finally { await access.stop(); }
+});
+
+test('a Cloudflare process stuck on DNS falls back even without exiting', async () => {
+  const h = harness();
+  const providers = [];
+  const access = await h.api.setupMobileAccess('/data', (port, provider) => {
+    providers.push(provider);
+    return tunnelCommand(port);
+  }, { provider: 'auto', startupMs: 100, retryMs: 1 });
+  try {
+    await until(() => providers.length >= 2);
+    assert.deepEqual(providers.slice(0, 2), ['cloudflare', 'localhost-run']);
+    h.child.stdout.emit('data', 'tunneled with tls termination, https://example123.lhr.life');
+    await settle();
+    assert.equal(h.state.lan_tunnel_url, 'https://example123.lhr.life');
+  } finally { await access.stop(); }
+});
+
+test('losing public reachability removes the URL and reconnects', async () => {
+  const h = harness();
+  let ready = true;
+  const access = await h.api.setupMobileAccess('/data', tunnelCommand, { checkMs: 5, retryMs: 1, probe: async () => ready });
+  try {
+    h.child.stderr.emit('data', 'https://blue-flower.trycloudflare.com');
+    await settle();
+    assert.equal(h.state.lan_tunnel_url, 'https://blue-flower.trycloudflare.com');
+    ready = false;
+    await until(() => h.spawns.length >= 2);
+    assert.equal(h.state.lan_tunnel_url, '');
+    assert.equal(h.spawns.length, 2);
+  } finally { await access.stop(); }
+});
+
+test('a late successful probe cannot republish a stopped tunnel', async () => {
+  const h = harness();
+  let finish;
+  const access = await h.api.setupMobileAccess('/data', tunnelCommand, { probe: () => new Promise((resolve) => { finish = resolve; }) });
+  h.child.stderr.emit('data', 'https://blue-flower.trycloudflare.com');
+  await access.stop();
+  finish(true);
+  await settle();
+  assert.equal(h.state.lan_tunnel_url, '');
 });
