@@ -152,6 +152,10 @@ class Handler(BaseHTTPRequestHandler):
         parts = self._parts()
 
         def route():
+            if parts == ["workflows"]:
+                from decurix_agent.workflow_api import listing
+                return self._json(200, listing())
+
             if parts == ["recordings"]:
                 return self._json(200, {"recordings": recording.sessions(), "demonstration": demonstration.status()})
 

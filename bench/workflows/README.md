@@ -57,3 +57,37 @@ python bench/workflows/live.py --desktop office1 --inputs inputs.json --timeout 
 ```
 
 The runner uses chat and reopens every saved artifact from a separate process before accepting completion. Structural parsing and hashes do not prove numerical accuracy, formula recalculation, visual layout or cross-artifact consistency. Add task-specific semantic checks and rendered/live inspection for those guarantees. Reports distinguish simulated adapters, real fixture applications, scripted native GUI tasks and model-driven tasks; do not combine them into a single application-success claim.
+
+## Qualification recorded on 14 October 2026
+
+| Check | Result | Evidence and scope |
+|---|---|---|
+| Agent regression suite | 1,284 tests, 9 skipped | `results/agent-tests-final.log`; includes the production fixes found during live testing |
+| Offline learning transfer | 150/150 | 25 families, six variants each; simulated application adapter |
+| Live browser learning transfer | 75/75 | `results/live-transfer-full.json`; 25 transformations sharing one local browser form, three holdout variants each |
+| Native learning transfer | 7/7 | `results/native-consolidated.json`; Calc, Writer, Impress and Thunar, one agent-recorded lesson per case, unseen values and independently reopened saved artifacts |
+| Native multi-app chain | 9/9 | `results/native-chain-final.json`; three Calc/Writer/Impress cycles, real file handoffs, fresh-worker resume after stage three, one attempt per stage |
+| Full teaching/correction API flow | Passed | `results/skill-api-verified.log`; one demonstration, teaching questions, three runs, safe pause and correction that resumes only the final step |
+| Scripted GUI outcomes | 20/20 | `results/gui-oracle/20261014-193022.json`; Chromium, Calc, Writer, Mousepad and Thunar |
+| Benchmark failure reporting | 2/2 | `results/gui-exit-tests.log`; a rejected business result produces a failing process exit even when actions report success |
+
+The independent [PM review](PM_REVIEW.md) records the evidence checks and remaining limits. Live runs use isolated Linux desktop containers, Chromium fixtures and LibreOffice; these results do not establish native Microsoft Office, enterprise account integration, human demonstration capture or unrestricted model autonomy. Results and screenshots are local, ignored artifacts preserved under `results/`.
+
+Live testing exposed missing labels on LibreOffice editable fields and loss of earlier supplied parameters when replay resumed at a later step. Both are fixed in production with regressions. The native report preserves failed attempts as well as passing reruns; fixture recovery-state and dialog-scope corrections are identified separately.
+
+Recheck exported evidence from the repository root:
+
+```text
+python bench/workflows/audit_evidence.py
+python bench/workflows/audit_native.py
+python bench/workflows/audit_api.py
+python bench/workflows/audit_chain.py
+python -m unittest discover -s bench/gui -p test_run.py -v
+```
+
+After teaching native lessons, run the chain inside that same isolated desktop (`DISPLAY=:1`, `PYTHONPATH=/opt`). Pass the native report containing those exact saved skills. The first process intentionally stops at a durable checkpoint; copy its `run_id` into the second command:
+
+```text
+python3 /home/headless/bench-workflows/native_chain.py --reports /home/headless/work/native-transfer.json --max-stages 3 --output /home/headless/work/native-chain-checkpoint.json
+python3 /home/headless/bench-workflows/native_chain.py --reports /home/headless/work/native-transfer.json --resume RUN_ID --output /home/headless/work/native-chain.json
+```

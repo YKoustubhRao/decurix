@@ -296,6 +296,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/desktops/recordings/learn", s.learnRecordingHandler)
 	mux.HandleFunc("/skills/", s.skillsPageHandler)
 	mux.HandleFunc("/api/desktops/skills", s.skillsAPIHandler)
+	mux.HandleFunc("/api/desktops/workflows", s.workflowsAPIHandler)
 	mux.HandleFunc("/api/desktops/skills/get", s.skillAPIHandler)
 	mux.HandleFunc("/api/desktops/skills/run", s.runSkillHandler)
 	mux.HandleFunc("/api/desktops/skills/export", s.skillExportHandler)

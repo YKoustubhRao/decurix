@@ -1277,10 +1277,13 @@ def run(program, params=None, start=1, report=None, ladder=None):
 
     values, absent = {}, []
     for param in program.get("params") or []:
-        if param["step"] < start:
-            continue
         if param["name"] in given:
+            # A resumed later step can still check a value typed earlier
+            # (for example "Saved {customer_name}" after correcting Save).
+            # Keep supplied context without requiring skipped inputs again.
             values[param["name"]] = given[param["name"]]
+        elif param["step"] < start:
+            continue
         elif param["secret"]:
             absent.append(param)
         else:

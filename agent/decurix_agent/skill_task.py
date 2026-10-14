@@ -377,7 +377,7 @@ def _begin(content, task_file):
     usage.add(input_tokens=0, output_tokens=0, cost_usd=0)
 
 
-def perform(content, task_file=None):
+def perform(content, task_file=None, source_files=None):
     """Run a "/learn" or "/skill" request as the task the watcher dispatched it as."""
 
     _begin(content, task_file)
@@ -386,7 +386,7 @@ def perform(content, task_file=None):
         if parse_learn(content) is not None:
             _learn(*parse_learn(content))
         else:
-            _run_request(*parse_skill(content), context=skill_context(content))
+            _run_request(*parse_skill(content), context=skill_context(content), source_files=source_files)
     except _Refused as refusal:
         write_final_reply(str(refusal), kind="error", engine=LEARN_ENGINE if parse_learn(content) is not None else SKILL_ENGINE)
     except Exception as exc:
@@ -644,7 +644,7 @@ def _listing():
     return "Skills on this desktop:\n" + "\n".join(lines) + "\nRun one with `/skill <name>`."
 
 
-def _run_request(query, given, context=""):
+def _run_request(query, given, context="", source_files=None):
     if not query:
         write_final_reply(_listing(), kind="final", engine=SKILL_ENGINE)
         return
@@ -656,6 +656,12 @@ def _run_request(query, given, context=""):
             names = ", ".join(f"`{s['name']}`" for s in candidates)
             raise _Refused(f"More than one skill fits \"{query}\": {names}. Say which, by its name.")
         raise _Refused(f"I do not know a skill like \"{query}\". " + _listing())
+
+    if source_files is not None:
+        try:
+            skill = skills.bind_sources(skill, source_files)
+        except ValueError as exc:
+            raise _Refused(f"Cannot use those source files: {exc}") from exc
 
     run = {"skill": skill, "values": skills.initial_values(skill, given), "start": 1, "checked": False, "patches": [],
            "asked": 0, "stuck": 0, "ladder": _ladder(skill), "asked_ids": [], "context": context}

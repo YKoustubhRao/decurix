@@ -9,9 +9,26 @@ from unittest import mock
 import test_recordings  # noqa: F401
 
 from decurix_agent.computer import replay
+from test_recordings import FakeScreen, field
 
 
 class ValuesOfThisRun(unittest.TestCase):
+    def test_resumed_confirmation_uses_the_earlier_supplied_value(self):
+        program = {"title": "Save a customer", "params": [
+            {"name": "customer_name", "step": 1, "secret": False, "default": "Acme", "example": "Acme"}],
+            "steps": [
+                {"n": 1, "kind": "type", "param": "customer_name", "summary": "type customer",
+                 "target": {"role": "textbox", "name": "Customer"}},
+                {"n": 2, "kind": "click", "summary": "click Go", "target": {"role": "button", "name": "Go"},
+                 "expect": [{"type": "element", "role": "status", "name": "Saved {customer_name}"}]}]}
+        for shown, expected in [("Saved Wayne", replay.VERIFIED), ("Saved Acme", replay.HALTED)]:
+            with self.subTest(shown=shown):
+                screen = FakeScreen([field("button", "Go")], after={"adds": [field("status", shown)]})
+                with mock.patch.object(replay, "core", screen), mock.patch.object(replay, "EXPECT_SECONDS", 0):
+                    result = replay.run(program, params={"customer_name": "Wayne"}, start=2, report=lambda _: None)
+                self.assertEqual(result["outcome"], expected)
+                self.assertEqual([kind for kind, _ in screen.acted], ["click"])
+
     def test_a_choice_shows_the_entry_named_within_the_value(self):
         self.assertTrue(replay._shows_value("IT", "IT department", choice=True))
         self.assertTrue(replay._shows_value("Customer Service", "Dept: Customer Service team", choice=True))

@@ -59,6 +59,14 @@
 .notes b,.learned b{color:var(--text);font-size:12px}
 
 .placeholder{padding:48px 24px;text-align:center;color:var(--text-3);font-size:13px}
+.workflow-tools{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.workflow-progress{width:100%;height:6px;accent-color:var(--accent)}
+.workflow-detail{padding:12px 18px;border-top:1px solid var(--line)}
+.workflow-detail summary{cursor:pointer;font-size:13px;font-weight:600}
+.workflow-detail ol{padding-left:22px;font-size:13px;line-height:1.6}
+.workflow-detail code{overflow-wrap:anywhere;font-size:11px}
+.workflow-error{color:var(--danger,var(--text));white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}
+.workflow-preview{padding:12px;border:1px solid var(--line);border-radius:8px;white-space:pre-wrap;font-size:13px}
 
 @media (max-width:520px){
   .skill-head,.run,.outline,.notes,.learned{padding-left:14px;padding-right:14px}
@@ -134,6 +142,26 @@
   </div>
 
   <div class="placeholder" id="loading">Loading…</div>
+  <section class="section" id="workflows" aria-labelledby="workflowTitle">
+    <div class="workflow-tools">
+      <h2 class="section-title" id="workflowTitle">Workflows</h2>
+      <button class="btn btn-default btn-sm" type="button" id="workflowRefresh">Refresh</button>
+      <a class="btn btn-default btn-sm" href="/view/{{.Desktop.ID}}">Open chat</a>
+    </div>
+    <p class="hint">Follow work across apps, inspect checked files and continue from a saved checkpoint.</p>
+    <p class="hint" id="workflowMessage" role="status">Loading saved workflows…</p>
+    <div class="cards" id="workflowCards"></div>
+    <details class="panel workflow-detail">
+      <summary>Start from an example</summary>
+      <form class="run" id="workflowStart">
+        <label>Workflow <select class="input" id="workflowExample" required></select></label>
+        <label>Files on this desktop, one full path per line <textarea class="input" id="workflowFiles" required placeholder="/home/headless/work/source.xlsx"></textarea></label>
+        <label>What should happen? Include how to check the result. <textarea class="input" id="workflowInstructions" required></textarea></label>
+        <p class="hint">Examples are starting instructions. The desktop may ask for more details in chat.</p>
+        <button class="btn btn-primary btn-sm" id="workflowStartButton" type="submit">Start workflow</button>
+      </form>
+    </details>
+  </section>
   {{end}}
 
 </main>
@@ -548,6 +576,105 @@
   }
 
   refresh();
+  var workflowBusy = false, workflowSending = false;
+  var workflowCards = document.getElementById("workflowCards");
+  var workflowMessage = document.getElementById("workflowMessage");
+  var workflowExample = document.getElementById("workflowExample");
+  var workflowStartButton = document.getElementById("workflowStartButton");
+
+  async function sendWorkflow(command, control){
+    if(workflowSending){ return; }
+    workflowSending = true;
+    control.disabled = true;
+    try{
+      await post("/api/desktops/send", {id: desktopID, content: command});
+      toast("Request sent. Follow its progress and questions in chat.");
+      workflowMessage.textContent = "Request sent. Refresh to see the saved state, or open chat for questions.";
+    }catch(err){
+      toast("Could not send request: " + err.message);
+    }finally{
+      workflowSending = false;
+      control.disabled = false;
+    }
+  }
+
+  function workflowCard(run){
+    var card = node("article", "panel skill");
+    var head = node("div", "skill-head");
+    head.appendChild(node("h3", "skill-title", run.title));
+    head.appendChild(node("div", "skill-meta", run.status.replace(/_/g, " ") + " · " + run.completed_stages + " of " + run.total_stages + " stages complete"));
+    head.appendChild(node("div", "skill-name", run.run_id));
+    var progress = node("progress", "workflow-progress");
+    progress.max = run.total_stages; progress.value = run.completed_stages;
+    progress.setAttribute("aria-label", "Completed stages"); head.appendChild(progress);
+    head.appendChild(node("p", "hint", run.guidance));
+    if(run.error){ head.appendChild(node("p", "workflow-error", run.error)); }
+    if(run.approval){
+      head.appendChild(node("div", "workflow-preview", "Proposed stage: " + run.approval.stage + "\n" + run.approval.instruction + "\nRequired files: " + run.approval.files.join(", ")));
+    }
+    var actions = node("div", "skill-actions");
+    run.actions.forEach(function(action){
+      var b = button(action.label, "btn-default");
+      var cancelling = action.command.indexOf("/workflow cancel ") === 0;
+      b.disabled = workflowBusy && !cancelling;
+      b.addEventListener("click", function(){
+        if(cancelling && !window.confirm("Cancel remaining stages? Changes already made will be kept.")){ return; }
+        sendWorkflow(action.command, b);
+      });
+      actions.appendChild(b);
+    });
+    head.appendChild(actions); card.appendChild(head);
+    var detail = node("details", "workflow-detail");
+    detail.appendChild(node("summary", "", "Stages and checked files"));
+    detail.appendChild(node("p", "hint", "Files were checked when their stage completed. Continuing rechecks earlier outputs. Relative paths are inside this run's artifact folder."));
+    var list = node("ol");
+    run.stages.forEach(function(stage){
+      var item = node("li", "", stage.id + (stage.app ? " · " + stage.app : "") + " · " + stage.status + " · attempts " + stage.attempts);
+      if(stage.error){ item.appendChild(node("p", "workflow-error", stage.error)); }
+      stage.files.forEach(function(file){
+        item.appendChild(node("div", "", file.path + " · " + file.bytes + " bytes"));
+        item.appendChild(node("code", "", "SHA-256 " + file.sha256));
+      });
+      list.appendChild(item);
+    });
+    detail.appendChild(list); card.appendChild(detail);
+    return card;
+  }
+
+  async function refreshWorkflows(){
+    var refreshButton = document.getElementById("workflowRefresh");
+    refreshButton.disabled = true;
+    try{
+      var data = await getJSON("/api/desktops/workflows?" + query({}));
+      workflowBusy = data.busy;
+      workflowStartButton.disabled = workflowBusy;
+      if(!workflowExample.options.length){
+        data.catalog.forEach(function(example){
+          var option = node("option", "", example.title); option.value = example.id;
+          workflowExample.appendChild(option);
+        });
+      }
+      workflowCards.replaceChildren.apply(workflowCards, data.runs.map(workflowCard));
+      workflowMessage.textContent = (data.runs.length ? "" : "No saved workflows yet. Start from an example below, or create one in chat.") +
+        (workflowBusy ? " This desktop is busy. Open chat to follow its current task; starting or continuing work is disabled." : "") +
+        (data.has_more ? " Showing the 100 most recently changed runs." : "") +
+        (data.unreadable_runs.length ? " Some saved runs could not be read: " + data.unreadable_runs.join(", ") : "");
+    }catch(err){
+      workflowStartButton.disabled = true;
+      workflowMessage.textContent = "Could not read saved workflows: " + err.message + ". Refresh to retry. Older desktops may need updating.";
+    }finally{ refreshButton.disabled = false; }
+  }
+
+  document.getElementById("workflowRefresh").addEventListener("click", refreshWorkflows);
+  document.getElementById("workflowStart").addEventListener("submit", function(event){
+    event.preventDefault();
+    if(workflowBusy){ return; }
+    var files = document.getElementById("workflowFiles").value.split(/\r?\n/).map(function(v){ return v.trim(); }).filter(Boolean);
+    var instructions = document.getElementById("workflowInstructions").value.trim();
+    if(!files.length || !instructions){ return; }
+    sendWorkflow("/workflow start " + workflowExample.value + " " + JSON.stringify({source_files: files, instructions: instructions}), workflowStartButton);
+  });
+  refreshWorkflows();
 })();
 </script>
 </body>

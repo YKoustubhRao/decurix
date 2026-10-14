@@ -25,6 +25,17 @@ from decurix_agent import filelock
 MAX_REPORT_CHARS = 2000
 
 
+def missing_inputs(spec, inputs):
+    """Zero and False are supplied values; absence and empty data are not."""
+    def absent(value):
+        return value is None or (isinstance(value, str) and not value.strip()) or (isinstance(value, (list, dict, tuple)) and not value)
+    return [key for key in spec.get("required_inputs", []) if key not in inputs or absent(inputs[key])]
+
+
+def _attempt_limit(step, record):
+    return step.get("max_attempts", 2) + record.get("additional_attempts", 0)
+
+
 def _serialized(method):
     @wraps(method)
     def call(self, run_id, *args, **kwargs):
@@ -117,6 +128,12 @@ def validate(spec):
                 raise ValueError(f"{key} must be boolean")
         if "skill" in s and (not isinstance(s["skill"], dict) or not isinstance(s["skill"].get("name"), str) or not s["skill"]["name"].strip() or not isinstance(s["skill"].get("params", {}), dict)):
             raise ValueError("skill needs a name and parameter object")
+        if "skill" in s:
+            sources = s["skill"].get("source_files", {})
+            if not isinstance(sources, dict) or any(not isinstance(k, str) or not k.strip() or not (
+                    isinstance(v, str) and v.strip() or isinstance(v, dict) and set(v) == {"input"}
+                    and isinstance(v["input"], str) and v["input"].strip()) for k, v in sources.items()):
+                raise ValueError("skill source_files must map recorded paths to paths or input bindings")
         for c in s["checks"]:
             if not isinstance(c, dict) or not isinstance(c.get("path"), str):
                 raise ValueError("check needs a string path")
@@ -347,7 +364,7 @@ class WorkflowRunner:
         validate(spec)
         if inputs is not None and not isinstance(inputs, dict):
             raise ValueError("inputs must be an object")
-        missing = [key for key in spec.get("required_inputs", []) if not (inputs or {}).get(key)]
+        missing = missing_inputs(spec, inputs or {})
         if missing:
             raise ValueError("missing required inputs: " + ", ".join(missing))
         p = self._path(run_id)
@@ -372,7 +389,7 @@ class WorkflowRunner:
             raise ValueError("checkpoint step ids do not match spec")
         for step in state["spec"]["steps"]:
             record = state["steps"][step["id"]]
-            if not isinstance(record, dict) or record.get("status") not in {"pending", "running", "completed", "failed"} or type(record.get("attempts")) is not int or not 0 <= record["attempts"] <= step.get("max_attempts", 2) or not isinstance(record.get("evidence"), list):
+            if not isinstance(record, dict) or type(record.get("additional_attempts", 0)) is not int or not 0 <= record.get("additional_attempts", 0) <= 10 - step.get("max_attempts", 2) or record.get("status") not in {"pending", "running", "completed", "failed"} or type(record.get("attempts")) is not int or not 0 <= record["attempts"] <= _attempt_limit(step, record) or not isinstance(record.get("evidence"), list):
                 raise ValueError("invalid checkpoint step record")
         return state
 
@@ -406,15 +423,12 @@ class WorkflowRunner:
                     current_identity = _process_identity(lease["pid"])
                     if current_identity is not None:
                         live = lease["process_identity"] == current_identity
-                if not s.get("retry_safe", False) and lease.get("owner") != self.owner:
-                    state["status"], state["error"] = "uncertain", "Interrupted non-idempotent step; reconcile external state before a new run"
-                    return self._save(state), None
                 if live or (not local and (not recover or lease.get("expires_at", 0) > time.time())):
                     return state, None
                 if not s.get("retry_safe", False):
                     state["status"], state["error"] = "uncertain", "Interrupted non-idempotent step; reconcile external state before a new run"
                     return self._save(state), None
-            if record["attempts"] >= s.get("max_attempts", 2):
+            if record["attempts"] >= _attempt_limit(s, record):
                 state["status"] = "failed"
                 return self._save(state), None
             if s.get("approval") and f"{run_id}:{s['id']}" not in approvals:
@@ -468,7 +482,7 @@ class WorkflowRunner:
             state["status"] = "pending"
         except Exception as exc:
             record["error"] = str(exc)
-            retry = step.get("retry_safe", False) and record["attempts"] < step.get("max_attempts", 2)
+            retry = step.get("retry_safe", False) and record["attempts"] < _attempt_limit(step, record)
             record["status"] = "pending" if retry else "failed"
             state["status"] = "pending" if retry else "failed"
         record.pop("lease", None)
@@ -495,8 +509,34 @@ class WorkflowRunner:
         return self.status(run_id)
 
     @_serialized
+    def retry(self, run_id, step_id):
+        """An explicit operator request grants one safe attempt, never a reset."""
+        state = self.status(run_id)
+        step = next((s for s in state["spec"]["steps"] if s["id"] == step_id), None)
+        record = state["steps"].get(step_id)
+        if not step or state["status"] != "failed" or record["status"] != "failed":
+            raise ValueError("retry requires a failed workflow and failed stage")
+        if not step.get("retry_safe", False):
+            raise ValueError("this stage is not retry-safe; reconcile its external effects before starting new work")
+        if _attempt_limit(step, record) >= 10:
+            raise ValueError("stage reached its lifetime limit of 10 attempts")
+        for predecessor in state["spec"]["steps"]:
+            previous = state["steps"][predecessor["id"]]
+            if previous["status"] == "completed" and artifact_evidence(predecessor, {}, self.context(state)) != previous["evidence"]:
+                raise ValueError("checked predecessor artifact changed; retry refused")
+        state.setdefault("recovery_events", []).append({"action": "retry", "step_id": step_id,
+            "at": time.time(), "previous_error": record.get("error", ""), "attempts": record["attempts"]})
+        record["additional_attempts"] = record.get("additional_attempts", 0) + 1
+        record["status"] = "pending"
+        state["status"] = "pending"
+        state.pop("error", None)
+        return self._save(state)
+
+    @_serialized
     def cancel(self, run_id):
         state = self.status(run_id)
+        if state["status"] in {"completed", "cancelled"}:
+            return state
         state["status"] = "cancelled"
         return self._save(state)
 
