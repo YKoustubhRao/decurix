@@ -674,6 +674,31 @@ For a phone, the app opens a temporary Cloudflare link to the access-code-gated
 listener while its window is open (`cloudflared` ships with the app). The
 unauthenticated dashboard on port 8080 is never exposed.
 
+The desktop checks that the public URL serves Decurix's access-code page before
+showing it. With `DECURIX_TUNNEL_PROVIDER=auto`, if Cloudflare cannot connect or
+its URL cannot resolve, it switches after 45 seconds to a free
+[localhost.run](https://localhost.run/docs/) tunnel using the OpenSSH client.
+No account or domain purchase is needed; both services
+use temporary addresses and require the app and computer to stay running.
+Set `DECURIX_TUNNEL_PROVIDER=localhost-run` in the desktop's `.env` to use that
+service directly, or `cloudflare` to use only Cloudflare (the default).
+Restart the app after changing this setting. The Windows settings file is
+`%APPDATA%\decurix\.env`. SSH host keys are saved in `tunnel-known-hosts` there.
+
+If system DNS reports a newly allocated public hostname as missing, the
+desktop's reachability check retries against Cloudflare DNS for that request.
+This does not change the computer's DNS settings. A phone or browser using a
+router/ISP resolver that returns incorrect NXDOMAIN responses may also need
+Cloudflare DNS (`1.1.1.1`, `1.0.0.1`) or Secure DNS enabled on that device.
+Public-link startup, DNS failures, and readiness are recorded in `desktop.log`.
+
+The IP URL is a **same-network** address, not a public internet address. Windows
+may ask for administrator approval to forward the gated port through WSL and
+allow it through the firewall. The app checks that the forwarded address serves
+the access-code page. Guest Wi-Fi/client isolation can still prevent another
+device from reaching it; use the public HTTPS tunnel in that case or when using
+mobile data. Forwarding a private IP cannot make it public through carrier NAT.
+
 ### Mac and Linux desktop app
 
 ```bash
