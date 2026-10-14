@@ -80,6 +80,29 @@ def _report_queued(name):
     )
 
 
+def _perform_following_procedure(content, task_file):
+    """
+    An engine's task, with the standing procedure it asks for written under it.
+    Recurring work the person taught by saying how it is done: a request that
+    gives the procedure has it kept, and a later "as usual" gets it back under
+    its own words - for the engine, and for the check of what it hands in
+    (procedures.py). Done on the task's own thread: finding the procedure asks
+    the hosted model, and found in review (2026-10-14) asking it inside the
+    watcher's pass held every other request and reply - and a model that waits
+    out a rate limit for minutes reads as a watcher stuck.
+    """
+
+    applied = procedures.apply(content)
+    if applied == content:
+        if procedures.sets_procedure(content):
+            threading.Thread(target=procedures.note, args=(content, task_context.current() or ""), daemon=True).start()
+    else:
+        content = applied
+        with state.state_lock:
+            state.current_task = content
+    return perform_task(content, task_file)
+
+
 def _needs_no_backend(content):
     """Whether a request is handled without the reasoning backend ("/replay", "/record", "/learn", "/skill", a recorded task done again, or a question for a web app)."""
 
@@ -381,10 +404,19 @@ def _pass():
                 except Exception as exc:
                     log(f"Could not keep what the person said: {exc}")
 
-            if state.paused_replay is not None:
-                target, args = replay_task.resume, (content, outcome)
-            elif state.paused_skill is not None:
-                target, args = skill_task.resume, (content, outcome)
+            if state.paused_replay is not None or state.paused_skill is not None:
+                # A paused replay or taught skill reads "stop" itself: a lesson
+                # keeps its draft and says how to carry on, a run records that
+                # it was stopped and where. Inside a /workflow stage the stop
+                # also ends the workflow, before that report is written, so the
+                # report is shown rather than taken for the stage's result and
+                # the next stage started.
+                if guidance.STOP_ONLY.match(content or "") and workflow_task.has_active():
+                    workflow_task.cancel_active()
+                if state.paused_replay is not None:
+                    target, args = replay_task.resume, (content, outcome)
+                else:
+                    target, args = skill_task.resume, (content, outcome)
             else:
                 guidance.note_reply(content, outcome)
                 # An answer to a question a taught task's engine asked
@@ -404,9 +436,6 @@ def _pass():
                 # next request starts.)
                 if guidance.STOP_ONLY.match(content or ""):
                     target, args = _called_off, (content,)
-
-            if guidance.STOP_ONLY.match(content or ""):
-                target, args = _called_off, (content,)
 
             thread = threading.Thread(
                 target=_run_handler if workflow_task.has_active() else target,
@@ -518,20 +547,7 @@ def _pass():
             # question, read its answer off the page (ask_task.py).
             target = ask_task.perform
         else:
-            target = perform_task
-            # Recurring work the person taught by saying how it is done: a request
-            # that gives the procedure has it kept, and a later "as usual" gets it
-            # back under its own words - for the engine, and for the check of
-            # what it hands in (procedures.py).
-            if state.backend_ready:
-                applied = procedures.apply(content)
-                if applied == content:
-                    if procedures.sets_procedure(content):
-                        threading.Thread(target=procedures.note, args=(content, task_id), daemon=True).start()
-                else:
-                    content = applied
-                    with state.state_lock:
-                        state.current_task = content
+            target = perform_task if not state.backend_ready else _perform_following_procedure
 
         thread = threading.Thread(
             target=target,

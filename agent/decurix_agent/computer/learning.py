@@ -886,6 +886,8 @@ def _variables(skill, steps, params):
 
     def where(step):
         target = step.get("target") or {}
+        if step.get("group"):
+            return f"the radio buttons {el._quote(step['group'], 40)}"
         if target.get("role"):
             return f"{target['role']} {el._quote(target.get('name') or '', 40)}"
         return "the focused field"
@@ -1189,6 +1191,14 @@ def answer(skill, question, reply):
     if question.get("values"):
         return _answer_values(skill, question, text)
 
+    if kind == "coordinates" and question.get("step") and _choose(kind, text) is None:
+        named = _named_control(text)
+        step = _step_by_id(skill, question["step"]) if named else None
+        if step is not None:
+            _target_named(step, *named)
+            skill["answers"][qid] = text[:300]
+            return {"understood": True, "note": f"Step {step['n']} is now: {step['summary']}.", "decision": None}
+
     # Anything but a yes or a no is the name to save it as; a reply with
     # nothing to name it by is unclear, like any other.
     if kind == "confirm" and not KEEP_NAME.match(text) and not THROW_AWAY.match(text) and rename(skill, text):
@@ -1333,6 +1343,50 @@ def _apply_step_choice(skill, step, choice):
         step["consequential"] = False
 
 
+# A person naming the control a position-only click was on: "it's the Next button", "the "Save draft" button",
+# "button Submit", "the Customers tab". Found live (2026-10-14): asked about a click recorded as a bare point, a
+# person said what it was - and the only answers taken were keep / skip / manual.
+CONTROL_ROLES = {"button": "button", "link": "link", "tab": "tab", "checkbox": "checkbox", "check box": "checkbox",
+                 "radio button": "radio", "radio": "radio", "menu item": "menuitem", "option": "option"}
+_ROLE_WORDS = "|".join(sorted((re.escape(r) for r in CONTROL_ROLES), key=len, reverse=True))
+_QUOTES = "\"'`“”‘’"
+_LEAD = re.compile(r"^(?:step\s*\d+\s+(?:is|was)\s+|(?:it|that|this)(?:'s|\s+is|\s+was)\s+|(?:click|press)(?:\s+on)?\s+|the\s+|a\s+)", re.I)
+_WHERE = re.compile(r"\s+(?:at|on|in|near|under|below|above)\s+the\b.*$", re.I)
+_NAME_ROLE = re.compile(rf"^(?P<name>.+?)\s+(?P<role>{_ROLE_WORDS})$", re.I)
+_ROLE_NAME = re.compile(rf"^(?P<role>{_ROLE_WORDS})\s+(?:called\s+|named\s+|labell?ed\s+)?(?P<name>.+)$", re.I)
+
+
+def _named_control(text):
+    """(role, name) of the one control a short reply names, or None."""
+
+    t = " ".join((text or "").split()).rstrip(".!")
+    if re.search(r"[,;]|\b(?:not|or|and|but)\b", t, re.I):
+        return None  # more than naming one control
+    t = _WHERE.sub("", t)
+    while True:
+        shorter = _LEAD.sub("", t, count=1)
+        if shorter == t:
+            break
+        t = shorter
+    m = _NAME_ROLE.match(t) or _ROLE_NAME.match(t)
+    if not m:
+        return None
+    name = m.group("name").strip().strip(_QUOTES).strip()
+    if not name or len(name.split()) > 5 or re.fullmatch(r"keep|skip|manual|it|that|this|same|one", name, re.I):
+        return None
+    return CONTROL_ROLES[m.group("role").lower()], name
+
+
+def _target_named(step, role, name):
+    """A position-only step pointed at the control a person named; it is found by that from now on, never by the spot."""
+
+    step["target"] = {"role": role, "name": name}
+    for key in ("point", "look"):
+        step.pop(key, None)
+    step.pop("element_missing", None)
+    step["summary"] = replay._summary(step)
+
+
 def _answer_positional(skill, question, text):
     """The reply to the grouped positional question (see _coordinate_choices), applied to each step it covers."""
 
@@ -1351,11 +1405,20 @@ def _answer_positional(skill, question, text):
         bare = re.sub(rf"(?:^|(?<=[;,]))\s*(?:step\s*)?{n}\s+(?:is|=)\s+{re.escape(what)}", " ", bare, flags=re.I)
     choices = _coordinate_choices(question, bare)
     note = ""
+    named_steps = set()
     for step in question["steps"]:
         if step["n"] in said:
             found = _step_by_id(skill, step["id"])
-            if found is not None:
+            if found is None:
+                continue
+            named = _named_control(said[step["n"]])
+            if named:
+                _target_named(found, *named)
+                named_steps.add(step["id"])
+            else:
                 found["intent"] = ((found["intent"] + " ") if found.get("intent") else "") + f"It is {said[step['n']]}."[:MAX_INTENT]
+    if choices is None and named_steps and not bare.strip(" ,;.\n"):
+        choices = {s["id"]: "keep" for s in question["steps"]}
 
     if choices is None:
         tries = skill["unclear"][qid] = skill["unclear"].get(qid, 0) + 1

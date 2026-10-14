@@ -23,9 +23,12 @@ from decurix_agent.logging_utils import log
 # last written after the task began.
 # ============================================================
 
-READABLE = {".xlsx", ".xlsm", ".docx", ".pdf", ".csv", ".tsv", ".txt", ".md", ".json", ".xml", ".html", ".htm", ".eml"}
+READABLE = {".xlsx", ".xlsm", ".docx", ".pptx", ".pdf", ".csv", ".tsv", ".txt", ".md", ".json", ".xml", ".html", ".htm", ".eml"}
 
 MAX_FILES = 4
+# What a person asked for, ahead of what a worker made on the way when only MAX_FILES are read. Found live
+# (2026-10-14): JSON specs and notes written after a workbook pushed it out of the four newest.
+DELIVERABLES = {".xlsx", ".xlsm", ".docx", ".pptx", ".pdf", ".csv"}
 MAX_FILE_CHARS = 7000
 MAX_DEPTH = 3
 MAX_ENTRIES = 4000
@@ -34,7 +37,7 @@ MAX_ENTRIES = 4000
 SKIP_DIRS = {"node_modules", "__pycache__", "venv", "site-packages", "target", "dist", "build"}
 
 # A file a request asks for by name ("make contract_changes.docx in my work folder").
-REQUESTED_FILE = re.compile(r"\b[\w-][\w.-]*\.(?:xlsx|xlsm|docx|pdf|csv|tsv|txt|md|json|xml|html?|eml)\b", re.I)
+REQUESTED_FILE = re.compile(r"\b[\w-][\w.-]*\.(?:xlsx|xlsm|docx|pptx|pdf|csv|tsv|txt|md|json|xml|html?|eml)\b", re.I)
 NAMED_PATH = re.compile(r"(?:~|/|\b[a-z]:[\\/])[\w.~/\\-]*[\w-]\.[a-z0-9]{2,5}\b", re.I)
 
 
@@ -111,9 +114,9 @@ def files(report="", started=None, root=None, request=""):
         if wanted and path.name.lower() not in wanted and path.name.lower() not in named:
             continue
         if stat.st_mtime > started and stat.st_size > 0:
-            made.append((stat.st_mtime, str(path)))
+            made.append((path.suffix.lower() in DELIVERABLES or path.name.lower() in named, stat.st_mtime, str(path)))
 
-    return [path for _, path in sorted(made, reverse=True)[:MAX_FILES]]
+    return [path for _, _, path in sorted(made, reverse=True)[:MAX_FILES]]
 
 
 WORK_FOLDER = re.compile(r"\b(?:in|to|into)\s+(?:my|the|our)\s+work\s+folder\b", re.I)

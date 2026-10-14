@@ -1697,9 +1697,18 @@ def select_option(element, option):
                 if (!this.options) { return {ok: false, error: 'not a dropdown'}; }
                 const want = label.trim().toLowerCase();
                 const options = Array.from(this.options);
+                // A document says more than a list's entry: "IT department" for the option "IT". The one option
+                // whose whole name lies within the text given, as words, is that option - never one of two.
+                const words = s => ' ' + s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() + ' ';
+                const within = () => {
+                    const given = words(label);
+                    const fits = options.filter(o => o.value !== '' && words(o.label).trim() && given.includes(words(o.label)));
+                    return fits.length === 1 ? fits[0] : null;
+                };
                 const hit = options.find(o => o.label.trim().toLowerCase() === want)
                     || options.find(o => o.label.trim().toLowerCase().startsWith(want))
-                    || options.find(o => o.label.toLowerCase().includes(want));
+                    || options.find(o => o.label.toLowerCase().includes(want))
+                    || within();
                 if (!hit) { return {ok: false, options: options.map(o => o.label)}; }
                 this.value = hit.value;
                 this.dispatchEvent(new Event('input', {bubbles: true}));

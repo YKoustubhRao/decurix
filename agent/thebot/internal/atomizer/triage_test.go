@@ -263,3 +263,21 @@ func TestTriageSendsAFileFromAWebsiteToTheOperator(t *testing.T) {
 		t.Fatalf("a plain file write was rerouted: %s (%s)", got.Kind, got.Reason)
 	}
 }
+
+// A request whose deliverables are an office document and an email draft is
+// back-office work even when its words look like a build: found live
+// (2026-10-14), a price-list workbook and a summary email went to the coding
+// harness.
+func TestTriageSendsOfficeDeliverablesToTheOperatorNotTheCodingHarness(t *testing.T) {
+	p := "Write a Python script that builds price_list.xlsx from the attached costs, then draft an email to sales@example.com summarising it."
+	if Classify(p) != "coding" {
+		t.Skip("no longer classified as coding at all - the guard below is then not exercised")
+	}
+	r := Triage(p)
+	if r.Kind == RouteSkill && r.TaskType == "coding" {
+		t.Errorf("Triage(%q) = coding harness, want the operator", p)
+	}
+	if r.Kind != RouteOperate {
+		t.Errorf("Triage(%q) = %v, want RouteOperate", p, r)
+	}
+}

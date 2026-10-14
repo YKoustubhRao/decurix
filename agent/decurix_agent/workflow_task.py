@@ -11,6 +11,7 @@ from decurix_agent.workflow_catalog import CATALOG, get
 
 _active = None
 _pending = None
+STAGE_REPORT_CHARS = 500
 _driving = False
 _runners = {}
 
@@ -83,6 +84,12 @@ def _report(state):
     if state.get("approval_required"):
         detail = "Approval required for " + state["approval_required"] + ". Resume with /workflow approve RUN_ID STEP_ID after reviewing the proposed action."
     records = ", ".join(f"{key}: {value['status']}" for key, value in state["steps"].items())
+    # Each stage's own report is consumed by final_gate (only its artifacts can
+    # advance the run), so the person's one reply carries what each stage said.
+    said = "".join(f"\n- {key}: {' '.join(value['report'].split())[:STAGE_REPORT_CHARS]}"
+                   for key, value in state["steps"].items() if value.get("report"))
+    if said:
+        detail = (detail + "\n\n" if detail else "") + "What each stage reported:" + said
     write_final_reply(f"Workflow {state['run_id']}: {state['status']}. {records}. {detail}",
                       kind="error" if state["status"] in {"failed", "uncertain"} else "final", checked=True)
 
@@ -254,7 +261,7 @@ def final_gate(reply, kind, engine=None):
             _report(runner().cancel(run_id))
             return True
         r = runner()
-        state = r.complete(run_id, step_id, error=reply if kind == "error" else None)
+        state = r.complete(run_id, step_id, error=reply if kind == "error" else None, report=reply)
         if state["status"] == "failed":
             _report(state)
         else:

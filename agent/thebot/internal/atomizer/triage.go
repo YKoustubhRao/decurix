@@ -267,8 +267,17 @@ func Triage(prompt string) Route {
 	p := strings.TrimSpace(prompt)
 	matched := Classify(p)
 
-	if matched == "coding" {
+	// A request whose deliverables are office documents or an email draft is
+	// back-office work, however it is worded: the operator makes them with
+	// office and gui, the coding harness would build a software project.
+	// Found live (2026-10-14): a price-list workbook and a summary email went
+	// to the coding harness, which made a Python package with tests and
+	// delivered neither.
+	if matched == "coding" && !wantsDocument(p) && !wantsEmailDraft(p) {
 		return Route{Kind: RouteSkill, TaskType: matched, Reason: "a request to build software - the coding harness takes it whole"}
+	}
+	if matched == "coding" {
+		matched = "general"
 	}
 
 	if namedCommandRe.MatchString(p) {

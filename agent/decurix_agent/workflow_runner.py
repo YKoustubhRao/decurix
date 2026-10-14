@@ -22,6 +22,9 @@ from functools import wraps
 from decurix_agent import filelock
 
 
+MAX_REPORT_CHARS = 2000
+
+
 def _serialized(method):
     @wraps(method)
     def call(self, run_id, *args, **kwargs):
@@ -436,7 +439,7 @@ class WorkflowRunner:
         return self._save(state), None
 
     @_serialized
-    def complete(self, run_id, step_id, result=None, error=None, claim_token=None):
+    def complete(self, run_id, step_id, result=None, error=None, claim_token=None, report=None):
         state = self.status(run_id)
         if state["status"] == "cancelled":
             return state
@@ -444,6 +447,10 @@ class WorkflowRunner:
         record = state["steps"][step_id]
         if record["status"] != "running":
             raise ValueError("step was not claimed")
+        # What the stage's executor said it did: kept beside the evidence (never
+        # as evidence) so the person's final report can show it.
+        if isinstance(report, str) and report.strip():
+            record["report"] = report.strip()[:MAX_REPORT_CHARS]
         token = claim_token or self._claims.get((run_id, step_id))
         if not token or token != record.get("lease", {}).get("token"):
             raise ValueError("stage completion requires its current claim token")

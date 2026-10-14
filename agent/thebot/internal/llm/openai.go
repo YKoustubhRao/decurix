@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -78,7 +79,10 @@ func (o *OpenAIProvider) Chat(ctx context.Context, model string, messages []Mess
 		msgs[i] = openaiMessage{Role: m.Role, Content: m.Content}
 		if len(m.Images) > 0 {
 			parts := []map[string]any{{"type": "text", "text": m.Content}}
-			for _, img := range base64All(m.Images) {
+			for j, img := range base64All(m.Images) {
+				if label := m.ImageLabel(j); label != "" {
+					parts = append(parts, map[string]any{"type": "text", "text": "Picture " + strconv.Itoa(j+1) + ": " + label})
+				}
 				parts = append(parts, map[string]any{"type": "image_url", "image_url": map[string]string{"url": "data:image/png;base64," + img}})
 			}
 			msgs[i].Content = parts

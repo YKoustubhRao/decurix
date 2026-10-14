@@ -87,12 +87,15 @@ def _subject_words(subject):
     return re.findall(r"[a-z0-9]+", (subject or "").lower())
 
 
-def _same_email(record, to, subject):
-    """The same letter: the same recipients, and a subject with the same words (found live: a second attempt
-    wrote "Final notice - overdue invoices" where the first had "Final notice: overdue invoices")."""
+def _same_email(record, to, subject, attached=None):
+    """The same letter: the same recipients, a subject with the same words (found live: a second attempt
+    wrote "Final notice - overdue invoices" where the first had "Final notice: overdue invoices"), and the same
+    files attached. Found in review (2026-10-14): without the files, one task's separate letters to one address
+    under one subject (an invoice each, "Invoice" every time) replaced each other and only the last was left."""
 
     return (sorted(a.lower() for a in record.get("to") or []) == sorted(a.lower() for a in to)
-            and _subject_words(record.get("subject")) == _subject_words(subject))
+            and _subject_words(record.get("subject")) == _subject_words(subject)
+            and sorted(record.get("attachments") or []) == sorted(attached or []))
 
 
 class DraftError(Exception):
@@ -134,7 +137,8 @@ def draft(to, subject, body, cc=None, attachments=None, replaces=None):
     task_id = task_context.current() or ""
     explicit = bool(replaces)
     if not replaces and task_id:
-        earlier = [r for r in drafted(task_id) if r.get("id") and _same_email(r, to, subject)]
+        attached = [Path(os.path.expanduser(str(path))).name for path in attachments or []]
+        earlier = [r for r in drafted(task_id) if r.get("id") and _same_email(r, to, subject, attached)]
         if earlier:
             replaces = earlier[-1]["id"]
 
@@ -214,5 +218,11 @@ def draft(to, subject, body, cc=None, attachments=None, replaces=None):
 
     progress.emit(f"Drafted an email to {', '.join(to)}: {payload['subject']}")
     replaced = f" It replaces the earlier draft {answer['replaced']}, which is no longer in the Outbox." if answer.get("replaced") else ""
+    if payload["replaces"] and "replaced" not in answer:
+        # A control plane from before drafts could be replaced takes the draft and ignores `replaces`. Found live
+        # (2026-10-14): a worker newer than its control plane left two copies of every corrected letter, each
+        # reported as a replacement. Say it, so the report does not claim one letter where there are two.
+        replaced = (f" The Outbox did not take it as a replacement: the earlier draft {payload['replaces']} is still "
+                    "there too, and a person has to discard it.")
     return (f"Drafted (id {answer.get('id', '?')}) to {', '.join(to)}, subject {payload['subject']!r}, with {names}. "
             "It waits in the Outbox for a person to send it - it has NOT been sent." + replaced)

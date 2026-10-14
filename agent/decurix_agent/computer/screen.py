@@ -152,6 +152,32 @@ def changed_fraction(before, after, tolerance=24):
     return changed / n
 
 
+def changed_in(before, after, box, tolerance=24, step=2):
+    """
+    What share of the pixels inside one [x, y, w, h] box differ between two
+    frames, 0.0 to 1.0 (1.0 when they cannot be compared). Every `step`-th
+    pixel of every `step`-th row: a control's own pixels, not the screen's.
+    """
+
+    if before is None or after is None or (before.width, before.height) != (after.width, after.height):
+        return 1.0
+    x, y, w, h = (int(v) for v in box)
+    left, top = max(0, x), max(0, y)
+    right, bottom = min(before.width, x + w), min(before.height, y + h)
+    if right <= left or bottom <= top:
+        return 1.0
+    stride = before.width * 3
+    seen = changed = 0
+    for row in range(top, bottom, step):
+        a = before.rgb[row * stride + left * 3:row * stride + right * 3]
+        b = after.rgb[row * stride + left * 3:row * stride + right * 3]
+        for i in range(0, len(a), 3 * step):
+            seen += 1
+            if abs(a[i] - b[i]) > tolerance or abs(a[i + 1] - b[i + 1]) > tolerance or abs(a[i + 2] - b[i + 2]) > tolerance:
+                changed += 1
+    return changed / seen if seen else 1.0
+
+
 _display = None
 
 
