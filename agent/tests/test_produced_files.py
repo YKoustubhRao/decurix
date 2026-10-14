@@ -206,3 +206,24 @@ class ANewRequestIsNotAnAnswer(ts.TeachingBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AYesThatSaysWhatIsMissing(ts.TeachingBase):
+    """"Right, Rae's ticket still needs its reply" is what is wrong, not a bare yes (found live, 2026-10-14)."""
+
+    def doubt(self, message):
+        handed = []
+        state.paused_skill = None
+        paused = {"mode": "confirm", "run": None, "claim": "Triaged all six.", "engine": "thebot",
+                  "task": "triage the inbox", "verdict": verdict(verify.NOT_DONE, seen="no reply to Rae")}
+        with mock.patch.object(skill_task, "_engine_can_drive", lambda: True), \
+                mock.patch.object(skill_task, "_retry_engine", lambda *a, **k: handed.append(a)):
+            skill_task._confirm_reply(paused, message)
+        return handed
+
+    def test_a_long_reply_starting_with_right_goes_back_to_the_engine(self):
+        self.assertTrue(self.doubt("Right, Rae's ticket still needs its reply - draft it as the playbook says."))
+
+    def test_a_bare_right_still_asks_for_done(self):
+        self.assertFalse(self.doubt("right"))
+        self.assertIn("reply `done`", self.asked[-1][0])

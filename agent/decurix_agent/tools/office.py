@@ -544,6 +544,36 @@ def _add_chart(ws, spec):
 DOCUMENT_BLOCKS = {"heading", "paragraph", "bullets", "table", "page_break"}
 
 
+def _table_layout(doc, texts):
+    """
+    A table's font size and column widths for the page: each column at least as wide as its longest word or figure,
+    the rest shared by how much each holds, and the font made smaller until the figures fit. Found live
+    (2026-10-14): an eight-column payslip split every figure over two lines ("1,672.7" and "4") - equal columns
+    on a portrait page were narrower than the numbers.
+    """
+
+    from docx.shared import Emu
+
+    section = doc.sections[-1]
+    usable = section.page_width - section.left_margin - section.right_margin
+    columns = list(zip(*texts)) if texts else []
+    longest = [max([len(t) for t in col] + [1]) for col in columns]
+    token = [max([len(w) for t in col for w in t.split()] + [1]) for col in columns]
+    pad = 2 * 108000  # the cell's own margins, about 0.11 inch a side
+    for size in (10, 9, 8, 7):
+        char = size * 12700 * 0.62  # a character of a bold header at this size, in EMU
+        need = [(token[j] + 1) * char + pad for j in range(len(columns))]
+        if sum(need) <= usable or size == 7:
+            break
+    spare = max(0, usable - sum(need))
+    extra = [max(0, longest[j] - token[j]) for j in range(len(columns))]
+    total = sum(extra) or 1
+    widths = [Emu(int(need[j] + spare * extra[j] / total)) for j in range(len(columns))]
+    if not sum(extra):
+        widths = [Emu(int(need[j] + spare / max(1, len(columns)))) for j in range(len(columns))]
+    return size, widths
+
+
 def create_document(path, blocks):
     """
     A new Word document (.docx), made with python-docx so it is always valid.
@@ -558,6 +588,7 @@ def create_document(path, blocks):
     """
 
     from docx import Document
+    from docx.shared import Pt
 
     p = _path(path)
     if p.suffix.lower() != ".docx":
@@ -590,12 +621,17 @@ def create_document(path, blocks):
             width = max(len(r) for r in rows)
             table = doc.add_table(rows=0, cols=width)
             table.style = "Table Grid"
-            for i, row in enumerate(rows):
+            texts = [["" if j >= len(row) or row[j] is None else str(row[j]) for j in range(width)] for row in rows]
+            size, widths = _table_layout(doc, texts)
+            table.autofit = False
+            for i, row in enumerate(texts):
                 cells = table.add_row().cells
                 for j in range(width):
-                    cells[j].text = "" if j >= len(row) or row[j] is None else str(row[j])
-                    if i == 0 and block.get("header", True):
-                        for run in cells[j].paragraphs[0].runs:
+                    cells[j].text = row[j]
+                    cells[j].width = widths[j]
+                    for run in cells[j].paragraphs[0].runs:
+                        run.font.size = Pt(size)
+                        if i == 0 and block.get("header", True):
                             run.bold = True
             tables += 1
         elif kind == "page_break":
@@ -713,7 +749,7 @@ def _cell_value(v):
 _MAIN_NS_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 
 
-def update_workbook(path, edits=None, replace_refs=None, output_path=None):
+def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_sheets=None):
     """
     Change cells of an existing workbook without touching anything else.
 
@@ -736,6 +772,12 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None):
     with zipfile.ZipFile(src) as z:
         entries = {i.filename: z.read(i.filename) for i in z.infolist()}
         order = [i.filename for i in z.infolist()]
+
+    # New sheets first, so the edits below can fill them too. Found live (2026-10-14): asked to add an Exceptions
+    # and a By Account sheet to an existing model, a worker had no way to and made a second workbook instead.
+    added = []
+    for sheet in add_sheets or []:
+        added.append(_add_sheet(entries, order, sheet))
 
     sheet_files = _sheet_files(entries)
     changed = []
@@ -829,7 +871,7 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None):
     os.replace(tmp, dst)
     stored = _store_results(dst)
 
-    msg = f"Updated {dst}: {len(changed)} cell(s)"
+    msg = f"Updated {dst}: " + (f"added sheet(s) {', '.join(added)}; " if added else "") + f"{len(changed)} cell(s)"
     if changed:
         msg += " (" + ", ".join(changed[:20]) + (" ..." if len(changed) > 20 else "") + ")"
     if replace_refs:
@@ -885,9 +927,77 @@ def _col_num(letters):
     return n
 
 
+def _col_letter(n):
+    letters = ""
+    while n:
+        n, rem = divmod(n - 1, 26)
+        letters = chr(65 + rem) + letters
+    return letters
+
+
 def _split(ref):
     m = re.fullmatch(r"([A-Z]+)(\d+)", ref)
     return m.group(1), int(m.group(2))
+
+
+_SHEET_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet"
+_SHEET_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"
+
+
+def _add_sheet(entries, order, sheet):
+    """A new sheet in the workbook's XML, filled from {"name", "rows": [[...]], "cells": {"A1": ...}}; returns its name."""
+
+    if not isinstance(sheet, dict):
+        raise OfficeError('each of add_sheets is {"name": ..., "rows": [[...]] and/or "cells": {"A1": ...}}')
+    unknown = set(sheet) - {"name", "rows", "cells"}
+    if unknown:
+        raise OfficeError(f"add_sheets takes name, rows and cells - not {', '.join(sorted(unknown))}. Nothing was written.")
+    name = str(sheet.get("name") or "").strip()
+    if not name or len(name) > 31 or re.search(r"[\\/?*\[\]:]", name):
+        raise OfficeError(f"{name!r} is not a sheet name (1-31 characters, none of \\ / ? * [ ] :)")
+    if name.lower() in (n.lower() for n in _sheet_files(entries)):
+        raise OfficeError(f"the workbook already has a sheet {name!r} - change its cells with edits instead")
+    if not sheet.get("rows") and not sheet.get("cells"):
+        raise OfficeError(f"the new sheet {name!r} has neither rows nor cells. Nothing was written.")
+
+    xml = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+           '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData/></worksheet>')
+    for r, row in enumerate(sheet.get("rows") or [], 1):
+        for c, value in enumerate(row, 1):
+            if value not in (None, ""):
+                xml = _set_cell(xml, f"{_col_letter(c)}{r}", value)
+    for ref, value in (sheet.get("cells") or {}).items():
+        if isinstance(value, dict):
+            value = value.get("formula") or value.get("value")
+            if isinstance(value, str) and value and not value.startswith("=") and "formula" in sheet["cells"][ref]:
+                value = "=" + value
+        xml = _set_cell(xml, str(ref).upper().replace("$", ""), value)
+
+    n = 1
+    while f"xl/worksheets/sheet{n}.xml" in entries:
+        n += 1
+    part = f"xl/worksheets/sheet{n}.xml"
+    entries[part] = _fix_dimension(xml).encode("utf-8")
+    order.append(part)
+
+    rels = entries["xl/_rels/workbook.xml.rels"].decode("utf-8")
+    ids = {int(i) for i in re.findall(r'\bId="rId(\d+)"', rels)}
+    rid = f"rId{max(ids | {0}) + 1}"
+    rels = rels.replace("</Relationships>", f'<Relationship Id="{rid}" Type="{_SHEET_REL}" Target="worksheets/sheet{n}.xml"/></Relationships>')
+    entries["xl/_rels/workbook.xml.rels"] = rels.encode("utf-8")
+
+    wb = entries["xl/workbook.xml"].decode("utf-8")
+    sheet_id = max([int(i) for i in re.findall(r'<sheet[^>]*?sheetId="(\d+)"', wb)] + [0]) + 1
+    # Its own namespace declaration: some writers declare the relationships prefix on each sheet, not the root.
+    tag = (f'<sheet xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+           f'name="{_escape(name)}" sheetId="{sheet_id}" r:id="{rid}"/>')
+    wb = wb.replace("</sheets>", tag + "</sheets>", 1)
+    entries["xl/workbook.xml"] = wb.encode("utf-8")
+
+    ct = entries["[Content_Types].xml"].decode("utf-8")
+    ct = ct.replace("</Types>", f'<Override PartName="/{part}" ContentType="{_SHEET_TYPE}"/></Types>', 1)
+    entries["[Content_Types].xml"] = ct.encode("utf-8")
+    return name
 
 
 def _new_cell(ref, value, style):
@@ -1246,7 +1356,7 @@ DECK_CHART_KEYS = {"type", "title", "categories", "series"}
 DECK_CHART_TYPES = {"column": "COLUMN_CLUSTERED", "bar": "BAR_CLUSTERED", "line": "LINE_MARKERS", "pie": "PIE"}
 DECK_IMAGE_TYPES = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff"}
 DECK_EDIT_KEYS = {"slide", "find", "replace", "title", "table", "row", "column", "value", "chart", "categories",
-                  "series", "notes"}
+                  "series", "notes", "add_rows", "before"}
 SLIDE_SIZE_INCHES = (13.333, 7.5)  # 16:9
 
 
@@ -1550,10 +1660,10 @@ def update_presentation(path, edits, output_path=None):
     for n, edit in enumerate(edits, 1):
         if not isinstance(edit, dict) or set(edit) - DECK_EDIT_KEYS:
             raise OfficeError(f"edit {n}: {edit!r} - an edit takes {', '.join(sorted(DECK_EDIT_KEYS))}"[:400])
-        actions = [k for k in ("find", "title", "value", "categories", "notes") if k in edit]
+        actions = [k for k in ("find", "title", "value", "categories", "notes", "add_rows") if k in edit]
         if len(actions) != 1:
-            raise OfficeError(f"edit {n}: give exactly one change - find/replace, title, a table cell's value, a chart's "
-                              "categories and series, or notes")
+            raise OfficeError(f"edit {n}: give exactly one change - find/replace, title, a table cell's value, rows "
+                              "added to a table (add_rows), a chart's categories and series, or notes")
         action = actions[0]
         number = edit.get("slide")
         if number is None and action != "find":
@@ -1588,6 +1698,42 @@ def update_presentation(path, edits, output_path=None):
                                   f"{len(table.rows)} x {len(table.columns)}")
             _set_text(table.cell(row - 1, col - 1).text_frame, "" if edit["value"] is None else edit["value"])
             done.append(f"slide {number} table {which} row {row} column {col}")
+        elif action == "add_rows":
+            # Rows added at the end of a table, each a copy of its last row (its look kept) holding the given texts.
+            # Found live (2026-10-14): a deck's table needed a Total row the copied deck had no room for, and the
+            # worker could only report the deck unfinished.
+            frames = [s for s in slide.shapes if getattr(s, "has_table", False) and s.has_table]
+            which, rows = edit.get("table", 1), edit["add_rows"]
+            if not isinstance(which, int) or not 1 <= which <= len(frames):
+                raise OfficeError(f"edit {n}: slide {number} has {len(frames)} table(s), not table {which!r}")
+            table = frames[which - 1].table
+            width = len(table.columns)
+            if not isinstance(rows, list) or not rows or not all(isinstance(r, list) and len(r) <= width for r in rows):
+                raise OfficeError(f"edit {n}: add_rows is a list of rows, each a list of at most {width} cell texts")
+            import copy
+            # "before": the row (from 1) the new rows go above - a total row stays last. Found live: rows added
+            # after a deck's Total row left the table with two totals. A new row copies the row above where it
+            # goes (an ordinary row, not the bold total).
+            trs = table._tbl.tr_lst
+            before = edit.get("before")
+            if before is not None and (isinstance(before, bool) or not isinstance(before, int) or not 2 <= before <= len(trs)):
+                raise OfficeError(f"edit {n}: \"before\" is a row number from 2 to {len(trs)} (rows count from 1)")
+            model = trs[before - 2] if before else trs[-1]
+            anchor = trs[before - 1] if before else None
+            for k, values in enumerate(rows):
+                tr = copy.deepcopy(model)
+                if anchor is not None:
+                    anchor.addprevious(tr)
+                    index = before - 1 + k
+                else:
+                    table._tbl.append(tr)
+                    index = len(table._tbl.tr_lst) - 1
+                new_row = table.rows[index]
+                for c in range(width):
+                    value = values[c] if c < len(values) else ""
+                    _set_text(new_row.cells[c].text_frame, "" if value is None else value)
+                frames[which - 1].height += model.h
+            done.append(f"slide {number} table {which}: {len(rows)} row(s) added" + (f" above row {before}" if before else ""))
         elif action == "categories":
             charts = [s.chart for s in slide.shapes if getattr(s, "has_chart", False) and s.has_chart]
             which = edit.get("chart", 1)
@@ -1622,6 +1768,7 @@ USAGE = """office - documents, spreadsheets and email drafts, from the shell
                                         formatting and everything else. SPEC (JSON, - for stdin):
                                         {"edits": [{"sheet": "Data", "cell": "B14", "value": 1250.5}],
                                          "replace_refs": [{"from": "Data!$B$2:$B$13", "to": "Data!$B$2:$B$14"}],
+                                         "add_sheets": [{"name": "Exceptions", "rows": [[...]], "cells": {...}}],
                                          "output_path": "optional.xlsx"}
                                         a value is a number, text, null (empties the cell) or "=FORMULA";
                                         replace_refs extends what charts, tables and names read
@@ -1647,6 +1794,7 @@ USAGE = """office - documents, spreadsheets and email drafts, from the shell
   office update DECK.pptx SPEC          change an existing deck, keeping its layout and everything else. SPEC:
                                         {"edits": [{"slide": 2, "find": "Q2", "replace": "Q3"}, {"slide": 1, "title": "..."},
                                          {"slide": 3, "table": 1, "row": 2, "column": 2, "value": "1,250"},
+                                         {"slide": 3, "table": 1, "add_rows": [["Central", "0"]], "before": 6},
                                          {"slide": 4, "chart": 1, "categories": [...], "series": [...]},
                                          {"slide": 5, "notes": "..."}], "output_path": "optional.pptx"}
                                         find/replace with no slide changes every slide; rows, columns, tables
@@ -1751,7 +1899,9 @@ def main(argv=None):
                 _only(spec, {"edits", "output_path"})
                 print(update_presentation(argv[0], spec.get("edits"), spec.get("output_path")))
             else:
-                print(update_workbook(argv[0], spec.get("edits"), spec.get("replace_refs"), spec.get("output_path")))
+                _only(spec, {"edits", "replace_refs", "output_path", "add_sheets"})
+                print(update_workbook(argv[0], spec.get("edits"), spec.get("replace_refs"), spec.get("output_path"),
+                                      spec.get("add_sheets")))
         elif cmd == "create":
             if len(argv) < 2:
                 raise OfficeError("usage: office create BOOK.xlsx|DOC.docx|DOC.pdf|DECK.pptx SPEC (JSON, or - to read it from stdin)")

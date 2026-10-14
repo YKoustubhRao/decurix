@@ -130,6 +130,23 @@ def radio_group(element):
     return m.group(1) if m else ""
 
 
+def _words(text):
+    return " " + re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip() + " "
+
+
+def _shows_value(shown, want, choice=False):
+    """
+    Whether a field shows the value wanted. A choice shows the entry chosen for it, which may be named within the
+    value ("IT" for "IT department" - the rule the choosing itself follows). Found live (2026-10-14): the drop-down
+    was set right and the check, wanting the document's words, halted the run.
+    """
+
+    if shown == want:
+        return True
+    return bool(choice and shown and _words(shown).strip() and (shown.lower() == want.lower() or _words(shown) in _words(want)
+                                                                or want.lower().startswith(shown.lower())))
+
+
 def compile_program(meta, events, frames=None):
     """
     A recording as a program: {"session", "title", "kind", "params", "steps"}.
@@ -272,7 +289,7 @@ def compile_program(meta, events, frames=None):
             for value in (event.get("expect") or {}).get("values") or []:
                 if value.get("value") == event.get("option") and value.get("name") == element.get("name"):
                     step["expect"].append({"type": "value", "role": value["role"], "name": value["name"],
-                                           "param": step["param"]})
+                                           "param": step["param"], "choice": True})
                     break
         step["screen"] = event.get("screen") or meta.get("screen")
         step["window"] = event.get("window") or ""
@@ -500,7 +517,7 @@ def _summary(step):
         end = step.get("end") or ["?", "?"]
         return f"drag {what} to {end[0]},{end[1]}"
     if kind == "upload":
-        files_str = ", ".join(step.get("files") or [])
+        files_str = f"{{{step['param']}}}" if step.get("param") else ", ".join(step.get("files") or [])
         return f"upload {files_str} to {what}"
     return f"{kind.replace('_', ' ')} {what}".strip()
 
@@ -571,7 +588,7 @@ def unmet(checks, observation, values=None):
         elif kind == "value":
             want = " ".join(((values or {}).get(check["param"]) or "").split())
             ok = any(e.get("role") == check["role"] and _norm(e.get("name")) == _norm(check["name"])
-                     and " ".join((e.get("value") or "").split()) == want
+                     and _shows_value(" ".join((e.get("value") or "").split()), want, check.get("choice"))
                      for e in observation.get("elements") or [])
         else:
             ok = True
@@ -933,7 +950,15 @@ def _run_step(step, values, ladder=None, report=None, next_step=None):
             raise _Halt("the recording has nothing to find this step's target by")
 
         if step.get("target") or step.get("point"):
-            element, point, seen, repair = _find(step, ladder, report)
+            try:
+                element, point, seen, repair = _find(step, ladder, report)
+            except _Halt as halt:
+                # A scroll needs only a place on the page or panel, and the recorded point is one: the control under
+                # the pointer is incidental. Found live (2026-10-14): a scroll recorded over a row naming the
+                # demonstration's own joiner halted every run for another.
+                if kind != "scroll" or not step.get("point") or not halt.missing:
+                    raise
+                element, point, seen, repair = None, step["point"], {}, None
             target = {"path": element["path"]} if element is not None else {"point": tuple(point)}
             pressed_cell = bool(seen.get("pressed_cell"))
 
@@ -955,9 +980,15 @@ def _run_step(step, values, ladder=None, report=None, next_step=None):
                 else:
                     ladder.found(step, element, seen)
 
+        # A step that takes this run's value never falls back to what the demonstration used: its ID scan in another
+        # person's record, its department for another joiner. Found in review (2026-10-14).
+        if kind in ("upload", "select") and step.get("param") and not values.get(step["param"]):
+            raise _Halt(f"this run gave no value for {step['param']}, and the demonstration's own "
+                        f"{'file' if kind == 'upload' else 'choice'} is not this run's")
+
         # Files go with an upload only: a typed step's value is its text.
         files = step.get("files") if kind == "upload" else None
-        if kind == "upload" and step.get("param") and values.get(step["param"]):
+        if kind == "upload" and step.get("param"):
             val = values.get(step["param"])
             # Several files are given the way list values are: separated by ';'.
             files = val if isinstance(val, list) else [f.strip() for f in str(val).split(";") if f.strip()]

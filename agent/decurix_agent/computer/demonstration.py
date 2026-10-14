@@ -757,6 +757,8 @@ class Recorder:
                     raw = self._raw(event.evtype, event.data, root)
                     if raw is not None and not self.paused:
                         self.raw.put(raw)
+                    elif raw is not None:
+                        self._input_while_paused = True
 
                 # End: everything the person did before pressing it is already
                 # on this connection, however far behind reading it is. Read it
@@ -1118,7 +1120,7 @@ class Recorder:
 
         ready = _keyboard_choices(ready, after)
         ready = _dates_entered(ready, after)
-        ready = self._file_chooser(ready, after)
+        ready = self._file_chooser(ready, after, before)
 
         for index, item in enumerate(ready):
             action, element, frame = item["action"], item["element"], item["frame"]
@@ -1163,7 +1165,7 @@ class Recorder:
             self.latest = after
             self._seen(after)
 
-    def _file_chooser(self, ready, after):
+    def _file_chooser(self, ready, after, before=None):
         """
         A person choosing a file for a page goes through the browser's own "Open File" dialog: a click on the
         page's file control, then clicks and keys in a window the page knows nothing of. Found live (2026-10-14):
@@ -1178,6 +1180,12 @@ class Recorder:
         open_now = after is None or _chooser_in_front(after)
         if held is None:
             for index, item in enumerate(ready):
+                # A press the recorder could not name (the screen was still changing) is on the file control when
+                # its point is inside that control's box in the last look. Found live (2026-10-14).
+                if item["action"]["kind"] == "click" and not _file_control(item["element"]):
+                    at = _file_control_at(item["action"].get("point"), before) or _file_control_at(item["action"].get("point"), after)
+                    if at is not None:
+                        item = dict(item, element=at)
                 if item["action"]["kind"] == "click" and _file_control(item["element"]):
                     if not open_now and _chosen(item["element"], after) is None:
                         if index < len(ready) - 1 or not _chooser_appears():
@@ -1251,6 +1259,7 @@ class Recorder:
             "window": (before or {}).get("active_title"),
         }
         self.latest = None
+        self._input_while_paused = False
         log(f"Paused: {self._pause['reason']}")
 
     def _resumed(self):
@@ -1259,6 +1268,19 @@ class Recorder:
             return
 
         core._wait_for_settle(None)
+
+        # Nothing the person did reached the screen while paused: there is no private step, whatever the screen did
+        # meanwhile. Found live (2026-10-14): a one-second pause to write a Reason, while the page an earlier click
+        # opened was still loading, was recorded as "a private step done by hand" that every run stopped at.
+        if not getattr(self, "_input_while_paused", True):
+            try:
+                after = core.observe(remember=False)
+                self.latest = after
+                self._seen(after)
+            except ComputerError as exc:
+                log(f"Could not read the screen on resuming: {exc}")
+            log("Resumed (no input from the person while paused, so no private step)")
+            return
 
         try:
             after = core.observe(remember=False)
@@ -1450,6 +1472,19 @@ def _file_control(element):
     """Whether an element is a page's file input (what opens the browser's file chooser)."""
 
     return ((element or {}).get("handle") or {}).get("input_type", "").lower() == "file"
+
+
+def _file_control_at(point, observation):
+    """The file control whose box holds `point` in a look, or None."""
+
+    if not point or not observation:
+        return None
+    x, y = point
+    for element in observation.get("elements") or []:
+        box = element.get("box")
+        if _file_control(element) and box and box[0] <= x <= box[0] + box[2] and box[1] <= y <= box[1] + box[3]:
+            return element
+    return None
 
 
 def _chooser_in_front(observation):

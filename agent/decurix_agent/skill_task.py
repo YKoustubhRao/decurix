@@ -1316,6 +1316,9 @@ MAX_CORRECTIONS = 8
 CONFIRM_RE = re.compile(r"^\W*(done|it(?:'s| is| was)? done|it worked|correct|confirmed|looks (?:right|good|fine))\b",
                         re.IGNORECASE)
 VAGUE_YES_RE = re.compile(r"^\W*(yes|y|yep|yeah|ok(?:ay)?|good|right|sure|fine|go ahead|proceed)\b", re.IGNORECASE)
+# What follows a "yes" that says the work is not finished: something still to do, missing, wrong or left out.
+STILL_WRONG_RE = re.compile(r"\b(still|needs?|missing|forgot|left out|wrong|not (?:done|there|right|correct|in)|isn'?t|"
+                            r"aren'?t|also|too|instead|should|must|add|fix|correct (?:the|it|that)|draft|redo)\b", re.I)
 REDO_RE = re.compile(r"^\W*(retry|try again|again|redo|do it again|finish it|keep going|continue)\b", re.IGNORECASE)
 
 
@@ -2441,8 +2444,10 @@ def _confirm_reply(paused, reply):
             _record_verdict(run, True, checked_by="person", helped=True)
         return write_final_reply(f"{claim}\n\nYou confirmed it was done.", kind="final", engine=engine, checked=True)
 
-    if VAGUE_YES_RE.match(reply):
-        # Neither a confirmation nor something to correct: the question stays open.
+    if VAGUE_YES_RE.match(reply) and not STILL_WRONG_RE.search(reply):
+        # Neither a confirmation nor something to correct: the question stays open. Unless what follows the yes says
+        # something is missing or wrong: "Right, Rae's ticket still needs its reply - draft it" (found live,
+        # 2026-10-14, taken for a yes) - while "yes - that only opens the list" answers some other question.
         state.paused_skill = paused
         return ask_for_query("To mark it done, reply `done` - a plain yes is not enough here, it may have been meant "
                              "for another question. Reply `retry` to have it tried again, or say what is wrong.",

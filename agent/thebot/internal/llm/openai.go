@@ -66,7 +66,19 @@ type openaiChatResponse struct {
 	} `json:"error"`
 }
 
+// Chat sends one chat request. A request the provider's content filter refuses while it carries pictures is sent
+// once more with the pictures left out, each named in the text: found live (2026-10-14), a scanned identity document
+// in an onboarding task made Azure answer "filtered due to the prompt triggering ... content management policy" and
+// the whole task ended in error. The model can still read the document as text.
 func (o *OpenAIProvider) Chat(ctx context.Context, model string, messages []Message, opts Options) (Result, error) {
+	res, err := o.chatOnce(ctx, model, messages, opts)
+	if err == nil || !ContentFiltered(err) || !hasImages(messages) {
+		return res, err
+	}
+	return o.chatOnce(ctx, model, WithoutImages(messages, "the model provider's content filter refused it"), opts)
+}
+
+func (o *OpenAIProvider) chatOnce(ctx context.Context, model string, messages []Message, opts Options) (Result, error) {
 	timeout := 120 * time.Second
 	if opts.TimeoutMs > 0 {
 		timeout = time.Duration(opts.TimeoutMs) * time.Millisecond

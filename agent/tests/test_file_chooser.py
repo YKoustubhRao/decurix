@@ -89,6 +89,19 @@ class APersonsFileChoiceIsAnUpload(unittest.TestCase):
                                              look("Page - Chromium", "id_delgado.png"))
         self.assertEqual([i["action"]["kind"] for i in closed], ["upload"])
 
+    def test_a_press_the_recorder_could_not_name_is_on_the_file_control_under_it(self):
+        before = {"active_title": "Page - Chromium", "elements": [dict(control(), box=[160, 530, 320, 36])]}
+        opened = self.recorder._file_chooser([item("click", None, point=[320, 548], t=1.0)], look("Open File"), before)
+        self.assertEqual(opened, [])
+        closed = self.recorder._file_chooser([item("type", None, text=self.file)], look("Page - Chromium", "id_delgado.png"))
+        self.assertEqual([i["action"]["kind"] for i in closed], ["upload"])
+        self.assertEqual(closed[0]["element"]["path"], PATH)
+
+    def test_a_press_elsewhere_stays_a_press(self):
+        before = {"active_title": "Page - Chromium", "elements": [dict(control(), box=[160, 530, 320, 36])]}
+        press = item("click", None, point=[700, 200])
+        self.assertEqual(self.recorder._file_chooser([press], look("Page - Chromium"), before), [press])
+
     def test_the_entry_carries_the_files(self):
         entry = self.recorder._entry({"kind": "upload", "files": [self.file], "t": 0, "t_end": 0.1}, control(), None, None)
         self.assertEqual(entry["files"], [self.file])

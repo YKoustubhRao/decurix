@@ -530,6 +530,77 @@ func unperformedScreenDoubt(nudge, claim string) string {
 
 // readBefore reports whether an earlier command named the document (by its
 // full path, or its file name when it was reached by a relative path).
+// maxSlipNudges is how many commands holding a stray writing system are sent back before the ordinary checks decide.
+const maxSlipNudges = 3
+
+// scripts are the writing systems a slip is told apart by (Latin, digits and punctuation are never a slip).
+var scripts = []*unicode.RangeTable{unicode.Thai, unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Hangul,
+	unicode.Cyrillic, unicode.Arabic, unicode.Hebrew, unicode.Devanagari, unicode.Bengali, unicode.Tamil,
+	unicode.Telugu, unicode.Greek, unicode.Georgian, unicode.Armenian, unicode.Ethiopic, unicode.Khmer, unicode.Lao,
+	unicode.Myanmar, unicode.Sinhala, unicode.Gujarati, unicode.Gurmukhi, unicode.Kannada, unicode.Malayalam}
+
+// strayScript is what to tell the operator instead of running a command whose typed text uses a writing system
+// that nothing in the task - the request, what commands have shown - uses, or "" when there is none.
+func strayScript(st *operatorState, command string) string {
+	values := typedValues(command)
+	if len(values) == 0 {
+		return ""
+	}
+	known := st.Request + "\n" + st.Seen
+	for _, v := range values {
+		for _, table := range scripts {
+			if containsScript(v, table) && !containsScript(known, table) {
+				return fmt.Sprintf("Not run: %q is written in a script that nothing in this task uses - it is not part "+
+					"of the work, and was a slip. Send the command again with the value as the request or the "+
+					"document gives it.", v)
+			}
+		}
+	}
+	return ""
+}
+
+func containsScript(s string, table *unicode.RangeTable) bool {
+	for _, r := range s {
+		if unicode.Is(table, r) {
+			return true
+		}
+	}
+	return false
+}
+
+// pictureExtRe is a document that is a picture: what it says is seen, never parsed.
+var pictureExtRe = regexp.MustCompile(`(?i)\.(png|jpe?g|gif|bmp|tiff?|webp|heic)$`)
+
+// unseenPictures is the request's pictures that no `office read` has shown the model. Found live (2026-10-14): a
+// phone photo of a clear invoice was registered "illegible" by a worker that only ever opened it with a Python
+// script - which reads pixels, not words - and never looked at it.
+func unseenPictures(st *operatorState) []string {
+	var out []string
+	for _, doc := range requestDocuments(st.Request) {
+		if !pictureExtRe.MatchString(doc) {
+			continue
+		}
+		base := doc[strings.LastIndexAny(doc, `/\`)+1:]
+		seen := false
+		for _, c := range st.Commands {
+			if strings.Contains(c, "office read") && (strings.Contains(c, doc) || strings.Contains(c, base)) {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			out = append(out, doc)
+		}
+	}
+	return out
+}
+
+func unseenPicturesNudge(unseen []string) string {
+	return fmt.Sprintf("Not taken yet: you were given %s and have not looked at it - a script that opens a picture's "+
+		"pixels cannot tell what it says. Look at it with office read %s (it is shown to you), then finish with what "+
+		"it says.", strings.Join(unseen, ", "), unseen[0])
+}
+
 func readBefore(commands []string, doc string) bool {
 	base := doc[strings.LastIndexAny(doc, `/\`)+1:]
 	for _, c := range commands {

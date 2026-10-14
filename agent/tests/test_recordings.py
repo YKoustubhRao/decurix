@@ -962,6 +962,18 @@ class PauseWithNothingInIt(unittest.TestCase):
         append.assert_called_once()
         self.assertEqual(append.call_args.args[1]["kind"], "manual")
 
+    def test_a_pause_with_no_input_from_the_person_is_no_private_step_however_the_screen_changed(self):
+        # Found live (2026-10-14): a one-second pause for a Reason while a page was still loading.
+        rec = self.recorder(bytes([200, 200, 200]) * (64 * 32))
+        rec._input_while_paused = False
+        after = {"frame": screen.Frame(64, 32, bytes([20, 20, 20]) * (64 * 32)), "elements": [], "active_title": "Request",
+                 "size": [64, 32]}
+        with mock.patch.object(core, "_wait_for_settle"), mock.patch.object(core, "observe", return_value=after), \
+                mock.patch.object(recording, "append") as append:
+            rec._resumed()
+        append.assert_not_called()
+        self.assertIs(rec.latest, after)
+
 
 class APressReadLate(unittest.TestCase):
     """A busy desktop reads input late: the screen it then sees may already be what the press made (the web app's Save,
