@@ -533,12 +533,12 @@ test('no IP link is given when the forwarding was declined, or turned off in .en
   const declined = await boot('absent', { lanAddress: '192.168.1.40', lanForwards: false });
   await declined.settle(20);
   assert.equal(declined.lanCalls.length, 1);
-  assert.ok(!declined.posts.some((p) => p.url.endsWith('/api/tunnel')));
+  assert.ok(declined.posts.some((p) => p.url.endsWith('/api/tunnel') && JSON.parse(p.body).lan_url === ''));
 
   const off = await boot('absent', { lanAddress: '192.168.1.40', settings: 'DECURIX_WSL_LAN_FORWARD=0\n' });
   await off.settle(20);
   assert.equal(off.lanCalls.length, 0);
-  assert.ok(!off.posts.some((p) => p.url.endsWith('/api/tunnel')));
+  assert.ok(off.posts.some((p) => p.url.endsWith('/api/tunnel') && JSON.parse(p.body).lan_url === ''));
 });
 
 test('keeps the Electron profile out of the control plane data dir', async () => {
