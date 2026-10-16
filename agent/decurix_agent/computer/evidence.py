@@ -159,6 +159,8 @@ NOTES_DIR = config.DECURIX_DIR / "computer" / "evidence"
 NOTES_KEEP_SECONDS = 2 * 24 * 3600
 MAX_NOTE = 18000
 MAX_OBSERVED = 40
+# How much of what an action changed on the screen is kept beside it (a search's answer fits; a page's new contents do not).
+MAX_CHANGE = 220
 
 
 def note(text):
@@ -268,6 +270,21 @@ def entered(task_id=None):
                           event.get("option") if event.get("kind") == "select" else None) if value]
 
 
+def pressed(task_id=None):
+    """The names of the controls a task's tools pressed and that went through, oldest first."""
+
+    task_id = task_id or task_context.current()
+    if not task_id:
+        return []
+    try:
+        _, events = recording.load(recording.session_for_task(task_id))
+    except (FileNotFoundError, OSError, ValueError):
+        return []
+    return [str((event.get("element") or {}).get("name") or "") for event in events
+            if event.get("outcome") in (None, "done") and event.get("kind") in ("click", "double_click")
+            and (event.get("element") or {}).get("name")]
+
+
 def read(task_id=None):
     """Everything a task's tools read off the screen, as one text ("" when nothing was kept)."""
 
@@ -299,7 +316,12 @@ def observed(task_id=None):
         _, events = recording.load(recording.session_for_task(task_id))
         for event in events[-MAX_OBSERVED:]:
             summary = event.get("summary") or event.get("kind")
-            lines.append(f"action: {summary} ({event.get('outcome') or 'done'})")
+            # ...and what the screen did in answer, which is what a check made along the way found: a search
+            # whose result ("No Results found") was missing here left the final check unable to see that the
+            # duplicate check was made, and it paged a person about a correct bill (found live, 2026-10-13).
+            change = " ".join(str(event.get("change") or "").split())
+            after = f" -> {change[:MAX_CHANGE]}{'…' if len(change) > MAX_CHANGE else ''}" if change else ""
+            lines.append(f"action: {summary} ({event.get('outcome') or 'done'}){after}")
     except (FileNotFoundError, OSError, ValueError):
         pass
 

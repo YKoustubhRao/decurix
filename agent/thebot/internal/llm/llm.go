@@ -5,7 +5,11 @@
 // scheduler, skills) needing to change - they only ever see Provider.
 package llm
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"strings"
+)
 
 type Message struct {
 	Role    string // "system" | "user" | "assistant"
@@ -13,6 +17,35 @@ type Message struct {
 	// Images are PNGs shown with a user message - only ever set for a brain
 	// with Capabilities.Vision. Every provider sends them in its own shape.
 	Images [][]byte `json:",omitempty"`
+	// ImageLabels says what each picture is ("scan_0030.pdf, page 1"), by
+	// index; shown right before its picture where the provider lets text and
+	// pictures interleave. Found live (2026-10-14): two scans read in one
+	// command reached the model as two unlabelled pictures after the text, it
+	// took one invoice for the other - and "verified" the swap by looking again.
+	ImageLabels []string `json:",omitempty"`
+}
+
+// ImageLabel is the label of picture i of a message, or "".
+func (m Message) ImageLabel(i int) string {
+	if i < len(m.ImageLabels) {
+		return m.ImageLabels[i]
+	}
+	return ""
+}
+
+// LabelledContent is a message's text with its pictures' labels listed in
+// order after it - for a provider that cannot put text between pictures.
+func (m Message) LabelledContent() string {
+	var labels []string
+	for i := range m.Images {
+		if l := m.ImageLabel(i); l != "" {
+			labels = append(labels, fmt.Sprintf("%d) %s", i+1, l))
+		}
+	}
+	if len(labels) == 0 {
+		return m.Content
+	}
+	return m.Content + "\n\n(The pictures, in order: " + strings.Join(labels, "; ") + ")"
 }
 
 type Result struct {
@@ -88,4 +121,39 @@ type Provider interface {
 	Name() string
 	Chat(ctx context.Context, model string, messages []Message, opts Options) (Result, error)
 	IsReachable(ctx context.Context) bool
+}
+
+// ContentFiltered reports whether an error is a provider's content filter refusing the request.
+func ContentFiltered(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "content management policy") || strings.Contains(msg, "content_filter") ||
+		strings.Contains(msg, "responsibleaipolicyviolation")
+}
+
+func hasImages(messages []Message) bool {
+	for _, m := range messages {
+		if len(m.Images) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// WithoutImages is the messages with every picture taken out and named in its message's text, saying why.
+func WithoutImages(messages []Message, why string) []Message {
+	out := make([]Message, len(messages))
+	for i, m := range messages {
+		out[i] = Message{Role: m.Role, Content: m.Content}
+		for j := range m.Images {
+			what := "a picture"
+			if label := m.ImageLabel(j); label != "" {
+				what = "the picture of " + label
+			}
+			out[i].Content += fmt.Sprintf("\n[%s was left out: %s. Read the file as text (office read) if you need it.]", what, why)
+		}
+	}
+	return out
 }

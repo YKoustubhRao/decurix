@@ -2679,3 +2679,8 @@ func writeStringToTar(tw *tar.Writer, tarPath, content string, mode int64) error
 func HostOS() string {
 	return runtime.GOOS
 }
+
+// WindowsCDrives returns where this process can read the host's C: drive (a WSL or container mount, or C:\ itself).
+func WindowsCDrives() []string {
+	return getWindowsCDriveCandidates()
+}

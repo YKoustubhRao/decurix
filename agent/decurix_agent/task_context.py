@@ -79,6 +79,10 @@ def start(task_id, request=None):
         writes = [(CURRENT_FILE, task_id)]
         if request is not None:
             writes.append((CURRENT_FILE + ".request", str(request)[:500]))
+            # The files the request brought, whole: the request above is cut at 500 characters, and its paths come
+            # last. What the screen layer checks a chosen record against (core._in_documents).
+            from decurix_agent import attachments
+            writes.append((CURRENT_FILE + ".files", "\n".join(attachments.files(str(request)))))
 
         for path, value in writes:
             try:
@@ -158,6 +162,16 @@ def current_request():
             return f.read().strip()
     except OSError:
         return ""
+
+
+def current_files():
+    """The files the current task's request brought (paths), as far as this process can tell."""
+
+    try:
+        with open(CURRENT_FILE + ".files", encoding="utf-8") as f:
+            return [line.strip() for line in f if line.strip()]
+    except OSError:
+        return []
 
 
 def current():

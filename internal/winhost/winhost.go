@@ -667,6 +667,8 @@ type Session struct {
 	goneOnce    sync.Once
 	stopOnce    sync.Once
 	onEvent     func(string) // see OnEvent
+	keyedSet    bool         // SetKeyedText has told the helper how this app takes text
+	keyedText   bool
 
 	// The last small picture the helper made (see Thumbnail): what it just sent, and the one kept with its width.
 	thumbMu    sync.Mutex
@@ -1149,13 +1151,44 @@ func (s *Session) Wheel(x, y, delta int) error {
 	return s.send(fmt.Sprintf("wheel %d %d %d", x, y, delta))
 }
 
-// Type sends characters to whatever was clicked last. Line breaks are keys (Enter), not text.
+// Type sends characters to whatever was clicked last. A line break in the text is sent as a line break of the text
+// ("newline"), which the helper gives the app the way that app takes one (see SetKeyedText).
 func (s *Session) Type(text string) error {
-	text = strings.NewReplacer("\r", "", "\n", "").Replace(text)
-	if text == "" {
-		return nil
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	for i, line := range lines {
+		line = strings.ReplaceAll(line, "\r", "")
+		if i > 0 {
+			if err := s.send("newline"); err != nil {
+				return err
+			}
+		}
+		if line == "" {
+			continue
+		}
+		if err := s.send("type " + line); err != nil {
+			return err
+		}
 	}
-	return s.send("type " + text)
+	return nil
+}
+
+// SetKeyedText says how the app takes typed text. An app whose controls Windows describes (Office) takes characters
+// as characters: a key going down is turned into a character by the app itself, after anything already queued, so
+// spaces and line breaks sent as keys landed among the next letters and twice ("replacemen tlamp"). An app that draws
+// its own screen (TallyPrime) dropped spaces sent as characters, and takes them as keys. Sent only when it changes.
+func (s *Session) SetKeyedText(keyed bool) {
+	s.mu.Lock()
+	if s.keyedSet && s.keyedText == keyed {
+		s.mu.Unlock()
+		return
+	}
+	s.keyedSet, s.keyedText = true, keyed
+	s.mu.Unlock()
+	if keyed {
+		_ = s.send("keyed 1")
+	} else {
+		_ = s.send("keyed 0")
+	}
 }
 
 // Key sends one virtual key (Enter is 13, Backspace 8, and so on) with any of the modifiers c, s, a held.
@@ -1173,6 +1206,78 @@ func (s *Session) Key(vk int, mods string) error {
 	return s.send(line)
 }
 
+// Press presses the named control at (x, y) of the picture through UI Automation (Invoke, Select, Toggle or Expand)
+// and returns its name; an error says nothing there could be pressed that way, and the caller clicks instead.
+func (s *Session) Press(x, y int) (string, error) {
+	s.Touch()
+	resp, err := s.Do(fmt.Sprintf("press %d %d", x, y))
+	if err != nil {
+		return "", err
+	}
+	if name, ok := strings.CutPrefix(resp, "PRESSED "); ok {
+		return name, nil
+	}
+	if name, ok := strings.CutPrefix(resp, "PENDING "); ok {
+		return name, nil // still being handled (a dialog it opened is up): it was pressed
+	}
+	return "", errors.New(strings.TrimSpace(strings.TrimPrefix(resp, "ERR")))
+}
+
+// SetValue puts text into the single-line field at (x, y) of the picture through UI Automation, gives it the keyboard,
+// and returns what the field holds afterwards. Typed key by key, a field's text raced the app: a key overtook the last
+// characters ("D20" went to D2), and spaces were dropped or doubled. A field that will not be set this way (a
+// document, a field that takes no value) answers an error, and the caller types instead. One line only.
+func (s *Session) SetValue(x, y int, text string, appendText bool) (string, error) {
+	if strings.ContainsAny(text, "\r\n") {
+		return "", errors.New("one line only")
+	}
+	s.Touch()
+	mode := "set"
+	if appendText {
+		mode = "add"
+	}
+	resp, err := s.Do(fmt.Sprintf("setvalue %d %d %s %s", x, y, mode, text))
+	if err != nil {
+		return "", err
+	}
+	if value, ok := strings.CutPrefix(resp, "SET "); ok {
+		return value, nil
+	}
+	if resp == "SET" {
+		return "", nil
+	}
+	return "", errors.New(strings.TrimSpace(strings.TrimPrefix(resp, "ERR")))
+}
+
+// SetFocus gives the keyboard to the control at (x, y) of the picture through UI Automation. A click posted to a dialog
+// does not move its focus, so text typed after it went to whichever field had the keyboard (found live: a Save As
+// file name typed into the "Save as type" box, which changed the type). Best effort: a control that cannot take the
+// keyboard is left as it is.
+func (s *Session) SetFocus(x, y int) error {
+	return s.send(fmt.Sprintf("setfocus %d %d", x, y))
+}
+
+// Choose picks, in the list control at (x, y) of the picture (a drop-down such as Save As's "Save as type"), the one
+// entry named text - exactly, else the only one starting with it, else the only one containing it - through UI
+// Automation, and returns the entry's name. Keys and clicks posted to a Windows dialog do not move its keyboard focus,
+// so a drop-down cannot be chosen from with them (found live: the typed words went to the dialog's folder pane).
+func (s *Session) Choose(x, y int, text string) (string, error) {
+	text = strings.TrimSpace(text)
+	if text == "" || strings.ContainsAny(text, "\r\n") {
+		return "", errors.New("choose needs the entry's name, on one line")
+	}
+	s.Touch()
+	resp, err := s.Do(fmt.Sprintf("choose %d %d %s", x, y, text))
+	if err != nil {
+		return "", err
+	}
+	name, ok := strings.CutPrefix(resp, "CHOSE ")
+	if !ok {
+		return "", errors.New(strings.TrimSpace(strings.TrimPrefix(resp, "ERR")))
+	}
+	return name, nil
+}
+
 // maxPaste bounds what one paste may type into the app.
 const maxPaste = 200_000
 
@@ -1183,18 +1288,7 @@ func (s *Session) Paste(text string) error {
 	if len([]rune(text)) > maxPaste {
 		return fmt.Errorf("too much to paste (over %d characters)", maxPaste)
 	}
-	text = strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(text)
-	for i, line := range strings.Split(text, "\n") {
-		if i > 0 {
-			if err := s.Key(13, ""); err != nil {
-				return err
-			}
-		}
-		if err := s.Type(line); err != nil {
-			return err
-		}
-	}
-	return nil
+	return s.Type(strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(text))
 }
 
 // Copy presses Ctrl+C (vk 67) or Ctrl+X (vk 88) in the app and returns what it put on the clipboard, or "" if nothing

@@ -1,10 +1,14 @@
 import json
 
-from decurix_agent import llm_client, task_context
+from decurix_agent import config, llm_client, task_context
 from decurix_agent.computer import escalation, core, learning, replay, skills
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 from decurix_agent.logging_utils import log
+
+# Which skills each task had replayed to their end (so a replay is never run twice for one request).
+REPLAYED_DIR = config.DECURIX_DIR / "computer" / "replayed"
+KEEP_REPLAYED = 60
 
 
 # ============================================================
@@ -136,7 +140,7 @@ def other_system(skill, request):
     return ""
 
 
-def run(skill, params=None, start=1):
+def run(skill, params=None, start=1, source_files=None):
     """
     Run a ready skill with no model and say how it ended, in replay.run's shape.
     A skill that is not ready, is missing a value the recording could not
@@ -146,6 +150,11 @@ def run(skill, params=None, start=1):
 
     if skill.get("status") != skills.READY:
         return _refusal(skill, "it was never finished being taught - a person confirms a skill in the chat with /learn")
+    if source_files is not None:
+        try:
+            skill = skills.bind_sources(skill, source_files)
+        except ValueError as exc:
+            return _refusal(skill, str(exc))
 
     # A task that was handed over as this very skill is not asked whether it
     # belongs to it. Found live on every run: the skill's places were window
@@ -195,6 +204,15 @@ def run(skill, params=None, start=1):
             return _refusal(skill, f"it begins from {', '.join(replay.describe_check(c) for c in checks)}, but "
                                    f"{replay._screen_brief(observation)}. Put the screen where it begins, or ask the human")
 
+    # A replay that ran to its end did the task - it saves, submits or sends at its end. Run again for the same
+    # request from before its end, it does it a second time. Found live (2026-10-14): sent back over one value of a
+    # record the replay had saved, the engine ran `gui do` from step 1 and a second employee record was made.
+    done_to = _replayed_to(skill["name"])
+    if done_to and start <= done_to:
+        return _refusal(skill, f"this request already had it replayed to its end (step {done_to}) - the task is done, "
+                               "and replaying it again from step " + str(start) + " would do it a second time. Open "
+                               "what it made and correct that by hand with gui observe / click / type / select")
+
     # The engine running this is itself the model, and there is no person to
     # ask - so only healing's own rung: a control that has plainly been
     # renamed is found, and anything less halts as it always did. Nothing is
@@ -206,5 +224,36 @@ def run(skill, params=None, start=1):
 
     if result["outcome"] in replay.SUCCESS:
         skills.note_run(skill["name"])
+        _note_replayed(skill["name"], len(program["steps"]))
 
     return result
+
+
+def _replayed_path():
+    task_id = task_context.current()
+    return REPLAYED_DIR / f"{task_id}.json" if task_id else None
+
+
+def _replayed_to(name):
+    """The last step of `name` this task already had replayed to the end, or 0."""
+
+    path = _replayed_path()
+    try:
+        return int(json.loads(path.read_text(encoding="utf-8")).get(name) or 0) if path else 0
+    except (OSError, ValueError, TypeError):
+        return 0
+
+
+def _note_replayed(name, last):
+    path = _replayed_path()
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        done = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        done[name] = last
+        path.write_text(json.dumps(done), encoding="utf-8")
+        for old in sorted(REPLAYED_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime)[:-KEEP_REPLAYED]:
+            old.unlink()
+    except (OSError, ValueError):
+        pass

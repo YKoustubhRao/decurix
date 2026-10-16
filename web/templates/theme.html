@@ -1252,11 +1252,11 @@ body.busy{cursor:progress}
     panel.appendChild(note);
   }
 
-  // signInLink is the one link to share: the free tunnel's address (the
-  // LAN address when there is no tunnel yet) with the access code in it, so
-  // opening it signs the device in and remembers it - nothing to type.
-  function signInLink(){
-    var base = lastLANTunnelURL || lastLANURL;
+  // signInLink is a link to share: an address (the free tunnel's, else the
+  // LAN address) with the access code in it, so opening it signs the device
+  // in and remembers it - nothing to type.
+  function signInLink(address){
+    var base = address === undefined ? (lastLANTunnelURL || lastLANURL) : address;
     if(!base){ return ""; }
     base = base.replace(/\/+$/, "");
     if(!lastLAN || !lastLAN.enabled){ return base; }
@@ -1276,6 +1276,13 @@ body.busy{cursor:progress}
       addSectionTitle(panel, "Pair a phone or computer");
       addNote(panel, "Open this link on the device. It asks for a name, then stays signed in until you revoke it. Anyone with the link can pair, so share it only with your own devices.");
       addLinkRow(panel, link, "Copy pairing link");
+      /* The tunnel's address is blocked by some networks' DNS (a router that
+         answers 0.0.0.0 for trycloudflare.com), so a device on this network
+         gets a link of its own that needs no tunnel. */
+      if(lastLANTunnelURL && lastLANURL){
+        addNote(panel, "On this Wi-Fi or office network (works even where the link above is blocked):");
+        addLinkRow(panel, signInLink(lastLANURL), "Copy local network pairing link");
+      }
     }
 
     /* -- the gated listener's addresses - both need the code below. The
@@ -1292,7 +1299,7 @@ body.busy{cursor:progress}
         addLinkRow(panel, lastLANTunnelURL, "Copy tunnel link");
       }
       if(lastLANURL){
-        if(lastLANTunnelURL){ addNote(panel, "Same network only:"); }
+        if(lastLANTunnelURL){ addNote(panel, "On this Wi-Fi or office network only:"); }
         addLinkRow(panel, lastLANURL, "Copy LAN link");
       }
     }else if(!tunnelLoaded || Date.now() < tunnelWaitUntil){

@@ -68,6 +68,16 @@ class WhatATaskWrote(unittest.TestCase):
         self.assertEqual(len(got), produced.MAX_FILES)
         self.assertTrue(got[0].endswith("part0.txt"))
 
+    def test_a_deliverable_is_read_before_working_files_written_after_it(self):
+        deck = write(self.root / "mbr.pptx", age=30)
+        book = write(self.root / "model.xlsx", age=20)
+        for n in range(produced.MAX_FILES + 2):
+            write(self.root / f"spec{n}.json", age=n)
+        got = self.files()
+        self.assertIn(deck, got)
+        self.assertIn(book, got)
+        self.assertEqual(len(got), produced.MAX_FILES)
+
     def test_with_no_known_start_nothing_is_guessed(self):
         write(self.root / "summary.csv")
         with mock.patch.object(produced, "since", lambda: None):
@@ -101,7 +111,7 @@ class FileWorkIsChecked(ts.TeachingBase):
         for patch in (mock.patch.object(skill_task.verify, "available", lambda: True),
                       mock.patch.object(skill_task.verify, "judge", judge),
                       mock.patch.object(skill_task, "_did_screen_work", lambda: False),
-                      mock.patch.object(skill_task.produced, "files", lambda report="": list(self.made)),
+                      mock.patch.object(skill_task.produced, "files", lambda report="", **kw: list(self.made)),
                       mock.patch.object(skill_task.produced, "text", lambda paths: "A7='only in the first list'"),
                       mock.patch.object(skill_task, "_engine_can_drive", lambda: False)):
             patch.start()
@@ -133,6 +143,30 @@ class FileWorkIsChecked(ts.TeachingBase):
         self.assertIn("the summary sheet has no difference row", sent[0])
         self.assertIn("correct what is wrong where it is", sent[0])
 
+    def test_a_wrong_sum_in_the_report_is_not_done_without_asking_a_model(self):
+        self.verdicts = []
+        self.assertTrue(skill_task._gate("Atlas total matches: 750.00 + 300.00 + 84.00 = 1143.00, so it is OK.",
+                                         "final", "thebot"))
+        self.assertEqual(self.judged, [])
+        self.assertEqual(self.finals, [])
+        self.assertIn("it comes to 1,134.00", self.asked[-1][0])
+
+    def test_a_number_written_as_a_program_prints_it_is_not_done_without_asking_a_model(self):
+        self.verdicts = []
+        with mock.patch.object(skill_task.produced, "text", lambda paths: "Hours: 3E+1  Net: 1,672.74"):
+            self.assertTrue(skill_task._gate("Payslips made.", "final", "thebot"))
+        self.assertEqual(self.judged, [])
+        self.assertEqual(self.finals, [])
+        self.assertIn("3E+1", self.asked[-1][0])
+
+    def test_a_report_that_says_it_could_not_be_done_goes_to_the_person(self):
+        self.verdicts = [verdict(verify.CANNOT, seen="the workbook has no November targets")]
+        self.assertTrue(skill_task._gate("The workbook has no November targets, so the deck cannot be completed.",
+                                         "final", "thebot"))
+        self.assertEqual(self.finals, [])
+        self.assertIn("I could not finish this", self.asked[-1][0])
+        self.assertIn("no November targets", self.asked[-1][0])
+
     def test_what_the_check_cannot_settle_goes_out_as_reported_not_as_a_question(self):
         self.verdicts = [verdict(verify.UNSURE)]
         self.assertFalse(skill_task._gate("Made result.xlsx.", "final", "thebot"))
@@ -147,6 +181,14 @@ class FileWorkIsChecked(ts.TeachingBase):
     def test_a_tickets_or_a_replays_own_report_is_not_an_engines(self):
         for engine in ("human", "replay", "web", skill_task.SKILL_ENGINE, skill_task.LEARN_ENGINE):
             self.assertFalse(skill_task._gate("Recording saved.", "final", engine))
+        self.assertEqual(self.judged, [])
+
+    def test_a_person_s_recording_is_not_judged_even_though_it_is_all_screen_work(self):
+        # Found live: a ticket ended with the form not yet saved was judged "not done" and handed to the engine,
+        # which started typing into the person's form.
+        with mock.patch.object(skill_task, "_did_screen_work", lambda: True), \
+                mock.patch.object(skill_task, "_engine", lambda *a, **k: self.fail("handed to the engine")):
+            self.assertFalse(skill_task._gate("Recorded 20 steps of \"Enter this order\".", "final", "human"))
         self.assertEqual(self.judged, [])
 
 
@@ -172,3 +214,37 @@ class ANewRequestIsNotAnAnswer(ts.TeachingBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AYesThatSaysWhatIsMissing(ts.TeachingBase):
+    """"Right, Rae's ticket still needs its reply" is what is wrong, not a bare yes (found live, 2026-10-14)."""
+
+    def doubt(self, message):
+        handed = []
+        state.paused_skill = None
+        paused = {"mode": "confirm", "run": None, "claim": "Triaged all six.", "engine": "thebot",
+                  "task": "triage the inbox", "verdict": verdict(verify.NOT_DONE, seen="no reply to Rae")}
+        with mock.patch.object(skill_task, "_engine_can_drive", lambda: True), \
+                mock.patch.object(skill_task, "_retry_engine", lambda *a, **k: handed.append(a)):
+            skill_task._confirm_reply(paused, message)
+        return handed
+
+    def test_a_long_reply_starting_with_right_goes_back_to_the_engine(self):
+        self.assertTrue(self.doubt("Right, Rae's ticket still needs its reply - draft it as the playbook says."))
+
+    def test_a_bare_right_still_asks_for_done(self):
+        self.assertFalse(self.doubt("right"))
+        self.assertIn("reply `done`", self.asked[-1][0])
+
+
+class PicturesAreDescribed(unittest.TestCase):
+    def test_an_exported_picture_is_read_back_as_its_format_and_size(self):
+        # Found live (2026-10-15): JPEGs exported from GIMP were not read back, and the check could not confirm them.
+        import tempfile
+        from PIL import Image
+        from decurix_agent import produced
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "lamp.jpg")
+            Image.new("RGB", (800, 600)).save(path, "JPEG")
+            said = produced.text([path])
+        self.assertIn("JPEG image, 800 x 600 pixels", said)

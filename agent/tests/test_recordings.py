@@ -962,6 +962,18 @@ class PauseWithNothingInIt(unittest.TestCase):
         append.assert_called_once()
         self.assertEqual(append.call_args.args[1]["kind"], "manual")
 
+    def test_a_pause_with_no_input_from_the_person_is_no_private_step_however_the_screen_changed(self):
+        # Found live (2026-10-14): a one-second pause for a Reason while a page was still loading.
+        rec = self.recorder(bytes([200, 200, 200]) * (64 * 32))
+        rec._input_while_paused = False
+        after = {"frame": screen.Frame(64, 32, bytes([20, 20, 20]) * (64 * 32)), "elements": [], "active_title": "Request",
+                 "size": [64, 32]}
+        with mock.patch.object(core, "_wait_for_settle"), mock.patch.object(core, "observe", return_value=after), \
+                mock.patch.object(recording, "append") as append:
+            rec._resumed()
+        append.assert_not_called()
+        self.assertIs(rec.latest, after)
+
 
 class APressReadLate(unittest.TestCase):
     """A busy desktop reads input late: the screen it then sees may already be what the press made (the web app's Save,
@@ -1008,3 +1020,109 @@ class APressReadLate(unittest.TestCase):
             {"kind": "click", "point": [1229, 111], "t": 1.0, "t_end": 1.0}, None, demonstration.LATE_NOTE, None)
         self.assertTrue(entry["late"])
         self.assertEqual(entry["element_missing"], demonstration.LATE_NOTE)
+
+
+class ARecorderOnABusyDesktop(unittest.TestCase):
+    """Found live (2026-10-14) on a worker with the recorder running behind: a click on Sign in after typing the
+    password, and a click on a drop-down a second after typing into the field above it, were recorded as bare points;
+    a click on the password field was recorded as a drag to the next button; and the password typed after it - into a
+    field the recorder could not tell - was kept in plain text."""
+
+    @staticmethod
+    def frame(paint=()):
+        rgb = bytearray(b"\xff" * (200 * 100 * 3))
+        for x0, y0, w, h in paint:
+            for y in range(y0, y0 + h):
+                for x in range(x0, x0 + w):
+                    rgb[(y * 200 + x) * 3:(y * 200 + x) * 3 + 3] = b"\x00\x00\x00"
+        return screen.Frame(200, 100, rgb)
+
+    def recorder(self):
+        from decurix_agent.computer import demonstration
+        return demonstration.Recorder.__new__(demonstration.Recorder)
+
+    def test_a_control_whose_own_pixels_did_not_change_is_named_though_the_screen_did(self):
+        from decurix_agent.computer import demonstration
+        select = {"role": "combobox", "name": "Product line 1", "value": "", "states": [], "box": [100, 60, 80, 30],
+                  "source": "cdp", "path": "site x > combobox Product line 1"}
+        look = self.frame()
+        observation = {"frame": look, "elements": [select], "active_title": "New order - Chromium"}
+        # What was typed above it changed a fifth of the screen; the drop-down is drawn as it was (a focus ring on
+        # its border does not count).
+        pressed = self.frame(paint=[(0, 0, 200, 20), (100, 60, 80, 2)])
+        self.assertGreater(screen.changed_fraction(look, pressed), demonstration.STALE_FRACTION)
+        found, note = self.recorder()._element({"kind": "click", "point": [140, 75]}, observation, pressed, (False, None))
+        self.assertIs(found, select)
+        self.assertIsNone(note)
+
+        # The control itself was drawn differently (another control in its place): still not named.
+        relabelled = self.frame(paint=[(0, 0, 200, 20), (110, 66, 40, 18)])
+        found, note = self.recorder()._element({"kind": "click", "point": [140, 75]}, observation, relabelled, (False, None))
+        self.assertIsNone(found)
+        self.assertIn("still changing", note)
+
+    def test_a_password_typed_into_a_field_that_cannot_be_told_is_withheld_after_the_page_has_gone(self):
+        rec = self.recorder()
+        password = {"role": "textbox", "name": "Password", "box": [10, 40, 100, 20], "handle": {"input_type": "password"}}
+        rec._seen({"seen_at": 100.0, "elements": [password]})                 # the sign-in page, before the typing
+        rec._seen({"seen_at": 130.0, "elements": [{"role": "link", "name": "Try again", "box": [1, 1, 5, 5]}]})
+        later = {"elements": [{"role": "link", "name": "Try again", "box": [1, 1, 5, 5]}], "active_title": "x"}
+        entry = rec._entry({"kind": "type", "text": "Northwind#2026", "t": 110.0, "t_end": 111.0}, None, None, later)
+        self.assertIsNone(entry["text"])
+        self.assertIn("password field", entry["withheld"]["text"])
+
+        # Typing done after the page with the password field had gone is kept.
+        entry = rec._entry({"kind": "type", "text": "Cafe Bloom", "t": 140.0, "t_end": 141.0}, None, None, later)
+        self.assertEqual(entry["text"], "Cafe Bloom")
+
+    def test_frames_are_grabbed_off_the_input_thread_and_waited_for_when_actions_are_made(self):
+        import concurrent.futures
+        from decurix_agent.computer import demonstration
+        rec = self.recorder()
+        started = threading.Event()
+        release = threading.Event()
+        rec._grab = lambda: (started.set(), release.wait(5), "the frame")[2]
+        rec._grabs = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.addCleanup(rec._grabs.shutdown)
+        pending = rec._grab_later()               # returns at once: the reader goes on to the next event
+        self.assertTrue(started.wait(5))
+        self.assertFalse(pending.done())
+        release.set()
+        self.assertEqual(demonstration._with_frame({"type": "press", "frame": pending})["frame"], "the frame")
+        self.assertEqual(demonstration._with_frame({"type": "release"}), {"type": "release"})
+
+    def test_a_region_of_two_frames_is_compared_pixel_by_pixel(self):
+        a, b = self.frame(), self.frame(paint=[(10, 10, 10, 10)])
+        self.assertEqual(screen.changed_in(a, b, [50, 50, 20, 20]), 0.0)
+        self.assertEqual(screen.changed_in(a, b, [10, 10, 10, 10]), 1.0)
+        self.assertEqual(screen.changed_in(a, None, [10, 10, 10, 10]), 1.0)
+
+    def test_typing_after_a_pause_goes_into_the_field_the_last_run_clicked(self):
+        import queue
+        from decurix_agent.computer import demonstration
+        rec = self.recorder()
+        rec.raw, rec.latest, rec.session_id, rec.task_id = queue.Queue(), None, "demo-x", ""
+        field = {"role": "textbox", "name": "Customer", "value": "", "states": [], "box": [20, 20, 120, 30],
+                 "source": "cdp", "path": "site x > textbox Customer"}
+        look = {"frame": self.frame(), "elements": [field], "active_title": "New order - Chromium", "size": [200, 100],
+                "seen_at": 1.0}
+        rec.latest = look
+        appended = []
+        with mock.patch.object(demonstration.core, "_wait_for_settle", return_value=look["frame"]), \
+                mock.patch.object(demonstration.core, "observe", return_value=dict(look)), \
+                mock.patch.object(demonstration.core, "compare", return_value={}), \
+                mock.patch.object(demonstration.core, "summarize", return_value=""), \
+                mock.patch.object(demonstration.core, "expectations", return_value={}), \
+                mock.patch.object(demonstration.recording, "append", lambda sid, entry, **kw: appended.append(entry) or entry), \
+                mock.patch.object(demonstration, "_report_to_chat"):
+            rec._flush([{"type": "press", "t": 2.0, "button": 1, "x": 50, "y": 35, "frame": look["frame"]},
+                        {"type": "release", "t": 2.05, "button": 1, "x": 50, "y": 35}])
+            # The person paused, then typed: a run of its own, whose first frame differs from the last look
+            # (a suggestion list opened) - the field is still where the keys go.
+            busy = self.frame(paint=[(0, 60, 200, 40)])
+            rec._flush([{"type": "key_down", "t": 4.0, "key": "c", "char": "C", "frame": busy},
+                        {"type": "key_up", "t": 4.05, "key": "c", "char": None}])
+        self.assertEqual(appended[0]["element"]["name"], "Customer")
+        self.assertEqual(appended[1]["kind"], "type")
+        self.assertEqual((appended[1]["element"] or {}).get("name"), "Customer")
+        self.assertEqual(appended[1]["text"], "C")

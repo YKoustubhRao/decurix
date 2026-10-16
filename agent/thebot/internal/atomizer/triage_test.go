@@ -250,3 +250,47 @@ func TestTriageSendsARequestWithAttachedFilesToTheOperator(t *testing.T) {
 		t.Errorf("the same question with no file went to the operator (%s)", got.Reason)
 	}
 }
+
+// A file whose contents must come from a website goes to the operator, never to the
+// tool-less file-write skill (found live, 2026-10-13: it wrote rows from the model's head).
+func TestTriageSendsAFileFromAWebsiteToTheOperator(t *testing.T) {
+	p := "On https://books.toscrape.com, the Mystery category runs over more than one page. Find every Mystery book that costs less than 20 pounds and save them to mystery_under_20.csv in my work folder (title, price), cheapest first."
+	if got := Triage(p); got.Kind != RouteOperate {
+		t.Fatalf("Triage = %s (%s), want operate", got.Kind, got.Reason)
+	}
+	// Writing a file from the request's own words is still the file-write skill's.
+	if got := Triage("write hello world to notes.txt"); got.Kind == RouteOperate && got.TaskType != "file-write" {
+		t.Fatalf("a plain file write was rerouted: %s (%s)", got.Kind, got.Reason)
+	}
+}
+
+// A request whose deliverables are an office document and an email draft is
+// back-office work even when its words look like a build: found live
+// (2026-10-14), a price-list workbook and a summary email went to the coding
+// harness.
+func TestTriageSendsOfficeDeliverablesToTheOperatorNotTheCodingHarness(t *testing.T) {
+	p := "Write a Python script that builds price_list.xlsx from the attached costs, then draft an email to sales@example.com summarising it."
+	if Classify(p) != "coding" {
+		t.Skip("no longer classified as coding at all - the guard below is then not exercised")
+	}
+	r := Triage(p)
+	if r.Kind == RouteSkill && r.TaskType == "coding" {
+		t.Errorf("Triage(%q) = coding harness, want the operator", p)
+	}
+	if r.Kind != RouteOperate {
+		t.Errorf("Triage(%q) = %v, want RouteOperate", p, r)
+	}
+}
+
+func TestTriageSendsWorkInAnAppOnTheDesktopToTheOperator(t *testing.T) {
+	// Found live (2026-10-15): answered by the chat skill, which has no screen, as "I need to use the UI directly".
+	for _, p := range []string{
+		`In TallyPrime (on your desktop; use Educational Mode), create a company named Northwind Traders and record a voucher.`,
+		`Use Excel (the Excel app on your desktop) to open sales.csv and sort it by amount.`,
+		`Open the accounting app and enter this bill.`,
+	} {
+		if got := Triage(p); got.Kind != RouteOperate {
+			t.Errorf("Triage(%q) = %v (%s), want operate", p, got.Kind, got.Reason)
+		}
+	}
+}

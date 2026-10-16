@@ -30,6 +30,11 @@ func TestTunnelHandlerPostThenGet(t *testing.T) {
 	post(`{"admin_url":"http://192.168.1.42:8080","lan_url":"http://192.168.1.42:8090"}`)
 	post(`{"url":"https://foo.trycloudflare.com"}`)
 	post(`{"lan_tunnel_url":"https://bar.trycloudflare.com"}`)
+	post(`{"lan_url":""}`)
+	if got := s.Tunnel.LANURL(); got != "" {
+		t.Fatalf("unavailable LAN link was not cleared: %q", got)
+	}
+	post(`{"lan_url":"http://192.168.1.42:8090"}`)
 	post(`{"lan_tunnel_url":""}`) // stopping the app clears its temporary link
 	if got := s.Tunnel.LANTunnelURL(); got != "" {
 		t.Fatalf("temporary tunnel was not cleared: %q", got)

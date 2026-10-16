@@ -99,7 +99,7 @@ class Replies(Base):
         state.waiting_for_query = False
         state.current_task = None
         watchers._pass()
-        self.assertEqual(FakeThread.started[0][0], watchers.perform_task)
+        self.assertEqual(FakeThread.started[0][0], watchers._perform_following_procedure)
 
     def test_different_task_id_is_not_marked_as_a_reply(self):
         state.waiting_for_query = True
@@ -137,6 +137,37 @@ class Replies(Base):
         watchers._called_off("stop")
         self.assertIn("nothing more", self.finals[-1][0])
         self.assertFalse(state.waiting_for_query)
+
+    def _stop_while_paused(self, paused, workflow_active=False):
+        FakeThread.started = []
+        state.processed_commands.clear()
+        state.waiting_for_query = True
+        state.current_task = "/skill add-a-customer"
+        state.current_task_id = TASK
+        state.paused_skill, state.paused_replay = paused
+        self.request("stop", reply=True)
+        cancelled = []
+        with mock.patch.object(watchers.lessons, "note"), \
+                mock.patch.object(watchers.workflow_task, "has_active", lambda: workflow_active and not cancelled), \
+                mock.patch.object(watchers.workflow_task, "cancel_active", lambda: cancelled.append(True)):
+            watchers._pass()
+        return FakeThread.started[0], cancelled
+
+    def test_a_paused_skill_or_replay_reads_stop_itself(self):
+        # Found in review (2026-10-14): a bare "stop" went to the generic
+        # call-off even when a lesson or a skill run had asked, so a lesson's
+        # draft was not kept and a stopped run never recorded that it stopped.
+        (target, args), cancelled = self._stop_while_paused(({"mode": "learn"}, None))
+        self.assertEqual(target, watchers.skill_task.resume)
+        self.assertEqual(args[0], "stop")
+        self.assertEqual(cancelled, [])
+        (target, _), _ = self._stop_while_paused((None, {"step": 3}))
+        self.assertEqual(target, watchers.replay_task.resume)
+
+    def test_stop_at_a_workflow_stages_skill_question_ends_the_workflow_too(self):
+        (target, _), cancelled = self._stop_while_paused(({"mode": "run"}, None), workflow_active=True)
+        self.assertEqual(target, watchers.skill_task.resume, "the skill still reports where it stopped")
+        self.assertEqual(cancelled, [True], "and the next stage is not started on its report")
 
     def test_an_empty_reply_is_retried_when_its_writer_finishes(self):
         state.waiting_for_query = True
@@ -208,12 +239,28 @@ class Replies(Base):
         self.assertEqual((FakeThread.started, self.finals), ([], []))
         self.assertTrue(path.exists(), "left for a later pass - the running task may pause and take it")
 
+    def test_finding_a_kept_procedure_never_holds_the_watcher(self):
+        # Found in review (2026-10-14): procedures.apply asked the hosted model
+        # inside the watcher's pass.
+        self.request("bank rec for August, usual procedure")
+        with mock.patch.object(watchers.procedures, "apply", side_effect=AssertionError("asked in the pass")):
+            watchers._pass()
+        target, args = FakeThread.started[0]
+        self.assertEqual(target, watchers._perform_following_procedure)
+
+        ran = []
+        with mock.patch.object(watchers.procedures, "apply", lambda c: c + "\\n\\nThe standing procedure ..."), \
+                mock.patch.object(watchers, "perform_task", lambda c, f: ran.append(c)):
+            target(*args)
+        self.assertTrue(ran[0].endswith("The standing procedure ..."))
+        self.assertEqual(state.current_task, ran[0], "the final check reads the procedure too")
+
     def test_a_new_request_is_remembered_until_it_finishes(self):
         self.request("what is the kernel version?")
 
         watchers._pass()
 
-        self.assertEqual(FakeThread.started[0][0], watchers.perform_task)
+        self.assertEqual(FakeThread.started[0][0], watchers._perform_following_procedure)
         self.assertEqual(task_context.take_interrupted()["task_id"], TASK)
 
 

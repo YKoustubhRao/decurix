@@ -4,6 +4,7 @@ __pycache__
 dist/
 
 bench/gui/results/
+bench/workflows/results/
 /decurix
 node_modules/
 desktop/electron/build/

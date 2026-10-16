@@ -185,6 +185,28 @@ class GroupedPositions(unittest.TestCase):
         self.assertEqual(question["id"], "coordinates:s5", "one left is asked the way a single one always was")
         self.assertIn("Step 5 (double click 676,522)", question["text"])
 
+    def test_a_step_a_person_names_is_found_by_that_control(self):
+        result = learning.answer(self.skill, self.question, "keep (2 is the Search button)")
+        self.assertTrue(result["understood"])
+        step = self.skill["steps"][1]
+        self.assertEqual(step["target"], {"role": "button", "name": "Search"})
+        self.assertNotIn("point", step)
+        self.assertNotIn("look", step)
+
+    def test_naming_the_one_step_left_is_an_answer(self):
+        self.skill["answers"]["coordinates:s1"] = "keep"
+        self.skill["answers"]["coordinates:s5"] = "keep"
+        question = next(q for q in learning.questions(self.skill) if q["kind"] == "coordinates")
+        result = learning.answer(self.skill, question, "It's the Search button at the top right.")
+        self.assertTrue(result["understood"])
+        self.assertIn('button "Search"', result["note"])
+        self.assertEqual(self.skill["steps"][1]["target"], {"role": "button", "name": "Search"})
+
+    def test_a_reply_that_names_more_than_one_thing_is_not_taken_for_a_control(self):
+        self.assertIsNone(learning._named_control("the Next button, not the Back one"))
+        self.assertIsNone(learning._named_control("keep"))
+        self.assertEqual(learning._named_control('the button called "Pay now"'), ("button", "Pay now"))
+
 
 if __name__ == "__main__":
     unittest.main()

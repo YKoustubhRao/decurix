@@ -147,5 +147,49 @@ class KeyFrames(unittest.TestCase):
         self.assertIn("frame", events[6])
 
 
+class CapsLock(unittest.TestCase):
+    # Found live (2026-10-13): "Cafe" typed over VNC was recorded as "cafe". Xvnc types a capital by toggling Caps
+    # Lock around the letter, and the recorder read Lock back from the server at the letter - after Xvnc had already
+    # toggled it off again.
+
+    KEYSYMS = {66: (0xFFE5, 0xFFE5), 54: (ord("c"), ord("C")), 38: (ord("a"), ord("A")), 41: (ord("f"), ord("F"))}
+
+    def recorder(self):
+        rec = demonstration.Recorder.__new__(demonstration.Recorder)
+        rec._shift, rec._caps, rec._lock_known, rec._keys_held, rec._last_key = set(), False, True, set(), 0.0
+        rec.input = mock.Mock()
+        rec.input.keycode_to_keysym = lambda keycode, index: self.KEYSYMS[keycode][min(index, 1)]
+        rec._grab = lambda: None
+        return rec
+
+    def typed(self, rec, keys):
+        xinput = XLIB["Xlib.ext.xinput"]
+        root = mock.Mock()
+        root.query_pointer.return_value = mock.Mock(mask=0)   # what the server says by the time anything asks
+        with mock.patch.dict(sys.modules, XLIB):
+            events = [rec._raw(xinput.RawKeyPress if down else xinput.RawKeyRelease, mock.Mock(detail=code), root)
+                      for code, down in keys]
+        return "".join(e["char"] for e in events if e.get("char") and e["key"] != "Caps_Lock")
+
+    def test_a_capital_xvnc_types_by_toggling_lock_stays_a_capital(self):
+        lock = [(66, True), (66, False)]
+        keys = lock + [(54, True)] + lock + [(54, False), (38, True), (38, False), (41, True), (41, False)]
+        self.assertEqual(self.typed(self.recorder(), keys), "Caf")
+
+    def test_an_agents_lock_press_counts_and_the_server_is_read_only_when_nothing_waits(self):
+        rec = self.recorder()
+        xinput = XLIB["Xlib.ext.xinput"]
+        with mock.patch.dict(sys.modules, XLIB):
+            rec._agent_key(xinput.RawKeyPress, mock.Mock(detail=66))
+            rec._agent_key(xinput.RawKeyRelease, mock.Mock(detail=66))
+        self.assertTrue(rec._caps)
+        self.assertEqual(self.typed(rec, [(38, True), (38, False)]), "A")
+        self.assertFalse(rec._lock_known, "a key read means the server's state may be ahead of the reader")
+        rec.input.screen.return_value.root.query_pointer.return_value = mock.Mock(mask=2)
+        with mock.patch.dict(sys.modules, XLIB):
+            rec._sync_lock()
+        self.assertTrue(rec._caps and rec._lock_known)
+
+
 if __name__ == "__main__":
     unittest.main()

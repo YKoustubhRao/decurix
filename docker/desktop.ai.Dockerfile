@@ -196,6 +196,7 @@ COPY agent/start_agent_terminal.sh /opt/start_agent_terminal.sh
 # work through shell commands (decurix_agent/computer/cli.py).
 COPY agent/gui /usr/local/bin/gui
 COPY agent/office /usr/local/bin/office
+COPY agent/lookup /usr/local/bin/lookup
 # TheBot harness's soul binary - built above from real source, started
 # conditionally by start_agent_terminal.sh only when AGENT_HARNESS=thebot.
 COPY --from=thebot-builder /soul /opt/soul
@@ -204,6 +205,12 @@ COPY --from=thebot-builder /soul /opt/soul
 # (PDF/DOCX/etc) fails per-file, honestly, without breaking anything
 # else; plain text/code and every other skill don't need Python at all.
 COPY agent/thebot/scripts /opt/thebot-scripts
+# Presentation support uses a venv: python3-pptx is unavailable in Ubuntu noble.
+# System site packages retain apt-provided GI, openpyxl and document readers.
+RUN python3 -m venv --system-site-packages /opt/office-venv && \
+    /opt/office-venv/bin/pip install --no-cache-dir python-pptx==1.0.2
+ENV PATH="/opt/office-venv/bin:${PATH}"
+
 # browser-agent: extension_pipeline/ext_server.py, the backend for the
 # extension loaded into this desktop's Chromium (see
 # agent/chromium-browser.init's --load-extension). Only core/, extension/
@@ -239,7 +246,7 @@ COPY agent/decurix-desktop-browser.desktop /home/headless/Desktop/chromium-brows
 # A desktop launcher runs only when it is executable (xfdesktop asks "untrusted launcher?" otherwise).
 RUN chmod 755 /home/headless/Desktop/chromium-browser.desktop
 
-RUN chmod +x /opt/vm_server.py /opt/start_agent_terminal.sh /opt/soul /usr/local/bin/gui /usr/local/bin/office
+RUN chmod +x /opt/vm_server.py /opt/start_agent_terminal.sh /opt/soul /usr/local/bin/gui /usr/local/bin/office /usr/local/bin/lookup
 
 RUN mkdir -p /home/headless/.config/autostart \
     /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml \

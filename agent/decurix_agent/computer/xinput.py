@@ -138,14 +138,15 @@ def move(x, y):
     _run(["mousemove", "--sync", str(int(x)), str(int(y))])
 
 
-def type_text(text):
+def type_text(text, delay=12):
     # --delay keeps up with apps that process each key on the main loop
     # (LibreOffice drops characters typed at xdotool's default speed).
     lines = text.split("\n")
 
     for index, line in enumerate(lines):
         if line:
-            _run(["type", "--delay", "12", "--", line], timeout=max(30, len(line) // 10))
+            _run(["type", "--delay", str(int(delay)), "--", line],
+                 timeout=max(30, len(line) * max(int(delay), 12) // 500 + 30))
         if index < len(lines) - 1:
             _run(["key", "Return"])
 

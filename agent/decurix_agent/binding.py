@@ -132,7 +132,11 @@ def fill(skill, params, context, with_rows=False):
             if images == MAX_IMAGES:
                 break
             parts.append(llm_client.image_part(path=image))
+            texts.append(office._ocr_file(image))
             images += 1
+
+    if any(_is_date_param(p) for p in params):
+        parts.append({"type": "text", "text": "\n" + _date_note(skill, texts)})
 
     try:
         message, _ = llm_client.chat(
@@ -147,6 +151,63 @@ def fill(skill, params, context, with_rows=False):
     values, evidence = _clean(params, answer, texts)
     rows = _rows(skill, params, answer, texts, values, evidence)
     return (values, evidence, rows) if with_rows else (values, evidence)
+
+
+# A date written with digits only: 03/10/2026, 3.10.2026, 28-09-2026.
+DIGIT_DATE = re.compile(r"(?<!\d)(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4})(?!\d)")
+
+
+def _is_date_param(param):
+    """A value that is a date: its example looks like one, or its label says so."""
+
+    example = str(param.get("example") or param.get("default") or "")
+    return bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", example) or DIGIT_DATE.fullmatch(example)
+                or re.search(r"\bdate\b", param.get("label") or param.get("name") or "", re.I))
+
+
+def date_order(texts):
+    """
+    "day" or "month" - which comes first in the digit dates these texts write - decided only by dates that cannot be
+    read the other way (28/09/2026 is day first), and only when they all agree; None otherwise.
+    """
+
+    seen = set()
+    for text in texts:
+        for a, b, _ in DIGIT_DATE.findall(text or ""):
+            a, b = int(a), int(b)
+            if a > 12 and b <= 12:
+                seen.add("day")
+            elif b > 12 and a <= 12:
+                seen.add("month")
+    return seen.pop() if len(seen) == 1 else None
+
+
+def _document_text(path):
+    """A document's words, its pictures read by OCR too (a scanned form has no text layer)."""
+
+    try:
+        doc = office.read_document(path)
+    except (office.OfficeError, OSError, ValueError):
+        return ""
+    return doc["text"] + "\n" + "\n".join(office._ocr_file(image) for image in doc["images"][:3])
+
+
+def _date_note(skill, texts):
+    """
+    What to tell the model about dates written in digits. Found live (2026-10-14): a claim form's "03/10/2026" was
+    read as 10 March although the form the person taught from wrote "28/09/2026" - day first - and the record was
+    saved with the wrong date.
+    """
+
+    order = date_order(texts) or date_order([_document_text(p) for p in skill.get("documents") or []])
+    if order == "day":
+        return ("Dates in these documents are written day first (as 28/09/2026 is 28 September): read a date such as "
+                "03/10/2026 as 3 October.")
+    if order == "month":
+        return ("Dates in these documents are written month first (as 09/28/2026 is September 28): read a date such "
+                "as 03/10/2026 as March 10.")
+    return ("If a date is written with digits that could be read either way (03/10/2026) and nothing in the documents "
+            "shows which comes first, leave that value out - it will be asked for.")
 
 
 def _prompt(skill, params, context):
@@ -217,8 +278,40 @@ def as_number(value, example):
 
     if example is None or not BARE_NUMBER.match(str(example)):
         return value
+    scaled = _scaled(value or "")
+    if scaled is not None:
+        return scaled
     found = FIGURE.match(value or "")
     return found.group(1) if found else value
+
+
+# A figure written with its scale: "$72k" is 72000, not 72 (found live, 2026-10-14: a salary of "$72k" was entered as
+# 72, the "k" taken for a unit and dropped). "k" and spelled-out scales always; "m"/"bn" only after a currency mark,
+# since "20 m" of cable is metres.
+_SCALES = {"k": 10 ** 3, "thousand": 10 ** 3, "lakh": 10 ** 5, "lakhs": 10 ** 5, "lac": 10 ** 5, "crore": 10 ** 7,
+           "crores": 10 ** 7, "cr": 10 ** 7, "million": 10 ** 6, "mn": 10 ** 6, "m": 10 ** 6, "billion": 10 ** 9,
+           "bn": 10 ** 9}
+_CURRENCY = r"(?:Rs\.?|INR|USD|EUR|GBP|AED|SGD|[₹$€£])"
+SCALED = re.compile(rf"^\s*(?P<cur>{_CURRENCY}\s*)?(?P<n>-?\d[\d,]*(?:\.\d+)?)\s*(?P<scale>[A-Za-z]+)\.?"
+                    rf"(?:\s+(?:a|per)\s+(?:year|annum|month|week|day|hour)|\s*/\s*(?:yr|year|mo|month|hr|hour))?\s*$", re.I)
+
+
+def _scaled(value):
+    """The number a figure with a scale word stands for, written plainly ("72000"), or None for any other figure."""
+
+    from decimal import Decimal, InvalidOperation
+
+    m = SCALED.match(value)
+    if not m:
+        return None
+    scale = m.group("scale").lower()
+    if scale not in _SCALES or (scale in ("m", "mn", "bn", "cr") and not m.group("cur")):
+        return None
+    try:
+        number = Decimal(m.group("n").replace(",", "")) * _SCALES[scale]
+    except InvalidOperation:
+        return None
+    return str(number.quantize(Decimal(1))) if number == number.to_integral_value() else format(number.normalize(), "f")
 
 
 def as_written(value, example, texts):

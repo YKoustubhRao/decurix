@@ -21,6 +21,26 @@ from decurix_agent import config
 # long before it is asked to do anything real.
 # ============================================================
 
+MAX_APPS = 8
+
+
+def _desktop_apps():
+    """The apps whose icons are on this desktop, each with the web address it opens when it is a web app."""
+
+    try:
+        from decurix_agent.computer import launchers
+        desktop = launchers.PLACES[0]
+        listed = []
+        for entry in launchers.entries([desktop]):
+            if launchers._opens_the_browser(entry):
+                continue
+            page = launchers.address(entry)
+            listed.append(f'"{entry["name"]}"' + (f" (a web app at {page})" if page else ""))
+        return sorted(listed)[:MAX_APPS]
+    except Exception:
+        return []
+
+
 def get_identity_context(engine=""):
     """
     Describe this desktop to its own agent, one fact per line.
@@ -49,6 +69,17 @@ def get_identity_context(engine=""):
             "container, with Chromium installed, viewed over VNC.",
         ]
     )
+
+    # Where things are, from inside this desktop. Found live (2026-10-13): asked to register a vendor in a web app
+    # whose server runs on the computer, an engine opened http://localhost:8000 (this desktop itself: refused),
+    # then http://127.0.0.1:8000, and spent a whole attempt on "the application never became available".
+    facts.append(
+        "- Network: localhost and 127.0.0.1 are THIS desktop, not the computer it runs on. Servers on that "
+        "computer are reached at host.docker.internal (http://host.docker.internal:PORT)."
+    )
+    apps = _desktop_apps()
+    if apps:
+        facts.append("- Apps on your desktop (open one with `gui open \"NAME\"`): " + "; ".join(apps))
 
     if config.DESKTOP_SPECIALIZATION:
         facts.append(
