@@ -310,6 +310,27 @@
       emit({ kind: 'press', x: p.x, y: p.y, seq: id });
     });
   };
+  // Puts a line of text into an app's field through its accessibility (the bridge sets the field's value and gives it
+  // the keyboard), instead of typing it key by key: typed, the last keys could be overtaken by the next key sent. The
+  // answer is "SET <what the field holds>" or "ERR ...", and the worker's action layer types instead on an error.
+  window.decurixSetValue = function (elem, text, append) {
+    return new Promise(function (resolve) {
+      if (!isField(elem) || !elem.dataset.box) { resolve('ERR not a field of the app'); return; }
+      var p = middleOf(elem), id = ++seqOut, timer = setTimeout(function () { delete answers[id]; resolve('ERR the app did not answer'); }, 10000);
+      answers[id] = function (r) {
+        clearTimeout(timer);
+        var said = (r && r.text) || 'ERR no answer';
+        if (said.indexOf('SET') === 0) {
+          elem.value = said.slice(4);
+          elem.dataset.edited = String(Date.now());
+          appField = elem;
+        }
+        resolve(said);
+      };
+      markBusy();
+      emit({ kind: 'setvalue', x: p.x, y: p.y, text: String(text || ''), append: !!append, seq: id });
+    });
+  };
   window.decurixChoose = function (elem, text) {
     return new Promise(function (resolve) {
       if (!elem || !elem.dataset || !elem.dataset.box) { resolve('ERR not a control of the app'); return; }

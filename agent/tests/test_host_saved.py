@@ -79,3 +79,20 @@ class MissingOnHost(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CopyFromHost(unittest.TestCase):
+    def test_a_saved_host_file_is_copied_for_the_check(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as home, \
+                mock.patch.object(produced.config, "DECURIX_DIR", Path(home)), \
+                mock.patch.object(produced, "since", return_value=1_800_000_000.0):
+            good = produced.saved_on_host(EXCEL, ask=disk({FOLDER + "\\sales_q3_report.xlsx"}, kind="zip"))
+            self.assertEqual(good, [FOLDER + "\\sales_q3_report.xlsx"])
+            copies = produced.copy_from_host(good, fetch=lambda path: b"PK\x03\x04data")
+            self.assertEqual([c.name for c in copies], ["sales_q3_report.xlsx"])
+            self.assertEqual(copies[0].read_bytes(), b"PK\x03\x04data")
+
+    def test_a_missing_file_is_not_copied(self):
+        self.assertEqual(produced.saved_on_host(EXCEL, ask=disk(set())), [])

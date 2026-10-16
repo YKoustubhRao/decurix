@@ -279,24 +279,25 @@ def _ask_host(path):
     return None if not isinstance(found, dict) or found.get("unknown") else found
 
 
-def missing_on_host(request, ask=None):
+def _host_findings(request, ask=None):
     """
-    What of the files a request said to save on the person's computer is not
-    there, or "": a file named in a sentence that saves something, looked for
-    in the C:\\ folders the request names that do exist (or at the whole path
-    the request gives it). A folder that is not there, or a control plane that
-    cannot be asked, decides nothing.
+    The files a request said to save on the person's computer: what is wrong
+    with them (sentences) and which are there as asked (host paths). A file
+    named in a sentence that saves something, looked for in the C:\\ folders the
+    request names that do exist (or at the whole path the request gives it). A
+    folder that is not there, or a control plane that cannot be asked, decides
+    nothing.
     """
 
     ask = ask or _ask_host
     text = attachments.text(request or "")
     paths = _host_paths(text)
     if not paths:
-        return ""
+        return [], []
     saved = " ".join(s for s in re.split(r"(?<=[.!?])\s+|\n+", text) if SAVE_SENTENCE.search(s))
     wanted = list(dict.fromkeys(REQUESTED_FILE.findall(saved)))
     if not wanted:
-        return ""
+        return [], []
     whole = [p for p in paths if REQUESTED_FILE.fullmatch(_leaf(p))]
     folders = []
     for path in paths:
@@ -304,11 +305,11 @@ def missing_on_host(request, ask=None):
             continue
         found = ask(path)
         if found is None:
-            return ""
+            return [], []
         if found.get("exists") and found.get("folder"):
             folders.append(path)
     began = since()
-    out = []
+    out, good = [], []
     for name in wanted:
         places = [p for p in whole if _leaf(p).lower() == name.lower()] + [f + "\\" + name for f in folders]
         if not places:
@@ -317,7 +318,7 @@ def missing_on_host(request, ask=None):
         for place in places:
             found = ask(place)
             if found is None:
-                return ""
+                return [], []
             if found.get("exists") and not found.get("folder"):
                 there.append((place, found))
         if not there:
@@ -329,7 +330,54 @@ def missing_on_host(request, ask=None):
                        f"{KIND_WORDS.get(kind, kind)}) - it was saved with another file type")
         elif began is not None and all(_older(found, began) for _, found in there):
             out.append(f"{there[0][0]} is there but was last written before this task began - it was not saved now")
-    return "; ".join(out)
+        else:
+            good.append(there[0][0])
+    return out, good
+
+
+def missing_on_host(request, ask=None):
+    """What of the files a request said to save on the person's computer is not there as asked, or ""."""
+
+    return "; ".join(_host_findings(request, ask)[0])
+
+
+def saved_on_host(request, ask=None):
+    """The files a request said to save on the person's computer that are there as asked (host paths)."""
+
+    return _host_findings(request, ask)[1]
+
+
+def copy_from_host(paths, fetch=None):
+    """
+    Local copies of files of the person's computer, for the final check to read
+    (the control plane hands over only files the task's own request names).
+    Copies keep the file's own name, under ~/.decurix/computer/host-copies/.
+    A file that cannot be fetched is left out.
+    """
+
+    import urllib.parse
+    import urllib.request
+
+    folder = config.DECURIX_DIR / "computer" / "host-copies"
+    out = []
+    for path in paths:
+        if Path(_leaf(path)).suffix.lower() not in READABLE:
+            continue
+        try:
+            if fetch is not None:
+                data = fetch(path)
+            else:
+                url = (config.CONTROL_PLANE_URL.rstrip("/") + "/api/host-files/read?"
+                       + urllib.parse.urlencode({"desktop": config.DESKTOP_ID, "path": path}))
+                with urllib.request.urlopen(url, timeout=60) as answer:
+                    data = answer.read()
+            folder.mkdir(parents=True, exist_ok=True)
+            local = folder / _leaf(path)
+            local.write_bytes(data)
+            out.append(local)
+        except Exception as exc:  # noqa: BLE001 - a copy that cannot be made leaves the check to the rest
+            log(f"produced: could not copy {path} from the person's computer: {exc}")
+    return out
 
 
 # What a file's name says its first bytes must be (the control plane reads eight of them, never more).
