@@ -477,7 +477,9 @@ def main():
         print(f"| {task_id} | " + " | ".join(cells) + " |")
 
     print(f"\nFull results: {out_path}")
+    return 0 if report["engines"] and all(summary["total"] and summary["passed"] == summary["total"]
+                    for summary in report["engines"].values()) else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

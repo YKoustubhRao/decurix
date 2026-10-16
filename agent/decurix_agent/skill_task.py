@@ -4,7 +4,7 @@ import threading
 import time
 import traceback
 
-from decurix_agent import (attachments, binding, config, guidance, lessons, llm_client, messaging, playbooks, produced,
+from decurix_agent import (attachments, binding, config, guidance, lessons, llm_client, messaging, playbooks, procedures, produced,
                            progress, request_reading, state, study, task_context, usage, verify)
 from decurix_agent.computer import (approval, constraints, core, escalation, evidence, experience, launchers, learning,
                                     mimic, recording, replay, skills)
@@ -377,7 +377,7 @@ def _begin(content, task_file):
     usage.add(input_tokens=0, output_tokens=0, cost_usd=0)
 
 
-def perform(content, task_file=None):
+def perform(content, task_file=None, source_files=None):
     """Run a "/learn" or "/skill" request as the task the watcher dispatched it as."""
 
     _begin(content, task_file)
@@ -386,7 +386,7 @@ def perform(content, task_file=None):
         if parse_learn(content) is not None:
             _learn(*parse_learn(content))
         else:
-            _run_request(*parse_skill(content), context=skill_context(content))
+            _run_request(*parse_skill(content), context=skill_context(content), source_files=source_files)
     except _Refused as refusal:
         write_final_reply(str(refusal), kind="error", engine=LEARN_ENGINE if parse_learn(content) is not None else SKILL_ENGINE)
     except Exception as exc:
@@ -644,7 +644,7 @@ def _listing():
     return "Skills on this desktop:\n" + "\n".join(lines) + "\nRun one with `/skill <name>`."
 
 
-def _run_request(query, given, context=""):
+def _run_request(query, given, context="", source_files=None):
     if not query:
         write_final_reply(_listing(), kind="final", engine=SKILL_ENGINE)
         return
@@ -656,6 +656,12 @@ def _run_request(query, given, context=""):
             names = ", ".join(f"`{s['name']}`" for s in candidates)
             raise _Refused(f"More than one skill fits \"{query}\": {names}. Say which, by its name.")
         raise _Refused(f"I do not know a skill like \"{query}\". " + _listing())
+
+    if source_files is not None:
+        try:
+            skill = skills.bind_sources(skill, source_files)
+        except ValueError as exc:
+            raise _Refused(f"Cannot use those source files: {exc}") from exc
 
     run = {"skill": skill, "values": skills.initial_values(skill, given), "start": 1, "checked": False, "patches": [],
            "asked": 0, "stuck": 0, "ladder": _ladder(skill), "asked_ids": [], "context": context}
@@ -1316,6 +1322,9 @@ MAX_CORRECTIONS = 8
 CONFIRM_RE = re.compile(r"^\W*(done|it(?:'s| is| was)? done|it worked|correct|confirmed|looks (?:right|good|fine))\b",
                         re.IGNORECASE)
 VAGUE_YES_RE = re.compile(r"^\W*(yes|y|yep|yeah|ok(?:ay)?|good|right|sure|fine|go ahead|proceed)\b", re.IGNORECASE)
+# What follows a "yes" that says the work is not finished: something still to do, missing, wrong or left out.
+STILL_WRONG_RE = re.compile(r"\b(still|needs?|missing|forgot|left out|wrong|not (?:done|there|right|correct|in)|isn'?t|"
+                            r"aren'?t|also|too|instead|should|must|add|fix|correct (?:the|it|that)|draft|redo)\b", re.I)
 REDO_RE = re.compile(r"^\W*(retry|try again|again|redo|do it again|finish it|keep going|continue)\b", re.IGNORECASE)
 
 
@@ -1449,6 +1458,9 @@ def _chosen_for(run):
     """The names of this run's values that are picked from a list: the skill's, and those of the rows added for this run."""
 
     chosen = set(_chosen_from_list(run["skill"]))
+    # A value set in a drop-down is one of its entries too, by the entry's own name. Found live (2026-10-14): a form
+    # saying "IT department" was entered as the drop-down's "IT", and the check refused the correct record.
+    chosen |= {s["param"].split("__")[0] for s in run["skill"].get("steps") or [] if s.get("kind") == "select" and s.get("param")}
     for name, base in ((run.get("rows") or {}).get("base") or {}).items():
         if base in chosen:
             chosen.add(name)
@@ -1528,6 +1540,17 @@ def _never_entered(run):
         except ValueError:
             return False
 
+    # A reference a run reached by pressing the control named for it was used, not left out. Found live
+    # (2026-10-15): a delivery received against PO-4423, opened by clicking its link in the list, was refused as
+    # "PO-4423 was never typed" - and the open doubt then swallowed the next delivery's request. Only a value
+    # with a letter in it: a quantity is not reached by a link that happens to read "12".
+    names = [" ".join(n.split()).casefold() for n in evidence.pressed()]
+
+    def was_pressed(item):
+        text = " ".join(str(item).split()).casefold()
+        return bool(re.search(r"[a-z]", text)) and any(
+            re.search(r"(?<![\w-])" + re.escape(text) + r"(?![\w-])", n) for n in names)
+
     missing = {}
     for name, value in values.items():
         if name in chosen or name.split("__")[0] in chosen or name in files or value in (None, ""):
@@ -1535,7 +1558,7 @@ def _never_entered(run):
         items = skills.split_items(value) if any(p.get("name") == name and p.get("list")
                                                  for p in skill.get("params") or []) else [value]
         for item in items:
-            if not any(_same_value(item, typed) for typed in done) and not was_read(item):
+            if not any(_same_value(item, typed) for typed in done) and not was_read(item) and not was_pressed(item):
                 missing[name] = item
     return missing
 
@@ -1603,6 +1626,9 @@ def _criteria(skill, values=None):
         parts.append(f"Done when: {understood['done_when']}")
     for rule in understood.get("rules") or []:
         parts.append(f"Rule: {rule}")
+    for note in understood.get("web_notes") or []:
+        # Looked up while the task was taught (study._researched): how the app works, never a value.
+        parts.append(f"About the app (from its documentation, looked up when it was taught): {note}")
     for said in understood.get("dialogue") or []:
         # The person's own words, which the rules above were written from.
         parts.append(f"Asked when it was taught: {said['q']} - the person answered: {said['a']}")
@@ -1720,13 +1746,21 @@ def _procedure(run, from_step=None, note="", ran=False):
     look = (f"- `gui skill {name} --look N` shows the screen as it was when the person did step N, with the spot they "
             "pressed ringed in red. Use it for any step recorded as a point on the screen, and whenever you are unsure "
             "what a step meant.")
-    if not one_off and not _replay_fits(run):
+    if run.get("attempt_note") and not run.get("attempt_blank"):
+        # Found live (2026-10-14): sent back over one value of a record it had saved, the engine ran the replay from
+        # the start - which ends by saving - and a second employee record was made. A second attempt corrects; it
+        # never replays the task (gui do refuses it too, for a skill already replayed to its end in this task).
+        how += [look, f"- Do NOT run `gui do {name}` again for this request: the first attempt already did the task, "
+                      "and the replay starts a new record and saves it. Open the record the first attempt made and "
+                      "correct it by hand with gui observe / click / type / select / key."]
+    elif not one_off and not _replay_fits(run):
         # Not offered where it is sure to be refused. Found live: offered it, an engine ran `gui do`, was refused
         # (this run picks another entry from a list than the demonstration did), and reported without doing a step.
         how += [look, f"- Do every step yourself with gui observe / click / type / select / key: this run chooses "
                       "other entries from the application's lists than the demonstration did, so the recording cannot "
                       f"be replayed for it (`gui do {name}` would be refused)."]
-    how += [] if one_off or not _replay_fits(run) else [
+    corrects = bool(run.get("attempt_note") and not run.get("attempt_blank"))
+    how += [] if one_off or corrects or not _replay_fits(run) else [
         look,
         "- Do it in this order. It is the order the person works in, and each part has its command:\n"
         "  1. Read this request's document(s) (office read), if you have not.\n"
@@ -1746,7 +1780,10 @@ def _procedure(run, from_step=None, note="", ran=False):
         "stopped because a list has no entry for something, that is a question for the person (HELP), not "
         "something to work around.\n"
         "  5. When it has run to the end it has checked nothing. Read the result off the screen (gui observe) "
-        "against this run's values and the person's rules, and report what you read.",
+        "against this run's values and the person's rules, and report what you read. Do not press its last "
+        "step again to make sure: it ran. Found live - a save shortcut pressed a second time on a record just "
+        "saved is, in some applications, the next action on it (submit, post), and it opened \"Permanently "
+        "Submit?\". Change only a value you read as wrong.",
         "- Work a step by hand with gui observe / click / type / select / key wherever the command cannot.",
     ]
     how += [
@@ -2132,8 +2169,24 @@ def _retry_engine(guided, note):
                    text=f"A check of the result after the previous attempt at this task found: {note} Finish the "
                         "task - correct what is wrong where it is, do not start it over - and do not report DONE "
                         "until the screen or the files you wrote show it done. Report only what they show. "
-                        + NOT_YOURS_TO_FORCE)
+                        + NOT_YOURS_TO_FORCE + _drafts_note())
     _engine(guided["task"], state.current_task_file)
+
+
+def _drafts_note():
+    """For a task sent back: the emails it already drafted, which are still in the Outbox, and how to correct one."""
+
+    try:
+        from decurix_agent.tools import outbox
+        made = outbox.drafted()
+    except Exception:
+        return ""
+    if not made:
+        return ""
+    listing = "; ".join(f"{d.get('id') or '?'} to {', '.join(d.get('to') or [])} ({d.get('subject') or ''})" for d in made)
+    return (f" The emails you drafted in the previous attempt are still in the Outbox: {listing}. Do not draft any of them a "
+            "second time unless it is wrong; to correct one, draft it again with the same recipients and subject (or pass "
+            "--replaces <its id>) - the corrected draft takes the place of the earlier one.")
 
 
 def _playbook(done, task="", skill=None, why=""):
@@ -2163,10 +2216,19 @@ def _gate(reply, kind, engine):
     if guided is None:
         if kind != "final" or not verify.available():
             return False
+        # A ticket, a replay, a lesson, a web lookup or a proven script reports for itself, screen work or not. Found
+        # live (2026-10-13): a person ended a recording ticket with the form not yet saved; the check judged it "not
+        # done" and handed "/record ..." to the engine, which started filling in the person's form on its own.
+        if engine in NOT_AN_ENGINE:
+            return False
         # A task that only wrote files is checked too: what it wrote is read back against its report.
         # (An engine's task only: a ticket, a replay, a lesson or a web lookup reports for itself.)
         # (An email it drafted is something it made, like a file: the draft is read back too.)
-        if not _did_screen_work() and (engine in NOT_AN_ENGINE or not (produced.files(reply) or produced.drafts())):
+        # A task that followed a kept procedure is checked even when it wrote nothing: the procedure says what
+        # it hands in, and found live (2026-10-13) a month-end reconciliation was answered in the chat with no
+        # workbook at all.
+        if not _did_screen_work() and (engine in NOT_AN_ENGINE or not (produced.files(reply) or produced.drafts()
+                                                                        or procedures.in_request(state.current_task))):
             return False
         guided = guidance.begin(skill=None, task=state.current_task or "", text="", mode="engine", run=None)
 
@@ -2218,7 +2280,12 @@ def _gate(reply, kind, engine):
         return True
 
     on_screen = run is not None or _did_screen_work()
-    made = [] if run is not None else produced.files(reply)
+    made = [] if run is not None else produced.files(reply, request=state.current_task or "")
+    host_missing = produced.missing_on_host(state.current_task or "")
+    if run is None and not host_missing:
+        # What a host app saved on the person's computer is read as well, not only found: found live (2026-10-16),
+        # workbooks of the right name and type had a header that was not bold and a total over damaged data.
+        made = made + produced.copy_from_host(produced.saved_on_host(state.current_task or ""))
     progress.emit("Checking the screen to see that the task was really done." if on_screen
                   else "Reading back what I wrote to check it against my report.")
     if run is not None and _acts_on_screen(run["skill"]) and not _did_screen_work():
@@ -2229,6 +2296,38 @@ def _gate(reply, kind, engine):
         verdict = {"verdict": verify.NOT_DONE, "confidence": 1.0, "seen": "",
                    "why": "Nothing was done on the screen during this task: no app was opened, nothing clicked or "
                           "typed. The task has to be carried out with the gui command."}
+    elif run is None and produced.misplaced(state.current_task or ""):
+        # No model is asked: whether a file is where the request said is a fact about the disk.
+        verdict = {"verdict": verify.NOT_DONE, "confidence": 1.0, "seen": produced.misplaced(state.current_task or ""),
+                   "why": "The result has to be saved where the request said - use Save As (or a new path) to put it "
+                          "in the work folder, and leave the attached original as it was."}
+    elif verify.left_undone(reply):
+        # No model is asked: a report that lists what it did not do is not a report of a finished task, whatever
+        # a file on the disk looks like (found live: a leftover file from an earlier task passed for the result).
+        verdict = {"verdict": verify.CANNOT, "confidence": 1.0, "seen": "left undone: " + verify.left_undone(reply),
+                   "why": "The report lists parts of the request it did not do."}
+    elif host_missing:
+        # No model is asked: whether a file is on the person's computer is a fact about that disk, which the screen
+        # cannot show (a host app hides a file's extension - found live, a CSV saved as "report.xlsx.csv").
+        verdict = {"verdict": verify.NOT_DONE, "confidence": 1.0, "seen": host_missing,
+                   "why": "The file the request asked for is not where it said on the person's computer. Save it again "
+                          "with Save As, typing the whole name and choosing the file type the request asked for, then "
+                          "read the dialog back before pressing Save."}
+    elif verify.false_sums("\n".join((reply or "", produced.drafts_text()))):
+        # No model is asked: a sum the report (or an email it drafted) writes out either comes to what it says or not.
+        wrong = verify.false_sums("\n".join((reply or "", produced.drafts_text())))
+        verdict = {"verdict": verify.NOT_DONE, "confidence": 1.0, "seen": "; ".join(wrong)[:600],
+                   "why": "A sum you wrote is wrong. Work every total out with a command over the source figures, "
+                          "correct whatever was decided from it (a status, an exception, a total in a file or an "
+                          "email) where it is, and report the corrected figures."}
+    elif run is None and verify.program_numbers("\n".join((produced.text(made), produced.drafts_text()))):
+        # No model is asked: a number written as a program prints it is in the file for anyone to see.
+        odd = verify.program_numbers("\n".join((produced.text(made), produced.drafts_text())))
+        verdict = {"verdict": verify.NOT_DONE, "confidence": 1.0,
+                   "seen": "these numbers are written as a program prints them: " + ", ".join(odd),
+                   "why": "Write every figure the way a person writes it: money rounded to the cent (7,183.00), others "
+                          "plainly (30, 7.5) - format them yourself when you build the text or the cell values - and "
+                          "correct the file or the email where it is."}
     elif run is not None and _never_entered(run) and not _says_it_could_not(run, reply):
         # No model is asked: a value nothing typed is not on the screen to be judged.
         missing = _never_entered(run)
@@ -2243,9 +2342,12 @@ def _gate(reply, kind, engine):
             screen_text=evidence.live_text() if on_screen else "", screen=on_screen,
             produced="\n".join(x for x in (produced.text(made), produced.drafts_text()) if x))
 
-    if not on_screen and verdict["verdict"] in (verify.UNSURE, verify.CANNOT):
+    if not on_screen and verdict["verdict"] == verify.UNSURE:
         # File work the check could not settle goes out as the worker reported it, marked not checked: only a
-        # report its own files contradict is worth a second attempt or a person's time.
+        # report its own files contradict is worth a second attempt or a person's time. A report that says it could
+        # NOT be done is not one of those: found live (2026-10-14), "the workbook has no November targets ... the
+        # deck cannot be completed" went out as the task's result and was recorded done, with a deck of zero targets
+        # and its email drafted. It goes to the person below, like screen work that could not be finished.
         guidance.end()
         return False
 
@@ -2319,6 +2421,46 @@ def check_unchecked(claim, engine):
     ask_for_query(_doubt_text(claim, verdict), kind="query", engine=engine)
 
 
+# The last sentence of a reply that says the work stands: "The record is done.", "That is correct", "it's fine now".
+CONFIRM_TAIL = re.compile(
+    # "done" / "correct" / "complete" on their own, or with what is done ("the record is done") ...
+    r"^\W*(?:(?:the|this|that|it|its|it's)\s+(?:\w+\s+){0,2}?(?:is\s+|was\s+|'s\s+|looks\s+|seems\s+)?)?(done|correct|complete|completed)\W*$"
+    # ... and the softer words only with a subject: a bare "ok" or "good" may answer some other question.
+    r"|^\W*(?:the|this|that|it|its|it's)\s+(?:\w+\s+){0,2}?(?:is\s+|was\s+|'s\s+|looks\s+|seems\s+)(right|fine|good)\W*$"
+    # ... or the sentence ends on it after a dash or comma: "I'll discard the extra copies myself - done."
+    r"|\s[-–—,;:]\s*(?:it'?s\s+|that'?s\s+|all\s+)?(done|correct|complete)\W*$",
+    re.IGNORECASE)
+NEGATION = re.compile(r"\b(not|n't|isn'?t|wrong|but)\b", re.IGNORECASE)
+ASKS_FOR_CHANGE = re.compile(r"\b(fix|change|update|add|remove|delete|redo|replace|move|rename|should|must|need|needs|please|"
+                             r"instead)\b", re.IGNORECASE)
+
+
+def _confirms(reply):
+    """
+    Whether a reply to "I cannot confirm this is done" says it is done. Either
+    the whole reply opens with it ("done", "correct"), or its last sentence
+    says so and that sentence has no "not"/"but" - a person often explains
+    first. Found live (2026-10-13): "An LLP is a partnership firm, not a
+    company - keep Supplier Type as Partnership ... The record is done." was
+    taken for "what is wrong" because of the "not" in the explanation, and the
+    finished record was done all over again. The explanation itself is kept as
+    a lesson by the watcher, as any answer to a worker's question is.
+    """
+
+    reply = (reply or "").strip()
+    if CONFIRM_RE.match(reply) and not NEGATION.search(reply):
+        return True
+    sentences = [x.strip() for x in re.split(r"(?<=[.!?])\s+|\n+", reply) if x.strip()]
+    last = sentences[-1] if sentences else ""
+    # A question ("it is done?") is not a confirmation.
+    if not last or last.endswith("?") or NEGATION.search(last):
+        return False
+    if CONFIRM_TAIL.match(last) or CONFIRM_RE.match(last):
+        return True
+    # "... - done" closing a sentence that asks for nothing ("Fix row 3 - done" asks for a fix).
+    return bool(CONFIRM_TAIL.search(last) and not ASKS_FOR_CHANGE.search(last))
+
+
 def _confirm_reply(paused, reply):
     """The person's answer to "I cannot confirm this is done" - after an engine's run or a replay's."""
 
@@ -2340,15 +2482,17 @@ def _confirm_reply(paused, reply):
                                  + "\n\nSend the new request again and I will start on it.",
                                  kind="error", engine=engine, checked=True)
 
-    if CONFIRM_RE.match(reply) and not re.search(r"\b(not|n't|isn'?t|wrong|but)\b", reply, re.IGNORECASE):
+    if _confirms(reply):
         if run is not None and paused.get("result") is not None:
             return _succeed(run, paused["result"], "person", helped=True)
         if run is not None:
             _record_verdict(run, True, checked_by="person", helped=True)
         return write_final_reply(f"{claim}\n\nYou confirmed it was done.", kind="final", engine=engine, checked=True)
 
-    if VAGUE_YES_RE.match(reply):
-        # Neither a confirmation nor something to correct: the question stays open.
+    if VAGUE_YES_RE.match(reply) and not STILL_WRONG_RE.search(reply):
+        # Neither a confirmation nor something to correct: the question stays open. Unless what follows the yes says
+        # something is missing or wrong: "Right, Rae's ticket still needs its reply - draft it" (found live,
+        # 2026-10-14, taken for a yes) - while "yes - that only opens the list" answers some other question.
         state.paused_skill = paused
         return ask_for_query("To mark it done, reply `done` - a plain yes is not enough here, it may have been meant "
                              "for another question. Reply `retry` to have it tried again, or say what is wrong.",

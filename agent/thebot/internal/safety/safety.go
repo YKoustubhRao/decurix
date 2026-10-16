@@ -32,9 +32,17 @@ type rule struct {
 	reason string
 }
 
+// atCommand names the rules about which program runs. They are matched
+// against the command with its quoted arguments blanked out: in
+// `grep -E 'outbox|mail'` the bar is part of a pattern, not a pipe into mail.
+var atCommand = map[string]bool{"it sends email": true, "it shuts down or restarts the machine": true}
+
 // commandRules are checked against a shell command about to run.
 var commandRules = []rule{
-	{regexp.MustCompile(`(?i)(^|[;&|]\s*|\bsudo\s+)(sendmail|mailx?|mutt|ssmtp|msmtp|swaks)\b`),
+	// The program itself: at a line's start or after an operator, followed by its arguments or the end of the
+	// line - never a word the same as it in a script's own text (`mail='flagged.txt'` in Python, found live
+	// 2026-10-14: the quote before it and a newline between were read as "after a quote").
+	{regexp.MustCompile(`(?im)(^[ \t]*|[;&|][ \t]*|\bsudo[ \t]+|['"][ \t]*|\$\([ \t]*|\x60[ \t]*)(sendmail|mailx?|mutt|ssmtp|msmtp|swaks)([ \t;&|<>)]|$)`),
 		"it sends email"},
 	{regexp.MustCompile(`(?i)\b(twilio|whatsapp|telegram-send|slack-cli|signal-cli)\b`),
 		"it sends a message on someone's behalf"},
@@ -50,8 +58,11 @@ var commandRules = []rule{
 		"it recursively deletes a home or root directory"},
 	{regexp.MustCompile(`(?i)\bmkfs(\.\w+)?\b|\bdd\b[^|;&]*\bof=/dev/|\bwipefs\b|\bshred\b`),
 		"it can destroy a disk or file permanently"},
-	{regexp.MustCompile(`(?i)(^|[;&|]\s*|\bsudo\s+)(shutdown|reboot|poweroff|halt)\b|\binit\s+[06]\b`),
+	{regexp.MustCompile(`(?im)(^[ \t]*|[;&|][ \t]*|\bsudo[ \t]+|['"][ \t]*|\$\([ \t]*|\x60[ \t]*)(shutdown|reboot|poweroff|halt)([ \t;&|<>)]|$)|\binit\s+[06]\b`),
 		"it shuts down or restarts the machine"},
+	// A script that sends mail itself. Checked against the whole command - a here-document's code included.
+	{regexp.MustCompile(`(?i)\bsmtplib\b[\s\S]*\.(send_message|sendmail)\s*\(|\bnodemailer\b[\s\S]*\bsendMail\s*\(`),
+		"it sends email from a script"},
 	{regexp.MustCompile(`:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:`),
 		"it is a fork bomb"},
 	{regexp.MustCompile(`(?i)\bchmod\s+(-[a-z]*\s+)*-[a-z]*R[a-z]*\s+[0-7]*7[0-7]*7\s+/(\s|$)|\bchown\s+(-[a-z]*\s+)*-[a-z]*R[a-z]*\s+\S+\s+/(\s|$)`),
@@ -74,8 +85,13 @@ func AssessCommand(command string) *Concern {
 	if command == "" {
 		return nil
 	}
+	unquoted := blankQuoted(blankHeredocs(command))
 	for _, r := range commandRules {
-		if !r.re.MatchString(command) {
+		target := command
+		if atCommand[r.reason] {
+			target = unquoted
+		}
+		if !r.re.MatchString(target) {
 			continue
 		}
 		if r.reason == "it sends data to a web service" && localTargetRe.MatchString(command) && !externalURLRe.MatchString(stripLocalURLs(command)) {
@@ -87,6 +103,86 @@ func AssessCommand(command string) *Concern {
 }
 
 var externalURLRe = regexp.MustCompile(`(?i)https?://`)
+
+// heredocRe finds a here-document: the program it is fed to, and its end word.
+var heredocRe = regexp.MustCompile(`(?m)^[ \t]*(?:[A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(\S+)[^\n]*?<<(-?)[ \t]*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?[^\n]*\n`)
+
+// shellReaders run what they are fed as shell commands: a here-document fed to them is commands, not data.
+var shellReaders = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true, "ksh": true, "ssh": true,
+	"su": true, "sudo": true, "eval": true, "xargs": true, "env": true, "exec": true, "source": true, ".": true}
+
+// blankHeredocs empties each here-document fed to a program that is not a shell (python3 - <<'PY' ... PY): its
+// lines are that program's code or data, and a word in them is not a command the shell will run.
+func blankHeredocs(command string) string {
+	var b strings.Builder
+	rest := command
+	for {
+		m := heredocRe.FindStringSubmatchIndex(rest)
+		if m == nil {
+			b.WriteString(rest)
+			return b.String()
+		}
+		program := rest[m[2]:m[3]]
+		if i := strings.LastIndex(program, "/"); i >= 0 {
+			program = program[i+1:]
+		}
+		dash, word := rest[m[4]:m[5]] == "-", rest[m[6]:m[7]]
+		b.WriteString(rest[:m[1]])
+		rest = rest[m[1]:]
+		end, offset := -1, 0
+		for offset < len(rest) {
+			line := rest[offset:]
+			if i := strings.IndexByte(line, '\n'); i >= 0 {
+				line = line[:i]
+			}
+			check := line
+			if dash {
+				check = strings.TrimLeft(check, "\t")
+			}
+			if strings.TrimRight(check, "\r") == word {
+				end = offset
+				break
+			}
+			offset += len(line) + 1
+		}
+		if end < 0 || shellReaders[program] {
+			continue // no end found, or the body is shell: left as it is
+		}
+		rest = rest[end:]
+	}
+}
+
+// quotedRe is a single- or double-quoted stretch of a shell line.
+var quotedRe = regexp.MustCompile(`'[^'\n]*'|"(?:[^"\\\n]|\\.)*"`)
+
+// runsQuotedRe ends where a quoted stretch would be run as shell code itself:
+// `sh -c '...'`, `bash -lc "..."`, `eval '...'`, `ssh host '...'`.
+var runsQuotedRe = regexp.MustCompile(`(?i)(\b(sh|bash|zsh|dash|ksh|su)\s+(-\w+\s+)*-\w*c\w*\s+|\beval\s+|\bssh\s+(-\S+\s+)*\S+\s+|\bxargs\s+(-\S+\s+)*)$`)
+
+// blankQuoted replaces each quoted argument of a command with an empty pair of
+// quotes, so what is left is the shell's own words and operators. A quoted
+// stretch that is itself run as shell code (`sh -c '... | mail ...'`) is kept:
+// its pipes are real.
+func blankQuoted(command string) string {
+	var b strings.Builder
+	last := 0
+	for _, m := range quotedRe.FindAllStringIndex(command, -1) {
+		b.WriteString(command[last:m[0]])
+		quoted := command[m[0]:m[1]]
+		// A command substitution inside double quotes runs: in
+		// `echo "$(mail -s x a@b < f)"` the mail is sent (found in review,
+		// 2026-10-14 - blanking the quotes hid it).
+		substitutes := quoted[0] == '"' && (strings.Contains(quoted, "$(") || strings.Contains(quoted, "\x60"))
+		if substitutes || runsQuotedRe.MatchString(command[:m[0]]) {
+			b.WriteString(command[m[0]:m[1]])
+		} else {
+			b.WriteString("''")
+		}
+		last = m[1]
+	}
+	b.WriteString(command[last:])
+	return b.String()
+}
 
 func stripLocalURLs(s string) string { return localTargetRe.ReplaceAllString(s, " ") }
 

@@ -110,6 +110,15 @@ if [ -f "$HOME/Desktop/versionsticker.desktop" ] && grep -q "version_sticker" "$
     rm -f "$HOME/Desktop/versionsticker.desktop"
 fi
 
+# LibreOffice's list of documents to recover. A desktop's restart ends LibreOffice without ceremony, and the next
+# start - the worker's, or a person's from the menu - opens on a "Document Recovery" dialog that blocks everything
+# until answered: found live (2026-10-15), it stood in front of task after task. A worker's half-made documents are
+# not something to recover; the files it saved are on disk. (The worker's own launches also pass --norestore.)
+LO_REG="$HOME/.config/libreoffice/4/user/registrymodifications.xcu"
+if [ -f "$LO_REG" ] && grep -q 'Office.Recovery/RecoveryList' "$LO_REG" 2>/dev/null; then
+    sed -i '/org.openoffice.Office.Recovery\/RecoveryList/d' "$LO_REG"
+fi
+
 # The base image's "Chromium Web Browser" icon, on a desktop created before the
 # browser became Google Chrome (agent/install-browser.sh): it still starts the
 # browser, but its picture went with the old package. Replaced by the image's

@@ -130,7 +130,7 @@ class ADropDownsChoiceIsAValue(unittest.TestCase):
         self.assertEqual((country["default"], country.get("choice")), ("Japan", True))
         step = program["steps"][1]
         self.assertEqual(step["summary"], 'select {country} in combobox "Country"')
-        self.assertIn({"type": "value", "role": "combobox", "name": "Country", "param": "country"}, step["expect"])
+        self.assertIn({"type": "value", "role": "combobox", "name": "Country", "param": "country", "choice": True}, step["expect"])
         self.assertEqual((step["app"]["name"], step["url"]), ("chrome", "http://s/order"))
 
     def test_a_run_chooses_this_runs_option(self):

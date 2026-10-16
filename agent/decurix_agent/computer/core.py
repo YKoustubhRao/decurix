@@ -181,11 +181,20 @@ def observe(remember=True, frame=None):
         previous = _load_state()
         next_ref = el.assign_refs(found, previous)
 
+        behind = [g for g in groups if g.get("behind")]
+        if behind:
+            notes = list(notes) + [
+                f"the controls of {el._quote(g.get('window_title') or g.get('title') or '', 60)} are from a read made "
+                "before your last action (the app's picture is still being read again): where the cursor is and what "
+                "the fields hold may have changed - observe again in a few seconds before relying on them."
+                for g in behind]
         observation = {
+            "behind": bool(behind),
             "time": time.time(),
             "size": [width, height],
             "active_title": active_title,
             "windows": [{"id": w["id"], "title": w["title"], "box": w["box"], "active": w["active"]} for w in windows],
+            "popups": screen.popups(),
             "groups": groups,
             "elements": found,
             "notes": notes,
@@ -311,6 +320,63 @@ def _focus_window(element):
         xinput.activate(window_id)
 
 
+# Where the keyboard was left by the last action of this task: the window in front then, and every window there was.
+FRONT_FILE = STATE_DIR / "front.json"
+# How long that stays the place keys go to.
+FRONT_KEEP_SECONDS = 900
+
+
+def _task_now():
+    try:
+        from decurix_agent import task_context
+        return task_context.current() or ""
+    except Exception:
+        return ""
+
+
+def _note_front():
+    """Remember the window in front after an action, and which windows there were."""
+
+    try:
+        wins = screen.windows()
+        front = next((w for w in wins if w.get("active")), None)
+        if front is None:
+            return
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        FRONT_FILE.write_text(json.dumps({"task": _task_now(), "at": time.time(), "id": front["id"],
+                                          "title": front["title"], "known": [w["id"] for w in wins]}),
+                              encoding="utf-8")
+    except Exception:  # a note for later must never fail the action
+        pass
+
+
+def _keys_home():
+    """
+    Before keys sent to no element: the window the last action left in front, when an older window has taken the
+    keyboard since. Found live (2026-10-15): Impress, left open by an earlier task, took the focus while the worker
+    filled TallyPrime's Company Creation screen; "Escape" and "Enter" went to Impress, and the worker reported that
+    the focus "kept going to other apps" and gave up. A window that appeared after that action (a dialog the app
+    opened) is where keys belong and is left alone. Returns the title keys were sent back to, or None.
+    """
+
+    try:
+        note = json.loads(FRONT_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if note.get("task") != _task_now() or time.time() - note.get("at", 0) > FRONT_KEEP_SECONDS:
+        return None
+    try:
+        wins = screen.windows()
+    except Exception:
+        return None
+    front = next((w for w in wins if w.get("active")), None)
+    home = next((w for w in wins if w["id"] == note.get("id")), None)
+    if home is None or front is None or front["id"] == home["id"] or front["id"] not in note.get("known", []):
+        return None
+    xinput.activate(home["id"])
+    return home["title"]
+
+
 def _goto_sheet_cell(element):
     """
     Move a spreadsheet's cell cursor to an element's cell, by coordinate.
@@ -327,6 +393,139 @@ def _goto_sheet_cell(element):
     xinput.type_text(element["name"])
     xinput.key("Return")
     time.sleep(0.2)
+
+
+# Windows whose tables are shapes on a page (a slide, a drawing), edited a cell at a time with F2.
+DRAWN_TABLES = re.compile(r"LibreOffice (?:Impress|Draw)\b")
+
+# What LibreOffice's AutoCorrect does to typed text, undone before comparing: dashes and curly quotes.
+_AUTOCORRECTED = str.maketrans({"–": "-", "—": "-", "‘": "'", "’": "'", "“": '"',
+                                "”": '"'})
+
+
+def _slide_words(text):
+    return re.sub(r"\s+", "", (text or "").translate(_AUTOCORRECTED)).lower()
+
+
+def _keep_slide_text(element, text, append):
+    """
+    Read back what was typed on a slide, and type it again slowly when the keys arrived out of order. Found live
+    (2026-10-15): on a busy worker Impress took "Northwind Traders - prepared for the leadership team" as "Ns -
+    preparedort for thwhined Tlraedeardership" - the shape re-laid itself out as the keys came and the caret went back
+    each time; the same keys on an idle worker came out right. Only the first line is compared: each line of a
+    bulleted text is a paragraph of its own.
+    """
+
+    want = _slide_words(text.split("\n")[0])
+    if not want:
+        return
+
+    def kept():
+        have = None
+        for _ in range(6):
+            time.sleep(0.5)
+            have = atspi.text_now(element)
+            if have is None:
+                return None
+            if want in _slide_words(have):
+                return True
+        return have
+
+    have = kept()
+    if have is True or have is None:
+        return
+    if append:
+        raise ComputerError(f"the text on the slide came out as {have[:120]!r}, not what was typed; select it, "
+                            "and type it again")
+    xinput.key("ctrl+a")
+    time.sleep(0.3)
+    xinput.type_text(text, delay=90)
+    have = kept()
+    if have is True or have is None:
+        return
+    raise ComputerError(f"the text on the slide came out as {have[:120]!r} even typed a second time, slowly; it "
+                        "needs correcting before going on")
+
+# The prompt a presentation shows in an empty placeholder (LibreOffice Impress, PowerPoint).
+PLACEHOLDER_PROMPT = re.compile(r"^\s*click to add (?:a |an )?(?:title|subtitle|text|notes|outline|table|chart|picture|image)\b",
+                                re.IGNORECASE)
+
+# The name a description of a control opens with: its capitalised words ("Recommended Charts in the Insert ribbon",
+# "the OK button"), up to the first word that is not.
+DESCRIBED_NAME = re.compile(r"^\s*(?:(?:the|a|an)\s+)?[\"']?((?:[A-Z0-9][\w&'.+-]*)(?:\s+[A-Z0-9][\w&'.+-]*){0,4})")
+
+
+# What a host app's viewer says when its controls were read from the picture by a vision model (hostgui.html).
+VISION_READ = "Controls read from the picture by the vision model"
+
+
+def _read_by_vision(observation):
+    """Whether a look's controls are a vision model's estimate of a picture, not the app's own."""
+
+    return any(e.get("name") == VISION_READ for e in (observation or {}).get("elements", []))
+
+
+def _keys_went_to(before, after):
+    """
+    When typing with no target went into a field the page lists, which one, and
+    what it holds now: ", which is textbox "Name Box" (e12), now "A20Total"".
+    Found live (2026-10-16): in Excel the engine typed a cell's address into the
+    Name Box, left out the Enter, and typed "Total" with no ref; the result said
+    only "into the focused element", and it went on as if the cell had it.
+    """
+
+    field = next((e for e in before.get("elements", []) if "focused" in (e.get("states") or [])
+                  and e.get("role") in ("textbox", "combobox", "searchbox", "spinbutton")
+                  and (e.get("name") or "").strip()), None)
+    # Not for an app read from its picture: there the field "with the cursor" is a vision model's estimate, and it named
+    # the wrong field as often as the right one (found live, 2026-10-16: "Search" for TallyPrime's ledger Name).
+    if field is None:
+        return ""
+    if privacy.secret_field(field):
+        return ""
+    now = _same_field(field, after) or field
+    value = (now.get("value") or "").strip()
+    held = f", now {el._quote(value, 60)}" if value else ""
+    return f", which is {el.describe(field)}{held} - the keys went to that field, not to anything behind it"
+
+
+def _names_another(description, name):
+    """
+    The control name a description opens with, when the control found has a name
+    that does not hold every word of it ("Recommended Charts" found as
+    "Recommended PivotTables"), else "". A description that names nothing (it
+    opens in lower case) and a control with no name decide nothing.
+    """
+
+    match = DESCRIBED_NAME.match(description or "")
+    if not match or not (name or "").strip():
+        return ""
+    wanted = match.group(1).strip(" .'\"")
+
+    def words(text):
+        return {w.lower().rstrip("s") for w in re.findall(r"[A-Za-z0-9]+", text)}
+
+    asked = words(wanted)
+    return wanted if asked and not asked <= words(name) else ""
+
+
+def _inside_large(element, point):
+    """
+    Whether a click aimed at `point` means that point inside the element rather than the element itself: a point
+    away from the middle of a control (a spreadsheet's grid, a canvas, a drawn area). Found live (2026-10-15): real
+    Excel's whole grid is one control in its viewer, every click on a cell went to the grid's middle, and there it
+    was covered - the worker could not select a single cell.
+    """
+
+    if point is None or not element or not element.get("box"):
+        return False
+    x, y, w, h = element["box"]
+    # A control, not an area: a press anywhere on it is a press of it. An area is big both ways - a dialog's narrow,
+    # tall folder pane is one too (found live: PowerPoint's Open dialog exposes its whole navigation pane as one
+    # "Control Host", and every click on "Documents" in it was refused as a press of that).
+    if w * h < 20000 or min(w, h) < 60:
+        return False
+    return abs(point[0] - (x + w / 2)) > 12 or abs(point[1] - (y + h / 2)) > 12
 
 
 def _perform(kind, element, point, text, keys, direction, amount, option, append, end=None, files=None):
@@ -353,13 +552,36 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
         button_cdp = "right" if kind == "right_click" else "left"
         button_x = 3 if kind == "right_click" else 1
 
-        if element is not None and element["source"] == "cdp":
+        if element is not None and element["source"] == "cdp" and kind == "click" and point is None \
+                and element.get("role") in RELAYED_PRESSABLE and (element.get("name") or "").strip() \
+                and _relayed(element, _load_state()):
+            # A named control of an app shown in a viewer (a Windows app's ribbon, its File page, a dialog's buttons)
+            # is pressed through the app's own accessibility: a posted click let Office's ribbon go by. When the app
+            # cannot press it that way, it is clicked as before.
+            try:
+                cdp.press_in_app(element)
+                return "relayed:pressed"
+            except ComputerError as exc:
+                if "BLOCKED" in str(exc):
+                    # Its window waits on an open dialog: nothing behind a dialog can be pressed until it is closed.
+                    raise ComputerError(f"{el.describe(element)} is behind an open dialog of the app, and nothing "
+                                        "was pressed: finish the dialog first (its own buttons, e.g. its Save or "
+                                        "Cancel) - the control you want is the dialog's.") from None
+
+        if element is not None and element["source"] == "cdp" and not _inside_large(element, point):
             opened = cdp.click(element, button=button_cdp, count=count)
             return "cdp:file_chooser" if opened.get("file_chooser") else "cdp"
 
         # A list or table cell's own action is "activate" - open the file,
         # not select it - so a cell is clicked where it is drawn instead.
-        if element is not None and kind == "click" and element["role"] not in ("cell", "listitem", "treeitem", "icon"):
+        # A click aimed at a point is a press there, whatever the look says is under it: an open menu is a window of
+        # its own that a look may not list, and the control "under" the point is then the one behind the menu. Found
+        # live (2026-10-15): "Export As..." in GIMP's open File menu was resolved to a checkbox behind it, the
+        # checkbox's own action toggled it, and the menu item was never pressed - four times. Raising the control's
+        # window would close the menu too.
+        aimed = point is not None and element is not None and element.get("source") != "cdp"
+        if element is not None and kind == "click" and element["role"] not in ("cell", "listitem", "treeitem", "icon") \
+                and element.get("source") != "cdp" and not _inside_large(element, point) and not aimed:
             done = atspi.default_action(element)
             if done:
                 return f"atspi:{done}"
@@ -368,7 +590,7 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
         if target is None:
             raise ComputerError(f"{el.describe(element)} has no position on screen to click")
 
-        if element is not None:
+        if element is not None and not aimed:
             _focus_window(element)
 
         xinput.click(target[0], target[1], button=button_x, repeat=count)
@@ -379,6 +601,21 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
             raise ComputerError("nothing to type")
 
         if element is not None and element["source"] == "cdp":
+            if element.get("role") in RELAYED_SETTABLE and not any(c in text for c in "\r\n\t") \
+                    and not privacy.secret_field(element) and _relayed(element, _load_state()):
+                # A field of an app shown in a viewer (a Windows app) is set through the app's own accessibility, and
+                # read back: typed key by key, the keys raced the app - "D20" into Excel's Name Box reached it as "D2"
+                # with the Enter overtaking the "0", and a whole Total row landed in the wrong cell (found live,
+                # 2026-10-16). A field the app will not set that way is typed into as before.
+                try:
+                    cdp.set_in_app(element, text, append=append)
+                    return "relayed:set"
+                except ComputerError as exc:
+                    # Typed instead only when nothing was set. Once the app may hold the text, typing it as well wrote
+                    # it twice (found live, 2026-10-16: "D20D20" in Excel's Name Box).
+                    if not NOT_SET.search(str(exc)):
+                        raise ComputerError(f"{exc} - the text may already be in the field: observe it before typing "
+                                            "again") from None
             cdp.type_text(element, text, replace=not append)
             return "cdp"
 
@@ -394,7 +631,28 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
             # not the caret: the caret is placed through the Text interface,
             # and a click at the element's centre is only the fallback.
             in_document = element["role"] in ("cell", "paragraph", "heading", "document")
-            if in_document:
+            if element["role"] == "cell" and DRAWN_TABLES.search(element.get("window_title") or "") and center:
+                # A table on a slide is a shape: a caret placed in its cell edits it for one key, and a click selects
+                # the table, not the cell - found live (2026-10-15), "Region" became "R", the next value landed in
+                # another cell, and a clicked cell took "Revenue" as "Rvenuee". A click, then F2 (edit the cell's
+                # text), then the keys, is what a person does.
+                xinput.click(*center)
+                time.sleep(0.3)
+                xinput.key("F2")
+                time.sleep(0.3)
+                if not append:
+                    xinput.key("ctrl+a")
+                xinput.type_text(text)
+                # Not read back and retyped here: in a table, Ctrl+A selects past the cell, and a retype after it put
+                # one cell's value across others (found live, 2026-10-16).
+                return "xdotool:drawn-cell"
+            if in_document and PLACEHOLDER_PROMPT.match(element.get("name") or "") and center:
+                # A presentation placeholder's words are its prompt, not its text: a caret placed in them adds to
+                # "Click to add Title" (found live, 2026-10-15, building a deck in Impress). A click on it is what
+                # opens it for editing, empty.
+                xinput.click(*center)
+                time.sleep(0.3)
+            elif in_document:
                 if not atspi.place_caret(element) and center:
                     xinput.click(*center)
             elif not atspi.grab_focus(element) and center:
@@ -410,6 +668,15 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
         elif point is not None:
             xinput.click(*point)
 
+        if element is not None and DRAWN_TABLES.search(element.get("window_title") or "") and len(text) > 1:
+            # On a slide the first key starts editing the text, and the next ones arrive while that is still starting:
+            # found live (2026-10-15), "Northwind Traders - prepared" came out "Nrthwind Traders - prepoared".
+            xinput.type_text(text[0])
+            time.sleep(0.6)
+            xinput.type_text(text[1:])
+            if element.get("source") != "cdp":
+                _keep_slide_text(element, text, append)
+            return "xdotool"
         xinput.type_text(text)
         return "xdotool"
 
@@ -445,6 +712,12 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
     if kind == "select":
         if element is None or not option:
             raise ComputerError("select needs a dropdown and the option to pick")
+        if element.get("role") == "radio":
+            return _choose_radio(element, option)
+        if element.get("role") in ("spinbutton", "spin button") and re.fullmatch(r"\s*-?[\d.,]+\s*", option):
+            # A number box has no options to pick from: choosing a number in it is typing it (found live
+            # (2026-10-15): Impress's Insert Table "Number of rows" answered `select ... "5"` with "no option '5'").
+            return _perform("type", element, None, option.strip(), None, None, None, None, False, None)
         if element["source"] == "cdp":
             try:
                 cdp.select_option(element, option)
@@ -452,7 +725,25 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
             except ComputerError as exc:
                 if "is not a dropdown" not in str(exc):
                     raise
-            _select_custom(element, option)
+            if element.get("role") == "combobox" and _relayed(element, _load_state()):
+                # In a viewer of a Windows app the app's own list is asked first: what a page-style search sees
+                # appear there is the app's other controls (found live: Excel's Sort dialog "Sort by" was answered
+                # with the ribbon's "More Options" entries).
+                _selected.update(name=cdp.choose_in_app(element, option), why="the app's list chose it")
+                return "relayed:chosen"
+            try:
+                _select_custom(element, option)
+            except ComputerError as exc:
+                if "showed no options" not in str(exc) or not _relayed(element, _load_state()):
+                    raise
+                # A Windows app's drop-down list (Save As's "Save as type") is a window of its own whose entries the
+                # viewer is not given: found live (2026-10-15) in real Excel, the list opened and no entry could be
+                # chosen, and the worker asked the person to set the file type. Keys and clicks posted to a dialog do
+                # not move its focus (typed words went to its folder pane, an Enter closed it), so the app's own
+                # accessibility selects the entry.
+                forget_failed_search()
+                _selected.update(name=cdp.choose_in_app(element, option), why="the app's list chose it")
+                return "relayed:chosen"
             return "cdp:custom"
         atspi.select_option(element, option)
         return "atspi"
@@ -599,6 +890,12 @@ def _stem(word):
     return word[:-1] if len(word) > 3 and word.endswith("s") and not word.endswith("ss") else word
 
 
+def _singular(word):
+    """A plural word in the singular, as typed into a search ("Mugs" -> "Mug", "T-shirts" -> "T-shirt"); else as it is."""
+
+    return word[:-1] if _stem(word) != word.lower() else word
+
+
 def _own_name(label):
     """
     The words of an entry's own name. A list often shows an entry as its name
@@ -711,7 +1008,43 @@ def _in_place_of(element, entry_name):
         return None
     if _person_said(wanted, entry_name):
         return None
+    if _in_documents(entry_name):
+        return None
     return wanted
+
+
+_DOCUMENT_WORDS = {}
+
+
+def _in_documents(entry_name):
+    """
+    Whether one of the documents this task's request brought names `entry_name`
+    (every telling word of its own name is in the document). Such an entry is
+    this run's value, not something in its place. Found live (2026-10-13): a
+    worker read a remittance's addressee ("To: Example Inc - Accounts
+    Receivable") as the paying customer, searched for it, found nothing - and
+    the guard then refused the payer the remittance itself names, so the
+    worker could not correct its own misreading and asked a person.
+    """
+
+    words = _telling_words(" ".join(_own_name(entry_name)) or entry_name)
+    if not words:
+        return False
+    try:
+        from decurix_agent import task_context
+        from decurix_agent.tools import office
+        paths = task_context.current_files()[:4]
+    except Exception:
+        return False
+    for path in paths:
+        if path not in _DOCUMENT_WORDS:
+            try:
+                _DOCUMENT_WORDS[path] = _telling_words(office.read_document(path).get("text") or "")
+            except Exception:
+                _DOCUMENT_WORDS[path] = set()
+        if words <= _DOCUMENT_WORDS[path]:
+            return True
+    return False
 
 
 def _typed_in_place_of(element, text):
@@ -792,16 +1125,24 @@ def _searches(option):
     hw = head.split()
     if len(hw) <= MAX_RUN_WORDS:
         for n in range(len(hw) - 1, 1, -1):
-            tries += [" ".join(hw[i:i + n]) for i in range(1, len(hw) - n + 1)]
+            for i in range(1, len(hw) - n + 1):
+                run = " ".join(hw[i:i + n])
+                tries.append(run)
+                # ...and in the singular right after it: a list matches text as a piece, so an order's "coffee
+                # mugs" never finds the record "Coffee Mug" (found live, 2026-10-13).
+                if _singular(hw[i + n - 1]) != hw[i + n - 1]:
+                    tries.append(" ".join(hw[i:i + n - 1] + [_singular(hw[i + n - 1])]))
     # Then its most distinctive words alone, longest first. A long line holds the system's short name somewhere in
     # the middle, and a list searches for a piece of text, not for words: found live, "Professional Fees for India
     # Statutory Audit & GST Compliance Filing Q2" never found "Statutory Audit & GST Compliance" (the "&" breaks
     # every run of words), and the engine, offered nothing, clicked an unrelated entry of the open list.
-    distinct = sorted({w for w in (re.sub(r"\W", "", w) for w in hw) if len(w) >= 5 and w.lower() not in FILLER_WORDS},
-                      key=lambda w: (-len(w), hw.index(next(x for x in hw if re.sub(r"\W", "", x) == w))))
+    # A word keeps the punctuation inside it ("T-shirts"): stripped to "Tshirt" it matched nothing (found live).
+    bare = lambda w: re.sub(r"^\W+|\W+$", "", w)
+    distinct = sorted({w for w in (bare(w) for w in hw) if len(re.sub(r"\W", "", w)) >= 5 and w.lower() not in FILLER_WORDS},
+                      key=lambda w: (-len(w), hw.index(next(x for x in hw if bare(x) == w))))
     # Searched in the singular: a list matches the typed text as a piece, and a document's "Monitors" is not in a
     # record named "Monitor" (found live: the plural found nothing, and the record was one letter away).
-    tries += [w[:-1] if _stem(w) != w.lower() else w for w in distinct[:MAX_WORD_SEARCHES]]
+    tries += [_singular(w) for w in distinct[:MAX_WORD_SEARCHES]]
     tries += [" ".join(words[:2]), words[0] if words else ""]
     out = []
     for t in tries:
@@ -826,6 +1167,32 @@ def _editor_opened_by(element):
         if time.monotonic() >= deadline:
             return None
         time.sleep(0.3)
+
+
+def _choose_radio(element, option):
+    """
+    Choose `option` among the radio buttons of the group `element` is in: the one named it, else the one whose name
+    it starts with, else the one radio whose whole name lies within it ("Contractor (12 months)" -> Contractor) - never
+    one of two.
+    """
+
+    group = (element.get("path") or "").rsplit(" > ", 1)[0]
+    radios = [e for e in observe(remember=False)["elements"]
+              if e.get("role") == "radio" and (e.get("path") or "").rsplit(" > ", 1)[0] == group]
+    want = " ".join(option.lower().split())
+    words = lambda s: " " + re.sub(r"[^a-z0-9]+", " ", s.lower()).strip() + " "
+    hit = ([e for e in radios if " ".join((e.get("name") or "").lower().split()) == want]
+           or [e for e in radios if (e.get("name") or "").lower().startswith(want)]
+           or [e for e in radios if words(e.get("name") or "").strip() and words(e.get("name") or "") in words(option)])
+    if len(hit) != 1:
+        offered = ", ".join(el._quote(e.get("name") or "") for e in radios) or "none"
+        raise ComputerError(f"no single radio button in that group is {el._quote(option)} - it offers {offered}")
+    if element.get("source") == "cdp":
+        cdp.click(hit[0])
+        return "cdp"
+    x, y = el.center(hit[0])
+    xinput.click(x, y)
+    return "xdotool"
 
 
 def _select_custom(element, option):
@@ -1005,11 +1372,41 @@ def _same_field(element, observation):
     return again
 
 
+# Viewers that show an app running elsewhere (a Windows app on the host, a phone's app): a field there is a stand-in
+# whose value comes from a later read of the real app's controls.
+RELAYED_VIEWERS = ("/host-gui/view", "/phone-app/view")
+# What in such a viewer is pressed through the app itself (cdp.press_in_app) rather than clicked.
+RELAYED_PRESSABLE = ("button", "tab", "menuitem", "link", "checkbox", "radio", "treeitem")
+# ...and what is given its text through the app itself (cdp.set_in_app) rather than typed key by key.
+RELAYED_SETTABLE = ("textbox", "combobox", "searchbox", "spinbutton")
+# What a viewer or the bridge says when it set nothing: only then is the text typed instead.
+NOT_SET = re.compile(r"\bNOSET\b|not a field of the app|cannot set a value")
+
+
+def _relayed(element, observation):
+    """
+    Whether an element belongs to a viewer of an app running elsewhere. What was typed into such a field reaches the
+    real app at once, but the field reports it only after the next read of that app - found live (2026-10-15): in
+    real Excel, every cell typed into looked "cleared", was typed a second time ("TotalTotal") and the sheet was
+    corrupted.
+    """
+
+    if not element or element.get("source") != "cdp":
+        return False
+    for group in (observation or {}).get("groups") or []:
+        if group.get("id") == element.get("group"):
+            return any(v in (group.get("url") or "") for v in RELAYED_VIEWERS)
+    return any(v in ((observation or {}).get("page_url") or "") for v in RELAYED_VIEWERS)
+
+
 def _typing_lost(field, text):
     """Whether a field no longer holds what was just typed into it. A password field shows no text, so it is never
     judged; nor is a field the page does not report a value for."""
 
     if field.get("role") in ("password", "password text") or privacy.secret_field(field):
+        return False
+    # A date field shows its date its own way ("10/06/2026" for "6 Oct 2026"); cdp.type_text checked it held.
+    if set(field.get("states") or ()) & {"date", "date and time", "time", "month", "week"}:
         return False
     value = field.get("value")
     line = (text.split("\n")[0]).strip()
@@ -1078,9 +1475,6 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     # were typed into this one: live, "Admin\tadmin123\n" put the password into
     # the username's step in plain text. Typing each field on its own lets the
     # password field be recognised as one.
-    if kind == "type" and text and "\t" in text:
-        raise ComputerError("type one field at a time: a Tab in the text would carry the rest into another field. "
-                            "Type into this field, then type the next value into its own field (by its ref).")
 
     before = observe()
 
@@ -1110,7 +1504,20 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
             grounded = wanted
     aimed_by_point = point is not None and element is None and not grounded
     if point is not None and element is None:
-        element = el.at_point(before["elements"], point[0], point[1])
+        element = el.at_point(before["elements"], point[0], point[1], before.get("windows"), before.get("popups"))
+
+    # What looking found must be what the description named. Found live (2026-10-16): asked for "Recommended Charts in
+    # the Insert ribbon", the grounding model put the point on the button beside it, "Recommended PivotTables", and
+    # that was pressed - a dialog the worker never meant to open, and the task lost its way from there.
+    if grounded and kind in ("click", "double_click", "right_click") and element is not None \
+            and element.get("role") in PRESSED_ROLES and not _inside_large(element, point):
+        wanted = _names_another(grounded, element.get("name") or "")
+        if wanted:
+            raise ComputerError(
+                f"looking at the screen for {el._quote(grounded, 80)} found {el.describe(element)} at "
+                f"{point[0]},{point[1]} - that is not \"{wanted}\", so nothing was clicked. If \"{wanted}\" is not in "
+                "your last look, gui observe again (a ribbon, menu or panel lists its controls once it is shown) and "
+                "press it by its ref.")
 
     # An engine's click on a control that has a name is made by that name
     # (`named`: the gui command and the MCP tools ask for it; a replay and a
@@ -1121,7 +1528,8 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     # what is at the point, it clicks that by its ref, or sees it is not what
     # it meant. Fields, cells and bare points are still clicked where they are.
     if named and aimed_by_point and kind in ("click", "double_click", "right_click") and element is not None \
-            and element.get("role") in PRESSED_ROLES and (element.get("name") or "").strip() and element.get("ref"):
+            and element.get("role") in PRESSED_ROLES and (element.get("name") or "").strip() and element.get("ref") \
+            and not _inside_large(element, point):
         raise ComputerError(
             f"{point[0]},{point[1]} is {el.describe(element)} - nothing was clicked. A click by coordinates does "
             f"not say what you mean to press. If this is it, press it by its ref: gui {kind.replace('_', '-')} "
@@ -1145,10 +1553,32 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         if replaced:
             raise ComputerError(SUBSTITUTE.format(field=el.describe(element), wanted=replaced, entry=text))
 
-    if kind == "type" and point is not None and element is None and before.get("page_url"):
+    # In a viewer of an app running elsewhere (a Windows app read from its picture, a phone's app) a point IS where the
+    # app's field is: the click reaches the app and the keys follow it. Found live (2026-10-15): refused here, a worker
+    # filling TallyPrime spelled "Northwind Traders" out one key at a time and made a company named "N".
+    if kind == "type" and point is not None and element is None and before.get("page_url") \
+            and not any(v in (before.get("page_url") or "") for v in RELAYED_VIEWERS):
         raise ComputerError("that point does not resolve to a browser field to type into - click the editor, "
                             "observe, then type into its field by ref; typing at an unresolved point can trigger "
                             "page shortcuts instead of entering text")
+
+    # One field per typing action: a Tab carries the rest into another field, and what lands there is recorded - and
+    # withheld or not - as if typed into this one (live, "Admin\tadmin123\n" put a password into the username's step).
+    # A table on a slide is the exception: Tab is how its cells are filled one after another, and none of them is a
+    # password field (found live, 2026-10-16: filled cell by cell, the cells' refs moved as they changed and the values
+    # scattered).
+    if kind == "type" and text and "\t" in text and not (
+            (element is not None and element.get("role") == "cell"
+             and DRAWN_TABLES.search(element.get("window_title") or ""))
+            or (element is None and point is None and DRAWN_TABLES.search(before.get("active_title") or ""))):
+        raise ComputerError("type one field at a time: a Tab in the text would carry the rest into another field. "
+                            "Type into this field, then type the next value into its own field (by its ref).")
+    # In a slide's table a line break is a second line inside the same cell, not the next row: a table typed with Tabs
+    # between cells and line breaks between rows came out with every row crammed into the first cells (found live).
+    if kind == "type" and text and "\t" in text and "\n" in text:
+        raise ComputerError("a table on a slide is filled with a Tab between every two cells, the end of a row "
+                            "included: a line break would put the next row inside this cell. Nothing was typed - type "
+                            "it again with Tabs only (\"Region\\tRevenue\\tNorth\\t812\").")
 
     keys = [k for k in (keys or []) if k and k.strip()]
     target = el.describe(element) if element else (f"{point[0]},{point[1]}" if point else "")
@@ -1247,6 +1677,10 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
             "observation": before,
         }
 
+    keys_home = None
+    if element is None and point is None and kind in ("key", "type"):
+        keys_home = _keys_home()
+
     try:
         try:
             backend = _perform(kind, element, point, text, keys, direction, amount, option, append, end, files=files)
@@ -1267,6 +1701,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
 
     settled = _wait_for_settle(before["frame"])
     after = observe()
+    _note_front()
 
     # A page still setting itself up re-draws its fields from what its form holds, and what was typed a moment before
     # (not yet committed - that happens when the field loses focus) is gone. Found live in the web app: typed into a new
@@ -1274,7 +1709,11 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     # half a second in the next, and a worker typed a bill's date four times without seeing it hold. Typed once more,
     # after a moment, the field keeps it.
     retyped = False
-    if kind == "type" and element is not None and text and not append:
+    relayed = _relayed(element, before)
+    # Only a field is typed again: in a paragraph, a cell or a document a second typing adds a second copy (found
+    # live: an Impress subtitle came out twice).
+    if kind == "type" and element is not None and text and not append and not relayed \
+            and element.get("role") not in ("paragraph", "heading", "cell", "document"):
         again = _same_field(element, after)
         if again is not None and _typing_lost(again, text):
             time.sleep(RETYPE_PAUSE)
@@ -1283,7 +1722,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
             after = observe()
             retyped = True
 
-    if kind == "type" and element is not None and text and not append and element.get("role") == "textbox":
+    if kind == "type" and element is not None and text and not append and element.get("role") == "textbox"             and not relayed:
         retained = _same_field(element, after)
         if retained is not None and _typing_lost(retained, text):
             reason = (f"{target} did not retain the requested text after retrying. Observe the field again and "
@@ -1322,6 +1761,8 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     summary = f"{verb} {target or 'the focused window'}"
     if kind == "type":
         summary = f"Typed {privacy.shown_text(text, withheld)} into {target or 'the focused element'}"
+        if not target:
+            summary += _keys_went_to(before, after)
         if retyped:
             summary += " (the page cleared it a moment after the first typing, so it was typed again)"
     elif kind == "drag":
@@ -1334,13 +1775,24 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
             # Not the text asked for: say which entry it was and why, so the engine and the check can object.
             summary = (f"Selected the entry {el._quote(_selected['name'], 90)} in {target} for "
                        f"{el._quote(option or '', 90)} ({_selected['why']})")
+        if backend == "relayed:chosen":
+            summary = f"Selected the entry {el._quote(_selected['name'] or '', 90)} in {target}"
     elif kind == "upload":
         files_str = ", ".join(os.path.basename(f) for f in (files or []))
         summary = f"Uploaded {files_str} to {target or 'the file input'}"
+    if keys_home:
+        summary += (f" (another window had taken the keyboard, so the keys went to \"{keys_home}\", where you "
+                    "were working)")
     if decision.approved:
         summary += " (approved by the human)"
 
     note = ""
+    if kind == "click" and element is not None and element.get("role") == "combobox" and _relayed(element, before):
+        # Found live (2026-10-15): in real Excel's Save As, the worker opened "Save as type" and clicked where it
+        # guessed "Excel Workbook" would be, chose Excel 97-2003, and saved "report.xlsx.xls".
+        note = (f"\n{target} is a drop-down of an app running elsewhere: its open list is not shown here, so do not "
+                f"click its entries by position. Choose one with gui select {element.get('ref') or 'REF'} "
+                "\"the entry's name\".")
     if backend == "cdp:file_chooser":
         # cdp.click intercepted it: no dialog is on the screen, nothing was chosen.
         note = (f"\n{target} opens a file chooser; none was shown and no file was chosen. "
@@ -1396,6 +1848,12 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         # and every click landed on the taskbar under the page.
         note += (f"\n{point[0]},{point[1]} is on the desktop's taskbar, below the windows. To reach something "
                  "below the visible part of a page, scroll it (gui scroll down 5) and observe again.")
+    # A key with no target goes to whatever has the keyboard: Enter in a field commits that field, which is not another
+    # field being changed behind it (found live: Enter in Excel's Name Box was reported as "changed a value you typed").
+    if not _read_by_vision(before):  # a vision read's values are estimates: one that "changed" may only be read anew
+        note += _overwritten_note(change, element if element is not None or kind != "key" else
+                                  next((e for e in before.get("elements", []) if "focused" in (e.get("states") or [])),
+                                       None))
 
     return {
         "status": "done",
@@ -1404,6 +1862,40 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         "change": change,
         "observation": after,
     }
+
+
+def _overwritten_note(change, acted_on):
+    """
+    A warning when this action changed a field away from a value this task typed into it. Found live (2026-10-14):
+    an order line's price was typed from the sheet, then the product was picked, the form filled in its catalogue
+    price over it, and the order was saved at the wrong price - the result only said the price "changed".
+    """
+
+    from decurix_agent.computer import evidence
+
+    try:
+        typed = {" ".join(t.split()).casefold() for t in evidence.entered() if t and t.strip()}
+    except Exception:
+        return ""
+    if not typed:
+        return ""
+    target = (acted_on or {}).get("path")
+    lost = []
+    for element, fields in change.get("changed") or []:
+        if element.get("path") == target or privacy.secret_field(element):
+            continue
+        # The same field listed twice (a drop-down and its text box: Excel's "Name Box") is the field acted on.
+        if acted_on and element.get("name") and element.get("name") == acted_on.get("name"):
+            continue
+        for field, old, new in fields:
+            if field == "value" and old and " ".join(old.split()).casefold() in typed and \
+                    " ".join(old.split()).casefold() != " ".join((new or "").split()).casefold():
+                lost.append(f"{el.describe(element)} from {el._quote(old, 40)} to {el._quote(new or '', 40)}")
+    if not lost:
+        return ""
+    return ("\nThis also changed " + "; ".join(lost[:3]) + " - a value you typed earlier in this task. The form "
+            "fills such fields from the one you just set: if the request gives that value, type it again now and "
+            "read it back.")
 
 
 def _named_by(description, observation):
@@ -1575,6 +2067,13 @@ def summarize(change, limit=6):
         if len(appeared) <= SMALL_CHANGE:
             ordered = messages + texts + [e for e in appeared if e not in messages and e not in texts]
             shown_list = ordered
+        elif len(appeared) <= PANEL_CHANGE and change.get("url_before") == change.get("url_after") \
+                and not change["windows_opened"]:
+            # A panel opened in place (a ribbon tab, a toolbar, a sidebar): every control in it is listed, so the
+            # next press can be made by a ref that was shown. Found live (2026-10-16): after Excel's Insert tab,
+            # six of 35 new controls were listed "(+29 more)", and the engine guessed a ref from their numbering -
+            # it pressed "Insert Pie or Doughnut Chart" for a column chart.
+            shown_list = messages + [e for e in texts if e["role"] == "heading"] + controls or appeared[:limit]
         else:
             shown_list = (messages + [e for e in texts if e["role"] == "heading"] + controls)[:limit] or appeared[:limit]
         shown = ", ".join(el.describe(e) for e in shown_list)
@@ -1598,6 +2097,8 @@ def summarize(change, limit=6):
 
 # Up to this many new elements are all listed in an action's result.
 SMALL_CHANGE = 10
+# Up to this many, appearing in place (no new page or window), every new control is listed.
+PANEL_CHANGE = 60
 
 
 # Roles worth checking for on a replay, besides the ones that can be acted on.
@@ -1724,10 +2225,10 @@ class _SampleFrame:
 URL_RE = re.compile(r"^(https?://|file://|www\.|localhost[:/]|127\.0\.0\.1[:/])", re.I)
 
 APPS = {
-    "libreoffice": ["soffice", "--nologo"],
-    "writer": ["soffice", "--nologo", "--writer"],
-    "calc": ["soffice", "--nologo", "--calc"],
-    "impress": ["soffice", "--nologo", "--impress"],
+    "libreoffice": ["soffice", "--nologo", "--norestore"],
+    "writer": ["soffice", "--nologo", "--norestore", "--writer"],
+    "calc": ["soffice", "--nologo", "--norestore", "--calc"],
+    "impress": ["soffice", "--nologo", "--norestore", "--impress"],
     "mousepad": ["mousepad"],
     "text editor": ["mousepad"],
     "editor": ["mousepad"],
@@ -1743,9 +2244,26 @@ APPS = {
     "mail": ["thunderbird"],
     "email": ["thunderbird"],
     "thunderbird": ["thunderbird"],
+    # What people call the apps these stand in for. A request says "in Excel" or "make a PowerPoint"; the
+    # desktop's equivalents are LibreOffice's, GIMP and Inkscape.
+    "excel": ["soffice", "--nologo", "--norestore", "--calc"],
+    "microsoft excel": ["soffice", "--nologo", "--norestore", "--calc"],
+    "spreadsheet": ["soffice", "--nologo", "--norestore", "--calc"],
+    "word": ["soffice", "--nologo", "--norestore", "--writer"],
+    "microsoft word": ["soffice", "--nologo", "--norestore", "--writer"],
+    "powerpoint": ["soffice", "--nologo", "--norestore", "--impress"],
+    "microsoft powerpoint": ["soffice", "--nologo", "--norestore", "--impress"],
+    "gimp": ["gimp"],
+    "image editor": ["gimp"],
+    "photoshop": ["gimp"],
+    "adobe photoshop": ["gimp"],
+    "inkscape": ["inkscape"],
+    "illustrator": ["inkscape"],
+    "adobe illustrator": ["inkscape"],
 }
 
 OFFICE_EXTENSIONS = (".odt", ".ods", ".odp", ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".csv", ".rtf")
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff", ".webp", ".xcf")
 
 
 def _chromium_argv(url):
@@ -1803,6 +2321,7 @@ def open_target(target, new_tab=False):
 
     after = screen.grab()
     active = next((w["title"] for w in screen.windows() if w["active"]), "")
+    _note_front()
 
     entry.update({
         "outcome": "done",
@@ -1867,14 +2386,20 @@ def _open(target, new_tab):
 
     if path.exists():
         if path.suffix.lower() in OFFICE_EXTENSIONS:
-            argv = ["soffice", "--nologo", str(path)]
+            argv = ["soffice", "--nologo", "--norestore", str(path)]
+        elif path.suffix.lower() in IMAGE_EXTENSIONS and shutil.which("gimp"):
+            argv = ["gimp", "--no-splash", str(path)]
+        elif path.suffix.lower() == ".svg" and shutil.which("inkscape"):
+            argv = ["inkscape", str(path)]
         elif path.is_dir():
             argv = ["thunar", str(path)]
         elif path.suffix.lower() in (".html", ".htm", ".pdf", ".eml"):
             return _open("file://" + str(path.resolve()), new_tab)
         else:
             argv = ["mousepad", str(path)]
-    elif lower in APPS:
+    elif lower in APPS and launchers.by_name(target) is None:
+        # A stand-in only when the desktop has no app of that name: "Excel" is the real Excel when a person copied
+        # it here ("Excel (Host)"), LibreOffice Calc otherwise.
         argv = APPS[lower]
     elif launchers.by_name(target) is not None:
         # An app that is an icon on this desktop, opened by its name: what a
@@ -1894,10 +2419,20 @@ def _open(target, new_tab):
         argv = parts
 
     started = " ".join(argv)
+    raises = launchers.by_name(target) is not None and not path.exists()
+    front_before = next((w["id"] for w in before if w.get("active")), None)
     session.launch(argv)
 
     def new_window():
-        return [w for w in screen.windows() if w["id"] not in before_ids and w["title"]]
+        now = screen.windows()
+        opened = [w for w in now if w["id"] not in before_ids and w["title"]]
+        if opened or not raises:
+            return opened
+        # A launcher brings its app forward when it is open already, and opens nothing. Found live (2026-10-13):
+        # a web app's launcher raised the app's window from behind the browser, and the open was reported as "no
+        # new window appeared within 90 seconds" - the engine took the app for broken and tried addresses that
+        # do not reach it.
+        return [w for w in now if w.get("active") and w["id"] != front_before and w["title"]]
 
     opened = _wait_until(new_window, OPEN_SECONDS, None)
     if not opened:

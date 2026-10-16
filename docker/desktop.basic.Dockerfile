@@ -32,6 +32,10 @@ USER root
 #   a screen that is only pixels - a host app on a canvas - when a replay has
 #   to decide whether a step is still needed or where a click lands now
 #   (computer/ocr.py); without it those rungs are skipped, nothing breaks.
+# - A worker's everyday tools: git, sqlite3, zip/unzip and 7z (archives people
+#   send), ImageMagick (resize, convert, montage pictures), qpdf (split, merge,
+#   decrypt PDFs), xclip and wmctrl (the clipboard and windows from a script).
+#   Missing, each was a task worked around in Python or a person asked to help.
 # - A modern look for the desktop a human actually opens: Ubuntu's own Yaru
 #   theme (GTK + xfwm4, in a red accent to match Decurix's own palette),
 #   Papirus icons and the Breeze cursor; Inter is a screen-tuned UI font, used
@@ -76,8 +80,21 @@ RUN apt-get update && \
         img2pdf \
         libreoffice-writer \
         libreoffice-calc \
+        libreoffice-impress \
         libreoffice-gtk3 \
-        fonts-liberation && \
+        gimp \
+        libgail-common \
+        inkscape \
+        fonts-liberation \
+        git \
+        sqlite3 \
+        zip \
+        unzip \
+        p7zip-full \
+        imagemagick \
+        qpdf \
+        xclip \
+        wmctrl && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -85,6 +102,9 @@ RUN apt-get update && \
 # panel, Thunar, mousepad, LibreOffice's GTK front end - from publishing its
 # widgets over AT-SPI at all. Without this the accessibility tree is empty.
 ENV NO_AT_BRIDGE=0
+# GTK2 apps (GIMP 2.10) publish their widgets only with these modules loaded (libgail-common, libatk-adaptor). GTK2 alone
+# reads this variable, so GTK3 apps are untouched.
+ENV GTK2_MODULES=gail:atk-bridge
 
 # The browser: Google Chrome stable from Google's signed repository, in place of
 # the base image's frozen Chromium 112, behind the one launcher every route to
@@ -96,6 +116,28 @@ COPY agent/chrome-policies.json /etc/opt/chrome/policies/managed/decurix.json
 COPY agent/install-browser.sh /tmp/install-browser.sh
 RUN chmod 644 /etc/opt/chrome/policies/managed/decurix.json \
     && sh /tmp/install-browser.sh && rm -f /tmp/install-browser.sh /tmp/chromium-browser
+
+# Presentation support uses a venv: python3-pptx is unavailable in Ubuntu noble.
+# System site packages retain apt-provided GI, openpyxl and document readers.
+RUN python3 -m venv --system-site-packages /opt/office-venv && \
+    /opt/office-venv/bin/pip install --no-cache-dir python-pptx==1.0.2
+ENV PATH="/opt/office-venv/bin:${PATH}"
+
+# The libraries a worker's own scripts reach for, in the system Python, so every python3 has them: the venv above is
+# not on a worker's PATH (the control plane sets PATH when it creates a desktop), so `import pptx` failed in any script
+# the engine wrote, and a run that needed `requests` failed and asked a person. Pinned, like everything here.
+RUN pip3 install --no-cache-dir --break-system-packages \
+        python-pptx==1.0.2 \
+        pandas==2.2.3 \
+        requests==2.32.3 \
+        beautifulsoup4==4.12.3 \
+        pdfplumber==0.11.4 \
+        pymupdf==1.24.14 \
+        matplotlib==3.9.2 \
+        python-dateutil==2.9.0.post0 \
+        xlrd==2.0.1 \
+        tabulate==0.9.0 \
+        reportlab==4.2.5
 
 # browser-agent: extension_pipeline/ext_server.py, the backend for the
 # browser-agent extension. No desktop loads the extension today (the Chrome
@@ -118,6 +160,7 @@ COPY agent/start_agent_terminal.sh /opt/start_agent_terminal.sh
 # work through shell commands (decurix_agent/computer/cli.py).
 COPY agent/gui /usr/local/bin/gui
 COPY agent/office /usr/local/bin/office
+COPY agent/lookup /usr/local/bin/lookup
 # TheBot harness's soul binary - built above from real source, started
 # conditionally by start_agent_terminal.sh only when AGENT_HARNESS=thebot.
 COPY --from=thebot-builder /soul /opt/soul
@@ -151,7 +194,7 @@ COPY agent/decurix-desktop-browser.desktop /home/headless/Desktop/chromium-brows
 # A desktop launcher runs only when it is executable (xfdesktop asks "untrusted launcher?" otherwise).
 RUN chmod 755 /home/headless/Desktop/chromium-browser.desktop
 
-RUN chmod +x /opt/vm_server.py /opt/start_agent_terminal.sh /opt/soul /usr/local/bin/gui /usr/local/bin/office
+RUN chmod +x /opt/vm_server.py /opt/start_agent_terminal.sh /opt/soul /usr/local/bin/gui /usr/local/bin/office /usr/local/bin/lookup
 
 RUN mkdir -p /home/headless/.config/autostart \
     /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml \
@@ -245,6 +288,11 @@ ENV PATH="/opt/tools/bin:/opt/tools/go/bin:/opt/tools/node/bin:/opt/tools/rust/b
     HF_HOME="/var/cache/decurix/huggingface"
 
 RUN chmod 666 /etc/passwd /etc/group
+
+# A library a task needs beyond the ones installed above: `pip install --user NAME` puts it in the worker's own home
+# (~/.local, on the desktop's persistent volume), so it is there after a restart and needs no administrator rights.
+# Not PIP_USER=1: a venv's pip refuses a --user install, and the coding harness installs into project venvs.
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
 USER headless
 

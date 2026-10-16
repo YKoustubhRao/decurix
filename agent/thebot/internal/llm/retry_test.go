@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -137,5 +138,40 @@ func TestAProvidersOwnFailureIsAskedAgain(t *testing.T) {
 	out, err := p.Chat(context.Background(), "demo", nil, Options{})
 	if err != nil || calls != 2 || out.Text != "ok" {
 		t.Fatalf("calls %d, out %+v, err %v", calls, out, err)
+	}
+}
+
+func TestACallThatCouldNotConnectIsTriedAgain(t *testing.T) {
+	// A listener that is not there yet: the first two dials are refused, then it answers.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+	served := make(chan struct{})
+	go func() {
+		time.Sleep(2500 * time.Millisecond)
+		l, err := net.Listen("tcp", addr)
+		if err != nil {
+			close(served)
+			return
+		}
+		srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })}
+		go srv.Serve(l)
+		<-served
+		srv.Close()
+	}()
+	defer close(served)
+	req, _ := http.NewRequest("POST", "http://"+addr+"/v1/chat/completions", strings.NewReader("{}"))
+	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("{}")), nil }
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := rateLimitedRequest(http.DefaultClient, req.WithContext(ctx))
+	if err != nil {
+		t.Fatalf("not retried: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status %d", resp.StatusCode)
 	}
 }

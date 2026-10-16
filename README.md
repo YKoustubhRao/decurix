@@ -134,6 +134,7 @@ A rundown of what's actually built and working, grouped by area. See [`CLAUDE.md
 * An autonomy dashboard (**Tasks**) breaking down autonomy rate by engine, worker and task type, and the most common reasons a human had to step in — with a single, precise definition of "autonomous"
 
 **Scheduling & automation**
+* **Durable business workflows** (`/workflow`): 25 editable examples plus arbitrary custom workflow specifications and learned-skill stages; stage checkpoints, bounded retries, approval boundaries and independently checked output artifacts. See [usage and validation](bench/workflows/README.md) for Excel/Word/PowerPoint handoffs, recovery, offline soak tests and the live desktop runner.
 * Recurring requests on a standard 5-field cron expression, or a one-time request for a future moment — set up from the Requests page and fired automatically by a built-in scheduler (no external cron dependency)
 * **DAG workflows** (`/dags`): a drag-and-drop canvas for wiring multiple workers' requests into a directed graph, where a node's output can be referenced in a downstream node's request text, dispatch is gated on every upstream node succeeding, and a failed node skips everything only reachable through it — runnable on its own cron trigger or on demand
 * A worker-recommender that suggests the best desktop for a newly typed request, based on which worker is most recently active or whose past memory most closely matches the request (embedding similarity), with recency as the always-available fallback
@@ -660,16 +661,43 @@ to release its memory. Idle worker stopping still works as before.
 
 Uninstalling (Settings > Apps, or the Start menu's own uninstaller) stops the
 app-owned distro (or only Decurix containers in a shared runtime) and removes
-the program. Shared distros and unrelated Docker resources are kept. It asks whether to delete the distro and your
-settings as well, and keeps them unless you say yes, so installing again picks
-up where you left off. A silent uninstall (`"Uninstall Decurix.exe" /S`) keeps
-them; add `--delete-app-data` to remove them. Deleting a single worker from the
+the program. Shared distros and unrelated Docker resources are kept. It also
+deletes the app's distro, every worker, your records and your settings, without
+asking, so installing again starts fresh. To keep them for a reinstall, take a
+backup first (**Back up**), or uninstall from a terminal with
+`"Uninstall Decurix.exe" /S --keep-app-data`. An update installed over the app
+keeps everything. Deleting a single worker from the
 dashboard deletes its files, its chat and everything it learned; take a backup
 first (**Back up**) to restore its skills and memory into another worker.
 
 For a phone, the app opens a temporary Cloudflare link to the access-code-gated
 listener while its window is open (`cloudflared` ships with the app). The
 unauthenticated dashboard on port 8080 is never exposed.
+
+The desktop checks that the public URL serves Decurix's access-code page before
+showing it. With `DECURIX_TUNNEL_PROVIDER=auto`, if Cloudflare cannot connect or
+its URL cannot resolve, it switches after 45 seconds to a free
+[localhost.run](https://localhost.run/docs/) tunnel using the OpenSSH client.
+No account or domain purchase is needed; both services
+use temporary addresses and require the app and computer to stay running.
+Set `DECURIX_TUNNEL_PROVIDER=localhost-run` in the desktop's `.env` to use that
+service directly, or `cloudflare` to use only Cloudflare (the default).
+Restart the app after changing this setting. The Windows settings file is
+`%APPDATA%\decurix\.env`. SSH host keys are saved in `tunnel-known-hosts` there.
+
+If system DNS reports a newly allocated public hostname as missing, the
+desktop's reachability check retries against Cloudflare DNS for that request.
+This does not change the computer's DNS settings. A phone or browser using a
+router/ISP resolver that returns incorrect NXDOMAIN responses may also need
+Cloudflare DNS (`1.1.1.1`, `1.0.0.1`) or Secure DNS enabled on that device.
+Public-link startup, DNS failures, and readiness are recorded in `desktop.log`.
+
+The IP URL is a **same-network** address, not a public internet address. Windows
+may ask for administrator approval to forward the gated port through WSL and
+allow it through the firewall. The app checks that the forwarded address serves
+the access-code page. Guest Wi-Fi/client isolation can still prevent another
+device from reaching it; use the public HTTPS tunnel in that case or when using
+mobile data. Forwarding a private IP cannot make it public through carrier NAT.
 
 ### Mac and Linux desktop app
 

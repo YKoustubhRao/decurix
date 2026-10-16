@@ -231,7 +231,7 @@ def perform(content, task_file=None):
 
         reply = (f"Done with the tool I wrote for this kind of request (`{Path(tool['path']).name} {line}`).\n\n"
                  f"{printed[:MAX_OUTPUT_CHARS]}")
-        made = produced.files(reply)
+        made = produced.files(reply, request=content)
         progress.emit("Reading back what it wrote to check it against the request.")
         verdict = verify.judge(content, claim=reply, screen=False,
                                produced="\n".join(x for x in (produced.text(made), produced.drafts_text()) if x))

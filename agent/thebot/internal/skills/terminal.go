@@ -327,7 +327,7 @@ func (t *TerminalSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 				Verified: false,
 				Meta: map[string]any{"command": command, "source": source, "exitCode": exitCode, "cwd": cwd,
 					"reroute":     "operator",
-					"rerouteNote": fmt.Sprintf("`%s` is not installed on this machine and cannot be installed (there is no sudo). Do it with a program that is here - python3 always is.", program)},
+					"rerouteNote": fmt.Sprintf("`%s` is not installed on this machine and programs cannot be installed (no administrator rights). Do it with a program that is here - python3 always is, with pandas, requests and the document libraries; a missing Python library can be added with `pip install --user NAME`.", program)},
 				DurationMs: duration,
 			}, nil
 		}

@@ -317,6 +317,8 @@ type hostGUIRequest struct {
 	Seq int `json:"seq,omitempty"`
 	// Mods is any of c, s, a: Ctrl, Shift and Alt held during a key or mouse event.
 	Mods string `json:"mods"`
+	// Append is for setvalue: add the text to what the field holds instead of replacing it.
+	Append bool `json:"append,omitempty"`
 }
 
 func readHostGUIRequest(w http.ResponseWriter, r *http.Request) (hostGUIRequest, bool) {
@@ -522,6 +524,28 @@ func applyInput(sess *winhost.Session, req hostGUIRequest) (text string, wantsTe
 		return text, err == nil, err
 	case "key":
 		err = sess.Key(req.VK, req.Mods)
+	case "press":
+		text, err = sess.Press(req.X, req.Y)
+		if err != nil {
+			return "ERR " + err.Error(), true, nil
+		}
+		return text, true, nil
+	case "setfocus":
+		err = sess.SetFocus(req.X, req.Y)
+	case "setvalue":
+		// The answer is what the field holds afterwards, or why it could not be set (the viewer then types the text).
+		text, err = sess.SetValue(req.X, req.Y, req.Text, req.Append)
+		if err != nil {
+			return "ERR " + err.Error(), true, nil
+		}
+		return "SET " + text, true, nil
+	case "choose":
+		// The answer is the entry chosen, or why none was: a drop-down's entries are not shown to the viewer.
+		text, err = sess.Choose(req.X, req.Y, req.Text)
+		if err != nil {
+			return "ERR " + err.Error(), true, nil
+		}
+		return text, true, nil
 	default:
 		err = errors.New("unknown input kind")
 	}

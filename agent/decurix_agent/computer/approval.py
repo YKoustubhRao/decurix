@@ -245,6 +245,11 @@ def assess(kind, element, text=None, keys=None, context=None):
             label = " ".join(name.split())[:60]
             return f'"{label}" sends, pays, buys or publishes something on your behalf'
 
+    if kind in ("click", "double_click") and element is not None:
+        asked = confirms_permanently(element)
+        if asked:
+            return f'this answers "{asked}" - it cannot be taken back'
+
     if kind == "key" and keys and any(ENTER_KEY.search(k.strip()) for k in keys):
         # Where the keyboard is decides what Enter does: in a search box it
         # searches. Unknown, it is taken to send - the cautious reading.
@@ -255,6 +260,33 @@ def assess(kind, element, text=None, keys=None, context=None):
         return "typing a new line here sends what was typed as a message"
 
     return None
+
+
+# A dialog's plain yes, and what such a dialog asks when the act cannot be
+# undone. Found live (2026-10-13): a worker pressed Ctrl+S on a draft its
+# replay had just saved, and the application - where a saved draft's next
+# action is to submit it to the books - asked "Confirm: Permanently Submit
+# PINV-26-00021?". The worker answered No itself; nothing would have stopped
+# a Yes, since the gate looks at a control's own label and this one says
+# only "Yes". The dialog's question is the label that matters: it is the
+# application saying, in its own words, that this is the consequential step.
+CONFIRM_ANSWER = re.compile(r"^\s*(yes|ok|okay|confirm|continue|proceed|i'?m sure|i am sure|yes,? [\w ]{1,30})\s*[.!]?\s*$",
+                            re.IGNORECASE)
+PERMANENT_QUESTION = re.compile(
+    r"\b(permanent(ly)?|irreversibl[ey]|cannot be (undone|reversed)|can'?t be (undone|reversed)|"
+    r"submit|send|pay|publish|post|transfer|delete|cancel (this|the) (order|invoice|payment|document|booking))\b",
+    re.IGNORECASE)
+DIALOG_IN_PATH = re.compile(r"\b(?:alertdialog|dialog) \"([^\"]*)\"", re.IGNORECASE)
+
+
+def confirms_permanently(element):
+    """The question a yes-button answers when its dialog asks to do something that cannot be taken back, or None."""
+
+    if (element.get("role") or "") not in ACTIVATING_ROLES or not CONFIRM_ANSWER.match(element.get("name") or ""):
+        return None
+    dialogs = DIALOG_IN_PATH.findall(element.get("path") or "")
+    asked = dialogs[-1].strip() if dialogs else ""
+    return asked if asked and PERMANENT_QUESTION.search(asked) else None
 
 
 def _fingerprint(kind, element, text, keys, point):
