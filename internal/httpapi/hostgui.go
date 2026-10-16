@@ -522,6 +522,21 @@ func applyInput(sess *winhost.Session, req hostGUIRequest) (text string, wantsTe
 		return text, err == nil, err
 	case "key":
 		err = sess.Key(req.VK, req.Mods)
+	case "press":
+		text, err = sess.Press(req.X, req.Y)
+		if err != nil {
+			return "ERR " + err.Error(), true, nil
+		}
+		return text, true, nil
+	case "setfocus":
+		err = sess.SetFocus(req.X, req.Y)
+	case "choose":
+		// The answer is the entry chosen, or why none was: a drop-down's entries are not shown to the viewer.
+		text, err = sess.Choose(req.X, req.Y, req.Text)
+		if err != nil {
+			return "ERR " + err.Error(), true, nil
+		}
+		return text, true, nil
 	default:
 		err = errors.New("unknown input kind")
 	}

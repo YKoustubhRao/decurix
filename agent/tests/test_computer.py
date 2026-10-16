@@ -232,11 +232,44 @@ class OneFieldPerTyping(unittest.TestCase):
         from decurix_agent.computer import core
         from decurix_agent.computer.errors import ComputerError
 
-        with mock.patch.object(core, "observe") as observe:
+        field = {"role": "textbox", "name": "Username", "source": "cdp", "ref": "e1", "states": [], "handle": {}}
+        look = {"elements": [field], "groups": [], "windows": [], "frame": None}
+        with mock.patch.object(core, "observe", return_value=look), \
+                mock.patch.object(core.el, "find", return_value=field), \
+                mock.patch.object(core, "_perform") as perform:
             with self.assertRaises(ComputerError) as caught:
                 core.act("type", ref="e1", text="Admin\tadmin123\n")
-        observe.assert_not_called()  # refused before the screen was even read
+        perform.assert_not_called()  # refused before anything was typed
         self.assertIn("one field at a time", str(caught.exception))
+
+    def test_a_table_on_a_slide_is_filled_with_tabs(self):
+        from unittest import mock
+        from decurix_agent.computer import core
+
+        cell = {"role": "cell", "name": "A1", "source": "atspi", "ref": "e9", "states": [], "handle": {},
+                "window_title": "deck.pptx - LibreOffice Impress"}
+        look = {"elements": [cell], "groups": [], "windows": [], "frame": None}
+        with mock.patch.object(core, "observe", return_value=look), \
+                mock.patch.object(core.el, "find", return_value=cell), \
+                mock.patch.object(core, "_perform", side_effect=RuntimeError("typed")) as perform:
+            with self.assertRaises(RuntimeError):
+                core.act("type", ref="e9", text="Region\tRevenue\tNorth\t812")
+        perform.assert_called_once()
+
+    def test_a_slide_table_typed_with_line_breaks_between_rows_is_refused(self):
+        from unittest import mock
+        from decurix_agent.computer import core
+        from decurix_agent.computer.errors import ComputerError
+
+        cell = {"role": "cell", "name": "A1", "source": "atspi", "ref": "e9", "states": [], "handle": {},
+                "window_title": "deck.pptx - LibreOffice Impress"}
+        look = {"elements": [cell], "groups": [], "windows": [], "frame": None}
+        with mock.patch.object(core, "observe", return_value=look), \
+                mock.patch.object(core.el, "find", return_value=cell), \
+                mock.patch.object(core, "_perform") as perform:
+            with self.assertRaises(ComputerError):
+                core.act("type", ref="e9", text="Region\tRevenue\nNorth\t812")
+        perform.assert_not_called()
 
 
 class ColumnNamedFields(unittest.TestCase):

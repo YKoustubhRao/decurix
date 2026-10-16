@@ -132,7 +132,11 @@ def fill(skill, params, context, with_rows=False):
             if images == MAX_IMAGES:
                 break
             parts.append(llm_client.image_part(path=image))
+            texts.append(office._ocr_file(image))
             images += 1
+
+    if any(_is_date_param(p) for p in params):
+        parts.append({"type": "text", "text": "\n" + _date_note(skill, texts)})
 
     try:
         message, _ = llm_client.chat(
@@ -147,6 +151,63 @@ def fill(skill, params, context, with_rows=False):
     values, evidence = _clean(params, answer, texts)
     rows = _rows(skill, params, answer, texts, values, evidence)
     return (values, evidence, rows) if with_rows else (values, evidence)
+
+
+# A date written with digits only: 03/10/2026, 3.10.2026, 28-09-2026.
+DIGIT_DATE = re.compile(r"(?<!\d)(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4})(?!\d)")
+
+
+def _is_date_param(param):
+    """A value that is a date: its example looks like one, or its label says so."""
+
+    example = str(param.get("example") or param.get("default") or "")
+    return bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", example) or DIGIT_DATE.fullmatch(example)
+                or re.search(r"\bdate\b", param.get("label") or param.get("name") or "", re.I))
+
+
+def date_order(texts):
+    """
+    "day" or "month" - which comes first in the digit dates these texts write - decided only by dates that cannot be
+    read the other way (28/09/2026 is day first), and only when they all agree; None otherwise.
+    """
+
+    seen = set()
+    for text in texts:
+        for a, b, _ in DIGIT_DATE.findall(text or ""):
+            a, b = int(a), int(b)
+            if a > 12 and b <= 12:
+                seen.add("day")
+            elif b > 12 and a <= 12:
+                seen.add("month")
+    return seen.pop() if len(seen) == 1 else None
+
+
+def _document_text(path):
+    """A document's words, its pictures read by OCR too (a scanned form has no text layer)."""
+
+    try:
+        doc = office.read_document(path)
+    except (office.OfficeError, OSError, ValueError):
+        return ""
+    return doc["text"] + "\n" + "\n".join(office._ocr_file(image) for image in doc["images"][:3])
+
+
+def _date_note(skill, texts):
+    """
+    What to tell the model about dates written in digits. Found live (2026-10-14): a claim form's "03/10/2026" was
+    read as 10 March although the form the person taught from wrote "28/09/2026" - day first - and the record was
+    saved with the wrong date.
+    """
+
+    order = date_order(texts) or date_order([_document_text(p) for p in skill.get("documents") or []])
+    if order == "day":
+        return ("Dates in these documents are written day first (as 28/09/2026 is 28 September): read a date such as "
+                "03/10/2026 as 3 October.")
+    if order == "month":
+        return ("Dates in these documents are written month first (as 09/28/2026 is September 28): read a date such "
+                "as 03/10/2026 as March 10.")
+    return ("If a date is written with digits that could be read either way (03/10/2026) and nothing in the documents "
+            "shows which comes first, leave that value out - it will be asked for.")
 
 
 def _prompt(skill, params, context):

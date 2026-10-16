@@ -268,9 +268,54 @@ def find(elements, ref=None, role=None, name=None, path=None, active_group=None)
     return matches[0]
 
 
-def at_point(elements, x, y):
-    """The smallest element whose box contains a screen point, or None."""
+def unoccluded(elements, windows, x, y, popups=None):
+    """
+    The elements that can be what a press at x,y lands on: not those of a
+    window that another window covers at that point. A look at the screen
+    lists every window's controls, the ones behind as readily as the ones in
+    front - found live, a click on an Impress slide was taken as a click on
+    the Calc sheet of a window left open behind it, and the worker never
+    reached its slide. `windows` is observe's list, topmost last; an element
+    whose window is not in it (a menu) is kept. `popups` are the boxes of open
+    menus and drop-down lists, which are over every window: at a point inside
+    one, only what lies within it counts (found live: GIMP's File menu hung
+    over a viewer window behind GIMP, and a click on "Open..." was taken for
+    that window's hidden "Name" button, thirty times).
+    """
 
+    for px, py, pw, ph in popups or []:
+        if px <= x < px + pw and py <= y < py + ph:
+            def inside(element, px=px, py=py, pw=pw, ph=ph):
+                box = element.get("box")
+                return bool(box) and px <= box[0] and py <= box[1] and box[0] + box[2] <= px + pw \
+                    and box[1] + box[3] <= py + ph
+            # The menu is over every window, whichever window its items say they belong to.
+            return [element for element in elements if inside(element)]
+
+    order = {}
+    for index, window in enumerate(windows or []):
+        if window.get("title"):
+            order[window["title"]] = index
+
+    def covered(element):
+        index = order.get(element.get("window_title") or "")
+        if index is None:
+            return False
+        for above in (windows or [])[index + 1:]:
+            box = above.get("box")
+            if box and box[0] <= x < box[0] + box[2] and box[1] <= y < box[1] + box[3]:
+                return True
+        return False
+
+    return [element for element in elements if not covered(element)]
+
+
+def at_point(elements, x, y, windows=None, popups=None):
+    """The smallest element whose box contains a screen point, or None. With `windows` (observe's list, topmost
+    last) and `popups` (open menus), the elements of a window covered at that point are left out."""
+
+    if windows or popups:
+        elements = unoccluded(elements, windows, x, y, popups)
     best = None
     best_area = None
 

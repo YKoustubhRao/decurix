@@ -357,6 +357,8 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	// The file chooser opens on this computer's own screen: for the person
 	// sitting at it, never a phone or a desktop's agent.
 	mux.HandleFunc("/api/host-paths/browse", s.humansOnly(s.browseHostPathHandler))
+	// Whether a file a task was asked to save on this computer is there - for the check of that task.
+	mux.HandleFunc("/api/host-files/stat", hostGUIDirectOnly(s.hostFileStatHandler))
 	mux.HandleFunc("/api/lan-access/status", s.lanAccessStatusHandler)
 	mux.HandleFunc("/api/lan-access/rotate", s.lanAccessRotateHandler)
 	mux.HandleFunc("/api/lan-access/devices", s.lanAccessDevicesHandler)

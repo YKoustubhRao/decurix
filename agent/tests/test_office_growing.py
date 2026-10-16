@@ -70,6 +70,18 @@ class AddingTableRows(unittest.TestCase):
         self.assertIn("| South | 20 |", text)
         self.assertIn("| Total | 30 |", text)
 
+    def test_rows_can_go_above_a_total_row(self):
+        # Found live (2026-10-14): a region added after the Total row left the table with two totals.
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        path = os.path.join(d, "deck.pptx")
+        office.create_presentation(path, [{"title": "T", "table": [["Region", "Revenue"], ["North", "10"], ["Total", "10"]]}])
+        office.update_presentation(path, [{"slide": 1, "table": 1, "add_rows": [["Central", "0"]], "before": 3}])
+        text = office.read_document(path)["text"]
+        self.assertLess(text.index("| Central | 0 |"), text.index("| Total | 10 |"))
+        with self.assertRaises(office.OfficeError):
+            office.update_presentation(path, [{"slide": 1, "table": 1, "add_rows": [["x", "1"]], "before": 9}])
+
     def test_a_row_wider_than_the_table_is_refused(self):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)

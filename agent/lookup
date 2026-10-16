@@ -1,0 +1,4 @@
+#!/bin/sh
+# The `lookup` command: what the web says about how an app or a kind of work goes, fetched without touching the
+# screen (decurix_agent/tools/lookup.py).
+PYTHONPATH="/opt${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m decurix_agent.tools.lookup "$@"

@@ -78,6 +78,9 @@ RUN apt-get update && \
         libreoffice-calc \
         libreoffice-impress \
         libreoffice-gtk3 \
+        gimp \
+        libgail-common \
+        inkscape \
         fonts-liberation && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
@@ -86,6 +89,9 @@ RUN apt-get update && \
 # panel, Thunar, mousepad, LibreOffice's GTK front end - from publishing its
 # widgets over AT-SPI at all. Without this the accessibility tree is empty.
 ENV NO_AT_BRIDGE=0
+# GTK2 apps (GIMP 2.10) publish their widgets only with these modules loaded (libgail-common, libatk-adaptor). GTK2 alone
+# reads this variable, so GTK3 apps are untouched.
+ENV GTK2_MODULES=gail:atk-bridge
 
 # The browser: Google Chrome stable from Google's signed repository, in place of
 # the base image's frozen Chromium 112, behind the one launcher every route to
@@ -125,6 +131,7 @@ COPY agent/start_agent_terminal.sh /opt/start_agent_terminal.sh
 # work through shell commands (decurix_agent/computer/cli.py).
 COPY agent/gui /usr/local/bin/gui
 COPY agent/office /usr/local/bin/office
+COPY agent/lookup /usr/local/bin/lookup
 # TheBot harness's soul binary - built above from real source, started
 # conditionally by start_agent_terminal.sh only when AGENT_HARNESS=thebot.
 COPY --from=thebot-builder /soul /opt/soul
@@ -158,7 +165,7 @@ COPY agent/decurix-desktop-browser.desktop /home/headless/Desktop/chromium-brows
 # A desktop launcher runs only when it is executable (xfdesktop asks "untrusted launcher?" otherwise).
 RUN chmod 755 /home/headless/Desktop/chromium-browser.desktop
 
-RUN chmod +x /opt/vm_server.py /opt/start_agent_terminal.sh /opt/soul /usr/local/bin/gui /usr/local/bin/office
+RUN chmod +x /opt/vm_server.py /opt/start_agent_terminal.sh /opt/soul /usr/local/bin/gui /usr/local/bin/office /usr/local/bin/lookup
 
 RUN mkdir -p /home/headless/.config/autostart \
     /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml \

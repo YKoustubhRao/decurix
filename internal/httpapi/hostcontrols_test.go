@@ -46,3 +46,28 @@ func TestAVisionAnswerThatIsNotJSONIsAnError(t *testing.T) {
 		t.Error("prose was read as controls")
 	}
 }
+
+// The field the picture shows as active is said in a line of text over it, never as Windows' "focused".
+func TestAVisionReadSaysWhichFieldHasTheCursor(t *testing.T) {
+	answer := `{"cursor":"Under","nodes":[
+		{"role":"textbox","name":"Name","box":[10,10,200,20],"value":"Kaveri Electricals"},
+		{"role":"textbox","name":"Under","box":[10,40,200,20],"value":"Capital Account"}]}`
+	nodes, err := parseVisionControls(answer, 960, 600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := nodes[len(nodes)-1]
+	if last.Role != "text" || last.Name != "the cursor is in: Under" || last.Box != nodes[1].Box || last.Focused {
+		t.Fatalf("cursor line = %+v", last)
+	}
+	for _, n := range nodes {
+		if n.Focused {
+			t.Fatalf("%+v was marked focused", n)
+		}
+	}
+	// A cursor naming no field read is not said.
+	nodes, _ = parseVisionControls(`{"cursor":"Nowhere","nodes":[{"role":"textbox","name":"Name","box":[1,1,50,20]}]}`, 960, 600)
+	if len(nodes) != 1 {
+		t.Fatalf("a cursor on no field was kept: %+v", nodes)
+	}
+}

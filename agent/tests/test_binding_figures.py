@@ -21,5 +21,31 @@ class Figures(unittest.TestCase):
         self.assertEqual(as_number("$72k", "about 70k"), "$72k")
 
 
+
+class DatesWrittenEitherWay(unittest.TestCase):
+    """Found live (2026-10-14): "03/10/2026" read as 10 March on forms that write dates day first."""
+
+    def test_the_order_comes_from_dates_that_read_only_one_way(self):
+        from decurix_agent.binding import date_order
+        self.assertEqual(date_order(["Date of loss: 28/09/2026"]), "day")
+        self.assertEqual(date_order(["Invoice date 09/28/2026"]), "month")
+        self.assertIsNone(date_order(["Date of loss: 03/10/2026"]))
+        self.assertIsNone(date_order(["28/09/2026 and 09/28/2026"]))
+
+    def test_the_model_is_told_the_order_or_to_leave_an_unclear_date_out(self):
+        from unittest import mock
+        from decurix_agent import binding
+        with mock.patch.object(binding, "_document_text", return_value="Date of loss: 28/09/2026"):
+            self.assertIn("day first", binding._date_note({"documents": ["/w/teach.pdf"]}, ["Date of loss: 03/10/2026"]))
+        with mock.patch.object(binding, "_document_text", return_value=""):
+            self.assertIn("leave that value out", binding._date_note({"documents": []}, ["03/10/2026"]))
+
+    def test_a_date_value_is_known_by_its_example_or_label(self):
+        from decurix_agent.binding import _is_date_param
+        self.assertTrue(_is_date_param({"name": "date_of_incident", "label": "Date of incident", "example": "2026-09-28"}))
+        self.assertTrue(_is_date_param({"name": "x", "label": "Due", "example": "28/09/2026"}))
+        self.assertFalse(_is_date_param({"name": "amount", "label": "Amount", "example": "4850.00"}))
+
+
 if __name__ == "__main__":
     unittest.main()

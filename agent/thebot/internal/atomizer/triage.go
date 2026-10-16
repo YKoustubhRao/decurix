@@ -83,7 +83,7 @@ var (
 	// Something on the desktop's screen - a window, a page already open in
 	// the browser, a form, an office document - as opposed to the machine's
 	// files and processes or the web at large.
-	screenSurfaceRe = regexp.MustCompile(`(?i)\b(browser|chromium|web ?page|(the|this|that) page|admin panel|dashboard|libre ?office|writer|calc|spreadsheet|mousepad|text editor|file manager|thunar|on (the )?screen|gui|window|(the|this|that) form|dialog|button|dropdown|drop-down|check ?box|(the|a|new) tab)\b`)
+	screenSurfaceRe = regexp.MustCompile(`(?i)\b(browser|chromium|web ?page|(the|this|that) page|admin panel|dashboard|libre ?office|writer|calc|impress|spreadsheet|mousepad|text editor|file manager|thunar|on (the )?screen|gui|window|(the|this|that) form|dialog|button|dropdown|drop-down|check ?box|(the|a|new) tab|apps?|application|(your|the) desktop|excel|powerpoint|word|outlook|gimp|photoshop|inkscape|illustrator)\b`)
 	// Doing something there. Both halves are required: "browser test message
 	// one" names a surface and asks for nothing, and stays conversation.
 	screenActionRe = regexp.MustCompile(`(?i)\b(click|double[- ]click|right[- ]click|tick|untick|fill\s+(in|out)|type|press|select|choose|pick|enter|add|edit|change|rename|delete|remove|submit|sign\s+in|log\s*in|save|set|make|turn\s+(on|off)|enable|disable|pay|send|publish|create|open|close|replace|put|scroll)\b`)
@@ -172,6 +172,10 @@ var (
 
 // wantsDocument reports whether a request asks for an Office document or a
 // PDF, named by its file, to be made or changed.
+// namedAppRe is a request that says which app to work in ("in Excel", "use PowerPoint"); skills.workInAppRe is the
+// operator's own copy, which decides what it may not make behind that app.
+var namedAppRe = regexp.MustCompile(`(?i)\b(?:in|use|using|with|on|into)\s+(?:microsoft\s+|libreoffice\s+|adobe\s+)?(?:excel|calc|powerpoint|impress|word|writer|photoshop|gimp|illustrator|inkscape)\b`)
+
 func wantsDocument(prompt string) bool {
 	return documentFileRe.MatchString(prompt) && documentVerbRe.MatchString(prompt)
 }
@@ -339,6 +343,9 @@ func Triage(prompt string) Route {
 	// saved the model's refusal as totals.xlsx. A request that also needs
 	// research is still planned; file-write hands such a step on itself.
 	if wantsDocument(p) && !researchRe.MatchString(p) {
+		if namedAppRe.MatchString(p) {
+			return Route{Kind: RouteOperate, TaskType: matched, Reason: "work to do in the app the request names - the operator does it there, on the screen"}
+		}
 		return Route{Kind: RouteOperate, TaskType: matched, Reason: "an Office document or PDF to make - the operator builds it with the office command"}
 	}
 

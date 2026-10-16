@@ -59,6 +59,52 @@ func TestGroundingRefusesAValueNothingShowed(t *testing.T) {
 	}
 }
 
+// A file the request names, saved in the work folder or a folder it names, is a path the task gave.
+func TestGroundingTakesAFilePathTheRequestGave(t *testing.T) {
+	st := groundingState("Make a deck from the brief. Save it as q3_review.pptx in my work folder.")
+	for _, ok := range []string{
+		`gui type e12 "/home/headless/work/q3_review.pptx"`,
+		`gui type e12 "~/work/out/q3_review.pptx"`,
+	} {
+		if n := groundingNudge(st, ok); n != "" {
+			t.Fatalf("%s was refused: %q", ok, n)
+		}
+	}
+	st = groundingState(`Save it as report.xlsx in C:\Users\Administrator\Documents\Decurix demo.`)
+	if n := groundingNudge(st, `gui type e12 "C:\Users\Administrator\Documents\Decurix demo\report.xlsx"`); n != "" {
+		t.Fatalf("a folder the request named was refused: %q", n)
+	}
+	for _, bad := range []string{
+		`gui type e12 "/home/headless/work/other_name.pptx"`, // a name nobody gave
+		`gui type e12 "/etc/q3_review.pptx"`,                 // a folder nobody gave
+	} {
+		if n := groundingNudge(groundingState("Save it as q3_review.pptx in my work folder."), bad); n == "" {
+			t.Fatalf("%s was let through", bad)
+		}
+	}
+}
+
+// The file type for a name the request gave is chosen without asking; another type is still a guess.
+func TestGroundingTakesTheFileTypeOfANameTheRequestGave(t *testing.T) {
+	st := groundingState("Save it as sales_q3_report.xlsx in my work folder.")
+	if n := groundingNudge(st, `gui select e40 "Excel Workbook (*.xlsx)"`); n != "" {
+		t.Fatalf("the requested file type was refused: %q", n)
+	}
+	if n := groundingNudge(st, `gui select e40 "Excel Macro-Enabled Workbook (*.xlsm)"`); n == "" {
+		t.Fatal("a file type nobody asked for was let through")
+	}
+}
+
+// A cell or range typed to go there is a place, not a value.
+func TestGroundingTakesACellReferenceAsAPlace(t *testing.T) {
+	st := groundingState("Add a Total row under the data.")
+	for _, ok := range []string{`gui type e3 "A20"`, `gui type e3 "A1:D1"`, `gui type e3 "$D$2"`} {
+		if n := groundingNudge(st, ok); n != "" {
+			t.Fatalf("%s was refused: %q", ok, n)
+		}
+	}
+}
+
 // A letterhead in capitals is typed as the running text writes it.
 func TestGroundingAsksForTheDocumentsOwnSpelling(t *testing.T) {
 	st := groundingState("Enter /w/GF-5522.pdf.", "office read /w/GF-5522.pdf")
@@ -512,5 +558,109 @@ func TestTextInAScriptTheTaskNeverUsesIsASlip(t *testing.T) {
 	st.noteSeen("Kunde: Müller, Адрес: Москва")
 	if n := strayScript(st, `gui type e9 "Москва"`); n != "" {
 		t.Fatalf("a script the task does use was taken for a slip: %q", n)
+	}
+}
+
+func TestAFileTheRequestWantsMadeInAnAppIsNotMadeBehindIt(t *testing.T) {
+	st := &operatorState{Request: "Make a deck from the attached brief, built in PowerPoint, and save it as q3_review.pptx."}
+	for _, cmd := range []string{
+		"office create /home/headless/work/q3_review.pptx - <<'EOF'\n{}\nEOF",
+		"python3 - <<'PY'\nfrom pptx import Presentation\nprs = Presentation()\nprs.save('/home/headless/work/q3_review.pptx')\nPY",
+	} {
+		if behindTheApp(st, cmd) == "" {
+			t.Errorf("not sent back: %s", cmd)
+		}
+	}
+	for _, cmd := range []string{
+		"office read /home/headless/work/q3_review.pptx",
+		"gui open /home/headless/work/q3_review.pptx",
+		"office create /home/headless/work/notes.xlsx - <<'EOF'\n{}\nEOF",
+	} {
+		if said := behindTheApp(st, cmd); said != "" {
+			t.Errorf("sent back %q: %s", cmd, said)
+		}
+	}
+	plain := &operatorState{Request: "Make a PowerPoint deck from the attached brief and save it as q3_review.pptx."}
+	if behindTheApp(plain, "office create /home/headless/work/q3_review.pptx - <<'EOF'\n{}\nEOF") != "" {
+		t.Error("a request that names no app to work in may use office create")
+	}
+	excel := &operatorState{Request: "Open the attached sales.csv in Excel, sort it and save it as report.xlsx."}
+	if behindTheApp(excel, "python3 - <<'PY'\nimport openpyxl\nwb=openpyxl.Workbook()\nwb.save('report.xlsx')\nPY") == "" {
+		t.Error("a workbook saved by a script for an Excel request was not sent back")
+	}
+}
+
+func TestAWindowsPathInDoubleQuotesKeepsItsBackslashes(t *testing.T) {
+	got := typedValues(`gui type e12 "C:\Users\Administrator\Documents\Decurix demo"`)
+	if len(got) != 1 || got[0] != `C:\Users\Administrator\Documents\Decurix demo` {
+		t.Fatalf("got %q", got)
+	}
+	if got := typedValues(`gui type e12 "say \"hi\" for \$5"`); len(got) != 1 || got[0] != `say "hi" for $5` {
+		t.Fatalf("escapes inside double quotes: got %q", got)
+	}
+}
+
+func TestAuthoredWordsAreNotGuessesButTheirFiguresAreTraced(t *testing.T) {
+	st := &operatorState{Request: "In Word, write a reply letter to the customer in the attached complaint: apologise, and confirm a replacement within 5 working days."}
+	st.noteSeen(st.Request + "\nOrder 55821 arrived damaged. Address: 14 Lake View Road, Pune 411001")
+	if n := groundingNudge(st, `gui type --append "Dear Ms Menon, we are sorry that order 55821 arrived damaged."`); n != "" {
+		t.Fatalf("authored sentence refused: %s", n)
+	}
+	if n := groundingNudge(st, `gui type --append "15 October 2026
+Dear Ms Menon, a replacement will reach 14 Lake View Road within 5 working days."`); n != "" {
+		t.Fatalf("a letter's own date was refused: %s", n)
+	}
+	if n := groundingNudge(st, `gui type --append "A refund of 1,499.00 will follow."`); n == "" {
+		t.Fatal("a figure nobody gave was let through in authored text")
+	}
+	data := &operatorState{Request: "Enter the attached invoice in the portal."}
+	data.noteSeen(data.Request)
+	if n := groundingNudge(data, `gui type e3 "Acme Widgets"`); n == "" {
+		t.Fatal("data entry with an untraced value was let through")
+	}
+}
+
+func TestValuesTypedAcrossTabsAreEachTheirOwn(t *testing.T) {
+	got := typedValues(`gui type e9 "North\t812\nSouth\t655"`)
+	want := []string{"North", "812", "South", "655"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// A question about how the app works is the web's to answer first; one only the person can answer is not.
+func TestAHowToQuestionIsLookedUpFirst(t *testing.T) {
+	for _, q := range []string{
+		"How do I set the Under field to Sundry Creditors in TallyPrime?",
+		"I can't find the menu option to freeze the header row.",
+		"Which menu holds the chart wizard?",
+		// Found live (2026-10-15): asked of the person, not looked up.
+		"I'm blocked in a Tally purchase-voucher popup (Receipt Details). Please clear that popup on this worker's screen, then reply.",
+	} {
+		if !howToQuestionRe.MatchString(q) {
+			t.Errorf("%q is a question about the app", q)
+		}
+	}
+	for _, q := range []string{
+		"Which supplier should I use for this bill: Kaveri or Kaveri Electricals?",
+		"Please give me the password for the ERP.",
+		"Should I submit the invoice or leave it as a draft?",
+	} {
+		if howToQuestionRe.MatchString(q) && !humanOnlyRe.MatchString(q) {
+			t.Errorf("%q is the person's to answer", q)
+		}
+	}
+}
+
+// What a lookup prints is a source of values only when the request asks for something from the web.
+func TestLookupOutputIsNotASourceOfValues(t *testing.T) {
+	if !isLookup(`lookup "TallyPrime how to create a ledger"`) || !isLookup(`cd ~ && lookup x`) || isLookup(`echo lookup`) {
+		t.Fatal("isLookup misread a command")
+	}
+	if researchRe.MatchString("Enter the attached vendor bill in ERPNext") {
+		t.Fatal("entering a bill is not research")
+	}
+	if !researchRe.MatchString("Look up the current CEO of each company") {
+		t.Fatal("looking up a CEO is research")
 	}
 }

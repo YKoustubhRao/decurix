@@ -5,7 +5,7 @@ import time
 import urllib.error
 import urllib.request
 
-from decurix_agent import config, guidance, playbooks, progress, state, usage
+from decurix_agent import app_skills, attachments, config, guidance, playbooks, progress, state, usage
 from decurix_agent.computer import approval
 from decurix_agent.identity import get_identity_context
 from decurix_agent.logging_utils import log
@@ -305,6 +305,12 @@ def _build_context(extra=""):
     taught = taught_context()
     if taught:
         parts.append(taught)
+
+    # Guides to the well-known apps this task names (app_skills.py): how they are worked on this desktop - the keys
+    # that reach them, their dialogs, how to save. Matched on the task's words, so a task that names no app pays nothing.
+    guides = app_skills.context(attachments.text(state.current_task or ""))
+    if guides:
+        parts.append(guides)
 
     # A taught task this request is (skill_task._by_model): the procedure the
     # model is to follow, this run's values, how to look at the demonstration.

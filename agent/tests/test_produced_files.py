@@ -151,6 +151,14 @@ class FileWorkIsChecked(ts.TeachingBase):
         self.assertEqual(self.finals, [])
         self.assertIn("it comes to 1,134.00", self.asked[-1][0])
 
+    def test_a_number_written_as_a_program_prints_it_is_not_done_without_asking_a_model(self):
+        self.verdicts = []
+        with mock.patch.object(skill_task.produced, "text", lambda paths: "Hours: 3E+1  Net: 1,672.74"):
+            self.assertTrue(skill_task._gate("Payslips made.", "final", "thebot"))
+        self.assertEqual(self.judged, [])
+        self.assertEqual(self.finals, [])
+        self.assertIn("3E+1", self.asked[-1][0])
+
     def test_a_report_that_says_it_could_not_be_done_goes_to_the_person(self):
         self.verdicts = [verdict(verify.CANNOT, seen="the workbook has no November targets")]
         self.assertTrue(skill_task._gate("The workbook has no November targets, so the deck cannot be completed.",
@@ -227,3 +235,16 @@ class AYesThatSaysWhatIsMissing(ts.TeachingBase):
     def test_a_bare_right_still_asks_for_done(self):
         self.assertFalse(self.doubt("right"))
         self.assertIn("reply `done`", self.asked[-1][0])
+
+
+class PicturesAreDescribed(unittest.TestCase):
+    def test_an_exported_picture_is_read_back_as_its_format_and_size(self):
+        # Found live (2026-10-15): JPEGs exported from GIMP were not read back, and the check could not confirm them.
+        import tempfile
+        from PIL import Image
+        from decurix_agent import produced
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "lamp.jpg")
+            Image.new("RGB", (800, 600)).save(path, "JPEG")
+            said = produced.text([path])
+        self.assertIn("JPEG image, 800 x 600 pixels", said)
