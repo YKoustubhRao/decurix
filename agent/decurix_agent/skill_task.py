@@ -476,8 +476,41 @@ def _learn(ids, name):
         understanding = study.study(skill)
         if understanding is not None:
             skill["understanding"] = understanding
+            _settle_from_study(skill)
 
     _ask(skill)
+
+
+def _in_words(value, text):
+    words = " ".join(str(value or "").lower().split())
+    return len(words) >= 2 and words in " ".join(str(text or "").lower().split())
+
+
+def _settle_from_study(skill):
+    """
+    What the study already settles is not asked: each value gets the name of
+    what it is (learning.rename_params), a value the person's own request
+    holds - "send Koustubh OG "hello man"" - changes with the request, and a
+    skill the person did not name gets the study's short name for the task
+    rather than the request with its values in it.
+    """
+
+    understanding = skill["understanding"]
+    learning.rename_params(skill, understanding.pop("names", None) or {})
+
+    request = skill.get("goal") or ""
+    for param in skill.get("params") or []:
+        if (param.get("varies") is None and understanding.get("varies", {}).get(param["name"]) is True
+                and not param.get("file") and _in_words(param.get("example"), request)):
+            param["varies"] = True
+            param["default"] = None
+            learning._follow_param(skill, param)
+            understanding.setdefault("settled", []).append(param["name"])
+
+    named = understanding.pop("name", "")
+    if named and (not skill.get("named") or skill.get("title") == request):
+        learning.rename(skill, named)
+        skill["named"] = False
 
 
 def _ask(skill, preface="", question=None):
@@ -495,7 +528,12 @@ def _learn_reply(paused, reply):
 
     # Only a bare "stop" / "cancel" ends a lesson: an answer may well start
     # with the word ("stop and tell me" to "what if it already exists?").
-    if ABANDON_RE.match(reply or "") and len((reply or "").split()) <= 2:
+    # And not when the question itself offers stopping as an answer - found
+    # live: "should the task stop or start a new chat?" answered `stop` threw
+    # the lesson away instead of teaching it to stop.
+    offered = question["kind"] in ("study", "goal") and re.search(
+        r"\b(stop|cancel|abort|quit)\b", question.get("text") or "", re.I)
+    if ABANDON_RE.match(reply or "") and len((reply or "").split()) <= 2 and not offered:
         skills.save(skill)
         write_final_reply(
             f"Stopped. What you have told me about \"{skill['title']}\" is kept - send `/learn {skill['sources'][0]}` "
@@ -2378,6 +2416,7 @@ def _gate(reply, kind, engine):
                             or bool(run.get("asked_person")))
         where = "Checked on the screen" if on_screen else "Checked against the files I wrote"
         text = f"{reply}\n\n{where}: {verdict['seen']}" if verdict.get("seen") else reply
+        text = _first_attempt_text(run) + text
         write_final_reply(text + _evidence_text(run), kind="final", engine=engine, checked=True)
         return True
 
@@ -2402,6 +2441,22 @@ def _gate(reply, kind, engine):
                           "task": guided["task"]}
     ask_for_query(_doubt_text(reply, verdict, on_screen=on_screen), kind="query", engine=engine)
     return True
+
+
+def _first_attempt_text(run):
+    """
+    What a run that needed a second attempt must say first: what was wrong
+    with the first one, which may have sent or saved something that stands.
+    Found live (2026-10-16): a message went to the wrong chat, the check sent
+    the run back, the second attempt sent it to the right one - and the reply
+    began "Corrected the first attempt's result", as if nothing had gone out.
+    """
+
+    if not run or not run.get("attempt_note") or run.get("attempt_blank"):
+        return ""
+    return ("My first attempt was wrong - the check found: " + " ".join(run["attempt_note"].split())[:600]
+            + " Whatever that attempt sent or saved is still there (a sent message cannot be unsent by me) - "
+            "please check it.\n\nThen: ")
 
 
 def check_unchecked(claim, engine):
