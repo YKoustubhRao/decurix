@@ -601,6 +601,21 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
             raise ComputerError("nothing to type")
 
         if element is not None and element["source"] == "cdp":
+            if element.get("role") in RELAYED_SETTABLE and not any(c in text for c in "\r\n\t") \
+                    and not privacy.secret_field(element) and _relayed(element, _load_state()):
+                # A field of an app shown in a viewer (a Windows app) is set through the app's own accessibility, and
+                # read back: typed key by key, the keys raced the app - "D20" into Excel's Name Box reached it as "D2"
+                # with the Enter overtaking the "0", and a whole Total row landed in the wrong cell (found live,
+                # 2026-10-16). A field the app will not set that way is typed into as before.
+                try:
+                    cdp.set_in_app(element, text, append=append)
+                    return "relayed:set"
+                except ComputerError as exc:
+                    # Typed instead only when nothing was set. Once the app may hold the text, typing it as well wrote
+                    # it twice (found live, 2026-10-16: "D20D20" in Excel's Name Box).
+                    if not NOT_SET.search(str(exc)):
+                        raise ComputerError(f"{exc} - the text may already be in the field: observe it before typing "
+                                            "again") from None
             cdp.type_text(element, text, replace=not append)
             return "cdp"
 
@@ -1362,6 +1377,10 @@ def _same_field(element, observation):
 RELAYED_VIEWERS = ("/host-gui/view", "/phone-app/view")
 # What in such a viewer is pressed through the app itself (cdp.press_in_app) rather than clicked.
 RELAYED_PRESSABLE = ("button", "tab", "menuitem", "link", "checkbox", "radio", "treeitem")
+# ...and what is given its text through the app itself (cdp.set_in_app) rather than typed key by key.
+RELAYED_SETTABLE = ("textbox", "combobox", "searchbox", "spinbutton")
+# What a viewer or the bridge says when it set nothing: only then is the text typed instead.
+NOT_SET = re.compile(r"\bNOSET\b|not a field of the app|cannot set a value")
 
 
 def _relayed(element, observation):

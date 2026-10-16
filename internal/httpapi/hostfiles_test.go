@@ -53,6 +53,18 @@ func TestHostFileStatAnswersOnlyForTheOpenTasksOwnFiles(t *testing.T) {
 	if code, body := stat("office", `C:\Users\me\Documents\sales.csv`); code != 200 || body["exists"] != false {
 		t.Fatalf("a named file that is not there: %d %v", code, body)
 	}
+	read := func(desktopID, path string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		q := url.Values{"desktop": {desktopID}, "path": {path}}
+		s.hostFileReadHandler(rec, httptest.NewRequest(http.MethodGet, "/api/host-files/read?"+q.Encode(), nil))
+		return rec
+	}
+	if rec := read("office", `C:\Users\me\Documents\report.xlsx`); rec.Code != 200 || rec.Body.String() != "PK\x03\x04." {
+		t.Fatalf("reading the saved file: %d %q", rec.Code, rec.Body.String())
+	}
+	if rec := read("office", `C:\secret.txt`); rec.Code != http.StatusForbidden {
+		t.Fatalf("a file the request does not name must not be read, got %d", rec.Code)
+	}
 	if code, _ := stat("office", `C:\secret.txt`); code != http.StatusForbidden {
 		t.Fatalf("a file the request does not name must not be answered, got %d", code)
 	}

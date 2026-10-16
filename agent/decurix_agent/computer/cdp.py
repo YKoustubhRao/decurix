@@ -1600,6 +1600,28 @@ def choose_in_app(element, option):
     return answer
 
 
+def set_in_app(element, text, append=False):
+    """
+    Put one line of text into a field of an app running elsewhere (hostgui.html's decurixSetValue: the app's own
+    accessibility sets the field's value and gives it the keyboard). Returns what the field holds afterwards; raises with
+    the app's reason when it could not be set that way - the caller then types the text.
+    """
+
+    page = _page_for(element)
+    try:
+        answer = page.call("Runtime.callFunctionOn", {
+            "objectId": _object(page, element["handle"]["backend_id"]), "returnByValue": True, "awaitPromise": True,
+            "arguments": [{"value": text}, {"value": bool(append)}],
+            "functionDeclaration": "function(text, add) { return window.decurixSetValue ? window.decurixSetValue(this, "
+                                   "text, add) : 'ERR this viewer cannot set a value (an older page)'; }",
+        }, timeout=20).get("result", {}).get("value") or ""
+    finally:
+        page.close()
+    if not answer.startswith("SET"):
+        raise ComputerError(f"{el.describe(element)}: {answer[3:].strip() or 'no answer'}")
+    return answer[4:]
+
+
 # A line longer than this is pasted (insertText) rather than typed key by key: nothing a form field takes is that long,
 # and a key event per character would take a while.
 KEYS_UP_TO = 500

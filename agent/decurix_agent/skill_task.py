@@ -2282,6 +2282,10 @@ def _gate(reply, kind, engine):
     on_screen = run is not None or _did_screen_work()
     made = [] if run is not None else produced.files(reply, request=state.current_task or "")
     host_missing = produced.missing_on_host(state.current_task or "")
+    if run is None and not host_missing:
+        # What a host app saved on the person's computer is read as well, not only found: found live (2026-10-16),
+        # workbooks of the right name and type had a header that was not bold and a total over damaged data.
+        made = made + produced.copy_from_host(produced.saved_on_host(state.current_task or ""))
     progress.emit("Checking the screen to see that the task was really done." if on_screen
                   else "Reading back what I wrote to check it against my report.")
     if run is not None and _acts_on_screen(run["skill"]) and not _did_screen_work():

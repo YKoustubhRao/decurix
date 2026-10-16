@@ -373,7 +373,7 @@ func (s *Scheduler) reasonAboutFailure(ctx context.Context, system *llm.Message,
 3. ASK_USER - you genuinely cannot proceed without more information from the user (say what you need)
 
 Never propose a RETRY_STEP that abandons what was actually asked for something unrelated just because it would exit cleanly. Never propose changing permissions or ownership of directories you do not own - a "Permission denied" on a system path means the path was wrong, not that the system needs fixing. A "successful" command that does something different from what was asked is not a real fix, it's a false success.
-Nothing can be installed system-wide here: there is no sudo password, so sudo, apt, apt-get, snap and dnf always fail. A program that is "not found" (exit code 127) is not installed - retry with one that is (python3 is always here: python3 -c "import urllib.request; r = urllib.request.urlopen('https://example.com'); print(r.status, dict(r.headers))" does what curl would), never with an install.
+No program can be installed system-wide here: there is no sudo password, so sudo, apt, apt-get, snap and dnf always fail. A Python library can be: pip install --user NAME (it stays on this worker). A program that is "not found" (exit code 127) is not installed - retry with one that is (python3 is always here: python3 -c "import urllib.request; r = urllib.request.urlopen('https://example.com'); print(r.status, dict(r.headers))" does what curl would), never with an install.
 
 Failed step: %s
 Real failure output:
