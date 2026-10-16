@@ -1223,6 +1223,32 @@ func (s *Session) Press(x, y int) (string, error) {
 	return "", errors.New(strings.TrimSpace(strings.TrimPrefix(resp, "ERR")))
 }
 
+// SetValue puts text into the single-line field at (x, y) of the picture through UI Automation, gives it the keyboard,
+// and returns what the field holds afterwards. Typed key by key, a field's text raced the app: a key overtook the last
+// characters ("D20" went to D2), and spaces were dropped or doubled. A field that will not be set this way (a
+// document, a field that takes no value) answers an error, and the caller types instead. One line only.
+func (s *Session) SetValue(x, y int, text string, appendText bool) (string, error) {
+	if strings.ContainsAny(text, "\r\n") {
+		return "", errors.New("one line only")
+	}
+	s.Touch()
+	mode := "set"
+	if appendText {
+		mode = "add"
+	}
+	resp, err := s.Do(fmt.Sprintf("setvalue %d %d %s %s", x, y, mode, text))
+	if err != nil {
+		return "", err
+	}
+	if value, ok := strings.CutPrefix(resp, "SET "); ok {
+		return value, nil
+	}
+	if resp == "SET" {
+		return "", nil
+	}
+	return "", errors.New(strings.TrimSpace(strings.TrimPrefix(resp, "ERR")))
+}
+
 // SetFocus gives the keyboard to the control at (x, y) of the picture through UI Automation. A click posted to a dialog
 // does not move its focus, so text typed after it went to whichever field had the keyboard (found live: a Save As
 // file name typed into the "Save as type" box, which changed the type). Best effort: a control that cannot take the

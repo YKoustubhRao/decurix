@@ -527,6 +527,7 @@ public class Native {
             case "thumb": Thumb(Int(rest)); return true;
             case "tree": Reply(Tree()); return true;
             case "setfocus": p = rest.Split(' '); FocusAt(Int(p[0]), Int(p[1])); Reply("OK"); return true;
+            case "setvalue": p = rest.Split(new[] { ' ' }, 4); Reply(SetValueAt(Int(p[0]), Int(p[1]), p[2] == "add", p.Length > 3 ? p[3] : "")); return true;
             case "press": p = rest.Split(' '); Reply(Press(Int(p[0]), Int(p[1]))); return true;
             case "choose": p = rest.Split(new[] { ' ' }, 3); Reply(Choose(Int(p[0]), Int(p[1]), p.Length > 2 ? p[2] : "")); return true;
             case "status": Reply("STATUS " + Status()); return true;
@@ -1375,6 +1376,53 @@ public class Native {
             var el = System.Windows.Automation.AutomationElement.FromPoint(new System.Windows.Point(sp.X, sp.Y));
             if (el != null && el.Current.IsKeyboardFocusable) el.SetFocus();
         }, 6000);
+    }
+
+    // Puts text into the single-line field at a point of the picture through its ValuePattern, gives it the keyboard, and
+    // answers "SET <what it holds now>" or "ERR <why>" (the caller then types). Only an Edit or an editable ComboBox of
+    // one line: a document or a tall field would be replaced whole. Typed key by key, text raced the app (a key overtook
+    // the last characters - "D20" into Excel's Name Box went to D2 - and spaces were dropped or doubled).
+    public static string SetValueAt(int x, int y, bool add, string text) {
+        EnsureGeometry();
+        POINT sp = ScreenPoint(x, y);
+        string result = "ERR HELD? the app did not answer in time";
+        RunOnDesktop(() => {
+            try {
+                IntPtr top = WindowAt(sp);
+                if (top != IntPtr.Zero && !IsWindowEnabled(top)) { result = "ERR NOSET BLOCKED behind an open dialog"; return; }
+                var el = System.Windows.Automation.AutomationElement.FromPoint(new System.Windows.Point(sp.X, sp.Y));
+                var walker = System.Windows.Automation.TreeWalker.ControlViewWalker;
+                System.Windows.Automation.ValuePattern value = null;
+                System.Windows.Automation.AutomationElement field = null;
+                for (int up = 0; el != null && up < 3 && value == null; up++, el = walker.GetParent(el)) {
+                    var ct = el.Current.ControlType;
+                    if (ct == System.Windows.Automation.ControlType.Document) { result = "ERR NOSET a document"; return; }
+                    if (ct != System.Windows.Automation.ControlType.Edit && ct != System.Windows.Automation.ControlType.ComboBox) continue;
+                    object vp;
+                    if (!el.TryGetCurrentPattern(System.Windows.Automation.ValuePattern.Pattern, out vp)) continue;
+                    var v = (System.Windows.Automation.ValuePattern)vp;
+                    if (v.Current.IsReadOnly) { result = "ERR NOSET read-only"; return; }
+                    if (el.Current.IsPassword) { result = "ERR NOSET a password field"; return; }
+                    var r = el.Current.BoundingRectangle;
+                    if (!r.IsEmpty && r.Height > 60) { result = "ERR NOSET a field of several lines"; return; }
+                    value = v; field = el;
+                }
+                if (value == null) { result = "ERR NOSET no single-line field there"; return; }
+                try { field.SetFocus(); } catch { }
+                string now = add ? (value.Current.Value ?? "") + text : text;
+                try { value.SetValue(now); }
+                catch (Exception e) { result = "ERR NOSET " + e.Message; return; }
+                // From here the field was set: an error now must not lead to typing the text again on top of it.
+                string held = "";
+                for (int tries = 0; tries < 8; tries++) {
+                    Thread.Sleep(120);
+                    held = value.Current.Value ?? "";
+                    if (held == now) break;
+                }
+                result = held == now ? "SET " + held : "ERR HELD " + Cut(held, 120);
+            } catch (Exception e) { result = "ERR HELD? " + e.Message; }
+        }, 6000);
+        return result;
     }
 
     // Runs a piece of UI Automation work on a new thread attached to the app's desktop, waiting up to timeout ms for it.

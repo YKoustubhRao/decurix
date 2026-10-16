@@ -222,7 +222,7 @@ var missingModuleRe = regexp.MustCompile(`No module named '([\w.]+)'`)
 // are most often reached for.
 func missingProgramHint(output, command string) string {
 	if m := missingModuleRe.FindStringSubmatch(output); m != nil {
-		return fmt.Sprintf("\n\nThe Python module `%s` is not installed, and you cannot install it here. Use Python's standard library instead: urllib.request for web requests (urllib.request.urlopen(url).headers, .status, .read()), json, csv, subprocess.", m[1])
+		return fmt.Sprintf("\n\nThe Python module `%s` is not installed. Install it for this worker with `pip install --user <its package name>` (it stays installed), then run the command again - or use Python's standard library (urllib.request, json, csv, subprocess). pandas, requests, beautifulsoup4, pdfplumber, pymupdf, matplotlib, openpyxl, python-docx and python-pptx are already here.", m[1])
 	}
 	for _, m := range missingProgramRe.FindAllStringSubmatch(output, -1) {
 		program := m[1]
@@ -232,7 +232,7 @@ func missingProgramHint(output, command string) string {
 		if !regexp.MustCompile(`(^|[\s|;&(])` + regexp.QuoteMeta(program) + `(\s|$)`).MatchString(command) {
 			continue // a missing file the program was given, not the program
 		}
-		hint := fmt.Sprintf("\n\n`%s` is not installed on this machine, and you cannot install software here. Use a program that is here instead.", program)
+		hint := fmt.Sprintf("\n\n`%s` is not installed on this machine, and programs cannot be installed here (no administrator rights; a Python library can be, with `pip install --user NAME`). Use a program that is here instead: python3, curl, jq, git, sqlite3, zip/unzip, 7z, ImageMagick (convert), qpdf, pdftotext, tesseract, xclip and wmctrl are.", program)
 		switch program {
 		case "curl", "wget", "http", "lynx", "links", "w3m":
 			hint += " To fetch a page use python3, for example:\nCOMMAND:\npython3 -c \"import urllib.request; print(urllib.request.urlopen('https://example.com', timeout=20).read().decode('utf-8', 'replace')[:3000])\""
