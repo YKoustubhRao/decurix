@@ -614,11 +614,11 @@ func TestPasteTypesTextLineByLineAndNeverNeedsTheClipboard(t *testing.T) {
 	got := strings.Split(strings.Join(received(t), "|"), "|")
 	var typed []string
 	for _, l := range got {
-		if strings.HasPrefix(l, "type ") || l == "key 13" {
+		if strings.HasPrefix(l, "type ") || l == "newline" {
 			typed = append(typed, l)
 		}
 	}
-	want := []string{"type first line", "key 13", "type second", "key 13", "key 13", "type fourth"}
+	want := []string{"type first line", "newline", "type second", "newline", "newline", "type fourth"}
 	if strings.Join(typed, "|") != strings.Join(want, "|") {
 		t.Fatalf("pasting sent %q, want %q", typed, want)
 	}
@@ -1024,5 +1024,25 @@ func TestALaunchOfAWebAppStillNamesItsLauncher(t *testing.T) {
 	r := resolvedProgram{exe: `C:\Edge\msedge.exe`, args: "--app=http://localhost:8000", own: "1", base: "msedge", launcher: `C:\portal.exe`}
 	if got, want := r.line(), "launchr\tC:\\Edge\\msedge.exe\t--app=http://localhost:8000\t\t1\tmsedge\tC:\\portal.exe"; got != want {
 		t.Errorf("line %q, want %q", got, want)
+	}
+}
+
+func TestTypedLineBreaksAreLineBreaksAndTheTypingModeIsSentOnce(t *testing.T) {
+	_, s := startFake(t, "lines")
+	if err := s.Type("Dear Ms Menon,\n\nWe are sorry"); err != nil {
+		t.Fatal(err)
+	}
+	s.SetKeyedText(true)
+	s.SetKeyedText(true)
+	s.SetKeyedText(false)
+	var sent []string
+	for _, l := range received(t) {
+		if strings.HasPrefix(l, "type ") || l == "newline" || strings.HasPrefix(l, "keyed ") {
+			sent = append(sent, l)
+		}
+	}
+	want := []string{"type Dear Ms Menon,", "newline", "newline", "type We are sorry", "keyed 1", "keyed 0"}
+	if strings.Join(sent, "|") != strings.Join(want, "|") {
+		t.Fatalf("sent %q, want %q", sent, want)
 	}
 }

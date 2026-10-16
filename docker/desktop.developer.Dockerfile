@@ -188,6 +188,7 @@ COPY agent/start_agent_terminal.sh /opt/start_agent_terminal.sh
 # work through shell commands (decurix_agent/computer/cli.py).
 COPY agent/gui /usr/local/bin/gui
 COPY agent/office /usr/local/bin/office
+COPY agent/lookup /usr/local/bin/lookup
 # TheBot harness's soul binary - built above from real source, started
 # conditionally by start_agent_terminal.sh only when AGENT_HARNESS=thebot.
 COPY --from=thebot-builder /soul /opt/soul
@@ -237,7 +238,7 @@ COPY agent/decurix-desktop-browser.desktop /home/headless/Desktop/chromium-brows
 # A desktop launcher runs only when it is executable (xfdesktop asks "untrusted launcher?" otherwise).
 RUN chmod 755 /home/headless/Desktop/chromium-browser.desktop
 
-RUN chmod +x /opt/vm_server.py /opt/start_agent_terminal.sh /opt/soul /usr/local/bin/gui /usr/local/bin/office
+RUN chmod +x /opt/vm_server.py /opt/start_agent_terminal.sh /opt/soul /usr/local/bin/gui /usr/local/bin/office /usr/local/bin/lookup
 
 RUN mkdir -p /home/headless/.config/autostart \
     /home/headless/.config/xfce4/xfconf/xfce-perchannel-xml \

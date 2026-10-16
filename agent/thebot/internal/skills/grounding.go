@@ -114,7 +114,11 @@ func typedValues(command string) []string {
 
 	var out []string
 	for _, v := range raw {
-		for _, item := range strings.FieldsFunc(v, func(r rune) bool { return r == ';' || r == '\n' }) {
+		// A tab between values moves to the next cell, as a newline moves to the next line: each part is a value of its
+		// own. Found live (2026-10-15): a deck's table row typed as "655\tEast\t498" was refused as one value nobody had
+		// given. Both a real tab and its written mark (\t) count.
+		v = strings.ReplaceAll(strings.ReplaceAll(v, `\t`, "\t"), `\n`, "\n")
+		for _, item := range strings.FieldsFunc(v, func(r rune) bool { return r == ';' || r == '\n' || r == '\t' }) {
 			if item = strings.TrimSpace(item); item != "" {
 				out = append(out, item)
 			}
@@ -193,9 +197,27 @@ func groundingNudge(st *operatorState, command string) string {
 	var numbers map[string]bool
 	var dates *dateSet
 	var untraced []string
+	authoring := authoringRe.MatchString(st.Request)
 	for _, v := range values {
 		if strings.Contains(seen, normalise(v)) || strings.Contains(seen, normalise(withoutNewlineMarks(v))) {
 			continue
+		}
+		// Words of the worker's own in something the request asks it to write (a letter, a reply, a memo) are
+		// authored, not copied: found live (2026-10-15), asked to write a reply letter in Word, every sentence of it
+		// was refused as "a guess" and the person was asked which values to use. Its figures are still traced.
+		if authoring && letterRe.MatchString(v) {
+			if numbers == nil {
+				numbers = numbersIn(st.Seen)
+			}
+			figures := true
+			// A letter's own date ("15 October 2026") is the writer's, not a figure to trace.
+			for _, n := range figureRe.FindAllString(proseDateRe.ReplaceAllString(v, " "), -1) {
+				c, ok := canonicalNumber(n)
+				figures = figures && ok && numbers[c]
+			}
+			if figures {
+				continue
+			}
 		}
 		if n, ok := canonicalNumber(v); ok {
 			if numbers == nil {
@@ -225,6 +247,9 @@ func groundingNudge(st *operatorState, command string) string {
 				continue
 			}
 		}
+		if pathTraced(v, seen) || fileTypeTraced(v, seen) || cellPlaceRe.MatchString(strings.TrimSpace(v)) {
+			continue
+		}
 		untraced = append(untraced, fmt.Sprintf("%q", v))
 	}
 	if len(untraced) == 0 {
@@ -232,8 +257,63 @@ func groundingNudge(st *operatorState, command string) string {
 	}
 	return fmt.Sprintf("Not run: %s appear nowhere in the request or in anything a command has shown you, so they "+
 		"would be guesses. Find each value in the document or the page it comes from and use it exactly as written "+
-		"there. A date may be typed in the format its field takes. If you converted one otherwise (a unit), or it cannot be found, ask with HELP instead.",
+		"there. A date may be typed in the format its field takes. A field the request gives no value for is left as the app has it (Enter past it) - nothing has to be typed there. If you converted one otherwise (a unit), or it cannot be found, ask with HELP instead.",
 		strings.Join(untraced, ", "))
+}
+
+var (
+	// authoringRe is a request that asks for something to be written: a letter, a reply, a memo, a summary.
+	authoringRe = regexp.MustCompile(`(?i)\b(?:write|draft|compose|reply|respond|prepare|word)\b[^.\n]{0,80}?\b(?:letters?|e-?mails?|memos?|messages?|notes?|repl(?:y|ies)|responses?|summar(?:y|ies)|reports?|documents?|descriptions?|posts?|articles?|paragraphs?|captions?|announcements?|minutes|notices?|cover letters?)\b`)
+	letterRe    = regexp.MustCompile(`\p{L}`)
+	proseDateRe = regexp.MustCompile(`(?i)\b\d{1,2}(?:st|nd|rd|th)?[ ./-]*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?[ ./,-]*\d{2,4}\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.? \d{1,2}(?:st|nd|rd|th)?,? \d{4}\b|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b`)
+	figureRe    = regexp.MustCompile(`\d[\d,]*(?:\.\d+)?`)
+)
+
+// filePathRe is a typed value that is a file's path: folders, then a name with an extension.
+var filePathRe = regexp.MustCompile(`^(~|[A-Za-z]:)?[\\/]?(?:[^\\/\n]+[\\/])+[^\\/\n]+\.[A-Za-z0-9]{1,5}$`)
+
+// workFolders are the places a request's "my work folder" means, written as a typed path would start.
+var workFolders = []string{"/home/headless/work/", "~/work/"}
+
+// pathTraced reports whether a typed file path is one the task gave: its file name is in the request or what was
+// read, and its folder is the work folder (or below it) or a folder that was itself seen. Found live (2026-10-15):
+// asked to save "q3_review.pptx in my work folder", a worker typing /home/headless/work/q3_review.pptx into Impress's
+// Save dialog was refused as typing a guess, and asked the person to save the file.
+func pathTraced(v, seen string) bool {
+	v = strings.TrimSpace(v)
+	if !filePathRe.MatchString(v) {
+		return false
+	}
+	cut := strings.LastIndexAny(v, `\/`)
+	dir, name := v[:cut+1], v[cut+1:]
+	if !strings.Contains(seen, normalise(name)) {
+		return false
+	}
+	for _, w := range workFolders {
+		if strings.HasPrefix(strings.ToLower(dir), w) {
+			return true
+		}
+	}
+	return strings.Contains(seen, normalise(strings.TrimRight(dir, `\/`)))
+}
+
+// cellPlaceRe is a spreadsheet cell or range typed to go there (Go To, the Name Box): a place, not a value. Found live
+// (2026-10-15): "A20" typed into real Excel's Go To was refused as a guess, and the worker asked the person.
+var cellPlaceRe = regexp.MustCompile(`^\$?[A-Za-z]{1,3}\$?[0-9]{1,7}(?::\$?[A-Za-z]{1,3}\$?[0-9]{1,7})?$`)
+
+// fileTypeExtRe finds the extensions a file-type entry names: "Excel Workbook (*.xlsx)", "PDF (*.pdf)".
+var fileTypeExtRe = regexp.MustCompile(`\*\.([A-Za-z0-9]{1,5})\b`)
+
+// fileTypeTraced reports whether a value is a Save dialog's file type whose extension the request or what was read
+// names (a file to save as q3_review.xlsx asks for "Excel Workbook (*.xlsx)"). Found live (2026-10-15): choosing that
+// type in Save As was refused as a guess, and the worker asked the person which values to use.
+func fileTypeTraced(v, seen string) bool {
+	for _, m := range fileTypeExtRe.FindAllStringSubmatch(v, -1) {
+		if strings.Contains(seen, "."+strings.ToLower(m[1])) {
+			return true
+		}
+	}
+	return false
 }
 
 var (
@@ -539,6 +619,47 @@ var scripts = []*unicode.RangeTable{unicode.Thai, unicode.Han, unicode.Hiragana,
 	unicode.Telugu, unicode.Greek, unicode.Georgian, unicode.Armenian, unicode.Ethiopic, unicode.Khmer, unicode.Lao,
 	unicode.Myanmar, unicode.Sinhala, unicode.Gujarati, unicode.Gurmukhi, unicode.Kannada, unicode.Malayalam}
 
+// workInAppRe is a request that says which app the work is done in: "in Excel", "using PowerPoint", "built in
+// Word", "open it in Photoshop".
+var workInAppRe = regexp.MustCompile(`(?i)\b(?:in|use|using|with|on|into)\s+(?:microsoft\s+|libreoffice\s+|adobe\s+)?(excel|calc|powerpoint|impress|word|writer|photoshop|gimp|illustrator|inkscape)\b`)
+
+// appFiles is the kind of file each named app makes.
+var appFiles = map[string]string{
+	"excel": `xlsx|xlsm|xls|ods|csv`, "calc": `xlsx|xlsm|xls|ods|csv`,
+	"powerpoint": `pptx|ppt|odp`, "impress": `pptx|ppt|odp`,
+	"word": `docx|doc|odt|pdf|rtf`, "writer": `docx|doc|odt|pdf|rtf`,
+	"photoshop": `jpe?g|png|gif|webp|tiff?|bmp|xcf`, "gimp": `jpe?g|png|gif|webp|tiff?|bmp|xcf`,
+	"illustrator": `svg|pdf|png`, "inkscape": `svg|pdf|png`,
+}
+
+// madeBehindRe is a command that writes such a file without the app: office's own create/update, a script that
+// saves a workbook, deck, document or picture, a headless conversion, ImageMagick.
+var madeBehindRe = regexp.MustCompile(`(?is)\boffice\s+(?:create|update)\b|\.save\(|\bsoffice\b[^\n]*--convert-to|\b(?:convert|mogrify|magick)\s`)
+
+// behindTheApp is what to tell the operator instead of running a command that makes the deliverable without the
+// app the request named, or "" when the command is not that. Found live (2026-10-15): asked for a deck "built in
+// PowerPoint", the operator worked Impress for five minutes and then wrote the deck with python-pptx - the file
+// was right and nothing of it was done in the app the person asked for.
+func behindTheApp(st *operatorState, command string) string {
+	if !madeBehindRe.MatchString(command) {
+		return ""
+	}
+	for _, m := range workInAppRe.FindAllStringSubmatch(st.Request, -1) {
+		app := strings.ToLower(m[1])
+		if regexp.MustCompile(`(?i)\.(?:` + appFiles[app] + `)\b`).MatchString(command) {
+			name := strings.ToUpper(app[:1]) + app[1:]
+			return fmt.Sprintf("Not run: the request asks for this to be done in %s, on the screen. Make and save it "+
+				"there with gui (gui open %s, or gui open FILE to open a file in its app); office read and scripts may "+
+				"only read sources and check the result. If something in the app blocks you, say what it is.", name, app)
+		}
+	}
+	return ""
+}
+
+// maxAppNudges bounds how often a command making the deliverable behind the named app is sent back before the
+// person is asked whether to make it that way.
+const maxAppNudges = 2
+
 // strayScript is what to tell the operator instead of running a command whose typed text uses a writing system
 // that nothing in the task - the request, what commands have shown - uses, or "" when there is none.
 func strayScript(st *operatorState, command string) string {
@@ -806,6 +927,12 @@ func shellWords(s string) []string {
 	for _, r := range s {
 		switch {
 		case escaped:
+			// Inside double quotes a backslash escapes only $ ` " \ and a newline, as in the shell; before anything
+			// else it is itself. Found live (2026-10-15): "C:\Users\Administrator\Documents" lost its backslashes
+			// here, and the folder path the request gave was refused as a value nobody had given.
+			if quote == '"' && !strings.ContainsRune("$`\"\\\n", r) {
+				cur.WriteRune('\\')
+			}
 			cur.WriteRune(r)
 			escaped = false
 		case r == '\\' && quote != '\'':
@@ -842,3 +969,31 @@ func unquote(v string) string {
 	}
 	return v
 }
+
+// lookupRe is a command that runs the web lookup tool (agent/lookup).
+var lookupRe = regexp.MustCompile(`(?m)(^|[;&|(]\s*)lookup\s`)
+
+// isLookup reports whether a command looks something up on the web.
+func isLookup(command string) bool { return lookupRe.MatchString(command) }
+
+// lookedUp reports whether this task has looked anything up on the web.
+func lookedUp(st *operatorState) bool {
+	for _, c := range st.Commands {
+		if isLookup(c) {
+			return true
+		}
+	}
+	return false
+}
+
+// researchRe is a request whose answer is meant to come from the web: what it finds there may be typed.
+var researchRe = regexp.MustCompile(`(?i)\b(look(?:ing)? up|search(?:ing)? (?:for|the web|online)|research|find out|google|on the (?:web|internet)|online)\b`)
+
+// howToQuestionRe is a question about how an app works - something a page of its documentation can answer - not
+// about what the person wants.
+var howToQuestionRe = regexp.MustCompile(`(?i)\b(how (?:do|can|should|to) (?:i|we|you)?\s*\w+|where (?:is|are|do|can) .{0,40}\b(?:menu|button|option|setting|field|screen|tab|dialog)|which (?:menu|button|option|key|screen|tab|shortcut)|(?:can't|cannot|could not|couldn't|unable to|don't know how to) (?:find|locate|see|tell)\b.{0,40}\b(?:menu|button|option|setting|field|screen|tab|dialog|way)|not sure how|(?:clear|dismiss|close|get past|fill(?: in)?|complete|answer|handle) (?:that|this|the) .{0,40}\b(?:popup|pop-up|dialog|prompt|sub-?screen|screen|window|panel|form)\b)`)
+
+// lookupNudge answers a question about how an app works asked before anything was looked up.
+const lookupNudge = "Not asked yet: that is a question about how the app works, and its documentation can answer it. " +
+	"Look it up first - lookup \"APP how to WHAT\" (it reads the web without touching the screen) - then carry on. " +
+	"Ask the person only what the web cannot know: their choices, their data, a password."

@@ -24,3 +24,17 @@ class SumsInAReport(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NumbersAsAProgramPrintsThem(unittest.TestCase):
+    def test_float_noise_and_scientific_notation_are_named(self):
+        from decurix_agent.verify import program_numbers
+        self.assertEqual(program_numbers("Net 1672.7400000000002, hours 3E+1, rate 1.5e-05"),
+                         ["1672.7400000000002", "3E+1", "1.5e-05"])
+        self.assertEqual(program_numbers("total 0.30000000000000004 and 2.9999999999999996"),
+                         ["0.30000000000000004", "2.9999999999999996"])
+
+    def test_what_people_write_is_left_alone(self):
+        from decurix_agent.verify import program_numbers
+        for text in ("Total 7,183.00", "rate 1.0823", "INV-2026-0094", "E101.pdf", "PO 1E5A", "x3E+1y", "version 2.10.3"):
+            self.assertEqual(program_numbers(text), [], text)

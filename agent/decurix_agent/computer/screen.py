@@ -429,3 +429,34 @@ def windows():
         })
 
     return result
+
+
+def popups():
+    """
+    The boxes (x, y, w, h) of the menus and drop-down lists open on the screen now: mapped override-redirect windows,
+    which the window manager does not list (they are drawn over every window). Small ones (a tooltip's shadow) and
+    ones as large as the screen are left out.
+    """
+
+    try:
+        from Xlib import X
+        d = _connect()
+        root = d.screen().root
+        width, height = d.screen().width_in_pixels, d.screen().height_in_pixels
+        children = root.query_tree().children
+    except Exception:
+        return []
+
+    boxes = []
+    for window in children:
+        try:
+            attrs = window.get_attributes()
+            if attrs.map_state != X.IsViewable or not attrs.override_redirect:
+                continue
+            geometry = window.get_geometry()
+        except Exception:
+            continue
+        if geometry.width < 40 or geometry.height < 20 or (geometry.width >= width and geometry.height >= height):
+            continue
+        boxes.append((geometry.x, geometry.y, geometry.width, geometry.height))
+    return boxes

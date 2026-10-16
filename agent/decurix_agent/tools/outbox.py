@@ -109,6 +109,16 @@ def _reason(exc):
         return str(exc)
 
 
+ADDRESS = re.compile(r"[^@\s<>,;]+@[^@\s<>,;]+\.[^@\s<>,;]+")
+
+
+def _address_of(recipient):
+    """The address in a recipient written plainly or as "Name <address>"."""
+
+    m = re.search(r"<([^<>]+)>\s*$", recipient)
+    return (m.group(1) if m else recipient).strip()
+
+
 def _recipients(values):
     out = []
     for value in values or []:
@@ -134,6 +144,12 @@ def draft(to, subject, body, cc=None, attachments=None, replaces=None):
     to = _recipients(to)
     if not to:
         raise DraftError("give at least one recipient.")
+    # A recipient is an email address. Found live (2026-10-14): drafts went to "grant", "holt" and "wei" - a rep's
+    # surname where the address was meant - and waited in the Outbox beside the right ones.
+    bad = [r for r in to + _recipients(cc) if not ADDRESS.fullmatch(_address_of(r))]
+    if bad:
+        raise DraftError(f"{', '.join(repr(b) for b in bad)} is not an email address - give each recipient's full "
+                         "address (name@domain). Nothing was drafted.")
     task_id = task_context.current() or ""
     explicit = bool(replaces)
     if not replaces and task_id:

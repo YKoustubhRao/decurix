@@ -200,3 +200,17 @@ func TestGeneralHandsAnOperatorStyleReplyToTheOperator(t *testing.T) {
 		t.Errorf("an ordinary answer was taken for an operator's reply: %+v", result.Meta)
 	}
 }
+
+func TestAChatAnswerThatNeedsTheScreenIsWork(t *testing.T) {
+	for _, s := range []string{
+		"I can't confirm this was done yet. I don't have the current on-screen state of TallyPrime in this chat.",
+		"For this kind of desktop task I need to use the UI directly to create the company.",
+	} {
+		if !needsTheScreenRe.MatchString(s) {
+			t.Errorf("not taken for screen work: %q", s)
+		}
+	}
+	if needsTheScreenRe.MatchString("The capital of France is Paris.") {
+		t.Error("a plain answer was taken for screen work")
+	}
+}

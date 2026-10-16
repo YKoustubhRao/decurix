@@ -1540,6 +1540,17 @@ def _never_entered(run):
         except ValueError:
             return False
 
+    # A reference a run reached by pressing the control named for it was used, not left out. Found live
+    # (2026-10-15): a delivery received against PO-4423, opened by clicking its link in the list, was refused as
+    # "PO-4423 was never typed" - and the open doubt then swallowed the next delivery's request. Only a value
+    # with a letter in it: a quantity is not reached by a link that happens to read "12".
+    names = [" ".join(n.split()).casefold() for n in evidence.pressed()]
+
+    def was_pressed(item):
+        text = " ".join(str(item).split()).casefold()
+        return bool(re.search(r"[a-z]", text)) and any(
+            re.search(r"(?<![\w-])" + re.escape(text) + r"(?![\w-])", n) for n in names)
+
     missing = {}
     for name, value in values.items():
         if name in chosen or name.split("__")[0] in chosen or name in files or value in (None, ""):
@@ -1547,7 +1558,7 @@ def _never_entered(run):
         items = skills.split_items(value) if any(p.get("name") == name and p.get("list")
                                                  for p in skill.get("params") or []) else [value]
         for item in items:
-            if not any(_same_value(item, typed) for typed in done) and not was_read(item):
+            if not any(_same_value(item, typed) for typed in done) and not was_read(item) and not was_pressed(item):
                 missing[name] = item
     return missing
 
@@ -1615,6 +1626,9 @@ def _criteria(skill, values=None):
         parts.append(f"Done when: {understood['done_when']}")
     for rule in understood.get("rules") or []:
         parts.append(f"Rule: {rule}")
+    for note in understood.get("web_notes") or []:
+        # Looked up while the task was taught (study._researched): how the app works, never a value.
+        parts.append(f"About the app (from its documentation, looked up when it was taught): {note}")
     for said in understood.get("dialogue") or []:
         # The person's own words, which the rules above were written from.
         parts.append(f"Asked when it was taught: {said['q']} - the person answered: {said['a']}")
@@ -2267,6 +2281,7 @@ def _gate(reply, kind, engine):
 
     on_screen = run is not None or _did_screen_work()
     made = [] if run is not None else produced.files(reply, request=state.current_task or "")
+    host_missing = produced.missing_on_host(state.current_task or "")
     progress.emit("Checking the screen to see that the task was really done." if on_screen
                   else "Reading back what I wrote to check it against my report.")
     if run is not None and _acts_on_screen(run["skill"]) and not _did_screen_work():
@@ -2282,6 +2297,18 @@ def _gate(reply, kind, engine):
         verdict = {"verdict": verify.NOT_DONE, "confidence": 1.0, "seen": produced.misplaced(state.current_task or ""),
                    "why": "The result has to be saved where the request said - use Save As (or a new path) to put it "
                           "in the work folder, and leave the attached original as it was."}
+    elif verify.left_undone(reply):
+        # No model is asked: a report that lists what it did not do is not a report of a finished task, whatever
+        # a file on the disk looks like (found live: a leftover file from an earlier task passed for the result).
+        verdict = {"verdict": verify.CANNOT, "confidence": 1.0, "seen": "left undone: " + verify.left_undone(reply),
+                   "why": "The report lists parts of the request it did not do."}
+    elif host_missing:
+        # No model is asked: whether a file is on the person's computer is a fact about that disk, which the screen
+        # cannot show (a host app hides a file's extension - found live, a CSV saved as "report.xlsx.csv").
+        verdict = {"verdict": verify.NOT_DONE, "confidence": 1.0, "seen": host_missing,
+                   "why": "The file the request asked for is not where it said on the person's computer. Save it again "
+                          "with Save As, typing the whole name and choosing the file type the request asked for, then "
+                          "read the dialog back before pressing Save."}
     elif verify.false_sums("\n".join((reply or "", produced.drafts_text()))):
         # No model is asked: a sum the report (or an email it drafted) writes out either comes to what it says or not.
         wrong = verify.false_sums("\n".join((reply or "", produced.drafts_text())))
@@ -2289,6 +2316,14 @@ def _gate(reply, kind, engine):
                    "why": "A sum you wrote is wrong. Work every total out with a command over the source figures, "
                           "correct whatever was decided from it (a status, an exception, a total in a file or an "
                           "email) where it is, and report the corrected figures."}
+    elif run is None and verify.program_numbers("\n".join((produced.text(made), produced.drafts_text()))):
+        # No model is asked: a number written as a program prints it is in the file for anyone to see.
+        odd = verify.program_numbers("\n".join((produced.text(made), produced.drafts_text())))
+        verdict = {"verdict": verify.NOT_DONE, "confidence": 1.0,
+                   "seen": "these numbers are written as a program prints them: " + ", ".join(odd),
+                   "why": "Write every figure the way a person writes it: money rounded to the cent (7,183.00), others "
+                          "plainly (30, 7.5) - format them yourself when you build the text or the cell values - and "
+                          "correct the file or the email where it is."}
     elif run is not None and _never_entered(run) and not _says_it_could_not(run, reply):
         # No model is asked: a value nothing typed is not on the screen to be judged.
         missing = _never_entered(run)

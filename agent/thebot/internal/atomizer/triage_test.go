@@ -281,3 +281,16 @@ func TestTriageSendsOfficeDeliverablesToTheOperatorNotTheCodingHarness(t *testin
 		t.Errorf("Triage(%q) = %v, want RouteOperate", p, r)
 	}
 }
+
+func TestTriageSendsWorkInAnAppOnTheDesktopToTheOperator(t *testing.T) {
+	// Found live (2026-10-15): answered by the chat skill, which has no screen, as "I need to use the UI directly".
+	for _, p := range []string{
+		`In TallyPrime (on your desktop; use Educational Mode), create a company named Northwind Traders and record a voucher.`,
+		`Use Excel (the Excel app on your desktop) to open sales.csv and sort it by amount.`,
+		`Open the accounting app and enter this bill.`,
+	} {
+		if got := Triage(p); got.Kind != RouteOperate {
+			t.Errorf("Triage(%q) = %v (%s), want operate", p, got.Kind, got.Reason)
+		}
+	}
+}

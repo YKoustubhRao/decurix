@@ -1,7 +1,9 @@
 package llm
 
 import (
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -24,6 +26,24 @@ const maxFallbackDelay = 30 * time.Second
 // safe; a provider that is really down still fails, three tries and about fifteen seconds later.
 const maxServerErrorRetries = 3
 
+// maxDialRetries bounds how often a call whose connection could not be made is tried again (2, 4, 8, 16, 32 s:
+// about a minute, what an endpoint restarting takes).
+const maxDialRetries = 5
+
+// neverConnected reports whether err is a failure to make the connection at all - refused, or a name that does not
+// resolve - so the request reached nobody and sending it again cannot do anything twice.
+func neverConnected(err error) bool {
+	var dns *net.DNSError
+	if errors.As(err, &dns) {
+		return true
+	}
+	var op *net.OpError
+	if errors.As(err, &op) && op.Op == "dial" {
+		return true
+	}
+	return false
+}
+
 func transientServerError(status int) bool {
 	return status == http.StatusInternalServerError || status == http.StatusBadGateway ||
 		status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout
@@ -32,7 +52,7 @@ func transientServerError(status int) bool {
 // rateLimitedRequest retries a rejected chat request within its existing deadline: a 429 as long as the deadline
 // allows, the provider's own failure a few times. No successful call or uncertain network failure is repeated.
 func rateLimitedRequest(client *http.Client, req *http.Request) (*http.Response, error) {
-	serverErrors := 0
+	serverErrors, dialErrors := 0, 0
 	for attempt := 0; ; attempt++ {
 		current := req.Clone(req.Context())
 		if attempt > 0 {
@@ -44,6 +64,24 @@ func rateLimitedRequest(client *http.Client, req *http.Request) (*http.Response,
 		}
 		resp, err := client.Do(current)
 		if err != nil {
+			// A connection that was never made (refused, or a name that does not resolve) sent nothing: the endpoint
+			// is restarting. Found live (2026-10-15): a worker's model call met the control plane's restart ("lookup
+			// decurix: no such host") and the task ended as "a step failed in a way retrying cannot fix".
+			if neverConnected(err) && dialErrors < maxDialRetries {
+				dialErrors++
+				wait := time.Duration(1<<dialErrors) * time.Second
+				if deadline, ok := req.Context().Deadline(); ok && time.Until(deadline) <= wait {
+					return resp, err
+				}
+				timer := time.NewTimer(wait)
+				select {
+				case <-req.Context().Done():
+					timer.Stop()
+					return nil, req.Context().Err()
+				case <-timer.C:
+				}
+				continue
+			}
 			return resp, err
 		}
 		if transientServerError(resp.StatusCode) {

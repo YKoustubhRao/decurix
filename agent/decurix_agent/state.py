@@ -24,6 +24,9 @@ request_preapproved = False
 # every progress line and reply carries back. "" when the request had none.
 current_task_id = ""
 waiting_for_query = False
+# When that question was asked (time.time()): a request saved after it, but not as its reply, means the control
+# plane holds no open question for this desktop (watchers._orphaned_question).
+query_asked_at = 0.0
 last_query_id = None
 
 # The question the agent is waiting on and its kind ("query" or "approval"),

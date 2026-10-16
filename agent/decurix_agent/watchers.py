@@ -156,6 +156,16 @@ INTERRUPTED = (
 )
 
 
+def _orphaned_question(name):
+    """Whether a command file not marked as a reply was saved after the open question was asked."""
+
+    try:
+        saved = time.mktime(time.strptime(name[:15], "%Y%m%d_%H%M%S"))
+    except (ValueError, OverflowError):
+        return False
+    return bool(state.query_asked_at) and saved > state.query_asked_at + 1
+
+
 def is_reply_file(name):
     """Whether a command file was saved while the agent was waiting on a question (messaging.save_request)."""
 
@@ -322,7 +332,18 @@ def _pass():
         # A task queued before a question was asked is not its answer.
         # Only messages marked as replies at receipt may resume that task.
         if state.waiting_for_query and not is_reply_file(path.name):
-            continue
+            if not _orphaned_question(path.name):
+                continue
+            # Saved after the question, yet not as its reply: the control plane planned it as a new task, so it
+            # holds no open question for this desktop (the question was asked for a task it had already closed).
+            # Found live (2026-10-15): such a request sat unread for 34 minutes behind a question nobody could
+            # answer. The stale question is dropped and the request runs.
+            log(f"{path.name} came after the open question but not as its reply - the question is stale; dropping it.")
+            state.waiting_for_query = False
+            state.paused_skill = None
+            state.paused_replay = None
+            with state.state_lock:
+                state.current_task = None
 
         # The reasoning backend has not been reached yet - Ollama
         # is still starting, or is briefly unreachable. Leave the
@@ -490,6 +511,16 @@ def _pass():
         if is_reply_file(path.name):
             _mark_handled(path)
             _answer_stale_reply(path, content)
+            continue
+
+        # A bare "stop" with nothing running or waiting has nothing to stop. Found live (2026-10-15): sent after the
+        # desktop restarted under an open question, it went to TheBot as a task, the engine answered "Stopped.", and
+        # the final check asked the person what to do about a task that could not be finished.
+        if guidance.STOP_ONLY.match(content or "") and not workflow_task.has_active():
+            task_id = task_context.task_id_from_filename(path.name)
+            task_context.start(task_id, request=content)
+            _mark_handled(path)
+            write_final_reply("Nothing is running or waiting on you, so there is nothing to stop.")
             continue
 
         # Reports from here on belong to this request's task record,

@@ -39,6 +39,9 @@ JUDGE_SYSTEM = (
     "them is listed). For a task that asks for information, each answer in the report must match what the tools "
     "read, and each must answer what was asked - an answer to a different question (a value garbled on the way, "
     "\"if you mean 7 x 8\" for 7+8) is not done.\n"
+    "A report that says the worker did not check a result the request asks for (\"I did not verify the file in the "
+    "folder\", \"could not confirm it saved\") is not proof of it: unless the screen or the observations show that "
+    "result, answer \"unsure\" (found live: a Word letter reported saved was an empty file).\n"
     "A screen left over from before is not this task's result: when it shows the demonstration's own values (or "
     "any others) where this run's should be, it is \"not_done\".\n"
     "What a taught task's \"done\" looks like was written from one demonstration. Its details that belonged to "
@@ -65,7 +68,9 @@ JUDGE_SYSTEM = (
     "own start date: count the days - an application's default of \"one month\" is 30 or 31 days by the calendar, "
     "and a day off is \"not_done\" (found live: a quote asked to be valid 30 days was saved valid for 31).\n"
     "A result must be where the request said to put it: a file saved in another folder (over the attached "
-    "original in an inbox folder instead of in the work folder named) is \"not_done\" - say where it is.\n"
+    "original in an inbox folder instead of in the work folder named) is \"not_done\" - say where it is. A request to "
+    "save in a folder of the person's own computer (C:\\...) or to work in a named app is met only by that app saving "
+    "there: a file in the worker's own folders, or work done in another app, is \"not_done\".\n"
     "Read what the report itself says was left undone. A value the document gives that the record has a place "
     "for, left out because the worker did not find or did not look for its field (\"no visible field on the part "
     "of the form I completed\"), is \"not_done\": say which value - a form keeps most of its fields further down "
@@ -148,6 +153,39 @@ def available():
     return llm_client.available()
 
 
+# A report's own heading for what it did not do ("Left undone:", "**Not done:**").
+_UNDONE_HEAD = re.compile(r"^\s*(?:[*_#>\-\s]*)(left undone|not done|undone|not completed|could not (?:do|complete))"
+                          r"(?:[*_\s]*)[:\-]\s*(.*)$", re.I)
+# What under such a heading says that nothing was left.
+_NOTHING_LEFT = re.compile(r"^[\s*_\-.]*(?:none|nothing|n/?a\b|no (?:part|item|step)s?\b|all (?:done|of it)\b)", re.I)
+# A line that opens the next part of a report ("How I verified:").
+_NEXT_HEAD = re.compile(r"^\s*[*_#]*[A-Z][^:\n]{0,60}:\s*$")
+
+
+def left_undone(report):
+    """
+    What a report lists under its own "Left undone:" heading, or "" when it lists nothing there. Decided with no
+    model: found live (2026-10-15), asked to do a report in real Excel and save it in a folder of the person's
+    computer, a worker re-saved a file an earlier task had left open in another app, wrote "Left undone: I could not
+    use Excel ... I could not verify the host path", and the check - looking at that file - passed it as done.
+    """
+
+    lines = (report or "").splitlines()
+    found = []
+    for i, line in enumerate(lines):
+        m = _UNDONE_HEAD.match(line)
+        if not m:
+            continue
+        items = [m.group(2).strip()] if m.group(2).strip() else []
+        for follow in lines[i + 1:]:
+            if not follow.strip() or _NEXT_HEAD.match(follow) or _UNDONE_HEAD.match(follow):
+                break
+            items.append(follow.strip())
+        items = [x for x in items if not _NOTHING_LEFT.match(x)]
+        found.extend(items)
+    return "; ".join(found)[:600]
+
+
 # A sum written out in a report: "450.00 + 90.00 + 102.60 = 642.60", "$1,200 - 150 = $1,050", "3 x 25.00 = 75.00".
 _AMOUNT = r"(?:[$€£¥]|USD|EUR|GBP|INR|Rs\.?)?\s?-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|(?:[$€£¥]|USD|EUR|GBP|INR|Rs\.?)?\s?-?\d+(?:\.\d+)?"
 _SUM = re.compile(rf"(?<![\w.,/-])((?:{_AMOUNT})(?:\s*[-+×x*]\s*(?:{_AMOUNT}))+)\s*=\s*({_AMOUNT})(?![\w%/.]|,\d)", re.I)
@@ -193,6 +231,23 @@ def false_sums(text):
         if abs(total - want) > Decimal(1).scaleb(-shown) / 2 + Decimal("0.0001"):
             out.append(f"{m.group(0).strip()} is wrong: it comes to {total:,.{places}f}")
     return out
+
+
+# A number as a program prints it, never as a person writes one: float noise (1672.7400000000002, 0.30000000000000004,
+# 2.9999999999999996) and scientific notation (3E+1, 1.5e-05).
+_FLOAT_NOISE = re.compile(r"(?<![\w.])-?\d+\.\d*(?:0{6,}|9{6,})\d{1,3}(?![\w.])")
+_SCIENTIFIC = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?[eE][+-]?\d{1,3}(?![\w.])")
+
+
+def program_numbers(text):
+    """
+    Numbers in what a task wrote that are written as a program prints them, as a list; [] when there are none.
+    Decided with no model. Found live (2026-10-14): a payslip PDF showed hours as "3E+1"; a person reading it sees a
+    broken document. (Plain decimals - 7183.0, 1135.125 - are left to the rules and the check: they can be right.)
+    """
+
+    found = _FLOAT_NOISE.findall(text or "") + _SCIENTIFIC.findall(text or "")
+    return list(dict.fromkeys(found))[:6]
 
 
 def judge(task, claim="", criteria="", values=None, steps="", live_png=None, reference_png=None, observed=None,

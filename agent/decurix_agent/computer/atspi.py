@@ -749,6 +749,22 @@ def select_option(element, option):
     raise ComputerError(f"could not select {option!r} in {el.describe(element)}")
 
 
+def text_now(element):
+    """What a paragraph, heading or cell holds right now, read through the Text interface, or None."""
+
+    Atspi = _lib()
+    node = resolve(element)
+    if node is None:
+        return None
+    try:
+        if element["role"] == "cell" and node.get_child_count():
+            return "\n".join(_text(Atspi, node.get_child_at_index(i), PARAGRAPH_TEXT_LIMIT)
+                             for i in range(node.get_child_count()))
+    except Exception:
+        return None
+    return _text(Atspi, node, PARAGRAPH_TEXT_LIMIT)
+
+
 def set_text(element, text):
     """
     Replace a field's contents through the widget itself. Not done over

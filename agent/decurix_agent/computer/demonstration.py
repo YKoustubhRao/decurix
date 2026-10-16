@@ -535,32 +535,10 @@ WHERE_NOTES = {
 }
 
 
-def _unoccluded(elements, windows, x, y):
-    """
-    The elements that can be what a press at x,y was on: not those of a
-    window that another window covers at that point. A look at the screen
-    lists every window's controls, the ones behind as readily as the ones in
-    front - found live, a click on a page was recorded as a text box of the
-    app behind the browser. `windows` is observe's list, topmost last; an
-    element whose window is not in it (a menu) is kept.
-    """
+def _unoccluded(elements, windows, x, y, popups=None):
+    """The elements a press at x,y can have been on (elements.unoccluded)."""
 
-    order = {}
-    for index, window in enumerate(windows or []):
-        if window.get("title"):
-            order[window["title"]] = index
-
-    def covered(element):
-        index = order.get(element.get("window_title") or "")
-        if index is None:
-            return False
-        for above in (windows or [])[index + 1:]:
-            box = above.get("box")
-            if box and box[0] <= x < box[0] + box[2] and box[1] <= y < box[1] + box[3]:
-                return True
-        return False
-
-    return [element for element in elements if not covered(element)]
+    return el.unoccluded(elements, windows, x, y, popups)
 
 
 def _report_to_chat(session_id, task_id, event, before, after):
@@ -931,7 +909,8 @@ class Recorder:
                 return None, None
             return next((e for e in observation["elements"] if "focused" in e.get("states", [])), None), None
 
-        element = el.at_point(_unoccluded(observation["elements"], observation.get("windows"), *action["point"]),
+        element = el.at_point(_unoccluded(observation["elements"], observation.get("windows"), *action["point"],
+                                          popups=observation.get("popups")),
                               *action["point"])
 
         if not fresh:

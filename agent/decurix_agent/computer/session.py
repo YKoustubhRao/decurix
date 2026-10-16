@@ -25,6 +25,10 @@ ACCESSIBLE_APP_ENV = {
     # LibreOffice only publishes its widgets over AT-SPI through its GTK
     # front end.
     "SAL_USE_VCLPLUGIN": "gtk3",
+    # A GTK2 app (GIMP 2.10) publishes nothing unless it loads these modules: found live (2026-10-15), GIMP's windows
+    # listed no control at all, and a worker spent 79 commands guessing at its Scale Image dialog. GTK2_MODULES is
+    # read by GTK2 only, so GTK3 apps are untouched.
+    "GTK2_MODULES": "gail:atk-bridge",
 }
 
 

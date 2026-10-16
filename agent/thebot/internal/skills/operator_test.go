@@ -515,3 +515,31 @@ func TestOperatorTakesAFailureThatIsTheAnswer(t *testing.T) {
 		t.Fatalf("result = %+v after %d calls", res, len(chat.calls))
 	}
 }
+
+// Found live (2026-10-14): an order form was reported as an "I'm not a robot" check no look had shown.
+func TestOperatorPushesBackOnAHumanCheckNoLookShowed(t *testing.T) {
+	chat := &scriptedChat{replies: []string{
+		"COMMAND:\necho typed",
+		"HELP:\nThe page is asking for a human verification step. Please complete the CAPTCHA and reply when done.",
+		"DONE:\nEntered.",
+	}}
+	res, _ := NewOperator().Run(operatorContext(t, chat), Subtask{Step: "enter the order", Type: "operator"})
+	if !res.Verified || res.Output != "Entered." {
+		t.Fatalf("result = %+v", res)
+	}
+	if !strings.Contains(chat.calls[2][len(chat.calls[2])-1].Content, "no look at the screen in this task showed") {
+		t.Error("the push back did not say no look showed a human check")
+	}
+}
+
+// When a look did show one, the HELP goes to the person at once.
+func TestOperatorDeliversAHumanCheckALookShowed(t *testing.T) {
+	chat := &scriptedChat{replies: []string{
+		"COMMAND:\necho 'This page is a check that a person is there (a CAPTCHA).'",
+		"HELP:\nPlease complete the CAPTCHA on this worker's screen and reply when done.",
+	}}
+	res, _ := NewOperator().Run(operatorContext(t, chat), Subtask{Step: "search the site", Type: "operator"})
+	if res.Meta["needsUserInput"] != true || len(chat.calls) != 2 {
+		t.Fatalf("result = %+v after %d calls, want the question delivered", res, len(chat.calls))
+	}
+}

@@ -23,6 +23,7 @@ Dockerfile text eol=lf
 # that could not run. scripts/windows/build-electron.ps1 refuses any other.
 agent/gui text eol=lf
 agent/office text eol=lf
+agent/lookup text eol=lf
 agent/chromium-browser text eol=lf
 # Becomes .env, which docker/Dockerfile copies into the Linux control plane.
 .env.example text eol=lf
