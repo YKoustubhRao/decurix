@@ -19,6 +19,9 @@ from decurix_agent.logging_utils import log, timestamp
 # longer has from a new request (watchers.is_reply_file).
 REPLY_MARK = "-reply"
 
+# How long a task's outcome is sent again while the control plane cannot be reached (it is restarting).
+SEND_RETRY_SECONDS = 180
+
 
 def save_request(request, task_id=""):
     """
@@ -126,22 +129,36 @@ def send_query(filename, content, kind="", reply="", engine=None, quiet=False, i
         method="POST",
     )
 
-    try:
-        with urllib.request.urlopen(
-            request,
-            timeout=10,
-        ) as response:
+    # A control plane that is restarting (an update, a crash it comes back from) is unreachable for seconds: the
+    # outcome is sent again until it answers. Found live (2026-10-15): a task's final reply met a restart, was never
+    # sent again, and the control plane showed the task running for good. Only a refused or unreachable connection is
+    # retried - an answer, even an error, is the control plane's word.
+    deadline = time.monotonic() + SEND_RETRY_SECONDS
+    wait = 2.0
+    while True:
+        try:
+            with urllib.request.urlopen(
+                request,
+                timeout=10,
+            ) as response:
 
-            if response.status < 200 or response.status >= 300:
-                raise RuntimeError(
-                    f"control plane returned HTTP {response.status}"
-                )
+                if response.status < 200 or response.status >= 300:
+                    raise RuntimeError(
+                        f"control plane returned HTTP {response.status}"
+                    )
 
-            return True
+                return True
 
-    except Exception as exc:
-        log(f"Failed to send query: {exc}")
-        return False
+        except urllib.error.HTTPError as exc:
+            log(f"Failed to send query: {exc}")
+            return False
+        except Exception as exc:
+            if time.monotonic() + wait > deadline:
+                log(f"Failed to send query: {exc}")
+                return False
+            log(f"Could not reach the control plane ({exc}); sending again in {int(wait)} s.")
+            time.sleep(wait)
+            wait = min(wait * 2, 20.0)
 
 
 def remember(title, summary, category="workflow"):
@@ -254,6 +271,7 @@ Please send instructions through the Decurix control plane.
     # send_query returns, and a reply that finds the agent not waiting is
     # held behind the paused task as if it were a new one.
     state.waiting_for_query = True
+    state.query_asked_at = time.time()
 
     sent = send_query(
         filename,

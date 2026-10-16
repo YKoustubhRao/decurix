@@ -480,7 +480,7 @@ public class Native {
                 Reply("ERR " + e.Message);
             }
             if (verb == "move") Nudge();
-            else if (verb == "down" || verb == "up" || verb == "click" || verb == "wheel" || verb == "type" || verb == "key" || verb == "copy") { NoteInput(); Kick(); }
+            else if (verb == "down" || verb == "up" || verb == "click" || verb == "wheel" || verb == "type" || verb == "newline" || verb == "key" || verb == "copy" || verb == "choose" || verb == "press") { NoteInput(); Kick(); }
             if (verb == "quit") break;
         }
     }
@@ -510,6 +510,8 @@ public class Native {
             case "click": Pointer("down", rest, false); Thread.Sleep(30); Reply(Pointer("up", rest, false)); return true;
             case "wheel": p = rest.Split(' '); Reply(Wheel(Int(p[0]), Int(p[1]), Int(p[2]))); return true;
             case "type": foreach (char c in rest) TypeChar(c); Reply("OK"); return true;
+            case "newline": TypeNewline(); Reply("OK"); return true;
+            case "keyed": KeyedText = rest.Trim() == "1"; Reply("OK"); return true;
             case "key": p = rest.Split(' '); Reply(Key(Int(p[0]), p.Length > 1 ? p[1] : "")); return true;
             case "copy": Reply(Copy(Int(rest))); return true;
             case "count": Reply("COUNT " + WindowCount()); return true;
@@ -524,6 +526,9 @@ public class Native {
             case "keyframe": KeyFrame(); Reply("OK"); return true;
             case "thumb": Thumb(Int(rest)); return true;
             case "tree": Reply(Tree()); return true;
+            case "setfocus": p = rest.Split(' '); FocusAt(Int(p[0]), Int(p[1])); Reply("OK"); return true;
+            case "press": p = rest.Split(' '); Reply(Press(Int(p[0]), Int(p[1]))); return true;
+            case "choose": p = rest.Split(new[] { ' ' }, 3); Reply(Choose(Int(p[0]), Int(p[1]), p.Length > 2 ? p[2] : "")); return true;
             case "status": Reply("STATUS " + Status()); return true;
             case "focus": Reply("FOCUS " + FocusInfo()); return true;
             case "windows": Reply("WINDOWS " + Windows()); return true;
@@ -1306,6 +1311,275 @@ public class Native {
         return "";
     }
 
+    // Presses the named control at a point of the picture through UI Automation - Invoke, or Select for a tab, Toggle for
+    // a check box, Expand for a menu - the way a screen reader presses it. A click posted as mouse messages does not reach
+    // every control: Office's ribbon and its File page let it go by (found live, 2026-10-15: the File tab "clicked" and
+    // nothing opened). Run on a thread of its own, bounded: a press that opens a modal dialog can hold Invoke until the
+    // dialog closes, and that must hold neither this helper nor its reads of the app. "PRESSED <name>", "PENDING <name>"
+    // (it is still being handled), or "ERR <why>" - then the caller clicks as before.
+    public static string Press(int x, int y) {
+        EnsureGeometry();
+        POINT sp = ScreenPoint(x, y);
+        string result = "ERR the app did not answer";
+        string name = "";
+        var started = new ManualResetEventSlim(false);
+        var done = new ManualResetEventSlim(false);
+        var th = new Thread(() => {
+            try {
+                if (!SetThreadDesktop(desktop)) { result = "ERR no desktop"; return; }
+                // A window a dialog has disabled takes no press - a real click there does nothing. UI Automation's
+                // Invoke would press it anyway (found live: the toolbar's Save behind an open Save As saved the
+                // workbook as CSV), so it is refused, saying why.
+                IntPtr top = WindowAt(sp);
+                if (top != IntPtr.Zero && !IsWindowEnabled(top)) { result = "ERR BLOCKED behind an open dialog"; return; }
+                var el = System.Windows.Automation.AutomationElement.FromPoint(new System.Windows.Point(sp.X, sp.Y));
+                var walker = System.Windows.Automation.TreeWalker.ControlViewWalker;
+                for (int up = 0; el != null && up < 3; up++) {
+                    object pat;
+                    name = el.Current.Name ?? "";
+                    var ct = el.Current.ControlType;
+                    if (ct == System.Windows.Automation.ControlType.Edit || ct == System.Windows.Automation.ControlType.Document) { result = "ERR a field"; return; }
+                    if (ct == System.Windows.Automation.ControlType.TabItem && el.TryGetCurrentPattern(System.Windows.Automation.SelectionItemPattern.Pattern, out pat)) {
+                        started.Set(); ((System.Windows.Automation.SelectionItemPattern)pat).Select(); result = "PRESSED " + name; return;
+                    }
+                    if (el.TryGetCurrentPattern(System.Windows.Automation.InvokePattern.Pattern, out pat)) {
+                        started.Set(); ((System.Windows.Automation.InvokePattern)pat).Invoke(); result = "PRESSED " + name; return;
+                    }
+                    if (el.TryGetCurrentPattern(System.Windows.Automation.TogglePattern.Pattern, out pat)) {
+                        started.Set(); ((System.Windows.Automation.TogglePattern)pat).Toggle(); result = "PRESSED " + name; return;
+                    }
+                    if (el.TryGetCurrentPattern(System.Windows.Automation.ExpandCollapsePattern.Pattern, out pat)) {
+                        started.Set(); ((System.Windows.Automation.ExpandCollapsePattern)pat).Expand(); result = "PRESSED " + name; return;
+                    }
+                    el = walker.GetParent(el);
+                }
+                result = "ERR nothing there can be pressed";
+            } catch (Exception e) { result = "ERR " + e.Message; }
+            finally { done.Set(); }
+        }) { IsBackground = true };
+        th.SetApartmentState(ApartmentState.MTA);
+        th.Start();
+        if (done.Wait(4000)) return result;
+        return started.IsSet ? "PENDING " + name : "ERR the app did not answer";
+    }
+
+    // Gives the keyboard to the control at a point of the picture, through UI Automation on the thread attached to the
+    // private desktop: a posted click does not move a dialog's focus. Waits for it (typing follows at once), at most 3 s.
+    public static void FocusAt(int x, int y) {
+        EnsureGeometry();
+        POINT sp = ScreenPoint(x, y);
+        // On a thread of its own, not the UI Automation queue: that queue also reads the app's whole tree, which for a
+        // spreadsheet takes seconds, and the text typed next must not go out before the keyboard is in the field. Found
+        // live (2026-10-16): an address typed into Excel's Name Box went to the sheet, the wait having given up.
+        RunOnDesktop(() => {
+            var el = System.Windows.Automation.AutomationElement.FromPoint(new System.Windows.Point(sp.X, sp.Y));
+            if (el != null && el.Current.IsKeyboardFocusable) el.SetFocus();
+        }, 6000);
+    }
+
+    // Runs a piece of UI Automation work on a new thread attached to the app's desktop, waiting up to timeout ms for it.
+    static void RunOnDesktop(Action work, int timeout) {
+        var done = new ManualResetEventSlim(false);
+        var th = new Thread(() => {
+            try { if (SetThreadDesktop(desktop)) work(); } catch { }
+            finally { done.Set(); }
+        }) { IsBackground = true, Name = "uia-now" };
+        th.SetApartmentState(ApartmentState.MTA);
+        th.Start();
+        done.Wait(timeout);
+    }
+
+    // Picks, in the list control at a point of the picture, the one entry named by text, through UI Automation: keys and
+    // clicks posted to a dialog do not move its keyboard focus, so a drop-down (Save As's "Save as type") cannot be chosen
+    // from with them. The entry is the one named exactly so, else the only one starting with the text, else the only one
+    // containing it; two that fit equally are not guessed between. Answers "CHOSE <name>" or "ERR <why>".
+    public static string Choose(int x, int y, string text) {
+        EnsureGeometry();
+        POINT sp = ScreenPoint(x, y);
+        string result = "ERR the app did not answer";
+        // On a thread of its own, as FocusAt: not behind a tree read of the whole app.
+        RunOnDesktop(() => {
+            try { result = ChooseAt(sp, text.Trim()); }
+            catch (Exception e) { result = "ERR " + e.Message; }
+        }, 15000);
+        return result;
+    }
+
+    static string ChooseAt(POINT sp, string text) {
+        var el = System.Windows.Automation.AutomationElement.FromPoint(new System.Windows.Point(sp.X, sp.Y));
+        var walker = System.Windows.Automation.TreeWalker.ControlViewWalker;
+        for (int up = 0; el != null && up < 4 && el.Current.ControlType != System.Windows.Automation.ControlType.ComboBox
+                && el.Current.ControlType != System.Windows.Automation.ControlType.List; up++) el = walker.GetParent(el);
+        if (el == null) return "ERR there is no list there";
+        object ec;
+        bool expanded = false;
+        var before = new HashSet<IntPtr>();
+        foreach (var w in AppWindows()) before.Add(w.H);
+        IntPtr ownerTop = WindowAt(sp); // the window holding the drop-down itself
+        if (el.TryGetCurrentPattern(System.Windows.Automation.ExpandCollapsePattern.Pattern, out ec)) {
+            try { ((System.Windows.Automation.ExpandCollapsePattern)ec).Expand(); expanded = true; Thread.Sleep(300); } catch { }
+        }
+        try {
+            var isItem = new System.Windows.Automation.OrCondition(
+                new System.Windows.Automation.PropertyCondition(System.Windows.Automation.AutomationElement.ControlTypeProperty, System.Windows.Automation.ControlType.ListItem),
+                new System.Windows.Automation.PropertyCondition(System.Windows.Automation.AutomationElement.ControlTypeProperty, System.Windows.Automation.ControlType.MenuItem),
+                new System.Windows.Automation.PropertyCondition(System.Windows.Automation.AutomationElement.ControlTypeProperty, System.Windows.Automation.ControlType.DataItem));
+            var all = new List<System.Windows.Automation.AutomationElement>();
+            foreach (System.Windows.Automation.AutomationElement it in el.FindAll(System.Windows.Automation.TreeScope.Descendants, isItem)) all.Add(it);
+            if (all.Count == 0 && expanded) {
+                // Office draws a drop-down's open list as a window of its own (Excel's Sort dialog, "Order"): its entries
+                // are there, not under the drop-down - in a window that appeared when it opened. Only such windows are
+                // read: the dialog's other lists ("Sort Field") are not this drop-down's entries.
+                Thread.Sleep(300);
+                foreach (var w in AppWindows()) {
+                    if (before.Contains(w.H)) continue;
+                    try {
+                        var root = System.Windows.Automation.AutomationElement.FromHandle(w.H);
+                        foreach (System.Windows.Automation.AutomationElement it in root.FindAll(System.Windows.Automation.TreeScope.Descendants, isItem)) {
+                            var box = it.Current.BoundingRectangle;
+                            if (!it.Current.IsOffscreen && !box.IsEmpty) all.Add(it);
+                        }
+                    } catch { }
+                    if (all.Count > 0) break; // the topmost window with entries is the open list
+                }
+                // A list opened before this call (the worker clicked the drop-down first) is not a new window: then
+                // any window of the app but the one holding the drop-down.
+                if (all.Count == 0)
+                    foreach (var w in AppWindows()) {
+                        if (w.H == ownerTop) continue;
+                        try {
+                            var root = System.Windows.Automation.AutomationElement.FromHandle(w.H);
+                            foreach (System.Windows.Automation.AutomationElement it in root.FindAll(System.Windows.Automation.TreeScope.Descendants, isItem)) {
+                                var box = it.Current.BoundingRectangle;
+                                if (!it.Current.IsOffscreen && !box.IsEmpty) all.Add(it);
+                            }
+                        } catch { }
+                        if (all.Count > 0) break;
+                    }
+            }
+            var items = all;
+            var names = new List<string>();
+            System.Windows.Automation.AutomationElement exact = null;
+            var starts = new List<System.Windows.Automation.AutomationElement>();
+            var holds = new List<System.Windows.Automation.AutomationElement>();
+            foreach (System.Windows.Automation.AutomationElement it in items) {
+                string n = (it.Current.Name ?? "").Trim();
+                if (n.Length == 0) continue;
+                names.Add(n);
+                if (string.Equals(n, text, StringComparison.OrdinalIgnoreCase)) exact = it;
+                else if (n.StartsWith(text, StringComparison.OrdinalIgnoreCase)) starts.Add(it);
+                else if (n.IndexOf(text, StringComparison.OrdinalIgnoreCase) >= 0) holds.Add(it);
+            }
+            var pick = exact ?? (starts.Count == 1 ? starts[0] : starts.Count == 0 && holds.Count == 1 ? holds[0] : null);
+            if (pick == null) {
+                string offered = string.Join("; ", names.GetRange(0, Math.Min(30, names.Count)));
+                return names.Count == 0 ? "ERR the list there has no entries"
+                    : (starts.Count + holds.Count > 1 ? "ERR more than one entry fits \"" + text + "\": " : "ERR no entry is \"" + text + "\"; it offers: ") + offered;
+            }
+            string chosen = pick.Current.Name;
+            // A real Windows combo box is told in its own messages: UI Automation's Select on its entries picked the
+            // wrong one in Excel's Save As (asked for "Excel Workbook", it showed "Excel Add-in").
+            IntPtr h = (IntPtr)el.Current.NativeWindowHandle;
+            if (h != IntPtr.Zero && el.Current.ControlType == System.Windows.Automation.ControlType.ComboBox) {
+                if (expanded) { try { ((System.Windows.Automation.ExpandCollapsePattern)ec).Collapse(); } catch { } expanded = false; }
+                string why = SelectInCombo(h, chosen);
+                if (why != null) return "ERR " + why;
+                // What the drop-down shows now, as its owner draws it: a native list that took the choice is not proof
+                // that the dialog did (found live: it showed one type and saved another).
+                string shows = null;
+                for (int tries = 0; tries < 8; tries++) {
+                    shows = SelectedEntry(el);
+                    if (shows == null || string.Equals(shows.Trim(), chosen.Trim(), StringComparison.OrdinalIgnoreCase)) break;
+                    Thread.Sleep(200);
+                }
+                if (shows != null && !string.Equals(shows.Trim(), chosen.Trim(), StringComparison.OrdinalIgnoreCase))
+                    return "ERR the drop-down still shows \"" + shows.Trim() + "\" - the choice did not take";
+                return "CHOSE " + chosen;
+            }
+            object sel, inv;
+            if (pick.TryGetCurrentPattern(System.Windows.Automation.SelectionItemPattern.Pattern, out sel))
+                ((System.Windows.Automation.SelectionItemPattern)sel).Select();
+            else if (pick.TryGetCurrentPattern(System.Windows.Automation.InvokePattern.Pattern, out inv))
+                ((System.Windows.Automation.InvokePattern)inv).Invoke();
+            else return "ERR its entries cannot be selected";
+            return "CHOSE " + chosen;
+        } finally {
+            if (expanded) { try { ((System.Windows.Automation.ExpandCollapsePattern)ec).Collapse(); } catch { } }
+        }
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr SendMessageTimeout(IntPtr h, uint msg, IntPtr wp, string lp, uint flags, uint timeout, out IntPtr result);
+    [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr h);
+    [DllImport("user32.dll")] static extern bool IsWindowEnabled(IntPtr h);
+    [DllImport("user32.dll")] static extern int GetDlgCtrlID(IntPtr h);
+    [StructLayout(LayoutKind.Sequential)] struct COMBOBOXINFO { public int cbSize; public RECT rcItem, rcButton; public int stateButton; public IntPtr hwndCombo, hwndItem, hwndList; }
+    [DllImport("user32.dll")] static extern bool GetComboBoxInfo(IntPtr h, ref COMBOBOXINFO info);
+    [DllImport("user32.dll", EntryPoint = "SendMessage")] static extern IntPtr SendMessageRect(IntPtr h, uint msg, IntPtr wp, out RECT lp);
+
+    // Selects the entry named exactly so in a combo box, as its owner hears of a choice the person made: CB_SETCURSEL,
+    // then CBN_SELCHANGE to the parent (CB_SETCURSEL alone tells nobody, and a Save As dialog would keep its old type).
+    // Null when done, else why not.
+    static string SelectInCombo(IntPtr h, string name) {
+        const uint CB_FINDSTRINGEXACT = 0x0158, CB_SETCURSEL = 0x014E, CB_GETCURSEL = 0x0147, WM_COMMAND = 0x0111;
+        IntPtr index, ignored;
+        if (SendMessageTimeout(h, CB_FINDSTRINGEXACT, (IntPtr)(-1), name, 0x2, 1000, out index) == IntPtr.Zero) return "the list did not answer";
+        if ((long)index < 0) return "the list has no entry \"" + name + "\"";
+        // As a person does it: open the drop-down and click the entry in its list, so the combo box selects it, closes and
+        // tells its owner in every way it listens for. Found live (2026-10-16): with CB_SETCURSEL and a CBN_SELCHANGE of our
+        // own - and with arrow keys sent to it - Excel's Save As kept saving as CSV ("report.xlsx.csv"), the native list
+        // showing "Excel Workbook" all along. A click on the entry in the open list is what its dialog takes in (checked:
+        // the same dialog then saved a real workbook).
+        var info = new COMBOBOXINFO(); info.cbSize = Marshal.SizeOf(typeof(COMBOBOXINFO));
+        if (GetComboBoxInfo(h, ref info) && info.hwndList != IntPtr.Zero) {
+            const uint CB_SHOWDROPDOWN = 0x014F, CB_GETDROPPEDSTATE = 0x0157, LB_SETTOPINDEX = 0x0197, LB_GETITEMRECT = 0x0198;
+            SendMessageTimeout(h, CB_SHOWDROPDOWN, (IntPtr)1, IntPtr.Zero, 0x2, 1000, out ignored);
+            Thread.Sleep(300);
+            SendMessageTimeout(info.hwndList, LB_SETTOPINDEX, index, IntPtr.Zero, 0x2, 1000, out ignored);
+            RECT item;
+            if (SendMessageRect(info.hwndList, LB_GETITEMRECT, index, out item) != (IntPtr)(-1) && item.R > item.L) {
+                int ix = (item.L + item.R) / 2, iy = (item.T + item.B) / 2;
+                IntPtr at = (IntPtr)((iy << 16) | (ix & 0xFFFF));
+                PostMessage(info.hwndList, 0x0200 /* WM_MOUSEMOVE */, IntPtr.Zero, at); Thread.Sleep(60);
+                PostMessage(info.hwndList, 0x0201 /* WM_LBUTTONDOWN */, (IntPtr)1, at); Thread.Sleep(60);
+                PostMessage(info.hwndList, 0x0202 /* WM_LBUTTONUP */, IntPtr.Zero, at); Thread.Sleep(400);
+            }
+            IntPtr open, picked;
+            SendMessageTimeout(h, CB_GETDROPPEDSTATE, IntPtr.Zero, IntPtr.Zero, 0x2, 1000, out open);
+            if (open != IntPtr.Zero) SendMessageTimeout(h, CB_SHOWDROPDOWN, IntPtr.Zero, IntPtr.Zero, 0x2, 1000, out ignored);
+            SendMessageTimeout(h, CB_GETCURSEL, IntPtr.Zero, IntPtr.Zero, 0x2, 1000, out picked);
+            if (picked == index && open == IntPtr.Zero) return null;
+        }
+        SendMessageTimeout(h, CB_SETCURSEL, index, IntPtr.Zero, 0x2, 1000, out ignored);
+        IntPtr parent = GetParent(h);
+        int id = GetDlgCtrlID(h);
+        if (parent != IntPtr.Zero)
+            SendMessageTimeout(parent, WM_COMMAND, (IntPtr)((1 /* CBN_SELCHANGE */ << 16) | (id & 0xFFFF)), h, 0x2, 2000, out ignored);
+        IntPtr now;
+        SendMessageTimeout(h, CB_GETCURSEL, IntPtr.Zero, IntPtr.Zero, 0x2, 1000, out now);
+        return now == index ? null : "the list did not keep the choice";
+    }
+
+    // The entry selected in the drop-down whose box this is. What the tree walk returns is cached only (no live
+    // element to ask), so the drop-down is found again at its middle.
+    static string SelectedEntryAt(System.Windows.Rect r) {
+        try {
+            var el = System.Windows.Automation.AutomationElement.FromPoint(new System.Windows.Point(r.X + r.Width / 2, r.Y + r.Height / 2));
+            var walker = System.Windows.Automation.TreeWalker.ControlViewWalker;
+            for (int up = 0; el != null && up < 3 && el.Current.ControlType != System.Windows.Automation.ControlType.ComboBox; up++) el = walker.GetParent(el);
+            return el == null ? null : SelectedEntry(el);
+        } catch { return null; }
+    }
+
+    // The name of the entry a list control has selected, read live (it is not in the cache), or null.
+    static string SelectedEntry(System.Windows.Automation.AutomationElement e) {
+        try {
+            object p;
+            if (!e.TryGetCurrentPattern(System.Windows.Automation.SelectionPattern.Pattern, out p)) return null;
+            var picked = ((System.Windows.Automation.SelectionPattern)p).Current.GetSelection();
+            return picked.Length > 0 ? picked[0].Current.Name : null;
+        } catch { return null; }
+    }
+
     static string ReadControls() {
         var wins = AppWindows(); // topmost first
         int l, t, fw, fh; double sc; IntPtr main;
@@ -1320,6 +1594,7 @@ public class Native {
         // Bottom window first: a dialog's controls come after the window it covers, as a page puts its dialog last.
         for (int i = wins.Count - 1; i >= 0 && count < MaxNodes; i--) {
             System.Windows.Automation.AutomationElementCollection all;
+            int walkCells = 0;
             try {
                 var root = System.Windows.Automation.AutomationElement.FromHandle(wins[i].H);
                 using (TreeCache().Activate()) all = root.FindAll(System.Windows.Automation.TreeScope.Descendants, notOff);
@@ -1333,6 +1608,19 @@ public class Native {
                 bool focusable = Cached(e, System.Windows.Automation.AutomationElement.IsKeyboardFocusableProperty) as bool? ?? false;
                 string role = RoleOf(ctObj, invokable, focusable, name);
                 if (role == "") continue;
+                if (role == "cell") {
+                    // A spreadsheet lists every cell it shows, empty or not: Excel's 700 empty ones filled the list to its
+                    // limit, and its ribbon and dialogs went missing behind them (found live, 2026-10-16). An empty cell,
+                    // and a row's or column's bare header ("T", "12"), says nothing; a cell that holds something stays.
+                    string held = Cached(e, System.Windows.Automation.ValuePattern.ValueProperty) as string;
+                    if (string.IsNullOrWhiteSpace(held) && (name.Length == 0 || IsCellAddress(name) || IsHeaderName(name))) continue;
+                    walkCells++;
+                }
+                // A field that cannot be typed into is text: a file list's Name / Date modified / Size cells are read-only
+                // edits, and listed as fields they invited typing - which in a file list renames the file (found live,
+                // 2026-10-16: a path typed into a folder's "Name" cell, then Ctrl+A and Delete, sent the folder to the bin).
+                if (role == "textbox" && ctObj == System.Windows.Automation.ControlType.Edit
+                        && (Cached(e, System.Windows.Automation.ValuePattern.IsReadOnlyProperty) as bool? ?? false)) role = "text";
                 // A browser's page is a Document too, and says it is read-only: the page, not a field. An editor's is not, and a
                 // RichEdit field (Character Map's "Search for") is a Document that says nothing either way.
                 if (ctObj == System.Windows.Automation.ControlType.Document && (Cached(e, System.Windows.Automation.ValuePattern.IsReadOnlyProperty) as bool? ?? false)) continue;
@@ -1364,6 +1652,10 @@ public class Native {
                 if (password) sb.Append(",\"password\":true");
                 else {
                     string value = Cached(e, System.Windows.Automation.ValuePattern.ValueProperty) as string;
+                    // A drop-down list that cannot be typed into (Save As's "Save as type") has no Value: what it
+                    // shows is its selected entry. Found live (2026-10-15): read as empty, nobody could tell which
+                    // file type Excel would save as.
+                    if (string.IsNullOrEmpty(value) && role == "combobox") value = SelectedEntryAt(r);
                     if (!string.IsNullOrEmpty(value) && value != name) sb.Append(",\"value\":").Append(Js(Cut(value, 500)));
                 }
                 object toggle = Cached(e, System.Windows.Automation.TogglePattern.ToggleStateProperty);
@@ -1377,9 +1669,100 @@ public class Native {
                 sb.Append('}');
                 count++;
             }
+            // A spreadsheet's grid shows its cells to UI Automation only through its grid pattern: none of them is among
+            // the descendants above. Found live (2026-10-16): in Excel the worker could not read a single cell - it typed,
+            // undid and typed again, and could not tell whether its Total row was there.
+            if (count < MaxNodes && walkCells == 0) count += GridCells(wins, i, l, t, fw, fh, sc, sb, count, MaxNodes - count);
         }
         sb.Append("]}");
         return sb.ToString();
+    }
+
+    const int GridRows = 30, GridCols = 12;
+
+    // The cells a grid control shows from its top-left corner, those that hold something: role "cell", the cell's own
+    // name (Excel's is its address) and what it holds, at its place on the screen. At most GridRows x GridCols are read.
+    static int GridCells(List<Win> wins, int i, int l, int t, int fw, int fh, double sc, StringBuilder sb, int count, int room) {
+        int added = 0;
+        System.Windows.Automation.AutomationElementCollection grids;
+        try {
+            var root = System.Windows.Automation.AutomationElement.FromHandle(wins[i].H);
+            var isGrid = new System.Windows.Automation.OrCondition(
+                new System.Windows.Automation.PropertyCondition(System.Windows.Automation.AutomationElement.ControlTypeProperty, System.Windows.Automation.ControlType.DataGrid),
+                new System.Windows.Automation.PropertyCondition(System.Windows.Automation.AutomationElement.ControlTypeProperty, System.Windows.Automation.ControlType.Table));
+            grids = root.FindAll(System.Windows.Automation.TreeScope.Descendants, isGrid);
+        } catch { return 0; }
+        foreach (System.Windows.Automation.AutomationElement g in grids) {
+            try {
+                object gp;
+                if (!g.TryGetCurrentPattern(System.Windows.Automation.GridPattern.Pattern, out gp)) continue;
+                var grid = (System.Windows.Automation.GridPattern)gp;
+                var gr = g.Current.BoundingRectangle;
+                if (gr.IsEmpty || gr.Width < 40 || gr.Height < 40) continue;
+                // The first cell shown: the one just inside the grid's top-left corner, past any headers.
+                int r0 = 0, c0 = 0;
+                for (int probe = 4; probe <= 60; probe += 14) {
+                    System.Windows.Automation.AutomationElement first = null;
+                    try { first = System.Windows.Automation.AutomationElement.FromPoint(new System.Windows.Point(gr.X + probe, gr.Y + probe)); } catch { }
+                    object ip;
+                    if (first != null && first.TryGetCurrentPattern(System.Windows.Automation.GridItemPattern.Pattern, out ip)) {
+                        var item = (System.Windows.Automation.GridItemPattern)ip;
+                        r0 = item.Current.Row; c0 = item.Current.Column; break;
+                    }
+                }
+                int rows = Math.Min(grid.Current.RowCount - r0, GridRows), cols = Math.Min(grid.Current.ColumnCount - c0, GridCols);
+                for (int r = r0; r < r0 + rows && added < room; r++) {
+                    bool rowShown = false;
+                    for (int c = c0; c < c0 + cols && added < room; c++) {
+                        System.Windows.Automation.AutomationElement cell;
+                        try { cell = grid.GetItem(r, c); } catch { continue; }
+                        if (cell == null) continue;
+                        var cr = cell.Current.BoundingRectangle;
+                        if (cr.IsEmpty || cr.X >= gr.Right || cr.Y >= gr.Bottom) continue;
+                        rowShown = true;
+                        // A row's or a column's header ("A", "1", "Select All") is not a cell of the sheet.
+                        if (cell.Current.ControlType == System.Windows.Automation.ControlType.HeaderItem) continue;
+                        string cname = (cell.Current.Name ?? "").Trim();
+                        string cvalue = "";
+                        object vp;
+                        if (cell.TryGetCurrentPattern(System.Windows.Automation.ValuePattern.Pattern, out vp))
+                            cvalue = ((System.Windows.Automation.ValuePattern)vp).Current.Value ?? "";
+                        if (cvalue.Trim().Length == 0 && (cname.Length == 0 || IsCellAddress(cname))) continue;
+                        double cx = cr.X + cr.Width / 2, cy = cr.Y + cr.Height / 2;
+                        bool covered = false;
+                        for (int j = 0; j < i; j++) { var v = wins[j].V; if (cx >= v.L && cx < v.R && cy >= v.T && cy < v.B) { covered = true; break; } }
+                        if (covered) continue;
+                        int x = (int)Math.Round((cr.X - l) * sc), y = (int)Math.Round((cr.Y - t) * sc);
+                        int w = (int)Math.Round(cr.Width * sc), h = (int)Math.Round(cr.Height * sc);
+                        if (x < 0) { w += x; x = 0; } if (y < 0) { h += y; y = 0; }
+                        if (x + w > fw) w = fw - x; if (y + h > fh) h = fh - y;
+                        if (w < 2 || h < 2) continue;
+                        if (count + added > 0) sb.Append(',');
+                        sb.Append("{\"role\":\"cell\",\"name\":").Append(Js(Cut(cname.Length > 0 ? cname : ColumnName(c) + (r + 1), 200)));
+                        sb.Append(",\"box\":[").Append(x).Append(',').Append(y).Append(',').Append(w).Append(',').Append(h).Append(']');
+                        if (cvalue.Length > 0 && cvalue != cname) sb.Append(",\"value\":").Append(Js(Cut(cvalue, 500)));
+                        sb.Append('}');
+                        added++;
+                    }
+                    if (!rowShown) break;
+                }
+            } catch { }
+        }
+        return added;
+    }
+
+    static bool IsHeaderName(string s) {
+        return System.Text.RegularExpressions.Regex.IsMatch(s, @"^(?:[A-Z]{1,3}|[0-9]{1,7}|Select All)$");
+    }
+
+    static bool IsCellAddress(string s) {
+        return System.Text.RegularExpressions.Regex.IsMatch(s, @"^\$?[A-Z]{1,3}\$?[0-9]{1,7}$");
+    }
+
+    static string ColumnName(int c) {
+        string s = "";
+        for (c++; c > 0; c = (c - 1) / 26) s = (char)('A' + (c - 1) % 26) + s;
+        return s;
     }
 
     static string Cut(string s, int n) { return s.Length <= n ? s : s.Substring(0, n); }
@@ -2791,12 +3174,40 @@ public class Native {
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern short VkKeyScan(char ch);
     [DllImport("user32.dll")] static extern uint MapVirtualKey(uint code, uint type);
 
+    // KeyedText: the app takes typed text as keys, not characters (set by the control plane from how the app's controls
+    // are read: one that draws its own screen). Off, a space and a line break are characters like any other.
+    public static bool KeyedText = false;
+
+    // TypeNewline is a line break inside typed text: the Enter character to an app that takes characters (a key going
+    // down would be turned into a second one, after whatever is queued), the Enter key to one that takes keys.
+    public static void TypeNewline() {
+        if (KeyedText) { Key(13, ""); System.Threading.Thread.Sleep(60); return; }
+        IntPtr t = KeyTarget();
+        if (t == IntPtr.Zero) return;
+        PostMessage(t, WM_CHAR, (IntPtr)13, (IntPtr)1);
+    }
+
     public static void TypeChar(char ch) {
         if (ShellChar(ch)) return;
         IntPtr t = KeyTarget();
         if (t == IntPtr.Zero) return;
         var cls = new StringBuilder(32); GetClassName(t, cls, 32);
-        if (cls.ToString() != "ConsoleWindowClass") { PostMessage(t, WM_CHAR, (IntPtr)ch, (IntPtr)1); return; }
+        if (cls.ToString() != "ConsoleWindowClass") {
+            // A space is its key going down and up, as a keyboard sends it, and the app makes the character from that
+            // itself: found live (2026-10-15), TallyPrime dropped every space posted as a bare character ("Northwind
+            // Traders" saved as "NorthwindTraders"). Not the character as well: an app that translates its keys
+            // (PowerPoint, Word) then had two, the second landing among the next letters ("Q3 2 026  Business"). The
+            // pause lets the app make its character before the next letter is posted behind it. Only the space: a
+            // letter's key going down would fire an app's one-letter shortcuts.
+            if (ch == ' ' && KeyedText) {
+                uint sp = MapVirtualKey(0x20, 0);
+                PostMessage(t, WM_KEYDOWN, (IntPtr)0x20, (IntPtr)(1 | (sp << 16)));
+                PostMessage(t, WM_KEYUP, (IntPtr)0x20, (IntPtr)(0xC0000001 | (sp << 16)));
+                System.Threading.Thread.Sleep(60);
+                return;
+            }
+            PostMessage(t, WM_CHAR, (IntPtr)ch, (IntPtr)1); return;
+        }
         // A console takes a character as a key going down, and a second one like it with no key coming up in between
         // as that key still held: it counts a repeat. Typed into a terminal, every doubled letter came out three times
         // (measured: "bool" typed as "boool", ">>" as ">>>"). So each character is a key that goes down and comes up.
@@ -2806,10 +3217,25 @@ public class Native {
         PostMessage(t, WM_KEYUP, (IntPtr)vk, (IntPtr)(0xC0000001 | (scan << 16)));
     }
 
+    // Whether a window is a list of files and folders (a file dialog's or Explorer's): its own class, or anything inside
+    // the shell's file view. Delete there sends what is selected to the Recycle Bin.
+    static bool IsFileView(IntPtr h) {
+        for (int up = 0; h != IntPtr.Zero && up < 6; up++, h = GetParent(h)) {
+            var cls = new StringBuilder(64); GetClassName(h, cls, 64);
+            string c = cls.ToString();
+            if (c == "SysListView32" || c == "SysTreeView32" || c == "SHELLDLL_DefView" || c == "DUIViewWndClassName") return true;
+        }
+        return false;
+    }
+
     public static string Key(int vk, string mods) {
         if (ShellKey(vk)) return "OK";
         IntPtr t = KeyTarget();
         if (t == IntPtr.Zero) return "ERR no window";
+        // The Delete key never reaches a list of files: it would delete what is selected there, on the person's own computer.
+        // Found live (2026-10-16): a worker's "replace this field's text" was Ctrl+A then Delete, the keyboard was on a
+        // file dialog's list, and a folder of the person's went to the Recycle Bin.
+        if (vk == 46 && IsFileView(t)) return "ERR refused: the Delete key would delete files in that list";
         // A keyboard turns these into characters through TranslateMessage; a direct message does not.
         bool asChar = (vk == 8 || vk == 9 || vk == 13 || vk == 27) && string.IsNullOrEmpty(mods.Replace("s", ""));
         if (string.IsNullOrEmpty(mods)) {

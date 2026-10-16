@@ -16,6 +16,10 @@ class FakeOutbox:
         self.drafts, self.n = {}, 0
 
     def urlopen(self, request, timeout=None):
+        # The patch is on urllib.request itself: a background sender left by another test (progress events) posts
+        # through it too, and must not be taken for a draft.
+        if not getattr(request, "full_url", "").endswith("/api/outbox"):
+            return mock.MagicMock(__enter__=lambda s: io.BytesIO(b"{}"), __exit__=lambda *a: False)
         body = json.loads(request.data)
         old = body.get("replaces")
         if old and (old not in self.drafts or self.drafts[old]["status"] != "draft"):
@@ -95,3 +99,18 @@ class ADraftAgainReplacesTheTasksEarlierOne(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ARecipientIsAnAddress(unittest.TestCase):
+    """Found live (2026-10-14): drafts went to "grant", "holt" and "wei" - surnames where addresses were meant."""
+
+    def test_a_name_that_is_not_an_address_is_refused_before_anything_is_drafted(self):
+        with mock.patch.object(outbox.urllib.request, "urlopen") as sent:
+            with self.assertRaises(outbox.DraftError) as refused:
+                outbox.draft(["grant"], "Commission", "body")
+        sent.assert_not_called()
+        self.assertIn("'grant' is not an email address", str(refused.exception))
+
+    def test_an_address_written_with_its_name_is_an_address(self):
+        self.assertEqual(outbox._address_of("Alicia Grant <alicia@example.com>"), "alicia@example.com")
+        self.assertTrue(outbox.ADDRESS.fullmatch(outbox._address_of("Alicia Grant <alicia@example.com>")))

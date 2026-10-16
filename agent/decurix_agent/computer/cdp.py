@@ -39,6 +39,9 @@ CALL_TIMEOUT = 20
 
 # How long observe() waits for a loading page before reading it anyway.
 LOAD_WAIT_SECONDS = 8
+# ...and for a viewer of an app running elsewhere to catch up with the last input: an app read from its picture is read
+# again by a vision model, which takes longer than a page takes to load (at most one read every 5 s, plus the call).
+RELAYED_WAIT_SECONDS = 20
 
 # "complete" once the page has loaded and is not catching up with an input.
 _READY = (
@@ -58,6 +61,9 @@ READABLE = {"heading", "paragraph", "status", "alert", "dialog", "alertdialog", 
 NAMED_BY_CONTENT = INTERACTIVE | READABLE | {
     "cell", "gridcell", "columnheader", "rowheader", "labeltext", "label", "legend", "caption",
 }
+
+# Pages that stand in for an app running elsewhere (core.RELAYED_VIEWERS): their elements are drawn clear on purpose.
+RELAYED_VIEWER_PATHS = ("/host-gui/view", "/phone-app/view")
 
 # Named containers that become part of an element's path.
 CONTAINERS = {"form", "dialog", "alertdialog", "navigation", "main", "region", "table", "row", "list", "group", "tabpanel", "menu", "toolbar", "search", "banner", "complementary"}
@@ -795,9 +801,14 @@ def observe():
         # viewer) marks itself data-decurix-busy until its copy has caught up
         # with the last input - the approval gate must judge what is there
         # now, not the button that was there before the tap.
-        deadline = time.monotonic() + LOAD_WAIT_SECONDS
+        relayed_page = any(viewer in (page.target.get("url") or "") for viewer in RELAYED_VIEWER_PATHS)
+        deadline = time.monotonic() + (RELAYED_WAIT_SECONDS if relayed_page else LOAD_WAIT_SECONDS)
         while time.monotonic() < deadline and page.evaluate(_READY) != "complete":
             time.sleep(0.2)
+        # Still catching up when the wait ran out: what is read is the copy from before the last input. Found live
+        # (2026-10-16): a picture-only app's controls are read by a vision model in a few seconds, and a look taken
+        # sooner showed the cursor where it had been - a worker was told its typing went into a field it had left.
+        behind = page.evaluate("document.documentElement.hasAttribute('data-decurix-busy') ? 1 : 0") == 1
 
         metrics = json.loads(page.evaluate(_METRICS))
         nodes = page.call("Accessibility.getFullAXTree").get("nodes", [])
@@ -906,6 +917,7 @@ def observe():
     url = metrics.get("url") or ""
 
     group = {
+        "behind": behind,
         "id": group_id,
         "title": f"Chromium tab {el._quote(title, 60)} {url[:100]}",
         "window_title": browser.page_window_title(title),
@@ -956,6 +968,7 @@ def observe():
     site = parsed.netloc or parsed.scheme or "page"
     stack = [(root, [f"site {site}"], False, None)] if root else []
     visits = 0
+    relayed = any(viewer in url for viewer in RELAYED_VIEWER_PATHS)
 
     while stack:
         node, segments, inside_row, bar = stack.pop()
@@ -977,8 +990,11 @@ def observe():
         if not ignored and backend_id is not None:
             if lower in INTERACTIVE:
                 include = True
-            elif backend_id in transparent:
-                include = False  # words nobody can see (a control drawn clear over a styled one still counts)
+            elif backend_id in transparent and not relayed:
+                # Words nobody can see (a control drawn clear over a styled one still counts). A viewer of an app that
+                # runs elsewhere draws all of its stand-ins clear over the app's picture, on purpose: found live
+                # (2026-10-16), a spreadsheet's cells were dropped by this rule and the worker could not read one.
+                include = False
             elif lower == "row":
                 display_name = " | ".join(cell_texts(node))
                 include = bool(display_name)
@@ -1004,6 +1020,9 @@ def observe():
                 checked = _prop(node, "checked")
                 if checked is not None and lower in ("checkbox", "radio", "switch", "menuitemcheckbox", "menuitemradio"):
                     states.append("checked" if checked in (True, "true", "mixed") else "unchecked")
+                pressed = _prop(node, "pressed")
+                if lower == "button" and pressed in (True, "true", "mixed"):
+                    states.append("pressed")  # a toggle button that is down: Bold, Italic, Freeze Panes
                 if _prop(node, "disabled"):
                     states.append("disabled")
                 expanded = _prop(node, "expanded")
@@ -1543,6 +1562,44 @@ def _object(page, backend_id):
     return resolved["object"]["objectId"]
 
 
+def press_in_app(element):
+    """Press a named control in a viewer of an app running elsewhere (hostgui.html's decurixPress); raises with why not."""
+
+    page = _page_for(element)
+    try:
+        answer = page.call("Runtime.callFunctionOn", {
+            "objectId": _object(page, element["handle"]["backend_id"]), "returnByValue": True, "awaitPromise": True,
+            "functionDeclaration": "function() { return window.decurixPress ? window.decurixPress(this) "
+                                   ": 'ERR this viewer cannot press through the app (an older page)'; }",
+        }, timeout=20).get("result", {}).get("value") or ""
+    finally:
+        page.close()
+    if not answer or answer.startswith("ERR"):
+        raise ComputerError(f"{el.describe(element)}: {answer[3:].strip() or 'no answer'}")
+    return answer
+
+
+def choose_in_app(element, option):
+    """
+    Pick an entry of a drop-down in a viewer of an app running elsewhere (hostgui.html's decurixChoose: the app's own
+    accessibility selects it). Returns the entry's name; raises with the app's reason (what it offers) when none was.
+    """
+
+    page = _page_for(element)
+    try:
+        answer = page.call("Runtime.callFunctionOn", {
+            "objectId": _object(page, element["handle"]["backend_id"]), "returnByValue": True, "awaitPromise": True,
+            "arguments": [{"value": option}],
+            "functionDeclaration": "function(text) { return window.decurixChoose ? window.decurixChoose(this, text) "
+                                   ": 'ERR this viewer cannot choose from a list (an older page: open the app again)'; }",
+        }, timeout=30).get("result", {}).get("value") or ""
+    finally:
+        page.close()
+    if answer.startswith("ERR"):
+        raise ComputerError(f"{el.describe(element)}: {answer[3:].strip()}")
+    return answer
+
+
 # A line longer than this is pasted (insertText) rather than typed key by key: nothing a form field takes is that long,
 # and a key event per character would take a while.
 KEYS_UP_TO = 500
@@ -1573,6 +1630,11 @@ def _type_line(page, object_id, line):
                 event["code"], event["windowsVirtualKeyCode"], event["nativeVirtualKeyCode"] = code
         page.call("Input.dispatchKeyEvent", down)
         page.call("Input.dispatchKeyEvent", up)
+    # A viewer of an app running elsewhere (a host app, a phone app) passes each key on to that app and its stand-in
+    # field does not change: found live (2026-10-15), every line typed into real Excel was inserted a second time here
+    # ("TotalTotal"), corrupting the sheet. Its keys arrived; nothing is inserted after them.
+    if any(v in ((getattr(page, "target", None) or {}).get("url") or "") for v in ("/host-gui/view", "/phone-app/view")):
+        return
     after = _field_value(page, object_id)
     if after is not None and line not in after and after == (before or ""):
         page.call("Input.insertText", {"text": line})
@@ -1705,10 +1767,24 @@ def select_option(element, option):
                     const fits = options.filter(o => o.value !== '' && words(o.label).trim() && given.includes(words(o.label)));
                     return fits.length === 1 ? fits[0] : null;
                 };
+                // The one option holding every word given, in any order and singular or plural: "navy baseball
+                // cap" is "CAP-NV - Baseball cap, navy". Found live (2026-10-14): word order alone sent a worker to
+                // pick a product by position, and it took a notebook.
+                const stem = w => w.replace(/(?:es|s)$/, '');
+                const allWords = () => {
+                    const given = words(label).trim().split(' ').filter(Boolean).map(stem);
+                    if (given.length < 2) { return null; }
+                    const fits = options.filter(o => {
+                        const have = new Set(words(o.label).trim().split(' ').map(stem));
+                        return o.value !== '' && given.every(w => have.has(w));
+                    });
+                    return fits.length === 1 ? fits[0] : null;
+                };
                 const hit = options.find(o => o.label.trim().toLowerCase() === want)
                     || options.find(o => o.label.trim().toLowerCase().startsWith(want))
                     || options.find(o => o.label.toLowerCase().includes(want))
-                    || within();
+                    || within()
+                    || allWords();
                 if (!hit) { return {ok: false, options: options.map(o => o.label)}; }
                 this.value = hit.value;
                 this.dispatchEvent(new Event('input', {bubbles: true}));

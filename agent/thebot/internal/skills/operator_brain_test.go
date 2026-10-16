@@ -151,7 +151,7 @@ func TestAHostedBrainIsGivenGenericTaskRules(t *testing.T) {
 			t.Fatal(err)
 		}
 		contract := chat.calls[0][len(chat.calls[0])-1].Content
-		if got := strings.Contains(contract, "Match records using identifiers and relevant attributes"); got != tc.want {
+		if got := strings.Contains(contract, "Match records by identifiers and attributes"); got != tc.want {
 			t.Errorf("%s: rules in the contract = %v, want %v", tc.caps.Brain, got, tc.want)
 		}
 	}

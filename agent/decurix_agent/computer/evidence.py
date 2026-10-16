@@ -270,6 +270,21 @@ def entered(task_id=None):
                           event.get("option") if event.get("kind") == "select" else None) if value]
 
 
+def pressed(task_id=None):
+    """The names of the controls a task's tools pressed and that went through, oldest first."""
+
+    task_id = task_id or task_context.current()
+    if not task_id:
+        return []
+    try:
+        _, events = recording.load(recording.session_for_task(task_id))
+    except (FileNotFoundError, OSError, ValueError):
+        return []
+    return [str((event.get("element") or {}).get("name") or "") for event in events
+            if event.get("outcome") in (None, "done") and event.get("kind") in ("click", "double_click")
+            and (event.get("element") or {}).get("name")]
+
+
 def read(task_id=None):
     """Everything a task's tools read off the screen, as one text ("" when nothing was kept)."""
 
