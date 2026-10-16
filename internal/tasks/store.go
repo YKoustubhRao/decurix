@@ -496,6 +496,27 @@ func (s *Store) Busy(workerID string) (string, error) {
 	}
 }
 
+// OpenRequest returns the request of the task a worker has running or waiting on a person, or "" when it has none -
+// what a check of that task's result may refer to.
+func (s *Store) OpenRequest(workerID string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var request string
+	err := s.db.QueryRow(
+		`SELECT t.request FROM executions e JOIN tasks t ON t.id = e.task_id
+		 WHERE e.worker_id = ? AND e.status IN (?, ?) ORDER BY e.started_ns DESC LIMIT 1`,
+		workerID, StatusRunning, StatusWaiting,
+	).Scan(&request)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("tasks: reading the open request: %w", err)
+	}
+	return request, nil
+}
+
 // Working reports whether any desktop has a task running or queued - one of
 // the things that should keep this machine from going to sleep (see
 // internal/keepawake): a sleep in the middle of a task freezes it half done.

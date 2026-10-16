@@ -92,6 +92,10 @@ func (s *Server) sessionControls(sess *winhost.Session, id string) winhost.Contr
 	if err != nil {
 		return winhost.Controls{Error: err.Error()}
 	}
+	if !c.Pending && c.Error == "" {
+		// An app Windows describes takes typed text as characters; one that draws its own screen, as keys.
+		sess.SetKeyedText(c.Actionable() == 0)
+	}
 	if c.Pending || c.Error != "" || c.Actionable() > 0 {
 		return c
 	}
@@ -185,7 +189,7 @@ func (s *Server) readByVision(sess *winhost.Session, id, provider string, tree w
 var visionRoles = map[string]bool{"button": true, "link": true, "textbox": true, "checkbox": true, "radio": true,
 	"combobox": true, "menuitem": true, "tab": true, "option": true, "slider": true, "text": true}
 
-const visionSystem = `You read a screenshot of one desktop application and list its controls, for a program that will click and type into them by name. Reply with JSON only: {"nodes":[{"role":"...","name":"...","box":[x,y,width,height],"value":"...","password":true,"checked":true}]}.
+const visionSystem = `You read a screenshot of one desktop application and list its controls, for a program that will click and type into them by name. Reply with JSON only: {"cursor":"...","nodes":[{"role":"...","name":"...","box":[x,y,width,height],"value":"...","password":true,"checked":true}]}.
 - role is one of: button, link, textbox, checkbox, radio, combobox, menuitem, tab, option, slider, text.
 - name is the control's own label as shown (a button's caption, the label beside a field, a tab's title); for an icon-only button, what it does in two or three words.
 - box is in the screenshot's pixels, tight around the control itself (for a field, the box you type into, not its label).
@@ -193,7 +197,8 @@ const visionSystem = `You read a screenshot of one desktop application and list 
 - password is true only for a field whose text is hidden as dots.
 - checked is given for checkboxes, radios and toggles.
 - Include headings and important text lines as role "text". Leave out the window's own title-bar buttons.
-- List only what is visible. If you are not sure something is a control, leave it out.`
+- List only what is visible. If you are not sure something is a control, leave it out.
+- cursor is the name of the one field that is plainly the active one - highlighted, or showing a text cursor - exactly as you named it in nodes; omit it when no field plainly is.`
 
 // askVision has the model list the controls in a picture of width x height.
 func (s *Server) askVision(ctx context.Context, provider string, pic []byte, width, height int) ([]winhost.Control, error) {
@@ -236,7 +241,8 @@ func parseVisionControls(text string, width, height int) ([]winhost.Control, err
 		return nil, fmt.Errorf("the model did not answer with JSON")
 	}
 	var got struct {
-		Nodes []winhost.Control `json:"nodes"`
+		Cursor string            `json:"cursor"`
+		Nodes  []winhost.Control `json:"nodes"`
 	}
 	if err := json.Unmarshal([]byte(text[start:end+1]), &got); err != nil {
 		return nil, fmt.Errorf("the model's JSON could not be read: %w", err)
@@ -266,6 +272,18 @@ func parseVisionControls(text string, width, height int) ([]winhost.Control, err
 		nodes = append(nodes, n)
 		if len(nodes) >= 300 {
 			break
+		}
+	}
+	// Which field the picture shows as active, as a line of text over that field: a program worked by keyboard (one that
+	// draws its own screens) types into whatever field has the cursor, and a worker that cannot tell which one does typed
+	// a ledger's group into its Name (found live, 2026-10-15). Never as "focused": that state is Windows' own word, and the
+	// approval gate reads it.
+	if cursor := strings.TrimSpace(got.Cursor); cursor != "" {
+		for _, n := range nodes {
+			if (n.Role == "textbox" || n.Role == "combobox") && strings.EqualFold(n.Name, cursor) {
+				nodes = append(nodes, winhost.Control{Role: "text", Name: "the cursor is in: " + n.Name, Box: n.Box})
+				break
+			}
 		}
 	}
 	return nodes, nil

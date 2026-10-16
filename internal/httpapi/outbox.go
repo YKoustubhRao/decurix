@@ -40,6 +40,7 @@ func (s *Server) outboxCreateHandler(w http.ResponseWriter, r *http.Request) {
 		Cc          []string `json:"cc"`
 		Subject     string   `json:"subject"`
 		Body        string   `json:"body"`
+		Replaces    string   `json:"replaces"`
 		Attachments []struct {
 			Name        string `json:"name"`
 			ContentType string `json:"content_type"`
@@ -70,6 +71,30 @@ func (s *Server) outboxCreateHandler(w http.ResponseWriter, r *http.Request) {
 		d.Files = append(d.Files, outbox.File{Name: mailtrigger.SafeFileName(a.Name), ContentType: a.ContentType, Data: data})
 	}
 
+	// A draft may replace one the same task of the same desktop made earlier and nobody has sent: a worker
+	// told its first attempt was wrong could otherwise only add a second copy of every email (found live,
+	// 2026-10-13: seven dunning letters drafted twice). Nothing a person sent, and nothing another task
+	// drafted, can be withdrawn this way.
+	var old outbox.Draft
+	if in.Replaces != "" {
+		var err error
+		old, err = s.Outbox.Get(in.Replaces)
+		switch {
+		case errors.Is(err, outbox.ErrNotFound):
+			jsonStatusError(w, http.StatusNotFound, "there is no draft "+in.Replaces+" to replace")
+			return
+		case err != nil:
+			jsonError(w, err)
+			return
+		case old.DesktopID != d.DesktopID || in.TaskID == "" || old.TaskID != in.TaskID:
+			jsonStatusError(w, http.StatusConflict, "only a draft this same task made can be replaced")
+			return
+		case old.Status != outbox.StatusDraft:
+			jsonStatusError(w, http.StatusConflict, "that email was already sent or discarded; it cannot be replaced")
+			return
+		}
+	}
+
 	saved, err := s.Outbox.Add(d)
 	if errors.Is(err, outbox.ErrInvalid) {
 		jsonStatusError(w, http.StatusBadRequest, strings.TrimPrefix(err.Error(), "outbox: "))
@@ -80,7 +105,17 @@ func (s *Server) outboxCreateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jsonResponse(w, map[string]any{"id": saved.ID, "status": saved.Status})
+	// Discarded only once its replacement is kept, so a failure leaves two drafts, never none.
+	replaced := ""
+	if old.ID != "" {
+		if err := s.Outbox.Discard(old.ID); err == nil {
+			replaced = old.ID
+		} else {
+			log.Printf("outbox: draft %s was kept but %s it replaces could not be discarded: %v", saved.ID, old.ID, err)
+		}
+	}
+
+	jsonResponse(w, map[string]any{"id": saved.ID, "status": saved.Status, "replaced": replaced})
 }
 
 // outboxListHandler lists drafts and sent emails, newest first, with the

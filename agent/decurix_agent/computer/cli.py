@@ -5,7 +5,7 @@ import sys
 import time
 
 from decurix_agent import logging_utils, progress
-from decurix_agent.computer import approval, core, replay, skill_engine, skills
+from decurix_agent.computer import approval, core, replay, shown, skill_engine, skills
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 
@@ -169,6 +169,8 @@ USAGE = """gui - see and use this desktop's screen
   gui do NAME [--param NAME=VALUE]... [--from N]
                                  do a taught task, with no model
 
+  gui guide [NAME]               how a well-known app is worked here (Excel, Calc,
+                                 TallyPrime, Word, PowerPoint, Impress, GIMP...)
   gui ask SERVICE "QUESTION"     put one question to chatgpt, google, duckduckgo,
                                  wikipedia or youtube and print its answer
 
@@ -224,6 +226,10 @@ def _target(value, args):
     point = el.parse_point(value)
 
     if el.REF_RE.match(value):
+        if shown.unseen(value):
+            raise ComputerError(f"{value} was not in anything shown to you in this task - a ref is not a number to "
+                                "guess, and a guessed one is another control. Nothing was done. gui observe, and use "
+                                "the ref the look gives the control you mean.")
         keywords["ref"] = value
     elif point:
         keywords["point"] = point
@@ -427,7 +433,11 @@ def build_parser():
     doer = sub.add_parser("do", add_help=False)
     doer.add_argument("name")
     doer.add_argument("--param", action="append", default=[])
+    doer.add_argument("--source-file", action="append", default=[])
     doer.add_argument("--from", dest="start", type=int, default=1)
+
+    guide = sub.add_parser("guide", add_help=False)
+    guide.add_argument("name", nargs="*")
 
     asker = sub.add_parser("ask", add_help=False)
     asker.add_argument("service")
@@ -524,7 +534,8 @@ def read_text(args):
     target = _target(words[0] if words else None, args)
 
     if target.get("point"):
-        element = el.at_point(observation["elements"], *target["point"])
+        element = el.at_point(observation["elements"], *target["point"], windows=observation.get("windows"),
+                               popups=observation.get("popups"))
     elif target:
         element = el.find(observation["elements"], active_group=core.active_group(observation), **target)
     else:
@@ -586,11 +597,18 @@ def run(argv):
         # host: an engine looked at a record just saved, was shown an empty page, reloaded it, and then could not
         # say whether its work had been saved. An almost empty page is looked at again before it is reported.
         loading = False
+        before = None
         for _ in range(EMPTY_PAGE_LOOKS):
             on_page = [e for e in observation.get("elements") or [] if e.get("source") == "cdp"]
             loading = bool(observation.get("page_url")) and len(on_page) < EMPTY_PAGE_ELEMENTS
-            if not loading:
+            # A small page that reads the same on two looks has settled: it is small, not loading. Found live:
+            # a sign-in page (a heading, two fields, a button) was called "almost nothing, still loading" after
+            # fifteen seconds of looks, and the engine was told not to touch it.
+            shape = [(e.get("role"), e.get("name")) for e in on_page]
+            if not loading or (on_page and shape == before):
+                loading = False
                 break
+            before = shape
             time.sleep(EMPTY_PAGE_PAUSE)
             observation = core.observe()
         core.report_observation(observation)
@@ -620,7 +638,26 @@ def run(argv):
         return EXIT_OK
 
     if command == "open":
-        print(core.open_target(" ".join(args.target), new_tab=args.new_tab))
+        target = " ".join(args.target)
+        print(core.open_target(target, new_tab=args.new_tab))
+        hint = _guide_hint(target)
+        if hint:
+            print(hint)
+        return EXIT_OK
+
+    if command == "guide":
+        # A guide to a well-known app (app_skills.py), for an engine that opened an app its request did not name.
+        from decurix_agent import app_skills
+
+        wanted = " ".join(args.name)
+        if not wanted:
+            for g in app_skills.guides():
+                print(f"{g['name']}: {g['description']}")
+            return EXIT_OK
+        found = app_skills.named(wanted)
+        if found is None:
+            raise ComputerError(f"no guide for {wanted!r}; gui guide lists them")
+        print(app_skills.render([found]))
         return EXIT_OK
 
     if command == "front":
@@ -705,7 +742,7 @@ def run(argv):
         from decurix_agent import guidance
 
         params = guidance.with_run_values(_params(args.param), skill.get("params"), skill=skill["name"])
-        return _print_replay(skill_engine.run(skill, params=params, start=args.start),
+        return _print_replay(skill_engine.run(skill, params=params, start=args.start, source_files=_params(args.source_file)),
                              command=f"gui do {skill['name']}")
 
     if command in ("click", "double-click", "right-click"):
@@ -805,6 +842,21 @@ def run(argv):
 # row one command may press.
 WALKING_KEYS = {"tab", "shift+tab"}
 MAX_WALK = 5
+# The most different keys one command presses.
+MAX_CHAIN = 6
+
+
+def _guide_hint(target):
+    """One line naming the guide to the app just opened, or "" (the line is printed only when there is one)."""
+
+    try:
+        from decurix_agent import app_skills
+        found = app_skills.matching(target)
+    except Exception:
+        return ""
+    if not found:
+        return ""
+    return "There is a guide to this app: gui guide " + " / gui guide ".join(g["name"] for g in found) +         " - read it before working it (it is already in your context when the request named the app)."
 
 
 def _refuse_blind_walk(keys):
@@ -824,16 +876,68 @@ def _refuse_blind_walk(keys):
         raise ComputerError(f"that is {longest} Tab presses in a row, and nothing was pressed: Tab moves through every "
                             "control on the way, and in a table of entries it adds rows. Go to the field itself - "
                             "gui click REF, or gui type REF \"text\" - with a ref from gui observe.")
+    # A long chain of different keys is a plan run blind. Found live (2026-10-15) in real Excel: one command pressed
+    # twenty keys - shortcuts, guessed ribbon key-tips ("alt+h s s"), the letters "t a b" - and every look after it
+    # met a sheet in a state nobody had seen form. Repeats of a key or two (Down Down Down, Tab Tab Enter) are a walk,
+    # not a plan, and are judged as one above.
+    if len(keys) > MAX_CHAIN and len({str(k).strip().lower() for k in keys}) > 3:
+        raise ComputerError(f"that is {len(keys)} keys in one command, and nothing was pressed: press at most "
+                            f"{MAX_CHAIN} at a time and look at what they did before the next (an app's key-tips and "
+                            "dialogs change what the following keys do). Type text with gui type, not as keys.")
+
+
+GONE = re.compile(r"^(e\d+) is no longer on the screen")
+
+
+def _moved_note(message):
+    """
+    For a ref that has gone, what it was and its ref now, when the screen shows
+    exactly one control of that role and name. Found live (2026-10-16): Excel's
+    Data tab had a new ref once a file was open; told only that "e21070 is no
+    longer on the screen", the engine pressed e21270 - a cell - and went round in
+    circles for forty commands.
+    """
+
+    gone = GONE.match(message)
+    if not gone:
+        return ""
+    known = shown.was(gone.group(1))
+    if not known:
+        return ""
+    role, name = known
+    try:
+        now = [e for e in core.observe()["elements"]
+               if e.get("role") == role and (e.get("name") or "") == name and e.get("ref")]
+    except ComputerError:
+        return ""
+    if len(now) != 1:
+        return f" It was {role} {el._quote(name)}."
+    return f" It was {role} {el._quote(name)}, which is now {now[0]['ref']} - use that ref."
+
+
+class _Kept:
+    """stdout, keeping a copy of what was printed (the refs in it are what the engine was shown)."""
+
+    def __init__(self, out):
+        self.out, self.kept = out, []
+
+    def write(self, text):
+        self.kept.append(text)
+        return self.out.write(text)
+
+    def __getattr__(self, name):
+        return getattr(self.out, name)
 
 
 def main(argv=None):
     logging_utils.log_to_file(logging_utils.log_file("decurix-gui.log"))
     argv = sys.argv[1:] if argv is None else argv
+    kept = sys.stdout = _Kept(sys.stdout)
 
     try:
         code = run(argv)
     except ComputerError as exc:
-        print(f"gui: {exc}")
+        print(f"gui: {exc}{_moved_note(str(exc))}")
         code = EXIT_ERROR
     except KeyboardInterrupt:
         code = EXIT_ERROR
@@ -852,6 +956,13 @@ def main(argv=None):
         print(f"gui: internal error ({type(exc).__name__}: {exc}); details in {logging_utils.log_file('decurix-gui.log')}")
         code = EXIT_ERROR
     finally:
+        if isinstance(kept, _Kept):
+            try:
+                shown.note("".join(kept.kept))
+            except Exception:  # noqa: BLE001 - remembering what was shown must never fail the command
+                pass
+            if sys.stdout is kept:
+                sys.stdout = kept.out
         save_screenshot(argv)
         # A short-lived command: the audit step it queued has to leave before
         # the process does.

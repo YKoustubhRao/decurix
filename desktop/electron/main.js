@@ -8,6 +8,7 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const { setupMobileAccess } = require('./mobile-access');
+const { ensureLanForward } = require('./windows-lan');
 const windowsRuntime = require('./windows-runtime');
 const { createLocalModels } = require('./local-models');
 
@@ -108,7 +109,16 @@ function cloudflared() {
   return windows ? resource('cloudflared.exe') : findProgram('cloudflared');
 }
 
-function tunnelCommand(port) {
+function tunnelCommand(port, provider = 'cloudflare') {
+  if (provider === 'localhost-run') {
+    return { file: windows ? path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe') : 'ssh', args: [
+      '-T', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new',
+      '-o', `UserKnownHostsFile=${path.join(dataDir(), 'tunnel-known-hosts')}`,
+      '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=3',
+      '-o', 'ExitOnForwardFailure=yes', '-o', 'ConnectTimeout=15',
+      '-R', `80:127.0.0.1:${port}`, 'nokey@localhost.run',
+    ] };
+  }
   return { file: cloudflared(), args: ['tunnel', '--protocol', 'http2', '--url', `http://127.0.0.1:${port}`] };
 }
 
@@ -116,7 +126,7 @@ function startMobileAccess() {
   if (mobileAccessPromise || closing) return;
   // No cloudflared, no tunnel: the dashboard works without one.
   if (!cloudflared()) return;
-  mobileAccessPromise = setupMobileAccess(dataDir(), tunnelCommand).then(async (access) => {
+  mobileAccessPromise = setupMobileAccess(dataDir(), tunnelCommand, { log: logLine }).then(async (access) => {
     if (closing) await access?.stop();
     else mobileAccess = access;
   }).catch((error) => console.warn('Mobile access setup failed:', error.message));
@@ -148,6 +158,12 @@ function update(message, failed = false, detail = '') {
 
 function logFile() {
   return path.join(dataDir(), 'desktop.log');
+}
+
+// logLine adds one line of the app's own to desktop.log, beside what the
+// programs it runs print there.
+function logLine(line) {
+  try { fs.appendFileSync(logFile(), `${new Date().toISOString()} ${line}\n`); } catch { /* the log is decoration */ }
 }
 
 // The newest line of desktop.log: why the control plane stopped. Empty when
@@ -215,6 +231,9 @@ function watchBackend() {
   if (watching) return;
   watching = true;
   watchKeepAwake();
+  // The control plane keeps the link in memory only: told again every minute,
+  // so a control plane that restarted on its own shows it again.
+  setInterval(() => { if (!closing && showingDashboard) reportLanAddress(); }, LAN_REPORT_EVERY_MS);
   setInterval(async () => {
     if (closing || starting || !showingDashboard || !window || window.isDestroyed()) return;
     if (await checkDashboard() === 'ready') { misses = 0; return; }
@@ -434,17 +453,59 @@ async function wslInstalled() {
   return await wsl(['--version']) === 0;
 }
 
+// A restart is asked for at most once per reason. Found on a second PC: WSL
+// still did not answer after the restart, the app asked for another, and
+// another - a loop with no way out. What was asked, and when, is kept; a
+// Windows booted since then has had its restart, and is not asked again.
+function restartFile() {
+  return path.join(dataDir(), 'restart-asked.json');
+}
+
+function restartedSinceAsked(reason) {
+  try {
+    const asked = JSON.parse(fs.readFileSync(restartFile(), 'utf8'));
+    const booted = Date.now() - os.uptime() * 1000;
+    return asked.reason === reason && booted > asked.at;
+  } catch { return false; }
+}
+
+function askForRestart(reason, message) {
+  try {
+    fs.mkdirSync(dataDir(), { recursive: true });
+    fs.writeFileSync(restartFile(), JSON.stringify({ reason, at: Date.now() }) + '\n', 'utf8');
+  } catch { /* without the note the person is asked again: the old behaviour */ }
+  throw new Error(message);
+}
+
+// wslSays is the first thing WSL prints for these arguments, for a message.
+async function wslSays(args) {
+  const lines = [];
+  await wsl(args, (line) => { const text = line.replace(/\0/g, '').trim(); if (text) lines.push(text); });
+  return lines.slice(0, 2).join(' ').slice(0, 300);
+}
+
+// The one administrator prompt that turns WSL on: --install enables its
+// Windows features, and --update installs WSL itself. Both fetch from GitHub
+// (--web-download), never the Microsoft Store: on a PC whose Store download
+// fails, `wsl --update` installed nothing and said nothing, and only
+// `wsl --update --web-download` by hand got it going (found 2026-10-13).
+const ENABLE_WSL = "Start-Process -FilePath cmd.exe -ArgumentList '/c','wsl.exe --install --no-distribution --web-download & wsl.exe --update --web-download' -Verb RunAs -Wait";
+
 // installWsl turns WSL on: Windows asks the person for an administrator's yes
 // once, and a computer that never had it then needs a restart.
 async function installWsl() {
+  const restarted = restartedSinceAsked('wsl');
   const message = 'Turning on Windows Subsystem for Linux. Windows will ask you to allow it.';
   update(message);
-  const command = "Start-Process -FilePath wsl.exe -ArgumentList '--install','--no-distribution' -Verb RunAs -Wait";
-  const code = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], (line) => update(message, false, line));
+  const code = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ENABLE_WSL], (line) => update(message, false, line));
   if (code !== 0) throw new Error('Windows Subsystem for Linux could not be turned on (was the administrator prompt declined?). Retry to try again.');
-  if (!await wslInstalled()) {
-    throw new Error('Windows Subsystem for Linux is installed. Restart Windows to finish, then open Decurix again.');
-  }
+  if (await wslInstalled()) return;
+  if (!restarted) askForRestart('wsl', 'Windows Subsystem for Linux is installed. Restart Windows to finish, then open Decurix again.');
+  const said = await wslSays(['--status']);
+  throw new Error('Windows Subsystem for Linux still does not start, even after a restart'
+    + (said ? ` (Windows says: ${said})` : '') + '. Open PowerShell as administrator and run: '
+    + 'wsl --update --web-download - then restart Windows and open Decurix again. '
+    + `Details are in ${logFile()}`);
 }
 
 // What a first install needs of the computer, asked before anything is set up
@@ -495,14 +556,23 @@ async function importDistro() {
   };
   const first = await attempt();
   if (first.code === 0) return;
-  if (!NO_VIRTUALIZATION.test(first.said)) throw new Error(`Could not set up Linux for Decurix. Check ${logFile()}`);
+  const said = first.said.split('\n').map((line) => line.trim()).filter(Boolean).slice(0, 2).join(' ').slice(0, 300);
+  if (!NO_VIRTUALIZATION.test(first.said)) throw new Error(`Could not set up Linux for Decurix${said ? ` (WSL says: ${said})` : ''}. Check ${logFile()}`);
+
+  // Already restarted once for this: another prompt and another restart
+  // change nothing, so say what is left to do.
+  if (restartedSinceAsked('platform')) {
+    throw new Error('Windows still cannot run Linux after the restart'
+      + (said ? ` (WSL says: ${said})` : '') + '. Virtualization is switched off: turn on Intel VT-x, AMD-V or SVM '
+      + 'in the computer\'s BIOS/UEFI settings. If it is already on, open PowerShell as administrator, run '
+      + '"bcdedit /set hypervisorlaunchtype auto", restart Windows and open Decurix again.');
+  }
 
   const asking = 'Turning on Windows\' Virtual Machine Platform. Windows will ask you to allow it.';
   update(asking);
-  const command = "Start-Process -FilePath wsl.exe -ArgumentList '--install','--no-distribution' -Verb RunAs -Wait";
-  await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], (line) => update(asking, false, line));
+  await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ENABLE_WSL], (line) => update(asking, false, line));
   if ((await attempt()).code === 0) return;
-  throw new Error('Windows cannot run Linux on this computer yet. Restart Windows, then open Decurix again. '
+  askForRestart('platform', 'Windows cannot run Linux on this computer yet. Restart Windows, then open Decurix again. '
     + 'If you see this again after the restart, virtualization is switched off in the computer\'s BIOS/UEFI settings '
     + '(Intel VT-x, AMD-V or SVM): turn it on there.');
 }
@@ -686,10 +756,6 @@ async function startStack() {
   await step('Starting Decurix…', ['compose', 'up', '-d', '--no-build'], 'Could not start Decurix in Docker.');
   await waitForDashboard(() => closing);
   buildToolsLater();
-  // Under WSL's default networking only this computer reaches the distro's
-  // ports, so there is no address on the network to give a phone there; the
-  // tunnel is how a phone gets in.
-  if (!windows) reportLanAddress();
   return true;
 }
 
@@ -705,23 +771,53 @@ function buildToolsLater() {
 // The gated listener is published on the network by compose, so a phone on
 // the same Wi-Fi can use it without the tunnel: the Mobile menu is told this
 // computer's address, found by asking which one a packet to the internet
-// would leave from (nothing is sent). scripts/*/build.sh do the same.
+// would leave from (nothing is sent). scripts/*/build.sh do the same. On
+// Windows the stack is in WSL, which hands its ports to this computer only:
+// windows-lan.js forwards the address there first (one administrator prompt;
+// DECURIX_WSL_LAN_FORWARD=0 in .env skips it), and no link is given without it.
+//
+// It is reported at every start - an earlier version reported it only when it
+// started the stack itself, so a PC whose stack was already running never got
+// the link - and again every LAN_REPORT_EVERY_MS. Whether the forward is in
+// place is asked once per address (lanForward), not every minute.
+const LAN_REPORT_EVERY_MS = 60000;
+let lanForward = { address: '', port: 0, ok: false };
+
+function publishLanURL(url) {
+  const body = JSON.stringify({ lan_url: url });
+  const req = http.request(`${dashboard}/api/tunnel`, { method: 'POST', timeout: 5000, headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, (res) => res.resume());
+  req.on('timeout', () => req.destroy());
+  req.on('error', () => {});
+  req.end(body);
+}
+
 function reportLanAddress() {
   const socket = dgram.createSocket('udp4');
   const give = () => { try { socket.close(); } catch { /* closed */ } };
-  socket.once('error', give);
-  socket.connect(80, '1.1.1.1', () => {
+  socket.once('error', () => { give(); publishLanURL(''); });
+  socket.connect(80, '1.1.1.1', async () => {
     let address = '';
     try { address = socket.address().address; } catch { /* no network */ }
     give();
-    if (!address || address.startsWith('127.')) return;
+    if (!address || address.startsWith('127.')) {
+      if (windows && lanForward.address !== '-') { lanForward = { address: '-', ok: false }; logLine('LAN link: this computer has no network address'); }
+      publishLanURL('');
+      return;
+    }
     let port = '8090';
-    try { port = fs.readFileSync(path.join(dataDir(), '.env'), 'utf8').match(/^\s*DECURIX_LAN_PORT\s*=\s*['"]?(\d+)/m)?.[1] || port; } catch { /* the default */ }
-    const body = JSON.stringify({ lan_url: `http://${address}:${port}` });
-    const req = http.request(`${dashboard}/api/tunnel`, { method: 'POST', timeout: 5000, headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, (res) => res.resume());
-    req.on('timeout', () => req.destroy());
-    req.on('error', () => {});
-    req.end(body);
+    let settings = '';
+    try { settings = fs.readFileSync(path.join(dataDir(), '.env'), 'utf8'); } catch { /* the defaults */ }
+    port = settings.match(/^\s*DECURIX_LAN_PORT\s*=\s*['"]?(\d+)/m)?.[1] || port;
+    if (windows) {
+      if (/^\s*DECURIX_WSL_LAN_FORWARD\s*=\s*['"]?0/m.test(settings)) { publishLanURL(''); return; }
+      if (lanForward.address !== address || lanForward.port !== Number(port) || !lanForward.ok) {
+        lanForward = { address, port: Number(port), ok: false };
+        try { lanForward.ok = await ensureLanForward(dataDir(), address, Number(port), logLine); }
+        catch (error) { logLine(`LAN link: could not forward ${address}: ${error.message}`); }
+      }
+      if (!lanForward.ok) { publishLanURL(''); return; }
+    }
+    publishLanURL(`http://${address}:${port}`);
   });
 }
 
@@ -782,6 +878,7 @@ async function start() {
       if (windows) localModels.resume().catch(error => console.warn(error.message));
       misses = 0;
       startMobileAccess();
+      reportLanAddress();
       watchBackend();
     }
   } catch (error) {

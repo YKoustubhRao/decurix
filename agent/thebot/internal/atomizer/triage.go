@@ -83,7 +83,7 @@ var (
 	// Something on the desktop's screen - a window, a page already open in
 	// the browser, a form, an office document - as opposed to the machine's
 	// files and processes or the web at large.
-	screenSurfaceRe = regexp.MustCompile(`(?i)\b(browser|chromium|web ?page|(the|this|that) page|admin panel|dashboard|libre ?office|writer|calc|spreadsheet|mousepad|text editor|file manager|thunar|on (the )?screen|gui|window|(the|this|that) form|dialog|button|dropdown|drop-down|check ?box|(the|a|new) tab)\b`)
+	screenSurfaceRe = regexp.MustCompile(`(?i)\b(browser|chromium|web ?page|(the|this|that) page|admin panel|dashboard|libre ?office|writer|calc|impress|spreadsheet|mousepad|text editor|file manager|thunar|on (the )?screen|gui|window|(the|this|that) form|dialog|button|dropdown|drop-down|check ?box|(the|a|new) tab|apps?|application|(your|the) desktop|excel|powerpoint|word|outlook|gimp|photoshop|inkscape|illustrator)\b`)
 	// Doing something there. Both halves are required: "browser test message
 	// one" names a surface and asks for nothing, and stays conversation.
 	screenActionRe = regexp.MustCompile(`(?i)\b(click|double[- ]click|right[- ]click|tick|untick|fill\s+(in|out)|type|press|select|choose|pick|enter|add|edit|change|rename|delete|remove|submit|sign\s+in|log\s*in|save|set|make|turn\s+(on|off)|enable|disable|pay|send|publish|create|open|close|replace|put|scroll)\b`)
@@ -172,6 +172,10 @@ var (
 
 // wantsDocument reports whether a request asks for an Office document or a
 // PDF, named by its file, to be made or changed.
+// namedAppRe is a request that says which app to work in ("in Excel", "use PowerPoint"); skills.workInAppRe is the
+// operator's own copy, which decides what it may not make behind that app.
+var namedAppRe = regexp.MustCompile(`(?i)\b(?:in|use|using|with|on|into)\s+(?:microsoft\s+|libreoffice\s+|adobe\s+)?(?:excel|calc|powerpoint|impress|word|writer|photoshop|gimp|illustrator|inkscape)\b`)
+
 func wantsDocument(prompt string) bool {
 	return documentFileRe.MatchString(prompt) && documentVerbRe.MatchString(prompt)
 }
@@ -267,8 +271,17 @@ func Triage(prompt string) Route {
 	p := strings.TrimSpace(prompt)
 	matched := Classify(p)
 
-	if matched == "coding" {
+	// A request whose deliverables are office documents or an email draft is
+	// back-office work, however it is worded: the operator makes them with
+	// office and gui, the coding harness would build a software project.
+	// Found live (2026-10-14): a price-list workbook and a summary email went
+	// to the coding harness, which made a Python package with tests and
+	// delivered neither.
+	if matched == "coding" && !wantsDocument(p) && !wantsEmailDraft(p) {
 		return Route{Kind: RouteSkill, TaskType: matched, Reason: "a request to build software - the coding harness takes it whole"}
+	}
+	if matched == "coding" {
+		matched = "general"
 	}
 
 	if namedCommandRe.MatchString(p) {
@@ -330,7 +343,21 @@ func Triage(prompt string) Route {
 	// saved the model's refusal as totals.xlsx. A request that also needs
 	// research is still planned; file-write hands such a step on itself.
 	if wantsDocument(p) && !researchRe.MatchString(p) {
+		if namedAppRe.MatchString(p) {
+			return Route{Kind: RouteOperate, TaskType: matched, Reason: "work to do in the app the request names - the operator does it there, on the screen"}
+		}
 		return Route{Kind: RouteOperate, TaskType: matched, Reason: "an Office document or PDF to make - the operator builds it with the office command"}
+	}
+
+	// A file whose contents are to come from a website is not something the
+	// file-write skill can write: it has no tools and writes what the model
+	// already holds. Found live (2026-10-13): "On https://books.toscrape.com
+	// ... find every Mystery book under 20 pounds and save them to
+	// mystery_under_20.csv" was triaged file-write, and the skill wrote four
+	// rows from the model's head - twice, the second time on the retry. The
+	// operator reads the site (fetching it, or on the screen) first.
+	if matched == "file-write" && webDestinationRe.MatchString(p) {
+		return Route{Kind: RouteOperate, TaskType: matched, Reason: "a file whose contents come from a website - the operator reads the site first"}
 	}
 
 	if wantsEmailDraft(p) && !researchRe.MatchString(p) {

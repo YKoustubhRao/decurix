@@ -348,9 +348,9 @@ def context(request, skill=None):
     before, for its standing context - or "". Remembers which playbook was
     offered, so the task's end can be counted for or against it.
 
-    Work on the screen is given the commands that worked, as the way through.
-    Shell and file work is given only a tool the worker wrote from them
-    (_distil): measured live, the list of commands cost more than it saved
+    Only a tool the worker wrote from what worked (_distil) is ever given;
+    the commands themselves are not, for any kind of work. Measured live on
+    shell work, the list of commands cost more than it saved
     there - the engine ran the same four commands in the same five turns, and
     carried the list in every one of them (17,088 tokens without it, 20,240
     and 20,961 with). Fewer tokens means fewer turns, and one command that
@@ -1111,13 +1111,21 @@ def listing():
     "first", "now", "uses", "ok", "saved_percent", "made_at"}. `how` is "tool"
     (a script of its own, run with no engine once it has been used), "replay"
     (its own checked run on the screen, replayed with no engine) or "way" (the
-    commands that worked, given to the engine).
+    commands that worked, kept to write a tool from or to compare runs by; the
+    engine still works such a request out each time).
+
+    A taught skill's runs are left out: the skill is what was kept of them,
+    and it shows its own cost (experience.economy). Listed here, the engine's
+    request for a taught task read as something worked out untaught, and the
+    saving its fitted replay made was put down to commands nobody was given.
     """
 
     own = _own_recordings()
     taken, out = set(), []
 
     for book in all_books():
+        if book.get("skill"):
+            continue
         entry = {"name": book["name"], "request": book.get("request", ""), "skill": book.get("skill"),
                  "commands": len(book["commands"]), "made_at": (book.get("made") or {}).get("at"),
                  "tool": (book.get("tool") or {}).get("run"), "recording": None, **economy(book)}

@@ -39,6 +39,9 @@ JUDGE_SYSTEM = (
     "them is listed). For a task that asks for information, each answer in the report must match what the tools "
     "read, and each must answer what was asked - an answer to a different question (a value garbled on the way, "
     "\"if you mean 7 x 8\" for 7+8) is not done.\n"
+    "A report that says the worker did not check a result the request asks for (\"I did not verify the file in the "
+    "folder\", \"could not confirm it saved\") is not proof of it: unless the screen or the observations show that "
+    "result, answer \"unsure\" (found live: a Word letter reported saved was an empty file).\n"
     "A screen left over from before is not this task's result: when it shows the demonstration's own values (or "
     "any others) where this run's should be, it is \"not_done\".\n"
     "What a taught task's \"done\" looks like was written from one demonstration. Its details that belonged to "
@@ -52,6 +55,28 @@ JUDGE_SYSTEM = (
     "than the request gave is \"not_done\" however complete the rest is: say which part, what was asked and what "
     "was done instead (found live: asked for one company, a record saved under a similarly named other one was "
     "reported in passing and passed).\n"
+    "A report that says a value of the request or its document was left out, cleared, shortened or replaced "
+    "because the application refused it (\"it rejected the GSTIN, so I saved without it\", \"set it to "
+    "Unregistered to complete the form\") is never \"done\": the record now says something the document does not. "
+    "Answer \"not_done\" and name the value (found live: a vendor saved as not GST-registered after its tax number "
+    "was refused passed this check).\n"
+    "A record made from a document must carry that document's own reference (its number, and its date where "
+    "there is a place for it): an order without the customer's order number, a receipt without the challan "
+    "number, is \"not_done\" when the record has a field for it - say which. Check the report and the screen for "
+    "it, not only the lines and totals (found live: two sales orders without the customer's PO number passed).\n"
+    "A period the document gives (valid for 30 days, due in 15 days) must be the record's date counted from its "
+    "own start date: count the days - an application's default of \"one month\" is 30 or 31 days by the calendar, "
+    "and a day off is \"not_done\" (found live: a quote asked to be valid 30 days was saved valid for 31).\n"
+    "A result must be where the request said to put it: a file saved in another folder (over the attached "
+    "original in an inbox folder instead of in the work folder named) is \"not_done\" - say where it is. A request to "
+    "save in a folder of the person's own computer (C:\\...) or to work in a named app is met only by that app saving "
+    "there: a file in the worker's own folders, or work done in another app, is \"not_done\".\n"
+    "Read what the report itself says was left undone. A value the document gives that the record has a place "
+    "for, left out because the worker did not find or did not look for its field (\"no visible field on the part "
+    "of the form I completed\"), is \"not_done\": say which value - a form keeps most of its fields further down "
+    "or in another section, and the worker is sent back to find it (found live: a sales order passed without "
+    "the customer's own order number and date, which the report listed as left undone). Only a reason that "
+    "stands - the application has no place for it at all, the person said to leave it - lets it pass.\n"
     "Answer \"not_done\" when you can see it was not: an error, a validation message, the wrong page or record, "
     "another value than asked, a half-filled form, a sign-in page, a CAPTCHA, nothing changed, fewer items than "
     "were asked for.\n"
@@ -71,18 +96,52 @@ JUDGE_SYSTEM = (
     "taught the task said to pick the matching existing record. Only a record for a different thing is a "
     "mismatch (found live: correct entries were refused for their records' names, and each retry entered the "
     "document a second time).\n"
+    "A rule about HOW to work - look for an existing record first, compare a total and say both, check "
+    "something before saving - is a step of the method, not part of the result. It happened before the screen "
+    "you see, so the screen cannot show it: judge it from what the tools observed during the task (the actions "
+    "list holds the search that was typed and what it found) and from the report. When those show it, or the "
+    "report states it and nothing you are shown contradicts it, it does not make a correct result \"unsure\". "
+    "What does make the task not done is the RESULT showing the rule was broken: a second record with the same "
+    "reference, a record submitted where a draft was asked, a total the report gets wrong. Found live: a "
+    "correct draft whose report said it had searched first and compared the totals (and both totals were on "
+    "the screen) was put to a person as \"no proof the duplicate check was made\", on every bill.\n"
     "Answer \"cannot\" when the worker's own report does not claim the task was done: it says the worker stopped, "
     "or could not go on, and gives the reason (something the task needs is not there, a rule it was given forbids "
     "the only way forward, the application refused). That is the worker being honest, not a check that failed: "
     "the person is told what it said (found live: \"this cannot be entered, there is no such record and I must "
     "not create one\" was sent back to be tried again, and the worker then typed into the half-filled form). "
-    "A report that claims success is never \"cannot\".\n"
+    "A report that claims success is never \"cannot\". Nor is one that names no obstacle: a worker that did a "
+    "first part (a check that found nothing in the way) and then stopped, saying only what it has not done yet, "
+    "could have gone on - that is \"not_done\", and it is sent back to finish (found live: \"no existing invoice "
+    "was found; I have not entered the new draft yet\" was put to a person as if something stood in the way).\n"
     "When you are shown the files the worker wrote during the task, they are the result, exact as they read now: "
     "every figure, status and statement the report makes about a file must be what that file shows, and the file "
     "must hold what the task asked for. A report that says something the file contradicts (\"these two were "
     "matched\" where the file lists them as unmatched, a total the file does not have, a sheet or column that is "
     "not there) is \"not_done\" - say which file and what differs, so the worker can correct the file or the "
-    "report. A file shown cut short is judged on the part shown.\n"
+    "report. Work out yourself every total, count or sum that the report or an email states, from the figures the "
+    "files show: one that does not add up is \"not_done\" (found live: an email gave a payable total of 6,899.40 "
+    "for rows summing to 6,900.40, and passed). When the request gives rules for working figures out (rates, caps, "
+    "formulas, a method, thresholds) and you are shown the source documents, recompute at least two rows of the result "
+    "yourself from the sources by those rules - the first row and one that a rule changes - and compare: a figure that "
+    "does not follow the rules is \"not_done\", however consistent the file and the report are with each other (found "
+    "live: a depreciation schedule whose opening values charged one year where the assets had been in service for two "
+    "passed, because the report described the file correctly). When rules sort the source's rows into places (kept / "
+    "rejected, matched / unmatched, OK / exception, duplicate - keep the first), follow every source row yourself to "
+    "where the rules put it and check it is there, exactly once: a row in the wrong place or in no place is "
+    "\"not_done\" (found live: both copies of a duplicated contact were rejected where the first was to be kept, and "
+    "passed). Every rule applies to every entry it covers: an entry one rule adjusted (a deduction) is still subject "
+    "to the next (a cap, a limit) - a figure above a cap the policy sets is \"not_done\" (found live: a meal approved "
+    "at 60.50 over a 60.00 cap, after its wine was deducted, passed). A total of something the request defines (\"every credit on the statement is a customer receipt\") counts "
+    "everything that definition covers - not only the part a later step used (found live: \"total receipts\" was given "
+    "as the receipts applied to invoices, leaving out a receipt no invoice matched, and passed). A record the worker made during this task (its recorded actions fill and save it, or its report says it "
+    "entered it) is the task's result, not one that \"already existed\": the screen at the end shows the result, and "
+    "only what was seen before the worker made anything says what existed before (found live: three orders the "
+    "worker had just entered were called duplicates of themselves). A file shown cut short is judged on the part shown. Text in a file that still holds a web page's markup "
+    "or character codes (&amp;, &#39;, &quot;, <br>, <b>) is \"not_done\": it must read as the page shows it - say "
+    "which entry (found live: a workbook of book titles kept \"It&#39;s Only the Himalayas\" and passed). In a "
+    "workbook, a figure the task asks for must be a number in a cell of its own: a quantity written with its unit "
+    "(\"2 Units\") or several figures in one text cell (\"Subtotal: 50000; Tax: 9000\") is \"not_done\".\n"
     "Answer \"unsure\" whenever you cannot tell from what you are shown. Never guess \"done\".\n"
     "Reply with JSON only: {\"verdict\": \"done\"|\"not_done\"|\"cannot\"|\"unsure\", \"confidence\": 0.0-1.0, "
     "\"seen\": \"what the screen now shows (or, with no screen, what the files show), one sentence\", "
@@ -92,6 +151,103 @@ JUDGE_SYSTEM = (
 
 def available():
     return llm_client.available()
+
+
+# A report's own heading for what it did not do ("Left undone:", "**Not done:**").
+_UNDONE_HEAD = re.compile(r"^\s*(?:[*_#>\-\s]*)(left undone|not done|undone|not completed|could not (?:do|complete))"
+                          r"(?:[*_\s]*)[:\-]\s*(.*)$", re.I)
+# What under such a heading says that nothing was left.
+_NOTHING_LEFT = re.compile(r"^[\s*_\-.]*(?:none|nothing|n/?a\b|no (?:part|item|step)s?\b|all (?:done|of it)\b)", re.I)
+# A line that opens the next part of a report ("How I verified:").
+_NEXT_HEAD = re.compile(r"^\s*[*_#]*[A-Z][^:\n]{0,60}:\s*$")
+
+
+def left_undone(report):
+    """
+    What a report lists under its own "Left undone:" heading, or "" when it lists nothing there. Decided with no
+    model: found live (2026-10-15), asked to do a report in real Excel and save it in a folder of the person's
+    computer, a worker re-saved a file an earlier task had left open in another app, wrote "Left undone: I could not
+    use Excel ... I could not verify the host path", and the check - looking at that file - passed it as done.
+    """
+
+    lines = (report or "").splitlines()
+    found = []
+    for i, line in enumerate(lines):
+        m = _UNDONE_HEAD.match(line)
+        if not m:
+            continue
+        items = [m.group(2).strip()] if m.group(2).strip() else []
+        for follow in lines[i + 1:]:
+            if not follow.strip() or _NEXT_HEAD.match(follow) or _UNDONE_HEAD.match(follow):
+                break
+            items.append(follow.strip())
+        items = [x for x in items if not _NOTHING_LEFT.match(x)]
+        found.extend(items)
+    return "; ".join(found)[:600]
+
+
+# A sum written out in a report: "450.00 + 90.00 + 102.60 = 642.60", "$1,200 - 150 = $1,050", "3 x 25.00 = 75.00".
+_AMOUNT = r"(?:[$€£¥]|USD|EUR|GBP|INR|Rs\.?)?\s?-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|(?:[$€£¥]|USD|EUR|GBP|INR|Rs\.?)?\s?-?\d+(?:\.\d+)?"
+_SUM = re.compile(rf"(?<![\w.,/-])((?:{_AMOUNT})(?:\s*[-+×x*]\s*(?:{_AMOUNT}))+)\s*=\s*({_AMOUNT})(?![\w%/.]|,\d)", re.I)
+
+
+def _amount(text):
+    from decimal import Decimal
+    digits = re.sub(r"[^\d.\-]", "", text.replace(",", ""))
+    return Decimal(digits)
+
+
+def false_sums(text):
+    """
+    Each sum a text writes out that does not come to what it says, as a sentence; [] when every one does. Decided with
+    no model. Found live (2026-10-14): a report read "750.00 + 300.00 + 84.00 = 1143.00" (it is 1134.00), so an
+    invoice whose lines do not add up to its total was registered OK - and the model check took the report's word.
+    """
+
+    from decimal import Decimal, InvalidOperation
+
+    out = []
+    for m in _SUM.finditer(text or ""):
+        left, stated = m.group(1), m.group(2)
+        parts = re.split(r"\s*([-+×x*])\s*(?=[$€£¥A-Z]{0,3}\s?-?\d)", left)
+        try:
+            # Multiplication first, then sums and differences, left to right.
+            terms, ops = [_amount(parts[0])], []
+            for op, value in zip(parts[1::2], parts[2::2]):
+                if op.lower() in ("×", "x", "*"):
+                    terms[-1] = terms[-1] * _amount(value)
+                else:
+                    ops.append(op)
+                    terms.append(_amount(value))
+            total = terms[0]
+            for op, value in zip(ops, terms[1:]):
+                total = total + value if op == "+" else total - value
+            want = _amount(stated)
+        except (InvalidOperation, ValueError, IndexError):
+            continue
+        places = max([len(p.split(".")[1]) for p in re.findall(r"\d+\.\d+", m.group(0))] + [0])
+        # Rounded to the result's own precision is right: 33.333 + 33.333 = 66.67.
+        shown = len(stated.split(".")[1]) if "." in stated else 0
+        if abs(total - want) > Decimal(1).scaleb(-shown) / 2 + Decimal("0.0001"):
+            out.append(f"{m.group(0).strip()} is wrong: it comes to {total:,.{places}f}")
+    return out
+
+
+# A number as a program prints it, never as a person writes one: float noise (1672.7400000000002, 0.30000000000000004,
+# 2.9999999999999996) and scientific notation (3E+1, 1.5e-05).
+_FLOAT_NOISE = re.compile(r"(?<![\w.])-?\d+\.\d*(?:0{6,}|9{6,})\d{1,3}(?![\w.])")
+_SCIENTIFIC = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?[eE][+-]?\d{1,3}(?![\w.])")
+
+
+def program_numbers(text):
+    """
+    Numbers in what a task wrote that are written as a program prints them, as a list; [] when there are none.
+    Decided with no model. Found live (2026-10-14): a payslip PDF showed hours as "3E+1"; a person reading it sees a
+    broken document. (Plain decimals - 7183.0, 1135.125 - are left to the rules and the check: they can be right.)
+    """
+
+    found = _FLOAT_NOISE.findall(text or "") + _SCIENTIFIC.findall(text or "")
+    return list(dict.fromkeys(found))[:6]
 
 
 def judge(task, claim="", criteria="", values=None, steps="", live_png=None, reference_png=None, observed=None,
@@ -182,7 +338,10 @@ def judge(task, claim="", criteria="", values=None, steps="", live_png=None, ref
 # refuses to type values from before reading (internal/skills/grounding.go).
 # A native Windows worker's documents are named C:\...\po.pdf.
 DOCUMENT_PATH = re.compile(r"(?:~|/|\b[a-z]:[\\/])[\w.~/\\-]*[\w-]\.(?:pdf|xlsx|xlsm|docx|csv|eml|png|jpe?g)\b", re.I)
-MAX_DOCUMENT_CHARS = 4000
+# Shared fairly among the task's documents, so none is cut to nothing. Found live (2026-10-13): three bills
+# read together in 4000 characters left the last one cut off, and the check could only answer "unsure"; a
+# 12-page policy needs all of itself to confirm "every limit" (as much as office.read_document gives).
+MAX_DOCUMENT_CHARS = 30000
 MAX_DOCUMENT_PICTURES = 2
 
 
@@ -196,18 +355,24 @@ def _documents(task):
 
     from decurix_agent.tools import office
 
+    from decurix_agent import attachments
+
     texts, pictures = [], []
     for path in dict.fromkeys(DOCUMENT_PATH.findall(task or "")):
+        # What the person sent, even when the task has since changed the file in place.
+        source = attachments.original(path)
         try:
-            doc = office.read_document(path)
+            doc = office.read_document(source)
         except Exception as exc:  # a missing or unreadable file: judged without it
             log(f"verify: could not read {path}: {exc}")
             continue
-        texts.append(f"--- {path}\n{(doc.get('text') or '').strip()}")
+        label = path if source == path else f"{path} (as the person sent it; the task has changed this file since)"
+        texts.append(f"--- {label}\n{(doc.get('text') or '').strip()}")
         for image in doc.get("images") or []:
             if len(pictures) < MAX_DOCUMENT_PICTURES and os.path.isfile(image):
                 pictures.append(image)
-    return "\n".join(texts)[:MAX_DOCUMENT_CHARS], pictures
+    share = MAX_DOCUMENT_CHARS // max(len(texts), 1)
+    return "\n".join(t if len(t) <= share else t[:share] + " [...]" for t in texts), pictures
 
 
 def _parse(text):

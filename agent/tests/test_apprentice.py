@@ -697,6 +697,21 @@ class Evidence(unittest.TestCase):
         self.assertEqual(seen, ["action: open https://chatgpt.com/?q=a (done)",
                                 "read off the screen: ChatGPT was asked 'what is 7+8?'; ChatGPT says: 15"])
 
+    def test_what_an_action_found_is_kept_beside_it(self):
+        # A duplicate check made along the way: the search is an action, its answer is what the screen did.
+        from decurix_agent.computer import recording
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(evidence, "NOTES_DIR", Path(tmp) / "notes"), \
+                mock.patch.object(recording, "ROOT", Path(tmp) / "rec"), \
+                mock.patch.object(evidence.task_context, "current", lambda: "t0123456789abcdef"):
+            recording.append("task-t0123456789abcdef", {"kind": "type", "summary": 'type "NXG-2026-8812" into textbox "Search"',
+                                                        "outcome": "done", "change": '1 element(s) appeared: text "No Results found"'})
+            recording.append("task-t0123456789abcdef", {"kind": "key", "summary": "press Escape", "outcome": "done",
+                                                        "change": "x" * 1000})
+            seen = evidence.observed()
+        self.assertEqual(seen[0], 'action: type "NXG-2026-8812" into textbox "Search" (done) -> 1 element(s) appeared: text "No Results found"')
+        self.assertLess(len(seen[1]), 300)
+
     def test_the_check_is_shown_what_was_observed(self):
         sent = []
         with mock.patch.object(verify.llm_client, "available", lambda: True), \

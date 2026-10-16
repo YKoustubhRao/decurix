@@ -80,7 +80,10 @@
     if (!ws || ws.readyState !== 1) return;
     while (outbox.length) ws.send(outbox.shift());
   }
+  // The field of this page the app's keyboard was last given to (aim), or null once anything else may have moved it.
+  var appField = null;
   function emit(ev) {
+    if (ev.kind === 'down' || ev.kind === 'key' || ev.kind === 'wheel' || ev.kind === 'choose' || ev.kind === 'press' || ev.kind === 'copy') { if (!ev.inField) appField = null; }
     // Only the latest of a run of mouse moves matters; anything else is sent after it, in order.
     if (ev.kind === 'move') {
       pendingMove = ev;
@@ -167,7 +170,7 @@
                cell: 'gridcell', checkbox: 'checkbox', radio: 'radio', combobox: 'combobox', slider: 'slider',
                spinbutton: 'spinbutton', columnheader: 'columnheader', image: 'img' };
 
-  function isField(t) { return !!t && t.parentNode === ax && t.tagName === 'INPUT'; }
+  function isField(t) { return !!t && t.parentNode === ax && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA'); }
 
   function place(elem, n) {
     elem.style.left = (n.box[0] / treeW * 100) + '%';
@@ -180,9 +183,16 @@
   // What changes about a control between two reads.
   function update(elem, n) {
     place(elem, n);
-    if (n.role === 'textbox') {
+    if (n.role === 'cell') {
+      // A spreadsheet's cell: what it holds is in its name, beside its address ("D2 = 4950"), since a grid cell has no
+      // value of its own to a reader of this page.
+      var inner = elem.querySelector('[role=gridcell]');
+      var label = (n.name || '') + (n.value ? ' = ' + n.value : '');
+      // As its text too: a reader lists a row by the text of its cells.
+      if (inner && inner.textContent !== label) { inner.textContent = label; inner.setAttribute('aria-label', label); }
+    } else if (n.role === 'textbox') {
       var type = n.password ? 'password' : 'text';
-      if (elem.type !== type) elem.type = type;
+      if (elem.tagName === 'INPUT' && elem.type !== type) elem.type = type;
       // What was typed a moment ago stays until the app's field has had time to show it.
       if (Date.now() - Number(elem.dataset.edited || 0) > 2000 && elem.value !== (n.value || '')) elem.value = n.value || '';
     } else if (n.role !== 'text' && n.role !== 'image') {
@@ -190,7 +200,12 @@
       var shown = n.value || '';
       if (elem.textContent !== shown) elem.textContent = shown;
     }
-    if (n.checked !== undefined && n.checked !== null) elem.setAttribute('aria-checked', n.checked ? 'true' : 'false'); else elem.removeAttribute('aria-checked');
+    // A button that stays down (Bold, Italic, a view's toggle) says so as pressed: a button has no "checked" to a reader,
+    // and without it a worker that could not see whether a header was bold pressed Bold again and undid it (found live).
+    var toggle = n.checked !== undefined && n.checked !== null;
+    var pressedKind = elem.getAttribute('role') === 'button';
+    if (toggle && pressedKind) elem.setAttribute('aria-pressed', n.checked ? 'true' : 'false'); else elem.removeAttribute('aria-pressed');
+    if (toggle && !pressedKind) elem.setAttribute('aria-checked', n.checked ? 'true' : 'false'); else elem.removeAttribute('aria-checked');
     if (n.expanded !== undefined && n.expanded !== null) elem.setAttribute('aria-expanded', n.expanded ? 'true' : 'false'); else elem.removeAttribute('aria-expanded');
     if (n.selected) elem.setAttribute('aria-selected', 'true'); else elem.removeAttribute('aria-selected');
     if (n.disabled) elem.setAttribute('aria-disabled', 'true'); else elem.removeAttribute('aria-disabled');
@@ -199,10 +214,27 @@
   function build(n) {
     var elem;
     if (n.role === 'textbox') {
-      elem = document.createElement('input');
+      // A field taller than a line or two (a document's page, a notes box) takes several lines: an <input> drops every
+      // line break typed into it - found live (2026-10-15), a letter typed into real Word arrived as its first line.
+      elem = document.createElement(!n.password && n.box && n.box[3] > 60 ? 'textarea' : 'input');
       elem.setAttribute('autocomplete', 'off');
       elem.tabIndex = -1;
       if (n.name) { elem.setAttribute('aria-label', n.name); elem.placeholder = n.name; }
+    } else if (n.role === 'cell') {
+      // A grid cell is a grid cell to the browser's accessibility tree only inside a grid's row; on its own it is dropped
+      // (found live, 2026-10-16: 736 of Excel's cells were on this page and none reached the worker). Each is its own
+      // one-cell grid, laid where the app draws it.
+      elem = document.createElement('div');
+      elem.setAttribute('role', 'grid');
+      var row = document.createElement('div');
+      row.setAttribute('role', 'row');
+      row.style.cssText = 'position:absolute;inset:0';
+      var cell = document.createElement('div');
+      cell.setAttribute('role', 'gridcell');
+      cell.style.cssText = 'position:absolute;inset:0';
+      cell.tabIndex = -1;
+      row.appendChild(cell);
+      elem.appendChild(row);
     } else if (n.role === 'text') {
       elem = document.createElement('span');
       elem.className = 't';
@@ -264,32 +296,103 @@
   }
   function clickAt(p) { emit({ kind: 'down', x: p.x, y: p.y, right: false, mods: '' }); emit({ kind: 'up', x: p.x, y: p.y, right: false, mods: '' }); }
 
-  // A field focused without a pointer (an agent's DOM focus) is clicked in the app, so what is typed lands there.
+  // Picks an entry of the app's drop-down list by its name, through the app's own accessibility (keys and clicks posted to
+  // a Windows dialog do not move its focus). The worker's action layer calls it on a combobox element; the answer is
+  // the entry's name, or "ERR ..." with why none was chosen.
+  // Presses an app's named control through its accessibility (decurixChoose's sibling): the worker's action layer calls
+  // it for a button, tab, menu entry, link or check box; "ERR ..." and the caller clicks as before.
+  window.decurixPress = function (elem) {
+    return new Promise(function (resolve) {
+      if (!elem || !elem.dataset || !elem.dataset.box) { resolve('ERR not a control of the app'); return; }
+      var p = middleOf(elem), id = ++seqOut, timer = setTimeout(function () { delete answers[id]; resolve('ERR the app did not answer'); }, 10000);
+      answers[id] = function (r) { clearTimeout(timer); resolve((r && r.text) || 'ERR no answer'); };
+      markBusy();
+      emit({ kind: 'press', x: p.x, y: p.y, seq: id });
+    });
+  };
+  // Puts a line of text into an app's field through its accessibility (the bridge sets the field's value and gives it
+  // the keyboard), instead of typing it key by key: typed, the last keys could be overtaken by the next key sent. The
+  // answer is "SET <what the field holds>" or "ERR ...", and the worker's action layer types instead on an error.
+  window.decurixSetValue = function (elem, text, append) {
+    return new Promise(function (resolve) {
+      if (!isField(elem) || !elem.dataset.box) { resolve('ERR not a field of the app'); return; }
+      var p = middleOf(elem), id = ++seqOut, timer = setTimeout(function () { delete answers[id]; resolve('ERR the app did not answer'); }, 10000);
+      answers[id] = function (r) {
+        clearTimeout(timer);
+        var said = (r && r.text) || 'ERR no answer';
+        if (said.indexOf('SET') === 0) {
+          elem.value = said.slice(4);
+          elem.dataset.edited = String(Date.now());
+          appField = elem;
+        }
+        resolve(said);
+      };
+      markBusy();
+      emit({ kind: 'setvalue', x: p.x, y: p.y, text: String(text || ''), append: !!append, seq: id });
+    });
+  };
+  window.decurixChoose = function (elem, text) {
+    return new Promise(function (resolve) {
+      if (!elem || !elem.dataset || !elem.dataset.box) { resolve('ERR not a control of the app'); return; }
+      var p = middleOf(elem), id = ++seqOut, timer = setTimeout(function () { delete answers[id]; resolve('ERR the app did not answer'); }, 20000);
+      answers[id] = function (r) { clearTimeout(timer); resolve((r && r.text) || 'ERR no answer'); };
+      markBusy();
+      emit({ kind: 'choose', x: p.x, y: p.y, text: String(text || ''), seq: id });
+    });
+  };
+
+  // A field focused without a pointer (an agent's DOM focus) is clicked in the app, so what is typed lands there. The click
+  // alone does not move a Windows dialog's focus, so the app is also asked to give that field the keyboard; and since a key
+  // (an Enter that moves on to the next cell, say) can take the app's focus elsewhere while this page's focus stays put,
+  // text is aimed again whenever anything else happened in between. Found live (2026-10-15): the second reference typed
+  // into Excel's Name Box went into a cell ("TotalD20").
+  function aim(t) {
+    if (appField === t) return;
+    var m = middleOf(t);
+    clickAt(m);
+    emit({ kind: 'setfocus', x: m.x, y: m.y });
+    appField = t;
+  }
   var refocusing = false;
   ax.addEventListener('focusin', function (e) {
-    if (isField(e.target) && !refocusing && Date.now() - lastPointer > 500) clickAt(middleOf(e.target));
+    if (isField(e.target) && !refocusing && Date.now() - lastPointer > 500) aim(e.target);
   });
 
-  // Text typed into a field goes to the app as text; replacing all of it is Ctrl+A then Delete, as it is in the app.
-  function clearField() { emit({ kind: 'key', vk: 65, mods: 'c' }); emit({ kind: 'key', vk: 46, mods: '' }); }
+  // Text typed into a field goes to the app as text. Replacing all of it selects it (Ctrl+A) and lets the new text replace
+  // the selection; emptying it is Ctrl+A then Backspace. Never Delete: where the app's keyboard is not in the field after
+  // all, Ctrl+A selects everything in a list and Delete deletes it - found live (2026-10-16), a folder of the person's
+  // own computer went to the Recycle Bin from a file dialog's list.
+  function selectField() { emit({ kind: 'key', vk: 65, mods: 'c', inField: true }); }
+  function clearField() { selectField(); emit({ kind: 'key', vk: 8, mods: '', inField: true }); }
   ax.addEventListener('beforeinput', function (e) {
     var t = e.target;
     if (!isField(t)) return;
+    aim(t);
     var whole = t.value.length > 0 && t.selectionStart === 0 && t.selectionEnd === t.value.length;
     var type = e.inputType || '';
     t.dataset.edited = String(Date.now());
     if (type.indexOf('insert') === 0 && type !== 'insertLineBreak' && type !== 'insertParagraph') {
       var data = e.data || (e.dataTransfer && e.dataTransfer.getData('text/plain')) || '';
-      if (whole) clearField();
+      if (whole) selectField();
+      // Line breaks travel with the text: the control plane gives the app each one the way that app takes it.
       if (data) emit({ kind: 'type', text: data });
     } else if (type === 'insertLineBreak' || type === 'insertParagraph') {
-      emit({ kind: 'key', vk: 13, mods: '' });
+      emit({ kind: 'type', text: '\n' });
     } else if (type.indexOf('deleteContentBackward') === 0 || type.indexOf('deleteWordBackward') === 0) {
-      if (whole) clearField(); else emit({ kind: 'key', vk: 8, mods: '' });
+      if (whole) clearField(); else emit({ kind: 'key', vk: 8, mods: '', inField: true });
     } else if (type.indexOf('delete') === 0) {
-      if (whole) clearField(); else emit({ kind: 'key', vk: 46, mods: '' });
+      if (whole) clearField(); else emit({ kind: 'key', vk: 46, mods: '', inField: true });
     }
   });
+
+  // Enter, Tab or Escape in a field moves the app's keyboard on (to the next cell, the next field, out of an editor), so
+  // this page's focus leaves the field too: what is typed next with no field named goes where the app's cursor now is.
+  // Found live (2026-10-15): after Enter in Excel's Name Box, "Total" typed into the cell went into the Name Box again.
+  function leaveField(t) {
+    if (!isField(t)) return;
+    refocusing = true;
+    try { t.blur(); img.focus({ preventScroll: true }); } finally { refocusing = false; }
+  }
 
   // The VM's clipboard, set from a hidden text box: navigator.clipboard needs a secure origin and this page is plain http.
   function setLocalClipboard(text) {
@@ -315,6 +418,8 @@
   window.addEventListener('mouseup', function (e) {
     if (!down) return; down = false; lastPointer = Date.now();
     var p = pos(e); emit({ kind: 'up', x: p.x, y: p.y, right: e.button === 2, mods: mods(e) });
+    // A press posted to the app does not move a dialog's or a toolbar box's focus: the app is asked to focus the field too.
+    if (isField(e.target)) { var mf = middleOf(e.target); emit({ kind: 'setfocus', x: mf.x, y: mf.y }); appField = e.target; }
   });
   stage.addEventListener('mousemove', function (e) { if (down) { var p = pos(e); emit({ kind: 'move', x: p.x, y: p.y, right: e.buttons === 2, mods: mods(e) }); } });
   stage.addEventListener('contextmenu', function (e) { e.preventDefault(); });
@@ -346,9 +451,15 @@
       return;
     }
     if ((e.ctrlKey && !e.altKey && k === 'v') || (e.shiftKey && e.key === 'Insert')) return; // handled by the paste event
+    // A single-line field gives no input event for Enter: it is the Enter key, sent from here.
+    if (inField && e.key === 'Enter' && !shortcut && e.target.tagName === 'INPUT') {
+      e.preventDefault(); emit({ kind: 'key', vk: 13, mods: mods(e) }); leaveField(e.target); return;
+    }
     if (inField && !shortcut && (text || e.key === 'Backspace' || e.key === 'Delete' || e.key === 'Enter')) return; // beforeinput
     if (NAMED[e.key] || /^F([1-9]|1[0-2])$/.test(e.key) || (shortcut && e.keyCode > 0)) {
-      e.preventDefault(); emit({ kind: 'key', vk: e.keyCode, mods: mods(e) }); return;
+      e.preventDefault(); emit({ kind: 'key', vk: e.keyCode, mods: mods(e) });
+      if (inField && (e.key === 'Tab' || e.key === 'Escape')) leaveField(e.target);
+      return;
     }
     if (text && !e.metaKey) { e.preventDefault(); emit({ kind: 'type', text: e.key }); }
   });

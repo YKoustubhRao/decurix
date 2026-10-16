@@ -1,6 +1,9 @@
+import collections
+import concurrent.futures
 import json
 import os
 import queue
+import re
 import select
 import signal
 import subprocess
@@ -82,10 +85,23 @@ DRAIN_SECONDS = 12
 # person typing a phrase on a 1-vCPU desktop - measured: End then came before
 # " breeding season" and Enter had been read, and they were lost.
 KEY_BURST_SECONDS = 1.0
+# After this long with no key, every key event is read and the server's Caps Lock state is the recorder's again.
+LOCK_RESYNC_SECONDS = 1.0
+
+# A control whose own pixels (inside its border, where a focus ring or hover outline is not) differ by no more than
+# this between the last look and the moment it was pressed is still the control that look saw there (_element).
+CONTROL_UNCHANGED = 0.02
+CONTROL_INSET = 3
+# How many recent looks are kept to tell whether a password field was on the screen while text went into a field
+# that could not be told (_secret_around).
+LOOKS_KEPT = 20
 
 # How far behind the input reader may be before a frame it grabs is not the moment of the press (Recorder._lag).
 LATE_SECONDS = 0.5
 LATE_NOTE = "it was read after the screen had already changed, so what was pressed is not known"
+# A date/time field as a look lists it (cdp.DATE_ROLES), and the values such a field holds.
+DATE_STATES = {"date", "date and time", "time", "month", "week"}
+DATE_VALUE = re.compile(r"\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2})?|\d{2}:\d{2}|\d{4}-\d{2}|\d{4}-W\d{2}")
 
 # A pause that ends on the screen it began on held no private step: the person paused to write a Reason (the toolbar
 # pauses while one is composed), or pressed Stop and Continue with nothing in between. Recording a "manual" step for it
@@ -400,6 +416,7 @@ KEY_NAMES = {
 }
 KEY_NAMES.update({0xFFBE + n: f"F{n + 1}" for n in range(12)})
 KEY_NAMES.update({0xFFB0 + n: f"KP_{n}" for n in range(10)})
+CAPS_LOCK = 0xFFE5
 
 
 def _key_name(keysym, keycode):
@@ -518,32 +535,10 @@ WHERE_NOTES = {
 }
 
 
-def _unoccluded(elements, windows, x, y):
-    """
-    The elements that can be what a press at x,y was on: not those of a
-    window that another window covers at that point. A look at the screen
-    lists every window's controls, the ones behind as readily as the ones in
-    front - found live, a click on a page was recorded as a text box of the
-    app behind the browser. `windows` is observe's list, topmost last; an
-    element whose window is not in it (a menu) is kept.
-    """
+def _unoccluded(elements, windows, x, y, popups=None):
+    """The elements a press at x,y can have been on (elements.unoccluded)."""
 
-    order = {}
-    for index, window in enumerate(windows or []):
-        if window.get("title"):
-            order[window["title"]] = index
-
-    def covered(element):
-        index = order.get(element.get("window_title") or "")
-        if index is None:
-            return False
-        for above in (windows or [])[index + 1:]:
-            box = above.get("box")
-            if box and box[0] <= x < box[0] + box[2] and box[1] <= y < box[1] + box[3]:
-                return True
-        return False
-
-    return [element for element in elements if not covered(element)]
+    return el.unoccluded(elements, windows, x, y, popups)
 
 
 def _report_to_chat(session_id, task_id, event, before, after):
@@ -604,10 +599,15 @@ class Recorder:
         self._clock_offset = None
         self._shift = set()
         self._caps = False
+        self._lock_known = False
         self._keys_held = set()
         self._pause = None
         self._last_look = 0.0
         self._last_key = 0.0
+        # Each look's time and whether a secret field was on the screen in it (_seen).
+        self._looks = collections.deque(maxlen=LOOKS_KEPT)
+        # Frames are grabbed off the input thread (_grab_later).
+        self._grabs = None
 
     # ---- X input, on its own thread and its own connections ----
 
@@ -653,17 +653,53 @@ class Recorder:
         self.agent_devices = {d.deviceid for d in devices if "XTEST" in str(d.name)}
         log("Input devices: " + ", ".join(f"{d.deviceid}={d.name}" for d in devices))
 
+        self._sync_lock()
+
         self.input.screen().root.xinput_select_events([(
             xinput.AllMasterDevices,
             xinput.RawKeyPressMask | xinput.RawKeyReleaseMask | xinput.RawButtonPressMask | xinput.RawButtonReleaseMask,
         )])
         self.input.flush()
 
+    def _sync_lock(self):
+        """Take Caps Lock's state from the server: right only when no key event is waiting to be read."""
+
+        from Xlib import X
+
+        try:
+            self._caps = bool(self.input.screen().root.query_pointer().mask & X.LockMask)
+            self._lock_known = True
+        except Exception as exc:
+            log(f"Could not read Caps Lock: {exc}")
+
+    def _agent_key(self, evtype, data):
+        """An agent's (XTEST) key: never recorded, but a Caps Lock it presses still changes what letters type."""
+
+        from Xlib.ext import xinput
+
+        if evtype == xinput.RawKeyPress:
+            keycode = int(data.detail)
+            if self.input.keycode_to_keysym(keycode, 0) == CAPS_LOCK:
+                self._caps = not self._caps
+
     def _grab(self):
         try:
             return screen.grab(display=self.grabber)
         except ComputerError:
             return None
+
+    def _grab_later(self):
+        """
+        The frame of the moment an input arrived, grabbed on a thread of its own. Found live (2026-10-14): grabbing a
+        whole screen on the input thread for each press put the reader seconds behind on a busy desktop, and the
+        pointer - which raw events do not carry, so it is read as each one is handled - had moved on by the time a
+        release was read: a click on a field was recorded as a drag to the next button, and the typing after it as
+        typed into nothing.
+        """
+
+        if getattr(self, "_grabs", None) is None:
+            return self._grab()
+        return self._grabs.submit(self._grab)
 
     def _read_input(self):
         from Xlib import X
@@ -694,10 +730,13 @@ class Recorder:
                     if event.type != ge.GenericEventCode or getattr(event, "evtype", None) not in self.raw_types:
                         continue
                     if event.data.sourceid in self.agent_devices:
+                        self._agent_key(event.evtype, event.data)
                         continue
                     raw = self._raw(event.evtype, event.data, root)
                     if raw is not None and not self.paused:
                         self.raw.put(raw)
+                    elif raw is not None:
+                        self._input_while_paused = True
 
                 # End: everything the person did before pressing it is already
                 # on this connection, however far behind reading it is. Read it
@@ -707,20 +746,22 @@ class Recorder:
                     if (not got and not readable) or time.monotonic() > drain_until:
                         self.stopping.set()
                         return
+                elif (not got and not self._lock_known and not self._keys_held
+                      and time.time() - self._last_key > LOCK_RESYNC_SECONDS):
+                    self._sync_lock()
             except Exception as exc:
                 log(f"Stopped reading input: {exc}")
                 self.stopping.set()
                 return
 
     def _raw(self, evtype, data, root):
-        from Xlib import X
         from Xlib.ext import xinput
 
         now = time.time()
         lag = self._lag(now, getattr(data, "time", 0))
 
         if evtype in (xinput.RawButtonPress, xinput.RawButtonRelease):
-            pointer = root.query_pointer()
+            pointer = root.query_pointer()  # first: the frame is grabbed later, the pointer must be read now
             event = {
                 "type": "press" if evtype == xinput.RawButtonPress else "release",
                 "t": now, "button": int(data.detail), "x": pointer.root_x, "y": pointer.root_y,
@@ -731,7 +772,7 @@ class Recorder:
             if event["type"] == "press":
                 scroll = event["button"] in processing.SCROLL_BUTTONS
                 if not scroll or now - self._last_scroll > processing.SCROLL_GAP_SECONDS:
-                    event["frame"] = self._grab()
+                    event["frame"] = self._grab_later()
                 if scroll:
                     self._last_scroll = now
             return event
@@ -743,16 +784,20 @@ class Recorder:
         name = _key_name(base, keycode)
 
         # Raw events carry no modifier state. Shift is followed from its own
-        # keys. Caps Lock is read back from the server whenever a key goes down
-        # with nothing held: Xvnc types a capital by toggling Lock around the
-        # letter, and a Lock state left on by an earlier session inverted every
-        # letter of a demonstration that assumed it started off.
+        # keys, and so is Caps Lock: Xvnc types a capital by toggling Lock
+        # around the letter, and its presses arrive in order with the letter's.
+        # The server's state is read only when nothing is waiting to be read
+        # (_sync_lock: at the start, so a Lock left on by an earlier session
+        # does not invert every letter, and after a quiet second). Found live
+        # (2026-10-13): reading it back at each key read it after Xvnc had
+        # toggled Lock off again - always, on a reader running behind - and
+        # "Cafe" typed over VNC was recorded as "cafe".
         if name in ("Shift_L", "Shift_R"):
             (self._shift.add if down else self._shift.discard)(name)
         if name == "Caps_Lock" and down:
             self._caps = not self._caps
-        elif down and not self._keys_held:
-            self._caps = bool(root.query_pointer().mask & X.LockMask)
+        if down:
+            self._lock_known = False
 
         char = None
         if down:
@@ -766,7 +811,7 @@ class Recorder:
 
         if down:
             if not self._keys_held and now - self._last_key > KEY_BURST_SECONDS:
-                event["frame"] = self._grab()
+                event["frame"] = self._grab_later()
             self._keys_held.add(name)
         else:
             self._keys_held.discard(name)
@@ -819,6 +864,7 @@ class Recorder:
         try:
             self.latest = core.observe(remember=False, frame=frame)
             self.latest["seen_at"] = grabbed_at
+            self._seen(self.latest)
         except ComputerError as exc:
             log(f"Could not read the screen: {exc}")
 
@@ -863,11 +909,19 @@ class Recorder:
                 return None, None
             return next((e for e in observation["elements"] if "focused" in e.get("states", [])), None), None
 
+        element = el.at_point(_unoccluded(observation["elements"], observation.get("windows"), *action["point"],
+                                          popups=observation.get("popups")),
+                              *action["point"])
+
         if not fresh:
+            # Something else on the screen changed since the last look (what was just typed, a suggestion list,
+            # a clock): the control under the press is still the one that look saw when its own pixels did not
+            # change. Found live (2026-10-14): a click on a drop-down a second after typing into the field above
+            # it, and a click on Sign in after typing the password, were recorded as bare points.
+            if element is not None and _unchanged_control(element, observation["frame"], frame):
+                return element, None
             return None, "the screen was still changing when this happened"
 
-        element = el.at_point(_unoccluded(observation["elements"], observation.get("windows"), *action["point"]),
-                              *action["point"])
         if element is not None:
             return element, None
 
@@ -922,6 +976,10 @@ class Recorder:
 
         if kind == "select":
             entry["option"] = privacy.kept_text(action.get("option"))
+        if kind == "upload":
+            entry["files"] = list(action.get("files") or [])
+            names = ", ".join(os.path.basename(f) for f in entry["files"])
+            entry["summary"] = f"upload {names} to {el.describe(element) if element else 'the page'}"
 
         # The program the window belongs to: what a replay opens when the
         # window is not there (a recording begun with the app already open
@@ -930,9 +988,13 @@ class Recorder:
             entry["app"] = located["app"]
 
         # Fail closed: text whose field cannot be told, typed while a secret
-        # field is on the screen, may have gone into that field.
+        # field is on the screen, may have gone into that field. "On the
+        # screen" is any look from the one before the typing on: found live
+        # (2026-10-14), a password typed into a field that could not be told
+        # was kept in plain text because the look this run was judged by had
+        # been taken after Sign in had already taken the page away.
         if kind == "type" and text is not None and element is None \
-                and privacy.secret_boxes((observation or {}).get("elements")):
+                and (privacy.secret_boxes((observation or {}).get("elements")) or self._secret_around(action["t"])):
             text, withheld = None, "typed while a password field was on screen, into a field that could not be told"
             entry["text"] = None
 
@@ -954,6 +1016,14 @@ class Recorder:
             empty_field = element is not None and element["role"] in ("textbox", "combobox", "spinbutton") \
                 and (not value or (value == typed and not before_typing))
             entry["append"] = not empty_field
+            # A date field takes its keys segment by segment in the browser's own order ("10062026" for 6 October);
+            # what the person entered is the date it now holds, in the field's fixed format - which is what a
+            # replay can put back (cdp.type_text / datefields). The keys themselves would be refused there.
+            if element is not None and set(element.get("states") or ()) & DATE_STATES and not before_typing \
+                    and DATE_VALUE.fullmatch(value) and not withheld:
+                entry["text"] = value
+                entry["append"] = False
+                entry["summary"] = approval.describe_action(kind, element, value, action.get("keys"), point)
 
         if withheld:
             entry["withheld"] = {"text": withheld}
@@ -974,6 +1044,7 @@ class Recorder:
     # recorded as one `select`, which a replay sets without opening anything.
 
     def _flush(self, buffer, final=False):
+        buffer = [_with_frame(event) for event in buffer]
         actions = processing.merge(buffer)
         if not actions:
             return
@@ -1002,7 +1073,11 @@ class Recorder:
             overtaken = any(event["t"] < looked_until for event in self.raw.queue)
 
         masks = privacy.secret_boxes((before or {}).get("elements")) + privacy.secret_boxes((after or {}).get("elements"))
-        focus = (False, None)
+        # Keys go where the last run of actions left them: a field it clicked into. Found live (2026-10-14): a
+        # person clicked a field, paused a moment longer than QUIET_SECONDS, and typed - the typing, a run of its
+        # own, was recorded as typed into nothing.
+        carried = getattr(self, "_carried_focus", None)
+        focus = (True, carried) if carried is not None else (False, None)
         ready = []
 
         for action in actions:
@@ -1019,6 +1094,12 @@ class Recorder:
                 located = dict(ready[-1]["located"], element=element)
 
             ready.append({"action": action, "element": element, "note": note, "located": located, "frame": frame})
+
+        self._carried_focus = focus[1] if focus[0] else None
+
+        ready = _keyboard_choices(ready, after)
+        ready = _dates_entered(ready, after)
+        ready = self._file_chooser(ready, after, before)
 
         for index, item in enumerate(ready):
             action, element, frame = item["action"], item["element"], item["frame"]
@@ -1061,6 +1142,85 @@ class Recorder:
 
         if after is not None:
             self.latest = after
+            self._seen(after)
+
+    def _file_chooser(self, ready, after, before=None):
+        """
+        A person choosing a file for a page goes through the browser's own "Open File" dialog: a click on the
+        page's file control, then clicks and keys in a window the page knows nothing of. Found live (2026-10-14):
+        that was recorded as those clicks and keys, which a replay cannot use to give another run's file (and, for
+        the dialog's own controls, cannot find again). What the person did is upload a file to that control. The
+        click that opened the chooser is held, so is everything done inside it, and once it closes with a file
+        chosen the run is recorded as one `upload` of that file (by its full path) - which a replay does without
+        opening any dialog, and `/learn` asks about like any value. A chooser closed with no file records nothing.
+        """
+
+        held = getattr(self, "_chooser", None)
+        open_now = after is None or _chooser_in_front(after)
+        if held is None:
+            for index, item in enumerate(ready):
+                # A press the recorder could not name (the screen was still changing) is on the file control when
+                # its point is inside that control's box in the last look. Found live (2026-10-14).
+                if item["action"]["kind"] == "click" and not _file_control(item["element"]):
+                    at = _file_control_at(item["action"].get("point"), before) or _file_control_at(item["action"].get("point"), after)
+                    if at is not None:
+                        item = dict(item, element=at)
+                if item["action"]["kind"] == "click" and _file_control(item["element"]):
+                    if not open_now and _chosen(item["element"], after) is None:
+                        if index < len(ready) - 1 or not _chooser_appears():
+                            continue  # a click on the control that opened nothing
+                        open_now = True
+                    self._chooser = held = {"item": item, "typed": [], "names": []}
+                    rest = ready[index + 1:]
+                    ready = ready[:index]
+                    break
+            else:
+                return ready
+        else:
+            rest, ready = ready, []
+
+        # What was done inside the chooser: typed paths and the names clicked in its list.
+        index = 0
+        while index < len(rest):
+            item = rest[index]
+            element = item["element"] or {}
+            # Back on the page: the chooser has closed. Keys that closed it (Enter, Alt+O) land on the control
+            # that opened it, once focus is back there - they are part of the choosing, not the page's.
+            on_opener = item["action"]["kind"] in ("key", "type") and element.get("path") == (held["item"]["element"] or {}).get("path")
+            if element.get("source") == "cdp" and not open_now and not on_opener:
+                break
+            if item["action"]["kind"] == "type" and item["action"].get("text"):
+                held["typed"].append(item["action"]["text"])
+            elif element.get("name"):
+                held["names"].append(element["name"])
+            index += 1
+        after_chooser = rest[index:]
+
+        if open_now:
+            return ready  # still choosing
+        self._chooser = None
+        opener = held["item"]
+        shown = _chosen(opener["element"], after)
+        if shown is None:
+            return ready + after_chooser  # closed with nothing chosen
+        files = _chosen_paths(shown, held["typed"], held["names"])
+        upload = dict(opener, action=dict(opener["action"], kind="upload", files=files))
+        return ready + [upload] + after_chooser
+
+    def _seen(self, observation):
+        """Remember when a look was taken and whether it showed a secret field."""
+
+        if observation is not None:
+            self.__dict__.setdefault("_looks", collections.deque(maxlen=LOOKS_KEPT)).append((observation.get("seen_at") or time.time(),
+                                bool(privacy.secret_boxes(observation.get("elements")))))
+
+    def _secret_around(self, at):
+        """Whether a secret field was on the screen in the last look before `at` or any look since."""
+
+        looks = sorted(getattr(self, "_looks", ()))
+        before = [n for n, (seen, _) in enumerate(looks) if seen <= at]
+        start = before[-1] if before else 0
+        return any(secret for _, secret in looks[start:])
 
     def _report(self, event, before, after):
         """Show one recorded action in the chat, as a step of the task it was recorded for."""
@@ -1069,6 +1229,7 @@ class Recorder:
 
     def _paused(self):
         active = _read_active() or {}
+        self._carried_focus = None  # what is done while paused is not seen
         before = self.latest
         self._pause = {
             "reason": active.get("pause_reason") or "a private step",
@@ -1077,6 +1238,7 @@ class Recorder:
             "window": (before or {}).get("active_title"),
         }
         self.latest = None
+        self._input_while_paused = False
         log(f"Paused: {self._pause['reason']}")
 
     def _resumed(self):
@@ -1085,6 +1247,19 @@ class Recorder:
             return
 
         core._wait_for_settle(None)
+
+        # Nothing the person did reached the screen while paused: there is no private step, whatever the screen did
+        # meanwhile. Found live (2026-10-14): a one-second pause to write a Reason, while the page an earlier click
+        # opened was still loading, was recorded as "a private step done by hand" that every run stopped at.
+        if not getattr(self, "_input_while_paused", True):
+            try:
+                after = core.observe(remember=False)
+                self.latest = after
+                self._seen(after)
+            except ComputerError as exc:
+                log(f"Could not read the screen on resuming: {exc}")
+            log("Resumed (no input from the person while paused, so no private step)")
+            return
 
         try:
             after = core.observe(remember=False)
@@ -1095,6 +1270,7 @@ class Recorder:
         if after is not None and pause["frame"] is not None and \
                 screen.changed_fraction(pause["frame"], after.get("frame")) < UNCHANGED_SCREEN:
             self.latest = after
+            self._seen(after)
             log("Resumed (nothing changed on the screen while paused, so no private step)")
             return
 
@@ -1130,6 +1306,7 @@ class Recorder:
         self._report(event, before_kept, after_kept)
 
         self.latest = after
+        self._seen(after)
         log("Resumed")
 
     def _process(self):
@@ -1192,6 +1369,7 @@ class Recorder:
         signal.signal(signal.SIGUSR1, self._on_pause)
         signal.signal(signal.SIGUSR2, self._on_resume)
 
+        self._grabs = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="grab")
         reader = threading.Thread(target=self._read_input, daemon=True)
         reader.start()
 
@@ -1214,6 +1392,7 @@ class Recorder:
             with self.raw.mutex:
                 if not self.raw.queue:
                     self.latest = first
+            self._seen(first)
         except ComputerError as exc:
             log(f"Could not read the screen at the start: {exc}")
 
@@ -1229,6 +1408,202 @@ class Recorder:
         return 0
 
 
+
+def _with_frame(event):
+    """An input event with the frame grabbed for it, once that grab is done (Recorder._grab_later)."""
+
+    frame = event.get("frame")
+    if isinstance(frame, concurrent.futures.Future):
+        try:
+            frame = frame.result(timeout=30)
+        except Exception as exc:
+            log(f"Could not grab the screen for an input: {exc}")
+            frame = None
+        event = dict(event, frame=frame)
+    return event
+
+
+def _unchanged_control(element, before, after):
+    """Whether a control's own pixels, inside its border, are the same in two frames."""
+
+    box = element.get("box")
+    if not box or len(box) != 4:
+        return False
+    x, y, w, h = box
+    if w <= 2 * CONTROL_INSET + 4 or h <= 2 * CONTROL_INSET + 4:
+        return False
+    inner = [x + CONTROL_INSET, y + CONTROL_INSET, w - 2 * CONTROL_INSET, h - 2 * CONTROL_INSET]
+    return screen.changed_in(before, after, inner) <= CONTROL_UNCHANGED
+
+
+# The window a browser (or a desktop app) shows to pick a file: "Open File", "Open Files", "Select file(s) to upload".
+CHOOSER_TITLE = re.compile(r"^\s*(open|select|choose|upload|attach)\s+(an?\s+)?(files?|documents?)(\s+to\s+upload)?\s*$"
+                           r"|^\s*file\s+upload\s*$", re.I)
+NO_FILE = re.compile(r"^\s*(no\s+files?\s+(chosen|selected)|choose\s+files?|browse\.*)?\s*$", re.I)
+MANY_FILES = re.compile(r"^\s*\d+\s+files?\s*$", re.I)
+# Where a person keeps a file they are about to upload, looked in when the chooser does not say the folder.
+LOOK_FOR_FILES_IN = ("work", "Downloads", "Desktop", "Documents", "Pictures")
+# How long a file chooser may take to come up after its control is clicked.
+CHOOSER_APPEAR_SECONDS = 5
+
+
+def _file_control(element):
+    """Whether an element is a page's file input (what opens the browser's file chooser)."""
+
+    return ((element or {}).get("handle") or {}).get("input_type", "").lower() == "file"
+
+
+def _file_control_at(point, observation):
+    """The file control whose box holds `point` in a look, or None."""
+
+    if not point or not observation:
+        return None
+    x, y = point
+    for element in observation.get("elements") or []:
+        box = element.get("box")
+        if _file_control(element) and box and box[0] <= x <= box[0] + box[2] and box[1] <= y <= box[1] + box[3]:
+            return element
+    return None
+
+
+def _chooser_in_front(observation):
+    return bool(CHOOSER_TITLE.match((observation or {}).get("active_title") or ""))
+
+
+def _chooser_appears(wait=None):
+    """
+    Whether a file chooser comes to the front within a few seconds. The screen can settle before the browser's
+    dialog is up (found live, 2026-10-14: the look after the click was taken ~2 s before it appeared), so a click on a
+    file control that seems to have opened nothing is given that long.
+    """
+
+    deadline = time.time() + (CHOOSER_APPEAR_SECONDS if wait is None else wait)
+    while True:
+        try:
+            if any(w.get("active") and CHOOSER_TITLE.match(w.get("title") or "") for w in screen.windows()):
+                return True
+        except Exception:
+            return False
+        if time.time() >= deadline:
+            return False
+        time.sleep(0.3)
+
+
+def _chosen(element, after):
+    """What a file control shows once the screen settled - the chosen file's name, "2 files" - or None for none."""
+
+    path = (element or {}).get("path")
+    now = next((e for e in (after or {}).get("elements") or [] if path and e.get("path") == path), None)
+    value = (now or {}).get("value") or ""
+    return None if now is None or NO_FILE.match(value) else value.strip()
+
+
+def _chosen_paths(shown, typed, names, home=None):
+    """
+    The full paths of the files chosen: a path typed into the chooser, a folder typed and a name clicked in its
+    list, or - when the chooser said neither - the file of that name a person keeps nearest to hand (newest first).
+    A name nothing finds is kept as the name: the lesson asks about it like any file.
+    """
+
+    home = home or os.path.expanduser("~")
+    wanted = [] if MANY_FILES.match(shown) else [shown]
+    folders, found = [], []
+    for text in typed:
+        candidate = os.path.normpath(os.path.expanduser(text.strip()))
+        if not os.path.isabs(candidate):
+            candidate = os.path.join(home, candidate)
+        if os.path.isfile(candidate):
+            found.append(candidate)
+        elif os.path.isdir(candidate):
+            folders.append(candidate)
+        elif os.path.isdir(os.path.dirname(candidate)):
+            folders.append(os.path.dirname(candidate))
+    for name in names + wanted:
+        for folder in reversed(folders):
+            candidate = os.path.join(folder, name)
+            if os.path.isfile(candidate) and candidate not in found:
+                found.append(candidate)
+                break
+    found = [f for f in found if not wanted or os.path.basename(f) == wanted[0]] or found
+    if found:
+        return found[:1] if wanted else found
+    if not wanted:
+        return []
+    matches = []
+    for top in LOOK_FOR_FILES_IN:
+        for root, _dirs, files in os.walk(os.path.join(home, top)):
+            if wanted[0] in files:
+                path = os.path.join(root, wanted[0])
+                try:
+                    matches.append((os.path.getmtime(path), path))
+                except OSError:
+                    pass
+    return [max(matches)[1]] if matches else wanted
+
+
+def _native_choice(element):
+    """Whether an element is a page's own drop-down (<select>): a combobox nothing can be typed into."""
+
+    handle = (element or {}).get("handle") or {}
+    return (element or {}).get("role") == "combobox" and handle.get("editable") is False and element.get("source") == "cdp"
+
+
+def _dates_entered(ready, after):
+    """
+    The keys a person typed into a date field are its segments in the browser's own order ("10062026"); what they
+    entered is the date the field holds once the screen settled, read from the look after the run (the field's own
+    look before it was taken before the typing when another action followed in the same run). Found live: of two
+    dates typed one after the other, the first was kept as "10062026", which a replay cannot put back.
+    """
+
+    if after is None:
+        return ready
+    shown = {e.get("path"): e for e in after.get("elements") or [] if e.get("path")}
+    out = []
+    for item in ready:
+        action, element = item["action"], item["element"] or {}
+        now = shown.get(element.get("path")) if action["kind"] == "type" else None
+        value = (now or {}).get("value") or ""
+        if now is not None and set(now.get("states") or ()) & DATE_STATES and DATE_VALUE.fullmatch(value):
+            item = dict(item, action=dict(action, text=value), element=dict(element, value=value, states=now.get("states")))
+        out.append(item)
+    return out
+
+
+def _keyboard_choices(ready, after):
+    """
+    A person choosing in a page's drop-down with the keyboard - open it, type the first letters, Enter - is a choice,
+    not typing: the keys only move which option is chosen. Found live (2026-10-13): "open the product list, type MUG,
+    Enter" was kept as typing "MUG" into the field plus a Return, and the option it chose ("MUG-12 - Ceramic mug
+    12oz") was nowhere in the recording. The run of keys is recorded as one `select` of the option the drop-down
+    shows once the screen settled, and the click that opened it (in the same run) is folded into it, as a choice
+    made with the mouse already is.
+    """
+
+    if after is None:
+        return ready
+    shown = {e.get("path"): e for e in after.get("elements") or [] if e.get("path")}
+    out = []
+    for item in ready:
+        action, element = item["action"], item["element"]
+        target = element or {}
+        if action["kind"] == "type" and _native_choice(element):
+            now = shown.get(target.get("path"))
+            option = (now or {}).get("value")
+            if option:
+                if out and out[-1]["action"]["kind"] == "click" and (out[-1]["element"] or {}).get("path") == target.get("path"):
+                    opened = out.pop()
+                    action = dict(action, t=opened["action"]["t"])
+                choice = {k: v for k, v in action.items() if k != "text"}
+                choice.update(kind="select", option=option)
+                out.append(dict(item, action=choice))
+                continue
+        if action["kind"] == "key" and out and out[-1]["action"]["kind"] == "select"                 and (out[-1]["element"] or {}).get("path") == target.get("path")                 and set(action.get("keys") or []) <= {"Return", "Enter", "KP_Enter"}:
+            continue  # the Enter that closed the list is part of the choice
+        out.append(item)
+    return out
+
+
 def main(argv=None):
     logging_utils.log_to_file(LOG_FILE)
     args = sys.argv[1:] if argv is None else argv
@@ -1242,3 +1617,4 @@ def main(argv=None):
 
 if __name__ == "__main__":
     sys.exit(main())
+

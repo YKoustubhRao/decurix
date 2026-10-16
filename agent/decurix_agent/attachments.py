@@ -15,6 +15,7 @@ request_reading.py), a question for a web app (ask_task.py).
 """
 
 import os
+import shutil
 
 from decurix_agent.logging_utils import log
 
@@ -101,3 +102,54 @@ def parts(paths, heading):
         out.insert(0, {"type": "text", "text": heading})
 
     return out
+
+
+# A copy of each attached file as it arrived, per task. A task may change an attachment in place ("update
+# last_invoice_number.txt when done"), and the check of its result then read the changed file as what the
+# person had sent: found live (2026-10-13), invoices correctly numbered on from INV-2026-0087 were called
+# wrong because the counter they had already advanced to 0090 was taken for the starting number.
+ORIGINALS_KEPT = 40
+MAX_ORIGINAL_BYTES = 30 * 1024 * 1024
+
+
+def _originals_dir(task_id):
+    from decurix_agent import config
+    return config.DECURIX_DIR / "originals" / task_id
+
+
+def keep_originals(content, task_id):
+    """Keep a copy of every file a request brought, as it arrived. Best-effort; never raises."""
+
+    if not task_id:
+        return
+    try:
+        folder = _originals_dir(task_id)
+        for path in files(content):
+            if os.path.isfile(path) and os.path.getsize(path) <= MAX_ORIGINAL_BYTES:
+                folder.mkdir(parents=True, exist_ok=True)
+                target = folder / os.path.basename(path)
+                if not target.exists():
+                    shutil.copy2(path, target)
+        kept = sorted((p for p in folder.parent.iterdir() if p.is_dir()), key=lambda p: p.stat().st_mtime, reverse=True)
+        for old in kept[ORIGINALS_KEPT:]:
+            shutil.rmtree(old, ignore_errors=True)
+    except OSError as exc:
+        log(f"attachments: could not keep the originals: {exc}")
+
+
+def original(path, task_id=None):
+    """The copy of `path` as the person sent it with this task, when the file has changed since; else `path`."""
+
+    from decurix_agent import task_context
+    task_id = task_id or task_context.current()
+    if not task_id:
+        return path
+    copy = _originals_dir(task_id) / os.path.basename(path)
+    try:
+        if copy.is_file() and os.path.isfile(path):
+            with open(copy, "rb") as a, open(path, "rb") as b:
+                if a.read() != b.read():
+                    return str(copy)
+    except OSError:
+        pass
+    return path

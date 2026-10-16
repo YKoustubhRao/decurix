@@ -492,7 +492,7 @@ func TestHostGUICopyReturnsWhatTheAppCopiedAndPasteTypesIt(t *testing.T) {
 	ws.sendJSON(map[string]any{"kind": "paste", "text": "a\nb"})
 	waitFor(t, 3*time.Second, "the pasted text to reach the host", func() bool {
 		data, _ := os.ReadFile(log)
-		return inOrder(string(data), "copy 67", "type a", "key 13", "type b")
+		return inOrder(string(data), "copy 67", "type a", "newline", "type b")
 	})
 	if data, _ := os.ReadFile(log); strings.Contains(string(data), "copy 86") {
 		t.Fatal("a 'copy' of Ctrl+V reached the host: only Ctrl+C and Ctrl+X may read the person's clipboard")

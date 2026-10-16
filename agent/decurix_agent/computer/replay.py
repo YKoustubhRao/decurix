@@ -117,6 +117,36 @@ class _Frames:
         return self._seen[name]
 
 
+_GROUP_SEGMENT = re.compile(r'(?:group|radiogroup) "([^"]+)"$')
+
+
+def radio_group(element):
+    """The name of the group a radio button is in ("Employment type"), from its path; "" for anything else."""
+
+    if (element or {}).get("role") != "radio" or not element.get("name"):
+        return ""
+    parent = (element.get("path") or "").rsplit(" > ", 1)[0] if " > " in (element.get("path") or "") else ""
+    m = _GROUP_SEGMENT.search(parent)
+    return m.group(1) if m else ""
+
+
+def _words(text):
+    return " " + re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip() + " "
+
+
+def _shows_value(shown, want, choice=False):
+    """
+    Whether a field shows the value wanted. A choice shows the entry chosen for it, which may be named within the
+    value ("IT" for "IT department" - the rule the choosing itself follows). Found live (2026-10-14): the drop-down
+    was set right and the check, wanting the document's words, halted the run.
+    """
+
+    if shown == want:
+        return True
+    return bool(choice and shown and _words(shown).strip() and (shown.lower() == want.lower() or _words(shown) in _words(want)
+                                                                or want.lower().startswith(shown.lower())))
+
+
 def compile_program(meta, events, frames=None):
     """
     A recording as a program: {"session", "title", "kind", "params", "steps"}.
@@ -148,6 +178,13 @@ def compile_program(meta, events, frames=None):
             continue
 
         element = event.get("element") or {}
+        # A click on one radio button of a named group is a choice in that group, like an option of a drop-down:
+        # "Employment type: Full-time" done again for a contractor chooses Contractor. Found live (2026-10-14): kept as
+        # a click on "Full-time", every later run entered Full-time and the worker had to ask.
+        group = radio_group(element)
+        if kind == "click" and group:
+            event = dict(event, kind="select", option=element["name"], group=group)
+            kind = "select"
         step = {"n": len(steps) + 1, "event": event.get("i"), "kind": kind, "actor": event.get("actor") or "agent"}
 
         # A control a recording knew only by its label (one imported from a
@@ -157,7 +194,7 @@ def compile_program(meta, events, frames=None):
             step["target"] = {key: element[key] for key in ("role", "name", "path", "window_title", "source", "nth")
                               if element.get(key) is not None}
 
-        for key in ("point", "end", "keys", "option", "direction", "amount", "append", "files"):
+        for key in ("point", "end", "keys", "option", "direction", "amount", "append", "files", "group"):
             if event.get(key) not in (None, [], ""):
                 step[key] = event[key]
 
@@ -208,11 +245,13 @@ def compile_program(meta, events, frames=None):
         if kind == "select" and event.get("option") and element.get("name"):
             # What was chosen in a drop-down is a value of the task as much as
             # what was typed into a field: "an order for Acme in India" done
-            # again for Japan chooses Japan. Named after the drop-down.
-            step["param"] = _param_name(element["name"], used)
+            # again for Japan chooses Japan. Named after the drop-down (a radio
+            # button's choice, after its group).
+            label = event.get("group") or element["name"]
+            step["param"] = _param_name(label, used)
             params.append({
                 "name": step["param"],
-                "label": element["name"],
+                "label": label,
                 "default": event["option"],
                 "secret": False,
                 "reason": None,
@@ -250,7 +289,7 @@ def compile_program(meta, events, frames=None):
             for value in (event.get("expect") or {}).get("values") or []:
                 if value.get("value") == event.get("option") and value.get("name") == element.get("name"):
                     step["expect"].append({"type": "value", "role": value["role"], "name": value["name"],
-                                           "param": step["param"]})
+                                           "param": step["param"], "choice": True})
                     break
         step["screen"] = event.get("screen") or meta.get("screen")
         step["window"] = event.get("window") or ""
@@ -471,12 +510,14 @@ def _summary(step):
         return f"scroll {step.get('direction', 'down')}" + (f" on {what}" if what else "")
     if kind == "select":
         chosen = f"{{{step['param']}}}" if step.get("param") else el._quote(step.get("option") or "")
+        if step.get("group"):
+            what = f"the radio buttons {el._quote(step['group'])}"
         return f"select {chosen} in {what}"
     if kind == "drag":
         end = step.get("end") or ["?", "?"]
         return f"drag {what} to {end[0]},{end[1]}"
     if kind == "upload":
-        files_str = ", ".join(step.get("files") or [])
+        files_str = f"{{{step['param']}}}" if step.get("param") else ", ".join(step.get("files") or [])
         return f"upload {files_str} to {what}"
     return f"{kind.replace('_', ' ')} {what}".strip()
 
@@ -547,7 +588,7 @@ def unmet(checks, observation, values=None):
         elif kind == "value":
             want = " ".join(((values or {}).get(check["param"]) or "").split())
             ok = any(e.get("role") == check["role"] and _norm(e.get("name")) == _norm(check["name"])
-                     and " ".join((e.get("value") or "").split()) == want
+                     and _shows_value(" ".join((e.get("value") or "").split()), want, check.get("choice"))
                      for e in observation.get("elements") or [])
         else:
             ok = True
@@ -877,6 +918,7 @@ def _run_step(step, values, ladder=None, report=None, next_step=None):
         raise _Halt(f"the recording names a control it cannot identify: {step['unresolved']}")
 
     pressed_cell = False
+    repair = element = None
 
     try:
         if kind == "open":
@@ -908,7 +950,15 @@ def _run_step(step, values, ladder=None, report=None, next_step=None):
             raise _Halt("the recording has nothing to find this step's target by")
 
         if step.get("target") or step.get("point"):
-            element, point, seen, repair = _find(step, ladder, report)
+            try:
+                element, point, seen, repair = _find(step, ladder, report)
+            except _Halt as halt:
+                # A scroll needs only a place on the page or panel, and the recorded point is one: the control under
+                # the pointer is incidental. Found live (2026-10-14): a scroll recorded over a row naming the
+                # demonstration's own joiner halted every run for another.
+                if kind != "scroll" or not step.get("point") or not halt.missing:
+                    raise
+                element, point, seen, repair = None, step["point"], {}, None
             target = {"path": element["path"]} if element is not None else {"point": tuple(point)}
             pressed_cell = bool(seen.get("pressed_cell"))
 
@@ -930,9 +980,15 @@ def _run_step(step, values, ladder=None, report=None, next_step=None):
                 else:
                     ladder.found(step, element, seen)
 
+        # A step that takes this run's value never falls back to what the demonstration used: its ID scan in another
+        # person's record, its department for another joiner. Found in review (2026-10-14).
+        if kind in ("upload", "select") and step.get("param") and not values.get(step["param"]):
+            raise _Halt(f"this run gave no value for {step['param']}, and the demonstration's own "
+                        f"{'file' if kind == 'upload' else 'choice'} is not this run's")
+
         # Files go with an upload only: a typed step's value is its text.
         files = step.get("files") if kind == "upload" else None
-        if kind == "upload" and step.get("param") and values.get(step["param"]):
+        if kind == "upload" and step.get("param"):
             val = values.get(step["param"])
             # Several files are given the way list values are: separated by ';'.
             files = val if isinstance(val, list) else [f.strip() for f in str(val).split(";") if f.strip()]
@@ -952,6 +1008,13 @@ def _run_step(step, values, ladder=None, report=None, next_step=None):
         if pressed_cell and not _field_appeared(step):
             raise _Halt(f"pressed where {_summary(step).split(' ', 1)[-1]} was when this was recorded, and no such field "
                         "appeared there - the page is laid out differently now")
+        # A deterministic healing renamed this exact control. Carry its
+        # identity to same-step value checks; checking the old label after
+        # typing into the healed field would incorrectly reject transfer.
+        # A model-grounded guess does not receive an exact-check alias.
+        if repair and repair.get("how") == "healed" and element is not None and element.get("role") == (step.get("target") or {}).get("role"):
+            done = dict(done, target_alias={"was": dict(step["target"]),
+                                           "now": {"role": element.get("role"), "name": element.get("name")}})
         return done
     except ComputerError as exc:
         raise _Halt(str(exc))
@@ -1169,6 +1232,28 @@ def _fit_screen(steps, report):
         time.sleep(1)
 
 
+def _with_opening_press(steps, start):
+    """
+    Where a run asked to start at `start` really starts: one step earlier when
+    `start` types into or chooses in the very control the step before it
+    pressed. Found live (2026-10-13): an engine entered a bill's header by
+    hand and resumed the replay at "choose {item} in Item" - a table cell that
+    is a field only once pressed, which the step before does - so the replay
+    halted at once and the rest was done by hand, 15 more model turns.
+    Pressing a field again before typing into it changes nothing else.
+    """
+
+    if not 1 < start <= len(steps):
+        return start
+    step, before = steps[start - 1], steps[start - 2]
+    target, pressed = step.get("target") or {}, before.get("target") or {}
+    if (step.get("kind") in ("type", "select") and before.get("kind") == "click" and not before.get("param")
+            and target.get("name") and target.get("role") == pressed.get("role")
+            and target.get("name") == pressed.get("name")):
+        return start - 1
+    return start
+
+
 def run(program, params=None, start=1, report=None, ladder=None):
     """
     Run a program from step `start` and say how it ended: {"outcome",
@@ -1188,14 +1273,17 @@ def run(program, params=None, start=1, report=None, ladder=None):
     steps = program.get("steps") or []
     total = len(steps)
     given = {name: str(value) for name, value in (params or {}).items()}
-    start = max(1, int(start or 1))
+    start = _with_opening_press(steps, max(1, int(start or 1)))
 
     values, absent = {}, []
     for param in program.get("params") or []:
-        if param["step"] < start:
-            continue
         if param["name"] in given:
+            # A resumed later step can still check a value typed earlier
+            # (for example "Saved {customer_name}" after correcting Save).
+            # Keep supplied context without requiring skipped inputs again.
             values[param["name"]] = given[param["name"]]
+        elif param["step"] < start:
+            continue
         elif param["secret"]:
             absent.append(param)
         else:
@@ -1338,7 +1426,14 @@ def run(program, params=None, start=1, report=None, ladder=None):
         # Found live: the icon was double-clicked, the app's window came up a few seconds after the ten
         # this waits for a page, and the run had already stopped at its first step.
         opening = core.OPEN_SECONDS if step["kind"] in ("click", "double_click") and _on_desktop(step) else None
-        missing, observation = _await_checks(step["expect"], result.get("observation"), values, seconds=opening)
+        checks = step["expect"]
+        alias = result.get("target_alias")
+        if alias:
+            checks = [dict(check, name=alias["now"]["name"])
+                      if check.get("type") in {"value", "element"}
+                      and (check.get("role"), check.get("name")) == (alias["was"].get("role"), alias["was"].get("name"))
+                      else check for check in checks]
+        missing, observation = _await_checks(checks, result.get("observation"), values, seconds=opening)
 
         if missing:
             described = [describe_check(c) for c in missing]
