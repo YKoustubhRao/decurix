@@ -132,7 +132,7 @@ class GroupedPositions(unittest.TestCase):
         self.assertEqual(self.question["kind"], "coordinates")
         self.assertEqual([s["n"] for s in self.question["steps"]], [1, 2, 5])
         self.assertIn("3 steps were recorded as clicks", self.question["text"])
-        self.assertIn("1. double click 71,259; 2. click 1004,48; 5. double click 676,522", self.question["text"])
+        self.assertIn("1. double click 71,259\n2. click 1004,48\n5. double click 676,522", self.question["text"])
 
     def test_keep_keeps_them_all_and_the_next_question_is_not_about_positions(self):
         result = learning.answer(self.skill, self.question, "keep")
