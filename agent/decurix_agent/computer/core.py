@@ -1457,6 +1457,30 @@ PRESSED_ROLES = ("button", "link", "option", "menuitem", "listitem", "treeitem",
                  "switch", "toggle")
 
 
+FILLED_ROLES = ("textbox", "searchbox", "combobox", "spinbutton")
+
+
+def _what_it_acts_on(observation, element):
+    """
+    The filled fields in the same window as an action the gate stopped, for
+    the person to see what it would send and where: "Send" alone said nothing
+    of which chat the message was in. Found live (2026-10-16): a message was
+    approved and sent to the wrong person, whose name was on the message box
+    the whole time. Secret fields are never shown.
+    """
+
+    group = (element or {}).get("group") or active_group(observation)
+    shown = []
+    for e in observation.get("elements") or []:
+        if e.get("role") not in FILLED_ROLES or (group and e.get("group") != group):
+            continue
+        value = " ".join((e.get("value") or "").split())
+        if not value or privacy.secret_field(e) or privacy.credential_in(value):
+            continue
+        shown.append(f"{e['role']} {el._quote(e.get('name') or '', 60)} holds {el._quote(value, 80)}")
+    return ("It would act on what is filled in: " + "; ".join(shown[:3])) if shown else ""
+
+
 def act(kind, ref=None, role=None, name=None, path=None, point=None,
         text=None, keys=None, direction=None, amount=None, option=None, append=False, end=None, files=None,
         see=None, replace_all=False, named=False):
@@ -1659,7 +1683,8 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     if kind == "key" and element is None:
         context["focused"] = _keyboard_field(before)
 
-    decision = approval.check(kind, element, text=text, keys=keys, point=point, context=context)
+    decision = approval.check(kind, element, text=text, keys=keys, point=point, context=context,
+                              about=_what_it_acts_on(before, element))
 
     if not decision.allowed:
         text = approval.request_text(decision.request)
