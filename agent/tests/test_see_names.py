@@ -44,3 +44,36 @@ class CursorLine(unittest.TestCase):
         # A vision model's "the cursor is in" is an estimate, and named the wrong field as often as the right one.
         look = {"elements": [{"role": "text", "name": "the cursor is in: Name", "states": []}]}
         self.assertEqual(core._keys_went_to(look, {"elements": []}), "")
+
+
+class NothingTyped(unittest.TestCase):
+    NOTHING = "nothing visible changed - check whether the action reached its target."
+
+    def test_typing_with_no_target_that_changed_nothing_did_not_land(self):
+        self.assertTrue(core._nothing_typed("type", None, "Revenue", self.NOTHING))
+
+    def test_typing_that_showed_something_landed(self):
+        self.assertFalse(core._nothing_typed("type", None, "Revenue", '1 element(s) appeared: button "Language English"'))
+
+    def test_typing_into_a_named_field_is_judged_by_that_field(self):
+        self.assertFalse(core._nothing_typed("type", {"ref": "e1"}, "Revenue", self.NOTHING))
+
+    def test_a_short_text_can_change_too_little_to_show(self):
+        self.assertFalse(core._nothing_typed("type", None, "5", self.NOTHING))
+
+    def test_only_typing_is_judged(self):
+        self.assertFalse(core._nothing_typed("click", None, "Revenue", self.NOTHING))
+
+
+class NothingTypedNotOnLaggingPages(unittest.TestCase):
+    NOTHING = "nothing visible changed - check whether the action reached its target."
+
+    def test_an_app_read_from_its_picture_is_never_told_nothing_was_typed(self):
+        look = {"elements": [{"role": "text", "name": core.VISION_READ, "states": []}]}
+        self.assertFalse(core._nothing_typed("type", None, "Kaveri Electricals", self.NOTHING, look))
+
+    def test_a_look_that_is_behind_is_never_told_nothing_was_typed(self):
+        self.assertFalse(core._nothing_typed("type", None, "Kaveri Electricals", self.NOTHING, {"behind": True, "elements": []}))
+
+    def test_an_ordinary_page_still_is(self):
+        self.assertTrue(core._nothing_typed("type", None, "Kaveri Electricals", self.NOTHING, {"elements": []}))

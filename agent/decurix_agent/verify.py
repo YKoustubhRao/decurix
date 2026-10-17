@@ -186,6 +186,29 @@ def left_undone(report):
     return "; ".join(found)[:600]
 
 
+# What an item left undone says when the worker did not FIND a place for the value (a field, a section, a control), as
+# against a thing that stands in the way (the application refused it, the person said not to, a file is missing).
+_NOT_FOUND = re.compile(
+    r"\b(?:no|not|n't|couldn't|cannot|can't|unable)\b[^.;\n]{0,60}\b(?:visible|available|found|find|see|locate|reach|"
+    r"exposed|present|shown|listed|accessible)\b|\b(?:no|missing)\b[^.;\n]{0,30}\b(?:field|section|control|option|"
+    r"button|tab|place)\b", re.I)
+_REFUSED = re.compile(r"\b(?:refus|reject|invalid|error|blocked|permission|approval|person said|you said|told me not|"
+                      r"not allowed|rate limit|expired|already exists)\w*", re.I)
+
+
+def not_found_undone(undone):
+    """
+    True when what a report lists as left undone is a place it did not find (a field "not visible", a section "not
+    available") and nothing in the way: such a form almost always has the place in a collapsed section, a tab or
+    further down, so the worker is sent back once to look there before a person is asked. Found live (2026-10-18):
+    a sales order was saved without the customer's PO number - "no visible PO number field ... in the section I could
+    access" - when the field was in a collapsed section of the same form.
+    """
+
+    text = undone or ""
+    return bool(text.strip()) and bool(_NOT_FOUND.search(text)) and not _REFUSED.search(text)
+
+
 # A sum written out in a report: "450.00 + 90.00 + 102.60 = 642.60", "$1,200 - 150 = $1,050", "3 x 25.00 = 75.00".
 _AMOUNT = r"(?:[$€£¥]|USD|EUR|GBP|INR|Rs\.?)?\s?-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|(?:[$€£¥]|USD|EUR|GBP|INR|Rs\.?)?\s?-?\d+(?:\.\d+)?"
 _SUM = re.compile(rf"(?<![\w.,/-])((?:{_AMOUNT})(?:\s*[-+×x*]\s*(?:{_AMOUNT}))+)\s*=\s*({_AMOUNT})(?![\w%/.]|,\d)", re.I)
