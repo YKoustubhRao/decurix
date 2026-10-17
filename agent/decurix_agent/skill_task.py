@@ -2342,8 +2342,23 @@ def _gate(reply, kind, engine):
     elif verify.left_undone(reply):
         # No model is asked: a report that lists what it did not do is not a report of a finished task, whatever
         # a file on the disk looks like (found live: a leftover file from an earlier task passed for the result).
-        verdict = {"verdict": verify.CANNOT, "confidence": 1.0, "seen": "left undone: " + verify.left_undone(reply),
-                   "why": "The report lists parts of the request it did not do."}
+        undone = verify.left_undone(reply)
+        tries = run.get("attempts", 0) if run is not None else guided.get("attempt", 1)
+        if verify.not_found_undone(undone) and tries < MAX_MODEL_ATTEMPTS and _engine_can_drive():
+            # What it lists is a place it did not find, not something in the way: the form almost always has it in a
+            # collapsed section, a tab or further down. One more look before a person is asked (found live,
+            # 2026-10-18: a sales order saved without the customer's PO number, "no visible field", which was in a
+            # collapsed section of the same form).
+            verdict = {"verdict": verify.NOT_DONE, "confidence": 1.0, "seen": "left undone: " + undone,
+                       "why": "You listed as left undone something you could not find a place for. A form that is made "
+                              "for such a value has a field for it: look in its collapsed sections and tabs (More "
+                              "Information, Additional, Other, a section named for the thing), expand each, scroll the "
+                              "whole form, and use the page's own search. Fill it in the record you already saved "
+                              "(open it - do not make a second one) and save. Only if the application really has no "
+                              "place for it, report that and why."}
+        else:
+            verdict = {"verdict": verify.CANNOT, "confidence": 1.0, "seen": "left undone: " + undone,
+                       "why": "The report lists parts of the request it did not do."}
     elif host_missing:
         # No model is asked: whether a file is on the person's computer is a fact about that disk, which the screen
         # cannot show (a host app hides a file's extension - found live, a CSV saved as "report.xlsx.csv").

@@ -1,0 +1,371 @@
+# Gotchas index
+
+One line per gotcha; open the named file and search for the quoted start.
+
+- [part-1.md](gotchas/part-1.md): CODE_MAP
+- [part-1.md](gotchas/part-1.md): Go doc comments
+- [part-1.md](gotchas/part-1.md): The agent's output must start with exactly one of COMMAND
+- [part-1.md](gotchas/part-1.md): The desktop agent
+- [part-1.md](gotchas/part-1.md): decurix_agent/state
+- [part-1.md](gotchas/part-1.md): EnsureImages no longer pulls
+- [part-1.md](gotchas/part-1.md): embed
+- [part-1.md](gotchas/part-1.md): go
+- [part-1.md](gotchas/part-1.md): go
+- [part-1.md](gotchas/part-1.md): --build-images rebuilds an image built from other sources, not only a
+- [part-1.md](gotchas/part-1.md): TheBot's shell is internal/hostshell
+- [part-1.md](gotchas/part-1.md): A page is read with its inner frames, and five faults that hid behind
+- [part-1.md](gotchas/part-1.md): On a local model a worker asks rather than claims
+- [part-1.md](gotchas/part-1.md): The Windows app runs the Linux stack in a WSL distro of its own
+- [part-1.md](gotchas/part-1.md): A recorded task is still the task when every word of its ticket shows
+- [part-1.md](gotchas/part-1.md): With a hosted model, the model reads the request
+- [part-1.md](gotchas/part-1.md): What a person answers a worker is kept, and the worker does not ask it
+- [part-1.md](gotchas/part-1.md): Two faults in TheBot the lessons bench found, both "a question taken f
+- [part-1.md](gotchas/part-1.md): The Windows and Linux app has no File / Edit / View / Window bar
+- [part-1.md](gotchas/part-1.md): A taught task is handed to the engine as one, checked against this run
+- [part-1.md](gotchas/part-1.md): A page that asks for proof of a person is the person's
+- [part-1.md](gotchas/part-1.md): The Mobile menu says when it is still getting its link
+- [part-1.md](gotchas/part-1.md): A first install on Windows checks the computer before it sets anything
+- [part-1.md](gotchas/part-1.md): Uninstalling the Windows app deletes everything, without asking
+- [part-1.md](gotchas/part-1.md): Uninstalling the Windows app stops the distro
+- [part-1.md](gotchas/part-1.md): build_app builds the app from scratch on each system, and the result i
+- [part-1.md](gotchas/part-1.md): Two things found on Windows that were wrong everywhere
+- [part-1.md](gotchas/part-1.md): Anything built on Windows embeds this checkout's working tree, so a sc
+- [part-1.md](gotchas/part-1.md): desktop
+- [part-1.md](gotchas/part-1.md): The web templates are compiled into the binary via web/embed
+- [part-1.md](gotchas/part-1.md): cmd/decurix's loadEnv looks for
+- [part-1.md](gotchas/part-1.md): docker/Dockerfile's runtime stage only copies the binary and
+- [part-1.md](gotchas/part-1.md): desktop
+- [part-1.md](gotchas/part-1.md): Desktop
+- [part-1.md](gotchas/part-1.md): desktop
+- [part-1.md](gotchas/part-1.md): sqlitedb
+- [part-1.md](gotchas/part-1.md): Every transaction is BEGIN IMMEDIATE
+- [part-1.md](gotchas/part-1.md): A schema change is a new step appended to that component's schema slic
+- [part-1.md](gotchas/part-1.md): What the task records trust is the task ID the desktop echoes, then th
+- [part-1.md](gotchas/part-1.md): tasks
+- [part-1.md](gotchas/part-1.md): Stopping, restarting or deleting a desktop calls tasks
+- [part-1.md](gotchas/part-1.md): Resending a failed task's exact words within retryWindow is another ex
+- [part-1.md](gotchas/part-1.md): Autonomy is defined once
+- [part-1.md](gotchas/part-1.md): Clearing a chat no longer deletes its screenshots
+- [part-1.md](gotchas/part-1.md): ask_for_query
+- [part-1.md](gotchas/part-1.md): Claude's total_cost_usd is summed across a task's runs
+- [part-1.md](gotchas/part-1.md): The dashboard's Claude login popup drives the real claude auth login -
+- [part-1.md](gotchas/part-1.md): The chat model is chosen for this machine, not hardcoded
+- [part-1.md](gotchas/part-1.md): A copied web app's launcher
+- [part-1.md](gotchas/part-1.md): httpapi
+- [part-1.md](gotchas/part-1.md): memory
+- [part-1.md](gotchas/part-1.md): harness
+- [part-1.md](gotchas/part-1.md): Prompt evaluation, not generation, is what makes a desktop feel slow,
+- [part-1.md](gotchas/part-1.md): Warm the Ollama the desktops actually use, at the context size they us
+- [part-1.md](gotchas/part-1.md): A backend failure ends the task
+- [part-1.md](gotchas/part-1.md): The reasoning model is not the only model
+- [part-1.md](gotchas/part-1.md): A model that asks a query before running a single command has not trie
+- [part-1.md](gotchas/part-1.md): A reply with no marker is still an answer
+- [part-1.md](gotchas/part-1.md): A repeated command is how the Ollama loop actually runs out of steps,
+- [part-1.md](gotchas/part-1.md): parse_agent_response matches uppercase markers anywhere in the respons
+- [part-1.md](gotchas/part-1.md): What a human reads when an engine fails must not be the engine's own w
+- [part-1.md](gotchas/part-1.md): thebot_harness sends the task and the standing context as separate fie
+- [part-1.md](gotchas/part-1.md): soul is deterministic before it is clever
+- [part-1.md](gotchas/part-1.md): soul keeps one paused job per session
+- [part-1.md](gotchas/part-1.md): The prompt frame's volatile sections are chat-only
+- [part-1.md](gotchas/part-1.md): A question for a web app is asked there, not worked out
+- [part-1.md](gotchas/part-1.md): A person's explanation from /learn is shown to every model as theirs,
+- [part-1.md](gotchas/part-1.md): What soul logs is not what the chat shows
+- [part-1.md](gotchas/part-1.md): TheBot's browser route gives up on a browser extension that is not the
+- [part-1.md](gotchas/part-1.md): The terminal skill runs what was named, not the sentence around it
+- [part-1.md](gotchas/part-1.md): An answer nothing printed is not taken
+- [part-1.md](gotchas/part-1.md): Stopping, restarting or deleting a desktop also closes its chat turn
+- [part-1.md](gotchas/part-1.md): A query note is shown as its task and its message
+- [part-1.md](gotchas/part-1.md): An operator HELP straight after a failed command is pushed back too
+- [part-1.md](gotchas/part-1.md): An operator HELP straight after a successful command gets one grounded
+- [part-1.md](gotchas/part-1.md): The operator's transcript keeps only the command, never the answer the
+- [part-1.md](gotchas/part-1.md): An abandoned Ollama request is not cancelled
+- [part-1.md](gotchas/part-1.md): thebot_harness sends sessionId
+- [part-1.md](gotchas/part-1.md): scripts/windows/build
+- [part-1.md](gotchas/part-1.md): Windows
+- [part-1.md](gotchas/part-1.md): The desktop agent binds
+- [part-1.md](gotchas/part-1.md): A request that arrives before the reasoning backend is up is queued, n
+- [part-1.md](gotchas/part-1.md): The command watcher claims the task slot
+- [part-1.md](gotchas/part-1.md): Don't hardcode a Cloudflare quick-tunnel URL as anyone's default
+- [part-1.md](gotchas/part-1.md): internal/lanaccess only ever gates the second listener, never the prim
+- [part-1.md](gotchas/part-1.md): lanaccess
+- [part-1.md](gotchas/part-1.md): A paired device outlives the access code
+- [part-1.md](gotchas/part-1.md): The Mobile menu adds a pairing link
+- [part-1.md](gotchas/part-1.md): A linked Android phone's apps run on the phone and show in a VM
+- [part-2.md](gotchas/part-2.md): Under WSL2 the local-network link is Windows' address, forwarded into
+- [part-2.md](gotchas/part-2.md): "Your own link"
+- [part-2.md](gotchas/part-2.md): idlepause never guesses "idle" from task history alone
+- [part-2.md](gotchas/part-2.md): idlepause
+- [part-2.md](gotchas/part-2.md): idlepause
+- [part-2.md](gotchas/part-2.md): A stopped desktop no longer fails a request — httpapi
+- [part-2.md](gotchas/part-2.md): desktop
+- [part-2.md](gotchas/part-2.md): progress
+- [part-2.md](gotchas/part-2.md): Steps nobody asked for are filed under their own entry once a request
+- [part-2.md](gotchas/part-2.md): A turn's last step can arrive after its reply
+- [part-2.md](gotchas/part-2.md): DESKTOP_ID
+- [part-2.md](gotchas/part-2.md): A dashboard card's preview is a JPEG from /api/desktops/screenshot, ne
+- [part-2.md](gotchas/part-2.md): desktop
+- [part-2.md](gotchas/part-2.md): The chat renders content through textContent only, never innerHTML — t
+- [part-2.md](gotchas/part-2.md): internal/webui/render_test
+- [part-2.md](gotchas/part-2.md): httpapi
+- [part-2.md](gotchas/part-2.md): The base image ships /home/headless as root
+- [part-2.md](gotchas/part-2.md): Chromium in a desktop runs sandboxed, which takes two halves that must
+- [part-2.md](gotchas/part-2.md): Desktops run with core dumps off
+- [part-2.md](gotchas/part-2.md): The chat renders a sent request the moment Send is pressed
+- [part-2.md](gotchas/part-2.md): The Cloudflare quick tunnel does not deliver the chat's event stream
+- [part-2.md](gotchas/part-2.md): NEEDS_TOOLS is taught only to the chat skill
+- [part-2.md](gotchas/part-2.md): The XFCE desktop wallpaper is set by baking agent/decurix-desktop-wall
+- [part-2.md](gotchas/part-2.md): The taskbar
+- [part-2.md](gotchas/part-2.md): A launcher plugin's
+- [part-2.md](gotchas/part-2.md): Editing a live desktop's xfce4-panel
+- [part-2.md](gotchas/part-2.md): The base image sets NO_AT_BRIDGE=1, which silently turns off every GTK
+- [part-2.md](gotchas/part-2.md): LibreOffice misreports where it draws
+- [part-2.md](gotchas/part-2.md): A ref means "the element at this path", not "the Nth element of this o
+- [part-2.md](gotchas/part-2.md): A GTK list/tree cell's AT-SPI action is activate — open the file, not
+- [part-2.md](gotchas/part-2.md): The browser's DevTools port
+- [part-2.md](gotchas/part-2.md): logging_utils
+- [part-2.md](gotchas/part-2.md): The audit trail's gui process is short-lived, so cli
+- [part-2.md](gotchas/part-2.md): The approval gate's patterns
+- [part-2.md](gotchas/part-2.md): bench
+- [part-2.md](gotchas/part-2.md): A dispatched request file is renamed to
+- [part-2.md](gotchas/part-2.md): bench/gui/run
+- [part-2.md](gotchas/part-2.md): A demonstration tells the person from the agent by input device, not b
+- [part-2.md](gotchas/part-2.md): A press the recorder read late is not named from a screen that changed
+- [part-2.md](gotchas/part-2.md): A pause that ends on the screen it began on records no private step
+- [part-2.md](gotchas/part-2.md): Xvnc changes the keymap while someone types
+- [part-2.md](gotchas/part-2.md): A typing run keeps its field until something moves focus
+- [part-2.md](gotchas/part-2.md): A demonstration's "what changed" is discarded when the person's next i
+- [part-2.md](gotchas/part-2.md): A replay is refused
+- [part-2.md](gotchas/part-2.md): The agent's HTTP server is a ThreadingHTTPServer
+- [part-2.md](gotchas/part-2.md): Everything the agent keeps for itself lives under ~/
+- [part-2.md](gotchas/part-2.md): A ticket is opened the same way any request is, but Record/Stop/Contin
+- [part-2.md](gotchas/part-2.md): httpapi
+- [part-2.md](gotchas/part-2.md): The ticket toolbar's own poll must not rebuild the panel when nothing
+- [part-2.md](gotchas/part-2.md): End does not wait for record_task
+- [part-2.md](gotchas/part-2.md): The dashboard card has no Record button of its own — index
+- [part-2.md](gotchas/part-2.md): "Your task is done" is announced on every page
+- [part-2.md](gotchas/part-2.md): A query note is resolved by answering it, and resolving keeps it
+- [part-2.md](gotchas/part-2.md): The "Recording saved" view of the ticket toolbar offers Replay, Learn
+- [part-2.md](gotchas/part-2.md): A saved skill is written into the desktop's learned memory
+- [part-2.md](gotchas/part-2.md): A request that is a recorded task done again is done the way the perso
+- [part-2.md](gotchas/part-2.md): A skill has a name a person can give it, and its goal survives a renam
+- [part-2.md](gotchas/part-2.md): A replay puts the screen back to the size its point clicks were record
+- [part-2.md](gotchas/part-2.md): A point click whose picture fails because this run typed something els
+- [part-2.md](gotchas/part-2.md): A "kin" must look like a line of text
+- [part-2.md](gotchas/part-2.md): The first /learn question also invites an explanation in the person's
+- [part-2.md](gotchas/part-2.md): A desktop icon is opened by its launcher, not by its picture
+- [part-2.md](gotchas/part-2.md): A browser window is opened by the browser's own icon, whatever it is c
+- [part-2.md](gotchas/part-2.md): Workflows are similar, not the same
+- [part-2.md](gotchas/part-2.md): A point click whose picture and kin both miss can be placed by the eng
+- [part-2.md](gotchas/part-2.md): click anyway lets a person release a point click whose picture did not
+- [part-2.md](gotchas/part-2.md): A NEEDS_APPROVAL
+- [part-2.md](gotchas/part-2.md): A lesson's last question asks for the skill's name
+- [part-2.md](gotchas/part-2.md): The screen is the control plane's page, not noVNC's
+- [part-2.md](gotchas/part-2.md): An open screen keeps its desktop awake
+- [part-2.md](gotchas/part-2.md): A restart the control plane did not ask for is reported by the agent t
+- [part-2.md](gotchas/part-2.md): The command watcher cannot die and cannot hang silently
+- [part-2.md](gotchas/part-2.md): End records everything done before it
+- [part-2.md](gotchas/part-2.md): /learn tidies a demonstration before asking about it
+- [part-2.md](gotchas/part-2.md): The base image's ~/Desktop/README
+- [part-2.md](gotchas/part-2.md): A card's pill is a traffic light
+- [part-2.md](gotchas/part-2.md): A desktop's card says what it is doing
+- [part-2.md](gotchas/part-2.md): A card rendered while its desktop was idle-paused follows the desktop
+- [part-2.md](gotchas/part-2.md): A result check follows a changing value into window titles too
+- [part-2.md](gotchas/part-2.md): The demonstration recorder reads the screen once per run of actions, n
+- [part-2.md](gotchas/part-2.md): A result check that echoes a changing value follows it
+- [part-2.md](gotchas/part-2.md): A demonstration's typing replaces the field on replay only if the fiel
+- [part-2.md](gotchas/part-2.md): A finished recording is a quiet callback, not a Query rail note
+- [part-2.md](gotchas/part-2.md): The ticket toolbar's tab is a drag handle, not just a click target
+- [part-2.md](gotchas/part-2.md): Every rewrite in the proxy's ModifyResponse chain writes UTF-8, but th
+- [part-2.md](gotchas/part-2.md): A note written while paused stays paused
+- [part-2.md](gotchas/part-2.md): Triggers are one page
+- [part-2.md](gotchas/part-2.md): A schedule
+- [part-2.md](gotchas/part-2.md): A one-time schedule
+- [part-2.md](gotchas/part-2.md): No automated sender reaches a busy desktop, and none can race a person
+- [part-2.md](gotchas/part-2.md): A mailbox is read by UID, which is what makes sleep safe
+- [part-2.md](gotchas/part-2.md): A From line proves nothing
+- [part-2.md](gotchas/part-2.md): The Triggers page
+- [part-2.md](gotchas/part-2.md): An email-triggered request writes the email out as plain delimited tex
+- [part-2.md](gotchas/part-2.md): The Ollama loop no longer reports work it never did
+- [part-2.md](gotchas/part-2.md): In a task that says to append, the Ollama loop never runs a command th
+- [part-2.md](gotchas/part-2.md): Mailbox passwords are encrypted at rest
+- [part-2.md](gotchas/part-2.md): Email jobs are sent at most once, and retried only when nothing was se
+- [part-2.md](gotchas/part-2.md): A mailbox whose password is refused is not polled again until a person
+- [part-2.md](gotchas/part-2.md): Keep-awake is held only while it is wanted, and only stops idle sleep
+- [part-2.md](gotchas/part-2.md): Windows apps run on the host and show in the VM
+- [part-2.md](gotchas/part-2.md): Modifier keys need the input queue's key-state table, not just message
+- [part-2.md](gotchas/part-2.md): The clipboard is the person's own
+- [part-2.md](gotchas/part-2.md): What can and cannot be hidden
+- [part-2.md](gotchas/part-2.md): The helper launches the app with a clean environment
+- [part-2.md](gotchas/part-2.md): Access to the host-gui API is by signed launch token, and never throug
+- [part-2.md](gotchas/part-2.md): - "Is this Windows"
+- [part-2.md](gotchas/part-2.md): Native Windows has no bash and no POSIX modes
+- [part-2.md](gotchas/part-2.md): Bridge gateways are bound on Linux only
+- [part-2.md](gotchas/part-2.md): scripts/mac/lib/host-mounts
+- [part-2.md](gotchas/part-2.md): Tests that stand bash in for the Windows helper, or run the bash launc
+- [part-2.md](gotchas/part-2.md): The copy-apps picker lists only what a VM can really show, and says ho
+- [part-2.md](gotchas/part-2.md): A copied app that only opens a local web page opens that page in the V
+- [part-2.md](gotchas/part-2.md): A host app's controls are real elements in the VM, read from Windows'
+- [part-3.md](gotchas/part-3.md): A click on a DPI-unaware Windows app landed short
+- [part-3.md](gotchas/part-3.md): Nothing on a private desktop may outlive what is showing it, because t
+- [part-3.md](gotchas/part-3.md): The helper is reached through the same docker run --privileged --pid=h
+- [part-3.md](gotchas/part-3.md): A VM showing a host app is in use even though nothing proxies its scre
+- [part-3.md](gotchas/part-3.md): A copied Windows app is kept running on its private desktop, ready, no
+- [part-3.md](gotchas/part-3.md): Why a host app is fast, and what not to undo
+- [part-3.md](gotchas/part-3.md): A browser's first start in a VM imports the person's profile, and must
+- [part-3.md](gotchas/part-3.md): A hidden Chrome must not show "Restore pages?", because that bubble ta
+- [part-3.md](gotchas/part-3.md): EVENT closed
+- [part-3.md](gotchas/part-3.md): A launcher's host command is split with Windows rules and passed as se
+- [part-3.md](gotchas/part-3.md): Tests for the launcher must never run a real browser
+- [part-3.md](gotchas/part-3.md): On this repo's own 8 GB Windows host the scarce resource is not CPU, i
+- [part-3.md](gotchas/part-3.md): OLLAMA_NUM_PARALLEL=2 does not keep two desktops' prompt caches apart
+- [part-3.md](gotchas/part-3.md): Anything that reloads the model is minutes, and Ollama treats a differ
+- [part-3.md](gotchas/part-3.md): Warming is ollama
+- [part-3.md](gotchas/part-3.md): A new tab that comes late is taken, not asked for again
+- [part-3.md](gotchas/part-3.md): A new tab keeps its address exactly
+- [part-3.md](gotchas/part-3.md): The Ollama loop pushes back on a mislabelled HELP, and never on a real
+- [part-3.md](gotchas/part-3.md): The transcript keeps only the command, never the answer the model gues
+- [part-3.md](gotchas/part-3.md): commands
+- [part-3.md](gotchas/part-3.md): API errors are the caller's mistake unless proven otherwise
+- [part-3.md](gotchas/part-3.md): Follow-ups to the above
+- [part-3.md](gotchas/part-3.md): The "azure" harness handles general-purpose work
+- [part-3.md](gotchas/part-3.md): An email trigger's attachments go to the desktop
+- [part-3.md](gotchas/part-3.md): With a hosted model set up, the control plane does not load the local
+- [part-3.md](gotchas/part-3.md): The browser is Google Chrome, behind one launcher
+- [part-3.md](gotchas/part-3.md): Chrome's password manager and leak warnings are off by policy
+- [part-3.md](gotchas/part-3.md): Teaching a document-driven workflow asks one question for all its type
+- [part-3.md](gotchas/part-3.md): A list value is checked item by item
+- [part-3.md](gotchas/part-3.md): A kind-match seen once is confirmed by one more look even past the dea
+- [part-3.md](gotchas/part-3.md): The Office
+- [part-3.md](gotchas/part-3.md): Application and document benches
+- [part-3.md](gotchas/part-3.md): A link named for a kind of record is a place, not a purchase
+- [part-3.md](gotchas/part-3.md): "I cannot confirm this is done" is answered by words about the result
+- [part-3.md](gotchas/part-3.md): Choosing where to go is not an action the approval gate stops
+- [part-3.md](gotchas/part-3.md): gui scroll's amount is notches, and what engines write instead is read
+- [part-3.md](gotchas/part-3.md): Whether a taught task starts without asking is decided in the lesson,
+- [part-3.md](gotchas/part-3.md): Typing is one field per action
+- [part-3.md](gotchas/part-3.md): Three things a web form did to typing, found entering application bill
+- [part-3.md](gotchas/part-3.md): A file goes into a web page through the page's own file chooser, inter
+- [part-3.md](gotchas/part-3.md): A field with no label of its own is named by the label in its group
+- [part-3.md](gotchas/part-3.md): select works on dropdowns a page draws itself and on fields that sugge
+- [part-3.md](gotchas/part-3.md): observe
+- [part-3.md](gotchas/part-3.md): While a dialog is open, a name means the dialog's control
+- [part-3.md](gotchas/part-3.md): Typing needs a field
+- [part-3.md](gotchas/part-3.md): What a Save answers with is shown whole
+- [part-3.md](gotchas/part-3.md): An unlabelled field in a table cell is named by its column's header
+- [part-3.md](gotchas/part-3.md): The azure engine keeps document pictures apart from screenshots
+- [part-3.md](gotchas/part-3.md): Finishing needs a checklist of the request
+- [part-3.md](gotchas/part-3.md): The hosted model's rate limit is waited out, not failed on
+- [part-3.md](gotchas/part-3.md): The desktop image has LibreOffice Writer and Calc
+- [part-3.md](gotchas/part-3.md): Two flaky tests fixed, both flaky on a pristine HEAD
+- [part-3.md](gotchas/part-3.md): A correct taught run is not refused for the application's own names, a
+- [part-3.md](gotchas/part-3.md): A value searched for and picked from a list is told apart from one tha
+- [part-3.md](gotchas/part-3.md): A worker may ask
+- [part-3.md](gotchas/part-3.md): A document has its own number of entries, a report may say "I could no
+- [part-3.md](gotchas/part-3.md): Nothing else in its place, and patience with a slow page - found on tw
+- [part-3.md](gotchas/part-3.md): A reply that only calls a task off ends it without another action
+- [part-3.md](gotchas/part-3.md): select aimed at a table cell searches in the field the cell becomes
+- [part-3.md](gotchas/part-3.md): A second taught task of another shape, and what it found
+- [part-3.md](gotchas/part-3.md): A backup is one download, and restoring never overwrites
+- [part-3.md](gotchas/part-3.md): Whether a result was checked is data, not prose
+- [part-3.md](gotchas/part-3.md): office create never says "Created" over data it threw away
+- [part-3.md](gotchas/part-3.md): An email address is not a website to TheBot's triage
+- [part-3.md](gotchas/part-3.md): The watchdog does not count time the container was frozen
+- [part-3.md](gotchas/part-3.md): Model selection runs at startup even when nothing preloads
+- [part-3.md](gotchas/part-3.md): Deleting a desktop resolves its query notes
+- [part-3.md](gotchas/part-3.md): The create dialog's Profile picker is hidden while every profile is th
+- [part-3.md](gotchas/part-3.md): On a phone the top bar's sections scroll on their own
+- [part-3.md](gotchas/part-3.md): An Office document or PDF is never written as text
+- [part-3.md](gotchas/part-3.md): Operator values are grounded in observed sources
+- [part-3.md](gotchas/part-3.md): A request that says how to work a screen goes to the operator, whateve
+- [part-3.md](gotchas/part-3.md): A number is traced by its value, not its spelling
+- [part-3.md](gotchas/part-3.md): A hosted model's 429 is waited out for the whole call, not four tries
+- [part-3.md](gotchas/part-3.md): A person can attach files from their own computer to a request and to
+- [part-3.md](gotchas/part-3.md): A third and a fourth kind of work, used heavily, and what they found
+- [part-4.md](gotchas/part-4.md): A worker gets cheaper at its work
+- [part-4.md](gotchas/part-4.md): A taught task run on documents, on a fresh build, and five faults it f
+- [part-4.md](gotchas/part-4.md): A taught task that runs the way it was shown, at another document's si
+- [part-4.md](gotchas/part-4.md): Generic work, wide and deep
+- [part-4.md](gotchas/part-4.md): Kept procedures
+- [part-4.md](gotchas/part-4.md): Native date inputs are one field
+- [part-4.md](gotchas/part-4.md): A draft drafted again replaces the task's earlier one
+- [part-4.md](gotchas/part-4.md): The check reads what the person sent
+- [part-4.md](gotchas/part-4.md): Gate fixes from the same runs
+- [part-4.md](gotchas/part-4.md): Office documents out
+- [part-4.md](gotchas/part-4.md): /workflow stages report through the ordinary harness, and only artifac
+- [part-4.md](gotchas/part-4.md): The demonstration recorder on a busy desktop
+- [part-4.md](gotchas/part-4.md): Business words are not code
+- [part-4.md](gotchas/part-4.md): What a check is shown, and what it can settle with no model
+- [part-4.md](gotchas/part-4.md): A person's file chooser in a demonstration is one upload
+- [part-4.md](gotchas/part-4.md): A recorded radio click is a choice in its group
+- [part-4.md](gotchas/part-4.md): A replay never uses the demonstration's file or choice for another run
+- [part-4.md](gotchas/part-4.md): A person names a position-only click's control
+- [part-4.md](gotchas/part-4.md): Smaller fixes from the same runs
+- [part-4.md](gotchas/part-4.md): Growing what exists, not making a second copy
+- [part-4.md](gotchas/part-4.md): What a worker must have looked at, and what is a slip
+- [part-4.md](gotchas/part-4.md): Recorder, from the second and third demonstrations
+- [part-4.md](gotchas/part-4.md): Operator rules added from round 3
+- [part-4.md](gotchas/part-4.md): "Right, X still needs Y" is a correction, not a yes
+- [part-4.md](gotchas/part-4.md): Round 3, last batch
+- [part-4.md](gotchas/part-4.md): taskRules is consolidated, and what can be checked is checked in code
+- [part-4.md](gotchas/part-4.md): A reference reached by pressing the control named for it was used
+- [part-4.md](gotchas/part-4.md): Work a person names an app for is done in that app, on the screen
+- [part-4.md](gotchas/part-4.md): The desktop has the apps people name
+- [part-4.md](gotchas/part-4.md): A point is on the window in front there
+- [part-4.md](gotchas/part-4.md): A value the task typed that an action then overwrote is said so
+- [part-4.md](gotchas/part-4.md): What a screen task wrote is read back, pictures included
+- [part-4.md](gotchas/part-4.md): A click aimed at a point inside a large control lands on that point
+- [part-4.md](gotchas/part-4.md): shellWords keeps a backslash in double quotes unless it escapes $,   ,
+- [part-4.md](gotchas/part-4.md): A question the control plane no longer holds is dropped
+- [part-4.md](gotchas/part-4.md): A field in a viewer of an app running elsewhere is not retyped
+- [part-4.md](gotchas/part-4.md): Keys typed into a host-app or phone-app viewer are not inserted a seco
+- [part-4.md](gotchas/part-4.md): A space reaches a Windows app as a key
+- [part-4.md](gotchas/part-4.md): Text a request asks the worker to write is its own
+- [part-4.md](gotchas/part-4.md): A presentation placeholder is clicked, not given a caret
+- [part-4.md](gotchas/part-4.md): A record that belongs to another is made after its parent is saved
+- [part-4.md](gotchas/part-4.md): An app read from its picture is worked by keyboard
+- [part-4.md](gotchas/part-4.md): Saving in a desktop app, and what counts as checked
+- [part-4.md](gotchas/part-4.md): A tall text field in a host-app viewer takes several lines
+- [part-4.md](gotchas/part-4.md): Work in an app on the desktop goes to the operator
+- [part-4.md](gotchas/part-4.md): A table on a slide is typed into a cell at a time with click, F2, keys
+- [part-4.md](gotchas/part-4.md): LibreOffice never opens on "Document Recovery"
+- [part-4.md](gotchas/part-4.md): How text reaches a Windows app depends on the app
+- [part-4.md](gotchas/part-4.md): A task's outcome survives a control-plane restart
+- [part-4.md](gotchas/part-4.md): GIMP is readable
+- [part-4.md](gotchas/part-4.md): Typing on a slide waits for editing to start, and a paragraph is never
+- [part-4.md](gotchas/part-4.md): A click aimed at a point is a press at that point
+- [part-4.md](gotchas/part-4.md): Keys sent to no control go where the task was working
+- [part-4.md](gotchas/part-4.md): Text on a slide is read back, and typed again slowly when it came out
+- [part-4.md](gotchas/part-4.md): A number box takes a number by typing it
+- [part-4.md](gotchas/part-4.md): Spreadsheets are worked by keyboard, and a picture-read app's form is
+- [part-4.md](gotchas/part-4.md): A Windows app's drop-down is chosen from through the app, not with key
+- [part-4.md](gotchas/part-4.md): Typing at a point in a host-app or phone-app viewer is allowed
+- [part-4.md](gotchas/part-4.md): A file path the task gave is not a guess
+- [part-4.md](gotchas/part-4.md): A point inside an open menu is on the menu
+- [part-4.md](gotchas/part-4.md): A file the request attached is worked on in the desktop's own app
+- [part-4.md](gotchas/part-4.md): A report that lists what it left undone is never "done"
+- [part-4.md](gotchas/part-4.md): Office's own drop-downs, and the order of asking
+- [part-4.md](gotchas/part-4.md): A worker looks up how an app works, without touching the screen
+- [part-4.md](gotchas/part-4.md): Guides to well-known apps, as SKILL
+- [part-4.md](gotchas/part-4.md): A Windows app's controls are pressed, focused and chosen through UI Au
+- [part-4.md](gotchas/part-4.md): A worker can never delete a person's files through a Windows app's fil
+- [part-4.md](gotchas/part-4.md): Tab fills a slide's table
+- [part-4.md](gotchas/part-4.md): The vision read of a picture-only app says which field has the cursor
+- [part-4.md](gotchas/part-4.md): A file a task was asked to save on the person's computer is checked on
+- [part-4.md](gotchas/part-4.md): What looking found must be what was named
+- [part-4.md](gotchas/part-4.md): A ref is only what was shown
+- [part-4.md](gotchas/part-4.md): A spreadsheet's cells are read, in a host app's viewer
+- [part-4.md](gotchas/part-4.md): A Windows drop-down's choice is a click in its open list, and is read
+- [part-4.md](gotchas/part-4.md): Focus and choose run on a thread of their own
+- [part-4.md](gotchas/part-4.md): A requested host file is checked for its kind, not only its name
+- [part-4.md](gotchas/part-4.md): A ref that has gone is named with its new one
+- [part-4.md](gotchas/part-4.md): A toggle button says when it is down
+- [part-4.md](gotchas/part-4.md): A look says when an app's copy is behind
+- [part-5.md](gotchas/part-5.md): A line of text goes into a Windows app's field as its value, not as ke
+- [part-5.md](gotchas/part-5.md): The final check reads what a task saved on the person's computer
+- [part-5.md](gotchas/part-5.md): Reliability is measured by repeat runs
+- [part-5.md](gotchas/part-5.md): Not built
+- [part-5.md](gotchas/part-5.md): A skill run's targets follow this run's values, and a detour never ski
+- [part-5.md](gotchas/part-5.md): A dialog's combo box is typed into, not set
+- [part-5.md](gotchas/part-5.md): Typing that changes nothing was not typed
+- [part-5.md](gotchas/part-5.md): A repeat run needs a restarted worker
+- [part-5.md](gotchas/part-5.md): Where a "wrong" run is not a wrong report
