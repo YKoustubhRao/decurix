@@ -589,6 +589,25 @@ func TestScriptIsEmbedded(t *testing.T) {
 	}
 }
 
+// TestSetValueLeavesADialogsComboBoxToTypedKeys pins a live finding: Word's Save As ignored a path set through UI Automation
+// on its "File name:" box (it saved "Doc1" in Documents) and kept one typed with keys.
+func TestSetValueLeavesADialogsComboBoxToTypedKeys(t *testing.T) {
+	src := string(Script)
+	i := strings.Index(src, "public static string SetValueAt(")
+	if i < 0 {
+		t.Fatal("SetValueAt is gone")
+	}
+	body := src[i:]
+	if j := strings.Index(body, "static void RunOnDesktop"); j > 0 {
+		body = body[:j]
+	}
+	for _, want := range []string{`"#32770"`, "GW_OWNER", "ControlType.ComboBox", "takes typed keys"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("SetValueAt no longer leaves a dialog's combo box to typed keys: missing %s", want)
+		}
+	}
+}
+
 func TestModifiersAreValidatedBeforeTheyReachTheHost(t *testing.T) {
 	_, s := startFake(t, "mods")
 	for _, bad := range []string{"x", "cc", "c s", "c\n", "ctrl"} {

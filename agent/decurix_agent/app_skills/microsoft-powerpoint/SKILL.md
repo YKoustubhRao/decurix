@@ -19,8 +19,10 @@ Building a deck
 - New slide: tab "Home", button "New Slide" (or Ctrl+M) gives "Title and Content": type the title, then the bullets as
   lines of one gui type into the content box.
 - A table: on the slide's content box press the "Insert Table" icon, or tab "Insert", button "Table", then
-  "Insert Table..." and set columns and rows. Then type into each cell by its ref (the table's cells are listed after
-  it is inserted); Tab also moves to the next cell.
+  "Insert Table..." (with the menu open, the key i chooses it) and set columns and rows. A new table is selected as a
+  whole, not being edited: text typed now goes nowhere ("nothing visible changed"). Click inside the first cell
+  (the top-left of the table, by its point), then gui type the first value, gui key Tab, gui type the next, and so on
+  row by row; each typing shows a "Language ..." button appearing when it landed. Tab in the last cell adds a row.
 - Read each slide back after typing: its texts are listed by gui observe.
 
 Saving

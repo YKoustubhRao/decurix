@@ -1357,6 +1357,13 @@ def _select_custom(element, option):
 # How long to give a page that reset a field before typing into it again.
 RETYPE_PAUSE = 1.0
 
+# Typing aimed at no field whose result changed nothing on the screen did not land: no text field, cell or box had the
+# keyboard. A short text can change too few pixels to show, so the note is only for texts of this many characters.
+NOTHING_TYPED_MIN = 3
+NOTHING_TYPED_NOTE = ("NOTHING WAS TYPED: no text field, table cell or box had the keyboard, so the text went nowhere. "
+                      "Click into the cell/box/field you mean (or give its ref), then type, and look to see the text "
+                      "show before going on.")
+
 
 def _same_field(element, observation):
     """The field typed into, as a fresh observation has it (found by its path), or None."""
@@ -1760,6 +1767,11 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
 
     change = compare(before, after)
     change_text = summarize(change)
+    if _nothing_typed(kind, element, text, change_text, after) and not before.get("behind"):
+        # Found live (2026-10-17): after PowerPoint's Insert Table the table is selected, not being edited, and four
+        # typings in a row (with Tab between) went nowhere; each said only "nothing visible changed - check ...", and
+        # the run ended with the table empty. Typing that changes nothing was not typed.
+        change_text += " " + NOTHING_TYPED_NOTE
 
     entry.update({
         "outcome": "done",
@@ -2050,6 +2062,19 @@ def compare(before, after):
         "changed": changed,
         "focused": focused,
     }
+
+
+def _nothing_typed(kind, element, text, change_text, observation=None):
+    """
+    True for typing aimed at no field whose result changed nothing on the screen: it did not land anywhere. Never for
+    an app read from its picture, or whose copy is still behind: there the typing lands and the look shows it only
+    later - found live (2026-10-18) in TallyPrime, where the note said "nothing was typed" over text that had gone
+    into the field, and the worker typed the same ledger name again ("Name already exists").
+    """
+    if _read_by_vision(observation) or (observation or {}).get("behind"):
+        return False
+    return (kind == "type" and element is None and bool(text) and len(text) >= NOTHING_TYPED_MIN
+            and change_text.startswith("nothing visible changed"))
 
 
 def summarize(change, limit=6):
