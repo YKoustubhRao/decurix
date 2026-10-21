@@ -257,7 +257,8 @@ def perform(content, task_file=None):
         else:
             verdict = verify.judge(content, claim=reply, screen=False,
                                    produced="\n".join(x for x in (produced.text(made), produced.drafts_text(),
-                                                                  produced.notes_text(facts.notes())) if x))
+                                                                  produced.notes_text(facts.notes())) if x),
+                                   look_up=lambda terms: produced.lines_with(made, terms))
 
         if verdict["verdict"] == verify.DONE:
             _note(book, True)

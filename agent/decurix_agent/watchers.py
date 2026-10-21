@@ -652,6 +652,12 @@ def _start_request(path, content):
     else:
         target = perform_task if not state.backend_ready else _perform_following_procedure
 
+    if state.backend_ready and target in (_perform_following_procedure, tool_task.perform) and \
+            long_task.may_follow_up(content):
+        # A short message just after a planned run was reported may change that work (long_task.follow_up): read on
+        # the task's own thread, never this one - it asks the model.
+        target = _follow_up_or(target)
+
     thread = threading.Thread(
         target=target,
         args=(content, path),
@@ -659,6 +665,25 @@ def _start_request(path, content):
     )
 
     thread.start()
+
+
+def _follow_up_or(target):
+    """`target`, unless the message changes the planned run reported shortly before: then that change is planned and
+    carried as a request of its own (the original request, the report, the change)."""
+
+    def run(content, path):
+        followed = long_task.follow_up(content)
+        if followed:
+            progress.emit("This changes the work I reported - redoing what it affects.")
+            # The task's request is now the whole of it - the original request (its folders and files), the report and
+            # the change: every check a command makes reads its inputs from it (series 16 H3, 2026-10-21: with only
+            # the person's one line, office email read every file of the desktop for each draft).
+            # It carries on the reported task: the drafts that task made are this one's to replace (tools/outbox.py).
+            task_context.start(task_context.current(), request=followed, continues=long_task.reported_task())
+            _perform_long(followed, path)
+        else:
+            target(content, path)
+    return run
 
 
 def command_watcher():

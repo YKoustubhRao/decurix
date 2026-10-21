@@ -16,6 +16,16 @@ var schema = []string{
 	 CREATE TABLE qualification_runs (id TEXT PRIMARY KEY, responsibility_id TEXT NOT NULL REFERENCES qualification_responsibilities(id), task_id TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL);
 	 CREATE INDEX qualification_runs_task ON qualification_runs(task_id);
 	 CREATE TABLE qualification_events (id INTEGER PRIMARY KEY, responsibility_id TEXT NOT NULL, at_ns INTEGER NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL);`,
+	// Step 2: practice from a worker's taught skills and recordings (simstore.go).
+	`CREATE TABLE simulation_responsibilities (id TEXT PRIMARY KEY, worker_id TEXT NOT NULL, source_kind TEXT NOT NULL, source_name TEXT NOT NULL, data TEXT NOT NULL, UNIQUE(worker_id, source_kind, source_name));
+	 CREATE TABLE simulation_suites (id TEXT PRIMARY KEY, responsibility_id TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL);
+	 CREATE INDEX simulation_suites_responsibility ON simulation_suites(responsibility_id);
+	 CREATE TABLE simulation_runs (id TEXT PRIMARY KEY, responsibility_id TEXT NOT NULL, suite_id TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL);
+	 CREATE INDEX simulation_runs_responsibility ON simulation_runs(responsibility_id);
+	 CREATE TABLE simulation_findings (run_id TEXT NOT NULL, case_id TEXT NOT NULL, position INTEGER NOT NULL, task_id TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY (run_id, case_id));
+	 CREATE INDEX simulation_findings_task ON simulation_findings(task_id);
+	 CREATE TABLE simulation_files (run_id TEXT NOT NULL, case_id TEXT NOT NULL, role TEXT NOT NULL, name TEXT NOT NULL, sha256 TEXT NOT NULL, body BLOB NOT NULL, PRIMARY KEY (run_id, case_id, role, name));
+	 CREATE TABLE simulation_holds (id TEXT PRIMARY KEY, worker_id TEXT NOT NULL, request_key TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL, UNIQUE(worker_id, request_key));`,
 }
 
 // Store owns durable readiness records and serializes state transitions.
@@ -80,6 +90,9 @@ func NewStore(db *sql.DB) (*Store, error) {
 				return nil, err
 			}
 		}
+	}
+	if err := s.recoverPractice(); err != nil {
+		return nil, err
 	}
 	return s, nil
 }

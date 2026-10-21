@@ -25,6 +25,10 @@ from decurix_agent.logging_utils import log
 # ============================================================
 
 DONE_CONFIDENCE = 0.8
+# The task text the judge is given (a long stage's instruction, inputs, binding answers, the system's read-back, the
+# code checks' evidence), and how many things it may ask to look up when a part it needs was not shown.
+MAX_TASK_CHARS = 20000
+MAX_LOOK = 6
 
 DONE, NOT_DONE, UNSURE, CANNOT = "done", "not_done", "unsure", "cannot"
 
@@ -101,10 +105,12 @@ JUDGE_SYSTEM = (
     "worker's working notes are not a source: a note that disagrees with the item's classification is a fault in the "
     "notes - say so, and that the notes are to be corrected, never the answer the source supports. When the worker kept "
     "an answer against an earlier check and quotes the source, judge the quote against the source.\n"
-    "Answer \"unsure\" whenever you cannot tell from what you are shown. Never guess \"done\".\n"
+    "Answer \"unsure\" whenever you cannot tell from what you are shown. Never guess \"done\". When you are unsure only "
+    "because a part of a file you need is not shown (a row, a person, a section), add \"look\": up to 6 exact words to "
+    "find in the files (a row's reference, a name, a heading) - you will be shown the lines that hold them.\n"
     "Reply with JSON only: {\"verdict\": \"done\"|\"not_done\"|\"cannot\"|\"unsure\", \"confidence\": 0.0-1.0, "
     "\"seen\": \"what the screen now shows (or, with no screen, what the files show), one sentence\", "
-    "\"why\": \"one sentence\"}"
+    "\"why\": \"one sentence\", \"look\": [optional]}"
 )
 
 
@@ -304,19 +310,28 @@ def program_numbers(text):
 
 
 def judge(task, claim="", criteria="", values=None, steps="", live_png=None, reference_png=None, observed=None,
-          screen_text="", chosen=(), produced="", screen=True, deliverables=()):
+          screen_text="", chosen=(), produced="", screen=True, deliverables=(), look_up=None):
     """
     {"verdict", "confidence", "seen", "why"} for whether `task` was done. With
     no model, or when the model cannot be read, the verdict is "unsure" - the
     caller then asks a person. `produced` is what the files the task wrote say
     now (produced.text); `screen=False` is a task that never touched the
-    screen, judged on its files alone.
+    screen, judged on its files alone. `look_up(terms)`: the lines of the
+    task's files that hold those terms - when the judge is unsure only because
+    a part it needs was not shown, it names what to find and judges once more
+    with those lines (the judge asks for evidence; nothing is guessed for it).
     """
 
     if not available():
         return {"verdict": UNSURE, "confidence": 0.0, "seen": "", "why": "there is no model here to check the screen with"}
 
-    lines = [f"The task as asked: {task.strip()[:1500]}"]
+    # The task is the stage's instruction AND what the caller adds after it - the person's binding answers, the
+    # system's own read-back, the code checks' evidence, the other stages' context. Found (2026-10-21): cut at 1,500
+    # characters, everything after a long instruction and its inputs list never reached the judge.
+    body = task.strip()
+    if len(body) > MAX_TASK_CHARS:
+        body = body[:MAX_TASK_CHARS] + f"\n[cut here: {len(body) - MAX_TASK_CHARS} more characters not shown]"
+    lines = [f"The task as asked: {body}"]
     if values:
         typed = {k: v for k, v in values.items() if v not in (None, "") and k.split("__")[0] not in chosen}
         looked_up = {k: v for k, v in values.items() if v not in (None, "") and k.split("__")[0] in chosen}
@@ -388,18 +403,33 @@ def judge(task, claim="", criteria="", values=None, steps="", live_png=None, ref
         content += [{"type": "text", "text": "The screen at the end of the person's own demonstration (other values):"},
                     llm_client.image_part(reference_png)]
 
-    try:
-        message, spent = llm_client.chat([{"role": "system", "content": JUDGE_SYSTEM},
-                                          {"role": "user", "content": content}], max_tokens=600)
-        found = _parse(message.get("content") or "")
-    except (llm_client.LLMError, ValueError) as exc:
-        log(f"verify: could not judge: {exc}")
-        return {"verdict": UNSURE, "confidence": 0.0, "seen": "", "why": f"the check could not be made ({exc})"}
+    def ask(parts):
+        try:
+            message, spent = llm_client.chat([{"role": "system", "content": JUDGE_SYSTEM},
+                                              {"role": "user", "content": parts}], max_tokens=600)
+            found = _parse(message.get("content") or "")
+        except (llm_client.LLMError, ValueError) as exc:
+            log(f"verify: could not judge: {exc}")
+            return {"verdict": UNSURE, "confidence": 0.0, "seen": "", "why": f"the check could not be made ({exc})",
+                    "look": []}
+        if found["verdict"] == DONE and found["confidence"] < DONE_CONFIDENCE:
+            found["why"] = f"not sure enough ({found['confidence']:.2f}): {found['why']}"
+            found["verdict"] = UNSURE
+        return found
 
-    if found["verdict"] == DONE and found["confidence"] < DONE_CONFIDENCE:
-        found["why"] = f"not sure enough ({found['confidence']:.2f}): {found['why']}"
-        found["verdict"] = UNSURE
-
+    found = ask(content)
+    if found["verdict"] == UNSURE and found.get("look") and look_up is not None:
+        try:
+            closer = look_up(found["look"])
+        except Exception as exc:  # noqa: BLE001 - a closer look is extra evidence, never a reason to fail the check
+            log(f"verify: could not look closer: {exc}")
+            closer = ""
+        if closer:
+            log(f"verify: unsure, looking closer at {found['look']}")
+            found = ask(content + [{"type": "text", "text": (
+                "You were unsure and asked to see: " + "; ".join(found["look"]) + ". The lines of the files that hold "
+                "them, looked up for you (exact):\n" + closer + "\nJudge again with these. Do not ask to look again.")}])
+    found.pop("look", None)
     log(f"verify: {found}")
     return found
 
@@ -494,7 +524,9 @@ def _parse(text):
         confidence = max(0.0, min(1.0, float(data.get("confidence", 0))))
     except (TypeError, ValueError):
         confidence = 0.0
+    look = data.get("look") if isinstance(data.get("look"), list) else []
     return {"verdict": verdict, "confidence": confidence,
             "seen": " ".join(str(data.get("seen") or "").split())[:400],
-            "why": " ".join(str(data.get("why") or "").split())[:400]}
+            "why": " ".join(str(data.get("why") or "").split())[:400],
+            "look": [" ".join(str(t).split())[:80] for t in look if str(t).strip()][:MAX_LOOK]}
 
