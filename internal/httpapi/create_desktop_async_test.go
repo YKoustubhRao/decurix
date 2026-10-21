@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -139,7 +140,7 @@ func TestBeginProvisioningReturnsASnapshotNotTheLiveRecord(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if *prov != first {
+	if !reflect.DeepEqual(*prov, first) {
 		t.Fatalf("the record BeginProvisioning returned changed after it was returned: %+v -> %+v", first, *prov)
 	}
 }

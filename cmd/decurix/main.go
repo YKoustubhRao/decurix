@@ -38,6 +38,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/ollama"
 	"github.com/YKoustubhRao/decurix/internal/outbox"
 	"github.com/YKoustubhRao/decurix/internal/phonehost"
+	"github.com/YKoustubhRao/decurix/internal/qualification"
 	"github.com/YKoustubhRao/decurix/internal/querynotes"
 	"github.com/YKoustubhRao/decurix/internal/resourcemon"
 	"github.com/YKoustubhRao/decurix/internal/schedule"
@@ -303,6 +304,12 @@ func main() {
 	defer cli.Close()
 
 	desktops := desktop.NewManager(cli)
+	// Host hops (privileged containers that run something on the host) left by an earlier run go first: their owner is
+	// gone, and the Windows helper a hop runs keeps its app and its memory for as long as the hop lives.
+	desktop.SweepHopsAtStart()
+	// And the host-app helpers (with the apps they started) that ran through those hops: a Windows program started
+	// through WSL outlives the hop that started it.
+	httpapi.SweepHostHelpersAtStart()
 	// The key that signs the launch tokens in a desktop's host-app launchers (internal/winhost). It lives in the data
 	// directory so launchers already written keep working across restarts; a failure only disables those apps.
 	hostGUISecret, err := winhost.LoadSecret(sqlitedb.DataDir())
@@ -310,6 +317,10 @@ func main() {
 		log.Printf("host apps: %v - Windows apps shown from the host are disabled", err)
 	}
 	desktops.HostGUISecret = hostGUISecret
+	// Requested apps a desktop was created without (and the retry of ones the host could not be asked about yet) live
+	// in memory; read them back from the desktops, which keep them for their agents. Its retries wait long enough for
+	// the host-app checker that the HTTP server installs below.
+	go desktops.RestoreMissingApps(context.Background())
 	desktop.OptimizeHostKSM()
 	ollamaManager := ollama.NewManager(cli, desktop.NetworkName)
 	ollama.EnableWarm()
@@ -403,6 +414,22 @@ func main() {
 
 	server.Devices = pairedDevices
 	server.DB = db
+	server.Qualification = must(qualification.NewStore(db))
+	for _, run := range must(server.Qualification.Interrupted()) {
+		if err := tasksStore.CloseOpen("readiness-"+run.ID, "Readiness run interrupted by a control-plane restart; never automatically replayed."); err != nil {
+			log.Fatalf("reconcile interrupted readiness task: %v", err)
+		}
+	}
+	if err := server.SetQualificationOwner(sqlitedb.DataDir()); err != nil {
+		log.Fatalf("create readiness owner key: %v", err)
+	}
+	// Qualification work is disposable. Never resume a process whose evidence
+	// transaction was interrupted; startup revoked its grant in NewStore.
+	qualificationCleanup, qualificationCleanupDone := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := desktops.CleanupQualification(qualificationCleanup); err != nil {
+		log.Printf("warning: cleanup interrupted readiness containers: %v", err)
+	}
+	qualificationCleanupDone()
 	server.CFTunnel = namedTunnel
 
 	// Notes of desktops deleted before deleting resolved them sat in "Needs
@@ -481,7 +508,7 @@ func main() {
 
 	lanServer := &http.Server{
 		Addr:              lanAddr,
-		Handler:           lanAccess.Middleware(httpapi.GzipMiddleware(lanMux)),
+		Handler:           lanAccess.Middleware(httpapi.GzipMiddleware(httpapi.MarkGated(lanMux))),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}

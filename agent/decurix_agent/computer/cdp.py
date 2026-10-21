@@ -1726,20 +1726,257 @@ def type_text(element, text, replace=True):
         if info.get("input") in datefields.FORMATS:
             datefields.put(page, object_id, info["input"], text)
             return
+        if info.get("input") == "number" and "\n" not in text and "\t" not in text and replace:
+            held = set_number(page, object_id, text.strip())
+            if held is not None:
+                if not same_number(held, text.strip()):
+                    raise ComputerError(f"the number field holds {held!r} after setting it to {text.strip()!r} - "
+                                        "it takes a plain number in its own format; read it and set it again")
+                return
         if info.get("multiline"):
             page.call("Input.insertText", {"text": text})
         else:
             lines = text.split("\n")
+            held = enter_would_submit(page, object_id) if len(lines) > 1 else None
             for index, line in enumerate(lines):
                 if line:
                     _type_line(page, object_id, line)
                 elif replace and index == 0 and len(lines) == 1:
                     # Replacing with nothing: delete the selection.
                     press_key(page, "Backspace")
-                if index < len(lines) - 1:
+                if index < len(lines) - 1 and not held:
                     press_key(page, "Enter")
+            if held:
+                raise EnterWouldSubmit(held_enter_message(held, typed="".join(lines)))
     finally:
         page.close()
+
+
+# ============================================================
+# Number fields: set whole, never stepped by accident
+#
+# Found live (2026-10-20, P2 on a portal): typing "24" into an order line's Quantity (an <input type=number>) opened
+# the browser's list of earlier entries under it; the worker clicked "option 24" by its picture, at a point that was
+# the field's up/down arrows, and each click stepped the quantity (24 -> 25 ...). Confused, it typed another line's
+# quantity into the field and saved the order with 60 where 24 was meant.
+# So: a number field is set as a whole value (no keys, so no list of earlier entries opens) and read back; a click at
+# a point on a number field's arrows, an Up/Down key in a number field and a scroll over one are refused - they change
+# its value; and before a form with several filled fields is saved, what it holds is listed and confirmed.
+# ============================================================
+
+SET_NUMBER = """function(text) {
+  if (this.tagName !== 'INPUT' || (this.type || '').toLowerCase() !== 'number') return null;
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+  this.focus();
+  setter.call(this, text);
+  this.dispatchEvent(new Event('input', {bubbles: true}));
+  this.dispatchEvent(new Event('change', {bubbles: true}));
+  return {value: this.value};
+}"""
+
+
+def set_number(page, object_id, text):
+    """Set a number field to text as a whole value; its value afterwards, or None when it is not a number field."""
+
+    result = page.call("Runtime.callFunctionOn", {
+        "objectId": object_id, "returnByValue": True, "functionDeclaration": SET_NUMBER,
+        "arguments": [{"value": text}],
+    }).get("result", {}).get("value")
+    return None if result is None else str(result.get("value") or "")
+
+
+def same_number(a, b):
+    """Whether two written numbers are the same number ("24" and "24.0"); text compared as text."""
+
+    try:
+        return float(str(a).replace(",", "")) == float(str(b).replace(",", ""))
+    except ValueError:
+        return str(a).strip() == str(b).strip()
+
+
+SPINNER_AT = """function(x, y) {
+  const el = document.elementFromPoint(x, y);
+  if (!el || el.tagName !== 'INPUT' || (el.type || '').toLowerCase() !== 'number') return null;
+  const r = el.getBoundingClientRect();
+  const label = el.getAttribute('aria-label') || el.name || el.id || 'number field';
+  return {label: label, value: el.value, arrows: x >= r.right - 24};
+}"""
+
+
+def number_field_at(x, y):
+    """{"label", "value", "arrows"} when the screen point is on a number field (arrows: on its up/down arrows), else None."""
+
+    page = None
+    try:
+        page = active_page()
+        metrics = json.loads(page.evaluate(_METRICS))
+        origin_x, origin_y, dpr = _viewport(metrics)
+        vx, vy = (x - origin_x) / dpr, (y - origin_y) / dpr
+        if not (0 <= vx < metrics["iw"] and 0 <= vy < metrics["ih"]):
+            return None
+        return page.call("Runtime.evaluate", {
+            "expression": f"({SPINNER_AT})({vx}, {vy})", "returnByValue": True,
+        }).get("result", {}).get("value")
+    except (ComputerError, KeyError, TypeError, ValueError, OSError):
+        return None
+    finally:
+        if page is not None:
+            page.close()
+
+
+FOCUSED_NUMBER = """(() => { const a = document.activeElement;
+  return a && document.hasFocus() && a.tagName === 'INPUT' && (a.type || '').toLowerCase() === 'number'
+    ? (a.getAttribute('aria-label') || a.name || a.id || 'number field') : null; })()"""
+
+
+def focused_number_field():
+    """The label of the number field that has the keyboard, or None."""
+
+    page = None
+    try:
+        page = active_page()
+        return page.call("Runtime.evaluate", {"expression": FOCUSED_NUMBER, "returnByValue": True}).get(
+            "result", {}).get("value")
+    except (ComputerError, KeyError, TypeError, ValueError, OSError):
+        return None
+    finally:
+        if page is not None:
+            page.close()
+
+
+FORM_FIELDS = """function() {
+  const b = this;
+  const form = b.form || (b.closest && b.closest('form'));
+  if (!form) return null;
+  const t = (b.type || '').toLowerCase();
+  const submits = (b.tagName === 'BUTTON' && (t === '' || t === 'submit')) || (b.tagName === 'INPUT' && ['submit', 'image'].includes(t));
+  if (!submits) return null;
+  const labelOf = (f) => {
+    if (f.getAttribute('aria-label')) return f.getAttribute('aria-label');
+    if (f.id) { const l = form.ownerDocument.querySelector('label[for="' + f.id + '"]'); if (l) return l.textContent.trim(); }
+    const l = f.closest('label'); if (l) return l.textContent.trim();
+    return f.name || f.id || f.type;
+  };
+  const out = [];
+  for (const f of form.elements) {
+    if (f.disabled) continue;
+    const ft = (f.type || '').toLowerCase();
+    if (['hidden', 'submit', 'button', 'reset', 'image', 'file', 'password'].includes(ft)) continue;
+    let v = '';
+    if (f.tagName === 'SELECT') { const o = f.options[f.selectedIndex]; v = o && o.value !== '' ? o.label : ''; }
+    else if (ft === 'checkbox' || ft === 'radio') { if (!f.checked) continue; v = 'checked'; }
+    else v = String(f.value || '');
+    if (v.trim() === '') continue;
+    out.push([labelOf(f).slice(0, 60), v.slice(0, 80)]);
+  }
+  const name = form.getAttribute('aria-label') || form.getAttribute('name') || form.id ||
+    ((form.querySelector('legend, h1, h2, h3') || {}).textContent || '').trim() || 'the form';
+  return {form: name.slice(0, 80), fields: out};
+}"""
+
+# A form with fewer filled fields than this (a search box and its button, a sign-in) is sent without the check.
+FORM_CHECK_MIN_FIELDS = 3
+
+
+def submit_form_fields(element, min_fields=None):
+    """{"form", "fields": [[label, value]]} when clicking element submits a form with several filled fields (at least
+    `min_fields`, FORM_CHECK_MIN_FIELDS by default), else None."""
+
+    page = None
+    try:
+        page = _page_for(element)
+        object_id = _object(page, element["handle"]["backend_id"])
+        found = page.call("Runtime.callFunctionOn", {
+            "objectId": object_id, "returnByValue": True, "functionDeclaration": FORM_FIELDS,
+        }).get("result", {}).get("value")
+        if not found or len(found.get("fields") or []) < (FORM_CHECK_MIN_FIELDS if min_fields is None else min_fields):
+            return None
+        return found
+    except (ComputerError, KeyError, TypeError, ValueError, OSError):
+        return None
+    finally:
+        if page is not None:
+            page.close()
+
+
+# ============================================================
+# Enter in a form's line field submits the form
+#
+# Found live (2026-10-20, P2 on a portal): a unit price typed into one line of an order form "and Enter" submitted the
+# whole form at once - an order saved with one line of several, which the portal cannot edit. A browser submits a
+# <form> when Enter is pressed in one of its single-line inputs (implicit submission). So Enter is held back there
+# while the form still has other empty fields: the text is typed, and the operator is told to move on with Tab or a
+# click, and to press the form's own submit button when everything is filled. A textarea, a search box, a field
+# outside a form, a form with no submit control, or a form whose fields are all filled is left alone.
+# ============================================================
+
+ENTER_SUBMITS = """function() {
+  const el = this;
+  if (!el || el.tagName !== 'INPUT') return null;
+  const t = (el.type || 'text').toLowerCase();
+  if (['search', 'checkbox', 'radio', 'button', 'submit', 'reset', 'file', 'image', 'hidden', 'range', 'color'].includes(t)) return null;
+  if ((el.getAttribute('role') || '').toLowerCase() === 'searchbox') return null;
+  const form = el.form;
+  if (!form) return null;
+  const submit = form.querySelector('button:not([type]), button[type=submit], input[type=submit], input[type=image]');
+  if (!submit) return null;
+  const visible = (f) => { const r = f.getBoundingClientRect(); const s = getComputedStyle(f);
+    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+  let empty = 0;
+  for (const f of form.elements) {
+    if (f === el || f.disabled || f.readOnly) continue;
+    const ft = (f.type || '').toLowerCase();
+    if (f.tagName === 'INPUT' && ['hidden', 'submit', 'button', 'reset', 'image', 'checkbox', 'radio', 'file'].includes(ft)) continue;
+    if (!['INPUT', 'TEXTAREA', 'SELECT'].includes(f.tagName) || !visible(f)) continue;
+    if (String(f.value || '').trim() === '') empty++;
+  }
+  if (!empty) return null;
+  const name = form.getAttribute('aria-label') || form.getAttribute('name') || form.id ||
+    ((form.querySelector('legend, h1, h2, h3') || {}).textContent || '').trim() || 'on this page';
+  return {form: name.slice(0, 80), empty: empty};
+}"""
+
+
+class EnterWouldSubmit(ComputerError):
+    """Enter was held back: it would have submitted a form with fields still empty."""
+
+
+def enter_would_submit(page, object_id):
+    """{"form", "empty"} when Enter in this element would submit its form with other fields still empty, else None."""
+
+    try:
+        return page.call("Runtime.callFunctionOn", {
+            "objectId": object_id, "returnByValue": True, "functionDeclaration": ENTER_SUBMITS,
+        }).get("result", {}).get("value")
+    except ComputerError:
+        return None
+
+
+def held_enter_message(found, typed=None):
+    """What the operator is told when Enter was held back."""
+
+    form = found.get("form") or "on this page"
+    form = form if form == "on this page" else f"'{form}'"
+    did = f"Typed {typed!r} without the Enter: " if typed is not None else "Enter was not pressed: "
+    return (did + f"Enter would submit the form {form} now, with {found.get('empty', 1)} other field(s) still empty. "
+            "Move on with Tab or click the next field; press the form's submit button when every field is filled.")
+
+
+def focused_enter_would_submit():
+    """Enter pressed now: would it submit a form with fields still empty? ({"form", "empty"} or None.)"""
+
+    page = None
+    try:
+        page = active_page()
+        result = page.call("Runtime.evaluate", {"expression": _FOCUSED}).get("result", {})
+        if not result.get("objectId"):
+            return None
+        return enter_would_submit(page, result["objectId"])
+    except (ComputerError, KeyError, TypeError, ValueError, OSError):
+        return None
+    finally:
+        if page is not None:
+            page.close()
 
 
 _KEYS = {

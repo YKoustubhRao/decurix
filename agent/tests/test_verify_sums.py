@@ -21,6 +21,26 @@ class SumsInAReport(unittest.TestCase):
         self.assertEqual(false_sums("3 x 25.00 + 5 = 80.00"), [])
         self.assertTrue(false_sums("3 x 25.00 + 5 = 81.00"))
 
+    def test_a_product_with_its_currency_is_a_product(self):
+        # Round 5 P6 on pc3 (2026-10-21): the right refund line was refused twice - "it comes to 6,035".
+        self.assertEqual(false_sums("E03: Approve refund 60 x Rs 35 = Rs 2,100 (policy, up to Rs 5,000)."), [])
+        for text in ("60 x Rs 35 = Rs 2,100", "60 X Rs. 35 = Rs. 2,100", "60 * INR 35 = INR 2,100", "60 @ Rs 35 = 2,100",
+                     "40 @ 175.75 = 7,030.00", "2 x Rs 35 + 1 x Rs 30 = Rs 100"):
+            self.assertEqual(false_sums(text), [], text)
+        self.assertEqual(false_sums("60 x Rs 35 = Rs 2,000"), ["60 x Rs 35 = Rs 2,000 is wrong: it comes to 2,100"])
+        self.assertTrue(false_sums("40 @ 175.75 = 7,000.00"))
+
+    def test_what_cannot_be_read_with_certainty_is_not_decided(self):
+        for text in ("10 x 2 x (1+18%) = 23.60", "60 pcs x Rs 35 = Rs 2,000", "60 x 35 kg = 2,000"):
+            self.assertEqual(false_sums(text), [], text)
+
+    def test_the_priced_list_that_made_this_check_is_still_refused(self):
+        # Round 5 P2 (2026-10-20): SO-5101's lines come to 13,456.00.
+        found = false_sums("The order should total 13129.00 ex GST from WB-500 40 @ 175.75, MUG-12 24 @ 149, "
+                           "NB-A5 30 @ 95.")
+        self.assertEqual(found, ["the total 13129.00 stated for 40 @ 175.75, 24 @ 149, 30 @ 95 is wrong: those come to "
+                                 "13,456.00"])
+
 
 if __name__ == "__main__":
     unittest.main()

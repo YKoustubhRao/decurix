@@ -5,7 +5,7 @@ import re
 import time
 
 from decurix_agent.computer import elements as el
-from decurix_agent.computer import constraints, replay, skills
+from decurix_agent.computer import constraints, launchers, replay, skills
 
 
 # ============================================================
@@ -84,7 +84,7 @@ GO_AHEAD = re.compile(r"\bgo(?: ahead)?\b|on your own|\b(?:don'?t|do not|never|w
 
 KEEP_NAME = re.compile(
     r"^\W*(?:(?:yes|y|yeah|yep|ok|okay|sure|confirm|looks good|go ahead)"
-    r"(?:[\s,.!-]+(?:please|thanks?|save(?: it)?|keep(?: it)?))*|(?:save|keep)(?: it| that)?)\W*$", re.I)
+    r"(?:[\s,.!-]+(?:please|thanks?|save(?: it)?|keep(?: it)?))*|(?:save|keep)(?: it| that)?(?: (?:for good|permanently))?|perma(?:nent(?:ly)?)?|save (?:it )?perma(?:nent(?:ly)?)?)\W*$", re.I)
 THROW_AWAY = re.compile(
     r"^\W*(?:(?:no|n|nope|nah)(?:[\s,.!-]+(?:thanks?|throw (?:it )?away|discard(?: it)?|delete(?: it)?|"
     r"don'?t save(?: it)?))*|discard(?: it)?|cancel|throw (?:it )?away|delete(?: it)?|"
@@ -155,6 +155,10 @@ def build(sources, name=None):
     for n, step in enumerate(steps, 1):
         step["id"] = f"s{n}"
         step["n"] = n
+
+    for note in _name_points(steps):
+        if note not in tidied:
+            tidied.append(note)
 
     params = _generalise(steps, len(programs))
     loops = _find_loops(steps, len(programs))
@@ -350,6 +354,61 @@ def _tidy(program, events):
         program["steps"] = joined
         program["params"] = [p for p in program["params"] if p["name"] in params]
 
+    return notes
+
+
+NAMED_BY_NEXT = ("type", "key", "select", "upload")
+
+
+def _inside(point, box, slack=4):
+    return (box and len(box) == 4 and box[0] - slack <= point[0] <= box[0] + box[2] + slack
+            and box[1] - slack <= point[1] <= box[1] + box[3] + slack)
+
+
+def _name_points(steps):
+    """
+    Name presses the recorder could only keep as a place on the screen, from
+    what the demonstration itself shows (in place); returns what was named,
+    in words. Nothing is asked about a press this settles.
+
+    - A press straight before typing (or a key, a choice, an upload) into a
+      control whose recorded box holds the press point was on that control:
+      found live (2026-10-16), the click that put the cursor in a chat's
+      message box was recorded while the chat was still opening, as "click
+      664,709", and the very next step typed into the message box drawn right
+      there.
+    - A press on the bare desktop that opened a window one launcher makes is
+      that launcher's icon (replay opens it by its launcher, whatever the
+      desktop looks like).
+    """
+
+    notes = []
+    for index, step in enumerate(steps):
+        if step["kind"] not in ("click", "double_click") or step.get("target") or not step.get("point"):
+            continue
+        following = steps[index + 1] if index + 1 < len(steps) else None
+        locate = (following or {}).get("locate") or {}
+        if (following and following.get("target") and following["kind"] in NAMED_BY_NEXT
+                and (following.get("window") or "") == (step.get("window") or "")
+                and (not step.get("screen") or not locate.get("screen") or list(step["screen"]) == list(locate["screen"]))
+                and _inside(step["point"], locate.get("box"))):
+            step["target"] = copy.deepcopy(following["target"])
+            step["locate"] = copy.deepcopy(locate)
+            step.pop("look", None)
+            step["summary"] = replay._summary(step)
+            notes.append(f"the press at step {step['n']} was on {replay._summary(following).split(' into ')[-1]}, "
+                         f"which step {following['n']} used")
+            continue
+        if replay._on_desktop(step):
+            window = replay._opened_window(step) or (replay._stable_title(following.get("window")) if following else None)
+            try:
+                entry = launchers.for_window(window) if window else None
+            except Exception:
+                entry = None
+            if entry:
+                step["launcher"] = entry["name"]
+                step["summary"] = replay._summary(step)
+                notes.append(f"the press at step {step['n']} was the desktop icon {el._quote(entry['name'], 60)}")
     return notes
 
 
@@ -759,7 +818,7 @@ def questions(skill):
     # before this, half answered, asks only about the rest.
     positional = [step for step in skill["steps"]
                   if step["id"] not in in_loop and step["kind"] in replay.REPLAYABLE and step["kind"] in CLICKS
-                  and not step.get("target") and step.get("point")
+                  and not step.get("target") and step.get("point") and not step.get("launcher")
                   and f"coordinates:{step['id']}" not in skill["answers"]]
     first_positional = positional[0]["id"] if positional else None
 
@@ -791,7 +850,7 @@ def questions(skill):
         if step["kind"] not in replay.REPLAYABLE:
             found.append(_unsupported(step))
         elif step["id"] == first_positional:
-            found.append(_coordinates(positional))
+            found.append(_coordinates(positional, skill))
 
     found.append(_approval(skill))
     found.append(_confirm(skill))
@@ -1016,22 +1075,33 @@ def _optional(skill, step):
     return _question(f"optional:{step['id']}", "optional", text, step["id"])
 
 
-def _coordinates(steps):
-    """One question for every step recorded only as a position on the screen."""
+def _coordinates(steps, skill=None):
+    """
+    One question for every press still known only by its place on the screen
+    (_name_points names the rest). Each is described by what the model that
+    studied the demonstration saw under it, when it did - a person answers
+    about "the WhatsApp icon", not about 73,300.
+    """
+
+    seen = ((skill or {}).get("understanding") or {}).get("steps") or {}
+
+    def what(step):
+        purpose = seen.get(str(step["n"]))
+        return f"{step['n']}. {purpose}" if purpose else f"{step['n']}. {step['summary']}"
 
     if len(steps) == 1:
         step = steps[0]
-        text = (f"Step {step['n']} ({step['summary']}) was recorded as a click at a spot on the screen with no named "
-                "control, which only works if the window is exactly where it was. Reply `keep` to try it as recorded, "
-                "`skip` to leave it out, or `manual` to have me stop and let you do it.")
+        purpose = seen.get(str(step["n"]))
+        text = (f"Step {step['n']} ({step['summary']}{' - ' + purpose if purpose else ''}) pressed a spot on the screen "
+                "and I could not tell which control was there. "
+                "Tell me what it is (for example `the Next button`) and I will find it by name, or reply `keep` to press "
+                "the same spot, `skip` to leave it out, or `manual` to let you do it.")
         return _question(f"coordinates:{step['id']}", "coordinates", text, step["id"])
 
-    listed = "; ".join(f"{s['n']}. {s['summary']}" for s in steps)
-    text = (f"{len(steps)} steps were recorded as clicks at spots on the screen with no named control under them "
-            f"({listed}). I look for what was under each click before clicking, but they only work if the windows "
-            "are laid out as they were. Reply `keep` to try them all as recorded, `manual` to have me stop at each "
-            f"and let you do it, or name the exceptions - for example `skip {steps[-1]['n']}` or "
-            f"`manual {steps[0]['n']}, skip {steps[-1]['n']}` (the rest are kept).")
+    listed = "\n".join(what(s) for s in steps)
+    text = (f"{len(steps)} steps were recorded as clicks at spots on the screen, and I could not tell which control "
+            f"was under them:\n{listed}\nReply `keep` to press the same spots (I check they still look the same first), "
+            f"`manual` to let you do them, or name exceptions - for example `skip {steps[-1]['n']}`.")
     question = _question("coordinates:" + "+".join(s["id"] for s in steps), "coordinates", text)
     question["steps"] = [{"id": s["id"], "n": s["n"]} for s in steps]
     return question
@@ -1131,7 +1201,9 @@ def _confirm(skill):
 
     needed = [p for p in skill["params"] if p["varies"]]
     if needed:
-        parts.append("Each run I need: " + ", ".join(f"{p['name']} ({p['label']})" for p in needed) + ".")
+        meant = (skill.get("understanding") or {}).get("inputs") or {}
+        parts.append("Each run I need: " + "; ".join(
+            f"{p['name']} ({el._quote(meant[p['name']], 80) if meant.get(p['name']) else p['label']})" for p in needed) + ".")
 
     understood = understood_text(skill)
     if understood:
@@ -1296,6 +1368,54 @@ def rename(skill, given):
     skill["title"] = given
     skill["named"] = True
     return True
+
+
+PARAM_NAME = re.compile(r"^[a-z][a-z0-9_]{1,30}$")
+
+
+def _replace_braces(value, old, new):
+    if isinstance(value, str):
+        return value.replace("{" + old + "}", "{" + new + "}")
+    if isinstance(value, list):
+        return [_replace_braces(v, old, new) for v in value]
+    if isinstance(value, dict):
+        return {k: _replace_braces(v, old, new) for k, v in value.items()}
+    return value
+
+
+def rename_params(skill, names):
+    """
+    Call each value by what it is ({contact}, {message}) instead of the label
+    of the field it was typed into ({type_a_message_to_koustubh_og}, named
+    after the demonstration's own value). `names` is {old: new}; a new name
+    that is not a short snake_case word, or that is taken, is left alone.
+    """
+
+    taken = {p["name"] for p in skill.get("params") or []}
+    for param in skill.get("params") or []:
+        old, new = param["name"], str(names.get(param["name"]) or "").strip().lower()
+        if not PARAM_NAME.match(new) or new == old or new in taken:
+            continue
+        taken.discard(old)
+        taken.add(new)
+        param["name"] = new
+        for step in skill.get("steps") or []:
+            if step.get("param") == old:
+                step["param"] = new
+            for check in step.get("expect") or []:
+                if check.get("param") == old:
+                    check["param"] = new
+        skill["steps"] = _replace_braces(skill["steps"], old, new)
+        understanding = skill.get("understanding")
+        if understanding:
+            for key in ("inputs", "varies"):
+                if old in (understanding.get(key) or {}):
+                    understanding[key][new] = understanding[key].pop(old)
+            for key in ("summary", "done_when", "steps", "rules", "questions"):
+                if key in understanding:
+                    understanding[key] = _replace_braces(understanding[key], old, new)
+    for step in skill.get("steps") or []:
+        step["summary"] = replay._summary(step)
 
 
 def _apply_loop(skill, loop, choice):

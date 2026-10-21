@@ -97,7 +97,7 @@ This is the beginning.
 
 ## ✅ Feature Overview
 
-A rundown of what's actually built and working, grouped by area. See [`CLAUDE.md`](CLAUDE.md) for the full architecture behind each of these.
+A rundown of what's actually built and working, grouped by area. See [`docs/`](docs/architecture.md) for the full architecture behind each of these.
 
 **Workers & environments**
 * Create, start, stop, restart and delete disposable desktop VMs (Docker containers running a full XFCE desktop over VNC) from a single dashboard
@@ -489,7 +489,7 @@ Set these in your own `.env` (copied from `.env.example`) — the control plane 
 | `DECURIX_LAN_PORT` | No | `8090` | Port of the second, access-code-gated listener — the **LAN access URL**, reachable directly on your own network. Changes which host port `docker compose` publishes it on too. `build.sh`/`rebuild.sh` open their primary tunnel against `:8080` instead, but also open a second tunnel against this port for the gated URL. |
 | `DECURIX_IDLE_STOP_MINUTES` | No | `5` (on) | Stop a desktop automatically once it's sat idle — no task running, queued, or waiting on a reply, and no screen/thumbnail open — for this many minutes. Set to `0` to turn it off. It only ever does what the dashboard's own Stop button does. |
 
-Every other setting (the agent harness, the control-plane URL a desktop calls home to, etc.) is set up for each desktop when you create it. See [`CLAUDE.md`](CLAUDE.md) if you're changing that wiring.
+Every other setting (the agent harness, the control-plane URL a desktop calls home to, etc.) is set up for each desktop when you create it. See [`docs/architecture.md`](docs/architecture.md) if you're changing that wiring.
 
 ---
 
@@ -501,7 +501,7 @@ The infrastructure underneath Decurix is intentionally modular and designed to s
 
 For developers interested in the current implementation, see:
 
-* [`CLAUDE.md`](CLAUDE.md) — architecture reference (packages, agent harnesses, conventions)
+* [`CLAUDE.md`](CLAUDE.md) and [`docs/`](docs/architecture.md) — architecture reference (packages, agent harnesses, conventions)
 * [`CODE_MAP.md`](CODE_MAP.md) — codebase reference
 * [`scripts/`](scripts/) — `linux/`, `mac/`, and `windows/` hold the scripts per platform, `release/` builds the downloadable executables
 

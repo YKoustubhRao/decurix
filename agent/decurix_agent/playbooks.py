@@ -1179,3 +1179,22 @@ def forget(name):
         _drop_tool(book)
         delete(name)
     return True
+
+
+def qualification_source(name):
+    """Export the exact local tool bytes; readiness must never hash a preview."""
+    if not NAME.fullmatch(name):
+        raise ValueError("not a playbook name")
+    book = load(name) or {}
+    tool = book.get("tool") or {}
+    target = Path(tool.get("path") or "")
+    if not target.is_file() or target.suffix not in {".py", ".sh"}:
+        raise FileNotFoundError("no saved Python or Bash tool")
+    # Know-how exports are bounded and confined to the tool store. They never
+    # turn an arbitrary agent-supplied path into a host/control-plane read.
+    if not target.resolve().is_relative_to(TOOLS.resolve()):
+        raise ValueError("the tool is outside the saved tools directory")
+    content = target.read_bytes()
+    if not content or len(content) > 128 * 1024:
+        raise ValueError("the tool is empty or too large for qualification")
+    return {"script": content.decode("utf-8"), "language": "bash" if target.suffix == ".sh" else "python"}

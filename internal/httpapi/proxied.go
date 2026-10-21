@@ -1,6 +1,9 @@
 package httpapi
 
-import "net/http"
+import (
+	"context"
+	"net/http"
+)
 
 // forwardingHeaders are what a reverse proxy or tunnel (Cloudflare's edge and
 // cloudflared, nginx, Caddy...) adds to a request it relays.
@@ -31,4 +34,22 @@ func RefuseForwarded(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// gatedKey marks a request that arrived on the gated listener (the access-code one a phone or a tunnel reaches).
+type gatedKey struct{}
+
+// MarkGated tags every request it passes on as one that came through the gated listener. The tag is set here, by the
+// server, and cannot be sent by a caller. A route that gives a desktop a reach on the person's own computer (a shared
+// folder) checks it: the code that opens the gated listener must never become that.
+func MarkGated(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), gatedKey{}, true)))
+	})
+}
+
+// isGated reports whether r came through the gated listener.
+func isGated(r *http.Request) bool {
+	gated, _ := r.Context().Value(gatedKey{}).(bool)
+	return gated
 }

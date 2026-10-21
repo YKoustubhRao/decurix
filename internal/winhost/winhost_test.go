@@ -70,6 +70,7 @@ XYZ'; else echo "THUMB same"; fi;;
     check*uwp*) echo "ERR This is a Universal Windows (UWP) app";;
     check*webapp*) printf 'OK\tC:\\Edge\\msedge.exe\t--app=http://localhost:8000\t\t1\tmsedge\tC:\\webapp.exe\n';;
     check*)   IFS=$'\t' read -r _ t a <<< "$l"; printf 'OK\t%s\t%s\t\t0\tx\n' "$t" "$a";;
+    pid)      echo "OK 4242";;
     quit)     exit 0;;
     *)        echo OK;;
   esac
@@ -589,6 +590,25 @@ func TestScriptIsEmbedded(t *testing.T) {
 	}
 }
 
+// TestSetValueLeavesADialogsComboBoxToTypedKeys pins a live finding: Word's Save As ignored a path set through UI Automation
+// on its "File name:" box (it saved "Doc1" in Documents) and kept one typed with keys.
+func TestSetValueLeavesADialogsComboBoxToTypedKeys(t *testing.T) {
+	src := string(Script)
+	i := strings.Index(src, "public static string SetValueAt(")
+	if i < 0 {
+		t.Fatal("SetValueAt is gone")
+	}
+	body := src[i:]
+	if j := strings.Index(body, "static void RunOnDesktop"); j > 0 {
+		body = body[:j]
+	}
+	for _, want := range []string{`"#32770"`, "GW_OWNER", "ControlType.ComboBox", "takes typed keys"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("SetValueAt no longer leaves a dialog's combo box to typed keys: missing %s", want)
+		}
+	}
+}
+
 func TestModifiersAreValidatedBeforeTheyReachTheHost(t *testing.T) {
 	_, s := startFake(t, "mods")
 	for _, bad := range []string{"x", "cc", "c s", "c\n", "ctrl"} {
@@ -713,21 +733,58 @@ func TestCheckAnswersTargetsTheProtocolCannotCarryItself(t *testing.T) {
 
 func TestCheckKeepsWhatWasAnsweredWhenTheHelperDies(t *testing.T) {
 	requireBash(t)
+	var starts int32
 	m := NewManager(func(context.Context, string) (*exec.Cmd, error) {
-		// Answers the readiness ping and one check, then exits.
-		return exec.Command("bash", "-c", `read -r l; echo OK; read -r l; echo OK`), nil
+		// The first answers the readiness ping and one check, then exits; every later one dies after the ping.
+		if atomic.AddInt32(&starts, 1) == 1 {
+			return exec.Command("bash", "-c", `read -r l; echo OK; read -r l; echo OK`), nil
+		}
+		return exec.Command("bash", "-c", `read -r l; echo OK`), nil
 	})
 	defer m.StopAll()
 	first, second := Target{Target: "a.exe"}, Target{Target: "b.exe"}
 	got, err := m.Check(context.Background(), []Target{first, second})
 	if err == nil {
-		t.Fatal("expected the helper's death to be reported")
+		t.Fatal("expected the helpers' deaths to be reported")
 	}
 	if v, ok := got[first]; !ok || v != "" {
 		t.Errorf("first = %q, %v; want its answer kept", v, ok)
 	}
 	if _, ok := got[second]; ok {
 		t.Error("second was never answered but has a verdict")
+	}
+	if n := atomic.LoadInt32(&starts); n != int32(1+checkHelperTries) {
+		t.Errorf("helpers started = %d, want the first plus %d that answered nothing", n, checkHelperTries)
+	}
+}
+
+func TestCheckAsksTheRestOnANewHelperWhenOneDiesPartway(t *testing.T) {
+	start, starts := fakeHelper(t, fakeOpts{})
+	var n int32
+	m := NewManager(func(ctx context.Context, name string) (*exec.Cmd, error) {
+		if atomic.AddInt32(&n, 1) == 1 {
+			// Answers the readiness ping and two checks, then exits - the boot-time hiccup.
+			return exec.Command("bash", "-c", `read -r l; echo OK; read -r l; echo OK; read -r l; echo OK`), nil
+		}
+		return start(ctx, name)
+	})
+	defer m.StopAll()
+	var targets []Target
+	for _, s := range []string{"a.exe", "b.exe", "c.exe", "d.exe", "uwp.exe"} {
+		targets = append(targets, Target{Target: s})
+	}
+	got, err := m.Check(context.Background(), targets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(targets) {
+		t.Fatalf("got %d verdicts, want all %d: %+v", len(got), len(targets), got)
+	}
+	if got[Target{Target: "c.exe"}] != "" || got[Target{Target: "uwp.exe"}] == "" {
+		t.Errorf("verdicts = %+v; want c runnable and the UWP app refused", got)
+	}
+	if atomic.LoadInt32(starts) != 1 {
+		t.Errorf("replacement helpers = %d, want 1", atomic.LoadInt32(starts))
 	}
 }
 
@@ -1044,5 +1101,153 @@ func TestTypedLineBreaksAreLineBreaksAndTheTypingModeIsSentOnce(t *testing.T) {
 	want := []string{"type Dear Ms Menon,", "newline", "newline", "type We are sorry", "keyed 1", "keyed 0"}
 	if strings.Join(sent, "|") != strings.Join(want, "|") {
 		t.Fatalf("sent %q, want %q", sent, want)
+	}
+}
+
+// A session's end ends what runs its helper on the host, however it ended. Found live (2026-10-20): the helper ran in
+// a container started by a docker client; ending the session killed the client, the container kept the helper's stdin
+// open, and a dozen helpers were left running in three minutes. The command's Cancel is what removes the container
+// (desktop.HopCommand), so a session must call it.
+func TestEndingASessionEndsWhatRunsItsHelper(t *testing.T) {
+	start, _ := fakeHelper(t, fakeOpts{})
+	var mu sync.Mutex
+	cancels := map[string]int{}
+	counting := func(ctx context.Context, name string) (*exec.Cmd, error) {
+		plain, err := start(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		// A Cancel needs a command made with a context, as every host hop is (desktop.HopCommand).
+		cmd := exec.CommandContext(context.Background(), plain.Args[0], plain.Args[1:]...)
+		cmd.Env = plain.Env
+		cmd.Cancel = func() error {
+			mu.Lock()
+			cancels[name]++
+			mu.Unlock()
+			if cmd.Process != nil {
+				return cmd.Process.Kill()
+			}
+			return nil
+		}
+		return cmd, nil
+	}
+	ended := func(name string) int {
+		mu.Lock()
+		defer mu.Unlock()
+		return cancels[name]
+	}
+
+	m := NewManager(counting)
+	s, err := m.Start(context.Background(), "vm-app", `C:\a.exe`, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Stop()
+	deadline := time.Now().Add(5 * time.Second)
+	for ended("decurix_helper_1") == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if ended("decurix_helper_1") == 0 {
+		t.Fatalf("a stopped session did not end what ran its helper: %v", cancels)
+	}
+	m.StopAll()
+	m.waitIdle()
+}
+
+// A helper whose client dies by itself (the stream broke) is ended the same way, though nothing called Stop.
+func TestAHelperWhoseClientExitsIsEnded(t *testing.T) {
+	requireBash(t)
+	var calls int32
+	cmd := exec.CommandContext(context.Background(), "bash", "-c", "read l; exit 0")
+	cmd.Cancel = func() error { atomic.AddInt32(&calls, 1); return nil }
+	s, err := newSession("x", cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.stdin.Close()
+	select {
+	case <-s.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the helper did not end")
+	}
+	if atomic.LoadInt32(&calls) != 1 {
+		t.Fatalf("Cancel called %d times after the client exited", calls)
+	}
+}
+
+// TestAKeptAppThatClosesStraightAwayIsGivenUpOnUntilKeptAgain: found live (2026-10-20), a Store app that cannot run on a
+// private desktop was relaunched every two minutes, for hours, for a stopped VM. After keepGiveUpAfter launches that
+// closed straight away it is not tried again, and whoever keeps the list is told why; keeping it again tries again.
+func TestAKeptAppThatClosesStraightAwayIsGivenUpOnUntilKeptAgain(t *testing.T) {
+	requireBash(t)
+	oldMin, oldMax := keepRetryMin, keepRetryMax
+	keepRetryMin, keepRetryMax = 10*time.Millisecond, 20*time.Millisecond
+	defer func() { keepRetryMin, keepRetryMax = oldMin, oldMax }()
+
+	start, starts := fakeHelper(t, fakeOpts{noWin: true})
+	m := NewManager(start)
+	defer m.waitIdle()
+	defer m.StopAll()
+	var gaveUp []string
+	var mu sync.Mutex
+	m.OnGiveUp = func(desktop, id, reason string) {
+		mu.Lock()
+		defer mu.Unlock()
+		gaveUp = append(gaveUp, desktop+"/"+id+": "+reason)
+	}
+
+	m.Keep("vm1", "vm1-notepad", `C:\notepad.exe`, "")
+	waitFor(t, "the app was not given up on", func() bool { mu.Lock(); defer mu.Unlock(); return len(gaveUp) == 1 })
+	if !strings.Contains(gaveUp[0], "vm1/vm1-notepad: It cannot run here") || !strings.Contains(gaveUp[0], "closed straight away") {
+		t.Errorf("reason = %q", gaveUp[0])
+	}
+	launched := atomic.LoadInt32(starts)
+	time.Sleep(200 * time.Millisecond)
+	if n := atomic.LoadInt32(starts); n != launched {
+		t.Errorf("a given-up app was launched again (%d helpers -> %d)", launched, n)
+	}
+	if got := m.KeptFor("vm1"); len(got) != 1 || got[0] != "vm1-notepad" {
+		t.Errorf("KeptFor = %v: the app stays on the list, given up on", got)
+	}
+
+	// Kept again (its desktop started again, or the app copied again): tried again.
+	m.Keep("vm1", "vm1-notepad", `C:\notepad.exe`, "")
+	waitFor(t, "a given-up app kept again was not tried again", func() bool { return atomic.LoadInt32(starts) > launched })
+}
+
+// TestStopEndsWhatTheHelperStartedOnTheHost: Stop hands the manager's Reap the helper's own host process id and the
+// app it launched - found live (2026-10-20), a stopped helper and its WINWORD.EXE kept running on the person's PC.
+func TestStopEndsWhatTheHelperStartedOnTheHost(t *testing.T) {
+	start, _ := fakeHelper(t, fakeOpts{launch: "OK pid=42"})
+	m := NewManager(start)
+	defer m.waitIdle()
+	defer m.StopAll()
+	var mu sync.Mutex
+	var reaped [][2]int
+	m.Reap = func(helper, app int) {
+		mu.Lock()
+		reaped = append(reaped, [2]int{helper, app})
+		mu.Unlock()
+	}
+	if _, err := m.Start(context.Background(), "vm1-word", `C:\Word.exe`, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.HostPIDs(); len(got) != 1 || got[0] != 4242 {
+		t.Fatalf("HostPIDs = %v, want [4242]", got)
+	}
+	m.Stop("vm1-word")
+	mu.Lock()
+	defer mu.Unlock()
+	if len(reaped) != 1 || reaped[0] != [2]int{4242, 42} {
+		t.Fatalf("reaped %v, want the helper 4242 and its app 42", reaped)
+	}
+}
+
+func TestParsePID(t *testing.T) {
+	for in, want := range map[string]int{"OK 4242": 4242, "OK pid=42 sandbox=S-1": 42, "OK": 0, "ERR unknown command": 0,
+		"OK pid=x": 0, "OK -3": 0} {
+		if got := parsePID(in); got != want {
+			t.Errorf("parsePID(%q) = %d, want %d", in, got, want)
+		}
 	}
 }

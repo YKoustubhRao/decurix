@@ -122,6 +122,7 @@ _INTERNAL_STEP = re.compile(
     r"|could not judge whether this is worth remembering"
     r"|feedback: (?:found|could not consult)"
     r"|skill:[\w-]+ -> model replied: "
+    r"|skill:[\w-]+ -> usage: "
     r"|coding-architecture: =+"
     r"|no skill matched task type)"
 )
@@ -409,6 +410,26 @@ def _answer_context(asked, reply):
     )
 
 
+def _session_id():
+    """
+    Soul's conversation for this request. A workflow stage's attempt has its own (the same while it waits on an
+    approval, so the reply resumes it): its prompt already carries what earlier stages found (long_task's ledger), and
+    soul's history of every earlier stage's prompt and reply went with each of its model calls. Found live (round 5
+    P3, 2026-10-20): 43% of a run's 1.6M tokens were earlier stages' conversation, 27,000 tokens a turn by the end.
+    """
+
+    desktop = config.DESKTOP_ID or "decurix-desktop"
+    try:
+        from decurix_agent import workflow_task
+        active = workflow_task._active
+        if active:
+            attempts = workflow_task.runner().status(active[0])["steps"][active[1]]["attempts"]
+            return f"{desktop}:{active[0][:16]}:{active[1]}:{attempts}"
+    except Exception as exc:  # noqa: BLE001 - the desktop's own session is always a working answer
+        log(f"Using the desktop's session for this job: {exc}")
+    return desktop
+
+
 def _run_thebot(request, reply, extra_context=""):
     """
     Submit one request to TheBot's /api/chat and follow the job until it
@@ -433,8 +454,9 @@ def _run_thebot(request, reply, extra_context=""):
                 "workdir": str(config.WORK_DIR),
                 # One session per desktop, for the whole life of the
                 # container: soul keeps the conversation's history and the
-                # paused job (if any) under it.
-                "sessionId": config.DESKTOP_ID or "decurix-desktop",
+                # paused job (if any) under it - except a workflow stage's, which
+                # gets one of its own (_session_id).
+                "sessionId": _session_id(),
                 "reply": reply,
                 # Said yes already, as a kind of task: soul does not ask about the request's own words again.
                 "approved": bool(state.request_preapproved) and not reply,
@@ -447,6 +469,30 @@ def _run_thebot(request, reply, extra_context=""):
     if not job_id:
         return None, f"TheBot did not return a job id: {submitted}"
 
+    global _current_job
+    _current_job = (base, job_id)
+    try:
+        return _follow_job(base, job_id)
+    finally:
+        _current_job = None
+
+
+# The job soul is running for this desktop now, so a person's "stop" in the
+# middle of a long request (long_task.py) can end it instead of waiting it out.
+_current_job = None
+
+
+def cancel_current():
+    """Cancel the job soul is running now, if any. True when there was one."""
+
+    job = _current_job
+    if job is None:
+        return False
+    _cancel_job(*job)
+    return True
+
+
+def _follow_job(base, job_id):
     try:
         job = _stream_job(base, job_id)
     except (urllib.error.URLError, OSError, ValueError) as exc:

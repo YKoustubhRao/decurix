@@ -127,7 +127,8 @@ func (j *jobRecord) snapshot() map[string]any {
 		"usedSkill": j.UsedSkill, "proposedSkill": j.ProposedSkill,
 		"outcome": j.Outcome, "question": j.Question, "route": j.Route,
 		"steps": j.Steps, "resumed": j.Resumed,
-		"usage": map[string]int{"promptTokens": promptTokens, "responseTokens": responseTokens, "calls": calls},
+		"usage": map[string]int{"promptTokens": promptTokens, "responseTokens": responseTokens, "calls": calls,
+			"cachedTokens": j.Usage.Cached()},
 	}
 }
 

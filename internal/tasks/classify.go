@@ -10,6 +10,8 @@ import (
 // and a dashboard row means the same thing next week. The one thing that can
 // change it later is the agent working the screen (see Store.AddStep).
 const (
+	// TypePractice is an isolated qualification exam, excluded from autonomy.
+	TypePractice      = "practice"
 	TypeConsequential = "consequential"
 	TypeScreen        = "screen"
 	TypeWeb           = "web"
@@ -69,6 +71,7 @@ func hasCommand(request, command string) bool {
 }
 
 var typeLabels = map[string]string{
+	TypePractice:      "Readiness practice",
 	TypeTeaching:      "Teaching a skill",
 	TypeDemonstration: "Recorded by a person",
 	TypeConsequential: "Payments & messages",

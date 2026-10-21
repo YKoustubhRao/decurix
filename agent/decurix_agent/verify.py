@@ -25,6 +25,10 @@ from decurix_agent.logging_utils import log
 # ============================================================
 
 DONE_CONFIDENCE = 0.8
+# The task text the judge is given (a long stage's instruction, inputs, binding answers, the system's read-back, the
+# code checks' evidence), and how many things it may ask to look up when a part it needs was not shown.
+MAX_TASK_CHARS = 20000
+MAX_LOOK = 6
 
 DONE, NOT_DONE, UNSURE, CANNOT = "done", "not_done", "unsure", "cannot"
 
@@ -37,115 +41,76 @@ JUDGE_SYSTEM = (
     "right page or record, with this request's values, saved or sent or answered as the task asks. Evidence is "
     "the screen now AND what the tools observed during the task (earlier screens are gone, but what was read off "
     "them is listed). For a task that asks for information, each answer in the report must match what the tools "
-    "read, and each must answer what was asked - an answer to a different question (a value garbled on the way, "
-    "\"if you mean 7 x 8\" for 7+8) is not done.\n"
-    "A report that says the worker did not check a result the request asks for (\"I did not verify the file in the "
-    "folder\", \"could not confirm it saved\") is not proof of it: unless the screen or the observations show that "
-    "result, answer \"unsure\" (found live: a Word letter reported saved was an empty file).\n"
+    "read, and each must answer what was asked.\n"
+    "A report that says the worker did not check a result the request asks for is not proof of it: unless the "
+    "screen or the observations show that result, answer \"unsure\".\n"
     "A screen left over from before is not this task's result: when it shows the demonstration's own values (or "
-    "any others) where this run's should be, it is \"not_done\".\n"
-    "What a taught task's \"done\" looks like was written from one demonstration. Its details that belonged to "
-    "that demonstration's own result - a person's city, a company, a date, an amount - are examples and do NOT "
-    "apply to this run: a search taught on one person whose profile showed \"Udupi, Karnataka\" is done for "
-    "another person when THAT person's profile is open, whatever city it shows. Never answer not_done or unsure "
-    "because such a detail differs or is missing (found live: a correct run was refused for exactly that).\n"
-    "Go through the request part by part before you answer. Each thing it names - which company, account, "
-    "person or record, a date, a reference, the state to leave the result in (a draft, not submitted) - must be "
-    "shown, or reported, with that value. A report or a screen that has ANOTHER value for a part of the request "
-    "than the request gave is \"not_done\" however complete the rest is: say which part, what was asked and what "
-    "was done instead (found live: asked for one company, a record saved under a similarly named other one was "
-    "reported in passing and passed).\n"
-    "A report that says a value of the request or its document was left out, cleared, shortened or replaced "
-    "because the application refused it (\"it rejected the GSTIN, so I saved without it\", \"set it to "
-    "Unregistered to complete the form\") is never \"done\": the record now says something the document does not. "
-    "Answer \"not_done\" and name the value (found live: a vendor saved as not GST-registered after its tax number "
-    "was refused passed this check).\n"
-    "A record made from a document must carry that document's own reference (its number, and its date where "
-    "there is a place for it): an order without the customer's order number, a receipt without the challan "
-    "number, is \"not_done\" when the record has a field for it - say which. Check the report and the screen for "
-    "it, not only the lines and totals (found live: two sales orders without the customer's PO number passed).\n"
-    "A period the document gives (valid for 30 days, due in 15 days) must be the record's date counted from its "
-    "own start date: count the days - an application's default of \"one month\" is 30 or 31 days by the calendar, "
-    "and a day off is \"not_done\" (found live: a quote asked to be valid 30 days was saved valid for 31).\n"
-    "A result must be where the request said to put it: a file saved in another folder (over the attached "
-    "original in an inbox folder instead of in the work folder named) is \"not_done\" - say where it is. A request to "
-    "save in a folder of the person's own computer (C:\\...) or to work in a named app is met only by that app saving "
-    "there: a file in the worker's own folders, or work done in another app, is \"not_done\".\n"
-    "Read what the report itself says was left undone. A value the document gives that the record has a place "
-    "for, left out because the worker did not find or did not look for its field (\"no visible field on the part "
-    "of the form I completed\"), is \"not_done\": say which value - a form keeps most of its fields further down "
-    "or in another section, and the worker is sent back to find it (found live: a sales order passed without "
-    "the customer's own order number and date, which the report listed as left undone). Only a reason that "
-    "stands - the application has no place for it at all, the person said to leave it - lets it pass.\n"
+    "any others) where this run's should be, it is \"not_done\". A taught task's details that belonged to the "
+    "demonstration's own result (a person's city, a company, a date, an amount) are examples, not requirements: "
+    "never answer not_done or unsure because such a detail differs.\n"
+    "Read the report's own evidence against the request: when a figure the report or the files give contradicts "
+    "what the request asks, the answer is \"not_done\" however the report sums itself up - say what was asked and "
+    "what the evidence shows.\n"
+    "When the request names the app to do the work in, the tools' record must show that app's own window opened (its "
+    "name in the window's title): work done in another app in its place - another program of the same kind - is not "
+    "what was asked; answer \"cannot\" and say which app was used instead, unless the report says the named app was not "
+    "available and the person agreed. A file whose content was made with tools (office, python) and that was then "
+    "opened in the named app's window, checked there and saved from it IS done in that app; made with tools and never "
+    "opened and saved in that app, it is not. An app named only as a file's format (\"the template (<app>)\", \"a "
+    "<app> file\") or offered as a choice (\"if you use <app> there\") is not an app the work must be done in.\n"
+    "Go through the request part by part before you answer. Each thing it names - which company, account, person or "
+    "record, a date, a reference, the state to leave the result in (a draft, not submitted) - must be shown, or "
+    "reported, with that value; ANOTHER value for a part of the request is \"not_done\" however complete the rest is: "
+    "say which part, what was asked and what was done instead.\n"
+    "A value of the request or its document that was left out, cleared, shortened or replaced because the application "
+    "refused it is never \"done\": the record now says something the document does not - name the value. A value the "
+    "record has a place for, left out because the worker did not find its field, is \"not_done\" too; only a reason "
+    "that stands (no place for it at all, the person said to leave it) lets it pass. A record made from a document "
+    "carries that document's own reference (its number, and its date) where the record has a field for it.\n"
+    "A period the document gives (valid for N days) is counted from the record's own date, never taken from an "
+    "application's default.\n"
+    "A result must be where the request said to put it: a file saved in another folder is \"not_done\" - say where it "
+    "is. A request to save in a folder of the person's own computer (C:\\...) is met only by a file saved there.\n"
     "Answer \"not_done\" when you can see it was not: an error, a validation message, the wrong page or record, "
     "another value than asked, a half-filled form, a sign-in page, a CAPTCHA, nothing changed, fewer items than "
     "were asked for.\n"
     "When the task names a document and you are shown what it says, the values entered or reported must be the "
-    "document's: a customer, reference, product, quantity or amount that is not in it (or differs from it) is "
-    "\"not_done\", however complete the screen looks - except that a thing the document describes is entered "
-    "as the application's own record of it (see below), which is not a difference.\n"
-    "The same value written in the format its field uses is not a difference: a date field whose placeholder "
-    "reads yyyy-dd-mm (year-day-month) shows 14 March 1998 as 1998-14-03; a number may show thousands "
-    "separators or a currency. Judge the value, not its format (found live: a correct date of birth was "
-    "called wrong).\n"
-    "A thing a document describes in its own words is entered as the application's own record of it: the worker "
-    "picks, from what the application offers, the existing record - a company, a product, an account, a person - "
-    "that is the same thing, and that record's name is usually shorter or worded differently than the document's "
-    "line (a document's \"Executive A4 Printing Paper 75 GSM (Box of 10 Reams)\" is the record \"A4 Printing "
-    "Paper\"). That is this run's value entered correctly, not another value - above all when the person who "
-    "taught the task said to pick the matching existing record. Only a record for a different thing is a "
-    "mismatch (found live: correct entries were refused for their records' names, and each retry entered the "
-    "document a second time).\n"
-    "A rule about HOW to work - look for an existing record first, compare a total and say both, check "
-    "something before saving - is a step of the method, not part of the result. It happened before the screen "
-    "you see, so the screen cannot show it: judge it from what the tools observed during the task (the actions "
-    "list holds the search that was typed and what it found) and from the report. When those show it, or the "
-    "report states it and nothing you are shown contradicts it, it does not make a correct result \"unsure\". "
-    "What does make the task not done is the RESULT showing the rule was broken: a second record with the same "
-    "reference, a record submitted where a draft was asked, a total the report gets wrong. Found live: a "
-    "correct draft whose report said it had searched first and compared the totals (and both totals were on "
-    "the screen) was put to a person as \"no proof the duplicate check was made\", on every bill.\n"
-    "Answer \"cannot\" when the worker's own report does not claim the task was done: it says the worker stopped, "
-    "or could not go on, and gives the reason (something the task needs is not there, a rule it was given forbids "
-    "the only way forward, the application refused). That is the worker being honest, not a check that failed: "
-    "the person is told what it said (found live: \"this cannot be entered, there is no such record and I must "
-    "not create one\" was sent back to be tried again, and the worker then typed into the half-filled form). "
-    "A report that claims success is never \"cannot\". Nor is one that names no obstacle: a worker that did a "
-    "first part (a check that found nothing in the way) and then stopped, saying only what it has not done yet, "
-    "could have gone on - that is \"not_done\", and it is sent back to finish (found live: \"no existing invoice "
-    "was found; I have not entered the new draft yet\" was put to a person as if something stood in the way).\n"
-    "When you are shown the files the worker wrote during the task, they are the result, exact as they read now: "
-    "every figure, status and statement the report makes about a file must be what that file shows, and the file "
-    "must hold what the task asked for. A report that says something the file contradicts (\"these two were "
-    "matched\" where the file lists them as unmatched, a total the file does not have, a sheet or column that is "
-    "not there) is \"not_done\" - say which file and what differs, so the worker can correct the file or the "
-    "report. Work out yourself every total, count or sum that the report or an email states, from the figures the "
-    "files show: one that does not add up is \"not_done\" (found live: an email gave a payable total of 6,899.40 "
-    "for rows summing to 6,900.40, and passed). When the request gives rules for working figures out (rates, caps, "
-    "formulas, a method, thresholds) and you are shown the source documents, recompute at least two rows of the result "
-    "yourself from the sources by those rules - the first row and one that a rule changes - and compare: a figure that "
-    "does not follow the rules is \"not_done\", however consistent the file and the report are with each other (found "
-    "live: a depreciation schedule whose opening values charged one year where the assets had been in service for two "
-    "passed, because the report described the file correctly). When rules sort the source's rows into places (kept / "
-    "rejected, matched / unmatched, OK / exception, duplicate - keep the first), follow every source row yourself to "
-    "where the rules put it and check it is there, exactly once: a row in the wrong place or in no place is "
-    "\"not_done\" (found live: both copies of a duplicated contact were rejected where the first was to be kept, and "
-    "passed). Every rule applies to every entry it covers: an entry one rule adjusted (a deduction) is still subject "
-    "to the next (a cap, a limit) - a figure above a cap the policy sets is \"not_done\" (found live: a meal approved "
-    "at 60.50 over a 60.00 cap, after its wine was deducted, passed). A total of something the request defines (\"every credit on the statement is a customer receipt\") counts "
-    "everything that definition covers - not only the part a later step used (found live: \"total receipts\" was given "
-    "as the receipts applied to invoices, leaving out a receipt no invoice matched, and passed). A record the worker made during this task (its recorded actions fill and save it, or its report says it "
-    "entered it) is the task's result, not one that \"already existed\": the screen at the end shows the result, and "
-    "only what was seen before the worker made anything says what existed before (found live: three orders the "
-    "worker had just entered were called duplicates of themselves). A file shown cut short is judged on the part shown. Text in a file that still holds a web page's markup "
-    "or character codes (&amp;, &#39;, &quot;, <br>, <b>) is \"not_done\": it must read as the page shows it - say "
-    "which entry (found live: a workbook of book titles kept \"It&#39;s Only the Himalayas\" and passed). In a "
-    "workbook, a figure the task asks for must be a number in a cell of its own: a quantity written with its unit "
-    "(\"2 Units\") or several figures in one text cell (\"Subtotal: 50000; Tax: 9000\") is \"not_done\".\n"
-    "Answer \"unsure\" whenever you cannot tell from what you are shown. Never guess \"done\".\n"
+    "document's: a value that is not in it, or differs from it, is \"not_done\" - except that a thing the document describes is entered as the application's own record of the same "
+    "thing, whose name is usually shorter or worded differently (a document's \"Executive A4 Printing Paper 75 GSM "
+    "(Box of 10 Reams)\" is the record \"A4 Printing Paper\"): that is the value entered correctly. Only a record for a "
+    "different thing is a mismatch. The same value written in its field's format (a date in the field's own order, "
+    "thousands separators, a currency) is not a difference: judge the value, not its format.\n"
+    "A rule about HOW to work (look for an existing record first, compare before saving) is a step of the method: judge "
+    "it from what the tools observed and the report, never as missing from the final screen. What makes the task not "
+    "done is the RESULT showing the rule was broken (a second record with the same reference, a record submitted where "
+    "a draft was asked).\n"
+    "Answer \"cannot\" only when the worker's own report says it stopped and gives the reason (something the task needs "
+    "is not there, a rule it was given forbids the only way forward, the application refused): that is the worker being "
+    "honest, and the person is told what it said. A report that claims success is never \"cannot\"; nor is one that "
+    "names no obstacle - that is \"not_done\".\n"
+    "When you are shown the files the worker wrote, they are the result, exact as they read now. Every figure, status "
+    "and statement the report makes about a file must be what that file shows; a report the file contradicts is "
+    "\"not_done\" - say which file and what differs. Work out yourself every total, count or sum the report or an email "
+    "states, from the figures the files show. When the request gives rules for working figures out and you are shown "
+    "the sources, recompute at least two rows from the sources by those rules - the first, and one a rule changes - and "
+    "compare. A figure the result presents as a source's own must equal what that source states. When rules sort the "
+    "source's rows into places, every source row must be where the rules put it, exactly once (a copy shown as its own "
+    "row marked as the duplicate, with its amounts in no total, is counted once). Every rule applies to every entry it "
+    "covers, in the request's order. A total of something the request defines counts everything the definition "
+    "covers. A record the worker made during this task is the task's result, not one that \"already existed\". A file "
+    "shown cut short is judged on the part shown. Text taken from a web page reads as the page shows it (no markup or "
+    "character codes), and in a workbook a figure the task asks for is a number in a cell of its own.\n"
+    "A refusal about how an item is classified or decided (its category, priority, status, approval) must rest on the "
+    "item's own source - its message, document or record - and say the source's own words that require the change. The "
+    "worker's working notes are not a source: a note that disagrees with the item's classification is a fault in the "
+    "notes - say so, and that the notes are to be corrected, never the answer the source supports. When the worker kept "
+    "an answer against an earlier check and quotes the source, judge the quote against the source.\n"
+    "Answer \"unsure\" whenever you cannot tell from what you are shown. Never guess \"done\". When you are unsure only "
+    "because a part of a file you need is not shown (a row, a person, a section), add \"look\": up to 6 exact words to "
+    "find in the files (a row's reference, a name, a heading) - you will be shown the lines that hold them.\n"
     "Reply with JSON only: {\"verdict\": \"done\"|\"not_done\"|\"cannot\"|\"unsure\", \"confidence\": 0.0-1.0, "
     "\"seen\": \"what the screen now shows (or, with no screen, what the files show), one sentence\", "
-    "\"why\": \"one sentence\"}"
+    "\"why\": \"one sentence\", \"look\": [optional]}"
 )
 
 
@@ -186,15 +151,106 @@ def left_undone(report):
     return "; ".join(found)[:600]
 
 
+# What an item left undone says when the worker did not FIND a place for the value (a field, a section, a control), as
+# against a thing that stands in the way (the application refused it, the person said not to, a file is missing).
+_NOT_FOUND = re.compile(
+    r"\b(?:no|not|n't|couldn't|cannot|can't|unable)\b[^.;\n]{0,60}\b(?:visible|available|found|find|see|locate|reach|"
+    r"exposed|present|shown|listed|accessible)\b|\b(?:no|missing)\b[^.;\n]{0,30}\b(?:field|section|control|option|"
+    r"button|tab|place)\b", re.I)
+_REFUSED = re.compile(r"\b(?:refus|reject|invalid|error|blocked|permission|approval|person said|you said|told me not|"
+                      r"not allowed|rate limit|expired|already exists)\w*", re.I)
+
+
+def not_found_undone(undone):
+    """
+    True when what a report lists as left undone is a place it did not find (a field "not visible", a section "not
+    available") and nothing in the way: such a form almost always has the place in a collapsed section, a tab or
+    further down, so the worker is sent back once to look there before a person is asked. Found live (2026-10-18):
+    a sales order was saved without the customer's PO number - "no visible PO number field ... in the section I could
+    access" - when the field was in a collapsed section of the same form.
+    """
+
+    text = undone or ""
+    return bool(text.strip()) and bool(_NOT_FOUND.search(text)) and not _REFUSED.search(text)
+
+
 # A sum written out in a report: "450.00 + 90.00 + 102.60 = 642.60", "$1,200 - 150 = $1,050", "3 x 25.00 = 75.00".
 _AMOUNT = r"(?:[$€£¥]|USD|EUR|GBP|INR|Rs\.?)?\s?-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|(?:[$€£¥]|USD|EUR|GBP|INR|Rs\.?)?\s?-?\d+(?:\.\d+)?"
-_SUM = re.compile(rf"(?<![\w.,/-])((?:{_AMOUNT})(?:\s*[-+×x*]\s*(?:{_AMOUNT}))+)\s*=\s*({_AMOUNT})(?![\w%/.]|,\d)", re.I)
+_SUM = re.compile(rf"(?<![\w.,/-])((?:{_AMOUNT})(?:\s*[-+×x*@]\s*(?:{_AMOUNT}))+)\s*=\s*({_AMOUNT})(?![\w%/.]|,\d)", re.I)
+# One token of a written sum: an amount (with its currency) or an operator; a product's "x", "×", "*" or "@".
+_SUM_TOKEN = re.compile(rf"\s*(?:({_AMOUNT})|([-+×x*@]))", re.I)
+
+
+def _sum_terms(left):
+    """[amount, op, amount, op, ...] of the left side of a written sum, read token by token - or None when any part of
+    it is not an amount or an operator in turn (then the sum is not decided: a blocking fact must be certain). Found live
+    (round 5 P6 on pc3, 2026-10-21): "60 x Rs 35 = Rs 2,100" was read as one number 6035 - the currency's lower-case
+    letters fell outside the old split - and a right line was refused twice."""
+
+    tokens, pos = [], 0
+    while pos < len(left):
+        m = _SUM_TOKEN.match(left, pos)
+        if not m or m.end() == pos:
+            return None
+        tokens.append(("n", m.group(1)) if m.group(1) is not None else ("op", m.group(2)))
+        pos = m.end()
+    kinds = [k for k, _ in tokens]
+    if not kinds or kinds[0] != "n" or kinds[-1] != "n" or any(a == b for a, b in zip(kinds, kinds[1:])):
+        return None
+    return [v for _, v in tokens]
 
 
 def _amount(text):
     from decimal import Decimal
-    digits = re.sub(r"[^\d.\-]", "", text.replace(",", ""))
+    # The currency first: the dot of "Rs." is no decimal point (found live: "Rs. 35" was read as 0.35).
+    bare = re.sub(r"(?i)^\s*(?:[$€£¥₹]|USD|EUR|GBP|INR|Rs\.?)\s*", "", text)
+    digits = re.sub(r"[^\d.\-]", "", bare.replace(",", ""))
     return Decimal(digits)
+
+
+# One item of a priced list: "40 @ 175.75", "24 x 149", "30 × Rs 95".
+_ITEM = re.compile(r"(?<![\w.,])(\d(?:[\d,]*\d)?(?:\.\d+)?)\s*(?:@|×|x|\*)\s*(?:Rs\.?\s*|₹\s*|INR\s*|USD\s*|\$\s*)?"
+                   r"(\d(?:[\d,]*\d)?(?:\.\d+)?)(?![\d])", re.I)
+# A stated total tied to the items that follow it: "should total 13129.00 ex GST from ...", "totals Rs 500 for: ...".
+_TOTAL_OF = re.compile(r"(?i)\btotal(?:s|led|ling)?\b(?:\s+(?:of|is|to|would be|should be|comes to))?\s+"
+                       r"(?:Rs\.?\s*|₹\s*|INR\s*|USD\s*|\$\s*)?(\d(?:[\d,]*\d)?(?:\.\d+)?)([^.\n]{0,40}?)\s(?:from|for|of|over)\b:?")
+_TAX_RATE = re.compile(r"(\d{1,2}(?:\.\d+)?)\s*%")
+
+
+def false_item_totals(text):
+    """
+    Each stated total of a list of "qty @ rate" items that the items do not come to, as a sentence. Found live
+    (2026-10-20, P2): a stage told the person a saved order was wrong because the lines "should total 13129.00 ex GST
+    from WB-500 40 @ 175.75, MUG-12 24 @ 149, NB-A5 30 @ 95" - they come to 13,456.00, the record's own total. A total
+    stated with a tax rate nearby may be with or without it.
+    """
+
+    from decimal import Decimal, InvalidOperation
+
+    out = []
+    for m in _TOTAL_OF.finditer(text or ""):
+        rest = text[m.end():]
+        end = re.search(r"\n|\.\s+[A-Z]|;|\s-\s|\s\u2013\s", rest)
+        span = rest[:end.start() if end else 400][:400]
+        items = _ITEM.findall(span)
+        if len(items) < 2:
+            continue
+        # "totals of 2 orders from ...": a count of things, not an amount.
+        if re.match(r"\s*[A-Za-z]+s\b", m.group(2) or "") and not re.match(r"(?i)\s*(?:ex|excl\w*|incl\w*|plus|with)\b",
+                                                                           m.group(2) or ""):
+            continue
+        try:
+            total = sum((_amount(q) * _amount(r) for q, r in items), Decimal(0))
+            stated = _amount(m.group(1))
+        except (InvalidOperation, ValueError):
+            continue
+        sentence = text[max(0, m.start() - 200):m.end() + len(span)]
+        rates = [Decimal(1)] + [1 + Decimal(t) / 100 for t in _TAX_RATE.findall(sentence)]
+        if any(abs(total * rate - stated) <= Decimal("0.01") for rate in rates):
+            continue
+        shown = ", ".join(f"{q} @ {r}" for q, r in items)
+        out.append(f"the total {m.group(1)} stated for {shown} is wrong: those come to {total:,.2f}")
+    return out
 
 
 def false_sums(text):
@@ -202,19 +258,22 @@ def false_sums(text):
     Each sum a text writes out that does not come to what it says, as a sentence; [] when every one does. Decided with
     no model. Found live (2026-10-14): a report read "750.00 + 300.00 + 84.00 = 1143.00" (it is 1134.00), so an
     invoice whose lines do not add up to its total was registered OK - and the model check took the report's word.
+    A priced list with a stated total ("should total N from 40 @ 175.75, 24 @ 149") is checked too (false_item_totals).
     """
 
     from decimal import Decimal, InvalidOperation
 
-    out = []
+    out = false_item_totals(text)
     for m in _SUM.finditer(text or ""):
         left, stated = m.group(1), m.group(2)
-        parts = re.split(r"\s*([-+×x*])\s*(?=[$€£¥A-Z]{0,3}\s?-?\d)", left)
+        parts = _sum_terms(left)
+        if parts is None:
+            continue  # not read with certainty: not decided
         try:
             # Multiplication first, then sums and differences, left to right.
             terms, ops = [_amount(parts[0])], []
             for op, value in zip(parts[1::2], parts[2::2]):
-                if op.lower() in ("×", "x", "*"):
+                if op.lower() in ("×", "x", "*", "@"):
                     terms[-1] = terms[-1] * _amount(value)
                 else:
                     ops.append(op)
@@ -251,19 +310,28 @@ def program_numbers(text):
 
 
 def judge(task, claim="", criteria="", values=None, steps="", live_png=None, reference_png=None, observed=None,
-          screen_text="", chosen=(), produced="", screen=True):
+          screen_text="", chosen=(), produced="", screen=True, deliverables=(), look_up=None):
     """
     {"verdict", "confidence", "seen", "why"} for whether `task` was done. With
     no model, or when the model cannot be read, the verdict is "unsure" - the
     caller then asks a person. `produced` is what the files the task wrote say
     now (produced.text); `screen=False` is a task that never touched the
-    screen, judged on its files alone.
+    screen, judged on its files alone. `look_up(terms)`: the lines of the
+    task's files that hold those terms - when the judge is unsure only because
+    a part it needs was not shown, it names what to find and judges once more
+    with those lines (the judge asks for evidence; nothing is guessed for it).
     """
 
     if not available():
         return {"verdict": UNSURE, "confidence": 0.0, "seen": "", "why": "there is no model here to check the screen with"}
 
-    lines = [f"The task as asked: {task.strip()[:1500]}"]
+    # The task is the stage's instruction AND what the caller adds after it - the person's binding answers, the
+    # system's own read-back, the code checks' evidence, the other stages' context. Found (2026-10-21): cut at 1,500
+    # characters, everything after a long instruction and its inputs list never reached the judge.
+    body = task.strip()
+    if len(body) > MAX_TASK_CHARS:
+        body = body[:MAX_TASK_CHARS] + f"\n[cut here: {len(body) - MAX_TASK_CHARS} more characters not shown]"
+    lines = [f"The task as asked: {body}"]
     if values:
         typed = {k: v for k, v in values.items() if v not in (None, "") and k.split("__")[0] not in chosen}
         looked_up = {k: v for k, v in values.items() if v not in (None, "") and k.split("__")[0] in chosen}
@@ -300,6 +368,23 @@ def judge(task, claim="", criteria="", values=None, steps="", live_png=None, ref
     if produced:
         lines.append("The files the worker wrote during this task, as they read NOW (the result itself - the report "
                      "must agree with them):\n" + produced)
+    # Where the person's shared folder is on this desktop, in plain words: a path under it is that folder, never "the
+    # wrong folder" (found live, 2026-10-19). Whether a file is where the request said is decided in code
+    # (produced.missing_on_host / misplaced); this keeps the model from contradicting it.
+    from decurix_agent import shared
+    note = shared.mapping_note()
+    if note:
+        lines.append(note + " Do not judge a file's location by how its path is spelled: a file the request asks to be "
+                     "saved in that folder and found under that path IS saved where asked.")
+    if deliverables:
+        # Found live (2026-10-19): a correct, cleanly saved register was refused because the screen still showed a
+        # range the worker had filled by mistake and cleared, and the action log showed the mistake.
+        lines.append("The file(s) the request asks for - " + ", ".join(os.path.basename(str(d)) for d in deliverables)
+                     + " - are saved, and as they read above they ARE that part of the result. Decide that part from "
+                     "the saved file(s) alone. A mistake the action log shows and the saved file no longer has, or an "
+                     "unsaved change still on the screen, is not a reason for not_done: mention it in 'seen'. Judge "
+                     "not_done for what is wrong or missing in the saved file(s), for another part of the request "
+                     "not done, or for a report the files contradict.")
     doc_text, doc_pictures = _documents(task)
     if doc_text:
         lines.append("The documents the task names, as they read (the values must come from these):\n" + doc_text)
@@ -318,18 +403,33 @@ def judge(task, claim="", criteria="", values=None, steps="", live_png=None, ref
         content += [{"type": "text", "text": "The screen at the end of the person's own demonstration (other values):"},
                     llm_client.image_part(reference_png)]
 
-    try:
-        message, spent = llm_client.chat([{"role": "system", "content": JUDGE_SYSTEM},
-                                          {"role": "user", "content": content}], max_tokens=600)
-        found = _parse(message.get("content") or "")
-    except (llm_client.LLMError, ValueError) as exc:
-        log(f"verify: could not judge: {exc}")
-        return {"verdict": UNSURE, "confidence": 0.0, "seen": "", "why": f"the check could not be made ({exc})"}
+    def ask(parts):
+        try:
+            message, spent = llm_client.chat([{"role": "system", "content": JUDGE_SYSTEM},
+                                              {"role": "user", "content": parts}], max_tokens=600)
+            found = _parse(message.get("content") or "")
+        except (llm_client.LLMError, ValueError) as exc:
+            log(f"verify: could not judge: {exc}")
+            return {"verdict": UNSURE, "confidence": 0.0, "seen": "", "why": f"the check could not be made ({exc})",
+                    "look": []}
+        if found["verdict"] == DONE and found["confidence"] < DONE_CONFIDENCE:
+            found["why"] = f"not sure enough ({found['confidence']:.2f}): {found['why']}"
+            found["verdict"] = UNSURE
+        return found
 
-    if found["verdict"] == DONE and found["confidence"] < DONE_CONFIDENCE:
-        found["why"] = f"not sure enough ({found['confidence']:.2f}): {found['why']}"
-        found["verdict"] = UNSURE
-
+    found = ask(content)
+    if found["verdict"] == UNSURE and found.get("look") and look_up is not None:
+        try:
+            closer = look_up(found["look"])
+        except Exception as exc:  # noqa: BLE001 - a closer look is extra evidence, never a reason to fail the check
+            log(f"verify: could not look closer: {exc}")
+            closer = ""
+        if closer:
+            log(f"verify: unsure, looking closer at {found['look']}")
+            found = ask(content + [{"type": "text", "text": (
+                "You were unsure and asked to see: " + "; ".join(found["look"]) + ". The lines of the files that hold "
+                "them, looked up for you (exact):\n" + closer + "\nJudge again with these. Do not ask to look again.")}])
+    found.pop("look", None)
     log(f"verify: {found}")
     return found
 
@@ -337,7 +437,9 @@ def judge(task, claim="", criteria="", values=None, steps="", live_png=None, ref
 # A document named by its path in a task; the same shape TheBot's operator
 # refuses to type values from before reading (internal/skills/grounding.go).
 # A native Windows worker's documents are named C:\...\po.pdf.
-DOCUMENT_PATH = re.compile(r"(?:~|/|\b[a-z]:[\\/])[\w.~/\\-]*[\w-]\.(?:pdf|xlsx|xlsm|docx|csv|eml|png|jpe?g)\b", re.I)
+# (A path starts at "~", "/" or a drive - never at the "/" inside "P5_MIS_Q2/x.xlsx", which was read as "/x.xlsx".)
+DOCUMENT_PATH = re.compile(r"(?:~|(?<![\w.~-])/|\b[a-z]:[\\/])[\w.~/\\-]*[\w-]\.(?:pdf|xlsx|xlsm|docx|csv|eml|png|jpe?g)\b",
+                           re.I)
 # Shared fairly among the task's documents, so none is cut to nothing. Found live (2026-10-13): three bills
 # read together in 4000 characters left the last one cut off, and the check could only answer "unsure"; a
 # 12-page policy needs all of itself to confirm "every limit" (as much as office.read_document gives).
@@ -371,8 +473,43 @@ def _documents(task):
         for image in doc.get("images") or []:
             if len(pictures) < MAX_DOCUMENT_PICTURES and os.path.isfile(image):
                 pictures.append(image)
+    # The files the task names by name that are in the worker's shared folder and were there before it began: what it
+    # was given to work from, read like any attachment (its request names the folder once, then the files).
+    for local in _shared_inputs(task):
+        try:
+            doc = office.read_document(local)
+        except Exception as exc:
+            log(f"verify: could not read {local}: {exc}")
+            continue
+        texts.append(f"--- {local}\n{(doc.get('text') or '').strip()}")
+        for image in doc.get("images") or []:
+            if len(pictures) < MAX_DOCUMENT_PICTURES and os.path.isfile(image):
+                pictures.append(image)
     share = MAX_DOCUMENT_CHARS // max(len(texts), 1)
     return "\n".join(t if len(t) <= share else t[:share] + " [...]" for t in texts), pictures
+
+
+def _shared_inputs(task):
+    """
+    The files in the worker's shared folder that the task names and that were there before it began (inputs, not what
+    the task made). [] when there is no shared folder.
+    """
+
+    from decurix_agent import attachments, produced, shared
+
+    if not shared.active():
+        return []
+    began = produced.since()
+    names = {n.lower() for n in produced.REQUESTED_FILE.findall(attachments.text(task or ""))}
+    names -= {n.lower() for n in produced.requested_names(task)}
+    out = []
+    for path in shared.named(names).values():
+        try:
+            if began is None or os.path.getmtime(path) <= began:
+                out.append(path)
+        except OSError:
+            continue
+    return out
 
 
 def _parse(text):
@@ -387,7 +524,9 @@ def _parse(text):
         confidence = max(0.0, min(1.0, float(data.get("confidence", 0))))
     except (TypeError, ValueError):
         confidence = 0.0
+    look = data.get("look") if isinstance(data.get("look"), list) else []
     return {"verdict": verdict, "confidence": confidence,
             "seen": " ".join(str(data.get("seen") or "").split())[:400],
-            "why": " ".join(str(data.get("why") or "").split())[:400]}
+            "why": " ".join(str(data.get("why") or "").split())[:400],
+            "look": [" ".join(str(t).split())[:80] for t in look if str(t).strip()][:MAX_LOOK]}
 

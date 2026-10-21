@@ -294,3 +294,19 @@ func TestTriageSendsWorkInAnAppOnTheDesktopToTheOperator(t *testing.T) {
 		}
 	}
 }
+
+// TestTriageSendsAPlannedStageToTheOperator: a stage of a long request the desktop agent planned is desk work for the
+// operator whatever it names - never conversation, a new plan or a software project.
+func TestTriageSendsAPlannedStageToTheOperator(t *testing.T) {
+	for _, prompt := range []string{
+		"Stage 2 of 5 of a longer request a person made: GST summary.\nDo only this stage now.\n\nThis stage: Write a script-free summary of output tax.",
+		"Stage 4 of 4 of a longer request a person made: Memo.\nThis stage: Write the memo of exceptions and research nothing on the web.",
+	} {
+		if got := Triage(prompt); got.Kind != RouteOperate {
+			t.Errorf("Triage(%q) = %v, want operate", prompt[:40], got.Kind)
+		}
+	}
+	if got := Triage("stage 2 of the rollout: what is it?"); got.Kind == RouteOperate && got.Reason == "a stage of a planned request - the operator does it" {
+		t.Errorf("a question that mentions a stage was taken for a planned stage")
+	}
+}

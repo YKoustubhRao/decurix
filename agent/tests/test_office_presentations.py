@@ -16,7 +16,11 @@ class PresentationReading(unittest.TestCase):
                 z.writestr("ppt/_rels/presentation.xml.rels", '<Relationships><Relationship Id="first" Target="slides/slide1.xml"/><Relationship Id="second" Target="slides/slide2.xml"/></Relationships>')
                 for n, text in [(1, "Next steps"), (2, "Revenue &amp; costs")]:
                     z.writestr(f"ppt/slides/slide{n}.xml", f'<slide xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:p><a:r><a:t>{text}</a:t></a:r></a:p></slide>')
-            result = office.read_document(deck)
+            # (The XML reader itself, as on a desktop without python-pptx: this stand-in is no package PowerPoint
+            # opens, which office read would otherwise say - test_files_open.)
+            from unittest import mock
+            with mock.patch.object(office, "strict_open", lambda p: None):
+                result = office.read_document(deck)
             self.assertIn("[Slide 1]\nRevenue & costs", result["text"])
             self.assertIn("[Slide 2]\nNext steps", result["text"])
             self.assertEqual(result["images"], [])

@@ -43,6 +43,8 @@ MAX_PICTURES = 14
 STUDY_SYSTEM = """You are an apprentice learning a computer task by watching a person do it (one or a few demonstrations) on a desktop. Later you will do this task on your own, with other values, on screens that may look different, and your work will be checked. What you work out now, and what you ask now, is all you will have.
 
 Study the recording you are given - the numbered steps (what was clicked, typed, in which window), the person's own notes, and the screenshots - and work out:
+- name: what the task is called, in three to six words, with no value from this demonstration in it ("Send a WhatsApp message", "Enter a vendor bill") - not the person's request with its values.
+- names: for each typed value (named by its parameter), a short snake_case name for what it IS in the task ("contact", "message", "invoice_number") - not the label of the field it was typed into.
 - summary: what the task achieves, in two or three sentences, in the person's terms.
 - steps: what each step is FOR (not what it clicks), by step number. For every press you are shown the screen at the moment the person pressed, with a red ring on the exact spot: look at what is under the ring and around it, and say what that thing IS in the task ("the first conversation in the search results", "the result for the company that was searched for") - the step list only names the text or control that happened to be under the pointer, which on another run will read differently. If the list's name for a press and what the ring is on disagree, trust the picture and say so.
 - inputs: for each typed value (named by its parameter), what it is and where a future run gets it (the request, a document, always the same...). When the documents the person worked from are shown (the files attached to their ticket), find each typed value in them and say which document and which label or line it was read from ("the name on the source document", "the quantity column, one per entry"): a future run brings its own documents of the same kind and reads the same things from those. A value that is in a document varies.
@@ -50,11 +52,11 @@ Study the recording you are given - the numbered steps (what was clicked, typed,
 - done_when: what must be visible on the screen, or true, when the task is finished - concrete enough to check from a screenshot, and true of EVERY run, not only this demonstration. Write an input as its parameter in braces ("a profile page for {typed_text} is open"), never as the value the person happened to use, and leave out details that only this demonstration's result has (this person's city, this order's total, today's date): another run's result will not show them. The same goes for the summary.
 - incidental: step numbers that look accidental or not needed (a stray click, scrolling around, closing a popup that may not appear).
 - rules: leave empty unless the notes already state one; each rule is one imperative sentence.
-- research: up to 3 searches that would tell you how the app or a term on its screens works, when you are not sure ("ERPNext Purchase Invoice Supplier Invoice Date field", "TallyPrime create ledger Under field"). Only about the app or the kind of work - never about this person's choices, and never containing a value, a name or a number from their documents. Leave it empty when you understand the screens.
-- questions: what you must ask the person, because you cannot work it out and getting it wrong would make a future run fail or do the wrong thing. Think about: what the request will look like next time (one item or a list? done once per item?), decisions (what if the record is not found, already exists, or the page differs?), which values come from where, preconditions (signed in, which account, which page to start from), steps that send, pay, submit or delete and what to check before them, and anything in the notes you do not understand. Most important first, at most 5. Each is one short, concrete question that can be answered in a line, naming steps by number and what is on the screen. Do not ask what you can see or work out, about passwords, about screen coordinates, or whether to save the task - those are handled separately.
+- research: up to 3 searches that would tell you how the app or a term on its screens works, when you are not sure ("<app> <screen> <field> meaning"). Only about the app or the kind of work - never about this person's choices, and never containing a value, a name or a number from their documents. Leave it empty when you understand the screens.
+- questions: what you must ask the person, because you cannot work it out and getting it wrong would make a future run fail or do the wrong thing. Think about: what the request will look like next time (one item or a list? done once per item?), decisions (what if the record is not found, already exists, or the page differs?), which values come from where, preconditions (signed in, which account, which page to start from), steps that send, pay, submit or delete and what to check before them, and anything in the notes you do not understand. Most important first, at most 5. Each is one short, concrete question that can be answered in a line, naming steps by number and what is on the screen. Do not ask what you can see or work out, about passwords, about screen coordinates, whether a value that is in the person's request changes (it does), or whether to save the task - those are handled separately. Never ask the person to confirm something you already wrote in the summary.
 
 Reply with JSON only:
-{"summary": "...", "steps": {"1": "..."}, "inputs": {"param": "..."}, "varies": {"param": true}, "done_when": "...", "incidental": [5], "rules": [], "research": ["..."], "questions": [{"id": "q1", "text": "...", "why": "..."}]}"""
+{"name": "...", "names": {"param": "contact"}, "summary": "...", "steps": {"1": "..."}, "inputs": {"param": "..."}, "varies": {"param": true}, "done_when": "...", "incidental": [5], "rules": [], "research": ["..."], "questions": [{"id": "q1", "text": "...", "why": "..."}]}"""
 
 MAX_RESEARCH = 3
 RESEARCH_CHARS = 2500
@@ -327,6 +329,10 @@ def study(skill):
 
     data = _researched(skill, data)
     understanding = _clean(data, skill)
+    understanding["name"] = " ".join(str(data.get("name") or "").split())[:60]
+    understanding["names"] = {str(k): " ".join(str(v or "").split())[:30]
+                              for k, v in (data.get("names") or {}).items()
+                              if k in {p["name"] for p in skill.get("params") or []}}
     understanding["web_notes"] = [" ".join(str(n).split())[:300] for n in data.get("web_notes") or [] if str(n).strip()][:8]
     questions = []
     for n, q in enumerate(data.get("questions") or [], 1):

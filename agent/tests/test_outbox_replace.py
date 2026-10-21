@@ -63,6 +63,24 @@ class ADraftAgainReplacesTheTasksEarlierOne(unittest.TestCase):
         # What the task made, as the final check reads it: one letter each.
         self.assertEqual([d["body"] for d in outbox.drafted()], ["v1", "v2 with the corrected total"])
 
+    def test_a_stage_run_again_replaces_its_earlier_draft_to_the_same_recipient(self):
+        # Round 5 P1 (2026-10-20), Finding BC: a re-check drafted a second reminder to one customer, another subject.
+        attempt = {"n": 1}
+        with mock.patch.object(outbox, "_stage", lambda: ("run1:s2-reminders", attempt["n"])):
+            outbox.draft(["accounts@coromandelclin.example.in"], "Overdue invoices - Coromandel Clinics", "v1")
+            outbox.draft(["accounts@konkanreso.example.in"], "Overdue invoices - Konkan Resorts", "v1")
+            attempt["n"] = 2
+            said = outbox.draft(["accounts@coromandelclin.example.in"], "Payment reminder", "v2")
+        self.assertIn("replaces the earlier draft mail_1", said)
+        self.assertEqual(self.cp.live(), ["mail_2", "mail_3"])
+        # Within one attempt, two letters to one address stay two (separate subjects).
+        with mock.patch.object(outbox, "_stage", lambda: ("run1:s2-reminders", 2)):
+            said = outbox.draft(["accounts@konkanreso.example.in"], "Statement of account", "v1")
+        self.assertIn("replaces the earlier draft mail_2", said)  # an earlier attempt's letter to it
+        with mock.patch.object(outbox, "_stage", lambda: ("run1:s2-reminders", 2)):
+            said = outbox.draft(["accounts@konkanreso.example.in"], "Another matter", "v1")
+        self.assertNotIn("replaces", said)
+
     def test_separate_letters_with_other_files_are_not_taken_for_one(self):
         a, b = Path(self.tmp.name) / "INV-1.pdf", Path(self.tmp.name) / "INV-2.pdf"
         a.write_bytes(b"%PDF-1")
@@ -114,3 +132,43 @@ class ARecipientIsAnAddress(unittest.TestCase):
     def test_an_address_written_with_its_name_is_an_address(self):
         self.assertEqual(outbox._address_of("Alicia Grant <alicia@example.com>"), "alicia@example.com")
         self.assertTrue(outbox.ADDRESS.fullmatch(outbox._address_of("Alicia Grant <alicia@example.com>")))
+
+
+class AFollowUpReplacesTheReportedTasksDrafts(unittest.TestCase):
+    """Series 16 H3: "leave Ishaan out" came after the fee run was reported; the follow-up task redid the drafts and the
+    first run's Rao draft, still billing him, stayed beside the new one."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.task = "t1"
+        self.patches = [mock.patch.object(outbox, "DRAFTS_DIR", Path(self.tmp.name)),
+                        mock.patch.object(outbox.task_context, "current", lambda: self.task),
+                        mock.patch.object(outbox.progress, "emit")]
+        for p in self.patches:
+            p.start()
+        self.cp = FakeOutbox()
+        self.net = mock.patch.object(outbox.urllib.request, "urlopen", self.cp.urlopen)
+        self.net.start()
+
+    def tearDown(self):
+        self.net.stop()
+        for p in reversed(self.patches):
+            p.stop()
+        self.tmp.cleanup()
+
+    def test_the_new_letter_to_the_same_family_replaces_the_reported_tasks(self):
+        outbox.draft(["rao@x.example"], "Term 2 fee demand", "Ishaan and Tara: Rs 89,300")
+        outbox.draft(["pillai@x.example"], "Term 2 fee demand", "Rs 44,000")
+        self.task = "t2"
+        with mock.patch.object(outbox.task_context, "continues", lambda: "t1"):
+            outbox.draft(["rao@x.example"], "Term 2 fee due by 15/11/2026", "Tara: Rs 41,200")
+        live = {k: v for k, v in self.cp.drafts.items() if v["status"] == "draft"}
+        self.assertEqual(sorted(v["body"] for v in live.values()), ["Rs 44,000", "Tara: Rs 41,200"])
+        self.assertEqual(next(v for v in live.values() if v["body"].startswith("Tara"))["continues"], "t1")
+
+    def test_a_task_that_continues_nothing_never_touches_another_tasks_drafts(self):
+        outbox.draft(["rao@x.example"], "Term 2 fee demand", "v1")
+        self.task = "t2"
+        with mock.patch.object(outbox.task_context, "continues", lambda: ""):
+            outbox.draft(["rao@x.example"], "Term 2 fee demand", "a new, separate letter")
+        self.assertEqual(len(self.cp.live()), 2)

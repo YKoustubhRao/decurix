@@ -39,6 +39,10 @@ type Activity struct {
 	CreatedAt string `json:"created_at,omitempty"`
 	CPUs      int64  `json:"cpus,omitempty"`
 	MemoryMB  int64  `json:"memory_mb,omitempty"`
+
+	// MissingApps are the requested host apps the desktop does not have, and why; a pending one appears on the card
+	// as still being added and disappears when its retry adds it.
+	MissingApps []desktop.MissingApp `json:"missing_apps,omitempty"`
 }
 
 // activityHandler answers GET /api/desktops/activity?ids=a,b,c with each
@@ -77,6 +81,7 @@ func (s *Server) activityHandler(w http.ResponseWriter, r *http.Request) {
 		if d, ok := known[id]; ok {
 			a.Status, a.Crash = d.Status, d.Crash
 			a.CreatedAt, a.CPUs, a.MemoryMB = d.CreatedAt, d.CPUs, d.MemoryMB
+			a.MissingApps = d.MissingApps
 		}
 		out[id] = a
 	}

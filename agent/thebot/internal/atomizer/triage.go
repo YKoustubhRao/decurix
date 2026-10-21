@@ -97,6 +97,9 @@ var (
 // searchLeadRe is a request that opens with a verb for looking something up.
 var searchLeadRe = regexp.MustCompile(`(?i)^\s*(please\s+)?(search|look\s+up|google)\s+\S`)
 
+// planStageRe is how the desktop agent hands over one stage of a long request it planned (long_task.stage_prompt).
+var planStageRe = regexp.MustCompile(`^Stage \d+ of \d+ of a longer request a person made:`)
+
 // taughtTaskRe is how the desktop agent hands over a taught task:
 // `Do the task you were taught, "<title>" (skill <name>) ...`.
 var taughtTaskRe = regexp.MustCompile(`(?i)^\s*do the task you were taught\b`)
@@ -172,9 +175,22 @@ var (
 
 // wantsDocument reports whether a request asks for an Office document or a
 // PDF, named by its file, to be made or changed.
-// namedAppRe is a request that says which app to work in ("in Excel", "use PowerPoint"); skills.workInAppRe is the
-// operator's own copy, which decides what it may not make behind that app.
-var namedAppRe = regexp.MustCompile(`(?i)\b(?:in|use|using|with|on|into)\s+(?:microsoft\s+|libreoffice\s+|adobe\s+)?(?:excel|calc|powerpoint|impress|word|writer|photoshop|gimp|illustrator|inkscape)\b`)
+var (
+	// deliverableFileRe is a file of a kind a person reads or keeps (text, data, a picture), not a program's source.
+	deliverableFileRe = regexp.MustCompile(`(?i)\b[\w-]+\.(?:txt|csv|tsv|md|log|xlsx|xlsm|xls|ods|docx|doc|odt|rtf|pptx|ppt|odp|pdf|png|jpe?g|gif|bmp|tiff?|webp|svg)\b`)
+	// onTheDeskRe says the work is done in the desktop's apps, or on the person's computer.
+	onTheDeskRe = regexp.MustCompile(`(?i)\bon (?:your|the|my) desktop\b|\b[a-z]:\\`)
+)
+
+// worksAtTheDesk reports whether a request is a clerk's job at the desk rather than software to build: it names an
+// app to work in, says "on your desktop" or names a folder of the person's computer, or asks for a document of a kind
+// a person reads (a .txt, a .csv, a picture) to be made or saved. Found live (2026-10-19): "look through app.log ...
+// (open it in Notepad on your desktop) and write a summary in Notepad, saved ... as error_summary.txt" went to the
+// coding harness, which built a tested Python package and reported it built - and no summary existed.
+func worksAtTheDesk(prompt string) bool {
+	return len(AppsFor(prompt)) > 0 || onTheDeskRe.MatchString(prompt) ||
+		(deliverableFileRe.MatchString(prompt) && documentVerbRe.MatchString(prompt))
+}
 
 func wantsDocument(prompt string) bool {
 	return documentFileRe.MatchString(prompt) && documentVerbRe.MatchString(prompt)
@@ -271,13 +287,21 @@ func Triage(prompt string) Route {
 	p := strings.TrimSpace(prompt)
 	matched := Classify(p)
 
+	// One stage of a long request the desktop agent planned (long_task.py): a
+	// piece of desk work with its files, its checks and what earlier stages
+	// found, already planned - never re-planned here, never conversation or
+	// a software project.
+	if planStageRe.MatchString(p) {
+		return Route{Kind: RouteOperate, TaskType: matched, Reason: "a stage of a planned request - the operator does it"}
+	}
+
 	// A request whose deliverables are office documents or an email draft is
 	// back-office work, however it is worded: the operator makes them with
 	// office and gui, the coding harness would build a software project.
 	// Found live (2026-10-14): a price-list workbook and a summary email went
 	// to the coding harness, which made a Python package with tests and
 	// delivered neither.
-	if matched == "coding" && !wantsDocument(p) && !wantsEmailDraft(p) {
+	if matched == "coding" && !wantsDocument(p) && !wantsEmailDraft(p) && !worksAtTheDesk(p) {
 		return Route{Kind: RouteSkill, TaskType: matched, Reason: "a request to build software - the coding harness takes it whole"}
 	}
 	if matched == "coding" {
@@ -323,6 +347,13 @@ func Triage(prompt string) Route {
 	// own loop - not a plan written before the first page has even loaded,
 	// and not the operator's generic, coordinate-driven screen loop when a
 	// page-aware, selector-grounded tool is exactly what this is.
+	// A page to work in that is one part of desk work - files to make, email drafts - is the operator's: it works
+	// the page with gui and makes the files with office; the browser extension makes no files. Found by the live
+	// requests corpus (2026-10-20, requests_corpus_test.go): "enter every approved order in the portal ... a tax
+	// invoice PDF for each order, dispatch_plan.xlsx ..." was handed whole to the browser extension.
+	if wantsBrowser(p) && (wantsDocument(p) || wantsEmailDraft(p)) {
+		return Route{Kind: RouteOperate, TaskType: matched, Reason: "work in a web page and files to make - the operator does both (gui for the page, office for the files)"}
+	}
 	if wantsBrowser(p) {
 		if !BrowserAvailable {
 			return Route{Kind: RouteOperate, TaskType: matched, Reason: "an interactive task in a real web page - the operator works the browser with the gui command"}
@@ -343,7 +374,8 @@ func Triage(prompt string) Route {
 	// saved the model's refusal as totals.xlsx. A request that also needs
 	// research is still planned; file-write hands such a step on itself.
 	if wantsDocument(p) && !researchRe.MatchString(p) {
-		if namedAppRe.MatchString(p) {
+		// WorkApps: an app named only as the file's format ("in Excel, orders.xlsx") is not one to work in.
+		if len(AppsFor(p)) > 0 {
 			return Route{Kind: RouteOperate, TaskType: matched, Reason: "work to do in the app the request names - the operator does it there, on the screen"}
 		}
 		return Route{Kind: RouteOperate, TaskType: matched, Reason: "an Office document or PDF to make - the operator builds it with the office command"}

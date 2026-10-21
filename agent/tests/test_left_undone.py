@@ -37,3 +37,19 @@ class LeftUndone(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NotFound(unittest.TestCase):
+    def test_a_field_that_was_not_visible_is_a_place_not_found(self):
+        self.assertTrue(verify.not_found_undone("Customer PO number was not entered because no visible PO number field "
+                                                "was available in the Sales Order screen section I could access"))
+        self.assertTrue(verify.not_found_undone("could not find the Delivery Date field"))
+
+    def test_an_obstacle_is_not_a_place_not_found(self):
+        self.assertFalse(verify.not_found_undone("the field is not visible because ERPNext refused the value"))
+        self.assertFalse(verify.not_found_undone("the supplier already exists"))
+        self.assertFalse(verify.not_found_undone("you said not to send it"))
+
+    def test_nothing_listed_is_nothing(self):
+        self.assertFalse(verify.not_found_undone(""))
+        self.assertFalse(verify.not_found_undone("the chart was left out on purpose"))

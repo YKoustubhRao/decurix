@@ -22,6 +22,13 @@ import (
 // plain `go build`, since templates are data to the compiler.
 func TestRenderEveryPage(t *testing.T) {
 	renderer := NewRenderer()
+	var readiness bytes.Buffer
+	if err := renderer.RenderReadiness(&readiness, ReadinessPageData{Desktop: desktop.Desktop{ID: "worker", Name: "Worker"}, OwnerFile: "qualification-owner.token"}); err != nil {
+		t.Fatalf("RenderReadiness: %v", err)
+	}
+	if !strings.Contains(readiness.String(), "Unlock owner controls") || !strings.Contains(readiness.String(), "Enable this scope") {
+		t.Fatal("readiness page lost its owner gate or scoped enable control")
+	}
 
 	running := desktop.Desktop{
 		ID:        "research-box",
@@ -322,5 +329,66 @@ func TestWorkerResourceDefaultsInDashboard(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "name=\"cpus\" value=\"1\" checked") {
 		t.Fatal("hardcoded CPU default overrides configuration")
+	}
+}
+
+// A worker made with a shared folder says which folder on the card, and the create form can set it: the person must be
+// able to see what the worker can touch.
+func TestTheDashboardShowsAndTakesTheSharedFolder(t *testing.T) {
+	shared := desktop.Desktop{
+		ID: "pc-box", Name: "pc-box", Profile: "basic", Harness: desktop.HarnessTheBot, Status: "running",
+		URL: "/desktop/pc-box/", SharedFolder: `C:\Users\Administrator\Documents\Decurix demo`,
+	}
+	plain := desktop.Desktop{ID: "plain-box", Name: "plain-box", Profile: "basic", Harness: desktop.HarnessTheBot, Status: "running", URL: "/desktop/plain-box/"}
+
+	var out bytes.Buffer
+	if err := NewRenderer().RenderIndex(&out, PageData{Desktops: []desktop.Desktop{shared, plain}}); err != nil {
+		t.Fatal(err)
+	}
+	page := out.String()
+	for _, want := range []string{
+		`name="shared_folder"`,        // the create form's field
+		`data-shared-folder="pc-box"`, // the card of the shared worker
+		`C:\Users\Administrator\Documents\Decurix demo`,
+		"shared_folder: sharedFolder", // sent with the create request
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the dashboard lacks %q", want)
+		}
+	}
+	if strings.Contains(page, `data-shared-folder="plain-box"`) {
+		t.Error("a worker with no shared folder says it shares one")
+	}
+}
+
+// A requested host app the desktop was made without is on its card with the reason, and one still being tried says so:
+// never a silent skip. A desktop that has everything it asked for shows nothing.
+func TestTheCardSaysWhichRequestedAppsAreMissingAndWhy(t *testing.T) {
+	short := desktop.Desktop{
+		ID: "pc", Name: "pc", Profile: "basic", Harness: desktop.HarnessTheBot, Status: "running", URL: "/desktop/pc/",
+		MissingApps: []desktop.MissingApp{
+			{ID: "win_paint", Name: "Paint", Reason: "This is a Microsoft Store app."},
+			{ID: "win_word", Name: "Word", Reason: desktop.UnverifiedAppReason, Pending: true},
+		},
+	}
+	whole := desktop.Desktop{ID: "whole", Name: "whole", Profile: "basic", Harness: desktop.HarnessTheBot, Status: "running", URL: "/desktop/whole/"}
+
+	var out bytes.Buffer
+	if err := NewRenderer().RenderIndex(&out, PageData{Desktops: []desktop.Desktop{short, whole}}); err != nil {
+		t.Fatal(err)
+	}
+	page := out.String()
+	for _, want := range []string{
+		"<strong>Paint</strong> was not added: This is a Microsoft Store app.",
+		"<strong>Word</strong> is being added: Not added yet",
+		`data-missing-apps="whole" hidden`, // there, for the poll to fill, but nothing shown
+		"paintMissingApps(card.querySelector(\"[data-missing-apps]\")",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the dashboard lacks %q", want)
+		}
+	}
+	if strings.Contains(page, `data-missing-apps="pc" hidden`) {
+		t.Error("the card of a desktop missing apps hides them")
 	}
 }
