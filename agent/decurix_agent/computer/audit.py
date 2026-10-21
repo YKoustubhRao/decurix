@@ -71,7 +71,7 @@ def record(entry, before=None, after=None, masks=()):
     try:
         event = recording.append(
             session_id, entry, before=before, after=after,
-            defaults={"task_id": task_id, "title": task_context.current_request()},
+            defaults={"task_id": task_id, "title": task_context.current_request()[:500]},
         )
     except (OSError, ValueError) as exc:
         log(f"Could not write the recording of {record_id}: {exc}")

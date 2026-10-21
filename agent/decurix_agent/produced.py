@@ -1046,6 +1046,46 @@ def sample_table(body, budget, focus=()):
     return "\n".join(out)
 
 
+LOOK_CHARS = 8000
+LOOK_LINES = 40
+
+
+def lines_with(paths, terms, budget=LOOK_CHARS):
+    """The lines of those files that hold any of `terms` (case and spacing ignored), each file's first lines with them
+    (a table's header), for a judge that asked to look closer (verify.judge's `look`). "" when none holds one."""
+
+    from decurix_agent.tools import office
+
+    wanted = [" ".join(str(t).lower().split()) for t in terms or () if str(t).strip()]
+    if not wanted:
+        return ""
+    parts, size = [], 0
+    for path in paths or ():
+        if Path(path).suffix.lower() in IMAGES:
+            continue
+        try:
+            lines = (office.read_document(path).get("text") or "").splitlines()
+        except Exception as exc:  # noqa: BLE001 - a file it cannot read holds nothing to show
+            log(f"produced: could not look in {path}: {exc}")
+            continue
+        flat = [" ".join(line.lower().replace(",", "").split()) for line in lines]
+        hits = [i for i, line in enumerate(flat)
+                if any(w in line or w.replace(",", "") in line for w in wanted)][:LOOK_LINES]
+        if not hits:
+            continue
+        head = [i for i in range(min(3, len(lines))) if i not in hits]
+        block = f"--- {_label(path)}\n" + "\n".join(
+            ([lines[i] for i in head] + ["[...]"] if head else []) + [f"(line {i + 1}) {lines[i]}" for i in hits])
+        if size + len(block) > budget:
+            block = block[:max(0, budget - size)]
+        if block:
+            parts.append(block)
+            size += len(block)
+        if size >= budget:
+            break
+    return "\n".join(parts)
+
+
 def text(paths, focus=()):
     """What those files say now, read the way the worker's own tools read them; unreadable ones say so. A long table is
     sampled (sample_table): its header, the rows `focus` (what findings name) points at, its totals, an even sample."""

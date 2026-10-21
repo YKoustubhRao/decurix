@@ -510,6 +510,9 @@ def build_parser():
 
     guide = sub.add_parser("guide", add_help=False)
     guide.add_argument("name", nargs="*")
+    guide.add_argument("--learn", default="")
+    guide.add_argument("--applies-to", dest="applies_to", default="")
+    guide.add_argument("--description", default="")
 
     asker = sub.add_parser("ask", add_help=False)
     asker.add_argument("service")
@@ -721,10 +724,22 @@ def run(argv):
         # A guide to a well-known app (app_skills.py), for an engine that opened an app its request did not name.
         from decurix_agent import app_skills
 
+        if args.learn:
+            # What the engine worked out about an app with no guide, kept for later tasks (app_skills.learn): the
+            # guide's text verbatim on stdin, held until this task is checked done.
+            from decurix_agent import task_context
+
+            body = "" if sys.stdin is None or sys.stdin.isatty() else sys.stdin.read()
+            try:
+                print(app_skills.learn(args.learn, args.applies_to, args.description, body, task_context.current(),
+                                       task_context.current_stage()[0]))
+            except ValueError as exc:
+                raise ComputerError(f"guide not kept: {exc}") from None
+            return EXIT_OK
         wanted = " ".join(args.name)
         if not wanted:
             for g in app_skills.guides():
-                print(f"{g['name']}: {g['description']}")
+                print(f"{g['name']}: {g['description']}" + (f" (learned here {g['learned']})" if g.get("learned") else ""))
             return EXIT_OK
         found = app_skills.named(wanted)
         if found is None:

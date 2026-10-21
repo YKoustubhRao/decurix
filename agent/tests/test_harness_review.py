@@ -389,3 +389,25 @@ def load_tests(loader, tests, pattern):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AnItemDecidedEarlierIsNotAskedAgain(unittest.TestCase):
+    """Series 16 H1: CL-4142 was decided by the first answer; the stage's next question listed it again, and the
+    follow-up for what an answer leaves open must not put it to the person a third time."""
+
+    def test_only_items_no_earlier_answer_decided_are_still_open(self):
+        first = {"question": "CL-4142 has no receipt: approve or reject?", "answer": base.LongRun.H1_ANSWER,
+                 "names": ["Neha", "CL-4142"]}
+        data = {"decisions": [first], "questions": []}
+
+        class Runner:
+            def status(self, run_id):
+                return {"steps": {"s1": {"status": "parked"}}}
+
+        answer = {"answer": "Yes - that was my answer to your question.",
+                  "undecided": ["CL-4122 Kavya Raghavan", "CL-4142 Neha Joshi", "CL-4145 Neha Joshi flight"]}
+        with mock.patch.object(long_task, "ledger", lambda run_id: data), \
+                mock.patch.object(long_task, "_runner", lambda: Runner()):
+            left = long_task._rest_to_ask("run", "s1", {"id": "q2", "kind": "query", "text": "1. ... 2. ... 3. ..."},
+                                          answer)
+        self.assertEqual(left, ["CL-4122 Kavya Raghavan", "CL-4145 Neha Joshi flight"])
