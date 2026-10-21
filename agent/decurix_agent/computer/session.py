@@ -91,7 +91,7 @@ def app_env():
     return env
 
 
-def launch(argv, cwd=None):
+def launch(argv):
     """
     Start a GUI program detached from the caller.
 
@@ -103,7 +103,7 @@ def launch(argv, cwd=None):
     return subprocess.Popen(
         argv,
         env=app_env(),
-        cwd=cwd or str(Path.home()),
+        cwd=str(Path.home()),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

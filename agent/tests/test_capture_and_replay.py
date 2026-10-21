@@ -6,15 +6,13 @@ replay that opens that program when it is not there - with this run's values,
 never the recorded ones. Found live on a worker (see demonstration.py, replay.py).
 """
 
-import json
-import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from decurix_agent import guidance
-from decurix_agent.computer import cdp, demonstration, launchers, mimic, replay
+from decurix_agent.computer import cdp, demonstration, mimic, replay
 from decurix_agent.computer.errors import ComputerError
 
 
@@ -54,8 +52,8 @@ class WhatAnEntrySays(unittest.TestCase):
         behind = {"window_title": "Orders", "role": "textbox"}
         front = {"window_title": "Notepad", "role": "button"}
         menu = {"window_title": "", "role": "menuitem"}
-        self.assertEqual(demonstration._unoccluded([behind, front, menu], windows, 50, 50), [front, menu])
-        self.assertEqual(demonstration._unoccluded([behind, front], windows, 700, 500), [behind, front])
+        self.assertEqual(demonstration.el.unoccluded([behind, front, menu], windows, 50, 50), [front, menu])
+        self.assertEqual(demonstration.el.unoccluded([behind, front], windows, 700, 500), [behind, front])
 
 
 class PageHitTest(unittest.TestCase):

@@ -22,9 +22,7 @@ import (
 	"io"
 	"log"
 	"net/url"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -99,18 +97,6 @@ func desktopName(id string) string {
 	}
 
 	return name
-}
-
-// ProfileDir is where the helper keeps the profile of its own that it gives a browser or Electron app started under
-// session id (bridge.ps1's Complete-Launch: $ProfileRoot\<desktop>-<base>). base is the program's name without ".exe",
-// in lower case. "" when this computer has no such place (not Windows).
-func ProfileDir(id, base string) string {
-	local := os.Getenv("LOCALAPPDATA")
-	if local == "" {
-		return ""
-	}
-
-	return filepath.Join(local, "Decurix", "hidden-profiles", desktopName(id)+"-"+base)
 }
 
 // Manager owns the running sessions, one per id, and one warm helper for the next.
@@ -325,7 +311,7 @@ func (m *Manager) Warm() {
 // Start launches an app on its own private desktop under session id and returns once its window has shown, or joins the
 // session already running under that id.
 func (m *Manager) Start(ctx context.Context, id, target, args string) (*Session, error) {
-	if strings.ContainsAny(target+args, "\r\n") || strings.Contains(target, "\t") || strings.TrimSpace(target) == "" {
+	if !carriable(Target{target, args}) {
 		return nil, errors.New("invalid application to start")
 	}
 
@@ -393,7 +379,10 @@ func (m *Manager) launch(ctx context.Context, id, target, args string) (*Session
 	for _, line := range []string{"desktop " + name, "viewers 1"} {
 		if resp, err := s.Do(line); err != nil || !strings.HasPrefix(resp, "OK") {
 			s.Stop()
-			return nil, firstErr(err, errors.New("the host helper refused to start"))
+			if err == nil {
+				err = errors.New("the host helper refused to start")
+			}
+			return nil, err
 		}
 	}
 	s.holdWatching(true) // the picture is captured from the moment the window exists, before anybody has connected
@@ -447,13 +436,10 @@ func (m *Manager) launchLine(s *Session, target, args string) (string, error) {
 	return s.DoTimeout("launch\t"+target+"\t"+args, launchRequestTimeout)
 }
 
-func firstErr(errs ...error) error {
-	for _, e := range errs {
-		if e != nil {
-			return e
-		}
-	}
-	return nil
+// carriable reports whether a target fits on one line of the helper protocol: a program, with no tab in it, and
+// arguments, neither of them breaking the line.
+func carriable(t Target) bool {
+	return !strings.ContainsAny(t.Target+t.Args, "\r\n") && !strings.Contains(t.Target, "\t") && strings.TrimSpace(t.Target) != ""
 }
 
 // Check asks the host - without starting anything - which of targets Start would be able to run on a private desktop,
@@ -466,7 +452,7 @@ func (m *Manager) Check(ctx context.Context, targets []Target) (map[Target]strin
 	verdicts := make(map[Target]string, len(targets))
 	var ask []Target
 	for _, t := range targets {
-		if strings.ContainsAny(t.Target+t.Args, "\r\n") || strings.Contains(t.Target, "\t") || strings.TrimSpace(t.Target) == "" {
+		if !carriable(t) {
 			verdicts[t] = "invalid application"
 			continue
 		}
@@ -647,15 +633,7 @@ func (m *Manager) KeptFor(desktop string) []string {
 
 // ForgetDesktop forgets every app kept ready for one VM, for when it is deleted or stopped.
 func (m *Manager) ForgetDesktop(desktop string) {
-	m.mu.Lock()
-	var ids []string
-	for id, k := range m.kept {
-		if k.desktop == desktop {
-			ids = append(ids, id)
-		}
-	}
-	m.mu.Unlock()
-	for _, id := range ids {
+	for _, id := range m.KeptFor(desktop) {
 		m.Forget(id)
 	}
 }
@@ -786,18 +764,11 @@ type Session struct {
 	appGone     chan struct{}
 	goneOnce    sync.Once
 	stopOnce    sync.Once
-	onEvent     func(string) // see OnEvent
-	keyedSet    bool         // SetKeyedText has told the helper how this app takes text
+	keyedSet    bool // SetKeyedText has told the helper how this app takes text
 	keyedText   bool
 
-	// The last small picture the helper made (see Thumbnail): what it just sent, and the one kept with its width.
-	thumbMu    sync.Mutex
-	thumbSent  []byte
-	thumbKept  []byte
-	thumbWidth int
-
-	// opens are the opens the helper is doing behind its command loop, by ticket (see open).
-	opens map[string]chan string
+	// The last small picture the helper made (see Picture).
+	thumbSent []byte
 
 	// hostPID is the helper's own process on the host and appPID the app it launched (0 when not known); reap is the
 	// manager's Reap (as reaper), called by Stop with them.
@@ -861,6 +832,10 @@ func (s *Session) read(r *bufio.Reader) {
 					return
 				}
 				s.publish(u.Update)
+			case strings.HasPrefix(line, "EVENT "):
+				if strings.TrimPrefix(line, "EVENT ") == "closed" {
+					s.markAppGone()
+				}
 			case strings.HasPrefix(line, "THUMB "):
 				// "THUMB <w> <h> <n>" is followed by the picture; "THUMB same" by nothing. Either is the answer to a
 				// thumb command, so the line goes on to whoever asked.
@@ -879,15 +854,7 @@ func (s *Session) read(r *bufio.Reader) {
 					s.thumbSent = data
 					s.mu.Unlock()
 				}
-				select {
-				case s.replies <- line:
-				case <-s.done:
-					return
-				}
-			case strings.HasPrefix(line, "EVENT "):
-				if strings.TrimPrefix(line, "EVENT ") == "closed" {
-					s.markAppGone()
-				}
+				fallthrough
 			default:
 				select {
 				case s.replies <- line:

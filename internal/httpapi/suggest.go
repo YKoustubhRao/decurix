@@ -17,8 +17,7 @@ const suggestTimeout = 8 * time.Second
 // requests page's compose form: a failure here is never an error, only an
 // empty suggestion.
 func (s *Server) suggestDesktopHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+	if !requirePost(w, r) {
 		return
 	}
 

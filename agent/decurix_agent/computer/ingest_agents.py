@@ -42,9 +42,6 @@ from decurix_agent.computer import ingest, privacy
 # from somewhere else and must not be able to run anything here.
 # ============================================================
 
-BROWSERGYM = "browsergym"
-OPENHANDS = "openhands"
-
 # The grammar of BrowserGym's flatten_axtree_to_str (browsergym/utils/obs.py):
 #
 #   <tabs>[bid] role 'name' value='v', flag, key='v', key2=True
@@ -309,13 +306,11 @@ UNSUPPORTED = {
 }
 
 
-def _typed(element, value):
-    """The text kept, and why not: judged by the field's own label when it has no name."""
+def _judged(element):
+    """A field as the privacy layer judges it: by its own label when it has no name."""
 
-    judged = {"role": (element or {}).get("role") or "textbox",
-              "name": (element or {}).get("name") or (element or {}).get("hint") or ""}
-
-    return ingest._typed(judged, value)
+    return {"role": (element or {}).get("role") or "textbox",
+            "name": (element or {}).get("name") or (element or {}).get("hint") or ""}
 
 
 def _step_event(name, args, kwargs, nodes, note_sink):
@@ -358,12 +353,11 @@ def _step_event(name, args, kwargs, nodes, note_sink):
             return None, "fill() has no text to type"
 
         event = targeted("type", bid)
-        text, why = _typed(event["element"], value)
+        text, why = ingest._typed(_judged(event["element"]), value)
         event["text"] = text
         if why:
             event["withheld"] = {"text": why}
-            if privacy.secret_field({"role": event["element"].get("role") or "textbox",
-                                     "name": event["element"].get("name") or event["element"].get("hint") or ""}):
+            if privacy.secret_field(_judged(event["element"])):
                 event["element"]["secret"] = why
         elif event["element"].get("role"):
             event["expect"] = {"values": [{"role": event["element"]["role"], "name": event["element"]["name"],

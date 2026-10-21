@@ -70,24 +70,8 @@ def ensure_work_link(work_dir=None):
 
     from decurix_agent import config
 
-    link, mount = Path(work_dir or config.WORK_DIR) / WORK_LINK, mount_path()
-    try:
-        if mount and mount.is_dir():
-            if link.is_symlink():
-                if os.path.realpath(link) == os.path.realpath(mount):
-                    return "linked"
-                link.unlink()
-            elif link.exists():
-                return f"{link} exists and is not a link: left as it is"
-            link.parent.mkdir(parents=True, exist_ok=True)
-            link.symlink_to(mount, target_is_directory=True)
-            return f"linked {link} to {mount}"
-        if link.is_symlink():
-            link.unlink()
-            return "removed a work-folder link to a shared folder this worker no longer has"
-    except OSError as exc:
-        return f"could not link {link}: {exc}"
-    return ""
+    return _make_link(Path(work_dir or config.WORK_DIR) / WORK_LINK,
+                      "removed a work-folder link to a shared folder this worker no longer has", make_parent=True)
 
 
 def plan_path(path):
@@ -127,7 +111,13 @@ def ensure_link():
     did, for the log.
     """
 
-    link, mount = link_path(), mount_path()
+    return _make_link(link_path(), "removed a link to a shared folder this worker no longer has")
+
+
+def _make_link(link, removed, make_parent=False):
+    """Make `link` lead to the mount, or take away a link when there is no mount (`removed` says so)."""
+
+    mount = mount_path()
     try:
         if mount and mount.is_dir():
             if link.is_symlink():
@@ -136,11 +126,13 @@ def ensure_link():
                 link.unlink()
             elif link.exists():
                 return f"{link} exists and is not a link: left as it is"
+            if make_parent:
+                link.parent.mkdir(parents=True, exist_ok=True)
             link.symlink_to(mount, target_is_directory=True)
             return f"linked {link} to {mount}"
         if link.is_symlink():
             link.unlink()
-            return "removed a link to a shared folder this worker no longer has"
+            return removed
     except OSError as exc:
         return f"could not link {link}: {exc}"
     return ""
@@ -284,7 +276,14 @@ def walk():
 
     if not active():
         return
-    seen, stack = 0, [(link_path(), 0)]
+    yield from (p for p in walk_files(link_path()) if contained(str(p)))
+
+
+def walk_files(root, skip=()):
+    """Files under root, at most MAX_DEPTH levels and MAX_ENTRIES entries deep, hidden ones and folders named in `skip`
+    left out."""
+
+    seen, stack = 0, [(Path(root), 0)]
     while stack:
         folder_path, depth = stack.pop()
         try:
@@ -299,9 +298,9 @@ def walk():
                 continue
             try:
                 if child.is_dir(follow_symlinks=False):
-                    if depth < MAX_DEPTH:
+                    if depth < MAX_DEPTH and child.name not in skip:
                         stack.append((Path(child.path), depth + 1))
-                elif child.is_file(follow_symlinks=False) and contained(child.path):
+                elif child.is_file(follow_symlinks=False):
                     yield Path(child.path)
             except OSError:
                 continue

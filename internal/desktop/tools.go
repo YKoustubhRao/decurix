@@ -20,20 +20,10 @@ func (m *Manager) EnsureToolsVolume(ctx context.Context) error {
 		return nil
 	}
 
-	_ = m.EnsureCacheVolume(ctx)
+	_ = m.ensureSharedVolume(ctx, CacheVolumeName, "cache")
 
-	vol, err := m.client.VolumeInspect(ctx, ToolsVolumeName)
-	if err != nil || vol.Name != ToolsVolumeName {
-		log.Printf("Creating shared tools volume %s...", ToolsVolumeName)
-		_, err = m.client.VolumeCreate(ctx, volume.CreateOptions{
-			Name: ToolsVolumeName,
-			Labels: map[string]string{
-				"decurix": "true",
-			},
-		})
-		if err != nil {
-			return fmt.Errorf("create tools volume: %w", err)
-		}
+	if err := m.ensureSharedVolume(ctx, ToolsVolumeName, "tools"); err != nil {
+		return err
 	}
 
 	if _, _, err := m.client.ImageInspectWithRaw(ctx, ToolsImage); err != nil {
@@ -97,24 +87,24 @@ func (m *Manager) PopulateToolsVolume(ctx context.Context) error {
 	return nil
 }
 
-// EnsureCacheVolume ensures the shared decurix-cache volume exists and is writable
-// by desktop containers to deduplicate package caches across desktops.
-func (m *Manager) EnsureCacheVolume(ctx context.Context) error {
+// ensureSharedVolume creates one of the volumes every desktop shares (the tools volume, or the writable cache that
+// deduplicates package caches across desktops) unless it exists; what names it in the log and errors.
+func (m *Manager) ensureSharedVolume(ctx context.Context, name, what string) error {
 
-	vol, err := m.client.VolumeInspect(ctx, CacheVolumeName)
-	if err == nil && vol.Name == CacheVolumeName {
+	vol, err := m.client.VolumeInspect(ctx, name)
+	if err == nil && vol.Name == name {
 		return nil
 	}
 
-	log.Printf("Creating shared cache volume %s...", CacheVolumeName)
+	log.Printf("Creating shared %s volume %s...", what, name)
 	_, err = m.client.VolumeCreate(ctx, volume.CreateOptions{
-		Name: CacheVolumeName,
+		Name: name,
 		Labels: map[string]string{
 			"decurix": "true",
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("create cache volume: %w", err)
+		return fmt.Errorf("create %s volume: %w", what, err)
 	}
 
 	return nil

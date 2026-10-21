@@ -29,18 +29,11 @@ func (p *processHolder) set(on bool) error {
 	}
 
 	cmd := p.command()
-	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
 
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("starting %s: %w", cmd.Path, err)
+	done, err := startHelper(cmd)
+	if err != nil {
+		return err
 	}
-
-	done := make(chan struct{})
-	go func() {
-		_ = cmd.Wait()
-		close(done)
-	}()
 
 	p.cmd, p.done = cmd, done
 
@@ -51,16 +44,7 @@ func (p *processHolder) alive() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.done == nil {
-		return false
-	}
-
-	select {
-	case <-p.done:
-		return false
-	default:
-		return true
-	}
+	return running(p.done)
 }
 
 func (p *processHolder) stopLocked() {
@@ -97,7 +81,7 @@ func (p *pipeHolder) set(on bool) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if !p.runningLocked() {
+	if !running(p.done) {
 		if !on {
 			return nil
 		}
@@ -121,47 +105,27 @@ func (p *pipeHolder) set(on bool) error {
 
 func (p *pipeHolder) startLocked() error {
 	cmd := p.command()
-	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return err
 	}
 
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("starting %s: %w", cmd.Path, err)
+	done, err := startHelper(cmd)
+	if err != nil {
+		return err
 	}
-
-	done := make(chan struct{})
-	go func() {
-		_ = cmd.Wait()
-		close(done)
-	}()
 
 	p.cmd, p.stdin, p.done = cmd, stdin, done
 
 	return nil
 }
 
-func (p *pipeHolder) runningLocked() bool {
-	if p.done == nil {
-		return false
-	}
-
-	select {
-	case <-p.done:
-		return false
-	default:
-		return true
-	}
-}
-
 func (p *pipeHolder) alive() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	return p.runningLocked()
+	return running(p.done)
 }
 
 func (p *pipeHolder) close() {
@@ -172,7 +136,7 @@ func (p *pipeHolder) close() {
 		p.stdin.Close()
 	}
 
-	if !p.runningLocked() {
+	if !running(p.done) {
 		return
 	}
 
@@ -181,5 +145,38 @@ func (p *pipeHolder) close() {
 	case <-time.After(5 * time.Second):
 		_ = p.cmd.Process.Kill()
 		<-p.done
+	}
+}
+
+// startHelper starts a holder's helper process with its output discarded, and returns a channel closed once it has
+// exited.
+func startHelper(cmd *exec.Cmd) (chan struct{}, error) {
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("starting %s: %w", cmd.Path, err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(done)
+	}()
+
+	return done, nil
+}
+
+// running reports whether the helper whose exit closes done (nil: none started) is still running.
+func running(done chan struct{}) bool {
+	if done == nil {
+		return false
+	}
+
+	select {
+	case <-done:
+		return false
+	default:
+		return true
 	}
 }

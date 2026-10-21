@@ -462,19 +462,13 @@ def taught_for(service):
     return None
 
 
-def _begin(content, task_file):
-    state.current_task = content
-    state.current_task_file = task_file
-    state.waiting_for_query = False
-
-    # Known, not unknown: no model reads anything here.
-    usage.add(input_tokens=0, output_tokens=0, cost_usd=0)
-
-
 def perform(content, task_file=None):
     """Put the request's question to the web app it names, and reply with what it said."""
 
-    _begin(content, task_file)
+    state.begin(content, task_file)
+
+    # Known, not unknown: no model reads anything here.
+    usage.add(input_tokens=0, output_tokens=0, cost_usd=0)
 
     try:
         found = parse_all(content)

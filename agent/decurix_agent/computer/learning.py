@@ -147,7 +147,7 @@ def build(sources, name=None):
     if not programs:
         raise ValueError("there is nothing in that recording to learn from - no action on the screen was kept")
 
-    base_meta, base_events, base_program = programs[0]
+    base_meta = programs[0][0]
     steps = _merge([_annotate(program) for _, _, program in programs])
 
     # Numbers follow the steps' order and change when one is removed; an ID
@@ -160,7 +160,7 @@ def build(sources, name=None):
         if note not in tidied:
             tidied.append(note)
 
-    params = _generalise(steps, len(programs))
+    params = _generalise(steps)
     loops = _find_loops(steps, len(programs))
     title = (base_meta.get("title") or base_meta.get("description") or "").strip() or "A recorded task"
     # What the person asked for when they recorded it, even after a rename.
@@ -170,7 +170,7 @@ def build(sources, name=None):
     # recording's title stays its goal (what a request is matched against,
     # mimic.plan). Either way the file name is free: naming a new
     # skill after one that exists must not overwrite it.
-    given = " ".join((name or "").split())[:80]
+    given = " ".join((name or "").split())[:MAX_NAME]
     name = skills.unique_name(given or title)
 
     skill = {
@@ -532,7 +532,7 @@ def _follow_param(skill, param):
                 check[key] = pattern.sub("{" + param["name"] + "}", check[key])
 
 
-def _generalise(steps, demos):
+def _generalise(steps):
     """
     Turn typed text into parameters, in step order, and return them. A secret
     field's step becomes a manual one instead: no recording has its value,
@@ -706,7 +706,7 @@ def _notes(steps, programs):
 
     notes = []
 
-    for index, (meta, events, program) in enumerate(programs):
+    for index, (_, events, program) in enumerate(programs):
         own = [s for s in steps if s.get("session") == program["session"]]
 
         for event in events:
@@ -852,7 +852,7 @@ def questions(skill):
         elif step["id"] == first_positional:
             found.append(_coordinates(positional, skill))
 
-    found.append(_approval(skill))
+    found.append(_approval())
     found.append(_confirm(skill))
     return found
 
@@ -1172,7 +1172,7 @@ def _unsupported(step):
 APPROVAL_OPENING = "Once you ask me to do this task"
 
 
-def _approval(skill):
+def _approval():
     """Whether a later request for this task waits for the person's yes. Decided here, once, by the person who knows
     what the task does - not by words in a request (a "Purchase Invoice" is a document; "purchase" is an act)."""
 
@@ -1501,9 +1501,8 @@ def _target_named(step, role, name):
     """A position-only step pointed at the control a person named; it is found by that from now on, never by the spot."""
 
     step["target"] = {"role": role, "name": name}
-    for key in ("point", "look"):
+    for key in ("point", "look", "element_missing"):
         step.pop(key, None)
-    step.pop("element_missing", None)
     step["summary"] = replay._summary(step)
 
 

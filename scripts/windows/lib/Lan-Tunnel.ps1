@@ -2,8 +2,9 @@
 .SYNOPSIS
     Shared by scripts/windows/build.ps1 and scripts/windows/rebuild.ps1.
 .DESCRIPTION
-    Dot-sourced, not executed directly: defines Start-LanTunnel/
-    Stop-LanTunnel, a second Cloudflare quick tunnel pointed at the
+    Dot-sourced, not executed directly: defines Show-LanAccess (the LAN
+    address and access code), and Start-LanTunnel/Stop-LanTunnel, a second
+    Cloudflare quick tunnel pointed at the
     access-code-gated listener (rather than the primary, unauthenticated one
     both scripts already tunnel in their own foreground loop) - so the gated
     URL is reachable from anywhere, not only this machine's own network like
@@ -105,6 +106,74 @@ function Start-LanTunnel {
         }
     } else {
         Write-Host "(It didn't come up within 30s - it'll still appear in the dashboard's Mobile menu once it does.)"
+    }
+}
+
+# Show-LanAccess reports this machine's LAN address on the gated port to the
+# control plane and prints it, with the access code.
+function Show-LanAccess {
+    param([string]$LanPort)
+
+    # The machine's own address on whatever network it's on, so both the
+    # admin (unauthenticated) and LAN (access-code-gated) URLs below are
+    # something another device can actually use - not "localhost", which
+    # only means anything on this machine. Opening a UDP "connection" sends
+    # no packets; it only asks Windows which local address it would use to
+    # reach the internet, the same trick build.sh's "ip route get" does.
+    $lanIP = $null
+    try {
+        $socket = New-Object System.Net.Sockets.Socket(
+            [System.Net.Sockets.AddressFamily]::InterNetwork,
+            [System.Net.Sockets.SocketType]::Dgram,
+            [System.Net.Sockets.ProtocolType]::Udp)
+        $socket.Connect("1.1.1.1", 65530)
+        $lanIP = $socket.LocalEndPoint.Address.ToString()
+        $socket.Close()
+    } catch {
+        # No route to the internet, or sockets unavailable - $lanIP stays unset.
+    }
+
+    if ($lanIP) {
+        $lanUrl = "http://${lanIP}:$lanPort"
+
+        # Reported once here, separately from the tunnel URL below (which is
+        # reported every time cloudflared prints one) - see
+        # httpapi.tunnelHandler, which never lets one blank out the other.
+        try {
+            Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8080/api/tunnel" `
+                -ContentType "application/json" `
+                -Body (@{ lan_url = $lanUrl } | ConvertTo-Json -Compress) `
+                -TimeoutSec 5 | Out-Null
+        } catch {
+            # Best effort - the dashboard's Mobile menu is the fallback.
+        }
+
+        Write-Host ""
+        Write-Host "LAN access URL (needs the code below, works without the tunnel): $lanUrl"
+    }
+
+    # Printed here as a convenience - it also always lives in the
+    # dashboard's Mobile menu (both URLs above alongside it), which is the
+    # one place it stays current after a rotate.
+    $lanCode = $null
+    try {
+        $lan = Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/lan-access/status" -TimeoutSec 5
+        if ($lan.code) {
+            $lanCode = $lan.code
+            Write-Host ""
+            Write-Host "Access code: $lanCode"
+            Write-Host "(Needed once by anyone using the LAN URL above. Also in the dashboard's Mobile menu, which can generate a new one.)"
+
+            # A one-click link for whoever is sitting at this terminal right
+            # now - they already have the code above, so this authenticates
+            # on click instead of asking them to type it into the gate's form.
+            if ($lanUrl) {
+                Write-Host ""
+                Write-Host "Open it yourself without typing the code: $lanUrl/__decurix_access/authenticate?code=$lanCode"
+            }
+        }
+    } catch {
+        # Best effort - the dashboard's Mobile menu always has it too.
     }
 }
 

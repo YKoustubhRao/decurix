@@ -380,8 +380,6 @@ func ensureTarDirs(tw *tar.Writer, dirRel string, seenDirs map[string]bool, now 
 
 // CopyHostPaths copies the specified files and directories from the host filesystem
 // into the VM filesystem for the desktop.
-// Works for both container desktops (using Docker's CopyToContainer API) and
-// native worker desktops (copying directly to the worker's home directory).
 func (m *Manager) CopyHostPaths(ctx context.Context, desktopID string, paths []HostCopyPath) error {
 	if len(paths) == 0 {
 		return nil
@@ -489,19 +487,7 @@ func (m *Manager) CopyHostPaths(ctx context.Context, desktopID string, paths []H
 					})
 				}
 
-				mode := int64(0o644)
-				if info.Mode()&0111 != 0 {
-					mode = 0o755
-				}
-				if err := tw.WriteHeader(&tar.Header{
-					Typeflag: tar.TypeReg,
-					Name:     entryRel,
-					Size:     info.Size(),
-					Mode:     mode,
-					ModTime:  info.ModTime(),
-					Uid:      desktopUID,
-					Gid:      desktopGID,
-				}); err != nil {
+				if err := tw.WriteHeader(hostFileHeader(entryRel, info)); err != nil {
 					return err
 				}
 
@@ -526,19 +512,7 @@ func (m *Manager) CopyHostPaths(ctx context.Context, desktopID string, paths []H
 				}
 			}
 
-			mode := int64(0o644)
-			if fi.Mode()&0111 != 0 {
-				mode = 0o755
-			}
-			if err := tw.WriteHeader(&tar.Header{
-				Typeflag: tar.TypeReg,
-				Name:     rel,
-				Size:     fi.Size(),
-				Mode:     mode,
-				ModTime:  fi.ModTime(),
-				Uid:      desktopUID,
-				Gid:      desktopGID,
-			}); err != nil {
+			if err := tw.WriteHeader(hostFileHeader(rel, fi)); err != nil {
 				writeErr = err
 				break
 			}
@@ -576,6 +550,24 @@ func (m *Manager) CopyHostPaths(ctx context.Context, desktopID string, paths []H
 	}
 
 	return nil
+}
+
+// hostFileHeader is the tar header for a regular host file copied into a desktop as name, owned by its user and
+// executable when it was on the host.
+func hostFileHeader(name string, info os.FileInfo) *tar.Header {
+	mode := int64(0o644)
+	if info.Mode()&0111 != 0 {
+		mode = 0o755
+	}
+	return &tar.Header{
+		Typeflag: tar.TypeReg,
+		Name:     name,
+		Size:     info.Size(),
+		Mode:     mode,
+		ModTime:  info.ModTime(),
+		Uid:      desktopUID,
+		Gid:      desktopGID,
+	}
 }
 
 // privateReadinessFile withholds an owner key even through a file symlink.

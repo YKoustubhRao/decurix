@@ -18,11 +18,16 @@ type fakeExtServer struct {
 	status    string
 	result    *extResult
 	cancelled bool
+	submitted map[string]any
 }
 
 func (f *fakeExtServer) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/requests", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.submitted = nil
+		json.NewDecoder(r.Body).Decode(&f.submitted)
+		f.mu.Unlock()
 		json.NewEncoder(w).Encode(map[string]string{"id": "r1"})
 	})
 	mux.HandleFunc("/requests/status", func(w http.ResponseWriter, r *http.Request) {
@@ -87,5 +92,38 @@ func TestBrowserSkillWaitsForARequestTheExtensionTook(t *testing.T) {
 	res, _ := skill.Run(RunContext{Ctx: context.Background(), OnLog: func(string) {}}, Subtask{Step: "search", Type: "browser"})
 	if !res.Verified || !strings.Contains(res.Output, "Found it.") || ext.cancelled {
 		t.Fatalf("result = %+v (cancelled %v), want the extension's answer", res, ext.cancelled)
+	}
+}
+
+// The extension's approval gate stopped before a Send: the step pauses for a
+// person, and only their yes to that action goes back with the rerun.
+func TestBrowserSkillAsksBeforeWhatTheGateStopped(t *testing.T) {
+	send := `click "Send" on mail.google.com`
+	ext := &fakeExtServer{status: "done", result: &extResult{Status: "needs_approval",
+		Approval: &browserCheckpoint{Action: send, Reason: `"Send" sends, pays, buys or publishes something on your behalf`}}}
+	server := httptest.NewServer(ext.handler())
+	defer server.Close()
+
+	skill := NewBrowser()
+	skill.BaseURL = server.URL
+	step := Subtask{Step: "reply to Priya", Type: "browser"}
+
+	res, _ := skill.Run(RunContext{Ctx: context.Background(), OnLog: func(string) {}}, step)
+	if res.Verified || res.Meta["needsApproval"] != true || res.Meta["action"] != send {
+		t.Fatalf("result = %+v, want a pause for approval of %q", res, send)
+	}
+	if _, ok := ext.submitted["approved"]; ok {
+		t.Fatalf("the first run carried an approval: %v", ext.submitted)
+	}
+
+	approved := func(action string) bool { return action == send }
+	skill.Run(RunContext{Ctx: context.Background(), OnLog: func(string) {}, Resume: res.Checkpoint, Approved: approved}, step)
+	if got, _ := json.Marshal(ext.submitted["approved"]); string(got) != `["click \"Send\" on mail.google.com"]` {
+		t.Fatalf("the rerun sent approved = %s, want only the approved action", got)
+	}
+
+	skill.Run(RunContext{Ctx: context.Background(), OnLog: func(string) {}, Resume: res.Checkpoint, Approved: func(string) bool { return false }}, step)
+	if _, ok := ext.submitted["approved"]; ok {
+		t.Fatalf("a rerun with no yes carried an approval: %v", ext.submitted)
 	}
 }

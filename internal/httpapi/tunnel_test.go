@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/YKoustubhRao/decurix/internal/cftunnel"
-	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 	"github.com/YKoustubhRao/decurix/internal/tunnel"
 )
 
@@ -69,12 +68,19 @@ func TestTunnelHandlerPostThenGet(t *testing.T) {
 	}
 }
 
-func TestAFixedLinkIsReportedOverAQuickTunnel(t *testing.T) {
-	db, err := sqlitedb.OpenMemory()
-	if err != nil {
-		t.Fatal(err)
+// reportedLANTunnel is the lan_tunnel_url GET /api/tunnel answers with.
+func reportedLANTunnel(s *Server) string {
+	rec := httptest.NewRecorder()
+	s.tunnelHandler(rec, httptest.NewRequest(http.MethodGet, "/api/tunnel", nil))
+	var body struct {
+		LANTunnelURL string `json:"lan_tunnel_url"`
 	}
-	defer db.Close()
+	json.NewDecoder(rec.Body).Decode(&body)
+	return body.LANTunnelURL
+}
+
+func TestAFixedLinkIsReportedOverAQuickTunnel(t *testing.T) {
+	db := testDB(t)
 
 	named, err := cftunnel.NewManager(db, nil, 8090)
 	if err != nil {
@@ -84,17 +90,7 @@ func TestAFixedLinkIsReportedOverAQuickTunnel(t *testing.T) {
 	s := &Server{Tunnel: tunnel.NewStore(), CFTunnel: named}
 	s.Tunnel.SetLANTunnelURL("https://bar.trycloudflare.com")
 
-	get := func() string {
-		rec := httptest.NewRecorder()
-		s.tunnelHandler(rec, httptest.NewRequest(http.MethodGet, "/api/tunnel", nil))
-		var body struct {
-			LANTunnelURL string `json:"lan_tunnel_url"`
-		}
-		json.NewDecoder(rec.Body).Decode(&body)
-		return body.LANTunnelURL
-	}
-
-	if got := get(); got != "https://bar.trycloudflare.com" {
+	if got := reportedLANTunnel(s); got != "https://bar.trycloudflare.com" {
 		t.Fatalf("with no fixed link: %q", got)
 	}
 
@@ -110,7 +106,7 @@ func TestAFixedLinkIsReportedOverAQuickTunnel(t *testing.T) {
 	}
 	s.CFTunnel = named
 
-	if got := get(); got != "https://decurix.example.com" {
+	if got := reportedLANTunnel(s); got != "https://decurix.example.com" {
 		t.Fatalf("with a fixed link: %q, want it over the quick tunnel", got)
 	}
 }
@@ -122,29 +118,20 @@ func TestCloudflaresAPIHostIsNeverTakenForTheTunnel(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/api/tunnel", strings.NewReader(body))
 		s.tunnelHandler(httptest.NewRecorder(), req)
 	}
-	get := func() string {
-		rec := httptest.NewRecorder()
-		s.tunnelHandler(rec, httptest.NewRequest(http.MethodGet, "/api/tunnel", nil))
-		var body struct {
-			LANTunnelURL string `json:"lan_tunnel_url"`
-		}
-		json.NewDecoder(rec.Body).Decode(&body)
-		return body.LANTunnelURL
-	}
 
 	post(`{"lan_tunnel_url":"https://api.trycloudflare.com"}`)
-	if got := get(); got != "" {
+	if got := reportedLANTunnel(s); got != "" {
 		t.Fatalf("the API host was taken as the tunnel: %q", got)
 	}
 
 	post(`{"lan_tunnel_url":"https://seasonal-deck-organisms-sf.trycloudflare.com"}`)
-	if got := get(); got != "https://seasonal-deck-organisms-sf.trycloudflare.com" {
+	if got := reportedLANTunnel(s); got != "https://seasonal-deck-organisms-sf.trycloudflare.com" {
 		t.Fatalf("a real tunnel address was dropped: %q", got)
 	}
 
 	// Stored before the check existed: not shown either.
 	s.Tunnel.SetLANTunnelURL("https://api.trycloudflare.com")
-	if got := get(); got != "" {
+	if got := reportedLANTunnel(s); got != "" {
 		t.Fatalf("a stored API host is still shown: %q", got)
 	}
 }

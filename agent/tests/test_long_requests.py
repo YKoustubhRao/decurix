@@ -20,7 +20,7 @@ from unittest import mock
 # Imported first: it stubs decurix_agent.config on a machine with no desktop.
 import test_recordings  # noqa: F401
 
-from decurix_agent import config, long_task, messaging, state, task_context, usage, verify, workflow_task
+from decurix_agent import config, long_task, messaging, state, task_context, verify, workflow_task
 from decurix_agent.workflow_runner import WorkflowRunner
 # Imported now, not first inside a test: LongRun patches sys.modules with patch.dict, which drops every module first
 # imported while it is in place - and a module imported twice is two modules (found: the next test file's mocks then
@@ -429,7 +429,8 @@ class FakeEngine:
         pass
 
 
-class LongRun(unittest.TestCase):
+class LongRunBase(unittest.TestCase):
+    """A planned run on a fake engine and model; no tests of its own, so other modules' classes build on it."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -535,7 +536,8 @@ class LongRun(unittest.TestCase):
     def run_id(self):
         return long_task._run["run_id"] if long_task._run else next(self.runner.root.glob("*/checkpoint.json")).parent.name
 
-    # ------------------------------------------------------------------
+
+class LongRun(LongRunBase):
 
     def test_stages_run_one_by_one_and_the_report_is_plain(self):
         self.assertTrue(long_task.perform(LONG, None))
@@ -834,10 +836,6 @@ class LongRun(unittest.TestCase):
         self.assertEqual(rerun, [])  # no finished stage ran again
         self.assertIn("Done", self.finals()[-1]["reply"])
         self.assertTrue(long_task.ledger(self.run_id())["amendments"][-1].get("no_change"))
-
-    # Round 5 P3 on pc3 (2026-10-21), CD again: the classifier's restatement of the same answer, word for word.
-    P3_KEEP_LIVE = ("Treat the email received last night as suspicious and do not change any bank account details; keep "
-                    "the account from the vendor master.")
 
     def test_the_persons_own_words_decide_and_a_paraphrase_reopens_nothing(self):
         # Whether words change what is done is the model's reading of the person's own words ("keeps_done"), never a
@@ -1838,18 +1836,17 @@ class LongRun(unittest.TestCase):
         self.assertEqual(asked["reply"], "Is this your answer to my question, or a change to the task?")
 
     def test_a_secret_the_request_gave_is_kept_out_of_the_ledger_and_the_models_view(self):
-        if True:
-            from decurix_agent.computer import privacy
-            privacy.remember_secrets(P2_REQUEST)
-            run_id = self.parked_run()
-            self.message_verdict = {"kind": "answer", "answers": [
-                {"question": "q1", "answer": "For the portal type user clerk and password Northwind#2026"}]}
-            self.message("12%. The portal password is Northwind#2026 if you need it.")
-            text = (self.runner.root / run_id / "ledger.json").read_text(encoding="utf-8")
-            self.assertNotIn("Northwind#2026", text)
-            self.assertIn("[withheld]", text)
-            self.assertNotIn("Northwind#2026", self.classified[-1])
-            self.assertNotIn("Northwind#2026", json.dumps(self.runner.status(run_id)))
+        from decurix_agent.computer import privacy
+        privacy.remember_secrets(P2_REQUEST)
+        run_id = self.parked_run()
+        self.message_verdict = {"kind": "answer", "answers": [
+            {"question": "q1", "answer": "For the portal type user clerk and password Northwind#2026"}]}
+        self.message("12%. The portal password is Northwind#2026 if you need it.")
+        text = (self.runner.root / run_id / "ledger.json").read_text(encoding="utf-8")
+        self.assertNotIn("Northwind#2026", text)
+        self.assertIn("[withheld]", text)
+        self.assertNotIn("Northwind#2026", self.classified[-1])
+        self.assertNotIn("Northwind#2026", json.dumps(self.runner.status(run_id)))
 
     # ---- Findings AH and AI ----
 

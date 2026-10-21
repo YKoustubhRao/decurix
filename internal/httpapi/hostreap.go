@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log"
-	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
@@ -87,15 +86,9 @@ func runOnHost(script string, timeout time.Duration) (string, error) {
 		cmd = exec.CommandContext(ctx, ps, "-NoProfile", "-NonInteractive", "-EncodedCommand", encodedCommand(script))
 		desktop.HideWindow(cmd)
 	} else {
-		shell := `PATH="$PATH:/mnt/c/Windows/System32:/mnt/c/Windows/System32/WindowsPowerShell/v1.0" ` +
-			`powershell.exe -NoProfile -NonInteractive -EncodedCommand ` + encodedCommand(script)
-		cmd = exec.CommandContext(ctx, "bash", "-c", shell)
-		if _, err := exec.LookPath("powershell.exe"); err != nil {
-			if _, statErr := os.Stat("/var/run/docker.sock"); statErr == nil {
-				if dockerBin := findDockerBinary(); dockerBin != "" {
-					cmd = desktop.HopCommand(ctx, dockerBin, "reap", false, shell)
-				}
-			}
+		shell := wslPowershellPath + `powershell.exe -NoProfile -NonInteractive -EncodedCommand ` + encodedCommand(script)
+		if cmd = hostHop(ctx, "powershell.exe", "reap", false, shell); cmd == nil {
+			cmd = exec.CommandContext(ctx, "bash", "-c", shell)
 		}
 	}
 	var stderr strings.Builder

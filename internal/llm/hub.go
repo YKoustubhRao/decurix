@@ -100,41 +100,28 @@ func NewHub(db *sql.DB, key []byte) (*Hub, error) {
 		return nil, err
 	}
 
-	rows, err := db.Query(`SELECT provider, endpoint, api_key, model, fast_model, vision, updated_ns FROM llm_providers`)
-	if err != nil {
-		return nil, err
-	}
-
 	type saved struct {
 		provider string
 		s        Settings
 		updated  int64
 	}
-	var all []saved
-
-	for rows.Next() {
+	all, err := sqlitedb.QueryAll(db, func(row sqlitedb.Scanner) (saved, error) {
 		var r saved
-		if err := rows.Scan(&r.provider, &r.s.Endpoint, &r.s.Key, &r.s.Model, &r.s.FastModel, &r.s.Vision, &r.updated); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		all = append(all, r)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+		err := row.Scan(&r.provider, &r.s.Endpoint, &r.s.Key, &r.s.Model, &r.s.FastModel, &r.s.Vision, &r.updated)
+		return r, err
+	}, `SELECT provider, endpoint, api_key, model, fast_model, vision, updated_ns FROM llm_providers`)
+	if err != nil {
 		return nil, err
 	}
 
 	for _, r := range all {
-		if sealed.IsSealed(r.s.Key) {
-			plain, err := sealed.Open(key, r.s.Key)
-			if err != nil {
-				// A key file that no longer opens it: the provider shows as
-				// not set up, and a person types the key in again.
-				continue
-			}
-			r.s.Key = plain
+		plain, err := sealed.Open(key, r.s.Key)
+		if err != nil {
+			// A key file that no longer opens it: the provider shows as
+			// not set up, and a person types the key in again.
+			continue
 		}
+		r.s.Key = plain
 		h.apply(r.provider, r.s, sqlitedb.FromNS(r.updated))
 	}
 
@@ -197,8 +184,7 @@ func (h *Hub) AnyConfigured() bool {
 // Model is the main model of a configured provider ("" otherwise): what a
 // desktop with that brain lists as its model.
 func (h *Hub) Model(provider string) string {
-	st := h.Status()[provider]
-	return st.Model
+	return h.Status()[provider].Model
 }
 
 // Status describes every provider, keys left out.
@@ -353,16 +339,11 @@ func (h *Hub) Chat(ctx context.Context, provider string, body []byte) (int, []by
 	az, cl := h.azure, h.claude
 	h.mu.RUnlock()
 
+	// Each Chat answers ErrNotConfigured itself, a nil client included.
 	switch provider {
 	case ProviderAzure:
-		if !az.Configured() {
-			return 0, nil, nil, ErrNotConfigured
-		}
 		return az.Chat(ctx, body)
 	case ProviderClaude:
-		if !cl.Configured() {
-			return 0, nil, nil, ErrNotConfigured
-		}
 		return cl.Chat(ctx, body)
 	}
 
@@ -424,13 +405,8 @@ const onePixelPNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP
 
 // upstreamMessage is the error message inside an answer body, or the body.
 func upstreamMessage(body []byte) string {
-	var parsed struct {
-		Error struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if json.Unmarshal(body, &parsed) == nil && parsed.Error.Message != "" {
-		return parsed.Error.Message
+	if message := errorMessage(body); message != "" {
+		return message
 	}
 
 	s := strings.TrimSpace(string(body))

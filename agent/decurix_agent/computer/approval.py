@@ -4,7 +4,6 @@ import re
 import time
 import uuid
 from contextlib import contextmanager
-from pathlib import Path
 
 from decurix_agent import config, filelock
 from decurix_agent.computer import elements as el
@@ -79,13 +78,6 @@ MESSAGING_CONTEXT = re.compile(
     re.IGNORECASE,
 )
 
-# Channels and external network endpoints
-EXTERNAL_CHANNELS = re.compile(
-    r"\b(email|mail|gmail|outlook|yahoo|proton|slack|telegram|discord|whatsapp|"
-    r"teams|twitter|x\.com|linkedin|facebook|stripe|paypal|checkout)\b",
-    re.IGNORECASE,
-)
-
 ENTER_KEY = re.compile(r"(^|\+)(return|enter|kp_enter)$", re.IGNORECASE)
 
 # A field Enter searches from, wherever it is. Found live on LinkedIn
@@ -128,31 +120,6 @@ def is_refusal(reply):
 
     reply = (reply or "").strip()
     return bool(REFUSAL_LEAD.match(reply)) and not REDIRECTS.search(reply)
-
-
-def is_external_action(kind, element=None, text=None, keys=None, context=None):
-    """
-    Check if an on-screen action targets an external communication channel,
-    payment provider, or public service (Dual-zone policy).
-    """
-
-    context = context or {}
-    where = " ".join(filter(None, [context.get("window"), context.get("url"),
-                                   element.get("window_title") if element else None]))
-
-    if element is not None:
-        name = element.get("name") or ""
-        if element.get("role") in ACTIVATING_ROLES:
-            if CONSEQUENTIAL_CONTROL.match(name) or EXTERNAL_CHANNELS.search(name):
-                return True
-
-    if MESSAGING_CONTEXT.search(where) or EXTERNAL_CHANNELS.search(where):
-        if kind == "key" and keys and any(ENTER_KEY.search(k.strip()) for k in keys):
-            return True
-        if kind == "type" and text and ("\n" in text or "@" in text):
-            return True
-
-    return False
 
 
 # Where a click goes somewhere rather than does something. Found live in the web app:

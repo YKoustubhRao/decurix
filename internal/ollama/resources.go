@@ -157,12 +157,17 @@ func parseNvidiaSMI(out string) (name string, totalGB, freeGB float64, unified, 
 // ollamaHeld reports, in GB, how much RAM and VRAM the models already loaded
 // in the Ollama at baseURL occupy (GET /api/ps). Unreachable means nothing.
 func ollamaHeld(ctx context.Context, baseURL string) (ramGB, vramGB float64) {
-	ps, err := fetchPS(ctx, baseURL)
-	if err != nil {
+	var ps struct {
+		Models []struct {
+			Size     int64 `json:"size"`
+			SizeVRAM int64 `json:"size_vram"`
+		} `json:"models"`
+	}
+	if _, err := getJSON(ctx, baseURL+"/api/ps", 4*time.Second, 1<<20, &ps); err != nil {
 		return 0, 0
 	}
 
-	for _, m := range ps {
+	for _, m := range ps.Models {
 		vram := float64(m.SizeVRAM)
 		ram := float64(m.Size) - vram
 		if ram < 0 {
@@ -175,36 +180,45 @@ func ollamaHeld(ctx context.Context, baseURL string) (ramGB, vramGB float64) {
 	return ramGB, vramGB
 }
 
-type psModel struct {
-	Name     string `json:"name"`
-	Size     int64  `json:"size"`
-	SizeVRAM int64  `json:"size_vram"`
-}
-
-// fetchPS lists the models the Ollama at baseURL has loaded.
-func fetchPS(ctx context.Context, baseURL string) ([]psModel, error) {
-	ctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+// getJSON GETs url, giving up after timeout, and decodes at most limit bytes
+// of the answer into v whatever its status, which it returns.
+func getJSON(ctx context.Context, url string, timeout time.Duration, limit int64, v any) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/ps", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 	defer resp.Body.Close()
 
-	var body struct {
-		Models []psModel `json:"models"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
-		return nil, err
+	return resp.StatusCode, json.NewDecoder(io.LimitReader(resp.Body, limit)).Decode(v)
+}
+
+// sampleBusy reads CPU counters (idle, total) twice, window apart, and returns the busy fraction between them.
+func sampleBusy(ctx context.Context, window time.Duration, read func() (idle, total uint64, err error)) (float64, error) {
+	idle1, total1, err := read()
+	if err != nil {
+		return 0, err
 	}
 
-	return body.Models, nil
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case <-time.After(window):
+	}
+
+	idle2, total2, err := read()
+	if err != nil {
+		return 0, err
+	}
+
+	return busyFraction(idle1, total1, idle2, total2), nil
 }
 
 // busyFraction turns two (idle, total) counter readings into the fraction of

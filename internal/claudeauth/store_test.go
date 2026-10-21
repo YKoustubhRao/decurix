@@ -7,17 +7,25 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
 
-func TestStoreGetEmptyByDefault(t *testing.T) {
+// newMemoryStore is a Store on a fresh in-memory database.
+func newMemoryStore(t *testing.T) *Store {
+	t.Helper()
 	db, err := sqlitedb.OpenMemory()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	t.Cleanup(func() { db.Close() })
 
 	s, err := NewStore(db)
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	return s
+}
+
+func TestStoreGetEmptyByDefault(t *testing.T) {
+	s := newMemoryStore(t)
 
 	if _, ok := s.Get(); ok {
 		t.Fatal("expected no session before anyone has logged in")
@@ -25,16 +33,7 @@ func TestStoreGetEmptyByDefault(t *testing.T) {
 }
 
 func TestStoreSaveOverwritesTheSameRow(t *testing.T) {
-	db, err := sqlitedb.OpenMemory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	s, err := NewStore(db)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := newMemoryStore(t)
 
 	if err := s.Save(`{"token":"first"}`, "a@example.com"); err != nil {
 		t.Fatal(err)

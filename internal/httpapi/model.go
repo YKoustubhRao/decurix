@@ -10,8 +10,7 @@ import (
 // model that fits this machine best right now, and the resources that
 // decided it (what the top bar's model chip shows).
 func (s *Server) modelHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+	if !requireGet(w, r) {
 		return
 	}
 

@@ -14,7 +14,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -585,26 +584,16 @@ func (s *server) mux() *http.ServeMux {
 	return mux
 }
 
-// buildProvider selects the real chat brain and, separately, a real
-// embedder for the Data RAG - LLM_PROVIDER governs chat; the embedder
-// follows from it EXCEPT for Anthropic, which has no embeddings API at
-// all, so that case falls back to Ollama (if configured and actually
-// reachable) or disables RAG/feedback for this run rather than crashing.
 // modelConcurrency is how many chat calls may run at once. A local Ollama
 // answers one request per model at a time unless it was started with
 // OLLAMA_NUM_PARALLEL, so the default there is one; the hosted APIs take
 // several.
 func modelConcurrency(cfg config.Config) int {
-	if v, err := strconv.Atoi(os.Getenv("MODEL_CONCURRENCY")); err == nil && v > 0 {
-		return v
-	}
+	fallback := 4
 	if cfg.Provider == "ollama" {
-		if v, err := strconv.Atoi(os.Getenv("OLLAMA_NUM_PARALLEL")); err == nil && v > 0 {
-			return v
-		}
-		return 1
+		fallback = llm.EnvInt("OLLAMA_NUM_PARALLEL", 1)
 	}
-	return 4
+	return llm.EnvInt("MODEL_CONCURRENCY", fallback)
 }
 
 // buildBrain works out what the chat model can do. A hosted brain is
@@ -648,6 +637,11 @@ func ollamaEmbedder(cfg config.Config, why string) llm.Embedder {
 	return ollama
 }
 
+// buildProvider selects the real chat brain and, separately, a real
+// embedder for the Data RAG - LLM_PROVIDER governs chat; the embedder
+// follows from it EXCEPT for Anthropic, which has no embeddings API at
+// all, so that case falls back to Ollama (if configured and actually
+// reachable) or disables RAG/feedback for this run rather than crashing.
 func buildProvider(cfg config.Config) (llm.Provider, llm.Models, llm.Embedder) {
 	switch cfg.Provider {
 	case "openai":

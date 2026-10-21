@@ -63,31 +63,6 @@ def dangerous_reason(command):
     return None
 
 
-_EXTERNAL_SHELL_PATTERNS = (
-    (re.compile(r"\bcurl\s+[^;&|]*(-X\s+(POST|PUT|DELETE|PATCH)|-d\b|--data\b|-F\b|--form\b)"), "it sends an outbound HTTP mutation to an external server"),
-    (re.compile(r"\bwget\s+[^;&|]*(--post-data|--post-file)"), "it posts data to an external server"),
-    (re.compile(r"\bgit\s+push\b"), "it pushes changes to a remote repository"),
-    (re.compile(r"\b(mail|sendmail|mutt)\s+"), "it sends an outbound email"),
-    (re.compile(r"\b(nc|ncat|netcat)\s+[^;&|]*\b[0-9]{2,5}\b"), "it opens an outbound network connection"),
-)
-
-
-def external_command_reason(command):
-    """
-    Why a shell command transmits data externally, or None.
-
-    Used in Supervised Execution (Stage 2) to gate outbound external side effects
-    while allowing internal commands (local files, reads, compiles) to run freely.
-    """
-
-    text = command or ""
-    for pattern, reason in _EXTERNAL_SHELL_PATTERNS:
-        if pattern.search(text):
-            return reason
-
-    return None
-
-
 # Commands run in /bin/sh (dash in the desktop images), not bash - on
 # purpose, measured. Models write bash (`grep ... <<< "$text"`), and in dash
 # that is a syntax error, so running them in bash looks like an obvious fix.

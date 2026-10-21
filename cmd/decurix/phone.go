@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -118,18 +119,10 @@ func phoneDir() string {
 func phoneModel(ctx context.Context, serial string) string {
 	out, err := exec.CommandContext(ctx, "adb", "-s", serial, "shell", "getprop", "ro.product.model").Output()
 	if model := string(out); err == nil && len(model) > 1 {
-		return trimLine(model)
+		return strings.TrimRight(model, "\n\r ")
 	}
 
 	return "Android phone"
-}
-
-func trimLine(s string) string {
-	for len(s) > 0 && (s[len(s)-1] == '\n' || s[len(s)-1] == '\r' || s[len(s)-1] == ' ') {
-		s = s[:len(s)-1]
-	}
-
-	return s
 }
 
 // useFallbackDNS gives Go's resolver a server when the system has no

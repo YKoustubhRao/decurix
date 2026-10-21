@@ -17,7 +17,7 @@ import (
 // rules that turn a matching email into a request, and the jobs they queued.
 // They are set up on the triggers page (beside schedules) and from the
 // requests page's compose form. A job reaches its desktop through SubmitTracked, the same
-// door a schedule's run takes - a fifth one onto submitRequest.
+// door a schedule's run takes - a fifth one onto submitLocked.
 //
 // Unlike most errors here, a mailbox's own error is shown as the server
 // said it: "the password was refused" and "the server could not be reached"
@@ -56,8 +56,7 @@ func emailPageMovedHandler(w http.ResponseWriter, r *http.Request) {
 // their passwords), the rules, the latest jobs, the poller's status and
 // whether this machine is being kept awake.
 func (s *Server) mailStateHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+	if !requireGet(w, r) {
 		return
 	}
 
@@ -163,22 +162,7 @@ func (s *Server) mailPasswordHandler(w http.ResponseWriter, r *http.Request) {
 
 // toggleMailHandler pauses or resumes watching a mailbox.
 func (s *Server) toggleMailHandler(w http.ResponseWriter, r *http.Request) {
-	if !requirePost(w, r) || !s.mailReady(w) {
-		return
-	}
-
-	enabled, err := strconv.ParseBool(r.FormValue("enabled"))
-	if err != nil {
-		jsonStatusError(w, http.StatusBadRequest, "enabled must be true or false")
-		return
-	}
-
-	if err := s.Mail.SetAccountEnabled(r.FormValue("id"), enabled); err != nil {
-		mailStoreError(w, err)
-		return
-	}
-
-	jsonResponse(w, map[string]string{"status": "ok"})
+	s.mailToggle(w, r, func(id string, enabled bool) error { return s.Mail.SetAccountEnabled(id, enabled) })
 }
 
 // checkMailHandler polls a mailbox now instead of waiting for its next poll.
@@ -261,22 +245,7 @@ func (s *Server) createMailRuleHandler(w http.ResponseWriter, r *http.Request) {
 
 // toggleMailRuleHandler pauses or resumes a rule.
 func (s *Server) toggleMailRuleHandler(w http.ResponseWriter, r *http.Request) {
-	if !requirePost(w, r) || !s.mailReady(w) {
-		return
-	}
-
-	enabled, err := strconv.ParseBool(r.FormValue("enabled"))
-	if err != nil {
-		jsonStatusError(w, http.StatusBadRequest, "enabled must be true or false")
-		return
-	}
-
-	if err := s.Mail.SetRuleEnabled(r.FormValue("id"), enabled); err != nil {
-		mailStoreError(w, err)
-		return
-	}
-
-	jsonResponse(w, map[string]string{"status": "ok"})
+	s.mailToggle(w, r, func(id string, enabled bool) error { return s.Mail.SetRuleEnabled(id, enabled) })
 }
 
 // deleteMailRuleHandler removes a rule and its waiting jobs.
@@ -349,8 +318,7 @@ func (s *Server) mailJobHandler(w http.ResponseWriter, r *http.Request) {
 // what a host script polls when the control plane runs in a container, where
 // it cannot hold the request itself (see internal/keepawake).
 func (s *Server) keepAwakeHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+	if !requireGet(w, r) {
 		return
 	}
 
@@ -386,15 +354,6 @@ func (s *Server) mailReady(w http.ResponseWriter) bool {
 	return true
 }
 
-func requirePost(w http.ResponseWriter, r *http.Request) bool {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
-		return false
-	}
-
-	return true
-}
-
 func mailStoreError(w http.ResponseWriter, err error) {
 	if errors.Is(err, mailtrigger.ErrNotFound) {
 		jsonStatusError(w, http.StatusNotFound, "not found")
@@ -421,4 +380,25 @@ func mailConnectError(w http.ResponseWriter, host string, err error) {
 	}
 
 	jsonStatusError(w, http.StatusBadGateway, "Could not connect: "+err.Error())
+}
+
+// mailToggle is the shared body of the mailbox and rule pause/resume
+// handlers: set is called with the form's id and enabled.
+func (s *Server) mailToggle(w http.ResponseWriter, r *http.Request, set func(id string, enabled bool) error) {
+	if !requirePost(w, r) || !s.mailReady(w) {
+		return
+	}
+
+	enabled, err := strconv.ParseBool(r.FormValue("enabled"))
+	if err != nil {
+		jsonStatusError(w, http.StatusBadRequest, "enabled must be true or false")
+		return
+	}
+
+	if err := set(r.FormValue("id"), enabled); err != nil {
+		mailStoreError(w, err)
+		return
+	}
+
+	jsonResponse(w, map[string]string{"status": "ok"})
 }

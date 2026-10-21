@@ -373,13 +373,7 @@ func (m *Manager) CancelClaudeLogin(loginID string) {
 // finishClaudeLogin still needs the container to read the credentials file
 // back out of it.
 func (m *Manager) endClaudeLoginSession(session *claudeLoginSession) {
-	if session.timer != nil {
-		session.timer.Stop()
-	}
-
-	if session.conn != nil {
-		_ = session.conn.Close()
-	}
+	session.stop()
 
 	m.claudeLoginMu.Lock()
 	defer m.claudeLoginMu.Unlock()
@@ -421,18 +415,22 @@ func (m *Manager) teardownClaudeLoginLocked(ctx context.Context) {
 	}
 
 	session := m.claudeLogin
-
-	if session.timer != nil {
-		session.timer.Stop()
-	}
-
-	if session.conn != nil {
-		_ = session.conn.Close()
-	}
+	session.stop()
 
 	m.destroyClaudeLoginContainer(ctx, session.containerID)
 
 	m.claudeLogin = nil
+}
+
+// stop ends a login attempt's idle timer and closes its attach connection, leaving its container alone.
+func (s *claudeLoginSession) stop() {
+	if s.timer != nil {
+		s.timer.Stop()
+	}
+
+	if s.conn != nil {
+		_ = s.conn.Close()
+	}
 }
 
 func (m *Manager) destroyClaudeLoginContainer(ctx context.Context, containerID string) {
@@ -523,20 +521,5 @@ chmod 600 %s`,
 		claudeCredentialsPath,
 	)
 
-	execConfig := container.ExecOptions{
-		Cmd:          []string{"bash", "-lc", cmd},
-		AttachStdout: true,
-		AttachStderr: true,
-	}
-
-	execID, err := m.client.ContainerExecCreate(ctx, containerName, execConfig)
-	if err != nil {
-		return fmt.Errorf("create claude credentials write exec for %s: %w", containerName, err)
-	}
-
-	if err := m.client.ContainerExecStart(ctx, execID.ID, container.ExecStartOptions{}); err != nil {
-		return fmt.Errorf("start claude credentials write exec for %s: %w", containerName, err)
-	}
-
-	return waitExec(ctx, m.client, execID.ID, fmt.Sprintf("claude credentials write exec for %s", containerName))
+	return m.execBash(ctx, containerName, cmd, "claude credentials write exec")
 }

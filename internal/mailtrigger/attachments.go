@@ -14,6 +14,8 @@ import (
 	"path"
 	"regexp"
 	"strings"
+
+	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
 
 // Attachments: an emailed PO, a supplier's invoice or price sheet is the
@@ -191,22 +193,15 @@ func uniqueNames(files []Attachment) []Attachment {
 
 // JobFiles returns the files kept with a job.
 func (s *Store) JobFiles(jobID string) ([]Attachment, error) {
-	rows, err := s.db.Query(`SELECT name, content_type, data FROM mail_job_files WHERE job_id = ? ORDER BY position`, jobID)
+	out, err := sqlitedb.QueryAll(s.db, func(r sqlitedb.Scanner) (a Attachment, err error) {
+		err = r.Scan(&a.Name, &a.ContentType, &a.Data)
+		return a, err
+	}, `SELECT name, content_type, data FROM mail_job_files WHERE job_id = ? ORDER BY position`, jobID)
 	if err != nil {
 		return nil, fmt.Errorf("mailtrigger: job files: %w", err)
 	}
-	defer rows.Close()
 
-	var out []Attachment
-	for rows.Next() {
-		var a Attachment
-		if err := rows.Scan(&a.Name, &a.ContentType, &a.Data); err != nil {
-			return nil, fmt.Errorf("mailtrigger: job files: %w", err)
-		}
-		out = append(out, a)
-	}
-
-	return out, rows.Err()
+	return out, nil
 }
 
 func insertJobFiles(tx *sql.Tx, jobID string, files []Attachment) error {

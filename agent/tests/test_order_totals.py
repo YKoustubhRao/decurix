@@ -6,26 +6,20 @@ with the one working row its full key ties it to, or holds as a sum of one order
 """
 
 import shutil
-import tempfile
 import unittest
-from pathlib import Path
 
 import openpyxl
 
 import test_long_requests as base  # noqa: F401 - stubs config first
 import fixture_paths  # noqa: E402 - live-run fixtures live outside the repo
+from temp_case import TempDirCase
 
 from decurix_agent import stage_facts
 
 LIVE = fixture_paths.fixture("p2_order_working_live.xlsx")  # the run's order_working.xlsx (pc3)
 
 
-class OrderTotals(unittest.TestCase):
-    def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.dir = Path(tmp.name)
-
+class OrderTotals(TempDirCase):
     def test_the_live_sheet_has_no_finding(self):
         path = self.dir / "order_working.xlsx"
         shutil.copy(fixture_paths.need(LIVE.name), path)

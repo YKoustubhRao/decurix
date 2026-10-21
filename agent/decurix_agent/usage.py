@@ -61,6 +61,13 @@ def add(input_tokens=None, output_tokens=None, cost_usd=None):
             _totals[key] = _totals.get(key, 0) + number
 
 
+def spent():
+    """Tokens read and written so far, together."""
+
+    totals = snapshot()
+    return int(totals.get("input_tokens") or 0) + int(totals.get("output_tokens") or 0)
+
+
 def snapshot():
     """The totals so far, as the fields the control plane's callback takes."""
 

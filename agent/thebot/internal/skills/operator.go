@@ -589,10 +589,7 @@ func (o *OperatorSkill) commandTimeout() time.Duration {
 	if o.CommandTimeout > 0 {
 		return o.CommandTimeout
 	}
-	if v, err := strconv.Atoi(os.Getenv("OPERATOR_COMMAND_TIMEOUT_SECONDS")); err == nil && v > 0 {
-		return time.Duration(v) * time.Second
-	}
-	return defaultCommandTimeout
+	return time.Duration(llm.EnvInt("OPERATOR_COMMAND_TIMEOUT_SECONDS", int(defaultCommandTimeout/time.Second))) * time.Second
 }
 
 func (o *OperatorSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
@@ -601,14 +598,19 @@ func (o *OperatorSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		var blocked string
 		st, blocked = o.resume(rc, subtask, st)
 		if blocked != "" {
-			res := NeedsApproval(subtask, o.Name(), st.Pending, blocked, st)
-			res.Meta["commands"] = st.Commands
-			return res, nil
+			return o.pause(subtask, st, blocked), nil
 		}
 	} else {
 		st = o.start(rc, subtask)
 	}
 	return o.loop(rc, subtask, st)
+}
+
+// pause is the result that waits for a person to approve st.Pending, with the goal kept.
+func (o *OperatorSkill) pause(subtask Subtask, st *operatorState, reason string) Result {
+	res := NeedsApproval(subtask, o.Name(), st.Pending, reason, st)
+	res.Meta["commands"] = st.Commands
+	return res
 }
 
 func (o *OperatorSkill) start(rc RunContext, subtask Subtask) *operatorState {
@@ -967,6 +969,12 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 		meta["userFacing"] = true
 		return Result{Subtask: subtask, SkillName: o.Name(), Output: output, Verified: verified, Meta: meta}, nil
 	}
+	// ask pauses on question for the person, with the goal kept so their reply carries it on.
+	ask := func(question string) (Result, error) {
+		res, _ := finish(question, false, map[string]any{"needsUserInput": true, "question": question, "failureReasoning": question})
+		res.Checkpoint = st
+		return res, nil
+	}
 
 	began := time.Now()
 	for turn := 0; turn < o.turns(st); turn++ {
@@ -990,9 +998,6 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 		}
 
 		resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, st.Messages, llm.Options{TimeoutMs: 180000, Temperature: 0.2})
-		if err == nil {
-			rc.Logf("operator", "%s", turnUsage(turn+1, st, resp))
-		}
 		if err != nil {
 			// The model itself is unusable. Retrying the same goal through
 			// the same model reaches the same conclusion minutes later.
@@ -1001,6 +1006,7 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				"failureReasoning": "could not reason about the task (" + err.Error() + ")",
 			})
 		}
+		rc.Logf("operator", "%s", turnUsage(turn+1, st, resp))
 
 		action, value := parseControl(resp.Text)
 		if action == "invalid" {
@@ -1058,9 +1064,7 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				st.ScreenConfirmed = true
 				question := unstartedScreenDoubt(value)
 				st.Messages = append(st.Messages, reply)
-				res, _ := finish(question, false, map[string]any{"needsUserInput": true, "question": question, "failureReasoning": question})
-				res.Checkpoint = st
-				return res, nil
+				return ask(question)
 			}
 			// Made with tools in the shared folder and opened in the named app, but never saved from it: the app has
 			// not really handled the file yet. Told once; said again, the final check judges it.
@@ -1085,9 +1089,7 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 					appOpenAttempts(st, app) + " The file has the content you asked for. Shall I leave it like that, or try " +
 					"again in " + app + "?"
 				st.Messages = append(st.Messages, reply)
-				res, _ := finish(question, false, map[string]any{"needsUserInput": true, "question": question, "failureReasoning": question})
-				res.Checkpoint = st
-				return res, nil
+				return ask(question)
 			}
 			// Only where nothing else will look: with a hosted model the host's final check judges the
 			// screen. Found live there: sent back to a record it had entered correctly, the operator
@@ -1107,9 +1109,7 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				st.ScreenConfirmed = true
 				question := unperformedScreenDoubt(nudge, value)
 				st.Messages = append(st.Messages, reply)
-				res, _ := finish(question, false, map[string]any{"needsUserInput": true, "question": question, "failureReasoning": question})
-				res.Checkpoint = st
-				return res, nil
+				return ask(question)
 			}
 			if question := doneAsksThePerson(value); question != "" {
 				// A DONE that only asks the person for what is missing is a
@@ -1120,9 +1120,7 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				// as the task's result, with nothing paused for the answer.
 				rc.Logf("operator", "said done, but only asks the person for something - asking them")
 				st.Messages = append(st.Messages, reply)
-				res, _ := finish(question, false, map[string]any{"needsUserInput": true, "question": question, "failureReasoning": question})
-				res.Checkpoint = st
-				return res, nil
+				return ask(question)
 			}
 			return finish(value, true, nil)
 
@@ -1151,30 +1149,25 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 			if st.LastResult != nil && st.LastResult.ExitCode == 0 && !st.SuccessNudged && !humanOnlyRe.MatchString(value) {
 				st.SuccessNudged = true
 				rc.Logf("operator", "had a query right after a command succeeded - showing it the output again")
-				out := strings.TrimSpace(st.LastResult.Output)
-				if out == "" {
-					out = "(no output)"
-				}
-				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: fmt.Sprintf(successQueryNudge, truncateText(out, st.outputChars()))})
+				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: fmt.Sprintf(successQueryNudge, truncateText(shownOutput(*st.LastResult), st.outputChars()))})
 				continue
 			}
 			if st.LastResult != nil && st.LastResult.ExitCode != 0 && st.FailureNudges < maxFailureNudges && !humanOnlyRe.MatchString(value) {
 				st.FailureNudges++
 				rc.Logf("operator", "had a query right after a command failed - asking it to try another way")
-				out := strings.TrimSpace(st.LastResult.Output)
-				if out == "" {
-					out = "(no output)"
-				}
+				out := shownOutput(*st.LastResult)
 				nudge := fmt.Sprintf(failureQueryNudge, st.LastResult.ExitCode, truncateText(out, st.outputChars())) + missingProgramHint(out, st.LastCommand)
 				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: nudge})
 				continue
 			}
 			st.Messages = append(st.Messages, reply)
-			res, _ := finish(value, false, map[string]any{"needsUserInput": true, "question": value, "failureReasoning": value})
-			res.Checkpoint = st
-			return res, nil
+			return ask(value)
 
 		case "command":
+			if value == "" {
+				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: "Your COMMAND was empty. Reply with a real command, or DONE with your answer."})
+				continue
+			}
 			// Keep only the command in the transcript. A small model writes
 			// the answer it expects alongside the command - and if that stays
 			// in its history it reads its own guess back next turn and reports
@@ -1183,14 +1176,8 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 			// written before the command ran; and `uname -r` came back as a
 			// HELP saying the real kernel version "is not what was expected",
 			// because the guess beside the command said something else.
-			if value != "" {
-				if strings.TrimSpace(resp.Text) != "COMMAND:\n"+value {
-					reply = llm.Message{Role: "assistant", Content: "COMMAND:\n" + value}
-				}
-			}
-			if value == "" {
-				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: "Your COMMAND was empty. Reply with a real command, or DONE with your answer."})
-				continue
+			if strings.TrimSpace(resp.Text) != "COMMAND:\n"+value {
+				reply = llm.Message{Role: "assistant", Content: "COMMAND:\n" + value}
 			}
 			if value == st.LastCommand && st.LastResult != nil {
 				repeats++
@@ -1240,24 +1227,18 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				// person knows where the values are, a guess does not.
 				question := untracedQuestion(untraced, nudge)
 				st.Messages = append(st.Messages, reply)
-				res, _ := finish(question, false, map[string]any{"needsUserInput": true, "question": question, "failureReasoning": question})
-				res.Checkpoint = st
-				return res, nil
+				return ask(question)
 			}
 			st.Messages = append(st.Messages, reply)
 
 			if concern := safety.AssessCommand(value); concern != nil && !rc.IsApproved(value) {
 				rc.Logf("operator", "approval needed before `%s` - %s", value, concern.Reason)
 				st.Pending = value
-				res := NeedsApproval(subtask, o.Name(), value, concern.Reason, st)
-				res.Meta["commands"] = st.Commands
-				return res, nil
+				return o.pause(subtask, st, concern.Reason), nil
 			}
 			if blocked := o.execute(rc, st, value); blocked != "" {
 				st.Pending = value
-				res := NeedsApproval(subtask, o.Name(), value, blocked, st)
-				res.Meta["commands"] = st.Commands
-				return res, nil
+				return o.pause(subtask, st, blocked), nil
 			}
 
 		default:
@@ -1295,9 +1276,7 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				// reasoning, which explained it with a story of its own.)
 				question := fmt.Sprintf("I could not finish this: the model stopped giving usable replies after %d command(s). "+
 					"Send the request again, or tell me how to go on.", st.CommandsRun)
-				res, _ := finish(question, false, map[string]any{"needsUserInput": true, "question": question, "failureReasoning": question})
-				res.Checkpoint = st
-				return res, nil
+				return ask(question)
 			}
 			st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: invalidReplyNudge(resp.Text)})
 		}
@@ -1319,9 +1298,7 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 			}
 		}
 		question += "\n\nTell me how to go on, or reply `stop`."
-		res, _ := finish(question, false, map[string]any{"needsUserInput": true, "question": question, "failureReasoning": question})
-		res.Checkpoint = st
-		return res, nil
+		return ask(question)
 	}
 
 	res, _ := finish(fmt.Sprintf("I ran out of turns (%d) before finishing, after running %d command(s).", o.turns(st), st.CommandsRun), false,
@@ -1426,11 +1403,16 @@ If it was a shell command to run, prefix it with COMMAND:
 If you need the human before you can continue, prefix it with HELP:`, opening)
 }
 
-func repeatedCommandNudge(command string, r shellResult, limit int) string {
-	out := strings.TrimSpace(r.Output)
-	if out == "" {
-		out = "(no output)"
+// shownOutput is what a command printed, as the model is shown it again.
+func shownOutput(r shellResult) string {
+	if out := strings.TrimSpace(r.Output); out != "" {
+		return out
 	}
+	return "(no output)"
+}
+
+func repeatedCommandNudge(command string, r shellResult, limit int) string {
+	out := shownOutput(r)
 	if r.ExitCode != 0 {
 		// "If that answers the task, reply with DONE" after a traceback is
 		// an invitation to answer from memory. Measured live: python3 with

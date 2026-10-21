@@ -109,7 +109,11 @@ func TestCLICreatePostsFormFields(t *testing.T) {
 	}
 }
 
-func TestCLIDeleteDeclinedConfirmationDoesNotCallAPI(t *testing.T) {
+// deleteCalled runs cliDelete with args, input typed at its prompt, and
+// reports whether it called the API.
+func deleteCalled(t *testing.T, args []string, input string) bool {
+	t.Helper()
+
 	called := false
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -119,36 +123,21 @@ func TestCLIDeleteDeclinedConfirmationDoesNotCallAPI(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := newAPIClient(srv.URL)
-	scanner := bufio.NewScanner(strings.NewReader("no\n"))
-
 	captureStdout(t, func() {
-		cliDelete(context.Background(), client, []string{"box"}, scanner)
+		cliDelete(context.Background(), newAPIClient(srv.URL), args, bufio.NewScanner(strings.NewReader(input)))
 	})
 
-	if called {
+	return called
+}
+
+func TestCLIDeleteDeclinedConfirmationDoesNotCallAPI(t *testing.T) {
+	if deleteCalled(t, []string{"box"}, "no\n") {
 		t.Fatal("delete API was called despite a declined confirmation")
 	}
 }
 
 func TestCLIDeleteYesFlagSkipsPrompt(t *testing.T) {
-	called := false
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"status":"deleted"}`)
-	}))
-	defer srv.Close()
-
-	client := newAPIClient(srv.URL)
-	scanner := bufio.NewScanner(strings.NewReader(""))
-
-	captureStdout(t, func() {
-		cliDelete(context.Background(), client, []string{"box", "--yes"}, scanner)
-	})
-
-	if !called {
+	if !deleteCalled(t, []string{"box", "--yes"}, "") {
 		t.Fatal("expected the delete API to be called when --yes is given")
 	}
 }

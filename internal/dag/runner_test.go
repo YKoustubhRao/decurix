@@ -267,51 +267,17 @@ func TestDispatchFailurePropagatesSkip(t *testing.T) {
 	}
 }
 
-func TestOutputPlaceholderByName(t *testing.T) {
+// secondNodeSent runs a chain of two nodes, first then second (whose content is given), lets first reply reply, and
+// returns what second's desktop (box-b) was sent.
+func secondNodeSent(t *testing.T, first, second, content, reply string) []string {
+	t.Helper()
+
 	now := time.Now()
 	store := newTestStore(t, now)
 	d, _ := store.Create("pipeline")
 
-	fetch, _ := store.AddNode(d.ID, "fetch", "box-a", "")
-	use, _ := store.AddNode(d.ID, "use", "box-b", "Use {{nodes.fetch.reply}}")
-
-	if _, err := store.AddEdge(d.ID, fetch.ID, use.ID); err != nil {
-		t.Fatal(err)
-	}
-
-	submitter := &fakeSubmitter{}
-	results := newFakeTaskResults()
-	runner := newTestRunner(store, submitter, results, now)
-
-	run, err := runner.Trigger(context.Background(), d.ID, TriggerManual)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	runNodes, _ := store.RunNodes(run.ID)
-	var fetchTaskID string
-	for _, rn := range runNodes {
-		if rn.NodeID == fetch.ID {
-			fetchTaskID = rn.TaskID
-		}
-	}
-
-	results.set(fetchTaskID, tasks.StatusDone, "42")
-	runner.advance(context.Background(), run)
-
-	calls := submitter.callsFor("box-b")
-	if len(calls) != 1 || calls[0] != "Use 42" {
-		t.Fatalf("box-b calls = %v, want [%q]", calls, "Use 42")
-	}
-}
-
-func TestOutputPlaceholderParentSugarSingleParent(t *testing.T) {
-	now := time.Now()
-	store := newTestStore(t, now)
-	d, _ := store.Create("pipeline")
-
-	a, _ := store.AddNode(d.ID, "a", "box-a", "")
-	b, _ := store.AddNode(d.ID, "b", "box-b", "got: {{parent.reply}}")
+	a, _ := store.AddNode(d.ID, first, "box-a", "")
+	b, _ := store.AddNode(d.ID, second, "box-b", content)
 
 	if _, err := store.AddEdge(d.ID, a.ID, b.ID); err != nil {
 		t.Fatal(err)
@@ -334,10 +300,21 @@ func TestOutputPlaceholderParentSugarSingleParent(t *testing.T) {
 		}
 	}
 
-	results.set(aTaskID, tasks.StatusDone, "hi")
+	results.set(aTaskID, tasks.StatusDone, reply)
 	runner.advance(context.Background(), run)
 
-	calls := submitter.callsFor("box-b")
+	return submitter.callsFor("box-b")
+}
+
+func TestOutputPlaceholderByName(t *testing.T) {
+	calls := secondNodeSent(t, "fetch", "use", "Use {{nodes.fetch.reply}}", "42")
+	if len(calls) != 1 || calls[0] != "Use 42" {
+		t.Fatalf("box-b calls = %v, want [%q]", calls, "Use 42")
+	}
+}
+
+func TestOutputPlaceholderParentSugarSingleParent(t *testing.T) {
+	calls := secondNodeSent(t, "a", "b", "got: {{parent.reply}}", "hi")
 	if len(calls) != 1 || calls[0] != "got: hi" {
 		t.Fatalf("box-b calls = %v, want [%q]", calls, "got: hi")
 	}

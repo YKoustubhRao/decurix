@@ -7,7 +7,7 @@ from decurix_agent.computer.errors import ComputerError
 class ADateIsPutInOnlyWhenItIsCertain(unittest.TestCase):
     def test_every_unambiguous_way_of_writing_a_date_gives_the_fields_own_format(self):
         for text in ("2026-10-06", "2026/10/6", "6 Oct 2026", "06-Oct-2026", "6th October 2026", "October 6, 2026",
-                     "Oct 6 2026", "6/10/2026" if False else "16/10/2026".replace("16", "06").replace("06/10", "06 October")):
+                     "Oct 6 2026", "06 October/2026"):
             self.assertEqual(datefields.value_for("date", text), "2026-10-06", text)
         self.assertEqual(datefields.value_for("date", "16/10/2026"), "2026-10-16")
         self.assertEqual(datefields.value_for("date", "10/16/2026"), "2026-10-16")

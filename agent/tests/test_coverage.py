@@ -7,12 +7,13 @@ was there. Decided in code from the saved file, never by the judge.
 
 import os
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
+
+from temp_case import TempDirCase  # noqa: E402
 
 try:
     import openpyxl
@@ -27,8 +28,7 @@ PRICE = 640
 NOT_FOUND = (14, 15)
 
 
-def workbook(path, filled=range(2, 26), total="=SUM(E2:E25)", total_row=26, blank_line_total=(), skip_header=False,
-             skip_formula_cells=False):
+def workbook(path, filled=range(2, 26), total="=SUM(E2:E25)", total_row=26, blank_line_total=(), skip_header=False):
     """
     The lookup workbook of the live case: 24 order rows (2 to 25) with A order, B SKU, C qty; D and E formulas on the rows
     in `filled`. Returns (path, the workbook LibreOffice would calculate from it).
@@ -43,9 +43,7 @@ def workbook(path, filled=range(2, 26), total="=SUM(E2:E25)", total_row=26, blan
             sheet.append([f"ORD-{3300 + r}", f"SKU-{100 + r}", QTY])
     for r in filled:
         ws[f"D{r}"] = f'=IFERROR(VLOOKUP(B{r},Prices!$A$2:$C$13,3,FALSE),"NOT FOUND")'
-        if r in blank_line_total:
-            pass
-        else:
+        if r not in blank_line_total:
             ws[f"E{r}"] = f'=IF(ISTEXT(D{r}),"",C{r}*D{r})'
         missing = r in NOT_FOUND
         cs[f"D{r}"] = "NOT FOUND" if missing else PRICE
@@ -58,12 +56,7 @@ def workbook(path, filled=range(2, 26), total="=SUM(E2:E25)", total_row=26, blan
 
 
 @unittest.skipIf(openpyxl is None, "openpyxl is not installed")
-class Coverage(unittest.TestCase):
-    def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.dir = Path(tmp.name)
-
+class Coverage(TempDirCase):
     def gaps(self, **kw):
         path, calc = workbook(self.dir / "orders.xlsx", **kw)
         with mock.patch.object(office, "_recalculated_values", lambda p, o: calc):
@@ -130,11 +123,9 @@ class Coverage(unittest.TestCase):
 
 
 @unittest.skipIf(openpyxl is None, "openpyxl is not installed")
-class CoverageAtEveryRoute(unittest.TestCase):
+class CoverageAtEveryRoute(TempDirCase):
     def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.dir = Path(tmp.name)
+        super().setUp()
         self.path, self.calc = workbook(self.dir / "orders.xlsx", filled=range(2, 25))
         patch = mock.patch.object(office, "_recalculated_values", lambda p, o: self.calc)
         patch.start()
@@ -221,12 +212,7 @@ def gst_register(path, typed_from=4, split_total=False, label_column=1):
 
 
 @unittest.skipIf(openpyxl is None, "openpyxl is not installed")
-class TypedNumbersAmongFormulas(unittest.TestCase):
-    def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.dir = Path(tmp.name)
-
+class TypedNumbersAmongFormulas(TempDirCase):
     def test_the_live_case_rows_typed_in_under_a_formula_are_named(self):
         found = office.constants_among_formulas(gst_register(self.dir / "g.xlsx", typed_from=4))
         self.assertEqual(len(found), 2)  # F and I carry formulas in rows 2-3; G and H are typed throughout
@@ -251,12 +237,7 @@ class TypedNumbersAmongFormulas(unittest.TestCase):
 
 
 @unittest.skipIf(openpyxl is None, "openpyxl is not installed")
-class ASplitTotal(unittest.TestCase):
-    def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.dir = Path(tmp.name)
-
+class ASplitTotal(TempDirCase):
     def test_the_live_case_a_label_on_one_row_and_its_sums_on_the_next(self):
         found = office.split_totals(gst_register(self.dir / "g.xlsx", split_total=True, label_column=6))
         self.assertEqual(len(found), 1)
@@ -280,11 +261,10 @@ class ASplitTotal(unittest.TestCase):
 
 
 @unittest.skipIf(openpyxl is None, "openpyxl is not installed")
-class WhatTheRequestAskedGatesThem(unittest.TestCase):
+class WhatTheRequestAskedGatesThem(TempDirCase):
     def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.path = gst_register(Path(tmp.name) / "g.xlsx", typed_from=4, split_total=True, label_column=6)
+        super().setUp()
+        self.path = gst_register(self.dir / "g.xlsx", typed_from=4, split_total=True, label_column=6)
 
     def test_formulas_asked_names_the_typed_rows_and_a_total_row_asked_names_the_split(self):
         asked = ("Add the columns CGST, SGST, IGST and Invoice Total with formulas. Add a Total row at the bottom.")

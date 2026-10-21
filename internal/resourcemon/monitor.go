@@ -39,30 +39,26 @@ type Monitor struct {
 
 // NewMonitor creates a new resource monitor backed by the given DesktopManager.
 func NewMonitor(desktops DesktopManager) *Monitor {
-	cpuThresh := defaultCPUThreshold
-	if env := os.Getenv("DECURIX_RESOURCE_CPU_THRESHOLD"); env != "" {
-		if v, err := strconv.ParseFloat(env, 64); err == nil && v > 0 {
-			cpuThresh = v
-		}
-	}
-
-	memThresh := defaultMemThreshold
-	if env := os.Getenv("DECURIX_RESOURCE_MEM_THRESHOLD"); env != "" {
-		if v, err := strconv.ParseFloat(env, 64); err == nil && v > 0 {
-			memThresh = v
-		}
-	}
-
 	return &Monitor{
 		desktops:         desktops,
-		CPUThreshold:     cpuThresh,
-		MemThreshold:     memThresh,
+		CPUThreshold:     envThreshold("DECURIX_RESOURCE_CPU_THRESHOLD", defaultCPUThreshold),
+		MemThreshold:     envThreshold("DECURIX_RESOURCE_MEM_THRESHOLD", defaultMemThreshold),
 		SweepInterval:    defaultSweepInterval,
 		CooldownDuration: defaultCooldown,
 		alerts:           make(map[string]*Alert),
 		cooldowns:        make(map[string]time.Time),
 		now:              time.Now,
 	}
+}
+
+// envThreshold is the positive percentage the environment variable name sets, or def.
+func envThreshold(name string, def float64) float64 {
+	if env := os.Getenv(name); env != "" {
+		if v, err := strconv.ParseFloat(env, 64); err == nil && v > 0 {
+			return v
+		}
+	}
+	return def
 }
 
 // Run sweeps running containers periodically until ctx is cancelled.
@@ -243,12 +239,7 @@ func (m *Monitor) ListAlerts() []*Alert {
 func (m *Monitor) Dismiss(desktopID string) {
 	sanitized := desktop.SanitizeID(desktopID)
 
-	m.mu.Lock()
-	delete(m.alerts, desktopID)
-	delete(m.alerts, sanitized)
-	m.cooldowns[desktopID] = m.now().Add(m.CooldownDuration)
-	m.cooldowns[sanitized] = m.now().Add(m.CooldownDuration)
-	m.mu.Unlock()
+	m.coolDown(desktopID, sanitized)
 }
 
 // Increase applies the predicted (or explicitly requested) resource increase, clears the alert,
@@ -311,12 +302,7 @@ func (m *Monitor) Increase(
 
 	log.Printf("resourcemon: increased desktop %s to %d CPUs and %d MB RAM", desktopID, targetCPUs, targetMemMB)
 
-	m.mu.Lock()
-	delete(m.alerts, desktopID)
-	delete(m.alerts, sanitized)
-	m.cooldowns[desktopID] = m.now().Add(m.CooldownDuration)
-	m.cooldowns[sanitized] = m.now().Add(m.CooldownDuration)
-	m.mu.Unlock()
+	m.coolDown(desktopID, sanitized)
 
 	resultAlert := &Alert{
 		DesktopID:         desktopID,
@@ -325,4 +311,15 @@ func (m *Monitor) Increase(
 	}
 
 	return resultAlert, nil
+}
+
+// coolDown clears a desktop's alert, under its ID as given and sanitized, and keeps it from alerting again for
+// CooldownDuration.
+func (m *Monitor) coolDown(desktopID, sanitized string) {
+	m.mu.Lock()
+	delete(m.alerts, desktopID)
+	delete(m.alerts, sanitized)
+	m.cooldowns[desktopID] = m.now().Add(m.CooldownDuration)
+	m.cooldowns[sanitized] = m.now().Add(m.CooldownDuration)
+	m.mu.Unlock()
 }

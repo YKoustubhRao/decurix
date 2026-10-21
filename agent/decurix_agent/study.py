@@ -2,7 +2,7 @@ import json
 import re
 
 from decurix_agent import app_skills, attachments, llm_client, progress
-from decurix_agent.computer import evidence, learning, replay
+from decurix_agent.computer import evidence, replay
 from decurix_agent.logging_utils import log
 
 
@@ -223,7 +223,7 @@ def _described(skill):
     learned = [p for p in params.values() if p.get("varies")]
     if learned:
         lines.append("Differed between demonstrations (so they vary): " + ", ".join(p["name"] for p in learned))
-    loops = [loop for loop in skill.get("loops") or []]
+    loops = skill.get("loops") or []
     if loops:
         lines.append(f"Repeated blocks found: {len(loops)} (asked about separately).")
     return "\n".join(lines)
@@ -236,7 +236,7 @@ def _token_budget(skill):
 
 
 def _call(system, content, max_tokens=6000):
-    message, spent = llm_client.chat([{"role": "system", "content": system}, {"role": "user", "content": content}],
+    message, _ = llm_client.chat([{"role": "system", "content": system}, {"role": "user", "content": content}],
                                      max_tokens=max_tokens, response_format={"type": "json_object"})
     text = message.get("content") or ""
     match = re.search(r"\{.*\}", text, re.DOTALL)
@@ -402,9 +402,3 @@ def absorb(skill, question, answer):
         understanding["follow_ups"] = understanding.get("follow_ups", 0) + 1
         return follow_up
     return ""
-
-
-def text(skill):
-    """What was understood, for the person to approve before the skill is saved."""
-
-    return learning.understood_text(skill)

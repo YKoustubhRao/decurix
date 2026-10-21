@@ -19,8 +19,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
-	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -83,7 +81,7 @@ func (s *Store) RecordNegative(ctx context.Context, task, detail, source string)
 	}
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO negative_feedback (task, detail, source, embedding, created_at) VALUES (?, ?, ?, ?, ?)`,
-		task, detail, source, encodeVector(vec), time.Now().Unix(),
+		task, detail, source, llm.EncodeVector(vec), time.Now().Unix(),
 	)
 	if err != nil {
 		return fmt.Errorf("feedback: insert: %w", err)
@@ -96,8 +94,8 @@ func (s *Store) RecordNegative(ctx context.Context, task, detail, source string)
 // Returns an empty slice (not an error) when nothing has been recorded
 // yet, since "no feedback yet" is a normal state.
 func (s *Store) ConsultNegative(ctx context.Context, task string, topK int) ([]Entry, error) {
-	var count int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM negative_feedback`).Scan(&count); err != nil {
+	count, err := s.Count(ctx)
+	if err != nil {
 		return nil, err
 	}
 	if count == 0 {
@@ -122,7 +120,7 @@ func (s *Store) ConsultNegative(ctx context.Context, task string, topK int) ([]E
 		if err := rows.Scan(&e.Task, &e.Detail, &e.Source, &embStr, &e.CreatedAt); err != nil {
 			return nil, err
 		}
-		e.Score = llm.CosineSimilarity(queryVec, decodeVector(embStr))
+		e.Score = llm.CosineSimilarity(queryVec, llm.DecodeVector(embStr))
 		entries = append(entries, e)
 	}
 	if err := rows.Err(); err != nil {
@@ -164,28 +162,4 @@ func (s *Store) ListRecent(ctx context.Context, n int) ([]Entry, error) {
 		out = append(out, e)
 	}
 	return out, rows.Err()
-}
-
-func encodeVector(v []float32) string {
-	parts := make([]string, len(v))
-	for i, f := range v {
-		parts[i] = strconv.FormatFloat(float64(f), 'g', -1, 32)
-	}
-	return strings.Join(parts, ",")
-}
-
-func decodeVector(s string) []float32 {
-	if s == "" {
-		return nil
-	}
-	parts := strings.Split(s, ",")
-	out := make([]float32, 0, len(parts))
-	for _, p := range parts {
-		f, err := strconv.ParseFloat(p, 32)
-		if err != nil {
-			continue
-		}
-		out = append(out, float32(f))
-	}
-	return out
 }

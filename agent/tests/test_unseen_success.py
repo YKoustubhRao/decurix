@@ -9,13 +9,14 @@ import io
 import os
 import sys
 import tempfile
-import time
 import unittest
 import zipfile
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
+
+from temp_case import TempDirCase  # noqa: E402
 
 try:
     from PIL import Image
@@ -55,12 +56,7 @@ def para(text, extra=""):
 PAGE = '<w:p><w:r><w:br w:type="page"/></w:r></w:p>'
 
 
-class DocumentStructure(unittest.TestCase):
-    def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.dir = Path(tmp.name)
-
+class DocumentStructure(TempDirCase):
     def test_page_breaks_headings_and_tables_are_read_in_order(self):
         path = docx(self.dir / "r.docx", para("Reminders", '<w:pPr><w:pStyle w:val="Heading1"/></w:pPr>')
                     + para("Blue Lotus Hotels") + PAGE + para("Kaveri Electricals")
@@ -93,11 +89,9 @@ class DocumentStructure(unittest.TestCase):
 
 
 @unittest.skipIf(Image is None, "Pillow is not installed")
-class PictureSizes(unittest.TestCase):
+class PictureSizes(TempDirCase):
     def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.dir = Path(tmp.name)
+        super().setUp()
         self.source = self.picture("logo.png", 1200, 600)
         self.request = ("Open logo.png from the folder in Paint, resize it to 50% keeping its proportions, and save it "
                         "in the same folder as logo_small.png.")
@@ -209,13 +203,8 @@ class FactsAtTheGate(FileWorkIsChecked):
         self.assertIn("error_summary.txt was not made", self.asked[-1][0])
 
 
-class OneSetOfChecksForEveryRoute(unittest.TestCase):
+class OneSetOfChecksForEveryRoute(TempDirCase):
     """The gate, a planned stage and a proven tool all read produced.file_facts, so a fix to a check applies to all."""
-
-    def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.dir = Path(tmp.name)
 
     def test_a_stage_is_checked_for_the_files_its_own_instruction_names(self):
         from decurix_agent import long_task

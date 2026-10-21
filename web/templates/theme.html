@@ -856,35 +856,93 @@ body.busy{cursor:progress}
     try{ localStorage.setItem(THEME_KEY, next); }catch(e){}
   }
 
+  /* ---- DOM and JSON helpers shared by the pages ---- */
+
+  function node(tag, className, text){
+    var el = document.createElement(tag);
+    if(className){ el.className = className; }
+    if(text !== undefined && text !== null){ el.textContent = text; }
+    return el;
+  }
+
+  function icon(name, size){
+    var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("width", size || 14);
+    svg.setAttribute("height", size || 14);
+    svg.setAttribute("aria-hidden", "true");
+    var use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+    use.setAttribute("href", "#i-" + name);
+    svg.appendChild(use);
+    return svg;
+  }
+
+  function button(label, className, iconName){
+    var b = node("button", "btn btn-sm " + className);
+    b.type = "button";
+    if(iconName){ b.appendChild(icon(iconName)); }
+    b.appendChild(document.createTextNode(label));
+    return b;
+  }
+
+  /* The JSON a response carries, or its error thrown. */
+  async function readJSON(response){
+    var data = await response.json().catch(function(){ return {}; });
+    if(!response.ok){ throw new Error(data.error || "Request failed"); }
+    return data;
+  }
+
+  async function getJSON(url){
+    return readJSON(await fetch(url, {headers: {"Accept": "application/json"}}));
+  }
+
+  /* Every [data-created] element reads how long ago it was; a week or older keeps its text. */
+  function relativeTimes(){
+    document.querySelectorAll("[data-created]").forEach(function(el){
+      var date = new Date(el.dataset.created);
+      if(isNaN(date.getTime())){ return; }
+
+      var seconds = Math.round((Date.now() - date.getTime()) / 1000);
+
+      if(seconds < 60){ el.textContent = "just now"; }
+      else if(seconds < 3600){ el.textContent = Math.floor(seconds / 60) + "m ago"; }
+      else if(seconds < 86400){ el.textContent = Math.floor(seconds / 3600) + "h ago"; }
+      else if(seconds < 604800){ el.textContent = Math.floor(seconds / 86400) + "d ago"; }
+
+      el.title = date.toLocaleString();
+    });
+  }
+
   /* ---- toasts ---- */
 
   function toast(body, kind){
     var host = document.getElementById("toasts");
     if(!host){ return; }
 
-    var el = document.createElement("div");
-    el.className = "toast " + (kind || "");
+    var el = node("div", "toast " + (kind || ""));
     el.setAttribute("role", kind === "error" ? "alert" : "status");
 
-    var icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    icon.setAttribute("width", "15");
-    icon.setAttribute("height", "15");
-    icon.setAttribute("aria-hidden", "true");
+    var text = node("div", "", body);
 
-    var use = document.createElementNS("http://www.w3.org/2000/svg", "use");
-    use.setAttribute("href", kind === "error" ? "#i-alert" : "#i-check");
-    icon.appendChild(use);
-
-    var text = document.createElement("div");
-    text.textContent = body;
-
-    el.append(icon, text);
+    el.append(icon(kind === "error" ? "alert" : "check", 15), text);
     host.appendChild(el);
 
     setTimeout(function(){
       el.classList.add("leaving");
       setTimeout(function(){ el.remove(); }, 200);
     }, kind === "error" ? 6000 : 3200);
+  }
+
+  /* Swap a keyboard hint for a confirmation, then put the hint back. */
+  function markSent(hint, message){
+    var original = hint.innerHTML;
+
+    hint.className = "sent";
+    hint.innerHTML = '<svg width="14" height="14"><use href="#i-check"/></svg>' + message;
+
+    setTimeout(function(){
+      hint.className = "hint";
+      hint.innerHTML = original;
+    }, 3200);
   }
 
   /* ---- pending-request progress ---- */
@@ -912,15 +970,7 @@ body.busy{cursor:progress}
       fetchOpts.signal = options.signal;
     }
 
-    var response = await fetch(url, fetchOpts);
-
-    var data = await response.json().catch(function(){ return {}; });
-
-    if(!response.ok){
-      throw new Error(data.error || "Request failed");
-    }
-
-    return data;
+    return readJSON(await fetch(url, fetchOpts));
   }
 
   /* ---- attachments ----
@@ -953,12 +1003,10 @@ body.busy{cursor:progress}
 
   /* One chip per file; onRemove makes each removable. */
   function attachmentChips(names, onRemove){
-    var list = document.createElement("div");
-    list.className = "attach-list";
+    var list = node("div", "attach-list");
 
     names.forEach(function(name, index){
-      var chip = document.createElement("span");
-      chip.className = "attach-chip";
+      var chip = node("span", "attach-chip");
       chip.title = name;
 
       var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -968,9 +1016,7 @@ body.busy{cursor:progress}
       use.setAttribute("href", "#i-clip");
       svg.appendChild(use);
 
-      var label = document.createElement("span");
-      label.className = "attach-name";
-      label.textContent = fileName(name);
+      var label = node("span", "attach-name", fileName(name));
 
       chip.append(svg, label);
 
@@ -1048,14 +1094,7 @@ body.busy{cursor:progress}
     Object.keys(fields).forEach(function(k){ body.append(k, fields[k]); });
     files.forEach(function(file){ body.append("files", file, file.name); });
 
-    var response = await fetch(url, {method: "POST", body: body});
-    var data = await response.json().catch(function(){ return {}; });
-
-    if(!response.ok){
-      throw new Error(data.error || "Request failed");
-    }
-
-    return data;
+    return readJSON(await fetch(url, {method: "POST", body: body}));
   }
 
   /* ---- dropdown menus ---- */
@@ -1125,11 +1164,8 @@ body.busy{cursor:progress}
     addSectionTitle(panel, "Phone apps in VMs (optional)", true);
 
     (lastPhones.phones || []).forEach(function(p){
-      var row = document.createElement("div");
-      row.className = "code-row";
-      var label = document.createElement("span");
-      label.className = "menu-link";
-      label.textContent = p.name + (p.model && p.model !== p.name ? " (" + p.model + ")" : "") + " \u00b7 linked";
+      var row = node("div", "code-row");
+      var label = node("span", "menu-link", p.name + (p.model && p.model !== p.name ? " (" + p.model + ")" : "") + " \u00b7 linked");
       row.appendChild(label);
       panel.appendChild(row);
     });
@@ -1161,11 +1197,9 @@ body.busy{cursor:progress}
     addNote(panel, "Signed in to this dashboard, nothing installed on them. Revoke signs one out.");
 
     lastDevices.devices.forEach(function(device){
-      var row = document.createElement("div");
-      row.className = "code-row";
+      var row = node("div", "code-row");
 
-      var label = document.createElement("span");
-      label.className = "menu-link";
+      var label = node("span", "menu-link");
       var appsLinked = lastPhones && (lastPhones.phones || []).some(function(p){ return p.id === device.id; });
       label.textContent = device.name + " \u00b7 " + timeAgo(device.last_seen) + (appsLinked ? " \u00b7 apps linked" : "");
       label.title = "Paired " + new Date(device.paired_at).toLocaleString();
@@ -1197,56 +1231,51 @@ body.busy{cursor:progress}
   // addLinkRow appends a copyable, clickable address row (a Cloudflare
   // tunnel URL or a LAN address) to panel.
   function addLinkRow(panel, url, copyLabel){
-    var row = document.createElement("div");
-    row.className = "code-row";
+    var row = node("div", "code-row");
 
-    var link = document.createElement("a");
-    link.className = "menu-link";
+    var link = node("a", "menu-link");
     link.href = url;
     link.target = "_blank";
     link.rel = "noopener";
     link.textContent = url;
     row.appendChild(link);
 
-    var copyBtn = document.createElement("button");
-    copyBtn.type = "button";
-    copyBtn.className = "icon-btn";
-    copyBtn.setAttribute("aria-label", copyLabel);
-    copyBtn.innerHTML = '<svg width="13" height="13"><use href="#i-copy"/></svg>';
-    copyBtn.addEventListener("click", async function(){
-      try{
-        await navigator.clipboard.writeText(url);
-        toast("Copied.");
-      }catch(e){
-        toast("Couldn't copy to the clipboard.", "error");
-      }
-    });
-    row.appendChild(copyBtn);
+    row.appendChild(copyButton(copyLabel, url, "Copied."));
 
     panel.appendChild(row);
   }
 
+  // copyButton is an icon button labelled label that copies value, saying copied.
+  function copyButton(label, value, copied){
+    var copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "icon-btn";
+    copyBtn.setAttribute("aria-label", label);
+    copyBtn.innerHTML = '<svg width="13" height="13"><use href="#i-copy"/></svg>';
+    copyBtn.addEventListener("click", async function(){
+      try{
+        await navigator.clipboard.writeText(value);
+        toast(copied);
+      }catch(e){
+        toast("Couldn't copy to the clipboard.", "error");
+      }
+    });
+    return copyBtn;
+  }
+
   function addSectionTitle(panel, text, spaced){
-    var title = document.createElement("div");
-    title.className = spaced ? "menu-title menu-title-spaced" : "menu-title";
-    title.textContent = text;
-    panel.appendChild(title);
+    panel.appendChild(node("div", spaced ? "menu-title menu-title-spaced" : "menu-title", text));
   }
 
   function addNote(panel, text){
-    var note = document.createElement("div");
-    note.className = "menu-note";
-    note.textContent = text;
-    panel.appendChild(note);
+    panel.appendChild(node("div", "menu-note", text));
   }
 
   // addWaiting is a note with a spinner: something this menu is still waiting for.
   function addWaiting(panel, text){
-    var note = document.createElement("div");
-    note.className = "menu-note menu-waiting";
+    var note = node("div", "menu-note menu-waiting");
     note.setAttribute("role", "status");
-    var ring = document.createElement("span");
-    ring.className = "menu-ring spin";
+    var ring = node("span", "menu-ring spin");
     note.appendChild(ring);
     note.appendChild(document.createTextNode(text));
     panel.appendChild(note);
@@ -1316,28 +1345,10 @@ body.busy{cursor:progress}
       addSectionTitle(panel, "Access code", true);
       addNote(panel, "Changes every 48 hours. Paired devices stay signed in when it does.");
 
-      var codeRow = document.createElement("div");
-      codeRow.className = "code-row";
+      var codeRow = node("div", "code-row");
 
-      var codeEl = document.createElement("code");
-      codeEl.className = "menu-link code-value";
-      codeEl.textContent = lastLAN.code;
-      codeRow.appendChild(codeEl);
-
-      var copyBtn = document.createElement("button");
-      copyBtn.type = "button";
-      copyBtn.className = "icon-btn";
-      copyBtn.setAttribute("aria-label", "Copy access code");
-      copyBtn.innerHTML = '<svg width="13" height="13"><use href="#i-copy"/></svg>';
-      copyBtn.addEventListener("click", async function(){
-        try{
-          await navigator.clipboard.writeText(lastLAN.code);
-          toast("Access code copied.");
-        }catch(e){
-          toast("Couldn't copy to the clipboard.", "error");
-        }
-      });
-      codeRow.appendChild(copyBtn);
+      codeRow.appendChild(node("code", "menu-link code-value", lastLAN.code));
+      codeRow.appendChild(copyButton("Copy access code", lastLAN.code, "Access code copied."));
       panel.appendChild(codeRow);
 
       var rotateBtn = document.createElement("button");
@@ -1432,12 +1443,9 @@ body.busy{cursor:progress}
   function gbText(n){ return (Math.round(n * 10) / 10) + " GB"; }
 
   function addModelRow(panel, label, value){
-    var row = document.createElement("div");
-    row.className = "model-kv";
-    var a = document.createElement("span");
-    a.textContent = label;
-    var b = document.createElement("span");
-    b.textContent = value;
+    var row = node("div", "model-kv");
+    var a = node("span", "", label);
+    var b = node("span", "", value);
     row.appendChild(a);
     row.appendChild(b);
     panel.appendChild(row);
@@ -1457,9 +1465,7 @@ body.busy{cursor:progress}
     panel.innerHTML = "";
     addSectionTitle(panel, "Model for this computer");
 
-    var name = document.createElement("div");
-    name.className = "model-name";
-    name.textContent = m.model;
+    var name = node("div", "model-name", m.model);
     panel.appendChild(name);
     addNote(panel, how + (m.reason ? ". " + m.reason : ""));
 
@@ -1716,7 +1722,13 @@ body.busy{cursor:progress}
   });
 
   window.Decurix = {
+    node: node,
+    icon: icon,
+    button: button,
+    getJSON: getJSON,
+    relativeTimes: relativeTimes,
     toast: toast,
+    markSent: markSent,
     busy: busy,
     post: post,
     postFiles: postFiles,

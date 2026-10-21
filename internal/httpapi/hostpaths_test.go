@@ -152,6 +152,21 @@ func TestBrowseHostPathAnswersWithWhatWasPickedAndWhereItGoes(t *testing.T) {
 	}
 }
 
+func TestWindowsPickerIsToldWhichWindowToOpen(t *testing.T) {
+	for _, c := range []struct {
+		folder, either bool
+		want           string
+	}{
+		{false, true, "$folder = $false\n$any = $true\n"},
+		{false, false, "$folder = $false\n$any = $false\n"},
+		{true, false, "$folder = $true\n$any = $false\n"},
+	} {
+		if got := windowsPickCommand("t", c.folder, c.either); !strings.HasPrefix(got, "$title = 't'\n"+c.want) {
+			t.Errorf("folder=%v either=%v: script starts %q", c.folder, c.either, got[:60])
+		}
+	}
+}
+
 func TestCreateDesktopWithHostPaths(t *testing.T) {
 	mgr := fakeDesktopManager(t)
 	srv := &Server{

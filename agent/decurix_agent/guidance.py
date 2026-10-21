@@ -131,12 +131,8 @@ def run_values(skill=None, recording=None):
     nothing, something else, or for another task. Read from any process.
     """
 
-    try:
-        kept = json.loads(RUN_FILE.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-
-    if not isinstance(kept, dict) or not kept.get("task_id") or kept.get("task_id") != task_context.current():
+    kept = _kept()
+    if kept is None:
         return {}
 
     if (skill and kept.get("skill") == skill) or (recording and kept.get("recording") == recording):
@@ -152,12 +148,20 @@ def handed(skill):
     (by the person, or by the reading of their request). Read from any process.
     """
 
+    kept = _kept()
+    return kept is not None and kept.get("skill") == skill
+
+
+def _kept():
+    """The run kept in RUN_FILE when it is the task being worked on's, else None."""
+
     try:
         kept = json.loads(RUN_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return False
-    return isinstance(kept, dict) and bool(kept.get("task_id")) and kept.get("task_id") == task_context.current() \
-        and kept.get("skill") == skill
+        return None
+    if not isinstance(kept, dict) or not kept.get("task_id") or kept.get("task_id") != task_context.current():
+        return None
+    return kept
 
 
 def persons_words():

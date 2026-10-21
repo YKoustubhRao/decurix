@@ -649,12 +649,6 @@ func (p Planner) logPlan(label string, steps []Step) {
 	}
 }
 
-// Atomize is the package-level entry point for callers without a shared
-// system frame. See Planner.Atomize.
-func Atomize(ctx context.Context, prompt string, provider llm.Provider, model string, onLog func(string)) Plan {
-	return Planner{Provider: provider, Model: model, OnLog: onLog}.Atomize(ctx, prompt)
-}
-
 // maxSteps caps how large a single plan can get. Raised from 5 to 10
 // after a live failure: "write C++ implementations of X, Y, and Z, each
 // in its own file, searching the web first for any you don't know well"

@@ -27,7 +27,7 @@ class Choosing(unittest.TestCase):
 
     def test_an_unclear_answer_takes_the_cautious_one_after_two_tries(self):
         skill = learning.build([self._demo()])
-        question = learning._approval(skill)
+        question = learning._approval()
         self.assertFalse(learning.answer(skill, question, "hmm")["understood"])
         result = learning.answer(skill, question, "dunno")
         self.assertTrue(result["understood"])

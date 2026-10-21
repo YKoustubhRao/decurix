@@ -29,8 +29,7 @@ func (s *Server) claudeAuthStatusHandler(w http.ResponseWriter, r *http.Request)
 // claudeAuthLoginStartHandler begins a fresh "claude auth login" attempt and
 // hands the dashboard's popup the sign-in URL to open.
 func (s *Server) claudeAuthLoginStartHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+	if !requirePost(w, r) {
 		return
 	}
 
@@ -51,8 +50,7 @@ func (s *Server) claudeAuthLoginStartHandler(w http.ResponseWriter, r *http.Requ
 // into an in-progress login attempt, and on success stores the resulting
 // session for every future claude-harness desktop to be seeded from.
 func (s *Server) claudeAuthLoginCodeHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+	if !requirePost(w, r) {
 		return
 	}
 
@@ -91,8 +89,7 @@ func (s *Server) claudeAuthLoginCodeHandler(w http.ResponseWriter, r *http.Reque
 // claudeAuthLoginCancelHandler discards an in-progress login attempt - the
 // dashboard calls this when the human closes the popup without finishing.
 func (s *Server) claudeAuthLoginCancelHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+	if !requirePost(w, r) {
 		return
 	}
 

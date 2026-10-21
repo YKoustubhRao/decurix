@@ -4,7 +4,6 @@ No live application success is implied. Every family has a distinct business
 operation, UI route, unseen input and independently specified expected result.
 """
 import argparse
-import copy
 import json
 import os
 import sys
@@ -172,7 +171,7 @@ def learn(case, root):
 
 
 def run_case(case, root, variant="holdout", learned=None):
-    from decurix_agent.computer import replay, skills, skill_engine
+    from decurix_agent.computer import replay, skill_engine
     learned = learned or learn(case, root)
     app = ScriptedApplication(case, offset=400 if variant == "moved-layout" else 0,
                               rename=variant == "renamed-control", ambiguous=variant == "ambiguous-control",
