@@ -10,6 +10,8 @@ import http.client
 import tempfile
 import threading
 import unittest
+
+from unittest.mock import patch
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -49,6 +51,14 @@ class RecordingsAPI(unittest.TestCase):
         except urllib.error.HTTPError as err:
             with err:
                 return err.code, json.loads(err.read() or b"{}")
+
+    def test_qualification_export_serves_exact_source_separately_from_the_preview(self):
+        source = {"script": "# padding\n" * 2500 + "print('end')\n", "language": "python"}
+        with patch.object(http_api.playbooks, "qualification_source", return_value=source) as exported:
+            status, body = self.call("/playbooks/reconcile/qualification-source")
+        self.assertEqual(status, 200)
+        self.assertTrue(body == source, "the executable export was truncated or changed")
+        exported.assert_called_once_with("reconcile")
 
     def test_an_export_is_imported_and_says_what_it_left_out(self):
         status, body = self.call("/recordings/import", {"title": "Month-end login", "data": LOGIN})

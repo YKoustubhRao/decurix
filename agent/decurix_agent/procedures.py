@@ -59,7 +59,7 @@ procedure way as before drill""".split())
 
 KEEP_SYSTEM = """A person gave a computer worker a request. Some requests set a standing procedure for work that will recur (every week, every month, each time something arrives) - how it is done, what is produced and how it is checked. Decide whether this request does, and if so write the procedure down so the worker can follow it on later requests that only say "do it as usual".
 
-Keep the procedure in the person's own terms and keep every rule, threshold, formula, column list, sheet name, file-name pattern (with its placeholders, e.g. ap_register_<WEEK>.xlsx), recipient address, email content and "never/only/draft only" instruction. Write it as numbered steps when the person did.
+Keep the procedure in the person's own terms and keep every rule, threshold, formula, column list, sheet name, file-name pattern (with its placeholders, e.g. report_<PERIOD>.xlsx), recipient address, email content and "never/only/draft only" instruction. Write it as numbered steps when the person did.
 
 Leave out what is only for this one run: this week's or this month's date or period, the particular batch or files attached now, a value given for this run alone. Where the person wrote such a value into a file name or subject, keep the pattern, not the value.
 

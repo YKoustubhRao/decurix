@@ -158,7 +158,7 @@ EXTRA_TOOLS = [
             "Change cells of an existing workbook, keeping its charts, formatting and everything else. "
             "edits: [{sheet, cell, value}] (number, text, null to empty, or a formula '=SUM(B2:B14)'). "
             "replace_refs: [{from: 'Data!$B$2:$B$13', to: 'Data!$B$2:$B$14'}] extends what charts/tables/names read. "
-            "Writes output_path, or the file itself (keeping <name>.orig.xlsx the first time)."
+            "Writes output_path, or the file itself (keeping <name>.orig.xlsx the first time, for a file that was there before the task)."
         ),
         "parameters": {
             "type": "object",

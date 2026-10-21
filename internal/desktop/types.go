@@ -41,10 +41,27 @@ type Desktop struct {
 	// a desktop with no particular focus.
 	Specialization string `json:"specialization,omitempty"`
 
+	// SharedFolder is the one folder of the person's computer this desktop may read and write, as they wrote it
+	// (a path like C:/Users/me/Documents/Shared), or "" for none. Fixed at creation, like the mount behind it.
+	SharedFolder string `json:"shared_folder,omitempty"`
+
 	// ParentID is the desktop this one was spawned as a specialized child
 	// of (see httpapi.createDesktopHandler), or "" for a desktop created
 	// standalone. Set once at creation and never changed afterward.
 	ParentID string `json:"parent_id,omitempty"`
+
+	// MissingApps are the host apps someone asked this desktop to have that it does not, each with why in plain
+	// words; Pending ones are still being tried. Kept by the Manager (see missingapps.go), not by Docker.
+	MissingApps []MissingApp `json:"missing_apps,omitempty"`
+}
+
+// MissingApp is a host app someone asked a desktop to have that is not on it, and why.
+type MissingApp struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
+	// Pending is true while Decurix is still trying: the host could not be asked about it yet, which is not a "no".
+	Pending bool `json:"pending,omitempty"`
 }
 
 // ResourceAllocation represents a container's CPU and memory allocation.
@@ -74,7 +91,10 @@ type ProvisioningDesktop struct {
 	Error          string `json:"error,omitempty"`
 	Specialization string `json:"specialization,omitempty"`
 	ParentID       string `json:"parent_id,omitempty"`
+	SharedFolder   string `json:"shared_folder,omitempty"`
 	Ready          bool   `json:"ready"`
+	// MissingApps are the requested host apps that are not (or not yet) on the desktop, and why.
+	MissingApps []MissingApp `json:"missing_apps,omitempty"`
 }
 
 // ToDesktop converts a ProvisioningDesktop into a Desktop struct.
@@ -93,6 +113,8 @@ func (p *ProvisioningDesktop) ToDesktop() Desktop {
 		URL:            p.URL,
 		CreatedAt:      p.CreatedAt,
 		Specialization: p.Specialization,
+		SharedFolder:   p.SharedFolder,
 		ParentID:       p.ParentID,
+		MissingApps:    p.MissingApps,
 	}
 }

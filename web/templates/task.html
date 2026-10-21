@@ -112,7 +112,7 @@
       <span><b>{{$task.WorkerName}}</b>{{if not $task.Worker.DeletedAt.IsZero}} (deleted){{end}}</span>
       <span>{{engineLabel $task.Engine}}</span>
       <span><time data-created="{{iso $task.CreatedAt}}">{{clock $task.CreatedAt}}</time></span>
-      {{if $task.Worker.DeletedAt.IsZero}}<a href="/view/{{$task.WorkerID}}">Open chat</a>{{end}}
+      {{if .ReadinessURL}}<a href="{{.ReadinessURL}}">Readiness evidence</a>{{else if $task.Worker.DeletedAt.IsZero}}<a href="/view/{{$task.WorkerID}}">Open chat</a>{{end}}
       {{/* Every on-screen action is recorded in a session named after its task; only a task that took one has a recording. */}}
       {{$screen := false}}{{range $task.Executions}}{{range .Steps}}{{if .Action}}{{$screen = true}}{{end}}{{end}}{{end}}
       {{if and $screen $task.Worker.DeletedAt.IsZero}}<a href="/recordings/{{$task.WorkerID}}?session=task-{{$task.ID}}">Recording</a>{{end}}

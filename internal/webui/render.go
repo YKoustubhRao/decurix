@@ -94,7 +94,8 @@ type TasksPageData struct {
 
 // TaskPageData is the template data for one task record.
 type TaskPageData struct {
-	Task tasks.Detail
+	Task         tasks.Detail
+	ReadinessURL string
 }
 
 // DagsPageData is the template data for the DAGs list page.
@@ -186,6 +187,7 @@ type Renderer struct {
 	taskTmpl       *template.Template
 	recordingsTmpl *template.Template
 	skillsTmpl     *template.Template
+	readinessTmpl  *template.Template
 	dagsTmpl       *template.Template
 	dagTmpl        *template.Template
 	hostGUITmpl    *template.Template
@@ -198,6 +200,7 @@ type Renderer struct {
 // NewRenderer parses all templates once at startup.
 func NewRenderer() *Renderer {
 	return &Renderer{
+		readinessTmpl: template.Must(template.ParseFS(web.TemplatesFS, templatePaths("readiness.html")...)),
 		indexTmpl: template.Must(
 			template.ParseFS(web.TemplatesFS, templatePaths("index.html")...),
 		),
@@ -299,6 +302,17 @@ func (rd *Renderer) RenderRecordings(w io.Writer, data RecordingsPageData) error
 // RenderSkills renders one desktop's skills page.
 func (rd *Renderer) RenderSkills(w io.Writer, data SkillsPageData) error {
 	return rd.skillsTmpl.ExecuteTemplate(w, "skills.html", data)
+}
+
+// ReadinessPageData identifies a worker and the local owner-key file name.
+type ReadinessPageData struct {
+	Desktop   desktop.Desktop
+	OwnerFile string
+}
+
+// RenderReadiness renders the owner's qualification and evidence console.
+func (rd *Renderer) RenderReadiness(w io.Writer, data ReadinessPageData) error {
+	return rd.readinessTmpl.ExecuteTemplate(w, "readiness.html", data)
 }
 
 // RenderDags renders the DAGs list page.

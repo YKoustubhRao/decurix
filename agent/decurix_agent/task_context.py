@@ -76,7 +76,10 @@ def start(task_id, request=None):
     with _lock:
         state.current_task_id = task_id
 
-        writes = [(CURRENT_FILE, task_id)]
+        writes = [(CURRENT_FILE, task_id), (CURRENT_FILE + ".stage", "")]  # a new task runs no stage yet
+        if task_id and _since_record()[0] != task_id:
+            # When the task began (kept across a resume of the same task): what was there before it is the person's.
+            writes.append((CURRENT_FILE + ".since", f"{task_id} {time.time():.3f}"))
         if request is not None:
             writes.append((CURRENT_FILE + ".request", str(request)[:500]))
             # The files the request brought, whole: the request above is cut at 500 characters, and its paths come
@@ -94,6 +97,22 @@ def start(task_id, request=None):
                 # Only the out-of-process reporters lose it, and the control
                 # plane still attributes their steps to the live task.
                 pass
+
+
+def _since_record():
+    try:
+        with open(CURRENT_FILE + ".since", encoding="utf-8") as f:
+            task_id, at = (f.read().split() + ["", ""])[:2]
+        return task_id, float(at)
+    except (OSError, ValueError):
+        return "", None
+
+
+def since():
+    """When the current task began (epoch seconds), from any process; None when no task is running or it is unknown."""
+
+    task_id, at = _since_record()
+    return at if task_id and task_id == current() else None
 
 
 # The task this desktop has taken on and not yet finished, kept on the
@@ -187,3 +206,34 @@ def current():
         return ""
 
     return task_id if valid(task_id) else ""
+
+
+# The long request's stage running now ("<run id>:<stage id>" and its attempt), for the processes a stage's engine
+# starts (the `office email` command): a draft made during a stage is that stage's, and its attempt's. Found live
+# (round 5 P1, 2026-10-20): the stage tag lived only in the agent's memory, so `office email` - another process -
+# never saw it, and a re-check's drafts sat beside the first attempt's instead of replacing them.
+def _stage_path():
+    return CURRENT_FILE + ".stage"
+
+
+def set_stage(scope, attempt=0):
+    """Mark the stage running now (scope "" clears it)."""
+
+    try:
+        tmp = _stage_path() + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"scope": scope, "attempt": int(attempt or 0)}) if scope else "")
+        os.replace(tmp, _stage_path())
+    except OSError:
+        pass
+
+
+def current_stage():
+    """(scope, attempt) of the stage running now, from any process, or ("", 0)."""
+
+    try:
+        with open(_stage_path(), encoding="utf-8") as f:
+            data = json.loads(f.read() or "{}")
+        return str(data.get("scope") or ""), int(data.get("attempt") or 0)
+    except (OSError, ValueError, TypeError):
+        return "", 0

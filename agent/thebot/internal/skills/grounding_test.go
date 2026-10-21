@@ -455,6 +455,32 @@ func TestGroundingLetsAFormulaThrough(t *testing.T) {
 	}
 }
 
+// A formula built from what the request says is the worker's own construction, quoted words and all. Found live
+// (2026-10-19): every =IF(...="maharashtra",E2*9%,0) was refused as typing a value never read.
+func TestGroundingLetsAFormulaWithTheRequestsWordsThrough(t *testing.T) {
+	st := groundingState("Use the spreadsheet app to add CGST and SGST: a sale to a customer in Maharashtra gets CGST 9% and SGST 9% of the taxable value, any other state IGST 18%.")
+	st.noteSeen("A2='INV-1'  D2='Maharashtra '  E2=12400")
+	for _, ok := range []string{
+		`gui type e30 "=IF(LOWER(TRIM(D2))=\"maharashtra\",E2*9%,0)"`,
+		`gui type e30 "=IF(LOWER(TRIM(D2))=\"maharashtra\",0,E2*18%)"`,
+		`gui type e30 "=IF(D2=\"\",\"\",E2*9%)"`,
+		`gui type e30 "=IF(TRIM(D2)=\"Maharashtra\",E2*9%,0)\t=E2+F2"`,
+	} {
+		if n := groundingNudge(st, ok); n != "" {
+			t.Errorf("%s was refused: %q", ok, n)
+		}
+	}
+	for _, bad := range []string{
+		`gui type e30 "=IF(D2=\"Gujarat\",E2*9%,0)"`,
+		`gui type e30 "=IF(D2=\"maharashtra\",E2*12%,0)"`,
+		`gui type e30 "=E2*0.07"`,
+	} {
+		if n := groundingNudge(st, bad); n == "" {
+			t.Errorf("%s was let through", bad)
+		}
+	}
+}
+
 // Work in a window cannot be reported done before a single command has run.
 func TestScreenWorkIsNotDoneBeforeAnythingRan(t *testing.T) {
 	st := groundingState("Rename the sheet in the spreadsheet open in LibreOffice Calc from Sheet1 to Budget 2026, then save the file.")
@@ -561,32 +587,27 @@ func TestTextInAScriptTheTaskNeverUsesIsASlip(t *testing.T) {
 	}
 }
 
-func TestAFileTheRequestWantsMadeInAnAppIsNotMadeBehindIt(t *testing.T) {
-	st := &operatorState{Request: "Make a deck from the attached brief, built in PowerPoint, and save it as q3_review.pptx."}
-	for _, cmd := range []string{
-		"office create /home/headless/work/q3_review.pptx - <<'EOF'\n{}\nEOF",
-		"python3 - <<'PY'\nfrom pptx import Presentation\nprs = Presentation()\nprs.save('/home/headless/work/q3_review.pptx')\nPY",
-	} {
-		if behindTheApp(st, cmd) == "" {
-			t.Errorf("not sent back: %s", cmd)
-		}
+// Finding BQ (2026-10-20): the content of a file for an app the request names may be made with the tools; the app has
+// to open, check and save it - asked for when the work is reported, never by refusing office create/update.
+func TestToolsMayMakeTheContentAndTheNamedAppMustHandleIt(t *testing.T) {
+	t.Setenv("DECURIX_SHARED_FOLDER", "")
+	st := &operatorState{Request: "Make a deck from the attached brief, built in PowerPoint, and save it as q3_review.pptx.",
+		Worked: []string{"office create /home/headless/work/q3_review.pptx - <<'EOF'\n{}\nEOF"}}
+	if n := sharedAppUntouchedNudge(st); !strings.Contains(n, "no window of powerpoint was opened") || !strings.Contains(n, "gui open FILE") {
+		t.Errorf("made with tools, never opened in the app: %q", n)
 	}
-	for _, cmd := range []string{
-		"office read /home/headless/work/q3_review.pptx",
-		"gui open /home/headless/work/q3_review.pptx",
-		"office create /home/headless/work/notes.xlsx - <<'EOF'\n{}\nEOF",
-	} {
-		if said := behindTheApp(st, cmd); said != "" {
-			t.Errorf("sent back %q: %s", cmd, said)
-		}
+	st.NamedAppOpened = true
+	if n := sharedAppUnsavedNudge(st); !strings.Contains(n, "nothing was saved from powerpoint") {
+		t.Errorf("opened, never saved from the app: %q", n)
 	}
-	plain := &operatorState{Request: "Make a PowerPoint deck from the attached brief and save it as q3_review.pptx."}
-	if behindTheApp(plain, "office create /home/headless/work/q3_review.pptx - <<'EOF'\n{}\nEOF") != "" {
-		t.Error("a request that names no app to work in may use office create")
+	st.SavedInApp = true
+	if sharedAppUntouchedNudge(st) != "" || sharedAppUnsavedNudge(st) != "" {
+		t.Error("made with tools, then opened and saved in the app, was sent back")
 	}
-	excel := &operatorState{Request: "Open the attached sales.csv in Excel, sort it and save it as report.xlsx."}
-	if behindTheApp(excel, "python3 - <<'PY'\nimport openpyxl\nwb=openpyxl.Workbook()\nwb.save('report.xlsx')\nPY") == "" {
-		t.Error("a workbook saved by a script for an Excel request was not sent back")
+	plain := &operatorState{Request: "Make a PowerPoint deck from the attached brief and save it as q3_review.pptx.",
+		Worked: []string{"office create /home/headless/work/q3_review.pptx - <<'EOF'\n{}\nEOF"}}
+	if sharedAppUntouchedNudge(plain) != "" {
+		t.Error("a request that names no app to work in was sent to one")
 	}
 }
 
@@ -662,5 +683,28 @@ func TestLookupOutputIsNotASourceOfValues(t *testing.T) {
 	}
 	if !researchRe.MatchString("Look up the current CEO of each company") {
 		t.Fatal("looking up a CEO is research")
+	}
+}
+
+// TestAQuestionAboutAnUnopenedAppSaysWhatWasTried: never "it may not be one of this desktop's apps" (round 5 P4).
+func TestAQuestionAboutAnUnopenedAppSaysWhatWasTried(t *testing.T) {
+	st := &operatorState{}
+	if got := appOpenAttempts(st, "Word"); got != "I did not open Word at all." {
+		t.Fatalf("nothing tried: %q", got)
+	}
+	st.Opens = []string{"gui open P4_onboarding_Nov/Offer_letter_template.docx -> exit 0 · Started soffice --nologo " +
+		"--norestore P4_onboarding_Nov/Offer_letter_template.docx, but no new window appeared within 90 seconds."}
+	got := appOpenAttempts(st, "Word")
+	if !strings.Contains(got, "I did not open Word itself - I opened gui open P4_onboarding_Nov/Offer_letter_template.docx") ||
+		!strings.Contains(got, "Started soffice") {
+		t.Fatalf("opened another app: %q", got)
+	}
+	st.Opens = append(st.Opens, `gui open "Word (Host)" -> exit 1 · gui: the host app did not answer`)
+	got = appOpenAttempts(st, "Word")
+	if !strings.Contains(got, `I tried to open Word and it did not open: gui open "Word (Host)" -> exit 1 · gui: the host app did not answer.`) {
+		t.Fatalf("tried and failed: %q", got)
+	}
+	if strings.Contains(got, "may not be one of this desktop's apps") {
+		t.Fatalf("a guess: %q", got)
 	}
 }

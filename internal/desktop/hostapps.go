@@ -43,6 +43,9 @@ type HostAppItem struct {
 	// safely show it inside a desktop. Keeping the item in discovery makes the
 	// scan complete without presenting a launcher that cannot work.
 	UnavailableReason string `json:"unavailable_reason,omitempty"`
+	// Unverified marks an unavailable app the host was not asked about successfully (its helper died or timed out) -
+	// "not checked yet", which a later check may turn into a yes, unlike a verdict the host actually gave.
+	Unverified bool `json:"unverified,omitempty"`
 }
 
 // knownAppDef defines how to probe and migrate a specific application or session.
@@ -462,10 +465,19 @@ func vetHostApps(apps []HostAppItem) []HostAppItem {
 	}
 
 	verdicts := checkHostTargets(targets)
+	hostAppCheckerMu.RLock()
+	canAsk := hostAppChecker != nil
+	hostAppCheckerMu.RUnlock()
 	for i, app := range pending {
+		app.Unverified, app.UnavailableReason = false, ""
 		reason, checked := verdicts[targets[i]]
-		if !checked {
-			reason = "The host-app helper could not verify that this app can run on a hidden desktop."
+		if !checked && !canAsk {
+			reason = "This computer has no way to run Windows apps for a desktop."
+		} else if !checked {
+			// Not a "no": the host was not asked successfully (found live 2026-10-20, a helper that died partway
+			// right after a control-plane start). A desktop that asked for it keeps trying (retryPendingApps).
+			reason = UnverifiedAppReason
+			app.Unverified = true
 		}
 		if reason != "" {
 			app.Mode = ModeUnavailable
@@ -499,7 +511,9 @@ func isBrowserApp(name string) bool {
 
 // MigrateHostApps packages selected host application sessions, tokens, and configurations,
 // strips cache bloat to maintain zero redundant memory, streams them into the container's
-// /home/headless volume, and installs the host execution bridge launchers.
+// /home/headless volume, and installs the host execution bridge launchers. A requested app it cannot add is never
+// skipped silently: it is recorded with the reason (MissingApps, the desktop's card, and a file its agent reads), and
+// one the host could not be asked about yet is tried again in the background and added when it checks out.
 func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selectedIDs []string) error {
 
 	if len(selectedIDs) == 0 {
@@ -518,12 +532,40 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 	}
 
 	selectedMap := make(map[string]bool)
+	requested := make(map[string]bool)
 	for _, id := range selectedIDs {
-		selectedMap[strings.ToLower(strings.TrimSpace(id))] = true
+		if id = strings.ToLower(strings.TrimSpace(id)); id != "" {
+			selectedMap[id] = true
+			requested[id] = true
+		}
 	}
 
 	// Always include host_bridge when apps are being migrated
 	selectedMap["host_bridge"] = true
+
+	defs := getKnownAppDefs()
+	defMap := make(map[string]knownAppDef)
+	for _, def := range defs {
+		defMap[strings.ToLower(def.id)] = def
+	}
+
+	// Index all detected apps (including dynamic Windows and desktop apps)
+	allDetected := DetectHostApps()
+	appMap := make(map[string]HostAppItem)
+	for _, app := range allDetected {
+		appMap[strings.ToLower(app.ID)] = app
+	}
+	// An app the host could not be asked about when the list was made is asked about again now, before it is called
+	// missing: the list may be minutes old, and its helper may have died since recovered.
+	var recheck []HostAppItem
+	for id := range selectedMap {
+		if app, ok := appMap[id]; ok && app.Unverified {
+			recheck = append(recheck, app)
+		}
+	}
+	for _, app := range recheckHostApps(recheck) {
+		appMap[strings.ToLower(app.ID)] = app
+	}
 
 	// Stream archive directly into container at /home/headless via pipe (zero RAM duplication)
 	pr, pw := io.Pipe()
@@ -540,20 +582,13 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 
 	tw := tar.NewWriter(pw)
 
-	defs := getKnownAppDefs()
-	defMap := make(map[string]knownAppDef)
-	for _, def := range defs {
-		defMap[strings.ToLower(def.id)] = def
-	}
-
-	// Index all detected apps (including dynamic Windows and desktop apps)
-	allDetected := DetectHostApps()
-	appMap := make(map[string]HostAppItem)
-	for _, app := range allDetected {
-		appMap[strings.ToLower(app.ID)] = app
-	}
-
 	migratedCount := 0
+	var missing []MissingApp
+	miss := func(id, name, reason string, pending bool) {
+		if requested[id] {
+			missing = append(missing, MissingApp{ID: id, Name: name, Reason: reason, Pending: pending})
+		}
+	}
 
 	for id := range selectedMap {
 		if def, ok := defMap[id]; ok {
@@ -564,23 +599,29 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 				paths = def.probeFn()
 			}
 			if len(paths) == 0 && def.id != "host_bridge" {
+				miss(id, def.name, "Decurix found nothing of it on this computer to copy.", false)
 				continue
 			}
 			if err := def.packFn(tw, paths); err != nil {
 				log.Printf("hostapps: packing %s for %s: %v", def.id, desktopID, err)
+				miss(id, def.name, "Copying it into the desktop failed.", false)
 				continue
 			}
 			migratedCount++
 		} else if app, ok := appMap[id]; ok {
 			if app.Mode == ModeUnavailable {
-				log.Printf("hostapps: skipping unavailable app %s for %s: %s", app.ID, desktopID, app.UnavailableReason)
+				log.Printf("hostapps: not adding %s to %s (pending=%v): %s", app.ID, desktopID, app.Unverified, app.UnavailableReason)
+				miss(id, app.Name, app.UnavailableReason, app.Unverified)
 				continue
 			}
 			if err := packDynamicApp(tw, app, packContext{DesktopID: sanitizedID, Secret: m.HostGUISecret}); err != nil {
 				log.Printf("hostapps: packing dynamic app %s for %s: %v", app.ID, desktopID, err)
+				miss(id, app.Name, "Copying it into the desktop failed.", false)
 				continue
 			}
 			migratedCount++
+		} else {
+			miss(id, id, "Decurix did not find this app on this computer.", false)
 		}
 	}
 
@@ -596,6 +637,12 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 	}
 
 	log.Printf("hostapps: successfully migrated %d component(s) into %s", migratedCount, containerName)
+	if m.noteMissingApps(sanitizedID, requested, missing) {
+		if err := m.writeMissingFile(ctx, inspect.ID, m.MissingApps(sanitizedID)); err != nil {
+			log.Printf("hostapps: telling %s which apps are missing: %v", containerName, err)
+		}
+	}
+	m.retryPendingApps(sanitizedID)
 	return nil
 }
 
@@ -1333,7 +1380,7 @@ func queryWindowsStartApps() []rawStartApp {
 				defer cancel()
 
 				psCmd := "PATH=$PATH:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0:/mnt/c/Windows/System32/WindowsPowerShell/v1.0:/mnt/c/WINDOWS/system32:/mnt/c/Windows/system32 powershell.exe -NoProfile -NonInteractive -InputFormat None -Command 'Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress' < /dev/null"
-				cmd := exec.CommandContext(ctx, dockerBin, "run", "--rm", "--privileged", "--pid=host", "alpine", "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "bash", "-c", psCmd)
+				cmd := HopCommand(ctx, dockerBin, "start-apps", false, psCmd)
 				cmd.Stdin = strings.NewReader("")
 				if output, err := cmd.Output(); err == nil && len(output) > 0 {
 					if apps := parseGetStartAppsJSON(output); len(apps) > 0 {

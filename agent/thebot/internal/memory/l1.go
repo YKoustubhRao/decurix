@@ -98,7 +98,7 @@ You answered:
 
 Respond in EXACTLY this format, nothing else:
 REMEMBER: yes or no
-FACT: <if yes, the single durable fact about the user, in the third person, e.g. "The user's name is Divyanshu Shekhar." If no, leave blank>`
+FACT: <if yes, the single durable fact about the user, in the third person, e.g. "The user's name is Alex Doe." If no, leave blank>`
 
 // ConsiderExchange makes one real judgment call about whether an exchange
 // is worth keeping, and stores it if so. Fire-and-forget by design: never

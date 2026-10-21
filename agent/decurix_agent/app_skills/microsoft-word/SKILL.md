@@ -22,6 +22,7 @@ Writing
   is Enter in Word. Read the page back (gui read <ref>) after typing - its first lines, its last lines.
 - Formatting: select text by keyboard (Ctrl+Home, Shift+End for a line, Ctrl+Shift+End to the end) and use Ctrl+B,
   Ctrl+I; a heading style from tab "Home"'s style gallery by its ref.
+- A page break is its key (gui key ctrl+Return), never "\f" typed as text: gui type reads only \n and \t as keys. office read shows a .docx's page breaks as [page break] - read the saved file back to see them.
 
 Saving
 - F12 opens Save As. In order: type the whole path and name into "File name" (C:\Users\...\reply.docx), set

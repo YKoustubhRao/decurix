@@ -101,6 +101,12 @@ def emit(text):
     if not text:
         return
 
+    try:
+        from decurix_agent.computer import privacy
+        text = privacy.withhold_known(text)
+    except Exception:  # noqa: BLE001 - decoration never fails the task
+        pass
+
     if len(text) > MAX_TEXT:
         text = text[:MAX_TEXT] + "…"
 

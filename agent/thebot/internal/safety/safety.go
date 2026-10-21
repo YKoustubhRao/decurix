@@ -32,6 +32,18 @@ type rule struct {
 	reason string
 }
 
+// progAt is where a program can stand in a shell line: at a line's start or after an operator, sudo, a quote
+// closing or a substitution - never a word the same as it inside a script's text or a file's name.
+const progAt = `(?im)(^[ \t]*|[;&|][ \t]*|\bsudo[ \t]+|['"][ \t]*|\$\([ \t]*|\x60[ \t]*)`
+
+// both matches a command that holds a and b, in either order.
+func both(a, b string) *regexp.Regexp {
+	return regexp.MustCompile(`(?is)(?:` + a + `)[\s\S]*(?:` + b + `)|(?:` + b + `)[\s\S]*(?:` + a + `)`)
+}
+
+// postsRe is a program making a request that changes something on a server.
+const postsRe = `\.(post|put|patch)\s*\(|\burlopen\s*\(|\bdata\s*=|\bmethod\s*=\s*['"]?(POST|PUT|PATCH)|\bfetch\s*\(`
+
 // atCommand names the rules about which program runs. They are matched
 // against the command with its quoted arguments blanked out: in
 // `grep -E 'outbox|mail'` the bar is part of a pattern, not a pipe into mail.
@@ -44,9 +56,27 @@ var commandRules = []rule{
 	// 2026-10-14: the quote before it and a newline between were read as "after a quote").
 	{regexp.MustCompile(`(?im)(^[ \t]*|[;&|][ \t]*|\bsudo[ \t]+|['"][ \t]*|\$\([ \t]*|\x60[ \t]*)(sendmail|mailx?|mutt|ssmtp|msmtp|swaks)([ \t;&|<>)]|$)`),
 		"it sends email"},
-	{regexp.MustCompile(`(?i)\b(twilio|whatsapp|telegram-send|slack-cli|signal-cli)\b`),
+	// A message is sent by a messaging program run as a command, by a script that calls a messaging library's send, or
+	// by a request to a service's send endpoint - not by the name of a service. Found live (2026-10-19, round 5): a
+	// worker reading "WhatsApp Chat with ....txt" (the file's own name), and a script that listed "WhatsApp chat: ..."
+	// as the source of each order row, were stopped for an approval "because it sends a message on someone's
+	// behalf"; the person refused, and the task lost its footing.
+	{regexp.MustCompile(`(?i)\btwilio\b[\s\S]*\bmessages\.create\s*\(|\bchat_(postMessage|postEphemeral|scheduleMessage)\s*\(|` +
+		`\b(telegram|telebot|telethon|pyrogram)\b[\s\S]*\b(send_message|sendMessage|send_document|send_photo|send_file)\s*\(|` +
+		`\bpywhatkit\b[\s\S]*\bsendwhat\w*\s*\(`),
 		"it sends a message on someone's behalf"},
-	{regexp.MustCompile(`(?i)\b(stripe|paypal|braintree|razorpay)\b[\s\S]*\b(charge|payment|payout|transfer|refund|invoice)`),
+	{both(`api\.twilio\.com/[^\s"']*/Messages|api\.telegram\.org/bot[^\s"']*/send\w+|hooks\.slack\.com/(services|workflows)/|`+
+		`slack\.com/api/chat\.(postMessage|postEphemeral|scheduleMessage)|discord(app)?\.com/api/(v\d+/)?webhooks/|`+
+		`graph\.facebook\.com/[^\s"']*/messages\b`, postsRe),
+		"it sends a message on someone's behalf"},
+	// Money moves through a payment program run as a command, a script calling a payment library's create/capture, or
+	// a request to a payment API - not through the name of a payment service next to the word "invoice".
+	{regexp.MustCompile(`(?i)\bstripe\.(Charge|PaymentIntent|Payout|Transfer|Refund|Invoice)\b[\s\S]*?\.(create|confirm|capture|pay|send_invoice)\s*\(|` +
+		`\b(paypalrestsdk|paypalhttp|paypalcheckoutsdk|braintree)\b[\s\S]*\.(create|execute|capture|sale)\s*\(|` +
+		`\brazorpay\b[\s\S]*\.(payout\.create|transfer\.create|refund\.create|payment\.(capture|refund))\s*\(`),
+		"it moves money"},
+	{both(`api\.stripe\.com/v1/(charges|payment_intents|payouts|transfers|refunds)|api(-m)?\.paypal\.com/v[12]/(payments|payouts|checkout/orders)|`+
+		`api\.razorpay\.com/v1/(payments|payouts|transfers|refunds|orders)`, postsRe),
 		"it moves money"},
 	{regexp.MustCompile(`(?i)\bgit\s+push\b`),
 		"it publishes commits to a remote repository"},
@@ -71,6 +101,15 @@ var commandRules = []rule{
 		"it sends data to a web service"},
 	{regexp.MustCompile(`(?i)\bwget\b[^|;&]*\s--(post-data|post-file|method=(POST|PUT|PATCH|DELETE))`),
 		"it sends data to a web service"},
+}
+
+// programRules are matched against the shell's own words only (quoted arguments and here-documents blanked): a
+// messaging or payment program run as a command.
+var programRules = []rule{
+	{regexp.MustCompile(progAt + `(twilio|telegram-send|slack-cli|signal-cli|yowsup-cli|whatsapp-cli|wacli)([ \t;&|<>)]|$)`),
+		"it sends a message on someone's behalf"},
+	{regexp.MustCompile(progAt + `stripe[ \t]+\S+[ \t]+(create|confirm|capture|pay|finalize|send)\b`),
+		"it moves money"},
 }
 
 // localTargetRe recognises a request aimed at this machine itself. Sending
@@ -98,6 +137,11 @@ func AssessCommand(command string) *Concern {
 			continue
 		}
 		return &Concern{Reason: r.reason}
+	}
+	for _, r := range programRules {
+		if r.re.MatchString(unquoted) {
+			return &Concern{Reason: r.reason}
+		}
 	}
 	return nil
 }

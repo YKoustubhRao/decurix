@@ -15,6 +15,7 @@ Writing
 - A paragraph style (Heading 1, ...) is set with gui select on the style box of the toolbar while the cursor is in that
   paragraph. Bold/italic: select the words, Ctrl+B / Ctrl+I.
 - A table: Table > Insert Table... (Ctrl+F12), columns and rows, Insert; cells are typed into by their refs.
+- A page break is its key (gui key ctrl+Return), never "\f" typed as text: gui type reads only \n and \t as keys. office read shows a .docx's page breaks as [page break] - read the saved file back to see them.
 
 Saving
 - File > Save As (Ctrl+Shift+S): the whole path with .docx in "Name", Save, then "Use Word 2007-365!" to keep the

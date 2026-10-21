@@ -312,5 +312,22 @@ class TestRestartIsOnlyOfferedBeforeAnythingWorkedThere(Desktop):
         self.assertIsNone(result["reopen"])
 
 
+class ALauncherCopiedLater(unittest.TestCase):
+    """Round 5 (2026-10-20): Word (Host) was copied onto a running desktop; the app list is read when it is asked for."""
+
+    def test_it_is_listed_and_opened_by_name_at_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            place = Path(tmp)
+            self.assertIsNone(launchers.by_name("Word", [place]))
+            (place / "word-host.desktop").write_text("[Desktop Entry]\nType=Application\nName=Word (Host)\n"
+                                                      "Exec=/home/headless/.local/bin/word-host %U\n")
+            entry = launchers.by_name("Word", [place])
+            self.assertEqual(entry["name"], "Word (Host)")
+            self.assertEqual(launchers.argv(entry), ["/home/headless/.local/bin/word-host"])
+            from decurix_agent import identity
+            with patch.object(launchers, "PLACES", [place]):
+                self.assertIn('"Word (Host)"', identity._desktop_apps())
+
+
 if __name__ == "__main__":
     unittest.main()

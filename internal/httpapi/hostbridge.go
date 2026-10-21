@@ -85,7 +85,8 @@ func (s *Server) copyHostAppsHandler(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err)
 		return
 	}
-	jsonResponse(w, map[string]any{"id": d.ID, "host_apps": apps})
+	// Never a silent skip: what was asked for and not added comes back with why (and Pending ones are still tried).
+	jsonResponse(w, map[string]any{"id": d.ID, "host_apps": apps, "missing_apps": s.Desktops.MissingApps(d.ID)})
 }
 
 // hostBridgeExecRequest represents a command execution request sent from inside
@@ -278,12 +279,9 @@ func createHostCmd(ctx context.Context, display, cmdStr string, args ...string) 
 						displayEnv = fmt.Sprintf("DISPLAY=%s ", display)
 					}
 					nsCmd := fmt.Sprintf("%sPATH=$PATH:/mnt/c/WINDOWS/system32:/mnt/c/Windows/system32:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0:/mnt/c/Windows/System32/WindowsPowerShell/v1.0:/mnt/c/Windows %s", displayEnv, fullCmd)
-					var cmd *exec.Cmd
-					if ctx != nil {
-						cmd = exec.CommandContext(ctx, dockerBin, "run", "--rm", "--privileged", "--pid=host", "alpine", "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "bash", "-c", nsCmd)
-					} else {
-						cmd = exec.Command(dockerBin, "run", "--rm", "--privileged", "--pid=host", "alpine", "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "bash", "-c", nsCmd)
-					}
+					// Named, labelled and removed when cancelled (desktop.HopCommand); a nil ctx is a launch that ends
+					// on its own when the program it started returns.
+					cmd := desktop.HopCommand(ctx, dockerBin, "exec", false, nsCmd)
 					cmd.Stdin = strings.NewReader("")
 					return cmd
 				}
