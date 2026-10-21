@@ -6,9 +6,14 @@
 package llm
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
+	"time"
 )
 
 type Message struct {
@@ -159,4 +164,59 @@ func WithoutImages(messages []Message, why string) []Message {
 		}
 	}
 	return out
+}
+
+// timeout is the call's TimeoutMs as a duration, or two minutes when unset.
+func (o Options) timeout() time.Duration {
+	if o.TimeoutMs > 0 {
+		return time.Duration(o.TimeoutMs) * time.Millisecond
+	}
+	return 120 * time.Second
+}
+
+// apiError is the error object a hosted API puts in a failed response.
+type apiError struct {
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// postJSON sends in as JSON to url through do and decodes the answer into out; a status other than 200 is an error
+// carrying failure's message (out's apiError). Every error starts with name. It returns the raw answer.
+func postJSON(ctx context.Context, do func(*http.Request) (*http.Response, error), name, url string, headers map[string]string, in, out any, failure *apiError) ([]byte, error) {
+	body, err := json.Marshal(in)
+	if err != nil {
+		return nil, fmt.Errorf("%s: marshal request: %w", name, err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("%s: build request: %w", name, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%s: request failed: %w", name, err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("%s: read response: %w", name, err)
+	}
+	if err := json.Unmarshal(respBytes, out); err != nil {
+		return nil, fmt.Errorf("%s: parse response: %w (body: %s)", name, err, string(respBytes))
+	}
+	if resp.StatusCode != http.StatusOK {
+		msg := string(respBytes)
+		if failure.Error != nil {
+			msg = failure.Error.Message
+		}
+		return nil, fmt.Errorf("%s returned HTTP %d: %s", name, resp.StatusCode, msg)
+	}
+	return respBytes, nil
 }

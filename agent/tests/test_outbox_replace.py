@@ -36,11 +36,14 @@ class FakeOutbox:
         return sorted(k for k, v in self.drafts.items() if v["status"] == "draft")
 
 
-class ADraftAgainReplacesTheTasksEarlierOne(unittest.TestCase):
+class _Drafting(unittest.TestCase):
+    """outbox over a FakeOutbox, drafting for the task self.task names."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.task = "t1"
         self.patches = [mock.patch.object(outbox, "DRAFTS_DIR", Path(self.tmp.name)),
-                        mock.patch.object(outbox.task_context, "current", return_value="t1"),
+                        mock.patch.object(outbox.task_context, "current", lambda: self.task),
                         mock.patch.object(outbox.progress, "emit")]
         for p in self.patches:
             p.start()
@@ -54,6 +57,8 @@ class ADraftAgainReplacesTheTasksEarlierOne(unittest.TestCase):
             p.stop()
         self.tmp.cleanup()
 
+
+class ADraftAgainReplacesTheTasksEarlierOne(_Drafting):
     def test_the_same_letter_drafted_again_replaces_the_first(self):
         outbox.draft(["ap@globex.example"], "Payment reminder - overdue", "v1")
         outbox.draft(["billing@hooli.example"], "Final notice", "v1")
@@ -134,27 +139,9 @@ class ARecipientIsAnAddress(unittest.TestCase):
         self.assertTrue(outbox.ADDRESS.fullmatch(outbox._address_of("Alicia Grant <alicia@example.com>")))
 
 
-class AFollowUpReplacesTheReportedTasksDrafts(unittest.TestCase):
+class AFollowUpReplacesTheReportedTasksDrafts(_Drafting):
     """Series 16 H3: "leave Ishaan out" came after the fee run was reported; the follow-up task redid the drafts and the
     first run's Rao draft, still billing him, stayed beside the new one."""
-
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.task = "t1"
-        self.patches = [mock.patch.object(outbox, "DRAFTS_DIR", Path(self.tmp.name)),
-                        mock.patch.object(outbox.task_context, "current", lambda: self.task),
-                        mock.patch.object(outbox.progress, "emit")]
-        for p in self.patches:
-            p.start()
-        self.cp = FakeOutbox()
-        self.net = mock.patch.object(outbox.urllib.request, "urlopen", self.cp.urlopen)
-        self.net.start()
-
-    def tearDown(self):
-        self.net.stop()
-        for p in reversed(self.patches):
-            p.stop()
-        self.tmp.cleanup()
 
     def test_the_new_letter_to_the_same_family_replaces_the_reported_tasks(self):
         outbox.draft(["rao@x.example"], "Term 2 fee demand", "Ishaan and Tara: Rs 89,300")

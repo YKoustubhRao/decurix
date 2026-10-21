@@ -15,18 +15,7 @@ var playbookNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,79}$`)
 
 // requirePlaybook is requireDesktop plus a valid playbook name.
 func requirePlaybook(w http.ResponseWriter, r *http.Request, method string) (string, string, bool) {
-	id, ok := requireDesktop(w, r, method)
-	if !ok {
-		return "", "", false
-	}
-
-	name := r.FormValue("name")
-	if !playbookNamePattern.MatchString(name) {
-		jsonStatusError(w, http.StatusBadRequest, "not a playbook name")
-		return "", "", false
-	}
-
-	return id, name, true
+	return requireNamed(w, r, method, "name", playbookNamePattern, "not a playbook name")
 }
 
 // playbooksAPIHandler lists what a desktop worked out for itself.

@@ -7,7 +7,8 @@ and screenshots, operate applications, research information, write code,
 and create or update files.
 
 Same contract as the other three harnesses (harness.py): perform_task,
-continue_after_query, wait_for_backend, ask_once. What it can do:
+continue_after_query, wait_for_backend (its single questions are
+llm_client.ask_once). What it can do:
 
   shell            a command in the work dir (the dangerous ones wait for a yes)
   observe/act/...  the screen, through computer/mcp_server's own tools, so the
@@ -29,14 +30,12 @@ human's reply as the paused tool call's result.
 import base64
 import json
 import os
-import time
-from pathlib import Path
 
-from decurix_agent import config, guidance, llm_client, progress, state, task_context, usage
+from decurix_agent import config, guidance, llm_client, progress, state, usage
 from decurix_agent.commands import dangerous_reason, run_command
 from decurix_agent.computer import approval
 from decurix_agent.identity import get_identity_context
-from decurix_agent.logging_utils import log
+from decurix_agent.logging_utils import log, log_banner
 from decurix_agent.memory_context import get_memory_context
 from decurix_agent.messaging import ask_for_query, remember, write_final_reply
 from decurix_agent.tools import office, outbox
@@ -268,15 +267,10 @@ _paused = None  # {"call_id", "tool", "command" (for a dangerous shell command)}
 def _tool_specs():
     from decurix_agent.computer import mcp_server
 
-    specs = [{"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["parameters"]}}
+    return ([{"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["parameters"]}}
              for t in EXTRA_TOOLS]
-
-    for t in mcp_server.TOOLS:
-        specs.append({"type": "function", "function": {
-            "name": t["name"], "description": t["description"], "parameters": t["inputSchema"],
-        }})
-
-    return specs
+            + [{"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["inputSchema"]}}
+               for t in mcp_server.TOOLS])
 
 
 def _screen_tool_names():
@@ -522,7 +516,7 @@ def _procedures(task):
     is the better judge of which fits.
     """
 
-    from decurix_agent.computer import recording, replay, skill_engine, skills
+    from decurix_agent.computer import replay, skill_engine, skills
 
     lines = []
 
@@ -578,7 +572,7 @@ def _system_message(task=""):
 
 def _step(messages, tools):
     _trim_images(messages)
-    message, used = llm_client.chat(messages, tools=tools, max_tokens=6000)
+    message, _ = llm_client.chat(messages, tools=tools, max_tokens=6000)
 
     assistant = {"role": "assistant", "content": message.get("content") or ""}
     if message.get("tool_calls"):
@@ -699,17 +693,12 @@ def _answer_rest(messages, rest):
 def perform_task(task, task_file):
     global _conversation, _paused, _finish_pushbacks
 
-    state.current_task = task
-    state.current_task_file = task_file
-    state.waiting_for_query = False
+    state.begin(task, task_file)
     _conversation, _paused = None, None
     _finish_pushbacks = 0
     usage.set_model(os.environ.get("AZURE_MODEL") or "hosted model")
 
-    log("========================================")
-    log("STARTING TASK (azure harness)")
-    log(task)
-    log("========================================")
+    log_banner("STARTING TASK (azure harness)", task)
 
     messages = [
         {"role": "system", "content": _system_message(task)},
@@ -752,10 +741,7 @@ def continue_after_query(query_response):
 
     messages.append({"role": "tool", "tool_call_id": paused["call_id"], "content": result})
 
-    log("========================================")
-    log("RECEIVED HUMAN REPLY (azure harness)")
-    log(reply)
-    log("========================================")
+    log_banner("RECEIVED HUMAN REPLY (azure harness)", reply)
 
     _run(messages)
 
@@ -770,11 +756,3 @@ def wait_for_backend():
 
     from decurix_agent.readiness import wait_for_http_ok
     wait_for_http_ok(config.CONTROL_PLANE_URL.rstrip("/") + "/api/llm", "the control plane's hosted model")
-
-
-def warm_after_ready():
-    return
-
-
-def ask_once(system, prompt):
-    return llm_client.ask_once(system, prompt)

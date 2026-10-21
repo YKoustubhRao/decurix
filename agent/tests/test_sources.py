@@ -7,13 +7,14 @@ the bank statement's own last balance was 398,360.00; the report said -14,140.00
 """
 
 import shutil
-import tempfile
 import unittest
 from decimal import Decimal
 from pathlib import Path
 from unittest import mock
 
 import openpyxl
+
+from temp_case import TempDirCase
 
 from decurix_agent import config, produced, sources
 
@@ -64,12 +65,10 @@ def reconciliation(path, bank_close, book_close=-41290):
     return path
 
 
-class Fixture(unittest.TestCase):
+class Fixture(TempDirCase):
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.dir = Path(self.tmp.name)
+        super().setUp()
         self.bank = self.dir / "bank_oct.csv"
         self.bank.write_text(BANK_CSV, encoding="utf-8")
         self.book = cashbook(self.dir / "cashbook_oct.xlsx")

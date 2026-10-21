@@ -6,8 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 
 	"thebot/internal/atomizer"
@@ -54,15 +56,6 @@ var (
 // pathInsideWordRe is a character a path cannot follow when it starts there: it would be the middle of a longer one.
 var pathInsideWordRe = regexp.MustCompile(`[\w.~-]`)
 
-func containsString(list []string, s string) bool {
-	for _, x := range list {
-		if x == s {
-			return true
-		}
-	}
-	return false
-}
-
 // attachedFilesMark opens the lines of a request that name the files a
 // person attached to it, one path a line (the control plane's
 // attachmentsMark, the desktop agent's attachments.MARK).
@@ -77,23 +70,14 @@ func requestDocuments(request string) []string {
 		if loc[0] > 0 && pathInsideWordRe.MatchString(request[loc[0]-1:loc[0]]) {
 			continue // the tail of a relative path, not a path of its own
 		}
-		if doc := request[loc[0]:loc[1]]; !containsString(docs, doc) {
+		if doc := request[loc[0]:loc[1]]; !slices.Contains(docs, doc) {
 			docs = append(docs, doc)
 		}
 	}
 
 	if _, rest, found := strings.Cut(request, attachedFilesMark); found {
 		for _, line := range strings.Split(rest, "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-
-			known := false
-			for _, doc := range docs {
-				known = known || doc == line
-			}
-			if !known {
+			if line = strings.TrimSpace(line); line != "" && !slices.Contains(docs, line) {
 				docs = append(docs, line)
 			}
 		}
@@ -182,7 +166,7 @@ func unreadSources(st *operatorState) []string {
 	var names []string
 	seen := map[string]bool{}
 	for _, doc := range requestDocuments(st.Request) {
-		base := doc[strings.LastIndexAny(doc, `/\`)+1:]
+		base := docName(doc)
 		key := strings.ToLower(base)
 		if base == "" || seen[key] || outputs[key] {
 			continue
@@ -205,7 +189,7 @@ var commandPathRe = regexp.MustCompile(`[\w.~/-]*[\w-]`)
 // of that name with the same content. Found live (2026-10-20, P2): the request said the attached files are also in a
 // folder of the work folder; the worker read those copies and the guard demanded the attached ones.
 func readElsewhere(commands []string, doc string) bool {
-	base := doc[strings.LastIndexAny(doc, `/\`)+1:]
+	base := docName(doc)
 	want, err := os.ReadFile(doc)
 	if err != nil || base == "" {
 		return false
@@ -265,7 +249,7 @@ func expandHome(p string) string {
 func unreadNudge(docs []string) string {
 	names := make([]string, 0, len(docs))
 	for _, doc := range docs {
-		names = append(names, doc[strings.LastIndexAny(doc, `/\`)+1:])
+		names = append(names, docName(doc))
 	}
 	return fmt.Sprintf("Not run: a value you would type is not in anything you have read, and the request also gives "+
 		"%s; you have not read it. Every value you type must come from what the task gives. Read it first (office "+
@@ -689,14 +673,8 @@ func typesIntoSearch(st *operatorState, command string) bool {
 // refRe is an element's ref as gui observe gives it.
 var refRe = regexp.MustCompile(`^e[0-9]+$`)
 
-// groundingNudge is what to tell the operator instead of running command, or
-// "" when every value it would type can be traced.
-func groundingNudge(st *operatorState, command string) string {
-	nudge, _ := groundingCheck(st, command)
-	return nudge
-}
-
-// groundingCheck is groundingNudge with the values it could not trace, as typed (for a question a person can answer).
+// groundingCheck is what to tell the operator instead of running command, or "" when every value it would type can be
+// traced, with the values it could not trace, as typed (for a question a person can answer).
 func groundingCheck(st *operatorState, command string) (string, []string) {
 	// Each simple command of a chain on its own: one typing into a search box excuses only itself.
 	values := typedValuesExcept(command, func(segment string) bool { return typesIntoSearch(st, segment) })
@@ -745,8 +723,8 @@ func groundingCheck(st *operatorState, command string) (string, []string) {
 		return unreadNudge(unread), maskSecrets(waiting, secrets)
 	}
 	seen := normalise(st.Seen)
-	var numbers map[string]bool
-	var dates *dateSet
+	numbers := sync.OnceValue(func() map[string]bool { return numbersIn(st.Seen) })
+	dates := sync.OnceValue(func() *dateSet { return datesIn(st.Seen) })
 	var untraced, bare []string
 	authoring := authoringRe.MatchString(st.Request)
 	for _, v := range values {
@@ -757,34 +735,23 @@ func groundingCheck(st *operatorState, command string) (string, []string) {
 		// authored, not copied: found live (2026-10-15), asked to write a reply letter in Word, every sentence of it
 		// was refused as "a guess" and the person was asked which values to use. Its figures are still traced.
 		if authoring && letterRe.MatchString(v) {
-			if numbers == nil {
-				numbers = numbersIn(st.Seen)
-			}
 			figures := true
 			// A letter's own date ("15 October 2026") is the writer's, not a figure to trace.
-			for _, n := range figureRe.FindAllString(proseDateRe.ReplaceAllString(v, " "), -1) {
+			for _, n := range numberRe.FindAllString(proseDateRe.ReplaceAllString(v, " "), -1) {
 				c, ok := canonicalNumber(n)
-				figures = figures && ok && numbers[c]
+				figures = figures && ok && numbers()[c]
 			}
 			if figures {
 				continue
 			}
 		}
-		if n, ok := canonicalNumber(v); ok {
-			if numbers == nil {
-				numbers = numbersIn(st.Seen)
-			}
-			if numbers[n] {
-				continue
-			}
+		if n, ok := canonicalNumber(v); ok && numbers()[n] {
+			continue
 		}
 		if literals, texts, ok := formulaLiterals(v); ok {
-			if numbers == nil {
-				numbers = numbersIn(st.Seen)
-			}
 			traced := true
 			for _, n := range literals {
-				traced = traced && numbers[n]
+				traced = traced && numbers()[n]
 			}
 			for _, t := range texts {
 				traced = traced && strings.Contains(seen, normalise(t))
@@ -793,13 +760,8 @@ func groundingCheck(st *operatorState, command string) (string, []string) {
 				continue
 			}
 		}
-		if d, ok := canonicalDate(v); ok {
-			if dates == nil {
-				dates = datesIn(st.Seen)
-			}
-			if dates.holds(d) {
-				continue
-			}
+		if d, ok := canonicalDate(v); ok && dates().holds(d) {
+			continue
 		}
 		if pathTraced(v, seen) || fileTypeTraced(v, seen) || cellPlaceRe.MatchString(strings.TrimSpace(v)) {
 			continue
@@ -841,7 +803,6 @@ var (
 	authoringRe = regexp.MustCompile(`(?i)\b(?:write|draft|compose|reply|respond|prepare|word)\b[^.\n]{0,80}?\b(?:letters?|e-?mails?|memos?|messages?|notes?|repl(?:y|ies)|responses?|summar(?:y|ies)|reports?|documents?|descriptions?|posts?|articles?|paragraphs?|captions?|announcements?|minutes|notices?|cover letters?)\b`)
 	letterRe    = regexp.MustCompile(`\p{L}`)
 	proseDateRe = regexp.MustCompile(`(?i)\b\d{1,2}(?:st|nd|rd|th)?[ ./-]*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?[ ./,-]*\d{2,4}\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.? \d{1,2}(?:st|nd|rd|th)?,? \d{4}\b|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b`)
-	figureRe    = regexp.MustCompile(`\d[\d,]*(?:\.\d+)?`)
 )
 
 // filePathRe is a typed value that is a file's path: folders, then a name with an extension.
@@ -1489,7 +1450,7 @@ func unseenPictures(st *operatorState) []string {
 		if !pictureExtRe.MatchString(doc) {
 			continue
 		}
-		base := doc[strings.LastIndexAny(doc, `/\`)+1:]
+		base := docName(doc)
 		seen := false
 		for _, c := range st.Commands {
 			if strings.Contains(c, "office read") && (strings.Contains(c, doc) || strings.Contains(c, base)) {
@@ -1510,8 +1471,11 @@ func unseenPicturesNudge(unseen []string) string {
 		"it says.", strings.Join(unseen, ", "), unseen[0])
 }
 
+// docName is a document's file name: what follows its last / or \.
+func docName(doc string) string { return doc[strings.LastIndexAny(doc, `/\`)+1:] }
+
 func readBefore(commands []string, doc string) bool {
-	base := doc[strings.LastIndexAny(doc, `/\`)+1:]
+	base := docName(doc)
 	for _, c := range commands {
 		if strings.Contains(c, doc) || strings.Contains(c, base) {
 			return true

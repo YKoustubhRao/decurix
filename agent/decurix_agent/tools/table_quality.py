@@ -148,27 +148,34 @@ def table_facts(header, rows, first_row=2):
             "totals": totals, "groups": groups, "loud": loud}
 
 
+def csv_table(path):
+    """(header, table_facts) of a CSV/TSV file, or None when it is not a table."""
+
+    p = Path(path)
+    with open(p, encoding="utf-8-sig", errors="replace", newline="") as handle:
+        rows = list(csv.reader(handle, delimiter="\t" if p.suffix.lower() == ".tsv" else ","))
+    if len(rows) < 3 or len(rows[0]) < 2:
+        return None
+    return rows[0], table_facts(rows[0], rows[1:])
+
+
 def csv_facts(path):
     """table_facts of a CSV/TSV file, or None when it is not a table."""
 
-    p = Path(path)
     try:
-        with open(p, encoding="utf-8-sig", errors="replace", newline="") as handle:
-            rows = list(csv.reader(handle, delimiter="\t" if p.suffix.lower() == ".tsv" else ","))
+        table = csv_table(path)
     except OSError:
         return None
-    if len(rows) < 3 or len(rows[0]) < 2:
-        return None
-    return table_facts(rows[0], rows[1:])
+    return table[1] if table else None
 
 
-def sheet_facts(sheet):
-    """table_facts of a worksheet whose first row is its header (openpyxl, values), or None."""
+def sheet_table(sheet):
+    """(header, table_facts) of a worksheet whose first row is its header (openpyxl, values), or None."""
 
     rows = [list(r) for r in sheet.iter_rows(values_only=True)]
     if len(rows) < 3 or sum(c is not None for c in rows[0]) < 2:
         return None
-    return table_facts(rows[0], rows[1:])
+    return rows[0], table_facts(rows[0], rows[1:])
 
 
 # ------------------------------------------------------------ several period files read in one task
@@ -185,13 +192,23 @@ def _known():
         return {}
 
 
+def _record(header, facts):
+    """What is kept of a read table: its columns' signature, its repeats and its totals with and without them."""
+
+    return {"sig": "|".join(str(h or "").strip().lower() for h in header),
+            "repeated": len(facts.get("duplicates") or []), "loud": bool(facts.get("loud")),
+            "totals": {k: [str(a), str(b)] for k, (a, b) in (facts.get("totals") or {}).items()},
+            "groups": {k: [str(a), str(b)] for k, (a, b) in (facts.get("groups") or {}).items()}}
+
+
 def overlap_lines(path, header, facts):
     """Note what this table holds (its date range, its totals with and without repeated rows), and say which tables
     read earlier in this task, with the same columns, have an overlapping date range."""
 
     if not facts:
         return []
-    sig = "|".join(str(h or "").strip().lower() for h in header)
+    record = _record(header, facts)
+    sig = record["sig"]
     store = _ranges_file()
     known = _known()
     out = []
@@ -204,10 +221,7 @@ def overlap_lines(path, header, facts):
             if lo <= info["hi"] and info["lo"] <= hi:
                 out.append(f"Its dates ({lo} to {hi}) overlap those of {Path(other).name} ({info['lo']} to "
                            f"{info['hi']}), read earlier with the same columns.")
-    known[str(path)] = {"sig": sig, "lo": lo, "hi": hi, "repeated": len(facts.get("duplicates") or []),
-                        "loud": bool(facts.get("loud")),
-                        "totals": {k: [str(a), str(b)] for k, (a, b) in (facts.get("totals") or {}).items()},
-                        "groups": {k: [str(a), str(b)] for k, (a, b) in (facts.get("groups") or {}).items()}}
+    known[str(path)] = {"sig": sig, "lo": lo, "hi": hi, **record}
     try:
         store.parent.mkdir(parents=True, exist_ok=True)
         store.write_text(json.dumps(known), encoding="utf-8")
@@ -242,28 +256,22 @@ def input_record(paths):
             tables = []
             try:
                 if suffix in (".csv", ".tsv"):
-                    with open(p, encoding="utf-8-sig", errors="replace", newline="") as handle:
-                        rows = list(csv.reader(handle, delimiter="\t" if suffix == ".tsv" else ","))
-                    if len(rows) >= 3 and len(rows[0]) >= 2:
-                        tables.append((str(p), rows[0], table_facts(rows[0], rows[1:])))
+                    table = csv_table(p)
+                    if table:
+                        tables.append((str(p), *table))
                 else:
                     import openpyxl
                     book = openpyxl.load_workbook(p, data_only=True, read_only=True)
                     try:
                         for sheet in book.worksheets:
-                            rows = [list(r) for r in sheet.iter_rows(values_only=True)]
-                            if len(rows) >= 3 and sum(c is not None for c in rows[0]) >= 2:
-                                tables.append((f"{p}#{sheet.title}", rows[0], table_facts(rows[0], rows[1:])))
+                            table = sheet_table(sheet)
+                            if table:
+                                tables.append((f"{p}#{sheet.title}", *table))
                     finally:
                         book.close()
             except Exception:  # noqa: BLE001 - a table that cannot be read is not judged
                 tables = []
-            _INPUT_CACHE[key] = {
-                name: {"sig": "|".join(str(h or "").strip().lower() for h in header),
-                       "repeated": len(facts.get("duplicates") or []), "loud": bool(facts.get("loud")),
-                       "totals": {k: [str(a), str(b)] for k, (a, b) in (facts.get("totals") or {}).items()},
-                       "groups": {k: [str(a), str(b)] for k, (a, b) in (facts.get("groups") or {}).items()}}
-                for name, header, facts in tables if facts}
+            _INPUT_CACHE[key] = {name: _record(header, facts) for name, header, facts in tables if facts}
         out.update(_INPUT_CACHE[key])
     return out
 

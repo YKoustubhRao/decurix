@@ -10,14 +10,12 @@ import os
 import sys
 import time
 import unittest
-from pathlib import Path
-from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
 
 from test_shared_folder import HOST, SharedBase
 
-from decurix_agent import config, long_task, shared
+from decurix_agent import long_task, shared
 from decurix_agent.computer import core
 from decurix_agent.workflow_runner import artifact_evidence
 

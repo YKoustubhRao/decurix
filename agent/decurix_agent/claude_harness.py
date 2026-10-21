@@ -6,7 +6,7 @@ from pathlib import Path
 
 from decurix_agent import config, progress, state, usage
 from decurix_agent.computer import approval
-from decurix_agent.logging_utils import log
+from decurix_agent.logging_utils import log, log_banner
 from decurix_agent.identity import get_identity_context
 from decurix_agent.memory_context import get_memory_context
 from decurix_agent.messaging import ask_for_query, write_final_reply
@@ -433,14 +433,9 @@ def _handle_result(result):
 
 
 def perform_task(task, task_file):
-    state.current_task = task
-    state.current_task_file = task_file
-    state.waiting_for_query = False
+    state.begin(task, task_file)
 
-    log("========================================")
-    log("STARTING TASK (Claude Code harness)")
-    log(task)
-    log("========================================")
+    log_banner("STARTING TASK (Claude Code harness)", task)
 
     result, error = _run_claude(task)
 
@@ -466,10 +461,7 @@ def continue_after_query(query_response):
 
     state.waiting_for_query = False
 
-    log("========================================")
-    log("RECEIVED HUMAN REPLY TO QUERY (Claude Code harness)")
-    log(query_response)
-    log("========================================")
+    log_banner("RECEIVED HUMAN REPLY TO QUERY (Claude Code harness)", query_response)
 
     result, error = _run_claude(
         query_response,

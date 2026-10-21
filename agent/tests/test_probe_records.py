@@ -53,15 +53,7 @@ class APlaceholderIsNeverSent(unittest.TestCase):
         self.assertEqual(self.check([["Search", "Cafe Bloom"]]), "")
 
 
-class ATestRecordSavedAnywayIsReportedAtTheTop(unittest.TestCase):
-    setUp = base.LongRun.setUp
-    restore = base.LongRun.restore
-    model = base.LongRun.model
-    send = base.LongRun.send
-    finals = base.LongRun.finals
-    message = base.LongRun.message
-    run_id = base.LongRun.run_id
-
+class ATestRecordSavedAnywayIsReportedAtTheTop(base.LongRunBase):
     def test_the_live_approval_puts_it_in_the_report(self):
         self.assertTrue(long_task.PROBE_RECORD.search(LIVE_APPROVAL))
         self.assertIsNone(long_task.PROBE_RECORD.search("Should I hold the order for Cafe Bloom that I created?"))

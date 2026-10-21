@@ -65,7 +65,7 @@ def is_done(remaining_text):
 
 
 def next_step(model_key, full_task, remaining, url, page_html, prior_error=None,
-              screenshot_b64=None, on_chunk=None):
+              screenshot_b64=None):
     """Returns (next_instruction, remaining_after). next_instruction is None if
     the response couldn't be parsed -- the caller treats that as a failure."""
     user = (
@@ -101,8 +101,6 @@ def next_step(model_key, full_task, remaining, url, page_html, prior_error=None,
                                    images=[screenshot_b64] if screenshot_b64 else None,
                                    max_tokens=200):
         full = evt["text"]
-        if evt["type"] == "chunk" and on_chunk:
-            on_chunk(full)
 
     next_instr, remaining_after = None, "done"
     for line in full.splitlines():

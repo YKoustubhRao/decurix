@@ -54,13 +54,10 @@ func authenticateViaLink(t *testing.T, srv *httptest.Server, code, next string) 
 	return resp
 }
 
-func TestAuthenticateLinkGrantsASessionAndRedirectsOn(t *testing.T) {
-	store := NewStore()
-	srv := httptest.NewServer(store.Middleware(protectedHandler()))
-	defer srv.Close()
-
-	resp := authenticateViaLink(t, srv, store.Password(), "/view/research-box")
-	defer resp.Body.Close()
+// assertSessionGrantedFor checks that a correct code redirected on to /view/research-box with a session cookie
+// that then reaches the real handler.
+func assertSessionGrantedFor(t *testing.T, srv *httptest.Server, resp *http.Response) {
+	t.Helper()
 
 	if resp.StatusCode != http.StatusFound {
 		t.Fatalf("status = %d, want 302", resp.StatusCode)
@@ -95,6 +92,17 @@ func TestAuthenticateLinkGrantsASessionAndRedirectsOn(t *testing.T) {
 	if !strings.HasPrefix(string(body[:n]), "protected: /view/research-box") {
 		t.Fatalf("expected the real handler to run once authenticated, got: %s", body[:n])
 	}
+}
+
+func TestAuthenticateLinkGrantsASessionAndRedirectsOn(t *testing.T) {
+	store := NewStore()
+	srv := httptest.NewServer(store.Middleware(protectedHandler()))
+	defer srv.Close()
+
+	resp := authenticateViaLink(t, srv, store.Password(), "/view/research-box")
+	defer resp.Body.Close()
+
+	assertSessionGrantedFor(t, srv, resp)
 }
 
 func TestAuthenticateLinkWithWrongCodeDoesNotGrantASession(t *testing.T) {
@@ -183,39 +191,7 @@ func TestCorrectCodeGrantsASessionAndRedirectsOn(t *testing.T) {
 	resp := login(t, srv, store.Password(), "/view/research-box")
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusFound {
-		t.Fatalf("status = %d, want 302", resp.StatusCode)
-	}
-
-	if loc := resp.Header.Get("Location"); loc != "/view/research-box" {
-		t.Fatalf("redirect location = %q, want /view/research-box", loc)
-	}
-
-	var cookie *http.Cookie
-	for _, c := range resp.Cookies() {
-		if c.Name == "decurix_lan_session" {
-			cookie = c
-		}
-	}
-	if cookie == nil {
-		t.Fatal("no session cookie was set")
-	}
-
-	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/view/research-box", nil)
-	req.AddCookie(cookie)
-
-	authed, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer authed.Body.Close()
-
-	body := make([]byte, 4096)
-	n, _ := authed.Body.Read(body)
-
-	if !strings.HasPrefix(string(body[:n]), "protected: /view/research-box") {
-		t.Fatalf("expected the real handler to run once authenticated, got: %s", body[:n])
-	}
+	assertSessionGrantedFor(t, srv, resp)
 }
 
 func TestWrongCodeDoesNotGrantASession(t *testing.T) {

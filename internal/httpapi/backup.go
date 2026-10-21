@@ -73,8 +73,7 @@ type backupDesktop struct {
 
 // backupHandler streams the backup (GET /api/backup[?recordings=1]).
 func (s *Server) backupHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodGet) {
 		return
 	}
 	if s.DB == nil {

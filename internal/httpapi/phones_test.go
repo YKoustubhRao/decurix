@@ -14,7 +14,6 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/devices"
 	"github.com/YKoustubhRao/decurix/internal/phonehost"
-	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 	"github.com/YKoustubhRao/decurix/internal/webui"
 	"github.com/YKoustubhRao/decurix/internal/winhost"
 	"github.com/YKoustubhRao/decurix/internal/wsconn"
@@ -24,11 +23,7 @@ import (
 func phoneServer(t *testing.T) (*Server, *httptest.Server, string, devices.Device) {
 	t.Helper()
 
-	db, err := sqlitedb.OpenMemory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
+	db := testDB(t)
 
 	store, err := devices.NewStore(db)
 	if err != nil {
@@ -117,13 +112,7 @@ func TestALinkedPhonesAppsAreListedAndOpenInAViewer(t *testing.T) {
 	s, srv, token, dev := phoneServer(t)
 	linkFakePhone(t, srv, token)
 
-	deadline := time.Now().Add(3 * time.Second)
-	for len(s.Phones.Phones()) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the phone never linked")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitFor(t, 3*time.Second, "the phone to link", func() bool { return len(s.Phones.Phones()) > 0 })
 
 	s.refreshPhoneApps(context.Background(), true)
 

@@ -23,7 +23,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -181,10 +180,7 @@ func chunkText(text string) []string {
 	runes := []rune(text)
 	start := 0
 	for start < len(runes) {
-		end := start + chunkSize
-		if end > len(runes) {
-			end = len(runes)
-		}
+		end := min(start+chunkSize, len(runes))
 		chunk := strings.TrimSpace(string(runes[start:end]))
 		if chunk != "" {
 			chunks = append(chunks, chunk)
@@ -233,7 +229,7 @@ func (r *RAG) IngestFile(ctx context.Context, relPath string) (chunks int, metho
 		}
 		if _, err := tx.Exec(
 			`INSERT INTO chunks (rel_path, chunk_index, text, embedding, created_at) VALUES (?, ?, ?, ?, ?)`,
-			relPath, i, piece, encodeVector(vec), now,
+			relPath, i, piece, llm.EncodeVector(vec), now,
 		); err != nil {
 			return 0, "", fmt.Errorf("rag: insert chunk %d of %s: %w", i, relPath, err)
 		}
@@ -265,15 +261,13 @@ func (r *RAG) Query(ctx context.Context, query string, topK int) ([]Result, erro
 		if err := rows.Scan(&relPath, &text, &embStr); err != nil {
 			return nil, fmt.Errorf("rag: scan row: %w", err)
 		}
-		vec := decodeVector(embStr)
-		score := llm.CosineSimilarity(queryVec, vec)
-		results = append(results, Result{RelPath: relPath, Text: text, Score: score})
+		results = append(results, Result{RelPath: relPath, Text: text, Score: llm.CosineSimilarity(queryVec, llm.DecodeVector(embStr))})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	sortByScoreDesc(results)
+	sort.Slice(results, func(i, j int) bool { return results[i].Score > results[j].Score })
 	if len(results) > topK {
 		results = results[:topK]
 	}
@@ -321,34 +315,6 @@ func (r *RAG) ListFiles(ctx context.Context) ([]FileStat, error) {
 		out = append(out, fs)
 	}
 	return out, rows.Err()
-}
-
-func encodeVector(v []float32) string {
-	parts := make([]string, len(v))
-	for i, f := range v {
-		parts[i] = strconv.FormatFloat(float64(f), 'g', -1, 32)
-	}
-	return strings.Join(parts, ",")
-}
-
-func decodeVector(s string) []float32 {
-	if s == "" {
-		return nil
-	}
-	parts := strings.Split(s, ",")
-	out := make([]float32, 0, len(parts))
-	for _, p := range parts {
-		f, err := strconv.ParseFloat(p, 32)
-		if err != nil {
-			continue
-		}
-		out = append(out, float32(f))
-	}
-	return out
-}
-
-func sortByScoreDesc(results []Result) {
-	sort.Slice(results, func(i, j int) bool { return results[i].Score > results[j].Score })
 }
 
 type doclingOutput struct {

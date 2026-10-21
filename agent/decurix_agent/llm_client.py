@@ -140,13 +140,10 @@ def chat(messages, tools=None, model="default", max_tokens=4000, temperature=Non
     return choices[0].get("message") or {}, spent
 
 
-def ask_once(system, prompt, model="default"):
+def ask_once(system, prompt):
     """One question, no tools, no history - harness.ask_model's shape."""
 
-    message, _ = chat(
-        [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-        model=model, max_tokens=1500,
-    )
+    message, _ = chat([{"role": "system", "content": system}, {"role": "user", "content": prompt}], max_tokens=1500)
 
     return (message.get("content") or "").strip()
 

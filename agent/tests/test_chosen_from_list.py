@@ -1,7 +1,8 @@
 import unittest
 from unittest.mock import patch
 
-from decurix_agent import skill_task, verify
+from decurix_agent import verify
+from decurix_agent.computer import skills
 
 
 def step(kind, param=None, role=None):
@@ -25,8 +26,8 @@ SKILL = {"name": "enter-a-record", "steps": [
 
 class TestValuesChosenFromAList(unittest.TestCase):
     def test_a_value_typed_and_then_picked_from_a_list_is_told_apart_from_one_that_is_typed(self):
-        self.assertEqual(skill_task._chosen_from_list(SKILL), {"company", "product"})
-        self.assertEqual(skill_task._chosen_from_list({"steps": []}), set())
+        self.assertEqual(skills.chosen_from_list(SKILL), {"company", "product"})
+        self.assertEqual(skills.chosen_from_list({"steps": []}), set())
 
     def test_the_check_is_told_which_values_are_the_applications_own_records(self):
         # Found live: a correct entry was refused because the record picked

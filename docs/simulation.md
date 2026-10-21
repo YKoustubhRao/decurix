@@ -95,7 +95,7 @@ production: a failed/wrong /skill task on that responsibility → suspended
 
 ## Isolation: the practice desktop
 
-The practice desktop is created by a new `desktop.Manager.CreatePractice`, not by `Create`. As in `RunQualification`, it does no migration, launchers, credential seeding, shared folder or host apps, and it is labelled `decurix-practice=true` and swept at startup (`CleanupPractice`, the twin of `CleanupQualification`).
+The practice desktop is created by a new `desktop.Manager.CreatePractice`, not by `BeginProvisioning`. As in `RunQualification`, it does no migration, launchers, credential seeding, shared folder or host apps, and it is labelled `decurix-practice=true` and swept at startup (`CleanupPractice`, the twin of `CleanupQualification`).
 
 | | Offline qualification (`qualification.go`) | Practice desktop |
 |---|---|---|

@@ -1,5 +1,4 @@
 import os
-import platform
 
 from decurix_agent import config
 

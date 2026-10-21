@@ -8,16 +8,11 @@ import (
 	"testing"
 
 	"github.com/YKoustubhRao/decurix/internal/outbox"
-	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
 
 func newOutboxServer(t *testing.T) *Server {
 	t.Helper()
-	db, err := sqlitedb.OpenMemory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
+	db := testDB(t)
 	store, err := outbox.New(db)
 	if err != nil {
 		t.Fatal(err)

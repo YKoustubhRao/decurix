@@ -83,15 +83,7 @@ class OnlyWhatTheRunOpened(unittest.TestCase):
         self.assertEqual(host_documents.still_open({}), ["MIS_Oct2026.pptx in PowerPoint"])
 
 
-class InAPlannedRun(unittest.TestCase):
-    setUp = base.LongRun.setUp
-    restore = base.LongRun.restore
-    model = base.LongRun.model
-    send = base.LongRun.send
-    finals = base.LongRun.finals
-    message = base.LongRun.message
-    run_id = base.LongRun.run_id
-
+class InAPlannedRun(base.LongRunBase):
     def test_a_question_leaves_the_stage_documents_open_and_says_so_and_the_end_lists_unsaved_ones(self):
         apps = Apps({"mine": "Budget.xlsx - Excel"}, unsaved={"deck"})
         apps.install(self)

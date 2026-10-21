@@ -2,13 +2,11 @@ package httpapi
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"strings"
 
-	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/memory"
 )
 
@@ -19,8 +17,7 @@ func (s *Server) desktopMemoryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+	if !requirePost(w, r) {
 		return
 	}
 
@@ -73,8 +70,7 @@ func (s *Server) desktopMemoryHandler(w http.ResponseWriter, r *http.Request) {
 // either one is shared with the other going forward, and backfills every
 // entry either one already has into the other's container.
 func (s *Server) linkDesktopMemoryHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+	if !requirePost(w, r) {
 		return
 	}
 
@@ -91,23 +87,11 @@ func (s *Server) linkDesktopMemoryHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if _, err := s.Desktops.Get(r.Context(), desktopID); err != nil {
-		if errors.Is(err, desktop.ErrNotFound) {
-			http.Error(w, "desktop_id not found", http.StatusBadRequest)
-			return
-		}
-
-		jsonError(w, err)
+	if _, ok := s.desktopFound(w, r, desktopID, http.StatusBadRequest, "desktop_id not found"); !ok {
 		return
 	}
 
-	if _, err := s.Desktops.Get(r.Context(), linkedID); err != nil {
-		if errors.Is(err, desktop.ErrNotFound) {
-			http.Error(w, "linked_id not found", http.StatusBadRequest)
-			return
-		}
-
-		jsonError(w, err)
+	if _, ok := s.desktopFound(w, r, linkedID, http.StatusBadRequest, "linked_id not found"); !ok {
 		return
 	}
 
@@ -128,25 +112,19 @@ func (s *Server) linkDesktopMemoryHandler(w http.ResponseWriter, r *http.Request
 // since the link itself (the part that matters for future entries) already
 // succeeded.
 func (s *Server) backfillSharedMemory(ctx context.Context, desktopA, desktopB string) {
-	for _, entry := range s.Memory.List(desktopA) {
-		filename, content := memory.FormatForDesktopFile(entry)
-		if err := s.Desktops.PersistMemoryFile(ctx, desktopB, filename, content); err != nil {
-			log.Printf("backfillSharedMemory: copy %s to %s: %v", entry.ID, desktopB, err)
-		}
-	}
-
-	for _, entry := range s.Memory.List(desktopB) {
-		filename, content := memory.FormatForDesktopFile(entry)
-		if err := s.Desktops.PersistMemoryFile(ctx, desktopA, filename, content); err != nil {
-			log.Printf("backfillSharedMemory: copy %s to %s: %v", entry.ID, desktopA, err)
+	for _, pair := range [][2]string{{desktopA, desktopB}, {desktopB, desktopA}} {
+		for _, entry := range s.Memory.List(pair[0]) {
+			filename, content := memory.FormatForDesktopFile(entry)
+			if err := s.Desktops.PersistMemoryFile(ctx, pair[1], filename, content); err != nil {
+				log.Printf("backfillSharedMemory: copy %s to %s: %v", entry.ID, pair[1], err)
+			}
 		}
 	}
 }
 
 // unlinkDesktopMemoryHandler stops sharing L1 memory between two workers.
 func (s *Server) unlinkDesktopMemoryHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+	if !requirePost(w, r) {
 		return
 	}
 

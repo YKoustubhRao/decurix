@@ -126,13 +126,6 @@ def scan_of(pdf, name, workdir):
     return base + ".png"
 
 
-def newest(pattern_dir, ext, exclude=()):
-    """Files with `ext` in a desktop folder, newest first, minus inputs."""
-
-    out = sh(f"ls -t {pattern_dir}/*{ext} 2>/dev/null").stdout.split("\n")
-    return [p for p in out if p and os.path.basename(p) not in exclude and ".orig." not in p]
-
-
 def made_since(t0, ext, exclude=()):
     """Files with `ext` written anywhere under ~/work since t0, newest first: where an output is saved is the
     agent's choice when the request names no folder, so it is looked for, not assumed."""
@@ -230,7 +223,7 @@ print(json.dumps("ok"))
 
 
 def wf4_price_update(work):
-    wb = py(f"""
+    py(f"""
 import json, openpyxl, os
 os.makedirs('{HOME}/work/wf4', exist_ok=True)
 wb = openpyxl.Workbook(); ws = wb.active; ws.title = 'Catalogue'

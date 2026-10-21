@@ -61,19 +61,6 @@ func (c *Claude) Configured() bool {
 	return c != nil && c.Key != ""
 }
 
-// Resolve maps what a caller asked for to a model, the same rule as
-// Client.Resolve: "default"/"fast" or the two configured names, nothing else.
-func (c *Claude) Resolve(asked string) (string, error) {
-	switch strings.TrimSpace(asked) {
-	case "", "default", c.Model:
-		return c.Model, nil
-	case "fast", c.FastModel:
-		return c.FastModel, nil
-	}
-
-	return "", fmt.Errorf("llm: model %q is not one this control plane offers", asked)
-}
-
 // openAIRequest is the part of a chat-completions request this translates.
 type openAIRequest struct {
 	Model               string           `json:"model"`
@@ -132,7 +119,7 @@ func (c *Claude) Chat(ctx context.Context, body []byte) (int, []byte, http.Heade
 		return 0, nil, nil, fmt.Errorf("llm: request is not a chat request: %w", err)
 	}
 
-	model, err := c.Resolve(req.Model)
+	model, err := resolve(req.Model, c.Model, c.FastModel)
 	if err != nil {
 		return 0, nil, nil, err
 	}
@@ -165,11 +152,7 @@ func (c *Claude) Chat(ctx context.Context, body []byte) (int, []byte, http.Heade
 		if errors.As(err, &apiErr) {
 			retry := http.Header{}
 			if apiErr.Response != nil {
-				for _, name := range append([]string{"retry-after"}, RetryHeaders...) {
-					if v := apiErr.Response.Header.Get(name); v != "" {
-						retry.Set(name, v)
-					}
-				}
+				retry = copyHeaders(apiErr.Response.Header, append([]string{"retry-after"}, RetryHeaders...))
 			}
 
 			return apiErr.StatusCode, errorBody(claudeErrorMessage(apiErr)), retry, nil
@@ -485,16 +468,26 @@ func fromClaudeMessage(msg *anthropic.Message) map[string]any {
 // claudeErrorMessage is the API's own message for a failed call, without
 // the request dump the SDK's Error() adds.
 func claudeErrorMessage(e *anthropic.Error) string {
+	if message := errorMessage([]byte(e.RawJSON())); message != "" {
+		return message
+	}
+
+	return http.StatusText(e.StatusCode)
+}
+
+// errorMessage is the message of an OpenAI- or Claude-shaped error body
+// ({"error": {"message": ...}}), or "".
+func errorMessage(body []byte) string {
 	var parsed struct {
 		Error struct {
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	if json.Unmarshal([]byte(e.RawJSON()), &parsed) == nil && parsed.Error.Message != "" {
-		return parsed.Error.Message
+	if json.Unmarshal(body, &parsed) != nil {
+		return ""
 	}
 
-	return http.StatusText(e.StatusCode)
+	return parsed.Error.Message
 }
 
 // errorBody is an OpenAI-shaped error answer.

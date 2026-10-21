@@ -11,9 +11,7 @@
 package tasks
 
 import (
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -326,13 +324,7 @@ func NewStore(db *sql.DB) (*Store, error) {
 // newID returns a random identifier with a one-letter prefix naming what it is.
 // Task IDs travel into a desktop inside a file name, so they stay [a-z0-9].
 func newID(prefix string) string {
-	raw := make([]byte, 8)
-
-	if _, err := rand.Read(raw); err != nil {
-		panic(fmt.Sprintf("tasks: generating id: %v", err))
-	}
-
-	return prefix + hex.EncodeToString(raw)
+	return sqlitedb.NewID(prefix, 8)
 }
 
 // ValidID reports whether id has the shape of an ID this store issues, which
@@ -462,7 +454,7 @@ func (s *Store) Plan(workerID, text string) (Route, error) {
 		return Route{}, fmt.Errorf("tasks: routing request: %w", err)
 	}
 
-	return Route{Kind: RouteNew, TaskID: newID("t"), ExecutionID: newID("x")}, nil
+	return NewRoute(), nil
 }
 
 // Busy says why a worker cannot take on something new right now - one of its
@@ -615,7 +607,7 @@ func (s *Store) Commit(route Route, worker Worker, text string) (Route, error) {
 		if err != nil || status != StatusWaiting && status != StatusRunning {
 			// The pause it answered is over (its desktop was stopped): the
 			// agent will take this as a new task, so record it as one.
-			route = Route{Kind: RouteNew, TaskID: newID("t"), ExecutionID: newID("x")}
+			route = NewRoute()
 			if err := s.insertTask(tx, route, worker, text, now); err != nil {
 				return route, err
 			}
@@ -739,8 +731,10 @@ type executionRef struct {
 	endedAt time.Time
 }
 
-func (e executionRef) live() bool {
-	return e.status == StatusQueued || e.status == StatusRunning || e.status == StatusWaiting
+// Live reports whether an execution or task status is still open: queued,
+// running or waiting on a human.
+func Live(status string) bool {
+	return status == StatusQueued || status == StatusRunning || status == StatusWaiting
 }
 
 // resolve finds the execution a desktop's report belongs to: the one named by
@@ -777,7 +771,7 @@ func resolve(tx *sql.Tx, workerID, taskID string, now time.Time) (executionRef, 
 
 		// A task that ended long ago is not what a desktop is working on now,
 		// whatever ID it last wrote down; fall through to what is live.
-		if ok && (ref.live() || now.Sub(ref.endedAt) < lateWindow) {
+		if ok && (Live(ref.status) || now.Sub(ref.endedAt) < lateWindow) {
 			return ref, true, nil
 		}
 	}
@@ -926,7 +920,7 @@ func (s *Store) RecordOutcome(workerID, taskID string, outcome Outcome) (string,
 	}
 
 	// A closed execution only takes steps after the fact, never a second end.
-	if !ok || !ref.live() {
+	if !ok || !Live(ref.status) {
 		return "", nil
 	}
 
@@ -944,7 +938,7 @@ func (s *Store) RecordOutcome(workerID, taskID string, outcome Outcome) (string,
 			checked = COALESCE(?, checked)
 		 WHERE id = ?`,
 		outcome.Engine, outcome.Engine, outcome.Model, outcome.Model,
-		nullFloat(outcome.CostUSD), nullInt(outcome.InputTokens), nullInt(outcome.OutputTokens),
+		nullable(outcome.CostUSD), nullable(outcome.InputTokens), nullable(outcome.OutputTokens),
 		nullBool(outcome.Checked), ref.id,
 	); err != nil {
 		return "", fmt.Errorf("tasks: recording outcome: %w", err)
@@ -1055,26 +1049,15 @@ func (s *Store) CloseOpen(workerID, why string) error {
 
 	now := sqlitedb.ToNS(s.now())
 
-	rows, err := tx.Query(
-		`SELECT id, task_id, status FROM executions WHERE worker_id = ? AND status IN (?, ?, ?)`,
-		workerID, StatusQueued, StatusRunning, StatusWaiting,
-	)
+	open, err := sqlitedb.QueryAll(tx, func(r sqlitedb.Scanner) (executionRef, error) {
+		var ref executionRef
+		err := r.Scan(&ref.id, &ref.taskID, &ref.status)
+		return ref, err
+	}, `SELECT id, task_id, status FROM executions WHERE worker_id = ? AND status IN (?, ?, ?)`,
+		workerID, StatusQueued, StatusRunning, StatusWaiting)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-
-	var open []executionRef
-
-	for rows.Next() {
-		var ref executionRef
-		if err := rows.Scan(&ref.id, &ref.taskID, &ref.status); err != nil {
-			rows.Close()
-			return err
-		}
-		open = append(open, ref)
-	}
-	rows.Close()
 
 	for _, ref := range open {
 		status := StatusAbandoned
@@ -1137,7 +1120,7 @@ func (s *Store) SetVerdict(taskID, verdict, note string) (Task, error) {
 const taskColumns = `t.id, t.worker_id, COALESCE(w.name, t.worker_id), t.engine, t.request, t.task_type,
 	t.status, t.verdict, t.verdict_note, t.verdict_ns, t.created_ns, t.updated_ns`
 
-func scanTask(scanner interface{ Scan(...any) error }) (Task, error) {
+func scanTask(scanner sqlitedb.Scanner) (Task, error) {
 	var task Task
 	var verdictAt, created, updated int64
 
@@ -1182,7 +1165,7 @@ func (s *Store) Get(taskID string) (Detail, error) {
 		return Detail{}, fmt.Errorf("tasks: reading task: %w", err)
 	}
 
-	detail := Detail{Task: task, Executions: []Execution{}}
+	detail := Detail{Task: task}
 	detail.Worker, _ = s.Worker(task.WorkerID)
 
 	executions, err := s.loadExecutions(`WHERE e.task_id = ?`, taskID)
@@ -1240,36 +1223,22 @@ func (s *Store) Get(taskID string) (Detail, error) {
 		}
 	}
 
-	if executions != nil {
-		detail.Executions = executions
-	}
+	detail.Executions = executions
 
 	return detail, nil
 }
 
 func (s *Store) loadExecutions(where string, args ...any) ([]Execution, error) {
-	rows, err := s.db.Query(
-		`SELECT e.id, e.task_id, e.attempt, e.worker_id, e.engine, e.model, e.status, e.final_reply,
-			e.started_ns, e.ended_ns, e.cost_usd, e.input_tokens, e.output_tokens, e.checked
-		 FROM executions e JOIN tasks t ON t.id = e.task_id `+where+` ORDER BY e.task_id, e.attempt`, args...,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("tasks: reading executions: %w", err)
-	}
-	defer rows.Close()
-
-	var executions []Execution
-
-	for rows.Next() {
+	executions, err := sqlitedb.QueryAll(s.db, func(r sqlitedb.Scanner) (Execution, error) {
 		var execution Execution
 		var started, ended int64
 		var cost sql.NullFloat64
 		var input, output, checked sql.NullInt64
 
-		if err := rows.Scan(&execution.ID, &execution.TaskID, &execution.Attempt, &execution.WorkerID,
+		if err := r.Scan(&execution.ID, &execution.TaskID, &execution.Attempt, &execution.WorkerID,
 			&execution.Engine, &execution.Model, &execution.Status, &execution.FinalReply,
 			&started, &ended, &cost, &input, &output, &checked); err != nil {
-			return nil, fmt.Errorf("tasks: reading executions: %w", err)
+			return Execution{}, err
 		}
 
 		execution.StartedAt = sqlitedb.FromNS(started)
@@ -1291,48 +1260,45 @@ func (s *Store) loadExecutions(where string, args ...any) ([]Execution, error) {
 			execution.Checked = &c
 		}
 
-		executions = append(executions, execution)
+		return execution, nil
+	}, `SELECT e.id, e.task_id, e.attempt, e.worker_id, e.engine, e.model, e.status, e.final_reply,
+			e.started_ns, e.ended_ns, e.cost_usd, e.input_tokens, e.output_tokens, e.checked
+		 FROM executions e JOIN tasks t ON t.id = e.task_id `+where+` ORDER BY e.task_id, e.attempt`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("tasks: reading executions: %w", err)
 	}
 
-	return executions, rows.Err()
+	return executions, nil
 }
 
 func (s *Store) loadInterventions(where string, args ...any) ([]Intervention, error) {
-	rows, err := s.db.Query(
-		`SELECT i.id, i.execution_id, i.kind, i.reason, i.request, i.reply, i.requested_ns, i.replied_ns
-		 FROM interventions i JOIN executions e ON e.id = i.execution_id JOIN tasks t ON t.id = e.task_id `+
-			where+` ORDER BY i.requested_ns`, args...,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("tasks: reading interventions: %w", err)
-	}
-	defer rows.Close()
-
-	var interventions []Intervention
-
-	for rows.Next() {
+	interventions, err := sqlitedb.QueryAll(s.db, func(r sqlitedb.Scanner) (Intervention, error) {
 		var intervention Intervention
 		var requested, replied int64
 
-		if err := rows.Scan(&intervention.ID, &intervention.ExecutionID, &intervention.Kind, &intervention.Reason,
-			&intervention.Request, &intervention.Reply, &requested, &replied); err != nil {
-			return nil, fmt.Errorf("tasks: reading interventions: %w", err)
-		}
+		err := r.Scan(&intervention.ID, &intervention.ExecutionID, &intervention.Kind, &intervention.Reason,
+			&intervention.Request, &intervention.Reply, &requested, &replied)
 
 		intervention.RequestedAt = sqlitedb.FromNS(requested)
 		intervention.RepliedAt = sqlitedb.FromNS(replied)
 
-		interventions = append(interventions, intervention)
+		return intervention, err
+	}, `SELECT i.id, i.execution_id, i.kind, i.reason, i.request, i.reply, i.requested_ns, i.replied_ns
+		 FROM interventions i JOIN executions e ON e.id = i.execution_id JOIN tasks t ON t.id = e.task_id `+
+		where+` ORDER BY i.requested_ns`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("tasks: reading interventions: %w", err)
 	}
 
-	return interventions, rows.Err()
+	return interventions, nil
 }
 
 func normalize(text string) string {
 	return strings.Join(strings.Fields(strings.ToLower(text)), " ")
 }
 
-func nullFloat(value *float64) any {
+// nullable stores a reported figure, or NULL when none was reported.
+func nullable[T any](value *T) any {
 	if value == nil {
 		return nil
 	}
@@ -1349,12 +1315,4 @@ func nullBool(value *bool) any {
 		return 1
 	}
 	return 0
-}
-
-func nullInt(value *int64) any {
-	if value == nil {
-		return nil
-	}
-
-	return *value
 }

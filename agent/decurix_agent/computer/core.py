@@ -304,7 +304,7 @@ def _wait_for_settle(reference):
     return last
 
 
-def _window_id_for(element, observation=None):
+def _window_id_for(element):
     title = element.get("window_title") or ""
     windows = screen.windows()
     for w in windows:
@@ -618,15 +618,19 @@ def _type_relayed_block(text):
     """Type a block where the app's cursor is: each cell's text, Tab between cells, Enter after each row."""
 
     for cells in _sheet_rows(text):
-        for j, value in enumerate(cells):
-            if j:
-                xinput.key("Tab")
-                time.sleep(RELAYED_CELL_PAUSE)
-            if value:
-                xinput.type_text(value)
-                time.sleep(RELAYED_CELL_PAUSE)
-        xinput.key("Return")
-        time.sleep(RELAYED_ROW_PAUSE)
+        _type_relayed_row(cells)
+
+
+def _type_relayed_row(cells):
+    for j, value in enumerate(cells):
+        if j:
+            xinput.key("Tab")
+            time.sleep(RELAYED_CELL_PAUSE)
+        if value:
+            xinput.type_text(value)
+            time.sleep(RELAYED_CELL_PAUSE)
+    xinput.key("Return")
+    time.sleep(RELAYED_ROW_PAUSE)
 
 
 def _read_back_relayed(before_cells, after_cells, text, start_cell=None):
@@ -662,15 +666,17 @@ def _read_back_relayed(before_cells, after_cells, text, start_cell=None):
         if not _cell_holds(typed, shown):
             wrong.append(f"{address} shows {el._quote(shown, 60) if shown else 'nothing (or is outside the part read)'} "
                          f"for {el._quote(typed, 60)}")
-    span = f"{cells[0][0]}:{max(cells, key=lambda c: (c[1], c[2]))[0]}" if cells else ""
     if cells and len(_sheet_rows(text)) > 1:
-        first = CELL_NAME.match(cells[0][0])
-        last_row = max(int(CELL_NAME.match(c[0]).group(2)) for c in cells)
-        runs_on = _table_runs_on(lambda address: (after_cells.get(address) or "").strip(), _column_number(first.group(1)),
-                                 last_row)
+        runs_on = _table_runs_on(lambda address: (after_cells.get(address) or "").strip(), cells)
         if runs_on:
             wrong.append(NOTE + runs_on)
-    return span, formulas, wrong
+    return _block_span(cells), formulas, wrong
+
+
+def _block_span(cells):
+    """Where a block's cells went ("D1:E3"), or "" for none."""
+
+    return f"{cells[0][0]}:{max(cells, key=lambda c: (c[1], c[2]))[0]}" if cells else ""
 
 
 def _block_report(opening, found, formulas, failed_lead):
@@ -776,15 +782,7 @@ def _type_relayed_rows(before, start_cell, text, budget=None, clock=time.monoton
         if i and clock() - began > budget:
             return i  # whole rows only: what was typed is read back, and the rest is named
         _goto_relayed_cell(boxes, f"{_column_letters(column)}{row + i}")
-        for j, value in enumerate(cells):
-            if j:
-                xinput.key("Tab")
-                time.sleep(RELAYED_CELL_PAUSE)
-            if value:
-                xinput.type_text(value)
-                time.sleep(RELAYED_CELL_PAUSE)
-        xinput.key("Return")
-        time.sleep(RELAYED_ROW_PAUSE)
+        _type_relayed_row(cells)
     return len(rows)
 
 
@@ -830,14 +828,17 @@ NOTE = "NOTE: "
 _RUNS_ON_LIMIT = 400
 
 
-def _table_runs_on(shown, first_column, last_row):
+def _table_runs_on(shown, cells):
     """
     A sentence when the table to the left of a block of cells goes on below the block's last row, else "". Found live
     (2026-10-19, real Excel): a block of formulas stopped one row short of a table of 24 rows, and was read back as
     "every cell holds what was typed" - the read-back only compared what was typed with what was typed. `shown(address)`
-    is a cell's text ("" for none); the table's own label column (A) says where a Total row ends it.
+    is a cell's text ("" for none); the table's own label column (A) says where a Total row ends it. `cells` are the
+    block's (_block_cells).
     """
 
+    first_column = _column_number(CELL_NAME.match(cells[0][0]).group(1))
+    last_row = max(int(CELL_NAME.match(c[0]).group(2)) for c in cells)
     if first_column < 2:
         return ""
     left = _column_letters(first_column - 1)
@@ -859,9 +860,10 @@ def _read_back_block(start, text):
     """
 
     rows = _sheet_rows(text)
+    cells = _block_cells(start, rows)
     handle = start.get("handle") or {}
     shown_lines, wrong = [], []
-    for coordinate, i, j, typed in _block_cells(start, rows):
+    for coordinate, i, j, typed in cells:
         if not typed.strip():
             continue
         shown = atspi.sheet_cell_text(start, handle.get("row", 0) + i, handle.get("column", 0) + j)
@@ -872,15 +874,12 @@ def _read_back_block(start, text):
             shown_lines.append(f"{coordinate} {typed.strip()} -> {el._quote(shown, 40)}")
         if not _cell_holds(typed, shown):
             wrong.append(f"{coordinate} shows {el._quote(shown, 60)} for {el._quote(typed, 60)}")
-    cells = _block_cells(start, rows)
-    first = CELL_NAME.match(cells[0][0])
-    last_row = int(CELL_NAME.match(cells[-1][0]).group(2))
 
     def shown_at(address):
         m = CELL_NAME.match(address)
         return (atspi.sheet_cell_text(start, int(m.group(2)) - 1, _column_number(m.group(1)) - 1) or "").strip()
 
-    runs_on = _table_runs_on(shown_at, _column_number(first.group(1)), last_row) if len(rows) > 1 else ""
+    runs_on = _table_runs_on(shown_at, cells) if len(rows) > 1 else ""
     if runs_on:
         wrong.append(NOTE + runs_on)
     return shown_lines, wrong
@@ -1546,11 +1545,6 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
             return "cdp"
 
         if element is not None:
-            # A control that takes its text whole (a native Windows worker's,
-            # of a toolkit that tells its app - atspi.set_text) is given it;
-            # text that ends in Enter is typed, since the Enter is a key.
-            if not append and "\n" not in text and atspi.set_text(element, text):
-                return "value"
             _focus_window(element)
             center = el.center(element)
             # Inside a document (a Writer table cell, a paragraph) focus is
@@ -2337,7 +2331,7 @@ def _relayed(element, observation):
     for group in (observation or {}).get("groups") or []:
         if group.get("id") == element.get("group"):
             return any(v in (group.get("url") or "") for v in RELAYED_VIEWERS)
-    return any(v in ((observation or {}).get("page_url") or "") for v in RELAYED_VIEWERS)
+    return _relayed_page(observation)
 
 
 def _typing_lost(field, text):
@@ -2356,7 +2350,6 @@ def _typing_lost(field, text):
     # Numeric form fields commonly add grouping and decimal places after typing.
     # Treat that formatting as the same value, without hiding genuinely lost input.
     import decimal
-    import re
     numeric = r"^[+-]?(?:\d+(?:,\d{3})*)(?:\.\d+)?$"
     wanted, shown = line.strip(), str(value).strip()
     if re.fullmatch(numeric, wanted) and re.fullmatch(numeric, shown):
@@ -2537,7 +2530,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     # app's field is: the click reaches the app and the keys follow it. Found live (2026-10-15): refused here, a worker
     # filling TallyPrime spelled "Northwind Traders" out one key at a time and made a company named "N".
     if kind == "type" and point is not None and element is None and before.get("page_url") \
-            and not any(v in (before.get("page_url") or "") for v in RELAYED_VIEWERS):
+            and not _relayed_page(before):
         raise ComputerError("that point does not resolve to a browser field to type into - click the editor, "
                             "observe, then type into its field by ref; typing at an unresolved point can trigger "
                             "page shortcuts instead of entering text")
@@ -2594,22 +2587,9 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     # Typing needs a field. Aimed at a page's row, button or link, the text goes
     # to whatever still has focus: live, a product name typed "into" an the web app
     # order row at a coordinate landed in the previous line's Unit Price.
-    # The same on a Windows worker's screen, where it was found live: a small
-    # model sent `gui type e40 "Hello World"` with e40 a toolbar button of
-    # Notepad, the keys went to the button, and nothing was typed. There the
-    # refusal names the fields that are on the screen, because the one the
-    # model wants is usually a line or two away in the list it just read.
-    if kind == "type" and element is not None and element["role"] in NOT_A_FIELD \
-            and element.get("source") in ("cdp", "uia"):
-        message = (f"{el.describe(element)} is not a field to type into - click the cell or control that "
-                   "opens a field, observe, then type into that field by its ref")
-        if element.get("source") == "uia":
-            fields = [el.describe(e) for e in before["elements"]
-                      if e.get("role") in TYPING_ROLES and "disabled" not in (e.get("states") or [])][:4]
-            if fields:
-                message = (f"{el.describe(element)} is not a field to type into. The fields on the screen are: "
-                           + "; ".join(fields) + " - type into one of those by its ref")
-        raise ComputerError(message)
+    if kind == "type" and element is not None and element["role"] in NOT_A_FIELD and element.get("source") == "cdp":
+        raise ComputerError(f"{el.describe(element)} is not a field to type into - click the cell or control that "
+                            "opens a field, observe, then type into that field by its ref")
 
     # Typing with no target at all (no ref/role/name/path/point) goes to
     # whatever already has focus, and that field is the one whose secrecy
@@ -2772,11 +2752,10 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     block_note, unverified = "", []
     if block is not None and backend == "xdotool:sheet-block":
         rows = _sheet_rows(text)
-        cells = _block_cells(element, rows)
         formulas, found = _read_back_block(element, text)
-        span = f"{cells[0][0]}:{max((c for c in cells), key=lambda c: (c[1], c[2]))[0]}" if cells else ""
         block_note, unverified = _block_report(
-            f"A block of {len(rows)} row(s) went into {span}, each row from its first cell.", found, formulas,
+            f"A block of {len(rows)} row(s) went into {_block_span(_block_cells(element, rows))}, each row from its "
+            "first cell.", found, formulas,
             "these cells do NOT hold what was typed - correct each by its own gui type CELL: ")
     elif relayed_block:
         # The viewer's copy of the app catches up after the keys: read the cells back from a look that is not behind.
@@ -3361,11 +3340,6 @@ OFFICE_EXTENSIONS = (".odt", ".ods", ".odp", ".docx", ".doc", ".xlsx", ".xls", "
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff", ".webp", ".xcf")
 
 
-def _chromium_argv(url):
-    # The launcher adds the profile, the DevTools port and every other flag.
-    return browser.launch_argv(url)
-
-
 # A page that asks whoever is there to prove they are a person. It is exactly
 # what a worker is not: the worker stops and a person does it on the worker's
 # screen. Found live: Google answered a search with its "unusual traffic" page,
@@ -3463,7 +3437,7 @@ def _open(target, new_tab):
                 "(key ctrl+shift+q in its window), then open the page again."
             )
 
-        session.launch(_chromium_argv(url))
+        session.launch(browser.launch_argv(url))
         _wait_until(cdp.available, BROWSER_START_SECONDS, "Chromium did not start")
         title = cdp.wait_ready(timeout=15, default_title=url)
         _raise_browser()
@@ -3476,7 +3450,7 @@ def _open(target, new_tab):
         if any(browser.is_browser_title(t) for t in before_titles) or cdp.available():
             _raise_browser()
             return "Brought Chromium to the front."
-        session.launch(_chromium_argv("about:blank"))
+        session.launch(browser.launch_argv("about:blank"))
         _wait_until(cdp.available, BROWSER_START_SECONDS, "Chromium did not start")
         _raise_browser()
         return "Started Chromium."
@@ -3622,16 +3596,4 @@ def _wait_until(probe, seconds, failure):
     if failure:
         raise ComputerError(failure)
     return None
-
-
-def upload_files(target, files, ref=None):
-    """
-    Convenience helper to upload one or more files to a target element in the browser.
-    `target` can be an element ref (e12), role and name ('button "Upload"'), or selector.
-    """
-    if ref:
-        return act("upload", ref=ref, files=files)
-    if isinstance(target, str) and el.REF_RE.match(target):
-        return act("upload", ref=target, files=files)
-    return act("upload", name=target, files=files)
 

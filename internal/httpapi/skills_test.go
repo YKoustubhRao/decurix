@@ -13,38 +13,22 @@ import (
 func TestSkillsRejectBadRequestsBeforeReachingADesktop(t *testing.T) {
 	s := chatServer(t)
 
-	get := func(handler http.HandlerFunc, query string) *httptest.ResponseRecorder {
-		rec := httptest.NewRecorder()
-		handler(rec, httptest.NewRequest(http.MethodGet, "/x?"+query, nil))
-		return rec
-	}
-
-	cases := []struct {
-		name string
-		rec  *httptest.ResponseRecorder
-		want int
-	}{
-		{"list with no desktop", get(s.skillsAPIHandler, ""), http.StatusBadRequest},
-		{"path in a skill name", get(s.skillAPIHandler, "id=box&name=../etc"), http.StatusBadRequest},
-		{"upper case skill name", get(s.skillAPIHandler, "id=box&name=Pay"), http.StatusBadRequest},
-		{"no skill name", get(s.skillAPIHandler, "id=box"), http.StatusBadRequest},
+	checkStatuses(t, []statusCase{
+		{"list with no desktop", getQuery(s.skillsAPIHandler, ""), http.StatusBadRequest},
+		{"path in a skill name", getQuery(s.skillAPIHandler, "id=box&name=../etc"), http.StatusBadRequest},
+		{"upper case skill name", getQuery(s.skillAPIHandler, "id=box&name=Pay"), http.StatusBadRequest},
+		{"no skill name", getQuery(s.skillAPIHandler, "id=box"), http.StatusBadRequest},
 		{"post to a read", postForm(t, s.skillAPIHandler, "/x", "id=box&name=pay"), http.StatusMethodNotAllowed},
-		{"get to a delete", get(s.skillDeleteHandler, "id=box&name=pay"), http.StatusMethodNotAllowed},
-		{"get to a run", get(s.runSkillHandler, "id=box&name=pay"), http.StatusMethodNotAllowed},
+		{"get to a delete", getQuery(s.skillDeleteHandler, "id=box&name=pay"), http.StatusMethodNotAllowed},
+		{"get to a run", getQuery(s.runSkillHandler, "id=box&name=pay"), http.StatusMethodNotAllowed},
 		{"run params not an object", postForm(t, s.runSkillHandler, "/x", "id=box&name=pay&params=%5B1%5D"), http.StatusBadRequest},
 		{"run bad param name", postForm(t, s.runSkillHandler, "/x", "id=box&name=pay&params=%7B%22..%2Fx%22%3A%22a%22%7D"), http.StatusBadRequest},
 		{"run value with both quotes", postForm(t, s.runSkillHandler, "/x", "id=box&name=pay&params=%7B%22a%22%3A%22%5C%22%27%22%7D"), http.StatusBadRequest},
 		{"learn a bad recording", postForm(t, s.learnRecordingHandler, "/x", "id=box&session=secret-1"), http.StatusBadRequest},
 		{"learn with a bad extra", postForm(t, s.learnRecordingHandler, "/x", "id=box&session=demo-1&sessions=demo-2,../x"), http.StatusBadRequest},
 		{"learn from too many", postForm(t, s.learnRecordingHandler, "/x", "id=box&session=demo-1&sessions=demo-2,demo-3,demo-4,demo-5,demo-6"), http.StatusBadRequest},
-		{"learn by get", get(s.learnRecordingHandler, "id=box&session=demo-1"), http.StatusMethodNotAllowed},
-	}
-
-	for _, c := range cases {
-		if c.rec.Code != c.want {
-			t.Errorf("%s: status %d, want %d (%s)", c.name, c.rec.Code, c.want, c.rec.Body.String())
-		}
-	}
+		{"learn by get", getQuery(s.learnRecordingHandler, "id=box&session=demo-1"), http.StatusMethodNotAllowed},
+	})
 }
 
 // A lesson or a skill run is refused while the desktop's agent has a task

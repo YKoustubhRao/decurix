@@ -166,7 +166,6 @@ class AToolOfItsOwn(_Store):
         self.assertEqual(book["tool"]["unused"], 0)
         self.assertEqual(len(self.asked), 1)                           # written once
         self.assertEqual(playbooks.economy(book)["saved_percent"], 67)
-        self.assertEqual(playbooks.summary()[0]["tool"], run)
 
     def test_a_tool_the_engine_keeps_passing_over_is_dropped(self):
         _, name = self.do(SUMMARIZE, BY_HAND, tokens=1000, turns=4)
@@ -264,7 +263,6 @@ class GettingCheaper(_Store):
         self.assertEqual(len(book["commands"]), 5)
         self.assertEqual(playbooks.economy(book),
                          {"first": 180000, "now": 60000, "uses": 1, "ok": 1, "saved_percent": 67})
-        self.assertEqual(playbooks.summary()[0]["saved_percent"], 67)
 
     def test_a_longer_way_replaces_the_kept_one_only_when_it_keeps_being_needed(self):
         _, name = self.do(ORDER, ORDER_WAY, tokens=1000)

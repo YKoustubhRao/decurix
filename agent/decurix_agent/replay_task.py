@@ -75,9 +75,7 @@ def _take_params(task_id):
 def perform(content, task_file=None):
     """Run a "/replay" request as the task the watcher dispatched it as."""
 
-    state.current_task = content
-    state.current_task_file = task_file
-    state.waiting_for_query = False
+    state.begin(content, task_file)
     state.paused_replay = None
 
     # Known, not unknown: a replay reads no prompt and costs nothing.

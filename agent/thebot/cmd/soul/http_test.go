@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -42,6 +43,31 @@ func (stubProvider) Chat(ctx context.Context, model string, messages []llm.Messa
 }
 func (stubProvider) IsReachable(ctx context.Context) bool { return true }
 
+// serve sends one request to s and returns what it answered.
+func serve(s *server, method, target, body string) *httptest.ResponseRecorder {
+	var r io.Reader
+	if body != "" {
+		r = strings.NewReader(body)
+	}
+	rec := httptest.NewRecorder()
+	s.mux().ServeHTTP(rec, httptest.NewRequest(method, target, r))
+	return rec
+}
+
+// realEmbedder is a reachable Ollama at OLLAMA_HOST (or the local default), or skips the test saying why it needs one.
+func realEmbedder(t *testing.T, why string) *llm.OllamaProvider {
+	t.Helper()
+	host := os.Getenv("OLLAMA_HOST")
+	if host == "" {
+		host = "http://127.0.0.1:11434"
+	}
+	embedder := llm.NewOllama(host)
+	if !embedder.IsReachable(context.Background()) {
+		t.Skipf("no real Ollama at %s - %s", host, why)
+	}
+	return embedder
+}
+
 func newTestServer(t *testing.T) *server {
 	t.Helper()
 	ws, err := workspace.New(t.TempDir())
@@ -60,9 +86,7 @@ func newTestServer(t *testing.T) *server {
 
 func TestHandleHealth(t *testing.T) {
 	s := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
-	rec := httptest.NewRecorder()
-	s.mux().ServeHTTP(rec, req)
+	rec := serve(s, http.MethodGet, "/api/health", "")
 
 	if rec.Code != 200 {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -78,9 +102,7 @@ func TestHandleHealth(t *testing.T) {
 
 func TestHandleChatRejectsEmptyPrompt(t *testing.T) {
 	s := newTestServer(t)
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{"prompt":""}`))
-	rec := httptest.NewRecorder()
-	s.mux().ServeHTTP(rec, req)
+	rec := serve(s, http.MethodPost, "/api/chat", `{"prompt":""}`)
 
 	if rec.Code != 400 {
 		t.Errorf("status = %d, want 400 for an empty prompt", rec.Code)
@@ -89,9 +111,7 @@ func TestHandleChatRejectsEmptyPrompt(t *testing.T) {
 
 func TestHandleChatRejectsGET(t *testing.T) {
 	s := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/api/chat", nil)
-	rec := httptest.NewRecorder()
-	s.mux().ServeHTTP(rec, req)
+	rec := serve(s, http.MethodGet, "/api/chat", "")
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want 405", rec.Code)
@@ -101,43 +121,19 @@ func TestHandleChatRejectsGET(t *testing.T) {
 func TestHandleChatAndPollJob(t *testing.T) {
 	s := newTestServer(t)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{"prompt":"run this command: `+"`echo http-test`"+`"}`))
-	rec := httptest.NewRecorder()
-	s.mux().ServeHTTP(rec, req)
-	if rec.Code != 200 {
-		t.Fatalf("POST /api/chat status = %d, want 200", rec.Code)
-	}
-	var created map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
-		t.Fatalf("response not valid JSON: %v", err)
-	}
-	id, _ := created["id"].(string)
+	id := postChat(t, s, `{"prompt":"run this command: `+"`echo http-test`"+`"}`)
 	if id == "" {
 		t.Fatal("no job id returned")
 	}
 
 	// Poll the real job record until the real background goroutine finishes -
 	// no sleeping a fixed amount, wait on the real state.
-	deadline := time.Now().Add(5 * time.Second)
-	var status string
-	for time.Now().Before(deadline) {
-		s.jobsMu.Lock()
-		job := s.jobs[id]
-		s.jobsMu.Unlock()
-		if job != nil && job.isDone() {
-			status = job.Status
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if status != "done" {
+	if status := waitJob(t, s, id, 5*time.Second)["status"]; status != "done" {
 		t.Fatalf("job did not reach status=done within the deadline (last status: %q)", status)
 	}
 
 	// Now fetch it over the real HTTP handler, not the internal struct.
-	req2 := httptest.NewRequest(http.MethodGet, "/api/jobs/"+id, nil)
-	rec2 := httptest.NewRecorder()
-	s.mux().ServeHTTP(rec2, req2)
+	rec2 := serve(s, http.MethodGet, "/api/jobs/"+id, "")
 	if rec2.Code != 200 {
 		t.Fatalf("GET /api/jobs/%s status = %d, want 200", id, rec2.Code)
 	}
@@ -150,9 +146,7 @@ func TestHandleChatAndPollJob(t *testing.T) {
 
 func TestUIServedAtRoot(t *testing.T) {
 	s := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	rec := httptest.NewRecorder()
-	s.mux().ServeHTTP(rec, req)
+	rec := serve(s, http.MethodGet, "/", "")
 
 	if rec.Code != 200 {
 		t.Fatalf("GET / status = %d, want 200", rec.Code)
@@ -168,9 +162,7 @@ func TestUIServedAtRoot(t *testing.T) {
 
 func TestRAGStatsEndpoint(t *testing.T) {
 	s := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/api/rag/stats", nil)
-	rec := httptest.NewRecorder()
-	s.mux().ServeHTTP(rec, req)
+	rec := serve(s, http.MethodGet, "/api/rag/stats", "")
 
 	if rec.Code != 200 {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -186,9 +178,7 @@ func TestRAGStatsEndpoint(t *testing.T) {
 
 func TestFeedbackStatsEndpoint(t *testing.T) {
 	s := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/api/feedback/stats", nil)
-	rec := httptest.NewRecorder()
-	s.mux().ServeHTTP(rec, req)
+	rec := serve(s, http.MethodGet, "/api/feedback/stats", "")
 
 	if rec.Code != 200 {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -202,9 +192,7 @@ func TestFeedbackStatsEndpoint(t *testing.T) {
 
 func TestHandleMemoryNilSafeDefaults(t *testing.T) {
 	s := newTestServer(t) // RAG and Feedback are nil in this test server
-	req := httptest.NewRequest(http.MethodGet, "/api/memory", nil)
-	rec := httptest.NewRecorder()
-	s.mux().ServeHTTP(rec, req)
+	rec := serve(s, http.MethodGet, "/api/memory", "")
 
 	if rec.Code != 200 {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -245,14 +233,7 @@ func TestHandleMemoryNilSafeDefaults(t *testing.T) {
 // The other half of the L1 fix: a real stored fact must actually reach
 // the endpoint, with its content and provenance - not just a count.
 func TestHandleMemoryReportsRealL1Facts(t *testing.T) {
-	host := os.Getenv("OLLAMA_HOST")
-	if host == "" {
-		host = "http://127.0.0.1:11434"
-	}
-	embedder := llm.NewOllama(host)
-	if !embedder.IsReachable(context.Background()) {
-		t.Skipf("no real Ollama at %s - storing an L1 fact needs real embeddings", host)
-	}
+	embedder := realEmbedder(t, "storing an L1 fact needs real embeddings")
 
 	s := newTestServer(t)
 	l1, err := memory.NewL1(s.ws.Root(), stubProvider{}, embedder, "stub-model")
@@ -266,9 +247,7 @@ func TestHandleMemoryReportsRealL1Facts(t *testing.T) {
 		t.Fatalf("Store() error = %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/memory", nil)
-	rec := httptest.NewRecorder()
-	s.mux().ServeHTTP(rec, req)
+	rec := serve(s, http.MethodGet, "/api/memory", "")
 
 	var body map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -297,27 +276,10 @@ func TestHandleMemoryReportsRealL1Facts(t *testing.T) {
 func TestHandleMemoryReflectsRealL2Activity(t *testing.T) {
 	s := newTestServer(t)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{"prompt":"run this command: `+"`echo memory-test`"+`"}`))
-	rec := httptest.NewRecorder()
-	s.mux().ServeHTTP(rec, req)
-	var created map[string]any
-	_ = json.Unmarshal(rec.Body.Bytes(), &created)
-	id := created["id"].(string)
+	id := postChat(t, s, `{"prompt":"run this command: `+"`echo memory-test`"+`"}`)
+	waitJob(t, s, id, 5*time.Second)
 
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		s.jobsMu.Lock()
-		job := s.jobs[id]
-		s.jobsMu.Unlock()
-		if job != nil && job.isDone() {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	req2 := httptest.NewRequest(http.MethodGet, "/api/memory", nil)
-	rec2 := httptest.NewRecorder()
-	s.mux().ServeHTTP(rec2, req2)
+	rec2 := serve(s, http.MethodGet, "/api/memory", "")
 	var body map[string]any
 	_ = json.Unmarshal(rec2.Body.Bytes(), &body)
 
@@ -337,9 +299,7 @@ func TestHandleMemoryReflectsRealL2Activity(t *testing.T) {
 
 func TestHandleJobsUnknownID(t *testing.T) {
 	s := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/api/jobs/does-not-exist", nil)
-	rec := httptest.NewRecorder()
-	s.mux().ServeHTTP(rec, req)
+	rec := serve(s, http.MethodGet, "/api/jobs/does-not-exist", "")
 	if rec.Code != 404 {
 		t.Errorf("status = %d, want 404", rec.Code)
 	}
@@ -351,23 +311,8 @@ func TestHandleJobsUnknownID(t *testing.T) {
 func TestStreamAfterCompletion(t *testing.T) {
 	s := newTestServer(t)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{"prompt":"run this command: `+"`echo stream-after-done`"+`"}`))
-	rec := httptest.NewRecorder()
-	s.mux().ServeHTTP(rec, req)
-	var created map[string]any
-	_ = json.Unmarshal(rec.Body.Bytes(), &created)
-	id := created["id"].(string)
-
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		s.jobsMu.Lock()
-		job := s.jobs[id]
-		s.jobsMu.Unlock()
-		if job != nil && job.isDone() {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	id := postChat(t, s, `{"prompt":"run this command: `+"`echo stream-after-done`"+`"}`)
+	waitJob(t, s, id, 5*time.Second)
 
 	// Real HTTP server so the streaming response can actually be read
 	// incrementally - httptest.ResponseRecorder doesn't support that.
@@ -412,14 +357,7 @@ func TestStreamAfterCompletion(t *testing.T) {
 // proposal is listed but never confirmed, and confirming it is the ONLY
 // thing that moves it into real use.
 func TestHandleSkillsListsAndConfirms(t *testing.T) {
-	host := os.Getenv("OLLAMA_HOST")
-	if host == "" {
-		host = "http://127.0.0.1:11434"
-	}
-	embedder := llm.NewOllama(host)
-	if !embedder.IsReachable(context.Background()) {
-		t.Skipf("no real Ollama at %s - skill matching needs real embeddings", host)
-	}
+	embedder := realEmbedder(t, "skill matching needs real embeddings")
 
 	s := newTestServer(t)
 	lib, err := memory.NewSkillLibrary(s.ws.Root(), embedder, "stub-model")
@@ -433,9 +371,7 @@ func TestHandleSkillsListsAndConfirms(t *testing.T) {
 		t.Fatalf("Propose() error = %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/skills", nil)
-	rec := httptest.NewRecorder()
-	s.mux().ServeHTTP(rec, req)
+	rec := serve(s, http.MethodGet, "/api/skills", "")
 	var body map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("response not valid JSON: %v", err)
@@ -449,16 +385,12 @@ func TestHandleSkillsListsAndConfirms(t *testing.T) {
 		t.Fatalf("confirmed = %v, want empty before any confirmation", confirmed)
 	}
 
-	confirmReq := httptest.NewRequest(http.MethodPost, "/api/skills/"+proposed.Slug+"/confirm", nil)
-	confirmRec := httptest.NewRecorder()
-	s.mux().ServeHTTP(confirmRec, confirmReq)
+	confirmRec := serve(s, http.MethodPost, "/api/skills/"+proposed.Slug+"/confirm", "")
 	if confirmRec.Code != 200 {
 		t.Fatalf("confirm status = %d, body=%s", confirmRec.Code, confirmRec.Body.String())
 	}
 
-	req2 := httptest.NewRequest(http.MethodGet, "/api/skills", nil)
-	rec2 := httptest.NewRecorder()
-	s.mux().ServeHTTP(rec2, req2)
+	rec2 := serve(s, http.MethodGet, "/api/skills", "")
 	var body2 map[string]any
 	_ = json.Unmarshal(rec2.Body.Bytes(), &body2)
 	confirmed2, _ := body2["confirmed"].([]any)
@@ -486,9 +418,7 @@ func TestHandleSkillsReject(t *testing.T) {
 		t.Fatalf("Propose() error = %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/skills/"+proposed.Slug+"/reject", nil)
-	rec := httptest.NewRecorder()
-	s.mux().ServeHTTP(rec, req)
+	rec := serve(s, http.MethodPost, "/api/skills/"+proposed.Slug+"/reject", "")
 	if rec.Code != 200 {
 		t.Fatalf("reject status = %d, body=%s", rec.Code, rec.Body.String())
 	}
@@ -503,9 +433,7 @@ func TestHandleSkillsReject(t *testing.T) {
 // the endpoint must degrade to real empty defaults, never crash.
 func TestHandleSkillsNilSafeWithNoLibraryConfigured(t *testing.T) {
 	s := newTestServer(t) // SkillLib is nil here
-	req := httptest.NewRequest(http.MethodGet, "/api/skills", nil)
-	rec := httptest.NewRecorder()
-	s.mux().ServeHTTP(rec, req)
+	rec := serve(s, http.MethodGet, "/api/skills", "")
 	if rec.Code != 200 {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -520,9 +448,7 @@ func TestHandleSkillsNilSafeWithNoLibraryConfigured(t *testing.T) {
 
 func postChat(t *testing.T, s *server, body string) string {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
-	rec := httptest.NewRecorder()
-	s.mux().ServeHTTP(rec, req)
+	rec := serve(s, http.MethodPost, "/api/chat", body)
 	if rec.Code != 200 {
 		t.Fatalf("POST /api/chat status = %d: %s", rec.Code, rec.Body.String())
 	}
@@ -599,9 +525,7 @@ func TestCancelStopsARunningJob(t *testing.T) {
 	id := postChat(t, s, `{"prompt":"run this command: `+"`sleep 30`"+`"}`)
 	time.Sleep(200 * time.Millisecond)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/jobs/"+id+"/cancel", nil)
-	rec := httptest.NewRecorder()
-	s.mux().ServeHTTP(rec, req)
+	rec := serve(s, http.MethodPost, "/api/jobs/"+id+"/cancel", "")
 	if rec.Code != 200 {
 		t.Fatalf("cancel status = %d", rec.Code)
 	}

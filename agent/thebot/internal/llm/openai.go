@@ -1,11 +1,8 @@
 package llm
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -36,6 +33,11 @@ func NewOpenAI(apiKey, embedModel string) *OpenAIProvider {
 
 func (o *OpenAIProvider) Name() string { return "openai" }
 
+// authHeader is the header that carries the API key.
+func (o *OpenAIProvider) authHeader() map[string]string {
+	return map[string]string{"Authorization": "Bearer " + o.APIKey}
+}
+
 type openaiMessage struct {
 	Role string `json:"role"`
 	// Content is a string, or a list of text and image_url parts when the
@@ -64,9 +66,7 @@ type openaiChatResponse struct {
 			CachedTokens int `json:"cached_tokens"`
 		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
-	Error *struct {
-		Message string `json:"message"`
-	} `json:"error"`
+	apiError
 }
 
 // Chat sends one chat request. A request the provider's content filter refuses while it carries pictures is sent
@@ -82,11 +82,7 @@ func (o *OpenAIProvider) Chat(ctx context.Context, model string, messages []Mess
 }
 
 func (o *OpenAIProvider) chatOnce(ctx context.Context, model string, messages []Message, opts Options) (Result, error) {
-	timeout := 120 * time.Second
-	if opts.TimeoutMs > 0 {
-		timeout = time.Duration(opts.TimeoutMs) * time.Millisecond
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(ctx, opts.timeout())
 	defer cancel()
 
 	msgs := make([]openaiMessage, len(messages))
@@ -104,45 +100,18 @@ func (o *OpenAIProvider) chatOnce(ctx context.Context, model string, messages []
 		}
 	}
 
-	body, err := json.Marshal(openaiChatRequest{
+	reqBody := openaiChatRequest{
 		Model:       model,
 		Messages:    msgs,
 		Temperature: opts.Temperature,
 		MaxTokens:   opts.MaxTokens,
 		Stop:        opts.Stop,
-	})
-	if err != nil {
-		return Result{}, fmt.Errorf("openai: marshal request: %w", err)
 	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.BaseURL+"/v1/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return Result{}, fmt.Errorf("openai: build request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+o.APIKey)
-
-	resp, err := rateLimitedRequest(o.Client, req)
-	if err != nil {
-		return Result{}, fmt.Errorf("openai: request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return Result{}, fmt.Errorf("openai: read response: %w", err)
-	}
-
+	do := func(req *http.Request) (*http.Response, error) { return rateLimitedRequest(o.Client, req) }
 	var parsed openaiChatResponse
-	if err := json.Unmarshal(respBytes, &parsed); err != nil {
-		return Result{}, fmt.Errorf("openai: parse response: %w (body: %s)", err, string(respBytes))
-	}
-	if resp.StatusCode != http.StatusOK {
-		msg := string(respBytes)
-		if parsed.Error != nil {
-			msg = parsed.Error.Message
-		}
-		return Result{}, fmt.Errorf("openai returned HTTP %d: %s", resp.StatusCode, msg)
+	respBytes, err := postJSON(ctx, do, "openai", o.BaseURL+"/v1/chat/completions", o.authHeader(), reqBody, &parsed, &parsed.apiError)
+	if err != nil {
+		return Result{}, err
 	}
 	if len(parsed.Choices) == 0 {
 		return Result{}, fmt.Errorf("openai: response contained no choices (body: %s)", string(respBytes))
@@ -184,9 +153,7 @@ type openaiEmbedResponse struct {
 	Data []struct {
 		Embedding []float32 `json:"embedding"`
 	} `json:"data"`
-	Error *struct {
-		Message string `json:"message"`
-	} `json:"error"`
+	apiError
 }
 
 // Embed calls OpenAI's real /v1/embeddings endpoint.
@@ -197,39 +164,9 @@ func (o *OpenAIProvider) Embed(ctx context.Context, model string, text string) (
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	body, err := json.Marshal(openaiEmbedRequest{Model: model, Input: text})
-	if err != nil {
-		return nil, fmt.Errorf("openai embed: marshal request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.BaseURL+"/v1/embeddings", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("openai embed: build request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+o.APIKey)
-
-	resp, err := o.Client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("openai embed: request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("openai embed: read response: %w", err)
-	}
-
 	var parsed openaiEmbedResponse
-	if err := json.Unmarshal(respBytes, &parsed); err != nil {
-		return nil, fmt.Errorf("openai embed: parse response: %w (body: %s)", err, string(respBytes))
-	}
-	if resp.StatusCode != http.StatusOK {
-		msg := string(respBytes)
-		if parsed.Error != nil {
-			msg = parsed.Error.Message
-		}
-		return nil, fmt.Errorf("openai embed returned HTTP %d: %s", resp.StatusCode, msg)
+	if _, err := postJSON(ctx, o.Client.Do, "openai embed", o.BaseURL+"/v1/embeddings", o.authHeader(), openaiEmbedRequest{Model: model, Input: text}, &parsed, &parsed.apiError); err != nil {
+		return nil, err
 	}
 	if len(parsed.Data) == 0 {
 		return nil, fmt.Errorf("openai embed: response contained no data")

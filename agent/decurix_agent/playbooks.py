@@ -71,7 +71,6 @@ MAX_COMMANDS = 60
 # A command is kept whole up to here: a script written with a heredoc is the
 # logic worth keeping, and is longer than a click.
 MAX_COMMAND_CHARS = 1500
-MAX_TEXT_CHARS = 6000
 MAX_PLAYBOOKS = 200
 USE_HISTORY = 10
 
@@ -298,27 +297,18 @@ def note_job(job):
         _run["turns"] += turns
 
 
-def _spent():
-    totals = usage.snapshot()
-    return int(totals.get("input_tokens") or 0) + int(totals.get("output_tokens") or 0)
+def use(ok, commands):
+    """One run's record for a playbook's history (what tool_task.py adds for a run with no engine)."""
 
-
-def _use(ok, commands):
     with _lock:
         turns = _run["turns"]
-    return {"at": int(time.time()), "ok": bool(ok), "tokens": _spent(), "turns": turns, "commands": len(commands)}
+    return {"at": int(time.time()), "ok": bool(ok), "tokens": usage.spent(), "turns": turns, "commands": len(commands)}
 
 
 def _on_screen(commands):
     """Whether a way through a task works the screen (any gui command) or is shell and files only."""
 
     return any((c or "").lstrip().startswith("gui ") for c in commands or [])
-
-
-def use(ok, commands):
-    """One run's record for a playbook's history (what tool_task.py adds for a run with no engine)."""
-
-    return _use(ok, commands)
 
 
 def answered():
@@ -384,27 +374,23 @@ def context(request, skill=None):
     if not said:
         try:
             from decurix_agent import progress
-            progress.emit("I have a tool I wrote for a request like this: running it." if tool
-                          else "I have done a request like this before: following what worked then.")
+            progress.emit("I have a tool I wrote for a request like this: running it.")
         except Exception as exc:  # telling the chat is decoration
             log(f"Playbooks: could not say a playbook is in use: {exc}")
 
     before = " ".join((book.get("request") or "").split())[:400]
 
-    if tool:
-        return (
-            f"You have done a request like this on this desktop before (\"{before}\") and kept a tool for it, written "
-            "from the commands that worked and were checked then:\n"
-            f"  {tool['run']} {tool.get('usage') or ''}\n"
-            f"What it does: {tool.get('does') or 'the same work, for other values'}\n"
-            f"That time it was: {tool['run']} {tool.get('example') or ''}\n"
-            "Run it once with this request's values, as your first command. It prints what it wrote: when that is "
-            "what this request asks for, report it from that output - do not do the work again by hand, and do not "
-            "read back what it has already printed. If it fails, or this request asks for something it does not do, "
-            "do the work yourself as you would any task."
-        )
-
-    return ""
+    return (
+        f"You have done a request like this on this desktop before (\"{before}\") and kept a tool for it, written "
+        "from the commands that worked and were checked then:\n"
+        f"  {tool['run']} {tool.get('usage') or ''}\n"
+        f"What it does: {tool.get('does') or 'the same work, for other values'}\n"
+        f"That time it was: {tool['run']} {tool.get('example') or ''}\n"
+        "Run it once with this request's values, as your first command. It prints what it wrote: when that is "
+        "what this request asks for, report it from that output - do not do the work again by hand, and do not "
+        "read back what it has already printed. If it fails, or this request asks for something it does not do, "
+        "do the work yourself as you would any task."
+    )
 
 
 # ============================================================
@@ -886,7 +872,7 @@ def own_replayed(session, worked):
         # Counted where its cost is kept: the playbook of the same kind of request.
         book = find(meta.get("task") or meta.get("title") or "")
         if book is not None:
-            record = _use(True, [])
+            record = use(True, [])
             record.update(turns=0, direct=True, replay=True)
             book["uses"] = ((book.get("uses") or []) + [record])[-USE_HISTORY:]
             try:
@@ -923,8 +909,8 @@ def keep(request, skill=None):
     clean = len(segments) == 1 and not steered
     ran = segments[0] if clean else []
     commands = tidy(ran, request)
-    use = _use(True, commands)
-    worth = bool(commands) and (use["turns"] >= MIN_TURNS if use["turns"] else len(commands) >= MIN_COMMANDS)
+    run = use(True, commands)
+    worth = bool(commands) and (run["turns"] >= MIN_TURNS if run["turns"] else len(commands) >= MIN_COMMANDS)
 
     # A clean run on the screen, of a request nobody taught, becomes what the next one replays - once the
     # engine has taken the same path through two requests of the kind, each checked. One run shows a way
@@ -944,7 +930,7 @@ def keep(request, skill=None):
 
     try:
         if book is not None:
-            book["uses"] = ((book.get("uses") or []) + [use])[-USE_HISTORY:]
+            book["uses"] = ((book.get("uses") or []) + [run])[-USE_HISTORY:]
             if clean:
                 book["misses"] = 0
             if path:
@@ -985,14 +971,14 @@ def keep(request, skill=None):
         book = {
             "name": _unique_name(words), "request": attachments.text(request or "").strip()[:1000], "shape": words,
             "skill": skill or None, "commands": commands,
-            "made": {k: use[k] for k in ("at", "tokens", "turns", "commands")}, "uses": [], "misses": 0,
+            "made": {k: run[k] for k in ("at", "tokens", "turns", "commands")}, "uses": [], "misses": 0,
         }
         if path:
             book["skeletons"] = [path]
         # A task that stopped for a yes is not made into one command that would not stop.
         if not _on_screen(commands) and not paused:
             _distil(book)
-            book["made"]["tokens"] = _spent()     # what learning it cost, the tool's writing included
+            book["made"]["tokens"] = usage.spent()     # what learning it cost, the tool's writing included
         save(book)
         log(f"Playbooks: kept {book['name']} ({len(commands)} commands, {book['made']['tokens']} tokens the first time)")
         return book["name"]
@@ -1045,13 +1031,12 @@ def missed(why=""):
         return
 
     try:
+        book["uses"] = ((book.get("uses") or []) + [use(False, [])])[-USE_HISTORY:]
         tool = book.get("tool")
         if tool and any(Path(tool["path"]).as_posix() in c for c in ran):
             tool_failed(book, why)
-            book["uses"] = ((book.get("uses") or []) + [_use(False, [])])[-USE_HISTORY:]
             save(book)
             return
-        book["uses"] = ((book.get("uses") or []) + [_use(False, [])])[-USE_HISTORY:]
         book["misses"] = book.get("misses", 0) + 1
         if book["misses"] >= RETIRE_AFTER:
             _drop_tool(book)
@@ -1081,14 +1066,6 @@ def economy(book):
     saved = round(100 * (first - now) / first) if first and now is not None else None
     return {"first": first, "now": now, "uses": len(uses), "ok": sum(1 for u in uses if u.get("ok")),
             "saved_percent": saved}
-
-
-def summary():
-    """Every playbook, for a person or a page: its request, how long it is, and what it has saved."""
-
-    return [{"name": b["name"], "request": b.get("request", ""), "skill": b.get("skill"),
-             "commands": len(b["commands"]), "tool": (b.get("tool") or {}).get("run"), "made_at": (b.get("made") or {}).get("at"), **economy(b)}
-            for b in all_books()]
 
 
 # ============================================================

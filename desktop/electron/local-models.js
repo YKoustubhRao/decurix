@@ -48,6 +48,6 @@ function createLocalModels({ readPreference, writePreference, operate }) {
     }
     return begin(value ? (installed ? ['ensure', 'prepare'] : ['install', 'ensure', 'prepare']) : ['stop']);
   }
-  return { status, setEnabled, resume: () => task || begin(['install', 'ensure', 'prepare']), prepare: () => setEnabled(true) };
+  return { status, setEnabled, resume: () => task || begin(['install', 'ensure', 'prepare']) };
 }
 module.exports = { createLocalModels };

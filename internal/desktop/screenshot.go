@@ -15,7 +15,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -156,7 +155,7 @@ func (m *Manager) Screenshot(ctx context.Context, rawID string, maxWidth int) ([
 	// Only a cache miss pays for the ContainerInspect captureTarget needs to
 	// resolve the desktop's address and password - a cache hit above never
 	// touches Docker at all.
-	addr, password, _, err := m.captureTarget(ctx, rawID)
+	addr, password, err := m.captureTarget(ctx, rawID)
 	if err != nil {
 		if errors.Is(err, ErrPaused) {
 			if entry.data != nil {
@@ -174,25 +173,19 @@ func (m *Manager) Screenshot(ctx context.Context, rawID string, maxWidth int) ([
 				return diskData, nil
 			}
 		}
-		entry.lastErr = err
-		entry.errAt = time.Now()
-		return nil, err
+		return entry.fail(err)
 	}
 
 	m.touchViewed(sanitizedID)
 
 	frame, err := captureFrame(ctx, addr, password)
 	if err != nil {
-		entry.lastErr = err
-		entry.errAt = time.Now()
-		return nil, err
+		return entry.fail(err)
 	}
 
 	encoded, err := encodeThumbnail(frame, maxWidth)
 	if err != nil {
-		entry.lastErr = err
-		entry.errAt = time.Now()
-		return nil, err
+		return entry.fail(err)
 	}
 
 	entry.data = encoded
@@ -203,46 +196,45 @@ func (m *Manager) Screenshot(ctx context.Context, rawID string, maxWidth int) ([
 	return encoded, nil
 }
 
+// fail remembers a failed capture for the negative cache and returns it. The caller holds e.mu.
+func (e *shotEntry) fail(err error) ([]byte, error) {
+	e.lastErr = err
+	e.errAt = time.Now()
+	return nil, err
+}
+
 // captureTarget resolves a running desktop's raw VNC address and the password
 // its Xvnc was started with. Both are read from the container itself rather
 // than from the control plane's own DEFAULT_PASSWORD, so a desktop created
 // before that value changed still has its screen readable.
-func (m *Manager) captureTarget(ctx context.Context, rawID string) (addr, password, sanitizedID string, err error) {
-	sanitizedID = sanitizeName(rawID)
-	name := "desktop_" + sanitizedID
-
-	inspect, err := m.client.ContainerInspect(ctx, name)
+func (m *Manager) captureTarget(ctx context.Context, rawID string) (addr, password string, err error) {
+	inspect, err := m.client.ContainerInspect(ctx, "desktop_"+sanitizeName(rawID))
 	if err != nil {
-		return "", "", sanitizedID, ErrNotFound
+		return "", "", ErrNotFound
 	}
 
 	if inspect.State == nil || !inspect.State.Running {
-		return "", "", sanitizedID, ErrNotRunning
+		return "", "", ErrNotRunning
 	}
 
 	if inspect.State.Paused {
-		return "", "", sanitizedID, ErrPaused
+		return "", "", ErrPaused
 	}
 
 	networkInfo, ok := inspect.NetworkSettings.Networks[NetworkName]
 	if !ok || networkInfo == nil {
-		return "", "", sanitizedID, ErrNoNetwork
+		return "", "", ErrNoNetwork
 	}
 
 	if networkInfo.IPAddress == "" {
-		return "", "", sanitizedID, ErrNoAddress
+		return "", "", ErrNoAddress
 	}
 
 	if inspect.Config != nil {
-		for _, entry := range inspect.Config.Env {
-			if value, found := strings.CutPrefix(entry, "VNC_PW="); found {
-				password = value
-				break
-			}
-		}
+		password = envValue(inspect.Config.Env, "VNC_PW")
 	}
 
-	return net.JoinHostPort(networkInfo.IPAddress, vncPort), password, sanitizedID, nil
+	return net.JoinHostPort(networkInfo.IPAddress, vncPort), password, nil
 }
 
 // captureFrame opens one RFB session against a desktop's Xvnc and returns its
@@ -421,12 +413,6 @@ func vncAuthResponse(challenge []byte, password string) ([]byte, error) {
 	}
 
 	return response, nil
-}
-
-// VNCAuthResponse is the answer VNC authentication expects to a challenge for
-// a password: what a native worker's own VNC endpoint checks a viewer against.
-func VNCAuthResponse(challenge []byte, password string) ([]byte, error) {
-	return vncAuthResponse(challenge, password)
 }
 
 // bits8Reverse reverses the bit order of a single byte.

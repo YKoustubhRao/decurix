@@ -102,14 +102,14 @@ def _describe(param, meaning="", lookup=False):
     return line
 
 
-def fill(skill, params, context, with_rows=False):
+def fill(skill, params, context):
     """
-    ({name: value}, {name: evidence}) for the params the run's context shows;
-    ({}, {}) when there is no model, nothing to read, or the model fails.
+    ({name: value}, {name: evidence}, rows) for the params the run's context shows;
+    ({}, {}, None) when there is no model, nothing to read, or the model fails.
     """
 
     if not params or not available():
-        return ({}, {}, None) if with_rows else ({}, {})
+        return ({}, {}, None)
 
     files = referenced_files(context)
     parts = [{"type": "text", "text": _prompt(skill, params, context)}]
@@ -143,11 +143,11 @@ def fill(skill, params, context, with_rows=False):
         answer = json.loads(message.get("content") or "{}")
     except (llm_client.LLMError, ValueError) as exc:
         log(f"binding: could not fill values for {skill.get('name')}: {exc}")
-        return ({}, {}, None) if with_rows else ({}, {})
+        return ({}, {}, None)
 
     values, evidence = _clean(params, answer, texts)
     rows = _rows(skill, params, answer, texts, values, evidence)
-    return (values, evidence, rows) if with_rows else (values, evidence)
+    return (values, evidence, rows)
 
 
 # A date written with digits only: 03/10/2026, 3.10.2026, 28-09-2026.

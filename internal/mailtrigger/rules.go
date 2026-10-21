@@ -24,7 +24,7 @@ type Rule struct {
 	SenderRe  string `json:"sender_re"`
 	SubjectRe string `json:"subject_re"`
 	// Content is the request sent to the desktop. {subject}, {from},
-	// {sender} and {date} are replaced with the email's; see Render for what
+	// {sender} and {date} are replaced with the email's; see RenderWithFiles for what
 	// is appended to it.
 	Content string `json:"content"`
 	// IncludeBody appends the email's text to the request.
@@ -118,7 +118,7 @@ func (s *Store) CreateRule(n NewRule) (Rule, error) {
 	now := s.clock()
 
 	rule := Rule{
-		ID:           newID("rule"),
+		ID:           sqlitedb.NewID("rule-", 8),
 		AccountID:    n.AccountID,
 		DesktopID:    n.DesktopID,
 		Name:         n.Name,
@@ -165,22 +165,14 @@ func (s *Store) Rules(accountID string) ([]Rule, error) {
 		args = append(args, accountID)
 	}
 
-	rows, err := s.db.Query(query+` ORDER BY created_ns`, args...)
-	if err != nil {
-		return nil, fmt.Errorf("mailtrigger: rules: %w", err)
-	}
-	defer rows.Close()
-
-	rules := make([]Rule, 0)
-
-	for rows.Next() {
+	rules, err := sqlitedb.QueryAll(s.db, func(row sqlitedb.Scanner) (Rule, error) {
 		var r Rule
 		var includeBody, verifiedOnly, enabled int
 		var created, lastFired int64
 
-		if err := rows.Scan(&r.ID, &r.AccountID, &r.DesktopID, &r.Name, &r.SenderRe, &r.SubjectRe, &r.Content,
+		if err := row.Scan(&r.ID, &r.AccountID, &r.DesktopID, &r.Name, &r.SenderRe, &r.SubjectRe, &r.Content,
 			&includeBody, &verifiedOnly, &enabled, &created, &lastFired, &r.Fired); err != nil {
-			return nil, fmt.Errorf("mailtrigger: rules: %w", err)
+			return Rule{}, err
 		}
 
 		r.IncludeBody = includeBody != 0
@@ -189,10 +181,13 @@ func (s *Store) Rules(accountID string) ([]Rule, error) {
 		r.CreatedAt = sqlitedb.FromNS(created)
 		r.LastFiredAt = sqlitedb.FromNS(lastFired)
 
-		rules = append(rules, r)
+		return r, nil
+	}, query+` ORDER BY created_ns`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("mailtrigger: rules: %w", err)
 	}
 
-	return rules, rows.Err()
+	return rules, nil
 }
 
 // SetRuleEnabled pauses or resumes a rule. A paused rule ignores the email

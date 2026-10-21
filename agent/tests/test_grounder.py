@@ -12,7 +12,6 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from decurix_agent.computer import approval, audit, cli, core, grounder

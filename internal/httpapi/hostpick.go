@@ -2,8 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/binary"
 	"errors"
 	"log"
 	"net/http"
@@ -14,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf16"
 
 	"github.com/YKoustubhRao/decurix/internal/desktop"
 )
@@ -38,8 +35,7 @@ var hostPickOpen sync.Mutex
 // the person picked and where each will be put in the new desktop.
 // POST /api/host-paths/browse?type=folder|file (primary listener, people only)
 func (s *Server) browseHostPathHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		jsonStatusError(w, http.StatusMethodNotAllowed, "POST required")
+	if !requireMethodJSON(w, r, http.MethodPost) {
 		return
 	}
 
@@ -101,8 +97,7 @@ func pickHostPathsOS(ctx context.Context, folder, either bool) ([]string, error)
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "windows":
-		script := "$title = '" + title + "'\n$folder = $" + map[bool]string{true: "true", false: "false"}[folder] + "\n" + windowsPickScript
-		cmd = exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-STA", "-EncodedCommand", encodePowerShell(script))
+		cmd = exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-STA", "-EncodedCommand", encodedCommand(windowsPickCommand(title, folder, either)))
 	case "darwin":
 		kind := "file"
 		if folder {
@@ -149,15 +144,11 @@ return out`)
 	return picked, nil
 }
 
-// encodePowerShell is a script as powershell.exe's -EncodedCommand takes it
-// (UTF-16LE, base64), so no quoting has to survive the command line.
-func encodePowerShell(script string) string {
-	units := utf16.Encode([]rune(script))
-	raw := make([]byte, 2*len(units))
-	for i, u := range units {
-		binary.LittleEndian.PutUint16(raw[2*i:], u)
-	}
-	return base64.StdEncoding.EncodeToString(raw)
+// windowsPickCommand is windowsPickScript with the variables it reads set: $title, $folder (a folder only) and $any
+// (files or a folder in one window).
+func windowsPickCommand(title string, folder, either bool) string {
+	psBool := map[bool]string{true: "$true", false: "$false"}
+	return "$title = '" + title + "'\n$folder = " + psBool[folder] + "\n$any = " + psBool[either && !folder] + "\n" + windowsPickScript
 }
 
 // windowsPickScript shows Explorer's own open dialog (IFileOpenDialog - the

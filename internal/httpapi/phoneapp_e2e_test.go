@@ -36,7 +36,6 @@ import (
 
 	"github.com/YKoustubhRao/decurix/internal/devices"
 	"github.com/YKoustubhRao/decurix/internal/phonehost"
-	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 	"github.com/YKoustubhRao/decurix/internal/webui"
 	"github.com/YKoustubhRao/decurix/internal/winhost"
 	"github.com/YKoustubhRao/decurix/internal/wsconn"
@@ -118,11 +117,7 @@ func TestAPhoneAppIsButtonsInARealDesktop(t *testing.T) {
 	config, key := h264[:sei], h264[idr:]
 
 	// The control plane, reachable from a container.
-	db, err := sqlitedb.OpenMemory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	db := testDB(t)
 	store, _ := devices.NewStore(db)
 	token, _ := store.Pair("Pixel 8")
 	dev, _ := store.Lookup(token)
@@ -198,13 +193,7 @@ func TestAPhoneAppIsButtonsInARealDesktop(t *testing.T) {
 		}
 	}()
 
-	deadline := time.Now().Add(3 * time.Second)
-	for len(s.Phones.Phones()) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the phone never linked")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	waitFor(t, 3*time.Second, "the phone to link", func() bool { return len(s.Phones.Phones()) > 0 })
 
 	id := "e2e-phone-whatsapp"
 	q := url.Values{

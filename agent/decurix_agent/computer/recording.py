@@ -128,10 +128,19 @@ def _read_meta(directory):
         return None
 
 
+def write_whole(path, data):
+    """Write `data` (bytes, or text as UTF-8) to `path` at once: to a .tmp file beside it, then moved over it."""
+
+    tmp = path.with_name(path.name + ".tmp")
+    if isinstance(data, bytes):
+        tmp.write_bytes(data)
+    else:
+        tmp.write_text(data, encoding="utf-8")
+    tmp.replace(path)
+
+
 def _write_meta(directory, meta):
-    tmp = directory / "meta.json.tmp"
-    tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
-    tmp.replace(directory / "meta.json")
+    write_whole(directory / "meta.json", json.dumps(meta, ensure_ascii=False, indent=1))
 
 
 def _new_meta(session_id, started_at=None):
@@ -230,9 +239,7 @@ def _store_bytes(frames, name, encode):
 
     frames.mkdir(parents=True, exist_ok=True)
     data = encode()
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_bytes(data)
-    tmp.replace(path)
+    write_whole(path, data)
 
     return len(data)
 
@@ -506,7 +513,7 @@ def import_legacy_audit(audit_dir):
                 frames[label] = None
 
         # The old trail kept typed text verbatim, password fields included.
-        text, withheld = privacy.withhold_text(entry.get("element"), entry.get("text"))
+        _, withheld = privacy.withhold_text(entry.get("element"), entry.get("text"))
         if withheld:
             entry["text"] = None
             entry["withheld"] = {"text": withheld}
