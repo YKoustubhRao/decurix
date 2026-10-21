@@ -3774,6 +3774,10 @@ $Commands = [Action[string, string]] {
                 Reply ([Native]::Launch($DesktopName, $l.Target, $l.Args, $l.WorkDir))
             }
         }
+        "pid" {
+            # Which process this helper is on the host: the control plane ends exactly this tree when it stops it.
+            Reply "OK $PID"
+        }
         "open" {
             $f = $rest.Split("`t")
             $r = Resolve-Launch $f[0] $(if ($f.Count -gt 1) { $f[1] } else { '' })

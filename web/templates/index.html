@@ -1093,6 +1093,18 @@
           </div>
           {{end}}
 
+          {{if .SharedFolder}}
+          <div class="dcard-spec" data-shared-folder="{{.ID}}">
+            <svg width="13" height="13"><use href="#i-clip"/></svg>
+            <span>Shares <span class="mono" title="The worker can read and write this folder, and nothing else on this computer">{{.SharedFolder}}</span></span>
+          </div>
+          {{end}}
+
+          <div class="dcard-spec dcard-missing" data-missing-apps="{{.ID}}"{{if not .MissingApps}} hidden{{end}}>
+            <svg width="13" height="13"><use href="#i-alert"/></svg>
+            <span>{{range $i, $a := .MissingApps}}{{if $i}}<br>{{end}}<strong>{{$a.Name}}</strong> {{if $a.Pending}}is being added{{else}}was not added{{end}}: {{$a.Reason}}{{end}}</span>
+          </div>
+
           {{if .ParentID}}
           <div class="dcard-spec">
             <svg width="13" height="13"><use href="#i-fork"/></svg>
@@ -1419,6 +1431,12 @@
           <label class="seg"><input type="radio" name="memory_mb" value="8192" {{if eq .DefaultDesktopMemoryMB 8192}}checked{{end}}><span>8 GB</span></label>
           <label class="seg"><input type="radio" name="memory_mb" value="16384" {{if eq .DefaultDesktopMemoryMB 16384}}checked{{end}}><span>16 GB</span></label>
         </div>
+      </div>
+
+      <div class="field" id="sharedFolderField">
+        <label for="dSharedFolder">Shared folder <span class="hint" style="display:inline">(optional)</span></label>
+        <input class="input" type="text" id="dSharedFolder" name="shared_folder" placeholder="C:/Users/you/Documents/Shared" autocomplete="off" spellcheck="false">
+        <div class="hint">One folder on this computer that the worker can read and write. Nothing else on this computer is reachable. It is fixed when the worker is made: to share another folder, make a new worker.</div>
       </div>
 
       <div class="field host-apps-section" id="hostAppsSection">
@@ -2306,9 +2324,13 @@
     if(info.specialization){
       specHtml += '<div class="dcard-spec"><svg width="13" height="13"><use href="#i-fork"/></svg><span>Specialized for: ' + escapeHTML(info.specialization) + '</span></div>';
     }
+    if(info.sharedFolder){
+      specHtml += '<div class="dcard-spec"><svg width="13" height="13"><use href="#i-clip"/></svg><span>Shares <span class="mono">' + escapeHTML(info.sharedFolder) + '</span></span></div>';
+    }
     if(info.parentId){
       specHtml += '<div class="dcard-spec"><svg width="13" height="13"><use href="#i-fork"/></svg><span>Child of <span class="mono">' + escapeHTML(info.parentId) + '</span></span></div>';
     }
+    specHtml += '<div class="dcard-spec dcard-missing" data-missing-apps="' + escapeHTML(info.id) + '" hidden><svg width="13" height="13"><use href="#i-alert"/></svg><span></span></div>';
 
     card.innerHTML =
       '<div class="dcard-preview">' +
@@ -2406,6 +2428,7 @@
     var memoryMb = parseInt(data.get("memory_mb") || "2048", 10);
     var specialization = (data.get("specialization") || "").trim();
     var parentId = (data.get("parent_id") || "").trim();
+    var sharedFolder = (data.get("shared_folder") || "").trim();
 
     var copyHostApps = dCopyHostApps && dCopyHostApps.checked;
     var selectedApps = [];
@@ -2428,6 +2451,7 @@
       cpus: cpus,
       memoryMb: memoryMb,
       specialization: specialization,
+      sharedFolder: sharedFolder,
       parentId: parentId
     });
 
@@ -2451,6 +2475,7 @@
         memory_mb: memoryMb,
         specialization: specialization,
         parent_id: parentId,
+        shared_folder: sharedFolder,
         copy_host_apps: copyHostApps ? "1" : "0",
         host_apps: selectedApps.join(","),
         copy_host_files: copyHostFiles ? "1" : "0",
@@ -3153,6 +3178,17 @@
     });
   }
 
+  /* Requested host apps the desktop does not have, with why: never a silent skip. A pending one is still being tried
+     and drops off the card when it is added. apps null means the poll knows nothing about this desktop: keep the card. */
+  function paintMissingApps(box, apps){
+    if(!box || apps === null){ return; }
+    var text = box.querySelector("span");
+    text.innerHTML = apps.map(function(a){
+      return "<strong>" + escapeHTML(a.name) + "</strong> " + (a.pending ? "is being added" : "was not added") + ": " + escapeHTML(a.reason);
+    }).join("<br>");
+    box.hidden = apps.length === 0;
+  }
+
   function paintCardDetails(){
     document.querySelectorAll(".dcard[data-desktop-id]").forEach(function(card){
       var now = activity[card.dataset.desktopId] || {};
@@ -3165,6 +3201,7 @@
         mem.textContent = now.memory_mb % 1024 === 0 ? (now.memory_mb / 1024) + " GB" : now.memory_mb + " MB";
       }
       if(created && now.created_at){ created.dataset.created = now.created_at; }
+      paintMissingApps(card.querySelector("[data-missing-apps]"), now.status ? (now.missing_apps || []) : null);
       card.querySelectorAll("[data-status-pill]").forEach(function(pill){
         if(now.status){ pill.dataset.baseStatus = now.status; pill.dataset.crash = now.crash || ""; }
       });
@@ -3362,6 +3399,7 @@
           if(txt && data.message){
             txt.textContent = data.message;
           }
+          if(data.missing_apps){ paintMissingApps(card.querySelector("[data-missing-apps]"), data.missing_apps); }
           var bar = card.querySelector("[data-prov-bar]");
           if(bar && typeof data.progress === "number"){
             bar.style.width = Math.max(10, Math.min(100, data.progress)) + "%";

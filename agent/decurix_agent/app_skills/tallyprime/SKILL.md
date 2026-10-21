@@ -21,32 +21,20 @@ How TallyPrime is worked here
 
 Create a company (with none open; or Alt+K, then C)
 1. Company Name: type it, Enter. Mailing Name copies it; Enter through Address, State, Country unless given.
-2. "Financial year beginning from" and "Books beginning from": type the date as 1-4-2026 for 1 April 2026; Tally
-   shows 1-Apr-26.
+2. "Financial year beginning from" and "Books beginning from": type dates as d-m-yyyy; Tally shows them as
+   d-Mon-yy.
 3. Ctrl+A accepts. A Company Features screen may follow: Ctrl+A accepts it as it is.
 - Educational Mode accepts entries only on the 1st, 2nd and 31st of a month (Tally's documentation): a voucher dated
   otherwise is refused - read the message and tell the person.
 
-Create a ledger - from the Gateway of Tally, exactly these steps
-1. With "Create" highlighted, Enter: "Master Creation" opens with its List of Masters.
-2. gui type "Ledger", Enter: "Ledger Creation" opens; the cursor is in Name.
-3. gui type the ledger's name, Enter: the cursor moves to (alias).
-4. Enter (skips alias): the cursor moves to Under (it shows "Capital Account" until changed) and the List of
-   Groups opens on the right.
-5. gui type the group's first letters ("Sundry Cr", "Indirect Ex"): the list narrows to the group. Enter takes it.
-6. Look: Under must read the whole group name. Then Ctrl+A accepts the ledger; Ledger Creation opens again, empty,
-   for the next one (repeat from step 3). Escape back to the Gateway when done.
-- "Name already exists": that ledger is there already - Enter, then Escape and Y to leave this form; do not make
+Masters and vouchers
+- From the Gateway, "Create" (Enter) opens Master Creation; type the master's kind ("Ledger", "Group" ...) and
+  Enter to open its form. Alt+G opens Go To: type a screen's name ("Create Voucher", "Day Book") and Enter.
+- In a voucher, the F-keys choose its type (shown at the top left); F2 sets its date; Ctrl+H changes its mode.
+- Ctrl+A accepts a form (and any pop-up of it); the same empty form then opens for the next one. Escape back to the
+  Gateway when done.
+- "Name already exists": that master is there already - Enter, then Escape and Y to leave the form; do not make
   another.
-
-Record a purchase - from the Gateway of Tally
-1. Alt+G, gui type "Create Voucher", Enter; then F9 for Purchase (the voucher type shows at the top left).
-2. F2: type the date (1-4-2026), Enter.
-3. Ctrl+H (Change Mode) - choose "Accounting Invoice" for a purchase with no stock items.
-4. Supplier Invoice No.: from the request when given. Party A/c name: the supplier's ledger from its list.
-5. Under Particulars: the expense ledger from its list, Enter, then the Amount, Enter.
-6. Narration: type it as given. Ctrl+A saves; an empty voucher opens. Popups such as "Party Details" accept with
-   Ctrl+A when the request gives none of their values.
 
 Checking
 - Gateway > Day Book lists the vouchers; Gateway > Chart of Accounts > Ledgers lists ledgers with their groups.

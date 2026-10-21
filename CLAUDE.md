@@ -20,8 +20,9 @@ This file holds only what must be in your head for every change. The detail live
 | Skills: learn, ask, run | [docs/skills.md](docs/skills.md) |
 | Maturity, final check, "no unseen success", token savings | [docs/learning-and-verification.md](docs/learning-and-verification.md) |
 | Healing ladder, experience | [docs/healing.md](docs/healing.md) |
+| Long requests: planned runs, ledger, amendments, parked questions, cross-check | [docs/long-requests.md](docs/long-requests.md) |
 | Build, run, env vars, `--cli`, releases | [docs/running.md](docs/running.md) |
-| Every lesson learned the hard way (363 entries) | [docs/gotchas.md](docs/gotchas.md): one line each, grep it, then open the named part file |
+| Every lesson learned the hard way (523 entries) | [docs/gotchas.md](docs/gotchas.md): one line each, grep it, then open the named part file |
 
 ## Commands
 
@@ -45,6 +46,7 @@ Live benches (Docker, minutes each) are listed in [docs/running.md](docs/running
 - **SQLite.** A schema change is a new appended step in that component's `Migrate` slice, never an edit. No query while a `*sql.Rows` is open. A read-then-write needs its own mutex.
 - **`go:embed`.** Anything a desktop image needs at docker-build time must be embedded (`embed.go`); it skips `_`-named files and `agent/thebot` (packed by `go generate .`). Use `path.Join` for embed paths.
 - **Scripts.** `.sh` and `.ps1` twins are hand-maintained: change both. Scripts that run in Linux must have LF endings (`.gitattributes`; the build refuses CRLF).
+- **A shared folder is one folder, opt-in, chosen at the person's own screen.** `shared_folder` at creation is validated (`desktop.ParseSharedFolder`), bound read-write outside `$HOME`, never accepted on the gated listener, and nothing else of the PC is reachable. Details: architecture.md.
 - **Desktop state in `$HOME` is fixed at creation.** Seccomp, wallpaper, panel, launchers, ENV: an existing desktop needs recreating to pick up a change.
 - **Keep the prompt prefix byte-identical** across model calls and `num_ctx` fixed at 8192, or Ollama reloads (minutes on the target CPU host).
 - **`progress.emit` is decoration.** It never blocks, raises or fails a task.
@@ -56,6 +58,7 @@ Live benches (Docker, minutes each) are listed in [docs/running.md](docs/running
 - `jsonError` never echoes `err.Error()` to a client.
 - Tests that need bash or a real browser skip on Windows or use a stand-in; never launch the real browser in a test.
 - A new page template goes into `internal/webui/render_test.go`.
+- A new stage code check goes into `long_task.stage_code_findings` as ADVISORY (`CHECK_MATURITY`) and must pass the replay gate (`agent/tests/test_replay_gate.py`); it becomes blocking only by its own entry after a clean live round (docs/long-requests.md).
 - Add a new lesson to the matching `docs/` file (gotchas go in the newest `docs/gotchas/part-N.md` and a line in `docs/gotchas.md`), not here. Keep this file short.
 
 ## Working agreements with the person who runs this

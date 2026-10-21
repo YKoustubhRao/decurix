@@ -232,9 +232,32 @@ def perform(content, task_file=None):
         reply = (f"Done with the tool I wrote for this kind of request (`{Path(tool['path']).name} {line}`).\n\n"
                  f"{printed[:MAX_OUTPUT_CHARS]}")
         made = produced.files(reply, request=content)
+        # The same code-decided facts about the files as the final gate's (produced.file_facts), with no model.
+        facts = produced.file_facts(content, made, drafts_made=produced.drafts())
+        from decurix_agent import source_guard, task_context
+        try:
+            changed_source = source_guard.check_and_restore(task_context.current(), content)
+        except Exception as exc:  # noqa: BLE001
+            log(f"tool_task: could not check the shared folder's files: {exc}")
+            changed_source = ""
+        source_guard.tidy_own_backups(content)
+        if changed_source:
+            progress.emit(changed_source)
+            facts.file_faults.append(changed_source)
+        # Only the invariants decide here (harness audit, 2026-10-21); what reads the request is evidence for the judge.
+        wrong = (facts.unstored + facts.gaps
+                 + ([facts.missing_files] if facts.missing_files else []) + facts.file_faults
+                 + facts.payee_mismatch + facts.source_mismatch + facts.unknown_recipients + facts.draft_facts)
         progress.emit("Reading back what it wrote to check it against the request.")
-        verdict = verify.judge(content, claim=reply, screen=False,
-                               produced="\n".join(x for x in (produced.text(made), produced.drafts_text()) if x))
+        if wrong:
+            verdict = {"verdict": verify.NOT_DONE, "confidence": 1.0, "seen": "; ".join(wrong)[:600],
+                       "why": "what it wrote is not finished: its workbook's formulas have no results stored, a file "
+                              "asked for was not made, a column filled down a table stops short of it, a placeholder is "
+                              "left, or a value is on no record"}
+        else:
+            verdict = verify.judge(content, claim=reply, screen=False,
+                                   produced="\n".join(x for x in (produced.text(made), produced.drafts_text(),
+                                                                  produced.notes_text(facts.notes())) if x))
 
         if verdict["verdict"] == verify.DONE:
             _note(book, True)

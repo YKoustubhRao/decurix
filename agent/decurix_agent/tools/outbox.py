@@ -98,6 +98,21 @@ def _same_email(record, to, subject, attached=None):
             and sorted(record.get("attachments") or []) == sorted(attached or []))
 
 
+def _stage():
+    """(run:stage, attempt) of the long request's stage running now, or ("", 0)."""
+
+    try:
+        from decurix_agent import workflow_task
+        active = workflow_task._active
+        if active:
+            attempt = workflow_task.runner().status(active[0])["steps"][active[1]]["attempts"]
+            return f"{active[0]}:{active[1]}", attempt
+    except Exception:  # noqa: BLE001 - a draft outside a run is simply a draft
+        pass
+    # Another process (`office email`, run by the stage's engine): the stage the agent marked (task_context.set_stage).
+    return task_context.current_stage()
+
+
 class DraftError(Exception):
     """A draft that was not made, and why, in words for the model."""
 
@@ -152,9 +167,17 @@ def draft(to, subject, body, cc=None, attachments=None, replaces=None):
                          "address (name@domain). Nothing was drafted.")
     task_id = task_context.current() or ""
     explicit = bool(replaces)
+    stage, attempt = _stage()
     if not replaces and task_id:
         attached = [Path(os.path.expanduser(str(path))).name for path in attachments or []]
         earlier = [r for r in drafted(task_id) if r.get("id") and _same_email(r, to, subject, attached)]
+        if not earlier and stage:
+            # A long request's stage run again (a retry, a re-check after a change) writes again to whom it wrote
+            # before: that letter takes the earlier one's place, whatever its subject. Found live (round 5 P1,
+            # 2026-10-20): a re-check drafted a second reminder to the same customer beside the first.
+            earlier = [r for r in drafted(task_id) if r.get("id") and r.get("stage") == stage
+                       and r.get("attempt") != attempt
+                       and sorted(a.lower() for a in r.get("to") or []) == sorted(a.lower() for a in to)]
         if earlier:
             replaces = earlier[-1]["id"]
 
@@ -178,6 +201,8 @@ def draft(to, subject, body, cc=None, attachments=None, replaces=None):
 
     record = {"to": to, "cc": _recipients(cc), "subject": (subject or "").strip(), "body": body or "",
               "attachments": [f["name"] for f in files]}
+    if stage:
+        record.update(stage=stage, attempt=attempt)
     names = ", ".join(f["name"] for f in files) or "no attachments"
 
     dry = os.environ.get(DRY_RUN)

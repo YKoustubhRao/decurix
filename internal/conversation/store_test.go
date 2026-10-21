@@ -417,3 +417,39 @@ func TestTaskTaggedStepAfterQueryResumesLiveTurn(t *testing.T) {
 		t.Fatalf("resumed teaching lost progress: %+v", thread)
 	}
 }
+
+// Round 5 P1 (2026-10-21): the receipt of a change the person sent mid-run closed the turn, and the chat read
+// "finished" while the planned run's stages were reopened and one still ran.
+func TestANoteWhileStillWorkingKeepsTheTurnRunning(t *testing.T) {
+	s := newStore(t)
+
+	s.AppendUserRequest("desktop-1", "", "October month-end close please.")
+	s.AppendStep("desktop-1", "Stage 1 of 7: Bank Rec")
+	s.AppendUserRequest("desktop-1", "t-msg", "Bill NS-0457 from Nova Stationers was cancelled - leave it out of everything.")
+	s.AppendAgentNote("desktop-1", "t-msg", KindEntry, "Noted: Exclude bill NS-0457 ... re-checking Add Purchase Register.")
+
+	thread := s.Snapshot("desktop-1")
+	if !thread.Running {
+		t.Fatal("a reply while the desktop is still working closed the turn")
+	}
+	if len(thread.Steps) != 1 || thread.StartedAt.IsZero() {
+		t.Fatalf("the turn's live steps or start were lost: %d steps, started %v", len(thread.Steps), thread.StartedAt)
+	}
+	if got := thread.Entries[len(thread.Entries)-1]; got.Role != RoleAgent || got.TaskID != "t-msg" {
+		t.Fatalf("the note was not recorded as the agent's reply on its task: %+v", got)
+	}
+
+	// The run's own final reply ends the turn, with all of its steps.
+	s.AppendStep("desktop-1", "Stage 2 of 7: Purchase Register")
+	s.AppendAgentReply("desktop-1", "", KindEntry, "Done - every stage was made and checked.")
+	thread = s.Snapshot("desktop-1")
+	if thread.Running || len(thread.Entries[len(thread.Entries)-1].Steps) != 2 {
+		t.Fatalf("the final reply did not close the turn with its steps: running=%v", thread.Running)
+	}
+
+	// With nothing running, a note is an ordinary reply.
+	s.AppendAgentNote("desktop-1", "", KindEntry, "Hello")
+	if s.Snapshot("desktop-1").Running {
+		t.Fatal("a note with nothing running opened a turn")
+	}
+}

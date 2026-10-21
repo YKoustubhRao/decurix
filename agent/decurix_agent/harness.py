@@ -115,4 +115,18 @@ def continue_after_query(query_response):
         workflow_task.engine_returned()
 
 
-__all__ = ["perform_task", "continue_after_query", "wait_for_backend", "ask_model"]
+def cancel_running():
+    """
+    End the engine's work in progress, when the engine can be told to (a
+    person stopped a long request mid-stage). True when something was
+    cancelled; an engine that cannot be cancelled finishes its turn and the
+    stop takes effect after it.
+    """
+
+    if config.AGENT_HARNESS == "thebot":
+        from decurix_agent import thebot_harness
+        return thebot_harness.cancel_current()
+    return False
+
+
+__all__ = ["perform_task", "continue_after_query", "wait_for_backend", "ask_model", "cancel_running"]

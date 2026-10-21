@@ -14,3 +14,8 @@ agent/thebot-soul
 # A Windows build of the control plane at the repository root (go build ./cmd/decurix).
 /decurix.exe
 bench/native/results/
+# Test fixtures copied from live benchmark runs (customer data, demo logins, MBs of files) are never committed;
+# tests that need them skip when they are absent. Only the small hand-made sets below are tracked.
+agent/tests/fixtures/*
+!agent/tests/fixtures/agents/
+!agent/tests/fixtures/detour/

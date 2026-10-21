@@ -1,4 +1,5 @@
 import configparser
+import json
 import os
 import re
 import shlex
@@ -159,6 +160,50 @@ def by_name(words, places=None):
         if commands:
             return None
     return None
+
+
+# The apps a person asked this desktop to have that it does not, each with why - written by the control plane
+# (internal/desktop/missingapps.go). Found live (2026-10-20): a desktop created without the Word asked for, because
+# the host's check died partway, had nothing saying so; asked for a letter in Word, the worker did it in another app.
+MISSING_FILE = HOME / ".decurix" / "missing-apps.json"
+
+
+def missing(path=None):
+    """The requested apps this desktop does not have: [{name, reason, pending}], [] when none or unreadable."""
+
+    try:
+        data = json.loads(Path(path or MISSING_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [a for a in data if isinstance(a, dict) and str(a.get("name") or "").strip()]
+
+
+def missing_named(words, path=None):
+    """
+    The requested-but-missing app a person means by `words`, or None: its name, the words its name starts or ends
+    with ("Word" for "Microsoft Word"), or a longer name ending in it ("Microsoft Word" for "Word").
+    """
+
+    wanted = _norm(words)
+    if not wanted:
+        return None
+    for app in missing(path):
+        name = _norm(app["name"])
+        if name and (wanted == name or name.startswith(wanted + " ") or name.endswith(" " + wanted)
+                     or wanted.endswith(" " + name)):
+            return app
+    return None
+
+
+def missing_sentence(app):
+    """One plain sentence on a requested app this desktop does not have."""
+
+    if app.get("pending"):
+        return f"{app['name']} isn't on this desktop yet (it is still being added and may appear in a few minutes)."
+    reason = str(app.get("reason") or "").strip().rstrip(".")
+    return f"{app['name']} isn't on this desktop" + (f" ({reason})" if reason else "") + "."
 
 
 WRAPPER_PAGE = re.compile(r"""^APP=['"](https?://[^'"\s]+)['"]""", re.MULTILINE)

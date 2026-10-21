@@ -245,7 +245,7 @@ func controlPlaneURL() string {
 }
 
 // buildDesktopEnv builds the container environment variables (VNC, desktop identity, control-plane/Ollama URLs, agent harness, brain) for a desktop by name.
-func buildDesktopEnv(name, harness, specialization, parentID string, brain Brain) []string {
+func buildDesktopEnv(name, harness, specialization, parentID string, brain Brain, shared ...*SharedFolder) []string {
 	defaultPassword := os.Getenv("DEFAULT_PASSWORD")
 	if defaultPassword == "" {
 		defaultPassword = "admin"
@@ -329,6 +329,11 @@ func buildDesktopEnv(name, harness, specialization, parentID string, brain Brain
 
 	env = append(env, "DECURIX_BRAIN="+brain.kind())
 
+	// The one folder of the person's computer this desktop may use, when they chose one (sharedfolder.go).
+	if len(shared) > 0 && shared[0] != nil {
+		env = append(env, shared[0].Env()...)
+	}
+
 	// A hosted brain: TheBot's OpenAI-compatible provider pointed at the
 	// control plane's proxy (/api/llm/<provider>/v1/...), which adds the key
 	// and, for Claude, translates. The "key" here is a placeholder soul's
@@ -384,7 +389,7 @@ func buildDesktopEnv(name, harness, specialization, parentID string, brain Brain
 }
 
 // buildContainerConfigs builds the Docker container, host, and network configuration for a desktop from its resolved image, resources, profile, harness, and security options.
-func buildContainerConfigs(imageName, containerName, profile, harness string, cpus, memoryMB int64, env []string, volumeName string, securityOpt []string) (*container.Config, *container.HostConfig, *network.NetworkingConfig) {
+func buildContainerConfigs(imageName, containerName, profile, harness string, cpus, memoryMB int64, env []string, volumeName string, securityOpt []string, shared ...*SharedFolder) (*container.Config, *container.HostConfig, *network.NetworkingConfig) {
 	labels := map[string]string{
 		"desktop-manager":        "true",
 		"desktop-profile":        profile,
@@ -395,6 +400,9 @@ func buildContainerConfigs(imageName, containerName, profile, harness string, cp
 		"desktop-model":          desktopModel(env),
 		"desktop-specialization": envValue(env, "DESKTOP_SPECIALIZATION"),
 		"desktop-parent-id":      envValue(env, "DESKTOP_PARENT_ID"),
+	}
+	if len(shared) > 0 && shared[0] != nil {
+		labels[sharedLabel] = shared[0].Host
 	}
 
 	config := &container.Config{
@@ -444,6 +452,12 @@ func buildContainerConfigs(imageName, containerName, profile, harness string, cp
 		ExtraHosts: []string{
 			"host.docker.internal:host-gateway",
 		},
+	}
+
+	// The shared folder is a mount of its own (not in Binds): the daemon refuses a source that does not exist, where a
+	// bind would make it on the host.
+	if len(shared) > 0 && shared[0] != nil {
+		hostConfig.Mounts = append(hostConfig.Mounts, shared[0].Mount())
 	}
 
 	networkingConfig := &network.NetworkingConfig{

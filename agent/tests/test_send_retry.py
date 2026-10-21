@@ -37,7 +37,9 @@ class AnOutcomeSurvivesARestart(unittest.TestCase):
 
         with mock.patch.object(messaging.urllib.request, "urlopen", urlopen), mock.patch.object(messaging.time, "sleep"):
             self.assertFalse(messaging.send_query("f.txt", "note", kind="final", reply="done"))
-        self.assertEqual(len(calls), 1)
+        # A refusal is the control plane's word: not retried as it was - sent once more short and plain
+        # (test_long_messages), and then let go.
+        self.assertEqual(len(calls), 2)
 
 
 if __name__ == "__main__":

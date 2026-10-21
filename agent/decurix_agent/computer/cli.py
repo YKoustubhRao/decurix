@@ -146,6 +146,10 @@ USAGE = """gui - see and use this desktop's screen
                                  A field holding several lines is a document: replacing
                                  all of it needs --replace-all
   gui type "text"                type into whatever has focus
+  gui type CELL "a\\tb\\nc\\td"     rows of a spreadsheet: a Tab between cells, \\n between rows,
+                                 from that cell (D1, or its ref); every cell is read back (exit 4 if
+                                 one differs) - also in a host app's viewer
+  gui type [TARGET] - <<'EOF'    the text verbatim from stdin (quotes, real Tabs and new lines)
   gui read [TARGET]              the whole text of a field or document, with line numbers
                                  (observe shows only its first 60 characters)
   gui key KEYS...                press keys: enter, tab, ctrl+s, alt+f4 ...
@@ -307,26 +311,92 @@ def _last_name(ref):
     return None
 
 
-# A Windows path: a drive or a share, then folders. In one, a backslash is a
-# separator - "C:\\work\\notes\\t1" holds no new line and no tab.
-WINDOWS_PATH = re.compile(r"(?:^|[\s\"\'(=])(?:[A-Za-z]:|\\\\[\w.-]+)\\[^\s\"\']*")
+# A Windows path: a drive (C:\), a share (\\host\share\) or an environment variable (%USERPROFILE%\), then folders and
+# a file. In one, a backslash is a separator: "C:\work\notes\t1" holds no new line and no tab, and
+# "C:\Users\me\Documents\Decurix demo\receivables.xlsx" holds no carriage return (found live, 2026-10-19: the path
+# was cut at its first space, " demo\receivables.xlsx" was read as text, and \r refused every typing of the path).
+_PATH_START = re.compile(r"(?:[A-Za-z]:\\|\\\\[\w.$-]+\\|%[A-Za-z_][A-Za-z0-9_]*%\\)")
+# What ends a path as a file: after one of these, \n or \t is an escape again ("C:\a\b.csv\nTotal").
+_FILE_EXT = re.compile(r"\.(?:xlsx|xlsm|xls|ods|csv|tsv|txt|md|log|json|xml|html?|docx?|odt|rtf|pptx?|odp|pdf|png|jpe?g|"
+                       r"gif|bmp|tiff?|webp|svg|zip|eml|msg|py|sh|ini|cfg|bak|tmp)$", re.I)
+_NOT_IN_A_NAME = '\\/:*?"<>|\r\n\t'
+
+
+def path_spans(text):
+    """
+    Where path-looking text stands in `text`, as (start, end) pairs: from a drive, share or %VAR% to the end of its
+    last folder or file - spaces inside names included - or, when a file name comes first (a known extension) and a
+    \\n or \\t escape follows it, to the end of that file. Backslashes inside are literal.
+    """
+
+    spans, pos, n = [], 0, len(text or "")
+    while pos < n:
+        start = _PATH_START.search(text, pos)
+        if not start:
+            break
+        before = text[start.start() - 1:start.start()] if start.start() else ""
+        # A drive letter is not the end of a word ("Note:\n") - unless the word is the n or t of a \n or \t before it.
+        if before.isalnum() and text[start.start() - 2:start.start()] not in ("\\n", "\\t"):
+            pos = start.start() + 1
+            continue
+        i = start.end()
+        while True:
+            j = i
+            while j < n and text[j] not in _NOT_IN_A_NAME:
+                j += 1
+            if j < n and text[j] == "\\":
+                if text[j + 1:j + 2] in ("n", "t") and _FILE_EXT.search(text[i:j].rstrip()):
+                    i = j
+                    break
+                i = j + 1
+                continue
+            i = j
+            break
+        spans.append((start.start(), i))
+        pos = max(i, start.end())
+    return spans
+
+
+def _outside_paths(text, change):
+    """`text` with `change` applied to every stretch that is not path-looking."""
+
+    out, last = [], 0
+    for begin, end in path_spans(text):
+        out.append(change(text[last:begin]))
+        out.append(text[begin:end])
+        last = end
+    out.append(change(text[last:]))
+    return "".join(out)
 
 
 def _unescape(text):
     """
-    The text of `gui type` with \\n and \\t read as a new line and a tab - outside a
-    Windows path. Found by bench/native: a file name typed into a Save dialog,
-    C:\\...\\workers\\t1\\home\\..., was refused as "a Tab in the text" (its \\t1), and
-    a folder called \\new would have been cut in two by an Enter.
+    The text of `gui type` with \\n and \\t read as a new line and a tab - outside path-looking text (see path_spans).
+    Found by bench/native: a file name typed into a Save dialog, C:\\...\\workers\\t1\\home\\..., was refused as "a Tab
+    in the text" (its \\t1), and a folder called \\new would have been cut in two by an Enter.
     """
 
-    out, last = [], 0
-    for match in WINDOWS_PATH.finditer(text):
-        out.append(text[last:match.start()].replace("\\n", "\n").replace("\\t", "\t"))
-        out.append(match.group(0))
-        last = match.end()
-    out.append(text[last:].replace("\\n", "\n").replace("\\t", "\t"))
-    return "".join(out)
+    return _outside_paths(text, lambda part: part.replace("\\n", "\n").replace("\\t", "\t"))
+
+
+# A backslash sequence gui type has no key for: \f, \r, \v, \b, \a - typed, the two characters. Refused only where it
+# stands alone as a token (nothing word-like after it): "\receivables" is a path's folder, "\fKaveri" is run-on text
+# the final check catches in the saved file (produced.document_findings).
+UNSUPPORTED_ESCAPE = re.compile(r"(?<!\\)\\[frvba](?![A-Za-z0-9_.])")
+
+
+def _unsupported_escape(text):
+    """The first lone backslash sequence in typed text that gui type would type as characters, or ""."""
+
+    rest = _outside_paths(text or "", lambda part: part)
+    for begin, end in reversed(path_spans(rest)):
+        rest = rest[:begin] + " " + rest[end:]
+    found = UNSUPPORTED_ESCAPE.search(rest)
+    return found.group(0) if found else ""
+
+
+# A spreadsheet cell named by its coordinate as gui type's target (D1, $B$14). Not a ref: refs are e and digits.
+CELL_TARGET = re.compile(r"^\$?[A-Za-z]{1,3}\$?[0-9]{1,7}(?::\$?[A-Za-z]{1,3}\$?[0-9]{1,7})?$")
 
 
 def _is_target(token):
@@ -362,6 +432,8 @@ def build_parser():
         p.add_argument("--role")
         p.add_argument("--name")
         p.add_argument("--see")
+        # The form's filled fields were listed and checked: send it (core._form_check).
+        p.add_argument("--checked", action="store_true")
 
     typing = sub.add_parser("type", add_help=False)
     typing.add_argument("words", nargs="+")
@@ -768,7 +840,8 @@ def run(argv):
         if not target:
             raise ComputerError(f"{command} what? Give a ref like e12 (run gui observe first).")
         # named: a press on a control that has a name is made by its ref, not by where it is (core.act).
-        result = core.act(command.replace("-", "_"), named=True, **target)
+        result = core.act(command.replace("-", "_"), named=True,
+                          check_form=("checked" if args.checked else True) if command == "click" else False, **target)
 
     elif command == "type":
         words = _strip_descriptor(list(args.words))
@@ -779,18 +852,40 @@ def run(argv):
             args.role, args.name, words = words[0], words[1], [words[2]]
         if args.see:
             target, text = {"see": args.see}, " ".join(words)
+        elif len(words) >= 2 and CELL_TARGET.match(words[0]) and not el.REF_RE.match(words[0]):
+            # gui type D1 "..." - a spreadsheet's cell by its coordinate (a ref is lower-case e and digits: e12).
+            # A range (F3:F13) names where the block starts: its top-left cell. Found live (2026-10-19): refused as "one
+            # field at a time", and the worker fell back to typing the figures.
+            target, text = {"cell": words[0].split(":")[0]}, " ".join(words[1:])
         elif args.role or args.name:
             target, text = _target(None, args), " ".join(words)
         elif len(words) >= 2 and (_is_target(words[0]) or len(words) == 2):
             target, text = _target(words[0], args), " ".join(words[1:])
         else:
             target, text = {}, " ".join(words)
-        result = core.act("type", text=_unescape(text), append=args.append, replace_all=args.replace_all, **target)
+        if text == "-":
+            # The text verbatim on stdin (a heredoc): quotes, Tabs and new lines exactly as given, nothing for the
+            # shell to eat. Found live (2026-10-19): "=IF(D2=""x"",1,0)" reached the app as =IF(D2=x,1,0).
+            text = sys.stdin.read()
+            text = text[:-1] if text.endswith("\n") else text
+            if not text:
+                raise ComputerError("nothing on stdin to type: gui type REF - <<'EOF' then the text then EOF")
+        else:
+            text = _unescape(text)
+        escape = _unsupported_escape(text)
+        if escape:
+            raise ComputerError(
+                f"the text holds {escape}, which gui type cannot type as a key - it would put the two characters "
+                f"{escape} in the document. Nothing was typed. Only \\n (Enter) and \\t (Tab) are read as keys. Type "
+                "the text in parts and press the key between them with gui key (a page break in a word processor "
+                "is gui key ctrl+Return).")
+        result = core.act("type", text=text, append=args.append, replace_all=args.replace_all, keys_from_task=True,
+                          **target)
 
     elif command == "key":
         target = _target(args.on, args) if args.on else {}
         _refuse_blind_walk(args.keys)
-        result = core.act("key", keys=args.keys, **target)
+        result = core.act("key", keys=args.keys, keys_from_task=True, **target)
 
     elif command == "scroll":
         words, direction, amount = scroll_words(args.words)
@@ -835,7 +930,10 @@ def run(argv):
 
     _print_act(result)
 
-    return EXIT_NEEDS_APPROVAL if result["status"] == "needs_approval" else EXIT_OK
+    if result["status"] == "needs_approval":
+        return EXIT_NEEDS_APPROVAL
+    # A block whose cells do not all hold what was typed was done, and is not right: the read-back says which.
+    return EXIT_VERIFY_FAILED if result.get("unverified") else EXIT_OK
 
 
 # Keys that move the keyboard from one control to the next, and how many in a

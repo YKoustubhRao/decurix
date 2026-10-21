@@ -50,7 +50,7 @@ class _Worker(unittest.TestCase):
                   patch.object(tool_task.llm_client, "chat", chat),
                   patch.object(tool_task.verify, "judge", judge),
                   patch.object(tool_task.produced, "files", lambda report="", **kw: [str(self.work / "total_feb.txt")]),
-                  patch.object(tool_task.produced, "text", lambda paths: "total_feb.txt: total 33.5"),
+                  patch.object(tool_task.produced, "text", lambda paths, focus=(): "total_feb.txt: total 33.5"),
                   patch.object(tool_task, "write_final_reply", lambda reply, **kw: self.reports.append((reply, kw))),
                   patch.object(tool_task.progress, "emit", lambda line, *a, **k: self.said.append(line)),
                   patch("decurix_agent.harness.perform_task", engine),

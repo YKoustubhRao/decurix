@@ -22,6 +22,95 @@ REPLY_MARK = "-reply"
 # How long a task's outcome is sent again while the control plane cannot be reached (it is restarting).
 SEND_RETRY_SECONDS = 180
 
+# What the control plane takes in one note (internal/httpapi/querynotes.go): the note's content in bytes, and the
+# whole request body. A message longer than that is never sent as it is: its whole text is saved in the work folder
+# (REPORTS_DIR) and the chat gets the first SHORT_TEXT characters, cut where a line or sentence ends, and where the
+# rest is. Found live (round 5 P3, 2026-10-20): an 18 KB final report was refused with a 400 and the person never
+# heard how the run ended.
+CONTENT_LIMIT = 16384
+BODY_LIMIT = 32768
+SHORT_TEXT = 6000
+REPORTS_DIR = "decurix-reports"
+
+# Kinds whose refusal is never the end of it: the person must hear a task's outcome, and a question must be asked.
+_MUST_REACH = {"final", "error", "query", "approval"}
+
+
+def cut_text(text, limit):
+    """`text` in at most `limit` characters, cut where a paragraph, a line or a sentence ends - never mid-sentence."""
+
+    text = text or ""
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    for mark in ("\n\n", "\n", ". "):
+        at = head.rfind(mark)
+        if at >= limit // 3:
+            return head[:at + (1 if mark == ". " else 0)].rstrip()
+    at = head.rfind(" ")
+    return head[:at if at > 0 else limit].rstrip()
+
+
+def _fits(payload):
+    """Whether the control plane takes this note as it is (CONTENT_LIMIT, BODY_LIMIT), with room to spare."""
+
+    content = (payload.get("content") or "").encode("utf-8")
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    return len(content) <= CONTENT_LIMIT - 256 and len(body) <= BODY_LIMIT - 512
+
+
+def save_whole(name, text):
+    """Keep a message's whole text in the work folder's REPORTS_DIR; its path, or None when it cannot be written."""
+
+    try:
+        folder = config.WORK_DIR / REPORTS_DIR
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / (name if name.endswith(".txt") else name + ".txt")
+        path.write_text(text, encoding="utf-8")
+        return path
+    except OSError as exc:
+        log(f"Could not keep the whole message: {exc}")
+        return None
+
+
+def _where(saved):
+    return (f"\n\n(Too long for the chat: the whole of it is in {saved}.)" if saved
+            else "\n\n(Too long for the chat: the rest was left out.)")
+
+
+def _with_text(payload, text, whole):
+    """The payload with `text` as the chat's reply, and in the note in place of the whole reply (or as the note)."""
+
+    new = dict(payload)
+    reply, content = payload.get("reply") or "", payload.get("content") or ""
+    if reply:
+        new["reply"] = text
+    new["content"] = content.replace(reply, text) if reply and reply in content else text
+    if not _fits(new):
+        new["content"] = text
+    if not _fits(new):
+        new["content"] = cut_text(text, SHORT_TEXT // 2)
+    return new
+
+
+def _shortened(payload, saved=None):
+    """A note that fits, its whole text kept in the work folder: (payload, saved path)."""
+
+    whole = payload.get("reply") or payload.get("content") or ""
+    saved = saved or save_whole(time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6], whole)
+    return _with_text(payload, cut_text(whole, SHORT_TEXT) + _where(saved), whole), saved
+
+
+def _fallback(payload, fallback, saved):
+    """The short plain version sent when the control plane refused a task's outcome or a question."""
+
+    whole = payload.get("reply") or payload.get("content") or ""
+    if not fallback and len(whole) <= 600:
+        return _with_text(payload, whole, whole), saved  # nothing to leave out: the plain text again
+    saved = saved or save_whole(time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6], whole)
+    text = (fallback or cut_text(whole, 600)) + _where(saved)
+    return _with_text(payload, cut_text(text, SHORT_TEXT), whole), saved
+
 
 def save_request(request, task_id=""):
     """
@@ -55,7 +144,8 @@ def save_request(request, task_id=""):
 # Control plane communication
 # ============================================================
 
-def send_query(filename, content, kind="", reply="", engine=None, quiet=False, interrupted=False, checked=False):
+def send_query(filename, content, kind="", reply="", engine=None, quiet=False, interrupted=False, checked=False,
+               task_id=None, with_usage=True, fallback=None, still_working=False):
     """
     Send a query to the Decurix control plane.
 
@@ -84,12 +174,22 @@ def send_query(filename, content, kind="", reply="", engine=None, quiet=False, i
     one sentence a human wants to read, so the agent says which is which.
     Both are optional - an older control plane ignores them, and a newer one
     falls back to parsing `content` when they are absent.
+
+    A note too long for the control plane is sent shortened, its whole text kept in the work folder (_shortened). A
+    task's outcome or a question the control plane refuses is sent once more as `fallback` (or its first lines),
+    plain and short, with where the whole text is: never dropped without a word.
     """
 
     # The chat closes a turn on this note; let the turn's last progress lines
     # land first.
     progress.flush()
 
+    # A secret the request gave never reaches the chat, the task record or the rail (computer/privacy.py).
+    try:
+        from decurix_agent.computer import privacy
+        content, reply = privacy.withhold_known(content), privacy.withhold_known(reply)
+    except Exception as exc:  # noqa: BLE001
+        log(f"Could not withhold secrets from a note: {exc}")
     payload = {
         "desktop_id": config.DESKTOP_ID,
         "vm_name": config.DESKTOP_NAME,
@@ -97,7 +197,8 @@ def send_query(filename, content, kind="", reply="", engine=None, quiet=False, i
         "content": content,
         "kind": kind,
         "reply": reply,
-        "task_id": task_context.current(),
+        # A message a long request took mid-run is answered on its own task (long_task.reply_on_task).
+        "task_id": task_id or task_context.current(),
         # Reporting which engine ran is not branching on it: every harness
         # sends the same fields. A replay (replay_task.py) ran no engine at
         # all, and says so.
@@ -108,57 +209,138 @@ def send_query(filename, content, kind="", reply="", engine=None, quiet=False, i
         payload["quiet"] = True
     if interrupted:
         payload["interrupted"] = True
+    if still_working:
+        # The desktop is still busy after this reply (a planned run's receipt): the chat's turn stays open.
+        payload["still_working"] = True
     # Whether the result went through the final check (verify.py, the skill
     # gate): the task records keep it as data, so an audit can tell a checked
     # "done" from one nobody looked at.
     if kind in ("final", "error"):
         payload["checked"] = bool(checked)
 
-    payload.update(usage.snapshot())
+    if with_usage:
+        payload.update(usage.snapshot())
 
-    body = json.dumps(payload).encode("utf-8")
-
-    url = config.CONTROL_PLANE_URL.rstrip("/") + "/api/querytext"
-
-    request = urllib.request.Request(
-        url,
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
+    saved = None
+    if not _fits(payload):
+        payload, saved = _shortened(payload)
+        log(f"A {kind or 'note'} too long for the control plane was shortened; the whole of it is in {saved}.")
+    short_sent = False
 
     # A control plane that is restarting (an update, a crash it comes back from) is unreachable for seconds: the
     # outcome is sent again until it answers. Found live (2026-10-15): a task's final reply met a restart, was never
-    # sent again, and the control plane showed the task running for good. Only a refused or unreachable connection is
-    # retried - an answer, even an error, is the control plane's word.
+    # sent again, and the control plane showed the task running for good. A refused or unreachable connection, or a
+    # server error (5xx: a proxy in front of a restarting control plane), is retried - any other answer is the control
+    # plane's word. A task's outcome that still could not be delivered is kept and sent again (resend_unsent): found
+    # live (2026-10-20), the report of a request stopped a moment before a control-plane restart never reached the
+    # chat, which said "running" for good.
     deadline = time.monotonic() + SEND_RETRY_SECONDS
     wait = 2.0
     while True:
-        try:
-            with urllib.request.urlopen(
-                request,
-                timeout=10,
-            ) as response:
-
-                if response.status < 200 or response.status >= 300:
-                    raise RuntimeError(
-                        f"control plane returned HTTP {response.status}"
-                    )
-
-                return True
-
-        except urllib.error.HTTPError as exc:
-            log(f"Failed to send query: {exc}")
+        outcome, detail = _post_querytext(payload)
+        if outcome == "sent":
+            return True
+        if outcome == "refused" and kind in _MUST_REACH and not short_sent:
+            short_sent = True
+            log(f"The control plane refused the {kind} ({detail}); sending a short plain version.")
+            payload, saved = _fallback(payload, fallback, saved)
+            continue
+        if outcome == "refused" or time.monotonic() + wait > deadline:
+            log(f"Failed to send query: {detail}")
+            if outcome != "refused" and kind in ("final", "error"):
+                _keep_unsent(payload)
             return False
-        except Exception as exc:
-            if time.monotonic() + wait > deadline:
-                log(f"Failed to send query: {exc}")
-                return False
-            log(f"Could not reach the control plane ({exc}); sending again in {int(wait)} s.")
-            time.sleep(wait)
-            wait = min(wait * 2, 20.0)
+        log(f"Could not reach the control plane ({detail}); sending again in {int(wait)} s.")
+        time.sleep(wait)
+        wait = min(wait * 2, 20.0)
+
+
+def _post_querytext(payload):
+    """POST one note to the control plane: ("sent", ""), ("refused", why) for its own no, or ("unreachable", why)."""
+
+    request = urllib.request.Request(
+        config.CONTROL_PLANE_URL.rstrip("/") + "/api/querytext",
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            if 200 <= response.status < 300:
+                return "sent", ""
+            return "unreachable", f"control plane returned HTTP {response.status}"
+    except urllib.error.HTTPError as exc:
+        return ("unreachable" if exc.code >= 500 else "refused"), str(exc)
+    except Exception as exc:  # noqa: BLE001 - every way of not getting through is "not yet"
+        return "unreachable", str(exc)
+
+
+def _unsent_dir():
+    return config.DECURIX_DIR / "unsent"
+
+
+def _keep_unsent(payload):
+    """Keep a task's outcome the control plane could not be told, to send again (resend_unsent)."""
+
+    try:
+        folder = _unsent_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        # Named by the moment to the nanosecond: sent again in the order they happened.
+        path = folder / (f"{time.time_ns():020d}_" + uuid.uuid4().hex[:8] + ".json")
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        tmp.replace(path)
+        log(f"Kept the undelivered outcome of task {payload.get('task_id') or '?'} to send again: {path.name}")
+    except OSError as exc:
+        log(f"Could not keep the undelivered outcome: {exc}")
+
+
+# How often kept outcomes are sent again, and for how long one is kept trying.
+RESEND_SECONDS = 30
+RESEND_FOR_SECONDS = 24 * 3600
+
+
+def resend_unsent():
+    """Send again every kept outcome, oldest first; one delivered (or refused by the control plane) is let go."""
+
+    folder = _unsent_dir()
+    if not folder.is_dir():
+        return 0
+    sent = 0
+    for path in sorted(folder.glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            path.unlink(missing_ok=True)
+            continue
+        outcome, detail = _post_querytext(payload)
+        if outcome == "unreachable":
+            try:
+                too_old = time.time() - path.stat().st_mtime > RESEND_FOR_SECONDS
+            except OSError:
+                too_old = True
+            if too_old:
+                log(f"Giving up sending {path.name} after a day: {detail}")
+                path.unlink(missing_ok=True)
+            break  # the control plane is not there: the rest wait for the next round, in order
+        if outcome == "refused":
+            log(f"The control plane refused the kept outcome {path.name}: {detail}")
+        else:
+            sent += 1
+            log(f"Sent the kept outcome {path.name}.")
+        path.unlink(missing_ok=True)
+    return sent
+
+
+def resend_unsent_loop():
+    """Send kept outcomes again now and every RESEND_SECONDS (the agent's start runs this on a thread of its own)."""
+
+    while True:
+        try:
+            resend_unsent()
+        except Exception as exc:  # noqa: BLE001 - this loop must outlive anything one round meets
+            log(f"Sending kept outcomes again failed: {exc}")
+        time.sleep(RESEND_SECONDS)
 
 
 def remember(title, summary, category="workflow"):
@@ -215,12 +397,41 @@ def ask_for_query(problem, kind="query", engine=None):
     # blocked desktop with no visible question at all.
     problem = (problem or "").strip() or BLANK_PROBLEM
 
+    # A payment run put to the person for approval shows, per payee, the account it pays to and where that account
+    # came from - an account taken from a message is said loudly (payees.py). Found live (2026-10-20): a run paying a
+    # vendor to an account from a lookalike email was put up for approval with nothing to show it.
+    try:
+        from decurix_agent import payees
+        problem = payees.annotate_approval(problem)
+    except Exception as exc:  # noqa: BLE001 - the question still goes out
+        log(f"Could not show where the payments go: {exc}")
+
     if _query_gate is not None:
         try:
             if _query_gate(problem, kind, engine):
                 return None
         except Exception as exc:
             log(f"The question was not checked against what was taught ({exc}); asking the person.")
+
+    # A stage of a long request asks without stopping the stages that do not need the answer (long_task.py).
+    try:
+        from decurix_agent import long_task
+        if long_task.take_question(problem, kind):
+            return None
+    except Exception as exc:
+        log(f"The long request could not park this question ({exc}); asking as usual.")
+
+    # A question that tells the person something with figures that do not add up is not passed on as fact: the
+    # figures are checked, and what they really come to is said with it (verify.false_sums; a planned stage is sent
+    # back to recheck instead, long_task._send_back_false_figures).
+    try:
+        from decurix_agent import verify
+        wrong = verify.false_sums(problem)
+        if wrong:
+            problem += ("\n\n(Checked before asking you: " + "; ".join(wrong)[:500]
+                        + ". The figures above may be mistaken - nothing was changed because of them.)")
+    except Exception as exc:  # noqa: BLE001 - the check never stops a question
+        log(f"Could not check the question's figures: {exc}")
 
     query_id = uuid.uuid4().hex
 
@@ -237,7 +448,7 @@ Desktop ID:
 {config.DESKTOP_ID}
 
 Task:
-{state.current_task or "unknown"}
+{_task_name()}
 
 Problem:
 {problem}
@@ -391,7 +602,20 @@ def set_query_gate(gate):
     _query_gate = gate
 
 
-def write_final_reply(reply, kind="final", engine=None, quiet=False, interrupted=False, checked=False):
+# How much of the task a note repeats.
+TASK_ECHO_CHARS = 1000
+
+
+def _task_name():
+    """The task, as a note names it: a stage's whole prompt is not its name (found live: a run's report went out with
+    the last stage's 9,000-word prompt in front of it, and past the control plane's size limit)."""
+
+    task = state.current_task or "unknown"
+    return cut_text(task, TASK_ECHO_CHARS) + " ..." if len(task) > TASK_ECHO_CHARS else task
+
+
+def write_final_reply(reply, kind="final", engine=None, quiet=False, interrupted=False, checked=False, fallback=None,
+                      task_id=None):
     """
     Write the final result into querytext/ so the existing
     querytext watcher sends it to the Decurix control plane.
@@ -441,7 +665,7 @@ Desktop ID:
 {config.DESKTOP_ID}
 
 Task:
-{state.current_task or "unknown"}
+{_task_name()}
 
 Status:
 {status}
@@ -478,6 +702,8 @@ Completed at:
         quiet=quiet,
         interrupted=interrupted,
         checked=checked,
+        fallback=fallback,
+        task_id=task_id,
     )
 
     if sent:
@@ -485,7 +711,37 @@ Completed at:
     else:
         log("WARNING: could not send final reply to control plane.")
 
+    if task_id and task_id != task_context.current():
+        # The report of a task that is not the one in hand (a stopped run's, sent on its own task): the task in hand
+        # keeps its state.
+        return
     state.current_task = None
     state.current_task_file = None
     state.waiting_for_query = False
     task_context.clear_active()
+
+
+def post_question(problem, kind="query"):
+    """
+    Put a question to the person without stopping the work: a long request's
+    stage that needs a decision waits, the stages that do not go on
+    (long_task.py). The control plane opens an intervention as for any
+    question; this agent keeps working and reads the reply when it comes.
+    """
+
+    problem = (problem or "").strip() or BLANK_PROBLEM
+    filename = time.strftime("%d%m%Y%H%M%S") + "_q.txt"
+    return send_query(filename, problem, kind=kind, reply=problem)
+
+
+def reply_on_task(task_id, text, kind="final", still_working=False):
+    """
+    Answer a message a long request took while it ran - an amendment, a
+    status question - on that message's own task, leaving the long request's
+    task and this agent's state as they are. `still_working`: the long request
+    goes on after this reply, so the chat keeps showing the desktop at work.
+    """
+
+    filename = time.strftime("%d%m%Y%H%M%S") + "_r.txt"
+    return send_query(filename, text, kind=kind, reply=text, quiet=True, checked=True, task_id=task_id,
+                      with_usage=False, still_working=still_working)

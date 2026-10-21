@@ -105,6 +105,12 @@ type Manager struct {
 	// and desktop icons/apps are migrated in the background.
 	provisioningMu sync.RWMutex
 	provisioning   map[string]*ProvisioningDesktop
+
+	// missingMu guards missing (the requested host apps each desktop does not have, and why) and retrying (desktops
+	// with a background retry of apps the host could not be asked about yet). See missingapps.go.
+	missingMu sync.Mutex
+	missing   map[string][]MissingApp
+	retrying  map[string]bool
 }
 
 // proxyTargetCacheEntry stores a cached reverse-proxy URL along with its expiration.
@@ -133,6 +139,8 @@ func NewManager(cli *client.Client) *Manager {
 		proxyTargets:      make(map[string]proxyTargetCacheEntry),
 		resourceOverrides: make(map[string]ResourceAllocation),
 		provisioning:      make(map[string]*ProvisioningDesktop),
+		missing:           make(map[string][]MissingApp),
+		retrying:          make(map[string]bool),
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 			Transport: &http.Transport{
@@ -353,7 +361,12 @@ func (m *Manager) BeginProvisioning(
 	selectedApps []string,
 	hostPaths []HostCopyPath,
 	onStarted func(d *Desktop) error,
+	shared ...*SharedFolder,
 ) (*ProvisioningDesktop, error) {
+	var sharedFolder *SharedFolder
+	if len(shared) > 0 {
+		sharedFolder = shared[0]
+	}
 
 	sanitizedID := sanitizeName(name)
 	if sanitizedID == "" {
@@ -392,6 +405,12 @@ func (m *Manager) BeginProvisioning(
 		ParentID:       parentID,
 		Ready:          false,
 	}
+	if sharedFolder != nil {
+		prov.SharedFolder = sharedFolder.Host
+	}
+	// What is already known about the requested apps goes back with the acceptance; runProvisioning replaces it with
+	// what the copy actually found.
+	prov.MissingApps = PrecheckHostApps(selectedApps)
 
 	// The caller gets a snapshot, never prov itself: runProvisioning keeps updating prov from its own goroutine (under
 	// provisioningMu) for the whole creation, and the caller serialises what it is given without holding that lock -
@@ -401,7 +420,7 @@ func (m *Manager) BeginProvisioning(
 	snapshot := *prov
 	m.provisioningMu.Unlock()
 
-	go m.runProvisioning(prov, brain, claudeCredentialsJSON, selectedApps, hostPaths, onStarted)
+	go m.runProvisioning(prov, brain, claudeCredentialsJSON, selectedApps, hostPaths, onStarted, sharedFolder)
 
 	return &snapshot, nil
 }
@@ -413,6 +432,7 @@ func (m *Manager) runProvisioning(
 	selectedApps []string,
 	hostPaths []HostCopyPath,
 	onStarted func(d *Desktop) error,
+	shared *SharedFolder,
 ) {
 	defer m.invalidateList()
 
@@ -475,7 +495,7 @@ func (m *Manager) runProvisioning(
 
 	// 3. Container Configuration & Creation
 	updateStage("container", "Creating container environment...", 45)
-	env := buildDesktopEnv(name, prov.Harness, prov.Specialization, prov.ParentID, brain)
+	env := buildDesktopEnv(name, prov.Harness, prov.Specialization, prov.ParentID, brain, shared)
 	m.provisioningMu.Lock()
 	prov.Model = desktopModel(env)
 	m.provisioningMu.Unlock()
@@ -490,6 +510,7 @@ func (m *Manager) runProvisioning(
 		env,
 		volumeName,
 		m.desktopSecurityOpt(ctx),
+		shared,
 	)
 
 	resp, err := m.client.ContainerCreate(ctx, config, hostConfig, networkingConfig, nil, containerName)
@@ -504,6 +525,9 @@ func (m *Manager) runProvisioning(
 		if err := m.MigrateHostApps(ctx, sanitizedID, selectedApps); err != nil {
 			log.Printf("hostapps: migration for %s: %v", containerName, err)
 		}
+		m.provisioningMu.Lock()
+		prov.MissingApps = m.MissingApps(sanitizedID)
+		m.provisioningMu.Unlock()
 	}
 
 	// 5. Copy Files & Directories from Host
@@ -820,6 +844,7 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 	model := c.Labels["desktop-model"]
 	specialization := c.Labels["desktop-specialization"]
 	parentID := c.Labels["desktop-parent-id"]
+	sharedFolder := c.Labels[sharedLabel]
 
 	var cpus int64
 	if s := c.Labels["desktop-cpus"]; s != "" {
@@ -957,7 +982,9 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 		CPUs:           cpus,
 		MemoryMB:       memoryMB,
 		Specialization: specialization,
+		SharedFolder:   sharedFolder,
 		ParentID:       parentID,
+		MissingApps:    m.MissingApps(id),
 	}
 }
 
