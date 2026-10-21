@@ -772,10 +772,23 @@ def _ledger_text(state, data, step):
             made = ", ".join(i["path"] for i in state["steps"][s["id"]]["evidence"] if not i.get("drafts"))
             lines.append(f"- {s.get('title', s['id'])}" + (f": {made} (in the work folder)" if made else ""))
         parts.append("Stages already done and checked:\n" + "\n".join(lines))
-    facts = [f"- ({_title(state, f['stage'])}) {f['text']}" for f in data["facts"] if f.get("kind", "fact") == "fact"]
-    if facts:
+    # Found live (series 15 H3, 2026-10-21): "leave Ishaan out" came after the fee demand stage had recorded the Rao
+    # family's total with him in it; "use it; do not work it out again" outranked the change and three attempts at the
+    # fee letters kept billing him. A finding made before a change the person made since is marked as such.
+    known = len(data["amendments"])
+    current, stale = [], []
+    for f in data["facts"]:
+        if f.get("kind", "fact") != "fact":
+            continue
+        line = f"- ({_title(state, f['stage'])}) {f['text']}"
+        (stale if f.get("seen", known) < known else current).append((f, line))
+    if current:
         parts.append("What they found (use it; do not work it out again unless you were asked to re-check):\n"
-                     + "\n".join(facts))
+                     + "\n".join(line for _, line in current))
+    if stale:
+        parts.append("What they found BEFORE a change the person made since (re-check each against the changes below; "
+                     "where a change applies, the change wins):\n"
+                     + "\n".join(f"{line} [found before change {f.get('seen', 0) + 1}]" for f, line in stale))
     if data["decisions"]:
         parts.append("What the person decided when asked:\n" + "\n".join(
             f"- Asked \"{d['question'][:300]}\" - they answered: \"{d['answer'][:600]}\"" for d in data["decisions"]))
@@ -2402,6 +2415,13 @@ def binding_text(data):
     for d in data.get("decisions") or []:
         question = " ".join(str(d.get("question") or "").split())
         if is_stuck_question(question):
+            # A reply that settles what the work and its check disagreed on binds the check like any answer; one that
+            # only says how to go on ("try again") does not (series 16, 2026-10-21: the person's "the work is right"
+            # reached only the worker, and the check refused the same figure again).
+            answer = " ".join(str(d.get("answer") or "").split())[:1200]
+            if settles_something(answer):
+                lines.append(f"- About a check the stage did not pass (\"{question[:1500]}\") - the person settled it: "
+                             f"\"{answer}\"")
             continue
         answer = " ".join(str(d.get("answer") or "").split())[:1200]
         # What the answer addresses first, as the model read it (classify): an item the question lists that the
@@ -2582,7 +2602,7 @@ def _judge(state, step, reply, made, drafts, note="", start=None, evidence=()):
                         produced="\n".join(x for x in (produced.text(made), produced.drafts_text(drafts),
                                                        sources.evidence(data.get("request") or "", made),
                                                        _bill_evidence(data.get("request") or "", made)) if x),
-                        deliverables=tuple(made))
+                        deliverables=tuple(made), look_up=lambda terms: produced.lines_with(made, terms))
 
 
 # Each code check of a finished stage, and its maturity. BLOCKING: its finding fails the stage. ADVISORY: its finding
@@ -3589,7 +3609,8 @@ def stage_finished(run_id, step_id, reply, kind, declined=None):
         # Out of attempts: a person at a desk would not abandon the whole job over one sheet. The stage waits on them
         # with what the check found, and every stage that does not need it goes on (round 5, Finding P).
         _record_cost(run_id, step_id, start, "stuck")
-        _park(run_id, step_id, stuck_question(step, run_state["steps"][step_id]["attempts"], error), run_state,
+        _park(run_id, step_id, stuck_question(step, run_state["steps"][step_id]["attempts"], error,
+                                              points=dispute_points(run_id, step, error, reply)), run_state,
               report=reply, kind="stuck")
         progress.emit(f"Stage not accepted after its attempts, asking you: {step.get('title', step_id)}")
         return r.status(run_id)
@@ -3603,10 +3624,19 @@ def stage_finished(run_id, step_id, reply, kind, declined=None):
             note["check_note"] = verdict.get("why", "")[:300]
         r.annotate(run_id, step_id, **note)
         _snapshot_sheets(run_id, step_id, made)
+        try:
+            # A guide this stage wrote to an app it had none for (gui guide --learn): kept now its work is checked.
+            from decurix_agent import app_skills
+            for name in app_skills.promote(ledger(run_id).get("task_id") or "", f"{run_id}:{step_id}"):
+                progress.emit(f"Learned how to work {name}, for later tasks.")
+        except Exception as exc:  # noqa: BLE001 - what is kept for later never costs the stage
+            log(f"long_task: could not keep the stage's learned guides: {exc}")
 
         def keep(data):
             data["facts"] = [f for f in data["facts"] if f.get("stage") != step_id]
-            data["facts"] += [{"stage": step_id, "kind": k, "text": t} for k, t in carried(reply)]
+            # "seen": how many of the person's changes the stage began with - a later change makes these stale.
+            data["facts"] += [{"stage": step_id, "kind": k, "text": t, "seen": start["amendments"]}
+                              for k, t in carried(reply)]
             # A change the person made while this stage ran: it is re-checked against it now.
             return data["amendments"][start["amendments"]:]
         late = _update(run_id, keep)
@@ -3886,14 +3916,72 @@ def is_stuck_question(text):
     return STUCK_MARK in str(text or "") or STOPPED_MARK in str(text or "")
 
 
-def stuck_question(step, attempts, finding):
-    """The question a stage that did not pass its check puts to the person, in plain words, with the ways on."""
+def stuck_question(step, attempts, finding, points=()):
+    """The question a stage that did not pass its check puts to the person, in plain words, with the ways on. With
+    `points` (dispute_points: what the worker and the check each say, and the source), the person is asked to settle
+    those points - the judgement a person adds, whatever the model's strength - and "try again" stays one way on."""
 
     finding = " ".join(str(finding or "").split())
     finding = re.sub(r"^(The check found:|Its output is not what the stage hands in:)\s*", "", finding)
-    return (f"\"{step.get('title', step['id'])}\" did not pass its check after {attempts} attempt(s). What the check "
-            f"found: {finding[:900]}\n\nHow should I go on? Reply \"try again\" (with any guidance - it is followed "
-            f"first), \"skip it\" (I leave it out and the report says so), or \"stop\".")
+    head = f"\"{step.get('title', step['id'])}\" did not pass its check after {attempts} attempt(s)."
+    if points:
+        lines = []
+        for n, p in enumerate(points, 1):
+            source = f" Source: {p['source']}" if p.get("source") else ""
+            lines.append(f"{n}. {p['point']} - the work says: {p['worker']}; the check says: {p['check']}.{source}")
+        return (f"{head} The work and its check disagree on:\n" + "\n".join(lines)
+                + "\n\nWhich is right? Answer each (for example \"1: the work is right\", \"2: the check is right\") or "
+                "say what is right - your answer settles it for this run. Or reply \"try again\", \"skip it\" (I leave "
+                "it out and the report says so), or \"stop\".")
+    return (f"{head} What the check found: {finding[:900]}\n\nHow should I go on? Reply \"try again\" (with any guidance - "
+            f"it is followed first), \"skip it\" (I leave it out and the report says so), or \"stop\".")
+
+
+DISPUTE_SYSTEM = """A computer worker did one stage of a person's request; a check refused it, more than once. You are
+given the stage, the check's finding and the worker's last report. Turn the disagreement into points a person can
+settle at a glance: for each point, what it is about (a record, a figure, a rule), what the WORK says or did, what the
+CHECK says it should be, and the source line either relies on (quoted exactly, or empty). Only points where the two
+differ on what is RIGHT and the sources leave room for judgement - how a rule reads, which record is meant, what the
+person would approve. Never a point for work that is plainly unfinished or wrong: a fix the report claims that the file
+does not show, a figure that contradicts another in the same file, a missing part, a file that does not open, a tool
+error - those are the worker's to correct, not the person's to decide. At most 6 points. Answer JSON only:
+{"points": [{"point": "...", "worker": "...", "check": "...", "source": "..."}]} - {"points": []} when there is none."""
+
+
+def dispute_points(run_id, step, finding, reply):
+    """[{point, worker, check, source}]: the check's refusal of a stuck stage as points the person settles (one model
+    call). [] when there are none, or the model cannot be read - the person then gets the finding as it is."""
+
+    shown = (f"The stage: {step.get('title', step['id'])}\n{str(step.get('instruction') or '')[:1500]}\n\n"
+             f"The check's finding: {' '.join(str(finding or '').split())[:2500]}\n\n"
+             f"The worker's last report: {' '.join(str(reply or '').split())[:2500]}")
+    before = _asked()
+    try:
+        found = _ask_json(DISPUTE_SYSTEM, shown, max_tokens=900) or {}
+    except Exception as exc:  # noqa: BLE001 - the person still gets the finding as it is
+        log(f"long_task: could not put the refusal as points: {exc}")
+        return []
+    finally:
+        _charge(run_id, before)
+    points = []
+    for p in (found.get("points") if isinstance(found, dict) else None) or []:
+        if not isinstance(p, dict):
+            continue
+        point = {k: " ".join(str(p.get(k) or "").split())[:300] for k in ("point", "worker", "check", "source")}
+        if point["point"] and point["worker"] and point["check"]:
+            points.append(point)
+    return points[:6]
+
+
+# A reply to a stuck stage that says only how to go on - not what is right.
+_GO_ON_WORDS = re.compile(r"(?i)\b(?:please|ok(?:ay)?|yes|no|just|try|again|skip|it|stop|use|your|judg(?:e)?ment|"
+                          r"carry|on|and|go|ahead|the|that|with|thanks?)\b|[^\w\s]")
+
+
+def settles_something(answer):
+    """Whether a reply to a stuck stage says what is right (binding for the check), not only how to go on."""
+
+    return len(_GO_ON_WORDS.sub(" ", str(answer or "")).split()) >= 3
 
 
 def _record_cost(run_id, step_id, start, outcome):
@@ -4022,6 +4110,8 @@ def take_question(problem, kind):
         elif route == "SETTLED" and _send_back_once(run_id, step_id, problem, settled_by=pointer):
             return _bounced(run_id, step_id)
         elif route == "UNCHECKED" and _send_back_unchecked(run_id, step_id, problem):
+            return _bounced(run_id, step_id)
+        elif route == "DECIDED" and _send_back_once(run_id, step_id, problem, decided_by=pointer):
             return _bounced(run_id, step_id)
     _note_probe_record(run_id, step_now, problem)
     if step_now.get("decision") and kind != "query" and not _decided(run_state, step_id):
@@ -4216,14 +4306,31 @@ question does not say that the cell is blank there.
 SETTLED: a sentence of the request already answers it plainly, about the same thing - pointer: that sentence, copied
 exactly. Never a sentence that asks the worker to ask the person.
 UNCHECKED: it asks about something the worker says it has not looked at yet and can check itself.
-When unsure, PERSON. Answer JSON only: {"for": "PERSON|OWN_TOOLS|OWN_READING|SOURCE|IN_INPUTS|SETTLED|UNCHECKED",
-"pointer": "the exact sentence, file or column, or empty", "other_means": true when it asks leave to reach the same
-result another way, else false}"""
-ROUTES = {"PERSON", "OWN_TOOLS", "OWN_READING", "SOURCE", "IN_INPUTS", "SETTLED", "UNCHECKED"}
+DECIDED: one of the person's earlier answers listed below already decides something the question asks again (the same
+record, item or choice) - pointer: that answer, copied exactly. Use it even when the question also asks about other
+things: the worker applies the answer and asks only about the rest.
+When unsure, PERSON. Answer JSON only: {"for": "PERSON|OWN_TOOLS|OWN_READING|SOURCE|IN_INPUTS|SETTLED|UNCHECKED|DECIDED",
+"pointer": "the exact sentence, file, column or answer, or empty", "other_means": true when it asks leave to reach the
+same result another way, else false}"""
+ROUTES = {"PERSON", "OWN_TOOLS", "OWN_READING", "SOURCE", "IN_INPUTS", "SETTLED", "UNCHECKED", "DECIDED"}
 
 
 def _flat(text):
     return " ".join(str(text or "").split())
+
+
+def _earlier_answers(run_id):
+    """[(question, answer)] the person gave in this run - answers and changes, not "try again / skip it" ones."""
+
+    try:
+        data = ledger(run_id)
+    except Exception:  # noqa: BLE001 - no ledger, no answers
+        return []
+    out = [(str(d.get("question") or ""), _flat(d.get("answer"))[:600]) for d in data.get("decisions") or []
+           if not is_stuck_question(d.get("question")) and _flat(d.get("answer"))]
+    out += [("(a change the person made to the request)", _flat(a.get("text"))[:600])
+            for a in data.get("amendments") or [] if _flat(a.get("text"))]
+    return out[-12:]
 
 
 def route_question(run_id, question, request, decision=False):
@@ -4247,6 +4354,9 @@ def route_question(run_id, question, request, decision=False):
     if headers:
         shown.append("Columns of the input tables:\n" + "\n".join(f"- {h} ({', '.join(f)})"
                                                                   for h, f in list(headers.items())[:120]))
+    answers = _earlier_answers(run_id)
+    shown.append("The person's earlier answers in this run:\n" + ("\n".join(
+        f"- Asked \"{_flat(q)[:300]}\" - answered: \"{a}\"" for q, a in answers) if answers else "(none)"))
     shown.append(f"The question:\n{_flat(question)[:2000]}")
     before = _asked()
     try:
@@ -4260,10 +4370,16 @@ def route_question(run_id, question, request, decision=False):
     pointer = _flat(said.get("pointer"))
     other_means = bool(said.get("other_means"))
     log(f"long_task: the main brain read the stage's question as {route} ({said})")
-    if route not in ROUTES or (decision and route != "OWN_TOOLS"):
+    if route not in ROUTES or (decision and route not in ("OWN_TOOLS", "DECIDED")):
         return "PERSON", "", False
     if route == "SETTLED" and not (pointer and pointer in _flat(text)):
         return "PERSON", "", False
+    if route == "DECIDED":
+        # The pointer must be the person's own answer, word for word - never the model's paraphrase of it.
+        said_by = next((a for _, a in answers if pointer and (pointer in a or (len(a) >= 20 and a in pointer))), "")
+        if not said_by:
+            return "PERSON", "", False
+        pointer = said_by
     if route == "SOURCE":
         found = next((s for s in systems if pointer and (pointer in s or s in pointer)), "") or next(
             (i for i in run_inputs(request) if pointer and Path(i.split(" (= ")[0]).name.lower() in pointer.lower()), "")
@@ -4306,18 +4422,21 @@ def _send_back_mechanics(run_id, step_id, question, other_means=False, source=""
     return True
 
 
-def _send_back_once(run_id, step_id, question, settled_by=""):
+def _send_back_once(run_id, step_id, question, settled_by="", decided_by=""):
     """
     A stage that asked the person about its own tooling (or about what the request already settles: `settled_by`, the
-    request's sentence) runs again told to re-read the source and decide - or to follow that sentence - once.
+    request's sentence; or what the person already decided: `decided_by`, their answer) runs again told to re-read the
+    source and decide - or to follow that sentence or answer - once each.
     """
 
     from decurix_agent import workflow_task
 
+    key = "decided_back" if decided_by else "sent_back"
+
     def count(data):
-        data.setdefault("sent_back", {})
-        data["sent_back"][step_id] = data["sent_back"].get(step_id, 0) + 1
-        return data["sent_back"][step_id]
+        data.setdefault(key, {})
+        data[key][step_id] = data[key].get(step_id, 0) + 1
+        return data[key][step_id]
     if _update(run_id, count) > 1:
         return False
     start = _stage_start.pop((run_id, step_id), None)
@@ -4325,7 +4444,14 @@ def _send_back_once(run_id, step_id, question, settled_by=""):
         _record_cost(run_id, step_id, start, "sent back")
     r = _runner()
     r.park(run_id, step_id, question)
-    if settled_by:
+    if decided_by:
+        # Series 16 H1 (2026-10-21): CL-4142 approved at Rs 1,200, then asked about again as "approve at Rs 1,850 or
+        # decline" - four questions in 80 seconds.
+        r.carry_on(run_id, step_id, f"You asked the person: \"{' '.join(str(question or '').split())[:500]}\" They "
+                   f"already answered: \"{decided_by}\" - that is their decision on what it covers. Apply it, and ask "
+                   "only about what it leaves open, naming only those items", field="settled")
+        progress.emit(f"You already answered that (\"{decided_by[:160]}\") - applying it.")
+    elif settled_by:
         r.carry_on(run_id, step_id, f"You asked the person: \"{' '.join(str(question or '').split())[:500]}\" The "
                    f"request already says: \"{settled_by}\"", field="settled")
         progress.emit(f"The request already answers that (\"{settled_by[:160]}\") - carrying on with it.")
@@ -4885,6 +5011,13 @@ def final_report(run_state):
             if run_state["status"] != "cancelled":
                 head = "Not everything is done."
         head = "WARNING - " + " ".join(warnings) + "\n\n" + head
+    if finished:
+        # A guide a stage wrote to an app it had none for is kept only now every stage is checked done.
+        try:
+            from decurix_agent import app_skills
+            app_skills.promote(data.get("task_id") or "")
+        except Exception as exc:  # noqa: BLE001 - what is kept for later never costs the report
+            log(f"long_task: could not keep the learned guides: {exc}")
     parts = [head, "Done:\n" + ("\n".join(done) if done else "nothing.")]
     if not_done:
         parts.append("Not done:\n" + "\n".join(not_done))
@@ -4920,10 +5053,114 @@ def final_report(run_state):
     if not data.get("task_id") or task_context.current() in ("", data.get("task_id")):
         # (Only while the run's task is the one in hand: a request taken after a stop keeps its own.)
         agent_state.current_task = data.get("request") or agent_state.current_task
+    if run_state["status"] != "cancelled":
+        _remember_reported(data, text, [p for _, p in _outputs(run_state)])
     write_final_reply(text, kind="final" if finished else "error", checked=True, fallback=fallback,
                       task_id=data.get("task_id") or None)
     _release_hold(run_id)
     return None
+
+
+# ============================================================
+# A change sent after the work was reported
+#
+# Found live (series 16 H1, held-out, 2026-10-21): the expense audit was reported done; five minutes later Admin's
+# "Hotel Shaniwar Residency is our corporate tie-up hotel - the limit there is Rs 5,000 a night" arrived. With no run
+# in hand it was a new message, triaged as conversation, and answered "Got it" - the audit, the upload and the drafts
+# kept the Rs 4,000 cut. A person who corrects work just handed in expects it redone. So a short message soon after a
+# planned run was reported is read against that run (one model call); one that changes the work becomes a request of
+# its own - the original request, what was reported, and the change - planned and checked like any other.
+# ============================================================
+
+FOLLOW_UP_HOURS = 8
+FOLLOW_UP_FILE = "last-reported-run.json"
+
+FOLLOW_UP_SYSTEM = """A computer worker finished a person's request and reported it; both are below. The person has now
+sent the message below. Decide what it is:
+- "change": it corrects or adds to how THAT work should be done - a rule, a limit, a value, a record or person in or
+  out, a fact the work must use - so some of what was reported (files, drafts, entries) has to be redone;
+- "question": it asks about that work, or only acknowledges it;
+- "new": anything else - a request about something else, small talk.
+Answer JSON only: {"kind": "change"|"question"|"new", "what": "for a change: what it changes, in one line"}"""
+
+
+def _follow_up_path():
+    return config.DECURIX_DIR / FOLLOW_UP_FILE
+
+
+def _remember_reported(data, report, outputs):
+    """Keep the planned run just reported, for a change the person sends about it afterwards (follow_up)."""
+
+    try:
+        _follow_up_path().write_text(json.dumps({
+            "task_id": data.get("task_id") or "", "request": str(data.get("request") or "")[:20000],
+            "report": str(report or "")[:4000], "outputs": list(outputs)[:40], "at": time.time()}), encoding="utf-8")
+    except OSError as exc:
+        log(f"long_task: could not keep the reported run for a follow-up: {exc}")
+
+
+def _reported_before(content):
+    """The planned run reported shortly before, when `content` is a short message with no files of its own that could
+    be about it; else None. Code only - no model."""
+
+    try:
+        text = attachments.text(content or "").strip()
+        if not enabled() or not text or text.startswith("/") or attachments.files(content or ""):
+            return None
+        if len(text) > WHOLE_REQUEST_CHARS:
+            return None
+        last = json.loads(_follow_up_path().read_text(encoding="utf-8"))
+        if time.time() - float(last.get("at") or 0) > FOLLOW_UP_HOURS * 3600:
+            return None
+        return last
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def reported_task():
+    """The task id of the planned run reported last (follow_up's), or ""."""
+
+    try:
+        return str(json.loads(_follow_up_path().read_text(encoding="utf-8")).get("task_id") or "")
+    except (OSError, ValueError, TypeError, AttributeError):
+        return ""
+
+
+def may_follow_up(content):
+    """Whether a message is worth reading against the planned run reported shortly before (follow_up). Code only."""
+
+    return _reported_before(content) is not None
+
+
+def follow_up(content, ask=None):
+    """
+    The request to plan for a message that changes the planned run reported shortly before, or None (the message is
+    handled as it always was). Only a short message with no files of its own, within FOLLOW_UP_HOURS of the report,
+    and only when the model reads it as a change to that work. Never raises.
+    """
+
+    try:
+        last = _reported_before(content)
+        if last is None:
+            return None
+        text = attachments.text(content or "").strip()
+        shown = (f"The request:\n{attachments.text(last.get('request') or '')[:6000]}\n\nWhat was reported:\n"
+                 f"{str(last.get('report') or '')[:3000]}\n\nThe person's message now: \"{privacy_withheld(text)}\"")
+        found = (ask or _ask_json)(FOLLOW_UP_SYSTEM, shown, 300)
+        if str(found.get("kind") or "").strip().lower() != "change":
+            return None
+    except Exception as exc:  # noqa: BLE001 - unread, the message is handled as it always was
+        log(f"long_task: could not read the message against the run reported before: {exc}")
+        return None
+    log(f"long_task: a change to the work reported before: {str(found.get('what') or '')[:200]}")
+    made = "\n".join(f"- {p}" for p in last.get("outputs") or [])
+    return (f"{last.get('request') or ''}\n\n"
+            f"This request was done and reported earlier. The report said:\n{str(last.get('report') or '')[:3000]}\n"
+            + (f"\nThe files it made:\n{made}\n" if made else "")
+            + f"\nSince then the person said: \"{text}\"\n"
+            "Redo only what this changes - in the same files and drafts, replacing the earlier versions (a draft that "
+            "is no longer right is replaced, not left beside the new one) - and say in the report what changed and "
+            "what stayed as it was.")
 
 
 # The run's message to the person: at most this many characters; the whole report is a file in the work folder.
@@ -5689,6 +5926,19 @@ def take_decision(run_id, step_id, answer, reading=None, hold=False):
     return f"Noted your decision for \"{title}\": {' '.join(answer.split())[:300]}"
 
 
+_ITEM_REF = re.compile(r"[a-z]*\d[a-z0-9]*(?:[-/][a-z0-9]+)*")
+
+
+def _same_item(decided, item):
+    """Whether an item an answer decided ("CL-4142", "Neha") is this listed item. An item with a reference is that
+    reference only - "Neha" decides one of her claims, not her flight CL-4145; without one, the same name exactly."""
+
+    refs = lambda s: set(_ITEM_REF.findall(str(s or "").lower()))  # noqa: E731
+    if refs(item):
+        return bool(refs(item) & refs(decided))
+    return bool(_name_words(item)) and set(_name_words(decided)) == set(_name_words(item))
+
+
 def _rest_to_ask(run_id, step_id, question, answer):
     """
     The items a question listed that the person's answer did not decide (classify's "undecided"), when they are to be
@@ -5697,6 +5947,11 @@ def _rest_to_ask(run_id, step_id, question, answer):
     """
 
     items = [str(i) for i in answer.get("undecided") or []]
+    # An item an earlier answer already decided is not open (series 16 H1, 2026-10-21: CL-4142 was approved at Rs
+    # 1,200, the stage's next question listed it again, and the follow-up asked the person about it twice more).
+    decided = [n for d in ledger(run_id)["decisions"] if not is_stuck_question(d.get("question"))
+               and d.get("answer") != answer.get("answer") for n in d.get("names") or []]
+    items = [i for i in items if not any(_same_item(n, i) for n in decided)]
     if not items or answer.get("hands_back") or answer.get("assumed"):
         return []
     if question and (question.get("followup_of") or question.get("kind") in ("stuck", "finding", "approval")

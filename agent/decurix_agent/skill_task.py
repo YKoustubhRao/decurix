@@ -5,7 +5,7 @@ import time
 import traceback
 from pathlib import Path
 
-from decurix_agent import (attachments, binding, config, guidance, lessons, llm_client, messaging, playbooks, procedures, produced,
+from decurix_agent import (app_skills, attachments, binding, config, guidance, lessons, llm_client, messaging, playbooks, procedures, produced,
                            progress, request_reading, source_guard, sources, state, study, task_context, usage, verify)
 from decurix_agent.computer import (approval, constraints, core, escalation, evidence, experience, launchers, learning,
                                     mimic, recording, replay, skills)
@@ -2259,8 +2259,12 @@ def _playbook(done, task="", skill=None, why=""):
     try:
         if not done:
             playbooks.missed(why)
-        elif playbooks.keep(task, skill=skill):
-            progress.emit("Kept how this was done, for the next request like it.")
+        else:
+            if playbooks.keep(task, skill=skill):
+                progress.emit("Kept how this was done, for the next request like it.")
+            # A guide the engine wrote to an app while doing this task is kept only now it is checked done.
+            for name in app_skills.promote(task_context.current()):
+                progress.emit(f"Learned how to work {name}, for later tasks.")
     except Exception as exc:  # what is kept for next time must never cost this task its report
         log(f"Could not update this task's playbook: {exc}")
 
@@ -2557,7 +2561,8 @@ def _gate(reply, kind, engine):
                                            sources.evidence(state.current_task or "", made),
                                            _bill_evidence(state.current_task or "", made),
                                            produced.notes_text(notes + loud)) if x),
-            deliverables=produced.asked_files(made, state.current_task or ""))
+            deliverables=produced.asked_files(made, state.current_task or ""),
+            look_up=lambda terms: produced.lines_with(made, terms))
 
     if not on_screen and verdict["verdict"] == verify.UNSURE and not unread_host:
         # File work the check could not settle goes out as the worker reported it, marked not checked: only a

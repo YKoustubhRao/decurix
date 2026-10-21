@@ -178,6 +178,12 @@ def draft(to, subject, body, cc=None, attachments=None, replaces=None):
             earlier = [r for r in drafted(task_id) if r.get("id") and r.get("stage") == stage
                        and r.get("attempt") != attempt
                        and sorted(a.lower() for a in r.get("to") or []) == sorted(a.lower() for a in to)]
+        if not earlier and task_context.continues():
+            # A follow-up (a change the person sent after the task was reported) rewrites the letters that task drafted:
+            # the new one to the same recipients takes the old one's place (series 16 H3, 2026-10-21: "leave Ishaan
+            # out" redid the drafts, and the first run's Rao draft, still billing him, stayed beside the new one).
+            earlier = [r for r in drafted(task_context.continues()) if r.get("id")
+                       and sorted(a.lower() for a in r.get("to") or []) == sorted(a.lower() for a in to)]
         if earlier:
             replaces = earlier[-1]["id"]
 
@@ -215,6 +221,7 @@ def draft(to, subject, body, cc=None, attachments=None, replaces=None):
         "desktop_id": config.DESKTOP_ID,
         "task_id": task_id,
         "replaces": replaces or "",
+        "continues": task_context.continues(),
         "to": to,
         "cc": _recipients(cc),
         "subject": (subject or "").strip(),

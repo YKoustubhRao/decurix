@@ -535,3 +535,10 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-5.md](gotchas/part-5.md): Correct work was refused by checks that guessed: derived figures, dates, FY27, phones with a prefix, intentional blanks, a form the request said to fill
 - [part-5.md](gotchas/part-5.md): An approval read as an exclusion, a question cut at 300 characters, a partial answer assumed: who is in or out is the model's structured reading, and a wrong blocking finding is the person's to overrule
 - [part-5.md](gotchas/part-5.md): "Figures that do not agree" that all agreed: sign words split equal counts, and a cross-check note turned a done run into "Not everything is done"
+- [part-5.md](gotchas/part-5.md): A finding made before the person's change outranked it: facts older than a later change are re-checked, the change wins
+- [part-5.md](gotchas/part-5.md): An app nobody wrote a guide for was worked out again on every task: learned guides, kept only when the task is checked done
+- [part-5.md](gotchas/part-5.md): The judge never saw most of what a stage's check gave it: the task was cut at 1,500 characters; an unsure judge may now look closer
+- [part-5.md](gotchas/part-5.md): A correction sent after the report was answered "Got it" and never applied: a change to reported work is planned and redone
+- [part-5.md](gotchas/part-5.md): The person was asked again about what they had just decided: the router sees earlier answers and sends such a question back
+- [part-5.md](gotchas/part-5.md): A refused stage asked only try again / skip / stop: it now asks the person to settle the disputed points, and that answer binds the check
+- [part-5.md](gotchas/part-5.md): A follow-up's checks read every file of the desktop, and its new drafts sat beside the old ones: whole request kept, continues the reported task

@@ -212,3 +212,41 @@ class AHandBack(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AlreadyDecided(unittest.TestCase):
+    """A question about something the person already decided goes back to the stage with their own words (series 16
+    H1, 2026-10-21: CL-4142 approved at Rs 1,200, then asked about again four times in 80 seconds)."""
+
+    ANSWER = ("Approve Neha's airport taxi without the receipt, but pay only Rs 1,200 - that is the prepaid taxi fare "
+              "from Delhi airport to her hotel. Note it as approved by me.")
+    QUESTION = ("I need your decisions on these approval items: 1. CL-4122 - Kavya Raghavan - shared cab. "
+                "2. CL-4142 - Neha Joshi - no receipt: approve at Rs 1,850.00, or decline.")
+
+    def pipeline(self, pointer, decision=False):
+        case = {"request": "Audit the expense claims; ask me where the policy needs my approval.",
+                "question": self.QUESTION, "decision": decision}
+        pipeline = Pipeline(case, routes=["DECIDED"])
+        pipeline.data["decisions"] = [{"question": "CL-4142 has no receipt: approve or reject?", "answer": self.ANSWER}]
+        pipeline.pointer = lambda route: pointer
+        return pipeline
+
+    def test_the_stage_applies_the_answer_and_asks_only_the_rest(self):
+        pipeline = self.pipeline("pay only Rs 1,200 - that is the prepaid taxi fare from Delhi airport")
+        self.assertEqual(pipeline.ask(), "settled")
+        said = pipeline.runner.carried[-1][1]
+        self.assertIn("They already answered", said)
+        self.assertIn(self.ANSWER, said)  # the person's own words, whole - never the model's paraphrase
+        self.assertIn("ask only about what it leaves open", said)
+
+    def test_a_pointer_the_person_never_said_goes_to_the_person(self):
+        self.assertEqual(self.pipeline("Approve CL-4142 in full").ask(), "person")
+
+    def test_a_decision_stage_may_be_sent_back_with_the_persons_answer_too(self):
+        self.assertEqual(self.pipeline("pay only Rs 1,200", decision=True).ask(), "settled")
+
+    def test_once_per_stage_then_the_person_is_asked(self):
+        pipeline = self.pipeline("pay only Rs 1,200")
+        self.assertEqual(pipeline.ask(), "settled")
+        pipeline.routes = ["DECIDED"]
+        self.assertEqual(pipeline.ask(), "person")
