@@ -27,6 +27,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/mailtrigger"
 	"github.com/YKoustubhRao/decurix/internal/memory"
 	"github.com/YKoustubhRao/decurix/internal/phonehost"
+	"github.com/YKoustubhRao/decurix/internal/qualification"
 	"github.com/YKoustubhRao/decurix/internal/querynotes"
 	"github.com/YKoustubhRao/decurix/internal/resourcemon"
 	"github.com/YKoustubhRao/decurix/internal/schedule"
@@ -52,9 +53,13 @@ type Server struct {
 	Chat       *conversation.Store
 	StepImages *stepimages.Store
 	Tasks      *tasks.Store
-	Tunnel     *tunnel.Store
-	ClaudeAuth *claudeauth.Store
-	LANAccess  *lanaccess.Store
+	// Qualification owns evidence and grants; desktop agents cannot write them.
+	Qualification     *qualification.Store
+	qualificationAuth qualificationAuth
+	qualificationRuns qualificationRuns
+	Tunnel            *tunnel.Store
+	ClaudeAuth        *claudeauth.Store
+	LANAccess         *lanaccess.Store
 	// Devices is the phones and laptops paired with the gated listener
 	// (internal/devices), listed and revoked from the Mobile menu. Assigned
 	// by cmd/decurix/main.go after construction; nil means pairing is off.
@@ -129,6 +134,11 @@ type Server struct {
 	HostGUIDataDir string
 	keptHostAppsMu sync.Mutex
 	keptHostApps   map[string]keptHostApp
+	// keptHostAppsLive are the desktops whose kept apps run on the host now: only a running (or paused) desktop's do
+	// (syncHostApps). keptHostApps itself is kept across a stop, so the desktop's next start keeps them again.
+	keptHostAppsLive map[string]bool
+	// hostAppDesktops lists the desktops for syncHostApps; nil means Desktops.List (tests set it).
+	hostAppDesktops func(ctx context.Context) ([]desktop.Desktop, error)
 	// hostVision is each host app's vision fallback for reading its controls (hostcontrols.go).
 	hostVisionMu sync.Mutex
 	hostVision   map[string]*hostVision
@@ -338,6 +348,18 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 // pointless the moment someone else on that listener asked for it, so
 // cmd/decurix/main.go calls this only for the primary mux.
 func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
+	// Owner-session protected, primary only; never delegated to desktop agents.
+	mux.HandleFunc("/readiness/", s.readinessPageHandler)
+	mux.HandleFunc("/api/readiness/session", s.qualificationSessionHandler)
+	mux.HandleFunc("/api/readiness/list", s.qualificationOwner(s.qualificationListHandler))
+	mux.HandleFunc("/api/readiness/source", s.qualificationOwner(s.qualificationSourceHandler))
+	mux.HandleFunc("/api/readiness/define", s.qualificationOwner(s.qualificationDefineHandler))
+	mux.HandleFunc("/api/readiness/authorize", s.qualificationOwner(s.qualificationAuthorizeHandler))
+	mux.HandleFunc("/api/readiness/run", s.qualificationOwner(s.qualificationRunHandler))
+	mux.HandleFunc("/api/readiness/cancel", s.qualificationOwner(s.qualificationCancelHandler))
+	mux.HandleFunc("/api/readiness/evidence", s.qualificationOwner(s.qualificationEvidenceHandler))
+	mux.HandleFunc("/api/readiness/history", s.qualificationOwner(s.qualificationHistoryHandler))
+	mux.HandleFunc("/api/readiness/artifact", s.qualificationOwner(s.qualificationArtifactHandler))
 	// Everything that runs something on the host or shows a host program
 	// is for a desktop's own launchers, which reach the primary listener
 	// over the Docker network. No phone or tunnel visitor needs any of it,
@@ -359,6 +381,7 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/host-paths/browse", s.humansOnly(s.browseHostPathHandler))
 	// Whether a file a task was asked to save on this computer is there - for the check of that task.
 	mux.HandleFunc("/api/host-files/stat", hostGUIDirectOnly(s.hostFileStatHandler))
+	mux.HandleFunc("/api/host-files/release", hostGUIDirectOnly(s.hostFileReleaseHandler))
 	mux.HandleFunc("/api/host-files/read", hostGUIDirectOnly(s.hostFileReadHandler))
 	mux.HandleFunc("/api/lan-access/status", s.lanAccessStatusHandler)
 	mux.HandleFunc("/api/lan-access/rotate", s.lanAccessRotateHandler)

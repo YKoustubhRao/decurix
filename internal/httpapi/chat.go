@@ -191,6 +191,10 @@ func (s *Server) agentEventHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	desktopID := desktop.SanitizeID(strings.TrimSpace(req.DesktopID))
+	if strings.HasPrefix(desktopID, "readiness-") {
+		jsonStatusError(w, http.StatusForbidden, "Readiness evidence is recorded by the independent runner.")
+		return
+	}
 	text := strings.TrimSpace(req.Text)
 
 	if desktopID != "" && text != "" {

@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -523,5 +524,98 @@ func TestDeletingADesktopForgetsTheHostAppsKeptReadyForIt(t *testing.T) {
 	}
 	if len(saved) != 1 || saved[0].ID != "vm2-paint" {
 		t.Fatalf("saved after deleting vm1: %+v", saved)
+	}
+}
+
+// keepServer is a Server whose host apps are kept by a manager that never starts anything real, and whose desktops are
+// the given statuses, for the tests of which apps are kept ready when.
+func keepServer(t *testing.T, statuses map[string]string) *Server {
+	t.Helper()
+	s := &Server{HostGUIDataDir: t.TempDir()}
+	s.hostGUIOnce.Do(func() {
+		s.hostGUIMgr = winhost.NewManager(func(ctx context.Context, name string) (*exec.Cmd, error) {
+			return nil, errors.New("no host in this test")
+		})
+	})
+	t.Cleanup(func() { s.hostGUIMgr.StopAll() })
+	s.hostAppDesktops = func(context.Context) ([]desktop.Desktop, error) {
+		var out []desktop.Desktop
+		for id, status := range statuses {
+			out = append(out, desktop.Desktop{ID: id, Status: status})
+		}
+		return out, nil
+	}
+	s.keptHostApps = map[string]keptHostApp{
+		"apps-notepad": {Desktop: "apps", ID: "apps-notepad", Target: `C:\notepad.exe`},
+		"apps-excel":   {Desktop: "apps", ID: "apps-excel", Target: `C:\excel.exe`},
+		"pc2-word":     {Desktop: "pc2", ID: "pc2-word", Target: `C:\winword.exe`},
+		"nap-paint":    {Desktop: "nap", ID: "nap-paint", Target: `C:\paint.exe`},
+	}
+	return s
+}
+
+// TestOnlyRunningDesktopsKeepTheirHostAppsReady: found live (2026-10-20), with one worker running, 15-18 bridges ran for
+// the apps of workers stopped hours before, one relaunched every two minutes. A stopped desktop's apps are ended and
+// remembered; its start keeps them again; a paused desktop's are ended too, and kept again when it resumes.
+func TestOnlyRunningDesktopsKeepTheirHostAppsReady(t *testing.T) {
+	statuses := map[string]string{"apps": "stopped", "pc2": "running", "nap": "paused"}
+	s := keepServer(t, statuses)
+	m := s.hostGUIMgr
+
+	s.syncHostApps(context.Background())
+	if got := m.KeptFor("apps"); len(got) != 0 {
+		t.Errorf("a stopped desktop's apps are kept ready: %v", got)
+	}
+	if got := m.KeptFor("pc2"); len(got) != 1 {
+		t.Errorf("a running desktop's apps are not kept: %v", got)
+	}
+	if got := m.KeptFor("nap"); len(got) != 0 {
+		// BT2 (2026-10-20): nine kept Office apps of paused workers held the person's files.
+		t.Errorf("a paused desktop's apps are still kept: %v", got)
+	}
+	// It resumes: its apps are kept again.
+	statuses["nap"] = "running"
+	s.syncHostApps(context.Background())
+	if got := m.KeptFor("nap"); len(got) != 1 {
+		t.Errorf("a resumed desktop's apps were not kept again: %v", got)
+	}
+
+	// pc2 stops (idle-stop, or its container ended): within a sync its apps go, and are remembered.
+	statuses["pc2"] = "stopped"
+	s.syncHostApps(context.Background())
+	if got := m.KeptFor("pc2"); len(got) != 0 {
+		t.Errorf("a desktop that stopped kept its apps: %v", got)
+	}
+	if _, ok := s.keptHostApps["pc2-word"]; !ok {
+		t.Error("a stopped desktop's apps were forgotten: its next start would not keep them")
+	}
+
+	// apps starts: its apps are kept again.
+	statuses["apps"] = "running"
+	s.syncHostApps(context.Background())
+	if got := m.KeptFor("apps"); len(got) != 2 {
+		t.Errorf("a started desktop's apps were not kept again: %v", got)
+	}
+}
+
+// TestStoppingADesktopEndsItsHostAppsAtOnce: the stop handler does not wait for the next sync.
+func TestStoppingADesktopEndsItsHostAppsAtOnce(t *testing.T) {
+	s := keepServer(t, map[string]string{"apps": "running", "pc2": "running", "nap": "running"})
+	s.syncHostApps(context.Background())
+	s.releaseHostApps("apps")
+	if got := s.hostGUIMgr.KeptFor("apps"); len(got) != 0 {
+		t.Errorf("a stopped desktop's apps are still kept: %v", got)
+	}
+	if got := s.hostGUIMgr.KeptFor("pc2"); len(got) != 1 {
+		t.Errorf("stopping one desktop ended another's apps: %v", got)
+	}
+	if len(s.keptHostApps) != 4 {
+		t.Errorf("the remembered set lost apps: %d", len(s.keptHostApps))
+	}
+}
+
+func TestAKeptAppsSlugAndName(t *testing.T) {
+	if got := keptAppSlug("pc2", "pc2-microsoft-paint"); got != "microsoft-paint" {
+		t.Errorf("slug = %q", got)
 	}
 }

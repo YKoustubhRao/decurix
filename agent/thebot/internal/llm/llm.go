@@ -52,7 +52,10 @@ type Result struct {
 	Text           string
 	PromptTokens   int
 	ResponseTokens int
-	DurationMs     int64
+	// CachedTokens is the part of PromptTokens the provider read from its prompt cache (a repeated prefix, billed
+	// at a fraction of the price), when it says so; 0 otherwise.
+	CachedTokens int
+	DurationMs   int64
 	// Truncated reports that the provider stopped because it ran out of
 	// room, not because the answer was finished. The content is real but
 	// INCOMPLETE - cut off mid-sentence, mid-function, mid-JSON.

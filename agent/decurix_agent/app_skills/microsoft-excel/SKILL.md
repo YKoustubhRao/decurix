@@ -20,7 +20,7 @@ How Excel is worked here (each of these was tried on this desktop)
 Opening a file of the person's computer
 1. gui open "Excel (Host)" (its first start can take 20-60 s: observe, never double-click the icon again).
 2. On the start screen press "New blank workbook"; then Ctrl+O, press "Browse".
-3. gui type the "File name" box's ref with the whole path (C:\Users\...\sales.csv), then Enter.
+3. gui type the "File name" box's ref with the whole path (C:\Users\...\name.csv), then Enter.
 
 Reading and reaching cells
 - gui observe lists the cells that hold something as rows like row "D2 = 4950" (address = what it shows). Read
@@ -32,15 +32,19 @@ Reading and reaching cells
 - Lost (columns off screen)? Name Box "A1", Enter. Never drag scrollbars, click headers, or use Ctrl+Shift+arrow.
 
 Common tasks
-- Order matters: sort first, then add the Total row under the data, then bold, chart and save.
+- Add a total row after sorting, so it is not sorted into the data.
 - Sort by one column: Name Box to a cell in that column's data (D2, Enter); tab "Data"; press the sort button
   from its list: "Sort Largest to Smallest" for numbers ("Sort Z to A" for text). Excel keeps the header row. Do not
   use the "Sort..." dialog for one column. Check the rows after it.
 - Bold the header: Name Box "A1:D1", Enter, Ctrl+B. With those cells selected, tab "Home" lists button "Bold" as
   [pressed] when they are bold: check it there, and never press Bold again when it is - that undoes it.
-- A total: Name Box "A20", Enter, gui type "Total", Enter; Name Box "D20", Enter, gui type "=SUM(D2:D19)", Enter.
-  Observe: row "A20 = Total" and row "D20 = <the sum>" must be there, and every data row unchanged.
-- A chart: Name Box to the range with its header (C1:D19), Enter; tab "Insert", press "Recommended Charts", then
+- A total under data in rows 2 to N: Name Box "A<N+1>", Enter, gui type "Total", Enter; Name Box "D<N+1>", Enter,
+  gui type "=SUM(D2:D<N>)", Enter. Observe: both cells must be there, and every data row unchanged.
+- A column of one formula down a table: type it ONCE in the first row's cell (gui type D2 - <<'EOF' with the formula), then
+  Name Box "D2:D25" (the whole run to the table's LAST row), Enter, gui key ctrl+d (fill down). Typing it row by row
+  sends every character through the viewer and is cut off with rows missing. Read the LAST row back (row "D25 = ...")
+  and make the total's range cover the same rows.
+- A chart: Name Box to the range with its header (e.g. C1:D<N>), Enter; tab "Insert", press "Recommended Charts", then
   "OK" (a clustered column chart is offered first). Escape leaves the chart.
 - Freeze the header row: tab "View", "Freeze Panes", "Freeze Top Row". Undo a slip at once with Ctrl+Z.
 

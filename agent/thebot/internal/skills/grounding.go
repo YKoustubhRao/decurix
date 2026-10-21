@@ -1,7 +1,10 @@
 package skills
 
 import (
+	"bytes"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -48,6 +51,18 @@ var (
 	paramRe = regexp.MustCompile(`--param\s+[\w.-]+=("(?:[^"\\]|\\.)*"|'[^']*'|\S+)`)
 )
 
+// pathInsideWordRe is a character a path cannot follow when it starts there: it would be the middle of a longer one.
+var pathInsideWordRe = regexp.MustCompile(`[\w.~-]`)
+
+func containsString(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
 // attachedFilesMark opens the lines of a request that name the files a
 // person attached to it, one path a line (the control plane's
 // attachmentsMark, the desktop agent's attachments.MARK).
@@ -57,7 +72,15 @@ const attachedFilesMark = "Files attached to this request, saved on this desktop
 // document's extension anywhere in it, and every file attached to it,
 // whatever its kind - a person attaches a file for it to be read.
 func requestDocuments(request string) []string {
-	docs := documentPathRe.FindAllString(request, -1)
+	var docs []string
+	for _, loc := range documentPathRe.FindAllStringIndex(request, -1) {
+		if loc[0] > 0 && pathInsideWordRe.MatchString(request[loc[0]-1:loc[0]]) {
+			continue // the tail of a relative path, not a path of its own
+		}
+		if doc := request[loc[0]:loc[1]]; !containsString(docs, doc) {
+			docs = append(docs, doc)
+		}
+	}
 
 	if _, rest, found := strings.Cut(request, attachedFilesMark); found {
 		for _, line := range strings.Split(rest, "\n") {
@@ -79,6 +102,176 @@ func requestDocuments(request string) []string {
 	return docs
 }
 
+// partSepRe is an ordinary separator between the parts of one typed label: " - ", " – ", " / ", " | ", ", ", or
+// parentheses ("MUG-12 - Ceramic mug 12oz", "Cafe Bloom (Pune)").
+var partSepRe = regexp.MustCompile(`\s+[-\x{2013}\x{2014}/|]\s+|,\s+|\s*\(\s*|\s*\)\s*`)
+
+// partsTraced reports whether a typed value is made only of parts that were each seen, whole, joined by ordinary
+// separators. Found live (2026-10-20, P2's portal): the product option "MUG-12 - Ceramic mug 12oz" - the code and the
+// description, both read many times - was refused as a guess, and the model took the refusal to mean the item did not
+// exist. Strict: two parts or more, every part traced as a whole word or phrase, nothing but separators between.
+func partsTraced(v, seen string) bool {
+	parts := partSepRe.Split(strings.TrimSpace(v), -1)
+	n := 0
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		n++
+		// Whole: bounded by space, a cell or field separator, or a quote - not by "-" or "." ("MUG" is not "MUG-12").
+		whole := regexp.MustCompile(`(?:^|[\s|,;:()"'])` + regexp.QuoteMeta(normalise(part)) + `(?:$|[\s|,;:()"'.])`)
+		if !whole.MatchString(seen) {
+			return false
+		}
+	}
+	return n >= 2
+}
+
+// outputNameRe finds where a request asks for a file to be made: "save it as X.xlsx", "make X.docx", a numbered
+// deliverable "4. X.xlsx: ...".
+var outputNameRe = regexp.MustCompile(`(?im)(?:\b(?:save[sd]?|saving|as|make|create|write|build|produce|export|into)\s+(?:it\s+|them\s+|the\s+\w+\s+)?(?:as\s+)?|^\s*\d{1,2}[.)]\s*)["'\x{201c}]?(?:[\w./~-]*/)?([\w.-]+\.[A-Za-z0-9]{2,5})\b`)
+
+// fillerWordRe is a value that only fills a field: test, dummy, n/a, tbd, xxx ...
+var fillerWordRe = regexp.MustCompile(`(?i)^\W*(?:test(?:ing)?|dummy|sample|placeholder|x{3,}|asdf\w*|qwerty|lorem(?: ipsum.*)?|n\s*/?\s*a|tbd|to be (?:confirmed|decided)|none|null|unknown)\W*$`)
+
+// fillerDomainRe is an email address at a domain that stands for no one.
+var fillerDomainRe = regexp.MustCompile(`(?i)@(?:example|test|sample|dummy|domain|email|mail)\.(?:com|org|net|in|co\.in)\b`)
+
+var nonDigitRe = regexp.MustCompile(`\D`)
+
+// looksFiller reports whether a typed value only fills a field: a filler word, an address at example.com, or a number
+// of five or more digits that is one digit repeated or a plain run (1234567890, 9876543210). (The same rule as
+// decurix_agent/filler.py.)
+func looksFiller(v string) bool {
+	t := strings.TrimSpace(v)
+	if t == "" {
+		return false
+	}
+	if fillerWordRe.MatchString(t) || fillerDomainRe.MatchString(t) {
+		return true
+	}
+	digits := nonDigitRe.ReplaceAllString(t, "")
+	bare := regexp.MustCompile(`[\s+\-().]`).ReplaceAllString(t, "")
+	if len(digits) < 5 || len(digits) < len(bare) {
+		return false
+	}
+	if strings.Count(digits, digits[:1]) == len(digits) {
+		return true
+	}
+	return strings.Contains("01234567890123456789", digits) || strings.Contains("98765432109876543210", digits)
+}
+
+// inSeen reports whether a value was shown: as written, or - a number - by its digits.
+func inSeen(seen, v string) bool {
+	if strings.Contains(normalise(seen), normalise(v)) {
+		return true
+	}
+	digits := nonDigitRe.ReplaceAllString(v, "")
+	return len(digits) >= 5 && strings.Contains(nonDigitRe.ReplaceAllString(seen, ""), digits)
+}
+
+// unreadSources are the documents the request names or brings that are sources still to read (one path a file name):
+// a file the request asks to be made is not a source; a file that is not there (yet) cannot be
+// read; and reading any file of the same name - the same file in another folder the request ties to it - reads it.
+func unreadSources(st *operatorState) []string {
+	outputs := map[string]bool{}
+	for _, m := range outputNameRe.FindAllStringSubmatch(st.Request, -1) {
+		outputs[strings.ToLower(m[1])] = true
+	}
+	var names []string
+	seen := map[string]bool{}
+	for _, doc := range requestDocuments(st.Request) {
+		base := doc[strings.LastIndexAny(doc, `/\`)+1:]
+		key := strings.ToLower(base)
+		if base == "" || seen[key] || outputs[key] {
+			continue
+		}
+		seen[key] = true
+		if sourceMissing(expandHome(doc)) {
+			continue
+		}
+		if !readBefore(st.Commands, doc) && !readElsewhere(st.Commands, expandHome(doc)) {
+			names = append(names, doc)
+		}
+	}
+	return names
+}
+
+// commandPathRe is a path-like word of a command: a folder it may have read or listed.
+var commandPathRe = regexp.MustCompile(`[\w.~/-]*[\w-]`)
+
+// readElsewhere reports whether a command read the same file in another folder: a folder a command names holds a file
+// of that name with the same content. Found live (2026-10-20, P2): the request said the attached files are also in a
+// folder of the work folder; the worker read those copies and the guard demanded the attached ones.
+func readElsewhere(commands []string, doc string) bool {
+	base := doc[strings.LastIndexAny(doc, `/\`)+1:]
+	want, err := os.ReadFile(doc)
+	if err != nil || base == "" {
+		return false
+	}
+	checked := map[string]bool{}
+	for _, c := range commands {
+		for _, word := range commandPathRe.FindAllString(c, -1) {
+			word = expandHome(strings.TrimRight(word, "/"))
+			// The word itself or its folder; a relative one from the work folder, where commands run.
+			for _, dir := range []string{word, filepath.Dir(word), filepath.Join(workFolder(), word), filepath.Join(workFolder(), filepath.Dir(word))} {
+				if checked[dir] {
+					continue
+				}
+				checked[dir] = true
+				if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+					continue
+				}
+				other := filepath.Join(dir, base)
+				if filepath.Clean(other) == filepath.Clean(doc) {
+					continue
+				}
+				if got, err := os.ReadFile(other); err == nil && bytes.Equal(got, want) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// workFolder is where the operator's commands run (the agent's work folder).
+func workFolder() string {
+	if w := os.Getenv("DECURIX_WORK_DIR"); w != "" {
+		return w
+	}
+	return expandHome("~/work")
+}
+
+// sourceMissing reports whether a file is not there to be read (a variable so tests can name files that do not exist).
+var sourceMissing = func(path string) bool {
+	_, err := os.Stat(path)
+	return err != nil
+}
+
+// expandHome is a path with a leading ~ made the home folder.
+func expandHome(p string) string {
+	if strings.HasPrefix(p, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home + p[1:]
+		}
+	}
+	return p
+}
+
+// unreadNudge sends the operator to read the sources it has not: named by their plain names (what the person's
+// question repeats), with the path to read.
+func unreadNudge(docs []string) string {
+	names := make([]string, 0, len(docs))
+	for _, doc := range docs {
+		names = append(names, doc[strings.LastIndexAny(doc, `/\`)+1:])
+	}
+	return fmt.Sprintf("Not run: a value you would type is not in anything you have read, and the request also gives "+
+		"%s; you have not read it. Every value you type must come from what the task gives. Read it first (office "+
+		"read %s), then type what it says.", strings.Join(names, ", "), docs[0])
+}
+
 // noteSeen adds text the operator has now seen (the request, a command's
 // output, a person's reply), keeping the most recent maxSeenChars.
 func (st *operatorState) noteSeen(text string) {
@@ -88,11 +281,132 @@ func (st *operatorState) noteSeen(text string) {
 	}
 }
 
+// shellSegment is one simple command of a command line - the words between ;, &&, ||, | and line ends - with the
+// body of a here-document it reads on stdin, when it has one.
+type shellSegment struct {
+	Text     string
+	Stdin    string
+	HasStdin bool
+}
+
+// heredocRe opens a here-document: `<<'EOF'`, <<EOF, <<-"END".
+var heredocRe = regexp.MustCompile(`<<(-?)[ \t]*(?:'(\w+)'|"(\w+)"|(\w+))`)
+
+// shellSegments splits a command line into its simple commands, as the shell runs them: separators inside quotes
+// are text, and a here-document's lines are the stdin of the command that opened it, not commands of their own.
+// Found live (2026-10-19): `gui type e12 "D1" && gui key enter && ... && gui key ctrl+d` was read as one command
+// typing "ctrl+d" (the chain's last word), and refused as a value nobody had given.
+func shellSegments(command string) []shellSegment {
+	var segs []shellSegment
+	var cur strings.Builder
+	type pending struct {
+		seg   int
+		word  string
+		strip bool
+	}
+	var waiting []pending
+	flush := func() {
+		text := strings.TrimSpace(cur.String())
+		cur.Reset()
+		if text == "" {
+			return
+		}
+		segs = append(segs, shellSegment{Text: text})
+		if m := heredocRe.FindStringSubmatchIndex(text); m != nil {
+			word := ""
+			for g := 2; g <= 4; g++ {
+				if m[2*g] >= 0 {
+					word = text[m[2*g]:m[2*g+1]]
+				}
+			}
+			segs[len(segs)-1].Text = strings.TrimSpace(text[:m[0]] + text[m[1]:])
+			waiting = append(waiting, pending{len(segs) - 1, word, m[3] > m[2]})
+		}
+	}
+	runes := []rune(command)
+	quote, escaped := rune(0), false
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		switch {
+		case escaped:
+			cur.WriteRune(r)
+			escaped = false
+		case r == '\\' && quote != '\'':
+			cur.WriteRune(r)
+			escaped = true
+		case quote != 0:
+			cur.WriteRune(r)
+			if r == quote {
+				quote = 0
+			}
+		case r == '"' || r == '\'':
+			quote = r
+			cur.WriteRune(r)
+		case r == '\n':
+			flush()
+			// The lines after one that opened here-documents are their bodies, each up to its closing word.
+			rest := string(runes[i+1:])
+			consumed := 0
+			for _, w := range waiting {
+				lines := strings.Split(rest[consumed:], "\n")
+				var body []string
+				found := false
+				used := 0
+				for _, l := range lines {
+					used += len(l) + 1
+					closing := l
+					if w.strip {
+						closing = strings.TrimLeft(l, "\t")
+					}
+					if strings.TrimRight(closing, " \t\r") == w.word {
+						found = true
+						break
+					}
+					body = append(body, l)
+				}
+				if !found {
+					break
+				}
+				segs[w.seg].Stdin, segs[w.seg].HasStdin = strings.Join(body, "\n"), true
+				consumed += used
+			}
+			waiting = nil
+			if consumed > 0 {
+				i += len([]rune(rest[:min(consumed, len(rest))]))
+			}
+		case r == ';' || r == '|' || r == '&':
+			flush()
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	flush()
+	return segs
+}
+
 // typedValues returns the values a command would type into an app: gui do's
 // and gui replay's --param values (each item of a "; " list), and the text
-// of gui type or the option of gui select. Nil for any other command.
+// of gui type or the option of gui select - of every gui command in a chain.
+// Nil when there are none. A key chord (gui key ctrl+d) is never one.
 func typedValues(command string) []string {
-	words := shellWords(command)
+	return typedValuesExcept(command, nil)
+}
+
+// typedValuesExcept is typedValues leaving out the simple commands skip says to.
+func typedValuesExcept(command string, skip func(segment string) bool) []string {
+	var out []string
+	for _, seg := range shellSegments(command) {
+		if skip != nil && skip(seg.Text) {
+			continue
+		}
+		out = append(out, segmentValues(seg)...)
+	}
+	return out
+}
+
+// segmentValues is what one simple gui command would type (see typedValues).
+func segmentValues(seg shellSegment) []string {
+	words := shellWords(seg.Text)
 	if len(words) < 2 || words[0] != "gui" {
 		return nil
 	}
@@ -100,12 +414,19 @@ func typedValues(command string) []string {
 	var raw []string
 	switch words[1] {
 	case "do", "replay":
-		for _, m := range paramRe.FindAllStringSubmatch(command, -1) {
+		for _, m := range paramRe.FindAllStringSubmatch(seg.Text, -1) {
 			raw = append(raw, unquote(m[1]))
 		}
 	case "type", "select":
 		args := positional(words[2:])
-		if len(args) > 0 {
+		switch {
+		case len(args) == 0:
+		case seg.HasStdin && args[len(args)-1] == "-":
+			// gui type REF - <<'EOF' ... EOF: the text is the here-document's body, verbatim.
+			raw = append(raw, seg.Stdin)
+		case len(args) >= 2 && refRe.MatchString(args[0]):
+			raw = append(raw, strings.Join(args[1:], " "))
+		default:
 			raw = append(raw, args[len(args)-1])
 		}
 	default:
@@ -117,7 +438,10 @@ func typedValues(command string) []string {
 		// A tab between values moves to the next cell, as a newline moves to the next line: each part is a value of its
 		// own. Found live (2026-10-15): a deck's table row typed as "655\tEast\t498" was refused as one value nobody had
 		// given. Both a real tab and its written mark (\t) count.
-		v = strings.ReplaceAll(strings.ReplaceAll(v, `\t`, "\t"), `\n`, "\n")
+		// Not inside path-looking text: C:\new\temp\notes.txt holds no Enter and no Tab (pathSpans).
+		v = outsidePaths(v, func(part string) string {
+			return strings.ReplaceAll(strings.ReplaceAll(part, `\t`, "\t"), `\n`, "\n")
+		})
 		for _, item := range strings.FieldsFunc(v, func(r rune) bool { return r == ';' || r == '\n' || r == '\t' }) {
 			if item = strings.TrimSpace(item); item != "" {
 				out = append(out, item)
@@ -125,6 +449,200 @@ func typedValues(command string) []string {
 		}
 	}
 	return out
+}
+
+// untracedQuestion is what a person is asked when the operator keeps typing values it cannot trace: the values
+// themselves, plainly, and what to answer - never the guard's own wording. Found live (2026-10-19): a clerk was asked
+// "Which values should I use? ("FALSE" appear nowhere in the request or in anything a command has shown you ...)".
+func untracedQuestion(untraced []string, nudge string) string {
+	// Found live (2026-10-20, round 5 P2): a planned stage asked "Which document or page should I take it from?" naming
+	// nothing - the person could not answer it, and an answer about something else was taken for its answer. Every
+	// path that refuses to type now hands over the values; this one is for a refusal that names none.
+	if len(untraced) == 0 {
+		return "I stopped before typing a value whose source I could not find (" + truncateText(strings.TrimPrefix(nudge, "Not run: "), 300) +
+			"). Which document or page should I take it from?"
+	}
+	if m := unreadNamedRe.FindStringSubmatch(nudge); m != nil {
+		return "I was about to type " + quotedList(untraced) + ", but I have not found it in what I have read, and I " +
+			"could not read " + m[1] + ", so I have not typed it. Where does it come from - or what should I type instead?"
+	}
+	return "I was about to type " + quotedList(untraced) + ", but I could not find this in your request or in " +
+		"the files and screens I read, so I have not typed it. Where does it come from - or what should I type " +
+		"instead?"
+}
+
+// secretShown is what a refusal or a question says in place of a secret value: the field, never the value. A password
+// in the chat is the leak privacy.py exists to prevent (found live 2026-10-20).
+const secretShown = "the password (not shown here)"
+
+// requestSecretRe is a secret the request spells out after its name: "password Northwind#2026", "PIN: 4821".
+// (The same rule as decurix_agent/computer/privacy.py's REQUEST_SECRET.)
+var requestSecretRe = regexp.MustCompile(`(?i)\b(?:pass(?:word|code|phrase)|pwd|pin|otp|one[- ]time (?:code|password)|token|api[ _-]?key|secret(?: key)?)\b\s*(?:is\s+|[:=]\s*)?["'\x{201c}\x{2018}]?([^\s"'\x{201d}\x{2019},;)\]]{3,200})`)
+
+// passwordFieldRe is a password field in a gui observe listing: its ref.
+var passwordFieldRe = regexp.MustCompile(`(?m)^(e\d+) password text\b`)
+
+// secretValues are the typed values of command that are secrets: what the request gives after a password's (PIN's,
+// key's) name, and anything typed into a field the screen listed as a password field.
+func secretValues(st *operatorState, command string) map[string]bool {
+	out := map[string]bool{}
+	for _, m := range requestSecretRe.FindAllStringSubmatch(st.Request, -1) {
+		out[strings.TrimRight(m[1], ".!?")] = true
+	}
+	fields := map[string]bool{}
+	for _, m := range passwordFieldRe.FindAllStringSubmatch(st.Seen, -1) {
+		fields[m[1]] = true
+	}
+	if len(fields) > 0 {
+		for _, seg := range shellSegments(command) {
+			words := shellWords(seg.Text)
+			if len(words) >= 4 && words[0] == "gui" && words[1] == "type" && fields[words[2]] {
+				for _, v := range segmentValues(seg) {
+					out[v] = true
+				}
+			}
+		}
+	}
+	return out
+}
+
+// maskSecrets is values with every secret replaced by secretShown.
+func maskSecrets(values []string, secrets map[string]bool) []string {
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		if secrets[v] {
+			v = secretShown
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// unreadNamedRe finds the documents a "you have not read it" refusal names.
+var unreadNamedRe = regexp.MustCompile(`the request also gives (.+?); you have not read it`)
+
+// quotedList is values as a person reads them: quoted, at most five, the rest counted.
+func quotedList(values []string) string {
+	shown := make([]string, 0, len(values))
+	for i, v := range values {
+		if i == 5 {
+			shown = append(shown, fmt.Sprintf("and %d more", len(values)-5))
+			break
+		}
+		if v == secretShown {
+			shown = append(shown, v)
+			continue
+		}
+		shown = append(shown, fmt.Sprintf("%q", truncateText(v, 80)))
+	}
+	return strings.Join(shown, ", ")
+}
+
+// maxQuoteNudges bounds how often a gui type whose quoting the shell would change is sent back before it is let run.
+const maxQuoteNudges = 2
+
+// mixedQuoting reports whether a simple command has a word whose quoting opens or closes in its middle: "a"b, a"b",
+// ="x"" - a quote meant as text, which the shell takes as the end or start of quoting and drops.
+func mixedQuoting(segment string) bool {
+	quote, escaped, inWord, justClosed := rune(0), false, false, false
+	for _, r := range segment {
+		switch {
+		case escaped:
+			escaped, inWord, justClosed = false, true, false
+		case r == '\\' && quote != '\'':
+			escaped = true
+		case quote != 0:
+			if r == quote {
+				quote, justClosed = 0, true
+			}
+		case r == '"' || r == '\'':
+			if inWord {
+				return true
+			}
+			quote, inWord = r, true
+		case r == ' ' || r == '\t' || r == '\n':
+			inWord, justClosed = false, false
+		default:
+			if justClosed {
+				return true
+			}
+			inWord = true
+		}
+	}
+	return quote != 0
+}
+
+// shellExpands reports whether a simple command holds a $ the shell would expand - outside single quotes and before a
+// letter, an underscore, { or ( - where a spreadsheet's absolute reference ($A$2) was meant. Found live (2026-10-19):
+// "=VLOOKUP(B2,Prices!$A$2:$C$13,3,FALSE)" reached real Excel as =VLOOKUP(B2,Prices!:3,3,FALSE).
+func shellExpands(segment string) bool {
+	runes := []rune(segment)
+	quote, escaped := rune(0), false
+	for i, r := range runes {
+		switch {
+		case escaped:
+			escaped = false
+		case r == '\\' && quote != '\'':
+			escaped = true
+		case quote == '\'':
+			if r == '\'' {
+				quote = 0
+			}
+		case r == '"':
+			if quote == '"' {
+				quote = 0
+			} else {
+				quote = '"'
+			}
+		case r == '\'' && quote == 0:
+			quote = '\''
+		case r == '$' && i+1 < len(runes):
+			n := runes[i+1]
+			if unicode.IsLetter(n) || n == '_' || n == '{' || n == '(' {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// unbalancedFormula reports whether a formula's text, as the shell hands it over, has an odd number of quotes or
+// unmatched brackets - what a formula whose quotes the shell ate looks like.
+func unbalancedFormula(v string) bool {
+	v = strings.TrimSpace(v)
+	if !strings.HasPrefix(v, "=") {
+		return false
+	}
+	return strings.Count(v, `"`)%2 == 1 || strings.Count(v, "(") != strings.Count(v, ")")
+}
+
+// quotesNudge is what to tell the operator instead of a gui type whose text the shell would hand over other than as
+// written, or "". Found live (2026-10-19): gui type "=IF(LOWER(TRIM(D2))=""maharashtra"",E2*9%,0)" reached the sheet
+// as =IF(LOWER(TRIM(D2))=maharashtra,E2*9%,0) (every row #NAME?), and gui type "=IF(D2="NOT FOUND","",C2*D2)" as
+// =IF(D2=NOT FOUND,,C2*D2) (FALSE in real Excel).
+func quotesNudge(command string) string {
+	for _, seg := range shellSegments(command) {
+		words := shellWords(seg.Text)
+		if len(words) < 2 || words[0] != "gui" || words[1] != "type" || seg.HasStdin {
+			continue
+		}
+		if shellExpands(seg.Text) {
+			return "Not run: the text holds $ before a letter ($A$2), which the shell replaces with nothing inside " +
+				"\"...\" - the app would get Sheet2!:3 for Sheet2!$A$2:$C$9. Give the text verbatim on stdin, with the " +
+				"end word quoted so nothing in it is expanded:\ngui type REF - <<'EOF'\n=VLOOKUP(B2,Sheet2!$A$2:$C$9,3,FALSE)\nEOF"
+		}
+		bad := mixedQuoting(seg.Text)
+		for _, v := range segmentValues(seg) {
+			bad = bad || unbalancedFormula(v)
+		}
+		if bad {
+			return "Not run: a quote inside the text of a gui type ends or starts the shell's quoting, so the app would " +
+				"get the text without those quotes (a formula comparing with \"text\" would break). Give any text that " +
+				"holds quotes - every formula - verbatim on stdin, one gui type each, the quotes as the app should get " +
+				"them and a real Tab between cells:\ngui type REF - <<'EOF'\n=IF(D2=\"text\",\"\",C2*D2)\nEOF"
+		}
+	}
+	return ""
 }
 
 // searchFieldRe names a field typed into to find something - a page, a
@@ -174,29 +692,62 @@ var refRe = regexp.MustCompile(`^e[0-9]+$`)
 // groundingNudge is what to tell the operator instead of running command, or
 // "" when every value it would type can be traced.
 func groundingNudge(st *operatorState, command string) string {
-	values := typedValues(command)
-	if len(values) == 0 || typesIntoSearch(st, command) {
-		return ""
+	nudge, _ := groundingCheck(st, command)
+	return nudge
+}
+
+// groundingCheck is groundingNudge with the values it could not trace, as typed (for a question a person can answer).
+func groundingCheck(st *operatorState, command string) (string, []string) {
+	// Each simple command of a chain on its own: one typing into a search box excuses only itself.
+	values := typedValuesExcept(command, func(segment string) bool { return typesIntoSearch(st, segment) })
+	if len(values) == 0 {
+		return "", nil
 	}
 
-	var unread []string
-	for _, doc := range requestDocuments(st.Request) {
-		if !readBefore(st.Commands, doc) {
-			unread = append(unread, doc)
+	secrets := secretValues(st, command)
+	// The sources not read yet: files the request names or brings that exist, that it does not ask to be made, and
+	// that no command has touched by name (a copy of the same file elsewhere counts). Found live (2026-10-20, P2's
+	// portal stage): a deliverable still to make and the inbox copies of files read in the work folder were demanded,
+	// and a value the chats gave was refused for them.
+	unread := unreadSources(st)
+	// A filler (9999999999, test, n/a, name@example.com) is refused whatever else was read - pictures included, which
+	// otherwise leave the words untraced. Found live (2026-10-20, P4): after looking at ID pictures, a joiner was
+	// onboarded with phone 9999999999; the attached tracker had her number.
+	var filler []string
+	for _, v := range values {
+		if looksFiller(v) && !inSeen(st.Seen, v) {
+			filler = append(filler, v)
 		}
 	}
-	if len(unread) > 0 {
-		return fmt.Sprintf("Not run: the request names %s, and you have not read it. Every value you type must come "+
-			"from it. Read it first (office read %s), then type what it says.", strings.Join(unread, ", "), unread[0])
+	if len(filler) > 0 {
+		return fmt.Sprintf("Not run: %s looks invented - a filler, not a value read from any source. Never type a value "+
+				"you did not read from a source or the person: find the real one (the request's input files, what earlier "+
+				"steps made) and give it in the format the field accepts - or ask, or leave an optional field empty.", quotedList(maskSecrets(filler, secrets))),
+			maskSecrets(filler, secrets)
 	}
-
 	if st.ShownPages {
-		return "" // read from a picture: the words are not text to search
+		// Read from pictures: the words are not text to search. Only an unread source still holds the typing back.
+		if len(unread) == 0 {
+			return "", nil
+		}
+		var waiting []string
+		requestText := normalise(st.Request)
+		for _, v := range values {
+			// (A word, not a bare number: "50" is in many requests and may be a document's figure.)
+			whole := regexp.MustCompile(`(?:^|[\s(,;:"'])` + regexp.QuoteMeta(normalise(v)) + `(?:$|[\s),;:."'])`)
+			if len(strings.TrimSpace(v)) < 3 || !letterRe.MatchString(v) || !whole.MatchString(requestText) {
+				waiting = append(waiting, v)
+			}
+		}
+		if len(waiting) == 0 {
+			return "", nil
+		}
+		return unreadNudge(unread), maskSecrets(waiting, secrets)
 	}
 	seen := normalise(st.Seen)
 	var numbers map[string]bool
 	var dates *dateSet
-	var untraced []string
+	var untraced, bare []string
 	authoring := authoringRe.MatchString(st.Request)
 	for _, v := range values {
 		if strings.Contains(seen, normalise(v)) || strings.Contains(seen, normalise(withoutNewlineMarks(v))) {
@@ -227,13 +778,16 @@ func groundingNudge(st *operatorState, command string) string {
 				continue
 			}
 		}
-		if literals, ok := formulaLiterals(v); ok {
+		if literals, texts, ok := formulaLiterals(v); ok {
 			if numbers == nil {
 				numbers = numbersIn(st.Seen)
 			}
 			traced := true
 			for _, n := range literals {
 				traced = traced && numbers[n]
+			}
+			for _, t := range texts {
+				traced = traced && strings.Contains(seen, normalise(t))
 			}
 			if traced {
 				continue
@@ -250,15 +804,36 @@ func groundingNudge(st *operatorState, command string) string {
 		if pathTraced(v, seen) || fileTypeTraced(v, seen) || cellPlaceRe.MatchString(strings.TrimSpace(v)) {
 			continue
 		}
-		untraced = append(untraced, fmt.Sprintf("%q", v))
+		if partsTraced(v, seen) {
+			continue
+		}
+		if secrets[v] {
+			untraced = append(untraced, secretShown)
+		} else {
+			untraced = append(untraced, fmt.Sprintf("%q", v))
+		}
+		bare = append(bare, v)
 	}
+	bare = maskSecrets(bare, secrets)
 	if len(untraced) == 0 {
-		return capitalsNudge(st.Seen, values)
+		if nudge := capitalsNudge(st.Seen, values); nudge != "" {
+			return nudge, maskSecrets(values, secrets)
+		}
+		return "", nil
+	}
+	if len(unread) > 0 {
+		// A value traced nowhere, with sources still unread: read them first (a value something read already gives
+		// was never held back for them - the request's sign-in, a date a chat gave).
+		return unreadNudge(unread), bare
 	}
 	return fmt.Sprintf("Not run: %s appear nowhere in the request or in anything a command has shown you, so they "+
-		"would be guesses. Find each value in the document or the page it comes from and use it exactly as written "+
-		"there. A date may be typed in the format its field takes. A field the request gives no value for is left as the app has it (Enter past it) - nothing has to be typed there. If you converted one otherwise (a unit), or it cannot be found, ask with HELP instead.",
-		strings.Join(untraced, ", "))
+		"would be guesses. This is only about where the text you typed comes from - it says nothing about whether "+
+		"the item or record exists. Find each value in the document or the page it comes from and use it exactly as "+
+		"written there; for a list or drop-down, type the code alone or pick the app's own option (gui select REF "+
+		"\"option\" with the option as gui observe lists it). A date may be typed in the format its field takes. A "+
+		"field the request gives no value for is left as the app has it (Enter past it) - nothing has to be typed "+
+		"there. If you converted one otherwise (a unit), or it cannot be found, ask with HELP instead.",
+		strings.Join(untraced, ", ")), bare
 }
 
 var (
@@ -272,8 +847,161 @@ var (
 // filePathRe is a typed value that is a file's path: folders, then a name with an extension.
 var filePathRe = regexp.MustCompile(`^(~|[A-Za-z]:)?[\\/]?(?:[^\\/\n]+[\\/])+[^\\/\n]+\.[A-Za-z0-9]{1,5}$`)
 
-// workFolders are the places a request's "my work folder" means, written as a typed path would start.
-var workFolders = []string{"/home/headless/work/", "~/work/"}
+// workFolders are the places a request's "my work folder" means, written as a typed path would start - and the shared
+// folder's place on this desktop, where a file the request names under the person's own folder is.
+// (Compared in lower case, so written so.)
+var workFolders = []string{"/home/headless/work/", "~/work/", strings.ToLower(sharedLinkPath) + "/"}
+
+// sharedLinkPath is where this desktop sees the one folder of the person's computer it shares (the agent links it).
+const sharedLinkPath = "/home/headless/PC"
+
+// sharedFolderHost is the folder this desktop shares, as the person writes it on their computer, or "" when it has
+// none (the control plane tells the agent, and the agent's environment is soul's).
+func sharedFolderHost() string { return strings.TrimSpace(os.Getenv("DECURIX_SHARED_FOLDER")) }
+
+// sharedRule is the one line the operator's contract gains when this desktop shares a folder (see sharedFolderHost).
+func sharedRule(host string) string {
+	sep := `\`
+	if !strings.Contains(host, `\`) {
+		sep = "/"
+	}
+	return "- The person's shared folder, " + host + " on their computer, is also at " + sharedLinkPath + " on this desktop: a file " +
+		"they name under it is at the same place there (" + host + sep + "x.xlsx is " + sharedLinkPath + "/x.xlsx). Read it, and " +
+		"make your results in it, with your own tools (office, python) - never by typing them into one of their apps a key " +
+		"at a time. Their computer's own apps open the same files (the named-app and source-file rules above say how). " +
+		"Nothing else of their computer is reachable.\n"
+}
+
+// windowTitleRe is a window's title as gui commands report it: `Opened "Document1 - App"`, `in "App - Chromium"`,
+// `active window is now "..."`, `window "..." opened`, `Active window: "..."`.
+var windowTitleRe = regexp.MustCompile(`(?:Opened|\bin|active window is now|Active window:|window)\s+"([^"\n]{1,160})"`)
+
+// namedAppWindow reports whether a gui command that worked showed a window of an app the request names to work in: a
+// window whose title has that app's name as a word. Another app opened in its place (a different word processor for
+// the one named) is not it. Found live (2026-10-19): asked to write letters "in Word (the Word app on your desktop)" on a
+// desktop with no such app, the worker opened another word processor, and the check of "the app was opened" took any
+// gui command for it.
+func namedAppWindow(request, command, output string) bool {
+	if !guiCommandRe.MatchString(command) {
+		return false
+	}
+	apps := atomizer.AppsFor(request)
+	if len(apps) == 0 {
+		return false
+	}
+	for _, m := range windowTitleRe.FindAllStringSubmatch(output, -1) {
+		for _, app := range apps {
+			if regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(app) + `\b`).MatchString(m[1]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// guiOpenRe is a gui open command (the app or file it names follows).
+var guiOpenRe = regexp.MustCompile(`(?i)^\s*gui\s+open\b`)
+
+// appOpenAttempts says, in one or two sentences, what was done to open `app`: each gui open that named it with what it
+// answered, or else what was opened instead - never a guess. Found live (round 5 P4, 2026-10-20): "I could not open
+// word here (it may not be one of this desktop's apps)" on a desktop that had Word (Host); the worker had never tried
+// it - it had opened the .docx with gui open FILE, which takes office files to LibreOffice.
+func appOpenAttempts(st *operatorState, app string) string {
+	nameRe := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(app) + `\b`)
+	var named, other []string
+	for _, o := range st.Opens {
+		command := o
+		if i := strings.Index(o, " -> "); i >= 0 {
+			command = o[:i]
+		}
+		if nameRe.MatchString(command) {
+			named = append(named, o)
+		} else {
+			other = append(other, o)
+		}
+	}
+	if len(named) > 0 {
+		if len(named) > 3 {
+			named = named[len(named)-3:]
+		}
+		return "I tried to open " + app + " and it did not open: " + strings.Join(named, "; ") + "."
+	}
+	if len(other) > 0 {
+		return "I did not open " + app + " itself - I opened " + other[len(other)-1] + " instead, and that is not " + app + "."
+	}
+	return "I did not open " + app + " at all."
+}
+
+// sharedAppUntouchedNudge is what to tell the operator instead of taking a DONE, on a desktop with a shared folder, for
+// a request that names an app to work in when no window of that app was ever opened - the result made with its own
+// tools, or in another app. "" when nothing is wrong (or the request names no app, or there is no shared folder).
+func sharedAppUntouchedNudge(st *operatorState) string {
+	host := sharedFolderHost()
+	apps := atomizer.AppsFor(st.Request)
+	if len(apps) == 0 || st.NamedAppOpened {
+		return ""
+	}
+	worked := false
+	for _, c := range st.Worked {
+		worked = worked || guiCommandRe.MatchString(c) || madeBehindRe.MatchString(c)
+	}
+	if !worked {
+		return ""
+	}
+	app := apps[0]
+	where := "open the file in it (gui open FILE)"
+	if host != "" {
+		where = "open the file in it by its place on their computer (" + host + " and the file's name)"
+	}
+	return "Not taken: the request asks for this to be done in " + app + ", and no window of " + app + " was opened - " +
+		"the result was made with your own tools, or in another app. Open " + app + " (gui open with its name as this " +
+		"desktop lists it, an app of the person's computer included), " + where + ", look at it there, do whatever only " +
+		"that app does, check it, and save it from the app (Save, keeping its name and format). If " + app + " is not on " +
+		"this desktop, do not use another app in its place: reply HELP saying so.\n\nReply now with exactly:\nCOMMAND:\ngui observe"
+}
+
+// madeWithTools reports whether one of the commands that worked made a file with tools (office create/update, a
+// script that saves one).
+func madeWithTools(st *operatorState) bool {
+	for _, c := range st.Worked {
+		if madeBehindRe.MatchString(c) {
+			return true
+		}
+	}
+	return false
+}
+
+// savedInAppRe is a gui command that saves from the app in front: its keys (Ctrl+S, F12 for Save As) or a click on
+// its Save / Save As control, as gui reports it.
+var (
+	savedInAppKeyRe = regexp.MustCompile(`(?i)^\s*gui\s+key\s+(?:ctrl\+s|ctrl\+shift\+s|f12)\b`)
+	savedInAppOutRe = regexp.MustCompile(`(?i)\bclick(?:ed)?\s+[\w ]{0,20}"Save(?: As)?"`)
+)
+
+// savedInApp reports whether a gui command that worked saved from the app in front.
+func savedInApp(command, output string) bool {
+	return guiCommandRe.MatchString(command) && (savedInAppKeyRe.MatchString(command) || savedInAppOutRe.MatchString(output))
+}
+
+// sharedAppUnsavedNudge is what to tell the operator instead of taking a DONE when, on a desktop with a shared
+// folder, the content was made with tools in the folder and the named app opened, but nothing was saved from the app:
+// the app has to have handled the file. "" when nothing is wrong.
+func sharedAppUnsavedNudge(st *operatorState) string {
+	host := sharedFolderHost()
+	apps := atomizer.AppsFor(st.Request)
+	if len(apps) == 0 || !st.NamedAppOpened || st.SavedInApp || !madeWithTools(st) {
+		return ""
+	}
+	app := apps[0]
+	place := "the file"
+	if host != "" {
+		place = "by its place on the person's computer, " + host + " and the file's name"
+	}
+	return "Not taken yet: the file was made with your tools and " + app + " was opened, but nothing was saved from " +
+		app + ". With the file open there (" + place + "), do " +
+		"what only " + app + " does if the request asks for it, check it on the screen, and save it from " + app +
+		" (Save, keeping its name and format). Then report.\n\nReply now with exactly:\nCOMMAND:\ngui observe"
+}
 
 // pathTraced reports whether a typed file path is one the task gave: its file name is in the request or what was
 // read, and its folder is the work folder (or below it) or a folder that was itself seen. Found live (2026-10-15):
@@ -299,7 +1027,13 @@ func pathTraced(v, seen string) bool {
 
 // cellPlaceRe is a spreadsheet cell or range typed to go there (Go To, the Name Box): a place, not a value. Found live
 // (2026-10-15): "A20" typed into real Excel's Go To was refused as a guess, and the worker asked the person.
-var cellPlaceRe = regexp.MustCompile(`^\$?[A-Za-z]{1,3}\$?[0-9]{1,7}(?::\$?[A-Za-z]{1,3}\$?[0-9]{1,7})?$`)
+// A sheet's name before it ("Prices!$A:$B", "'Q3 data'!B2") and whole columns or rows ("$A:$B", "2:13") are places too:
+// found live (2026-10-19), "Prices!$A:$B" typed into a function's argument box was refused as a value never read.
+var cellPlaceRe = regexp.MustCompile(`^(?:(?:'[^']+'|[A-Za-z_][\w.]*)!)?(?:\$?[A-Za-z]{1,3}\$?[0-9]{1,7}(?::\$?[A-Za-z]{1,3}\$?[0-9]{1,7})?|\$?[A-Za-z]{1,3}:\$?[A-Za-z]{1,3}|\$?[0-9]{1,7}:\$?[0-9]{1,7})$`)
+
+// functionLedRe is text that starts with a spreadsheet function call - VLOOKUP(, IFERROR(, SUM( - a formula without
+// its "=".
+var functionLedRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9.]*\(.*\)$`)
 
 // fileTypeExtRe finds the extensions a file-type entry names: "Excel Workbook (*.xlsx)", "PDF (*.pdf)".
 var fileTypeExtRe = regexp.MustCompile(`\*\.([A-Za-z0-9]{1,5})\b`)
@@ -330,26 +1064,117 @@ var (
 // nowhere", and went on to close the spreadsheet. What a formula may not
 // carry is a figure nobody has seen: its literal numbers (not cell
 // references) are returned to be traced like any typed number, and a formula
-// holding quoted text is not excused at all.
-func formulaLiterals(v string) ([]string, bool) {
+// holding quoted text has that text traced like any typed text (texts). Found live (2026-10-19): asked for "CGST 9% for
+// a customer in Maharashtra", =IF(TRIM(D2)="maharashtra",E2*9%,0) was refused as a value "never read" - every quoted
+// word made the whole formula a guess - and the worker was pushed off formulas onto typing figures. 0 and 1 are the
+// formula's own structure (no result, one whole), never a figure taken from a document.
+func formulaLiterals(v string) (numbers, texts []string, ok bool) {
 	v = strings.TrimSpace(withoutNewlineMarks(v))
-	if !strings.HasPrefix(v, "=") || len(v) < 2 || formulaQuotedRe.MatchString(v) || !formulaAllowedRe.MatchString(v) {
-		return nil, false
+	// A formula whose "=" went separately (gui key "=", then the rest typed) is still a formula: found live
+	// (2026-10-19), IFERROR(VLOOKUP(B2,Prices!$A:$B,2,FALSE),"NOT FOUND") was refused as a value never read, and the
+	// person was asked where "FALSE" came from.
+	if !strings.HasPrefix(v, "=") && functionLedRe.MatchString(v) {
+		v = "=" + v
 	}
-	var out []string
-	for _, n := range formulaNumberRe.FindAllString(cellRefRe.ReplaceAllString(v, " "), -1) {
-		if c, ok := canonicalNumber(n); ok {
-			out = append(out, c)
+	// "=@IFERROR(...)" is how a spreadsheet shows a formula back (implicit intersection): the same formula.
+	if strings.HasPrefix(v, "=@") {
+		v = "=" + v[2:]
+	}
+	if !strings.HasPrefix(v, "=") || len(v) < 2 {
+		return nil, nil, false
+	}
+	for _, q := range formulaQuotedRe.FindAllString(v, -1) {
+		if t := strings.TrimSpace(q[1 : len(q)-1]); t != "" {
+			texts = append(texts, t)
 		}
 	}
-	return out, true
+	bare := formulaQuotedRe.ReplaceAllString(v, `0`)
+	if !formulaAllowedRe.MatchString(bare) {
+		return nil, nil, false
+	}
+	for _, n := range formulaNumberRe.FindAllString(cellRefRe.ReplaceAllString(bare, " "), -1) {
+		if c, ok := canonicalNumber(n); ok && c != "0" && c != "1" {
+			numbers = append(numbers, c)
+		}
+	}
+	return numbers, texts, true
 }
 
 // withoutNewlineMarks is a typed value without the \n that gui type reads as
 // "press Enter" - unless the value is a Windows path, where \n is the start
 // of a folder's name.
 func withoutNewlineMarks(v string) string {
-	return strings.TrimSpace(strings.ReplaceAll(v, `\n`, ""))
+	return strings.TrimSpace(outsidePaths(v, func(part string) string { return strings.ReplaceAll(part, `\n`, "") }))
+}
+
+var (
+	// pathStartRe is where a Windows path begins: a drive (C:\), a share (\\host\) or an environment variable (%VAR%\).
+	pathStartRe = regexp.MustCompile(`[A-Za-z]:\\|\\\\[\w.$-]+\\|%[A-Za-z_][A-Za-z0-9_]*%\\`)
+	// pathFileRe ends a path as a file: after one of these, \n or \t is an escape again ("C:\a\b.csv\nTotal").
+	pathFileRe = regexp.MustCompile(`(?i)\.(?:xlsx|xlsm|xls|ods|csv|tsv|txt|md|log|json|xml|html?|docx?|odt|rtf|pptx?|odp|pdf|png|jpe?g|gif|bmp|tiff?|webp|svg|zip|eml|msg|py|sh|ini|cfg|bak|tmp)$`)
+)
+
+// notInAName is what cannot be in a Windows file name, and so ends a stretch of path.
+const notInAName = "\\/:*?\"<>|\r\n\t"
+
+// pathSpans is where path-looking text stands in s, as [start, end) byte pairs: from a drive, share or %VAR% to the
+// end of its last folder or file - spaces inside names included - or, when a file name (a known extension) is followed
+// by a \n or \t escape, to the end of that file. Backslashes inside are literal. The Python side's cli.path_spans is
+// the same rule. Found live (2026-10-19): "C:\Users\me\Documents\Decurix demo\receivables.xlsx" was cut at its space
+// and the rest, starting \r, was read as an escape.
+func pathSpans(s string) [][2]int {
+	var spans [][2]int
+	pos := 0
+	for pos < len(s) {
+		loc := pathStartRe.FindStringIndex(s[pos:])
+		if loc == nil {
+			break
+		}
+		begin, i := pos+loc[0], pos+loc[1]
+		if begin > 0 && isASCIIAlnum(s[begin-1]) && !(begin >= 2 && (s[begin-2:begin] == `\n` || s[begin-2:begin] == `\t`)) {
+			pos = begin + 1
+			continue
+		}
+		for {
+			j := len(s)
+			if k := strings.IndexAny(s[i:], notInAName); k >= 0 {
+				j = i + k
+			}
+			if j < len(s) && s[j] == '\\' {
+				if j+1 < len(s) && (s[j+1] == 'n' || s[j+1] == 't') && pathFileRe.MatchString(strings.TrimRight(s[i:j], " ")) {
+					i = j
+					break
+				}
+				i = j + 1
+				continue
+			}
+			i = j
+			break
+		}
+		spans = append(spans, [2]int{begin, i})
+		pos = i
+		if pos <= begin {
+			pos = begin + 1
+		}
+	}
+	return spans
+}
+
+func isASCIIAlnum(b byte) bool {
+	return b >= '0' && b <= '9' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
+}
+
+// outsidePaths is s with change applied to every stretch that is not path-looking text.
+func outsidePaths(s string, change func(string) string) string {
+	var b strings.Builder
+	last := 0
+	for _, span := range pathSpans(s) {
+		b.WriteString(change(s[last:span[0]]))
+		b.WriteString(s[span[0]:span[1]])
+		last = span[1]
+	}
+	b.WriteString(change(s[last:]))
+	return b.String()
 }
 
 // capitalsNudge asks for a value typed in capitals to be typed the way the
@@ -619,46 +1444,9 @@ var scripts = []*unicode.RangeTable{unicode.Thai, unicode.Han, unicode.Hiragana,
 	unicode.Telugu, unicode.Greek, unicode.Georgian, unicode.Armenian, unicode.Ethiopic, unicode.Khmer, unicode.Lao,
 	unicode.Myanmar, unicode.Sinhala, unicode.Gujarati, unicode.Gurmukhi, unicode.Kannada, unicode.Malayalam}
 
-// workInAppRe is a request that says which app the work is done in: "in Excel", "using PowerPoint", "built in
-// Word", "open it in Photoshop".
-var workInAppRe = regexp.MustCompile(`(?i)\b(?:in|use|using|with|on|into)\s+(?:microsoft\s+|libreoffice\s+|adobe\s+)?(excel|calc|powerpoint|impress|word|writer|photoshop|gimp|illustrator|inkscape)\b`)
-
-// appFiles is the kind of file each named app makes.
-var appFiles = map[string]string{
-	"excel": `xlsx|xlsm|xls|ods|csv`, "calc": `xlsx|xlsm|xls|ods|csv`,
-	"powerpoint": `pptx|ppt|odp`, "impress": `pptx|ppt|odp`,
-	"word": `docx|doc|odt|pdf|rtf`, "writer": `docx|doc|odt|pdf|rtf`,
-	"photoshop": `jpe?g|png|gif|webp|tiff?|bmp|xcf`, "gimp": `jpe?g|png|gif|webp|tiff?|bmp|xcf`,
-	"illustrator": `svg|pdf|png`, "inkscape": `svg|pdf|png`,
-}
-
 // madeBehindRe is a command that writes such a file without the app: office's own create/update, a script that
 // saves a workbook, deck, document or picture, a headless conversion, ImageMagick.
 var madeBehindRe = regexp.MustCompile(`(?is)\boffice\s+(?:create|update)\b|\.save\(|\bsoffice\b[^\n]*--convert-to|\b(?:convert|mogrify|magick)\s`)
-
-// behindTheApp is what to tell the operator instead of running a command that makes the deliverable without the
-// app the request named, or "" when the command is not that. Found live (2026-10-15): asked for a deck "built in
-// PowerPoint", the operator worked Impress for five minutes and then wrote the deck with python-pptx - the file
-// was right and nothing of it was done in the app the person asked for.
-func behindTheApp(st *operatorState, command string) string {
-	if !madeBehindRe.MatchString(command) {
-		return ""
-	}
-	for _, m := range workInAppRe.FindAllStringSubmatch(st.Request, -1) {
-		app := strings.ToLower(m[1])
-		if regexp.MustCompile(`(?i)\.(?:` + appFiles[app] + `)\b`).MatchString(command) {
-			name := strings.ToUpper(app[:1]) + app[1:]
-			return fmt.Sprintf("Not run: the request asks for this to be done in %s, on the screen. Make and save it "+
-				"there with gui (gui open %s, or gui open FILE to open a file in its app); office read and scripts may "+
-				"only read sources and check the result. If something in the app blocks you, say what it is.", name, app)
-		}
-	}
-	return ""
-}
-
-// maxAppNudges bounds how often a command making the deliverable behind the named app is sent back before the
-// person is asked whether to make it that way.
-const maxAppNudges = 2
 
 // strayScript is what to tell the operator instead of running a command whose typed text uses a writing system
 // that nothing in the task - the request, what commands have shown - uses, or "" when there is none.

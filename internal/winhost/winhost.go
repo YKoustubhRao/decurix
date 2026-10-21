@@ -26,6 +26,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -54,6 +55,8 @@ type Update struct {
 // Timings, variables so tests can shorten them.
 var (
 	requestTimeout = 20 * time.Second
+	// checkHelperTries is how many helpers in a row may die without answering a single check before Check gives up.
+	checkHelperTries = 3
 	// A launch answers once the program has been started, and the first launch of a browser for a VM first brings the
 	// person's profile over into that VM's private one (bridge.ps1's Initialize-PrivateBrowserProfile) - hundreds of MB,
 	// a minute or more on a busy host. Timed out at requestTimeout, the helper was killed mid-copy, the copy never
@@ -80,6 +83,9 @@ var (
 	// been uninstalled must not be launched in a tight loop.
 	keepRetryMin = 30 * time.Second
 	keepRetryMax = 30 * time.Minute
+	// A kept app that closes straight away this many times running is not tried again (a program that cannot run on a
+	// private desktop): until it is kept again - its desktop started again, or the app copied again.
+	keepGiveUpAfter = 3
 )
 
 var unsafeName = regexp.MustCompile(`[^a-zA-Z0-9_]`)
@@ -127,12 +133,22 @@ type Manager struct {
 	stopping map[string]*Session
 	// kept are the apps kept running and ready (Keep), by session id.
 	kept map[string]*keptApp
+	// OnGiveUp, when set, is told about a kept app that is no longer tried (keepGiveUpAfter): its VM, its session id,
+	// and why, in plain words. Set it before the first Keep.
+	OnGiveUp func(desktop, id, reason string)
+	// Reap, when set, is called by a session's Stop, after the helper was asked to end and its host command was
+	// ended, with the host process ids the helper reported (its own, and the app it launched; 0 when unknown): it ends
+	// what of those is still running on the host, and nothing else. Found live (2026-10-20): /api/host-gui/stop
+	// answered 204 and left the helper's PowerShell and the WINWORD.EXE it started running on the person's computer -
+	// a Windows program started through WSL outlives the Linux side that started it. Set it before the first Start.
+	Reap func(helperPID, appPID int)
 }
 
 // keptApp is an app kept open on its private desktop until Forget, so that opening it in a VM shows it at once.
 type keptApp struct {
 	desktop, target, args string
 	stop                  chan struct{}
+	gaveUp                bool // keepRunning stopped trying it (keepGiveUpAfter): a Keep starts it again
 }
 
 // resolvedProgram is what the helper's check worked out for a target.
@@ -216,6 +232,41 @@ func (m *Manager) helper(ctx context.Context) (*Session, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// parsePID is the process id in a helper's answer: "OK 4242" (pid) or "OK pid=4242 ..." (launch); 0 when there is none.
+func parsePID(resp string) int {
+	f := strings.Fields(resp)
+	if len(f) < 2 || f[0] != "OK" {
+		return 0
+	}
+	v := strings.TrimPrefix(f[1], "pid=")
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
+}
+
+// HostPIDs lists the host process ids of the helpers this manager runs now (sessions, the spare, and those being
+// stopped): what a sweep of the host must leave alone.
+func (m *Manager) HostPIDs() []int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []int
+	add := func(s *Session) {
+		if s != nil && s.hostPID > 0 {
+			out = append(out, s.hostPID)
+		}
+	}
+	for _, s := range m.sessions {
+		add(s)
+	}
+	for _, s := range m.stopping {
+		add(s)
+	}
+	add(m.spare)
+	return out
 }
 
 // keepWarm puts an unused helper back to wait for the next app, or ends it if one is already waiting.
@@ -346,11 +397,19 @@ func (m *Manager) launch(ctx context.Context, id, target, args string) (*Session
 		}
 	}
 	s.holdWatching(true) // the picture is captured from the moment the window exists, before anybody has connected
+	// Which host process the helper is, so its Stop can end that tree and nothing else (an older script does not say: 0).
+	if resp, err := s.Do("pid"); err == nil {
+		s.hostPID = parsePID(resp)
+	}
+	s.reaper = m.Reap
 
 	resp, err := m.launchLine(s, target, args)
 	if err != nil {
 		s.Stop()
 		return nil, err
+	}
+	if strings.HasPrefix(resp, "OK") {
+		s.appPID = parsePID(resp) // the app this helper started: its Stop ends it if the helper's ending did not
 	}
 	if !strings.HasPrefix(resp, "OK") {
 		// Refused before anything ran (a Store app, a missing program): the helper is as clean as it was, and now knows
@@ -399,8 +458,9 @@ func firstErr(errs ...error) error {
 
 // Check asks the host - without starting anything - which of targets Start would be able to run on a private desktop,
 // using the same decision the helper's launch makes. The result maps each target it got an answer for to why it cannot
-// run ("" when it can). A target the line protocol cannot carry is answered here, with no round trip. If the helper
-// stops answering partway, what was learned so far is returned along with the error, so a caller can keep it. The
+// run ("" when it can). A target the line protocol cannot carry is answered here, with no round trip. A helper that
+// stops answering partway is replaced and the rest asked again; if helpers keep dying without answering, what was
+// learned so far is returned along with the error, so a caller can keep it. The
 // helper it used stays warm, and what it worked out makes the launch that follows instant.
 func (m *Manager) Check(ctx context.Context, targets []Target) (map[Target]string, error) {
 	verdicts := make(map[Target]string, len(targets))
@@ -420,7 +480,14 @@ func (m *Manager) Check(ctx context.Context, targets []Target) (map[Target]strin
 	if err != nil {
 		return verdicts, err
 	}
-	for _, t := range ask {
+	// A helper that dies partway (found live 2026-10-20: right after a control-plane start, with kept apps starting
+	// alongside, one stopped answering after 56 of 119 checks) is replaced and the rest asked again: its death says
+	// nothing about the targets it never got to. Only helpers that die without answering anything count against the
+	// limit, so a host that cannot keep one alive still ends in an error.
+	barren := 0
+	answered := false
+	for i := 0; i < len(ask); i++ {
+		t := ask[i]
 		if err := ctx.Err(); err != nil {
 			h.Stop()
 			return verdicts, err
@@ -428,8 +495,21 @@ func (m *Manager) Check(ctx context.Context, targets []Target) (map[Target]strin
 		resp, err := h.Do("check\t" + t.Target + "\t" + t.Args)
 		if err != nil {
 			h.Stop()
-			return verdicts, err
+			if !answered {
+				barren++
+			}
+			if barren >= checkHelperTries || ctx.Err() != nil {
+				return verdicts, err
+			}
+			log.Printf("winhost: the check helper stopped after %d of %d targets (%v); asking the rest on a new one", i, len(ask), err)
+			if h, err = m.helper(ctx); err != nil {
+				return verdicts, err
+			}
+			answered = false
+			i-- // ask this target again
+			continue
 		}
+		answered = true
 		if strings.HasPrefix(resp, "OK") {
 			verdicts[t] = ""
 			// Six fields from a helper that predates the launcher field, seven since.
@@ -524,11 +604,12 @@ func (m *Manager) Keep(desktop, id, target, args string) {
 		return
 	}
 	if k, ok := m.kept[id]; ok {
-		if k.target == target && k.args == args {
+		if k.target == target && k.args == args && !k.gaveUp {
 			m.mu.Unlock()
 			return
 		}
-		close(k.stop) // copied again as another program: keep that one instead
+		// Copied again as another program, or kept again after it was given up on: keep this one instead.
+		close(k.stop)
 	}
 	k := &keptApp{desktop: desktop, target: target, args: args, stop: make(chan struct{})}
 	m.kept[id] = k
@@ -550,7 +631,21 @@ func (m *Manager) Forget(id string) {
 	}
 }
 
-// ForgetDesktop forgets every app kept ready for one VM, for when it is deleted.
+// KeptFor lists the session ids of the apps kept ready for one VM (those given up on included), sorted.
+func (m *Manager) KeptFor(desktop string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var ids []string
+	for id, k := range m.kept {
+		if k.desktop == desktop {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// ForgetDesktop forgets every app kept ready for one VM, for when it is deleted or stopped.
 func (m *Manager) ForgetDesktop(desktop string) {
 	m.mu.Lock()
 	var ids []string
@@ -565,9 +660,14 @@ func (m *Manager) ForgetDesktop(desktop string) {
 	}
 }
 
-// keepRunning is Keep's loop for one app: start it, wait for it to end, start it again.
+// closedAtOnce is the error a launch gives for an app that exits before it ever shows a window.
+const closedAtOnce = "closed straight away"
+
+// keepRunning is Keep's loop for one app: start it, wait for it to end, start it again. An app that closes straight away
+// keepGiveUpAfter times running is given up on (OnGiveUp) until it is kept again.
 func (m *Manager) keepRunning(id string, k *keptApp) {
 	var backoff time.Duration
+	closedRunning := 0
 	wait := func(d time.Duration) bool {
 		t := time.NewTimer(d)
 		defer t.Stop()
@@ -594,6 +694,25 @@ func (m *Manager) keepRunning(id string, k *keptApp) {
 			if closed {
 				return
 			}
+			if strings.Contains(err.Error(), closedAtOnce) {
+				closedRunning++
+			} else {
+				closedRunning = 0
+			}
+			if closedRunning >= keepGiveUpAfter {
+				m.mu.Lock()
+				if m.kept[id] == k {
+					k.gaveUp = true
+				}
+				onGiveUp := m.OnGiveUp
+				m.mu.Unlock()
+				log.Printf("host apps: not keeping %s ready any more: it closed straight away %d times (%v)", id, closedRunning, err)
+				if onGiveUp != nil {
+					onGiveUp(k.desktop, id, fmt.Sprintf("It cannot run here: on this computer it closed straight away each "+
+						"of the %d times it was started, without opening a window.", closedRunning))
+				}
+				return
+			}
 			backoff = min(max(2*backoff, keepRetryMin), keepRetryMax)
 			log.Printf("host apps: could not keep %s ready (trying again in %s): %v", id, backoff, err)
 			if !wait(backoff) {
@@ -602,6 +721,7 @@ func (m *Manager) keepRunning(id string, k *keptApp) {
 			continue
 		}
 		backoff = 0
+		closedRunning = 0
 		s.setKept(true)
 		select {
 		case <-k.stop:
@@ -678,6 +798,11 @@ type Session struct {
 
 	// opens are the opens the helper is doing behind its command loop, by ticket (see open).
 	opens map[string]chan string
+
+	// hostPID is the helper's own process on the host and appPID the app it launched (0 when not known); reap is the
+	// manager's Reap (as reaper), called by Stop with them.
+	hostPID, appPID int
+	reaper          func(helperPID, appPID int)
 }
 
 func newSession(id string, cmd *exec.Cmd) (*Session, error) {
@@ -708,6 +833,8 @@ func newSession(id string, cmd *exec.Cmd) (*Session, error) {
 	go s.read(bufio.NewReaderSize(stdout, 1<<20))
 	go func() {
 		err := cmd.Wait()
+		// The client that ran the helper has exited; the container it ran it in may not have.
+		endHost(cmd)
 		s.fail(fmt.Errorf("host helper ended: %v", err))
 		close(s.done)
 	}()
@@ -1341,5 +1468,22 @@ func (s *Session) Stop() {
 				}
 			}
 		}
+		// Whatever ended it, what runs the helper on the host is ended too: when that is a container started by a
+		// client that has died, the client's exit says nothing about the container, which kept the helper's stdin open
+		// and so the helper alive (found live, 2026-10-20: a dozen of them in three minutes).
+		endHost(s.cmd)
+		// And what it started on the host, by its own process ids: the helper and the app it launched, if either is
+		// still there (Manager.Reap ends only those, after checking they are what they were).
+		if s.reaper != nil && (s.hostPID > 0 || s.appPID > 0) {
+			s.reaper(s.hostPID, s.appPID)
+		}
 	})
+}
+
+// endHost runs a command's Cancel when it has one: for a host hop it removes the hop's container (desktop.HopCommand),
+// for an ordinary command it kills the process. A command that has already finished is left as it is.
+func endHost(cmd *exec.Cmd) {
+	if cmd != nil && cmd.Cancel != nil && cmd.Process != nil {
+		_ = cmd.Cancel()
+	}
 }

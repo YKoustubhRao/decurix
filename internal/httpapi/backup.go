@@ -187,7 +187,7 @@ func addDataDir(tw *tar.Writer, dir string) []string {
 	var problems []string
 	for _, e := range entries {
 		n := e.Name()
-		if !e.Type().IsRegular() || strings.HasPrefix(n, sqlitedb.FileName) {
+		if !e.Type().IsRegular() || strings.HasPrefix(n, sqlitedb.FileName) || n == QualificationOwnerFile {
 			continue
 		}
 		info, err := e.Info()

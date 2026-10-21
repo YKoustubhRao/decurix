@@ -1,7 +1,113 @@
+import hashlib
+import os
 import re
 import urllib.parse
+from pathlib import Path
 
 from decurix_agent.computer import elements as el
+
+
+# ============================================================
+# Secrets a request gives in plain words
+#
+# Found live (2026-10-20, round 5 P2): a request said "user clerk, password Northwind#2026"; a refused typing asked
+# the person 'I was about to type "clerk", "Northwind#2026", ...' - the password in the chat. And every command the
+# worker runs is shown as a step ("Running: gui type e5 ..."). So the secrets a request spells out are remembered at
+# the start of its task - as SHA-256 hashes only, never the text - and every line that reaches the chat, a step, a task
+# record or a recording has any word that is one of them replaced by [withheld].
+# ============================================================
+
+# A secret after its name in a request: "password Northwind#2026", "PIN: 4821", "api key=abc", "token is xyz".
+REQUEST_SECRET = re.compile(
+    r"(?i)\b(?:pass(?:word|code|phrase)|pwd|pin|otp|one[- ]time (?:code|password)|token|api[ _-]?key|secret(?: key)?)"
+    r"\b\s*(?:is\s+|[:=]\s*)?[\"'\u201c\u2018]?([^\s\"'\u201d\u2019,;)\]]{3,200})")
+_WORD = re.compile(r"[^\s\"'\u201c\u201d\u2018\u2019(),;<>\[\]{}=]+")
+_MAX_KEPT = 200
+
+
+def _secrets_file():
+    base = Path(os.environ.get("DECURIX_DIR") or (Path(os.environ.get("HOME", "/home/headless")) / ".decurix"))
+    return base / "withheld-secrets"
+
+
+def _hash(text):
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def request_secrets(text):
+    """The secrets a request's own words give after their names (a password, a PIN, a key): [text]."""
+
+    found = [m.group(1).rstrip(".!?") for m in REQUEST_SECRET.finditer(text or "")]
+    found += [m.group(1) for m in SPOKEN_SECRET.finditer(text or "")]
+    return [s for s in dict.fromkeys(found) if len(s) >= 3 and s.lower() not in {"for", "the", "and", "from", "field"}]
+
+
+def remember_secrets(text):
+    """Keep the hashes of the secrets `text` gives, for withhold_known to find. Never raises."""
+
+    try:
+        hashes = [_hash(s) for s in request_secrets(text)]
+        if not hashes:
+            return
+        path = _secrets_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        kept = [h for h in path.read_text(encoding="utf-8").split() if h] if path.exists() else []
+        kept = list(dict.fromkeys(kept + hashes))[-_MAX_KEPT:]
+        path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+        _known_cache.clear()
+    except Exception:  # noqa: BLE001 - remembering is a safety net, never a failure of the task
+        pass
+
+
+_known_cache = {}
+
+
+def _known():
+    path = _secrets_file()
+    try:
+        stamp = path.stat().st_mtime_ns
+    except OSError:
+        return set()
+    if _known_cache.get("stamp") != stamp:
+        try:
+            _known_cache.update(stamp=stamp, hashes=set(path.read_text(encoding="utf-8").split()))
+        except OSError:
+            return set()
+    return _known_cache.get("hashes", set())
+
+
+def known_secret_in(text):
+    """Whether text holds a word that is one of the request secrets remembered."""
+
+    known = _known()
+    if not known or not text:
+        return False
+    return any(_hash(w) in known or _hash(w.rstrip(".:!?")) in known for w in _WORD.findall(str(text)))
+
+
+def withhold_known(text):
+    """text with every word that is a remembered request secret replaced by [withheld] (and spoken secrets too)."""
+
+    if not text:
+        return text
+    text = withhold_spoken_secrets(str(text))
+    known = _known()
+    if not known:
+        return text
+
+    def hide(match):
+        word = match.group(0)
+        if _hash(word) in known:
+            return "[withheld]"
+        bare = word.rstrip(".:!?")
+        if bare != word and _hash(bare) in known:
+            return "[withheld]" + word[len(bare):]
+        return word
+    return _WORD.sub(hide, text)
 
 
 # ============================================================
@@ -117,6 +223,9 @@ def credential_in(text):
 
     if not text:
         return None
+
+    if known_secret_in(text):
+        return "password the request gave"
 
     for label, pattern in CREDENTIALS:
         if pattern.search(text):

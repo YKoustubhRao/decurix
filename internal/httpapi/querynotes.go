@@ -81,6 +81,10 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		// and said so.
 		Interrupted bool `json:"interrupted"`
 
+		// StillWorking says the desktop is still busy after this reply: an answer to a message a planned run took
+		// mid-run (its receipt) is a reply in the chat, but the run goes on, so the turn stays open (running).
+		StillWorking bool `json:"still_working"`
+
 		// Checked says whether the desktop's final check judged a finished
 		// result (messaging.write_final_reply). Absent from older images,
 		// which leaves it unknown rather than "not checked".
@@ -105,6 +109,12 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 
 	if req.DesktopID == "" {
 		http.Error(w, "desktop_id is required", http.StatusBadRequest)
+		return
+	}
+	// Qualification outcomes are produced by the host verifier, never agent
+	// callbacks. An injected request cannot close or certify an exam task.
+	if strings.HasPrefix(desktop.SanitizeID(req.DesktopID), "readiness-") {
+		jsonStatusError(w, http.StatusForbidden, "Readiness results can only be recorded by the independent runner.")
 		return
 	}
 
@@ -171,19 +181,24 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if chatText != "" {
-		s.Chat.AppendAgentReply(
-			desktopID,
-			taskID,
-			chatKind,
-			chatText,
-		)
+		if req.StillWorking {
+			s.Chat.AppendAgentNote(desktopID, taskID, chatKind, chatText)
+		} else {
+			s.Chat.AppendAgentReply(
+				desktopID,
+				taskID,
+				chatKind,
+				chatText,
+			)
+		}
 	}
 
 	if outcomeKindFor(req.Kind, chatKind) == tasks.OutcomeDone {
 		s.recordFinished(desktopID, req.VMName, taskID, chatText)
 	}
 
-	if s.IdleChecker != nil && outcomeKindFor(req.Kind, chatKind) == tasks.OutcomeDone {
+	// (A reply while the desktop is still working - a planned run's receipt - never speeds up its idle pause.)
+	if s.IdleChecker != nil && !req.StillWorking && outcomeKindFor(req.Kind, chatKind) == tasks.OutcomeDone {
 		s.IdleChecker.FastPauseAfter(desktopID, 15*time.Second)
 	}
 

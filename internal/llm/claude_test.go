@@ -137,6 +137,51 @@ func TestClaudeTranslatesAnOpenAIChatBothWays(t *testing.T) {
 	}
 }
 
+// An agent's turns re-send the same conversation: the system prompt and the end of the last message are marked for
+// Claude's prompt cache, and a cached read is counted as prompt tokens and said as cached ones.
+func TestClaudeIsAskedToCacheThePrefixAndSaysWhatWasCached(t *testing.T) {
+	srv, got, _ := fakeMessagesAPI(t, 200, `{
+		"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5-5",
+		"content":[{"type":"text","text":"COMMAND:\nls"}],"stop_reason":"end_turn",
+		"usage":{"input_tokens":50,"output_tokens":10,"cache_read_input_tokens":9000,"cache_creation_input_tokens":400}}`, nil)
+	c := NewClaude("sk-test", "", "")
+	c.BaseURL = srv.URL
+	body := `{"model":"default","messages":[{"role":"system","content":"You are TheBot."},
+	  {"role":"user","content":"The contract and the task."},{"role":"assistant","content":"COMMAND:\nls"},
+	  {"role":"user","content":"Command execution result: a.txt"}]}`
+	status, answer, _, err := c.Chat(context.Background(), []byte(body))
+	if err != nil || status != 200 {
+		t.Fatalf("Chat = %d %s %v", status, answer, err)
+	}
+	sent := *got
+	sys := sent["system"].([]any)
+	if mustJSON(sys[len(sys)-1]) == "" || !strings.Contains(mustJSON(sys[len(sys)-1]), `"cache_control":{"type":"ephemeral"`) {
+		t.Errorf("system not marked: %s", mustJSON(sys))
+	}
+	msgs := sent["messages"].([]any)
+	last := msgs[len(msgs)-1].(map[string]any)["content"].([]any)
+	if !strings.Contains(mustJSON(last[len(last)-1]), `"cache_control":{"type":"ephemeral"`) {
+		t.Errorf("the last message is not marked: %s", mustJSON(last))
+	}
+	if strings.Count(mustJSON(msgs), "cache_control") != 1 {
+		t.Errorf("only the last block is marked: %s", mustJSON(msgs))
+	}
+	var out struct {
+		Usage struct {
+			PromptTokens int `json:"prompt_tokens"`
+			Details      struct {
+				Cached int `json:"cached_tokens"`
+			} `json:"prompt_tokens_details"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(answer, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Usage.PromptTokens != 9450 || out.Usage.Details.Cached != 9000 {
+		t.Errorf("usage = %+v, want every prompt token counted and the cached ones said", out.Usage)
+	}
+}
+
 func TestClaudePassesARateLimitThroughForTheDesktopToWaitOut(t *testing.T) {
 	srv, _, _ := fakeMessagesAPI(t, 429,
 		`{"type":"error","error":{"type":"rate_limit_error","message":"Number of request tokens has exceeded your per-minute rate limit"}}`,

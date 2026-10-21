@@ -17,8 +17,8 @@ Common tasks
 
 Saving
 - GIMP's Save (Ctrl+S) writes only its own .xcf. A JPEG or PNG is made with File > Export As... (Shift+Ctrl+E): type
-  the whole path with the extension in "Name" (~/work/web/lamp.jpg), press "Export", then "Export" again in the
+  the whole path with the extension in "Name" (~/work/out/image.jpg), press "Export", then "Export" again in the
   quality dialog that follows.
-- A folder that does not exist yet: make it first in the shell (mkdir -p ~/work/web).
+- A folder that does not exist yet: make it first in the shell (mkdir -p ~/work/out).
 - Check each file afterwards: office read FILE says its format and size in pixels.
 - Closing an image that was only exported asks to save the .xcf: "Discard Changes" closes it.

@@ -21,3 +21,30 @@ func TestOperatorContractTeachesMakingAndChangingADeck(t *testing.T) {
 		}
 	}
 }
+
+// Found live (round 5 P6, 2026-10-20, twice): an email with no order number was left "Need order lookup" though the
+// system's order list had the sender's company and the product. The task rules say to find it by what is given.
+func TestOperatorContractFindsARecordByWhatTheMessageGives(t *testing.T) {
+	for _, want := range []string{
+		"when its source gives no reference is found by what the source does give",
+		"search or filter the system's list",
+		"only when several match or none does",
+	} {
+		if !strings.Contains(taskRules, want) {
+			t.Errorf("the operator's task rules do not say %q", want)
+		}
+	}
+}
+
+// Found live (round 5 P1, 2026-10-20): a bill's code wrapped under its row was paired with the next row's rate, and
+// two bills were flagged with GST rate mismatches they did not have.
+func TestOperatorTaskRulesReadAWrappedRowAsItsOwn(t *testing.T) {
+	for _, want := range []string{
+		"a code on such a line belongs to the row above",
+		"that row's figures are its own",
+	} {
+		if !strings.Contains(taskRules, want) {
+			t.Errorf("the operator's task rules do not say %q", want)
+		}
+	}
+}

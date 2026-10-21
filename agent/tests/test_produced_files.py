@@ -112,7 +112,7 @@ class FileWorkIsChecked(ts.TeachingBase):
                       mock.patch.object(skill_task.verify, "judge", judge),
                       mock.patch.object(skill_task, "_did_screen_work", lambda: False),
                       mock.patch.object(skill_task.produced, "files", lambda report="", **kw: list(self.made)),
-                      mock.patch.object(skill_task.produced, "text", lambda paths: "A7='only in the first list'"),
+                      mock.patch.object(skill_task.produced, "text", lambda paths, focus=(): "A7='only in the first list'"),
                       mock.patch.object(skill_task, "_engine_can_drive", lambda: False)):
             patch.start()
             self.addCleanup(patch.stop)
@@ -153,7 +153,7 @@ class FileWorkIsChecked(ts.TeachingBase):
 
     def test_a_number_written_as_a_program_prints_it_is_not_done_without_asking_a_model(self):
         self.verdicts = []
-        with mock.patch.object(skill_task.produced, "text", lambda paths: "Hours: 3E+1  Net: 1,672.74"):
+        with mock.patch.object(skill_task.produced, "text", lambda paths, focus=(): "Hours: 3E+1  Net: 1,672.74"):
             self.assertTrue(skill_task._gate("Payslips made.", "final", "thebot"))
         self.assertEqual(self.judged, [])
         self.assertEqual(self.finals, [])
@@ -190,6 +190,112 @@ class FileWorkIsChecked(ts.TeachingBase):
                 mock.patch.object(skill_task, "_engine", lambda *a, **k: self.fail("handed to the engine")):
             self.assertFalse(skill_task._gate("Recorded 20 steps of \"Enter this order\".", "final", "human"))
         self.assertEqual(self.judged, [])
+
+
+try:
+    import openpyxl
+except ImportError:  # pragma: no cover
+    openpyxl = None
+
+
+def script_workbook(path):
+    """A workbook as a script writes one: formulas with no results in the file (openpyxl stores none)."""
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Orders"
+    ws.append(["SKU", "Qty", "Price", "Total"])
+    ws.append(["A-1", 2, 5, "=B2*C2"])
+    ws["D3"] = "=SUM(D2:D2)"
+    wb.save(path)
+    return str(path)
+
+
+def calculated_orders(path, _openpyxl):
+    book = openpyxl.Workbook()
+    book.active.title = "Orders"
+    book["Orders"]["D2"], book["Orders"]["D3"] = 10, 10
+    return book
+
+
+@unittest.skipIf(openpyxl is None, "openpyxl is not installed")
+class FormulaResultsAreStored(unittest.TestCase):
+    """A workbook the task wrote never leaves it with formulas whose results are not in the file."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.emitted = []
+        patch = mock.patch("decurix_agent.progress.emit", lambda text: self.emitted.append(text))
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_a_script_written_workbook_gets_its_results_stored(self):
+        from decurix_agent.tools import office
+
+        book = script_workbook(self.root / "priced.xlsx")
+        with mock.patch.object(office, "_recalculated_values", calculated_orders):
+            self.assertEqual(produced.store_results([book]), [])
+        self.assertEqual(openpyxl.load_workbook(book, data_only=True)["Orders"]["D3"].value, 10)
+        self.assertEqual(openpyxl.load_workbook(book)["Orders"]["D3"].value, "=SUM(D2:D2)")
+        self.assertIn("Stored the results of 2 formula(s) in priced.xlsx", self.emitted[0])
+
+    def test_one_that_cannot_be_calculated_is_said_to_be_blank(self):
+        from decurix_agent.tools import office
+
+        book = script_workbook(self.root / "priced.xlsx")
+        with mock.patch.object(office.shutil, "which", lambda name: None):
+            left = produced.store_results([book])
+        self.assertEqual(len(left), 1)
+        self.assertIn("2 formula cell(s) with no stored result (Orders!D2, Orders!D3)", left[0])
+
+    def test_other_files_and_complete_workbooks_are_left_alone(self):
+        from decurix_agent.tools import office
+
+        notes = write(self.root / "notes.txt", "=SUM(A1)")
+        book = script_workbook(self.root / "priced.xlsx")
+        with mock.patch.object(office, "_recalculated_values", calculated_orders):
+            produced.store_results([book])
+        stamp = os.stat(book).st_mtime_ns
+        with mock.patch.object(office, "calculate_workbook", lambda p: self.fail("calculated again")):
+            self.assertEqual(produced.store_results([notes, book, str(self.root / "gone.xlsx")]), [])
+        self.assertEqual(os.stat(book).st_mtime_ns, stamp)
+
+
+class FormulaResultsAtTheGate(FileWorkIsChecked):
+    """The final gate, for a task whose workbook's formulas have no results in the file."""
+
+    def test_a_workbook_with_formulas_but_no_results_is_not_done_without_asking_a_model(self):
+        self.verdicts = []
+        left = ["/work/priced.xlsx has 50 formula cell(s) with no stored result (Orders!D2, Orders!E2 and 48 more)"]
+        with mock.patch.object(skill_task.produced, "store_results", lambda paths: list(left)):
+            self.assertTrue(skill_task._gate("Completed and verified: priced.xlsx has the lookups.", "final", "thebot"))
+        self.assertEqual(self.judged, [])
+        self.assertEqual(self.finals, [])
+        self.assertIn("50 formula cell(s) with no stored result", self.asked[-1][0])
+
+    def test_the_results_are_stored_before_the_file_is_judged(self):
+        stored = []
+        self.verdicts = [verdict(verify.DONE, seen="priced.xlsx prices every line")]
+        with mock.patch.object(skill_task.produced, "store_results",
+                               lambda paths: stored.append(list(paths)) or []):
+            self.assertTrue(skill_task._gate("Made result.xlsx.", "final", "thebot"))
+        self.assertEqual(stored, [["/work/result.xlsx"]])
+        self.assertEqual(len(self.judged), 1)
+
+    @unittest.skipIf(openpyxl is None, "openpyxl is not installed")
+    def test_a_real_script_workbook_is_stored_and_then_judged(self):
+        from decurix_agent.tools import office
+
+        with tempfile.TemporaryDirectory() as tmp:
+            book = script_workbook(Path(tmp) / "result.xlsx")
+            self.made = [book]
+            self.verdicts = [verdict(verify.DONE, seen="every line priced")]
+            with mock.patch.object(office, "_recalculated_values", calculated_orders):
+                self.assertTrue(skill_task._gate("Made result.xlsx.", "final", "thebot"))
+            self.assertEqual(office.formulas_without_results(book), [])
+        self.assertEqual(len(self.judged), 1)
 
 
 class ANewRequestIsNotAnAnswer(ts.TeachingBase):

@@ -28,6 +28,10 @@ from decurix_agent import config, state
 # ============================================================
 
 CURRENT_FILE = os.environ.get("DECURIX_TASK_FILE", "/tmp/decurix-current-task")
+# How much of the request every process sees (current_request): the checks a command makes (office email's recipients,
+# the screen's typed values) read the request's folders and files from it. Found (series 16, 2026-10-21): cut at 500
+# characters, a request naming its folder later in the text named none, and the checks read every file of the desktop.
+REQUEST_CHARS = 20000
 
 # The shape the control plane issues ("t" + 16 hex digits). Anything else in
 # a file name or the task file is ignored rather than reported.
@@ -60,7 +64,7 @@ def task_id_from_filename(name):
     return match.group(1) if match else ""
 
 
-def start(task_id, request=None):
+def start(task_id, request=None, continues=""):
     """
     Make task_id the task every report from here on belongs to.
 
@@ -69,6 +73,8 @@ def start(task_id, request=None):
     to whatever it knows this desktop is running. `request` is what the task
     asked for, kept beside the ID so a recording of the task can be titled
     with it by whichever process records the task's first action.
+    `continues`: the task this one carries on (a change the person sent after
+    that task was reported) - its drafts are this task's to replace.
     """
 
     task_id = task_id if valid(task_id) else ""
@@ -76,9 +82,13 @@ def start(task_id, request=None):
     with _lock:
         state.current_task_id = task_id
 
-        writes = [(CURRENT_FILE, task_id)]
+        writes = [(CURRENT_FILE, task_id), (CURRENT_FILE + ".stage", ""),  # a new task runs no stage yet
+                  (CURRENT_FILE + ".continues", continues if valid(continues) else "")]
+        if task_id and _since_record()[0] != task_id:
+            # When the task began (kept across a resume of the same task): what was there before it is the person's.
+            writes.append((CURRENT_FILE + ".since", f"{task_id} {time.time():.3f}"))
         if request is not None:
-            writes.append((CURRENT_FILE + ".request", str(request)[:500]))
+            writes.append((CURRENT_FILE + ".request", str(request)[:REQUEST_CHARS]))
             # The files the request brought, whole: the request above is cut at 500 characters, and its paths come
             # last. What the screen layer checks a chosen record against (core._in_documents).
             from decurix_agent import attachments
@@ -94,6 +104,22 @@ def start(task_id, request=None):
                 # Only the out-of-process reporters lose it, and the control
                 # plane still attributes their steps to the live task.
                 pass
+
+
+def _since_record():
+    try:
+        with open(CURRENT_FILE + ".since", encoding="utf-8") as f:
+            task_id, at = (f.read().split() + ["", ""])[:2]
+        return task_id, float(at)
+    except (OSError, ValueError):
+        return "", None
+
+
+def since():
+    """When the current task began (epoch seconds), from any process; None when no task is running or it is unknown."""
+
+    task_id, at = _since_record()
+    return at if task_id and task_id == current() else None
 
 
 # The task this desktop has taken on and not yet finished, kept on the
@@ -155,13 +181,24 @@ def current_request():
     """What the current task asked for, as far as this process can tell, or ""."""
 
     if state.current_task_id and state.current_task:
-        return str(state.current_task)[:500]
+        return str(state.current_task)[:REQUEST_CHARS]
 
     try:
         with open(CURRENT_FILE + ".request", encoding="utf-8") as f:
             return f.read().strip()
     except OSError:
         return ""
+
+
+def continues():
+    """The task the current one carries on (task_context.start's `continues`), or ""."""
+
+    try:
+        with open(CURRENT_FILE + ".continues", encoding="utf-8") as f:
+            task_id = f.read().strip()
+    except OSError:
+        return ""
+    return task_id if valid(task_id) else ""
 
 
 def current_files():
@@ -187,3 +224,34 @@ def current():
         return ""
 
     return task_id if valid(task_id) else ""
+
+
+# The long request's stage running now ("<run id>:<stage id>" and its attempt), for the processes a stage's engine
+# starts (the `office email` command): a draft made during a stage is that stage's, and its attempt's. Found live
+# (round 5 P1, 2026-10-20): the stage tag lived only in the agent's memory, so `office email` - another process -
+# never saw it, and a re-check's drafts sat beside the first attempt's instead of replacing them.
+def _stage_path():
+    return CURRENT_FILE + ".stage"
+
+
+def set_stage(scope, attempt=0):
+    """Mark the stage running now (scope "" clears it)."""
+
+    try:
+        tmp = _stage_path() + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"scope": scope, "attempt": int(attempt or 0)}) if scope else "")
+        os.replace(tmp, _stage_path())
+    except OSError:
+        pass
+
+
+def current_stage():
+    """(scope, attempt) of the stage running now, from any process, or ("", 0)."""
+
+    try:
+        with open(_stage_path(), encoding="utf-8") as f:
+            data = json.loads(f.read() or "{}")
+        return str(data.get("scope") or ""), int(data.get("attempt") or 0)
+    except (OSError, ValueError, TypeError):
+        return "", 0

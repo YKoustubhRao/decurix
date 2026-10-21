@@ -366,9 +366,11 @@ def describe_action(kind, element, text=None, keys=None, point=None, withheld=No
     return f"{kind.replace('_', ' ')} {target}{where}"
 
 
-def check(kind, element, text=None, keys=None, point=None, context=None):
+def check(kind, element, text=None, keys=None, point=None, context=None, about=""):
     """
-    Decide whether an action may run now. Consumes a matching grant.
+    Decide whether an action may run now. Consumes a matching grant. `about`
+    says what the action would act on (the filled fields beside it), shown to
+    the person with the request.
     """
 
     reason = assess(kind, element, text=text, keys=keys, context=context)
@@ -390,6 +392,7 @@ def check(kind, element, text=None, keys=None, point=None, context=None):
             "fingerprint": fingerprint,
             "reason": reason,
             "action": description,
+            "about": about or "",
             "created": time.time(),
         }
         state["pending"] = request
@@ -476,7 +479,8 @@ def blocked_command(exit_code, output):
 def request_text(request):
     """The words an engine and a human see for a pending approval."""
 
+    about = f" {request['about'].rstrip('.')}." if request.get("about") else ""
     return (
-        f"Approval needed before I {request['action']}: {request['reason']}. "
+        f"Approval needed before I {request['action']}: {request['reason']}.{about} "
         "Nothing was clicked or sent. Reply yes to let me do it, or tell me what to do instead."
     )

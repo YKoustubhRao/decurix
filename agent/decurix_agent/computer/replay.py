@@ -491,6 +491,8 @@ def _summary(step):
 
     if target:
         what = f"{target.get('role', 'element')} {el._quote(target.get('name') or '', 50)}"
+    elif step.get("launcher") and kind in ("click", "double_click"):
+        return f"open {el._quote(step['launcher'], 60)} from its desktop icon"
     elif step.get("point"):
         what = f"{step['point'][0]},{step['point'][1]}"
     else:
@@ -562,6 +564,112 @@ def fill_name(name, values):
     """
 
     return PLACEHOLDER.sub(lambda m: str((values or {}).get(m.group(1), m.group(0))), name or "")
+
+
+def _word_set(text):
+    return re.findall(r"\w+", _norm(text))
+
+
+def _holds_words(want, name):
+    """Whether every word of `want` is a word of `name` ("Type a message to Happy Family" in "Type a message to group Happy family ❤️")."""
+
+    wanted = _word_set(want)
+    return bool(wanted) and set(wanted) <= set(_word_set(name))
+
+
+def avoided(target, element):
+    """Whether an element is named for a value the demonstration typed and this run does not (target["avoid"])."""
+
+    name = _norm(element.get("name"))
+    return any(_holds_words(old, name) for old in target.get("avoid") or [])
+
+
+# What a click right after typing picks from the list the typing brought up.
+RESULT_ROLES = {"row", "option", "listitem", "link", "menuitem", "treeitem", "gridcell", "cell"}
+
+
+def _recorded_value(param):
+    value = param.get("example") if param.get("example") is not None else param.get("default")
+    return None if value is None or isinstance(value, list) else str(value)
+
+
+def follow_values(steps, params, values):
+    """
+    The steps with their targets following this run's values, for a run of a
+    skill (not a raw /replay). Two kinds of target were named for the moment
+    they were recorded:
+
+    - one whose name holds what the demonstration typed: the message box
+      "Type a message to Koustubh OG" after a search for Koustubh OG. Found
+      live (2026-10-16): a run for "Happy Family" found that very box - the
+      demonstration's chat was still open behind the search results - typed
+      into it and sent the message to the wrong person. Its name now holds
+      this run's value, matched by words, and a control named for the
+      demonstration's value is never taken for it (`avoid`, also kept out of
+      healing's candidates);
+    - a result picked right after typing whose name is only a date or a time
+      (a chat row read as "10/9/2026", the day of its last message): it is the
+      result for what was typed, found by the typed value's words.
+
+    A step that does not change keeps its recorded target.
+    """
+
+    by_step = {}
+    for param in params or []:
+        recorded, value = _recorded_value(param), (values or {}).get(param["name"])
+        if recorded is None or value is None or isinstance(value, list) or len(recorded.strip()) < 2:
+            continue
+        by_step[param["step"]] = (param, recorded, str(value))
+
+    if not by_step:
+        return steps
+
+    followed = []
+    for index, step in enumerate(steps):
+        target = step.get("target") or {}
+        name = target.get("name") or ""
+        new = None
+
+        for at, (param, recorded, value) in by_step.items():
+            if step["n"] <= at:
+                continue
+            if value != recorded and _holds_words(recorded, name):
+                pattern = re.compile(r"\s+".join(re.escape(w) for w in recorded.split()), re.IGNORECASE)
+                renamed = pattern.sub(value, name) if pattern.search(name) else f"{name} {value}"
+                new = dict(target, name=renamed, contains=True, path=None,
+                           avoid=list(target.get("avoid") or []) + [recorded])
+                break
+            if (step["n"] == at + 1 and step.get("kind") in ("click", "double_click") and name
+                    and target.get("role") in RESULT_ROLES and volatility.only_a_moment(name)):
+                new = dict(target, name=value, contains=True, path=None,
+                           avoid=list(target.get("avoid") or []) + ([recorded] if value != recorded else []))
+                break
+
+        if new is None:
+            followed.append(step)
+            continue
+        step = dict(step, target=new)
+        step.pop("look", None)
+        step["summary"] = _summary(step)
+        followed.append(step)
+
+    return followed
+
+
+def _typing_checks(step):
+    """
+    What typing is checked by: the field holding the text, and a page or
+    window it leads to - not whatever else came up on the screen while the
+    person typed. Found live: a message typed into a chat was expected to
+    bring up "Context menu for message from <contact>" (a hover the person
+    made), and every run halted after typing the message correctly.
+    """
+
+    if step.get("kind") != "type" or not step.get("expect"):
+        return step
+    mine = "{" + step["param"] + "}" if step.get("param") else None
+    kept = [c for c in step["expect"] if c.get("type") != "element" or (mine and mine in (c.get("name") or ""))]
+    return step if len(kept) == len(step["expect"]) else dict(step, expect=kept)
 
 
 def unmet(checks, observation, values=None):
@@ -655,7 +763,7 @@ def resolve(step, observation):
 
     if target:
         path = target.get("path")
-        if path:
+        if path and not target.get("contains"):
             exact = [e for e in elements if e.get("path") == path]
             if len(exact) == 1:
                 return exact[0], None, None
@@ -665,8 +773,13 @@ def resolve(step, observation):
         what = f"{role or 'element'} {el._quote(name or '')}" + (f" (#{nth})" if nth else "")
 
         if role or name:
+            # A target that follows this run's value (follow_values) is the
+            # control whose name holds that value's words; never one that names
+            # what the demonstration typed instead.
+            same = (lambda e: _holds_words(name, e.get("name"))) if target.get("contains") \
+                else (lambda e: _norm(e.get("name")) == _norm(name))
             matches = [e for e in elements
-                       if (not role or e.get("role") == role) and _norm(e.get("name")) == _norm(name)]
+                       if (not role or e.get("role") == role) and same(e) and not avoided(target, e)]
 
             # By its label alone, a heading or a paragraph reading the same is
             # not the control that was meant - not merely a worse candidate.
@@ -1142,6 +1255,8 @@ def _recover(steps, index, step, halt, values, ladder, report):
     except Exception as exc:  # a way to be smarter, never a reason to fail differently
         log(f"replay: could not compare step {step['n']}'s screens: {exc}")
         jump = None
+    if jump is not None and _detour_refused(steps, index, jump, halt.observation):
+        jump = None
     if jump is not None:
         return "skip", jump
 
@@ -1156,6 +1271,30 @@ def _recover(steps, index, step, halt, values, ladder, report):
             placed["point"] = list(point)
             return "done", _run_step(placed, values, ladder, report)
 
+    return None
+
+
+def _detour_refused(steps, index, jump, observation):
+    """
+    Why steps index..jump-1 may not be left out, or None. A screen that looks
+    like a later step's can be the state an EARLIER run left behind: found
+    live (2026-10-16), a search for "Happy Family" left the previous chat open
+    behind its results, the screens matched the recording's step 6, the click
+    on the search result was left out, and the message went to the previous
+    chat. So a detour needs the step it lands on to find its control on the
+    screen now, and never leaves out the choice made right after typing (the
+    result picked from what the typing brought up).
+    """
+
+    typed = {s["n"] for s in steps if s.get("param") and s.get("kind") in ("type", "select")}
+    for skipped in steps[index:jump]:
+        if skipped["n"] - 1 in typed and skipped.get("kind") in ("click", "double_click"):
+            return f"step {skipped['n']} picks from what step {skipped['n'] - 1} typed"
+    landing = steps[jump]
+    if landing.get("target") and observation is not None:
+        found, _, why = resolve(landing, observation)
+        if found is None:
+            return f"step {landing['n']}'s control is not on the screen ({why})"
     return None
 
 
@@ -1342,6 +1481,7 @@ def run(program, params=None, start=1, report=None, ladder=None):
 
     _fit_screen([s for s in steps if s["n"] >= start], report)
     changed_at = _first_change(program, values)
+    steps = [_typing_checks(s) for s in follow_values(steps, program.get("params"), values)]
 
     if ladder is not None:
         ladder.typed = [(str(p.get("example") if p.get("example") is not None else p.get("default")), str(values[p["name"]]))
