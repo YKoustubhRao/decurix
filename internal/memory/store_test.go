@@ -7,17 +7,25 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
 
-func TestStoreMemoryLifecycle(t *testing.T) {
+func newStore(t *testing.T) *Store {
+	t.Helper()
+
 	db, err := sqlitedb.OpenMemory()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	t.Cleanup(func() { db.Close() })
 
 	s, err := NewStore(db)
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	return s
+}
+
+func TestStoreMemoryLifecycle(t *testing.T) {
+	s := newStore(t)
 
 	entry, err := s.Record("desktop-1", "Lead follow-up", "Check the CRM, draft a reply, and send it from the shared mailbox.", "workflow")
 	if err != nil {
@@ -76,16 +84,7 @@ func TestMemorySurvivesReopen(t *testing.T) {
 }
 
 func TestStoreLinkSharesInBothDirections(t *testing.T) {
-	db, err := sqlitedb.OpenMemory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	s, err := NewStore(db)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := newStore(t)
 
 	if err := s.Link("desktop-a", "desktop-b"); err != nil {
 		t.Fatalf("Link returned error: %v", err)
@@ -114,16 +113,7 @@ func TestStoreLinkSharesInBothDirections(t *testing.T) {
 }
 
 func TestStoreLinkRejectsSelfAndEmpty(t *testing.T) {
-	db, err := sqlitedb.OpenMemory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	s, err := NewStore(db)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := newStore(t)
 
 	if err := s.Link("desktop-a", "desktop-a"); err == nil {
 		t.Fatal("expected an error linking a worker to itself")
@@ -135,16 +125,7 @@ func TestStoreLinkRejectsSelfAndEmpty(t *testing.T) {
 }
 
 func TestStoreRecordDeduplication(t *testing.T) {
-	db, err := sqlitedb.OpenMemory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	s, err := NewStore(db)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := newStore(t)
 
 	entry1, err := s.Record("desktop-1", "Deploy Script", "Run ./deploy.sh to push production code.", "workflow")
 	if err != nil {
@@ -174,16 +155,7 @@ func TestStoreRecordDeduplication(t *testing.T) {
 // Deleting a desktop takes what it learned with it: a desktop made later
 // under the same name is another worker, and used to list this one's memory.
 func TestDeleteForDesktopRemovesItsEntriesAndLinksOnly(t *testing.T) {
-	db, err := sqlitedb.OpenMemory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	s, err := NewStore(db)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := newStore(t)
 
 	first, err := s.Record("eve", "Search Google", "Run it with /skill search-google.", "skill")
 	if err != nil {

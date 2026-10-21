@@ -237,7 +237,7 @@ def find_window(title, matches):
     return None
 
 
-def bring_forward(title, matches, places=None, wait=None, app=None, url=None):
+def bring_forward(title, matches, places=None, wait=None):
     """
     Put the window recorded as `title` in front: raise it when it is open,
     else open it from its launcher and wait for it. Returns a sentence saying

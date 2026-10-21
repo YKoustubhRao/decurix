@@ -165,16 +165,10 @@ func TestAnOpenScreenKeepsItsDesktopViewed(t *testing.T) {
 		close(finished)
 	}()
 
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if _, ok := mgr.LastViewed("terga"); ok {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("an open screen never marked its desktop viewed")
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
+	waitFor(t, 2*time.Second, "an open screen to mark its desktop viewed", func() bool {
+		_, ok := mgr.LastViewed("terga")
+		return ok
+	})
 
 	close(done)
 	select {

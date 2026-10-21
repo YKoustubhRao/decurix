@@ -78,32 +78,3 @@ def plan(model_key, full_task, max_tokens=500):
     if not steps:
         raise ValueError(f"planner returned no steps: {raw!r}")
     return steps
-
-
-class Stack:
-    """A stack of pending instruction strings. Top of stack is index 0 (the
-    next thing to execute), so push_before() naturally means "insert ahead
-    of everything else still pending" -- an O(n) insert/pop on a Python
-    list, but these stacks are a handful of items, so that's irrelevant."""
-
-    def __init__(self, items=None):
-        self.items = list(items) if items else []
-
-    def peek(self):
-        return self.items[0] if self.items else None
-
-    def pop(self):
-        return self.items.pop(0)
-
-    def push_before(self, instruction):
-        self.items.insert(0, instruction)
-
-    def is_empty(self):
-        return not self.items
-
-    def to_list(self):
-        return list(self.items)
-
-    @classmethod
-    def from_list(cls, items):
-        return cls(items)

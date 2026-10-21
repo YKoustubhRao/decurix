@@ -10,6 +10,12 @@ import (
 	"thebot/internal/llm"
 )
 
+// groundingNudge is groundingCheck's nudge alone.
+func groundingNudge(st *operatorState, command string) string {
+	nudge, _ := groundingCheck(st, command)
+	return nudge
+}
+
 func TestTypedValuesReadsWhatACommandWouldType(t *testing.T) {
 	cases := map[string][]string{
 		`gui do enter-po --param customer="Green Furnishings" --param quantity="2; 12"`: {"Green Furnishings", "2", "12"},

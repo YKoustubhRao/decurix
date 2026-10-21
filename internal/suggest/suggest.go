@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -250,15 +251,10 @@ func (s *Store) Forget(memoryIDs []string) {
 	// In pieces: SQLite bounds the number of parameters in one statement.
 	const piece = 500
 
-	for start := 0; start < len(memoryIDs); start += piece {
-		end := start + piece
-		if end > len(memoryIDs) {
-			end = len(memoryIDs)
-		}
-
-		placeholders := make([]string, 0, end-start)
-		args := make([]any, 0, end-start)
-		for _, id := range memoryIDs[start:end] {
+	for chunk := range slices.Chunk(memoryIDs, piece) {
+		placeholders := make([]string, 0, len(chunk))
+		args := make([]any, 0, len(chunk))
+		for _, id := range chunk {
 			placeholders = append(placeholders, "?")
 			args = append(args, id)
 		}

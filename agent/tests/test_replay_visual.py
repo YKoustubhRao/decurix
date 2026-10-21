@@ -7,48 +7,21 @@ what was around it, and the replay clicks only where that picture still is.
 
 import sys
 import tempfile
-import types
 import unittest
 from pathlib import Path
 
-try:
-    from decurix_agent import config  # noqa: F401
-except OSError:
-    import decurix_agent
-
-    stub = types.ModuleType("decurix_agent.config")
-    stub.DESKTOP_ID = "test-box"
-    stub.DESKTOP_NAME = "test-box"
-    stub.CONTROL_PLANE_URL = "http://127.0.0.1:9"
-    stub.AGENT_HARNESS = "ollama"
-    sys.modules["decurix_agent.config"] = stub
-    decurix_agent.config = stub
+import config_stub  # noqa: F401 - first: stubs decurix_agent.config on a machine with no desktop
 
 from decurix_agent.computer import recording, replay, visual
 
 sys.path.insert(0, str(Path(__file__).parent))
-from test_visual import CLICK, HEIGHT, RECORDED, WIDTH, Frame, frame_with, png_of  # noqa: E402
+from test_visual import CLICK, HEIGHT, RECORDED, WIDTH, Frame, PixelScreen, frame_with, png_of  # noqa: E402
 
 SESSION = "demo-20260921T101500-abc123"
 
 
-class CanvasScreen:
-    """core, as a replay of a coordinate click sees it: a screen and a log of clicks."""
-
-    def __init__(self, frame):
-        self.frame = frame
-        self.acted = []
-
-    def observe(self, remember=True):
-        return {"elements": [], "windows": [{"title": "Canvas"}], "active_title": "Canvas",
-                "size": [WIDTH, HEIGHT], "frame": self.frame}
-
-    def active_group(self, observation):
-        return "g"
-
-    def act(self, kind, **kwargs):
-        self.acted.append((kind, kwargs))
-        return {"status": "done", "text": "ok", "observation": self.observe()}
+def CanvasScreen(frame):
+    return PixelScreen(frame, "Canvas", (WIDTH, HEIGHT))
 
 
 class Anchored(unittest.TestCase):

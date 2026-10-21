@@ -145,19 +145,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 
   var toast = Decurix.toast, post = Decurix.post, busy = Decurix.busy;
 
-  document.querySelectorAll("[data-created]").forEach(function(el){
-    var date = new Date(el.dataset.created);
-    if(isNaN(date.getTime())){ return; }
-
-    var seconds = Math.round((Date.now() - date.getTime()) / 1000);
-
-    if(seconds < 60){ el.textContent = "just now"; }
-    else if(seconds < 3600){ el.textContent = Math.floor(seconds / 60) + "m ago"; }
-    else if(seconds < 86400){ el.textContent = Math.floor(seconds / 3600) + "h ago"; }
-    else if(seconds < 604800){ el.textContent = Math.floor(seconds / 86400) + "d ago"; }
-
-    el.title = date.toLocaleString();
-  });
+  Decurix.relativeTimes();
 
   var dialog = document.getElementById("newDagDialog");
   var form = document.getElementById("newDagForm");

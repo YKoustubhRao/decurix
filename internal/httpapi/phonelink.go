@@ -158,8 +158,7 @@ func (s *Server) phoneLinkPageHandler(w http.ResponseWriter, r *http.Request) {
 // phoneSetupTokenHandler issues the one-time token the setup command carries,
 // to a paired device only.
 func (s *Server) phoneSetupTokenHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodPost) {
 		return
 	}
 	if s.Phones == nil || s.Devices == nil {
@@ -299,8 +298,7 @@ func (s *Server) phoneBinaryHandler(w http.ResponseWriter, r *http.Request) {
 // phoneClaimHandler spends a setup token for a sign-in of the phone link's
 // own, on the same paired device as the browser that asked for the token.
 func (s *Server) phoneClaimHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodPost) {
 		return
 	}
 	if s.Devices == nil {

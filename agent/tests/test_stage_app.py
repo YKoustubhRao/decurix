@@ -5,14 +5,11 @@ asked. A named app binds to its deliverable: a stage is held to an app only for 
 """
 
 import unittest
-from pathlib import Path
 
 import test_long_requests as base  # noqa: F401 - stubs config first
 import fixture_paths  # noqa: E402 - live-run fixtures live outside the repo
 
 from decurix_agent import long_task
-
-REPLAY = fixture_paths.fixture("replay")
 
 
 class StageApp(unittest.TestCase):

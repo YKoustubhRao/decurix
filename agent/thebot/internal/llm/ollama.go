@@ -64,7 +64,7 @@ func NewOllama(host string) *OllamaProvider {
 		Host:         host,
 		Client:       &http.Client{},
 		EmbedModel:   getenvDefault("EMBED_MODEL", "nomic-embed-text"),
-		TimeoutFloor: envDuration("OLLAMA_TIMEOUT_MS", defaultTimeoutFloor),
+		TimeoutFloor: time.Duration(EnvInt("OLLAMA_TIMEOUT_MS", int(defaultTimeoutFloor/time.Millisecond))) * time.Millisecond,
 		KeepAlive:    getenvDefault("OLLAMA_KEEP_ALIVE", defaultKeepAlive),
 	}
 }
@@ -74,21 +74,6 @@ func getenvDefault(key, fallback string) string {
 		return v
 	}
 	return fallback
-}
-
-// envDuration reads a millisecond count from the environment, ignoring
-// anything unparseable or non-positive rather than failing a build over a
-// typo in a deployment's env.
-func envDuration(key string, fallback time.Duration) time.Duration {
-	v := os.Getenv(key)
-	if v == "" {
-		return fallback
-	}
-	ms, err := strconv.Atoi(v)
-	if err != nil || ms <= 0 {
-		return fallback
-	}
-	return time.Duration(ms) * time.Millisecond
 }
 
 func defaultNumThread() int {
@@ -102,7 +87,8 @@ func defaultNumThread() int {
 	return 1
 }
 
-func getenvInt(key string, fallback int) int {
+// EnvInt reads a positive whole number from the environment, or fallback when it is unset, unparseable or not positive.
+func EnvInt(key string, fallback int) int {
 	v := os.Getenv(key)
 	if v == "" {
 		return fallback
@@ -153,10 +139,7 @@ type ollamaChatResponse struct {
 // context otherwise, a real failure mode discovered building the Node
 // prototype this is replacing.
 func (o *OllamaProvider) Chat(ctx context.Context, model string, messages []Message, opts Options) (Result, error) {
-	timeout := 120 * time.Second
-	if opts.TimeoutMs > 0 {
-		timeout = time.Duration(opts.TimeoutMs) * time.Millisecond
-	}
+	timeout := opts.timeout()
 	if o.TimeoutFloor > timeout {
 		timeout = o.TimeoutFloor
 	}
@@ -177,8 +160,8 @@ func (o *OllamaProvider) Chat(ctx context.Context, model string, messages []Mess
 	}
 	ollamaOpts := map[string]any{
 		"num_ctx":    numCtx,
-		"num_thread": getenvInt("OLLAMA_NUM_THREAD", defaultNumThread()),
-		"num_batch":  getenvInt("OLLAMA_NUM_BATCH", 512),
+		"num_thread": EnvInt("OLLAMA_NUM_THREAD", defaultNumThread()),
+		"num_batch":  EnvInt("OLLAMA_NUM_BATCH", 512),
 	}
 	if opts.Temperature > 0 {
 		ollamaOpts["temperature"] = opts.Temperature

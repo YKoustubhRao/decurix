@@ -3,11 +3,11 @@ package httpapi
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/YKoustubhRao/decurix/internal/schedule"
-	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
 
 // scheduleServer builds the slice of Server createScheduleHandler and its
@@ -16,11 +16,7 @@ import (
 func scheduleServer(t *testing.T) *Server {
 	t.Helper()
 
-	db, err := sqlitedb.OpenMemory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
+	db := testDB(t)
 
 	store, err := schedule.NewStore(db)
 	if err != nil {
@@ -30,17 +26,24 @@ func scheduleServer(t *testing.T) *Server {
 	return &Server{Schedules: store, Desktops: fakeDesktopManager(t, "bordu")}
 }
 
-func TestCreateScheduleHandlerRunAtCreatesAOneTimeSchedule(t *testing.T) {
-	s := scheduleServer(t)
+// createSchedule posts form to a fresh scheduleServer's createScheduleHandler
+// and fails the test unless it answers want.
+func createSchedule(t *testing.T, form string, want int) *httptest.ResponseRecorder {
+	t.Helper()
 
+	rec := postForm(t, scheduleServer(t).createScheduleHandler, "/api/schedules/create", form)
+
+	if rec.Code != want {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, want, rec.Body.String())
+	}
+
+	return rec
+}
+
+func TestCreateScheduleHandlerRunAtCreatesAOneTimeSchedule(t *testing.T) {
 	runAt := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 
-	rec := postForm(t, s.createScheduleHandler, "/api/schedules/create",
-		"id=bordu&content=check+the+mail&run_at="+runAt)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
-	}
+	rec := createSchedule(t, "id=bordu&content=check+the+mail&run_at="+runAt, http.StatusOK)
 
 	var sch schedule.Schedule
 	if err := json.Unmarshal(rec.Body.Bytes(), &sch); err != nil {
@@ -57,61 +60,27 @@ func TestCreateScheduleHandlerRunAtCreatesAOneTimeSchedule(t *testing.T) {
 }
 
 func TestCreateScheduleHandlerRejectsBothCronAndRunAt(t *testing.T) {
-	s := scheduleServer(t)
-
 	runAt := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 
-	rec := postForm(t, s.createScheduleHandler, "/api/schedules/create",
-		"id=bordu&content=check+the+mail&cron=0+9+*+*+*&run_at="+runAt)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
-	}
+	createSchedule(t, "id=bordu&content=check+the+mail&cron=0+9+*+*+*&run_at="+runAt, http.StatusBadRequest)
 }
 
 func TestCreateScheduleHandlerRejectsMalformedRunAt(t *testing.T) {
-	s := scheduleServer(t)
-
-	rec := postForm(t, s.createScheduleHandler, "/api/schedules/create",
-		"id=bordu&content=check+the+mail&run_at=not-a-time")
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
-	}
+	createSchedule(t, "id=bordu&content=check+the+mail&run_at=not-a-time", http.StatusBadRequest)
 }
 
 func TestCreateScheduleHandlerRejectsPastRunAt(t *testing.T) {
-	s := scheduleServer(t)
-
 	runAt := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
 
-	rec := postForm(t, s.createScheduleHandler, "/api/schedules/create",
-		"id=bordu&content=check+the+mail&run_at="+runAt)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
-	}
+	createSchedule(t, "id=bordu&content=check+the+mail&run_at="+runAt, http.StatusBadRequest)
 }
 
 func TestCreateScheduleHandlerRequiresCronOrRunAt(t *testing.T) {
-	s := scheduleServer(t)
-
-	rec := postForm(t, s.createScheduleHandler, "/api/schedules/create", "id=bordu&content=check+the+mail")
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
-	}
+	createSchedule(t, "id=bordu&content=check+the+mail", http.StatusBadRequest)
 }
 
 func TestCreateScheduleHandlerStillCreatesRecurringSchedules(t *testing.T) {
-	s := scheduleServer(t)
-
-	rec := postForm(t, s.createScheduleHandler, "/api/schedules/create",
-		"id=bordu&content=check+the+mail&cron=0+9+*+*+*")
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
-	}
+	rec := createSchedule(t, "id=bordu&content=check+the+mail&cron=0+9+*+*+*", http.StatusOK)
 
 	var sch schedule.Schedule
 	if err := json.Unmarshal(rec.Body.Bytes(), &sch); err != nil {

@@ -208,10 +208,10 @@ class TestLearningLeavesTheNudgeOut(unittest.TestCase):
 class TestAnAppFoundOpenAlready(Desktop):
     """Live: Chrome was open on Wikipedia, and the start page's search box was nowhere."""
 
-    def _run(self):
-        steps = [dict(OPEN, n=1, summary="double click 72,259"),
-                 dict(IN_CHROME, n=2, summary="click 535,361", look={"w": 144, "h": 48, "png": ""})]
-        observation = {"size": [1536, 729], "active_title": "Koustubh - Chrome", "frame": object()}
+    def _run(self, steps=None, title="Koustubh - Chrome"):
+        steps = steps or [dict(OPEN, n=1, summary="double click 72,259"),
+                          dict(IN_CHROME, n=2, summary="click 535,361", look={"w": 144, "h": 48, "png": ""})]
+        observation = {"size": [1536, 729], "active_title": title, "frame": object()}
         with patch.object(replay.core, "observe", return_value=observation), \
                 patch.object(replay.visual, "find", return_value={"status": replay.visual.MISSING}), \
                 patch.object(replay, "FIND_SECONDS", 0), patch.object(replay, "_fit_screen"), \
@@ -235,12 +235,7 @@ class TestAnAppFoundOpenAlready(Desktop):
         self.windows.append({"id": 9, "title": "Koustubh - Chrome", "active": False})
         steps = [dict(OPEN, n=1, summary="open"),
                  dict(IN_CHROME, n=2, summary="click", window="Untitled 1 - Mousepad", look={"w": 1, "h": 1, "png": ""})]
-        observation = {"size": [1536, 729], "active_title": "Untitled 1 - Mousepad", "frame": object()}
-        with patch.object(replay.core, "observe", return_value=observation), \
-                patch.object(replay.visual, "find", return_value={"status": replay.visual.MISSING}), \
-                patch.object(replay, "FIND_SECONDS", 0), patch.object(replay, "_fit_screen"), \
-                patch.object(replay, "_await_checks", side_effect=lambda checks, observation, values, seconds=None: ([], observation)):
-            result = replay.run({"steps": steps, "params": [], "title": "mutra"}, report=self.lines.append)
+        result = self._run(steps, "Untitled 1 - Mousepad")
         self.assertIsNone(result["reopen"])
 
 

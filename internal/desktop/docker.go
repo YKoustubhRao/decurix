@@ -246,10 +246,7 @@ func controlPlaneURL() string {
 
 // buildDesktopEnv builds the container environment variables (VNC, desktop identity, control-plane/Ollama URLs, agent harness, brain) for a desktop by name.
 func buildDesktopEnv(name, harness, specialization, parentID string, brain Brain, shared ...*SharedFolder) []string {
-	defaultPassword := os.Getenv("DEFAULT_PASSWORD")
-	if defaultPassword == "" {
-		defaultPassword = "admin"
-	}
+	defaultPassword := envOr("DEFAULT_PASSWORD", "admin")
 
 	// OLLAMA_URL/OLLAMA_MODEL follow the same pattern as DEFAULT_PASSWORD:
 	// the control plane's own environment wins, with a default that has to
@@ -299,33 +296,15 @@ func buildDesktopEnv(name, harness, specialization, parentID string, brain Brain
 
 	// Forward Ollama performance & thread tuning into desktops so agents don't
 	// starve the host CPU or thrash caches.
-	numThreads := os.Getenv("OLLAMA_NUM_THREAD")
-	if numThreads == "" {
-		numThreads = strconv.Itoa(ollama.DefaultNumThread())
-	}
-	env = append(env, "OLLAMA_NUM_THREAD="+numThreads)
-
-	kvCache := os.Getenv("OLLAMA_KV_CACHE_TYPE")
-	if kvCache == "" {
-		kvCache = "q8_0"
-	}
-	env = append(env, "OLLAMA_KV_CACHE_TYPE="+kvCache)
-
-	flashAttn := os.Getenv("OLLAMA_FLASH_ATTENTION")
-	if flashAttn == "" {
-		flashAttn = "1"
-	}
-	env = append(env, "OLLAMA_FLASH_ATTENTION="+flashAttn)
-
+	env = append(env,
+		"OLLAMA_NUM_THREAD="+envOr("OLLAMA_NUM_THREAD", strconv.Itoa(ollama.DefaultNumThread())),
+		"OLLAMA_KV_CACHE_TYPE="+envOr("OLLAMA_KV_CACHE_TYPE", "q8_0"),
+		"OLLAMA_FLASH_ATTENTION="+envOr("OLLAMA_FLASH_ATTENTION", "1"),
+	)
 	if numBatch := os.Getenv("OLLAMA_NUM_BATCH"); numBatch != "" {
 		env = append(env, "OLLAMA_NUM_BATCH="+numBatch)
 	}
-
-	numParallel := os.Getenv("OLLAMA_NUM_PARALLEL")
-	if numParallel == "" {
-		numParallel = "1"
-	}
-	env = append(env, "OLLAMA_NUM_PARALLEL="+numParallel)
+	env = append(env, "OLLAMA_NUM_PARALLEL="+envOr("OLLAMA_NUM_PARALLEL", "1"))
 
 	env = append(env, "DECURIX_BRAIN="+brain.kind())
 
@@ -388,6 +367,14 @@ func buildDesktopEnv(name, harness, specialization, parentID string, brain Brain
 	return env
 }
 
+// envOr is the control plane's own value of the environment variable name, or def when it is unset or empty.
+func envOr(name, def string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return def
+}
+
 // buildContainerConfigs builds the Docker container, host, and network configuration for a desktop from its resolved image, resources, profile, harness, and security options.
 func buildContainerConfigs(imageName, containerName, profile, harness string, cpus, memoryMB int64, env []string, volumeName string, securityOpt []string, shared ...*SharedFolder) (*container.Config, *container.HostConfig, *network.NetworkingConfig) {
 	labels := map[string]string{
@@ -412,7 +399,8 @@ func buildContainerConfigs(imageName, containerName, profile, harness string, cp
 		Labels:   labels,
 	}
 
-	swappinessZero := int64(0)
+	resources := desktopResources(cpus, memoryMB)
+	resources.Ulimits = desktopUlimits()
 	shmBytes := int64(512 * 1024 * 1024)
 	if shmEnv := os.Getenv("DECURIX_DESKTOP_SHM_MB"); shmEnv != "" {
 		if parsed, err := strconv.ParseInt(shmEnv, 10, 64); err == nil && parsed > 0 {
@@ -422,14 +410,7 @@ func buildContainerConfigs(imageName, containerName, profile, harness string, cp
 	hostConfig := &container.HostConfig{
 		ShmSize:     shmBytes,
 		SecurityOpt: securityOpt,
-		Resources: container.Resources{
-			NanoCPUs:          cpus * 1_000_000_000,
-			CPUShares:         cpus * 1024,
-			Memory:            memoryMB * 1024 * 1024,
-			MemoryReservation: (memoryMB * 1024 * 1024) / 2,
-			MemorySwappiness:  &swappinessZero,
-			Ulimits:           desktopUlimits(),
-		},
+		Resources:   resources,
 		Tmpfs: map[string]string{
 			"/tmp": "rw,nosuid,size=256m,mode=1777",
 			"/run": "rw,nosuid,size=64m,mode=755",
@@ -467,6 +448,19 @@ func buildContainerConfigs(imageName, containerName, profile, harness string, cp
 	}
 
 	return config, hostConfig, networkingConfig
+}
+
+// desktopResources is the CPU and memory a desktop is given: cpus whole CPUs and memoryMB of memory (half of it
+// reserved), never swapped.
+func desktopResources(cpus, memoryMB int64) container.Resources {
+	swappinessZero := int64(0)
+	return container.Resources{
+		NanoCPUs:          cpus * 1_000_000_000,
+		CPUShares:         cpus * 1024,
+		Memory:            memoryMB * 1024 * 1024,
+		MemoryReservation: (memoryMB * 1024 * 1024) / 2,
+		MemorySwappiness:  &swappinessZero,
+	}
 }
 
 // SanitizeID normalizes a caller-supplied desktop identifier the same way

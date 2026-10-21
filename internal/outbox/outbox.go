@@ -12,9 +12,7 @@
 package outbox
 
 import (
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -140,7 +138,7 @@ func (s *Store) Add(d Draft) (Draft, error) {
 		return Draft{}, fmt.Errorf("%w: attachments too large", ErrInvalid)
 	}
 
-	d.ID = newID()
+	d.ID = sqlitedb.NewID("mail_", 8)
 	d.Status = StatusDraft
 	d.CreatedAt = time.Now()
 	d.UpdatedAt = d.CreatedAt
@@ -180,24 +178,9 @@ func (s *Store) List(limit int) ([]Draft, error) {
 		limit = 100
 	}
 
-	rows, err := s.db.Query(`SELECT `+draftColumns+` FROM outbox_drafts ORDER BY created_ns DESC LIMIT ?`, limit)
+	out, err := sqlitedb.QueryAll(s.db, scan, `SELECT `+draftColumns+` FROM outbox_drafts ORDER BY created_ns DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("outbox: list: %w", err)
-	}
-
-	var out []Draft
-	for rows.Next() {
-		d, err := scan(rows)
-		if err != nil {
-			rows.Close()
-			return nil, err
-		}
-		out = append(out, d)
-	}
-	rows.Close()
-
-	if err := rows.Err(); err != nil {
-		return nil, err
 	}
 
 	for i := range out {
@@ -213,24 +196,12 @@ func (s *Store) List(limit int) ([]Draft, error) {
 
 // Get returns one draft with its files' contents.
 func (s *Store) Get(id string) (Draft, error) {
-	rows, err := s.db.Query(`SELECT `+draftColumns+` FROM outbox_drafts WHERE id = ?`, id)
-	if err != nil {
-		return Draft{}, fmt.Errorf("outbox: get: %w", err)
+	d, err := scan(s.db.QueryRow(`SELECT `+draftColumns+` FROM outbox_drafts WHERE id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Draft{}, ErrNotFound
 	}
-
-	var d Draft
-	found := false
-	if rows.Next() {
-		d, err = scan(rows)
-		found = err == nil
-	}
-	rows.Close()
-
 	if err != nil {
 		return Draft{}, err
-	}
-	if !found {
-		return Draft{}, ErrNotFound
 	}
 
 	d.Files, err = s.files(id, true)
@@ -259,7 +230,7 @@ func (s *Store) files(id string, withData bool) ([]File, error) {
 	return out, rows.Err()
 }
 
-func scan(rows *sql.Rows) (Draft, error) {
+func scan(rows sqlitedb.Scanner) (Draft, error) {
 	var d Draft
 	var to, cc string
 	var created, updated int64
@@ -363,10 +334,4 @@ func clean(addrs []string) []string {
 		}
 	}
 	return out
-}
-
-func newID() string {
-	b := make([]byte, 8)
-	_, _ = rand.Read(b)
-	return "mail_" + hex.EncodeToString(b)
 }

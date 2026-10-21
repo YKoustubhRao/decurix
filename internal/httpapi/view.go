@@ -1,12 +1,10 @@
 package httpapi
 
 import (
-	"errors"
 	"log"
 	"net/http"
 	"strings"
 
-	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/ollama"
 	"github.com/YKoustubhRao/decurix/internal/webui"
 )
@@ -29,14 +27,8 @@ func (s *Server) desktopViewHandler(w http.ResponseWriter, r *http.Request) {
 	// resident by the time they have typed it.
 	ollama.WarmAsync()
 
-	d, err := s.Desktops.Get(r.Context(), id)
-	if errors.Is(err, desktop.ErrNotFound) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		log.Printf("desktop view: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+	d, ok := s.pageDesktop(w, r, id, "desktop view")
+	if !ok {
 		return
 	}
 

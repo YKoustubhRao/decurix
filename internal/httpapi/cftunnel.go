@@ -17,8 +17,7 @@ const cfTunnelSetupTimeout = 45 * time.Second
 // dashboard's Mobile menu and for build.sh, which skips its quick tunnel
 // while one is set up. Primary listener only, and never to a desktop.
 func (s *Server) cfTunnelStatusHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodGet) {
 		return
 	}
 
@@ -35,8 +34,7 @@ func (s *Server) cfTunnelStatusHandler(w http.ResponseWriter, r *http.Request) {
 // reuses the saved one. Cloudflare's own refusal is shown as it is - it is
 // the person's own token, and its message is what tells them what to fix.
 func (s *Server) cfTunnelConfigureHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodPost) {
 		return
 	}
 
@@ -71,8 +69,7 @@ func (s *Server) cfTunnelConfigureHandler(w http.ResponseWriter, r *http.Request
 // cfTunnelDisableHandler stops this machine's connector and forgets the
 // setup; the tunnel and its DNS record stay on Cloudflare.
 func (s *Server) cfTunnelDisableHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodPost) {
 		return
 	}
 

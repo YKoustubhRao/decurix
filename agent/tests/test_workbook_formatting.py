@@ -7,13 +7,13 @@ file had no fill and no conditional format.
     PYTHONPATH="agent;agent/tests" python -m unittest test_workbook_formatting
 """
 
-import tempfile
 import unittest
-from pathlib import Path
 
 import openpyxl
 from openpyxl.formatting.rule import CellIsRule, ColorScaleRule, FormulaRule
 from openpyxl.styles import Font, PatternFill
+
+from temp_case import TempDirCase
 
 from decurix_agent import produced
 from decurix_agent.tools import office
@@ -43,12 +43,7 @@ def _book(path, fills=(), rules=(), autofilter=None, header_fill=False):
     return path
 
 
-class Reading(unittest.TestCase):
-
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.dir = Path(self.tmp.name)
+class Reading(TempDirCase):
 
     def read(self, path):
         return office.read_workbook(path)
@@ -80,12 +75,7 @@ class Reading(unittest.TestCase):
             self.assertIn(line, text)
 
 
-class HighlightNotApplied(unittest.TestCase):
-
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.dir = Path(self.tmp.name)
+class HighlightNotApplied(TempDirCase):
 
     def test_nothing_applied_is_a_finding(self):
         # A header fill is not a highlight of the rows asked for.

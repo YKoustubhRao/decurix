@@ -12,10 +12,6 @@ def _skill(name, goal, params, status=skills.READY, title=None):
             "params": params, "steps": []}
 
 
-def _param(name, example, varies=True):
-    return {"name": name, "label": name, "example": example, "varies": varies}
-
-
 class TestNamingASkill(unittest.TestCase):
     def test_a_name_with_spaces_is_read_whole(self):
         self.assertEqual(skill_task.parse_learn('/learn demo-1 name="Google a phrase" demo-2'),

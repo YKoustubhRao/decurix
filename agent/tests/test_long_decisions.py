@@ -144,16 +144,8 @@ class Messages(unittest.TestCase):
             self.assertIn(want, text)
 
 
-class RunWithDecisions(unittest.TestCase):
+class RunWithDecisions(base.LongRunBase):
     """The live flow on the LongRun harness of test_long_requests."""
-
-    setUp = base.LongRun.setUp
-    restore = base.LongRun.restore
-    model = base.LongRun.model
-    send = base.LongRun.send
-    finals = base.LongRun.finals
-    message = base.LongRun.message
-    run_id = base.LongRun.run_id
 
     def test_the_same_question_after_an_answer_does_not_loop(self):
         self.engine.asks["s1-register"] = LIVE_QUESTION
@@ -206,16 +198,8 @@ def _live_run_plan():
          "outputs": [{"file": "portal_log.csv"}]}]}
 
 
-class TheLiveMixUp(unittest.TestCase):
+class TheLiveMixUp(base.LongRunBase):
     """Round 5 P2: the credit decision answered while the portal stage's grounding question was open."""
-
-    setUp = base.LongRun.setUp
-    restore = base.LongRun.restore
-    model = base.LongRun.model
-    send = base.LongRun.send
-    finals = base.LongRun.finals
-    message = base.LongRun.message
-    run_id = base.LongRun.run_id
 
     def test_the_credit_answer_decides_the_credit_stage_not_the_portal_question(self):
         self.plan = _live_run_plan()
@@ -256,15 +240,7 @@ def _p3_plan():
          "outputs": [{"file": "approval_log.csv"}], "depends_on": ["proposal"]}]}
 
 
-class TheApprovalOfAPlanIsADecision(unittest.TestCase):
-    setUp = base.LongRun.setUp
-    restore = base.LongRun.restore
-    model = base.LongRun.model
-    send = base.LongRun.send
-    finals = base.LongRun.finals
-    message = base.LongRun.message
-    run_id = base.LongRun.run_id
-
+class TheApprovalOfAPlanIsADecision(base.LongRunBase):
     def test_an_approval_asked_in_a_decision_stage_is_a_question_and_yes_decides_it(self):
         self.plan = _p3_plan()
         engine_perform = self.engine.perform_task

@@ -29,18 +29,25 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	isWebSocket := strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
+
 	// If the desktop is actively provisioning and not yet ready for GUI connections,
 	// display a sleek launch progress screen rather than connection failures or 404s.
-	if prov, ok := s.Desktops.GetProvisioning(parts[0]); ok && !prov.Ready {
-		if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-			http.Error(w, "desktop is still provisioning", http.StatusServiceUnavailable)
-			return
+	provisioning := func() bool {
+		prov, ok := s.Desktops.GetProvisioning(parts[0])
+		if !ok || prov.Ready {
+			return false
 		}
-		s.renderProvisioningLaunchScreen(w, r, prov)
+		if isWebSocket {
+			http.Error(w, "desktop is still provisioning", http.StatusServiceUnavailable)
+		} else {
+			s.renderProvisioningLaunchScreen(w, r, prov)
+		}
+		return true
+	}
+	if provisioning() {
 		return
 	}
-
-	isWebSocket := strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
 
 	// The screen itself is the control plane's page (screen.go); everything
 	// under it - the WebSocket, and noVNC's own vnc.html for anyone who wants
@@ -52,52 +59,11 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	proxyURL, desktopID, err := s.Desktops.ProxyTarget(r.Context(), parts[0])
 
-	if err != nil {
-		if prov, ok := s.Desktops.GetProvisioning(parts[0]); ok && !prov.Ready {
-			if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-				http.Error(w, "desktop is still provisioning", http.StatusServiceUnavailable)
-				return
-			}
-			s.renderProvisioningLaunchScreen(w, r, prov)
-			return
-		}
+	if err != nil && provisioning() {
+		return
 	}
 
-	switch {
-	case errors.Is(err, desktop.ErrNotFound):
-		http.NotFound(w, r)
-		return
-
-	case errors.Is(err, desktop.ErrNotRunning):
-		http.Error(
-			w,
-			"desktop is not running",
-			http.StatusServiceUnavailable,
-		)
-		return
-
-	case errors.Is(err, desktop.ErrNoNetwork):
-		http.Error(
-			w,
-			"desktop is not connected to Decurix network",
-			http.StatusServiceUnavailable,
-		)
-		return
-
-	case errors.Is(err, desktop.ErrNoAddress):
-		http.Error(
-			w,
-			"desktop has no network IP",
-			http.StatusServiceUnavailable,
-		)
-		return
-
-	case err != nil:
-		http.Error(
-			w,
-			err.Error(),
-			http.StatusInternalServerError,
-		)
+	if proxyTargetFailed(w, r, err) {
 		return
 	}
 
@@ -171,35 +137,35 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 // mark, resolved against the control plane's origin (not the desktop
 // container's) since this page is only ever reached through the
 // /desktop/<id>/ proxy.
-var decurixBrandingRewrites = [][2][]byte{
-	{
-		[]byte(`<title>noVNC</title>`),
-		[]byte(`<title>Decurix</title>`),
-	},
-	{
-		[]byte(`<link rel="icon" type="image/x-icon" href="app/images/icons/novnc.ico">`),
-		[]byte(`<link rel="icon" type="image/svg+xml" href="/favicon.svg">`),
-	},
-	{
-		[]byte(`<h1 class="noVNC_logo" translate="no"><span>no</span><br>VNC</h1>`),
-		[]byte(`<h1 class="noVNC_logo decurix-logo" translate="no" style="font-size:13px;line-height:1.2;display:flex;align-items:center;gap:8px;text-shadow:none;color:#f2f0ea;font-family:ui-sans-serif,system-ui,sans-serif"><img src="/favicon.svg" alt="" width="20" height="20" style="display:block;border-radius:4px"><span style="color:inherit;font-weight:700">Decurix</span></h1>`),
-	},
-	{
-		[]byte(`<p class="noVNC_logo" translate="no"><span>no</span>VNC</p>`),
-		[]byte(`<p class="noVNC_logo decurix-logo" translate="no" style="font-size:20px;line-height:1.2;display:flex;flex-direction:column;align-items:center;gap:10px;text-shadow:none;color:#f2f0ea;font-family:ui-sans-serif,system-ui,sans-serif"><img src="/favicon.svg" alt="" width="56" height="56" style="display:block;border-radius:12px"><span style="color:inherit;font-weight:700;letter-spacing:.02em">Decurix</span></p>`),
-	},
-}
+var decurixBrandingRewrites = brandingRewrites("/favicon.svg")
 
+// init puts the embedded favicon itself, as a data: URI, in place of
+// /favicon.svg when the build has one.
 func init() {
 	if len(webui.FaviconSVG) > 0 {
-		dataURI := "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString(webui.FaviconSVG)
-		faviconLink := fmt.Sprintf(`<link rel="icon" type="image/svg+xml" href="%s">`, dataURI)
-		smallLogo := fmt.Sprintf(`<h1 class="noVNC_logo decurix-logo" translate="no" style="font-size:13px;line-height:1.2;display:flex;align-items:center;gap:8px;text-shadow:none;color:#f2f0ea;font-family:ui-sans-serif,system-ui,sans-serif"><img src="%s" alt="" width="20" height="20" style="display:block;border-radius:4px"><span style="color:inherit;font-weight:700">Decurix</span></h1>`, dataURI)
-		largeLogo := fmt.Sprintf(`<p class="noVNC_logo decurix-logo" translate="no" style="font-size:20px;line-height:1.2;display:flex;flex-direction:column;align-items:center;gap:10px;text-shadow:none;color:#f2f0ea;font-family:ui-sans-serif,system-ui,sans-serif"><img src="%s" alt="" width="56" height="56" style="display:block;border-radius:12px"><span style="color:inherit;font-weight:700;letter-spacing:.02em">Decurix</span></p>`, dataURI)
+		decurixBrandingRewrites = brandingRewrites("data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString(webui.FaviconSVG))
+	}
+}
 
-		decurixBrandingRewrites[1][1] = []byte(faviconLink)
-		decurixBrandingRewrites[2][1] = []byte(smallLogo)
-		decurixBrandingRewrites[3][1] = []byte(largeLogo)
+// brandingRewrites is decurixBrandingRewrites with icon as the brand mark's address.
+func brandingRewrites(icon string) [][2][]byte {
+	return [][2][]byte{
+		{
+			[]byte(`<title>noVNC</title>`),
+			[]byte(`<title>Decurix</title>`),
+		},
+		{
+			[]byte(`<link rel="icon" type="image/x-icon" href="app/images/icons/novnc.ico">`),
+			[]byte(`<link rel="icon" type="image/svg+xml" href="` + icon + `">`),
+		},
+		{
+			[]byte(`<h1 class="noVNC_logo" translate="no"><span>no</span><br>VNC</h1>`),
+			[]byte(`<h1 class="noVNC_logo decurix-logo" translate="no" style="font-size:13px;line-height:1.2;display:flex;align-items:center;gap:8px;text-shadow:none;color:#f2f0ea;font-family:ui-sans-serif,system-ui,sans-serif"><img src="` + icon + `" alt="" width="20" height="20" style="display:block;border-radius:4px"><span style="color:inherit;font-weight:700">Decurix</span></h1>`),
+		},
+		{
+			[]byte(`<p class="noVNC_logo" translate="no"><span>no</span>VNC</p>`),
+			[]byte(`<p class="noVNC_logo decurix-logo" translate="no" style="font-size:20px;line-height:1.2;display:flex;flex-direction:column;align-items:center;gap:10px;text-shadow:none;color:#f2f0ea;font-family:ui-sans-serif,system-ui,sans-serif"><img src="` + icon + `" alt="" width="56" height="56" style="display:block;border-radius:12px"><span style="color:inherit;font-weight:700;letter-spacing:.02em">Decurix</span></p>`),
+		},
 	}
 }
 
@@ -211,6 +177,38 @@ func init() {
 // desktop"), splicing in the ticket toolbar, and - only for requests carrying
 // ?ui=touch - the mobile touch enhancements.
 func rewriteDesktopHTML(resp *http.Response, desktopID string) error {
+	return rewriteHTML(resp, func(body []byte) []byte {
+		for _, rewrite := range decurixBrandingRewrites {
+			body = bytes.Replace(body, rewrite[0], rewrite[1], 1)
+		}
+
+		marker := []byte("</body>")
+		if bytes.Contains(body, marker) {
+			var injections strings.Builder
+			injections.WriteString(strings.ReplaceAll(titleOverrideScript, "__DESKTOP_ID__", desktopID))
+			injections.WriteString(strings.ReplaceAll(ticketToolbar, "__DESKTOP_ID__", desktopID))
+			injections.WriteString(strings.ReplaceAll(resourceAlertPopup, "__DESKTOP_ID__", desktopID))
+			injections.WriteString(autoConnectHelper)
+			if resp.Request != nil && resp.Request.URL != nil && resp.Request.URL.Query().Get("ui") == "touch" {
+				injections.WriteString(mobileViewerEnhancements)
+			}
+			body = bytes.Replace(body, marker, append([]byte(injections.String()), marker...), 1)
+		}
+
+		// The proxied container's own Content-Type carries no charset, and this
+		// is where every rewrite above appends UTF-8 text (the ticket toolbar's
+		// own copy, e.g. its em dashes) well past a browser's ~1024-byte <meta
+		// charset> sniffing window. Without an explicit charset here a browser
+		// guesses one for the whole document before any of that text is even in
+		// it, and every non-ASCII byte added above renders as mojibake.
+		resp.Header.Set("Content-Type", "text/html; charset=utf-8")
+		return body
+	})
+}
+
+// rewriteHTML replaces an HTML response's body with edit's version of it,
+// keeping its length right; any other response passes untouched.
+func rewriteHTML(resp *http.Response, edit func([]byte) []byte) error {
 	if !strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
 		return nil
 	}
@@ -221,34 +219,11 @@ func rewriteDesktopHTML(resp *http.Response, desktopID string) error {
 		return err
 	}
 
-	for _, rewrite := range decurixBrandingRewrites {
-		body = bytes.Replace(body, rewrite[0], rewrite[1], 1)
-	}
-
-	marker := []byte("</body>")
-	if bytes.Contains(body, marker) {
-		var injections strings.Builder
-		injections.WriteString(strings.ReplaceAll(titleOverrideScript, "__DESKTOP_ID__", desktopID))
-		injections.WriteString(strings.ReplaceAll(ticketToolbar, "__DESKTOP_ID__", desktopID))
-		injections.WriteString(strings.ReplaceAll(resourceAlertPopup, "__DESKTOP_ID__", desktopID))
-		injections.WriteString(autoConnectHelper)
-		if resp.Request != nil && resp.Request.URL != nil && resp.Request.URL.Query().Get("ui") == "touch" {
-			injections.WriteString(mobileViewerEnhancements)
-		}
-		body = bytes.Replace(body, marker, append([]byte(injections.String()), marker...), 1)
-	}
+	body = edit(body)
 
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	resp.ContentLength = int64(len(body))
 	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
-
-	// The proxied container's own Content-Type carries no charset, and this
-	// is where every rewrite above appends UTF-8 text (the ticket toolbar's
-	// own copy, e.g. its em dashes) well past a browser's ~1024-byte <meta
-	// charset> sniffing window. Without an explicit charset here a browser
-	// guesses one for the whole document before any of that text is even in
-	// it, and every non-ASCII byte added above renders as mojibake.
-	resp.Header.Set("Content-Type", "text/html; charset=utf-8")
 	return nil
 }
 
@@ -1661,41 +1636,7 @@ func (s *Server) agentProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	proxyURL, desktopID, err := s.Desktops.AgentProxyTarget(r.Context(), parts[0])
 
-	switch {
-	case errors.Is(err, desktop.ErrNotFound):
-		http.NotFound(w, r)
-		return
-
-	case errors.Is(err, desktop.ErrNotRunning):
-		http.Error(
-			w,
-			"desktop is not running",
-			http.StatusServiceUnavailable,
-		)
-		return
-
-	case errors.Is(err, desktop.ErrNoNetwork):
-		http.Error(
-			w,
-			"desktop is not connected to Decurix network",
-			http.StatusServiceUnavailable,
-		)
-		return
-
-	case errors.Is(err, desktop.ErrNoAddress):
-		http.Error(
-			w,
-			"desktop has no network IP",
-			http.StatusServiceUnavailable,
-		)
-		return
-
-	case err != nil:
-		http.Error(
-			w,
-			err.Error(),
-			http.StatusInternalServerError,
-		)
+	if proxyTargetFailed(w, r, err) {
 		return
 	}
 
@@ -1713,25 +1654,10 @@ func (s *Server) agentProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reverseProxy.ModifyResponse = func(resp *http.Response) error {
-		if !strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
-			return nil
-		}
-
-		body, readErr := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		if readErr != nil {
-			return readErr
-		}
-
-		rewritten := bytes.ReplaceAll(body, []byte("'/api/"), []byte("'"+prefix+"/api/"))
-		rewritten = bytes.ReplaceAll(rewritten, []byte("`/api/"), []byte("`"+prefix+"/api/"))
-
-		resp.Body = io.NopCloser(bytes.NewReader(rewritten))
-		resp.ContentLength = int64(len(rewritten))
-		resp.Header.Set("Content-Length", strconv.Itoa(len(rewritten)))
-
-		return nil
+		return rewriteHTML(resp, func(body []byte) []byte {
+			rewritten := bytes.ReplaceAll(body, []byte("'/api/"), []byte("'"+prefix+"/api/"))
+			return bytes.ReplaceAll(rewritten, []byte("`/api/"), []byte("`"+prefix+"/api/"))
+		})
 	}
 
 	reverseProxy.ErrorHandler = func(
@@ -1993,3 +1919,46 @@ const launchScreenHTML = `<!DOCTYPE html>
 </body>
 </html>
 `
+
+// proxyTargetFailed answers a request whose desktop proxy target could not be
+// resolved (err from ProxyTarget or AgentProxyTarget) and reports whether it
+// did; a nil err writes nothing.
+func proxyTargetFailed(w http.ResponseWriter, r *http.Request, err error) bool {
+	switch {
+	case err == nil:
+		return false
+
+	case errors.Is(err, desktop.ErrNotFound):
+		http.NotFound(w, r)
+
+	case errors.Is(err, desktop.ErrNotRunning):
+		http.Error(
+			w,
+			"desktop is not running",
+			http.StatusServiceUnavailable,
+		)
+
+	case errors.Is(err, desktop.ErrNoNetwork):
+		http.Error(
+			w,
+			"desktop is not connected to Decurix network",
+			http.StatusServiceUnavailable,
+		)
+
+	case errors.Is(err, desktop.ErrNoAddress):
+		http.Error(
+			w,
+			"desktop has no network IP",
+			http.StatusServiceUnavailable,
+		)
+
+	default:
+		http.Error(
+			w,
+			err.Error(),
+			http.StatusInternalServerError,
+		)
+	}
+
+	return true
+}

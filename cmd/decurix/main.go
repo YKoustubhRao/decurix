@@ -503,18 +503,18 @@ func main() {
 
 	lanAddr := lanListenAddr()
 
-	var srvMu sync.Mutex
-	var activeServers []*http.Server
-
-	lanServer := &http.Server{
-		Addr:              lanAddr,
-		Handler:           lanAccess.Middleware(httpapi.GzipMiddleware(httpapi.MarkGated(lanMux))),
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       60 * time.Second,
+	newServer := func(addr string, handler http.Handler) *http.Server {
+		return &http.Server{
+			Addr:              addr,
+			Handler:           handler,
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       60 * time.Second,
+		}
 	}
-	srvMu.Lock()
-	activeServers = append(activeServers, lanServer)
-	srvMu.Unlock()
+
+	lanServer := newServer(lanAddr, lanAccess.Middleware(httpapi.GzipMiddleware(httpapi.MarkGated(lanMux))))
+	// Every listener, for the shutdown below; appended to only before it starts.
+	activeServers := []*http.Server{lanServer}
 
 	go func() {
 		log.Printf("LAN/tunnel listener on %s (access code: %s)", lanAddr, lanAccess.Password())
@@ -649,20 +649,10 @@ func main() {
 	log.Printf("Desktop manager listening on %s", strings.Join(addrs, ", "))
 
 	handler := httpapi.RefuseForwarded(httpapi.GzipMiddleware(mux))
-	newServer := func(addr string) *http.Server {
-		return &http.Server{
-			Addr:              addr,
-			Handler:           handler,
-			ReadHeaderTimeout: 10 * time.Second,
-			IdleTimeout:       60 * time.Second,
-		}
-	}
 
 	for _, addr := range addrs[1:] {
-		s := newServer(addr)
-		srvMu.Lock()
+		s := newServer(addr, handler)
 		activeServers = append(activeServers, s)
-		srvMu.Unlock()
 		go func(srv *http.Server, a string) {
 			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.Printf("warning: primary listener on %s failed: %v", a, err)
@@ -670,10 +660,8 @@ func main() {
 		}(s, addr)
 	}
 
-	primarySrv := newServer(addrs[0])
-	srvMu.Lock()
+	primarySrv := newServer(addrs[0], handler)
 	activeServers = append(activeServers, primarySrv)
-	srvMu.Unlock()
 
 	go func() {
 		<-ctx.Done()
@@ -681,11 +669,7 @@ func main() {
 		defer cancel()
 
 		var wg sync.WaitGroup
-		srvMu.Lock()
-		toShutdown := append([]*http.Server(nil), activeServers...)
-		srvMu.Unlock()
-
-		for _, s := range toShutdown {
+		for _, s := range activeServers {
 			wg.Add(1)
 			go func(srv *http.Server) {
 				defer wg.Done()

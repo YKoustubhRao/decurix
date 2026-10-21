@@ -8,13 +8,13 @@ the drafts did not go to, and a re-check's drafts sat beside the first attempt's
 
 import io
 import json
-import tempfile
 import unittest
 from contextlib import redirect_stdout
-from pathlib import Path
 from unittest import mock
 
 import openpyxl
+
+from temp_case import TempDirCase
 
 from decurix_agent import payees, task_context
 from decurix_agent.tools import office, outbox
@@ -37,12 +37,10 @@ def run(argv, stdin=None):
     return code, out.getvalue()
 
 
-class Fixture(unittest.TestCase):
+class Fixture(TempDirCase):
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.dir = Path(self.tmp.name)
+        super().setUp()
         self.book = self.dir / "customer_master.xlsx"
         wb = openpyxl.Workbook()
         wb.active.append(["Customer", "Contact", "Email"])

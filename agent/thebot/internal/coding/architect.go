@@ -384,11 +384,7 @@ func (d *Design) Announce(onLog func(string)) {
 	for i, f := range d.Files {
 		onLog(fmt.Sprintf("coding-architecture:   %d. %s - %s", i+1, f.Path, f.Purpose))
 		for _, s := range f.Symbols {
-			sig := s.Signature
-			if strings.TrimSpace(sig) == "" {
-				sig = s.Name
-			}
-			onLog(fmt.Sprintf("coding-architecture:        - %s  // %s", oneLine(sig), s.Purpose))
+			onLog(fmt.Sprintf("coding-architecture:        - %s  // %s", oneLine(orDefault(s.Signature, s.Name)), s.Purpose))
 		}
 	}
 	if d.RunCommand != "" {

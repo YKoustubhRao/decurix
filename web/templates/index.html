@@ -634,7 +634,8 @@
   border-radius:var(--r-lg);
   margin-top:2px;
 }
-.host-apps-head{
+.host-apps-head,
+.host-files-head{
   display:flex;
   align-items:center;
   justify-content:space-between;
@@ -795,12 +796,6 @@
   border-radius:var(--r-lg);
   margin-top:6px;
 }
-.host-files-head{
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap:12px;
-}
 .host-files-rows{
   display:flex;
   flex-direction:column;
@@ -859,28 +854,6 @@
   color:var(--text-3);
 }
 .host-files-note.err{color:var(--red, #ef4444)}
-
-/* ---------- claude login dialog ---------- */
-
-.claude-login-url-row{display:flex;align-items:center;gap:8px}
-
-.claude-login-url{
-  display:block;
-  flex:1;
-  min-width:0;
-  padding:9px 11px;
-  border:1px solid var(--line);
-  border-radius:var(--r-md);
-  background:var(--surface-2);
-  font-size:12.5px;
-  word-break:break-all;
-  color:var(--text);
-  text-decoration:none
-}
-.claude-login-url:hover{border-color:var(--line-2)}
-.copy-btn:disabled{opacity:.4;cursor:not-allowed}
-.claude-login-error{display:none;font-size:12.5px;color:var(--danger)}
-.claude-login-error.on{display:block}
 
 /* ---------- query rail ---------- */
 
@@ -1585,6 +1558,7 @@
   if(document.querySelector("[data-shot]")){ shotLoop(); }
 
   var toast = Decurix.toast, busy = Decurix.busy, post = Decurix.post;
+  var node = Decurix.node, recButton = Decurix.button;
 
   /* ---------------- formatting ---------------- */
 
@@ -2056,8 +2030,7 @@
 
       hostAppsData.forEach(function(item){
         var unavailable = item.mode === "unavailable" || !!item.unavailable_reason;
-        var row = document.createElement("label");
-        row.className = "host-app-row " + (unavailable ? "is-unavailable" : "is-detected");
+        var row = node("label", "host-app-row " + (unavailable ? "is-unavailable" : "is-detected"));
         var paths = Array.isArray(item.detected_paths) ? item.detected_paths.join(" ") : "";
         row.dataset.searchText = [
           item.name || "",
@@ -2170,20 +2143,14 @@
   function renderHostFiles(){
     hostFilesRows.textContent = "";
     hostFilesChosen.forEach(function(item){
-      var row = document.createElement("div");
-      row.className = "host-file-row";
+      var row = node("div", "host-file-row");
 
-      var kind = document.createElement("span");
-      kind.className = "host-file-kind";
-      kind.textContent = item.is_dir ? "Folder" : "File";
+      var kind = node("span", "host-file-kind", item.is_dir ? "Folder" : "File");
 
-      var paths = document.createElement("div");
-      paths.className = "host-file-paths";
-      var src = document.createElement("div");
-      src.textContent = item.display_path || item.path;
+      var paths = node("div", "host-file-paths");
+      var src = node("div", "", item.display_path || item.path);
       src.title = item.display_path || item.path;
-      var dest = document.createElement("div");
-      dest.className = "host-file-dest";
+      var dest = node("div", "host-file-dest");
       dest.textContent = "→ " + String(item.dest || "").replace(/^\/home\/headless/, "~");
       dest.title = "Where it will be in the desktop";
       paths.appendChild(src);
@@ -2311,8 +2278,7 @@
     var existing = grid.querySelector('.dcard[data-desktop-id="' + info.id + '"]');
     if(existing){ return existing; }
 
-    var card = document.createElement("article");
-    card.className = "dcard";
+    var card = node("article", "dcard");
     card.dataset.desktopId = info.id;
 
     var profileLabel = info.profile === "ai" ? "AI Developer" : (info.profile === "developer" ? "Developer" : "Basic");
@@ -2587,19 +2553,6 @@
    first, with Replay / Learn / Download. Read from the desktop when the list
    is opened, so what is shown is what is there now. Built from text nodes
    only: a title is whatever a person typed. */
-  function recNode(tag, className, text){
-    var n = document.createElement(tag);
-    if(className){ n.className = className; }
-    if(text !== undefined){ n.textContent = text; }
-    return n;
-  }
-
-  function recButton(label, className){
-    var b = recNode("button", "btn btn-sm " + className, label);
-    b.type = "button";
-    return b;
-  }
-
   function recWhen(seconds){
     if(!seconds){ return ""; }
     return new Date(seconds * 1000).toLocaleString([], {dateStyle: "medium", timeStyle: "short"});
@@ -2619,18 +2572,18 @@
     body.textContent = "";
 
     if(!shown.length){
-      body.appendChild(recNode("div", "mem-none", "Nothing recorded yet. Record a demonstration from the desktop's screen."));
+      body.appendChild(node("div", "mem-none", "Nothing recorded yet. Record a demonstration from the desktop's screen."));
       return;
     }
 
-    var list = recNode("ul", "rec-list");
+    var list = node("ul", "rec-list");
 
     shown.forEach(function(r){
-      var item = recNode("li", "rec-item");
+      var item = node("li", "rec-item");
 
       /* The recording's name, editable in place: what it is listed as, and
          what the skill Learn teaches from it is called. */
-      var name = recNode("input", "rec-title rec-name");
+      var name = node("input", "rec-title rec-name");
       name.type = "text";
       name.value = r.title || "";
       name.placeholder = "Name this recording";
@@ -2651,14 +2604,14 @@
         }
       });
       item.appendChild(name);
-      item.appendChild(recNode("div", "rec-meta",
+      item.appendChild(node("div", "rec-meta",
         [recWhen(r.started_at), r.event_count + (r.event_count === 1 ? " step" : " steps")].filter(Boolean).join(" · ")));
 
-      var actions = recNode("div", "rec-actions");
+      var actions = node("div", "rec-actions");
 
       var replay = recButton("Replay", "btn-default");
       var learn = recButton("Learn", "btn-default");
-      var download = recNode("a", "btn btn-sm btn-default", "Download");
+      var download = node("a", "btn btn-sm btn-default", "Download");
       download.href = "/api/desktops/recordings/export?" + new URLSearchParams({id: desktopID, session: r.id});
 
       function start(button, url, started, fields){
@@ -2693,13 +2646,11 @@
     var body = details.querySelector("[data-rec-body]");
 
     try{
-      var response = await fetch("/api/desktops/recordings?" + new URLSearchParams({id: desktopID}), {headers: {"Accept": "application/json"}});
-      var data = await response.json().catch(function(){ return {}; });
-      if(!response.ok){ throw new Error(data.error || "Request failed"); }
+      var data = await Decurix.getJSON("/api/desktops/recordings?" + new URLSearchParams({id: desktopID}));
       renderRecordings(details, desktopID, data.recordings || []);
     }catch(e){
       body.textContent = "";
-      body.appendChild(recNode("div", "mem-none", "Couldn't read this desktop's recordings: " + e.message));
+      body.appendChild(node("div", "mem-none", "Couldn't read this desktop's recordings: " + e.message));
     }
   }
 
@@ -2804,27 +2755,33 @@
 
   /* ---------------- learned memory ---------------- */
 
-  document.querySelectorAll("[data-memory-form]").forEach(function(form){
-    form.addEventListener("submit", async function(event){
-      event.preventDefault();
+  /* A memory form posts its fields to url and reloads the page; its button
+     reads pending meanwhile, and label again if that fails. */
+  function memoryForm(selector, url, pending, label){
+    document.querySelectorAll(selector).forEach(function(form){
+      form.addEventListener("submit", async function(event){
+        event.preventDefault();
 
-      var submit = form.querySelector("button[type=submit]");
-      submit.disabled = true;
-      submit.textContent = "Saving…";
+        var submit = form.querySelector("button[type=submit]");
+        submit.disabled = true;
+        submit.textContent = pending;
 
-      try{
-        var fields = {};
-        new FormData(form).forEach(function(value, key){ fields[key] = value; });
+        try{
+          var fields = {};
+          new FormData(form).forEach(function(value, key){ fields[key] = value; });
 
-        await post("/api/desktops/memory", fields);
-        location.reload();
-      }catch(e){
-        submit.disabled = false;
-        submit.textContent = "Save rule";
-        toast(e.message, "error");
-      }
+          await post(url, fields);
+          location.reload();
+        }catch(e){
+          submit.disabled = false;
+          submit.textContent = label;
+          toast(e.message, "error");
+        }
+      });
     });
-  });
+  }
+
+  memoryForm("[data-memory-form]", "/api/desktops/memory", "Saving…", "Save rule");
 
   /* A card's learned memory follows the control plane, like its pill and its
      activity line: one request for every card, and a card is redrawn only
@@ -2844,24 +2801,18 @@
     holder.textContent = "";
 
     if(!entries.length){
-      var none = document.createElement("div");
-      none.className = "mem-none";
-      none.textContent = "Nothing saved yet. Rules you add here are read by the agent before every task.";
+      var none = node("div", "mem-none", "Nothing saved yet. Rules you add here are read by the agent before every task.");
       holder.appendChild(none);
       return;
     }
 
-    var list = document.createElement("ul");
-    list.className = "mem-list";
+    var list = node("ul", "mem-list");
 
     entries.forEach(function(entry){
-      var item = document.createElement("li");
-      item.className = "mem-item";
+      var item = node("li", "mem-item");
 
       [["mem-cat", entry.category], ["mem-title", entry.title], ["mem-summary-text", entry.summary]].forEach(function(part){
-        var el = document.createElement("div");
-        el.className = part[0];
-        el.textContent = part[1] || "";
+        var el = node("div", part[0], part[1] || "");
         item.appendChild(el);
       });
 
@@ -2898,27 +2849,7 @@
   setInterval(pollMemory, 4000);
   document.addEventListener("visibilitychange", pollMemory);
 
-  document.querySelectorAll("[data-link-memory-form]").forEach(function(form){
-    form.addEventListener("submit", async function(event){
-      event.preventDefault();
-
-      var submit = form.querySelector("button[type=submit]");
-      submit.disabled = true;
-      submit.textContent = "Sharing…";
-
-      try{
-        var fields = {};
-        new FormData(form).forEach(function(value, key){ fields[key] = value; });
-
-        await post("/api/desktops/memory/link", fields);
-        location.reload();
-      }catch(e){
-        submit.disabled = false;
-        submit.textContent = "Share memory";
-        toast(e.message, "error");
-      }
-    });
-  });
+  memoryForm("[data-link-memory-form]", "/api/desktops/memory/link", "Sharing…", "Share memory");
 
   document.addEventListener("click", async function(event){
     var button = event.target.closest("[data-unlink-memory]");
@@ -2957,18 +2888,13 @@
   };
 
   function noteElement(note){
-    var el = document.createElement("article");
-    el.className = "note";
+    var el = node("article", "note");
 
-    var head = document.createElement("div");
-    head.className = "note-head";
+    var head = node("div", "note-head");
 
-    var vm = document.createElement("div");
-    vm.className = "note-vm trunc";
-    vm.textContent = note.vm_name || note.filename || "Desktop";
+    var vm = node("div", "note-vm trunc", note.vm_name || note.filename || "Desktop");
 
-    var time = document.createElement("div");
-    time.className = "note-time";
+    var time = node("div", "note-time");
 
     var date = new Date(note.created_at);
     time.textContent = isNaN(date.getTime()) ? "" : relative(date);
@@ -2979,16 +2905,13 @@
     // "DECURIX QUERY REQUEST" left the reader to find out.
     var kindLabel = NOTE_KINDS[note.kind];
     if(kindLabel){
-      var kind = document.createElement("span");
-      kind.className = "chip note-kind note-kind--" + note.kind;
-      kind.textContent = kindLabel;
+      var kind = node("span", "chip note-kind note-kind--" + note.kind, kindLabel);
       head.append(kind);
     }
 
     head.append(time);
 
-    var body = document.createElement("div");
-    body.className = "note-body";
+    var body = node("div", "note-body");
     // The agent's own words and the task they are about (the server reads
     // both out of the note); the whole note only when it has neither.
     body.textContent = note.message || note.content || "";
@@ -3001,17 +2924,13 @@
       task.title = note.task;
     }
 
-    var actions = document.createElement("div");
-    actions.className = "note-actions";
+    var actions = node("div", "note-actions");
 
-    var reply = document.createElement("a");
-    reply.className = "btn btn-default btn-sm";
+    var reply = node("a", "btn btn-default btn-sm");
     reply.href = "/dashboard";
     reply.textContent = "Reply";
 
-    var resolve = document.createElement("button");
-    resolve.className = "btn btn-quiet btn-sm";
-    resolve.textContent = "Resolve";
+    var resolve = node("button", "btn btn-quiet btn-sm", "Resolve");
     resolve.addEventListener("click", function(){ resolveNote(note.id); });
 
     actions.append(reply, resolve);

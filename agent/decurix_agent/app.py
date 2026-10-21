@@ -4,7 +4,7 @@ from http.server import ThreadingHTTPServer
 from decurix_agent import config, harness, shared
 from decurix_agent.computer import demonstration, recording
 from decurix_agent.http_api import Handler
-from decurix_agent.logging_utils import log
+from decurix_agent.logging_utils import log, log_banner
 from decurix_agent.watchers import command_watcher, watchdog
 
 
@@ -34,9 +34,7 @@ def tidy_recordings():
 
 def main():
 
-    log("========================================")
-    log("Decurix VM Agent")
-    log("========================================")
+    log_banner("Decurix VM Agent")
 
     log(
         f"Desktop ID: {config.DESKTOP_ID}"

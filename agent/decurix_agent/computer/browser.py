@@ -13,12 +13,7 @@ compares product names. The raw title is kept beside it for anything shown to
 a person.
 """
 
-import json
-import os
 import re
-from pathlib import Path
-
-from decurix_agent.computer.errors import ComputerError
 
 # The name every title, recording and check uses for the browser.
 CANONICAL = "Chromium"

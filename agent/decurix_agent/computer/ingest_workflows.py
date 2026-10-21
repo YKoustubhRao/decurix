@@ -60,21 +60,19 @@ def from_workflow_demo(data):
                 "name": target.get("name", ""),
                 "source": target.get("source", "cdp" if "http" in current_url else "atspi"),
             }
-        elif isinstance(target, str):
-            if kind == "open":
-                pass
-            else:
-                element = {
-                    "role": "control",
-                    "name": target,
-                    "source": "cdp" if "http" in current_url else "atspi",
-                }
+        elif isinstance(target, str) and kind != "open":
+            element = {
+                "role": "control",
+                "name": target,
+                "source": "cdp" if "http" in current_url else "atspi",
+            }
 
         base_event = {
             "actor": "human",
             "outcome": "done",
             "imported": {"step": idx, "type": kind},
         }
+        expect = None
 
         if kind in ("open", "navigate", "launch"):
             open_target = s.get("target") or s.get("url") or s.get("app")
@@ -85,41 +83,27 @@ def from_workflow_demo(data):
                 current_url = str(open_target)
             event = dict(base_event, kind="open", target=open_target, new_tab=bool(s.get("new_tab", False)))
             if current_url:
-                event["url"] = current_url
-                event["expect"] = {"url": current_url}
-            events.append(event)
+                expect = {"url": current_url}
 
         elif kind in ("click", "double_click", "right_click"):
             event = dict(base_event, kind=kind, element=element)
             if s.get("point"):
                 event["point"] = list(s["point"])
-            if current_url:
-                event["url"] = current_url
-            events.append(event)
 
         elif kind in ("type", "fill", "input", "change"):
             text = s.get("text") if "text" in s else s.get("value", "")
             event = dict(base_event, kind="type", element=element, text=str(text))
-            if current_url:
-                event["url"] = current_url
             if element.get("name"):
-                event["expect"] = {"values": [{"role": element.get("role", "textbox"), "name": element["name"], "value": str(text)}]}
-            events.append(event)
+                expect = {"values": [{"role": element.get("role", "textbox"), "name": element["name"], "value": str(text)}]}
 
         elif kind == "upload":
             if isinstance(files, str):
                 files = [files]
             event = dict(base_event, kind="upload", element=element, files=files or [])
-            if current_url:
-                event["url"] = current_url
-            events.append(event)
 
         elif kind in ("select", "dropdown"):
             option = s.get("option") or s.get("value")
             event = dict(base_event, kind="select", element=element, option=str(option or ""))
-            if current_url:
-                event["url"] = current_url
-            events.append(event)
 
         elif kind == "scroll":
             direction = s.get("direction", "down")
@@ -127,28 +111,26 @@ def from_workflow_demo(data):
             event = dict(base_event, kind="scroll", direction=direction, amount=amount)
             if element:
                 event["element"] = element
-            if current_url:
-                event["url"] = current_url
-            events.append(event)
 
         elif kind == "drag":
             end = s.get("end") or s.get("drop_point")
             event = dict(base_event, kind="drag", element=element, end=list(end) if end else None)
-            if current_url:
-                event["url"] = current_url
-            events.append(event)
 
         elif kind in ("key", "press"):
             keys = s.get("keys") or [s.get("key")]
             event = dict(base_event, kind="key", keys=[str(k) for k in keys if k])
             if element:
                 event["element"] = element
-            if current_url:
-                event["url"] = current_url
-            events.append(event)
 
         else:
             ignored += 1
+            continue
+
+        if current_url:
+            event["url"] = current_url
+        if expect:
+            event["expect"] = expect
+        events.append(event)
 
     return {
         "title": title,

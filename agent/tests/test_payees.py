@@ -10,12 +10,13 @@ stand-ins built the same way otherwise.
 """
 
 import shutil
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 import openpyxl
+
+from temp_case import TempDirCase
 
 from decurix_agent import payees, produced
 
@@ -70,12 +71,10 @@ def proposal(path, sgp_account="002501234567", sgp_ifsc="ICIC0000025"):
     return str(path)
 
 
-class Fixture(unittest.TestCase):
+class Fixture(TempDirCase):
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.dir = Path(self.tmp.name)
+        super().setUp()
         self.master = master(self.dir / "vendor_master.xlsx")
         self.email = self.dir / "Change of bank account - Shree Ganesh Packaging.eml"
         self.email.write_text(EMAIL, encoding="utf-8")
@@ -190,12 +189,10 @@ class AtTheFinalCheck(FileWorkIsChecked):
 
 
 @unittest.skipUnless(LIVE_IN.is_dir() and LIVE_OUT.is_dir(), "the round's P3 files are not on this machine")
-class TheRoundsOwnFiles(unittest.TestCase):
+class TheRoundsOwnFiles(TempDirCase):
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.dir = Path(self.tmp.name)
+        super().setUp()
         for name in ("vendor_master.xlsx", "PO_register.xlsx", "GRN_log.xlsx",
                      "Change of bank account - Shree Ganesh Packaging.eml"):
             shutil.copy(LIVE_IN / name, self.dir / name)

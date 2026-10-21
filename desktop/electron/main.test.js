@@ -835,7 +835,7 @@ test('hosting controls persist the choice and keep setup failures in the dashboa
 
 test('only the trusted dashboard can control local hosting', async () => {
   const result = await boot('ready');
-  for (const channel of ['local-model-status', 'local-model-hosting', 'local-model-prepare']) {
+  for (const channel of ['local-model-status', 'local-model-hosting']) {
     assert.throws(() => result.modelAction(channel, true, 'https://example.test'), /only available/);
     assert.throws(() => result.modelAction(channel, true, 'http://127.0.0.1:8080/', true), /only available/);
   }

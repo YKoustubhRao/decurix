@@ -146,7 +146,7 @@ class TestALookReadsInnerFrames(unittest.TestCase):
 
     def test_a_frame_with_no_size_and_what_is_inside_it_are_not_read(self):
         page = FramedPage()
-        frames = cdp._frames(page)
+        frames = cdp._inner_frames(page, cdp._frame_tree(page))
 
         self.assertEqual([f["id"] for f in frames], ["APP"])
 

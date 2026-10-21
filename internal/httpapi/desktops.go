@@ -22,6 +22,58 @@ import (
 
 var validDesktopNameRe = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 
+// positiveInt is raw as a positive number, or fallback when it is not one.
+func positiveInt(raw string, fallback int64) int64 {
+	if parsed, err := strconv.ParseInt(raw, 10, 64); err == nil && parsed > 0 {
+		return parsed
+	}
+	return fallback
+}
+
+// splitList is a comma-separated form value's items, trimmed, without empty ones.
+func splitList(raw string) []string {
+	var items []string
+	for _, part := range strings.Split(raw, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			items = append(items, part)
+		}
+	}
+	return items
+}
+
+// pageDesktop looks up the desktop id a page is for, answering the request
+// itself when that fails: 404 when there is no such desktop, a 500 (logged
+// under what) otherwise.
+func (s *Server) pageDesktop(w http.ResponseWriter, r *http.Request, id, what string) (desktop.Desktop, bool) {
+	d, err := s.Desktops.Get(r.Context(), id)
+	if errors.Is(err, desktop.ErrNotFound) {
+		http.NotFound(w, r)
+		return d, false
+	}
+	if err != nil {
+		log.Printf("%s: %v", what, err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return d, false
+	}
+	return d, true
+}
+
+// desktopFound looks up the desktop id, answering the request itself when that
+// fails: missing, in plain text with status, when there is no such desktop,
+// jsonError otherwise.
+func (s *Server) desktopFound(w http.ResponseWriter, r *http.Request, id string, status int, missing string) (desktop.Desktop, bool) {
+	d, err := s.Desktops.Get(r.Context(), id)
+	if errors.Is(err, desktop.ErrNotFound) {
+		http.Error(w, missing, status)
+		return d, false
+	}
+	if err != nil {
+		jsonError(w, err)
+		return d, false
+	}
+	return d, true
+}
+
 // dashboardHandler renders the root dashboard page listing all desktops.
 func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
@@ -78,8 +130,7 @@ func (s *Server) desktopsAPIHandler(w http.ResponseWriter, r *http.Request) {
 
 // createDesktopHandler validates a desktop-creation request (name, profile, cpus, memory, and optionally a specialization/parent_id spawning it as another desktop's child) and creates the desktop.
 func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+	if !requirePost(w, r) {
 		return
 	}
 
@@ -92,19 +143,9 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	specialization := strings.Join(strings.Fields(r.FormValue("specialization")), " ")
 	parentID := strings.TrimSpace(r.FormValue("parent_id"))
 
-	cpus := int64(1)
-	if envCpus := os.Getenv("DECURIX_DEFAULT_DESKTOP_CPUS"); envCpus != "" {
-		if parsed, err := strconv.ParseInt(envCpus, 10, 64); err == nil && parsed > 0 {
-			cpus = parsed
-		}
-	}
-
-	memoryMB := int64(2048)
-	if envMem := os.Getenv("DECURIX_DEFAULT_DESKTOP_MEMORY_MB"); envMem != "" {
-		if parsed, err := strconv.ParseInt(envMem, 10, 64); err == nil && parsed > 0 {
-			memoryMB = parsed
-		}
-	}
+	// The form's value, else the environment's default, else ours.
+	cpus := positiveInt(r.FormValue("cpus"), positiveInt(os.Getenv("DECURIX_DEFAULT_DESKTOP_CPUS"), 1))
+	memoryMB := positiveInt(r.FormValue("memory_mb"), positiveInt(os.Getenv("DECURIX_DEFAULT_DESKTOP_MEMORY_MB"), 2048))
 
 	if profile == "" {
 		profile = "basic"
@@ -127,29 +168,12 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if v := r.FormValue("cpus"); v != "" {
-		if parsed, err := strconv.ParseInt(v, 10, 64); err == nil && parsed > 0 {
-			cpus = parsed
-		}
-	}
-
-	if v := r.FormValue("memory_mb"); v != "" {
-		if parsed, err := strconv.ParseInt(v, 10, 64); err == nil && parsed > 0 {
-			memoryMB = parsed
-		}
-	}
-
 	if name == "" {
 		name = fmt.Sprintf("desktop-%d", time.Now().Unix())
 	}
 
 	if !validDesktopNameRe.MatchString(name) {
 		http.Error(w, "invalid name: only alphanumeric, hyphens, underscores, and dots allowed", http.StatusBadRequest)
-		return
-	}
-
-	if cpus <= 0 {
-		http.Error(w, "cpus must be positive", http.StatusBadRequest)
 		return
 	}
 
@@ -165,11 +189,6 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if cpus > maxHostCpus && maxHostCpus > 0 {
 		cpus = maxHostCpus
-	}
-
-	if memoryMB <= 0 {
-		http.Error(w, "memory_mb must be positive", http.StatusBadRequest)
-		return
 	}
 
 	if memoryMB > 65536 {
@@ -196,14 +215,7 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	copyHostApps := r.FormValue("copy_host_apps") == "1" ||
 		strings.EqualFold(r.FormValue("copy_host_apps"), "true")
 	if copyHostApps {
-		appsVal := strings.TrimSpace(r.FormValue("host_apps"))
-		if appsVal != "" {
-			for _, part := range strings.Split(appsVal, ",") {
-				if trimmed := strings.TrimSpace(part); trimmed != "" {
-					selectedApps = append(selectedApps, trimmed)
-				}
-			}
-		}
+		selectedApps = splitList(r.FormValue("host_apps"))
 	}
 
 	var hostCopyPaths []desktop.HostCopyPath
@@ -340,13 +352,8 @@ func (s *Server) desktopStatusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. Otherwise inspect the desktop
-	d, err := s.Desktops.Get(r.Context(), desktopID)
-	if err != nil {
-		if errors.Is(err, desktop.ErrNotFound) {
-			http.Error(w, "desktop not found", http.StatusNotFound)
-			return
-		}
-		jsonError(w, err)
+	d, ok := s.desktopFound(w, r, desktopID, http.StatusNotFound, "desktop not found")
+	if !ok {
 		return
 	}
 
@@ -364,26 +371,39 @@ func (s *Server) desktopStatusHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// startDesktopHandler starts an existing desktop by ID.
-func (s *Server) startDesktopHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
-		return
+// desktopAction is the shared start of the start/stop/pause/unpause/restart/
+// delete handlers: a POST naming a desktop by id, on which it runs act. It
+// answers the request itself when that fails and returns the id and whether
+// the action was done. warm begins loading the model first.
+func (s *Server) desktopAction(w http.ResponseWriter, r *http.Request, warm bool, act func(context.Context, string) error) (string, bool) {
+	if !requirePost(w, r) {
+		return "", false
 	}
 
-	// The model takes minutes to load cold and the desktop seconds to
-	// start: begin loading it now so the two overlap.
-	ollama.WarmAsync()
+	if warm {
+		// The model takes minutes to load cold and the desktop seconds to
+		// start: begin loading it now so the two overlap.
+		ollama.WarmAsync()
+	}
 
 	id := r.FormValue("id")
 
 	if id == "" {
 		http.Error(w, "missing id", http.StatusBadRequest)
-		return
+		return "", false
 	}
 
-	if err := s.Desktops.Start(r.Context(), id); err != nil {
+	if err := act(r.Context(), id); err != nil {
 		jsonError(w, err)
+		return "", false
+	}
+
+	return id, true
+}
+
+// startDesktopHandler starts an existing desktop by ID.
+func (s *Server) startDesktopHandler(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.desktopAction(w, r, true, s.Desktops.Start); !ok {
 		return
 	}
 	// Its host apps are kept ready again, in the background, now that it runs.
@@ -396,20 +416,8 @@ func (s *Server) startDesktopHandler(w http.ResponseWriter, r *http.Request) {
 
 // stopDesktopHandler stops a running desktop by ID.
 func (s *Server) stopDesktopHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
-		return
-	}
-
-	id := r.FormValue("id")
-
-	if id == "" {
-		http.Error(w, "missing id", http.StatusBadRequest)
-		return
-	}
-
-	if err := s.Desktops.Stop(r.Context(), id); err != nil {
-		jsonError(w, err)
+	id, ok := s.desktopAction(w, r, false, s.Desktops.Stop)
+	if !ok {
 		return
 	}
 
@@ -424,76 +432,26 @@ func (s *Server) stopDesktopHandler(w http.ResponseWriter, r *http.Request) {
 
 // pauseDesktopHandler freezes a running desktop by ID using the cgroup freezer (0% CPU).
 func (s *Server) pauseDesktopHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
-		return
+	if _, ok := s.desktopAction(w, r, false, s.Desktops.Pause); ok {
+		jsonResponse(w, map[string]string{
+			"status": "paused",
+		})
 	}
-
-	id := r.FormValue("id")
-
-	if id == "" {
-		http.Error(w, "missing id", http.StatusBadRequest)
-		return
-	}
-
-	if err := s.Desktops.Pause(r.Context(), id); err != nil {
-		jsonError(w, err)
-		return
-	}
-
-	jsonResponse(w, map[string]string{
-		"status": "paused",
-	})
 }
 
 // unpauseDesktopHandler thaws a paused desktop by ID (< 1ms).
 func (s *Server) unpauseDesktopHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
-		return
+	if _, ok := s.desktopAction(w, r, true, s.Desktops.Unpause); ok {
+		jsonResponse(w, map[string]string{
+			"status": "running",
+		})
 	}
-
-	// The model takes minutes to load cold and the desktop seconds to
-	// start: begin loading it now so the two overlap.
-	ollama.WarmAsync()
-
-	id := r.FormValue("id")
-
-	if id == "" {
-		http.Error(w, "missing id", http.StatusBadRequest)
-		return
-	}
-
-	if err := s.Desktops.Unpause(r.Context(), id); err != nil {
-		jsonError(w, err)
-		return
-	}
-
-	jsonResponse(w, map[string]string{
-		"status": "running",
-	})
 }
 
 // restartDesktopHandler restarts a desktop by ID.
 func (s *Server) restartDesktopHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// The model takes minutes to load cold and the desktop seconds to
-	// start: begin loading it now so the two overlap.
-	ollama.WarmAsync()
-
-	id := r.FormValue("id")
-
-	if id == "" {
-		http.Error(w, "missing id", http.StatusBadRequest)
-		return
-	}
-
-	if err := s.Desktops.Restart(r.Context(), id); err != nil {
-		jsonError(w, err)
+	id, ok := s.desktopAction(w, r, true, s.Desktops.Restart)
+	if !ok {
 		return
 	}
 
@@ -506,20 +464,8 @@ func (s *Server) restartDesktopHandler(w http.ResponseWriter, r *http.Request) {
 
 // deleteDesktopHandler deletes a desktop and its persistent storage by ID.
 func (s *Server) deleteDesktopHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
-		return
-	}
-
-	id := r.FormValue("id")
-
-	if id == "" {
-		http.Error(w, "missing id", http.StatusBadRequest)
-		return
-	}
-
-	if err := s.Desktops.Delete(r.Context(), id); err != nil {
-		jsonError(w, err)
+	id, ok := s.desktopAction(w, r, false, s.Desktops.Delete)
+	if !ok {
 		return
 	}
 

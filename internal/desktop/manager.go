@@ -152,198 +152,6 @@ func NewManager(cli *client.Client) *Manager {
 	}
 }
 
-// Create provisions a new desktop container (volume, env, container config)
-// for the given profile and starts it, rolling back on failure.
-// claudeCredentialsJSON seeds a claude-harness desktop with the shared
-// Claude session (see internal/claudeauth); pass "" for every other harness,
-// or when nobody has logged in yet. specialization and parentID are "" for
-// an ordinary, standalone desktop; see httpapi.createDesktopHandler for how
-// a specialized child desktop is spawned from an existing one.
-func (m *Manager) Create(
-	ctx context.Context,
-	name string,
-	profile string,
-	harness string,
-	cpus int64,
-	memoryMB int64,
-	claudeCredentialsJSON string,
-	specialization string,
-	parentID string,
-	hostApps ...[]string,
-) (*Desktop, error) {
-	var selectedApps []string
-	if len(hostApps) > 0 && len(hostApps[0]) > 0 {
-		selectedApps = hostApps[0]
-	}
-	return m.CreateWithPaths(
-		ctx,
-		name,
-		profile,
-		harness,
-		cpus,
-		memoryMB,
-		claudeCredentialsJSON,
-		specialization,
-		parentID,
-		selectedApps,
-		nil,
-	)
-}
-
-func (m *Manager) CreateWithPaths(
-	ctx context.Context,
-	name string,
-	profile string,
-	harness string,
-	cpus int64,
-	memoryMB int64,
-	claudeCredentialsJSON string,
-	specialization string,
-	parentID string,
-	selectedApps []string,
-	hostPaths []HostCopyPath,
-) (*Desktop, error) {
-	defer m.invalidateList()
-
-	imageName, err := resolveDesktopImage(profile)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := m.EnsureToolsVolume(ctx); err != nil {
-		log.Printf("warning: ensure tools volume: %v", err)
-	}
-
-	volumeName := fmt.Sprintf(
-		"desktop_%s_home",
-		sanitizeName(name),
-	)
-
-	// Create persistent home volume.
-	_, err = m.client.VolumeCreate(
-		ctx,
-		volume.CreateOptions{
-			Name: volumeName,
-		},
-	)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"create volume: %w",
-			err,
-		)
-	}
-
-	containerName := fmt.Sprintf(
-		"desktop_%s",
-		sanitizeName(name),
-	)
-
-	env := buildDesktopEnv(name, harness, specialization, parentID, Brain{})
-
-	config, hostConfig, networkingConfig := buildContainerConfigs(
-		imageName,
-		containerName,
-		profile,
-		harness,
-		cpus,
-		memoryMB,
-		env,
-		volumeName,
-		m.desktopSecurityOpt(ctx),
-	)
-
-	resp, err := m.client.ContainerCreate(
-		ctx,
-		config,
-		hostConfig,
-		networkingConfig,
-		nil,
-		containerName,
-	)
-	if err != nil {
-		_ = m.client.VolumeRemove(
-			ctx,
-			volumeName,
-			true,
-		)
-
-		return nil, fmt.Errorf(
-			"create container: %w",
-			err,
-		)
-	}
-
-	// Pre-seed host applications onto the volume BEFORE container startup.
-	// This ensures desktop launchers, wrapper scripts, credentials, and SVG
-	// icons exist on disk before XFCE initializes, avoiding icon refresh lag
-	// and startup race conditions.
-	if len(selectedApps) > 0 {
-		if err := m.MigrateHostApps(ctx, sanitizeName(name), selectedApps); err != nil {
-			log.Printf("hostapps: pre-start migration for %s: %v", containerName, err)
-		}
-	}
-
-	// Pre-seed files and directories from the host filesystem.
-	if len(hostPaths) > 0 {
-		if err := m.CopyHostPaths(ctx, sanitizeName(name), hostPaths); err != nil {
-			log.Printf("copy host paths for %s: %v", containerName, err)
-		}
-	}
-
-	if err := m.client.ContainerStart(
-		ctx,
-		resp.ID,
-		container.StartOptions{},
-	); err != nil {
-
-		_ = m.client.ContainerRemove(
-			ctx,
-			resp.ID,
-			container.RemoveOptions{
-				Force: true,
-			},
-		)
-
-		_ = m.client.VolumeRemove(
-			ctx,
-			volumeName,
-			true,
-		)
-
-		return nil, fmt.Errorf(
-			"start container: %w",
-			err,
-		)
-	}
-
-	// Best-effort, like PersistMemoryFile: the desktop is still created and
-	// usable without it, just unauthenticated until someone logs in and a
-	// new desktop picks up the session, or this one is recreated.
-	if harness == HarnessClaude && claudeCredentialsJSON != "" {
-		if err := m.PersistClaudeCredentials(ctx, sanitizeName(name), claudeCredentialsJSON); err != nil {
-			log.Printf("seed claude credentials into %s: %v", containerName, err)
-		}
-	}
-
-	return &Desktop{
-		ID:             sanitizeName(name),
-		Name:           name,
-		Profile:        profile,
-		Harness:        harness,
-		Brain:          BrainOllama,
-		Model:          desktopModel(env),
-		ContainerID:    resp.ID,
-		Volume:         volumeName,
-		Status:         "running",
-		CPUs:           cpus,
-		MemoryMB:       memoryMB,
-		URL:            desktopURL(sanitizeName(name)),
-		CreatedAt:      time.Now().Format(time.RFC3339),
-		Specialization: specialization,
-		ParentID:       parentID,
-	}, nil
-}
-
 // BeginProvisioning registers an in-flight provisioning desktop and launches
 // an asynchronous background goroutine to create the volume, container, host app
 // migration, container start, and readiness probing. It returns the ProvisioningDesktop
@@ -646,7 +454,7 @@ type listCall struct {
 }
 
 // invalidateList drops the cached List result. Every lifecycle change calls
-// it (see the deferred calls in Create/Start/Stop/...), so a caller that acts
+// it (see the deferred calls in runProvisioning/Start/Stop/...), so a caller that acts
 // and then lists never reads the state from before its own action.
 func (m *Manager) invalidateList() {
 	m.listMu.Lock()
@@ -833,13 +641,7 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 		)
 	}
 
-	volumeName := ""
-	for _, mount := range c.Mounts {
-		if mount.Destination == "/home/headless" {
-			volumeName = mount.Name
-			break
-		}
-	}
+	volumeName := homeVolume(c.Mounts)
 
 	model := c.Labels["desktop-model"]
 	specialization := c.Labels["desktop-specialization"]
@@ -884,12 +686,7 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 				m.startedMu.Unlock()
 			}
 			if volumeName == "" {
-				for _, mount := range inspect.Mounts {
-					if mount.Destination == "/home/headless" {
-						volumeName = mount.Name
-						break
-					}
-				}
+				volumeName = homeVolume(inspect.Mounts)
 			}
 			if model == "" && inspect.Config != nil {
 				model = desktopModel(inspect.Config.Env)
@@ -1062,12 +859,6 @@ func (m *Manager) Stop(
 
 	sanitizedID := sanitizeName(id)
 	m.InvalidateProxyTarget(sanitizedID)
-	name := "desktop_" + sanitizedID
-
-	inspect, inspectErr := m.client.ContainerInspect(ctx, name)
-	if inspectErr == nil && inspect.State != nil && inspect.State.Paused {
-		_ = m.client.ContainerUnpause(ctx, name)
-	}
 
 	timeoutEnv := os.Getenv("DESKTOP_STOP_TIMEOUT_SECONDS")
 	timeout := 3
@@ -1075,6 +866,17 @@ func (m *Manager) Stop(
 		if parsedTimeout, err := strconv.Atoi(timeoutEnv); err == nil && parsedTimeout > 0 {
 			timeout = parsedTimeout
 		}
+	}
+
+	return notFound(id, m.stopContainer(ctx, "desktop_"+sanitizedID, timeout))
+}
+
+// stopContainer stops a desktop's container, unpausing it first, with timeout seconds to end, and forgets when it
+// started.
+func (m *Manager) stopContainer(ctx context.Context, name string, timeout int) error {
+	inspect, inspectErr := m.client.ContainerInspect(ctx, name)
+	if inspectErr == nil && inspect.State != nil && inspect.State.Paused {
+		_ = m.client.ContainerUnpause(ctx, name)
 	}
 
 	err := m.client.ContainerStop(
@@ -1092,7 +894,7 @@ func (m *Manager) Stop(
 	delete(m.startedCache, name)
 	m.startedMu.Unlock()
 
-	return notFound(id, err)
+	return err
 }
 
 // Restart stops and restarts the Docker container backing the given desktop ID.
@@ -1106,29 +908,8 @@ func (m *Manager) Restart(
 	m.InvalidateProxyTarget(sanitizedID)
 	name := "desktop_" + sanitizedID
 
-	inspect, inspectErr := m.client.ContainerInspect(ctx, name)
-	if inspectErr == nil && inspect.State != nil && inspect.State.Paused {
-		_ = m.client.ContainerUnpause(ctx, name)
-	}
-
-	timeout := 10
-
-	if err := m.client.ContainerStop(
-		ctx,
-		name,
-		container.StopOptions{
-			Timeout: &timeout,
-		},
-	); err != nil {
-		// Container may already be stopped.
-	}
-
-	m.startedMu.Lock()
-	if inspectErr == nil && inspect.ID != "" {
-		delete(m.startedCache, inspect.ID)
-	}
-	delete(m.startedCache, name)
-	m.startedMu.Unlock()
+	// Container may already be stopped.
+	_ = m.stopContainer(ctx, name, 10)
 
 	return notFound(id, m.client.ContainerStart(
 		ctx,
@@ -1173,14 +954,7 @@ func (m *Manager) Delete(
 		_ = m.client.ContainerUnpause(ctx, name)
 	}
 
-	var volumeName string
-
-	for _, mount := range inspect.Mounts {
-		if mount.Destination == "/home/headless" {
-			volumeName = mount.Name
-			break
-		}
-	}
+	volumeName := homeVolume(inspect.Mounts)
 
 	err = m.client.ContainerRemove(
 		ctx,
@@ -1254,12 +1028,7 @@ func (m *Manager) Get(ctx context.Context, id string) (Desktop, error) {
 		CreatedAt:   inspect.Created,
 	}
 
-	for _, mount := range inspect.Mounts {
-		if mount.Destination == "/home/headless" {
-			found.Volume = mount.Name
-			break
-		}
-	}
+	found.Volume = homeVolume(inspect.Mounts)
 
 	if inspect.Config != nil {
 		if profile := inspect.Config.Labels["desktop-profile"]; profile != "" {
@@ -1334,6 +1103,16 @@ func (m *Manager) LastViewed(id string) (t time.Time, ok bool) {
 	t, ok = m.viewed[sanitizeName(id)]
 
 	return t, ok
+}
+
+// homeVolume is the name of the volume mounted as a desktop's /home/headless, or "".
+func homeVolume(mounts []container.MountPoint) string {
+	for _, mount := range mounts {
+		if mount.Destination == "/home/headless" {
+			return mount.Name
+		}
+	}
+	return ""
 }
 
 // envValue returns one variable from a container's environment list.
@@ -1496,28 +1275,28 @@ mkdir -p "$dir" && cat <<'%s' > "$dir/%s"
 		delimiter,
 	)
 
-	execConfig := container.ExecOptions{
+	return m.execBash(ctx, containerName, cmd, "memory write exec")
+}
+
+// execBash runs cmd with `bash -lc` in a container and polls until it exits or ctx is cancelled; a non-zero exit is an
+// error. what names the exec in errors.
+func (m *Manager) execBash(ctx context.Context, containerName, cmd, what string) error {
+	execID, err := m.client.ContainerExecCreate(ctx, containerName, container.ExecOptions{
 		Cmd:          []string{"bash", "-lc", cmd},
 		AttachStdout: true,
 		AttachStderr: true,
-	}
-
-	execID, err := m.client.ContainerExecCreate(ctx, containerName, execConfig)
+	})
 	if err != nil {
-		return fmt.Errorf("create memory write exec for %s: %w", containerName, err)
+		return fmt.Errorf("create %s for %s: %w", what, containerName, err)
 	}
 
 	if err := m.client.ContainerExecStart(ctx, execID.ID, container.ExecStartOptions{}); err != nil {
-		return fmt.Errorf("start memory write exec for %s: %w", containerName, err)
+		return fmt.Errorf("start %s for %s: %w", what, containerName, err)
 	}
 
-	return waitExec(ctx, m.client, execID.ID, fmt.Sprintf("memory write exec for %s", containerName))
-}
-
-// waitExec polls ContainerExecInspect until the exec process exits or ctx is cancelled.
-func waitExec(ctx context.Context, cli *client.Client, execID, desc string) error {
+	desc := fmt.Sprintf("%s for %s", what, containerName)
 	for {
-		inspect, err := cli.ContainerExecInspect(ctx, execID)
+		inspect, err := m.client.ContainerExecInspect(ctx, execID.ID)
 		if err != nil {
 			return fmt.Errorf("inspect %s: %w", desc, err)
 		}
@@ -1547,18 +1326,7 @@ func (m *Manager) UpdateResources(
 	sanitizedID := sanitizeName(id)
 	name := "desktop_" + sanitizedID
 
-	swappinessZero := int64(0)
-	updateConfig := container.UpdateConfig{
-		Resources: container.Resources{
-			NanoCPUs:          cpus * 1_000_000_000,
-			CPUShares:         cpus * 1024,
-			Memory:            memoryMB * 1024 * 1024,
-			MemoryReservation: (memoryMB * 1024 * 1024) / 2,
-			MemorySwappiness:  &swappinessZero,
-		},
-	}
-
-	resp, err := m.client.ContainerUpdate(ctx, name, updateConfig)
+	resp, err := m.client.ContainerUpdate(ctx, name, container.UpdateConfig{Resources: desktopResources(cpus, memoryMB)})
 	if err != nil {
 		return fmt.Errorf("update container resources for %s: %w", name, err)
 	}

@@ -80,16 +80,17 @@ func (c *Client) Configured() bool {
 	return c != nil && c.Endpoint != "" && c.Key != ""
 }
 
-// Resolve maps what a caller asked for to a deployment: "" or "default" is
-// Model, "fast" is FastModel, and the two configured names stand for
-// themselves. Anything else is refused rather than forwarded, so a desktop
-// cannot spend on whatever else happens to be deployed on the resource.
-func (c *Client) Resolve(asked string) (string, error) {
+// resolve maps what a caller asked a provider for to one of its models: ""
+// or "default" is model, "fast" is fast, and the two configured names stand
+// for themselves. Anything else is refused rather than forwarded, so a
+// desktop cannot spend on whatever else happens to be deployed on the
+// resource.
+func resolve(asked, model, fast string) (string, error) {
 	switch strings.TrimSpace(asked) {
-	case "", "default", c.Model:
-		return c.Model, nil
-	case "fast", c.FastModel:
-		return c.FastModel, nil
+	case "", "default", model:
+		return model, nil
+	case "fast", fast:
+		return fast, nil
 	}
 
 	return "", fmt.Errorf("llm: model %q is not one this control plane offers", asked)
@@ -112,7 +113,7 @@ func (c *Client) chatURL() string {
 var RetryHeaders = []string{"Retry-After", "Retry-After-Ms", "X-Ratelimit-Reset-Tokens", "X-Ratelimit-Reset-Requests"}
 
 // Chat forwards one OpenAI-shaped chat request body, with its "model" field
-// resolved (Resolve), and returns the upstream status, body and the headers
+// resolved (resolve), and returns the upstream status, body and the headers
 // in RetryHeaders it sent, unchanged.
 func (c *Client) Chat(ctx context.Context, body []byte) (int, []byte, http.Header, error) {
 	if !c.Configured() {
@@ -126,7 +127,7 @@ func (c *Client) Chat(ctx context.Context, body []byte) (int, []byte, http.Heade
 
 	asked, _ := req["model"].(string)
 
-	model, err := c.Resolve(asked)
+	model, err := resolve(asked, c.Model, c.FastModel)
 	if err != nil {
 		return 0, nil, nil, err
 	}
@@ -171,14 +172,19 @@ func (c *Client) Chat(ctx context.Context, body []byte) (int, []byte, http.Heade
 		return 0, nil, nil, fmt.Errorf("llm: reading the answer: %w", err)
 	}
 
-	retry := http.Header{}
-	for _, name := range RetryHeaders {
-		if v := resp.Header.Get(name); v != "" {
-			retry.Set(name, v)
+	return resp.StatusCode, data, copyHeaders(resp.Header, RetryHeaders), nil
+}
+
+// copyHeaders is the headers of from named in names that are set.
+func copyHeaders(from http.Header, names []string) http.Header {
+	out := http.Header{}
+	for _, name := range names {
+		if v := from.Get(name); v != "" {
+			out.Set(name, v)
 		}
 	}
 
-	return resp.StatusCode, data, retry, nil
+	return out
 }
 
 // isReasoningModel recognizes the supported reasoning deployment families.

@@ -27,6 +27,47 @@ func useHostChecker(t *testing.T, check HostAppChecker) {
 	t.Cleanup(func() { SetHostAppChecker(nil) })
 }
 
+// packedFile is one entry of an archive a test packed.
+type packedFile struct {
+	hdr  *tar.Header
+	data string
+}
+
+// pack runs fill into a fresh tar archive and returns its entries by name: what copying it into a desktop would put there.
+func pack(t *testing.T, fill func(*tar.Writer) error) map[string]packedFile {
+	t.Helper()
+	buf := new(bytes.Buffer)
+	tw := tar.NewWriter(buf)
+	if err := fill(tw); err != nil {
+		t.Fatalf("packing: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar: %v", err)
+	}
+	files := map[string]packedFile{}
+	tr := tar.NewReader(buf)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			return files
+		}
+		if err != nil {
+			t.Fatalf("read tar: %v", err)
+		}
+		data, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[hdr.Name] = packedFile{hdr, string(data)}
+	}
+}
+
+// packApp is pack of one app's launcher for testPack.
+func packApp(t *testing.T, app HostAppItem) map[string]packedFile {
+	t.Helper()
+	return pack(t, func(tw *tar.Writer) error { return packDynamicApp(tw, app, testPack) })
+}
+
 // allowEverything is a host that says every program can run hidden.
 func allowEverything(_ context.Context, targets []winhost.Target) (map[winhost.Target]string, error) {
 	out := make(map[winhost.Target]string, len(targets))
@@ -161,9 +202,6 @@ func TestChromeIsDiscoveredWithoutAStartMenuEntry(t *testing.T) {
 }
 
 func TestPackDynamicApp(t *testing.T) {
-	buf := new(bytes.Buffer)
-	tw := tar.NewWriter(buf)
-
 	app := HostAppItem{
 		ID:          "win_spotify",
 		Name:        "Spotify Music",
@@ -173,46 +211,14 @@ func TestPackDynamicApp(t *testing.T) {
 		Icon:        "audio-x-generic",
 	}
 
-	if err := packDynamicApp(tw, app, testPack); err != nil {
-		t.Fatalf("packDynamicApp failed: %v", err)
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	tr := tar.NewReader(buf)
-	foundFiles := make(map[string]bool)
-	var desktopContent string
-	var wrapperContent string
-
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		foundFiles[hdr.Name] = true
-		if hdr.Name == "Desktop/spotify-music-host.desktop" {
-			data, _ := io.ReadAll(tr)
-			desktopContent = string(data)
-		}
-		if hdr.Name == ".local/bin/spotify-music-host" {
-			data, _ := io.ReadAll(tr)
-			wrapperContent = string(data)
+	files := packApp(t, app)
+	for _, name := range []string{".local/bin/spotify-music-host", "Desktop/spotify-music-host.desktop", ".local/share/applications/spotify-music-host.desktop"} {
+		if _, ok := files[name]; !ok {
+			t.Errorf("expected %s to be packed", name)
 		}
 	}
-
-	if !foundFiles[".local/bin/spotify-music-host"] {
-		t.Errorf("expected .local/bin/spotify-music-host wrapper to be packed")
-	}
-	if !foundFiles["Desktop/spotify-music-host.desktop"] {
-		t.Errorf("expected Desktop/spotify-music-host.desktop to be packed")
-	}
-	if !foundFiles[".local/share/applications/spotify-music-host.desktop"] {
-		t.Errorf("expected .local/share/applications/spotify-music-host.desktop to be packed")
-	}
+	desktopContent := files["Desktop/spotify-music-host.desktop"].data
+	wrapperContent := files[".local/bin/spotify-music-host"].data
 	if !strings.Contains(desktopContent, "Exec=/home/headless/.local/bin/spotify-music-host %U") {
 		t.Errorf("unexpected desktop content: %s", desktopContent)
 	}
@@ -257,32 +263,11 @@ func TestCacheExclusion(t *testing.T) {
 }
 
 func TestPackHostBridgeLaunchers(t *testing.T) {
-	buf := new(bytes.Buffer)
-	tw := tar.NewWriter(buf)
-
-	if err := packHostBridgeLaunchers(tw); err != nil {
-		t.Fatalf("packHostBridgeLaunchers failed: %v", err)
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatalf("close tar: %v", err)
-	}
-
-	tr := tar.NewReader(buf)
-	foundFiles := make(map[string]bool)
-
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatalf("read tar: %v", err)
-		}
-		foundFiles[hdr.Name] = true
-
-		if strings.HasSuffix(hdr.Name, ".desktop") || strings.HasPrefix(hdr.Name, ".local/bin/") {
-			if hdr.Mode&0111 == 0 {
-				t.Errorf("file %s expected executable bit set, got mode %o", hdr.Name, hdr.Mode)
+	files := pack(t, packHostBridgeLaunchers)
+	for name, f := range files {
+		if strings.HasSuffix(name, ".desktop") || strings.HasPrefix(name, ".local/bin/") {
+			if f.hdr.Mode&0111 == 0 {
+				t.Errorf("file %s expected executable bit set, got mode %o", name, f.hdr.Mode)
 			}
 		}
 	}
@@ -294,7 +279,7 @@ func TestPackHostBridgeLaunchers(t *testing.T) {
 	}
 
 	for _, exp := range expected {
-		if !foundFiles[exp] {
+		if _, ok := files[exp]; !ok {
 			t.Errorf("expected %s in host bridge tar archive", exp)
 		}
 	}
@@ -321,7 +306,7 @@ func TestPackHostBridgeLaunchers(t *testing.T) {
 	}
 
 	for _, unexp := range unexpected {
-		if foundFiles[unexp] {
+		if _, ok := files[unexp]; ok {
 			t.Errorf("did NOT expect %s in host bridge tar archive (should only be packed when explicitly selected)", unexp)
 		}
 	}
@@ -348,30 +333,8 @@ func TestSelectedAppsPackaging(t *testing.T) {
 			if !ok {
 				t.Fatalf("missing def for %s", tc.id)
 			}
-			buf := new(bytes.Buffer)
-			tw := tar.NewWriter(buf)
-			if err := def.packFn(tw, []string{}); err != nil {
-				t.Fatalf("packFn for %s failed: %v", tc.id, err)
-			}
-			if err := tw.Close(); err != nil {
-				t.Fatalf("close tar: %v", err)
-			}
-
-			tr := tar.NewReader(buf)
-			found := false
-			for {
-				hdr, err := tr.Next()
-				if err == io.EOF {
-					break
-				}
-				if err != nil {
-					t.Fatalf("read tar: %v", err)
-				}
-				if hdr.Name == tc.expectedFile {
-					found = true
-				}
-			}
-			if !found {
+			files := pack(t, func(tw *tar.Writer) error { return def.packFn(tw, []string{}) })
+			if _, found := files[tc.expectedFile]; !found {
 				t.Errorf("expected %s to be packed when %s is selected", tc.expectedFile, tc.id)
 			}
 		})
@@ -391,37 +354,15 @@ func TestWriteDirToTar(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(tmpDir, "Cache", "data_0"), []byte("cache_blob_should_be_stripped"), 0644)
 	_ = os.WriteFile(filepath.Join(tmpDir, "Preferences"), []byte(`{"logged_in": true}`), 0644)
 
-	buf := new(bytes.Buffer)
-	tw := tar.NewWriter(buf)
+	files := pack(t, func(tw *tar.Writer) error { return writeDirToTar(tw, tmpDir, ".config/app", isCacheOrTransient) })
 
-	err = writeDirToTar(tw, tmpDir, ".config/app", isCacheOrTransient)
-	if err != nil {
-		t.Fatalf("writeDirToTar: %v", err)
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	tr := tar.NewReader(buf)
-	foundFiles := make(map[string]bool)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		foundFiles[hdr.Name] = true
-	}
-
-	if !foundFiles[".config/app/Cookies"] {
+	if _, ok := files[".config/app/Cookies"]; !ok {
 		t.Errorf("expected Cookies to be preserved")
 	}
-	if !foundFiles[".config/app/Preferences"] {
+	if _, ok := files[".config/app/Preferences"]; !ok {
 		t.Errorf("expected Preferences to be preserved")
 	}
-	if foundFiles[".config/app/Cache/data_0"] {
+	if _, ok := files[".config/app/Cache/data_0"]; ok {
 		t.Errorf("Cache/data_0 should have been stripped!")
 	}
 }
@@ -463,38 +404,8 @@ func TestPackDynamicAppWebAppMode(t *testing.T) {
 		HostCmd:     `cmd.exe /c start explorer.exe shell:AppsFolder\Claude_pzs8sxrjxfjjc!Claude`,
 	}
 
-	buf := new(bytes.Buffer)
-	tw := tar.NewWriter(buf)
-
-	if err := packDynamicApp(tw, app, testPack); err != nil {
-		t.Fatalf("packDynamicApp: %v", err)
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	tr := tar.NewReader(buf)
-	foundWrapper := false
-	var wrapperContent string
-
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if hdr.Name == ".local/bin/claude-host" {
-			foundWrapper = true
-			data, err := io.ReadAll(tr)
-			if err != nil {
-				t.Fatal(err)
-			}
-			wrapperContent = string(data)
-		}
-	}
-
+	wrapper, foundWrapper := packApp(t, app)[".local/bin/claude-host"]
+	wrapperContent := wrapper.data
 	if !foundWrapper {
 		t.Fatal("expected .local/bin/claude-host to be packed")
 	}
@@ -512,48 +423,13 @@ func TestPackDynamicAppSVGIcon(t *testing.T) {
 		HostCmd:     `cmd.exe /c start msedge.exe`,
 	}
 
-	buf := new(bytes.Buffer)
-	tw := tar.NewWriter(buf)
-
-	if err := packDynamicApp(tw, app, testPack); err != nil {
-		t.Fatalf("packDynamicApp: %v", err)
+	files := packApp(t, app)
+	svg, foundSVG := files[".local/share/icons/hicolor/scalable/apps/microsoft-edge.svg"]
+	if foundSVG && !strings.Contains(svg.data, "<svg") {
+		t.Errorf("expected valid SVG content, got:\n%s", svg.data)
 	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	tr := tar.NewReader(buf)
-	foundSVG := false
-	foundDesktop := false
-	var desktopContent string
-
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if hdr.Name == ".local/share/icons/hicolor/scalable/apps/microsoft-edge.svg" {
-			foundSVG = true
-			data, err := io.ReadAll(tr)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !strings.Contains(string(data), "<svg") {
-				t.Errorf("expected valid SVG content, got:\n%s", string(data))
-			}
-		}
-		if hdr.Name == "Desktop/microsoft-edge-host.desktop" {
-			foundDesktop = true
-			data, err := io.ReadAll(tr)
-			if err != nil {
-				t.Fatal(err)
-			}
-			desktopContent = string(data)
-		}
-	}
+	desktop, foundDesktop := files["Desktop/microsoft-edge-host.desktop"]
+	desktopContent := desktop.data
 
 	if !foundSVG {
 		t.Errorf("expected embedded SVG icon to be packed at .local/share/icons/hicolor/scalable/apps/microsoft-edge.svg")
@@ -567,36 +443,7 @@ func TestPackDynamicAppSVGIcon(t *testing.T) {
 }
 
 func TestPackHostBridgeLaunchersIncludesDisplay(t *testing.T) {
-	buf := new(bytes.Buffer)
-	tw := tar.NewWriter(buf)
-
-	if err := packHostBridgeLaunchers(tw); err != nil {
-		t.Fatalf("packHostBridgeLaunchers: %v", err)
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	tr := tar.NewReader(buf)
-	var hostRunContent string
-
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if hdr.Name == ".local/bin/host-run" {
-			data, err := io.ReadAll(tr)
-			if err != nil {
-				t.Fatal(err)
-			}
-			hostRunContent = string(data)
-			break
-		}
-	}
+	hostRunContent := pack(t, packHostBridgeLaunchers)[".local/bin/host-run"].data
 
 	if !strings.Contains(hostRunContent, `body["display"] = os.environ.get("DISPLAY", ":1")`) {
 		t.Errorf("expected host-run to send container DISPLAY in payload, got:\n%s", hostRunContent)
@@ -611,41 +458,27 @@ func TestPackHostBridgeLaunchersIncludesDisplay(t *testing.T) {
 // not on the basic image's PATH, so the shell said "host-run: not found"), and host-run itself
 // posted with curl, which the desktop images do not all ship.
 func TestHostRunWorksOnAnImageWithoutCurlOrLocalBinOnPath(t *testing.T) {
-	buf := new(bytes.Buffer)
-	tw := tar.NewWriter(buf)
-	if err := packHostBridgeLaunchers(tw); err != nil {
-		t.Fatal(err)
-	}
 	app := HostAppItem{ID: "win_notepad", Name: "Notepad", HostCmd: `cmd.exe /c start "" "C:\Notepad.lnk"`}
-	if err := packDynamicApp(tw, app, testPack); err != nil {
-		t.Fatal(err)
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
+	files := pack(t, func(tw *tar.Writer) error {
+		if err := packHostBridgeLaunchers(tw); err != nil {
+			return err
+		}
+		return packDynamicApp(tw, app, testPack)
+	})
 
-	tr := tar.NewReader(buf)
 	scripts := 0
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.HasPrefix(hdr.Name, ".local/bin/") {
+	for name, f := range files {
+		if !strings.HasPrefix(name, ".local/bin/") {
 			continue
 		}
-		data, _ := io.ReadAll(tr)
-		content := string(data)
+		content := f.data
 		scripts++
 		if strings.Contains(content, "curl") && !strings.Contains(content, "python3 rather than curl") {
-			t.Errorf("%s calls curl, which the desktop images do not all have:\n%s", hdr.Name, content)
+			t.Errorf("%s calls curl, which the desktop images do not all have:\n%s", name, content)
 		}
 		for _, line := range strings.Split(content, "\n") {
 			if strings.HasPrefix(strings.TrimSpace(line), "exec host-run") {
-				t.Errorf("%s runs host-run by bare name, which is not on PATH in the basic image: %q", hdr.Name, line)
+				t.Errorf("%s runs host-run by bare name, which is not on PATH in the basic image: %q", name, line)
 			}
 		}
 	}
@@ -687,28 +520,8 @@ func requireBash(t *testing.T) {
 func TestDynamicAppWrapperRunsUnderBashWithBackslashesIntact(t *testing.T) {
 	requireBash(t)
 	dir := t.TempDir()
-	buf := new(bytes.Buffer)
-	tw := tar.NewWriter(buf)
 	app := HostAppItem{ID: "win_calc", Name: "Calc", HostCmd: `winapp --profile "C:\Program Files\App" --name "it's"`}
-	if err := packDynamicApp(tw, app, testPack); err != nil {
-		t.Fatal(err)
-	}
-	tw.Close()
-	tr := tar.NewReader(buf)
-	var wrapper string
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if hdr.Name == ".local/bin/calc-host" {
-			data, _ := io.ReadAll(tr)
-			wrapper = strings.ReplaceAll(string(data), "/home/headless/.local/bin/host-run", filepath.Join(dir, "host-run"))
-		}
-	}
+	wrapper := strings.ReplaceAll(packApp(t, app)[".local/bin/calc-host"].data, "/home/headless/.local/bin/host-run", filepath.Join(dir, "host-run"))
 	stub := "#!/usr/bin/env bash\nfor a in \"$@\"; do printf '[%s]' \"$a\"; done\n"
 	if err := os.WriteFile(filepath.Join(dir, "host-run"), []byte(stub), 0755); err != nil {
 		t.Fatal(err)
@@ -746,6 +559,11 @@ func TestWindowsTarget(t *testing.T) {
 			t.Errorf("windowsTarget(%q) = (%q, %q, %v), want (%q, %q, %v)", c.in, target, args, ok, c.target, c.args, c.ok)
 		}
 	}
+}
+
+// hostGUIWrapper is a complete launcher script around hostGUILauncher.
+func hostGUIWrapper(pc packContext, slug, title, target, args string) string {
+	return "#!/usr/bin/env bash\n" + hostGUILauncher(pc, slug, title, target, args)
 }
 
 // TestHostGUIWrapperOpensTheViewerForThisDesktop runs the generated launcher with a stand-in browser first on PATH
@@ -931,24 +749,7 @@ func TestTheHostIsOnlyAskedAboutAnAppOnce(t *testing.T) {
 // ("host-run rm -rf ...", and win-run/mac-run which wrapped it) is what let a desktop's agent run anything on the host.
 func TestHostRunRefusesToRunAnUnsignedCommand(t *testing.T) {
 	requireBash(t)
-	buf := new(bytes.Buffer)
-	tw := tar.NewWriter(buf)
-	if err := packHostBridgeLaunchers(tw); err != nil {
-		t.Fatal(err)
-	}
-	tw.Close()
-	tr := tar.NewReader(buf)
-	var script string
-	for {
-		hdr, err := tr.Next()
-		if err != nil {
-			break
-		}
-		if hdr.Name == ".local/bin/host-run" {
-			b, _ := io.ReadAll(tr)
-			script = string(b)
-		}
-	}
+	script := pack(t, packHostBridgeLaunchers)[".local/bin/host-run"].data
 	path := filepath.Join(t.TempDir(), "host-run")
 	if err := os.WriteFile(path, []byte(script), 0755); err != nil {
 		t.Fatal(err)
@@ -1035,33 +836,10 @@ func TestChromeDiscoveredAndPackaged(t *testing.T) {
 		t.Fatal("expected chrome probeFn to discover profile directory")
 	}
 
-	buf := new(bytes.Buffer)
-	tw := tar.NewWriter(buf)
-	if err := chromeDef.packFn(tw, paths); err != nil {
-		t.Fatalf("chrome packFn failed: %v", err)
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	tr := tar.NewReader(buf)
-	foundLocalState := false
-	foundSymlink := false
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if hdr.Name == ".config/google-chrome/Local State" {
-			foundLocalState = true
-		}
-		if hdr.Name == ".config/chromium" && hdr.Typeflag == tar.TypeSymlink && hdr.Linkname == "google-chrome" {
-			foundSymlink = true
-		}
-	}
+	files := pack(t, func(tw *tar.Writer) error { return chromeDef.packFn(tw, paths) })
+	_, foundLocalState := files[".config/google-chrome/Local State"]
+	link, foundSymlink := files[".config/chromium"]
+	foundSymlink = foundSymlink && link.hdr.Typeflag == tar.TypeSymlink && link.hdr.Linkname == "google-chrome"
 	if !foundLocalState {
 		t.Error("expected .config/google-chrome/Local State to be packed")
 	}
@@ -1116,31 +894,11 @@ Categories=Utility;TextEditor;
 }
 
 func TestAPhoneAppOpensThePhoneViewerNotItsWebVersion(t *testing.T) {
-	buf := new(bytes.Buffer)
-	tw := tar.NewWriter(buf)
-
 	// WhatsApp has a web version too; picked from the phone, it must run on the phone.
 	app := HostAppItem{ID: "phone-d1-com.whatsapp", Name: "WhatsApp", Mode: ModePhone, HostCmd: PhoneCmd("d1", "com.whatsapp")}
-	if err := packDynamicApp(tw, app, testPack); err != nil {
-		t.Fatal(err)
-	}
-	tw.Close()
+	files := packApp(t, app)
 
-	files := map[string]string{}
-	tr := tar.NewReader(buf)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		data, _ := io.ReadAll(tr)
-		files[hdr.Name] = string(data)
-	}
-
-	wrapper := files[".local/bin/whatsapp-host"]
+	wrapper := files[".local/bin/whatsapp-host"].data
 	if !strings.Contains(wrapper, "/phone-app/view?") || strings.Contains(wrapper, "web.whatsapp.com") {
 		t.Fatalf("the launcher does not open the phone viewer:\n%s", wrapper)
 	}
@@ -1151,8 +909,8 @@ func TestAPhoneAppOpensThePhoneViewerNotItsWebVersion(t *testing.T) {
 		t.Fatalf("the launcher is not signed for exactly this app on this phone:\n%s", wrapper)
 	}
 
-	if !strings.Contains(files["Desktop/whatsapp-host.desktop"], "Name=WhatsApp (Phone)") {
-		t.Errorf("launcher entry: %s", files["Desktop/whatsapp-host.desktop"])
+	if entry := files["Desktop/whatsapp-host.desktop"].data; !strings.Contains(entry, "Name=WhatsApp (Phone)") {
+		t.Errorf("launcher entry: %s", entry)
 	}
 }
 

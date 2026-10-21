@@ -1,18 +1,16 @@
-import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import patch
+
+from temp_case import TempDirCase
 
 from decurix_agent import guidance, lessons, skill_task, state
 
 
-class _Memory(unittest.TestCase):
+class _Memory(TempDirCase):
     """A worker's memory folder, and a control plane that writes what it is told to remember into it."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.dir = Path(self.tmp.name)
+        super().setUp()
         self.kept, self.says, self.shown = [], None, []
 
         def remember(title, summary, category="workflow"):

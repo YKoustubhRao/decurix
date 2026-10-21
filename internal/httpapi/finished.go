@@ -70,8 +70,7 @@ func (s *Server) recordFinished(desktopID, vmName, taskID, message string) {
 // finishedTasksHandler answers GET /api/tasks/finished?after=<seq>: the tasks finished since that one, and the latest
 // seq to ask after next time. A page's first call (no after) gets only the latest seq.
 func (s *Server) finishedTasksHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodGet) {
 		return
 	}
 	raw := r.URL.Query().Get("after")

@@ -60,3 +60,47 @@ func jsonStatusError(w http.ResponseWriter, status int, reason string) {
 		},
 	)
 }
+
+// requireGet refuses anything but a GET with "GET required" and reports
+// whether the request may go on.
+func requireGet(w http.ResponseWriter, r *http.Request) bool {
+	return requireMethod(w, r, http.MethodGet)
+}
+
+// requirePost refuses anything but a POST with "POST required" and reports
+// whether the request may go on.
+func requirePost(w http.ResponseWriter, r *http.Request) bool {
+	return requireMethod(w, r, http.MethodPost)
+}
+
+// requireMethod refuses any method but method with "<method> required" and
+// reports whether the request may go on.
+func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
+	if r.Method != method {
+		http.Error(w, method+" required", http.StatusMethodNotAllowed)
+		return false
+	}
+
+	return true
+}
+
+// allowMethod refuses any method but method with "method not allowed" and
+// reports whether the request may go on.
+func allowMethod(w http.ResponseWriter, r *http.Request, method string) bool {
+	if r.Method != method {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return false
+	}
+
+	return true
+}
+
+// requireMethodJSON is requireMethod answering in JSON.
+func requireMethodJSON(w http.ResponseWriter, r *http.Request, method string) bool {
+	if r.Method != method {
+		jsonStatusError(w, http.StatusMethodNotAllowed, method+" required")
+		return false
+	}
+
+	return true
+}

@@ -147,18 +147,11 @@ func (c *client) zoneByName(ctx context.Context, domain string) (zone, error) {
 
 // remoteTunnel is a Cloudflare Tunnel as the API lists it.
 type remoteTunnel struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Status      string `json:"status"`
-	Connections []struct {
-		ID         string `json:"id"`
-		OriginIP   string `json:"origin_ip"`
-		OpenedAt   string `json:"opened_at"`
-		ColoName   string `json:"colo_name"`
-		ClientID   string `json:"client_id"`
-		IsPending  bool   `json:"is_pending_reconnect"`
-		ClientVers string `json:"client_version"`
-	} `json:"connections"`
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	// Connections are only counted.
+	Connections []struct{} `json:"connections"`
 }
 
 // findTunnel returns the live tunnel called name, if there is one.

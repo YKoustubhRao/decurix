@@ -23,6 +23,12 @@ LIVE_SPEC = Path(r"C:\Users\Administrator\decurix-tests\wide\process\out\P3\2026
                  r"\outputs\ap_register_spec.json")
 
 
+def unopenable(paths):
+    """The Office files among `paths` a strict reader cannot open, each as a sentence (produced.open_statuses)."""
+
+    return [said for status, said in produced.open_statuses(paths).values() if status == "broken"]
+
+
 def break_shared_strings(path):
     """The live breakage: a cell turned into a shared-string cell, a sharedStrings part nothing registers."""
 
@@ -53,10 +59,10 @@ class OfficeFilesOpen(unittest.TestCase):
 
     def test_a_workbook_with_an_unregistered_shared_string_table_cannot_be_opened(self):
         good = self.book()
-        self.assertEqual(produced.unopenable([str(good)]), [])
+        self.assertEqual(unopenable([str(good)]), [])
         bad = self.book("broken.xlsx")
         break_shared_strings(bad)
-        found = produced.unopenable([str(bad), str(good)])
+        found = unopenable([str(bad), str(good)])
         self.assertEqual(len(found), 1)
         self.assertIn("broken.xlsx cannot be opened", found[0])
         # Blocking hygiene in every route's file facts.
@@ -70,7 +76,7 @@ class OfficeFilesOpen(unittest.TestCase):
         for name in ("letter.docx", "deck.pptx"):
             path = self.dir / name
             path.write_bytes(b"PK\x03\x04 not a document")
-            self.assertTrue(produced.unopenable([str(path)]), name)
+            self.assertTrue(unopenable([str(path)]), name)
 
     def test_office_update_adds_a_column_rows_and_a_sheet_and_the_file_opens(self):
         book = self.book()
@@ -79,7 +85,7 @@ class OfficeFilesOpen(unittest.TestCase):
                                                  {"sheet": "Register", "cell": "A3", "value": "Total"},
                                                  {"sheet": "Register", "cell": "B3", "value": "=SUM(B2:B2)"}],
                                add_sheets=[{"name": "Notes", "rows": [["Approved as proposed."]]}])
-        self.assertEqual(produced.unopenable([str(book)]), [])
+        self.assertEqual(unopenable([str(book)]), [])
         self.assertIn("never edit an Office file's XML", office.USAGE)
 
     @unittest.skipUnless(LIVE_SPEC.is_file(), f"the live spec is not here: {LIVE_SPEC}")
@@ -87,7 +93,7 @@ class OfficeFilesOpen(unittest.TestCase):
         spec = json.loads(LIVE_SPEC.read_text(encoding="utf-8"))
         out = self.dir / "AP_register.xlsx"
         office.create_workbook(str(out), spec["sheets"])
-        self.assertEqual(produced.unopenable([str(out)]), [])
+        self.assertEqual(unopenable([str(out)]), [])
         import openpyxl
         self.assertEqual(openpyxl.load_workbook(out).sheetnames, [s["name"] for s in spec["sheets"]])
 

@@ -29,8 +29,7 @@ var exportColumns = []string{
 
 // taskExportHandler serves the export.
 func (s *Server) taskExportHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodGet) {
 		return
 	}
 

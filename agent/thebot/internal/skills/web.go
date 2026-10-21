@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -43,16 +42,9 @@ const reportDir = "web-reports"
 // the same prompt in seconds, so the defaults stay generous here and a host
 // that knows it is CPU-bound turns them down (Decurix's start script does).
 var (
-	deepReadCount    = envPositive("THEBOT_WEB_PAGES", 3)
-	deepReadMaxChars = envPositive("THEBOT_WEB_PAGE_CHARS", 6000)
+	deepReadCount    = llm.EnvInt("THEBOT_WEB_PAGES", 3)
+	deepReadMaxChars = llm.EnvInt("THEBOT_WEB_PAGE_CHARS", 6000)
 )
-
-func envPositive(key string, fallback int) int {
-	if v, err := strconv.Atoi(os.Getenv(key)); err == nil && v > 0 {
-		return v
-	}
-	return fallback
-}
 
 var (
 	urlRe = regexp.MustCompile(`https?://[^\s)]+`)

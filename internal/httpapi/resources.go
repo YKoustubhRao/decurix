@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 
 	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/docker/docker/client"
@@ -13,15 +12,12 @@ import (
 // resourceAlertsHandler returns active resource alerts.
 // GET /api/desktops/resource-alerts?id=<desktop_id>
 func (s *Server) resourceAlertsHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodGet) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-
 	if s.ResourceMon == nil {
-		_ = json.NewEncoder(w).Encode(map[string]any{"alert": nil, "alerts": []any{}})
+		jsonResponse(w, map[string]any{"alert": nil, "alerts": []any{}})
 		return
 	}
 
@@ -32,30 +28,35 @@ func (s *Server) resourceAlertsHandler(w http.ResponseWriter, r *http.Request) {
 
 	if desktopID != "" {
 		alert := s.ResourceMon.GetAlert(desktopID)
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		jsonResponse(w, map[string]any{
 			"alert": alert,
 		})
 		return
 	}
 
 	alerts := s.ResourceMon.ListAlerts()
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	jsonResponse(w, map[string]any{
 		"alerts": alerts,
 	})
+}
+
+// resourceDesktopID is the desktop a resource call names: desktop_id, else id,
+// from the form or the query string.
+func resourceDesktopID(r *http.Request) string {
+	if id := r.FormValue("desktop_id"); id != "" {
+		return id
+	}
+	return r.FormValue("id")
 }
 
 // resourceIncreaseHandler applies the predicted (or requested) resource increase when the user clicks Yes.
 // POST /api/desktops/resource-increase
 func (s *Server) resourceIncreaseHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodPost) {
 		return
 	}
 
-	desktopID := r.URL.Query().Get("desktop_id")
-	if desktopID == "" {
-		desktopID = r.URL.Query().Get("id")
-	}
+	desktopID := resourceDesktopID(r)
 
 	var reqCPUs, reqMemMB int64
 
@@ -74,18 +75,8 @@ func (s *Server) resourceIncreaseHandler(w http.ResponseWriter, r *http.Request)
 			reqMemMB = req.MemoryMB
 		}
 	} else {
-		_ = r.ParseForm()
-		if id := r.FormValue("desktop_id"); id != "" {
-			desktopID = id
-		} else if id := r.FormValue("id"); id != "" {
-			desktopID = id
-		}
-		if c, err := strconv.ParseInt(r.FormValue("cpus"), 10, 64); err == nil && c > 0 {
-			reqCPUs = c
-		}
-		if m, err := strconv.ParseInt(r.FormValue("memory_mb"), 10, 64); err == nil && m > 0 {
-			reqMemMB = m
-		}
+		reqCPUs = positiveInt(r.FormValue("cpus"), 0)
+		reqMemMB = positiveInt(r.FormValue("memory_mb"), 0)
 	}
 
 	if desktopID == "" {
@@ -108,8 +99,7 @@ func (s *Server) resourceIncreaseHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	jsonResponse(w, map[string]any{
 		"status":     "ok",
 		"desktop_id": desktopID,
 		"cpus":       res.PredictedCPUs,
@@ -121,15 +111,11 @@ func (s *Server) resourceIncreaseHandler(w http.ResponseWriter, r *http.Request)
 // resourceDismissHandler dismisses an alert when the user clicks No.
 // POST /api/desktops/resource-dismiss
 func (s *Server) resourceDismissHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodPost) {
 		return
 	}
 
-	desktopID := r.URL.Query().Get("desktop_id")
-	if desktopID == "" {
-		desktopID = r.URL.Query().Get("id")
-	}
+	desktopID := resourceDesktopID(r)
 
 	if r.Header.Get("Content-Type") == "application/json" {
 		var req struct {
@@ -137,13 +123,6 @@ func (s *Server) resourceDismissHandler(w http.ResponseWriter, r *http.Request) 
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err == nil && req.DesktopID != "" {
 			desktopID = req.DesktopID
-		}
-	} else {
-		_ = r.ParseForm()
-		if id := r.FormValue("desktop_id"); id != "" {
-			desktopID = id
-		} else if id := r.FormValue("id"); id != "" {
-			desktopID = id
 		}
 	}
 
@@ -156,8 +135,7 @@ func (s *Server) resourceDismissHandler(w http.ResponseWriter, r *http.Request) 
 		s.ResourceMon.Dismiss(desktopID)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	jsonResponse(w, map[string]any{
 		"status":     "dismissed",
 		"desktop_id": desktopID,
 	})
@@ -166,8 +144,7 @@ func (s *Server) resourceDismissHandler(w http.ResponseWriter, r *http.Request) 
 // resourceReportHandler allows reporting CPU/RAM usage to trigger an alert.
 // POST /api/desktops/resource-report
 func (s *Server) resourceReportHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodPost) {
 		return
 	}
 
@@ -198,8 +175,7 @@ func (s *Server) resourceReportHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	jsonResponse(w, map[string]any{
 		"status": "ok",
 		"alert":  alert,
 	})

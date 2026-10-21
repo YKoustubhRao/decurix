@@ -251,6 +251,18 @@ def _prune():
             pass
 
 
+def _task_events(task_id):
+    """The actions a task's tools took on the screen, as recorded, oldest first; [] when there are none."""
+
+    task_id = task_id or task_context.current()
+    if not task_id:
+        return []
+    try:
+        return recording.load(recording.session_for_task(task_id))[1]
+    except (FileNotFoundError, OSError, ValueError):
+        return []
+
+
 def entered(task_id=None):
     """
     What a task's tools put into fields, oldest first: the text of each typing
@@ -258,14 +270,7 @@ def entered(task_id=None):
     secret) is not among them.
     """
 
-    task_id = task_id or task_context.current()
-    if not task_id:
-        return []
-    try:
-        _, events = recording.load(recording.session_for_task(task_id))
-    except (FileNotFoundError, OSError, ValueError):
-        return []
-    return [str(value) for event in events if event.get("outcome") in (None, "done")
+    return [str(value) for event in _task_events(task_id) if event.get("outcome") in (None, "done")
             for value in (event.get("text") if event.get("kind") == "type" else None,
                           event.get("option") if event.get("kind") == "select" else None) if value]
 
@@ -273,14 +278,7 @@ def entered(task_id=None):
 def pressed(task_id=None):
     """The names of the controls a task's tools pressed and that went through, oldest first."""
 
-    task_id = task_id or task_context.current()
-    if not task_id:
-        return []
-    try:
-        _, events = recording.load(recording.session_for_task(task_id))
-    except (FileNotFoundError, OSError, ValueError):
-        return []
-    return [str((event.get("element") or {}).get("name") or "") for event in events
+    return [str((event.get("element") or {}).get("name") or "") for event in _task_events(task_id)
             if event.get("outcome") in (None, "done") and event.get("kind") in ("click", "double_click")
             and (event.get("element") or {}).get("name")]
 
@@ -289,19 +287,24 @@ def read(task_id=None):
     """Everything a task's tools read off the screen, as one text ("" when nothing was kept)."""
 
     task_id = task_id or task_context.current()
-    if not task_id:
-        return ""
-    out = []
+    return "\n".join(_notes(task_id)) if task_id else ""
+
+
+def _notes(task_id, last=None):
+    """The texts noted for a task, oldest first: of its `last` lines only, when given."""
+
     try:
         with open(NOTES_DIR / f"{task_id}.jsonl", encoding="utf-8") as f:
-            for line in f:
-                try:
-                    out.append(json.loads(line)["text"])
-                except (ValueError, KeyError):
-                    continue
+            lines = f.readlines()
     except OSError:
-        pass
-    return "\n".join(out)
+        return []
+    texts = []
+    for line in lines[-last:] if last else lines:
+        try:
+            texts.append(json.loads(line)["text"])
+        except (ValueError, KeyError):
+            continue
+    return texts
 
 
 def observed(task_id=None):
@@ -312,27 +315,13 @@ def observed(task_id=None):
         return []
 
     lines = []
-    try:
-        _, events = recording.load(recording.session_for_task(task_id))
-        for event in events[-MAX_OBSERVED:]:
-            summary = event.get("summary") or event.get("kind")
-            # ...and what the screen did in answer, which is what a check made along the way found: a search
-            # whose result ("No Results found") was missing here left the final check unable to see that the
-            # duplicate check was made, and it paged a person about a correct bill (found live, 2026-10-13).
-            change = " ".join(str(event.get("change") or "").split())
-            after = f" -> {change[:MAX_CHANGE]}{'…' if len(change) > MAX_CHANGE else ''}" if change else ""
-            lines.append(f"action: {summary} ({event.get('outcome') or 'done'}){after}")
-    except (FileNotFoundError, OSError, ValueError):
-        pass
+    for event in _task_events(task_id)[-MAX_OBSERVED:]:
+        summary = event.get("summary") or event.get("kind")
+        # ...and what the screen did in answer, which is what a check made along the way found: a search
+        # whose result ("No Results found") was missing here left the final check unable to see that the
+        # duplicate check was made, and it paged a person about a correct bill (found live, 2026-10-13).
+        change = " ".join(str(event.get("change") or "").split())
+        after = f" -> {change[:MAX_CHANGE]}{'…' if len(change) > MAX_CHANGE else ''}" if change else ""
+        lines.append(f"action: {summary} ({event.get('outcome') or 'done'}){after}")
 
-    try:
-        with open(NOTES_DIR / f"{task_id}.jsonl", encoding="utf-8") as f:
-            for line in f.readlines()[-MAX_OBSERVED:]:
-                try:
-                    lines.append("read off the screen: " + json.loads(line)["text"])
-                except (ValueError, KeyError):
-                    continue
-    except OSError:
-        pass
-
-    return lines
+    return lines + ["read off the screen: " + text for text in _notes(task_id, MAX_OBSERVED)]

@@ -15,15 +15,7 @@ from decurix_agent import long_task, state, task_context
 TASK, NEW_TASK = base.TASK, "t63fb9d48eea9ec15"
 
 
-class StopThenANewRequest(unittest.TestCase):
-    setUp = base.LongRun.setUp
-    restore = base.LongRun.restore
-    model = base.LongRun.model
-    send = base.LongRun.send
-    finals = base.LongRun.finals
-    message = base.LongRun.message
-    run_id = base.LongRun.run_id
-
+class StopThenANewRequest(base.LongRunBase):
     def test_the_report_goes_out_on_the_runs_own_task_and_holds_new_requests_until_then(self):
         self.engine.asks["s1-register"] = "Which rate is right for bill B-7?"
         long_task.perform(base.LONG, None)

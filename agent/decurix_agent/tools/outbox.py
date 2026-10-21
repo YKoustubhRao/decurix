@@ -87,13 +87,17 @@ def _subject_words(subject):
     return re.findall(r"[a-z0-9]+", (subject or "").lower())
 
 
+def _same_recipients(record, to):
+    return sorted(a.lower() for a in record.get("to") or []) == sorted(a.lower() for a in to)
+
+
 def _same_email(record, to, subject, attached=None):
     """The same letter: the same recipients, a subject with the same words (found live: a second attempt
     wrote "Final notice - overdue invoices" where the first had "Final notice: overdue invoices"), and the same
     files attached. Found in review (2026-10-14): without the files, one task's separate letters to one address
     under one subject (an invoice each, "Invoice" every time) replaced each other and only the last was left."""
 
-    return (sorted(a.lower() for a in record.get("to") or []) == sorted(a.lower() for a in to)
+    return (_same_recipients(record, to)
             and _subject_words(record.get("subject")) == _subject_words(subject)
             and sorted(record.get("attachments") or []) == sorted(attached or []))
 
@@ -176,14 +180,12 @@ def draft(to, subject, body, cc=None, attachments=None, replaces=None):
             # before: that letter takes the earlier one's place, whatever its subject. Found live (round 5 P1,
             # 2026-10-20): a re-check drafted a second reminder to the same customer beside the first.
             earlier = [r for r in drafted(task_id) if r.get("id") and r.get("stage") == stage
-                       and r.get("attempt") != attempt
-                       and sorted(a.lower() for a in r.get("to") or []) == sorted(a.lower() for a in to)]
+                       and r.get("attempt") != attempt and _same_recipients(r, to)]
         if not earlier and task_context.continues():
             # A follow-up (a change the person sent after the task was reported) rewrites the letters that task drafted:
             # the new one to the same recipients takes the old one's place (series 16 H3, 2026-10-21: "leave Ishaan
             # out" redid the drafts, and the first run's Rao draft, still billing him, stayed beside the new one).
-            earlier = [r for r in drafted(task_context.continues()) if r.get("id")
-                       and sorted(a.lower() for a in r.get("to") or []) == sorted(a.lower() for a in to)]
+            earlier = [r for r in drafted(task_context.continues()) if r.get("id") and _same_recipients(r, to)]
         if earlier:
             replaces = earlier[-1]["id"]
 

@@ -200,53 +200,33 @@ type Renderer struct {
 // NewRenderer parses all templates once at startup.
 func NewRenderer() *Renderer {
 	return &Renderer{
-		readinessTmpl: template.Must(template.ParseFS(web.TemplatesFS, templatePaths("readiness.html")...)),
-		indexTmpl: template.Must(
-			template.ParseFS(web.TemplatesFS, templatePaths("index.html")...),
-		),
-		requestsTmpl: template.Must(
-			template.ParseFS(web.TemplatesFS, templatePaths("requests.html", triggerParts)...),
-		),
-		dashboardTmpl: template.Must(
-			template.ParseFS(web.TemplatesFS, templatePaths("dashboard.html")...),
-		),
-		desktopTmpl: template.Must(
-			template.ParseFS(web.TemplatesFS, templatePaths("desktop.html")...),
-		),
-		tasksTmpl: template.Must(
-			template.New("tasks.html").Funcs(taskFuncs).ParseFS(web.TemplatesFS, templatePaths("tasks.html")...),
-		),
-		taskTmpl: template.Must(
-			template.New("task.html").Funcs(taskFuncs).ParseFS(web.TemplatesFS, templatePaths("task.html")...),
-		),
-		recordingsTmpl: template.Must(
-			template.ParseFS(web.TemplatesFS, templatePaths("recordings.html")...),
-		),
-		skillsTmpl: template.Must(
-			template.ParseFS(web.TemplatesFS, templatePaths("skills.html")...),
-		),
-		dagsTmpl: template.Must(
-			template.New("dags.html").Funcs(taskFuncs).ParseFS(web.TemplatesFS, templatePaths("dags.html")...),
-		),
-		dagTmpl: template.Must(
-			template.New("dag.html").Funcs(taskFuncs).ParseFS(web.TemplatesFS, templatePaths("dag.html")...),
-		),
-		hostGUITmpl: template.Must(
-			template.ParseFS(web.TemplatesFS, templatePaths("hostgui.html")...),
-		),
+		readinessTmpl:  parse(nil, "readiness.html"),
+		indexTmpl:      parse(nil, "index.html"),
+		requestsTmpl:   parse(nil, "requests.html", triggerParts),
+		dashboardTmpl:  parse(nil, "dashboard.html"),
+		desktopTmpl:    parse(nil, "desktop.html"),
+		tasksTmpl:      parse(taskFuncs, "tasks.html"),
+		taskTmpl:       parse(taskFuncs, "task.html"),
+		recordingsTmpl: parse(nil, "recordings.html"),
+		skillsTmpl:     parse(nil, "skills.html"),
+		dagsTmpl:       parse(taskFuncs, "dags.html"),
+		dagTmpl:        parse(taskFuncs, "dag.html"),
+		hostGUITmpl:    parse(nil, "hostgui.html"),
 		phoneAppTmpl: template.Must(
 			template.ParseFS(web.TemplatesFS, "templates/phoneapp.html"),
 		),
 		phoneLinkTmpl: template.Must(
 			template.ParseFS(web.TemplatesFS, "templates/phonelink.html"),
 		),
-		screenTmpl: template.Must(
-			template.ParseFS(web.TemplatesFS, templatePaths("screen.html")...),
-		),
-		triggersTmpl: template.Must(
-			template.ParseFS(web.TemplatesFS, templatePaths("triggers.html", triggerParts)...),
-		),
+		screenTmpl:   parse(nil, "screen.html"),
+		triggersTmpl: parse(nil, "triggers.html", triggerParts),
 	}
+}
+
+// parse parses a page with the shared theme and any partials, with funcs (may
+// be nil) available to them.
+func parse(funcs template.FuncMap, page string, partials ...string) *template.Template {
+	return template.Must(template.New(page).Funcs(funcs).ParseFS(web.TemplatesFS, templatePaths(page, partials...)...))
 }
 
 // RenderIndex renders the root dashboard page.

@@ -188,8 +188,7 @@ func (s *Server) taskReportAPIHandler(w http.ResponseWriter, r *http.Request) {
 // "correct", "wrong", or "" to take it back - with an optional note, and
 // shows it in that desktop's chat on every device.
 func (s *Server) taskVerdictHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+	if !requirePost(w, r) {
 		return
 	}
 
