@@ -141,7 +141,7 @@ func (m *Manager) buildImage(ctx context.Context, out io.Writer, img desktopImag
 	reader, writer := io.Pipe()
 
 	go func() {
-		writer.CloseWithError(writeBuildContext(writer))
+		writer.CloseWithError(tarBuildContext(writer, decurix.DesktopBuildContext))
 	}()
 
 	defer reader.Close()
@@ -215,12 +215,6 @@ func contextHash(fsys fs.FS, img desktopImage) (string, error) {
 // errNoTheBotSource is a binary built without `go generate .`: go:embed left
 // agent/thebot out (it is a Go module of its own), and nothing put it back.
 var errNoTheBotSource = errors.New("this decurix was built without TheBot's sources, so it cannot build the desktop images: run `go generate .` at the repository root, then build it again")
-
-// writeBuildContext tars the embedded build context into w, preserving the
-// paths the Dockerfiles expect.
-func writeBuildContext(w io.Writer) error {
-	return tarBuildContext(w, decurix.DesktopBuildContext)
-}
 
 // tarBuildContext tars every file of fsys into w under its own path, except
 // decurix.TheBotSource, whose files are written under decurix.TheBotDir -
@@ -375,20 +369,14 @@ func streamBuildOutput(out io.Writer, body io.Reader) error {
 		}
 
 		if msg.Error != "" {
-			return fmt.Errorf("%s", firstNonEmpty(msg.ErrorDetail.Message, msg.Error))
+			if msg.ErrorDetail.Message != "" {
+				return fmt.Errorf("%s", msg.ErrorDetail.Message)
+			}
+			return fmt.Errorf("%s", msg.Error)
 		}
 
 		if msg.Stream != "" {
 			fmt.Fprint(out, msg.Stream)
 		}
 	}
-}
-
-// firstNonEmpty returns the first non-empty string of the two.
-func firstNonEmpty(a, b string) string {
-	if a != "" {
-		return a
-	}
-
-	return b
 }

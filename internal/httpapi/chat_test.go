@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"image"
@@ -27,12 +28,9 @@ import (
 func chatServer(t *testing.T) *Server {
 	t.Helper()
 
-	db, err := sqlitedb.OpenMemory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
+	db := testDB(t)
 
+	var err error
 	open := func(err error) {
 		t.Helper()
 		if err != nil {
@@ -54,16 +52,23 @@ func chatServer(t *testing.T) *Server {
 	return s
 }
 
+// testDB is an in-memory database, closed when the test ends.
+func testDB(t *testing.T) *sql.DB {
+	t.Helper()
+
+	db, err := sqlitedb.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	return db
+}
+
 func postJSON(t *testing.T, handler http.HandlerFunc, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 
-	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-
-	rec := httptest.NewRecorder()
-	handler(rec, req)
-
-	return rec
+	return postAs(t, handler, path, "application/json", body)
 }
 
 func readThread(t *testing.T, s *Server, id string) conversation.Thread {

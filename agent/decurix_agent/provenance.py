@@ -236,15 +236,24 @@ def _squash(text):
     return re.sub(r"[^a-z0-9]+", "", str(text or "").lower())
 
 
+def date_readings(written):
+    """The (y, m, d) readings of one written date: an ambiguous 02/11/2026 is both 2 Nov and 11 Feb; none for a text
+    that is no date."""
+
+    out = set()
+    for day_first in (True, False):
+        value = fact_value(written, day_first)
+        if value[0] == "date":
+            out.add(value[1])
+    return out
+
+
 def _dates(text):
     """Every reading of every date a text writes: an ambiguous 02/11/2026 is both 2 Nov and 11 Feb."""
 
     out = set()
     for m in _DATE_IN_TEXT.finditer(text or ""):
-        for day_first in (True, False):
-            value = fact_value(m.group(0), day_first)
-            if value[0] == "date":
-                out.add(value[1])
+        out |= date_readings(m.group(0))
     return out
 
 
@@ -299,10 +308,6 @@ def _figures(text):
     return out
 
 
-def _within(value, target, tolerance):
-    return abs(value - target) <= tolerance
-
-
 IMPLIED = {Decimal(n) for n in (2, 4, 7, 12, 24, 52, 365)}
 
 
@@ -344,7 +349,7 @@ def derived(value, operands, pool):
                 if b in (0, 1) or (b == 100 and forward(b) == a):
                     continue
                 result = forward(b)
-                if result is not None and _within(result, v, tolerance):
+                if result is not None and abs(result - v) <= tolerance:
                     return True
     return False
 
@@ -389,8 +394,7 @@ class Sources:
         if kind == "email":
             return written.lower() in self.emails or written.lower() in self.flat
         if kind == "date":
-            readings = {fact_value(written, d)[1] for d in (True, False) if fact_value(written, d)[0] == "date"}
-            return bool(readings & self.dates) or " ".join(written.lower().split()) in self.flat
+            return bool(date_readings(written) & self.dates) or " ".join(written.lower().split()) in self.flat
         if kind == "code":
             return bool(_squash(written)) and _squash(written) in self.squashed
         if kind == "ident":

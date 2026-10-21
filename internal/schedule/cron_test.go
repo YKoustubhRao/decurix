@@ -28,52 +28,30 @@ func TestParseRejectsOutOfRangeValue(t *testing.T) {
 	}
 }
 
-func TestEveryMinute(t *testing.T) {
-	expr := mustParse(t, "* * * * *")
+// assertNext checks that spec's first match after after is want.
+func assertNext(t *testing.T, spec string, after, want time.Time) {
+	t.Helper()
 
-	after := time.Date(2026, 9, 15, 12, 30, 0, 0, time.UTC)
-
-	next, ok := expr.Next(after)
+	next, ok := mustParse(t, spec).Next(after)
 	if !ok {
 		t.Fatal("expected a match")
 	}
 
-	want := time.Date(2026, 9, 15, 12, 31, 0, 0, time.UTC)
 	if !next.Equal(want) {
 		t.Fatalf("Next = %v, want %v", next, want)
 	}
+}
+
+func TestEveryMinute(t *testing.T) {
+	assertNext(t, "* * * * *", time.Date(2026, 9, 15, 12, 30, 0, 0, time.UTC), time.Date(2026, 9, 15, 12, 31, 0, 0, time.UTC))
 }
 
 func TestEveryFiveMinutesStep(t *testing.T) {
-	expr := mustParse(t, "*/5 * * * *")
-
-	after := time.Date(2026, 9, 15, 12, 31, 0, 0, time.UTC)
-
-	next, ok := expr.Next(after)
-	if !ok {
-		t.Fatal("expected a match")
-	}
-
-	want := time.Date(2026, 9, 15, 12, 35, 0, 0, time.UTC)
-	if !next.Equal(want) {
-		t.Fatalf("Next = %v, want %v", next, want)
-	}
+	assertNext(t, "*/5 * * * *", time.Date(2026, 9, 15, 12, 31, 0, 0, time.UTC), time.Date(2026, 9, 15, 12, 35, 0, 0, time.UTC))
 }
 
 func TestDailyAtSpecificTime(t *testing.T) {
-	expr := mustParse(t, "30 9 * * *")
-
-	after := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
-
-	next, ok := expr.Next(after)
-	if !ok {
-		t.Fatal("expected a match")
-	}
-
-	want := time.Date(2026, 9, 16, 9, 30, 0, 0, time.UTC)
-	if !next.Equal(want) {
-		t.Fatalf("Next = %v, want %v", next, want)
-	}
+	assertNext(t, "30 9 * * *", time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC), time.Date(2026, 9, 16, 9, 30, 0, 0, time.UTC))
 }
 
 // A weekly schedule (day-of-week restricted, day-of-month left as "*") only

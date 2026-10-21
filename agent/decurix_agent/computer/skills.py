@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 from decurix_agent import config
-from decurix_agent.computer import experience, replay
+from decurix_agent.computer import experience, recording, replay
 
 
 def bind_sources(skill, bindings):
@@ -93,9 +93,7 @@ def save(skill):
     path = _path(skill["name"])
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(skill, ensure_ascii=False, indent=1), encoding="utf-8")
-    tmp.replace(path)
+    recording.write_whole(path, json.dumps(skill, ensure_ascii=False, indent=1))
 
     return skill
 
@@ -188,7 +186,7 @@ def find(query):
 
 
 def _score(skill, query):
-    wanted = {w for w in replay.WORD.findall((query or "").lower()) if w not in replay.STOP_WORDS}
+    wanted = replay.query_words(query)
     words = set(replay.WORD.findall(f"{skill['name'].replace('-', ' ')} {skill.get('title') or ''} {skill.get('goal') or ''}".lower()))
 
     return len(wanted & words)
@@ -337,10 +335,14 @@ def chosen_from_list(skill):
 
     chosen, steps = set(), skill.get("steps") or []
     for step, following in zip(steps, steps[1:]):
-        if step.get("kind") == "type" and step.get("param") and following.get("kind") == "click" \
-                and ((following.get("target") or {}).get("role") or "") in LIST_ENTRY_ROLES:
+        if _picks_from_list(step, following):
             chosen.add(step["param"].split("__")[0])
     return chosen
+
+
+def _picks_from_list(step, following):
+    return (step.get("kind") == "type" and bool(step.get("param")) and following.get("kind") == "click"
+            and ((following.get("target") or {}).get("role") or "") in LIST_ENTRY_ROLES)
 
 
 def repeated_rows(skill):
@@ -488,13 +490,7 @@ def expand(skill, values):
                 each["summary"] = f"{replay._summary(each)} (item {n + 1} of {count})"
                 steps.append(each)
 
-    for number, step in enumerate(steps, 1):
-        step["n"] = number
-
-    by_name = {step["param"]: step["n"] for step in steps if step.get("param")}
-    params = [dict(p, step=by_name[p["name"]]) for p in params if p["name"] in by_name]
-
-    return fit(skill, _program(skill, steps, params), flat), flat
+    return fit(skill, _program(skill, steps, _numbered(steps, params)), flat), flat
 
 
 def summary(skill, detail=False):
@@ -556,13 +552,18 @@ def required(skill):
 def renumber(skill):
     """Make each step's number, and each parameter's step, follow the steps' current order."""
 
-    for n, step in enumerate(skill["steps"], 1):
+    skill["params"] = _numbered(skill["steps"], skill.get("params") or [])
+    return skill
+
+
+def _numbered(steps, params):
+    """Number `steps` in order: the parameters their steps still type, each with its step's new number."""
+
+    for n, step in enumerate(steps, 1):
         step["n"] = n
 
-    by_name = {step["param"]: step["n"] for step in skill["steps"] if step.get("param")}
-    skill["params"] = [dict(p, step=by_name[p["name"]]) for p in skill.get("params") or [] if p["name"] in by_name]
-
-    return skill
+    by_name = {step["param"]: step["n"] for step in steps if step.get("param")}
+    return [dict(p, step=by_name[p["name"]]) for p in params if p["name"] in by_name]
 
 
 # ============================================================
@@ -687,9 +688,7 @@ def fit(skill, program, values):
         step = steps[i]
         following = steps[i + 1] if i + 1 < len(steps) else {}
         name = step.get("param")
-        if step.get("kind") == "type" and name and base_of.get(name, name).split("__")[0] in chosen \
-                and following.get("kind") == "click" \
-                and ((following.get("target") or {}).get("role") or "") in LIST_ENTRY_ROLES \
+        if _picks_from_list(step, following) and base_of.get(name, name).split("__")[0] in chosen \
                 and _given(values, name) and values[name] != (params.get(name) or {}).get("example"):
             row = re.search(r" \(row \d+\)$", step.get("summary") or "")
             step["kind"], step["expect"], step["chosen"] = "select", [], True
@@ -711,23 +710,19 @@ def fit(skill, program, values):
     if count and count < demo:
         first = min(first, last[count - 1] + 1) if len(last) == demo else first
     for step in out[first:]:
+        # ...and not one that follows a value through the demonstration's own wording ("{item} Instances").
         step["expect"] = [check for check in step.get("expect") or []
-                          if check.get("param") or "{" in str(check.get("name") or check.get("value") or "")]
-        for check in step["expect"]:
-            # ...and not one that follows a value through the demonstration's own wording ("{item} Instances").
-            text = str(check.get("name") or check.get("value") or "")
-            if not check.get("param") and re.sub(r"\{[^}]*\}", "", text).strip():
-                check["drop"] = True
-        step["expect"] = [check for check in step["expect"] if not check.pop("drop", False)]
+                          if check.get("param") or _only_placeholders(str(check.get("name") or check.get("value") or ""))]
 
-    for number, step in enumerate(out, 1):
-        step["n"] = number
-    by_name = {step["param"]: step["n"] for step in out if step.get("param")}
     fitted = dict(program)
     fitted["steps"] = out
-    fitted["params"] = [dict(p, step=by_name[name]) for name, p in params.items() if name in by_name]
+    fitted["params"] = _numbered(out, params.values())
     fitted["fitted"] = True
     return fitted
+
+
+def _only_placeholders(text):
+    return "{" in text and not re.sub(r"\{[^}]*\}", "", text).strip()
 
 
 def el_name(step):

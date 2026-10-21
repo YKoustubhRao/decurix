@@ -460,31 +460,26 @@ def _documents(task):
     from decurix_agent import attachments
 
     texts, pictures = [], []
-    for path in dict.fromkeys(DOCUMENT_PATH.findall(task or "")):
-        # What the person sent, even when the task has since changed the file in place.
-        source = attachments.original(path)
+
+    def add(path, source, label):
         try:
             doc = office.read_document(source)
         except Exception as exc:  # a missing or unreadable file: judged without it
             log(f"verify: could not read {path}: {exc}")
-            continue
-        label = path if source == path else f"{path} (as the person sent it; the task has changed this file since)"
+            return
         texts.append(f"--- {label}\n{(doc.get('text') or '').strip()}")
         for image in doc.get("images") or []:
             if len(pictures) < MAX_DOCUMENT_PICTURES and os.path.isfile(image):
                 pictures.append(image)
+
+    for path in dict.fromkeys(DOCUMENT_PATH.findall(task or "")):
+        # What the person sent, even when the task has since changed the file in place.
+        source = attachments.original(path)
+        add(path, source, path if source == path else f"{path} (as the person sent it; the task has changed this file since)")
     # The files the task names by name that are in the worker's shared folder and were there before it began: what it
     # was given to work from, read like any attachment (its request names the folder once, then the files).
     for local in _shared_inputs(task):
-        try:
-            doc = office.read_document(local)
-        except Exception as exc:
-            log(f"verify: could not read {local}: {exc}")
-            continue
-        texts.append(f"--- {local}\n{(doc.get('text') or '').strip()}")
-        for image in doc.get("images") or []:
-            if len(pictures) < MAX_DOCUMENT_PICTURES and os.path.isfile(image):
-                pictures.append(image)
+        add(local, local, local)
     share = MAX_DOCUMENT_CHARS // max(len(texts), 1)
     return "\n".join(t if len(t) <= share else t[:share] + " [...]" for t in texts), pictures
 

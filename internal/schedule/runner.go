@@ -57,11 +57,16 @@ func (r *Runner) Run(ctx context.Context) {
 		interval = defaultInterval
 	}
 
+	Every(ctx, interval, r.tick)
+}
+
+// Every calls fn at once and then every interval until ctx is done.
+func Every(ctx context.Context, interval time.Duration, fn func(context.Context)) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
-		r.tick(ctx)
+		fn(ctx)
 
 		select {
 		case <-ctx.Done():
@@ -69,6 +74,27 @@ func (r *Runner) Run(ctx context.Context) {
 		case <-ticker.C:
 		}
 	}
+}
+
+// Concurrently calls fn on every item, at most limit at a time, and returns
+// once every call has.
+func Concurrently[T any](items []T, limit int, fn func(T)) {
+	sem := make(chan struct{}, limit)
+	var wg sync.WaitGroup
+
+	for _, item := range items {
+		wg.Add(1)
+		sem <- struct{}{}
+
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			fn(item)
+		}()
+	}
+
+	wg.Wait()
 }
 
 func (r *Runner) tick(ctx context.Context) {
@@ -80,22 +106,7 @@ func (r *Runner) tick(ctx context.Context) {
 		return
 	}
 
-	sem := make(chan struct{}, fireConcurrency)
-	var wg sync.WaitGroup
-
-	for _, sch := range due {
-		wg.Add(1)
-		sem <- struct{}{}
-
-		go func(sch Schedule) {
-			defer wg.Done()
-			defer func() { <-sem }()
-
-			r.fire(ctx, sch, now)
-		}(sch)
-	}
-
-	wg.Wait()
+	Concurrently(due, fireConcurrency, func(sch Schedule) { r.fire(ctx, sch, now) })
 }
 
 // fire submits sch's request, with a TIME field recording when this run

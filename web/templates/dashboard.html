@@ -49,7 +49,6 @@
   font-size:11.5px;
   color:var(--text-3)
 }
-.req-meta .mono{font-size:11.5px}
 .req-kind{font-weight:600}
 .req-kind--wait{color:var(--busy)}
 .req-kind--error{color:var(--danger)}
@@ -253,23 +252,11 @@
 (function(){
   "use strict";
 
-  var toast = Decurix.toast, post = Decurix.post;
+  var toast = Decurix.toast, post = Decurix.post, el = Decurix.node;
 
   /* ---------------- relative timestamps ---------------- */
 
-  document.querySelectorAll("[data-created]").forEach(function(el){
-    var date = new Date(el.dataset.created);
-    if(isNaN(date.getTime())){ return; }
-
-    var seconds = Math.round((Date.now() - date.getTime()) / 1000);
-
-    if(seconds < 60){ el.textContent = "just now"; }
-    else if(seconds < 3600){ el.textContent = Math.floor(seconds / 60) + "m ago"; }
-    else if(seconds < 86400){ el.textContent = Math.floor(seconds / 3600) + "h ago"; }
-    else if(seconds < 604800){ el.textContent = Math.floor(seconds / 86400) + "d ago"; }
-
-    el.title = date.toLocaleString();
-  });
+  Decurix.relativeTimes();
 
   /* ---------------- auto-growing reply boxes ---------------- */
 
@@ -317,7 +304,7 @@
 
         textarea.value = "";
         grow(textarea);
-        markSent(form);
+        Decurix.markSent(form.querySelector(".hint"), "Delivered to the desktop");
         setTimeout(syncOpen, 600);
       }catch(e){
         toast(e.message, "error");
@@ -327,20 +314,6 @@
       }
     });
   });
-
-  /* Swap the keyboard hint for a confirmation, then put the hint back. */
-  function markSent(form){
-    var hint = form.querySelector(".hint");
-    var original = hint.innerHTML;
-
-    hint.className = "sent";
-    hint.innerHTML = '<svg width="14" height="14"><use href="#i-check"/></svg>Delivered to the desktop';
-
-    setTimeout(function(){
-      hint.className = "hint";
-      hint.innerHTML = original;
-    }, 3200);
-  }
 
   /* ---------------- resolve ---------------- */
 
@@ -379,13 +352,6 @@
   var resolvedList = document.getElementById("resolvedList");
   var resolvedCount = document.getElementById("resolvedCount");
   var resolvedShown = "";
-
-  function el(tag, className, text){
-    var n = document.createElement(tag);
-    if(className){ n.className = className; }
-    if(text !== undefined){ n.textContent = text; }
-    return n;
-  }
 
   function renderResolved(notes){
     // Nothing to redraw when the history has not changed, so an entry the

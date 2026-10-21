@@ -8,6 +8,8 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -92,4 +94,30 @@ func CosineSimilarity(a, b []float32) float64 {
 		return 0
 	}
 	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
+}
+
+// EncodeVector is v as the comma-separated text the stores keep in SQLite.
+func EncodeVector(v []float32) string {
+	parts := make([]string, len(v))
+	for i, f := range v {
+		parts[i] = strconv.FormatFloat(float64(f), 'g', -1, 32)
+	}
+	return strings.Join(parts, ",")
+}
+
+// DecodeVector is EncodeVector undone, skipping any part that is not a number.
+func DecodeVector(s string) []float32 {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]float32, 0, len(parts))
+	for _, p := range parts {
+		f, err := strconv.ParseFloat(p, 32)
+		if err != nil {
+			continue
+		}
+		out = append(out, float32(f))
+	}
+	return out
 }

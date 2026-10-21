@@ -22,15 +22,10 @@ var hostCDrives = desktop.WindowsCDrives
 
 // hostFileAsked checks a request for a host file: a desktop, a C:\ path that does not go up a folder, and written in
 // that desktop's own open task request - so a desktop can ask only about what its task named, never probe the disk.
-// It answers the path asked for and its place under the C: drive, or writes the refusal and answers ok=false.
-func (s *Server) hostFileAsked(w http.ResponseWriter, r *http.Request) (asked, rel string, ok bool) {
-	return s.hostFileAskedBy(w, r, http.MethodGet)
-}
-
-// hostFileAskedBy is hostFileAsked for a request made with method.
-func (s *Server) hostFileAskedBy(w http.ResponseWriter, r *http.Request, method string) (asked, rel string, ok bool) {
-	if r.Method != method {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+// It answers the path asked for and its place under the C: drive, or writes the refusal and answers ok=false. Any
+// method but method is refused.
+func (s *Server) hostFileAsked(w http.ResponseWriter, r *http.Request, method string) (asked, rel string, ok bool) {
+	if !allowMethod(w, r, method) {
 		return "", "", false
 	}
 	id := desktop.SanitizeID(r.URL.Query().Get("desktop"))
@@ -66,7 +61,7 @@ func (s *Server) hostFileAskedBy(w http.ResponseWriter, r *http.Request, method 
 // what its first bytes make it. A desktop's worker cannot see the person's files, so this is how the check of a task
 // that saved one in a host app ("save it as C:\...eport.xlsx in Excel") learns whether it is there.
 func (s *Server) hostFileStatHandler(w http.ResponseWriter, r *http.Request) {
-	asked, rel, ok := s.hostFileAsked(w, r)
+	asked, rel, ok := s.hostFileAsked(w, r, http.MethodGet)
 	if !ok {
 		return
 	}
@@ -103,7 +98,7 @@ const hostFileReadMax = 30 << 20
 // file of that name exists: found live (2026-10-16), correct-looking files with a header that was not bold and a total
 // over damaged data were reported done. The same rule as the stat: only a path the task's own request names.
 func (s *Server) hostFileReadHandler(w http.ResponseWriter, r *http.Request) {
-	_, rel, ok := s.hostFileAsked(w, r)
+	_, rel, ok := s.hostFileAsked(w, r, http.MethodGet)
 	if !ok {
 		return
 	}

@@ -95,12 +95,20 @@ func getenv(k string) string {
 	return string(out)
 }
 
-func startFake(t *testing.T, id string) (*Manager, *Session) {
+// fakeManager is a Manager whose helpers are fakeHelper's: it is stopped, and its helpers still starting in the
+// background are waited for, when the test ends.
+func fakeManager(t *testing.T, o fakeOpts) (*Manager, *int32) {
 	t.Helper()
-	start, _ := fakeHelper(t, fakeOpts{})
+	start, starts := fakeHelper(t, o)
 	m := NewManager(start)
 	t.Cleanup(m.waitIdle)
 	t.Cleanup(m.StopAll)
+	return m, starts
+}
+
+func startFake(t *testing.T, id string) (*Manager, *Session) {
+	t.Helper()
+	m, _ := fakeManager(t, fakeOpts{})
 	s, err := m.Start(context.Background(), id, `C:\a.exe`, "")
 	if err != nil {
 		t.Fatal(err)
@@ -123,10 +131,7 @@ func next(t *testing.T, v *Viewer) Update {
 }
 
 func TestStartWaitsForFirstPictureAndForwardsInputVerbatim(t *testing.T) {
-	start, _ := fakeHelper(t, fakeOpts{launch: "OK pid=42"})
-	m := NewManager(start)
-	defer m.waitIdle()
-	defer m.StopAll()
+	m, _ := fakeManager(t, fakeOpts{launch: "OK pid=42"})
 
 	s, err := m.Start(context.Background(), "vm1-app", `C:\Program Files\App\app.exe`, "--flag")
 	if err != nil {
@@ -276,10 +281,7 @@ func TestALaunchMayTakeLongerThanAnOrdinaryRequest(t *testing.T) {
 }
 
 func TestStartReturnsTheHelpersReasonWhenTheLaunchIsRefused(t *testing.T) {
-	start, starts := fakeHelper(t, fakeOpts{launch: "ERR This is a Microsoft Store app."})
-	m := NewManager(start)
-	defer m.waitIdle()
-	defer m.StopAll()
+	m, starts := fakeManager(t, fakeOpts{launch: "ERR This is a Microsoft Store app."})
 	_, err := m.Start(context.Background(), "vm1-calc", `shell:AppsFolder\X`, "")
 	if err == nil || !strings.Contains(err.Error(), "Microsoft Store app") {
 		t.Fatalf("err = %v, want the helper's own reason", err)
@@ -324,10 +326,7 @@ func TestStartRefusesTargetsThatCouldBreakTheLineProtocol(t *testing.T) {
 }
 
 func TestStartTwiceReusesTheRunningSession(t *testing.T) {
-	start, _ := fakeHelper(t, fakeOpts{})
-	m := NewManager(start)
-	defer m.waitIdle()
-	defer m.StopAll()
+	m, _ := fakeManager(t, fakeOpts{})
 	a, err := m.Start(context.Background(), "same", `C:\a.exe`, "")
 	if err != nil {
 		t.Fatal(err)
@@ -342,10 +341,7 @@ func TestStartTwiceReusesTheRunningSession(t *testing.T) {
 }
 
 func TestTwoStartsAtOnceLaunchTheAppOnce(t *testing.T) {
-	start, _ := fakeHelper(t, fakeOpts{})
-	m := NewManager(start)
-	defer m.waitIdle()
-	defer m.StopAll()
+	m, _ := fakeManager(t, fakeOpts{})
 
 	var wg sync.WaitGroup
 	got := make([]*Session, 6)
@@ -378,10 +374,7 @@ func TestTwoStartsAtOnceLaunchTheAppOnce(t *testing.T) {
 }
 
 func TestTheNextAppFindsAHelperAlreadyWaiting(t *testing.T) {
-	start, starts := fakeHelper(t, fakeOpts{})
-	m := NewManager(start)
-	defer m.waitIdle()
-	defer m.StopAll()
+	m, starts := fakeManager(t, fakeOpts{})
 
 	m.Warm()
 	deadline := time.Now().Add(3 * time.Second)
@@ -663,10 +656,7 @@ func TestCopyOnlyPressesCopyOrCutAndReadsWhatTheAppCopied(t *testing.T) {
 }
 
 func TestCheckReportsWhichProgramsCanRunWithoutStartingAny(t *testing.T) {
-	start, _ := fakeHelper(t, fakeOpts{})
-	m := NewManager(start)
-	defer m.waitIdle()
-	defer m.StopAll()
+	m, _ := fakeManager(t, fakeOpts{})
 	paint := Target{Target: `C:\Windows\mspaint.exe`}
 	calc := Target{Target: `shell:AppsFolder\uwp!App`}
 	got, err := m.Check(context.Background(), []Target{paint, calc})
@@ -687,10 +677,7 @@ func TestCheckReportsWhichProgramsCanRunWithoutStartingAny(t *testing.T) {
 }
 
 func TestACheckLeavesItsHelperWarmForTheNextLaunch(t *testing.T) {
-	start, starts := fakeHelper(t, fakeOpts{})
-	m := NewManager(start)
-	defer m.waitIdle()
-	defer m.StopAll()
+	m, starts := fakeManager(t, fakeOpts{})
 	if _, err := m.Check(context.Background(), []Target{{Target: "a.exe"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -802,10 +789,7 @@ func launches(t *testing.T) (full, resolved int) {
 }
 
 func TestALaunchAfterACheckStartsWhatWasResolvedWithoutLookingItUpAgain(t *testing.T) {
-	start, _ := fakeHelper(t, fakeOpts{})
-	m := NewManager(start)
-	defer m.waitIdle()
-	defer m.StopAll()
+	m, _ := fakeManager(t, fakeOpts{})
 	if _, err := m.Check(context.Background(), []Target{{Target: `shell:AppsFolder\Chrome`}}); err != nil {
 		t.Fatal(err)
 	}
@@ -825,10 +809,7 @@ func TestALaunchAfterACheckStartsWhatWasResolvedWithoutLookingItUpAgain(t *testi
 }
 
 func TestWhatACheckResolvedSurvivesTheHelperThatDidIt(t *testing.T) {
-	start, _ := fakeHelper(t, fakeOpts{})
-	m := NewManager(start)
-	defer m.waitIdle()
-	defer m.StopAll()
+	m, _ := fakeManager(t, fakeOpts{})
 	m.Check(context.Background(), []Target{{Target: "a.exe"}})
 	// Throw away every helper, as happens when one is used up by an app or let go: the knowledge must not go with it.
 	m.mu.Lock()
@@ -845,10 +826,7 @@ func TestWhatACheckResolvedSurvivesTheHelperThatDidIt(t *testing.T) {
 }
 
 func TestAProgramThatHasMovedIsLookedUpAgainAndNotTrustedTwice(t *testing.T) {
-	start, _ := fakeHelper(t, fakeOpts{moved: true})
-	m := NewManager(start)
-	defer m.waitIdle()
-	defer m.StopAll()
+	m, _ := fakeManager(t, fakeOpts{moved: true})
 	m.Check(context.Background(), []Target{{Target: "a.exe"}})
 	if _, err := m.Start(context.Background(), "moved", "a.exe", ""); err != nil {
 		t.Fatalf("a program that moved must still start, found again by the helper: %v", err)
@@ -1031,10 +1009,7 @@ func TestOpeningAnAppThatIsClosingWaitsForTheNextOne(t *testing.T) {
 // a page on this computer - says so (the seventh field), and LocalPage gives that page; a plain program, a browser with
 // no launcher behind it and a page on another computer give none.
 func TestAWebAppsLauncherIsKnownByItsLocalPage(t *testing.T) {
-	start, _ := fakeHelper(t, fakeOpts{})
-	m := NewManager(start)
-	defer m.waitIdle()
-	defer m.StopAll()
+	m, _ := fakeManager(t, fakeOpts{})
 	web := Target{Target: `C:\webapp.exe`}
 	plain := Target{Target: `C:\Windows\mspaint.exe`}
 	if _, err := m.Check(context.Background(), []Target{web, plain}); err != nil {
@@ -1218,10 +1193,7 @@ func TestAKeptAppThatClosesStraightAwayIsGivenUpOnUntilKeptAgain(t *testing.T) {
 // TestStopEndsWhatTheHelperStartedOnTheHost: Stop hands the manager's Reap the helper's own host process id and the
 // app it launched - found live (2026-10-20), a stopped helper and its WINWORD.EXE kept running on the person's PC.
 func TestStopEndsWhatTheHelperStartedOnTheHost(t *testing.T) {
-	start, _ := fakeHelper(t, fakeOpts{launch: "OK pid=42"})
-	m := NewManager(start)
-	defer m.waitIdle()
-	defer m.StopAll()
+	m, _ := fakeManager(t, fakeOpts{launch: "OK pid=42"})
 	var mu sync.Mutex
 	var reaped [][2]int
 	m.Reap = func(helper, app int) {

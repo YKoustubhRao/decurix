@@ -169,41 +169,7 @@ lan_port="${lan_port:-8090}"
 # port (lib/lan-address.sh) - WSL's private one is unreachable from a phone.
 lan_ip="$(decurix_lan_ip "$lan_port")"
 
-if [ -n "$lan_ip" ]; then
-    lan_url="http://$lan_ip:$lan_port"
-
-    # Reported once here, separately from the tunnel URL below (which is
-    # reported every time cloudflared prints one) - see httpapi.tunnelHandler,
-    # which never lets one blank out the other.
-    curl -fsS -X POST http://127.0.0.1:8080/api/tunnel \
-        -H "Content-Type: application/json" \
-        -d "{\"lan_url\":\"$lan_url\"}" \
-        >/dev/null 2>&1 || true
-
-    echo ""
-    echo "LAN access URL (needs the code below, works without the tunnel):  $lan_url"
-fi
-
-# Printed here as a convenience - it also always lives in the dashboard's
-# Mobile menu (both URLs above alongside it), which is the one place it
-# stays current after a rotate.
-if command -v jq >/dev/null 2>&1; then
-    lan_code="$(curl -fsS http://127.0.0.1:8080/api/lan-access/status 2>/dev/null | jq -r '.code // empty')"
-
-    if [ -n "$lan_code" ]; then
-        echo ""
-        echo "Access code: $lan_code"
-        echo "(Needed once by anyone using the LAN URL above. Also in the dashboard's Mobile menu, which can generate a new one.)"
-
-        # A one-click link for whoever is sitting at this terminal right now -
-        # they already have the code above, so this authenticates on click
-        # instead of asking them to type it into the gate's form.
-        if [ -n "$lan_url" ]; then
-            echo ""
-            echo "Open it yourself without typing the code: $lan_url/__decurix_access/authenticate?code=$lan_code"
-        fi
-    fi
-fi
+report_lan_access "$lan_ip" "$lan_port"
 
 # --cli is a terminal-native alternative to the tunnel below: it never opens
 # a tunnel URL, so the INT/TERM trap's "tunnel stopped" message would not

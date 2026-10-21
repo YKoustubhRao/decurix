@@ -73,8 +73,7 @@ func (s *Server) phoneConnectHandler(w http.ResponseWriter, r *http.Request) {
 
 // phonesHandler lists the phones linked right now.
 func (s *Server) phonesHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodGet) {
 		return
 	}
 

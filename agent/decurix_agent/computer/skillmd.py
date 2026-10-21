@@ -62,7 +62,7 @@ def _ordinal(n):
     return {1: "1st", 2: "2nd", 3: "3rd"}.get(n, f"{n}th")
 
 
-def _description(skill, subtasks):
+def _description(skill):
     title = skill.get("title") or skill["name"]
     parts = [f"{title.rstrip('.')}, taught by demonstration on a Decurix desktop."]
 
@@ -92,7 +92,7 @@ def render(skill):
     front = [
         "---",
         f"name: {name}",
-        f"description: {json.dumps(_description(skill, subtasks))}",
+        f"description: {json.dumps(_description(skill))}",
         # The spec's `metadata` is a map of strings to strings; a nested map is stringified
         # into a Python repr by the reference reader, so each key stands alone.
         "metadata:",

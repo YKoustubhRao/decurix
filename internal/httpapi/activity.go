@@ -49,8 +49,7 @@ type Activity struct {
 // named desktop's Activity, keyed by ID: one request per dashboard poll,
 // however many cards it shows.
 func (s *Server) activityHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodGet) {
 		return
 	}
 

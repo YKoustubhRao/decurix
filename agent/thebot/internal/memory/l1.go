@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -226,7 +225,7 @@ func (l *L1) Store(ctx context.Context, fact, source string) error {
 			rows.Close()
 			return err
 		}
-		if llm.CosineSimilarity(vec, decodeVec(embStr)) >= dedupeThreshold {
+		if llm.CosineSimilarity(vec, llm.DecodeVector(embStr)) >= dedupeThreshold {
 			dupeID = id
 			break
 		}
@@ -242,13 +241,13 @@ func (l *L1) Store(ctx context.Context, fact, source string) error {
 		// an explicit restatement should also upgrade an inferred one.
 		_, err = l.db.ExecContext(ctx,
 			`UPDATE facts SET fact = ?, embedding = ?, created_at = ?, source = CASE WHEN source = 'explicit' THEN 'explicit' ELSE ? END WHERE id = ?`,
-			fact, encodeVec(vec), time.Now().Unix(), source, dupeID)
+			fact, llm.EncodeVector(vec), time.Now().Unix(), source, dupeID)
 		return err
 	}
 
 	_, err = l.db.ExecContext(ctx,
 		`INSERT INTO facts (fact, source, embedding, created_at) VALUES (?, ?, ?, ?)`,
-		fact, source, encodeVec(vec), time.Now().Unix(),
+		fact, source, llm.EncodeVector(vec), time.Now().Unix(),
 	)
 	return err
 }
@@ -260,8 +259,8 @@ func (l *L1) Recall(ctx context.Context, query string, topK int) ([]L1Entry, err
 	if topK <= 0 {
 		return nil, nil
 	}
-	var count int
-	if err := l.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM facts`).Scan(&count); err != nil {
+	count, err := l.Count(ctx)
+	if err != nil {
 		return nil, err
 	}
 	if count == 0 {
@@ -286,7 +285,7 @@ func (l *L1) Recall(ctx context.Context, query string, topK int) ([]L1Entry, err
 		if err := rows.Scan(&e.Fact, &e.Source, &embStr, &e.CreatedAt); err != nil {
 			return nil, err
 		}
-		e.Score = llm.CosineSimilarity(queryVec, decodeVec(embStr))
+		e.Score = llm.CosineSimilarity(queryVec, llm.DecodeVector(embStr))
 		out = append(out, e)
 	}
 	if err := rows.Err(); err != nil {
@@ -325,28 +324,4 @@ func (l *L1) ListRecent(ctx context.Context, n int) ([]L1Entry, error) {
 		out = append(out, e)
 	}
 	return out, rows.Err()
-}
-
-func encodeVec(v []float32) string {
-	parts := make([]string, len(v))
-	for i, f := range v {
-		parts[i] = strconv.FormatFloat(float64(f), 'g', -1, 32)
-	}
-	return strings.Join(parts, ",")
-}
-
-func decodeVec(s string) []float32 {
-	if s == "" {
-		return nil
-	}
-	parts := strings.Split(s, ",")
-	out := make([]float32, 0, len(parts))
-	for _, p := range parts {
-		f, err := strconv.ParseFloat(p, 32)
-		if err != nil {
-			continue
-		}
-		out = append(out, float32(f))
-	}
-	return out
 }

@@ -153,8 +153,7 @@ func (s *Store) List() []QueryNote {
 // ListResolved returns the notes that have been resolved, most recently
 // resolved first, up to maxResolved.
 func (s *Store) ListResolved() []QueryNote {
-	notes := s.list(`resolved_ns != 0`, `resolved_ns DESC LIMIT `+fmt.Sprint(maxResolved))
-	return notes
+	return s.list(`resolved_ns != 0`, `resolved_ns DESC LIMIT `+fmt.Sprint(maxResolved))
 }
 
 // Close resolves a query note by ID, keeping it in the history. It is a no-op

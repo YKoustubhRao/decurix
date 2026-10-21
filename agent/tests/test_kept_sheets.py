@@ -6,7 +6,6 @@ instruction or a change the person made asks for that sheet to change. Snapshots
 
 import json
 import shutil
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -15,6 +14,7 @@ import openpyxl
 
 import test_long_requests as base  # noqa: F401 - stubs config first
 import fixture_paths  # noqa: E402 - live-run fixtures live outside the repo
+from temp_case import TempDirCase
 
 from decurix_agent import long_task
 from decurix_agent.tools import office
@@ -27,11 +27,9 @@ class Runner:
         self.root = Path(root)
 
 
-class KeptSheets(unittest.TestCase):
+class KeptSheets(TempDirCase):
     def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.dir = Path(tmp.name)
+        super().setUp()
         self.book = self.dir / "work" / "month_end_close_Oct2026.xlsx"
         self.book.parent.mkdir(parents=True)
         self.data = {"amendments": []}
@@ -154,7 +152,7 @@ class CellsByMeaning(unittest.TestCase):
                 self.assertTrue(long_task.same_cell(cells.get(key), after[sheet].get(key)), (sheet, key))  # ... same
 
 
-class AdditionsAreNoChange(unittest.TestCase):
+class AdditionsAreNoChange(TempDirCase):
     """CO (round 5 P2 on pc3, 2026-10-20): stage 3 added column N to stage 1's "Working" sheet in dispatch_plan.xlsx and
     was refused for "changed (N1, N10, N11 ...)". Adding cells is allowed; changing or clearing a value, removing a row
     or reordering rows is not."""
@@ -163,9 +161,7 @@ class AdditionsAreNoChange(unittest.TestCase):
 
     def setUp(self):
         self.LIVE = fixture_paths.need(self.LIVE.name)
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.dir = Path(tmp.name)
+        super().setUp()
         self.book = self.dir / "dispatch_plan.xlsx"
         shutil.copy(self.LIVE / "dispatch_plan.xlsx", self.book)
         kept = json.loads((self.LIVE / "s1-extract-orders.json").read_text(encoding="utf-8"))
@@ -220,7 +216,7 @@ class AdditionsAreNoChange(unittest.TestCase):
         self.assertIn("was changed", found[0])
 
 
-class AfterARecordWasRemoved(unittest.TestCase):
+class AfterARecordWasRemoved(TempDirCase):
     """CP2 (round 5 P1 on pc3, 2026-10-20): the person cancelled bill NS-0457 mid-run; the Purchase Register stage, re-run,
     was refused for the totals still holding NS-0457 AND for changing "Purchase Working" and "GSTR-3B" - reported as the
     AR Ageing stage's sheets. A sheet is the stage's whose completion first held it; after a change to a record, the
@@ -231,10 +227,8 @@ class AfterARecordWasRemoved(unittest.TestCase):
 
     def setUp(self):
         self.LIVE = fixture_paths.need(self.LIVE.name)
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.dir = Path(tmp.name)
-        self.run = json.loads((self.LIVE / "run.json").read_text(encoding="utf-8"))
+        super().setUp()
+        self.run =json.loads((self.LIVE / "run.json").read_text(encoding="utf-8"))
         self.book = self.dir / "month_end_close_Oct2026.xlsx"
         shutil.copy(self.LIVE / "month_end_close_Oct2026.xlsx", self.book)
         sheets = self.dir / "runs" / RUN / "sheets"

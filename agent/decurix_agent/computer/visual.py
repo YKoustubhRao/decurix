@@ -132,6 +132,11 @@ def encode_png(width, height, rgb):
 
     stride = width * 3
     raw = b"".join(b"\x00" + bytes(rgb[y * stride:(y + 1) * stride]) for y in range(height))
+    return png_of_rows(width, height, raw, 6)
+
+
+def png_of_rows(width, height, raw, level):
+    """A PNG of 8-bit RGB rows that already carry their filter byte, compressed at zlib `level`."""
 
     def chunk(tag, body):
         return struct.pack(">I", len(body)) + tag + body + struct.pack(">I", zlib.crc32(tag + body) & 0xFFFFFFFF)
@@ -139,7 +144,7 @@ def encode_png(width, height, rgb):
     return (
         PNG_SIGNATURE
         + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
-        + chunk(b"IDAT", zlib.compress(raw, 6))
+        + chunk(b"IDAT", zlib.compress(raw, level))
         + chunk(b"IEND", b"")
     )
 
@@ -712,24 +717,19 @@ def _item_at(rgb, width, height, px, py, ink):
     seed = min(rows, key=lambda y: abs(y - py))
     reach_x0, reach_x1 = px - 40, px + 41
 
-    top = seed
-    gap = 0
-    for y in range(seed - 1, max(-1, seed - 60), -1):
-        if _band(rgb, width, reach_x0, reach_x1, y, is_ink):
-            top, gap = y, 0
-        else:
-            gap += 1
-            if gap > KIN_GAP_Y:
-                break
-    bottom = seed
-    gap = 0
-    for y in range(seed + 1, min(height, seed + 60)):
-        if _band(rgb, width, reach_x0, reach_x1, y, is_ink):
-            bottom, gap = y, 0
-        else:
-            gap += 1
-            if gap > KIN_GAP_Y:
-                break
+    def last_row(ys):
+        edge, gap = seed, 0
+        for y in ys:
+            if _band(rgb, width, reach_x0, reach_x1, y, is_ink):
+                edge, gap = y, 0
+            else:
+                gap += 1
+                if gap > KIN_GAP_Y:
+                    break
+        return edge
+
+    top = last_row(range(seed - 1, max(-1, seed - 60), -1))
+    bottom = last_row(range(seed + 1, min(height, seed + 60)))
 
     def column(x):
         for y in range(top, bottom + 1):

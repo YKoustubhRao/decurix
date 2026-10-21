@@ -80,7 +80,7 @@ func releaseLines(out string) (released, held []string) {
 // hostFileReleaseHandler ends the apps our host-app helpers started that hold a file of the person's computer named in
 // the desktop's open task (POST ?desktop=&path=). It answers what it ended and what holds the file that is not ours.
 func (s *Server) hostFileReleaseHandler(w http.ResponseWriter, r *http.Request) {
-	asked, _, ok := s.hostFileAskedBy(w, r, http.MethodPost)
+	asked, _, ok := s.hostFileAsked(w, r, http.MethodPost)
 	if !ok {
 		return
 	}

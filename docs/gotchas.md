@@ -542,3 +542,4 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-5.md](gotchas/part-5.md): The person was asked again about what they had just decided: the router sees earlier answers and sends such a question back
 - [part-5.md](gotchas/part-5.md): A refused stage asked only try again / skip / stop: it now asks the person to settle the disputed points, and that answer binds the check
 - [part-5.md](gotchas/part-5.md): A follow-up's checks read every file of the desktop, and its new drafts sat beside the old ones: whole request kept, continues the reported task
+- [part-5.md](gotchas/part-5.md): An outbox email with no attachments went out with an empty body: bytes taken before the body was written

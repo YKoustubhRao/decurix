@@ -1,11 +1,7 @@
 package llm
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -61,20 +57,14 @@ type anthropicResponse struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
 	} `json:"usage"`
-	Error *struct {
-		Message string `json:"message"`
-	} `json:"error"`
+	apiError
 }
 
 // Chat calls Anthropic's real Messages API. A leading "system"-role
 // message is pulled out into the top-level `system` field - Anthropic's
 // API has no "system" role inside the messages array, unlike Ollama/OpenAI.
 func (a *AnthropicProvider) Chat(ctx context.Context, model string, messages []Message, opts Options) (Result, error) {
-	timeout := 120 * time.Second
-	if opts.TimeoutMs > 0 {
-		timeout = time.Duration(opts.TimeoutMs) * time.Millisecond
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(ctx, opts.timeout())
 	defer cancel()
 
 	var system string
@@ -103,40 +93,10 @@ func (a *AnthropicProvider) Chat(ctx context.Context, model string, messages []M
 		maxTokens = opts.MaxTokens
 	}
 	reqBody := anthropicRequest{Model: model, MaxTokens: maxTokens, System: system, Messages: msgs, Temperature: opts.Temperature}
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return Result{}, fmt.Errorf("anthropic: marshal request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.BaseURL+"/v1/messages", bytes.NewReader(body))
-	if err != nil {
-		return Result{}, fmt.Errorf("anthropic: build request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", a.APIKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-
-	resp, err := a.Client.Do(req)
-	if err != nil {
-		return Result{}, fmt.Errorf("anthropic: request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return Result{}, fmt.Errorf("anthropic: read response: %w", err)
-	}
-
 	var parsed anthropicResponse
-	if err := json.Unmarshal(respBytes, &parsed); err != nil {
-		return Result{}, fmt.Errorf("anthropic: parse response: %w (body: %s)", err, string(respBytes))
-	}
-	if resp.StatusCode != http.StatusOK {
-		msg := string(respBytes)
-		if parsed.Error != nil {
-			msg = parsed.Error.Message
-		}
-		return Result{}, fmt.Errorf("anthropic returned HTTP %d: %s", resp.StatusCode, msg)
+	headers := map[string]string{"x-api-key": a.APIKey, "anthropic-version": "2023-06-01"}
+	if _, err := postJSON(ctx, a.Client.Do, "anthropic", a.BaseURL+"/v1/messages", headers, reqBody, &parsed, &parsed.apiError); err != nil {
+		return Result{}, err
 	}
 
 	text := ""

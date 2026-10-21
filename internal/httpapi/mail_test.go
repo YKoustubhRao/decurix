@@ -13,7 +13,6 @@ import (
 
 	"github.com/YKoustubhRao/decurix/internal/keepawake"
 	"github.com/YKoustubhRao/decurix/internal/mailtrigger"
-	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 	"github.com/YKoustubhRao/decurix/internal/webui"
 )
 
@@ -30,11 +29,7 @@ func (emptyMailbox) Close()                                      {}
 func mailServer(t *testing.T) *Server {
 	t.Helper()
 
-	db, err := sqlitedb.OpenMemory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
+	db := testDB(t)
 
 	store, err := mailtrigger.NewStore(db, nil)
 	if err != nil {

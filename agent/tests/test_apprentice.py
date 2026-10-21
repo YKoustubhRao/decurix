@@ -176,7 +176,7 @@ class WithTheModel(ts.TeachingBase):
         self.taught_customer()
         self.screen()
         self.verdicts = [verdict(verify.DONE, seen="Initech is in the customer list")]
-        read = ({"customer_name": "Initech"}, {"customer_name": "PO.pdf, Bill To"})
+        read = ({"customer_name": "Initech"}, {"customer_name": "PO.pdf, Bill To"}, None)
 
         with mock.patch.object(skill_task.binding, "available", return_value=True), \
                 mock.patch.object(skill_task.binding, "fill", return_value=read):

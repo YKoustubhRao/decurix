@@ -176,19 +176,10 @@ func (m *Manager) retryPendingApps(id string) {
 		}
 		if m.giveUpPending(id) {
 			log.Printf("hostapps: gave up on unchecked apps for %s", id)
-			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-			defer cancel()
-			if err := writeMissingFileFn(m, ctx, "desktop_"+id, m.MissingApps(id)); err != nil {
-				log.Printf("hostapps: telling %s which apps are missing: %v", id, err)
-			}
+			m.rewriteMissingFile(id)
 			m.invalidateList()
 		}
 	}()
-}
-
-// writeMissingFile writes the desktop's MissingAppsFile (an empty list clears it).
-func (m *Manager) writeMissingFile(ctx context.Context, containerID string, apps []MissingApp) error {
-	return writeMissingFileFn(m, ctx, containerID, apps)
 }
 
 // missingFileTar is the tar that puts apps, as JSON, at MissingAppsFile under the desktop's home.

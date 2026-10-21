@@ -37,8 +37,7 @@ func (s *Server) llmSettingsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodPost) {
 		return
 	}
 
@@ -75,8 +74,7 @@ func (s *Server) llmSettingsHandler(w http.ResponseWriter, r *http.Request) {
 
 // llmForgetHandler removes a provider's saved settings.
 func (s *Server) llmForgetHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodPost) {
 		return
 	}
 
@@ -133,8 +131,7 @@ func (s *Server) llmProxyHandler(w http.ResponseWriter, r *http.Request) {
 // llmChat forwards one chat request to a provider, adding the key the
 // desktop never sees.
 func (s *Server) llmChat(w http.ResponseWriter, r *http.Request, provider string) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodPost) {
 		return
 	}
 

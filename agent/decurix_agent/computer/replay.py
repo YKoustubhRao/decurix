@@ -625,7 +625,7 @@ def follow_values(steps, params, values):
         return steps
 
     followed = []
-    for index, step in enumerate(steps):
+    for step in steps:
         target = step.get("target") or {}
         name = target.get("name") or ""
         new = None
@@ -858,7 +858,6 @@ def _find(step, ladder=None, report=None):
         if element is not None or point is not None:
             return element, point, observation, None
 
-
         # The screen was put back to the recorded size before the run, and a
         # viewer that reconnected since resized it to its browser again: fit
         # it once more rather than halt on a size the run can simply set.
@@ -879,7 +878,7 @@ def _find(step, ladder=None, report=None):
         if not brought and reason.startswith(NOT_IN_FRONT):
             brought = True
             window = _stable_title(step.get("window"))
-            done = launchers.bring_forward(window, title_matches, app=step.get("app"), url=step.get("url")) \
+            done = launchers.bring_forward(window, title_matches) \
                 if window else None
             if done:
                 (report or progress.emit)(f"Step {step['n']}: {done}")
@@ -923,11 +922,8 @@ def _find(step, ladder=None, report=None):
                 observation["pressed_cell"] = True
                 return None, tuple(step["point"]), observation, None
 
-            if repair:
-                raise _Halt(reason, _screen_brief(observation), missing=missing, options=repair["options"],
-                            observation=observation)
-
-            raise _Halt(reason, _screen_brief(observation), missing=missing, observation=observation)
+            raise _Halt(reason, _screen_brief(observation), missing=missing,
+                        options=repair["options"] if repair else None, observation=observation)
 
         time.sleep(POLL_SECONDS)
 
@@ -1169,8 +1165,6 @@ def _await_checks(checks, observation, values, seconds=None):
     return missing, observation
 
 
-# Why a point click did not run when its picture was not found (resolve). A
-# person may still say the spot is right (skill_task's "click anyway").
 def _kin(step):
     """
     What kind of thing a point step clicked (visual.make_kin), read from the
@@ -1314,11 +1308,10 @@ def _first_change(program, values):
 
     steps = []
     for param in program.get("params") or []:
-        recorded = param.get("example") if param.get("example") is not None else param.get("default")
-        value = values.get(param["name"])
-        if recorded is None or value is None or isinstance(recorded, list) or isinstance(value, list):
+        recorded, value = _recorded_value(param), values.get(param["name"])
+        if recorded is None or value is None or isinstance(value, list):
             continue
-        if str(value) != str(recorded):
+        if str(value) != recorded:
             steps.append(param["step"])
     return min(steps) if steps else None
 
@@ -1333,6 +1326,8 @@ NOT_IN_FRONT = "the step was recorded as a point in"
 # no longer matched.
 DESKTOP_NUDGE_PIXELS = 40
 
+# Why a point click did not run when its picture was not found (resolve). A
+# person may still say the spot is right (skill_task's "click anyway").
 LOOK_MISSING = ("what was around the click when it was recorded is not on the screen "
                 "(it looks different, or has moved too far), so a replay does not click there")
 
@@ -1658,7 +1653,7 @@ def _summary_text(program, result, step):
 def search(query="", limit=8):
     """Recordings for `query`, best first: demonstrations ahead of tasks, newer ahead of older."""
 
-    wanted = {w for w in WORD.findall((query or "").lower()) if w not in STOP_WORDS}
+    wanted = query_words(query)
     ranked = []
 
     for meta in recording.sessions():
@@ -1678,6 +1673,12 @@ def search(query="", limit=8):
 
     ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
     return [meta for _, _, meta in ranked[:limit]]
+
+
+def query_words(query):
+    """The words of a request that say what it is about: lower case, without "the", "please" and the like."""
+
+    return {w for w in WORD.findall((query or "").lower()) if w not in STOP_WORDS}
 
 
 def render_text(meta, program, budget=3500):

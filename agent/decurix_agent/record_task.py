@@ -229,9 +229,7 @@ def perform(content, task_file=None):
 
     global _ticket
 
-    state.current_task = content
-    state.current_task_file = task_file
-    state.waiting_for_query = False
+    state.begin(content, task_file)
 
     # Known, not unknown: nobody read a prompt and nothing was spent.
     usage.add(input_tokens=0, output_tokens=0, cost_usd=0)

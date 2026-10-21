@@ -1,22 +1,15 @@
-"""Extension-facing server: the same atomize -> (expectation) -> act -> verify
-pipeline as runner.py/server.py, except "act" targets a live Chrome tab's real
-DOM (via the browser-agent Chrome extension's own tab capture + content-script
-execution) instead of a Playwright page owned by browser_host.py.
+"""Extension-facing server: an atomize -> (expectation) -> act -> verify
+pipeline whose "act" targets a live Chrome tab's real DOM (via the
+browser-agent Chrome extension's own tab capture + content-script execution).
 
-Reuses atomizer.py, reasoning.py and models.py completely unmodified -- they
-were already pure functions over (model_key, text, url, html, screenshot_b64)
-with no Playwright dependency. worker.get_full_html's HTML-cleaning is also
-reused unmodified, via a tiny duck-typed shim below (it only ever calls
-page.content() on the object it's given). Only codegen.py's role -- turning
-one instruction into something executable -- has no direct equivalent, since
-a generated Playwright snippet can't run in a content script; ext_codegen.py
-covers that instead with a small grounded-action grammar.
+atomizer.py, reasoning.py and models.py are pure functions over (model_key,
+text, url, html, screenshot_b64). worker.get_full_html's HTML-cleaning runs
+via a tiny duck-typed shim below (it only ever calls page.content() on the
+object it's given). ext_codegen.py turns one instruction into something
+executable with a small grounded-action grammar.
 
-Runs as its own standalone process on its own port. It never imports or
-touches server.py/runner.py/worker.py's browser-owning state -- browser_host.py
-and the shared Playwright Chromium don't need to be running at all for this to
-work, since the Chrome extension supplies its own page snapshots directly from
-the user's real tab.
+Runs as its own standalone process on its own port; the Chrome extension
+supplies its own page snapshots directly from the user's real tab.
 """
 import re
 import threading
@@ -61,6 +54,10 @@ class RequestBody(BaseModel):
     start_url: Optional[str] = None
     id: Optional[str] = None
     meta: Optional[dict] = None
+    # Actions a person approved for this request (background.js's approval
+    # gate names them, e.g. 'click "Send" on mail.google.com'); each one lets
+    # exactly one such action through, once.
+    approved: Optional[list[str]] = None
 
 
 class RequestsBody(BaseModel):
@@ -83,6 +80,9 @@ class RequestResultBody(BaseModel):
     final_state: Optional[dict] = None
     check_passed: Optional[bool] = None
     elapsed_s: Optional[float] = None
+    # status "needs_approval": {"action", "reason"} - the action the gate
+    # stopped before carrying it out.
+    approval: Optional[dict] = None
 
 
 def _add_request(r: RequestBody):
@@ -181,7 +181,7 @@ def next_request():
                 r["status"] = "running"
                 r["started_at"] = time.time()
                 return {"request": {k: r.get(k) for k in
-                                    ("id", "kind", "task", "program", "start_url", "meta")}}
+                                    ("id", "kind", "task", "program", "start_url", "meta", "approved")}}
         return {"request": None}
 
 
@@ -382,13 +382,15 @@ def _step_stack(body, html):
             return {"error": f"planning failed: {exc}"}
         plan_steps = stack
 
+    def planned(resp):
+        if plan_steps is not None:
+            resp["planned"] = plan_steps
+        return resp
+
     memory = body.memory
     for _ in range(10):  # bounded: a model stuck emitting "skip" forever must not hang the request
         if not stack:
-            resp = {"done": True, "memory": memory, "stack": stack}
-            if plan_steps is not None:
-                resp["planned"] = plan_steps
-            return resp
+            return planned({"done": True, "memory": memory, "stack": stack})
 
         current_instr = stack[0]
         try:
@@ -402,21 +404,15 @@ def _step_stack(body, html):
         if push_before:
             stack = [push_before, *stack]
         if action is None:
-            resp = {"done": True, "memory": memory, "evaluation_previous_goal": evaluation, "stack": []}
-            if plan_steps is not None:
-                resp["planned"] = plan_steps
-            return resp
+            return planned({"done": True, "memory": memory, "evaluation_previous_goal": evaluation, "stack": []})
         if action.get("type") == "answer":
-            resp = {"done": True, "answer": action.get("text", ""), "memory": memory,
-                    "evaluation_previous_goal": evaluation, "stack": stack}
-            if plan_steps is not None:
-                resp["planned"] = plan_steps
-            return resp
+            return planned({"done": True, "answer": action.get("text", ""), "memory": memory,
+                            "evaluation_previous_goal": evaluation, "stack": stack})
         if action.get("type") == "skip":
             stack = stack[1:]
             continue
 
-        resp = {
+        return planned({
             "done": False, "captcha": None,
             "next_instruction": push_before or current_instr,
             "remaining": f"{len(stack) - 1} step(s) pending after this",
@@ -425,10 +421,7 @@ def _step_stack(body, html):
             "memory": memory,
             "evaluation_previous_goal": evaluation,
             "stack": stack,
-        }
-        if plan_steps is not None:
-            resp["planned"] = plan_steps
-        return resp
+        })
 
     return {"error": "too many consecutive skipped steps -- stopping to avoid a runaway loop"}
 

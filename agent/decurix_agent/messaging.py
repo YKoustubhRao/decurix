@@ -6,7 +6,7 @@ import urllib.request
 import uuid
 
 from decurix_agent import config, progress, state, task_context, usage
-from decurix_agent.logging_utils import log, timestamp
+from decurix_agent.logging_utils import log, log_banner, timestamp
 
 
 # ============================================================
@@ -78,7 +78,7 @@ def _where(saved):
             else "\n\n(Too long for the chat: the rest was left out.)")
 
 
-def _with_text(payload, text, whole):
+def _with_text(payload, text):
     """The payload with `text` as the chat's reply, and in the note in place of the whole reply (or as the note)."""
 
     new = dict(payload)
@@ -98,7 +98,7 @@ def _shortened(payload, saved=None):
 
     whole = payload.get("reply") or payload.get("content") or ""
     saved = saved or save_whole(time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6], whole)
-    return _with_text(payload, cut_text(whole, SHORT_TEXT) + _where(saved), whole), saved
+    return _with_text(payload, cut_text(whole, SHORT_TEXT) + _where(saved)), saved
 
 
 def _fallback(payload, fallback, saved):
@@ -106,10 +106,10 @@ def _fallback(payload, fallback, saved):
 
     whole = payload.get("reply") or payload.get("content") or ""
     if not fallback and len(whole) <= 600:
-        return _with_text(payload, whole, whole), saved  # nothing to leave out: the plain text again
+        return _with_text(payload, whole), saved  # nothing to leave out: the plain text again
     saved = saved or save_whole(time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6], whole)
     text = (fallback or cut_text(whole, 600)) + _where(saved)
-    return _with_text(payload, cut_text(text, SHORT_TEXT), whole), saved
+    return _with_text(payload, cut_text(text, SHORT_TEXT)), saved
 
 
 def save_request(request, task_id=""):
@@ -468,14 +468,9 @@ Please send instructions through the Decurix control plane.
         encoding="utf-8"
     )
 
-    state.last_query_id = query_id
     state.last_query_text, state.last_query_kind = problem, kind
 
-    log("========================================")
-    log("AGENT HAS A QUERY")
-    log(content)
-    log(f"Query written to: {path}")
-    log("========================================")
+    log_banner("AGENT HAS A QUERY", content, f"Query written to: {path}")
 
     # Waiting before the question goes out, not after: a person answering
     # the moment it appears (or a scripted reply) can reach the watcher before

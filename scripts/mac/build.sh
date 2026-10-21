@@ -19,8 +19,8 @@ cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 # shellcheck source=lib/ollama-setup.sh
 source ./scripts/mac/lib/ollama-setup.sh
-# shellcheck source=lib/lan-tunnel.sh
-source ./scripts/mac/lib/lan-tunnel.sh
+# shellcheck source=../linux/lib/lan-tunnel.sh
+source ./scripts/linux/lib/lan-tunnel.sh
 # shellcheck source=lib/keep-awake.sh
 source ./scripts/mac/lib/keep-awake.sh
 # shellcheck source=lib/host-mounts.sh
@@ -113,32 +113,7 @@ if [ -z "$lan_ip" ]; then
     lan_ip="$(ipconfig getifaddr en0 2>/dev/null || true)"
 fi
 
-if [ -n "$lan_ip" ]; then
-    lan_url="http://$lan_ip:$lan_port"
-
-    curl -fsS -X POST http://127.0.0.1:8080/api/tunnel \
-        -H "Content-Type: application/json" \
-        -d "{\"lan_url\":\"$lan_url\"}" \
-        >/dev/null 2>&1 || true
-
-    echo ""
-    echo "LAN access URL (needs the code below, works without the tunnel):  $lan_url"
-fi
-
-if command -v jq >/dev/null 2>&1; then
-    lan_code="$(curl -fsS http://127.0.0.1:8080/api/lan-access/status 2>/dev/null | jq -r '.code // empty')"
-
-    if [ -n "$lan_code" ]; then
-        echo ""
-        echo "Access code: $lan_code"
-        echo "(Needed once by anyone using the LAN URL above. Also in the dashboard's Mobile menu, which can generate a new one.)"
-
-        if [ -n "$lan_url" ]; then
-            echo ""
-            echo "Open it yourself without typing the code: $lan_url/__decurix_access/authenticate?code=$lan_code"
-        fi
-    fi
-fi
+report_lan_access "$lan_ip" "$lan_port"
 
 # Nothing runs while this machine sleeps - no email trigger, no schedule -
 # and the control plane, in its container, cannot stop the host sleeping.
@@ -178,7 +153,7 @@ echo ""
 # The primary listener (:8080) is deliberately never tunnelled: it has no
 # login and can create desktops and run commands on this machine. Only the
 # access-code-gated listener above is reachable from off this machine. The
-# tunnel to it runs in the background (lib/lan-tunnel.sh, which restarts it
+# tunnel to it runs in the background (linux/lib/lan-tunnel.sh, which restarts it
 # if it drops); this just keeps the script - and so Ctrl+C handling - in the
 # foreground. "sleep & wait" so the trap runs at once, not after the sleep.
 while true; do

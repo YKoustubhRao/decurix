@@ -6,24 +6,11 @@ what happens when that recording is replayed.
 """
 
 import json
-import sys
 import tempfile
-import types
 import unittest
 from pathlib import Path
 
-try:
-    from decurix_agent import config  # noqa: F401
-except OSError:
-    import decurix_agent
-
-    stub = types.ModuleType("decurix_agent.config")
-    stub.DESKTOP_ID = "test-box"
-    stub.DESKTOP_NAME = "test-box"
-    stub.CONTROL_PLANE_URL = "http://127.0.0.1:9"
-    stub.AGENT_HARNESS = "ollama"
-    sys.modules["decurix_agent.config"] = stub
-    decurix_agent.config = stub
+import config_stub  # noqa: F401 - first: stubs decurix_agent.config on a machine with no desktop
 
 from decurix_agent.computer import ingest, lint, recording, replay
 

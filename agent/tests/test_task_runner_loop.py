@@ -5,14 +5,14 @@ from unittest.mock import patch
 from decurix_agent import state, task_runner
 
 
-def _run(replies, results):
+def _run(replies, results, task="how many files are in /etc?"):
     """Drive perform_task with a scripted model and scripted command results."""
 
     replies = list(replies)
     results = list(results)
     seen = {"histories": [], "done": [], "queries": []}
 
-    def fake_ask(task, history):
+    def fake_ask(_task, history):
         seen["histories"].append([dict(m) for m in history])
         return replies.pop(0)
 
@@ -22,7 +22,7 @@ def _run(replies, results):
          patch.object(task_runner, "ask_for_query", side_effect=lambda t, **k: seen["queries"].append(t)), \
          patch.object(task_runner, "pause_for_screen_approval", return_value=False), \
          patch.object(task_runner.progress, "emit"):
-        task_runner.perform_task("how many files are in /etc?", None)
+        task_runner.perform_task(task, None)
 
     state.current_task = None
     return seen
@@ -309,24 +309,7 @@ class TestUnrunCommand(unittest.TestCase):
 
 
 def _run_task(task, replies, results):
-    replies = list(replies)
-    results = list(results)
-    seen = {"histories": [], "done": [], "queries": []}
-
-    def fake_ask(t, history):
-        seen["histories"].append([dict(m) for m in history])
-        return replies.pop(0)
-
-    with patch.object(task_runner, "ask_agent", side_effect=fake_ask), \
-         patch.object(task_runner, "run_command", side_effect=lambda c: results.pop(0)), \
-         patch.object(task_runner, "write_final_reply", side_effect=lambda t, **k: seen["done"].append(t)), \
-         patch.object(task_runner, "ask_for_query", side_effect=lambda t, **k: seen["queries"].append(t)), \
-         patch.object(task_runner, "pause_for_screen_approval", return_value=False), \
-         patch.object(task_runner.progress, "emit"):
-        task_runner.perform_task(task, None)
-
-    state.current_task = None
-    return seen
+    return _run(replies, results, task)
 
 
 class TestUngroundedDone(unittest.TestCase):

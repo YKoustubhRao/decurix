@@ -19,6 +19,24 @@ import re
 import _pathfix  # noqa: F401
 import models
 
+
+def _action_schema(*types):
+    """The action object of a decide call's schema, its type one of `types`."""
+    fields = ("selector", "text", "near", "url", "direction")
+    return {
+        "type": "object",
+        "properties": {"type": {"type": "string", "enum": list(types)}, **{f: {"type": "string"} for f in fields}},
+        "required": ["type", *fields],
+    }
+
+
+_EVALUATION = {
+    "type": "string",
+    "description": "Did the LAST action (if any) actually achieve what it was meant to, "
+                    "given the CURRENT page state shown below? One short judgment.",
+}
+
+
 # decide_and_act's structured-output schema, replacing the old free-text
 # NEXT:/REMAINING:/EXPECT:/ACTION: line format. Ollama's `format` param (and
 # llama-server's response_format, for qwen3-spec) grammar-constrain decoding
@@ -33,11 +51,7 @@ import models
 STEP_SCHEMA = {
     "type": "object",
     "properties": {
-        "evaluation_previous_goal": {
-            "type": "string",
-            "description": "Did the LAST action (if any) actually achieve what it was meant to, "
-                            "given the CURRENT page state shown below? One short judgment.",
-        },
+        "evaluation_previous_goal": _EVALUATION,
         "memory": {
             "type": "string",
             "description": "Notes worth carrying into later steps (site quirks noticed, what's "
@@ -47,21 +61,7 @@ STEP_SCHEMA = {
         "next_instruction": {"type": "string"},
         "remaining": {"type": "string"},
         "expectation": {"type": "string"},
-        "action": {
-            "type": "object",
-            "properties": {
-                "type": {
-                    "type": "string",
-                    "enum": ["search", "select", "click", "type", "navigate", "scroll", "answer", "done"],
-                },
-                "selector": {"type": "string"},
-                "text": {"type": "string"},
-                "near": {"type": "string"},
-                "url": {"type": "string"},
-                "direction": {"type": "string"},
-            },
-            "required": ["type", "selector", "text", "near", "url", "direction"],
-        },
+        "action": _action_schema("search", "select", "click", "type", "navigate", "scroll", "answer", "done"),
     },
     "required": [
         "evaluation_previous_goal", "memory", "next_instruction", "remaining", "expectation", "action",
@@ -258,6 +258,13 @@ def _clean_action(action):
     return None  # "done", or a kind the model invented -- caller treats both as no action
 
 
+def _turn(parsed):
+    """(memory, evaluation_previous_goal, action_or_None) of a decide call's parsed JSON; None for "done"."""
+    action_obj = parsed.get("action") or {}
+    action = None if (action_obj.get("type") or "").lower() == "done" else _clean_action(action_obj)
+    return (parsed.get("memory") or "").strip(), (parsed.get("evaluation_previous_goal") or "").strip(), action
+
+
 def decide_and_act(model_key, full_task, remaining, url, page_html, memory="", prior_error=None,
                    screenshot_b64=None, max_tokens=350):
     """One model call replacing three (atomizer.next_step +
@@ -306,10 +313,7 @@ def decide_and_act(model_key, full_task, remaining, url, page_html, memory="", p
     instruction = (parsed.get("next_instruction") or "").strip() or None
     remaining_after = (parsed.get("remaining") or "").strip() or "done"
     expectation = (parsed.get("expectation") or "").strip() or None
-    new_memory = (parsed.get("memory") or "").strip()
-    evaluation = (parsed.get("evaluation_previous_goal") or "").strip()
-    action_obj = parsed.get("action") or {}
-    action = None if (action_obj.get("type") or "").lower() == "done" else _clean_action(action_obj)
+    new_memory, evaluation, action = _turn(parsed)
     return instruction, remaining_after, expectation, action, new_memory, evaluation, raw
 
 
@@ -323,11 +327,7 @@ def decide_and_act(model_key, full_task, remaining, url, page_html, memory="", p
 STACK_STEP_SCHEMA = {
     "type": "object",
     "properties": {
-        "evaluation_previous_goal": {
-            "type": "string",
-            "description": "Did the LAST action (if any) actually achieve what it was meant to, "
-                            "given the CURRENT page state shown below? One short judgment.",
-        },
+        "evaluation_previous_goal": _EVALUATION,
         "memory": {
             "type": "string",
             "description": "Notes worth carrying into later steps -- carried forward verbatim "
@@ -347,22 +347,7 @@ STACK_STEP_SCHEMA = {
                             "THIS turn's action (the detour if push_before is set, else the "
                             "current instruction) worked.",
         },
-        "action": {
-            "type": "object",
-            "properties": {
-                "type": {
-                    "type": "string",
-                    "enum": ["search", "select", "click", "type", "navigate", "scroll",
-                             "answer", "skip", "done"],
-                },
-                "selector": {"type": "string"},
-                "text": {"type": "string"},
-                "near": {"type": "string"},
-                "url": {"type": "string"},
-                "direction": {"type": "string"},
-            },
-            "required": ["type", "selector", "text", "near", "url", "direction"],
-        },
+        "action": _action_schema("search", "select", "click", "type", "navigate", "scroll", "answer", "skip", "done"),
     },
     "required": ["evaluation_previous_goal", "memory", "push_before", "expectation", "action"],
 }
@@ -443,17 +428,13 @@ def decide_stack_step(model_key, current_instruction, full_task, url, page_html,
 
     expectation = (parsed.get("expectation") or "").strip() or None
     push_before = (parsed.get("push_before") or "").strip()
-    new_memory = (parsed.get("memory") or "").strip()
-    evaluation = (parsed.get("evaluation_previous_goal") or "").strip()
-    action_obj = parsed.get("action") or {}
-    action = None if (action_obj.get("type") or "").lower() == "done" else _clean_action(action_obj)
+    new_memory, evaluation, action = _turn(parsed)
     return action, expectation, push_before, new_memory, evaluation, raw
 
 
 def generate_step_action(model_key, instruction, url, page_html, prior_error=None,
-                          screenshot_b64=None, max_tokens=120, on_chunk=None):
-    """on_chunk(partial_text), if given, is called after every token, same
-    contract as codegen.generate_step_code. Returns (action_dict_or_None, raw_text)."""
+                          screenshot_b64=None, max_tokens=120):
+    """Returns (action_dict_or_None, raw_text)."""
     use_vision = screenshot_b64 and models.MODELS[model_key]["vision"]
 
     user = (
@@ -474,7 +455,5 @@ def generate_step_action(model_key, instruction, url, page_html, prior_error=Non
                                    images=[screenshot_b64] if use_vision else None,
                                    max_tokens=max_tokens):
         full = evt["text"]
-        if evt["type"] == "chunk" and on_chunk:
-            on_chunk(full)
 
     return parse_action(full), full

@@ -8,6 +8,22 @@ import (
 	"thebot/internal/llm"
 )
 
+// Atomize is Planner.Atomize without a shared system frame.
+func Atomize(ctx context.Context, prompt string, provider llm.Provider, model string, onLog func(string)) Plan {
+	return Planner{Provider: provider, Model: model, OnLog: onLog}.Atomize(ctx, prompt)
+}
+
+// dropNoOpSteps is steps without the ones noOpStepRe matches (what plan parsing drops).
+func dropNoOpSteps(steps []string) []string {
+	var out []string
+	for _, s := range steps {
+		if !noOpStepRe.MatchString(s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // stubProvider stands in for a real model so planning behaviour can be
 // tested deterministically, without a live Ollama or model variance.
 type stubProvider struct {

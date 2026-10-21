@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 import test_recordings  # noqa: F401 - stubs config first
+from test_enter_in_forms import type_into
 
 from decurix_agent.computer import cdp, core
 from decurix_agent.computer.errors import ComputerError
@@ -40,11 +41,6 @@ class NumberPage:
 
     def close(self):
         pass
-
-
-def type_into(page, text):
-    with mock.patch.object(cdp, "_page_for", return_value=page), mock.patch.object(cdp, "_object", return_value="obj"):
-        cdp.type_text({"handle": {"backend_id": 7}}, text)
 
 
 class ANumberFieldIsSetWhole(unittest.TestCase):

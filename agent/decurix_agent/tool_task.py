@@ -202,9 +202,7 @@ def _to_engine(content, task_file, said, note=""):
 def perform(content, task_file=None):
     """Do the request with the worker's own tool; the engine only when that cannot be done or did not work."""
 
-    state.current_task = content
-    state.current_task_file = task_file
-    state.waiting_for_query = False
+    state.begin(content, task_file)
 
     try:
         book = _book(content)

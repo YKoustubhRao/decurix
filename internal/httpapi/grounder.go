@@ -27,8 +27,7 @@ func (s *Server) grounderStatusHandler(w http.ResponseWriter, r *http.Request) {
 // when the model gave no position. Primary listener only, beside the hosted
 // models' proxy: the desktops reach it over the Docker network.
 func (s *Server) grounderLocateHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodPost) {
 		return
 	}
 	if s.Grounder == nil {

@@ -232,6 +232,7 @@
   if(!list){ return; }
 
   var toast = Decurix.toast, post = Decurix.post;
+  var node = Decurix.node, icon = Decurix.icon, button = Decurix.button, getJSON = Decurix.getJSON;
   var body = document.body;
   var desktopID = body.dataset.desktop;
   var detail = document.getElementById("detail");
@@ -243,42 +244,9 @@
 
   /* ---- helpers ---- */
 
-  function node(tag, className, text){
-    var el = document.createElement(tag);
-    if(className){ el.className = className; }
-    if(text !== undefined && text !== null){ el.textContent = text; }
-    return el;
-  }
-
-  function icon(name, size){
-    var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute("width", size || 14);
-    svg.setAttribute("height", size || 14);
-    svg.setAttribute("aria-hidden", "true");
-    var use = document.createElementNS("http://www.w3.org/2000/svg", "use");
-    use.setAttribute("href", "#i-" + name);
-    svg.appendChild(use);
-    return svg;
-  }
-
-  function button(label, className, iconName){
-    var b = node("button", "btn btn-sm " + className);
-    b.type = "button";
-    if(iconName){ b.appendChild(icon(iconName)); }
-    b.appendChild(document.createTextNode(label));
-    return b;
-  }
-
   function query(params){
     var q = new URLSearchParams(Object.assign({id: desktopID}, params));
     return q.toString();
-  }
-
-  async function getJSON(url){
-    var response = await fetch(url, {headers: {"Accept": "application/json"}});
-    var data = await response.json().catch(function(){ return {}; });
-    if(!response.ok){ throw new Error(data.error || "Request failed"); }
-    return data;
   }
 
   function when(seconds){

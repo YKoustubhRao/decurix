@@ -97,17 +97,10 @@
 window.Triggers = (function(){
   "use strict";
 
-  var post = Decurix.post, toast = Decurix.toast;
+  var post = Decurix.post, toast = Decurix.toast, el = Decurix.node;
   var accounts = [];
 
   function $(id){ return document.getElementById(id); }
-
-  function el(tag, cls, text){
-    var node = document.createElement(tag);
-    if(cls){ node.className = cls; }
-    if(text !== undefined && text !== null){ node.textContent = text; }
-    return node;
-  }
 
   /* The mailbox choice, kept across refreshes. */
   function setAccounts(list){
@@ -359,10 +352,10 @@ window.Triggers = (function(){
   }
 
   return {
-    loadAccounts: loadAccounts, setAccounts: setAccounts, accounts: function(){ return accounts; },
+    loadAccounts: loadAccounts, setAccounts: setAccounts,
     show: show, create: create, wireTest: wireTest,
     scheduleRow: scheduleRow, ruleRow: ruleRow,
-    el: el, ago: ago, when: when, shortTime: shortTime, textButton: textButton, iconButton: iconButton, act: act
+    el: el, ago: ago, when: when, textButton: textButton, iconButton: iconButton
   };
 })();
 </script>

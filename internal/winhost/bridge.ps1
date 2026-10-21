@@ -127,7 +127,7 @@ public class Native {
 
     [DllImport("kernel32.dll")] static extern bool GetExitCodeProcess(IntPtr p, out uint code);
 
-    static IntPtr desktop, job, mainWindow, lastTarget, captured, launched;
+    static IntPtr desktop, job, lastTarget, captured, launched;
     // Where the last picture sat on the private desktop: its top-left corner (physical pixels) and its scale, so a click
     // in the picture that was shown is mapped back to the place it was drawn from even if windows have moved since.
     // Written by the capture thread, read by whichever thread handles an input, so always under geo.
@@ -842,17 +842,6 @@ public class Native {
         fixedScreen = screenW > 0 && screenH > 0;
     }
 
-    // Finds the app's main window: the biggest of its windows.
-    static bool LocateWindow() {
-        long best = 0;
-        mainWindow = IntPtr.Zero;
-        foreach (var w in AppWindows()) {
-            long a = (long)(w.V.R - w.V.L) * (w.V.B - w.V.T);
-            if (a > best) { best = a; mainWindow = w.H; }
-        }
-        return mainWindow != IntPtr.Zero;
-    }
-
     // One picture of everything the app has on screen: every window, painted bottom to top at its own position, over
     // the smallest rectangle that holds them all. A menu or dialog is therefore visible, and clickable, like the rest.
     // Null when the app has no window.
@@ -911,14 +900,9 @@ public class Native {
 
     static Surface Compose(bool everything) {
         var all = AppWindows();
-        if (all.Count == 0 && !fixedScreen) return null;
-        LocateWindow();
-        int l = int.MaxValue, t = int.MaxValue, r = int.MinValue, b = int.MinValue;
-        foreach (var w in all) { l = Math.Min(l, w.V.L); t = Math.Min(t, w.V.T); r = Math.Max(r, w.V.R); b = Math.Max(b, w.V.B); }
-        double sc = Scale(mainWindow); // the main window's scale is the picture's, so a DPI-unaware app stays crisp
-        if (fixedScreen) { l = 0; t = 0; r = screenW; b = screenH; sc = 1.0; }
-        int pw = (int)Math.Round((r - l) * sc), ph = (int)Math.Round((b - t) * sc);
-        if (pw <= 0 || ph <= 0 || pw > 8192 || ph > 8192) return null;
+        // The main window's scale is the picture's, so a DPI-unaware app stays crisp.
+        int l, t, pw, ph; double sc; IntPtr main;
+        if (!Geometry(all, out l, out t, out pw, out ph, out sc, out main)) return null;
 
         // Topmost first: what is wholly inside a window that hides what is under it (less its rounded corners) is left out.
         var ws = new List<Win>(); var covers = new List<RECT>(); var solid = new HashSet<IntPtr>();
@@ -1491,31 +1475,10 @@ public class Native {
                 // are there, not under the drop-down - in a window that appeared when it opened. Only such windows are
                 // read: the dialog's other lists ("Sort Field") are not this drop-down's entries.
                 Thread.Sleep(300);
-                foreach (var w in AppWindows()) {
-                    if (before.Contains(w.H)) continue;
-                    try {
-                        var root = System.Windows.Automation.AutomationElement.FromHandle(w.H);
-                        foreach (System.Windows.Automation.AutomationElement it in root.FindAll(System.Windows.Automation.TreeScope.Descendants, isItem)) {
-                            var box = it.Current.BoundingRectangle;
-                            if (!it.Current.IsOffscreen && !box.IsEmpty) all.Add(it);
-                        }
-                    } catch { }
-                    if (all.Count > 0) break; // the topmost window with entries is the open list
-                }
+                OpenListEntries(isItem, hw => before.Contains(hw), all);
                 // A list opened before this call (the worker clicked the drop-down first) is not a new window: then
                 // any window of the app but the one holding the drop-down.
-                if (all.Count == 0)
-                    foreach (var w in AppWindows()) {
-                        if (w.H == ownerTop) continue;
-                        try {
-                            var root = System.Windows.Automation.AutomationElement.FromHandle(w.H);
-                            foreach (System.Windows.Automation.AutomationElement it in root.FindAll(System.Windows.Automation.TreeScope.Descendants, isItem)) {
-                                var box = it.Current.BoundingRectangle;
-                                if (!it.Current.IsOffscreen && !box.IsEmpty) all.Add(it);
-                            }
-                        } catch { }
-                        if (all.Count > 0) break;
-                    }
+                if (all.Count == 0) OpenListEntries(isItem, hw => hw == ownerTop, all);
             }
             var items = all;
             var names = new List<string>();
@@ -1565,6 +1528,22 @@ public class Native {
             return "CHOSE " + chosen;
         } finally {
             if (expanded) { try { ((System.Windows.Automation.ExpandCollapsePattern)ec).Collapse(); } catch { } }
+        }
+    }
+
+    // Adds to all the shown entries of the topmost of the app's windows that has any, passing over those skip names:
+    // the topmost window with entries is the open list.
+    static void OpenListEntries(System.Windows.Automation.Condition isItem, Func<IntPtr, bool> skip, List<System.Windows.Automation.AutomationElement> all) {
+        foreach (var w in AppWindows()) {
+            if (skip(w.H)) continue;
+            try {
+                var root = System.Windows.Automation.AutomationElement.FromHandle(w.H);
+                foreach (System.Windows.Automation.AutomationElement it in root.FindAll(System.Windows.Automation.TreeScope.Descendants, isItem)) {
+                    var box = it.Current.BoundingRectangle;
+                    if (!it.Current.IsOffscreen && !box.IsEmpty) all.Add(it);
+                }
+            } catch { }
+            if (all.Count > 0) break;
         }
     }
 
@@ -1695,19 +1674,11 @@ public class Native {
                 if (!(rectObj is System.Windows.Rect)) continue;
                 var r = (System.Windows.Rect)rectObj;
                 if (r.IsEmpty || r.Width < 2 || r.Height < 2) continue;
-                // Under a window nearer the top (a dialog over its form): not something that can be clicked now.
-                double cx = r.X + r.Width / 2, cy = r.Y + r.Height / 2;
-                bool covered = false;
-                for (int j = 0; j < i; j++) { var v = wins[j].V; if (cx >= v.L && cx < v.R && cy >= v.T && cy < v.B) { covered = true; break; } }
-                if (covered) continue;
-                int x = (int)Math.Round((r.X - l) * sc), y = (int)Math.Round((r.Y - t) * sc);
-                int w = (int)Math.Round(r.Width * sc), h = (int)Math.Round(r.Height * sc);
-                if (x < 0) { w += x; x = 0; } if (y < 0) { h += y; y = 0; }
-                if (x + w > fw) w = fw - x; if (y + h > fh) h = fh - y;
-                if (w < 2 || h < 2) continue;
+                string box = BoxIn(r, wins, i, l, t, fw, fh, sc);
+                if (box == null) continue;
                 if (count > 0) sb.Append(',');
                 sb.Append("{\"role\":\"").Append(role).Append("\",\"name\":").Append(Js(Cut(name, 200)));
-                sb.Append(",\"box\":[").Append(x).Append(',').Append(y).Append(',').Append(w).Append(',').Append(h).Append(']');
+                sb.Append(box);
                 bool password = Cached(e, System.Windows.Automation.AutomationElement.IsPasswordProperty) as bool? ?? false;
                 if (password) sb.Append(",\"password\":true");
                 else {
@@ -1788,18 +1759,11 @@ public class Native {
                         if (cell.TryGetCurrentPattern(System.Windows.Automation.ValuePattern.Pattern, out vp))
                             cvalue = ((System.Windows.Automation.ValuePattern)vp).Current.Value ?? "";
                         if (cvalue.Trim().Length == 0 && (cname.Length == 0 || IsCellAddress(cname))) continue;
-                        double cx = cr.X + cr.Width / 2, cy = cr.Y + cr.Height / 2;
-                        bool covered = false;
-                        for (int j = 0; j < i; j++) { var v = wins[j].V; if (cx >= v.L && cx < v.R && cy >= v.T && cy < v.B) { covered = true; break; } }
-                        if (covered) continue;
-                        int x = (int)Math.Round((cr.X - l) * sc), y = (int)Math.Round((cr.Y - t) * sc);
-                        int w = (int)Math.Round(cr.Width * sc), h = (int)Math.Round(cr.Height * sc);
-                        if (x < 0) { w += x; x = 0; } if (y < 0) { h += y; y = 0; }
-                        if (x + w > fw) w = fw - x; if (y + h > fh) h = fh - y;
-                        if (w < 2 || h < 2) continue;
+                        string box = BoxIn(cr, wins, i, l, t, fw, fh, sc);
+                        if (box == null) continue;
                         if (count + added > 0) sb.Append(',');
                         sb.Append("{\"role\":\"cell\",\"name\":").Append(Js(Cut(cname.Length > 0 ? cname : ColumnName(c) + (r + 1), 200)));
-                        sb.Append(",\"box\":[").Append(x).Append(',').Append(y).Append(',').Append(w).Append(',').Append(h).Append(']');
+                        sb.Append(box);
                         if (cvalue.Length > 0 && cvalue != cname) sb.Append(",\"value\":").Append(Js(Cut(cvalue, 500)));
                         sb.Append('}');
                         added++;
@@ -1809,6 +1773,20 @@ public class Native {
             } catch { }
         }
         return added;
+    }
+
+    // The JSON "box" of a control of window i whose screen rectangle is r, in the pixels of the picture (corner l, t, size
+    // fw x fh, scale sc), cut to the picture. Null under a window nearer the top (a dialog over its form: not something
+    // that can be clicked now), and for what is too small to show.
+    static string BoxIn(System.Windows.Rect r, List<Win> wins, int i, int l, int t, int fw, int fh, double sc) {
+        double cx = r.X + r.Width / 2, cy = r.Y + r.Height / 2;
+        for (int j = 0; j < i; j++) { var v = wins[j].V; if (cx >= v.L && cx < v.R && cy >= v.T && cy < v.B) return null; }
+        int x = (int)Math.Round((r.X - l) * sc), y = (int)Math.Round((r.Y - t) * sc);
+        int w = (int)Math.Round(r.Width * sc), h = (int)Math.Round(r.Height * sc);
+        if (x < 0) { w += x; x = 0; } if (y < 0) { h += y; y = 0; }
+        if (x + w > fw) w = fw - x; if (y + h > fh) h = fh - y;
+        if (w < 2 || h < 2) return null;
+        return new StringBuilder(",\"box\":[").Append(x).Append(',').Append(y).Append(',').Append(w).Append(',').Append(h).Append(']').ToString();
     }
 
     static bool IsHeaderName(string s) {
@@ -2218,8 +2196,7 @@ public class Native {
         string name = null;
         lock (deskLock) foreach (var sc in shortcuts) if (sc.Id == id) name = sc.Name;
         if (name == null) return;
-        var list = new List<IntPtr>();
-        if (desktop != IntPtr.Zero) Enum(TaskWindow, list);
+        var list = TaskWindows();
         openingWindows = list.Count; openingAt = Stopwatch.GetTimestamp(); openingName = name;
         Kick();
     }
@@ -2255,8 +2232,7 @@ public class Native {
         float s = (float)Dpi();
         ReadLanguage();
 
-        var list = new List<IntPtr>();
-        if (desktop != IntPtr.Zero) Enum(TaskWindow, list);
+        var list = TaskWindows();
         taskCount = list.Count;
         var key = new StringBuilder();
         var titles = new List<string>(); var mins = new List<bool>();
@@ -2949,6 +2925,13 @@ public class Native {
         return null;
     }
 
+    // The windows a taskbar has a button for, topmost first.
+    static List<IntPtr> TaskWindows() {
+        var list = new List<IntPtr>();
+        if (desktop != IntPtr.Zero) Enum(TaskWindow, list);
+        return list;
+    }
+
     static bool TaskWindow(IntPtr h, IntPtr l) {
         if (!IsWindowVisible(h) || GetWindow(h, 4 /* GW_OWNER */) != IntPtr.Zero) return true;
         if ((GetWindowLong(h, -20 /* GWL_EXSTYLE */) & 0x80 /* WS_EX_TOOLWINDOW */) != 0) return true;
@@ -2965,8 +2948,7 @@ public class Native {
     // The windows a taskbar would have a button for, topmost first: "<handle><US><a|m|-><US><title>", TAB between them.
     // a is the one in front, m a minimised one.
     public static string Tasks() {
-        var list = new List<IntPtr>();
-        if (desktop != IntPtr.Zero) Enum(TaskWindow, list);
+        var list = TaskWindows();
         var sb = new StringBuilder();
         bool front = true;
         lock (deskLock) {
@@ -2988,8 +2970,7 @@ public class Native {
     // What a taskbar button does to its window: raise (and restore), min, close. Only to a window that has a button.
     public static string WindowDo(string action, long handle) {
         IntPtr h = (IntPtr)handle;
-        var list = new List<IntPtr>();
-        if (desktop != IntPtr.Zero) Enum(TaskWindow, list);
+        var list = TaskWindows();
         if (!list.Contains(h)) return "ERR that window is not there any more";
         switch (action) {
             case "raise": Activate(h); break;
@@ -3031,11 +3012,6 @@ public class Native {
     static IntPtr ClientLParam(IntPtr target, POINT screen) {
         POINT c = screen; ScreenToClient(target, ref c);
         return (IntPtr)(((c.Y & 0xFFFF) << 16) | (c.X & 0xFFFF));
-    }
-
-    static void SyncSend(IntPtr h, uint msg, IntPtr wp, IntPtr lp) {
-        IntPtr ignored;
-        SendMessageTimeout(h, msg, wp, lp, 0x2 /* SMTO_ABORTIFHUNG */, 300, out ignored);
     }
 
     // GetKeyState - which is how an app learns that Ctrl or Shift is held - only ever reflects real hardware input, never a
@@ -3481,14 +3457,6 @@ function Resolve-Program([string]$target, [string]$argLine) {
 # and nothing answers there yet (starting its containers, say). Found live: with the launcher only replaced, the worker's
 # app shortcut opened a browser on "localhost refused to connect". So when the page is local and not answering, the launcher
 # is run for that part alone (Start-WebAppServer, Native.Prepare): any browser it goes on to start is ended as it is created.
-function Test-LocalPort([int]$port) {
-    $c = New-Object Net.Sockets.TcpClient
-    try {
-        $r = $c.BeginConnect('127.0.0.1', $port, $null, $null)
-        if (-not $r.AsyncWaitHandle.WaitOne(300)) { return $false }
-        $c.EndConnect($r); return $true
-    } catch { return $false } finally { $c.Close() }
-}
 
 # $p is a resolved program; Launcher is the launcher it stands in for, when it is a web app's.
 function Start-WebAppServer($p) {
@@ -3717,6 +3685,12 @@ function Complete-Launch($p) {
     return @{ Target = $p.Target; Args = $argLine; WorkDir = $p.WorkDir }
 }
 
+# A check's answer: the program a target resolved to (for launchr), or why it cannot run hidden.
+function Format-Check($r) {
+    if ($r.Error) { return "ERR $($r.Error)" }
+    return "OK`t" + $r.Target + "`t" + $r.Args + "`t" + $r.WorkDir + "`t" + [int]$r.OwnProfile + "`t" + $r.Base + "`t" + $r.Launcher
+}
+
 function Resolve-Launch([string]$target, [string]$argLine) {
     $p = Resolve-Program $target $argLine
     if ($p.Error) { return $p }
@@ -3731,9 +3705,7 @@ if ($Resolve) {
         $f = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Resolve)).Split("`t")
         switch ($f[0]) {
             'check' {
-                $r = Resolve-Program $f[1] $(if ($f.Count -gt 2) { $f[2] } else { '' })
-                if ($r.Error) { Say "ERR $($r.Error)" }
-                else { Say ("OK`t" + $r.Target + "`t" + $r.Args + "`t" + $r.WorkDir + "`t" + [int]$r.OwnProfile + "`t" + $r.Base + "`t" + $r.Launcher) }
+                Say (Format-Check (Resolve-Program $f[1] $(if ($f.Count -gt 2) { $f[2] } else { '' })))
             }
             'complete' {
                 $l = Complete-Launch @{ Target = $f[1]; Args = $f[2]; WorkDir = $f[3]; OwnProfile = ($f[4] -eq '1'); Base = $f[5]; Launcher = $f[6] }
@@ -3760,9 +3732,7 @@ $Commands = [Action[string, string]] {
         }
         "check" {
             $f = $rest.Split("`t")
-            $r = Resolve-Program $f[0] $(if ($f.Count -gt 1) { $f[1] } else { '' })
-            if ($r.Error) { Reply "ERR $($r.Error)" }
-            else { Reply ("OK`t" + $r.Target + "`t" + $r.Args + "`t" + $r.WorkDir + "`t" + [int]$r.OwnProfile + "`t" + $r.Base + "`t" + $r.Launcher) }
+            Reply (Format-Check (Resolve-Program $f[0] $(if ($f.Count -gt 1) { $f[1] } else { '' })))
         }
         "launchr" {
             # What a check already worked out: nothing is looked up, so this is as fast as starting the program.

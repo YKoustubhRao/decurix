@@ -5,14 +5,6 @@ import (
 	"testing"
 )
 
-func names(cs []Candidate) []string {
-	var out []string
-	for _, c := range cs {
-		out = append(out, c.Name)
-	}
-	return out
-}
-
 func inst(name string, sizeGB, paramsB float64) Candidate {
 	return Candidate{Name: name, SizeGB: sizeGB, ParamsB: paramsB, Installed: true}
 }

@@ -250,15 +250,7 @@ func (s *Store) AppendUserRequest(desktopID, taskID, content string) Entry {
 		s.appendAgentReplyLocked(desktopID, "", KindEntry, UnrequestedActivity)
 	}
 
-	entry := Entry{
-		ID:        s.nextID(),
-		DesktopID: desktopID,
-		Role:      RoleUser,
-		Kind:      KindEntry,
-		Content:   content,
-		TaskID:    taskID,
-		CreatedAt: time.Now().UTC(),
-	}
+	entry := s.newEntry(desktopID, taskID, RoleUser, KindEntry, content)
 
 	var dropped []Entry
 
@@ -317,21 +309,7 @@ func (s *Store) AppendAgentNote(desktopID, taskID, kind, content string) Entry {
 		return s.appendAgentReplyLocked(desktopID, taskID, kind, content)
 	}
 
-	switch kind {
-	case KindEntry, KindApproval, KindQuery, KindError:
-	default:
-		kind = KindEntry
-	}
-
-	entry := Entry{
-		ID:        s.nextID(),
-		DesktopID: desktopID,
-		Role:      RoleAgent,
-		Kind:      kind,
-		Content:   content,
-		TaskID:    taskID,
-		CreatedAt: time.Now().UTC(),
-	}
+	entry := s.newEntry(desktopID, taskID, RoleAgent, agentKind(kind), content)
 
 	var dropped []Entry
 
@@ -374,22 +352,8 @@ func (s *Store) EndTurn(desktopID, why string) bool {
 func (s *Store) appendAgentReplyLocked(desktopID, taskID, kind, content string) Entry {
 	current := s.threadFor(desktopID)
 
-	switch kind {
-	case KindEntry, KindApproval, KindQuery, KindError:
-	default:
-		kind = KindEntry
-	}
-
-	entry := Entry{
-		ID:        s.nextID(),
-		DesktopID: desktopID,
-		Role:      RoleAgent,
-		Kind:      kind,
-		Content:   content,
-		TaskID:    taskID,
-		Steps:     current.steps,
-		CreatedAt: time.Now().UTC(),
-	}
+	entry := s.newEntry(desktopID, taskID, RoleAgent, agentKind(kind), content)
+	entry.Steps = current.steps
 
 	var dropped []Entry
 
@@ -416,6 +380,29 @@ func (s *Store) appendAgentReplyLocked(desktopID, taskID, kind, content string) 
 	current.touch()
 
 	return entry
+}
+
+// newEntry makes an entry stamped now. The caller must hold the lock.
+func (s *Store) newEntry(desktopID, taskID, role, kind, content string) Entry {
+	return Entry{
+		ID:        s.nextID(),
+		DesktopID: desktopID,
+		Role:      role,
+		Kind:      kind,
+		Content:   content,
+		TaskID:    taskID,
+		CreatedAt: time.Now().UTC(),
+	}
+}
+
+// agentKind is kind when an agent entry can be one, and KindEntry otherwise.
+func agentKind(kind string) string {
+	switch kind {
+	case KindEntry, KindApproval, KindQuery, KindError:
+		return kind
+	default:
+		return KindEntry
+	}
 }
 
 // AppendStep records one line of live activity for the running turn. A step
@@ -473,31 +460,19 @@ func (s *Store) appendStep(desktopID, taskID, text string, action *Action) Step 
 			last = entry
 		}
 	}
+	// The step joins that entry, or else the running turn's live steps.
+	entryID, steps := "", &current.steps
 	if last != nil {
-		last.Steps, dropped = appendCapped(last.Steps, step, maxSteps)
-
-		s.persist(desktopID, current, func(tx *sql.Tx) error {
-			if err := insertStep(tx, desktopID, last.ID, step); err != nil {
-				return err
-			}
-
-			return deleteSteps(tx, dropped)
-		})
-
-		current.touch()
-
-		return step
-	}
-
-	if !current.running {
+		entryID, steps = last.ID, &last.Steps
+	} else if !current.running {
 		current.running = true
 		current.startedAt = step.CreatedAt
 	}
 
-	current.steps, dropped = appendCapped(current.steps, step, maxSteps)
+	*steps, dropped = appendCapped(*steps, step, maxSteps)
 
 	s.persist(desktopID, current, func(tx *sql.Tx) error {
-		if err := insertStep(tx, desktopID, "", step); err != nil {
+		if err := insertStep(tx, desktopID, entryID, step); err != nil {
 			return err
 		}
 
@@ -811,29 +786,12 @@ func (s *Store) load(desktopID string) *thread {
 }
 
 func loadEntries(db *sql.DB, desktopID string) ([]Entry, error) {
-	rows, err := db.Query(
-		`SELECT id, role, kind, content, task_id, verdict, created_ns FROM chat_entries
-		 WHERE desktop_id = ? ORDER BY rowid`, desktopID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var entries []Entry
-
-	for rows.Next() {
+	return sqlitedb.QueryAll(db, func(r sqlitedb.Scanner) (Entry, error) {
 		entry := Entry{DesktopID: desktopID}
 		var created int64
-
-		if err := rows.Scan(&entry.ID, &entry.Role, &entry.Kind, &entry.Content,
-			&entry.TaskID, &entry.Verdict, &created); err != nil {
-			return nil, err
-		}
-
+		err := r.Scan(&entry.ID, &entry.Role, &entry.Kind, &entry.Content, &entry.TaskID, &entry.Verdict, &created)
 		entry.CreatedAt = sqlitedb.FromNS(created)
-		entries = append(entries, entry)
-	}
-
-	return entries, rows.Err()
+		return entry, err
+	}, `SELECT id, role, kind, content, task_id, verdict, created_ns FROM chat_entries
+		 WHERE desktop_id = ? ORDER BY rowid`, desktopID)
 }

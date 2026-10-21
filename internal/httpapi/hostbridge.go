@@ -35,11 +35,39 @@ func findDockerBinary() string {
 	return ""
 }
 
+// windowsPaths are the folders of the Windows programs a host command may name, as WSL mounts them.
+const windowsPaths = "/mnt/c/WINDOWS/system32:/mnt/c/Windows/system32:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0:/mnt/c/Windows/System32/WindowsPowerShell/v1.0:/mnt/c/Windows"
+
+// wslPowershellPath is the prefix that puts Windows PowerShell on a WSL shell command's PATH.
+const wslPowershellPath = `PATH="$PATH:/mnt/c/Windows/System32:/mnt/c/Windows/System32/WindowsPowerShell/v1.0" `
+
+// hostHop is the docker/nsenter hop (desktop.HopCommand) that runs script on the host from a control plane in a
+// container - one where program is not on PATH, with a Docker socket and binary - or nil anywhere else.
+func hostHop(ctx context.Context, program, purpose string, interactive bool, script string) *exec.Cmd {
+	if _, err := exec.LookPath(program); err == nil {
+		return nil
+	}
+	if _, err := os.Stat("/var/run/docker.sock"); err != nil {
+		return nil
+	}
+	if dockerBin := findDockerBinary(); dockerBin != "" {
+		return desktop.HopCommand(ctx, dockerBin, purpose, interactive, script)
+	}
+	return nil
+}
+
+// command is exec.CommandContext, or exec.Command for a nil ctx.
+func command(ctx context.Context, name string, args ...string) *exec.Cmd {
+	if ctx != nil {
+		return exec.CommandContext(ctx, name, args...)
+	}
+	return exec.Command(name, args...)
+}
+
 // detectHostAppsHandler returns the detected applications, session stores,
 // and developer tokens found on the host machine.
 func (s *Server) detectHostAppsHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodGet) {
 		return
 	}
 
@@ -57,28 +85,17 @@ func (s *Server) detectHostAppsHandler(w http.ResponseWriter, r *http.Request) {
 // be refreshed without recreating the desktop. Form fields: id, and host_apps as a comma-separated list of IDs from
 // /api/host-apps/detect.
 func (s *Server) copyHostAppsHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodPost) {
 		return
 	}
 	id := strings.TrimSpace(r.FormValue("id"))
-	var apps []string
-	for _, part := range strings.Split(r.FormValue("host_apps"), ",") {
-		if part = strings.TrimSpace(part); part != "" {
-			apps = append(apps, part)
-		}
-	}
+	apps := splitList(r.FormValue("host_apps"))
 	if id == "" || len(apps) == 0 {
 		http.Error(w, "id and host_apps are required", http.StatusBadRequest)
 		return
 	}
-	d, err := s.Desktops.Get(r.Context(), id)
-	if err != nil {
-		if errors.Is(err, desktop.ErrNotFound) {
-			http.Error(w, "desktop not found", http.StatusNotFound)
-			return
-		}
-		jsonError(w, err)
+	d, ok := s.desktopFound(w, r, id, http.StatusNotFound, "desktop not found")
+	if !ok {
 		return
 	}
 	if err := s.Desktops.MigrateHostApps(r.Context(), d.ID, apps); err != nil {
@@ -113,8 +130,7 @@ type hostBridgeExecResponse struct {
 // hostBridgeExecHandler executes commands directly on the host desktop machine,
 // enabling programs to run on the normal desktop with zero duplicate RAM in the VM.
 func (s *Server) hostBridgeExecHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodPost) {
 		return
 	}
 
@@ -240,12 +256,7 @@ func createHostCmd(ctx context.Context, display, cmdStr string, args ...string) 
 	// A Windows program is on the host already: run the program itself. There is no bash to wrap it in (and a bash
 	// that a WSL install puts on PATH would run it inside Linux), and going without a shell means no quoting to get wrong.
 	if runtime.GOOS == "windows" {
-		var cmd *exec.Cmd
-		if ctx != nil {
-			cmd = exec.CommandContext(ctx, cmdStr, args...)
-		} else {
-			cmd = exec.Command(cmdStr, args...)
-		}
+		cmd := command(ctx, cmdStr, args...)
 		cmd.Stdin = strings.NewReader("")
 		return cmd
 	}
@@ -271,36 +282,23 @@ func createHostCmd(ctx context.Context, display, cmdStr string, args ...string) 
 
 	// If it's a Windows command and cmd.exe is not directly executable in PATH (e.g. inside Docker container)
 	if isWinCmd && desktop.IsWSLOrWindows() {
-		if _, err := exec.LookPath("cmd.exe"); err != nil {
-			if _, err := os.Stat("/var/run/docker.sock"); err == nil {
-				if dockerBin := findDockerBinary(); dockerBin != "" {
-					displayEnv := ""
-					if display != "" {
-						displayEnv = fmt.Sprintf("DISPLAY=%s ", display)
-					}
-					nsCmd := fmt.Sprintf("%sPATH=$PATH:/mnt/c/WINDOWS/system32:/mnt/c/Windows/system32:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0:/mnt/c/Windows/System32/WindowsPowerShell/v1.0:/mnt/c/Windows %s", displayEnv, fullCmd)
-					// Named, labelled and removed when cancelled (desktop.HopCommand); a nil ctx is a launch that ends
-					// on its own when the program it started returns.
-					cmd := desktop.HopCommand(ctx, dockerBin, "exec", false, nsCmd)
-					cmd.Stdin = strings.NewReader("")
-					return cmd
-				}
-			}
+		displayEnv := ""
+		if display != "" {
+			displayEnv = fmt.Sprintf("DISPLAY=%s ", display)
+		}
+		// Named, labelled and removed when cancelled (desktop.HopCommand); a nil ctx is a launch that ends
+		// on its own when the program it started returns.
+		if cmd := hostHop(ctx, "cmd.exe", "exec", false, fmt.Sprintf("%sPATH=$PATH:%s %s", displayEnv, windowsPaths, fullCmd)); cmd != nil {
+			cmd.Stdin = strings.NewReader("")
+			return cmd
 		}
 	}
 
-	var cmd *exec.Cmd
-	if ctx != nil {
-		cmd = exec.CommandContext(ctx, "bash", "-c", fullCmd)
-	} else {
-		cmd = exec.Command("bash", "-c", fullCmd)
-	}
+	cmd := command(ctx, "bash", "-c", fullCmd)
 	cmd.Stdin = strings.NewReader("")
 	cmd.Env = os.Environ()
 	if isWinCmd && desktop.IsWSLOrWindows() {
-		currPath := os.Getenv("PATH")
-		winPaths := "/mnt/c/WINDOWS/system32:/mnt/c/Windows/system32:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0:/mnt/c/Windows/System32/WindowsPowerShell/v1.0:/mnt/c/Windows"
-		cmd.Env = append(cmd.Env, fmt.Sprintf("PATH=%s:%s", currPath, winPaths))
+		cmd.Env = append(cmd.Env, fmt.Sprintf("PATH=%s:%s", os.Getenv("PATH"), windowsPaths))
 	}
 	if display != "" {
 		cmd.Env = append(cmd.Env, "DISPLAY="+display)
@@ -327,8 +325,7 @@ type hostBridgeOpenRequest struct {
 
 // hostBridgeOpenHandler opens a URL or document on the host desktop using the host OS opener.
 func (s *Server) hostBridgeOpenHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodPost) {
 		return
 	}
 
@@ -416,8 +413,7 @@ type hostBridgeClipRequest struct {
 
 // hostBridgeClipHandler receives text from the VM and copies it into the host clipboard.
 func (s *Server) hostBridgeClipHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodPost) {
 		return
 	}
 

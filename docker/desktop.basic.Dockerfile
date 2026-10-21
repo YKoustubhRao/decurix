@@ -144,9 +144,7 @@ RUN pip3 install --no-cache-dir --break-system-packages \
 # launcher passes no --load-extension), so soul sends web work to the
 # operator unless THEBOT_BROWSER_EXTENSION=1. Placed before the agent's own
 # code so a code change does not re-run this pip install. Only core/, extension/
-# and extension_pipeline/ ship - eval/, legacy/ and playwright_pipeline/
-# are reference material for a pipeline this desktop doesn't run (see
-# agent/BROWSER_INTEGRATION.md).
+# and extension_pipeline/ ship (see agent/BROWSER_INTEGRATION.md).
 COPY agent/browser-agent/core /opt/browser-agent/core
 COPY agent/browser-agent/extension /opt/browser-agent/extension
 COPY agent/browser-agent/extension_pipeline /opt/browser-agent/extension_pipeline

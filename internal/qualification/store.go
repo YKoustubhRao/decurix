@@ -1,9 +1,7 @@
 package qualification
 
 import (
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"sync"
 	"time"
@@ -57,26 +55,7 @@ func NewStore(db *sql.DB) (*Store, error) {
 			}
 		}
 	}
-	rows, err := db.Query(`SELECT data FROM qualification_runs WHERE status = 'running'`)
-	if err != nil {
-		return nil, err
-	}
-	var interrupted []Run
-	for rows.Next() {
-		var b string
-		if err := rows.Scan(&b); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		var run Run
-		if err := json.Unmarshal([]byte(b), &run); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		interrupted = append(interrupted, run)
-	}
-	err = rows.Err()
-	rows.Close()
+	interrupted, err := queryJSON[Run](db, `SELECT data FROM qualification_runs WHERE status = 'running'`)
 	if err != nil {
 		return nil, err
 	}
@@ -97,54 +76,51 @@ func NewStore(db *sql.DB) (*Store, error) {
 	return s, nil
 }
 
-func newID(prefix string) string {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		panic(err)
+// scanJSON decodes a row whose one column is a JSON document into a T.
+func scanJSON[T any](row sqlitedb.Scanner) (T, error) {
+	var v T
+	var b string
+	if err := row.Scan(&b); err != nil {
+		return v, err
 	}
-	return prefix + hex.EncodeToString(b)
+	err := json.Unmarshal([]byte(b), &v)
+	return v, err
+}
+
+// queryJSON runs query, whose one column is a JSON document, and decodes every row into a T.
+func queryJSON[T any](db *sql.DB, query string, args ...any) ([]T, error) {
+	return sqlitedb.QueryAll(db, scanJSON[T], query, args...)
+}
+
+// getJSON decodes the JSON document query finds; ErrNotFound when it finds no row.
+func getJSON[T any](db *sql.DB, query string, args ...any) (T, error) {
+	v, err := scanJSON[T](db.QueryRow(query, args...))
+	if err == sql.ErrNoRows {
+		return v, ErrNotFound
+	}
+	return v, err
 }
 
 // List returns a worker's responsibilities, including expired readiness.
 func (s *Store) List(worker string) ([]Responsibility, error) {
-	rows, err := s.db.Query(`SELECT data FROM qualification_responsibilities WHERE (? = '' OR worker_id = ?) ORDER BY id`, worker, worker)
+	out, err := queryJSON[Responsibility](s.db, `SELECT data FROM qualification_responsibilities WHERE (? = '' OR worker_id = ?) ORDER BY id`, worker, worker)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := []Responsibility{}
-	for rows.Next() {
-		var b string
-		if err := rows.Scan(&b); err != nil {
-			return nil, err
-		}
-		var r Responsibility
-		if err := json.Unmarshal([]byte(b), &r); err != nil {
-			return nil, err
-		}
-		s.expire(&r)
-		out = append(out, r)
+	for i := range out {
+		s.expire(&out[i])
 	}
-	err = rows.Err()
-	rows.Close()
+	active, err := sqlitedb.QueryAll(s.db, func(row sqlitedb.Scanner) ([2]string, error) {
+		var pair [2]string
+		err := row.Scan(&pair[0], &pair[1])
+		return pair, err
+	}, `SELECT responsibility_id,id FROM qualification_runs WHERE status='running'`)
 	if err != nil {
 		return nil, err
 	}
-	active, err := s.db.Query(`SELECT responsibility_id,id FROM qualification_runs WHERE status='running'`)
-	if err != nil {
-		return nil, err
-	}
-	defer active.Close()
 	byID := map[string]string{}
-	for active.Next() {
-		var responsibility, id string
-		if err := active.Scan(&responsibility, &id); err != nil {
-			return nil, err
-		}
-		byID[responsibility] = id
-	}
-	if err := active.Err(); err != nil {
-		return nil, err
+	for _, pair := range active {
+		byID[pair[0]] = pair[1]
 	}
 	for i := range out {
 		out[i].ActiveRunID = byID[out[i].ID]
@@ -160,16 +136,8 @@ func (s *Store) expire(r *Responsibility) {
 
 // Get returns a responsibility; stale evidence never yields an enabled grant.
 func (s *Store) Get(id string) (Responsibility, error) {
-	var b string
-	err := s.db.QueryRow(`SELECT data FROM qualification_responsibilities WHERE id = ?`, id).Scan(&b)
-	if err == sql.ErrNoRows {
-		return Responsibility{}, ErrNotFound
-	}
+	r, err := getJSON[Responsibility](s.db, `SELECT data FROM qualification_responsibilities WHERE id = ?`, id)
 	if err != nil {
-		return Responsibility{}, err
-	}
-	var r Responsibility
-	if err := json.Unmarshal([]byte(b), &r); err != nil {
 		return r, err
 	}
 	s.expire(&r)
@@ -206,18 +174,14 @@ func (s *Store) Save(id string, d Definition) (Responsibility, error) {
 	defer s.mu.Unlock()
 	r := Responsibility{ID: id, Definition: d, Revision: Fingerprint(d), Readiness: Untested, Authorization: Supervised, UpdatedAt: s.now()}
 	if id == "" {
-		r.ID = newID("r")
+		r.ID = sqlitedb.NewID("r", 16)
 	} else {
 		old, err := s.Get(id)
 		if err != nil {
 			return r, err
 		}
-		busy, err := s.busy(id)
-		if err != nil {
+		if err := s.idle("qualification_runs", id); err != nil {
 			return r, err
-		}
-		if busy {
-			return r, ErrConflict
 		}
 		if old.Revision == r.Revision {
 			return old, nil
@@ -227,10 +191,17 @@ func (s *Store) Save(id string, d Definition) (Responsibility, error) {
 	return r, s.save(r, "owner", "define", r.Reason)
 }
 
-func (s *Store) busy(id string) (bool, error) {
+// idle is ErrConflict while a responsibility has a run going in table
+// (qualification_runs or simulation_runs).
+func (s *Store) idle(table, id string) error {
 	var n int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM qualification_runs WHERE responsibility_id=? AND status='running'`, id).Scan(&n)
-	return n > 0, err
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM `+table+` WHERE responsibility_id=? AND status='running'`, id).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return ErrConflict
+	}
+	return nil
 }
 
 // Authorize enables only current, complete evidence, or suspends a responsibility.
@@ -241,12 +212,8 @@ func (s *Store) Authorize(id, revision, action string) (Responsibility, error) {
 	if err != nil {
 		return r, err
 	}
-	busy, err := s.busy(id)
-	if err != nil {
+	if err := s.idle("qualification_runs", id); err != nil {
 		return r, err
-	}
-	if busy {
-		return r, ErrConflict
 	}
 	if action == "enable" {
 		if r.Revision != revision || r.Readiness != Qualified || r.EvaluationID == "" {
@@ -299,12 +266,8 @@ func (s *Store) BeginExecution(id, revision, mode, taskID string, production *Ca
 	if err != nil {
 		return Run{}, err
 	}
-	busy, err := s.busy(id)
-	if err != nil {
+	if err := s.idle("qualification_runs", id); err != nil {
 		return Run{}, err
-	}
-	if busy {
-		return Run{}, ErrConflict
 	}
 	if revision != r.Revision {
 		return Run{}, ErrDenied
@@ -316,7 +279,7 @@ func (s *Store) BeginExecution(id, revision, mode, taskID string, production *Ca
 	} else if mode != "practice" {
 		return Run{}, ErrInvalid
 	}
-	run := Run{ID: newID("e"), ResponsibilityID: id, TaskID: taskID, Mode: mode, Revision: r.Revision, Definition: r.Definition, Status: "running", Findings: []Finding{}, StartedAt: s.now()}
+	run := Run{ID: sqlitedb.NewID("e", 16), ResponsibilityID: id, TaskID: taskID, Mode: mode, Revision: r.Revision, Definition: r.Definition, Status: "running", Findings: []Finding{}, StartedAt: s.now()}
 	run.ProductionCase = production
 	b, err := json.Marshal(run)
 	if err != nil {
@@ -434,30 +397,35 @@ func (s *Store) FinishRun(id string, findings []Finding, artifacts map[string][]
 		r.Readiness, r.Authorization, r.Reason = NeedsRetesting, Suspended, "An enabled run failed its independent check; reconcile and retest."
 	}
 	r.UpdatedAt = s.now()
-	// The run and grant transition must commit together, including on disk-full.
+	return run, s.commitRun(run, r, "verifier", run.Status)
+}
+
+// commitRun saves a finished run with its responsibility's transition and the
+// event recording it: they must commit together, including on disk-full.
+func (s *Store) commitRun(run Run, r Responsibility, actor, action string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
-		return run, err
+		return err
 	}
 	defer tx.Rollback()
 	b, err := json.Marshal(run)
 	if err != nil {
-		return run, err
+		return err
 	}
 	rb, err := json.Marshal(r)
 	if err != nil {
-		return run, err
+		return err
 	}
 	if _, err := tx.Exec(`UPDATE qualification_runs SET status=?,data=? WHERE id=?`, run.Status, string(b), run.ID); err != nil {
-		return run, err
+		return err
 	}
 	if _, err := tx.Exec(`UPDATE qualification_responsibilities SET data=? WHERE id=?`, string(rb), r.ID); err != nil {
-		return run, err
+		return err
 	}
-	if _, err := tx.Exec(`INSERT INTO qualification_events(responsibility_id,at_ns,actor,action,reason) VALUES(?,?,?,?,?)`, r.ID, sqlitedb.ToNS(s.now()), "verifier", run.Status, r.Reason); err != nil {
-		return run, err
+	if _, err := tx.Exec(`INSERT INTO qualification_events(responsibility_id,at_ns,actor,action,reason) VALUES(?,?,?,?,?)`, r.ID, sqlitedb.ToNS(s.now()), actor, action, r.Reason); err != nil {
+		return err
 	}
-	return run, tx.Commit()
+	return tx.Commit()
 }
 
 // Cancel records a durable terminal state before stopping the container.
@@ -482,44 +450,12 @@ func (s *Store) Cancel(id string) (Run, error) {
 	if run.Mode == "production" {
 		r.Authorization = Suspended
 	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return run, err
-	}
-	defer tx.Rollback()
-	b, err := json.Marshal(run)
-	if err != nil {
-		return run, err
-	}
-	rb, err := json.Marshal(r)
-	if err != nil {
-		return run, err
-	}
-	if _, err = tx.Exec(`UPDATE qualification_runs SET status=?,data=? WHERE id=?`, run.Status, string(b), run.ID); err != nil {
-		return run, err
-	}
-	if _, err = tx.Exec(`UPDATE qualification_responsibilities SET data=? WHERE id=?`, string(rb), r.ID); err != nil {
-		return run, err
-	}
-	if _, err = tx.Exec(`INSERT INTO qualification_events(responsibility_id,at_ns,actor,action,reason) VALUES(?,?,?,?,?)`, r.ID, sqlitedb.ToNS(s.now()), "owner", "cancel", r.Reason); err != nil {
-		return run, err
-	}
-	return run, tx.Commit()
+	return run, s.commitRun(run, r, "owner", "cancel")
 }
 
 // Run returns a frozen suite and independently collected evidence.
 func (s *Store) Run(id string) (Run, error) {
-	var b string
-	err := s.db.QueryRow(`SELECT data FROM qualification_runs WHERE id=?`, id).Scan(&b)
-	if err == sql.ErrNoRows {
-		return Run{}, ErrNotFound
-	}
-	var run Run
-	if err != nil {
-		return run, err
-	}
-	err = json.Unmarshal([]byte(b), &run)
-	return run, err
+	return getJSON[Run](s.db, `SELECT data FROM qualification_runs WHERE id=?`, id)
 }
 
 // ForTask returns the authority and evidence linked to an ordinary task record.
@@ -549,44 +485,10 @@ func (s *Store) WrongTask(taskID string) error {
 
 // History returns frozen evidence for a responsibility, newest first.
 func (s *Store) History(id string) ([]Run, error) {
-	rows, err := s.db.Query(`SELECT json_remove(data, '$.definition', '$.production_case', '$.artifacts', '$.case_artifacts') FROM qualification_runs WHERE (?='' OR responsibility_id=?) ORDER BY rowid DESC LIMIT 100`, id, id)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []Run{}
-	for rows.Next() {
-		var b string
-		if err := rows.Scan(&b); err != nil {
-			return nil, err
-		}
-		var run Run
-		if err := json.Unmarshal([]byte(b), &run); err != nil {
-			return nil, err
-		}
-		out = append(out, run)
-	}
-	return out, rows.Err()
+	return queryJSON[Run](s.db, `SELECT json_remove(data, '$.definition', '$.production_case', '$.artifacts', '$.case_artifacts') FROM qualification_runs WHERE (?='' OR responsibility_id=?) ORDER BY rowid DESC LIMIT 100`, id, id)
 }
 
 // Interrupted returns every interrupted identity for task-record reconciliation.
 func (s *Store) Interrupted() ([]Run, error) {
-	rows, err := s.db.Query(`SELECT data FROM qualification_runs WHERE status='interrupted'`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []Run{}
-	for rows.Next() {
-		var b string
-		if err := rows.Scan(&b); err != nil {
-			return nil, err
-		}
-		var run Run
-		if err := json.Unmarshal([]byte(b), &run); err != nil {
-			return nil, err
-		}
-		out = append(out, run)
-	}
-	return out, rows.Err()
+	return queryJSON[Run](s.db, `SELECT data FROM qualification_runs WHERE status='interrupted'`)
 }

@@ -14,7 +14,6 @@ what the result says. No application or business is special here.
 
 import csv
 import io
-import os
 import re
 from decimal import Decimal, InvalidOperation
 from pathlib import Path

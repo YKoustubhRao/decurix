@@ -166,22 +166,6 @@ func (r *Runner) Run(ctx context.Context, command string, timeout time.Duration)
 	return res
 }
 
-// RunAll runs commands in order and stops at the first real failure,
-// returning every result so far. Used for setup sequences where a later
-// step is meaningless if an earlier one failed (there is no point running
-// `uv pip install` when `uv venv` just failed).
-func (r *Runner) RunAll(ctx context.Context, commands []string, timeout time.Duration) []CmdResult {
-	var out []CmdResult
-	for _, c := range commands {
-		res := r.Run(ctx, c, timeout)
-		out = append(out, res)
-		if !res.OK {
-			break
-		}
-	}
-	return out
-}
-
 // Have reports whether a tool is really present on PATH, by asking the
 // shell rather than assuming. Used to choose between real alternatives
 // (uv vs pip, cmake vs a bare compiler) from fact instead of hope.
