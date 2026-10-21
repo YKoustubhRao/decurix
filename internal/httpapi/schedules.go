@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,8 +13,7 @@ import (
 // schedulesHandler returns the recurring requests set up from the requests
 // page, optionally filtered to one desktop with ?id=.
 func (s *Server) schedulesHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+	if !requireGet(w, r) {
 		return
 	}
 
@@ -30,11 +28,10 @@ func (s *Server) schedulesHandler(w http.ResponseWriter, r *http.Request) {
 // createScheduleHandler sets up a recurring request (cron) or a one-time
 // request held for a single future run (run_at, an RFC3339 timestamp) - both
 // resubmit the same content through the same path a one-off Send takes (see
-// requests.go's submitRequest and internal/schedule's Runner), differing only
+// requests.go's submitLocked and internal/schedule's Runner), differing only
 // in whether there is a next occurrence after the first.
 func (s *Server) createScheduleHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+	if !requirePost(w, r) {
 		return
 	}
 
@@ -58,13 +55,7 @@ func (s *Server) createScheduleHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := s.Desktops.Get(r.Context(), desktopID); err != nil {
-		if errors.Is(err, desktop.ErrNotFound) {
-			http.Error(w, "desktop not found", http.StatusBadRequest)
-			return
-		}
-
-		jsonError(w, err)
+	if _, ok := s.desktopFound(w, r, desktopID, http.StatusBadRequest, "desktop not found"); !ok {
 		return
 	}
 
@@ -102,8 +93,7 @@ func (s *Server) createScheduleHandler(w http.ResponseWriter, r *http.Request) {
 
 // deleteScheduleHandler removes a schedule by ID.
 func (s *Server) deleteScheduleHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+	if !requirePost(w, r) {
 		return
 	}
 
@@ -114,8 +104,7 @@ func (s *Server) deleteScheduleHandler(w http.ResponseWriter, r *http.Request) {
 
 // toggleScheduleHandler pauses or resumes a schedule without deleting it.
 func (s *Server) toggleScheduleHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+	if !requirePost(w, r) {
 		return
 	}
 

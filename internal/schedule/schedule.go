@@ -8,9 +8,7 @@
 package schedule
 
 import (
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"fmt"
 	"log"
 	"strings"
@@ -87,16 +85,12 @@ func NewStore(db *sql.DB) (*Store, error) {
 // next time the expression matches, never immediately - the same way cron
 // itself never runs a job the instant it is added.
 func (s *Store) Create(desktopID, content, cronExpr string) (Schedule, error) {
-	desktopID = strings.TrimSpace(desktopID)
+	desktopID, err := checkRequest(desktopID, content)
+	if err != nil {
+		return Schedule{}, err
+	}
+
 	cronExpr = strings.TrimSpace(cronExpr)
-
-	if desktopID == "" {
-		return Schedule{}, fmt.Errorf("desktop id is required")
-	}
-
-	if strings.TrimSpace(content) == "" {
-		return Schedule{}, fmt.Errorf("request text is required")
-	}
 
 	expr, err := Parse(cronExpr)
 	if err != nil {
@@ -110,26 +104,15 @@ func (s *Store) Create(desktopID, content, cronExpr string) (Schedule, error) {
 		return Schedule{}, fmt.Errorf("cron expression %q never matches", cronExpr)
 	}
 
-	sch := Schedule{
-		ID:        newID(),
+	return s.insert("create", Schedule{
+		ID:        sqlitedb.NewID("sched-", 8),
 		DesktopID: desktopID,
 		Content:   content,
 		CronExpr:  cronExpr,
 		Enabled:   true,
 		CreatedAt: now,
 		NextRunAt: next,
-	}
-
-	if _, err := s.db.Exec(
-		`INSERT INTO schedules (id, desktop_id, content, cron_expr, enabled, created_ns, last_run_ns, next_run_ns, run_once)
-		 VALUES (?, ?, ?, ?, 1, ?, 0, ?, 0)`,
-		sch.ID, sch.DesktopID, sch.Content, sch.CronExpr,
-		sqlitedb.ToNS(sch.CreatedAt), sqlitedb.ToNS(sch.NextRunAt),
-	); err != nil {
-		return Schedule{}, fmt.Errorf("schedule: create: %w", err)
-	}
-
-	return sch, nil
+	})
 }
 
 // CreateOnce persists a request held for a single future run at runAt, rather
@@ -137,14 +120,9 @@ func (s *Store) Create(desktopID, content, cronExpr string) (Schedule, error) {
 // same "never immediately" rule as Create applies here too: runAt must be
 // strictly after now.
 func (s *Store) CreateOnce(desktopID, content string, runAt time.Time) (Schedule, error) {
-	desktopID = strings.TrimSpace(desktopID)
-
-	if desktopID == "" {
-		return Schedule{}, fmt.Errorf("desktop id is required")
-	}
-
-	if strings.TrimSpace(content) == "" {
-		return Schedule{}, fmt.Errorf("request text is required")
+	desktopID, err := checkRequest(desktopID, content)
+	if err != nil {
+		return Schedule{}, err
 	}
 
 	now := s.clock()
@@ -154,23 +132,42 @@ func (s *Store) CreateOnce(desktopID, content string, runAt time.Time) (Schedule
 		return Schedule{}, fmt.Errorf("run time must be in the future")
 	}
 
-	sch := Schedule{
-		ID:        newID(),
+	return s.insert("create once", Schedule{
+		ID:        sqlitedb.NewID("sched-", 8),
 		DesktopID: desktopID,
 		Content:   content,
 		RunOnce:   true,
 		Enabled:   true,
 		CreatedAt: now,
 		NextRunAt: runAt,
+	})
+}
+
+// checkRequest trims desktopID and checks that it and the request text are given.
+func checkRequest(desktopID, content string) (string, error) {
+	desktopID = strings.TrimSpace(desktopID)
+
+	if desktopID == "" {
+		return "", fmt.Errorf("desktop id is required")
 	}
 
+	if strings.TrimSpace(content) == "" {
+		return "", fmt.Errorf("request text is required")
+	}
+
+	return desktopID, nil
+}
+
+// insert persists a new, enabled schedule that has never run; what names the
+// caller in an error.
+func (s *Store) insert(what string, sch Schedule) (Schedule, error) {
 	if _, err := s.db.Exec(
 		`INSERT INTO schedules (id, desktop_id, content, cron_expr, enabled, created_ns, last_run_ns, next_run_ns, run_once)
-		 VALUES (?, ?, ?, '', 1, ?, 0, ?, 1)`,
-		sch.ID, sch.DesktopID, sch.Content,
-		sqlitedb.ToNS(sch.CreatedAt), sqlitedb.ToNS(sch.NextRunAt),
+		 VALUES (?, ?, ?, ?, 1, ?, 0, ?, ?)`,
+		sch.ID, sch.DesktopID, sch.Content, sch.CronExpr,
+		sqlitedb.ToNS(sch.CreatedAt), sqlitedb.ToNS(sch.NextRunAt), sch.RunOnce,
 	); err != nil {
-		return Schedule{}, fmt.Errorf("schedule: create once: %w", err)
+		return Schedule{}, fmt.Errorf("schedule: %s: %w", what, err)
 	}
 
 	return sch, nil
@@ -179,7 +176,7 @@ func (s *Store) CreateOnce(desktopID, content string, runAt time.Time) (Schedule
 // List returns schedules, most recently created first. When desktopID is
 // empty, schedules for every desktop are returned.
 func (s *Store) List(desktopID string) []Schedule {
-	query := `SELECT id, desktop_id, content, cron_expr, enabled, created_ns, last_run_ns, next_run_ns, run_once, waiting, waiting_since_ns FROM schedules`
+	query := `SELECT ` + scheduleColumns + ` FROM schedules`
 
 	args := []any{}
 
@@ -214,28 +211,15 @@ func (s *Store) List(desktopID string) []Schedule {
 
 // Due returns enabled schedules whose next run has arrived by now.
 func (s *Store) Due(now time.Time) ([]Schedule, error) {
-	rows, err := s.db.Query(
-		`SELECT id, desktop_id, content, cron_expr, enabled, created_ns, last_run_ns, next_run_ns, run_once, waiting, waiting_since_ns
-		 FROM schedules WHERE enabled = 1 AND next_run_ns > 0 AND next_run_ns <= ?`,
+	due, err := sqlitedb.QueryAll(s.db, scanSchedule,
+		`SELECT `+scheduleColumns+` FROM schedules WHERE enabled = 1 AND next_run_ns > 0 AND next_run_ns <= ?`,
 		sqlitedb.ToNS(now),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("schedule: due: %w", err)
 	}
-	defer rows.Close()
 
-	due := make([]Schedule, 0)
-
-	for rows.Next() {
-		sch, err := scanSchedule(rows)
-		if err != nil {
-			return nil, fmt.Errorf("schedule: due: %w", err)
-		}
-
-		due = append(due, sch)
-	}
-
-	return due, rows.Err()
+	return due, nil
 }
 
 // MarkRun records that the schedule id fired at ranAt and advances it to its
@@ -261,23 +245,19 @@ func (s *Store) MarkRun(id string, ranAt time.Time) error {
 		return fmt.Errorf("schedule: mark run %s: %w", id, err)
 	}
 
-	if runOnce != 0 {
-		if _, err := s.db.Exec(
-			`UPDATE schedules SET enabled = 0, last_run_ns = ?, next_run_ns = 0, waiting = '', waiting_since_ns = 0 WHERE id = ?`,
-			sqlitedb.ToNS(ranAt), id,
-		); err != nil {
+	var next time.Time
+	var ok bool
+
+	if runOnce == 0 {
+		expr, err := Parse(cronExpr)
+		if err != nil {
 			return fmt.Errorf("schedule: mark run %s: %w", id, err)
 		}
 
-		return nil
+		next, ok = expr.Next(ranAt)
 	}
 
-	expr, err := Parse(cronExpr)
-	if err != nil {
-		return fmt.Errorf("schedule: mark run %s: %w", id, err)
-	}
-
-	next, ok := expr.Next(ranAt)
+	var err error
 
 	if !ok {
 		_, err = s.db.Exec(
@@ -406,7 +386,9 @@ func (s *Store) DeleteForDesktop(desktopID string) {
 	}
 }
 
-func scanSchedule(rows *sql.Rows) (Schedule, error) {
+const scheduleColumns = `id, desktop_id, content, cron_expr, enabled, created_ns, last_run_ns, next_run_ns, run_once, waiting, waiting_since_ns`
+
+func scanSchedule(rows sqlitedb.Scanner) (Schedule, error) {
 	var sch Schedule
 	var enabled, runOnce int
 	var created, lastRun, nextRun, waitingSince int64
@@ -423,19 +405,6 @@ func scanSchedule(rows *sql.Rows) (Schedule, error) {
 	sch.WaitingSince = sqlitedb.FromNS(waitingSince)
 
 	return sch, nil
-}
-
-// newID generates a random schedule ID - not derived from the clock, so two
-// schedules created within the same nanosecond (routine under a fixed test
-// clock, if rare in production) never collide.
-func newID() string {
-	raw := make([]byte, 8)
-
-	if _, err := rand.Read(raw); err != nil {
-		panic(fmt.Sprintf("schedule: generating id: %v", err))
-	}
-
-	return "sched-" + hex.EncodeToString(raw)
 }
 
 func (s *Store) clock() time.Time {

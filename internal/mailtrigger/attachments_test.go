@@ -44,6 +44,20 @@ func TestAnAttachmentSurvivesBeingSentAndReadBack(t *testing.T) {
 	}
 }
 
+func TestAPlainEmailKeepsItsBody(t *testing.T) {
+	raw, err := BuildMessage("ops@acme.test", OutgoingMail{
+		To: []string{"buyer@x.test"}, Subject: "PO 4471", Body: "Please confirm the delivery date.\nThanks",
+	}, time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	at := bytes.Index(raw, []byte("\r\n\r\n")) + 4
+	if text := bodyText(raw[:at], raw[at:], 500); !strings.Contains(text, "confirm the delivery date") {
+		t.Fatalf("an email with no files went out without its body: %q", raw)
+	}
+}
+
 func TestARequestListsWhereTheFilesAre(t *testing.T) {
 	out := RenderWithFiles(Rule{Content: "Create the sales order"}, Message{From: "a@b.c", Subject: "PO"}, "", InboxDir("mjob_1"),
 		[]Attachment{{Name: "PO.pdf"}})

@@ -80,21 +80,13 @@ func (s *Store) Waiting() bool {
 }
 
 func (s *Store) queryJobs(query string, args ...any) ([]Job, error) {
-	rows, err := s.db.Query(query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("mailtrigger: jobs: %w", err)
-	}
-	defer rows.Close()
-
-	jobs := make([]Job, 0)
-
-	for rows.Next() {
+	jobs, err := sqlitedb.QueryAll(s.db, func(r sqlitedb.Scanner) (Job, error) {
 		var j Job
 		var received, nextAttempt, created, updated int64
 
-		if err := rows.Scan(&j.ID, &j.RuleID, &j.RuleName, &j.AccountID, &j.DesktopID, &j.MessageID, &j.From, &j.Subject,
+		if err := r.Scan(&j.ID, &j.RuleID, &j.RuleName, &j.AccountID, &j.DesktopID, &j.MessageID, &j.From, &j.Subject,
 			&received, &j.Content, &j.Status, &j.Note, &j.TaskID, &j.Attempts, &nextAttempt, &created, &updated); err != nil {
-			return nil, fmt.Errorf("mailtrigger: jobs: %w", err)
+			return Job{}, err
 		}
 
 		j.Received = sqlitedb.FromNS(received)
@@ -102,10 +94,13 @@ func (s *Store) queryJobs(query string, args ...any) ([]Job, error) {
 		j.CreatedAt = sqlitedb.FromNS(created)
 		j.UpdatedAt = sqlitedb.FromNS(updated)
 
-		jobs = append(jobs, j)
+		return j, nil
+	}, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("mailtrigger: jobs: %w", err)
 	}
 
-	return jobs, rows.Err()
+	return jobs, nil
 }
 
 // claimJob moves a pending job that is due to sending, and reports whether
@@ -131,45 +126,28 @@ func (s *Store) claimJob(id string, now time.Time) (bool, error) {
 // releaseJob puts a claimed job back to waiting without counting an attempt
 // (its desktop was busy), with why.
 func (s *Store) releaseJob(id, note string) error {
-	return s.fromSending(id, JobPending, note, "", nil, nil)
+	return s.fromSending(id, JobPending, note, "", 0, time.Time{})
 }
 
 // retryJobLater puts a claimed job back to waiting after a failed send, not
 // to be tried again before next.
 func (s *Store) retryJobLater(id, note string, next time.Time) error {
-	one := 1
-	return s.fromSending(id, JobPending, note, "", &one, &next)
+	return s.fromSending(id, JobPending, note, "", 1, next)
 }
 
 // finishJob ends a claimed job.
 func (s *Store) finishJob(id, status, note, taskID string, failedAttempt bool) error {
-	var add *int
-	if failedAttempt {
-		one := 1
-		add = &one
-	}
-
-	return s.fromSending(id, status, note, taskID, add, nil)
+	return s.fromSending(id, status, note, taskID, boolInt(failedAttempt), time.Time{})
 }
 
-func (s *Store) fromSending(id, status, note, taskID string, addAttempt *int, next *time.Time) error {
+func (s *Store) fromSending(id, status, note, taskID string, addAttempts int, next time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	attempts := 0
-	if addAttempt != nil {
-		attempts = *addAttempt
-	}
-
-	nextNS := int64(0)
-	if next != nil {
-		nextNS = sqlitedb.ToNS(*next)
-	}
 
 	if _, err := s.db.Exec(
 		`UPDATE mail_jobs SET status = ?, note = ?, task_id = ?, attempts = attempts + ?, next_attempt_ns = ?, updated_ns = ?
 		 WHERE id = ? AND status = 'sending'`,
-		status, note, taskID, attempts, nextNS, sqlitedb.ToNS(s.clock()), id,
+		status, note, taskID, addAttempts, sqlitedb.ToNS(next), sqlitedb.ToNS(s.clock()), id,
 	); err != nil {
 		return fmt.Errorf("mailtrigger: update job: %w", err)
 	}

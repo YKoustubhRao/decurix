@@ -133,8 +133,9 @@ func linkOnce(ctx context.Context, cfg Config, server string) error {
 	a := &agent{cfg: cfg, conn: conn, sessions: make(map[uint32]*session), kick: make(chan struct{}, 1)}
 	defer a.closeAll()
 
-	model, android := a.describe(ctx)
-	a.sdk = a.apiLevel(ctx)
+	// The phone's model and Android version, for the dashboard, and its API level (0 when it cannot be read).
+	model, android := a.getprop(ctx, "ro.product.model"), a.getprop(ctx, "ro.build.version.release")
+	a.sdk, _ = strconv.Atoi(a.getprop(ctx, "ro.build.version.sdk"))
 
 	treeCtx, treeCancel := context.WithCancel(ctx)
 	defer treeCancel()
@@ -215,29 +216,14 @@ func (a *agent) send(m phonehost.Message) error {
 	return a.conn.Write(wsconn.OpText, raw)
 }
 
-// describe reads the phone's model and Android version, for the dashboard.
-func (a *agent) describe(ctx context.Context) (model, android string) {
-	get := func(prop string) string {
-		out, err := adbCommand(ctx, a.cfg.Serial, "shell", "getprop", prop).Output()
-		if err != nil {
-			return ""
-		}
-		return strings.TrimSpace(string(out))
-	}
-
-	return get("ro.product.model"), get("ro.build.version.release")
-}
-
-// apiLevel reads the phone's Android API level (0 when it cannot be read).
-func (a *agent) apiLevel(ctx context.Context) int {
-	out, err := adbCommand(ctx, a.cfg.Serial, "shell", "getprop", "ro.build.version.sdk").Output()
+// getprop reads one of the phone's system properties ("" when it cannot be read).
+func (a *agent) getprop(ctx context.Context, prop string) string {
+	out, err := adbCommand(ctx, a.cfg.Serial, "shell", "getprop", prop).Output()
 	if err != nil {
-		return 0
+		return ""
 	}
 
-	n, _ := strconv.Atoi(strings.TrimSpace(string(out)))
-
-	return n
+	return strings.TrimSpace(string(out))
 }
 
 // wakeTree asks the tree reader to read the screens again soon.

@@ -3,9 +3,7 @@ package qualification
 import (
 	"archive/zip"
 	"bytes"
-	"crypto/sha256"
 	"encoding/csv"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -49,8 +47,7 @@ func Verify(c Case, result Result, runErr error) Finding {
 			f.Problems = append(f.Problems, "An artifact exceeded the file policy.")
 			continue
 		}
-		h := sha256.Sum256(b)
-		f.Hashes[n] = hex.EncodeToString(h[:])
+		f.Hashes[n] = SHA256Hex(b)
 		if _, ok := allowed[n]; !ok {
 			f.Problems = append(f.Problems, fmt.Sprintf("Unexpected artifact: %s.", n))
 		}

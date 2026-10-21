@@ -53,11 +53,6 @@ func (s *Server) hostGUISecretKey() []byte {
 	return s.HostGUISecret
 }
 
-// hostGUIToken is the launch token for one app on one session, as a launcher would carry it.
-func (s *Server) hostGUIToken(id, target, args string) string {
-	return winhost.Token(s.hostGUISecretKey(), id, target, args)
-}
-
 // hostGUIAuthorised reports whether token is the one this session was started with. Only start checks a token against
 // what it launches; every later request has to present the same token, so knowing a session's id is not enough.
 func (s *Server) hostGUIAuthorised(id, token string) bool {
@@ -81,11 +76,9 @@ func (s *Server) hostGUIAuthorise(id, token string) {
 // any desktop, and this is the one part of the API that lets a caller see and drive a program on the host.
 func hostGUIDirectOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		for _, h := range []string{"Cf-Connecting-Ip", "Cf-Ray", "X-Forwarded-For", "X-Forwarded-Host", "Forwarded", "X-Real-Ip"} {
-			if r.Header.Get(h) != "" {
-				http.Error(w, "not available through a tunnel or proxy", http.StatusForbidden)
-				return
-			}
+		if isForwarded(r) {
+			http.Error(w, "not available through a tunnel or proxy", http.StatusForbidden)
+			return
 		}
 		next(w, r)
 	}
@@ -131,9 +124,15 @@ func hostGUIStarter(ctx context.Context, desktopName string) (*exec.Cmd, error) 
 		return nil, err
 	}
 	// desktopName is already reduced to [A-Za-z0-9_] by winhost, so it is safe in a shell word.
-	shell := fmt.Sprintf(`PATH="$PATH:/mnt/c/Windows/System32:/mnt/c/Windows/System32/WindowsPowerShell/v1.0" `+
+	shell := fmt.Sprintf(wslPowershellPath+
 		`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(wslpath -w %s)" -DesktopName %s`, script, desktopName)
-	return hostShellCmd(ctx, shell), nil
+	// Run on the host with stdin left open for the caller: directly when the control plane is on the host itself, through
+	// the same docker/nsenter hop createHostCmd uses when it is in a container - named and removed when its session ends
+	// (desktop.HopCommand): a killed docker client left it running.
+	if cmd := hostHop(ctx, "powershell.exe", "bridge", true, shell); cmd != nil {
+		return cmd, nil
+	}
+	return exec.CommandContext(ctx, "bash", "-c", shell), nil
 }
 
 // nativeHostGUICmd runs the helper directly, for a control plane that is itself a Windows program: no shell and no
@@ -412,20 +411,6 @@ func (s *Server) watchHostApps(ctx context.Context) {
 	}
 }
 
-// hostShellCmd builds a command that runs a shell script on the host with stdin left open for the caller: directly when
-// the control plane is on the host itself, through the same docker/nsenter hop createHostCmd uses when it is in a container.
-func hostShellCmd(ctx context.Context, script string) *exec.Cmd {
-	if _, err := exec.LookPath("powershell.exe"); err != nil {
-		if _, err := os.Stat("/var/run/docker.sock"); err == nil {
-			if dockerBin := findDockerBinary(); dockerBin != "" {
-				// Named and removed when its session ends (desktop.HopCommand): a killed docker client left it running.
-				return desktop.HopCommand(ctx, dockerBin, "bridge", true, script)
-			}
-		}
-	}
-	return exec.CommandContext(ctx, "bash", "-c", script)
-}
-
 // hostGUIRequest is the body of every host-gui POST.
 type hostGUIRequest struct {
 	ID     string `json:"id"`
@@ -451,8 +436,7 @@ type hostGUIRequest struct {
 
 func readHostGUIRequest(w http.ResponseWriter, r *http.Request) (hostGUIRequest, bool) {
 	var req hostGUIRequest
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodPost) {
 		return req, false
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {

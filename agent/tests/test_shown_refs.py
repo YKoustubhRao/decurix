@@ -5,7 +5,6 @@ from unittest import mock
 
 from decurix_agent import config
 from decurix_agent.computer import cli, core, shown
-from decurix_agent.computer.errors import ComputerError
 
 
 class ShownRefs(unittest.TestCase):

@@ -23,13 +23,6 @@ var (
 	// crashed, or never bound. Distinct from the errors above because the
 	// desktop itself is fine; only its agent is not listening yet.
 	ErrAgentUnreachable = errors.New("desktop agent is not responding")
-
-	// ErrNoVNC is a native Windows worker asked for a VNC address: its
-	// screen is not an X server but a private desktop, shown through
-	// Manager.NativeSession. ErrNoStats is the same worker asked for a
-	// container's resource figures.
-	ErrNoVNC   = errors.New("a native worker's screen is not served over VNC")
-	ErrNoStats = errors.New("a native worker has no container statistics")
 )
 
 // ProxyTarget resolves the internal VNC address (http://ip:port) to reverse-proxy

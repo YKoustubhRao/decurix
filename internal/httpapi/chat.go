@@ -129,8 +129,7 @@ func (s *Server) chatStreamHandler(w http.ResponseWriter, r *http.Request) {
 // the agent's own memory inside the container (worker memory files, and
 // whatever its harness keeps), are untouched.
 func (s *Server) clearChatHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+	if !requirePost(w, r) {
 		return
 	}
 
@@ -159,8 +158,7 @@ func (s *Server) clearChatHandler(w http.ResponseWriter, r *http.Request) {
 // fail a task, so an unusable event is accepted and dropped rather than
 // answered with an error the agent would then have to handle.
 func (s *Server) agentEventHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodPost) {
 		return
 	}
 
@@ -195,13 +193,9 @@ func (s *Server) agentEventHandler(w http.ResponseWriter, r *http.Request) {
 		jsonStatusError(w, http.StatusForbidden, "Readiness evidence is recorded by the independent runner.")
 		return
 	}
-	text := strings.TrimSpace(req.Text)
+	text := clip(req.Text, maxStepTextBytes)
 
 	if desktopID != "" && text != "" {
-		if len(text) > maxStepTextBytes {
-			text = truncateUTF8(text, maxStepTextBytes) + "…"
-		}
-
 		step := tasks.Step{Text: text}
 
 		if req.Action == nil {
@@ -236,7 +230,6 @@ func (s *Server) agentEventHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// stepImageURL stores one screenshot sent with an action step and returns the
 // stepImageURL stores one screenshot sent with an action step and returns the
 // URL the chat loads it from, or "" when there is none or it is unusable.
 // Screenshots are content-deduplicated: consecutive action steps often report

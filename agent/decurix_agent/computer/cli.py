@@ -403,6 +403,17 @@ def _is_target(token):
     return bool(el.REF_RE.match(token) or el.parse_point(token))
 
 
+def _one_target(words, args):
+    """A command's words that name one control - a ref, a point, `role name`, or a name in words - as act() keywords."""
+
+    if words and not (_is_target(words[0]) or (len(words) == 2 and _is_role_word(words[0]))):
+        words = [" ".join(words)]
+    if len(words) == 2 and _is_role_word(words[0]):
+        args.role, args.name = args.role or words[0], args.name or words[1]
+        words = []
+    return _target(words[0] if words else None, args)
+
+
 class _Parser(argparse.ArgumentParser):
     """
     Reports a malformed command as one line, not argparse's usage dump.
@@ -452,20 +463,11 @@ def build_parser():
     keys.add_argument("keys", nargs="+")
     keys.add_argument("--on")
 
-    scroll = sub.add_parser("scroll", add_help=False)
-    scroll.add_argument("words", nargs="*")
-    scroll.add_argument("--role")
-    scroll.add_argument("--name")
-
-    select = sub.add_parser("select", add_help=False)
-    select.add_argument("words", nargs="+")
-    select.add_argument("--role")
-    select.add_argument("--name")
-
-    upload = sub.add_parser("upload", add_help=False)
-    upload.add_argument("words", nargs="+")
-    upload.add_argument("--role")
-    upload.add_argument("--name")
+    for name, nargs in (("scroll", "*"), ("select", "+"), ("upload", "+")):
+        p = sub.add_parser(name, add_help=False)
+        p.add_argument("words", nargs=nargs)
+        p.add_argument("--role")
+        p.add_argument("--name")
 
     opener = sub.add_parser("open", add_help=False)
     opener.add_argument("target", nargs="+")
@@ -600,13 +602,7 @@ def read_text(args):
     from decurix_agent.computer import privacy
 
     observation = core.observe()
-    words = _strip_descriptor(list(args.target))
-    if words and not (_is_target(words[0]) or (len(words) == 2 and _is_role_word(words[0]))):
-        words = [" ".join(words)]
-    if len(words) == 2 and _is_role_word(words[0]):
-        args.role, args.name = args.role or words[0], args.name or words[1]
-        words = []
-    target = _target(words[0] if words else None, args)
+    target = _one_target(_strip_descriptor(list(args.target)), args)
 
     if target.get("point"):
         element = el.at_point(observation["elements"], *target["point"], windows=observation.get("windows"),
@@ -846,12 +842,7 @@ def run(argv):
             raise ComputerError(f"{command} takes one target, and {len(words)} points were given; nothing was "
                                 "clicked. To reach something below the visible part of a page, gui scroll it "
                                 "(gui scroll down 5), then gui observe and click it by its ref.")
-        if words and not (_is_target(words[0]) or (len(words) == 2 and _is_role_word(words[0]))):
-            words = [" ".join(words)]
-        if len(words) == 2 and _is_role_word(words[0]):
-            args.role, args.name = args.role or words[0], args.name or words[1]
-            words = []
-        target = _target(words[0] if words else None, args)
+        target = _one_target(words, args)
         if not target:
             raise ComputerError(f"{command} what? Give a ref like e12 (run gui observe first).")
         # named: a press on a control that has a name is made by its ref, not by where it is (core.act).
@@ -904,7 +895,7 @@ def run(argv):
 
     elif command == "scroll":
         words, direction, amount = scroll_words(args.words)
-        target = _target(words[0], args) if words else _target(None, args)
+        target = _target(words[0] if words else None, args)
         result = core.act("scroll", direction=direction, amount=amount, **target)
 
     elif command == "select":

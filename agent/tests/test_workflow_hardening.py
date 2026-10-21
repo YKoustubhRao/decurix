@@ -1,5 +1,4 @@
 """Regression tests for concurrent claims, stale results and generic evidence."""
-import copy
 import json
 import os
 import subprocess

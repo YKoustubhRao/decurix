@@ -37,6 +37,15 @@ def log_to_file(path):
     _log_path = path
 
 
+def log_banner(*lines):
+    """Log `lines` between two rules: how a task's start and a person's reply stand out in the log."""
+
+    log("=" * 40)
+    for line in lines:
+        log(line)
+    log("=" * 40)
+
+
 def log(text):
     line = f"[{timestamp()}] {text}"
 
@@ -49,10 +58,3 @@ def log(text):
             f.write(line + "\n")
     except OSError:
         pass
-
-
-def safe_filename(name):
-    return "".join(
-        c if c.isalnum() or c in "-_." else "_"
-        for c in name
-    )

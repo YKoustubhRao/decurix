@@ -164,7 +164,6 @@ def open_status(p):
     """
 
     import io
-    import zipfile as _zip
     p = Path(p)
     suffix = p.suffix.lower()
     if suffix not in (".xlsx", ".xlsm", ".xltx", ".xltm", ".docx", ".dotx", ".docm", ".pptx", ".potx", ".pptm"):
@@ -173,11 +172,11 @@ def open_status(p):
     if raw[:8] == _CFB_MAGIC:
         return "protected", f"{p.name} is password-protected or encrypted: it was not checked"
     try:
-        with _zip.ZipFile(io.BytesIO(raw)) as z:
+        with zipfile.ZipFile(io.BytesIO(raw)) as z:
             if any(_STRICT_OOXML in z.read(n)[:4096] for n in z.namelist()
                    if n.endswith((".xml", ".rels")) and n.count("/") <= 1):
                 return "unchecked", f"{p.name} is Strict Open XML: it was not checked"
-    except _zip.BadZipFile as exc:
+    except zipfile.BadZipFile as exc:
         return "broken", broken_file(p, exc)
     except Exception:  # noqa: BLE001 - the reader below decides
         pass
@@ -185,18 +184,15 @@ def open_status(p):
         data = io.BytesIO(raw)
         if suffix in (".xlsx", ".xlsm", ".xltx", ".xltm"):
             _openpyxl().load_workbook(data, keep_vba=suffix in (".xlsm", ".xltm")).close()
-        elif suffix in (".docx", ".dotx", ".docm"):
-            import docx
-            try:
-                docx.Document(data)
-            except ValueError as exc:
-                if "template" in str(exc).lower() or "content type" in str(exc).lower():
-                    return "unchecked", f"{p.name}: a template or a kind the reader does not take: not checked"
-                raise
         else:
-            import pptx
+            if suffix in (".docx", ".dotx", ".docm"):
+                import docx
+                reader = docx.Document
+            else:
+                import pptx
+                reader = pptx.Presentation
             try:
-                pptx.Presentation(data)
+                reader(data)
             except ValueError as exc:
                 if "template" in str(exc).lower() or "content type" in str(exc).lower():
                     return "unchecked", f"{p.name}: a template or a kind the reader does not take: not checked"
@@ -222,13 +218,8 @@ def _data_check_csv(p):
 
     try:
         from decurix_agent.tools import table_quality
-        facts = table_quality.csv_facts(p)
-        if not facts:
-            return ""
-        import csv
-        with open(p, encoding="utf-8-sig", errors="replace", newline="") as handle:
-            header = next(csv.reader(handle, delimiter="\t" if p.suffix.lower() == ".tsv" else ","), [])
-        return table_quality.report(p, header, facts)
+        table = table_quality.csv_table(p)
+        return table_quality.report(p, *table) if table else ""
     except Exception:  # noqa: BLE001 - a check that cannot be made says nothing
         return ""
 
@@ -242,10 +233,9 @@ def _data_check_workbook(p):
         out = []
         try:
             for sheet in book.worksheets:
-                facts = table_quality.sheet_facts(sheet)
-                if facts:
-                    header = next(sheet.iter_rows(values_only=True), ())
-                    said = table_quality.report(f"{p}#{sheet.title}", header, facts)
+                table = table_quality.sheet_table(sheet)
+                if table:
+                    said = table_quality.report(f"{p}#{sheet.title}", *table)
                     if said:
                         out.append(f"[sheet {sheet.title}] " + said)
         finally:
@@ -433,13 +423,6 @@ def docx_structure(p):
             lines.append("[page break]")
     escapes = sorted(set(_TYPED_ESCAPE.findall("\n".join(text_seen))))
     return {"lines": lines, "page_breaks": breaks, "tables": tables, "headings": headings, "typed_escapes": escapes}
-
-
-def _docx_text_from_xml(p):
-    with zipfile.ZipFile(p) as z:
-        xml = z.read("word/document.xml").decode("utf-8", errors="replace")
-    xml = re.sub(r"</w:p>", "\n", xml)
-    return f"{p.name}:\n" + re.sub(r"<[^>]+>", "", xml)
 
 
 def _read_pptx(p):
@@ -781,21 +764,6 @@ def _fill_colour(fill):
     return _colour(fill.fgColor) or _colour(fill.bgColor) or f"{fill.fill_type} pattern"
 
 
-def _runs(numbers):
-    """[2, 5, 9, 10, 11] -> "2, 5, 9-11"."""
-
-    out, numbers = [], sorted(set(numbers))
-    start = prev = None
-    for n in numbers + [None]:
-        if start is not None and n == prev + 1:
-            prev = n
-            continue
-        if start is not None:
-            out.append(str(start) if start == prev else f"{start}-{prev}")
-        start = prev = n
-    return ", ".join(out)
-
-
 def _rule_text(rule):
     """One conditional-format rule: what decides it, and what it applies."""
 
@@ -869,6 +837,8 @@ def sheet_formatting(ws):
 def _formatting_lines(ws):
     """sheet_formatting as the few lines `office read` shows."""
 
+    from decurix_agent.tools import table_quality
+
     facts = sheet_formatting(ws)
     lines = [f"Filter: {('on ' + facts['filter']) if facts['filter'] else 'none'}"]
     if facts["conditional"]:
@@ -880,7 +850,7 @@ def _formatting_lines(ws):
     if facts["fills"]:
         parts = []
         for colour, rows in sorted(facts["fills"].items(), key=lambda kv: -len(kv[1]))[:6]:
-            runs = _runs(rows)
+            runs = ", ".join(table_quality._runs(set(rows)))
             parts.append(f"{colour} fill on rows {runs if len(runs) <= 160 else runs[:160] + '...'}")
         lines.append("Fills: " + "; ".join(parts) + ("" if facts["checked_all"] else " (first cells only)"))
     else:
@@ -1128,18 +1098,9 @@ def create_workbook(path, sheets):
         for row in spec.get("rows") or []:
             ws.append([_cell_value(v) for v in row])
         for ref, v in (spec.get("cells") or {}).items():
-            cell = str(ref).upper().replace("$", "")
-            if not re.fullmatch(r"[A-Z]{1,3}[1-9]\d*", cell):
-                raise OfficeError(f"{ref!r} is not a cell address like B14")
+            cell = _cell_address(ref)
             if isinstance(v, dict):
-                if "value" in v:
-                    v = v["value"]
-                elif "formula" in v:
-                    v = str(v["formula"] or "")
-                    if v and not v.startswith("="):
-                        v = "=" + v
-                else:
-                    raise OfficeError(f"cell {cell} has no value: give a value, \"=FORMULA\" or {{\"formula\": ...}}")
+                v = _given_value(v, f"cell {cell} has no value: give a value, \"=FORMULA\" or {{\"formula\": ...}}")
             ws[cell] = _cell_value(v)
 
         if spec.get("header", True) and ws.max_row >= 1:
@@ -1234,6 +1195,24 @@ def _clean_spec(spec):
     return spec
 
 
+def _cell_address(ref):
+    cell = str(ref or "").upper().replace("$", "")
+    if not re.fullmatch(r"[A-Z]{1,3}[1-9]\d*", cell):
+        raise OfficeError(f"{ref!r} is not a cell address like B14")
+    return cell
+
+
+def _given_value(spec, missing):
+    """A cell's "value", or its "formula" with its "="; OfficeError(missing) when it has neither."""
+
+    if "value" in spec:
+        return spec["value"]
+    if "formula" in spec:
+        value = str(spec["formula"] or "")
+        return "=" + value if value and not value.startswith("=") else value
+    raise OfficeError(missing)
+
+
 def _cell_value(v):
     if isinstance(v, float):
         return clean_number(v)
@@ -1248,9 +1227,6 @@ def _cell_value(v):
 # ------------------------------------------------------------------
 # Workbooks: updating in place (charts survive)
 # ------------------------------------------------------------------
-
-_MAIN_NS_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-
 
 def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_sheets=None):
     """
@@ -1272,9 +1248,7 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_s
         raise OfficeError(f"{src} does not exist")
     dst = _path(output_path) if output_path else src
 
-    with zipfile.ZipFile(src) as z:
-        entries = {i.filename: z.read(i.filename) for i in z.infolist()}
-        order = [i.filename for i in z.infolist()]
+    entries, order = _zip_parts(src)
 
     # New sheets first, so the edits below can fill them too. Found live (2026-10-14): asked to add an Exceptions
     # and a By Account sheet to an existing model, a worker had no way to and made a second workbook instead.
@@ -1290,22 +1264,13 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_s
         sheet = e.get("sheet") or next(iter(sheet_files))
         if sheet not in sheet_files:
             raise OfficeError(f"no sheet {sheet!r}; the sheets are {list(sheet_files)}")
-        cell = str(e.get("cell") or "").upper().replace("$", "")
-        if not re.fullmatch(r"[A-Z]{1,3}[1-9]\d*", cell):
-            raise OfficeError(f"{e.get('cell')!r} is not a cell address like B14")
+        cell = _cell_address(e.get("cell"))
         # "formula" is how a model naturally names a formula's edit; taken as
         # the value (with its "="). An edit with neither key is refused, never
         # read as "empty the cell": live, {"cell": "D2", "formula": "=SUM(..)"}
         # wiped a total and the engine reported it updated.
-        if "value" in e:
-            value = e["value"]
-        elif "formula" in e:
-            value = str(e["formula"] or "")
-            if value and not value.startswith("="):
-                value = "=" + value
-        else:
-            raise OfficeError(f"the edit of {sheet}!{cell} has no value: give \"value\" (a number, text, \"=FORMULA\", "
-                              "or null to empty the cell)")
+        value = _given_value(e, f"the edit of {sheet}!{cell} has no value: give \"value\" (a number, text, \"=FORMULA\", "
+                                "or null to empty the cell)")
         by_sheet.setdefault(sheet, []).append((cell, value))
 
     for sheet, cell_edits in by_sheet.items():
@@ -1362,16 +1327,10 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_s
         entries["[Content_Types].xml"] = re.sub(r"<Override\b[^>]*calcChain[^>]*/>", "", ct).encode("utf-8")
 
     if dst == src:
-        backup = src.with_name(src.stem + ".orig" + src.suffix)
-        if not backup.exists() and not _task_made(src):
-            shutil.copy2(src, backup)
+        _keep_original(src)
 
-    tmp = dst.with_name(dst.name + ".tmp")
     dst.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
-        for name in order:
-            z.writestr(name, entries[name])
-    os.replace(tmp, dst)
+    _write_zip(dst, order, entries)
     stored = _store_results(dst)
 
     msg = f"Updated {dst}: " + (f"added sheet(s) {', '.join(added)}; " if added else "") + f"{len(changed)} cell(s)"
@@ -1382,6 +1341,28 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_s
         if not swaps:
             msg += " - none matched: read the workbook to see the exact ranges its charts use"
     return msg + (". Formula results are recalculated and saved in it." if stored else ". Formulas recalculate when the file is opened.")
+
+
+def _keep_original(src, suffix=None):
+    """Keep `src` as it was, beside it as <name>.orig<ext>, the first time it is changed in place - unless the task
+    made it."""
+
+    backup = src.with_name(src.stem + ".orig" + (suffix or src.suffix))
+    if not backup.exists() and not _task_made(src):
+        shutil.copy2(src, backup)
+
+
+def _zip_parts(p):
+    with zipfile.ZipFile(p) as z:
+        return {i.filename: z.read(i.filename) for i in z.infolist()}, [i.filename for i in z.infolist()]
+
+
+def _write_zip(p, order, entries):
+    tmp = p.with_name(p.name + ".tmp")
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
+        for name in order:
+            z.writestr(name, entries[name])
+    os.replace(tmp, p)
 
 
 def _other_sheet_quoting(ref):
@@ -1721,6 +1702,20 @@ def formulas_without_results(path):
     return out
 
 
+def _formula_books(path, with_values=True):
+    """A workbook's formulas and, `with_values`, its stored results (else None), loaded with openpyxl; None for a file
+    that is not such a workbook or cannot be read."""
+
+    if Path(path).suffix.lower() not in RESULT_BOOKS:
+        return None
+    openpyxl = _openpyxl()
+    try:
+        formulas = openpyxl.load_workbook(str(path))
+        return formulas, (openpyxl.load_workbook(str(path), data_only=True) if with_values else None)
+    except Exception:
+        return None
+
+
 # A row's label that says it totals what is above it: "Total", "Grand Total", "Sub-total", "Totals".
 TOTAL_LABEL = re.compile(r"^\s*(?:grand\s+|sub[\s-]*)?totals?\b", re.I)
 
@@ -1733,14 +1728,10 @@ def typed_totals(path):
     Found live (2026-10-19): a GST register asked for "with formulas" had every total of its Total row typed in.
     """
 
-    if Path(path).suffix.lower() not in RESULT_BOOKS:
+    books = _formula_books(path)
+    if books is None:
         return []
-    openpyxl = _openpyxl()
-    try:
-        formulas = openpyxl.load_workbook(str(path))
-        values = openpyxl.load_workbook(str(path), data_only=True)
-    except Exception:
-        return []
+    formulas, values = books
 
     def number(v):
         return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
@@ -1822,16 +1813,10 @@ def formula_errors(path):
     is left out: a lookup may say "not found" on purpose.) Needs the formula results stored.
     """
 
-    import io
-    if Path(path).suffix.lower() not in RESULT_BOOKS:
+    books = _formula_books(path)
+    if books is None:
         return []
-    openpyxl = _openpyxl()
-    try:
-        data = Path(path).read_bytes()
-        formulas = openpyxl.load_workbook(io.BytesIO(data))
-        values = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
-    except Exception:
-        return []
+    formulas, values = books
     out = []
     for ws in formulas.worksheets:
         shown = values[ws.title]
@@ -1854,24 +1839,40 @@ def coverage_gaps(path):
     Needs the file's formula results (store them first): they say which rows are explained.
     """
 
-    if Path(path).suffix.lower() not in RESULT_BOOKS:
+    books = _formula_books(path)
+    if books is None:
         return []
-    openpyxl = _openpyxl()
-    try:
-        formulas = openpyxl.load_workbook(str(path))
-        values = openpyxl.load_workbook(str(path), data_only=True)
-    except Exception:
-        return []
+    formulas, values = books
     out = []
-    for ws in formulas.worksheets:
-        if ws.max_row > _COVERAGE_MAX_ROWS or ws.max_column > _COVERAGE_MAX_COLUMNS:
-            continue
+    for ws, grid in _table_grids(formulas):
         shown = values[ws.title]
-        grid = {(c.row, c.column): c.value for row in ws.iter_rows() for c in row if _filled(c.value)}
-        total_rows = {r for (r, k), v in grid.items() if isinstance(v, str) and TOTAL_LABEL.match(v)}
+        total_rows = _total_rows(grid)
         out.extend(_column_gaps(ws.title, grid, shown, total_rows, ws.max_row, ws.max_column))
         out.extend(_total_gaps(ws.title, grid, total_rows))
     return out
+
+
+def _table_grids(formulas):
+    """(sheet, {(row, column): value of each filled cell}) of a workbook's sheets small enough to be a table."""
+
+    for ws in formulas.worksheets:
+        if ws.max_row > _COVERAGE_MAX_ROWS or ws.max_column > _COVERAGE_MAX_COLUMNS:
+            continue
+        yield ws, {(c.row, c.column): c.value for row in ws.iter_rows() for c in row if _filled(c.value)}
+
+
+def _total_rows(grid):
+    return {r for (r, k), v in grid.items() if isinstance(v, str) and TOTAL_LABEL.match(v)}
+
+
+def _extent(lo, hi, last_row, beside, total_rows):
+    """lo..hi widened over the rows around it that `beside` says belong to the table (never over a Total row)."""
+
+    while lo > 1 and beside(lo - 1) and (lo - 1) not in total_rows:
+        lo -= 1
+    while hi < last_row and beside(hi + 1) and (hi + 1) not in total_rows:
+        hi += 1
+    return lo, hi
 
 
 def _column_gaps(title, grid, shown, total_rows, max_row, max_col):
@@ -1898,11 +1899,7 @@ def _column_gaps(title, grid, shown, total_rows, max_row, max_col):
         def has_data(r):
             return any(_filled(grid.get((r, k))) and not _is_formula(grid.get((r, k))) for k in data)
 
-        start, end = lo, hi
-        while start > 1 and has_data(start - 1) and (start - 1) not in total_rows:
-            start -= 1
-        while end < max_row and has_data(end + 1) and (end + 1) not in total_rows:
-            end += 1
+        start, end = _extent(lo, hi, max_row, has_data, total_rows)
 
         def explained(r):
             for k in range(1, max_col + 1):
@@ -1952,19 +1949,13 @@ def constants_among_formulas(path):
     formula belongs is right today and stale the day a row changes. Only meaningful when formulas were asked for.
     """
 
-    if Path(path).suffix.lower() not in RESULT_BOOKS:
+    books = _formula_books(path, with_values=False)
+    if books is None:
         return []
-    openpyxl = _openpyxl()
-    try:
-        formulas = openpyxl.load_workbook(str(path))
-    except Exception:
-        return []
+    formulas, _ = books
     out = []
-    for ws in formulas.worksheets:
-        if ws.max_row > _COVERAGE_MAX_ROWS or ws.max_column > _COVERAGE_MAX_COLUMNS:
-            continue
-        grid = {(c.row, c.column): c.value for row in ws.iter_rows() for c in row if _filled(c.value)}
-        total_rows = {r for (r, k), v in grid.items() if isinstance(v, str) and TOTAL_LABEL.match(v)}
+    for ws, grid in _table_grids(formulas):
+        total_rows = _total_rows(grid)
         for c in range(1, ws.max_column + 1):
             fill = [r for r in range(1, ws.max_row + 1)
                     if r not in total_rows and _is_formula(grid.get((r, c)))
@@ -1976,11 +1967,7 @@ def constants_among_formulas(path):
                 return any(_filled(grid.get((r, k))) for k in range(1, ws.max_column + 1) if k != c)
 
             lo, hi = min(fill), max(fill)
-            start, end = lo, hi
-            while start > 1 and beside(start - 1) and (start - 1) not in total_rows:
-                start -= 1
-            while end < ws.max_row and beside(end + 1) and (end + 1) not in total_rows:
-                end += 1
+            start, end = _extent(lo, hi, ws.max_row, beside, total_rows)
             typed = [r for r in range(start, end + 1)
                      if isinstance(grid.get((r, c)), (int, float)) and not isinstance(grid.get((r, c)), bool)]
             if typed:
@@ -1998,18 +1985,12 @@ def split_totals(path):
     "Total" was typed at F14 and the four SUMs at F15, so no row was the Total row.
     """
 
-    if Path(path).suffix.lower() not in RESULT_BOOKS:
+    books = _formula_books(path, with_values=False)
+    if books is None:
         return []
-    openpyxl = _openpyxl()
-    try:
-        formulas = openpyxl.load_workbook(str(path))
-    except Exception:
-        return []
+    formulas, _ = books
     out = []
-    for ws in formulas.worksheets:
-        if ws.max_row > _COVERAGE_MAX_ROWS or ws.max_column > _COVERAGE_MAX_COLUMNS:
-            continue
-        grid = {(c.row, c.column): c.value for row in ws.iter_rows() for c in row if _filled(c.value)}
+    for ws, grid in _table_grids(formulas):
         for (r, c), v in sorted(grid.items()):
             if not (isinstance(v, str) and TOTAL_LABEL.match(v)):
                 continue
@@ -2032,14 +2013,10 @@ def workbook_tail(path, rows=4):
     read from is cut before it. "" for anything but a workbook that can be read.
     """
 
-    if Path(path).suffix.lower() not in RESULT_BOOKS:
+    books = _formula_books(path)
+    if books is None:
         return ""
-    openpyxl = _openpyxl()
-    try:
-        formulas = openpyxl.load_workbook(str(path))
-        values = openpyxl.load_workbook(str(path), data_only=True)
-    except Exception:
-        return ""
+    formulas, values = books
     out = []
     for ws in formulas.worksheets:
         if ws.max_row < 2 or ws.max_column > _COVERAGE_MAX_COLUMNS:
@@ -2131,7 +2108,7 @@ def _recalculated_values(p, openpyxl):
 _CELL_XML = re.compile(r"<c\b([^>]*?)(?:/>|>(.*?)</c>)", re.S)
 
 
-def _result_xml(attrs, inner, value, openpyxl):
+def _result_xml(attrs, inner, value):
     """One formula cell's XML with `value`, as calculated, as its saved result (None: it came to empty text)."""
 
     import datetime
@@ -2178,9 +2155,7 @@ def _store_results(p):
     if values is None:
         return False
 
-    with zipfile.ZipFile(p) as z:
-        entries = {i.filename: z.read(i.filename) for i in z.infolist()}
-        order = [i.filename for i in z.infolist()]
+    entries, order = _zip_parts(p)
     for sheet, name in _sheet_files(entries).items():
         if sheet not in values.sheetnames or name not in entries:
             continue
@@ -2191,15 +2166,11 @@ def _store_results(p):
             ref = re.search(r'\br="([A-Z]{1,3}\d+)"', attrs)
             if inner is None or "<f" not in inner or not ref:
                 return m.group(0)
-            return _result_xml(attrs, inner, ws[ref.group(1)].value, openpyxl)
+            return _result_xml(attrs, inner, ws[ref.group(1)].value)
 
         entries[name] = _CELL_XML.sub(fill, entries[name].decode("utf-8")).encode("utf-8")
 
-    tmp = p.with_name(p.name + ".tmp")
-    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
-        for name in order:
-            z.writestr(name, entries[name])
-    os.replace(tmp, p)
+    _write_zip(p, order, entries)
     return True
 
 
@@ -2238,7 +2209,7 @@ def _image_to_pdf(src, dst):
     Image.open(src).convert("RGB").save(dst, "PDF", resolution=150)
 
 
-def _ocr_file(path, limit=MAX_TEXT_CHARS):
+def _ocr_file(path):
     """Text tesseract reads off one picture, "" when it cannot run."""
 
     try:
@@ -2247,7 +2218,7 @@ def _ocr_file(path, limit=MAX_TEXT_CHARS):
     except (OSError, subprocess.SubprocessError):
         return ""
     text = (done.stdout or "").strip()
-    return text[:limit]
+    return text[:MAX_TEXT_CHARS]
 
 
 # ------------------------------------------------------------------
@@ -2532,6 +2503,12 @@ def _replace_in_frame(frame, find, replace):
     return count
 
 
+def _pick(found, which, kind, n, number):
+    if not isinstance(which, int) or not 1 <= which <= len(found):
+        raise OfficeError(f"edit {n}: slide {number} has {len(found)} {kind}(s), not {kind} {which!r}")
+    return found[which - 1]
+
+
 def update_presentation(path, edits, output_path=None):
     """
     Change an existing deck in place, keeping its layout, theme, pictures and
@@ -2595,11 +2572,9 @@ def update_presentation(path, edits, output_path=None):
             _set_text(slide.shapes.title, edit["title"])
             done.append(f"slide {number} title")
         elif action == "value":
-            tables = [s.table for s in slide.shapes if getattr(s, "has_table", False) and s.has_table]
             which, row, col = edit.get("table", 1), edit.get("row"), edit.get("column")
-            if not isinstance(which, int) or not 1 <= which <= len(tables):
-                raise OfficeError(f"edit {n}: slide {number} has {len(tables)} table(s), not table {which!r}")
-            table = tables[which - 1]
+            table = _pick([s.table for s in slide.shapes if getattr(s, "has_table", False) and s.has_table], which,
+                          "table", n, number)
             if not isinstance(row, int) or not isinstance(col, int) or not (1 <= row <= len(table.rows)
                                                                           and 1 <= col <= len(table.columns)):
                 raise OfficeError(f"edit {n}: give \"row\" and \"column\" from 1 within the table's "
@@ -2610,11 +2585,10 @@ def update_presentation(path, edits, output_path=None):
             # Rows added at the end of a table, each a copy of its last row (its look kept) holding the given texts.
             # Found live (2026-10-14): a deck's table needed a Total row the copied deck had no room for, and the
             # worker could only report the deck unfinished.
-            frames = [s for s in slide.shapes if getattr(s, "has_table", False) and s.has_table]
             which, rows = edit.get("table", 1), edit["add_rows"]
-            if not isinstance(which, int) or not 1 <= which <= len(frames):
-                raise OfficeError(f"edit {n}: slide {number} has {len(frames)} table(s), not table {which!r}")
-            table = frames[which - 1].table
+            frame = _pick([s for s in slide.shapes if getattr(s, "has_table", False) and s.has_table], which, "table",
+                          n, number)
+            table = frame.table
             width = len(table.columns)
             if not isinstance(rows, list) or not rows or not all(isinstance(r, list) and len(r) <= width for r in rows):
                 raise OfficeError(f"edit {n}: add_rows is a list of rows, each a list of at most {width} cell texts")
@@ -2640,23 +2614,19 @@ def update_presentation(path, edits, output_path=None):
                 for c in range(width):
                     value = values[c] if c < len(values) else ""
                     _set_text(new_row.cells[c].text_frame, "" if value is None else value)
-                frames[which - 1].height += model.h
+                frame.height += model.h
             done.append(f"slide {number} table {which}: {len(rows)} row(s) added" + (f" above row {before}" if before else ""))
         elif action == "categories":
-            charts = [s.chart for s in slide.shapes if getattr(s, "has_chart", False) and s.has_chart]
             which = edit.get("chart", 1)
-            if not isinstance(which, int) or not 1 <= which <= len(charts):
-                raise OfficeError(f"edit {n}: slide {number} has {len(charts)} chart(s), not chart {which!r}")
-            charts[which - 1].replace_data(_deck_chart_data(edit, f"edit {n}"))
+            _pick([s.chart for s in slide.shapes if getattr(s, "has_chart", False) and s.has_chart], which, "chart", n,
+                  number).replace_data(_deck_chart_data(edit, f"edit {n}"))
             done.append(f"slide {number} chart {which} data")
         else:
             slide.notes_slide.notes_text_frame.text = str(edit["notes"])
             done.append(f"slide {number} notes")
 
     if dst == src:
-        backup = src.with_name(src.stem + ".orig" + src.suffix)
-        if not backup.exists() and not _task_made(src):
-            shutil.copy2(src, backup)
+        _keep_original(src)
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_name(dst.name + ".tmp")
     prs.save(str(tmp))
@@ -2696,11 +2666,6 @@ def _replace_in_paragraph(paragraph, replace, counts):
     whole = "".join(t.text or "" for t in texts)
     if not any(key in whole for key in replace):
         return
-    # Where each w:t starts in the paragraph's text.
-    starts, at = [], 0
-    for t in texts:
-        starts.append(at)
-        at += len(t.text or "")
     for key, value in replace.items():
         while True:
             whole = "".join(t.text or "" for t in texts)
@@ -2708,6 +2673,7 @@ def _replace_in_paragraph(paragraph, replace, counts):
             if i < 0:
                 break
             end = i + len(key)
+            # Where each w:t starts in the paragraph's text.
             starts, at = [], 0
             for t in texts:
                 starts.append(at)
@@ -2786,8 +2752,8 @@ def update_document(path, replace, output_path=None):
             for paragraph in root.iter(_W + "p"):
                 _replace_in_paragraph(paragraph, replace, counts)
             parts[info.filename] = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
-    if out == p and not p.with_name(p.stem + ".orig.docx").exists() and not _task_made(p):
-        shutil.copy2(p, p.with_name(p.stem + ".orig.docx"))
+    if out == p:
+        _keep_original(p, ".docx")
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(out.name + ".tmp")
     with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
@@ -2870,8 +2836,6 @@ USAGE = """office - documents, spreadsheets and email drafts, from the shell
 def _spec(arg):
     """A JSON spec given as `-` (stdin), inline JSON, or a file."""
 
-    import sys
-
     if arg == "-":
         text = sys.stdin.read()
     elif arg.lstrip().startswith(("{", "[")):
@@ -2901,7 +2865,6 @@ def _only(spec, keys):
 
 def _email(argv):
     import argparse
-    import sys
 
     from decurix_agent.tools import outbox
 
@@ -2936,7 +2899,7 @@ def _email(argv):
     except payees.PartyError as exc:
         raise OfficeError(f"not drafted: {exc}") from exc
     # A typed address that is in no input is refused now, with the one on record, not an attempt later at the check.
-    typed = [a for a in list(args.to) + list(args.cc)]
+    typed = list(args.to) + list(args.cc)
     if typed and task_context.current():  # a task's inputs to check against
         try:
             refused = payees.typed_recipients_refused(request, typed, args.subject, body)

@@ -8,7 +8,9 @@
 package sqlitedb
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"net/url"
 	"os"
@@ -186,6 +188,43 @@ func Migrate(db *sql.DB, component string, steps []string) error {
 	}
 
 	return nil
+}
+
+// Scanner is what a row is read from: a *sql.Row or *sql.Rows.
+type Scanner = interface{ Scan(dest ...any) error }
+
+// QueryAll runs query on q (a *sql.DB or *sql.Tx) and returns every row as
+// scan reads it - an empty, non-nil slice when there are none. The rows are
+// closed before it returns, so the caller may run its next statement at once
+// (see Open); scan itself must not run one.
+func QueryAll[T any](q interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}, scan func(Scanner) (T, error), query string, args ...any) ([]T, error) {
+	rows, err := q.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]T, 0)
+	for rows.Next() {
+		v, err := scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+
+	return out, rows.Err()
+}
+
+// NewID returns prefix followed by n random bytes in hex: a row key that is
+// unguessable and never collides with one made in the same instant.
+func NewID(prefix string, n int) string {
+	raw := make([]byte, n)
+	_, _ = rand.Read(raw) // never fails: crypto/rand crashes the program instead
+
+	return prefix + hex.EncodeToString(raw)
 }
 
 // ToNS stores a time as Unix nanoseconds; the zero time is stored as 0.

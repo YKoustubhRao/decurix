@@ -207,6 +207,24 @@ def _absolute(files):
     return out
 
 
+def _run_answer(result, what, tool):
+    """The answer to a replay or skill run: its outcome and text, and how to carry on from where it stopped."""
+
+    text = f"outcome: {result['outcome']}\n{result['text']}"
+
+    if result["outcome"] == replay.NEEDS_APPROVAL:
+        return [_text(
+            "NEEDS_APPROVAL: " + result["text"]
+            + f"\n\nStop here. End your turn with a reply that begins NEEDS_APPROVAL: saying what the {what} "
+            f"wants to do. When the human approves, call {tool} again with from={result['resume_from']}."
+        )], False
+
+    if result.get("resume_from") and result["outcome"] in (replay.HALTED, replay.NEEDS_HUMAN):
+        text += f"\n\nTo carry on from there later, call {tool} with from={result['resume_from']}."
+
+    return [_text(text)], result["outcome"] not in replay.SUCCESS
+
+
 def call_tool(name, arguments):
     """Run one tool; return (content blocks, is_error)."""
 
@@ -288,19 +306,7 @@ def call_tool(name, arguments):
 
         params = guidance.with_run_values(arguments.get("params") or {}, program.get("params"), recording=arguments["id"])
         result = replay.run(program, params=params, start=arguments.get("from") or 1)
-        text = f"outcome: {result['outcome']}\n{result['text']}"
-
-        if result["outcome"] == replay.NEEDS_APPROVAL:
-            return [_text(
-                "NEEDS_APPROVAL: " + result["text"]
-                + "\n\nStop here. End your turn with a reply that begins NEEDS_APPROVAL: saying what the replay "
-                f"wants to do. When the human approves, call replay again with from={result['resume_from']}."
-            )], False
-
-        if result.get("resume_from") and result["outcome"] in (replay.HALTED, replay.NEEDS_HUMAN):
-            text += f"\n\nTo carry on from there later, call replay with from={result['resume_from']}."
-
-        return [_text(text)], result["outcome"] not in replay.SUCCESS
+        return _run_answer(result, "replay", "replay")
 
     if name in ("skills", "run_skill"):
         wanted = arguments.get("name") or ("" if name == "skills" else None)
@@ -324,19 +330,7 @@ def call_tool(name, arguments):
 
         params = guidance.with_run_values(arguments.get("params") or {}, skill.get("params"), skill=skill["name"])
         result = skill_engine.run(skill, params=params, start=arguments.get("from") or 1)
-        text = f"outcome: {result['outcome']}\n{result['text']}"
-
-        if result["outcome"] == replay.NEEDS_APPROVAL:
-            return [_text(
-                "NEEDS_APPROVAL: " + result["text"]
-                + "\n\nStop here. End your turn with a reply that begins NEEDS_APPROVAL: saying what the skill "
-                f"wants to do. When the human approves, call run_skill again with from={result['resume_from']}."
-            )], False
-
-        if result.get("resume_from") and result["outcome"] in (replay.HALTED, replay.NEEDS_HUMAN):
-            text += f"\n\nTo carry on from there later, call run_skill with from={result['resume_from']}."
-
-        return [_text(text)], result["outcome"] not in replay.SUCCESS
+        return _run_answer(result, "skill", "run_skill")
 
     if name == "recordings":
         found = replay.search(arguments.get("query") or "")

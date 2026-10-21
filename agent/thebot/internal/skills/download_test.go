@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -98,7 +99,7 @@ func TestWantedExtsRecognisesSourceCode(t *testing.T) {
 		"download the source files",
 	} {
 		exts := wantedExts(step)
-		if !contains(exts, "cpp") || !contains(exts, "hpp") {
+		if !slices.Contains(exts, "cpp") || !slices.Contains(exts, "hpp") {
 			t.Errorf("wantedExts(%q) = %v, want cpp/hpp included", step, exts)
 		}
 	}

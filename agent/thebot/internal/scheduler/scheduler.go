@@ -31,8 +31,6 @@ package scheduler
 
 import (
 	"context"
-	"os"
-	"strconv"
 	"time"
 
 	"thebot/internal/atomizer"
@@ -179,25 +177,18 @@ func New(provider llm.Provider, models llm.Models, ws *workspace.Workspace, l2 *
 	return &Scheduler{Provider: provider, Models: models, Workspace: ws, L2: l2, RAG: dataRAG, Feedback: fb, L1: l1}
 }
 
-func envInt(key string, fallback int) int {
-	if v, err := strconv.Atoi(os.Getenv(key)); err == nil && v > 0 {
-		return v
-	}
-	return fallback
-}
-
 func (s *Scheduler) maxParallel() int {
 	if s.MaxParallel > 0 {
 		return s.MaxParallel
 	}
-	return envInt("THEBOT_MAX_PARALLEL_STEPS", 3)
+	return llm.EnvInt("THEBOT_MAX_PARALLEL_STEPS", 3)
 }
 
 func (s *Scheduler) jobTimeout() time.Duration {
 	if s.JobTimeout > 0 {
 		return s.JobTimeout
 	}
-	return time.Duration(envInt("THEBOT_JOB_TIMEOUT_SECONDS", 1500)) * time.Second
+	return time.Duration(llm.EnvInt("THEBOT_JOB_TIMEOUT_SECONDS", 1500)) * time.Second
 }
 
 func (s *Scheduler) maxReplans() int {
@@ -205,11 +196,6 @@ func (s *Scheduler) maxReplans() int {
 		return s.MaxReplans
 	}
 	return 1
-}
-
-// Run executes one job with no host context and no resume. See Execute.
-func (s *Scheduler) Run(ctx context.Context, prompt string, sessionHistory []llm.Message, onLog func(string)) (*Job, error) {
-	return s.Execute(ctx, Request{Prompt: prompt, History: sessionHistory}, onLog)
 }
 
 // Execute runs one request end to end. onLog streams progress as it

@@ -411,11 +411,7 @@ func (h *Harness) applyFix(ctx context.Context, r *Runner, diag Diagnosis, repor
 func (h *Harness) generateCode(ctx context.Context, d *Design, tc *Toolchain, spec FileSpec, built map[string]string, lastFailure string, diag Diagnosis, attempt int) (string, error) {
 	var symbols strings.Builder
 	for _, s := range spec.Symbols {
-		sig := s.Signature
-		if strings.TrimSpace(sig) == "" {
-			sig = s.Name
-		}
-		fmt.Fprintf(&symbols, "  - %s\n      %s\n", sig, s.Purpose)
+		fmt.Fprintf(&symbols, "  - %s\n      %s\n", orDefault(s.Signature, s.Name), s.Purpose)
 	}
 	if symbols.Len() == 0 {
 		symbols.WriteString("  (whatever this file's purpose genuinely requires)\n")
@@ -540,13 +536,9 @@ func (h *Harness) repairCodeOrTest(ctx context.Context, d *Design, tc *Toolchain
 		target = strings.ToLower(m[1])
 	}
 
-	idx := strings.Index(resp.Text, "CONTENT:")
-	if idx == -1 {
-		return "", "", fmt.Errorf("repair response had no CONTENT block")
-	}
-	content = cleanCode(strings.TrimLeft(resp.Text[idx+len("CONTENT:"):], "\r\n"))
-	if strings.TrimSpace(content) == "" {
-		return "", "", fmt.Errorf("repair response had an empty CONTENT block")
+	content, err = repairContent(resp.Text)
+	if err != nil {
+		return "", "", err
 	}
 	return target, content, nil
 }
@@ -596,6 +588,7 @@ func (h *Harness) runIntegrationPhase(ctx context.Context, r *Runner, d *Design,
 
 	report.TestsPassed = h.fullSuiteUntilPassing(ctx, r, d, tc, env, built, report)
 
+	report.BuildPassed = true
 	if tc.BuildCmd != nil {
 		if cmd := tc.BuildCmd(d, env); cmd != "" {
 			res := r.Run(ctx, cmd, testTimeout)
@@ -606,11 +599,7 @@ func (h *Harness) runIntegrationPhase(ctx context.Context, r *Runner, d *Design,
 				h.logf("coding: ✗ the project does not build: %s", truncate(res.Tail(600), 300))
 				report.Failures = append(report.Failures, "the project does not build")
 			}
-		} else {
-			report.BuildPassed = true
 		}
-	} else {
-		report.BuildPassed = true
 	}
 
 	h.smokeRun(ctx, r, d, env, report)
@@ -724,6 +713,19 @@ CONTENT:
 
 var fileTargetRe = regexp.MustCompile(`(?im)^FILE:\s*(.+)$`)
 
+// repairContent is the complete file a repair response gives after CONTENT:.
+func repairContent(text string) (string, error) {
+	idx := strings.Index(text, "CONTENT:")
+	if idx == -1 {
+		return "", fmt.Errorf("repair response had no CONTENT block")
+	}
+	content := cleanCode(strings.TrimLeft(text[idx+len("CONTENT:"):], "\r\n"))
+	if strings.TrimSpace(content) == "" {
+		return "", fmt.Errorf("repair response had an empty CONTENT block")
+	}
+	return content, nil
+}
+
 // repairProject decides which single real file is at fault for a full-suite
 // failure and returns its complete replacement. Scoped to one file per
 // attempt on purpose: a change that rewrites three files at once makes it
@@ -750,13 +752,9 @@ func (h *Harness) repairProject(ctx context.Context, r *Runner, d *Design, built
 	}
 	target := strings.TrimSpace(strings.Trim(m[1], "`\"' "))
 
-	idx := strings.Index(resp.Text, "CONTENT:")
-	if idx == -1 {
-		return "", "", fmt.Errorf("repair response had no CONTENT block")
-	}
-	content := cleanCode(strings.TrimLeft(resp.Text[idx+len("CONTENT:"):], "\r\n"))
-	if strings.TrimSpace(content) == "" {
-		return "", "", fmt.Errorf("repair response had an empty CONTENT block")
+	content, err := repairContent(resp.Text)
+	if err != nil {
+		return "", "", err
 	}
 
 	// Never let a repair response write outside the project, whatever path
@@ -875,11 +873,7 @@ func architectureOutline(d *Design) string {
 	for _, f := range d.Files {
 		fmt.Fprintf(&b, "  %s - %s\n", f.Path, f.Purpose)
 		for _, s := range f.Symbols {
-			sig := s.Signature
-			if strings.TrimSpace(sig) == "" {
-				sig = s.Name
-			}
-			fmt.Fprintf(&b, "      %s\n", oneLine(sig))
+			fmt.Fprintf(&b, "      %s\n", oneLine(orDefault(s.Signature, s.Name)))
 		}
 	}
 	return b.String()

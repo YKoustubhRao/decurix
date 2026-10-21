@@ -148,16 +148,18 @@ func (c *Checker) checkOne(ctx context.Context, d desktop.Desktop) {
 		return
 	}
 
+	c.idleOut(ctx, d.ID, idleSince, "", "")
+}
+
+// idleOut pauses or stops (per Action) an idle desktop, logging it with prefix before the verb and why after the id.
+func (c *Checker) idleOut(ctx context.Context, id string, idleSince time.Time, prefix, why string) {
+	verb, act := "stopping", c.Desktops.Stop
 	if c.Action == "pause" {
-		log.Printf("idlepause: pausing %s - idle since %s", d.ID, idleSince.Format(time.RFC3339))
-		if err := c.Desktops.Pause(ctx, d.ID); err != nil {
-			log.Printf("idlepause: pausing %s: %v", d.ID, err)
-		}
-	} else {
-		log.Printf("idlepause: stopping %s - idle since %s", d.ID, idleSince.Format(time.RFC3339))
-		if err := c.Desktops.Stop(ctx, d.ID); err != nil {
-			log.Printf("idlepause: stopping %s: %v", d.ID, err)
-		}
+		verb, act = "pausing", c.Desktops.Pause
+	}
+	log.Printf("idlepause: %s%s %s%s - idle since %s", prefix, verb, id, why, idleSince.Format(time.RFC3339))
+	if err := act(ctx, id); err != nil {
+		log.Printf("idlepause: %s%s %s: %v", prefix, verb, id, err)
 	}
 }
 
@@ -197,17 +199,7 @@ func (c *Checker) checkFastPause(ctx context.Context, d desktop.Desktop, minIdle
 		return
 	}
 
-	if c.Action == "pause" {
-		log.Printf("idlepause: fast-pausing %s after task completion - idle since %s", d.ID, idleSince.Format(time.RFC3339))
-		if err := c.Desktops.Pause(ctx, d.ID); err != nil {
-			log.Printf("idlepause: fast-pausing %s: %v", d.ID, err)
-		}
-	} else {
-		log.Printf("idlepause: fast-stopping %s after task completion - idle since %s", d.ID, idleSince.Format(time.RFC3339))
-		if err := c.Desktops.Stop(ctx, d.ID); err != nil {
-			log.Printf("idlepause: fast-stopping %s: %v", d.ID, err)
-		}
-	}
+	c.idleOut(ctx, d.ID, idleSince, "fast-", " after task completion")
 }
 
 // idleSince is the latest of: when the desktop last started, when its task

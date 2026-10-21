@@ -11,13 +11,9 @@ import (
 // day-of-month month day-of-week. Matching runs in UTC, so a schedule fires
 // at the same wall-clock instant regardless of the host's own timezone.
 type Expr struct {
-	spec                          string
 	minute, hour, dom, month, dow map[int]bool
 	domAny, dowAny                bool
 }
-
-// String returns the expression exactly as it was given to Parse.
-func (e Expr) String() string { return e.spec }
 
 // Parse parses a standard 5-field cron expression (minute hour day-of-month
 // month day-of-week). Each field is a comma-separated list of "*", "N",
@@ -54,7 +50,6 @@ func Parse(spec string) (Expr, error) {
 	}
 
 	return Expr{
-		spec:   spec,
 		minute: minute,
 		hour:   hour,
 		dom:    dom,

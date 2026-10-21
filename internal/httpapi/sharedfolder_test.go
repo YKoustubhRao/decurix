@@ -27,11 +27,7 @@ func sharedFolderRoot(t *testing.T) {
 
 func createWith(t *testing.T, handler http.Handler, form url.Values) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/api/desktops/create", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	return rec
+	return postForm(t, handler.ServeHTTP, "/api/desktops/create", form.Encode())
 }
 
 func TestCreateDesktopTakesOneValidatedSharedFolder(t *testing.T) {

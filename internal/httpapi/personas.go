@@ -12,8 +12,7 @@ import (
 
 // personasHandler returns the full catalog of AI employee personas.
 func (s *Server) personasHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodGet) {
 		return
 	}
 
@@ -24,8 +23,7 @@ func (s *Server) personasHandler(w http.ResponseWriter, r *http.Request) {
 
 // personaHandler returns a single persona by id query param.
 func (s *Server) personaHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodGet) {
 		return
 	}
 
@@ -48,8 +46,7 @@ func (s *Server) personaHandler(w http.ResponseWriter, r *http.Request) {
 
 // teamsHandler returns all multi-agent team templates.
 func (s *Server) teamsHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodGet) {
 		return
 	}
 
@@ -60,8 +57,7 @@ func (s *Server) teamsHandler(w http.ResponseWriter, r *http.Request) {
 
 // teamHandler returns a single team template by id query param.
 func (s *Server) teamHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodGet) {
 		return
 	}
 
@@ -82,20 +78,56 @@ func (s *Server) teamHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// personaDesktopSpec is how a persona's desktop is to be made: the fields a
+// create and a team deploy request share.
+type personaDesktopSpec struct {
+	Profile  string `json:"profile"`
+	Harness  string `json:"harness"`
+	Brain    string `json:"brain"`
+	CPUs     int64  `json:"cpus"`
+	MemoryMB int64  `json:"memory_mb"`
+}
+
+// personaDesktop fills in spec's defaults (basic, 2 CPUs, 4096 MB) and checks
+// its brain, answering the request itself (and returning false) when that is
+// refused or there is no desktop manager to make the desktop with.
+func (s *Server) personaDesktop(w http.ResponseWriter, spec *personaDesktopSpec) (desktop.Brain, bool) {
+	spec.Profile = strings.TrimSpace(spec.Profile)
+	if spec.Profile == "" {
+		spec.Profile = "basic"
+	}
+
+	brain, err := s.desktopBrain(spec.Harness, spec.Brain)
+	if err != nil {
+		jsonStatusError(w, http.StatusBadRequest, err.Error())
+		return brain, false
+	}
+
+	if spec.CPUs <= 0 {
+		spec.CPUs = 2
+	}
+
+	if spec.MemoryMB <= 0 {
+		spec.MemoryMB = 4096
+	}
+
+	if s.Desktops == nil {
+		jsonStatusError(w, http.StatusServiceUnavailable, "desktop manager unavailable")
+		return brain, false
+	}
+
+	return brain, true
+}
+
 type createPersonaDesktopReq struct {
 	PersonaID string `json:"persona_id"`
 	Name      string `json:"name"`
-	Profile   string `json:"profile"`
-	Harness   string `json:"harness"`
-	Brain     string `json:"brain"`
-	CPUs      int64  `json:"cpus"`
-	MemoryMB  int64  `json:"memory_mb"`
+	personaDesktopSpec
 }
 
 // createPersonaDesktopHandler provisions a specialized desktop pre-configured for an AI persona.
 func (s *Server) createPersonaDesktopHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodPost) {
 		return
 	}
 
@@ -116,40 +148,18 @@ func (s *Server) createPersonaDesktopHandler(w http.ResponseWriter, r *http.Requ
 		name = fmt.Sprintf("%s-worker-%d", p.ID, time.Now().Unix())
 	}
 
-	profile := strings.TrimSpace(req.Profile)
-	if profile == "" {
-		profile = "basic"
-	}
-
-	brain, err := s.desktopBrain(req.Harness, req.Brain)
-	if err != nil {
-		jsonStatusError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	harness := desktop.HarnessTheBot
-
-	cpus := req.CPUs
-	if cpus <= 0 {
-		cpus = 2
-	}
-
-	memoryMB := req.MemoryMB
-	if memoryMB <= 0 {
-		memoryMB = 4096
-	}
-
-	if s.Desktops == nil {
-		jsonStatusError(w, http.StatusServiceUnavailable, "desktop manager unavailable")
+	brain, ok := s.personaDesktop(w, &req.personaDesktopSpec)
+	if !ok {
 		return
 	}
 
 	prov, err := s.Desktops.BeginProvisioning(
 		name,
-		profile,
-		harness,
+		req.Profile,
+		desktop.HarnessTheBot,
 		brain,
-		cpus,
-		memoryMB,
+		req.CPUs,
+		req.MemoryMB,
 		"",
 		p.Specialization,
 		"",
@@ -170,19 +180,14 @@ func (s *Server) createPersonaDesktopHandler(w http.ResponseWriter, r *http.Requ
 }
 
 type deployTeamReq struct {
-	TeamID   string `json:"team_id"`
-	Prefix   string `json:"prefix"`
-	Profile  string `json:"profile"`
-	Harness  string `json:"harness"`
-	Brain    string `json:"brain"`
-	CPUs     int64  `json:"cpus"`
-	MemoryMB int64  `json:"memory_mb"`
+	TeamID string `json:"team_id"`
+	Prefix string `json:"prefix"`
+	personaDesktopSpec
 }
 
 // deployTeamHandler deploys all personas in a multi-agent team template and links their shared memory.
 func (s *Server) deployTeamHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodPost) {
 		return
 	}
 
@@ -203,30 +208,8 @@ func (s *Server) deployTeamHandler(w http.ResponseWriter, r *http.Request) {
 		prefix = "team"
 	}
 
-	profile := strings.TrimSpace(req.Profile)
-	if profile == "" {
-		profile = "basic"
-	}
-
-	brain, err := s.desktopBrain(req.Harness, req.Brain)
-	if err != nil {
-		jsonStatusError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	harness := desktop.HarnessTheBot
-
-	cpus := req.CPUs
-	if cpus <= 0 {
-		cpus = 2
-	}
-
-	memoryMB := req.MemoryMB
-	if memoryMB <= 0 {
-		memoryMB = 4096
-	}
-
-	if s.Desktops == nil {
-		jsonStatusError(w, http.StatusServiceUnavailable, "desktop manager unavailable")
+	brain, ok := s.personaDesktop(w, &req.personaDesktopSpec)
+	if !ok {
 		return
 	}
 
@@ -248,11 +231,11 @@ func (s *Server) deployTeamHandler(w http.ResponseWriter, r *http.Request) {
 
 		prov, err := s.Desktops.BeginProvisioning(
 			workerName,
-			profile,
-			harness,
+			req.Profile,
+			desktop.HarnessTheBot,
 			brain,
-			cpus,
-			memoryMB,
+			req.CPUs,
+			req.MemoryMB,
 			"",
 			p.Specialization,
 			parentID,
@@ -292,8 +275,7 @@ type inboundChannelReq struct {
 // inboundChannelHandler handles incoming communications from Slack, email, webhooks, and forms
 // and routes them to the right departmental employee persona.
 func (s *Server) inboundChannelHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodPost) {
 		return
 	}
 
@@ -341,11 +323,12 @@ func (s *Server) inboundChannelHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var taskID string
+	var taskID, targetID string
 	var dispatched bool
 	if targetDesktop != nil {
+		targetID = targetDesktop.ID
 		taskGoal := fmt.Sprintf("[%s via %s from %s] %s", matchedPersona.Name, req.Channel, req.Sender, fullText)
-		tID, err := s.SubmitTracked(r.Context(), targetDesktop.ID, taskGoal)
+		tID, err := s.SubmitTracked(r.Context(), targetID, taskGoal)
 		if err == nil {
 			taskID = tID
 			dispatched = true
@@ -358,20 +341,14 @@ func (s *Server) inboundChannelHandler(w http.ResponseWriter, r *http.Request) {
 		"channel":         req.Channel,
 		"sender":          req.Sender,
 		"dispatched":      dispatched,
-		"desktop_id": func() string {
-			if targetDesktop != nil {
-				return targetDesktop.ID
-			}
-			return ""
-		}(),
-		"task_id": taskID,
+		"desktop_id":      targetID,
+		"task_id":         taskID,
 	})
 }
 
 // skillsCatalogHandler returns the built-in catalog of 22 ready skills.
 func (s *Server) skillsCatalogHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodGet) {
 		return
 	}
 
@@ -400,8 +377,7 @@ type installCatalogSkillReq struct {
 
 // installCatalogSkillHandler installs a skill from the standard catalog onto a target desktop.
 func (s *Server) installCatalogSkillHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodPost) {
 		return
 	}
 
@@ -459,8 +435,7 @@ func (s *Server) workerModeHandler(w http.ResponseWriter, r *http.Request) {
 
 // shadowingHandler proxies shadowing observations and metrics for a desktop.
 func (s *Server) shadowingHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodGet) {
 		return
 	}
 

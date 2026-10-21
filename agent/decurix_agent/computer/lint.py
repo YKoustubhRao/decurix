@@ -218,10 +218,10 @@ def lint(program):
 
     grade = GRADES[max((f["level"] for f in findings), key=SEVERITY.get, default=INFO)]
 
-    return {"grade": grade, "summary": _summary(grade, findings, coverage), "findings": findings, "coverage": coverage}
+    return {"grade": grade, "summary": _summary(grade, findings), "findings": findings, "coverage": coverage}
 
 
-def _summary(grade, findings, coverage):
+def _summary(grade, findings):
     if grade == READY:
         return "Every step can be found again and leaves something to check afterwards."
 

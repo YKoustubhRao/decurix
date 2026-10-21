@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/YKoustubhRao/decurix/internal/schedule"
 	"github.com/YKoustubhRao/decurix/internal/tasks"
 )
 
@@ -127,18 +128,7 @@ func (r *Runner) Run(ctx context.Context) {
 		interval = defaultInterval
 	}
 
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		r.tick(ctx)
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-	}
+	schedule.Every(ctx, interval, r.tick)
 }
 
 func (r *Runner) tick(ctx context.Context) {
@@ -148,21 +138,7 @@ func (r *Runner) tick(ctx context.Context) {
 	if err != nil {
 		log.Printf("dag: checking due cron dags: %v", err)
 	} else {
-		sem := make(chan struct{}, dispatchConcurrency)
-		var wg sync.WaitGroup
-
-		for _, d := range due {
-			wg.Add(1)
-			sem <- struct{}{}
-
-			go func(d DAG) {
-				defer wg.Done()
-				defer func() { <-sem }()
-				r.fireCron(ctx, d, now)
-			}(d)
-		}
-
-		wg.Wait()
+		schedule.Concurrently(due, dispatchConcurrency, func(d DAG) { r.fireCron(ctx, d, now) })
 	}
 
 	active, err := r.Store.ActiveRuns()
@@ -171,21 +147,7 @@ func (r *Runner) tick(ctx context.Context) {
 		return
 	}
 
-	sem := make(chan struct{}, dispatchConcurrency)
-	var wg sync.WaitGroup
-
-	for _, run := range active {
-		wg.Add(1)
-		sem <- struct{}{}
-
-		go func(run Run) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			r.advance(ctx, run)
-		}(run)
-	}
-
-	wg.Wait()
+	schedule.Concurrently(active, dispatchConcurrency, func(run Run) { r.advance(ctx, run) })
 }
 
 // fireCron starts a run for a due DAG and advances its cron to the next
@@ -284,7 +246,7 @@ func (r *Runner) resolveRunning(runID string, runNodes []RunNode, edges []Edge, 
 		}
 
 		status, reply, ok := r.Tasks.TaskResult(rn.TaskID)
-		if !ok || isLive(status) {
+		if !ok || tasks.Live(status) {
 			continue
 		}
 
@@ -319,30 +281,17 @@ func (r *Runner) dispatchReady(ctx context.Context, runID string, nodeByID map[s
 		parentsOf[e.ToNodeID] = append(parentsOf[e.ToNodeID], e.FromNodeID)
 	}
 
-	sem := make(chan struct{}, dispatchConcurrency)
-	var wg sync.WaitGroup
+	var ready []RunNode
 
 	for _, rn := range runNodes {
-		if rn.Status != NodePending {
-			continue
+		if _, ok := nodeByID[rn.NodeID]; ok && rn.Status == NodePending && parentsSatisfied(parentsOf[rn.NodeID], byNodeID) {
+			ready = append(ready, rn)
 		}
-
-		node, ok := nodeByID[rn.NodeID]
-		if !ok || !parentsSatisfied(parentsOf[rn.NodeID], byNodeID) {
-			continue
-		}
-
-		wg.Add(1)
-		sem <- struct{}{}
-
-		go func(rn RunNode, node Node) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			r.dispatch(ctx, runID, rn, node, nodes, edges, runNodes, now)
-		}(rn, node)
 	}
 
-	wg.Wait()
+	schedule.Concurrently(ready, dispatchConcurrency, func(rn RunNode) {
+		r.dispatch(ctx, runID, rn, nodeByID[rn.NodeID], nodes, edges, runNodes, now)
+	})
 }
 
 // parentsSatisfied reports whether every parent that actually has a
@@ -383,21 +332,21 @@ func (r *Runner) dispatch(ctx context.Context, runID string, rn RunNode, node No
 	mu.Lock()
 	defer mu.Unlock()
 
-	if reason, err := r.Tasks.Busy(node.DesktopID); err != nil {
-		log.Printf("dag: checking desktop %s busy for node %s in run %s: %v", node.DesktopID, node.ID, runID, err)
+	release := func() {
+		if _, err := r.Store.ReleaseRunNode(rn.ID); err != nil {
+			log.Printf("dag: releasing node %s in run %s: %v", node.ID, runID, err)
+		}
+	}
 
-		if _, releaseErr := r.Store.ReleaseRunNode(rn.ID); releaseErr != nil {
-			log.Printf("dag: releasing node %s in run %s: %v", node.ID, runID, releaseErr)
+	if reason, err := r.Tasks.Busy(node.DesktopID); err != nil || reason != "" {
+		if err != nil {
+			log.Printf("dag: checking desktop %s busy for node %s in run %s: %v", node.DesktopID, node.ID, runID, err)
 		}
 
-		return
-	} else if reason != "" {
 		// Busy with something else right now - back off and retry next
 		// tick rather than letting internal/tasks queue a second ticket
 		// behind it (see TaskResults.Busy's doc).
-		if _, releaseErr := r.Store.ReleaseRunNode(rn.ID); releaseErr != nil {
-			log.Printf("dag: releasing node %s in run %s: %v", node.ID, runID, releaseErr)
-		}
+		release()
 
 		return
 	}
@@ -410,9 +359,7 @@ func (r *Runner) dispatch(ctx context.Context, runID string, rn RunNode, node No
 	// something): the same "back off and retry next tick", not a failure.
 	var busy interface{ DesktopBusy() string }
 	if errors.As(err, &busy) {
-		if _, releaseErr := r.Store.ReleaseRunNode(rn.ID); releaseErr != nil {
-			log.Printf("dag: releasing node %s in run %s: %v", node.ID, runID, releaseErr)
-		}
+		release()
 
 		return
 	}
@@ -501,10 +448,6 @@ func closeIfDone(store *Store, runID string, runNodes []RunNode, now time.Time) 
 	if _, err := store.FinishRun(runID, status, now); err != nil {
 		log.Printf("dag: finishing run %s: %v", runID, err)
 	}
-}
-
-func isLive(status string) bool {
-	return status == tasks.StatusQueued || status == tasks.StatusRunning || status == tasks.StatusWaiting
 }
 
 // namedPlaceholder matches {{nodes.<name>.reply}} - always resolvable by

@@ -387,7 +387,6 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
   border-top-color:var(--accent);
   animation:spin .7s linear infinite
 }
-@keyframes spin{to{transform:rotate(360deg)}}
 
 .working-elapsed{margin-left:auto;font-family:var(--mono);font-size:11.5px;color:var(--text-3)}
 
@@ -606,7 +605,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
   var input = document.getElementById("chatInput");
   var offlineFlag = document.getElementById("chatOffline");
 
-  var toast = Decurix.toast, post = Decurix.post;
+  var toast = Decurix.toast, post = Decurix.post, node = Decurix.node;
 
   /* Files chosen for the next request (the paperclip, a drop, a paste). */
   var attached = Decurix.attachmentPicker(document.getElementById("chatAttach"), document.getElementById("chatFiles"));
@@ -685,8 +684,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
   function appendInline(parent, text){
     text.split(/(`[^`\n]+`)/).forEach(function(part){
       if(part.length > 2 && part.charAt(0) === "`" && part.charAt(part.length - 1) === "`"){
-        var code = document.createElement("code");
-        code.textContent = part.slice(1, -1);
+        var code = node("code", "", part.slice(1, -1));
         parent.appendChild(code);
       }else if(part){
         parent.appendChild(document.createTextNode(part));
@@ -708,8 +706,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
         });
 
         var pre = document.createElement("pre");
-        var code = document.createElement("code");
-        code.textContent = body.replace(/\n$/, "");
+        var code = node("code", "", body.replace(/\n$/, ""));
         pre.appendChild(code);
         container.appendChild(pre);
 
@@ -724,8 +721,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
     });
 
     if(!container.childNodes.length){
-      var fallback = document.createElement("p");
-      fallback.textContent = text;
+      var fallback = node("p", "", text);
       container.appendChild(fallback);
     }
   }
@@ -777,8 +773,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
   };
 
   function shotLink(url, label){
-    var link = document.createElement("a");
-    link.className = "step-shot";
+    var link = node("a", "step-shot");
     link.href = url;
     link.target = "_blank";
     link.rel = "noopener";
@@ -788,8 +783,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
     img.loading = "lazy";
     img.alt = label + " screenshot";
 
-    var caption = document.createElement("span");
-    caption.textContent = label;
+    var caption = node("span", "", label);
 
     link.append(img, caption);
 
@@ -800,14 +794,11 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
     var action = step.action;
     var badge = ACTION_BADGES[action.outcome] || ACTION_BADGES.done;
 
-    var el = document.createElement("div");
-    el.className = "step is-action" + (badge.cls ? " " + badge.cls : "");
+    var el = node("div", "step is-action" + (badge.cls ? " " + badge.cls : ""));
 
-    var head = document.createElement("div");
-    head.className = "step-head";
+    var head = node("div", "step-head");
 
-    var label = document.createElement("span");
-    label.className = "step-badge";
+    var label = node("span", "step-badge");
     label.textContent = badge.label;
 
     var text = document.createElement("span");
@@ -816,8 +807,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
     head.append(label, text);
     el.appendChild(head);
 
-    var shots = document.createElement("div");
-    shots.className = "step-shots";
+    var shots = node("div", "step-shots");
 
     if(STEP_IMAGE.test(action.before || "")){ shots.appendChild(shotLink(action.before, "Before")); }
     if(STEP_IMAGE.test(action.after || "")){ shots.appendChild(shotLink(action.after, "After")); }
@@ -842,19 +832,16 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
   }
 
   function stepsBlock(steps, open){
-    var details = document.createElement("details");
-    details.className = "steps";
+    var details = node("details", "steps");
     if(open){ details.open = true; }
 
     var summary = document.createElement("summary");
     summary.appendChild(icon("#i-chevron", 13)).classList.add("steps-chevron");
 
-    var label = document.createElement("span");
-    label.textContent = steps.length === 1 ? "1 step" : steps.length + " steps";
+    var label = node("span", "", steps.length === 1 ? "1 step" : steps.length + " steps");
     summary.appendChild(label);
 
-    var list = document.createElement("div");
-    list.className = "steps-list";
+    var list = node("div", "steps-list");
     steps.forEach(function(step){ list.appendChild(stepElement(step)); });
 
     details.append(summary, list);
@@ -894,12 +881,9 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
   }
 
   function verdictElement(entry){
-    var wrap = document.createElement("div");
-    wrap.className = "verdict";
+    var wrap = node("div", "verdict");
 
-    var question = document.createElement("span");
-    question.className = "verdict-q";
-    question.textContent = "Right?";
+    var question = node("span", "verdict-q", "Right?");
     wrap.appendChild(question);
 
     [["correct", "Correct", "#i-check", "is-correct"], ["wrong", "Wrong", "#i-x", "is-wrong"]].forEach(function(option){
@@ -918,8 +902,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
       wrap.appendChild(button);
     });
 
-    var link = document.createElement("a");
-    link.className = "verdict-link";
+    var link = node("a", "verdict-link");
     link.href = "/tasks/" + encodeURIComponent(entry.task_id);
     link.textContent = entry.verdict === "wrong" ? "Add a note" : "Record";
     wrap.appendChild(link);
@@ -930,14 +913,12 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
   function entryElement(entry, withVerdict){
     var fromUser = entry.role === "user";
 
-    var row = document.createElement("div");
-    row.className = "entry " + (fromUser ? "from-user" : "from-agent");
+    var row = node("div", "entry " + (fromUser ? "from-user" : "from-agent"));
 
     if(entry.kind === "approval" || entry.kind === "query"){ row.classList.add("is-approval"); }
     if(entry.kind === "error"){ row.classList.add("is-error"); }
 
-    var avatar = document.createElement("div");
-    avatar.className = "entry-avatar";
+    var avatar = node("div", "entry-avatar");
 
     if(fromUser){
       avatar.textContent = "You".charAt(0);
@@ -945,24 +926,20 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
       avatar.appendChild(icon("#i-blossom", 15));
     }
 
-    var body = document.createElement("div");
-    body.className = "entry-body";
+    var body = node("div", "entry-body");
 
     if(entry.steps && entry.steps.length){
       body.appendChild(stepsBlock(entry.steps, false));
     }
 
-    var bubble = document.createElement("div");
-    bubble.className = "bubble";
+    var bubble = node("div", "bubble");
 
     var flag = FLAGS[entry.kind];
     if(flag && !fromUser){
-      var flagEl = document.createElement("div");
-      flagEl.className = "entry-flag";
+      var flagEl = node("div", "entry-flag");
       flagEl.appendChild(icon(flag.icon, 12));
 
-      var flagText = document.createElement("span");
-      flagText.textContent = flag.label;
+      var flagText = node("span", "", flag.label);
       flagEl.appendChild(flagText);
 
       bubble.appendChild(flagEl);
@@ -977,13 +954,10 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
     if(names.length){ bubble.appendChild(Decurix.attachmentChips(names)); }
     body.appendChild(bubble);
 
-    var time = document.createElement("div");
-    time.className = "entry-time";
-    time.textContent = relativeTime(entry.created_at);
+    var time = node("div", "entry-time", relativeTime(entry.created_at));
 
     if(withVerdict){
-      var foot = document.createElement("div");
-      foot.className = "entry-foot";
+      var foot = node("div", "entry-foot");
       foot.append(time, verdictElement(entry));
       body.appendChild(foot);
     }else{
@@ -998,27 +972,20 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
   /* ---------------- the live turn ---------------- */
 
   function workingElement(thread){
-    var row = document.createElement("div");
-    row.className = "entry from-agent";
+    var row = node("div", "entry from-agent");
 
-    var avatar = document.createElement("div");
-    avatar.className = "entry-avatar";
+    var avatar = node("div", "entry-avatar");
     avatar.appendChild(icon("#i-blossom", 15));
 
-    var body = document.createElement("div");
-    body.className = "working";
+    var body = node("div", "working");
 
-    var head = document.createElement("div");
-    head.className = "working-head";
+    var head = node("div", "working-head");
 
-    var spinner = document.createElement("span");
-    spinner.className = "spinner";
+    var spinner = node("span", "spinner");
 
-    var label = document.createElement("span");
-    label.textContent = "Working…";
+    var label = node("span", "", "Working…");
 
-    var elapsed = document.createElement("span");
-    elapsed.className = "working-elapsed";
+    var elapsed = node("span", "working-elapsed");
     elapsed.dataset.startedAt = thread.started_at || "";
     elapsed.textContent = elapsedSince(thread.started_at);
 
@@ -1028,9 +995,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
     if(thread.steps.length){
       body.appendChild(stepsBlock(thread.steps, true));
     }else{
-      var waiting = document.createElement("div");
-      waiting.className = "working-latest";
-      waiting.textContent = "Thinking about where to start…";
+      var waiting = node("div", "working-latest", "Thinking about where to start…");
       body.appendChild(waiting);
     }
 
@@ -1049,23 +1014,19 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
   /* ---------------- empty state ---------------- */
 
   function emptyElement(){
-    var wrap = document.createElement("div");
-    wrap.className = "chat-empty";
+    var wrap = node("div", "chat-empty");
 
-    var mark = document.createElement("div");
-    mark.className = "chat-empty-mark";
+    var mark = node("div", "chat-empty-mark");
     mark.appendChild(icon("#i-blossom", 22));
 
-    var heading = document.createElement("h2");
-    heading.textContent = "Ask " + desktopName + " to do something";
+    var heading = node("h2", "", "Ask " + desktopName + " to do something");
 
     var blurb = document.createElement("p");
     blurb.textContent =
       "Its agent runs the task on this desktop and reports back here. " +
       "It stops and asks before anything it can't undo.";
 
-    var suggestions = document.createElement("div");
-    suggestions.className = "suggestions";
+    var suggestions = node("div", "suggestions");
 
     SUGGESTIONS.forEach(function(text){
       var button = document.createElement("button");
@@ -1140,12 +1101,10 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
                             files: item.sent ? [] : item.files});
     row.classList.add(item.state === "failed" ? "is-failed" : "is-pending");
 
-    var status = document.createElement("div");
-    status.className = "entry-status";
+    var status = node("div", "entry-status");
 
     if(item.state === "failed"){
-      var reason = document.createElement("span");
-      reason.textContent = "Not delivered" + (item.error ? " - " + item.error : "");
+      var reason = node("span", "", "Not delivered" + (item.error ? " - " + item.error : ""));
 
       var retry = document.createElement("button");
       retry.type = "button";

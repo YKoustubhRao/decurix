@@ -5,14 +5,13 @@ deliverables. That backup is for the person's own files: a file the task made is
 of the task's own output is removed at the end. A backup of a file that was there before the task is kept.
 """
 
-import os
-import tempfile
 import time
 import unittest
-from pathlib import Path
 from unittest import mock
 
 import openpyxl
+
+from temp_case import TempDirCase
 
 from decurix_agent import source_guard, state, task_context
 from decurix_agent.tools import office
@@ -26,11 +25,9 @@ def workbook(path, value):
     book.save(path)
 
 
-class OwnBackups(unittest.TestCase):
+class OwnBackups(TempDirCase):
     def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.dir = Path(tmp.name)
+        super().setUp()
         saved = task_context.CURRENT_FILE, state.current_task_id
         self.addCleanup(lambda: (setattr(task_context, "CURRENT_FILE", saved[0]),
                                  setattr(state, "current_task_id", saved[1])))

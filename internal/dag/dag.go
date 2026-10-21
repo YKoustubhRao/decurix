@@ -15,9 +15,7 @@
 package dag
 
 import (
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -241,17 +239,6 @@ func (s *Store) clock() time.Time {
 	return time.Now().UTC()
 }
 
-// newID returns a random identifier with a prefix naming what it is.
-func newID(prefix string) string {
-	raw := make([]byte, 8)
-
-	if _, err := rand.Read(raw); err != nil {
-		panic(fmt.Sprintf("dag: generating id: %v", err))
-	}
-
-	return prefix + hex.EncodeToString(raw)
-}
-
 func validateNodeName(name string) (string, error) {
 	name = strings.TrimSpace(name)
 
@@ -292,7 +279,7 @@ func (s *Store) Create(name string) (DAG, error) {
 	}
 
 	now := s.clock()
-	d := DAG{ID: newID("dag-"), Name: name, CreatedAt: now, UpdatedAt: now}
+	d := DAG{ID: sqlitedb.NewID("dag-", 8), Name: name, CreatedAt: now, UpdatedAt: now}
 
 	if _, err := s.db.Exec(
 		`INSERT INTO dags (id, name, created_ns, updated_ns) VALUES (?, ?, ?, ?)`,
@@ -322,26 +309,8 @@ func (s *Store) Get(id string) (DAG, error) {
 // query across every DAG (grouped by dag_id) rather than three queries per
 // DAG, so the list page's cost stays flat as the number of DAGs grows.
 func (s *Store) List() ([]Summary, error) {
-	rows, err := s.db.Query(`SELECT ` + dagColumns + ` FROM dags ORDER BY created_ns DESC`)
+	dags, err := sqlitedb.QueryAll(s.db, scanDAG, `SELECT `+dagColumns+` FROM dags ORDER BY created_ns DESC`)
 	if err != nil {
-		return nil, fmt.Errorf("dag: list: %w", err)
-	}
-
-	dags := make([]DAG, 0)
-
-	for rows.Next() {
-		d, err := scanDAG(rows)
-		if err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("dag: list: %w", err)
-		}
-
-		dags = append(dags, d)
-	}
-
-	rows.Close()
-
-	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("dag: list: %w", err)
 	}
 
@@ -441,47 +410,37 @@ func (s *Store) Delete(id string) {
 
 // Nodes returns a DAG's nodes, oldest first.
 func (s *Store) Nodes(dagID string) ([]Node, error) {
-	rows, err := s.db.Query(
-		`SELECT id, dag_id, name, desktop_id, content, pos_x, pos_y, created_ns
-		 FROM dag_nodes WHERE dag_id = ? ORDER BY created_ns`, dagID,
-	)
+	nodes, err := sqlitedb.QueryAll(s.db, scanNode, `SELECT `+nodeColumns+` FROM dag_nodes WHERE dag_id = ? ORDER BY created_ns`, dagID)
 	if err != nil {
 		return nil, fmt.Errorf("dag: nodes: %w", err)
 	}
-	defer rows.Close()
 
-	nodes := make([]Node, 0)
-
-	for rows.Next() {
-		var n Node
-		var created int64
-
-		if err := rows.Scan(&n.ID, &n.DAGID, &n.Name, &n.DesktopID, &n.Content, &n.PosX, &n.PosY, &created); err != nil {
-			return nil, fmt.Errorf("dag: nodes: %w", err)
-		}
-
-		n.CreatedAt = sqlitedb.FromNS(created)
-		nodes = append(nodes, n)
-	}
-
-	return nodes, rows.Err()
+	return nodes, nil
 }
 
-func (s *Store) getNode(id string) (Node, error) {
+const nodeColumns = `id, dag_id, name, desktop_id, content, pos_x, pos_y, created_ns`
+
+func scanNode(scanner sqlitedb.Scanner) (Node, error) {
 	var n Node
 	var created int64
 
-	err := s.db.QueryRow(
-		`SELECT id, dag_id, name, desktop_id, content, pos_x, pos_y, created_ns FROM dag_nodes WHERE id = ?`, id,
-	).Scan(&n.ID, &n.DAGID, &n.Name, &n.DesktopID, &n.Content, &n.PosX, &n.PosY, &created)
+	if err := scanner.Scan(&n.ID, &n.DAGID, &n.Name, &n.DesktopID, &n.Content, &n.PosX, &n.PosY, &created); err != nil {
+		return Node{}, err
+	}
+
+	n.CreatedAt = sqlitedb.FromNS(created)
+
+	return n, nil
+}
+
+func (s *Store) getNode(id string) (Node, error) {
+	n, err := scanNode(s.db.QueryRow(`SELECT `+nodeColumns+` FROM dag_nodes WHERE id = ?`, id))
 	if err == sql.ErrNoRows {
 		return Node{}, ErrNotFound
 	}
 	if err != nil {
 		return Node{}, fmt.Errorf("dag: get node %s: %w", id, err)
 	}
-
-	n.CreatedAt = sqlitedb.FromNS(created)
 
 	return n, nil
 }
@@ -523,7 +482,7 @@ func (s *Store) AddNode(dagID, name, desktopID, content string) (Node, error) {
 	}
 
 	now := s.clock()
-	node := Node{ID: newID("dnode-"), DAGID: dagID, Name: name, DesktopID: desktopID, Content: content, CreatedAt: now}
+	node := Node{ID: sqlitedb.NewID("dnode-", 8), DAGID: dagID, Name: name, DesktopID: desktopID, Content: content, CreatedAt: now}
 
 	if _, err := tx.Exec(
 		`INSERT INTO dag_nodes (id, dag_id, name, desktop_id, content, created_ns) VALUES (?, ?, ?, ?, ?, ?)`,
@@ -685,29 +644,27 @@ func (s *Store) SetHead(dagID, nodeID string) (DAG, error) {
 
 // Edges returns a DAG's edges, oldest first.
 func (s *Store) Edges(dagID string) ([]Edge, error) {
-	rows, err := s.db.Query(
-		`SELECT id, dag_id, from_node_id, to_node_id, created_ns FROM dag_edges WHERE dag_id = ? ORDER BY created_ns`, dagID,
-	)
+	edges, err := sqlitedb.QueryAll(s.db, func(r sqlitedb.Scanner) (Edge, error) {
+		var e Edge
+		var created int64
+		err := r.Scan(&e.ID, &e.DAGID, &e.FromNodeID, &e.ToNodeID, &created)
+		e.CreatedAt = sqlitedb.FromNS(created)
+		return e, err
+	}, `SELECT id, dag_id, from_node_id, to_node_id, created_ns FROM dag_edges WHERE dag_id = ? ORDER BY created_ns`, dagID)
 	if err != nil {
 		return nil, fmt.Errorf("dag: edges: %w", err)
 	}
-	defer rows.Close()
 
-	edges := make([]Edge, 0)
+	return edges, nil
+}
 
-	for rows.Next() {
+// edgeEnds returns just the two ends of each of a DAG's edges, read inside tx.
+func edgeEnds(tx *sql.Tx, dagID string) ([]Edge, error) {
+	return sqlitedb.QueryAll(tx, func(r sqlitedb.Scanner) (Edge, error) {
 		var e Edge
-		var created int64
-
-		if err := rows.Scan(&e.ID, &e.DAGID, &e.FromNodeID, &e.ToNodeID, &created); err != nil {
-			return nil, fmt.Errorf("dag: edges: %w", err)
-		}
-
-		e.CreatedAt = sqlitedb.FromNS(created)
-		edges = append(edges, e)
-	}
-
-	return edges, rows.Err()
+		err := r.Scan(&e.FromNodeID, &e.ToNodeID)
+		return e, err
+	}, `SELECT from_node_id, to_node_id FROM dag_edges WHERE dag_id = ?`, dagID)
 }
 
 // AddEdge adds a directed dependency from -> to: reject a self-loop, an edge
@@ -760,24 +717,9 @@ func (s *Store) AddEdge(dagID, from, to string) (Edge, error) {
 		}
 	}
 
-	rows, err := tx.Query(`SELECT from_node_id, to_node_id FROM dag_edges WHERE dag_id = ?`, dagID)
+	edges, err := edgeEnds(tx, dagID)
 	if err != nil {
 		return Edge{}, fmt.Errorf("dag: add edge: %w", err)
-	}
-
-	var edges []Edge
-	for rows.Next() {
-		var e Edge
-		if err := rows.Scan(&e.FromNodeID, &e.ToNodeID); err != nil {
-			rows.Close()
-			return Edge{}, fmt.Errorf("dag: add edge: %w", err)
-		}
-		edges = append(edges, e)
-	}
-	scanErr := rows.Err()
-	rows.Close()
-	if scanErr != nil {
-		return Edge{}, fmt.Errorf("dag: add edge: %w", scanErr)
 	}
 
 	for _, e := range edges {
@@ -791,7 +733,7 @@ func (s *Store) AddEdge(dagID, from, to string) (Edge, error) {
 	}
 
 	now := s.clock()
-	edge := Edge{ID: newID("dedge-"), DAGID: dagID, FromNodeID: from, ToNodeID: to, CreatedAt: now}
+	edge := Edge{ID: sqlitedb.NewID("dedge-", 8), DAGID: dagID, FromNodeID: from, ToNodeID: to, CreatedAt: now}
 
 	if _, err := tx.Exec(
 		`INSERT INTO dag_edges (id, dag_id, from_node_id, to_node_id, created_ns) VALUES (?, ?, ?, ?, ?)`,
@@ -943,27 +885,15 @@ func (s *Store) SetCron(dagID, cronExpr string) (DAG, error) {
 
 // DueCron returns DAGs whose cron trigger has arrived by now.
 func (s *Store) DueCron(now time.Time) ([]DAG, error) {
-	rows, err := s.db.Query(
+	due, err := sqlitedb.QueryAll(s.db, scanDAG,
 		`SELECT `+dagColumns+` FROM dags WHERE cron_expr != '' AND next_run_ns > 0 AND next_run_ns <= ?`,
 		sqlitedb.ToNS(now),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("dag: due cron: %w", err)
 	}
-	defer rows.Close()
 
-	due := make([]DAG, 0)
-
-	for rows.Next() {
-		d, err := scanDAG(rows)
-		if err != nil {
-			return nil, fmt.Errorf("dag: due cron: %w", err)
-		}
-
-		due = append(due, d)
-	}
-
-	return due, rows.Err()
+	return due, nil
 }
 
 // MarkCronRun records that dagID's cron fired at ranAt and advances it to

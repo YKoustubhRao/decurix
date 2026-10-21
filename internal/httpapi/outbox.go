@@ -23,8 +23,7 @@ import (
 
 // outboxCreateHandler keeps a draft sent by a desktop's agent.
 func (s *Server) outboxCreateHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodPost) {
 		return
 	}
 
@@ -195,8 +194,7 @@ func (s *Server) outboxFileHandler(w http.ResponseWriter, r *http.Request) {
 // outboxSendHandler sends a draft from a connected mailbox. id, account_id;
 // optionally to/cc/subject/body when the person edited them first.
 func (s *Server) outboxSendHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodPost) {
 		return
 	}
 

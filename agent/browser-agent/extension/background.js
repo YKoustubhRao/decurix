@@ -104,6 +104,23 @@ function updateKeepAlive() {
   }
 }
 
+// finishRun marks a run stopped, unlocks its tabs unless it is paused, and
+// tells the popup.
+async function finishRun(run) {
+  run.running = false;
+  if (!run.paused) await unlockRun(run);
+  updateKeepAlive();
+  chrome.runtime.sendMessage({ type: "run_finished", tabId: run.primaryTabId }).catch(() => {});
+}
+
+// runFailed marks a run that could not start (or replay) stopped, saying why.
+function runFailed(run, why) {
+  run.running = false;
+  log(run, why);
+  updateKeepAlive();
+  chrome.runtime.sendMessage({ type: "run_finished", tabId: run.primaryTabId }).catch(() => {});
+}
+
 // ---- state broadcast ----------------------------------------------------
 function log(run, line) {
   run.log.push(line);
@@ -527,7 +544,52 @@ async function onNewTabJoined(run, tabId) {
 // ext_codegen.py's small grammar (or a recorded selector on replay), so a
 // page's own content can never get more than "which element gets clicked or
 // typed into" -- it can't make the extension run arbitrary script.
-function domAction(act) {
+function domAction(act, approved = []) {
+  // The approval gate, with agent/decurix_agent/computer/approval.py's rules
+  // (keep them in step): a click on a control whose own label commits the
+  // person - sends, pays, buys, publishes, closes an account - and Enter in a
+  // messaging page outside a search box are not carried out unless a person
+  // approved exactly that action for this request. A yes is one action's.
+  // Checked before anything on the page is touched. Self-contained: this
+  // function runs inside the page.
+  const CONSEQUENTIAL = new RegExp(
+    "^\\s*("
+    + "send|send now|send (it|message|email|e-mail|mail|newsletter|invite|invitation|reply|sms|text|money|payment)"
+    + "|pay|pay now|make (a )?payment|submit payment|authori[sz]e payment"
+    + "|confirm (and pay|payment|purchase|order|transfer|booking)"
+    + "|buy|buy now|purchase|place (your |my )?order|complete (order|purchase|payment|checkout)"
+    + "|checkout|check out(?=\\s*(now)?\\s*$)|proceed to (checkout|payment)"
+    + "|transfer( money| funds| now)?|donate|withdraw"
+    + "|publish|post|post now|tweet|reply all"
+    + "|delete (my )?account|close (my )?account|cancel (my )?(subscription|membership|account|order)"
+    + "|book now|reserve now|subscribe( now)?"
+    + ")\\b", "i");
+  const MESSAGING = new RegExp(
+    "(whatsapp|telegram|messenger|slack\\.com|\\bslack\\b|discord|signal|teams\\.microsoft|"
+    + "mail\\.google|gmail|outlook|mail\\.yahoo|proton\\.me|protonmail|thunderbird|"
+    + "\\bcompose\\b|new message|linkedin\\.com/messaging|twitter\\.com|x\\.com/)", "i");
+  const SEARCH_FIELD = /^\s*(search|find|filter|look up)\b/i;
+  const ACTIVATING = "button, a[href], summary, input[type=submit], input[type=button], [role=button], [role=link], [role=menuitem], [role=tab]";
+  const labelOf = (n) => String(n.getAttribute("aria-label") || n.innerText || n.value || n.title || "")
+    .replace(/\s+/g, " ").trim().slice(0, 60);
+  const isSearch = (f) => f.type === "search" || f.getAttribute("role") === "searchbox"
+    || SEARCH_FIELD.test(f.getAttribute("aria-label") || f.placeholder || f.name || "");
+  function gate(action, reason) {
+    return approved.includes(action) ? { usedApproval: action } : { success: false, needsApproval: { action, reason }, error: `stopped before ${action} - ${reason}; a person has to approve it` };
+  }
+  function clickGate(el) {
+    const control = el.closest(ACTIVATING);
+    const label = control ? labelOf(control) : "";
+    if (!control || !CONSEQUENTIAL.test(label)) return null;
+    return gate(`click "${label}" on ${location.host}`, `"${label}" sends, pays, buys or publishes something on your behalf`);
+  }
+  function enterGate(field) {
+    if (isSearch(field) || !MESSAGING.test(`${location.href} ${document.title}`)) return null;
+    const name = String(field.getAttribute("aria-label") || field.placeholder || field.name || "the message box").trim().slice(0, 60);
+    return gate(`press Enter in "${name}" on ${location.host}`,
+      "pressing Enter here sends what was typed as a message");
+  }
+
   // Pages repeat the same control per item (an "Add to cart" per product, a
   // "Download" per row). Positional selectors get this wrong constantly, so
   // an action may carry near="<the item's own text>": among all matches,
@@ -564,15 +626,17 @@ function domAction(act) {
     if (act.type === "click") {
       const { el, error } = pick(act);
       if (!el) return { success: false, error };
+      const held = clickGate(el);
+      if (held && !held.usedApproval) return held;
       el.scrollIntoView({ block: "center" });
       // A synthetic el.click() from an extension-injected script carries no
       // user activation, and Chrome silently refuses target="_blank"
       // navigation without it -- confirmed: the tab opens but sits on
       // about:blank forever. Hand it to the caller's privileged tabs API.
       const anchor = el.closest("a[target=_blank], a[target=_new]");
-      if (anchor && anchor.href) return { success: true, openNewTab: anchor.href };
+      if (anchor && anchor.href) return { success: true, openNewTab: anchor.href, ...held };
       el.click();
-      return { success: true };
+      return { success: true, ...held };
     }
     if (act.type === "select") {
       const { el, error } = pick(act);
@@ -608,6 +672,8 @@ function domAction(act) {
       if (!el) {
         return { success: false, error: `"${act.selector}" is not a text field and contains none` };
       }
+      const held = act.type === "search" ? enterGate(el) : null;
+      if (held && !held.usedApproval) return held;
       el.scrollIntoView({ block: "center" });
       el.focus();
       if (el.isContentEditable && el.tagName !== "INPUT" && el.tagName !== "TEXTAREA") {
@@ -635,7 +701,7 @@ function domAction(act) {
         const form = el.form || el.closest("form");
         if (form && form.requestSubmit) form.requestSubmit();
       }
-      return { success: true };
+      return { success: true, ...held };
     }
     if (act.type === "scroll") {
       window.scrollBy(0, act.direction === "down" ? 800 : -800);
@@ -653,10 +719,13 @@ async function execAction(run, action) {
     await waitForTabLoad(run.tabId);
   } else {
     const [{ result }] = await chrome.scripting.executeScript({
-      target: { tabId: run.tabId }, func: domAction, args: [action],
+      target: { tabId: run.tabId }, func: domAction, args: [action, run.approved || []],
     });
     await sleep(STEP_SETTLE_MS);
+    if (result.needsApproval) run.needsApproval = result.needsApproval;
     if (!result.success) return result;
+    // A yes lets one action through, once.
+    if (result.usedApproval) run.approved = (run.approved || []).filter((a) => a !== result.usedApproval);
     if (result.openNewTab) {
       // Called directly rather than left to the onCreated listener alone, so
       // the group/lock/switch decision is settled before the next step's
@@ -920,10 +989,7 @@ async function runLoop(run, { task, remaining, modelKey, vision, verifyEnabled, 
     log(run, `Fatal error: ${run.fatalError}`);
     stage(run, `Fatal error: ${run.fatalError}`);
   } finally {
-    run.running = false;
-    if (!run.paused) await unlockRun(run);
-    updateKeepAlive();
-    chrome.runtime.sendMessage({ type: "run_finished", tabId: run.primaryTabId }).catch(() => {});
+    await finishRun(run);
   }
 }
 
@@ -935,6 +1001,8 @@ async function startRun(tabId, { task, modelKey, vision, verifyEnabled, flavour 
   run.steps = [];
   run.answer = null;
   run.trace = [];
+  run.approved = [];
+  run.needsApproval = null;
   run.currentStage = "Starting...";
   const tab = await chrome.tabs.get(tabId);
   run.windowId = tab.windowId;
@@ -950,6 +1018,9 @@ async function retryRun(tabId) {
   const run = getRun(tabId);
   if (!run.paused) return;
   const { task, remaining, modelKey, vision, verifyEnabled, lastError, memory, flavour, stack } = run.paused;
+  // Retry on a run the approval gate stopped is the person's yes to that one action.
+  run.approved = run.needsApproval ? [run.needsApproval.action] : [];
+  run.needsApproval = null;
   const tab = await chrome.tabs.get(run.tabId);
   run.windowId = tab.windowId;
   run.lockedTabIds.add(run.tabId);
@@ -1057,6 +1128,7 @@ async function handleProgram(run, req, deadline, onStepState = null) {
     const result = await execAction(run, step);
     if (!result.success) {
       upsertStep(run, i, { status: "failed", error: result.error });
+      if (result.needsApproval) { log(run, `Stopped: ${result.error}`); break; }
       throw new Error(`program step ${i + 1} failed: ${result.error}`);
     }
     upsertStep(run, i, { status: "ok" });
@@ -1157,6 +1229,8 @@ async function runListenerLoop({ modelKey, vision, verifyEnabled, flavour = "liv
         run.paused = null;
         run.timedOut = false;
         run.cancelledByUser = false;
+        run.approved = Array.isArray(req.approved) ? [...req.approved] : [];
+        run.needsApproval = null;
 
         const label = req.kind === "program" ? `program "${req.program}"` : req.task;
         log(run, `── Request ${req.id} [${req.kind}]: ${label}`);
@@ -1198,6 +1272,7 @@ async function runListenerLoop({ modelKey, vision, verifyEnabled, flavour = "liv
               run.running = false;
             }
             if (run.cancelledByUser) { status = "cancelled"; error = "Cancelled by request."; }
+            else if (run.needsApproval) { status = "needs_approval"; error = run.needsApproval.reason; }
             else if (run.timedOut) status = "timeout";
           } else {
             await runLoop(run, {
@@ -1206,6 +1281,7 @@ async function runListenerLoop({ modelKey, vision, verifyEnabled, flavour = "liv
               onStepState: pushLiveStep,
             });
             if (run.cancelledByUser) { status = "cancelled"; error = "Cancelled by request."; }
+            else if (run.needsApproval) { status = "needs_approval"; error = run.needsApproval.reason; }
             else if (run.blocked) { status = "blocked"; error = run.blocked; }
             else if (run.fatalError) { status = "error"; error = run.fatalError; }
             else if (run.timedOut) status = "timeout";
@@ -1254,6 +1330,7 @@ async function runListenerLoop({ modelKey, vision, verifyEnabled, flavour = "liv
           final_state: lastState,
           check_passed: checkPassed,
           elapsed_s: Math.round((Date.now() - started) / 100) / 10,
+          approval: (run && run.needsApproval) || null,
         });
       } catch (e) {
         if (run) log(run, `Could not post result for ${req.id}: ${e.message || e}`);
@@ -1481,23 +1558,14 @@ async function replayRecording(tabId, recordingId) {
     }
     if (!run.stop) { stage(run, "Replay complete."); log(run, "Replay complete."); }
   } finally {
-    run.running = false;
-    if (!run.paused) await unlockRun(run);
-    updateKeepAlive();
-    chrome.runtime.sendMessage({ type: "run_finished", tabId: run.primaryTabId }).catch(() => {});
+    await finishRun(run);
   }
 }
 
 // ---- messaging --------------------------------------------------------
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "run") {
-    startRun(msg.tabId, msg).catch((e) => {
-      const run = getRun(msg.tabId);
-      run.running = false;
-      log(run, `Fatal error starting run: ${e.message || e}`);
-      updateKeepAlive();
-      chrome.runtime.sendMessage({ type: "run_finished", tabId: run.primaryTabId }).catch(() => {});
-    });
+    startRun(msg.tabId, msg).catch((e) => runFailed(getRun(msg.tabId), `Fatal error starting run: ${e.message || e}`));
     sendResponse({ ok: true });
   } else if (msg.type === "retry") {
     retryRun(msg.tabId).catch((e) => log(getRun(msg.tabId), `Fatal error resuming run: ${e.message || e}`));
@@ -1589,13 +1657,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     deleteRecording(msg.id).then((list) => sendResponse({ ok: true, savedRecordings: list }));
     return true;
   } else if (msg.type === "replayRecording") {
-    replayRecording(msg.tabId, msg.recordingId).catch((e) => {
-      const run = getRun(msg.tabId);
-      run.running = false;
-      log(run, `Replay failed: ${e.message || e}`);
-      updateKeepAlive();
-      chrome.runtime.sendMessage({ type: "run_finished", tabId: run.primaryTabId }).catch(() => {});
-    });
+    replayRecording(msg.tabId, msg.recordingId).catch((e) => runFailed(getRun(msg.tabId), `Replay failed: ${e.message || e}`));
     sendResponse({ ok: true });
   } else if (msg.type === "recordedEvent") {
     const tabId = sender.tab && sender.tab.id;

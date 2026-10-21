@@ -8,26 +8,29 @@ from decurix_agent import config, state
 # signatures, so watchers.py's command_watcher() and app.py's startup
 # don't need to know which is active.
 
+
+def _nothing():
+    """
+    No backend to wait for (the claude CLI is a local binary), or nothing to
+    do once it is up.
+    """
+    return
+
+
 if config.AGENT_HARNESS == "claude":
     from decurix_agent.claude_harness import perform_task, continue_after_query, ask_once as _ask_once
 
-    def _wait_for_backend():
-        """
-        No backend to wait for: the claude CLI is a local binary.
-        """
-        return
-
-    def _after_ready():
-        return
+    _wait_for_backend = _after_ready = _nothing
 
 elif config.AGENT_HARNESS == "azure":
     from decurix_agent.azure_harness import (
         perform_task,
         continue_after_query,
-        ask_once as _ask_once,
         wait_for_backend as _wait_for_backend,
-        warm_after_ready as _after_ready,
     )
+    from decurix_agent.llm_client import ask_once as _ask_once
+
+    _after_ready = _nothing
 
 elif config.AGENT_HARNESS == "thebot":
     from decurix_agent.thebot_harness import (

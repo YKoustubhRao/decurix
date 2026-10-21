@@ -468,18 +468,8 @@
     }
   });
 
-  /* Swap the keyboard hint for a confirmation, then put the hint back. */
   function markSent(message){
-    var hint = document.getElementById("footHint");
-    var original = hint.innerHTML;
-
-    hint.className = "sent";
-    hint.innerHTML = '<svg width="14" height="14"><use href="#i-check"/></svg>' + message;
-
-    setTimeout(function(){
-      hint.className = "hint";
-      hint.innerHTML = original;
-    }, 3200);
+    Decurix.markSent(document.getElementById("footHint"), message);
   }
 
 })();

@@ -33,7 +33,7 @@ func windowsAppIcon(app HostAppItem) []byte {
 	if _, err := os.Stat("/var/run/docker.sock"); err == nil && findDockerBinary() != "" {
 		hostScript := "PATH=$PATH:/mnt/c/Windows/System32/WindowsPowerShell/v1.0:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0 powershell.exe -NoProfile -NonInteractive -Command " + shellQuote(script)
 		cmd = HopCommand(ctx, findDockerBinary(), "app-icon", false, hostScript)
-	} else if ps := findPowershellExe(); ps != "" {
+	} else if ps := PowershellExe(); ps != "" {
 		cmd = exec.CommandContext(ctx, ps, "-NoProfile", "-NonInteractive", "-Command", script)
 		HideWindow(cmd)
 	} else {

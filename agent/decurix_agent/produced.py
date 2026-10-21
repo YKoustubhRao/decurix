@@ -6,6 +6,7 @@ from pathlib import Path
 
 from decurix_agent import attachments, config, shared
 from decurix_agent.logging_utils import log
+from decurix_agent.provenance import _squash
 
 
 # ============================================================
@@ -35,8 +36,6 @@ MAX_FILES = 4
 # (2026-10-14): JSON specs and notes written after a workbook pushed it out of the four newest.
 DELIVERABLES = {".xlsx", ".xlsm", ".docx", ".pptx", ".pdf", ".csv", ".ods", ".odt", ".odp", ".svg"} | IMAGES
 MAX_FILE_CHARS = 7000
-MAX_DEPTH = 3
-MAX_ENTRIES = 4000
 
 # Folders that hold tools' own files, never a task's result (decurix-reports: the whole text of a message too long
 # for the chat, messaging.REPORTS_DIR).
@@ -60,28 +59,7 @@ def since():
 def _walk(root):
     """Readable files under root, a few levels deep, hidden and tool folders left out."""
 
-    seen = 0
-    stack = [(Path(root), 0)]
-    while stack:
-        folder, depth = stack.pop()
-        try:
-            children = list(os.scandir(folder))
-        except OSError:
-            continue
-        for child in children:
-            seen += 1
-            if seen > MAX_ENTRIES:
-                return
-            if child.name.startswith("."):
-                continue
-            try:
-                if child.is_dir(follow_symlinks=False):
-                    if depth < MAX_DEPTH and child.name not in SKIP_DIRS:
-                        stack.append((Path(child.path), depth + 1))
-                elif child.is_file(follow_symlinks=False):
-                    yield Path(child.path)
-            except OSError:
-                continue
+    return shared.walk_files(root, SKIP_DIRS)
 
 
 def files(report="", started=None, root=None, request=""):
@@ -184,12 +162,19 @@ def formula_errors(paths):
 
     from decurix_agent.tools import office
 
+    return _per_file(paths, office.formula_errors, "check the formula results of")
+
+
+def _per_file(paths, check, what):
+    """check(path)'s sentences for each of `paths`, each headed by the file's name; a file it cannot be made for is
+    logged ("could not <what> <path>") and decides nothing."""
+
     out = []
     for path in paths:
         try:
-            found = office.formula_errors(path)
+            found = check(path)
         except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing
-            log(f"produced: could not check the formula results of {path}: {exc}")
+            log(f"produced: could not {what} {path}: {exc}")
             continue
         out.extend(f"{Path(path).name}: {sentence}" for sentence in found)
     return out
@@ -206,15 +191,7 @@ def coverage_gaps(paths):
 
     from decurix_agent.tools import office
 
-    out = []
-    for path in paths:
-        try:
-            found = office.coverage_gaps(path)
-        except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing
-            log(f"produced: could not check the coverage of {path}: {exc}")
-            continue
-        out.extend(f"{Path(path).name}: {sentence}" for sentence in found)
-    return out
+    return _per_file(paths, office.coverage_gaps, "check the coverage of")
 
 
 # A request that asks for a Total row: "a Total row at the bottom", "a row labelled Total", "totals under the data".
@@ -241,16 +218,9 @@ def layout_faults(paths, request=""):
     from decurix_agent.tools import office
 
     check_formulas, check_total = formulas_asked(request), total_asked(request)
-    out = []
-    for path in paths:
-        try:
-            found = ((office.constants_among_formulas(path) if check_formulas else [])
-                     + (office.split_totals(path) if check_total else []))
-        except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing
-            log(f"produced: could not check the layout of {path}: {exc}")
-            continue
-        out.extend(f"{Path(path).name}: {sentence}" for sentence in found)
-    return out
+    return _per_file(paths, lambda path: ((office.constants_among_formulas(path) if check_formulas else [])
+                                          + (office.split_totals(path) if check_total else [])),
+                     "check the layout of")
 
 
 # A request that asks for formulas or for figures that follow their rows: then a typed total is not what was asked.
@@ -333,7 +303,6 @@ def typed_totals(paths, request=""):
 # These are facts of the saved file, decided here with no model.
 # ============================================================
 
-IMAGE_EXTS = IMAGES
 # (A dot followed by a letter is a file name's, not the end of the sentence: "resize photo.jpg to 800 x 600".)
 RESIZE_PERCENT = re.compile(r"\b(?:resiz|scal|shrink|reduc|enlarg|halv)\w*\b(?:[^.\n]|\.(?=\S)){0,80}?\b(\d{1,3}(?:\.\d+)?)\s*(?:%|per\s*cent)", re.I)
 RESIZE_PIXELS = re.compile(r"\b(?:resiz|scal|shrink|reduc|enlarg)\w*\b(?:[^.\n]|\.(?=\S)){0,80}?\b(\d{2,5})\s*(?:x|×|by)\s*(\d{2,5})\b", re.I)
@@ -400,7 +369,7 @@ def source_images(request, made, root=None, fetch=None):
     text = attachments.text(request or "")
     outputs = {n.lower() for n in requested_names(request)} | {Path(p).name.lower() for p in made}
     names = [n for n in dict.fromkeys(REQUESTED_FILE.findall(text))
-             if Path(n).suffix.lower() in IMAGE_EXTS and n.lower() not in outputs]
+             if Path(n).suffix.lower() in IMAGES and n.lower() not in outputs]
     if not names:
         return []
     root = Path(root or config.WORK_DIR)
@@ -437,7 +406,7 @@ def image_findings(request, made, sources):
     pixels = RESIZE_PIXELS.search(text)
     if not (percent or pixels):
         return []
-    outputs = [p for p in made if Path(p).suffix.lower() in IMAGE_EXTS]
+    outputs = [p for p in made if Path(p).suffix.lower() in IMAGES]
     source_names = {Path(s).name.lower() for s in sources}
     outputs = [p for p in outputs if Path(p).name.lower() not in source_names]
     src_sizes = [s for s in (_image_size(p) for p in sources) if s]
@@ -570,17 +539,6 @@ class FileFacts:
                 + list(self.disclosures) + list(self.draft_fields))
 
 
-def unopenable(paths):
-    """
-    The Office files among `paths` (workbooks, Word documents, decks) that a strict reader - openpyxl, python-docx,
-    python-pptx, as a program or the person's app reads them - cannot open, each as a sentence; [] when all open.
-    Hygiene, certain: found live (series 14 P3 on pc3, 2026-10-21), the worker's own script rewrote three workbooks'
-    XML (shared-string cells, a sharedStrings part nothing registers) and none of them opened - reported checked.
-    """
-
-    return [said for path, (status, said) in open_statuses(paths).items() if status == "broken"]
-
-
 OFFICE_KINDS = {".xlsx", ".xlsm", ".xltx", ".xltm", ".docx", ".docm", ".dotx", ".pptx", ".pptm", ".potx"}
 
 
@@ -603,13 +561,6 @@ def open_statuses(paths):
             log(f"produced: could not read {path} to open it: {exc}")
     _note_opened([p for p, (status, _) in out.items() if status == "ok"])
     return out
-
-
-def protected_notes(paths):
-    """Evidence lines for the Office files among `paths` that are password-protected or of a kind not checked: they
-    were not opened, said so - never called broken."""
-
-    return [said for status, said in open_statuses(paths).values() if status in ("protected", "unchecked") and said]
 
 
 def _opened_file():
@@ -835,10 +786,6 @@ _FIGURE = re.compile(r"\d[\d,]*\d(?:\.\d+)?|\d{2,}")
 _MIN_PARTY_ROWS = 2
 
 
-def _squash(text):
-    return re.sub(r"[^a-z0-9]", "", str(text or "").lower())
-
-
 def _table_rows(path):
     """The rows of an attached table (xlsx or csv) as lists of cells, or []."""
 
@@ -1025,7 +972,7 @@ def sample_table(body, budget, focus=()):
         if room:
             stride = max(1, len(rest) / room)
             keep |= {rest[int(k * stride)] for k in range(min(room, len(rest)))}
-    out, last, size = [], -1, 0
+    out, last = [], -1
     # (The header, the named rows and the totals first, then the sample, each in file order, within the budget.)
     first = set(range(min(HEAD_LINES, len(lines)))) | {i for i in keep if i in range(len(lines)) and (
         any(f in flat[i] for f in focus) or re.search(r"\b(?:grand\s+)?(?:sub)?totals?\b", flat[i]))}
@@ -1112,7 +1059,6 @@ def text(paths, focus=()):
         # The end of a sheet is where a fill that stopped short and a Total row show, and the text above is cut before
         # it: a workbook's last rows are always shown, cell by cell, the empty ones named.
         try:
-            from decurix_agent.tools import office
             tail = office.workbook_tail(path)
         except Exception as exc:  # noqa: BLE001 - extra evidence, never a reason to fail the read
             log(f"produced: no tail of {path}: {exc}")

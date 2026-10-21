@@ -4,9 +4,6 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('decurixHost', {
   pickFolders: () => ipcRenderer.invoke('pick-host-folders'),
-  localModelStatus: () => ipcRenderer.invoke('local-model-status'),
-  setLocalHosting: enabled => ipcRenderer.invoke('local-model-hosting', enabled),
-  prepareLocalModels: () => ipcRenderer.invoke('local-model-prepare'),
 });
 
 contextBridge.exposeInMainWorld('decurixStartup', {

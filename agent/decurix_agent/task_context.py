@@ -95,15 +95,31 @@ def start(task_id, request=None, continues=""):
             writes.append((CURRENT_FILE + ".files", "\n".join(attachments.files(str(request)))))
 
         for path, value in writes:
-            try:
-                tmp = path + ".tmp"
-                with open(tmp, "w", encoding="utf-8") as f:
-                    f.write(value)
-                os.replace(tmp, path)
-            except OSError:
-                # Only the out-of-process reporters lose it, and the control
-                # plane still attributes their steps to the live task.
-                pass
+            _write(path, value)
+
+
+def _write(path, value):
+    """Replace a file the out-of-process reporters read, whole."""
+
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(value)
+        os.replace(tmp, path)
+    except OSError:
+        # Only the out-of-process reporters lose it, and the control
+        # plane still attributes their steps to the live task.
+        pass
+
+
+def _read(suffix=""):
+    """What CURRENT_FILE (or the file of its `suffix`) holds, stripped, or "" when it cannot be read."""
+
+    try:
+        with open(CURRENT_FILE + suffix, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
 
 
 def _since_record():
@@ -183,21 +199,13 @@ def current_request():
     if state.current_task_id and state.current_task:
         return str(state.current_task)[:REQUEST_CHARS]
 
-    try:
-        with open(CURRENT_FILE + ".request", encoding="utf-8") as f:
-            return f.read().strip()
-    except OSError:
-        return ""
+    return _read(".request")
 
 
 def continues():
     """The task the current one carries on (task_context.start's `continues`), or ""."""
 
-    try:
-        with open(CURRENT_FILE + ".continues", encoding="utf-8") as f:
-            task_id = f.read().strip()
-    except OSError:
-        return ""
+    task_id = _read(".continues")
     return task_id if valid(task_id) else ""
 
 
@@ -217,12 +225,7 @@ def current():
     if state.current_task_id:
         return state.current_task_id
 
-    try:
-        with open(CURRENT_FILE, encoding="utf-8") as f:
-            task_id = f.read().strip()
-    except OSError:
-        return ""
-
+    task_id = _read()
     return task_id if valid(task_id) else ""
 
 
@@ -237,13 +240,7 @@ def _stage_path():
 def set_stage(scope, attempt=0):
     """Mark the stage running now (scope "" clears it)."""
 
-    try:
-        tmp = _stage_path() + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(json.dumps({"scope": scope, "attempt": int(attempt or 0)}) if scope else "")
-        os.replace(tmp, _stage_path())
-    except OSError:
-        pass
+    _write(_stage_path(), json.dumps({"scope": scope, "attempt": int(attempt or 0)}) if scope else "")
 
 
 def current_stage():

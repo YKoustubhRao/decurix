@@ -56,8 +56,7 @@ func (s *Server) requestsDashboardHandler(w http.ResponseWriter, r *http.Request
 
 // sendRequestHandler validates and forwards a request to a specific desktop.
 func (s *Server) sendRequestHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+	if !requirePost(w, r) {
 		return
 	}
 
@@ -103,7 +102,7 @@ func (s *Server) sendRequestHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// submitRequestWithFiles is submitRequest for a request a person attached
+// submitRequestWithFiles is submitLocked for a request a person attached
 // files to: under the desktop's send lock the files are written into the
 // desktop first, so they are there when its agent reads the request that
 // names them. It returns the request as sent.
@@ -128,21 +127,13 @@ func (s *Server) submitRequestWithFiles(ctx context.Context, desktopID, content 
 	return route, content, err
 }
 
-// submitRequest sends content to a desktop through the same path every
+// submitLocked sends content to a desktop through the same path every
 // human request takes - Plan a task route, deliver it (starting the desktop
 // first if it is stopped), then Commit the route and append it to the chat -
 // and returns the route it landed under. Shared by sendRequestHandler and
 // Submit, so a cron-triggered request (internal/schedule's Runner) lands in
-// the task records and chat exactly the way a typed one does.
-func (s *Server) submitRequest(ctx context.Context, desktopID, content string) (tasks.Route, error) {
-	unlock := s.lockDesktop(desktop.SanitizeID(desktopID))
-	defer unlock()
-
-	return s.submitLocked(ctx, desktopID, content)
-}
-
-// submitLocked is submitRequest for a caller already holding the desktop's
-// send lock (lockDesktop).
+// the task records and chat exactly the way a typed one does. The caller
+// already holds the desktop's send lock (lockDesktop).
 func (s *Server) submitLocked(ctx context.Context, desktopID, content string) (tasks.Route, error) {
 	id := desktop.SanitizeID(desktopID)
 
@@ -166,7 +157,7 @@ func (s *Server) submitLocked(ctx context.Context, desktopID, content string) (t
 }
 
 // Submit implements internal/schedule's Submitter: it is the fourth door
-// onto submitRequest, after the chat, the requests page and a query reply -
+// onto submitLocked, after the chat, the requests page and a query reply -
 // see that package's Runner for when this is called. Like every automated
 // door it sends only to a free desktop (submitWhenFree), returning a
 // *DesktopBusyError otherwise.

@@ -25,75 +25,51 @@ func NewStore() *Store {
 	return &Store{}
 }
 
-// Set records the current Cloudflare tunnel URL.
-func (s *Store) Set(url string) {
+// set records one of the addresses.
+func (s *Store) set(field *string, url string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.url = url
+	*field = url
 }
+
+// get returns one of the addresses.
+func (s *Store) get(field *string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return *field
+}
+
+// Set records the current Cloudflare tunnel URL.
+func (s *Store) Set(url string) { s.set(&s.url, url) }
 
 // Get returns the current Cloudflare tunnel URL, or "" if none has been
 // recorded.
-func (s *Store) Get() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return s.url
-}
+func (s *Store) Get() string { return s.get(&s.url) }
 
 // SetAdminURL records the machine's LAN address for the primary listener -
 // full, unauthenticated control, same as sitting at the machine itself.
-func (s *Store) SetAdminURL(url string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.adminURL = url
-}
+func (s *Store) SetAdminURL(url string) { s.set(&s.adminURL, url) }
 
 // AdminURL returns the current admin URL, or "" if none has been recorded.
-func (s *Store) AdminURL() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return s.adminURL
-}
+func (s *Store) AdminURL() string { return s.get(&s.adminURL) }
 
 // SetLANURL records the machine's LAN address for the internal/lanaccess
 // -gated listener - reachable on the local network without the Cloudflare
 // tunnel, but still behind the access code.
-func (s *Store) SetLANURL(url string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.lanURL = url
-}
+func (s *Store) SetLANURL(url string) { s.set(&s.lanURL, url) }
 
 // LANURL returns the current gated-listener LAN URL, or "" if none has been
 // recorded.
-func (s *Store) LANURL() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return s.lanURL
-}
+func (s *Store) LANURL() string { return s.get(&s.lanURL) }
 
 // SetLANTunnelURL records the current Cloudflare quick tunnel URL for the
 // internal/lanaccess-gated listener - what makes the gated URL reachable
 // from anywhere, still behind the access code, instead of only on the local
 // network like LANURL.
-func (s *Store) SetLANTunnelURL(url string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.lanTunnelURL = url
-}
+func (s *Store) SetLANTunnelURL(url string) { s.set(&s.lanTunnelURL, url) }
 
 // LANTunnelURL returns the current gated-listener tunnel URL, or "" if none
 // has been recorded.
-func (s *Store) LANTunnelURL() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return s.lanTunnelURL
-}
+func (s *Store) LANTunnelURL() string { return s.get(&s.lanTunnelURL) }

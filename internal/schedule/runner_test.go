@@ -24,13 +24,22 @@ func (f *fakeSubmitter) Submit(_ context.Context, desktopID, content string) err
 	return f.err
 }
 
-func TestTickFiresDueScheduleWithTimeField(t *testing.T) {
-	now := time.Date(2026, 9, 15, 12, 30, 0, 0, time.UTC)
-	store := newTestStore(t, now)
+// tenMinuteSchedule opens a store at 12:30 holding one schedule due every ten minutes.
+func tenMinuteSchedule(t *testing.T) (*Store, Schedule) {
+	t.Helper()
 
-	if _, err := store.Create("bordu", "check the mail", "*/10 * * * *"); err != nil {
+	store := newTestStore(t, time.Date(2026, 9, 15, 12, 30, 0, 0, time.UTC))
+
+	sch, err := store.Create("bordu", "check the mail", "*/10 * * * *")
+	if err != nil {
 		t.Fatal(err)
 	}
+
+	return store, sch
+}
+
+func TestTickFiresDueScheduleWithTimeField(t *testing.T) {
+	store, _ := tenMinuteSchedule(t)
 
 	submitter := &fakeSubmitter{}
 
@@ -61,13 +70,7 @@ func TestTickFiresDueScheduleWithTimeField(t *testing.T) {
 }
 
 func TestTickAdvancesEvenWhenSubmitFails(t *testing.T) {
-	now := time.Date(2026, 9, 15, 12, 30, 0, 0, time.UTC)
-	store := newTestStore(t, now)
-
-	sch, err := store.Create("bordu", "check the mail", "*/10 * * * *")
-	if err != nil {
-		t.Fatal(err)
-	}
+	store, sch := tenMinuteSchedule(t)
 
 	submitter := &fakeSubmitter{err: errors.New("desktop unreachable")}
 
@@ -91,16 +94,11 @@ func TestTickAdvancesEvenWhenSubmitFails(t *testing.T) {
 }
 
 func TestTickDoesNotFireBeforeDue(t *testing.T) {
-	now := time.Date(2026, 9, 15, 12, 30, 0, 0, time.UTC)
-	store := newTestStore(t, now)
-
-	if _, err := store.Create("bordu", "check the mail", "*/10 * * * *"); err != nil {
-		t.Fatal(err)
-	}
+	store, _ := tenMinuteSchedule(t)
 
 	submitter := &fakeSubmitter{}
 
-	runner := &Runner{Store: store, Submitter: submitter, now: func() time.Time { return now.Add(2 * time.Minute) }}
+	runner := &Runner{Store: store, Submitter: submitter, now: func() time.Time { return time.Date(2026, 9, 15, 12, 32, 0, 0, time.UTC) }}
 	runner.tick(context.Background())
 
 	submitter.mu.Lock()
@@ -117,13 +115,7 @@ func (busyErr) Error() string       { return "busy" }
 func (busyErr) DesktopBusy() string { return "the agent is waiting for your reply" }
 
 func TestABusyDesktopHoldsTheRunInsteadOfSkippingOrSendingIt(t *testing.T) {
-	now := time.Date(2026, 9, 15, 12, 30, 0, 0, time.UTC)
-	store := newTestStore(t, now)
-
-	sch, err := store.Create("bordu", "check the mail", "*/10 * * * *")
-	if err != nil {
-		t.Fatal(err)
-	}
+	store, sch := tenMinuteSchedule(t)
 
 	submitter := &fakeSubmitter{err: busyErr{}}
 	clock := time.Date(2026, 9, 15, 12, 40, 0, 0, time.UTC)

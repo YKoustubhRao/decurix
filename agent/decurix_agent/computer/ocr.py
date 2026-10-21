@@ -1,9 +1,7 @@
 import hashlib
-import os
 import re
 import shutil
 import subprocess
-import tempfile
 
 from decurix_agent.logging_utils import log
 

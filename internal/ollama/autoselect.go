@@ -2,11 +2,8 @@ package ollama
 
 import (
 	"context"
-	"encoding/json"
-	"io"
 	"log"
 	"net"
-	"net/http"
 	neturl "net/url"
 	"os"
 	"strconv"
@@ -288,19 +285,9 @@ func liveEvaluation(ctx context.Context) (Selection, Resources, string, error) {
 // listInstalled lists the chat models the Ollama at baseURL has (GET
 // /api/tags), leaving out embedding models.
 func listInstalled(ctx context.Context, baseURL string) ([]Candidate, error) {
+	// The timeout covers the per-model /api/show calls below too.
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/tags", nil)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
 
 	var body struct {
 		Models []struct {
@@ -314,7 +301,7 @@ func listInstalled(ctx context.Context, baseURL string) ([]Candidate, error) {
 			} `json:"details"`
 		} `json:"models"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&body); err != nil {
+	if _, err := getJSON(ctx, baseURL+"/api/tags", 5*time.Second, 4<<20, &body); err != nil {
 		return nil, err
 	}
 

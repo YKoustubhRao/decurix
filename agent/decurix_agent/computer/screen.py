@@ -1,10 +1,8 @@
 import hashlib
 import os
-import struct
 import time
-import zlib
 
-from decurix_agent.computer import browser, session
+from decurix_agent.computer import browser, session, visual
 from decurix_agent.computer.errors import ComputerError
 
 
@@ -59,19 +57,7 @@ class Frame:
 
         out_w = (width + scale - 1) // scale
         out_h = len(rows)
-
-        def chunk(tag, body):
-            return (
-                struct.pack(">I", len(body)) + tag + body
-                + struct.pack(">I", zlib.crc32(tag + body) & 0xFFFFFFFF)
-            )
-
-        res = (
-            b"\x89PNG\r\n\x1a\n"
-            + chunk(b"IHDR", struct.pack(">IIBBBBB", out_w, out_h, 8, 2, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(b"".join(rows), 1))
-            + chunk(b"IEND", b"")
-        )
+        res = visual.png_of_rows(out_w, out_h, b"".join(rows), 1)
         self._png_cache[scale] = res
         return res
 
@@ -142,14 +128,7 @@ def changed_fraction(before, after, tolerance=24):
     if len(a) != len(b) or not a:
         return 1.0
 
-    n = len(a)
-    tol = tolerance
-    changed = 0
-    for i in range(n):
-        if abs(a[i] - b[i]) > tol:
-            changed += 1
-
-    return changed / n
+    return sum(1 for x, y in zip(a, b) if abs(x - y) > tolerance) / len(a)
 
 
 def changed_in(before, after, box, tolerance=24, step=2):

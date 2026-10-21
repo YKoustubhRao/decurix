@@ -108,6 +108,17 @@ type extResult struct {
 	CheckPassed *bool     `json:"check_passed"`
 	ElapsedS    float64   `json:"elapsed_s"`
 	Steps       []extStep `json:"steps"`
+	// Approval is the action the extension's approval gate stopped before
+	// (Status "needs_approval").
+	Approval *browserCheckpoint `json:"approval"`
+}
+
+// browserCheckpoint is the action a browser run stopped before, waiting for a
+// person's yes. On a yes the step runs again and the extension is told that
+// one action is approved; it lets it through once.
+type browserCheckpoint struct {
+	Action string `json:"action"`
+	Reason string `json:"reason"`
 }
 
 // extRequest is one entry of ext_server.py's /requests/status listing.
@@ -197,7 +208,11 @@ func (b *BrowserSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	// observe something, even one that didn't finish the actual task, is
 	// handled entirely differently below (see report()) - that is not a
 	// failure to recover from, it is an answer.
-	if err := b.postJSON(rc.Ctx, "/requests", map[string]any{"kind": "instruction", "task": task}, &submitted); err != nil {
+	request := map[string]any{"kind": "instruction", "task": task}
+	if cp, ok := rc.Resume.(*browserCheckpoint); ok && cp.Action != "" && rc.IsApproved(cp.Action) {
+		request["approved"] = []string{cp.Action}
+	}
+	if err := b.postJSON(rc.Ctx, "/requests", request, &submitted); err != nil {
 		return finish("Could not reach the browser extension's backend (ext_server.py on :8092): "+err.Error(), false, map[string]any{
 			"error": err.Error(), "fatal": true, "needsUserInput": true,
 			"failureReasoning": "ext_server.py is not reachable - the desktop's browser extension may not have started yet",
@@ -309,6 +324,10 @@ func (b *BrowserSkill) report(subtask Subtask, r extRequest) (Result, error) {
 	}
 	if res.FinalURL != "" {
 		meta["url"] = res.FinalURL
+	}
+
+	if res.Status == "needs_approval" && res.Approval != nil && res.Approval.Action != "" {
+		return NeedsApproval(subtask, b.Name(), res.Approval.Action, res.Approval.Reason, res.Approval), nil
 	}
 
 	if res.Status == "done" && res.Answer != "" {

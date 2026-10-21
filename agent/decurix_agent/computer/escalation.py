@@ -219,7 +219,7 @@ class Ladder:
 
         target = step.get("target") or {}
         if not target:
-            return self._asked(step, [], reason)
+            return self._asked([], reason)
 
         ranked = healing.rank(step, observation)
         verdict, top = healing.decide(step, ranked)
@@ -237,12 +237,12 @@ class Ladder:
                 return {"element": picked[0]["element"], "how": GROUNDED, "confidence": picked[1],
                         "reason": "", "options": [], "observation": observation}
 
-        return self._asked(step, ranked, reason)
+        return self._asked(ranked, reason)
 
     def _may_ground(self, step):
         return self.ask_model is not None and self.calls_left > 0 and not healing.strict(step)
 
-    def _asked(self, step, ranked, reason):
+    def _asked(self, ranked, reason):
         options = [{"n": n, "role": c["element"].get("role"), "name": c["element"].get("name"),
                     "ref": c["element"].get("ref"), "path": c["element"].get("path"), "score": c["score"]}
                    for n, c in enumerate(ranked[:MAX_OPTIONS], 1)]

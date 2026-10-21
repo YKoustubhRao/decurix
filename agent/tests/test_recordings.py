@@ -10,32 +10,16 @@ display; the screen-facing half is exercised on a live desktop.
 import io
 import json
 import os
-import sys
 import tempfile
 import threading
 import time
-import types
 import unittest
 import zipfile
 from datetime import date
 from pathlib import Path
-
-# decurix_agent.config creates the desktop's directories under /home/headless
-# when imported, which a development machine does not have.
-try:
-    from decurix_agent import config  # noqa: F401
-except OSError:
-    import decurix_agent
-
-    stub = types.ModuleType("decurix_agent.config")
-    stub.DESKTOP_ID = "test-box"
-    stub.DESKTOP_NAME = "test-box"
-    stub.CONTROL_PLANE_URL = "http://127.0.0.1:9"
-    stub.AGENT_HARNESS = "ollama"
-    sys.modules["decurix_agent.config"] = stub
-    decurix_agent.config = stub
-
 from unittest import mock
+
+import config_stub  # noqa: F401 - first: stubs decurix_agent.config on a machine with no desktop
 
 from decurix_agent import record_task, replay_task, state
 from decurix_agent.computer import approval, core, privacy, processing, recording, replay, screen, volatility

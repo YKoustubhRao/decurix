@@ -104,8 +104,11 @@ func waitIdle(t *testing.T) {
 	t.Fatal("warm-up never finished")
 }
 
-func TestWarmAsyncLoadsAModelThatIsNotResident(t *testing.T) {
-	url, loads := fakeOllama(t, `{"models":[]}`)
+// warmOnce runs one WarmAsync for model m:1b against an Ollama whose /api/ps
+// says ps, and returns how many preloads it sent.
+func warmOnce(t *testing.T, ps string) int32 {
+	t.Helper()
+	url, loads := fakeOllama(t, ps)
 	t.Setenv("OLLAMA_URL", url)
 	t.Setenv("OLLAMA_MODEL", "m:1b")
 	resetWarm()
@@ -113,38 +116,26 @@ func TestWarmAsyncLoadsAModelThatIsNotResident(t *testing.T) {
 	WarmAsync()
 	waitIdle(t)
 
-	if loads.Load() != 1 {
-		t.Fatalf("expected one preload, got %d", loads.Load())
+	return loads.Load()
+}
+
+func TestWarmAsyncLoadsAModelThatIsNotResident(t *testing.T) {
+	if n := warmOnce(t, `{"models":[]}`); n != 1 {
+		t.Fatalf("expected one preload, got %d", n)
 	}
 }
 
 func TestWarmAsyncLeavesAResidentModelStrictlyAlone(t *testing.T) {
-	url, loads := fakeOllama(t, `{"models":[{"name":"m:1b","model":"m:1b","context_length":8192}]}`)
-	t.Setenv("OLLAMA_URL", url)
-	t.Setenv("OLLAMA_MODEL", "m:1b")
-	resetWarm()
-
-	WarmAsync()
-	waitIdle(t)
-
 	// Not even a one-token request: it would replace the agents' cached
 	// prompt prefix, and the next real request would pay ~200 s to rebuild it.
-	if loads.Load() != 0 {
-		t.Fatalf("a resident model was sent %d generate requests, want none", loads.Load())
+	if n := warmOnce(t, `{"models":[{"name":"m:1b","model":"m:1b","context_length":8192}]}`); n != 0 {
+		t.Fatalf("a resident model was sent %d generate requests, want none", n)
 	}
 }
 
 func TestWarmAsyncReloadsAModelResidentAtAnotherContextSize(t *testing.T) {
-	url, loads := fakeOllama(t, `{"models":[{"name":"m:1b","context_length":32768}]}`)
-	t.Setenv("OLLAMA_URL", url)
-	t.Setenv("OLLAMA_MODEL", "m:1b")
-	resetWarm()
-
-	WarmAsync()
-	waitIdle(t)
-
-	if loads.Load() != 1 {
-		t.Fatalf("a runner at the wrong num_ctx does not serve the agents; want 1 preload, got %d", loads.Load())
+	if n := warmOnce(t, `{"models":[{"name":"m:1b","context_length":32768}]}`); n != 1 {
+		t.Fatalf("a runner at the wrong num_ctx does not serve the agents; want 1 preload, got %d", n)
 	}
 }
 

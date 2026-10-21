@@ -12,9 +12,7 @@ package stepimages
 
 import (
 	"bytes"
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"image"
@@ -127,10 +125,8 @@ func (s *Store) put(desktopID string, img image.Image) (string, error) {
 		return "", ErrTooLarge
 	}
 
-	id, err := newID()
-	if err != nil {
-		return "", err
-	}
+	// Unguessable, so one desktop's screenshots are not enumerable by counting.
+	id := sqlitedb.NewID("", 12)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -169,31 +165,19 @@ const evictBatch = 64
 // caller must hold the lock.
 func (s *Store) evict() error {
 	for s.size > s.maxBytes {
-		rows, err := s.db.Query(`SELECT id, size FROM step_images ORDER BY rowid LIMIT ?`, evictBatch)
-		if err != nil {
-			return fmt.Errorf("stepimages: evicting: %w", err)
-		}
-
 		type victim struct {
 			id   string
 			size int
 		}
 
-		var victims []victim
-
-		for rows.Next() {
+		victims, err := sqlitedb.QueryAll(s.db, func(row sqlitedb.Scanner) (victim, error) {
 			var v victim
-			if err := rows.Scan(&v.id, &v.size); err != nil {
-				rows.Close()
-				return fmt.Errorf("stepimages: evicting: %w", err)
-			}
-			victims = append(victims, v)
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
+			err := row.Scan(&v.id, &v.size)
+			return v, err
+		}, `SELECT id, size FROM step_images ORDER BY rowid LIMIT ?`, evictBatch)
+		if err != nil {
 			return fmt.Errorf("stepimages: evicting: %w", err)
 		}
-		rows.Close()
 
 		if len(victims) == 0 {
 			s.size = 0
@@ -212,27 +196,13 @@ func (s *Store) evict() error {
 			}
 		}
 
-		if len(toDelete) > 0 {
-			query := fmt.Sprintf(`DELETE FROM step_images WHERE id IN (%s)`, strings.Join(placeholders, ","))
-			if _, err := s.db.Exec(query, toDelete...); err != nil {
-				return fmt.Errorf("stepimages: evicting: %w", err)
-			}
-			s.size -= deletedBytes
-			_ = sqlitedb.IncrementalVacuum(s.db, len(toDelete)*2)
+		query := fmt.Sprintf(`DELETE FROM step_images WHERE id IN (%s)`, strings.Join(placeholders, ","))
+		if _, err := s.db.Exec(query, toDelete...); err != nil {
+			return fmt.Errorf("stepimages: evicting: %w", err)
 		}
+		s.size -= deletedBytes
+		_ = sqlitedb.IncrementalVacuum(s.db, len(toDelete)*2)
 	}
 
 	return nil
-}
-
-// newID returns an unguessable identifier, so one desktop's screenshots are
-// not enumerable by counting.
-func newID() (string, error) {
-	raw := make([]byte, 12)
-
-	if _, err := rand.Read(raw); err != nil {
-		return "", fmt.Errorf("stepimages: generating id: %w", err)
-	}
-
-	return hex.EncodeToString(raw), nil
 }

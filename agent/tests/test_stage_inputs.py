@@ -14,15 +14,7 @@ from decurix_agent import attachments, config, long_task
 HEADERS = ["Employee", "Department", "Mobile", "DOB", "Personal email", "Bank", "Account no", "IFSC"]
 
 
-class Stages(unittest.TestCase):
-    setUp = base.LongRun.setUp
-    restore = base.LongRun.restore
-    model = base.LongRun.model
-    send = base.LongRun.send
-    finals = base.LongRun.finals
-    message = base.LongRun.message
-    run_id = base.LongRun.run_id
-
+class Stages(base.LongRunBase):
     def request(self):
         import openpyxl
         folder = Path(config.WORK_DIR) / "P4_onboarding_Nov"

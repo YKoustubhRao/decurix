@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -154,10 +155,8 @@ func unpackData(file, dir string) ([]string, error) {
 	if !manifest {
 		return nil, fmt.Errorf("%s is not a Decurix backup (no manifest.json)", file)
 	}
-	for _, n := range names {
-		if n == sqlitedb.FileName {
-			return names, nil
-		}
+	if slices.Contains(names, sqlitedb.FileName) {
+		return names, nil
 	}
 	return nil, fmt.Errorf("%s holds no database (data/%s)", file, sqlitedb.FileName)
 }

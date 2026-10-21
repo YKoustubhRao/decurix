@@ -231,7 +231,7 @@ def _check_values(candidate, given, request):
 # Reading
 # ============================================================
 
-def worth_reading(request, candidates=None):
+def worth_reading(request):
     """
     Whether to put a request to the model at all: there is a taught task, and
     the request shares a word with one (its ticket, name, summary or where it

@@ -24,9 +24,7 @@
 package mailtrigger
 
 import (
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -180,30 +178,21 @@ func NewStore(db *sql.DB, key []byte) (*Store, error) {
 }
 
 func (s *Store) sealPlainPasswords() error {
-	rows, err := s.db.Query(`SELECT id, password FROM mail_accounts WHERE password NOT LIKE ?`, sealedPrefix+"%")
+	plain, err := sqlitedb.QueryAll(s.db, func(r sqlitedb.Scanner) (p [2]string, err error) {
+		err = r.Scan(&p[0], &p[1])
+		return p, err
+	}, `SELECT id, password FROM mail_accounts WHERE password NOT LIKE ?`, sealedPrefix+"%")
 	if err != nil {
 		return fmt.Errorf("mailtrigger: reading passwords: %w", err)
 	}
 
-	plain := map[string]string{}
-	for rows.Next() {
-		var id, password string
-		if err := rows.Scan(&id, &password); err != nil {
-			rows.Close()
-			return fmt.Errorf("mailtrigger: reading passwords: %w", err)
-		}
-
-		plain[id] = password
-	}
-	rows.Close()
-
-	for id, password := range plain {
-		sealed, err := seal(s.key, password)
+	for _, p := range plain {
+		sealed, err := seal(s.key, p[1])
 		if err != nil {
 			return err
 		}
 
-		if _, err := s.db.Exec(`UPDATE mail_accounts SET password = ? WHERE id = ?`, sealed, id); err != nil {
+		if _, err := s.db.Exec(`UPDATE mail_accounts SET password = ? WHERE id = ?`, sealed, p[0]); err != nil {
 			return fmt.Errorf("mailtrigger: encrypting a password: %w", err)
 		}
 	}
@@ -303,7 +292,7 @@ func (s *Store) CreateAccount(n NewAccount, uidValidity, uidNext uint32) (Accoun
 	now := s.clock()
 
 	acct := n.Account()
-	acct.ID = newID("mbox")
+	acct.ID = sqlitedb.NewID("mbox-", 8)
 	acct.CreatedAt = now
 	acct.LastCheckAt = now
 	acct.LastOKAt = now
@@ -390,46 +379,28 @@ const accountColumns = `id, email, password, host, port, folder, enabled, create
 
 // Accounts returns every mailbox connection, oldest first.
 func (s *Store) Accounts() ([]Account, error) {
-	rows, err := s.db.Query(`SELECT ` + accountColumns + ` FROM mail_accounts ORDER BY created_ns`)
+	accounts, err := sqlitedb.QueryAll(s.db, s.scanAccount, `SELECT `+accountColumns+` FROM mail_accounts ORDER BY created_ns`)
 	if err != nil {
 		return nil, fmt.Errorf("mailtrigger: accounts: %w", err)
 	}
-	defer rows.Close()
 
-	accounts := make([]Account, 0)
-
-	for rows.Next() {
-		acct, err := s.scanAccount(rows)
-		if err != nil {
-			return nil, fmt.Errorf("mailtrigger: accounts: %w", err)
-		}
-
-		accounts = append(accounts, acct)
-	}
-
-	return accounts, rows.Err()
+	return accounts, nil
 }
 
 // Account returns one mailbox connection.
 func (s *Store) Account(id string) (Account, error) {
-	rows, err := s.db.Query(`SELECT `+accountColumns+` FROM mail_accounts WHERE id = ?`, id)
+	a, err := s.scanAccount(s.db.QueryRow(`SELECT `+accountColumns+` FROM mail_accounts WHERE id = ?`, id))
+	if err == sql.ErrNoRows {
+		return Account{}, ErrNotFound
+	}
 	if err != nil {
 		return Account{}, fmt.Errorf("mailtrigger: account: %w", err)
 	}
-	defer rows.Close()
 
-	if !rows.Next() {
-		if err := rows.Err(); err != nil {
-			return Account{}, err
-		}
-
-		return Account{}, ErrNotFound
-	}
-
-	return s.scanAccount(rows)
+	return a, nil
 }
 
-func (s *Store) scanAccount(rows *sql.Rows) (Account, error) {
+func (s *Store) scanAccount(rows sqlitedb.Scanner) (Account, error) {
 	var a Account
 	var enabled, needsPassword int
 	var created, lastCheck, lastOK int64
@@ -538,13 +509,15 @@ func (s *Store) RecordPoll(accountID string, p Poll) error {
 			return fmt.Errorf("mailtrigger: record poll: %w", err)
 		}
 
-		if n, _ := res.RowsAffected(); n == 1 && len(job.Files) > 0 {
-			if err := insertJobFiles(tx, job.ID, job.Files); err != nil {
-				return err
-			}
+		if n, _ := res.RowsAffected(); n != 1 {
+			continue
 		}
 
-		if n, _ := res.RowsAffected(); n == 1 && job.Status == JobPending {
+		if err := insertJobFiles(tx, job.ID, job.Files); err != nil {
+			return err
+		}
+
+		if job.Status == JobPending {
 			if _, err := tx.Exec(`UPDATE mail_rules SET last_fired_ns = ?, fired = fired + 1 WHERE id = ?`,
 				sqlitedb.ToNS(p.At), job.RuleID); err != nil {
 				return fmt.Errorf("mailtrigger: record poll: %w", err)
@@ -592,15 +565,6 @@ func boolInt(b bool) int {
 	}
 
 	return 0
-}
-
-func newID(prefix string) string {
-	raw := make([]byte, 8)
-	if _, err := rand.Read(raw); err != nil {
-		panic(fmt.Sprintf("mailtrigger: generating id: %v", err))
-	}
-
-	return prefix + "-" + hex.EncodeToString(raw)
 }
 
 func (s *Store) clock() time.Time {

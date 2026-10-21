@@ -129,10 +129,6 @@ func DefaultNumThread() int {
 	return 1
 }
 
-func defaultNumThread() int {
-	return DefaultNumThread()
-}
-
 func getenvInt(key string, fallback int) int {
 	v := os.Getenv(key)
 	if v == "" {
@@ -217,7 +213,7 @@ func (m *Manager) EnsureReady(ctx context.Context) error {
 				log.Printf("Could not prepare embedding model: %v", err)
 			}
 		}
-		m.preloadModel(ctx, base, DesktopModel())
+		preloadModel(ctx, base, DesktopModel())
 
 		return nil
 	}
@@ -331,7 +327,7 @@ func (m *Manager) EnsureReady(ctx context.Context) error {
 				"OLLAMA_FLASH_ATTENTION=" + getenvDefault("OLLAMA_FLASH_ATTENTION", "1"),
 				"OLLAMA_KV_CACHE_TYPE=" + getenvDefault("OLLAMA_KV_CACHE_TYPE", "q8_0"),
 				"OLLAMA_NUM_PARALLEL=" + getenvDefault("OLLAMA_NUM_PARALLEL", "1"),
-				"OLLAMA_NUM_THREAD=" + strconv.Itoa(defaultNumThread()),
+				"OLLAMA_NUM_THREAD=" + strconv.Itoa(DefaultNumThread()),
 			},
 
 			Labels: map[string]string{
@@ -444,7 +440,7 @@ func (m *Manager) EnsureReady(ctx context.Context) error {
 	// timeout that harness happens to use - which is exactly how "hello"
 	// to a freshly built desktop came back as a query about a deadline
 	// being exceeded.
-	m.preloadModel(ctx, BundledURL, DesktopModel())
+	preloadModel(ctx, BundledURL, DesktopModel())
 
 	log.Println("Ollama ready.")
 
@@ -496,12 +492,6 @@ func answers(ctx context.Context, baseURL string) bool {
 // hold it there, so the first real request does not pay for it.
 // Best-effort: a failure here only costs the warm start it was trying to
 // buy.
-func (m *Manager) preloadModel(ctx context.Context, baseURL, model string) {
-	preloadModel(ctx, baseURL, model)
-}
-
-// preloadModel is the body of Manager.preloadModel; WarmAsync uses it too,
-// where there is no Manager to hang it on.
 func preloadModel(ctx context.Context, baseURL, model string) {
 	log.Printf("Preloading Ollama model %s at %s...", model, baseURL)
 
@@ -513,7 +503,7 @@ func preloadModel(ctx context.Context, baseURL, model string) {
 	preloadOpts := map[string]any{
 		"num_ctx": NumCtx,
 	}
-	if nt := getenvInt("OLLAMA_NUM_THREAD", defaultNumThread()); nt > 0 {
+	if nt := getenvInt("OLLAMA_NUM_THREAD", DefaultNumThread()); nt > 0 {
 		preloadOpts["num_thread"] = nt
 	}
 	preloadOpts["num_batch"] = getenvInt("OLLAMA_NUM_BATCH", 512)
@@ -578,32 +568,8 @@ func waitForOllama(ctx context.Context) error {
 	deadline := time.Now().Add(2 * time.Minute)
 
 	for time.Now().Before(deadline) {
-
-		req, err := http.NewRequestWithContext(
-			ctx,
-			http.MethodGet,
-			BundledURL+"/api/tags",
-			nil,
-		)
-
-		if err == nil {
-
-			client := &http.Client{
-				Timeout: 3 * time.Second,
-			}
-
-			resp, err := client.Do(req)
-
-			if err == nil {
-
-				resp.Body.Close()
-
-				if resp.StatusCode >= 200 &&
-					resp.StatusCode < 300 {
-
-					return nil
-				}
-			}
+		if answers(ctx, BundledURL) {
+			return nil
 		}
 
 		select {
@@ -619,150 +585,66 @@ func waitForOllama(ctx context.Context) error {
 
 // ensureModel pulls the named Ollama model into the shared Ollama container if it is not already present.
 func (m *Manager) ensureModel(ctx context.Context, name string) error {
-	// Try `ollama show MODEL`.
-	// Exit code 0 means the model already exists.
-	checkExec, err := m.client.ContainerExecCreate(
-		ctx,
-		containerName,
-		container.ExecOptions{
-			Cmd: []string{
-				"ollama",
-				"show",
-				name,
-			},
-			AttachStdout: true,
-			AttachStderr: true,
-		},
-	)
-
+	// `ollama show MODEL` exits 0 when the model already exists.
+	code, err := m.execWait(ctx, "model check", 200*time.Millisecond, "ollama", "show", name)
 	if err != nil {
-		return fmt.Errorf(
-			"create Ollama model check: %w",
-			err,
-		)
+		return err
 	}
 
-	if err := m.client.ContainerExecStart(
-		ctx,
-		checkExec.ID,
-		container.ExecStartOptions{},
-	); err != nil {
-		return fmt.Errorf(
-			"start Ollama model check: %w",
-			err,
-		)
-	}
-
-	for {
-		result, err := m.client.ContainerExecInspect(
-			ctx,
-			checkExec.ID,
-		)
-
-		if err != nil {
-			return fmt.Errorf(
-				"inspect Ollama model check: %w",
-				err,
-			)
-		}
-
-		if !result.Running {
-			if result.ExitCode == 0 {
-				log.Printf(
-					"Ollama model %s already exists.",
-					name,
-				)
-
-				return nil
-			}
-
-			break
-		}
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-
-		case <-time.After(200 * time.Millisecond):
-		}
+	if code == 0 {
+		log.Printf("Ollama model %s already exists.", name)
+		return nil
 	}
 
 	// Model doesn't exist. Pull it.
-	log.Printf(
-		"Pulling Ollama model %s...",
-		name,
-	)
+	log.Printf("Pulling Ollama model %s...", name)
 
-	pullExec, err := m.client.ContainerExecCreate(
-		ctx,
-		containerName,
-		container.ExecOptions{
-			Cmd: []string{
-				"ollama",
-				"pull",
-				name,
-			},
-			AttachStdout: true,
-			AttachStderr: true,
-		},
-	)
-
+	code, err = m.execWait(ctx, "pull", time.Second, "ollama", "pull", name)
 	if err != nil {
-		return fmt.Errorf(
-			"create Ollama pull: %w",
-			err,
-		)
+		return err
 	}
 
-	if err := m.client.ContainerExecStart(
-		ctx,
-		pullExec.ID,
-		container.ExecStartOptions{},
-	); err != nil {
-		return fmt.Errorf(
-			"start Ollama pull: %w",
-			err,
-		)
+	if code != 0 {
+		return fmt.Errorf("Ollama pull failed with exit code %d", code)
+	}
+
+	log.Printf("Ollama model %s ready.", name)
+
+	return nil
+}
+
+// execWait runs cmd in the Ollama container, checking every poll until it
+// exits, and returns its exit code. what names it in an error.
+func (m *Manager) execWait(ctx context.Context, what string, poll time.Duration, cmd ...string) (int, error) {
+	run, err := m.client.ContainerExecCreate(ctx, containerName, container.ExecOptions{
+		Cmd:          cmd,
+		AttachStdout: true,
+		AttachStderr: true,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("create Ollama %s: %w", what, err)
+	}
+
+	if err := m.client.ContainerExecStart(ctx, run.ID, container.ExecStartOptions{}); err != nil {
+		return 0, fmt.Errorf("start Ollama %s: %w", what, err)
 	}
 
 	for {
-		result, err := m.client.ContainerExecInspect(
-			ctx,
-			pullExec.ID,
-		)
-
+		result, err := m.client.ContainerExecInspect(ctx, run.ID)
 		if err != nil {
-			return fmt.Errorf(
-				"inspect Ollama pull: %w",
-				err,
-			)
+			return 0, fmt.Errorf("inspect Ollama %s: %w", what, err)
 		}
 
 		if !result.Running {
-			if result.ExitCode != 0 {
-				return fmt.Errorf(
-					"Ollama pull failed with exit code %d",
-					result.ExitCode,
-				)
-			}
-
-			break
+			return result.ExitCode, nil
 		}
 
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
-
-		case <-time.After(1 * time.Second):
+			return 0, ctx.Err()
+		case <-time.After(poll):
 		}
 	}
-
-	log.Printf(
-		"Ollama model %s ready.",
-		name,
-	)
-
-	return nil
 }
 
 // warmState guards WarmAsync: at most one warm-up in flight, and at most one
@@ -861,20 +743,6 @@ func WarmAsync() {
 // counts as "not resident": loading a model that is already there is
 // harmless, skipping one that is not is the cold start this exists to avoid.
 func resident(ctx context.Context, baseURL, model string) bool {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/ps", nil)
-	if err != nil {
-		return false
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-
 	var ps struct {
 		Models []struct {
 			Name          string `json:"name"`
@@ -882,7 +750,7 @@ func resident(ctx context.Context, baseURL, model string) bool {
 			ContextLength int    `json:"context_length"`
 		} `json:"models"`
 	}
-	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&ps) != nil {
+	if status, err := getJSON(ctx, baseURL+"/api/ps", 5*time.Second, 1<<20, &ps); err != nil || status != http.StatusOK {
 		return false
 	}
 

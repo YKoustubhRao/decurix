@@ -14,6 +14,8 @@ import re
 from pathlib import Path
 
 from decurix_agent.logging_utils import log
+from decurix_agent.provenance import _squash as _ref_key
+from decurix_agent.sources import _money as _fmt
 
 TABLE_KINDS = {".xlsx", ".xlsm", ".csv", ".tsv"}
 
@@ -29,8 +31,28 @@ def _number(text):
         return None
 
 
-def _fmt(value):
-    return f"{value:,.2f}"
+def _header_at(rows, within=10):
+    """Where a table's header is: the first of its first rows with two or more filled cells, or None."""
+
+    return next((i for i, row in enumerate(rows[:within]) if sum(1 for c in row if c not in (None, "")) >= 2), None)
+
+
+def _refs(row):
+    """The item references (ITEM_ID) a row's cells hold, sorted."""
+
+    return sorted({r for c in row if c not in (None, "") for r in ITEM_ID.findall(str(c))})
+
+
+def _status_cells(made):
+    """(label, header, row, column, text) of each filled status/action cell of the made tables."""
+
+    for label, header, rows in tables_of(made):
+        cols = [i for i, h in enumerate(header) if STATUS_COLUMN.search(h or "")]
+        for row in rows:
+            for i in cols:
+                cell = str(row[i]) if i < len(row) and row[i] not in (None, "") else ""
+                if cell:
+                    yield label, header, row, i, cell
 
 
 # ============================================================
@@ -96,7 +118,7 @@ def _column_sums(rows):
     """{(column header, filter words): sum} for a table's numeric columns: all rows, and the rows where a column with a
     few repeated values (Yes/No, a status) holds each value. Total rows are left out."""
 
-    header_at = next((i for i, row in enumerate(rows[:10]) if sum(1 for c in row if c not in (None, "")) >= 2), None)
+    header_at = _header_at(rows)
     if header_at is None:
         return {}
     header = [str(c or "").strip() for c in rows[header_at]]
@@ -169,21 +191,14 @@ def removed_residue(amendments, made, documents):
     if not figures:
         return []
     out = []
-    for path in made:
-        if Path(str(path)).suffix.lower() not in TABLE_KINDS:
-            continue
-        try:
-            sheets = _sheets(path)
-        except Exception as exc:  # noqa: BLE001 - a file that cannot be read decides nothing here
-            log(f"stage_facts: could not read {path}: {exc}")
-            continue
+    for path, sheets in _table_files(made):
         totals = {}
         for name, rows in sheets:
             for (column, kind), value in _column_sums(rows).items():
                 if value > 0:
                     totals.setdefault(value, []).append((name, column, kind))
         for name, rows in sheets:
-            header_at = next((i for i, row in enumerate(rows[:10]) if sum(1 for c in row if c not in (None, "")) >= 2), 0)
+            header_at = _header_at(rows) or 0
             header = [str(c or "").strip() for c in rows[header_at]] if rows else []
             for row in rows[header_at + 1:]:
                 label = next((str(c).strip() for c in row if isinstance(c, str) and c.strip()), "")
@@ -214,6 +229,23 @@ def sheet_tables(paths):
     """
 
     out = []
+    for _, label, rows in _labelled_sheets(paths):
+        segment = []
+        for row in list(rows) + [[]]:
+            if any(c not in (None, "") for c in row):
+                segment.append(row)
+                continue
+            header_at = _header_at(segment, 4)
+            if header_at is not None and len(segment) > header_at + 1:
+                out.append((label, [str(c or "").strip() for c in segment[header_at]], segment[header_at + 1:]))
+            segment = []
+    return out
+
+
+def _table_files(paths):
+    """(path, [(sheet name, rows)]) of the tables among these files (_sheets); a file that cannot be read is logged and
+    left out (it decides nothing here)."""
+
     for path in paths:
         if Path(str(path)).suffix.lower() not in TABLE_KINDS:
             continue
@@ -222,40 +254,22 @@ def sheet_tables(paths):
         except Exception as exc:  # noqa: BLE001
             log(f"stage_facts: could not read {path}: {exc}")
             continue
+        yield path, sheets
+
+
+def _labelled_sheets(paths):
+    """(path, label, rows) of each sheet of the tables among these files (a workbook's sheets, a CSV), values as stored;
+    a file that cannot be read is logged and left out."""
+
+    for path, sheets in _table_files(paths):
         for sheet, rows in sheets:
-            label = f"{Path(str(path)).name} ({sheet})" if sheet != Path(str(path)).name else Path(str(path)).name
-            segment = []
-            for row in list(rows) + [[]]:
-                if any(c not in (None, "") for c in row):
-                    segment.append(row)
-                    continue
-                header_at = next((i for i, r in enumerate(segment[:4]) if sum(1 for c in r if c not in (None, "")) >= 2),
-                                 None)
-                if header_at is not None and len(segment) > header_at + 1:
-                    out.append((label, [str(c or "").strip() for c in segment[header_at]], segment[header_at + 1:]))
-                segment = []
-    return out
+            yield path, f"{Path(str(path)).name} ({sheet})" if sheet != Path(str(path)).name else Path(str(path)).name, rows
 
 
 def tables_of(paths):
     """[(label, header, rows)] of the tables in these files (a workbook's sheets, a CSV), values as stored."""
 
-    out = []
-    for path in paths:
-        if Path(str(path)).suffix.lower() not in TABLE_KINDS:
-            continue
-        try:
-            sheets = _sheets(path)
-        except Exception as exc:  # noqa: BLE001
-            log(f"stage_facts: could not read {path}: {exc}")
-            continue
-        for sheet, rows in sheets:
-            header_at = next((i for i, row in enumerate(rows[:10]) if sum(1 for c in row if c not in (None, "")) >= 2), None)
-            if header_at is None:
-                continue
-            label = f"{Path(str(path)).name} ({sheet})" if sheet != Path(str(path)).name else Path(str(path)).name
-            out.append((label, [str(c or "").strip() for c in rows[header_at]], rows[header_at + 1:]))
-    return out
+    return [(label, header, rows) for _, label, header, rows, _ in _tables_with_rows(paths)]
 
 
 # ============================================================
@@ -268,10 +282,6 @@ def tables_of(paths):
 FLAG_WORDS = re.compile(r"\b(?:flag\w*|held|hold|duplicat\w*|mismatch\w*|exception\w*|ineligible|not eligible|excluded|"
                         r"disput\w*|wrong|short\w*|over-?billed|blocked|reject\w*|discrepan\w*|kept out|not claimed)\b",
                         re.I)
-
-
-def _ref_key(text):
-    return re.sub(r"[^a-z0-9]", "", str(text or "").lower())
 
 
 def earlier_findings(texts, amendments=()):
@@ -400,7 +410,7 @@ def _key_columns(header, rows):
     return usable
 
 
-def _row_keys(header, row, cols):
+def _row_keys(row, cols):
     """The row's values in the table's key columns (_key_columns), or [] when it cannot be told."""
 
     return [str(row[i]).strip() for i in cols if i < len(row) and row[i] not in (None, "") and str(row[i]).strip()]
@@ -422,7 +432,7 @@ def status_conflicts(made, drafts=()):
             continue
         keyed = _key_columns(header, rows)
         for row in rows:
-            keys = _row_keys(header, row, keyed)
+            keys = _row_keys(row, keyed)
             words = " | ".join(str(row[i]) for i in cols if i < len(row) and row[i] not in (None, ""))
             kind = _kind(words, _KINDS)
             if not keys or not kind:
@@ -460,7 +470,6 @@ DEFERRED = re.compile(r"\b(?:calculate|compute|work out|to be (?:calculated|comp
                       r"check (?:it )?against (?:the )?policy|process (?:it )?(?:as |per |according to )(?:the )?policy|"
                       r"verify (?:the )?amount|determine (?:the )?(?:amount|refund))\b", re.I)
 REFERENCE_COLUMN = re.compile(r"\b(?:order|invoice|so|po|reference|ref)\b\.?\s*(?:no|number|#|id)?\b", re.I)
-FILE_COLUMN = re.compile(r"\b(?:file|message|email|e-mail|source)\b", re.I)
 _AUTO_HEADERS = re.compile(r"^(?:auto-submitted:\s*auto-|x-autoreply:|x-autorespond:|precedence:\s*auto_reply)", re.I | re.M)
 _AUTO_SUBJECT = re.compile(r"^subject:\s*(?:automatic reply|auto(?:matic)?[- ]?reply|out of (?:the )?office)", re.I | re.M)
 
@@ -470,14 +479,9 @@ def deferred_actions(made):
     ("calculate ...", "check against policy"), with its row's reference."""
 
     out = []
-    for label, header, rows in tables_of(made):
-        cols = [i for i, h in enumerate(header) if STATUS_COLUMN.search(h or "")]
-        for row in rows:
-            for i in cols:
-                cell = str(row[i]) if i < len(row) and row[i] not in (None, "") else ""
-                if cell and DEFERRED.search(cell):
-                    refs = sorted({r for c in row if c not in (None, "") for r in ITEM_ID.findall(str(c))})
-                    out.append(f"{label}: {', '.join(refs) or 'a row'} - {header[i]} says \"{cell[:140]}\"")
+    for label, header, row, i, cell in _status_cells(made):
+        if DEFERRED.search(cell):
+            out.append(f"{label}: {', '.join(_refs(row)) or 'a row'} - {header[i]} says \"{cell[:140]}\"")
     return out[:10]
 
 
@@ -537,8 +541,6 @@ TAX_COLUMN = re.compile(r"\b(?:gst|vat|tax|cgst|sgst|igst)\b.*(?:%|pct|percent|r
 DISCOUNT_COLUMN = re.compile(r"\b(?:discount|disc\.?|rebate)\b", re.I)
 SUBTOTAL_COLUMN = re.compile(r"\b(?:taxable|subtotal|sub-total|net|gross|base|before tax|ex[- ]gst|excl\w*)\b", re.I)
 IDENT_COLUMN = re.compile(r"\b(?:line|no\.?|number|row|id|code|#|days?|terms|year|month|page|sl|sr|s\.no)\b", re.I)
-# A quantity column the working marks as the one the result uses.
-USED_QTY = re.compile(r"\b(?:used|payable|accepted|refund\w*|affected|charged|billable|applied)\b", re.I)
 
 
 def _working_columns(header):
@@ -644,19 +646,9 @@ def _tables_with_rows(paths):
     """tables_of, with each table's file and where its header row is (to find a row's cells by their address)."""
 
     out = []
-    for path in paths:
-        if Path(str(path)).suffix.lower() not in TABLE_KINDS:
-            continue
-        try:
-            sheets = _sheets(path)
-        except Exception as exc:  # noqa: BLE001
-            log(f"stage_facts: could not read {path}: {exc}")
-            continue
-        for sheet, rows in sheets:
-            header_at = next((i for i, row in enumerate(rows[:10]) if sum(1 for c in row if c not in (None, "")) >= 2), None)
-            if header_at is None:
-                continue
-            label = f"{Path(str(path)).name} ({sheet})" if sheet != Path(str(path)).name else Path(str(path)).name
+    for path, label, rows in _labelled_sheets(paths):
+        header_at = _header_at(rows)
+        if header_at is not None:
             out.append((path, label, [str(c or "").strip() for c in rows[header_at]], rows[header_at + 1:], header_at))
     return out
 
@@ -698,7 +690,7 @@ def working_rows(made):
                 continue
             other = [i for i, c in enumerate(row) if i not in known and i < len(header) and _number(c) is not None
                      and not isinstance(c, bool)]
-            refs = sorted({r for c in row if c not in (None, "") for r in ITEM_ID.findall(str(c))})
+            refs = _refs(row)
             source = " ".join(str(row[i]) for i in kinds["source"] if i < len(row) and row[i] not in (None, ""))
             sources_by = [(str(header[i]), str(row[i])) for i in kinds["source"] if i < len(row) and row[i] not in (None, "")]
             items = [str(row[i]).strip() for i, h in enumerate(header)
@@ -892,30 +884,26 @@ def working_problems(made, sources=(), messages=()):
                     if theirs and not any(abs(a - b) <= 0.005 for a in theirs for b in prices):
                         out.append(f"{label}: {', '.join(refs)} uses a price of {_fmt(prices[0])}, but {t_label} "
                                    f"has {_fmt(theirs[0])}")
-    for label, header, rows in tables_of(made):
-        cols = [i for i, h in enumerate(header) if STATUS_COLUMN.search(h or "")]
-        for row in rows:
-            for i in cols:
-                cell = str(row[i]) if i < len(row) and row[i] not in (None, "") else ""
-                m = MONEY_IN_TEXT.search(cell)
-                if not m or not DERIVED_AMOUNT.search(cell):
-                    continue
-                amount = _number(m.group(1))
-                refs = sorted({r for c in row if c not in (None, "") for r in ITEM_ID.findall(str(c))})
-                worked = next((by_ref[r] for r in refs if r in by_ref), None)
-                if worked and amount is not None:
-                    tied = _stated_against_working(amount, row, refs, work)
-                    if tied is not None:
-                        out.append(f"{label}: {', '.join(refs)} - {header[i]} says {_fmt(amount)}, its working in "
-                                   f"{tied[0]} gives {_fmt(tied[1])}")
-                elif not worked and work and refs and amount is not None:
-                    # Only a derived amount needs a working: one the row's own message states was read, and a row tied
-                    # to no message is not decided (round 5 P6, 2026-10-20: five refunds the customers' own emails
-                    # state were refused for "no working").
-                    if stated_by_message(amount, row, read) is not False:
-                        continue
-                    out.append(f"{label}: {', '.join(refs)} - {header[i]} states {_fmt(amount)} with no working "
-                               "for it (quantity, price, where each was read)")
+    for label, header, row, i, cell in _status_cells(made):
+        m = MONEY_IN_TEXT.search(cell)
+        if not m or not DERIVED_AMOUNT.search(cell):
+            continue
+        amount = _number(m.group(1))
+        refs = _refs(row)
+        worked = next((by_ref[r] for r in refs if r in by_ref), None)
+        if worked and amount is not None:
+            tied = _stated_against_working(amount, row, refs, work)
+            if tied is not None:
+                out.append(f"{label}: {', '.join(refs)} - {header[i]} says {_fmt(amount)}, its working in "
+                           f"{tied[0]} gives {_fmt(tied[1])}")
+        elif not worked and work and refs and amount is not None:
+            # Only a derived amount needs a working: one the row's own message states was read, and a row tied
+            # to no message is not decided (round 5 P6, 2026-10-20: five refunds the customers' own emails
+            # state were refused for "no working").
+            if stated_by_message(amount, row, read) is not False:
+                continue
+            out.append(f"{label}: {', '.join(refs)} - {header[i]} states {_fmt(amount)} with no working "
+                       "for it (quantity, price, where each was read)")
     return list(dict.fromkeys(out))[:10]
 
 
@@ -947,8 +935,7 @@ def formula_contradictions(made):
                     continue
                 in_row = {cc: f for (rr, cc), f in cells.items() if rr == r and cc != c}
                 worked = evaluate(formula, r, row, in_row)
-                if worked is not None and abs(worked - stored) > 0.011 and not (
-                        float(stored).is_integer() and abs(round(worked) - stored) < 0.001):
+                if worked is not None and not _matches(worked, stored):
                     out.append(f"{Path(str(path)).name} ({sheet}) row {r}: the cell holds {_fmt(stored)}, its own formula "
                                f"{formula} gives {_fmt(worked)}")
     return list(dict.fromkeys(out))[:10]
@@ -967,20 +954,15 @@ def unworked_amounts(made, messages=()):
         return []
     read = read_messages(messages)
     out = []
-    for label, header, rows in tables_of(made):
-        cols = [i for i, h in enumerate(header) if STATUS_COLUMN.search(h or "")]
-        for row in rows:
-            for i in cols:
-                cell = str(row[i]) if i < len(row) and row[i] not in (None, "") else ""
-                m = MONEY_IN_TEXT.search(cell)
-                if m and DERIVED_AMOUNT.search(cell):
-                    # An amount the item's own message states was read, not computed; a row tied to no message is
-                    # not decided.
-                    amount = _number(m.group(1).rstrip("."))
-                    if amount is None or stated_by_message(amount, row, read) is not False:
-                        continue
-                    refs = sorted({r for c in row if c not in (None, "") for r in ITEM_ID.findall(str(c))})
-                    out.append(f"{label}: {', '.join(refs) or 'a row'} - \"{cell[:100]}\"")
+    for label, header, row, i, cell in _status_cells(made):
+        m = MONEY_IN_TEXT.search(cell)
+        if m and DERIVED_AMOUNT.search(cell):
+            # An amount the item's own message states was read, not computed; a row tied to no message is
+            # not decided.
+            amount = _number(m.group(1).rstrip("."))
+            if amount is None or stated_by_message(amount, row, read) is not False:
+                continue
+            out.append(f"{label}: {', '.join(_refs(row)) or 'a row'} - \"{cell[:100]}\"")
     return out[:10]
 
 
@@ -1004,8 +986,7 @@ def self_contradictions(made):
                 others = " | ".join(str(x) for j, x in enumerate(row) if j != c and x not in (None, ""))
                 m = deny.search(others)
                 if m:
-                    refs = sorted({r for x in row if x not in (None, "") for r in ITEM_ID.findall(str(x))})
-                    out.append(f"{label}: {', '.join(refs) or 'a row'} is filed as {header[c]} \"{value}\" while the "
+                    out.append(f"{label}: {', '.join(_refs(row)) or 'a row'} is filed as {header[c]} \"{value}\" while the "
                                f"same row says \"{m.group(0)}\"")
     return out[:10]
 
@@ -1041,7 +1022,7 @@ def summary_vs_detail(made):
     for path in made:
         if Path(str(path)).suffix.lower() not in (".xlsx", ".xlsm"):
             continue
-        tables = [t for t in tables_of([path])]
+        tables = tables_of([path])
         details = []
         for label, header, rows in tables:
             status = next((i for i, h in enumerate(header) if re.search(r"(?i)\bstatus\b|\bexception\b|\bremark\b|"
@@ -1102,12 +1083,7 @@ def _date_key(value):
     from decurix_agent import provenance
     if isinstance(value, (datetime.date, datetime.datetime)):
         return {tuple(value.timetuple()[:3])}
-    out = set()
-    for day_first in (True, False):
-        fact = provenance.fact_value(str(value or ""), day_first)
-        if fact[0] == "date":
-            out.add(fact[1])
-    return out
+    return provenance.date_readings(str(value or ""))
 
 
 def _cell_kind(value):
@@ -1211,15 +1187,3 @@ def draft_field_facts(drafts, tables):
             seen.add(key)
             unique.append(f)
     return unique[:12]
-
-
-def draft_fact_problems(drafts, tables, source_text=""):
-    """draft_field_facts as sentences; a name in no source at all is said to be in none."""
-
-    out = []
-    for f in draft_field_facts(drafts, tables):
-        note = ""
-        if f["kind"] == "name" and source_text and f["said"].lower() not in source_text.lower():
-            note = " - a name in no source the run has"
-        out.append(f"the draft to {f['who']} says {f['header']} is \"{f['said']}\"{note}; the source gives \"{f['own']}\"")
-    return out

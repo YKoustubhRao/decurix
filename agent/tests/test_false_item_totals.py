@@ -50,15 +50,7 @@ class AQuestionWithFalseFiguresIsNotPassedOn(unittest.TestCase):
         self.assertIn("those come to 13,456.00", sent[-1])
 
 
-class AStageIsSentBackToRecheck(unittest.TestCase):
-    setUp = base.LongRun.setUp
-    restore = base.LongRun.restore
-    model = base.LongRun.model
-    send = base.LongRun.send
-    finals = base.LongRun.finals
-    message = base.LongRun.message
-    run_id = base.LongRun.run_id
-
+class AStageIsSentBackToRecheck(base.LongRunBase):
     def test_the_live_question_goes_back_to_the_stage_once_and_never_to_the_person(self):
         self.engine.asks["s1-register"] = LIVE
         long_task.perform(base.LONG, None)

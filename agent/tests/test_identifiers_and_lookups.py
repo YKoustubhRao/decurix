@@ -14,10 +14,6 @@ import test_long_requests as base  # noqa: F401 - stubs config first
 
 from decurix_agent import long_task
 
-P6 = ("Can you triage the support inbox? The 22 emails are in P6_support_inbox/inbox (.eml). Order details are in the "
-      "Back Office portal (http://host.docker.internal:8701, Orders).\n1. support_triage_tracker.xlsx: one row per "
-      "email - Email, From, Order No (our SO number from the portal), Customer, Action, Notes.")
-
 
 class Identifiers(unittest.TestCase):
     def test_names_and_codes_are_not_figures(self):

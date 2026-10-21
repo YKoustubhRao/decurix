@@ -3,7 +3,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
-from audit_native import TABLE, OFFICE, cells, xml
+from audit_native import OFFICE, cells, xml
 
 
 def events(path):

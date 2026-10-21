@@ -50,8 +50,7 @@ type restoreResult struct {
 
 // restoreDesktopHandler restores skills and memory into a desktop.
 func (s *Server) restoreDesktopHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodPost) {
 		return
 	}
 

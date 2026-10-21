@@ -128,9 +128,7 @@ def _read_active():
 
 def _write_active(data):
     ACTIVE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = ACTIVE_FILE.with_name(ACTIVE_FILE.name + ".tmp")
-    tmp.write_text(json.dumps(data), encoding="utf-8")
-    tmp.replace(ACTIVE_FILE)
+    recording.write_whole(ACTIVE_FILE, json.dumps(data))
 
 
 def _clear_active():
@@ -487,9 +485,6 @@ def _focus_after(action, element, focus):
     return True, None
 
 
-THUMBNAIL_SCALE = audit.THUMBNAIL_SCALE
-
-
 def _holds(entry, element, after):
     """
     {"role", "name", "value"} when the settled screen shows the field of a
@@ -535,12 +530,6 @@ WHERE_NOTES = {
 }
 
 
-def _unoccluded(elements, windows, x, y, popups=None):
-    """The elements a press at x,y can have been on (elements.unoccluded)."""
-
-    return el.unoccluded(elements, windows, x, y, popups)
-
-
 def _report_to_chat(session_id, task_id, event, before, after):
     """
     Show one recorded event in the chat, as a step of the task it was
@@ -552,8 +541,8 @@ def _report_to_chat(session_id, task_id, event, before, after):
         return
 
     try:
-        before_png = before.png(THUMBNAIL_SCALE) if before is not None else None
-        after_png = after.png(THUMBNAIL_SCALE) if after is not None else None
+        before_png = before.png(audit.THUMBNAIL_SCALE) if before is not None else None
+        after_png = after.png(audit.THUMBNAIL_SCALE) if after is not None else None
     except Exception as exc:
         log(f"Could not encode step screenshots: {exc}")
         before_png = after_png = None
@@ -909,8 +898,8 @@ class Recorder:
                 return None, None
             return next((e for e in observation["elements"] if "focused" in e.get("states", [])), None), None
 
-        element = el.at_point(_unoccluded(observation["elements"], observation.get("windows"), *action["point"],
-                                          popups=observation.get("popups")),
+        element = el.at_point(el.unoccluded(observation["elements"], observation.get("windows"), *action["point"],
+                                            popups=observation.get("popups")),
                               *action["point"])
 
         if not fresh:
@@ -1043,7 +1032,7 @@ class Recorder:
     # opened it is held back until the choosing is over, and the pair is
     # recorded as one `select`, which a replay sets without opening anything.
 
-    def _flush(self, buffer, final=False):
+    def _flush(self, buffer):
         buffer = [_with_frame(event) for event in buffer]
         actions = processing.merge(buffer)
         if not actions:
@@ -1248,24 +1237,21 @@ class Recorder:
 
         core._wait_for_settle(None)
 
-        # Nothing the person did reached the screen while paused: there is no private step, whatever the screen did
-        # meanwhile. Found live (2026-10-14): a one-second pause to write a Reason, while the page an earlier click
-        # opened was still loading, was recorded as "a private step done by hand" that every run stopped at.
-        if not getattr(self, "_input_while_paused", True):
-            try:
-                after = core.observe(remember=False)
-                self.latest = after
-                self._seen(after)
-            except ComputerError as exc:
-                log(f"Could not read the screen on resuming: {exc}")
-            log("Resumed (no input from the person while paused, so no private step)")
-            return
-
         try:
             after = core.observe(remember=False)
         except ComputerError as exc:
             log(f"Could not read the screen on resuming: {exc}")
             after = None
+
+        # Nothing the person did reached the screen while paused: there is no private step, whatever the screen did
+        # meanwhile. Found live (2026-10-14): a one-second pause to write a Reason, while the page an earlier click
+        # opened was still loading, was recorded as "a private step done by hand" that every run stopped at.
+        if not getattr(self, "_input_while_paused", True):
+            if after is not None:
+                self.latest = after
+                self._seen(after)
+            log("Resumed (no input from the person while paused, so no private step)")
+            return
 
         if after is not None and pause["frame"] is not None and \
                 screen.changed_fraction(pause["frame"], after.get("frame")) < UNCHANGED_SCREEN:
@@ -1324,7 +1310,7 @@ class Recorder:
 
             if self.pause_requested:
                 self.pause_requested = False
-                self._flush(buffer, final=True)
+                self._flush(buffer)
                 buffer = []
                 self._paused()
             elif self.resume_requested:
@@ -1338,7 +1324,7 @@ class Recorder:
                     except queue.Empty:
                         break
                     buffer.append(item)
-                self._flush(buffer, final=True)
+                self._flush(buffer)
                 return
             elif buffer and processing.idle(buffer) and time.monotonic() - last_input >= QUIET_SECONDS:
                 self._flush(buffer)
@@ -1406,7 +1392,6 @@ class Recorder:
         recording.update(self.session_id, status="complete", ended_at=time.time())
         log(f"Finished demonstration {self.session_id}")
         return 0
-
 
 
 def _with_frame(event):

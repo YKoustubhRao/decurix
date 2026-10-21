@@ -191,7 +191,10 @@ func BuildMessage(from string, m OutgoingMail, at time.Time) ([]byte, error) {
 		header("Content-Type", "text/plain; charset=utf-8")
 		header("Content-Transfer-Encoding", "quoted-printable")
 		buf.WriteString("\r\n")
-		return buf.Bytes(), writeQP(&buf, m.Body)
+		if err := writeQP(&buf, m.Body); err != nil {
+			return nil, err
+		}
+		return buf.Bytes(), nil
 	}
 
 	mw := multipart.NewWriter(&buf)
