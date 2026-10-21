@@ -142,6 +142,8 @@ def observe(remember=True, frame=None):
     windows = screen.windows()
     active = next((w for w in windows if w["active"]), None)
     active_title = active["title"] if active else ""
+    if remember:
+        _task_windows(windows)  # the windows open at a task's first look are the ones it found, not its own
 
     found = []
     groups = []
@@ -377,9 +379,103 @@ def _keys_home():
     return home["title"]
 
 
-def _goto_sheet_cell(element):
+# ============================================================
+# Windows a task found open, and keys sent to none of its own
+#
+# Found live (2026-10-19): a task that ran out of time left two spreadsheet windows open; the next task opened its
+# own workbook, and its `gui type "=11,160"` (no target: the keys go where the keyboard is) replaced A1 of the old
+# task's sheet. A window that was open before this task's first look is not where this task's keys go until the task
+# has worked in it on purpose - acted on something in it, opened it, or brought it to the front. Keys with no target
+# aimed at such a window are refused, with what to do instead. Replays and a person's own actions are not asked.
+# ============================================================
+
+TASK_WINDOWS_FILE = STATE_DIR / "task-windows.json"
+
+
+def _task_windows(windows=None):
+    """This task's record of windows: {task, inherited: [ids open at its first look], adopted: [ids]}, or None."""
+
+    task = _task_now()
+    if not task:
+        return None
+    try:
+        record = json.loads(TASK_WINDOWS_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        record = None
+    if not isinstance(record, dict) or record.get("task") != task:
+        try:
+            wins = screen.windows() if windows is None else windows
+        except Exception:
+            return None
+        record = {"task": task, "inherited": [w["id"] for w in wins], "adopted": []}
+        _save_task_windows(record)
+    return record
+
+
+def _save_task_windows(record):
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        TASK_WINDOWS_FILE.write_text(json.dumps(record), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _adopt_front():
+    """The window in front now is one this task works in (it acted there, opened it, or brought it forward)."""
+
+    try:
+        record = _task_windows()
+        front = next((w for w in screen.windows() if w.get("active")), None)
+    except Exception:  # a note for later must never fail the action
+        return
+    if record is None or front is None or front["id"] in record["adopted"]:
+        return
+    record["adopted"].append(front["id"])
+    _save_task_windows(record)
+
+
+# How long keys wait for a window to come to the front (an app just opened) before they are refused.
+FRONT_WAIT_SECONDS = 5.0
+
+
+def _nothing_in_front(wait=0.0):
     """
-    Move a spreadsheet's cell cursor to an element's cell, by coordinate.
+    Whether no window is active, after waiting up to `wait` seconds for one: keys sent now go to the desktop itself.
+    False when it cannot be told.
+    """
+
+    deadline = time.monotonic() + wait
+    while True:
+        try:
+            wins = screen.windows()
+        except Exception:
+            return False
+        if any(w.get("active") for w in wins):
+            return False
+        if time.monotonic() >= deadline:
+            return True
+        time.sleep(0.5)
+
+
+def _left_from_before():
+    """The title of the window in front when it was open before this task and the task has not worked in it, or ""."""
+
+    record = _task_windows()
+    if record is None:
+        return ""
+    try:
+        front = next((w for w in screen.windows() if w.get("active")), None)
+    except Exception:
+        return ""
+    if front is None or front["id"] not in record["inherited"] or front["id"] in record["adopted"]:
+        return ""
+    return front.get("title") or "an untitled window"
+
+
+def _goto_sheet_cell(element, cell=None):
+    """
+    Move a spreadsheet's cell cursor to an element's cell (or to `cell`, a
+    coordinate on the same sheet), by coordinate.
 
     Through LibreOffice's Name Box (Ctrl+Shift+F5, the cell reference,
     Enter): the Name Box itself is not exposed over AT-SPI, and a click at a
@@ -390,9 +486,404 @@ def _goto_sheet_cell(element):
     xinput.key("Escape")
     xinput.key("ctrl+shift+F5")
     time.sleep(0.2)
-    xinput.type_text(element["name"])
+    xinput.type_text(cell or element["name"])
     xinput.key("Return")
     time.sleep(0.2)
+
+
+# ============================================================
+# A block of cells typed into a spreadsheet's grid in one action
+#
+# Found live (2026-10-19): a five-row order sheet and a GST register's four headers were typed one cell per gui
+# command - two commands a cell, about ten seconds each - because a Tab in typed text was refused (rightly, for a
+# form: it carries the rest into the next field). In a sheet's grid a Tab is the next cell and a new line the next
+# row, and every cell can be read back. So text with Tabs or new lines aimed at a sheet's cell is entered row by row
+# from that cell, and then each cell is read back and compared with what was typed: a cell the app changed (its
+# AutoInput completing "Maggi" to "Maggi 12-pack", a number read as a date, a formula showing an error) is reported,
+# and the command fails verification. Form fields keep the one-field rule.
+# ============================================================
+
+CELL_NAME = re.compile(r"^\$?([A-Za-z]{1,3})\$?([0-9]{1,7})$")
+# What a spreadsheet shows for a formula it could not work out.
+FORMULA_ERROR = re.compile(r"^(?:#[A-Z][A-Z0-9/!?]*[!?]?|Err:\d+)$")
+
+
+def _column_number(letters):
+    n = 0
+    for ch in letters.upper():
+        n = n * 26 + ord(ch) - 64
+    return n
+
+
+def _column_letters(n):
+    out = ""
+    while n:
+        n, r = divmod(n - 1, 26)
+        out = chr(65 + r) + out
+    return out
+
+
+def _sheet_rows(text):
+    """A block's rows of cells: lines split at Tabs (a final new line ends the block, it adds no row)."""
+
+    return [line.split("\t") for line in text.rstrip("\n").split("\n")]
+
+
+def _is_block(text):
+    """Whether typed text is a block of cells (a Tab between cells or a new line between rows), not one value."""
+
+    return bool(text) and ("\t" in text or "\n" in text.rstrip("\n"))
+
+
+def _sheet_start(element, before):
+    """
+    The sheet cell a block starts at: the cell aimed at, or - with no target - the focused cell of the sheet in the
+    active window. None when the typing does not go into a spreadsheet's grid.
+    """
+
+    if element is not None:
+        return element if (element.get("handle") or {}).get("sheet_cell") else None
+    focused = [e for e in before.get("elements", []) if (e.get("handle") or {}).get("sheet_cell")
+               and "focused" in (e.get("states") or []) and e.get("window_title") == before.get("active_title")]
+    return focused[0] if len(focused) == 1 else None
+
+
+def _block_cells(start, rows):
+    """Each cell of a block: (coordinate, row offset, column offset, text), from the start cell's coordinate."""
+
+    m = CELL_NAME.match((start.get("name") or "").strip())
+    if not m:
+        raise ComputerError(f"{el.describe(start)} has no cell coordinate to start a block from - type into a cell "
+                            "by its ref (gui observe lists them as cell \"A1\")")
+    column, row = _column_number(m.group(1)), int(m.group(2))
+    return [(f"{_column_letters(column + j)}{row + i}", i, j, value)
+            for i, cells in enumerate(rows) for j, value in enumerate(cells)]
+
+
+def _type_sheet_block(element, text):
+    """Enter a block of cells row by row: the Name Box to each row's first cell, the cells with a Tab between, Enter."""
+
+    rows = _sheet_rows(text)
+    first = _block_cells(element, rows)
+    for i, cells in enumerate(rows):
+        coordinate = next(c for c, ri, cj, _ in first if ri == i and cj == 0)
+        _goto_sheet_cell(element, coordinate)
+        for j, value in enumerate(cells):
+            if j:
+                xinput.key("Tab")
+            if value:
+                xinput.type_text(value)
+        xinput.key("Return")
+
+
+# ---- The same, in a viewer of an app running elsewhere (a Windows spreadsheet shown through the host-app viewer) ----
+#
+# Found live (2026-10-19): real Excel through the viewer took 68 actions and 26 minutes for two columns of formulas,
+# cell by cell through the Name Box, and saved nothing. There the cells are read through the app's accessibility and
+# listed by the viewer as `row "D2 = 640"` (empty cells left out), and keys reach the app as a person's would. A block
+# is typed where the app's cursor is, as a person types a table: each cell's text, Tab between cells, Enter at the end
+# of a row - a spreadsheet takes Enter after a run of Tabs back to the column the run began in, one row down. The
+# person's clipboard on the host is never used (winhost.Session.Paste: it is theirs). The cells are then read back from
+# the viewer: the block's top-left is where the cells that changed begin.
+
+# A cell as the viewer lists it: its address, then " = " and what it shows (an empty cell is not listed).
+RELAYED_CELL = re.compile(r"^\$?([A-Z]{1,3})\$?([0-9]{1,7})(?: = (.*))?$", re.S)
+# Pauses that let an app far away take a cell's characters before the key that moves on (a key can overtake text).
+RELAYED_CELL_PAUSE = 0.3
+RELAYED_ROW_PAUSE = 0.6
+# How many more looks the read-back waits for when the viewer's copy of the app is still behind.
+RELAYED_READ_TRIES = 5
+
+
+def _relayed_page(observation):
+    """Whether the page in front is a viewer of an app running elsewhere."""
+
+    return any(v in ((observation or {}).get("page_url") or "") for v in RELAYED_VIEWERS)
+
+
+def _relayed_cells(observation):
+    """The spreadsheet cells a viewer lists, {address: what it shows}."""
+
+    cells = {}
+    for e in (observation or {}).get("elements", []):
+        if e.get("source") != "cdp" or e.get("role") not in ("row", "gridcell", "cell"):
+            continue
+        m = RELAYED_CELL.match((e.get("name") or "").strip())
+        if m:
+            cells[m.group(1) + m.group(2)] = (m.group(3) or "").strip()
+    return cells
+
+
+def _type_relayed_block(text):
+    """Type a block where the app's cursor is: each cell's text, Tab between cells, Enter after each row."""
+
+    for cells in _sheet_rows(text):
+        for j, value in enumerate(cells):
+            if j:
+                xinput.key("Tab")
+                time.sleep(RELAYED_CELL_PAUSE)
+            if value:
+                xinput.type_text(value)
+                time.sleep(RELAYED_CELL_PAUSE)
+        xinput.key("Return")
+        time.sleep(RELAYED_ROW_PAUSE)
+
+
+def _read_back_relayed(before_cells, after_cells, text, start_cell=None):
+    """
+    Compare a typed block with the cells a viewer lists after it. Returns (span, formulas, wrong): where it went, what
+    each formula came to, and each cell that does not show what was typed. Nothing changed is all wrong. The block
+    starts at `start_cell` when the cell was named, else where the cells that changed begin.
+    """
+
+    def place(address):
+        m = CELL_NAME.match(address)
+        return _column_number(m.group(1)), int(m.group(2))
+
+    changed = [a for a in after_cells if after_cells[a] != before_cells.get(a)]
+    changed += [a for a in before_cells if a not in after_cells]
+    if not changed:
+        return "", [], ["no cell of the sheet changed - the keys did not reach the sheet (click the starting cell, or "
+                        "go to it by the Name Box and press Enter, then type the block)"]
+    if start_cell:
+        start = {"name": start_cell.upper()}
+    else:
+        column = min(place(a)[0] for a in changed)
+        row = min(place(a)[1] for a in changed)
+        start = {"name": f"{_column_letters(column)}{row}"}
+    cells = _block_cells(start, _sheet_rows(text))
+    formulas, wrong = [], []
+    for address, _, _, typed in cells:
+        if not typed.strip():
+            continue
+        shown = after_cells.get(address, "")
+        if typed.strip().startswith("="):
+            formulas.append(f"{address} {typed.strip()} -> {el._quote(shown, 40)}")
+        if not _cell_holds(typed, shown):
+            wrong.append(f"{address} shows {el._quote(shown, 60) if shown else 'nothing (or is outside the part read)'} "
+                         f"for {el._quote(typed, 60)}")
+    span = f"{cells[0][0]}:{max(cells, key=lambda c: (c[1], c[2]))[0]}" if cells else ""
+    if cells and len(_sheet_rows(text)) > 1:
+        first = CELL_NAME.match(cells[0][0])
+        last_row = max(int(CELL_NAME.match(c[0]).group(2)) for c in cells)
+        runs_on = _table_runs_on(lambda address: (after_cells.get(address) or "").strip(), _column_number(first.group(1)),
+                                 last_row)
+        if runs_on:
+            wrong.append(NOTE + runs_on)
+    return span, formulas, wrong
+
+
+def _block_report(opening, found, formulas, failed_lead):
+    """
+    What a block's result says, and which of its findings failed it: `found` holds cells that do not hold what was
+    typed (they make the command end 4) and NOTE lines (a table that goes on below the block, which is only said).
+    Returns (the text, the failures).
+    """
+
+    notes = [w[len(NOTE):] for w in found if w.startswith(NOTE)]
+    failed = [w for w in found if not w.startswith(NOTE)]
+    text = (f"\n{opening} Read back: "
+            + ("every cell holds what was typed." if not failed else
+               failed_lead + "; ".join(failed[:12]) + (f" (+{len(failed) - 12} more)" if len(failed) > 12 else ""))
+            + (("\nFormulas came to: " + "; ".join(formulas[:12])) if formulas else "")
+            + ("".join(f"\nNote: {n}" for n in notes)))
+    return text, failed
+
+
+def _sheet_cell_named(before, cell):
+    """
+    An element for a cell of the sheet in the active window, named by its coordinate ("D1"), made from a cell the
+    look listed (a sheet lists only its visible cells, and an empty column may have none). None with no such sheet.
+    """
+
+    cells = [e for e in before.get("elements", []) if (e.get("handle") or {}).get("sheet_cell")
+             and e.get("window_title") == before.get("active_title") and CELL_NAME.match(e.get("name") or "")]
+    if not cells:
+        return None
+    ref = next((e for e in cells if "focused" in (e.get("states") or [])), cells[0])
+    have, want = CELL_NAME.match(ref["name"]), CELL_NAME.match(cell)
+    dc = _column_number(want.group(1)) - _column_number(have.group(1))
+    dr = int(want.group(2)) - int(have.group(2))
+    handle = dict(ref["handle"], row=ref["handle"].get("row", 0) + dr, column=ref["handle"].get("column", 0) + dc)
+    return dict(ref, name=cell.upper(), ref=None, value="", states=[], handle=handle,
+                path=(ref.get("path") or "").rsplit(" > ", 1)[0] + f' > cell "{cell.upper()}"')
+
+
+def _name_boxes(observation):
+    """
+    The viewer's Name Box elements, the editable text field first: the viewer lists the box twice (a combobox and the
+    textbox inside it), and the app takes a value only in its text field. Found live (2026-10-19): the combobox was
+    picked, and every block failed with "not a field of the app" while the textbox took "D1:E26" when typed by hand.
+    """
+
+    boxes = [e for e in (observation or {}).get("elements", []) if e.get("source") == "cdp"
+             and e.get("role") in ("textbox", "combobox") and (e.get("name") or "").strip().lower() == "name box"]
+    return sorted(boxes, key=lambda e: e.get("role") != "textbox")
+
+
+def _goto_relayed_cell(boxes, cell):
+    """Put an app's cursor on a cell, in a viewer of a spreadsheet running elsewhere: its Name Box, then Enter."""
+
+    enabled = [b for b in boxes if "disabled" not in (b.get("states") or [])]
+    if not enabled:
+        raise ComputerError(f"this app shows no Name Box to go to {cell} by (or it is greyed out: a cell is being "
+                            "edited or a dialog is open) - nothing was typed")
+    last = None
+    for box in enabled:
+        try:
+            cdp.set_in_app(box, cell.upper())
+            break
+        except ComputerError as exc:
+            last = exc
+            if not NOT_SET.search(str(exc)):
+                raise
+    else:
+        raise ComputerError(f"could not go to {cell} by the Name Box: {last} - nothing was typed")
+    time.sleep(RELAYED_CELL_PAUSE)
+    xinput.key("Return")
+    time.sleep(RELAYED_ROW_PAUSE)
+
+
+# How long a block may take to type into an app far away, as seconds: its keys are relayed one by one (a 25-row block
+# of formulas was 2,100 of them, about 0.09 s each) and the operator kills a command at 180. Found live (2026-10-19):
+# the command was killed at the 24th row's turn, nothing was read back, and "exit 124" was read past. Past this the
+# block stops at a row boundary and says what was not typed.
+RELAYED_BLOCK_SECONDS = float(os.environ.get("DECURIX_GUI_BLOCK_SECONDS", "110"))
+
+
+def _type_relayed_rows(before, start_cell, text, budget=None, clock=time.monotonic):
+    """
+    Enter a block into a spreadsheet running elsewhere, row by row from `start_cell`. First Escape: it takes this
+    page's keyboard out of any stand-in field (the keys then go where the app's cursor is) and ends an edit in the app.
+    Each row is begun at its first cell through the Name Box - which also drops any selected range (in a selection Tab
+    and Enter move inside it: found live, a block typed over a selected D1:E26 came out a row off, with a circular
+    reference) - then each cell's text is typed as keys, a real Tab key between cells and Enter after the last. A
+    cell's value is never set with Tabs in it: a Tab in a set value is a character.
+    """
+
+    budget = RELAYED_BLOCK_SECONDS if budget is None else budget
+    began = clock()
+    xinput.key("Escape")
+    time.sleep(RELAYED_ROW_PAUSE)
+    boxes = _name_boxes(before)
+    if boxes and all("disabled" in (b.get("states") or []) for b in boxes):
+        # Still editing a cell, or a dialog is open: one more look after the Escape.
+        boxes = _name_boxes(observe())
+    m = CELL_NAME.match(start_cell)
+    column, row = _column_number(m.group(1)), int(m.group(2))
+    rows = _sheet_rows(text)
+    for i, cells in enumerate(rows):
+        if i and clock() - began > budget:
+            return i  # whole rows only: what was typed is read back, and the rest is named
+        _goto_relayed_cell(boxes, f"{_column_letters(column)}{row + i}")
+        for j, value in enumerate(cells):
+            if j:
+                xinput.key("Tab")
+                time.sleep(RELAYED_CELL_PAUSE)
+            if value:
+                xinput.type_text(value)
+                time.sleep(RELAYED_CELL_PAUSE)
+        xinput.key("Return")
+        time.sleep(RELAYED_ROW_PAUSE)
+    return len(rows)
+
+
+def _squash(text):
+    """Text as compared after typing: spaces collapsed, the dashes and quotes AutoCorrect makes undone (case kept)."""
+
+    return " ".join((text or "").translate(_AUTOCORRECTED).split())
+
+
+def _numeric(text):
+    """A cell's text as a number when it is one, written any usual way (1,250.00, ₹78, 9%); else None."""
+
+    import decimal
+
+    t = re.sub(r"[\s,]", "", text or "")
+    t = re.sub(r"^[^\d+\-.]+", "", t)
+    percent = t.endswith("%")
+    t = t.rstrip("%")
+    if not re.fullmatch(r"[+-]?(?:\d+\.?\d*|\.\d+)", t):
+        return None
+    value = decimal.Decimal(t)
+    return value / 100 if percent else value
+
+
+def _cell_holds(typed, shown):
+    """Whether a cell shows what was typed into it (a formula: whether it shows a result rather than an error)."""
+
+    typed, shown = (typed or "").strip(), (shown or "").strip()
+    if typed.startswith("="):
+        return not FORMULA_ERROR.match(shown)
+    if _squash(typed) == _squash(shown):
+        return True
+    a, b = _numeric(typed), _numeric(shown)
+    return a is not None and b is not None and (a == b or (typed.strip().endswith("%") != shown.endswith("%")
+                                                            and (a * 100 == b or a == b * 100)))
+
+
+# A row label that says it totals what is above it (the table ends before it).
+_TOTAL_ROW = re.compile(r"^\s*(?:grand\s+|sub[\s-]*)?totals?\b", re.I)
+# What a read-back puts first on a finding that is a warning to read, not a cell that failed (the command still ends 0).
+NOTE = "NOTE: "
+# How far below a block the table beside it is followed.
+_RUNS_ON_LIMIT = 400
+
+
+def _table_runs_on(shown, first_column, last_row):
+    """
+    A sentence when the table to the left of a block of cells goes on below the block's last row, else "". Found live
+    (2026-10-19, real Excel): a block of formulas stopped one row short of a table of 24 rows, and was read back as
+    "every cell holds what was typed" - the read-back only compared what was typed with what was typed. `shown(address)`
+    is a cell's text ("" for none); the table's own label column (A) says where a Total row ends it.
+    """
+
+    if first_column < 2:
+        return ""
+    left = _column_letters(first_column - 1)
+    if not shown(f"{left}{last_row}"):
+        return ""
+    row = last_row
+    while row < last_row + _RUNS_ON_LIMIT and shown(f"{left}{row + 1}") and not _TOTAL_ROW.match(shown(f"A{row + 1}") or ""):
+        row += 1
+    if row == last_row:
+        return ""
+    return (f"the table to its left (column {left}) goes on to row {row}, but this block ends at row {last_row} - "
+            f"rows {last_row + 1} to {row} were NOT filled")
+
+
+def _read_back_block(start, text):
+    """
+    Read every cell of a typed block back from the sheet. Returns (lines, wrong): what each formula came to and
+    each cell that does not hold what was typed (or could not be read).
+    """
+
+    rows = _sheet_rows(text)
+    handle = start.get("handle") or {}
+    shown_lines, wrong = [], []
+    for coordinate, i, j, typed in _block_cells(start, rows):
+        if not typed.strip():
+            continue
+        shown = atspi.sheet_cell_text(start, handle.get("row", 0) + i, handle.get("column", 0) + j)
+        if shown is None:
+            wrong.append(f"{coordinate} could not be read back")
+            continue
+        if typed.strip().startswith("="):
+            shown_lines.append(f"{coordinate} {typed.strip()} -> {el._quote(shown, 40)}")
+        if not _cell_holds(typed, shown):
+            wrong.append(f"{coordinate} shows {el._quote(shown, 60)} for {el._quote(typed, 60)}")
+    cells = _block_cells(start, rows)
+    first = CELL_NAME.match(cells[0][0])
+    last_row = int(CELL_NAME.match(cells[-1][0]).group(2))
+
+    def shown_at(address):
+        m = CELL_NAME.match(address)
+        return (atspi.sheet_cell_text(start, int(m.group(2)) - 1, _column_number(m.group(1)) - 1) or "").strip()
+
+    runs_on = _table_runs_on(shown_at, _column_number(first.group(1)), last_row) if len(rows) > 1 else ""
+    if runs_on:
+        wrong.append(NOTE + runs_on)
+    return shown_lines, wrong
 
 
 # Windows whose tables are shapes on a page (a slide, a drawing), edited a cell at a time with F2.
@@ -528,6 +1019,438 @@ def _inside_large(element, point):
     return abs(point[0] - (x + w / 2)) > 12 or abs(point[1] - (y + h / 2)) > 12
 
 
+# A press that saves in an app shown in a viewer: Ctrl+S, or a dialog's Save, Replace or Yes (a replace prompt).
+SAVE_CONTROL = re.compile(r"^\s*(?:save|replace|yes)\s*$", re.I)
+SAVE_SETTLE_SECONDS = 4
+
+
+def _saves(kind, element, keys):
+    """Whether an action saves in an app: Ctrl+S, or a press on a control named Save, Replace or Yes."""
+
+    if kind == "key":
+        return any(xinput.normalize_combo(c).lower() == "ctrl+s" for c in keys or ())
+    if kind in ("click", "double_click") and element is not None:
+        return bool(SAVE_CONTROL.match(element.get("name") or ""))
+    return False
+
+
+def _shared_save_note(since, wait=SAVE_SETTLE_SECONDS):
+    """
+    After a save in an app of the person's computer, on a worker with a shared folder: which file of that folder it
+    wrote, or plainly that none changed. Found live (2026-10-20, P1): a deck saved in PowerPoint was read back from a
+    stale copy elsewhere, and the worker reported the save had not taken - the file had changed where asked.
+    """
+
+    from decurix_agent import shared
+
+    if not shared.active():
+        return ""
+    deadline = time.time() + wait
+    while True:
+        changed = []
+        for path in shared.walk():
+            if path.name.startswith("~$"):
+                continue  # an app's lock file, not what it saved
+            try:
+                if os.stat(path).st_mtime >= since - 1:
+                    changed.append(path)
+            except OSError:
+                continue
+        if changed or time.time() >= deadline:
+            break
+        time.sleep(0.5)
+    if changed:
+        named = "; ".join(f"{shared.to_host(str(p)) or p} (on this desktop {p})" for p in changed[:4])
+        return f"\nSaved in the person's shared folder: {named}. Read it back from there."
+    held = sorted({p.name[2:] for p in _shared_lock_files()})
+    if held:
+        return ("\nNo file in the person's shared folder changed with this save, and " + ", ".join(held[:4])
+                + " is open in an app (its lock file ~$... is there): a save over a file that is open elsewhere does not "
+                "take. Save in the app that has it open, or close it there first; then read the file back.")
+    return ("\nNo file in the person's shared folder changed with this save. Before going on, look: a dialog may still "
+            "be open (a replace or file-format question), the app may have saved somewhere else (another folder, a "
+            "cloud location), or the file may be open in another program.")
+
+
+def _shared_lock_files():
+    """Office's owner files (~$name) in the shared folder: the files an app of the person's computer has open."""
+
+    from decurix_agent import shared
+
+    out = []
+    if not shared.active():
+        return out
+    for folder, _dirs, names in os.walk(shared.link_path(), followlinks=True):
+        out += [Path(folder) / n for n in names if n.startswith("~$")]
+        if len(out) > 20:
+            break
+    return out
+
+
+def _refuse_number_arrows(kind, point):
+    """A click at a point on a number field's up/down arrows is refused: each one changes the field's value."""
+
+    if kind not in ("click", "double_click") or point is None or not cdp.available():
+        return
+    number = cdp.number_field_at(*point)
+    if number and number.get("arrows"):
+        raise ComputerError(f"nothing was pressed: {point[0]},{point[1]} is on the up/down arrows of the number "
+                            f"field {el._quote(number.get('label') or '', 60)} (now {number.get('value')!r}), and "
+                            "each click there changes its value. Set it with gui type REF \"the number\". A list "
+                            "of earlier entries that opens under a field is the browser's, not the form's: ignore it "
+                            "(press Tab).")
+
+
+# A document an app has open read-only, or a new blank one ("Document1", "Book1", "Presentation1"), as its title or a
+# status element shows it.
+_READ_ONLY_DOC = re.compile(r"\bRead-Only\b|\[Read-Only\]", re.I)
+_BLANK_DOC = re.compile(r"^\s*(?:Document|Book|Presentation)\d+(?:\s*-\s*(?:Word|Excel|PowerPoint|Compatibility Mode))?\s*$")
+
+
+def _refuse_unsafe_save(kind, element, keys, before):
+    """
+    A save in an app of the person's computer is refused when what is open there is read-only or a new blank document:
+    Ctrl+S then saves nothing or a copy - or an empty document over the file with Save As. Found live (round 5 P1 on pc3,
+    2026-10-20, CS): Word held the memo from an earlier attempt, the tools rewrote it, and Word's stale and later blank
+    copy was saved over it - the memo ended with 0 headings.
+    """
+
+    if not _relayed_page(before) or not _saves(kind, element, keys):
+        return
+    names = [str(e.get("name") or "") for e in (before or {}).get("elements", [])]
+    title = str((before or {}).get("active_title") or "")
+    if any(_READ_ONLY_DOC.search(n) for n in names + [title]):
+        raise ComputerError("nothing was saved: the document open in the app is read-only (its title says Read-Only) - "
+                            "a save there does not reach the file. Close it without saving, then open the file again from "
+                            "its place (another app of this desktop may still hold it), and save only when it is not "
+                            "read-only.")
+    if any(_BLANK_DOC.match(n) for n in names + [title]):
+        raise ComputerError("nothing was saved: the app has a new blank document open (Document1/Book1/Presentation1), "
+                            "not the file - Ctrl+S would save an empty document. Open the file itself from its place "
+                            "(File > Open, its full path), check it is the file, then save.")
+
+
+def _beside_number_fields(target):
+    """A point to scroll the page from that is not on a number field: the target's row at the page's left, then the
+    middle of the screen."""
+
+    width, height = screen.size()
+    for candidate in ((max(10, target[0] - 300), target[1]), (width // 2, height // 2), (20, height // 2)):
+        if not cdp.number_field_at(*candidate):
+            return candidate
+    return (20, height // 2)
+
+
+# Where a form waiting to be confirmed is noted between gui commands (each runs as its own process).
+FORM_CHECK_FILE = Path(os.environ.get("TMPDIR", "/tmp")) / "decurix-form-check.json"
+FORM_CHECK_SECONDS = 600
+
+
+# A value that only holds a place: "TEST", "dummy", "xxx", "asdf" anywhere; "123", "abc" in a reference-like field.
+PLACEHOLDER_ANYWHERE = re.compile(r"^\W*(?:test(?:ing)?|dummy|sample|placeholder|x{3,}|asdf\w*|qwerty|lorem ipsum.*|"
+                                  r"tbd|to be (?:confirmed|decided))\W*$", re.I)
+PLACEHOLDER_IN_REFERENCE = re.compile(r"^\W*(?:1234?5?6?|123|abc|xyz|0000?|1111?)\W*$", re.I)
+REFERENCE_FIELD = re.compile(r"\b(?:po|ref|reference|number|no\.?|#|code|id|order|invoice|bill|receipt|voucher|customer|"
+                             r"supplier|vendor|name|description|note|remarks?)\b", re.I)
+
+
+def placeholder_fields(fields):
+    """The filled fields of a form whose value only holds a place ("Customer PO: TEST"), as "label: value"."""
+
+    out = []
+    for label, value in fields or ():
+        value = str(value or "").strip()
+        if PLACEHOLDER_ANYWHERE.match(value) or (REFERENCE_FIELD.search(str(label or "")) and PLACEHOLDER_IN_REFERENCE.match(value)):
+            out.append(f"{label}: {value}")
+    return out
+
+
+# A click that saves a new record, and what the application answers once it has.
+_SAVE_CONTROL = re.compile(r"(?i)\b(?:submit|save|create|add|onboard|post|confirm|place|register|book|finish)\b")
+_SAVED_ANSWER = re.compile(r"(?i)/done/|/saved?\b|/success|\bsaved\b|\bcreated\b|\bsubmitted\b|\badded\b")
+_NEW_RECORD_PAGE = re.compile(r"(?i)page is now \S*/(?:new|create|add)\b|\b(?:new|create|add)\b[^\"]{0,20}(?:record|employee|"
+                              r"order|customer|invoice|entry)")
+_RECORD_NO = re.compile(r"\b[A-Z]{2,5}-\d{3,}\b")
+# A new record's form opened at its start (".../new", not ".../new?step=2" of the same form).
+_FORM_START = re.compile(r"(?i)page is now \S*/(?:new|create|add)(?:[?#](?![^\s;]*step=(?:[2-9]|\d\d))[^\s;]*)?(?=[\s;]|$)")
+
+
+def _identity(values):
+    """What identifies a record among the values put into its form: an email, else its first two words typed (a name)."""
+
+    mails = {v.strip().lower() for v in values if re.fullmatch(r"\S+@\S+\.\S+", v.strip())}
+    if mails:
+        return ("mail", frozenset(mails))
+    words = [v.strip().lower() for v in values if re.fullmatch(r"[A-Za-z][A-Za-z .'-]{1,40}", v.strip())]
+    return ("name", tuple(words[:2])) if len(words) >= 2 else None
+
+
+def already_entered(events):
+    """
+    (what it is, the system's number) when the new record being saved repeats one this task already saved: the values
+    typed since the last save, against those of each earlier save (an email, or its first two words). None otherwise -
+    and never for a form that changes an existing record. Found live (round 5 P4, 2026-10-21): a joiner saved with the
+    wrong department was entered again, and the portal held him twice.
+    """
+
+    saved, current, new_page = [], [], False
+    for event in events:
+        if event.get("outcome") not in (None, "done"):
+            continue
+        change = str(event.get("change") or "")
+        if _FORM_START.search(change) or _FORM_START.search("page is now " + str(event.get("target") or "")):
+            current = []  # (a new record's form opened afresh: what was typed into an abandoned one is not this one's)
+        if event.get("kind") == "type" and event.get("text"):
+            current.append(str(event["text"]))
+        if event.get("kind") == "select" and event.get("option"):
+            current.append(str(event["option"]))
+        if _NEW_RECORD_PAGE.search(change) or _NEW_RECORD_PAGE.search(str(event.get("target") or "")):
+            new_page = True
+        if event.get("kind") in ("click", "key") and _SAVED_ANSWER.search(change) and current:
+            number = _RECORD_NO.search(change)
+            saved.append((_identity(current), number.group(0) if number else ""))
+            current, new_page = [], False
+    mine = _identity(current)
+    if not mine or not new_page:
+        return None
+    for theirs, number in saved:
+        if theirs and theirs[0] == mine[0] and (theirs[1] & mine[1] if mine[0] == "mail" else theirs[1] == mine[1]):
+            what = ", ".join(sorted(mine[1])) if mine[0] == "mail" else " ".join(w.title() for w in mine[1])
+            return what, number
+    return None
+
+
+def _current_form(events):
+    """[(field label, value)] put into the record's form being filled: since it opened afresh or the last save."""
+
+    current = []
+    for event in events:
+        if event.get("outcome") not in (None, "done"):
+            continue
+        change = str(event.get("change") or "")
+        if _FORM_START.search(change) or _FORM_START.search("page is now " + str(event.get("target") or "")):
+            current = []
+        label = str((event.get("element") or {}).get("name") or "")
+        if event.get("kind") == "type" and event.get("text"):
+            current.append((label, str(event["text"])))
+        if event.get("kind") == "select" and event.get("option"):
+            current.append((label, str(event["option"])))
+        if event.get("kind") in ("click", "key") and _SAVED_ANSWER.search(change) and current:
+            current = []
+    return current
+
+
+_LABEL_NOISE = {"of", "the", "a", "no", "number", "dd", "mm", "yyyy", "rs", "usd", "inr", "per", "recruiter", "status"}
+
+
+def _words_of(label):
+    return {w for w in re.findall(r"[a-z]+", re.sub(r"\(.*?\)", " ", str(label or "").lower())) if w not in _LABEL_NOISE}
+
+
+def _same_value(a, b):
+    """Two values of one field, the same whatever their form: case, spaces, punctuation, a date's format, a phone's +91."""
+
+    import datetime
+    def norm(v):
+        if isinstance(v, (datetime.date, datetime.datetime)):
+            return ("date", v.strftime("%Y-%m-%d"))
+        t = str(v if v is not None else "").strip()
+        m = re.fullmatch(r"(\d{1,2})[/.\- ](\d{1,2}|[A-Za-z]{3})[a-z]*[/.\- ](\d{4})", t)
+        if m:
+            months = {k: i for i, k in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct",
+                                                  "nov", "dec"), 1)}
+            mo = int(m.group(2)) if m.group(2).isdigit() else months.get(m.group(2).lower()[:3], 0)
+            return ("date", f"{int(m.group(3)):04d}-{mo:02d}-{int(m.group(1)):02d}")
+        m = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})(?:[ T].*)?", t)
+        if m:
+            return ("date", f"{m.group(1)}-{m.group(2)}-{m.group(3)}")
+        digits = re.sub(r"\D", "", t)
+        if len(digits) >= 7 and len(digits) >= len(re.sub(r"\s", "", t)) - 4:
+            return ("digits", digits[-10:])
+        return ("text", re.sub(r"[^a-z0-9]", "", t.lower()))
+    return norm(a) == norm(b) and norm(a)[1] != ""
+
+
+def crossed_values(form, tables):
+    """
+    The values put into a record's form that are ANOTHER record's in the source table (one row per record) and not
+    this one's: [(field, typed, whose, own)]. The record is the row its typed email, else its first two words, names.
+    Nothing when the record or the field's column cannot be told. Found live (round 5 P4, 2026-10-21): Rohit
+    Kulkarni was saved with Mohammed Arif Khan's department and job title.
+    """
+
+    values = [v for _, v in form]
+    mails = [v.strip().lower() for v in values if re.fullmatch(r"\S+@\S+\.\S+", v.strip())]
+    words = [v.strip().lower() for v in values if re.fullmatch(r"[A-Za-z][A-Za-z .'-]{1,40}", v.strip())][:2]
+    out = []
+    for header, rows in tables:
+        cells = lambda row: [str(c).strip().lower() for c in row if c not in (None, "")]  # noqa: E731
+        if mails:
+            own = [r for r in rows if any(c == m for c in cells(r) for m in mails)]
+        elif len(words) == 2:
+            own = [r for r in rows if all(any(w == c or w in c.split() for c in cells(r)) for w in words)]
+        else:
+            continue
+        if len(own) != 1:
+            continue
+        own = own[0]
+        name_col = next((i for i, h in enumerate(header) if re.search(r"(?i)\bname\b", str(h or ""))), 0)
+        for label, typed in form:
+            if typed.strip().lower() in mails or typed.strip().lower() in words:
+                continue
+            lw = _words_of(label)
+            col = next((i for i, h in enumerate(header) if h and lw and (_words_of(h) and (_words_of(h) <= lw
+                                                                                          or lw <= _words_of(h)))), None)
+            if col is None or col >= len(own) or _same_value(typed, own[col]):
+                continue
+            others = [r for r in rows if r is not own and col < len(r) and _same_value(typed, r[col])]
+            if others:
+                whose = str(others[0][name_col] if name_col < len(others[0]) else "another record")
+                out.append((str(label), typed, whose, "" if own[col] is None else str(own[col])))
+    return out
+
+
+def _source_files():
+    """The request's own input tables: its attachments and the files in the folders it names (as BK3 reads them) -
+    most requests name a folder ("everything is in the P3_payment_run folder") and attach nothing."""
+
+    from decurix_agent import task_context
+    files = list(task_context.current_files())
+    try:
+        from decurix_agent import long_task
+        files += long_task.request_input_files(task_context.current_request(), ())
+    except Exception:  # noqa: BLE001 - what cannot be listed is not read
+        pass
+    return [f for f in dict.fromkeys(str(x) for x in files)
+            if Path(f).suffix.lower() in (".xlsx", ".xlsm", ".csv", ".tsv")]
+
+
+def _crossed_record(element):
+    """The refusal of a save whose form holds another record's values from the request's own table ("" to go on)."""
+
+    if not _SAVE_CONTROL.search(str(element.get("name") or "")):
+        return ""
+    try:
+        from decurix_agent import stage_facts, task_context
+        from decurix_agent.computer import recording
+        task_id = task_context.current()
+        if not task_id:
+            return ""
+        _, events = recording.load(recording.session_for_task(task_id))
+        tables = [(header, rows) for _, header, rows in stage_facts.tables_of(_source_files())]
+    except (FileNotFoundError, OSError, ValueError, ImportError):
+        return ""
+    form = _current_form(events)
+    found = crossed_values(form, tables) if form and tables else []
+    if not found:
+        return ""
+    said = "; ".join(f"{field} is '{typed}' - that is {whose}'s; the source gives '{own}'"
+                     for field, typed, whose, own in found[:6])
+    return (f"Not pressed: this record's form holds another record's values ({said}). Put this record's own values "
+            "from the source in those fields, then save.")
+
+
+def _duplicate_record(element):
+    """The refusal of a save that would enter, as a new record, one this task already saved ("" to go on)."""
+
+    if not _SAVE_CONTROL.search(str(element.get("name") or "")):
+        return ""
+    try:
+        from decurix_agent import task_context
+        from decurix_agent.computer import recording
+        task_id = task_context.current()
+        if not task_id:
+            return ""
+        _, events = recording.load(recording.session_for_task(task_id))
+    except (FileNotFoundError, OSError, ValueError, ImportError):
+        return ""
+    found = already_entered(events)
+    if not found:
+        return ""
+    what, number = found
+    return (f"Not pressed: {what} is already saved in this application{f' ({number})' if number else ''} - entering it "
+            "again makes a second record of the same one. Never enter a record twice. If the saved one is wrong and the "
+            "application lets you correct it, correct that one; if it does not, write a line 'WRONG IN THE APPLICATION: "
+            "<the record> - <what is wrong> - <what the person must fix by hand>' and leave it for the person.")
+
+
+def _unsourced_fields(fields):
+    """
+    [(label, value)] of a form's fields whose value the tools typed during this task and that states a fact (an
+    address, a date, a code, a figure of 100 or more) no source holds - the request, its files, the person's messages,
+    the system's pages read, the work's recorded working (provenance, harness audit 2026-10-21). A value the
+    application filled in itself is not the worker's and is never judged here.
+    """
+
+    from decurix_agent import long_task, task_context
+    from decurix_agent.computer import evidence
+    typed = {" ".join(str(v).split()) for v in evidence.entered()}
+    mine = [(label, value) for label, value in fields if " ".join(str(value or "").split()) in typed]
+    if not mine:
+        return []
+    sources = long_task.work_sources(task_context.current_request())
+    return [(label, value) for label, value in mine if sources.unsourced(value)]
+
+
+def _form_check(element, checked=False):
+    """
+    Before a form with several filled fields is sent by a click on its submit control: a click lists what the form
+    holds and presses nothing; the click again with --checked, the form unchanged since that list, sends it. Found live
+    (2026-10-20): an order saved with a quantity the worker had not meant - a list of the fields before Save is the
+    one look that catches it. Returns the text that stops the click, or "" to go on.
+    """
+
+    import hashlib
+
+    twice = _duplicate_record(element) or _crossed_record(element)
+    if twice:
+        return twice  # (never sent, --checked or not)
+    found = cdp.submit_form_fields(element, min_fields=1)
+    if not found:
+        return ""
+    probe = placeholder_fields(found["fields"])
+    if probe:
+        # Never sent, with or without --checked: a record saved to see what the application does is a real record.
+        return (f"Not pressed: {el._quote(found['form'], 60)} holds a placeholder ({'; '.join(probe)}), so this would "
+                "save a test record in a real application - which may then be invoiced or shipped, and many "
+                "applications cannot delete it. Never save, submit or post a record to find out how an application "
+                "behaves: learn the form by reading it (its fields, labels, options, help, an existing record's detail "
+                "view), and save only the real records the request asks for. A form started by mistake is cancelled "
+                "or left unsaved.")
+    try:
+        from decurix_agent import filler, task_context
+        files = task_context.current_files()
+        made_up = filler.invented(found["fields"], task_context.current_request(), files)
+        made_up += _unsourced_fields(found["fields"])
+    except Exception:  # noqa: BLE001 - a check that cannot be made stops nothing
+        made_up = []
+    if made_up:
+        # Never sent, with or without --checked (found live 2026-10-20: a joiner onboarded with phone 9999999999).
+        return filler.refusal(made_up, files)
+    if len(found["fields"]) < cdp.FORM_CHECK_MIN_FIELDS:
+        return ""  # a small form (a search, a sign-in) is sent at once
+    key = hashlib.sha256(json.dumps([element.get("path") or element.get("name"), found], sort_keys=True).encode()).hexdigest()
+    try:
+        noted = json.loads(FORM_CHECK_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        noted = {}
+    if checked and noted.get("key") == key and time.time() - float(noted.get("at") or 0) < FORM_CHECK_SECONDS:
+        try:
+            FORM_CHECK_FILE.unlink()
+        except OSError:
+            pass
+        return ""
+    try:
+        FORM_CHECK_FILE.write_text(json.dumps({"key": key, "at": time.time()}), encoding="utf-8")
+    except OSError:
+        return ""  # a check that cannot be kept never blocks the click
+    lines = "\n".join(f"  {label}: {value}" for label, value in found["fields"])
+    return (f"Not pressed yet - {el._quote(found['form'], 60)} would be sent holding:\n{lines}\n"
+            "Check every value against what you meant to enter (a quantity, a price, every line). If all are right, "
+            f"send gui click {element.get('ref') or 'REF'} --checked to save; if one is wrong, correct it first "
+            "(gui type REF \"value\") - the form is listed again before it is sent.")
+
+
 def _perform(kind, element, point, text, keys, direction, amount, option, append, end=None, files=None):
     """Carry out one action; return which backend did it."""
 
@@ -535,6 +1458,9 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
         if kind == "type":
             if text is None:
                 raise ComputerError("nothing to type")
+            if _is_block(text):
+                _type_sheet_block(element, text)
+                return "xdotool:sheet-block"
             _goto_sheet_cell(element)
             # Typing into a selected cell replaces it; Enter commits the entry.
             xinput.type_text(text)
@@ -691,6 +1617,18 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
             _focus_window(element)
             if element["source"] != "cdp":
                 atspi.grab_focus(element)
+        if any(xinput.normalize_combo(c).lower() in ("up", "down", "page_up", "page_down", "prior", "next")
+               for c in keys) and cdp.available():
+            number = cdp.focused_number_field()
+            if number:
+                raise ComputerError(f"nothing was pressed: Up/Down in the number field {el._quote(number, 60)} steps "
+                                    "its value. Set the value with gui type REF \"the number\"; to move on, press Tab.")
+        if any(xinput.normalize_combo(c).lower() in ("return", "enter", "kp_enter") for c in keys) and cdp.available():
+            # Enter in a form's line field submits the whole form (cdp.ENTER_SUBMITS): held back while the form still
+            # has empty fields - nothing is pressed.
+            held = cdp.focused_enter_would_submit()
+            if held:
+                raise cdp.EnterWouldSubmit(cdp.held_enter_message(held))
         for combo in keys:
             xinput.key(combo)
         return "xdotool"
@@ -704,6 +1642,10 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
         if target is None:
             width, height = screen.size()
             target = (width // 2, height // 2)
+        if cdp.available() and cdp.number_field_at(*target):
+            # The wheel over a number field changes its value, not the page (cdp.SET_NUMBER's note): the page is
+            # scrolled from a point beside it instead.
+            target = _beside_number_fields(target)
         if element is not None:
             _focus_window(element)
         xinput.scroll(target[0], target[1], direction, amount or 3)
@@ -956,14 +1898,6 @@ GENERIC_WORDS = {"ltd", "limited", "pvt", "private", "inc", "llp", "llc", "co", 
 
 def _telling_words(text):
     return {w for w in (_stem(t) for t in re.findall(r"\w+", text or "")) if len(w) >= 3 and w not in GENERIC_WORDS}
-
-
-def _task_now():
-    try:
-        from decurix_agent import task_context
-        return task_context.current() or ""
-    except Exception:
-        return ""
 
 
 def _note_failed_search(element, wanted):
@@ -1357,6 +2291,13 @@ def _select_custom(element, option):
 # How long to give a page that reset a field before typing into it again.
 RETYPE_PAUSE = 1.0
 
+# Typing aimed at no field whose result changed nothing on the screen did not land: no text field, cell or box had the
+# keyboard. A short text can change too few pixels to show, so the note is only for texts of this many characters.
+NOTHING_TYPED_MIN = 3
+NOTHING_TYPED_NOTE = ("NOTHING WAS TYPED: no text field, table cell or box had the keyboard, so the text went nowhere. "
+                      "Click into the cell/box/field you mean (or give its ref), then type, and look to see the text "
+                      "show before going on.")
+
 
 def _same_field(element, observation):
     """The field typed into, as a fresh observation has it (found by its path), or None."""
@@ -1457,9 +2398,33 @@ PRESSED_ROLES = ("button", "link", "option", "menuitem", "listitem", "treeitem",
                  "switch", "toggle")
 
 
+FILLED_ROLES = ("textbox", "searchbox", "combobox", "spinbutton")
+
+
+def _what_it_acts_on(observation, element):
+    """
+    The filled fields in the same window as an action the gate stopped, for
+    the person to see what it would send and where: "Send" alone said nothing
+    of which chat the message was in. Found live (2026-10-16): a message was
+    approved and sent to the wrong person, whose name was on the message box
+    the whole time. Secret fields are never shown.
+    """
+
+    group = (element or {}).get("group") or active_group(observation)
+    shown = []
+    for e in observation.get("elements") or []:
+        if e.get("role") not in FILLED_ROLES or (group and e.get("group") != group):
+            continue
+        value = " ".join((e.get("value") or "").split())
+        if not value or privacy.secret_field(e) or privacy.credential_in(value):
+            continue
+        shown.append(f"{e['role']} {el._quote(e.get('name') or '', 60)} holds {el._quote(value, 80)}")
+    return ("It would act on what is filled in: " + "; ".join(shown[:3])) if shown else ""
+
+
 def act(kind, ref=None, role=None, name=None, path=None, point=None,
         text=None, keys=None, direction=None, amount=None, option=None, append=False, end=None, files=None,
-        see=None, replace_all=False, named=False):
+        see=None, replace_all=False, named=False, keys_from_task=False, cell=None, check_form=False):
     """
     Do one thing on the screen and report what changed. `end` is the point a
     drag drops at. `see` describes the target in words for the grounding model
@@ -1502,6 +2467,21 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
                 raise
             point = grounder.locate(before["frame"], wanted)
             grounded = wanted
+    # A cell named by its coordinate ("gui type D1 ..."): in a sheet this desktop reads, that cell's element; in a
+    # viewer of a spreadsheet running elsewhere, the cursor is put there by the app's Name Box before typing. Found
+    # live (2026-10-19): `gui type D1 - <<'EOF'` with a block in real Excel was refused as "one field at a time".
+    relayed_cell = None
+    rows_entered = None  # how many rows of a block typed into an app far away were entered (the time budget may stop it)
+    if cell:
+        if not CELL_NAME.match(cell.strip()):
+            raise ComputerError(f"{cell!r} is not a cell's coordinate (like D1)")
+        element = _sheet_cell_named(before, cell.strip().replace("$", ""))
+        if element is None:
+            if _relayed_page(before) and _relayed_cells(before):
+                relayed_cell = cell.strip().upper().replace("$", "")
+            else:
+                raise ComputerError(f"{cell} names a cell, but the window in front shows no spreadsheet whose cells "
+                                    "can be read - bring the spreadsheet forward (gui front), or type by a ref")
     aimed_by_point = point is not None and element is None and not grounded
     if point is not None and element is None:
         element = el.at_point(before["elements"], point[0], point[1], before.get("windows"), before.get("popups"))
@@ -1562,20 +2542,35 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
                             "observe, then type into its field by ref; typing at an unresolved point can trigger "
                             "page shortcuts instead of entering text")
 
+    # Keys sent to no element go where the keyboard is (see "Windows a task found open").
+    untargeted = element is None and point is None
+
+    # Rows of cells for a spreadsheet's grid: entered row by row and read back (see "A block of cells" above). With no
+    # target, the block starts at the focused cell of the sheet in the active window.
+    block = _sheet_start(element, before) if kind == "type" and _is_block(text) and point is None else None
+    if block is not None and element is None:
+        element = block
+    # ...and in a viewer of a spreadsheet running elsewhere, typed with no target where the app's cursor is.
+    relayed_block = (kind == "type" and block is None and untargeted and text is not None
+                     and (relayed_cell is not None
+                          or (_is_block(text) and _relayed_page(before) and bool(_relayed_cells(before)))))
+
     # One field per typing action: a Tab carries the rest into another field, and what lands there is recorded - and
     # withheld or not - as if typed into this one (live, "Admin\tadmin123\n" put a password into the username's step).
     # A table on a slide is the exception: Tab is how its cells are filled one after another, and none of them is a
     # password field (found live, 2026-10-16: filled cell by cell, the cells' refs moved as they changed and the values
     # scattered).
-    if kind == "type" and text and "\t" in text and not (
+    if kind == "type" and block is None and not relayed_block and text and "\t" in text and not (
             (element is not None and element.get("role") == "cell"
              and DRAWN_TABLES.search(element.get("window_title") or ""))
             or (element is None and point is None and DRAWN_TABLES.search(before.get("active_title") or ""))):
         raise ComputerError("type one field at a time: a Tab in the text would carry the rest into another field. "
-                            "Type into this field, then type the next value into its own field (by its ref).")
+                            "Type into this field, then type the next value into its own field (by its ref). (Rows "
+                            "of a spreadsheet's grid are typed in one go into a cell: gui type CELLREF "
+                            "\"a\\tb\\nc\\td\" - the cell a sheet lists as cell \"A1\".)")
     # In a slide's table a line break is a second line inside the same cell, not the next row: a table typed with Tabs
     # between cells and line breaks between rows came out with every row crammed into the first cells (found live).
-    if kind == "type" and text and "\t" in text and "\n" in text:
+    if kind == "type" and block is None and not relayed_block and text and "\t" in text and "\n" in text:
         raise ComputerError("a table on a slide is filled with a Tab between every two cells, the end of a row "
                             "included: a line break would put the next row inside this cell. Nothing was typed - type "
                             "it again with Tabs only (\"Region\\tRevenue\\tNorth\\t812\").")
@@ -1659,7 +2654,16 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     if kind == "key" and element is None:
         context["focused"] = _keyboard_field(before)
 
-    decision = approval.check(kind, element, text=text, keys=keys, point=point, context=context)
+    _refuse_number_arrows(kind, point)
+    _refuse_unsafe_save(kind, element, keys, before)
+    acted_at = time.time()
+    if check_form and kind == "click" and element is not None and element.get("source") == "cdp":
+        held = _form_check(element, checked=check_form == "checked")
+        if held:
+            raise ComputerError(held)
+
+    decision = approval.check(kind, element, text=text, keys=keys, point=point, context=context,
+                              about=_what_it_acts_on(before, element))
 
     if not decision.allowed:
         text = approval.request_text(decision.request)
@@ -1680,16 +2684,46 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     keys_home = None
     if element is None and point is None and kind in ("key", "type"):
         keys_home = _keys_home()
+    if keys_from_task and untargeted and kind in ("key", "type") and _nothing_in_front(wait=FRONT_WAIT_SECONDS):
+        # Found live (2026-10-19): Alt+F4 pressed with every window closed went to the desktop, which offered to log
+        # out (and the next Alt+F4 went to that dialog). An app just opened may not have its window up yet: a few
+        # seconds are waited first.
+        raise ComputerError("no window is in front, so the keys would go to the desktop itself (Alt+F4 there asks to "
+                            "log out) - nothing was pressed. If you just opened an app it is still starting: gui "
+                            "observe again in a few seconds. Otherwise bring forward the window you mean (gui front, "
+                            "gui open).")
+    if keys_from_task and untargeted and kind in ("key", "type"):
+        left = _left_from_before()
+        if left:
+            raise ComputerError(
+                f"the keyboard is in {el._quote(left, 80)}, a window that was open before this task began and that "
+                "this task has not worked in - nothing was typed or pressed. If it is the window you mean, bring it "
+                "forward first (gui front \"a few words of its title\") or act on something in it by its ref; "
+                "otherwise bring forward the window you are working in (gui open FILE brings an open document "
+                "forward).")
 
     try:
-        try:
-            backend = _perform(kind, element, point, text, keys, direction, amount, option, append, end, files=files)
-        except ComputerError as exc:
-            again = _redrawn(exc, element, ref, role, name, path)
-            if again is None:
-                raise
-            element = again
-            backend = _perform(kind, element, point, text, keys, direction, amount, option, append, end, files=files)
+        if relayed_block:
+            if relayed_cell:
+                rows_entered = _type_relayed_rows(before, relayed_cell, text)
+            elif len(_sheet_rows(text)) > 1:
+                # Rows typed where the cursor is depend on what is selected and on the app's Enter: refused, with the
+                # form that is entered row by row from a named cell.
+                raise ComputerError("several rows go into a sheet from a named cell, row by row - nothing was "
+                                    "typed. Give the block's top-left cell: gui type D1 - <<'EOF' (the rows, real "
+                                    "Tabs between cells) EOF")
+            else:
+                _type_relayed_block(text)
+            backend = "relayed:block"
+        else:
+            try:
+                backend = _perform(kind, element, point, text, keys, direction, amount, option, append, end, files=files)
+            except ComputerError as exc:
+                again = _redrawn(exc, element, ref, role, name, path)
+                if again is None:
+                    raise
+                element = again
+                backend = _perform(kind, element, point, text, keys, direction, amount, option, append, end, files=files)
     except ComputerError as exc:
         entry.update({
             "outcome": "failed",
@@ -1702,6 +2736,8 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     settled = _wait_for_settle(before["frame"])
     after = observe()
     _note_front()
+    if not untargeted:
+        _adopt_front()
 
     # A page still setting itself up re-draws its fields from what its form holds, and what was typed a moment before
     # (not yet committed - that happens when the field loses focus) is gone. Found live in the web app: typed into a new
@@ -1733,8 +2769,47 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
                          masks=masks + privacy.secret_boxes(after["elements"]))
             raise ComputerError(reason)
 
+    block_note, unverified = "", []
+    if block is not None and backend == "xdotool:sheet-block":
+        rows = _sheet_rows(text)
+        cells = _block_cells(element, rows)
+        formulas, found = _read_back_block(element, text)
+        span = f"{cells[0][0]}:{max((c for c in cells), key=lambda c: (c[1], c[2]))[0]}" if cells else ""
+        block_note, unverified = _block_report(
+            f"A block of {len(rows)} row(s) went into {span}, each row from its first cell.", found, formulas,
+            "these cells do NOT hold what was typed - correct each by its own gui type CELL: ")
+    elif relayed_block:
+        # The viewer's copy of the app catches up after the keys: read the cells back from a look that is not behind.
+        for _ in range(RELAYED_READ_TRIES):
+            if not after.get("behind"):
+                break
+            time.sleep(1.5)
+            after = observe()
+        rows = _sheet_rows(text)
+        entered = len(rows) if rows_entered is None else rows_entered
+        typed = "\n".join("\t".join(r) for r in rows[:entered])
+        span, formulas, found = _read_back_relayed(_relayed_cells(before), _relayed_cells(after), typed,
+                                                   start_cell=relayed_cell)
+        if entered < len(rows):
+            # The time budget stopped it (the operator would kill the command, and nothing would be read back).
+            m = CELL_NAME.match(relayed_cell)
+            next_cell = f"{m.group(1).upper()}{int(m.group(2)) + entered}"
+            found.append(f"STOPPED after row {entered} of {len(rows)} (this takes too long to type through the "
+                         f"viewer, a key at a time): the other {len(rows) - entered} row(s) were NOT typed - start "
+                         f"again at {next_cell} with those rows; a column of one formula is typed once and filled "
+                         "down (select the range with the Name Box, Ctrl+D) rather than row by row")
+        block_note, unverified = _block_report(
+            f"A block of {entered} of {len(rows)} row(s) was typed" + (f" ({span})" if span else "")
+            + ", Tab between cells and Enter after each row.", found, formulas,
+            "these cells do NOT hold what was typed - look at the sheet and correct them: ")
+
     change = compare(before, after)
     change_text = summarize(change)
+    if _nothing_typed(kind, element, text, change_text, after) and not before.get("behind"):
+        # Found live (2026-10-17): after PowerPoint's Insert Table the table is selected, not being edited, and four
+        # typings in a row (with Tab between) went nowhere; each said only "nothing visible changed - check ...", and
+        # the run ended with the table empty. Typing that changes nothing was not typed.
+        change_text += " " + NOTHING_TYPED_NOTE
 
     entry.update({
         "outcome": "done",
@@ -1855,12 +2930,17 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
                                   next((e for e in before.get("elements", []) if "focused" in (e.get("states") or [])),
                                        None))
 
+    if _relayed_page(before) and _saves(kind, element, keys):
+        note += _shared_save_note(acted_at)
+
     return {
         "status": "done",
-        "text": f"{summary}.\nWhat changed: {change_text}{note}",
+        "text": f"{summary}.\nWhat changed: {change_text}{note}{block_note}",
         "element": element,
         "change": change,
         "observation": after,
+        # Cells of a typed block that do not hold what was typed: the gui command fails verification (exit 4).
+        "unverified": unverified,
     }
 
 
@@ -2025,6 +3105,21 @@ def compare(before, after):
         "changed": changed,
         "focused": focused,
     }
+
+
+def _nothing_typed(kind, element, text, change_text, observation=None):
+    """
+    True for typing aimed at no field whose result changed nothing on the screen: it did not land anywhere. Never for
+    an app read from its picture, or whose copy is still behind: there the typing lands and the look shows it only
+    later - found live (2026-10-18) in TallyPrime, where the note said "nothing was typed" over text that had gone
+    into the field, and the worker typed the same ledger name again ("Name already exists").
+    """
+    # Nor in a viewer of an app running elsewhere: a cell being edited there shows its text only once it is entered.
+    # Found live (2026-10-19, real Excel): a formula said "NOTHING WAS TYPED" had gone into the cell being edited.
+    if _read_by_vision(observation) or (observation or {}).get("behind") or _relayed_page(observation):
+        return False
+    return (kind == "type" and element is None and bool(text) and len(text) >= NOTHING_TYPED_MIN
+            and change_text.startswith("nothing visible changed"))
 
 
 def summarize(change, limit=6):
@@ -2322,6 +3417,7 @@ def open_target(target, new_tab=False):
     after = screen.grab()
     active = next((w["title"] for w in screen.windows() if w["active"]), "")
     _note_front()
+    _adopt_front()
 
     entry.update({
         "outcome": "done",
@@ -2347,6 +3443,7 @@ def _open(target, new_tab):
         raise ComputerError("say what to open: a URL, a file, or an app name")
 
     before = screen.windows()
+    _task_windows(before)
     before_titles = {w["title"] for w in before}
     # A window that was not there is told by which window it is, not by its
     # title: a second window of an app that is open has the first one's title.
@@ -2397,6 +3494,12 @@ def _open(target, new_tab):
             return _open("file://" + str(path.resolve()), new_tab)
         else:
             argv = ["mousepad", str(path)]
+    elif launchers.by_name(target) is None and launchers.missing_named(target):
+        # An app the person asked this desktop to have and it does not: no stand-in for it, said plainly.
+        raise ComputerError(
+            launchers.missing_sentence(launchers.missing_named(target))
+            + " Tell the person; do not do it in another app instead unless they say so."
+        )
     elif lower in APPS and launchers.by_name(target) is None:
         # A stand-in only when the desktop has no app of that name: "Excel" is the real Excel when a person copied
         # it here ("Excel (Host)"), LibreOffice Calc otherwise.
@@ -2421,6 +3524,15 @@ def _open(target, new_tab):
     started = " ".join(argv)
     raises = launchers.by_name(target) is not None and not path.exists()
     front_before = next((w["id"] for w in before if w.get("active")), None)
+    if "(host)" in target.lower():
+        # An app of the person's computer opens the files the tools made as they are now: one of ours still holding
+        # one of them (a stale copy from an earlier attempt) lets it go first (tool_made.py; CS, 2026-10-20).
+        try:
+            from decurix_agent import tool_made
+            tool_made.held_by_our_apps()
+        except Exception as exc:  # noqa: BLE001 - opening the app never fails on this
+            from decurix_agent.logging_utils import log
+            log(f"gui: could not release the tools' files before opening {target}: {exc}")
     session.launch(argv)
 
     def new_window():
@@ -2489,6 +3601,7 @@ def bring_to_front(title):
 
     xinput.activate(found[0]["id"])
     time.sleep(0.4)
+    _adopt_front()
     return f"Brought {el._quote(found[0]['title'], 80)} to the front."
 
 

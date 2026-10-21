@@ -58,8 +58,11 @@ type openaiChatResponse struct {
 		} `json:"message"`
 	} `json:"choices"`
 	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
+		PromptTokens        int `json:"prompt_tokens"`
+		CompletionTokens    int `json:"completion_tokens"`
+		PromptTokensDetails struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
@@ -149,6 +152,7 @@ func (o *OpenAIProvider) chatOnce(ctx context.Context, model string, messages []
 		Text:           parsed.Choices[0].Message.Content,
 		PromptTokens:   parsed.Usage.PromptTokens,
 		ResponseTokens: parsed.Usage.CompletionTokens,
+		CachedTokens:   parsed.Usage.PromptTokensDetails.CachedTokens,
 	}, nil
 }
 

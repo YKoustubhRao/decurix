@@ -66,3 +66,25 @@ func TestADraftReplacesOnlyAnUnsentDraftOfTheSameTask(t *testing.T) {
 		t.Fatalf("the replacement is %q, want still a draft", kept.Status)
 	}
 }
+
+// A follow-up task (a change the person sent after t1 was reported) replaces t1's draft only when it says it continues
+// t1, on the same desktop - never another task's, and never by naming a task it does not continue.
+func TestAFollowUpReplacesTheDraftOfTheTaskItContinues(t *testing.T) {
+	s := newOutboxServer(t)
+	_, first := draftVia(t, s, `{"desktop_id":"ops","task_id":"t1","to":["a@x.com"],"subject":"Fees","body":"v1"}`)
+	id := first["id"].(string)
+	_, other := draftVia(t, s, `{"desktop_id":"ops","task_id":"t3","to":["b@x.com"],"subject":"x","body":"y"}`)
+	for _, body := range []string{
+		`{"desktop_id":"ops","task_id":"t2","continues":"t3","to":["a@x.com"],"subject":"Fees","body":"v2","replaces":"` + id + `"}`,
+		`{"desktop_id":"other","task_id":"t2","continues":"t1","to":["a@x.com"],"subject":"Fees","body":"v2","replaces":"` + id + `"}`,
+		`{"desktop_id":"ops","task_id":"t2","continues":"t1","to":["b@x.com"],"subject":"x","body":"y","replaces":"` + other["id"].(string) + `"}`,
+	} {
+		if code, out := draftVia(t, s, body); code != http.StatusConflict {
+			t.Errorf("%s = %d %v, want 409", body, code, out)
+		}
+	}
+	code, second := draftVia(t, s, `{"desktop_id":"ops","task_id":"t2","continues":"t1","to":["a@x.com"],"subject":"Fees","body":"v2","replaces":"`+id+`"}`)
+	if code != http.StatusOK || second["replaced"] != id {
+		t.Fatalf("follow-up replace = %d %v, want 200 replacing %s", code, second, id)
+	}
+}

@@ -32,7 +32,7 @@ func windowsAppIcon(app HostAppItem) []byte {
 	// cannot run there. Cross to WSL's host namespace before invoking it.
 	if _, err := os.Stat("/var/run/docker.sock"); err == nil && findDockerBinary() != "" {
 		hostScript := "PATH=$PATH:/mnt/c/Windows/System32/WindowsPowerShell/v1.0:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0 powershell.exe -NoProfile -NonInteractive -Command " + shellQuote(script)
-		cmd = exec.CommandContext(ctx, findDockerBinary(), "run", "--rm", "--privileged", "--pid=host", "alpine", "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "bash", "-c", hostScript)
+		cmd = HopCommand(ctx, findDockerBinary(), "app-icon", false, hostScript)
 	} else if ps := findPowershellExe(); ps != "" {
 		cmd = exec.CommandContext(ctx, ps, "-NoProfile", "-NonInteractive", "-Command", script)
 		HideWindow(cmd)

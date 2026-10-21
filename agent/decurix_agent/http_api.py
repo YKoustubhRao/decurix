@@ -189,6 +189,9 @@ class Handler(BaseHTTPRequestHandler):
                     raise FileNotFoundError(parts[1])
                 return self._json(200, {"playbook": found})
 
+            if len(parts) == 3 and parts[0] == "playbooks" and parts[2] == "qualification-source":
+                return self._json(200, playbooks.qualification_source(parts[1]))
+
             if len(parts) == 2 and parts[0] == "skills":
                 return self._json(200, {"skill": skills.summary(skills.load(parts[1]), detail=True)})
 

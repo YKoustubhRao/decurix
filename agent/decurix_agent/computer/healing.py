@@ -264,7 +264,14 @@ def rank(step, observation):
     names = aliases(step)
     ranked = []
 
+    avoid = [" ".join((a or "").lower().split()) for a in target.get("avoid") or []]
+
     for element in observation.get("elements") or []:
+        # Named for what the demonstration typed, in a run that types something
+        # else (replay.follow_values): the very control a run must not take.
+        name_now = " ".join((element.get("name") or "").lower().split())
+        if any(a and set(a.split()) <= set(name_now.split()) for a in avoid):
+            continue
         role = compatible(recorded_role, element.get("role"))
         if role == 0.0:
             continue

@@ -95,6 +95,13 @@ def refused():
     return None
 
 
+def clear_refusal():
+    """The refusal has been acted on for its own part of the task (one stage of a long request): the rest goes on."""
+
+    global _refused
+    _refused = None
+
+
 def text():
     return (_current or {}).get("text") or ""
 

@@ -1406,6 +1406,18 @@ public class Native {
                     var r = el.Current.BoundingRectangle;
                     if (!r.IsEmpty && r.Height > 60) { result = "ERR NOSET a field of several lines"; return; }
                     value = v; field = el;
+                    // A dialog's combo box (Save As's "File name:" is one, holding an Edit of the same name) shows text set
+                    // through UI Automation and reads it back, but the dialog does not use it: pressing Save in Word saved
+                    // "Doc1" in Documents and ignored the path in the box, set on the Edit or on the combo (found live,
+                    // 2026-10-17; Excel's dialog happened to take it). Typed keys are taken, so the caller types.
+                    if (top != IntPtr.Zero) {
+                        var cls = new StringBuilder(32); GetClassName(top, cls, 32);
+                        bool inDialog = cls.ToString() == "#32770" || GetWindow(top, 4 /* GW_OWNER */) != IntPtr.Zero;
+                        var parent = ct == System.Windows.Automation.ControlType.Edit ? walker.GetParent(el) : null;
+                        bool inCombo = ct == System.Windows.Automation.ControlType.ComboBox
+                            || (parent != null && parent.Current.ControlType == System.Windows.Automation.ControlType.ComboBox);
+                        if (inDialog && inCombo) { result = "ERR NOSET a dialog's combo box takes typed keys, not a set value"; return; }
+                    }
                 }
                 if (value == null) { result = "ERR NOSET no single-line field there"; return; }
                 try { field.SetFocus(); } catch { }
@@ -3761,6 +3773,10 @@ $Commands = [Action[string, string]] {
                 $l = Complete-Launch @{ Target = $f[0]; Args = $f[1]; WorkDir = $f[2]; OwnProfile = ($f[3] -eq '1'); Base = $f[4]; Launcher = $(if ($f.Count -gt 5) { $f[5] } else { '' }) }
                 Reply ([Native]::Launch($DesktopName, $l.Target, $l.Args, $l.WorkDir))
             }
+        }
+        "pid" {
+            # Which process this helper is on the host: the control plane ends exactly this tree when it stops it.
+            Reply "OK $PID"
         }
         "open" {
             $f = $rest.Split("`t")

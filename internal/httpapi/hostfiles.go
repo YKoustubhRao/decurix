@@ -24,12 +24,21 @@ var hostCDrives = desktop.WindowsCDrives
 // that desktop's own open task request - so a desktop can ask only about what its task named, never probe the disk.
 // It answers the path asked for and its place under the C: drive, or writes the refusal and answers ok=false.
 func (s *Server) hostFileAsked(w http.ResponseWriter, r *http.Request) (asked, rel string, ok bool) {
-	if r.Method != http.MethodGet {
+	return s.hostFileAskedBy(w, r, http.MethodGet)
+}
+
+// hostFileAskedBy is hostFileAsked for a request made with method.
+func (s *Server) hostFileAskedBy(w http.ResponseWriter, r *http.Request, method string) (asked, rel string, ok bool) {
+	if r.Method != method {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return "", "", false
 	}
 	id := desktop.SanitizeID(r.URL.Query().Get("desktop"))
 	asked = strings.TrimSpace(r.URL.Query().Get("path"))
+	if strings.EqualFold(path.Base(strings.ReplaceAll(asked, "\\", "/")), QualificationOwnerFile) {
+		http.Error(w, "readiness owner keys cannot be read by a desktop", http.StatusForbidden)
+		return "", "", false
+	}
 	if id == "" || !hostDrivePath.MatchString(asked) || s.Tasks == nil {
 		http.Error(w, `desktop and a C:\ path are required`, http.StatusBadRequest)
 		return "", "", false
@@ -100,6 +109,10 @@ func (s *Server) hostFileReadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, drive := range hostCDrives() {
 		full := filepath.Join(drive, filepath.FromSlash(rel))
+		if resolved, err := filepath.EvalSymlinks(full); err == nil && strings.EqualFold(filepath.Base(resolved), QualificationOwnerFile) {
+			http.Error(w, "readiness owner keys cannot be read by a desktop", http.StatusForbidden)
+			return
+		}
 		info, err := os.Stat(full)
 		if err != nil || info.IsDir() {
 			continue

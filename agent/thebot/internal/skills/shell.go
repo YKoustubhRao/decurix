@@ -111,7 +111,11 @@ func runShell(ctx context.Context, dir, command string, timeout time.Duration, e
 	}
 	if timedOut {
 		res.ExitCode = 124
-		res.Output += "\n[killed: still running after " + timeout.String() + "]"
+		// Said so that it cannot be read past (found live, 2026-10-19: a block of cells was killed before its last row
+		// and the next command was a Total over a table one row short).
+		res.Output += "\n[killed: still running after " + timeout.String() + ". It did NOT finish: part of what it " +
+			"was doing may be done and the rest not. Look at the screen or the file to see how far it got, and do " +
+			"the rest in smaller commands, before going on.]"
 	}
 	return res
 }

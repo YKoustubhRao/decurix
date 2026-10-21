@@ -34,13 +34,16 @@ func (s *Server) outboxCreateHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var in struct {
-		DesktopID   string   `json:"desktop_id"`
-		TaskID      string   `json:"task_id"`
-		To          []string `json:"to"`
-		Cc          []string `json:"cc"`
-		Subject     string   `json:"subject"`
-		Body        string   `json:"body"`
-		Replaces    string   `json:"replaces"`
+		DesktopID string   `json:"desktop_id"`
+		TaskID    string   `json:"task_id"`
+		To        []string `json:"to"`
+		Cc        []string `json:"cc"`
+		Subject   string   `json:"subject"`
+		Body      string   `json:"body"`
+		Replaces  string   `json:"replaces"`
+		// Continues names the task a follow-up carries on (a change the person sent after that task was reported):
+		// that task's unsent drafts on the same desktop may be replaced too.
+		Continues   string `json:"continues"`
 		Attachments []struct {
 			Name        string `json:"name"`
 			ContentType string `json:"content_type"`
@@ -86,7 +89,8 @@ func (s *Server) outboxCreateHandler(w http.ResponseWriter, r *http.Request) {
 		case err != nil:
 			jsonError(w, err)
 			return
-		case old.DesktopID != d.DesktopID || in.TaskID == "" || old.TaskID != in.TaskID:
+		case old.DesktopID != d.DesktopID || in.TaskID == "" ||
+			(old.TaskID != in.TaskID && (in.Continues == "" || old.TaskID != in.Continues)):
 			jsonStatusError(w, http.StatusConflict, "only a draft this same task made can be replaced")
 			return
 		case old.Status != outbox.StatusDraft:

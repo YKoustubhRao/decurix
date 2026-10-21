@@ -310,7 +310,28 @@ func toClaudeParams(req openAIRequest, model string) (anthropic.MessageNewParams
 		}
 	}
 
+	markCacheable(&params)
 	return params, nil
+}
+
+// markCacheable asks Claude to cache the request's prefix: the system prompt, and everything up to the end of the
+// last message. An agent's turns re-send the same conversation with one more exchange each time; Claude (unlike
+// Azure OpenAI, which caches a repeated prefix on its own) caches only where it is asked to, and reads a cached prefix
+// for a tenth of the price. Measured (2026-10-20): an operator turn re-sends about 8,000-10,000 tokens of contract,
+// rules and stage request before any output, so a 15-turn stage paid for them 15 times. Nothing in the request
+// changes: the marks only say where a cached prefix may end.
+func markCacheable(params *anthropic.MessageNewParams) {
+	if n := len(params.System); n > 0 {
+		params.System[n-1].CacheControl = anthropic.NewCacheControlEphemeralParam()
+	}
+	if n := len(params.Messages); n > 0 {
+		blocks := params.Messages[n-1].Content
+		if k := len(blocks); k > 0 {
+			if cc := blocks[k-1].GetCacheControl(); cc != nil {
+				*cc = anthropic.NewCacheControlEphemeralParam()
+			}
+		}
+	}
 }
 
 // contentBlocks reads an OpenAI message content - a string or a list of
@@ -437,6 +458,7 @@ func fromClaudeMessage(msg *anthropic.Message) map[string]any {
 		finish = "content_filter"
 	}
 
+	prompt := msg.Usage.InputTokens + msg.Usage.CacheReadInputTokens + msg.Usage.CacheCreationInputTokens
 	message := map[string]any{"role": "assistant", "content": text.String()}
 	if len(calls) > 0 {
 		message["tool_calls"] = calls
@@ -447,10 +469,15 @@ func fromClaudeMessage(msg *anthropic.Message) map[string]any {
 		"object":  "chat.completion",
 		"model":   string(msg.Model),
 		"choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": finish}},
+		// Every prompt token counts in prompt_tokens, cached or not (a cached read is input that cost less), and the
+		// cached part is said the way OpenAI says it, so each caller's accounting stays comparable.
 		"usage": map[string]any{
-			"prompt_tokens":     msg.Usage.InputTokens,
+			"prompt_tokens":     prompt,
 			"completion_tokens": msg.Usage.OutputTokens,
-			"total_tokens":      msg.Usage.InputTokens + msg.Usage.OutputTokens,
+			"total_tokens":      prompt + msg.Usage.OutputTokens,
+			"prompt_tokens_details": map[string]any{
+				"cached_tokens": msg.Usage.CacheReadInputTokens,
+			},
 		},
 	}
 }
