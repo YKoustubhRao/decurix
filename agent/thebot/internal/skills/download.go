@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -98,16 +99,7 @@ func wantedExts(step string) []string {
 // pages - the signal that switches the skill from "scan this page for
 // linked files" to "save these pages themselves".
 func wantsHTML(exts []string) bool {
-	return contains(exts, "html") || contains(exts, "htm")
-}
-
-func contains(list []string, want string) bool {
-	for _, s := range list {
-		if s == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(exts, "html") || slices.Contains(exts, "htm")
 }
 
 // extractLinks pulls every href matching a wanted extension out of the
@@ -124,7 +116,7 @@ func extractLinks(html, pageURL string, exts []string) []string {
 	for _, m := range hrefRe.FindAllStringSubmatch(html, -1) {
 		raw := strings.ReplaceAll(m[1], "&amp;", "&")
 		em := extRe.FindStringSubmatch(raw)
-		if em == nil || !contains(exts, strings.ToLower(em[1])) {
+		if em == nil || !slices.Contains(exts, strings.ToLower(em[1])) {
 			continue
 		}
 		ref, err := url.Parse(raw)
@@ -244,7 +236,7 @@ func (d *DownloadSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 				// wanted type over one that's just a page to go scan.
 				target = candidates[0]
 				for _, c := range candidates {
-					if em := extRe.FindStringSubmatch(c); em != nil && contains(exts, strings.ToLower(em[1])) {
+					if em := extRe.FindStringSubmatch(c); em != nil && slices.Contains(exts, strings.ToLower(em[1])) {
 						target = c
 						break
 					}
@@ -260,7 +252,7 @@ func (d *DownloadSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		}
 		rc.Logf("download", "looking for real %s links at %s", strings.Join(exts, "/"), target)
 
-		if em := extRe.FindStringSubmatch(target); em != nil && contains(exts, strings.ToLower(em[1])) {
+		if em := extRe.FindStringSubmatch(target); em != nil && slices.Contains(exts, strings.ToLower(em[1])) {
 			fileURLs = []string{target} // the URL IS the file
 		} else if wantsHTML(exts) {
 			// A single page was named and raw html was asked for - the

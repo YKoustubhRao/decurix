@@ -27,7 +27,6 @@ waiting_for_query = False
 # When that question was asked (time.time()): a request saved after it, but not as its reply, means the control
 # plane holds no open question for this desktop (watchers._orphaned_question).
 query_asked_at = 0.0
-last_query_id = None
 
 # The question the agent is waiting on and its kind ("query" or "approval"),
 # so the person's reply can be kept with what it answered (lessons.py).
@@ -51,3 +50,10 @@ paused_replay = None
 paused_skill = None
 
 processed_commands = set()
+
+
+def begin(task, task_file):
+    """A task starts: it is the current one, and nothing waits on a question."""
+
+    global current_task, current_task_file, waiting_for_query
+    current_task, current_task_file, waiting_for_query = task, task_file, False

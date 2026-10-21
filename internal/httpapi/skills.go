@@ -1,10 +1,7 @@
 package httpapi
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -34,14 +31,8 @@ func (s *Server) skillsPageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	found, err := s.Desktops.Get(r.Context(), id)
-	if errors.Is(err, desktop.ErrNotFound) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		log.Printf("skills page: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+	found, ok := s.pageDesktop(w, r, id, "skills page")
+	if !ok {
 		return
 	}
 
@@ -118,7 +109,7 @@ func (s *Server) runSkillHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.sendTaught(w, r, id, content, "/skills/"+name+"/run", map[string]any{"params": params})
+	s.sendTaught(w, r, id, content, "/skills/"+name+"/run", map[string]any{"params": params}, "skills")
 }
 
 // learnRecordingHandler starts a lesson: the desktop asks whoever recorded a
@@ -157,14 +148,14 @@ func (s *Server) learnRecordingHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.sendTaught(w, r, id, content, "/recordings/"+session+"/learn", map[string]any{"sessions": sessions[1:], "name": name})
+	s.sendTaught(w, r, id, content, "/recordings/"+session+"/learn", map[string]any{"sessions": sessions[1:], "name": name}, "skills")
 }
 
-// sendTaught delivers a "/skill" or "/learn" request to a desktop as a task:
-// refused while the desktop is busy (sent to a paused agent the watcher would
-// take it as the reply to whatever it asked), otherwise Plan, hand it to the
-// desktop's own endpoint, Commit.
-func (s *Server) sendTaught(w http.ResponseWriter, r *http.Request, id, content, agentPath string, payload map[string]any) {
+// sendTaught delivers a "/skill", "/learn" or "/replay" request to a desktop
+// as a task: refused while the desktop is busy (refuseBusy, which logs a
+// records error under what), otherwise Plan, hand it with payload and its
+// task ID to the desktop's own endpoint agentPath, Commit.
+func (s *Server) sendTaught(w http.ResponseWriter, r *http.Request, id, content, agentPath string, payload map[string]any, what string) {
 	worker := desktop.SanitizeID(id)
 
 	// Held until the request is handed over, so no automated send can
@@ -172,10 +163,7 @@ func (s *Server) sendTaught(w http.ResponseWriter, r *http.Request, id, content,
 	unlock := s.lockDesktop(worker)
 	defer unlock()
 
-	if why, err := s.Tasks.Busy(worker); err != nil {
-		log.Printf("skills: %v", err)
-	} else if why != "" {
-		jsonStatusError(w, http.StatusConflict, why)
+	if s.refuseBusy(w, worker, what) {
 		return
 	}
 
@@ -186,15 +174,8 @@ func (s *Server) sendTaught(w http.ResponseWriter, r *http.Request, id, content,
 
 	payload["task_id"] = route.TaskID
 
-	body, err := json.Marshal(payload)
-	if err != nil {
-		jsonError(w, err)
-		return
-	}
-
-	resp, err := s.Desktops.AgentRequest(ctx, id, http.MethodPost, agentPath, bytes.NewReader(body))
-	if err != nil {
-		recordingsError(w, err)
+	resp, ok := s.askAgent(ctx, w, id, http.MethodPost, agentPath, payload)
+	if !ok {
 		return
 	}
 
@@ -276,16 +257,5 @@ func skillContent(name string, params map[string]string) (string, error) {
 
 // requireSkill is requireDesktop plus a valid skill name.
 func requireSkill(w http.ResponseWriter, r *http.Request, method string) (string, string, bool) {
-	id, ok := requireDesktop(w, r, method)
-	if !ok {
-		return "", "", false
-	}
-
-	name := r.FormValue("name")
-	if !skillNamePattern.MatchString(name) {
-		jsonStatusError(w, http.StatusBadRequest, "not a skill name")
-		return "", "", false
-	}
-
-	return id, name, true
+	return requireNamed(w, r, method, "name", skillNamePattern, "not a skill name")
 }

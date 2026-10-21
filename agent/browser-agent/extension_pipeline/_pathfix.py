@@ -1,8 +1,6 @@
 """Adds core/ to sys.path so sibling-package imports (models, atomizer,
 reasoning, worker, ...) resolve without turning this into a dotted-import
-package -- see playwright_pipeline/_pathfix.py for the full rationale (this
-is the extension pipeline's identical counterpart, pointing at the same
-core/ directory)."""
+package: ext_server.py is run directly as a script, not via python -m."""
 import sys
 from pathlib import Path
 

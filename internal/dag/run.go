@@ -34,28 +34,22 @@ func scanRun(scanner interface{ Scan(...any) error }) (Run, error) {
 // started in the same nanosecond) is harmless here since either is an
 // equally valid "most recent".
 func (s *Store) lastRuns() (map[string]Run, error) {
-	rows, err := s.db.Query(
-		`SELECT ` + runColumns + ` FROM dag_runs WHERE (dag_id, started_ns) IN (
+	last, err := sqlitedb.QueryAll(s.db, scanRun,
+		`SELECT `+runColumns+` FROM dag_runs WHERE (dag_id, started_ns) IN (
 			SELECT dag_id, MAX(started_ns) FROM dag_runs GROUP BY dag_id
 		)`,
 	)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	runs := make(map[string]Run)
+	runs := make(map[string]Run, len(last))
 
-	for rows.Next() {
-		r, err := scanRun(rows)
-		if err != nil {
-			return nil, err
-		}
-
+	for _, r := range last {
 		runs[r.DAGID] = r
 	}
 
-	return runs, rows.Err()
+	return runs, nil
 }
 
 // Runs returns a DAG's run history, most recent first, capped at limit (or
@@ -65,26 +59,14 @@ func (s *Store) Runs(dagID string, limit int) ([]Run, error) {
 		limit = recentRunsLimit
 	}
 
-	rows, err := s.db.Query(
+	runs, err := sqlitedb.QueryAll(s.db, scanRun,
 		`SELECT `+runColumns+` FROM dag_runs WHERE dag_id = ? ORDER BY started_ns DESC LIMIT ?`, dagID, limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("dag: runs: %w", err)
 	}
-	defer rows.Close()
 
-	runs := make([]Run, 0)
-
-	for rows.Next() {
-		r, err := scanRun(rows)
-		if err != nil {
-			return nil, fmt.Errorf("dag: runs: %w", err)
-		}
-
-		runs = append(runs, r)
-	}
-
-	return runs, rows.Err()
+	return runs, nil
 }
 
 func (s *Store) getRun(runID string) (Run, error) {
@@ -99,56 +81,45 @@ func (s *Store) getRun(runID string) (Run, error) {
 	return run, nil
 }
 
+// compareAndSwap runs a guarded update and reports whether it changed a row; what names it in an error.
+func (s *Store) compareAndSwap(what, query string, args ...any) (bool, error) {
+	result, err := s.db.Exec(query, args...)
+	if err != nil {
+		return false, fmt.Errorf("dag: %s: %w", what, err)
+	}
+
+	changed, err := result.RowsAffected()
+
+	return changed > 0, err
+}
+
 // ActiveRuns returns every run, across every DAG, still in progress - what
 // the Runner's tick sweeps forward.
 func (s *Store) ActiveRuns() ([]Run, error) {
-	rows, err := s.db.Query(`SELECT `+runColumns+` FROM dag_runs WHERE status = ?`, RunRunning)
+	runs, err := sqlitedb.QueryAll(s.db, scanRun, `SELECT `+runColumns+` FROM dag_runs WHERE status = ?`, RunRunning)
 	if err != nil {
 		return nil, fmt.Errorf("dag: active runs: %w", err)
 	}
-	defer rows.Close()
 
-	runs := make([]Run, 0)
-
-	for rows.Next() {
-		r, err := scanRun(rows)
-		if err != nil {
-			return nil, fmt.Errorf("dag: active runs: %w", err)
-		}
-
-		runs = append(runs, r)
-	}
-
-	return runs, rows.Err()
+	return runs, nil
 }
 
 // RunNodes returns a run's per-node execution records.
 func (s *Store) RunNodes(runID string) ([]RunNode, error) {
-	rows, err := s.db.Query(
-		`SELECT id, run_id, node_id, status, task_id, final_reply, started_ns, ended_ns
-		 FROM dag_run_nodes WHERE run_id = ?`, runID,
-	)
+	nodes, err := sqlitedb.QueryAll(s.db, func(r sqlitedb.Scanner) (RunNode, error) {
+		var rn RunNode
+		var started, ended int64
+		err := r.Scan(&rn.ID, &rn.RunID, &rn.NodeID, &rn.Status, &rn.TaskID, &rn.FinalReply, &started, &ended)
+		rn.StartedAt = sqlitedb.FromNS(started)
+		rn.EndedAt = sqlitedb.FromNS(ended)
+		return rn, err
+	}, `SELECT id, run_id, node_id, status, task_id, final_reply, started_ns, ended_ns
+		 FROM dag_run_nodes WHERE run_id = ?`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("dag: run nodes: %w", err)
 	}
-	defer rows.Close()
 
-	nodes := make([]RunNode, 0)
-
-	for rows.Next() {
-		var rn RunNode
-		var started, ended int64
-
-		if err := rows.Scan(&rn.ID, &rn.RunID, &rn.NodeID, &rn.Status, &rn.TaskID, &rn.FinalReply, &started, &ended); err != nil {
-			return nil, fmt.Errorf("dag: run nodes: %w", err)
-		}
-
-		rn.StartedAt = sqlitedb.FromNS(started)
-		rn.EndedAt = sqlitedb.FromNS(ended)
-		nodes = append(nodes, rn)
-	}
-
-	return nodes, rows.Err()
+	return nodes, nil
 }
 
 // RunDetail returns one run's DAG snapshot (its current nodes/edges - a run
@@ -203,26 +174,15 @@ func (s *Store) StartRun(dagID, trigger string, now time.Time) (Run, error) {
 		return Run{}, fmt.Errorf("dag: this DAG has no head node set")
 	}
 
-	rows, err := tx.Query(`SELECT from_node_id, to_node_id FROM dag_edges WHERE dag_id = ?`, dagID)
+	edges, err := edgeEnds(tx, dagID)
 	if err != nil {
 		return Run{}, fmt.Errorf("dag: start run: %w", err)
 	}
-	defer rows.Close()
 
 	children := make(map[string][]string)
 
-	for rows.Next() {
-		var from, to string
-
-		if err := rows.Scan(&from, &to); err != nil {
-			return Run{}, fmt.Errorf("dag: start run: %w", err)
-		}
-
-		children[from] = append(children[from], to)
-	}
-
-	if err := rows.Err(); err != nil {
-		return Run{}, fmt.Errorf("dag: start run: %w", err)
+	for _, e := range edges {
+		children[e.FromNodeID] = append(children[e.FromNodeID], e.ToNodeID)
 	}
 
 	reachable := map[string]bool{headNodeID: true}
@@ -240,7 +200,7 @@ func (s *Store) StartRun(dagID, trigger string, now time.Time) (Run, error) {
 		}
 	}
 
-	run := Run{ID: newID("drun-"), DAGID: dagID, Status: RunRunning, Trigger: trigger, StartedAt: now}
+	run := Run{ID: sqlitedb.NewID("drun-", 8), DAGID: dagID, Status: RunRunning, Trigger: trigger, StartedAt: now}
 
 	if _, err := tx.Exec(
 		`INSERT INTO dag_runs (id, dag_id, status, trigger_kind, started_ns) VALUES (?, ?, ?, ?, ?)`,
@@ -252,7 +212,7 @@ func (s *Store) StartRun(dagID, trigger string, now time.Time) (Run, error) {
 	for nodeID := range reachable {
 		if _, err := tx.Exec(
 			`INSERT INTO dag_run_nodes (id, run_id, node_id, status) VALUES (?, ?, ?, ?)`,
-			newID("drn-"), run.ID, nodeID, NodePending,
+			sqlitedb.NewID("drn-", 8), run.ID, nodeID, NodePending,
 		); err != nil {
 			return Run{}, fmt.Errorf("dag: start run: %w", err)
 		}
@@ -270,17 +230,10 @@ func (s *Store) StartRun(dagID, trigger string, now time.Time) (Run, error) {
 // applies from status pending): see runner.go's package doc for why every
 // run-node transition needs to be one.
 func (s *Store) MarkRunNodeDispatched(id, taskID string, now time.Time) (bool, error) {
-	result, err := s.db.Exec(
+	return s.compareAndSwap("mark run node dispatched "+id,
 		`UPDATE dag_run_nodes SET status = ?, task_id = ?, started_ns = ? WHERE id = ? AND status = ?`,
 		NodeRunning, taskID, sqlitedb.ToNS(now), id, NodePending,
 	)
-	if err != nil {
-		return false, fmt.Errorf("dag: mark run node dispatched %s: %w", id, err)
-	}
-
-	changed, err := result.RowsAffected()
-
-	return changed > 0, err
 }
 
 // ClaimRunNode compare-and-swaps a run-node from pending to running with no
@@ -293,17 +246,10 @@ func (s *Store) MarkRunNodeDispatched(id, taskID string, now time.Time) (bool, e
 // invisible to resolveRunning (it checks task_id != ""), so it is never
 // mistaken for one whose ticket is already in flight.
 func (s *Store) ClaimRunNode(id string, now time.Time) (bool, error) {
-	result, err := s.db.Exec(
+	return s.compareAndSwap("claim run node "+id,
 		`UPDATE dag_run_nodes SET status = ?, started_ns = ? WHERE id = ? AND status = ?`,
 		NodeRunning, sqlitedb.ToNS(now), id, NodePending,
 	)
-	if err != nil {
-		return false, fmt.Errorf("dag: claim run node %s: %w", id, err)
-	}
-
-	changed, err := result.RowsAffected()
-
-	return changed > 0, err
 }
 
 // SetRunNodeTaskID records the task ID a claimed run-node's ticket landed
@@ -332,64 +278,37 @@ func (s *Store) SetRunNodeTaskID(id, taskID string) error {
 // SetRunNodeTaskID uses, so it can never revert a node whose ticket was
 // actually submitted.
 func (s *Store) ReleaseRunNode(id string) (bool, error) {
-	result, err := s.db.Exec(
+	return s.compareAndSwap("release run node "+id,
 		`UPDATE dag_run_nodes SET status = ?, started_ns = 0, ended_ns = 0 WHERE id = ? AND status = ? AND task_id = ''`,
 		NodePending, id, NodeRunning,
 	)
-	if err != nil {
-		return false, fmt.Errorf("dag: release run node %s: %w", id, err)
-	}
-
-	changed, err := result.RowsAffected()
-
-	return changed > 0, err
 }
 
 // MarkRunNodeTerminal transitions a run-node from fromStatus to a terminal
 // toStatus (succeeded or failed), recording the reply it ended with.
 // Compare-and-swap, same reason as MarkRunNodeDispatched.
 func (s *Store) MarkRunNodeTerminal(id, fromStatus, toStatus, finalReply string, now time.Time) (bool, error) {
-	result, err := s.db.Exec(
+	return s.compareAndSwap("mark run node terminal "+id,
 		`UPDATE dag_run_nodes SET status = ?, final_reply = ?, ended_ns = ? WHERE id = ? AND status = ?`,
 		toStatus, finalReply, sqlitedb.ToNS(now), id, fromStatus,
 	)
-	if err != nil {
-		return false, fmt.Errorf("dag: mark run node terminal %s: %w", id, err)
-	}
-
-	changed, err := result.RowsAffected()
-
-	return changed > 0, err
 }
 
 // SkipRunNode transitions a still-pending run-node to skipped - a node
 // reachable only through one that just failed. Compare-and-swap, same
 // reason as MarkRunNodeDispatched.
 func (s *Store) SkipRunNode(id string, now time.Time) (bool, error) {
-	result, err := s.db.Exec(
+	return s.compareAndSwap("skip run node "+id,
 		`UPDATE dag_run_nodes SET status = ?, ended_ns = ? WHERE id = ? AND status = ?`,
 		NodeSkipped, sqlitedb.ToNS(now), id, NodePending,
 	)
-	if err != nil {
-		return false, fmt.Errorf("dag: skip run node %s: %w", id, err)
-	}
-
-	changed, err := result.RowsAffected()
-
-	return changed > 0, err
 }
 
 // FinishRun closes a run still running as succeeded or failed.
 // Compare-and-swap, same reason as MarkRunNodeDispatched.
 func (s *Store) FinishRun(id, status string, now time.Time) (bool, error) {
-	result, err := s.db.Exec(
-		`UPDATE dag_runs SET status = ?, ended_ns = ? WHERE id = ? AND status = ?`, status, sqlitedb.ToNS(now), id, RunRunning,
+	return s.compareAndSwap("finish run "+id,
+		`UPDATE dag_runs SET status = ?, ended_ns = ? WHERE id = ? AND status = ?`,
+		status, sqlitedb.ToNS(now), id, RunRunning,
 	)
-	if err != nil {
-		return false, fmt.Errorf("dag: finish run %s: %w", id, err)
-	}
-
-	changed, err := result.RowsAffected()
-
-	return changed > 0, err
 }

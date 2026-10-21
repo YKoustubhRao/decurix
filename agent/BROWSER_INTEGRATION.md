@@ -19,17 +19,15 @@ research tool always worked.
 
 ## Browser control: the extension pipeline, not the Playwright one
 
-`browser-agent/README.md` (carried over as-is) describes **two independent
-pipelines** that share the same `core/` LLM plumbing:
+The research tool had **two independent pipelines** sharing the same `core/`
+LLM plumbing; only one is carried here:
 
 - `playwright_pipeline/` — a throwaway Chromium instance Playwright owns
-  outright. **Not part of this integration.** A desktop already has a real,
-  persistent Chromium that the human and the agent's own computer-use layer
-  (`decurix_agent/computer/cdp.py`) both use — spinning up a second, separate
-  browser just for this tool would mean two logged-out browsers with no
-  shared cookies, doubling the thing we already have. Kept in the copy for
-  reference (it's a fine tool on its own, e.g. for disposable scriptable
-  scraping), but nothing below wires it in.
+  outright. **Not part of this integration, and removed from this copy**
+  (with the research `eval/` and `legacy/` directories; see git history). A
+  desktop already has a real, persistent Chromium that the human and the
+  agent's own computer-use layer (`decurix_agent/computer/cdp.py`) both use,
+  and its model-written Playwright code would bypass the approval gate.
 - `extension_pipeline/` + `extension/` — the one this integration is for.
   `extension/` is a normal Chrome/Chromium extension (Manifest V3, load
   unpacked); `extension_pipeline/ext_server.py` is its backend on port 8092.
@@ -53,8 +51,7 @@ This is plain open-source Chromium (the base image, not Chrome-branded), so
 restriction is a Chrome-stable-channel policy, not something Chromium itself
 enforces. **Done**: all three `docker/desktop.*.Dockerfile`s now `COPY`
 `browser-agent/core`, `browser-agent/extension` and
-`browser-agent/extension_pipeline` to `/opt/browser-agent/` (not `eval/`,
-`legacy/` or `playwright_pipeline/` — those aren't needed at runtime), and
+`browser-agent/extension_pipeline` to `/opt/browser-agent/`, and
 `agent/chromium-browser.init` carries the two flags above. Verified live: a
 container built from the updated `desktop.basic.Dockerfile`, with Chromium
 launched inside it, shows the extension's manifest-v3 service worker
@@ -91,9 +88,7 @@ useful (both `background.js` and `popup.js` hardcode that URL). **Done**:
 — it's a property of this desktop's browser, not of which harness is
 running), from a dedicated venv (`/opt/browser-agent-venv`, built in each
 Dockerfile from `browser-agent/requirements.txt`: fastapi, uvicorn, pydantic,
-playwright — the package only, never `playwright install`, since
-`core/worker.py`'s HTML-cleaning helper imports it but the extension pipeline
-never launches a Playwright browser — beautifulsoup4, psutil, requests),
+beautifulsoup4, psutil, requests),
 logging to `/tmp/decurix-ext-server.log`. No readiness gate yet (see the
 checklist) — it just starts and is reachable within a second or two.
 
@@ -132,17 +127,16 @@ existing precedent for "route this deterministically before asking a model
 to decide" — the same idea extends to "this needs a live web page, route to
 `[browser]`."
 
-**Open problem, not yet solved anywhere:** the extension pipeline has **no
-approval gate**. `computer/approval.py`'s consequential-control check (Send/
-Pay/Buy/Publish-style labels) is what stops the *existing* computer-use layer
-before a real-world-consequence click; `background.js`'s `domAction` has
-nothing equivalent — it clicks whatever the model's action names. Wiring
-TheBot's `internal/safety` checks (or a port of `approval.CONSEQUENTIAL_
-CONTROL`'s label-matching) in front of `ext_codegen.decide_and_act`'s chosen
-action is a prerequisite for treating this as more than a supervised demo,
-matching the same posture every other harness already takes
-("Consequential commands and requests are stopped by `internal/safety`
-before they run, whatever the model decided").
+**Approval gate.** `background.js`'s `domAction` carries
+`computer/approval.py`'s rules (keep the two in step): a click on a control
+whose own label commits the person (`CONSEQUENTIAL_CONTROL`: Send/Pay/Buy/
+Publish-style) and Enter in a messaging page outside a search box are not
+carried out. The run stops with status `needs_approval` and the action
+(`click "Send" on mail.google.com`); TheBot's browser skill turns that into
+`NeedsApproval`, the scheduler asks the person, and on a yes the step runs
+again with `approved: [that action]` on the request - the extension lets it
+through once. A yes is one action's. In the popup, Retry on a run the gate
+stopped is the person's yes to that action.
 
 ## What "TheBot will control everything" means concretely
 
@@ -168,8 +162,8 @@ the main CLAUDE.md, or the operator skill has to the `gui` command.
    `start_agent_terminal.sh`. **Still open**: no readiness gate (the
    `decurix_agent/readiness.py`'s `wait_for_http_ok` pattern) — it's a minor
    gap since nothing currently depends on it being up by a specific time.
-4. ⬜ Add the approval-gate bridge for the extension pipeline's actions before
-   trusting it with anything consequential.
+4. ✅ Approval-gate bridge for the extension pipeline's actions (see "Approval
+   gate" above).
 5. ✅ Add a TheBot `[browser]` skill/step tag in `internal/skills` +
    `internal/atomizer`, calling `ext_server`'s HTTP API and reporting results
    back through the normal step/checkpoint machinery. **Partially open**: the

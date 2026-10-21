@@ -54,14 +54,8 @@ func (s *Server) recordingsPageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	found, err := s.Desktops.Get(r.Context(), id)
-	if errors.Is(err, desktop.ErrNotFound) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		log.Printf("recordings page: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+	found, ok := s.pageDesktop(w, r, id, "recordings page")
+	if !ok {
 		return
 	}
 
@@ -267,10 +261,7 @@ func (s *Server) recordTaskHandler(w http.ResponseWriter, r *http.Request) {
 	unlock := s.lockDesktop(worker)
 	defer unlock()
 
-	if why, err := s.Tasks.Busy(worker); err != nil {
-		log.Printf("record: %v", err)
-	} else if why != "" {
-		jsonStatusError(w, http.StatusConflict, why)
+	if s.refuseBusy(w, worker, "record") {
 		return
 	}
 
@@ -415,47 +406,7 @@ func (s *Server) replayRecordingHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	worker := desktop.SanitizeID(id)
-
-	// Held until the request is handed over, so no automated send can
-	// slip in between this busy check and it (see sendlock.go).
-	unlock := s.lockDesktop(worker)
-	defer unlock()
-
-	if why, err := s.Tasks.Busy(worker); err != nil {
-		log.Printf("replay: %v", err)
-	} else if why != "" {
-		jsonStatusError(w, http.StatusConflict, why)
-		return
-	}
-
-	content := replayContent(session, from)
-	route := s.routeRequest(worker, content)
-
-	ctx, cancel := context.WithTimeout(r.Context(), recordingsRequestTimeout)
-	defer cancel()
-
-	body, err := json.Marshal(map[string]any{"task_id": route.TaskID, "from": from, "params": params})
-	if err != nil {
-		jsonError(w, err)
-		return
-	}
-
-	resp, err := s.Desktops.AgentRequest(ctx, id, http.MethodPost, "/recordings/"+session+"/replay", bytes.NewReader(body))
-	if err != nil {
-		recordingsError(w, err)
-		return
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		relayAgent(w, resp)
-		return
-	}
-	resp.Body.Close()
-
-	route = s.recordDelivered(r.Context(), worker, content, route)
-
-	jsonResponse(w, map[string]string{"status": "sent", "task_id": route.TaskID, "content": content})
+	s.sendTaught(w, r, id, replayContent(session, from), "/recordings/"+session+"/replay", map[string]any{"from": from, "params": params}, "replay")
 }
 
 // replayContent is the request a replay is sent and recorded as. The desktop's
@@ -500,8 +451,7 @@ func parseReplayParams(raw string) (map[string]string, string) {
 // requireDesktop checks the method and reads the desktop ID a recordings call
 // is for.
 func requireDesktop(w http.ResponseWriter, r *http.Request, method string) (string, bool) {
-	if r.Method != method {
-		http.Error(w, method+" required", http.StatusMethodNotAllowed)
+	if !requireMethod(w, r, method) {
 		return "", false
 	}
 
@@ -514,20 +464,26 @@ func requireDesktop(w http.ResponseWriter, r *http.Request, method string) (stri
 	return id, true
 }
 
-// requireRecording is requireDesktop plus a valid recording ID.
-func requireRecording(w http.ResponseWriter, r *http.Request, method string) (string, string, bool) {
+// requireNamed is requireDesktop plus the form value field, which must match
+// pattern; refusal is the answer when it does not.
+func requireNamed(w http.ResponseWriter, r *http.Request, method, field string, pattern *regexp.Regexp, refusal string) (string, string, bool) {
 	id, ok := requireDesktop(w, r, method)
 	if !ok {
 		return "", "", false
 	}
 
-	session := r.FormValue("session")
-	if !recordingIDPattern.MatchString(session) {
-		jsonStatusError(w, http.StatusBadRequest, "not a recording id")
+	name := r.FormValue(field)
+	if !pattern.MatchString(name) {
+		jsonStatusError(w, http.StatusBadRequest, refusal)
 		return "", "", false
 	}
 
-	return id, session, true
+	return id, name, true
+}
+
+// requireRecording is requireDesktop plus a valid recording ID.
+func requireRecording(w http.ResponseWriter, r *http.Request, method string) (string, string, bool) {
+	return requireNamed(w, r, method, "session", recordingIDPattern, "not a recording id")
 }
 
 // callAgent sends one call to a desktop's recordings API and relays the
@@ -541,12 +497,21 @@ func (s *Server) callAgent(w http.ResponseWriter, r *http.Request, id, method, p
 		defer cancel()
 	}
 
+	if resp, ok := s.askAgent(ctx, w, id, method, path, payload); ok {
+		relayAgent(w, resp)
+	}
+}
+
+// askAgent sends one call to a desktop's agent, payload (unless nil) as its
+// JSON body, and returns the answer; a call that could not be made is answered
+// here and returns false.
+func (s *Server) askAgent(ctx context.Context, w http.ResponseWriter, id, method, path string, payload any) (*http.Response, bool) {
 	var body io.Reader
 	if payload != nil {
 		encoded, err := json.Marshal(payload)
 		if err != nil {
 			jsonError(w, err)
-			return
+			return nil, false
 		}
 		body = bytes.NewReader(encoded)
 	}
@@ -554,10 +519,29 @@ func (s *Server) callAgent(w http.ResponseWriter, r *http.Request, id, method, p
 	resp, err := s.Desktops.AgentRequest(ctx, id, method, path, body)
 	if err != nil {
 		recordingsError(w, err)
-		return
+		return nil, false
 	}
 
-	relayAgent(w, resp)
+	return resp, true
+}
+
+// refuseBusy answers 409 with why desktop worker is busy - sent to a paused
+// agent, a request would be taken as the reply to whatever it asked - and
+// reports whether it did. A records error is logged under what and refuses
+// nothing.
+func (s *Server) refuseBusy(w http.ResponseWriter, worker, what string) bool {
+	why, err := s.Tasks.Busy(worker)
+	if err != nil {
+		log.Printf("%s: %v", what, err)
+		return false
+	}
+
+	if why != "" {
+		jsonStatusError(w, http.StatusConflict, why)
+		return true
+	}
+
+	return false
 }
 
 // relayAgent copies a desktop agent's answer to the client: its status, the

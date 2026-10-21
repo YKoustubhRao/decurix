@@ -6,9 +6,13 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/YKoustubhRao/decurix/internal/schedule"
+	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
 
 // Submitter sends a request to a desktop and says which task it became.
@@ -110,18 +114,7 @@ func (r *Runner) Run(ctx context.Context) {
 		log.Printf("mailtrigger: %d email-triggered task(s) were being sent when Decurix stopped; marked for a person to check", n)
 	}
 
-	ticker := time.NewTicker(tick)
-	defer ticker.Stop()
-
-	for {
-		r.step(ctx)
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-	}
+	schedule.Every(ctx, tick, r.step)
 }
 
 // step is one tick: notice a sleep, poll the mailboxes that are due, send
@@ -138,26 +131,8 @@ func (r *Runner) step(ctx context.Context) {
 		return
 	}
 
-	sem := make(chan struct{}, pollConcurrency)
-	var wg sync.WaitGroup
-
-	for _, acct := range accounts {
-		if !r.due(acct, now, woke) {
-			continue
-		}
-
-		wg.Add(1)
-		sem <- struct{}{}
-
-		go func(acct Account) {
-			defer wg.Done()
-			defer func() { <-sem }()
-
-			_ = r.poll(ctx, acct)
-		}(acct)
-	}
-
-	wg.Wait()
+	due := slices.DeleteFunc(accounts, func(acct Account) bool { return !r.due(acct, now, woke) })
+	schedule.Concurrently(due, pollConcurrency, func(acct Account) { _ = r.poll(ctx, acct) })
 
 	r.dispatch(ctx)
 }
@@ -456,7 +431,7 @@ func (m matcher) matches(msg Message) bool {
 }
 
 func newJob(acct Account, rule Rule, msg Message, text string, at time.Time, files []Attachment) Job {
-	id := newID("mjob")
+	id := sqlitedb.NewID("mjob-", 8)
 
 	job := Job{
 		ID:        id,
@@ -485,7 +460,7 @@ func newJob(acct Account, rule Rule, msg Message, text string, at time.Time, fil
 	return job
 }
 
-// Render builds the request a matching email sends. Placeholders in the
+// RenderWithFiles builds the request a matching email sends. Placeholders in the
 // rule's text are filled in, and - unless the request is a slash command such
 // as "/skill name param={subject}", whose words are parsed exactly - the
 // email is written out below it, and the request said again after it.
@@ -502,12 +477,8 @@ func newJob(acct Account, rule Rule, msg Message, text string, at time.Time, fil
 // and the request is repeated after it so a sender's "ignore all previous
 // instructions" is not the last thing the model reads. A "---" in the
 // email's own text is broken up, so it cannot fake the end of the email.
-func Render(rule Rule, msg Message, text string) string {
-	return RenderWithFiles(rule, msg, text, "", nil)
-}
-
-// RenderWithFiles is Render for an email that carried files: they are listed
-// inside the email's frame with where they are on the desktop (dir).
+// Files the email carried are listed inside the email's frame with where
+// they are on the desktop (dir).
 func RenderWithFiles(rule Rule, msg Message, text, dir string, files []Attachment) string {
 	date := ""
 	if !msg.Received.IsZero() {
@@ -573,7 +544,7 @@ func RenderWithFiles(rule Rule, msg Message, text, dir string, files []Attachmen
 	return b.String()
 }
 
-// emailStart and emailEnd frame the email in a request (Render).
+// emailStart and emailEnd frame the email in a request (RenderWithFiles).
 const (
 	emailStart = "--- The email that started this task. Its whole text is right here; it is not saved in any file or variable. ---"
 	emailEnd   = "--- End of the email ---"

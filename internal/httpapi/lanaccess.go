@@ -12,8 +12,7 @@ import (
 // the primary mux (see Server.RegisterLocalRoutes) - never served back over
 // the listener it gates.
 func (s *Server) lanAccessStatusHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodGet) {
 		return
 	}
 
@@ -32,8 +31,7 @@ func (s *Server) lanAccessStatusHandler(w http.ResponseWriter, r *http.Request) 
 // session it had granted - the "kick everyone off" button next to it in the
 // dashboard's Mobile menu.
 func (s *Server) lanAccessRotateHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodPost) {
 		return
 	}
 
@@ -49,8 +47,7 @@ func (s *Server) lanAccessRotateHandler(w http.ResponseWriter, r *http.Request) 
 // for the Mobile menu. Primary listener only, like the code itself: a paired
 // phone should not be able to see, or revoke, the others.
 func (s *Server) lanAccessDevicesHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodGet) {
 		return
 	}
 
@@ -71,8 +68,7 @@ func (s *Server) lanAccessDevicesHandler(w http.ResponseWriter, r *http.Request)
 // lanAccessRevokeDeviceHandler unpairs one device (form value id): the next
 // request it makes meets the access-code gate again.
 func (s *Server) lanAccessRevokeDeviceHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodPost) {
 		return
 	}
 

@@ -214,9 +214,7 @@ ENV PATH="/opt/office-venv/bin:${PATH}"
 # browser-agent: extension_pipeline/ext_server.py, the backend for the
 # extension loaded into this desktop's Chromium (see
 # agent/chromium-browser.init's --load-extension). Only core/, extension/
-# and extension_pipeline/ ship - eval/, legacy/ and playwright_pipeline/
-# are reference material for a pipeline this desktop doesn't run (see
-# agent/BROWSER_INTEGRATION.md).
+# and extension_pipeline/ ship (see agent/BROWSER_INTEGRATION.md).
 COPY agent/browser-agent/core /opt/browser-agent/core
 COPY agent/browser-agent/extension /opt/browser-agent/extension
 COPY agent/browser-agent/extension_pipeline /opt/browser-agent/extension_pipeline

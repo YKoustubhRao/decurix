@@ -15,6 +15,7 @@ import openpyxl
 from decurix_agent import stage_facts
 
 import fixture_paths  # live-run fixtures live outside the repo
+from temp_case import TempDirCase
 
 RUN = Path(r"C:\Users\Administrator\decurix-tests\wide\process\out\P1\20261020-060650")
 WORKBOOK = RUN / "worker" / "P1_month_end" / "outputs" / "month_end_close_Oct2026.xlsx"
@@ -24,12 +25,10 @@ AMENDMENT = [{"n": 1, "text": "Exclude bill NS-0457 from everything - Nova Stati
 
 
 @unittest.skipUnless(WORKBOOK.is_file() and BILL.is_file(), "round 5 P1's files are not on this machine")
-class TheRoundsOwnFiles(unittest.TestCase):
+class TheRoundsOwnFiles(TempDirCase):
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.dir = Path(self.tmp.name)
+        super().setUp()
         self.workbook = self.dir / WORKBOOK.name
         shutil.copy(WORKBOOK, self.workbook)
         self.bill = self.dir / BILL.name
@@ -66,13 +65,8 @@ CHANGE = [{"n": 1, "text": "Exclude bill NS-0457 from Nova Stationers from all o
 
 
 @unittest.skipUnless(RUN2.is_file() and WORKBOOK.is_file(), "round 5 P1's files are not on this machine")
-class AReCheckKeepsEarlierFindings(unittest.TestCase):
+class AReCheckKeepsEarlierFindings(TempDirCase):
     """Finding BG: re-run for the cancelled bill, the register lost the wrong-rate bill's flag."""
-
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.dir = Path(self.tmp.name)
 
     def copy(self, source, name):
         target = self.dir / name
@@ -92,12 +86,11 @@ class AReCheckKeepsEarlierFindings(unittest.TestCase):
         self.assertEqual(stage_facts.earlier_findings(["NS-0457 held: cancelled by vendor"], CHANGE), [])
 
 
-class AStatusEveryOutputAgreesOn(unittest.TestCase):
+class AStatusEveryOutputAgreesOn(TempDirCase):
     """Round 5 P6 (2026-10-20), Finding BZ1: the tracker said "assess" for refunds the drafts approved."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
+        super().setUp()
         self.tracker = Path(self.tmp.name) / "support_triage_tracker.xlsx"
 
     def write(self, action_small, action_big):
@@ -157,14 +150,9 @@ class AStatusEveryOutputAgreesOn(unittest.TestCase):
 P6_INBOX = Path(r"C:\Users\Administrator\decurix-tests\wide\process\out\P6\20261020-154917\host\inbox")
 
 
-class WorkLeftUndoneInATable(unittest.TestCase):
+class WorkLeftUndoneInATable(TempDirCase):
     """Round 5 P6 (2026-10-20), Finding CC: an Action left as "calculate ... and process per policy", and an automatic
     reply given another email's order number."""
-
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.dir = Path(self.tmp.name)
 
     def tracker(self, rows):
         path = self.dir / "support_triage_tracker.xlsx"
@@ -206,7 +194,7 @@ class WorkLeftUndoneInATable(unittest.TestCase):
         self.assertEqual(stage_facts.unsupported_references(made, messages), [])
 
 
-class ComputedAmountsHold(unittest.TestCase):
+class ComputedAmountsHold(TempDirCase):
     """Round 5 P6 (2026-10-20), Finding CF: "Approve refund Rs 1,800.00" for 60 lanyards at Rs 35 (Rs 2,100), with no
     working; and E07 filed as Refund while its own Action says "no refund requested"."""
 
@@ -215,11 +203,6 @@ class ComputedAmountsHold(unittest.TestCase):
     LIVE_E07 = ["1017_E07.eml", "Farah Shaikh <farah@parkevents.example.in>", "Wrong caps delivered - SO-5107", "Refund",
                 "Medium", "SO-5107", "Park Events Ltd", "Acknowledge wrong item delivery and arrange urgent replacement "
                 "before 25 October; no refund requested.", "Support"]
-
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.dir = Path(self.tmp.name)
 
     def book(self, rows, working=None):
         path = self.dir / "support_triage_tracker.xlsx"

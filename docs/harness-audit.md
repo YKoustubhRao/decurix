@@ -72,7 +72,7 @@ Verdicts: **KEEP** = blocking, a domain-free mechanical invariant; **GEN** = rew
 | `KEEP_CLAUSES`/`affirmative_change` (CD) | word lists for "change vs answer" | CD paraphrase | DEL: one model classification with the person's words verbatim |
 | `RESERVED`/`BLOCKING`/`_reserved`, `DELEGATES` | approval/delegation word lists | BI/BY | GEN: model reading; code keeps only "a yes is one action's" |
 | question routing: `ABOUT_OWN_TOOLS`, `OWN_MECHANICS`, `OTHER_MEANS`, `PERSON_ONLY`, `fields_in_inputs`, `source_asked_for`, `request_settles` | phrase lists + one model call | AK/BM/BP/BW layers conflicted | GEN: one model call "who is this for" with evidence; keep `person_keeps` (secrets/captcha/approval) and the 2-bounce cap |
-| `PROBE_RECORD`, `_wrong_in_app` | worker's own declarations | none | KEEP (`WRONG IN THE APPLICATION` is the worker's own line); probe regex -> ADV |
+| `PROBE_RECORD`, `WRONG_IN_APP` | worker's own declarations | none | KEEP (`WRONG IN THE APPLICATION` is the worker's own line); probe regex -> ADV |
 | `decision_problem`, `_unchanged_after_retry` | structural | none | KEEP |
 
 ## Target architecture (code checks)

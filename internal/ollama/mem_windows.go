@@ -61,21 +61,5 @@ func systemTimes() (idle, total uint64, err error) {
 
 // cpuBusy samples the system's CPU times twice, window apart.
 func cpuBusy(ctx context.Context, window time.Duration) (float64, error) {
-	idle1, total1, err := systemTimes()
-	if err != nil {
-		return 0, err
-	}
-
-	select {
-	case <-ctx.Done():
-		return 0, ctx.Err()
-	case <-time.After(window):
-	}
-
-	idle2, total2, err := systemTimes()
-	if err != nil {
-		return 0, err
-	}
-
-	return busyFraction(idle1, total1, idle2, total2), nil
+	return sampleBusy(ctx, window, systemTimes)
 }

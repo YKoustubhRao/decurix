@@ -96,23 +96,7 @@ func cgroupMemory() (limit, used uint64, ok bool) {
 // cpuBusy samples /proc/stat twice, window apart, and returns the fraction
 // (0-1) of CPU time spent doing anything but idling.
 func cpuBusy(ctx context.Context, window time.Duration) (float64, error) {
-	idle1, total1, err := readCPUStat()
-	if err != nil {
-		return 0, err
-	}
-
-	select {
-	case <-ctx.Done():
-		return 0, ctx.Err()
-	case <-time.After(window):
-	}
-
-	idle2, total2, err := readCPUStat()
-	if err != nil {
-		return 0, err
-	}
-
-	return busyFraction(idle1, total1, idle2, total2), nil
+	return sampleBusy(ctx, window, readCPUStat)
 }
 
 func readCPUStat() (idle, total uint64, err error) {

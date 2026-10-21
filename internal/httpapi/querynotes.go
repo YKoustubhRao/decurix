@@ -50,8 +50,7 @@ func nextNoteID() string {
 
 // queryTextHandler records a query note submitted from inside a desktop.
 func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !allowMethod(w, r, http.MethodPost) {
 		return
 	}
 
@@ -113,7 +112,8 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	// Qualification outcomes are produced by the host verifier, never agent
 	// callbacks. An injected request cannot close or certify an exam task.
-	if strings.HasPrefix(desktop.SanitizeID(req.DesktopID), "readiness-") {
+	desktopID := desktop.SanitizeID(req.DesktopID)
+	if strings.HasPrefix(desktopID, "readiness-") {
 		jsonStatusError(w, http.StatusForbidden, "Readiness results can only be recorded by the independent runner.")
 		return
 	}
@@ -145,8 +145,6 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		chatKind = notedKind
 	}
 
-	desktopID := desktop.SanitizeID(req.DesktopID)
-
 	if req.Interrupted {
 		open, err := s.Tasks.IsOpen(desktopID, reportedTaskID(req.TaskID))
 		if err != nil {
@@ -167,13 +165,13 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	taskID, err := s.Tasks.RecordOutcome(desktopID, reportedTaskID(req.TaskID), tasks.Outcome{
-		Kind:         outcomeKindFor(req.Kind, chatKind),
+		Kind:         note.Kind,
 		Reply:        chatText,
 		Engine:       clip(req.Engine, 32),
 		Model:        clip(req.Model, 128),
-		CostUSD:      nonNegativeFloat(req.CostUSD),
-		InputTokens:  nonNegativeInt(req.InputTokens),
-		OutputTokens: nonNegativeInt(req.OutputTokens),
+		CostUSD:      nonNegative(req.CostUSD),
+		InputTokens:  nonNegative(req.InputTokens),
+		OutputTokens: nonNegative(req.OutputTokens),
 		Checked:      req.Checked,
 	})
 	if err != nil {
@@ -193,18 +191,16 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if outcomeKindFor(req.Kind, chatKind) == tasks.OutcomeDone {
+	if note.Kind == tasks.OutcomeDone {
 		s.recordFinished(desktopID, req.VMName, taskID, chatText)
 	}
 
 	// (A reply while the desktop is still working - a planned run's receipt - never speeds up its idle pause.)
-	if s.IdleChecker != nil && !req.StillWorking && outcomeKindFor(req.Kind, chatKind) == tasks.OutcomeDone {
+	if s.IdleChecker != nil && !req.StillWorking && note.Kind == tasks.OutcomeDone {
 		s.IdleChecker.FastPauseAfter(desktopID, 15*time.Second)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-
-	json.NewEncoder(w).Encode(map[string]string{
+	jsonResponse(w, map[string]string{
 		"status": "received",
 	})
 }
@@ -234,15 +230,8 @@ func outcomeKindFor(reported, chatKind string) string {
 	}
 }
 
-func nonNegativeFloat(value *float64) *float64 {
-	if value == nil || *value < 0 {
-		return nil
-	}
-
-	return value
-}
-
-func nonNegativeInt(value *int64) *int64 {
+// nonNegative is value, or nil when it is negative.
+func nonNegative[T float64 | int64](value *T) *T {
 	if value == nil || *value < 0 {
 		return nil
 	}
@@ -283,8 +272,7 @@ func (s *Server) resolvedQueryNotesHandler(w http.ResponseWriter, r *http.Reques
 
 // closeQueryNoteHandler resolves a query note by ID; it stays in the history.
 func (s *Server) closeQueryNoteHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+	if !requirePost(w, r) {
 		return
 	}
 

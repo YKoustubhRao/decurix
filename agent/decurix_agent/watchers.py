@@ -8,7 +8,7 @@ from decurix_agent import (ask_task, attachments, config, guidance, lessons, lon
 from decurix_agent.computer import approval
 from decurix_agent.harness import continue_after_query, perform_task
 from decurix_agent.logging_utils import log
-from decurix_agent.messaging import REPLY_MARK, resend_unsent_loop, send_query, write_final_reply
+from decurix_agent.messaging import REPLY_MARK, resend_unsent_loop, write_final_reply
 
 
 def _run_handler(target, args):
@@ -528,13 +528,10 @@ def answer_waiting(path, content, already_marked=False):
         if guidance.STOP_ONLY.match(content or ""):
             target, args = _called_off, (content,)
 
-    thread = threading.Thread(
-        target=_run_handler if workflow_task.has_active() else target,
-        args=(target, args) if workflow_task.has_active() else args,
-        daemon=True,
-    )
+    if workflow_task.has_active():
+        target, args = _run_handler, (target, args)
 
-    thread.start()
+    threading.Thread(target=target, args=args, daemon=True).start()
 
 
 def _perform_long(content, task_file):
@@ -722,70 +719,3 @@ def command_watcher():
 
         time.sleep(1)
 
-
-# ============================================================
-# Query text watcher (defunct, useful to have)
-# ============================================================
-
-def querytext_watcher():
-    """
-    Existing functionality:
-    watches querytext/ and sends newly-created or
-    modified .txt files to the control plane.
-
-    This remains useful for agent-generated queries.
-    """
-
-    log(
-        f"Watching querytext directory: "
-        f"{config.QUERYTEXT_DIR}"
-    )
-
-    seen = {}
-
-    while True:
-
-        try:
-
-            for path in config.QUERYTEXT_DIR.glob("*.txt"):
-
-                try:
-                    stat = path.stat()
-
-                except FileNotFoundError:
-                    continue
-
-                signature = (
-                    stat.st_mtime_ns,
-                    stat.st_size,
-                )
-
-                if seen.get(path.name) == signature:
-                    continue
-
-                seen[path.name] = signature
-
-                try:
-                    content = path.read_text(
-                        encoding="utf-8"
-                    )
-
-                except Exception as exc:
-                    log(
-                        f"Could not read query file "
-                        f"{path}: {exc}"
-                    )
-                    continue
-
-                send_query(
-                    path.name,
-                    content,
-                )
-
-        except Exception as exc:
-            log(
-                f"Query text watcher error: "
-                f"{exc}"
-            )
-
-        time.sleep(1)

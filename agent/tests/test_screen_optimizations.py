@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from decurix_agent.computer import screen, core, cdp
+from decurix_agent.computer import core, cdp
 from decurix_agent.computer.screen import Frame, changed_fraction
 
 

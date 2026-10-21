@@ -72,8 +72,7 @@ func qualificationToken() string {
 // Session and CSRF values are never passed through tasks or the agent's filesystem.
 func (s *Server) qualificationSessionHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	if r.Method != http.MethodPost {
-		jsonStatusError(w, 405, "POST required")
+	if !requireMethodJSON(w, r, http.MethodPost) {
 		return
 	}
 	if !qualificationSameOrigin(r) {
@@ -180,8 +179,7 @@ func qualificationError(w http.ResponseWriter, err error) {
 
 // readinessPageHandler renders a local owner console; evidence requires a session.
 func (s *Server) readinessPageHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "GET required", 405)
+	if !requireGet(w, r) {
 		return
 	}
 	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/readiness/"), "/")
@@ -201,8 +199,7 @@ func (s *Server) readinessPageHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) qualificationListHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		jsonStatusError(w, 405, "GET required")
+	if !requireMethodJSON(w, r, http.MethodGet) {
 		return
 	}
 	list, err := s.Qualification.List(r.URL.Query().Get("worker"))
@@ -214,8 +211,7 @@ func (s *Server) qualificationListHandler(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) qualificationSourceHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		jsonStatusError(w, 405, "GET required")
+	if !requireMethodJSON(w, r, http.MethodGet) {
 		return
 	}
 	name := r.URL.Query().Get("name")
@@ -234,8 +230,7 @@ func (s *Server) qualificationSourceHandler(w http.ResponseWriter, r *http.Reque
 // qualificationDefineHandler pins the current tool bytes and actual image.
 // A form cannot invent a fingerprint for an executable it has never exported.
 func (s *Server) qualificationDefineHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		jsonStatusError(w, 405, "POST required")
+	if !requireMethodJSON(w, r, http.MethodPost) {
 		return
 	}
 	var body struct {
@@ -327,8 +322,7 @@ func (s *Server) qualificationCurrent(ctx context.Context, r qualification.Respo
 }
 
 func (s *Server) qualificationAuthorizeHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		jsonStatusError(w, 405, "POST required")
+	if !requireMethodJSON(w, r, http.MethodPost) {
 		return
 	}
 	var body struct {
@@ -359,8 +353,7 @@ func (s *Server) qualificationAuthorizeHandler(w http.ResponseWriter, r *http.Re
 }
 
 func (s *Server) qualificationRunHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		jsonStatusError(w, 405, "POST required")
+	if !requireMethodJSON(w, r, http.MethodPost) {
 		return
 	}
 	var body struct {
@@ -483,8 +476,7 @@ func (s *Server) executeQualification(ctx context.Context, run qualification.Run
 }
 
 func (s *Server) qualificationCancelHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		jsonStatusError(w, 405, "POST required")
+	if !requireMethodJSON(w, r, http.MethodPost) {
 		return
 	}
 	var body struct {
@@ -514,8 +506,7 @@ func (s *Server) qualificationCancelHandler(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) qualificationEvidenceHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		jsonStatusError(w, 405, "GET required")
+	if !requireMethodJSON(w, r, http.MethodGet) {
 		return
 	}
 	run, err := s.Qualification.Run(r.URL.Query().Get("id"))
@@ -527,8 +518,7 @@ func (s *Server) qualificationEvidenceHandler(w http.ResponseWriter, r *http.Req
 }
 
 func (s *Server) qualificationHistoryHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		jsonStatusError(w, 405, "GET required")
+	if !requireMethodJSON(w, r, http.MethodGet) {
 		return
 	}
 	runs, err := s.Qualification.History(r.URL.Query().Get("id"))
@@ -547,8 +537,7 @@ func (s *Server) qualificationHistoryHandler(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) qualificationArtifactHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		jsonStatusError(w, 405, "GET required")
+	if !requireMethodJSON(w, r, http.MethodGet) {
 		return
 	}
 	name := r.URL.Query().Get("file")

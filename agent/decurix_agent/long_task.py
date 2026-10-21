@@ -22,11 +22,12 @@ import re
 import threading
 import time
 import uuid
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import Path
 
-from decurix_agent import attachments, config, progress, state, task_context, usage
+from decurix_agent import attachments, config, progress, provenance, stage_facts, state, task_context, usage
 from decurix_agent.logging_utils import log
+from decurix_agent.stage_facts import _number
 
 
 # ============================================================
@@ -91,10 +92,8 @@ def looks_long(content):
     text = attachments.text(content or "").strip()
     if not text or text.startswith("/"):
         return False
-    kinds = {kind for kind, pattern in _KIND_RES.items() if pattern.search(text)}
     files = attachments.files(content or "")
-    items = len(_LIST_ITEM.findall(text))
-    score = len(kinds) + (1 if items >= 3 else 0)
+    score = _shape_score(text)
     if score >= MIN_KINDS:
         return True
     return score >= MIN_KINDS_WITH_FILES and (len(files) >= MANY_FILES or len(text) >= LONG_TEXT)
@@ -361,10 +360,6 @@ def deliverable_words(request, outputs):
     return found
 
 
-def _named_in_request(request):
-    return {(a or b).strip() for a, b in _QUOTED.findall(request or "") if (a or b).strip()}
-
-
 def spec_from_plan(plan, files=(), request=""):
     """
     The runner's spec for a plan the model drafted, or None when it is not a
@@ -405,7 +400,7 @@ def spec_from_plan(plan, files=(), request=""):
                     check["min_count"] = max(1, min(500, int(out.get("count") or 1))) if isinstance(out, dict) else 1
                 except (TypeError, ValueError):
                     check["min_count"] = 1
-            quoted = _named_in_request(request)
+            quoted = {(a or b).strip() for a, b in _QUOTED.findall(request or "") if (a or b).strip()}
             contains = [c.strip() for c in (out.get("must_contain") or [] if isinstance(out, dict) else [])
                         if isinstance(c, str) and c.strip() in quoted][:MAX_CONTAINS]
             if contains and check["format"] not in {"pdf"}:
@@ -597,11 +592,6 @@ def _update(run_id, change):
         return result
 
 
-def _spent():
-    totals = usage.snapshot()
-    return int(totals.get("input_tokens") or 0) + int(totals.get("output_tokens") or 0)
-
-
 def _output():
     return int(usage.snapshot().get("output_tokens") or 0)
 
@@ -612,6 +602,16 @@ def _charge(run_id, before):
     spent = max(0, _asked() - before)
     if spent:
         _update(run_id, lambda d: d.__setitem__("overhead_tokens", d["overhead_tokens"] + spent))
+
+
+def _ask_charged(run_id, system, prompt, max_tokens):
+    """_ask_json, its tokens charged to the run's overhead (_charge) whether or not it answers."""
+
+    before = _asked()
+    try:
+        return _ask_json(system, prompt, max_tokens=max_tokens)
+    finally:
+        _charge(run_id, before)
 
 
 def _steps(state):
@@ -668,13 +668,11 @@ def perform(content, task_file):
     """
 
     global _run
-    from decurix_agent import procedures, workflow_task
+    from decurix_agent import procedures
 
     request = content
     try:
-        applied = procedures.apply(content)
-        if applied != content:
-            request = applied
+        request = procedures.apply(content)
     except Exception as exc:
         log(f"long_task: could not look for a kept procedure: {exc}")
 
@@ -810,7 +808,7 @@ def stage_prompt(state, step):
     record = state["steps"][step["id"]]
     steps = _steps(state)
     n = next(i for i, s in enumerate(steps, 1) if s["id"] == step["id"])
-    _stage_start[(run_id, step["id"])] = {"t": time.time(), "tokens": _spent(), "output": _output(), "asked": _asked(),
+    _stage_start[(run_id, step["id"])] = {"t": time.time(), "tokens": usage.spent(), "output": _output(), "asked": _asked(),
                                           "drafts": _draft_base(run_id, step["id"]),
                                           "amendments": len(data["amendments"]), "attempt": record["attempts"],
                                           "viewers": _stage_viewers(run_id, step["id"]), "entered": len(_entered())}
@@ -950,11 +948,7 @@ def stage_prompt(state, step):
             # Found live (round 5 P1, 2026-10-20): re-run for a cancelled bill, the stage dropped the wrong-rate bill's flag.
             lines += ["Earlier findings of this stage - still true unless the change says otherwise; keep each one in "
                       "every output (its flag, its hold, its note):"] + [f"- {text}" for _ref, text in kept[:12]]
-        try:
-            from decurix_agent import stage_facts
-            gone = stage_facts.removed_records(data["amendments"])
-        except Exception:  # noqa: BLE001
-            gone = []
+        gone = _removed(data)
         if gone:
             # Found live (round 5 P1, 2026-10-20): the removed bill left the register, its tax stayed in the return.
             lines += [f"Removing {', '.join(gone)}: take it out and recompute every figure built on it in every "
@@ -1214,32 +1208,56 @@ def _send_back_found_in_inputs(run_id, step_id, question, found=None):
     once, told where it is - never the person asked for what the request gave (round 5 P4, 2026-10-20).
     """
 
-    from decurix_agent import workflow_task
-
     found = found if found is not None else fields_in_inputs(question, ledger(run_id).get("request") or "")
     if not found:
         return False
+    places = "; ".join(found[:6])
+    return _send_back(run_id, step_id, "in_inputs", question,
+                      "You were about to ask the person: \"" + " ".join(str(question).split())[:400]
+                      + "\" The request's own inputs have it: " + places + ". Read it there (the input files are "
+                      "listed below) and carry on; ask only for what no input file and no earlier output has.",
+                      "recheck",
+                      "The request's own files have what I was about to ask (" + places[:200] + ") - reading them "
+                      "instead.")
+
+
+def _count(run_id, key, step_id):
+    """One more of `key` for this stage, counted in the ledger; the count now."""
 
     def count(data):
-        data.setdefault("in_inputs", {})
-        data["in_inputs"][step_id] = data["in_inputs"].get(step_id, 0) + 1
-        return data["in_inputs"][step_id]
-    if _update(run_id, count) > 1:
+        data.setdefault(key, {})
+        data[key][step_id] = data[key].get(step_id, 0) + 1
+        return data[key][step_id]
+    return _update(run_id, count)
+
+
+def _send_back(run_id, step_id, key, question, told, field, said):
+    """
+    A stage's question sent back to it, once for `key`: the first time, its cost so far is noted, it is parked on the
+    question and carried on told `told` (kept in its record's `field`), `said` is shown, and the dispatcher picks the
+    run up - True; False when it was sent back so before.
+    """
+
+    if _count(run_id, key, step_id) > 1:
         return False
     start = _stage_start.pop((run_id, step_id), None)
     if start:
         _record_cost(run_id, step_id, start, "sent back")
     r = _runner()
     r.park(run_id, step_id, question)
-    places = "; ".join(found[:6])
-    r.carry_on(run_id, step_id, "You were about to ask the person: \"" + " ".join(str(question).split())[:400]
-               + "\" The request's own inputs have it: " + places + ". Read it there (the input files are listed "
-               "below) and carry on; ask only for what no input file and no earlier output has.", field="recheck")
-    progress.emit("The request's own files have what I was about to ask (" + places[:200] + ") - reading them instead.")
+    r.carry_on(run_id, step_id, told, field=field)
+    progress.emit(said)
+    _dispatch_next(run_id)
+    return True
+
+
+def _dispatch_next(run_id):
+    """The stage's job ends here: the dispatcher picks the run up again (workflow_task._pending)."""
+
+    from decurix_agent import workflow_task
     if workflow_task._active and workflow_task._active[0] == run_id:
         workflow_task._active = None
     workflow_task._pending = (run_id, (_run or {}).get("task_file"), ())
-    return True
 
 
 def _address_books(request):
@@ -1503,13 +1521,6 @@ def _header_key(text):
     return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
 
 
-def _number(text):
-    try:
-        return float(str(text).replace(",", "").strip())
-    except ValueError:
-        return None
-
-
 # A rule by which the stage itself selects among the records (a cap, a limit, an order it fills until): its result is
 # a selection, never "every record". Found live (round 5 P3, 2026-10-20): the payment proposal - whole bills in order,
 # never over the cash available - was refused for leaving out the two bills the rule left out.
@@ -1613,7 +1624,7 @@ def coverage_problems(run_state, step, made):
         return []
     named = " ".join(" ".join(row) for _, rows in log_tables for row in rows).lower()
     work = Path(_runner().context(run_state)["work_dir"])
-    owed, where = {}, {}
+    owed = {}
     gathered = []
     for dep in step.get("depends_on", []):
         for item in run_state["steps"][dep]["evidence"]:
@@ -1709,7 +1720,6 @@ def _earlier_findings(data, step, record):
     its previous report) that the person's changes do not name."""
 
     try:
-        from decurix_agent import stage_facts
         texts = [f.get("text") or "" for f in data.get("facts") or [] if f.get("stage") == step["id"]]
         return stage_facts.earlier_findings(texts + [record.get("report") or ""], data.get("amendments"))
     except Exception as exc:  # noqa: BLE001
@@ -1721,7 +1731,6 @@ def _lost_findings(run_id, step, record, made):
     """An earlier finding a re-check dropped from the stage's outputs (stage_facts.lost_findings), as problems."""
 
     try:
-        from decurix_agent import stage_facts
         data = ledger(run_id)
         found = stage_facts.lost_findings(_earlier_findings(data, step, record), made)
     except Exception as exc:  # noqa: BLE001
@@ -1737,7 +1746,6 @@ def removed_still_there(run_id, made):
     """A record the person removed that an output still holds as a full row (stage_facts.removed_still_present)."""
 
     try:
-        from decurix_agent import stage_facts
         found = stage_facts.removed_still_present(ledger(run_id)["amendments"], made)
     except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing
         log(f"long_task: could not look for a removed record still in the outputs: {exc}")
@@ -1753,7 +1761,7 @@ def _removed_residue(run_id, made, request):
     """A record the person removed whose figures a total still holds (stage_facts.removed_residue), as problems."""
 
     try:
-        from decurix_agent import payees, stage_facts
+        from decurix_agent import payees
         amendments = ledger(run_id)["amendments"]
         if not stage_facts.removed_records(amendments):
             return []
@@ -1773,7 +1781,6 @@ def _status_conflicts(run_state, step, made, drafts):
     contradicts (stage_facts.status_conflicts), as problems."""
 
     try:
-        from decurix_agent import stage_facts
         work = Path(_runner().context(run_state)["work_dir"])
         earlier = [str(work / e["path"]) for s in _steps(run_state) if s["id"] != step["id"]
                    and run_state["steps"][s["id"]]["status"] == "completed"
@@ -1789,35 +1796,28 @@ def _status_conflicts(run_state, step, made, drafts):
             "output too, so every output says the same."]
 
 
-def _left_undone(made, request):
-    """Work a table leaves as an instruction, references given without evidence, amounts whose working does not hold or
-    is missing, rows that contradict themselves (stage_facts), as problems."""
-
-    return [text for _, text in _left_undone_found(made, request)]
-
-
 def _left_undone_found(made, request):
-    """_left_undone's findings as (check, finding), each named by its check (CHECK_MATURITY)."""
+    """Work a table leaves as an instruction, references given without evidence, amounts whose working does not hold or
+    is missing, rows that contradict themselves (stage_facts), as (check, finding), each named by its check
+    (CHECK_MATURITY)."""
 
     try:
-        from decurix_agent import payees, stage_facts
+        from decurix_agent import payees
         deferred = stage_facts.deferred_actions(made)
         unsupported = stage_facts.unsupported_references(made, payees.inputs(request)[1])
     except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing
         log(f"long_task: could not look for work left undone in the tables: {exc}")
         return []
     try:
-        from decurix_agent import stage_facts as facts_
         records, messages = payees.inputs(request)
-        worked = facts_.working_problems(made, records, messages)
-        unworked = facts_.unworked_amounts(made, messages)
-        contradicts = facts_.self_contradictions(made)
+        worked = stage_facts.working_problems(made, records, messages)
+        unworked = stage_facts.unworked_amounts(made, messages)
+        contradicts = stage_facts.self_contradictions(made)
     except Exception as exc:  # noqa: BLE001
         log(f"long_task: could not check the computed amounts: {exc}")
         worked, unworked, contradicts = [], [], []
     try:
-        from decurix_agent import stage_facts as facts_
-        own = facts_.formula_contradictions(made)
+        own = stage_facts.formula_contradictions(made)
     except Exception as exc:  # noqa: BLE001
         log(f"long_task: could not check the formulas against their figures: {exc}")
         own = []
@@ -1909,7 +1909,6 @@ def _scalar(value, day_first=None):
     """A cell value by meaning: ("empty",), ("bool", b), ("date", (y, m, d, seconds)), ("number", Decimal, step) or
     ("text", folded)."""
 
-    import datetime
     if value is None or (isinstance(value, str) and not value.strip()):
         return ("empty",)
     if isinstance(value, bool):
@@ -2209,36 +2208,19 @@ def request_input_files(request, made=(), limit=400):
     return list(dict.fromkeys(p for p in found if str(Path(p).resolve()) not in made_real))
 
 
-def _needs_you(run_id, step, reply):
-    """Keep the stage's 'NEEDS YOU:' lines in the ledger, for the final report's "Needs you"."""
+def _keep_lines(run_id, step, reply, pattern, key, entry):
+    """The lines of a stage's report that `pattern` marks, kept in the ledger's `key` as `entry` (title, text) once."""
 
-    found = [" ".join(m.split())[:400] for m in NEEDS_YOU_LINE.findall(reply or "")]
+    found = [" ".join(m.split())[:400] for m in pattern.findall(reply or "")]
     if found:
         title = step.get("title", step["id"])
 
         def keep(data):
-            kept = data.setdefault("needs_you", [])
+            kept = data.setdefault(key, [])
             for text in found:
-                entry = f"({title}) {text}"
-                if entry not in kept:
-                    kept.append(entry)
-        _update(run_id, keep)
-    return found
-
-
-def _wrong_in_app(run_id, step, reply):
-    """The records a stage says it saved wrong in an application and cannot correct: kept in the ledger, for the top."""
-
-    found = [" ".join(m.split())[:400] for m in WRONG_IN_APP.findall(reply or "")]
-    if found:
-        title = step.get("title", step["id"])
-
-        def keep(data):
-            kept = data.setdefault("wrong_in_app", [])
-            for text in found:
-                entry = f"{title}: {text}"
-                if entry not in kept:
-                    kept.append(entry)
+                line = entry.format(title, text)
+                if line not in kept:
+                    kept.append(line)
         _update(run_id, keep)
     return found
 
@@ -2354,11 +2336,7 @@ def rescope_after_answer(run_id, question, answer):
                             f"{s['instruction'].split(_OWN_WORDS)[0][:1200]}" for s in steps)
         prompt = (f"Stages:\n{listing}\n\nThe question: {' '.join(str(question).split())[:800]}\n"
                   f"The person's answer: {' '.join(str(answer).split())[:800]}")
-        before = _asked()
-        try:
-            found = _ask_json(RESCOPE_SYSTEM, prompt, max_tokens=1500)
-        finally:
-            _charge(run_id, before)
+        found = _ask_charged(run_id, RESCOPE_SYSTEM, prompt, 1500)
     except Exception as exc:  # noqa: BLE001 - the plan stays as it was; the check still gets the answer as binding
         log(f"long_task: could not restate the plan after the answer: {exc}")
         return []
@@ -2414,16 +2392,15 @@ def binding_text(data):
     lines = []
     for d in data.get("decisions") or []:
         question = " ".join(str(d.get("question") or "").split())
+        answer = " ".join(str(d.get("answer") or "").split())[:1200]
         if is_stuck_question(question):
             # A reply that settles what the work and its check disagreed on binds the check like any answer; one that
             # only says how to go on ("try again") does not (series 16, 2026-10-21: the person's "the work is right"
             # reached only the worker, and the check refused the same figure again).
-            answer = " ".join(str(d.get("answer") or "").split())[:1200]
             if settles_something(answer):
                 lines.append(f"- About a check the stage did not pass (\"{question[:1500]}\") - the person settled it: "
                              f"\"{answer}\"")
             continue
-        answer = " ".join(str(d.get("answer") or "").split())[:1200]
         # What the answer addresses first, as the model read it (classify): an item the question lists that the
         # answer does not address is not decided (series 15 H1, 2026-10-21: the question cut at 300 characters showed
         # only its first item, and the judge took "Approve Neha's airport taxi ..." for a decision about Kavya's cab).
@@ -2445,7 +2422,7 @@ def binding_text(data):
                      + (f" (it takes out: {', '.join(removed)})" if removed else ""))
     if not lines:
         return ""
-    left_out = excluded_names(data) + [r for r in _removed(data)]
+    left_out = excluded_names(data) + _removed(data)
     return ("The person's own answers and changes for this run - BINDING, for what each addresses. They override the "
             "source files, the request's wording and this stage's title: a scope phrase of the request covers what the "
             "person has not left out. Output that follows them is right; output that ignores them is wrong. An item an "
@@ -2456,7 +2433,6 @@ def binding_text(data):
 
 def _removed(data):
     try:
-        from decurix_agent import stage_facts
         return stage_facts.removed_records(data.get("amendments") or [])
     except Exception:  # noqa: BLE001
         return []
@@ -2776,7 +2752,7 @@ def _stage_tool_record(run_id, step, start):
                and when(e) >= began]
     # (After the last value put in - a typing, a choice, a file: the saves and the list opened after it are what follow.)
     last_entry = max([when(e) for e in actions if e.get("kind") in ("type", "select", "upload")] or [began])
-    read = []
+    notes = []
     try:
         with open(evidence.NOTES_DIR / f"{task_id}.jsonl", encoding="utf-8") as f:
             for line in f:
@@ -2784,24 +2760,13 @@ def _stage_tool_record(run_id, step, start):
                     note = json.loads(line)
                 except ValueError:
                     continue
-                if float(note.get("at") or 0) >= last_entry:
-                    read.append(str(note.get("text") or ""))
+                notes.append((float(note.get("at") or 0), str(note.get("text") or "")))
     except OSError:
         pass
+    read = [text for at, text in notes if at >= last_entry]
     read += [str(e.get("change") or "") for e in actions if when(e) >= last_entry]
     # The whole stage's reading too: the system's own page for each record as it was saved ("Order SO-5102 was saved").
-    everything = []
-    try:
-        with open(evidence.NOTES_DIR / f"{task_id}.jsonl", encoding="utf-8") as f:
-            for line in f:
-                try:
-                    note = json.loads(line)
-                except ValueError:
-                    continue
-                if float(note.get("at") or 0) >= began:
-                    everything.append(str(note.get("text") or ""))
-    except OSError:
-        pass
+    everything = [text for at, text in notes if at >= began]
     everything += [str(e.get("change") or "") for e in actions]
 
     def pages(texts):
@@ -2862,7 +2827,6 @@ def _claimed_records(made):
     anything's).
     """
 
-    from decurix_agent import stage_facts
     out = []
     for label, header, rows in stage_facts.tables_of(made):
         status_cols = [i for i, h in enumerate(header) if _STATUS_HEADER.search(re.sub(r"[_\W]+", " ", h or ""))]
@@ -2870,7 +2834,6 @@ def _claimed_records(made):
             continue
         for row in rows:
             cells = [str(c).strip() for c in row if c not in (None, "") and str(c).strip()]
-            text = " | ".join(cells)
             said = [str(row[i]).strip() for i in status_cols if i < len(row) and row[i] not in (None, "")]
             verbs = [c for c in said if _ENTERED_CELL.search(c)]
             numbered = [str(row[i]).strip() for i in status_cols if i < len(row) and row[i] not in (None, "")
@@ -3085,7 +3048,6 @@ def work_sources(request, made=()):
     recorded), and the system's pages the tools read. What a value typed or written must trace to.
     """
 
-    from decurix_agent import provenance
     inputs = request_input_files(request, made) if request else []
     return provenance.gather(request, list(inputs) + list(made), roots=[config.WORK_DIR], notes=_page_notes())
 
@@ -3094,7 +3056,6 @@ def given_sources(request, made=()):
     """provenance.gather without the work folder: the request, its input files and messages, the system's pages - what
     the work was given, never what it wrote (independent review, 2026-10-21, #11: the work folder is circular)."""
 
-    from decurix_agent import provenance
     inputs = request_input_files(request, made) if request else []
     return provenance.gather(request, list(inputs), roots=(), notes=_page_notes())
 
@@ -3107,7 +3068,6 @@ def own_work_evidence(text, request, made=()):
     """
 
     try:
-        from decurix_agent import provenance
         work = [m for m in made if Path(str(m)).is_file()]
         found = provenance.own_work_only(text or "", given_sources(request, made), work) if work else []
     except Exception as exc:  # noqa: BLE001 - evidence that cannot be gathered decides nothing
@@ -3131,7 +3091,6 @@ def draft_checks(drafts, request, made=()):
     if not drafts:
         return [], []
     try:
-        from decurix_agent import stage_facts
         sources = work_sources(request, made)
         inputs = request_input_files(request, made)
         tables = [(h, r) for _, h, r in stage_facts.tables_of(inputs)]
@@ -3174,7 +3133,6 @@ def _summary_totals(made):
     detail sheet counts."""
 
     try:
-        from decurix_agent import stage_facts
         found = stage_facts.summary_vs_detail(made)
     except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing
         log(f"long_task: could not compare summary figures with their rows: {exc}")
@@ -3244,13 +3202,9 @@ def files_open(run_state, made):
 
     try:
         from decurix_agent import produced
-        work = Path(_runner().context(run_state)["work_dir"])
-        earlier = [str(work / e["path"]) for s in _steps(run_state)
-                   if run_state["steps"][s["id"]]["status"] == "completed"
-                   for e in run_state["steps"][s["id"]]["evidence"] if not e.get("drafts")]
         # (This stage's own files are file_facts' - said once, there.)
         own = {str(Path(m).resolve()) for m in made}
-        broken = produced.no_longer_open([p for p in earlier if str(Path(p).resolve()) not in own])
+        broken = produced.no_longer_open([p for _, p in _outputs(run_state) if str(Path(p).resolve()) not in own])
     except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing
         log(f"long_task: could not open the run's files to check them: {exc}")
         return []
@@ -3393,14 +3347,11 @@ def _finding_view(run_id, step, made, request, texts, reasons):
               + "\n\nThe worker's reasons:\n" + "\n".join(f"- {r[:700]}" for r in reasons)
               + f"\n\nThe request:\n{attachments.text(request or '').strip()[:4000]}"
               + f"\n\nThe stage's files:\n{produced.text(made)[:15000]}")
-    before = _asked()
     try:
-        found = _ask_json(FINDING_VIEW_SYSTEM, prompt, max_tokens=800)
+        found = _ask_charged(run_id, FINDING_VIEW_SYSTEM, prompt, 800)
     except Exception as exc:  # noqa: BLE001 - no view is no view; the person still decides
         log(f"long_task: no model view of the findings: {exc}")
         return ""
-    finally:
-        _charge(run_id, before)
     lines = []
     for v in found.get("views") or []:
         if isinstance(v, dict) and str(v.get("applies")) in ("yes", "no", "unsure"):
@@ -3488,7 +3439,7 @@ def stage_finished(run_id, step_id, reply, kind, declined=None):
     into the ledger. Returns the run's state.
     """
 
-    from decurix_agent import verify, workflow_task
+    from decurix_agent import verify
 
     r = _runner()
     run_state = r.status(run_id)
@@ -3505,7 +3456,7 @@ def stage_finished(run_id, step_id, reply, kind, declined=None):
             return _runner().status(run_id)
         if start_noted:
             _stage_start[(run_id, step_id)] = start_noted
-    start = _stage_start.pop((run_id, step_id), {"t": time.time(), "tokens": _spent(), "output": _output(), "asked": _asked(), "drafts": [],
+    start = _stage_start.pop((run_id, step_id), {"t": time.time(), "tokens": usage.spent(), "output": _output(), "asked": _asked(), "drafts": [],
                                                  "amendments": len(ledger(run_id)["amendments"]), "attempt": 0})
     base = ledger(run_id).get("draft_base", {}).get(step_id)
     drafts = _stage_drafts(base if base is not None else start["drafts"], f"{run_id}:{step_id}")
@@ -3527,8 +3478,10 @@ def stage_finished(run_id, step_id, reply, kind, declined=None):
         problems = [text for _, text in blocking]
         advice = [text for check, text in findings if not is_blocking(check) and not asks_person(check)]
         to_approve = [(check, text) for check, text in findings if asks_person(check)]
-        _needs_you(run_id, step, reply)
-        wrong = _wrong_in_app(run_id, step, reply)
+        # The stage's 'NEEDS YOU:' lines, for the final report's "Needs you"; the records it says it saved wrong in an
+        # application and cannot correct, for its top.
+        _keep_lines(run_id, step, reply, NEEDS_YOU_LINE, "needs_you", "({}) {}")
+        wrong = _keep_lines(run_id, step, reply, WRONG_IN_APP, "wrong_in_app", "{}: {}")
         came_back = _came_back(run_id, step_id, blocking)
         _note_blocked(run_id, step_id, blocking)
         if (blocking and not wrong and came_back and KEPT_ANY.search(reply or "")
@@ -3842,7 +3795,6 @@ def _release_host_files(run_state, data, needs):
     files = host_files_of(run_state, data.get("request") or "")
     if not files:
         return []
-    import json as _json
     import urllib.parse
     import urllib.request
     kept_open = " ".join(n for n in needs if "Still open in the apps" in n)
@@ -3855,7 +3807,7 @@ def _release_host_files(run_state, data, needs):
                + urllib.parse.urlencode({"desktop": config.DESKTOP_ID, "path": host}))
         try:
             with urllib.request.urlopen(urllib.request.Request(url, data=b"", method="POST"), timeout=70) as resp:
-                answer = _json.loads(resp.read().decode("utf-8") or "{}")
+                answer = json.loads(resp.read().decode("utf-8") or "{}")
         except Exception as exc:  # noqa: BLE001 - tidying never fails the report
             log(f"long_task: could not release {host}: {exc}")
             continue
@@ -3955,14 +3907,11 @@ def dispute_points(run_id, step, finding, reply):
     shown = (f"The stage: {step.get('title', step['id'])}\n{str(step.get('instruction') or '')[:1500]}\n\n"
              f"The check's finding: {' '.join(str(finding or '').split())[:2500]}\n\n"
              f"The worker's last report: {' '.join(str(reply or '').split())[:2500]}")
-    before = _asked()
     try:
-        found = _ask_json(DISPUTE_SYSTEM, shown, max_tokens=900) or {}
+        found = _ask_charged(run_id, DISPUTE_SYSTEM, shown, 900) or {}
     except Exception as exc:  # noqa: BLE001 - the person still gets the finding as it is
         log(f"long_task: could not put the refusal as points: {exc}")
         return []
-    finally:
-        _charge(run_id, before)
     points = []
     for p in (found.get("points") if isinstance(found, dict) else None) or []:
         if not isinstance(p, dict):
@@ -3987,7 +3936,7 @@ def settles_something(answer):
 def _record_cost(run_id, step_id, start, outcome):
     entry = {"attempt": start.get("attempt"), "seconds": round(time.time() - start["t"], 1),
              # The stage's engine and its check; not what reading a message meanwhile cost (that is overhead).
-             "tokens": max(0, (_spent() - start["tokens"]) - (_asked() - start.get("asked", _asked()))),
+             "tokens": max(0, (usage.spent() - start["tokens"]) - (_asked() - start.get("asked", _asked()))),
              # What it wrote, apart from what it read: read (prompt) tokens dominate a stage that reads many files,
              # because every turn sends the whole conversation again.
              "output_tokens": max(0, _output() - start.get("output", _output())),
@@ -4037,14 +3986,11 @@ def _new_question(run_id, step_id, text, kind, parked, extra=None):
 
 
 def _park(run_id, step_id, question, run_state, report=None, kind="query", extra=None):
-    from decurix_agent import workflow_task
     from decurix_agent.messaging import post_question
 
     _runner().park(run_id, step_id, question, report=report)
     _new_question(run_id, step_id, question, kind, True, extra=extra)
-    if workflow_task._active and workflow_task._active[0] == run_id:
-        workflow_task._active = None
-    workflow_task._pending = (run_id, (_run or {}).get("task_file"), ())
+    _dispatch_next(run_id)
     if _runnable_besides(_runner().status(run_id), step_id):
         post_question(f"{question}\n\n(Meanwhile I am carrying on with the parts that do not depend on this.)")
     _show(_runner().status(run_id))
@@ -4196,10 +4142,7 @@ def _bounces(run_id, step_id):
 def _bounced(run_id, step_id):
     """Count one send-back of the stage's question (any layer). True, for take_question to return."""
 
-    def count(data):
-        data.setdefault("bounces", {})
-        data["bounces"][step_id] = int(data["bounces"].get(step_id) or 0) + 1
-    _update(run_id, count)
+    _count(run_id, "bounces", step_id)
     return True
 
 
@@ -4230,30 +4173,13 @@ def _send_back_unchecked(run_id, step_id, question):
     choose ... if "Pete Sandoval" is not available."
     """
 
-    from decurix_agent import workflow_task
-
     text = " ".join(str(question or "").split())
-
-    def count(data):
-        data.setdefault("unchecked", {})
-        data["unchecked"][step_id] = data["unchecked"].get(step_id, 0) + 1
-        return data["unchecked"][step_id]
-    if _update(run_id, count) > 1:
-        return False
-    start = _stage_start.pop((run_id, step_id), None)
-    if start:
-        _record_cost(run_id, step_id, start, "sent back")
-    r = _runner()
-    r.park(run_id, step_id, question)
-    r.carry_on(run_id, step_id, "Check it first: you were about to ask the person \"" + text[:500] + "\" - about "
-               "something you have not looked at yet. Open the field's options, look in the system or try it, and use "
-               "the source's value if it is there. Ask only if, after checking, it truly isn't - and say what you saw.",
-               field="recheck")
-    progress.emit("A question about something I had not checked yet - checking it first instead of asking you.")
-    if workflow_task._active and workflow_task._active[0] == run_id:
-        workflow_task._active = None
-    workflow_task._pending = (run_id, (_run or {}).get("task_file"), ())
-    return True
+    return _send_back(run_id, step_id, "unchecked", question,
+                      "Check it first: you were about to ask the person \"" + text[:500] + "\" - about something you "
+                      "have not looked at yet. Open the field's options, look in the system or try it, and use the "
+                      "source's value if it is there. Ask only if, after checking, it truly isn't - and say what you "
+                      "saw.", "recheck",
+                      "A question about something I had not checked yet - checking it first instead of asking you.")
 
 
 def _send_back_false_figures(run_id, step_id, question):
@@ -4264,31 +4190,16 @@ def _send_back_false_figures(run_id, step_id, question):
     the record's own total; a person would have "corrected" a correct order.
     """
 
-    from decurix_agent import verify, workflow_task
+    from decurix_agent import verify
 
     wrong = verify.false_sums(question or "")
     if not wrong:
         return False
-
-    def count(data):
-        data.setdefault("false_figures", {})
-        data["false_figures"][step_id] = data["false_figures"].get(step_id, 0) + 1
-        return data["false_figures"][step_id]
-    if _update(run_id, count) > 1:
-        return False
-    start = _stage_start.pop((run_id, step_id), None)
-    if start:
-        _record_cost(run_id, step_id, start, "sent back")
-    r = _runner()
-    r.park(run_id, step_id, question)
-    r.carry_on(run_id, step_id, "You were about to tell the person: \"" + " ".join(str(question).split())[:500]
-               + "\" Your own figures say otherwise: " + "; ".join(wrong)[:400] + ". Recheck them with a command over "
-               "the sources before telling the person anything is wrong.", field="recheck")
-    progress.emit("My own figures did not add up (" + "; ".join(wrong)[:200] + ") - rechecking before I ask you.")
-    if workflow_task._active and workflow_task._active[0] == run_id:
-        workflow_task._active = None
-    workflow_task._pending = (run_id, (_run or {}).get("task_file"), ())
-    return True
+    return _send_back(run_id, step_id, "false_figures", question,
+                      "You were about to tell the person: \"" + " ".join(str(question).split())[:500]
+                      + "\" Your own figures say otherwise: " + "; ".join(wrong)[:400] + ". Recheck them with a "
+                      "command over the sources before telling the person anything is wrong.", "recheck",
+                      "My own figures did not add up (" + "; ".join(wrong)[:200] + ") - rechecking before I ask you.")
 
 
 ROUTE_SYSTEM = """A worker doing one stage of a person's request is about to ask the person the question below. You are
@@ -4358,14 +4269,11 @@ def route_question(run_id, question, request, decision=False):
     shown.append("The person's earlier answers in this run:\n" + ("\n".join(
         f"- Asked \"{_flat(q)[:300]}\" - answered: \"{a}\"" for q, a in answers) if answers else "(none)"))
     shown.append(f"The question:\n{_flat(question)[:2000]}")
-    before = _asked()
     try:
-        said = _ask_json(ROUTE_SYSTEM, "\n\n".join(shown), max_tokens=300) or {}
+        said = _ask_charged(run_id, ROUTE_SYSTEM, "\n\n".join(shown), 300) or {}
     except Exception as exc:  # noqa: BLE001
         log(f"long_task: could not tell whom the question is for: {exc}")
         return "PERSON", "", False
-    finally:
-        _charge(run_id, before)
     route = str(said.get("for") or "").strip().upper()
     pointer = _flat(said.get("pointer"))
     other_means = bool(said.get("other_means"))
@@ -4397,29 +4305,12 @@ def route_question(run_id, question, request, decision=False):
 def _send_back_mechanics(run_id, step_id, question, other_means=False, source=""):
     """A stage that asked the person about its own app or screen trouble runs again with how to recover, once."""
 
-    from decurix_agent import workflow_task
-
-    def count(data):
-        data.setdefault("mechanics", {})
-        data["mechanics"][step_id] = data["mechanics"].get(step_id, 0) + 1
-        return data["mechanics"][step_id]
-    if _update(run_id, count) > 1:
-        return False
-    start = _stage_start.pop((run_id, step_id), None)
-    if start:
-        _record_cost(run_id, step_id, start, "sent back")
-    r = _runner()
-    r.park(run_id, step_id, question)
     note = " ".join(str(question or "").split())[:600]
     # (The source's sentence may carry its login: the note kept on the record never keeps a secret - privacy.py.)
     marker = f"SOURCE: {privacy_withheld(source)[:300]} || " if source else ("MEANS: " if other_means else "")
-    r.carry_on(run_id, step_id, marker + note, field="mechanics")
-    progress.emit("My own app trouble - recovering from it (closing it, restarting the app, or working without the "
-                  "screen) instead of asking you.")
-    if workflow_task._active and workflow_task._active[0] == run_id:
-        workflow_task._active = None
-    workflow_task._pending = (run_id, (_run or {}).get("task_file"), ())
-    return True
+    return _send_back(run_id, step_id, "mechanics", question, marker + note, "mechanics",
+                      "My own app trouble - recovering from it (closing it, restarting the app, or working without the "
+                      "screen) instead of asking you.")
 
 
 def _send_back_once(run_id, step_id, question, settled_by="", decided_by=""):
@@ -4429,39 +4320,21 @@ def _send_back_once(run_id, step_id, question, settled_by="", decided_by=""):
     source and decide - or to follow that sentence or answer - once each.
     """
 
-    from decurix_agent import workflow_task
-
-    key = "decided_back" if decided_by else "sent_back"
-
-    def count(data):
-        data.setdefault(key, {})
-        data[key][step_id] = data[key].get(step_id, 0) + 1
-        return data[key][step_id]
-    if _update(run_id, count) > 1:
-        return False
-    start = _stage_start.pop((run_id, step_id), None)
-    if start:
-        _record_cost(run_id, step_id, start, "sent back")
-    r = _runner()
-    r.park(run_id, step_id, question)
     if decided_by:
         # Series 16 H1 (2026-10-21): CL-4142 approved at Rs 1,200, then asked about again as "approve at Rs 1,850 or
         # decline" - four questions in 80 seconds.
-        r.carry_on(run_id, step_id, f"You asked the person: \"{' '.join(str(question or '').split())[:500]}\" They "
-                   f"already answered: \"{decided_by}\" - that is their decision on what it covers. Apply it, and ask "
-                   "only about what it leaves open, naming only those items", field="settled")
-        progress.emit(f"You already answered that (\"{decided_by[:160]}\") - applying it.")
-    elif settled_by:
-        r.carry_on(run_id, step_id, f"You asked the person: \"{' '.join(str(question or '').split())[:500]}\" The "
-                   f"request already says: \"{settled_by}\"", field="settled")
-        progress.emit(f"The request already answers that (\"{settled_by[:160]}\") - carrying on with it.")
-    else:
-        r.carry_on(run_id, step_id, " ".join(str(question or "").split())[:600], field="sent_back")
-        progress.emit("A question about my own reading of a source - re-reading it instead of asking you.")
-    if workflow_task._active and workflow_task._active[0] == run_id:
-        workflow_task._active = None
-    workflow_task._pending = (run_id, (_run or {}).get("task_file"), ())
-    return True
+        return _send_back(run_id, step_id, "decided_back", question,
+                          f"You asked the person: \"{' '.join(str(question or '').split())[:500]}\" They already "
+                          f"answered: \"{decided_by}\" - that is their decision on what it covers. Apply it, and ask "
+                          "only about what it leaves open, naming only those items", "settled",
+                          f"You already answered that (\"{decided_by[:160]}\") - applying it.")
+    if settled_by:
+        return _send_back(run_id, step_id, "sent_back", question,
+                          f"You asked the person: \"{' '.join(str(question or '').split())[:500]}\" The request "
+                          f"already says: \"{settled_by}\"", "settled",
+                          f"The request already answers that (\"{settled_by[:160]}\") - carrying on with it.")
+    return _send_back(run_id, step_id, "sent_back", question, " ".join(str(question or "").split())[:600], "sent_back",
+                      "A question about my own reading of a source - re-reading it instead of asking you.")
 
 
 def _carry_on(run_id, step_id, said):
@@ -4470,20 +4343,12 @@ def _carry_on(run_id, step_id, said):
     (found live, round 5: entering five orders on the screen needed more than one job's steps). False when used up.
     """
 
-    from decurix_agent import workflow_task
-
-    def count(data):
-        data.setdefault("continuations", {})
-        data["continuations"][step_id] = data["continuations"].get(step_id, 0) + 1
-        return data["continuations"][step_id]
-    if _update(run_id, count) > MAX_CONTINUATIONS:
+    if _count(run_id, "continuations", step_id) > MAX_CONTINUATIONS:
         return False
     r = _runner()
     r.park(run_id, step_id, said)
     r.carry_on(run_id, step_id, " ".join(str(said or "").split())[:600])
-    if workflow_task._active and workflow_task._active[0] == run_id:
-        workflow_task._active = None
-    workflow_task._pending = (run_id, (_run or {}).get("task_file"), ())
+    _dispatch_next(run_id)
     progress.emit(f"Stage ran out of room before the end - carrying on: {_title(r.status(run_id), step_id)}")
     return True
 
@@ -4544,8 +4409,7 @@ def _end():
 # ---------- figures that appear in several outputs ----------
 
 from decurix_agent.provenance import (  # noqa: E402,F401 - the one normaliser (provenance.py)
-    _FILE_END, _MONEY_WORDS, _MONTHS, _NUMBER, _SCALES, _readings, declared_unit, fact_value, identifier_like,
-    parse_number, same_fact, same_figure)
+    declared_unit, fact_value, identifier_like, parse_number, same_fact, same_figure)
 _TOTALISH = re.compile(r"\b(total|net|sum|balance|payable|receivable|revenue|sales|expenses?|tax|credit|profit|loss|"
                        r"variance|closing|opening|outstanding|due|gross|cost|amount|count|grand)\b", re.I)
 _STOP = {"the", "a", "an", "of", "for", "in", "on", "to", "and", "rs", "inr", "amount", "value", "figure", "is", "as",
@@ -4689,9 +4553,8 @@ def _place_value(snippet, value):
     """The figure a place gives: its own "value" when the snippet holds it, else the snippet's one figure, else None
     (a row with several figures cannot say which one the label means)."""
 
-    flat = lambda s: " ".join(str(s or "").split())  # noqa: E731
-    if value and flat(value) in flat(snippet):
-        return flat(value)
+    if value and _flat(value) in _flat(snippet):
+        return _flat(value)
     figures = re.findall(r"\d{1,2}[/.\-]\d{1,2}[/.\-]\d{4}|\d{4}-\d{2}-\d{2}|(?:Rs\.?\s*|₹\s*)?\d[\d,]*(?:\.\d+)?", snippet or "")
     return figures[0] if len(figures) == 1 else None
 
@@ -4762,7 +4625,6 @@ def model_disagreements(outputs, ask=None, request="", notes=None):
         log(f"long_task: the cross-check could not ask the model: {exc}")
         return [], 0
     by_name = {os.path.basename(p): p for p in texts}
-    flat = lambda s: " ".join(str(s).split())
     day_first = _day_first(request)
     disagreements, agreed = [], 0
     for item in found[:15]:
@@ -4770,7 +4632,7 @@ def model_disagreements(outputs, ask=None, request="", notes=None):
         for place in item.get("places") or []:
             path = by_name.get(os.path.basename(str(place.get("file") or "")))
             snippet = str(place.get("text") or "")
-            if not path or flat(snippet) not in flat(texts[path][1]):
+            if not path or _flat(snippet) not in _flat(texts[path][1]):
                 continue
             value = _place_value(snippet, place.get("value"))
             if value is None:
@@ -4954,8 +4816,7 @@ def final_report(run_state):
         if step.get("for_approval") and run_state["steps"][step["id"]]["status"] == "completed":
             needs.append(f"For your approval, nothing promised: {step.get('title', step['id'])} - "
                          + ", ".join(str(work / o) for o in step.get("outputs") or []))
-    for text in data.get("needs_you") or []:
-        needs.append(text)
+    needs += data.get("needs_you") or []
     for text in data.get("kept_for_person") or []:
         needs.append(f"Kept for your approval (you left it to me, but the request keeps it for you): {text}")
     for left in data.get("assumed_for_person") or []:
@@ -4997,19 +4858,15 @@ def final_report(run_state):
     else:
         head = "Not everything is done." + (f" And {said_loud} (see Needs you)." if said_loud else "")
     warnings = _payment_warnings(run_state, data.get("request") or "")
-    for wrong in data.get("wrong_in_app") or []:
-        # A wrong record already saved in an application the worker could not correct: the person fixes it by hand.
-        warnings.append(f"WRONG IN THE APPLICATION - {wrong}")
+    # A wrong record already saved in an application the worker could not correct: the person fixes it by hand.
+    warnings += [f"WRONG IN THE APPLICATION - {wrong}" for wrong in data.get("wrong_in_app") or []]
+    # Where money goes, said first: one approval of a payment to the wrong account cannot be taken back. A payment
+    # to an account not on record is not done; a suspicious message the run did not act on is only a warning.
+    if data.get("wrong_in_app") or any(w.startswith("PAYMENT TO") for w in warnings):
         finished = False
         if run_state["status"] != "cancelled":
             head = "Not everything is done."
     if warnings:
-        # Where money goes, said first: one approval of a payment to the wrong account cannot be taken back. A payment
-        # to an account not on record is not done; a suspicious message the run did not act on is only a warning.
-        if any(w.startswith("PAYMENT TO") for w in warnings):
-            finished = False
-            if run_state["status"] != "cancelled":
-                head = "Not everything is done."
         head = "WARNING - " + " ".join(warnings) + "\n\n" + head
     if finished:
         # A guide a stage wrote to an app it had none for is kept only now every stage is checked done.
@@ -5045,8 +4902,7 @@ def final_report(run_state):
     text, fallback = _report_message(run_id, work, parts, head=head, done=done_short, not_done=not_done, needs=needs,
                                      changes=changes, decisions=decisions, assumed=assumed, crossed=crossed,
                                      cost=cost, warnings=warnings, stages=len(_steps(run_state)), please=please)
-    workflow_task._active = None
-    workflow_task._pending = None
+    workflow_task._active = workflow_task._pending = None
     _end()
     # The report names the person's request, never the last stage's prompt (the note's "Task:").
     from decurix_agent import state as agent_state
@@ -5656,9 +5512,7 @@ def _withhold_derived(data):
             for field in fields:
                 if isinstance(item.get(field), str):
                     item[field] = privacy_withheld(item[field])
-    if isinstance(data.get("wrong_in_app"), list):
-        data["wrong_in_app"] = [privacy_withheld(t) if isinstance(t, str) else t for t in data["wrong_in_app"]]
-    for key in ("needs_you", "kept_for_person"):
+    for key in ("wrong_in_app", "needs_you", "kept_for_person"):
         if isinstance(data.get(key), list):
             data[key] = [privacy_withheld(t) if isinstance(t, str) else t for t in data[key]]
     confirming = data.get("confirming")
@@ -5814,6 +5668,7 @@ def _take_message(content, path, about_this=False):
                                                                   for k in ("removed", "removed_lines", "restored")})
     resumed_whole = None
     decided = [a for a in verdict["answers"] if a["question"].startswith("d:")]
+    answered = [a for a in verdict["answers"] if not a["question"].startswith("d:")]
     for answer in decided:
         rest = _rest_to_ask(run_id, answer["question"][2:], None, answer)
         receipt = ((receipt + " ") if receipt else "") + take_decision(run_id, answer["question"][2:], answer["answer"],
@@ -5831,7 +5686,7 @@ def _take_message(content, path, about_this=False):
             # Decided before it was asked: what was computed before the decision is redone all the same.
             _recheck_after_decision(run_id, {"stage": answer["question"][2:], "at": time.time(), "text": ""},
                                     answer["answer"], names=answer.get("names"))
-    for answer in [a for a in verdict["answers"] if not a["question"].startswith("d:")]:
+    for answer in answered:
         question = next(q for q in data["questions"] if q["id"] == answer["question"])
         _decide(run_id, question, answer["answer"], reading=_answer_reading(answer))
         if question.get("kind") == "finding" and answer.get("keep") is True:
@@ -5875,14 +5730,14 @@ def _take_message(content, path, about_this=False):
                                 if verdict["amendment"] else "")
         watchers.answer_waiting(path, text, already_marked=True)
         return
-    if decided and not [a for a in verdict["answers"] if not a["question"].startswith("d:")]:
+    if decided and not answered:
         # A decision taken from the message: its stage runs with it; a question still open is asked again when nothing
         # else can run (conclude), never answered with this.
         if waiting:
             state.waiting_for_query = False
         _resume(run_id)
         return
-    if waiting and not [a for a in verdict["answers"] if not a["question"].startswith("d:")] and waiting_kind:
+    if waiting and not answered and waiting_kind:
         # A change sent while a question is pending is not its answer: the question is asked again.
         _ask_again((receipt + "\n\n" if receipt else "") + "Still waiting on your answer:\n" + state.last_query_text,
                    waiting_kind)
@@ -5911,9 +5766,10 @@ def take_decision(run_id, step_id, answer, reading=None, hold=False):
                 q["status"] = "answered"
     _update(run_id, add)
     status = run_state["steps"][step_id]["status"]
+    receipt = f"Noted your decision for \"{title}\": {' '.join(answer.split())[:300]}"
     if hold:
         # (Part of it is still open: the stage waits for the follow-up's answer - _ask_rest.)
-        return f"Noted your decision for \"{title}\": {' '.join(answer.split())[:300]}"
+        return receipt
     try:
         # The runner's own record says so too: deciding changes no file (workflow_runner._unchanged_counts).
         _runner().annotate(run_id, step_id, decided=True)
@@ -5923,7 +5779,7 @@ def take_decision(run_id, step_id, answer, reading=None, hold=False):
             _reopen(run_id, step_id, f"the person decided: \"{answer[:600]}\"")
     except ValueError as exc:
         log(f"long_task: {exc}")
-    return f"Noted your decision for \"{title}\": {' '.join(answer.split())[:300]}"
+    return receipt
 
 
 _ITEM_REF = re.compile(r"[a-z]*\d[a-z0-9]*(?:[-/][a-z0-9]+)*")
@@ -6383,7 +6239,6 @@ def resume_interrupted(record):
 
     global _run
     from decurix_agent import config as _config
-    from decurix_agent import workflow_task
 
     if not (_config.DECURIX_DIR / "workflows").is_dir():
         return False

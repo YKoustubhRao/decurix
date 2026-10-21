@@ -1,5 +1,4 @@
 import time
-from pathlib import Path
 
 from decurix_agent.computer import skills
 
@@ -368,13 +367,6 @@ def get_catalog():
     """Return all skills in the standard catalog."""
 
     return list(CATALOG_SKILLS)
-
-
-def get_catalog_by_department(department):
-    """Return catalog skills belonging to a specific department."""
-
-    dep = (department or "").strip().lower()
-    return [s for s in CATALOG_SKILLS if s.get("department", "").lower() == dep]
 
 
 def get_catalog_skill(name):

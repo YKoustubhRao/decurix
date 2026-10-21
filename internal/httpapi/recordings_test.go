@@ -11,53 +11,62 @@ import (
 // Everything a recordings call checks happens before it reaches a desktop, so
 // a malformed or unsafe request never becomes a URL path on one. chatServer
 // has no Docker manager: a test that got past the checks would panic.
-func TestRecordingsRejectBadRequestsBeforeReachingADesktop(t *testing.T) {
-	s := chatServer(t)
+// statusCase is one request a table test made and the status it must have had.
+type statusCase struct {
+	name string
+	rec  *httptest.ResponseRecorder
+	want int
+}
 
-	get := func(handler http.HandlerFunc, query string) *httptest.ResponseRecorder {
-		rec := httptest.NewRecorder()
-		handler(rec, httptest.NewRequest(http.MethodGet, "/x?"+query, nil))
-		return rec
-	}
-
-	cases := []struct {
-		name string
-		rec  *httptest.ResponseRecorder
-		want int
-	}{
-		{"no desktop", get(s.recordingsAPIHandler, ""), http.StatusBadRequest},
-		{"path in a session", get(s.recordingAPIHandler, "id=box&session=../etc"), http.StatusBadRequest},
-		{"unknown session kind", get(s.recordingAPIHandler, "id=box&session=secret-1"), http.StatusBadRequest},
-		{"path in a frame", get(s.recordingFrameHandler, "id=box&session=demo-1&frame=../../meta.json"), http.StatusBadRequest},
-		{"post to a read", postForm(t, s.recordingAPIHandler, "/x", "id=box&session=demo-1"), http.StatusMethodNotAllowed},
-		{"get to a write", get(s.recordingDeleteHandler, "id=box&session=demo-1"), http.StatusMethodNotAllowed},
-		{"unknown action", postForm(t, s.demonstrationHandler, "/x", "id=box&action=erase"), http.StatusBadRequest},
-		{"bad step", postForm(t, s.replayRecordingHandler, "/x", "id=box&session=demo-1&from=zero"), http.StatusBadRequest},
-		{"params not an object", postForm(t, s.replayRecordingHandler, "/x", "id=box&session=demo-1&params=%5B1%5D"), http.StatusBadRequest},
-		{"bad param name", postForm(t, s.replayRecordingHandler, "/x", "id=box&session=demo-1&params=%7B%22..%2Fx%22%3A%22a%22%7D"), http.StatusBadRequest},
-		{"record with no task", postForm(t, s.recordTaskHandler, "/x", "id=box&task=++"), http.StatusBadRequest},
-		{"record too long", postForm(t, s.recordTaskHandler, "/x", "id=box&task="+strings.Repeat("x", maxRequestBytes)), http.StatusBadRequest},
-		{"record by get", get(s.recordTaskHandler, "id=box&task=x"), http.StatusMethodNotAllowed},
-		{"demonstration status with no desktop", get(s.demonstrationHandler, ""), http.StatusBadRequest},
-		{"ticket status with no desktop", get(s.ticketStatusHandler, ""), http.StatusBadRequest},
-		{"ticket status by post", postForm(t, s.ticketStatusHandler, "/x", "id=box"), http.StatusMethodNotAllowed},
-		{"unknown ticket action", postForm(t, s.ticketActionHandler, "/x", "id=box&action=cancel"), http.StatusBadRequest},
-		{"ticket action by get", get(s.ticketActionHandler, "id=box&action=begin"), http.StatusMethodNotAllowed},
-		{"ticket note with no text", postForm(t, s.ticketActionHandler, "/x", "id=box&action=note"), http.StatusBadRequest},
-		{"ticket note with blank text", postForm(t, s.ticketActionHandler, "/x", "id=box&action=note&text=+++"), http.StatusBadRequest},
-		{"import with no file", postForm(t, s.recordingImportHandler, "/x", "id=box"), http.StatusBadRequest},
-		{"import that is not JSON", postForm(t, s.recordingImportHandler, "/x", "id=box&data=not+json"), http.StatusBadRequest},
-		{"import that is a bare number", postForm(t, s.recordingImportHandler, "/x", "id=box&data=1"), http.StatusBadRequest},
-		{"import too large", postForm(t, s.recordingImportHandler, "/x", "id=box&data=%7B%22a%22%3A%22"+strings.Repeat("x", maxImportBytes)+"%22%7D"), http.StatusBadRequest},
-		{"import by get", get(s.recordingImportHandler, "id=box&data=%7B%7D"), http.StatusMethodNotAllowed},
-		{"import with no desktop", postForm(t, s.recordingImportHandler, "/x", "data=%7B%7D"), http.StatusBadRequest},
-	}
+// checkStatuses fails the test for every case answered with another status.
+func checkStatuses(t *testing.T, cases []statusCase) {
+	t.Helper()
 
 	for _, c := range cases {
 		if c.rec.Code != c.want {
 			t.Errorf("%s: status %d, want %d (%s)", c.name, c.rec.Code, c.want, c.rec.Body.String())
 		}
 	}
+}
+
+// getQuery GETs handler with query.
+func getQuery(handler http.HandlerFunc, query string) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	handler(rec, httptest.NewRequest(http.MethodGet, "/x?"+query, nil))
+	return rec
+}
+
+func TestRecordingsRejectBadRequestsBeforeReachingADesktop(t *testing.T) {
+	s := chatServer(t)
+
+	checkStatuses(t, []statusCase{
+		{"no desktop", getQuery(s.recordingsAPIHandler, ""), http.StatusBadRequest},
+		{"path in a session", getQuery(s.recordingAPIHandler, "id=box&session=../etc"), http.StatusBadRequest},
+		{"unknown session kind", getQuery(s.recordingAPIHandler, "id=box&session=secret-1"), http.StatusBadRequest},
+		{"path in a frame", getQuery(s.recordingFrameHandler, "id=box&session=demo-1&frame=../../meta.json"), http.StatusBadRequest},
+		{"post to a read", postForm(t, s.recordingAPIHandler, "/x", "id=box&session=demo-1"), http.StatusMethodNotAllowed},
+		{"get to a write", getQuery(s.recordingDeleteHandler, "id=box&session=demo-1"), http.StatusMethodNotAllowed},
+		{"unknown action", postForm(t, s.demonstrationHandler, "/x", "id=box&action=erase"), http.StatusBadRequest},
+		{"bad step", postForm(t, s.replayRecordingHandler, "/x", "id=box&session=demo-1&from=zero"), http.StatusBadRequest},
+		{"params not an object", postForm(t, s.replayRecordingHandler, "/x", "id=box&session=demo-1&params=%5B1%5D"), http.StatusBadRequest},
+		{"bad param name", postForm(t, s.replayRecordingHandler, "/x", "id=box&session=demo-1&params=%7B%22..%2Fx%22%3A%22a%22%7D"), http.StatusBadRequest},
+		{"record with no task", postForm(t, s.recordTaskHandler, "/x", "id=box&task=++"), http.StatusBadRequest},
+		{"record too long", postForm(t, s.recordTaskHandler, "/x", "id=box&task="+strings.Repeat("x", maxRequestBytes)), http.StatusBadRequest},
+		{"record by get", getQuery(s.recordTaskHandler, "id=box&task=x"), http.StatusMethodNotAllowed},
+		{"demonstration status with no desktop", getQuery(s.demonstrationHandler, ""), http.StatusBadRequest},
+		{"ticket status with no desktop", getQuery(s.ticketStatusHandler, ""), http.StatusBadRequest},
+		{"ticket status by post", postForm(t, s.ticketStatusHandler, "/x", "id=box"), http.StatusMethodNotAllowed},
+		{"unknown ticket action", postForm(t, s.ticketActionHandler, "/x", "id=box&action=cancel"), http.StatusBadRequest},
+		{"ticket action by get", getQuery(s.ticketActionHandler, "id=box&action=begin"), http.StatusMethodNotAllowed},
+		{"ticket note with no text", postForm(t, s.ticketActionHandler, "/x", "id=box&action=note"), http.StatusBadRequest},
+		{"ticket note with blank text", postForm(t, s.ticketActionHandler, "/x", "id=box&action=note&text=+++"), http.StatusBadRequest},
+		{"import with no file", postForm(t, s.recordingImportHandler, "/x", "id=box"), http.StatusBadRequest},
+		{"import that is not JSON", postForm(t, s.recordingImportHandler, "/x", "id=box&data=not+json"), http.StatusBadRequest},
+		{"import that is a bare number", postForm(t, s.recordingImportHandler, "/x", "id=box&data=1"), http.StatusBadRequest},
+		{"import too large", postForm(t, s.recordingImportHandler, "/x", "id=box&data=%7B%22a%22%3A%22"+strings.Repeat("x", maxImportBytes)+"%22%7D"), http.StatusBadRequest},
+		{"import by get", getQuery(s.recordingImportHandler, "id=box&data=%7B%7D"), http.StatusMethodNotAllowed},
+		{"import with no desktop", postForm(t, s.recordingImportHandler, "/x", "data=%7B%7D"), http.StatusBadRequest},
+	})
 }
 
 func TestTicketToolbarKeepsALoadingStateUntilTheTicketAppears(t *testing.T) {

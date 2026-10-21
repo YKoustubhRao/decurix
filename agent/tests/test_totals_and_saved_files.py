@@ -7,12 +7,12 @@ cleared.
 
 import os
 import sys
-import tempfile
 import unittest
-from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
+
+from temp_case import TempDirCase  # noqa: E402
 
 try:
     import openpyxl
@@ -39,12 +39,7 @@ def register(path, totals):
 
 
 @unittest.skipIf(openpyxl is None, "openpyxl is not installed")
-class TypedTotals(unittest.TestCase):
-    def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.dir = Path(tmp.name)
-
+class TypedTotals(TempDirCase):
     def test_typed_sums_under_a_total_label_are_found(self):
         book = register(self.dir / "gst.xlsx", [3000, 90, 3540])
         found = office.typed_totals(book)

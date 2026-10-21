@@ -8,7 +8,6 @@ Data is built in code; no fixture files.
 """
 
 import datetime
-import os
 import tempfile
 import unittest
 import zipfile
@@ -109,7 +108,7 @@ class CorrectWorkPasses(World):
     def test_a_password_protected_workbook_is_not_called_broken(self):
         locked = self.dir / "salaries.xlsx"
         locked.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 512)
-        self.assertEqual(produced.unopenable([str(locked)]), [])
+        self.assertNotIn("broken", [s for s, _ in produced.open_statuses([str(locked)]).values()])
         facts = produced.file_facts("Protect the salary workbook with a password.", [str(locked)])
         self.assertNothingBlocks(facts.file_faults, "a protected workbook")
         self.assertIn("password-protected", " ".join(facts.notes()))
@@ -171,7 +170,7 @@ class WrongWorkIsStillBlocked(World):
         other = self.dir / "never.xlsx"
         other.write_bytes(b"PK\x03\x04 broken from the start")
         self.assertEqual(produced.no_longer_open([str(other)]), [])
-        self.assertTrue(produced.unopenable([str(other)]))
+        self.assertIn("broken", [s for s, _ in produced.open_statuses([str(other)]).values()])
 
 
 class TheFiguresAtHand(unittest.TestCase):

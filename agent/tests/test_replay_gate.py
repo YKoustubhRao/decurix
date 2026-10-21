@@ -60,20 +60,6 @@ def _stored_pdf_text(fixture, work, read):
     return read_document
 
 
-def _note_input_tables(work, outputs):
-    """office read's notes on every input CSV of the work folder (not a stage's output), into this task's record."""
-
-    import csv
-    for path in sorted(work.rglob("*.csv")):
-        if path.relative_to(work).as_posix() in outputs:
-            continue
-        try:
-            header = next(csv.reader(open(path, encoding="utf-8-sig", errors="replace")))
-        except (OSError, StopIteration):
-            continue
-        table_quality.overlap_lines(str(path), header, table_quality.csv_facts(str(path)))
-
-
 def replay(fixture, root, crosscheck=(), seen=None):
     """
     Every code finding the saved run's stages meet now: [(stage title, finding)].

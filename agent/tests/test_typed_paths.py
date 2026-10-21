@@ -12,7 +12,6 @@ import os
 import sys
 import tempfile
 import unittest
-import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -21,8 +20,6 @@ sys.path.insert(0, os.path.dirname(__file__))
 from decurix_agent import produced
 from decurix_agent.computer import cli
 from decurix_agent.computer.errors import ComputerError
-
-BS = "\\"
 
 PATHS = [
     "C:\\Users\\Administrator\\Documents\\Decurix demo\\receivables.xlsx",

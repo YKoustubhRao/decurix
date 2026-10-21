@@ -91,10 +91,7 @@ WORK_DIR = Path(os.environ.get("DECURIX_WORK_DIR", _default_base / "work"))
 MEMORY_CONTEXT_CHARS = int(os.environ.get("DECURIX_MEMORY_CONTEXT_CHARS", "6000"))
 
 try:
-    COMMAND_DIR.mkdir(parents=True, exist_ok=True)
-    QUERYTEXT_DIR.mkdir(parents=True, exist_ok=True)
-    FINAL_DIR.mkdir(parents=True, exist_ok=True)
-    WORK_DIR.mkdir(parents=True, exist_ok=True)
-    MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+    for _folder in (COMMAND_DIR, QUERYTEXT_DIR, FINAL_DIR, WORK_DIR, MEMORY_DIR):
+        _folder.mkdir(parents=True, exist_ok=True)
 except OSError:
     pass

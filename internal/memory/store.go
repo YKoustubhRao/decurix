@@ -252,20 +252,12 @@ func (s *Store) DeleteForDesktop(desktopID string) ([]string, error) {
 	defer tx.Rollback()
 
 	// Read to the end and closed before the next statement (see sqlitedb).
-	rows, err := tx.Query(`SELECT id FROM worker_memory WHERE desktop_id = ?`, desktopID)
-	if err != nil {
-		return nil, fmt.Errorf("memory: delete for desktop: %w", err)
-	}
-	var ids []string
-	for rows.Next() {
+	ids, err := sqlitedb.QueryAll(tx, func(row sqlitedb.Scanner) (string, error) {
 		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("memory: delete for desktop: %w", err)
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Close(); err != nil {
+		err := row.Scan(&id)
+		return id, err
+	}, `SELECT id FROM worker_memory WHERE desktop_id = ?`, desktopID)
+	if err != nil {
 		return nil, fmt.Errorf("memory: delete for desktop: %w", err)
 	}
 

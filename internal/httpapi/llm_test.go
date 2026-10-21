@@ -44,14 +44,6 @@ func llmTestServer(t *testing.T) *Server {
 	return &Server{LLM: hub}
 }
 
-func postSettings(h http.HandlerFunc, path string, form url.Values) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rec := httptest.NewRecorder()
-	h(rec, req)
-	return rec
-}
-
 func TestNewDesktopsRunTheBotWithTheBrainTheyAskFor(t *testing.T) {
 	s := llmTestServer(t)
 
@@ -86,7 +78,7 @@ func TestNewDesktopsRunTheBotWithTheBrainTheyAskFor(t *testing.T) {
 func TestSettingsAreSavedOnlyWhenTheModelAnswers(t *testing.T) {
 	s := llmTestServer(t)
 
-	rec := postSettings(s.llmSettingsHandler, "/api/llm/settings", url.Values{"provider": {"claude"}, "key": {"sk-ant-bad"}})
+	rec := postForm(t, s.llmSettingsHandler, "/api/llm/settings", url.Values{"provider": {"claude"}, "key": {"sk-ant-bad"}}.Encode())
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid x-api-key") {
 		t.Fatalf("bad key: %d %s", rec.Code, rec.Body)
 	}
@@ -94,7 +86,7 @@ func TestSettingsAreSavedOnlyWhenTheModelAnswers(t *testing.T) {
 		t.Fatal("a key the API refused was saved")
 	}
 
-	rec = postSettings(s.llmSettingsHandler, "/api/llm/settings", url.Values{"provider": {"claude"}, "key": {"sk-ant-good"}})
+	rec = postForm(t, s.llmSettingsHandler, "/api/llm/settings", url.Values{"provider": {"claude"}, "key": {"sk-ant-good"}}.Encode())
 	if rec.Code != http.StatusOK || !s.LLM.Configured(llm.ProviderClaude) {
 		t.Fatalf("good key: %d %s", rec.Code, rec.Body)
 	}

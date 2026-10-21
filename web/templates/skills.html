@@ -177,45 +177,13 @@
   if(!loading){ return; }
 
   var toast = Decurix.toast, post = Decurix.post;
+  var node = Decurix.node, icon = Decurix.icon, button = Decurix.button, getJSON = Decurix.getJSON;
   var desktopID = document.body.dataset.desktop;
 
   /* ---- helpers ---- */
 
-  function node(tag, className, text){
-    var el = document.createElement(tag);
-    if(className){ el.className = className; }
-    if(text !== undefined && text !== null){ el.textContent = text; }
-    return el;
-  }
-
-  function icon(name, size){
-    var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute("width", size || 14);
-    svg.setAttribute("height", size || 14);
-    svg.setAttribute("aria-hidden", "true");
-    var use = document.createElementNS("http://www.w3.org/2000/svg", "use");
-    use.setAttribute("href", "#i-" + name);
-    svg.appendChild(use);
-    return svg;
-  }
-
-  function button(label, className, iconName){
-    var b = node("button", "btn btn-sm " + className);
-    b.type = "button";
-    if(iconName){ b.appendChild(icon(iconName)); }
-    b.appendChild(document.createTextNode(label));
-    return b;
-  }
-
   function query(params){
     return new URLSearchParams(Object.assign({id: desktopID}, params)).toString();
-  }
-
-  async function getJSON(url){
-    var response = await fetch(url, {headers: {"Accept": "application/json"}});
-    var data = await response.json().catch(function(){ return {}; });
-    if(!response.ok){ throw new Error(data.error || "Request failed"); }
-    return data;
   }
 
   function when(seconds){
@@ -229,6 +197,18 @@
     document.getElementById("noticeText").textContent = text;
     document.getElementById("notice").hidden = false;
     window.scrollTo({top: 0, behavior: "smooth"});
+  }
+
+  /* Does work with the page busy; a failure is a toast. */
+  async function busyWhile(work){
+    Decurix.busy(true);
+    try{
+      await work();
+    }catch(err){
+      toast(err.message, "error");
+    }finally{
+      Decurix.busy(false);
+    }
   }
 
   /* ---- a skill ---- */
@@ -325,18 +305,13 @@
       var params = {};
       Object.keys(inputs).forEach(function(name){ params[name] = inputs[name].value; });
 
-      Decurix.busy(true);
-      try{
+      busyWhile(async function(){
         await post("/api/desktops/skills/run", {id: desktopID, name: skill.name, params: JSON.stringify(params)});
         form.hidden = true;
         toast("Started.");
         started("Started “" + skill.title + "”. Follow it, and answer anything it asks, in the chat.");
         refresh();
-      }catch(err){
-        toast(err.message, "error");
-      }finally{
-        Decurix.busy(false);
-      }
+      });
     });
 
     /* steps, read when first asked for */
@@ -344,8 +319,7 @@
     stepsBtn.addEventListener("click", async function(){
       if(outline){ outline.hidden = !outline.hidden; return; }
 
-      Decurix.busy(true);
-      try{
+      busyWhile(async function(){
         var data = await getJSON("/api/desktops/skills/get?" + query({name: skill.name}));
         outline = node("ol", "outline");
         data.skill.outline.forEach(function(step){
@@ -367,11 +341,7 @@
           data.skill.notes.forEach(function(t){ notes.appendChild(node("span", "", t)); });
           card.appendChild(notes);
         }
-      }catch(err){
-        toast(err.message, "error");
-      }finally{
-        Decurix.busy(false);
-      }
+      });
     });
 
     if(skill.learned && skill.learned.length){
@@ -383,16 +353,11 @@
 
     deleteBtn.addEventListener("click", async function(){
       if(!window.confirm("Forget “" + skill.title + "”? The recordings it was taught from are kept.")){ return; }
-      Decurix.busy(true);
-      try{
+      busyWhile(async function(){
         await post("/api/desktops/skills/delete", {id: desktopID, name: skill.name});
         toast("Forgotten.");
         refresh();
-      }catch(err){
-        toast(err.message, "error");
-      }finally{
-        Decurix.busy(false);
-      }
+      });
     });
 
     return card;
@@ -417,28 +382,18 @@
       var sources = skill.sources || [];
       if(!sources.length){ return; }
 
-      Decurix.busy(true);
-      try{
+      busyWhile(async function(){
         await post("/api/desktops/recordings/learn", {id: desktopID, session: sources[0], sessions: sources.slice(1).join(",")});
         started("Picking up “" + skill.title + "” where you left off. Its next question is in the chat.");
-      }catch(err){
-        toast(err.message, "error");
-      }finally{
-        Decurix.busy(false);
-      }
+      });
     });
 
     deleteBtn.addEventListener("click", async function(){
       if(!window.confirm("Throw away this unfinished lesson?")){ return; }
-      Decurix.busy(true);
-      try{
+      busyWhile(async function(){
         await post("/api/desktops/skills/delete", {id: desktopID, name: skill.name});
         refresh();
-      }catch(err){
-        toast(err.message, "error");
-      }finally{
-        Decurix.busy(false);
-      }
+      });
     });
 
     return card;
@@ -525,16 +480,11 @@
 
     deleteBtn.addEventListener("click", async function(){
       if(!window.confirm("Forget how it does this? The next request of this kind is worked out again from nothing.")){ return; }
-      Decurix.busy(true);
-      try{
+      busyWhile(async function(){
         await post("/api/desktops/playbooks/delete", {id: desktopID, name: item.name});
         toast("Forgotten.");
         refresh();
-      }catch(err){
-        toast(err.message, "error");
-      }finally{
-        Decurix.busy(false);
-      }
+      });
     });
 
     return card;

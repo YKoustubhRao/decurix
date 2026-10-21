@@ -35,7 +35,7 @@ const practiceExpiry = 30 * 24 * time.Hour
 // interrupted, its responsibility needs retesting, and every enabled grant
 // returns to supervision for the owner to review (readiness's rule).
 func (s *Store) recoverPractice() error {
-	runs, err := s.practiceRuns(`SELECT data FROM simulation_runs WHERE status='running'`)
+	runs, err := queryJSON[PracticeRun](s.db, `SELECT data FROM simulation_runs WHERE status='running'`)
 	if err != nil {
 		return err
 	}
@@ -45,7 +45,7 @@ func (s *Store) recoverPractice() error {
 			return err
 		}
 	}
-	list, err := s.practiceList(`SELECT data FROM simulation_responsibilities ORDER BY id`)
+	list, err := queryJSON[PracticeResponsibility](s.db, `SELECT data FROM simulation_responsibilities ORDER BY id`)
 	if err != nil {
 		return err
 	}
@@ -64,54 +64,6 @@ func (s *Store) recoverPractice() error {
 	return nil
 }
 
-func (s *Store) practiceList(query string, args ...any) ([]PracticeResponsibility, error) {
-	rows, err := s.db.Query(query, args...)
-	if err != nil {
-		return nil, err
-	}
-	out := []PracticeResponsibility{}
-	for rows.Next() {
-		var b string
-		if err := rows.Scan(&b); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		var r PracticeResponsibility
-		if err := json.Unmarshal([]byte(b), &r); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		out = append(out, r)
-	}
-	err = rows.Err()
-	rows.Close()
-	return out, err
-}
-
-func (s *Store) practiceRuns(query string, args ...any) ([]PracticeRun, error) {
-	rows, err := s.db.Query(query, args...)
-	if err != nil {
-		return nil, err
-	}
-	out := []PracticeRun{}
-	for rows.Next() {
-		var b string
-		if err := rows.Scan(&b); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		var run PracticeRun
-		if err := json.Unmarshal([]byte(b), &run); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		out = append(out, run)
-	}
-	err = rows.Err()
-	rows.Close()
-	return out, err
-}
-
 func (s *Store) expirePractice(r *PracticeResponsibility) {
 	if r.Readiness == Qualified && s.now().Sub(r.QualifiedAt) > practiceExpiry {
 		r.Readiness, r.Authorization, r.Reason = NeedsRetesting, Supervised, "Practice evidence is older than 30 days; practise again."
@@ -120,11 +72,11 @@ func (s *Store) expirePractice(r *PracticeResponsibility) {
 
 // ListPractice returns a worker's practice responsibilities ("" for all).
 func (s *Store) ListPractice(worker string) ([]PracticeResponsibility, error) {
-	list, err := s.practiceList(`SELECT data FROM simulation_responsibilities WHERE (?='' OR worker_id=?) ORDER BY id`, worker, worker)
+	list, err := queryJSON[PracticeResponsibility](s.db, `SELECT data FROM simulation_responsibilities WHERE (?='' OR worker_id=?) ORDER BY id`, worker, worker)
 	if err != nil {
 		return nil, err
 	}
-	active, err := s.practiceRuns(`SELECT data FROM simulation_runs WHERE status='running'`)
+	active, err := queryJSON[PracticeRun](s.db, `SELECT data FROM simulation_runs WHERE status='running'`)
 	if err != nil {
 		return nil, err
 	}
@@ -141,16 +93,8 @@ func (s *Store) ListPractice(worker string) ([]PracticeResponsibility, error) {
 
 // GetPractice returns one practice responsibility; stale evidence grants nothing.
 func (s *Store) GetPractice(id string) (PracticeResponsibility, error) {
-	var b string
-	err := s.db.QueryRow(`SELECT data FROM simulation_responsibilities WHERE id=?`, id).Scan(&b)
-	if err == sql.ErrNoRows {
-		return PracticeResponsibility{}, ErrNotFound
-	}
+	r, err := getJSON[PracticeResponsibility](s.db, `SELECT data FROM simulation_responsibilities WHERE id=?`, id)
 	if err != nil {
-		return PracticeResponsibility{}, err
-	}
-	var r PracticeResponsibility
-	if err := json.Unmarshal([]byte(b), &r); err != nil {
 		return r, err
 	}
 	s.expirePractice(&r)
@@ -158,13 +102,7 @@ func (s *Store) GetPractice(id string) (PracticeResponsibility, error) {
 }
 
 func (s *Store) practiceFor(worker, kind, name string) (PracticeResponsibility, error) {
-	var b string
-	err := s.db.QueryRow(`SELECT data FROM simulation_responsibilities WHERE worker_id=? AND source_kind=? AND source_name=?`, worker, kind, name).Scan(&b)
-	if err != nil {
-		return PracticeResponsibility{}, err
-	}
-	var r PracticeResponsibility
-	err = json.Unmarshal([]byte(b), &r)
+	r, err := scanJSON[PracticeResponsibility](s.db.QueryRow(`SELECT data FROM simulation_responsibilities WHERE worker_id=? AND source_kind=? AND source_name=?`, worker, kind, name))
 	s.expirePractice(&r)
 	return r, err
 }
@@ -190,12 +128,6 @@ func (s *Store) savePractice(r PracticeResponsibility, actor, action, reason str
 	return tx.Commit()
 }
 
-func (s *Store) practiceBusy(id string) (bool, error) {
-	var n int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM simulation_runs WHERE responsibility_id=? AND status='running'`, id).Scan(&n)
-	return n > 0, err
-}
-
 // SaveDraft stores a generated suite for owner review. The store computes every
 // hash itself, so a caller cannot pin bytes it did not hand over.
 func (s *Store) SaveDraft(su PracticeSuite) (PracticeSuite, error) {
@@ -206,7 +138,7 @@ func (s *Store) SaveDraft(su PracticeSuite) (PracticeSuite, error) {
 	defer s.mu.Unlock()
 	r, err := s.practiceFor(su.WorkerID, su.Source.Kind, su.Source.Name)
 	if errors.Is(err, sql.ErrNoRows) {
-		r = PracticeResponsibility{ID: newID("p"), WorkerID: su.WorkerID, SourceKind: su.Source.Kind, SourceName: su.Source.Name,
+		r = PracticeResponsibility{ID: sqlitedb.NewID("p", 16), WorkerID: su.WorkerID, SourceKind: su.Source.Kind, SourceName: su.Source.Name,
 			Title: su.Source.Title, Readiness: Untested, Authorization: Supervised, Reason: "No practice suite approved yet."}
 		if err := s.savePractice(r, "owner", "create", r.Reason); err != nil {
 			return su, err
@@ -214,7 +146,7 @@ func (s *Store) SaveDraft(su PracticeSuite) (PracticeSuite, error) {
 	} else if err != nil {
 		return su, err
 	}
-	su.ID, su.ResponsibilityID, su.Status, su.CreatedAt = newID("s"), r.ID, SuiteDraft, s.now()
+	su.ID, su.ResponsibilityID, su.Status, su.CreatedAt = sqlitedb.NewID("s", 16), r.ID, SuiteDraft, s.now()
 	su.Source.SHA256 = sourceFingerprint(su.Source)
 	su.GeneratorSHA = SHA256Hex([]byte(su.Generator))
 	su.MockSHA = ""
@@ -247,17 +179,7 @@ func sourceFingerprint(src PracticeSource) string {
 
 // Suite returns one stored suite.
 func (s *Store) Suite(id string) (PracticeSuite, error) {
-	var b string
-	err := s.db.QueryRow(`SELECT data FROM simulation_suites WHERE id=?`, id).Scan(&b)
-	if err == sql.ErrNoRows {
-		return PracticeSuite{}, ErrNotFound
-	}
-	if err != nil {
-		return PracticeSuite{}, err
-	}
-	var su PracticeSuite
-	err = json.Unmarshal([]byte(b), &su)
-	return su, err
+	return getJSON[PracticeSuite](s.db, `SELECT data FROM simulation_suites WHERE id=?`, id)
 }
 
 func (s *Store) saveSuite(tx *sql.Tx, su PracticeSuite) error {
@@ -285,14 +207,11 @@ func (s *Store) ApproveSuite(id, generatorSHA, mockSHA, casesSHA string) (Practi
 	if err != nil {
 		return r, err
 	}
-	if busy, err := s.practiceBusy(r.ID); err != nil || busy {
-		if err == nil {
-			err = ErrConflict
-		}
+	if err := s.idle("simulation_runs", r.ID); err != nil {
 		return r, err
 	}
 	// Other approved suites of this responsibility are retired.
-	older, err := s.suites(`SELECT data FROM simulation_suites WHERE responsibility_id=? AND status=?`, r.ID, SuiteApproved)
+	older, err := queryJSON[PracticeSuite](s.db, `SELECT data FROM simulation_suites WHERE responsibility_id=? AND status=?`, r.ID, SuiteApproved)
 	if err != nil {
 		return r, err
 	}
@@ -324,33 +243,9 @@ func (s *Store) ApproveSuite(id, generatorSHA, mockSHA, casesSHA string) (Practi
 	return r, s.savePractice(r, "owner", "approve", r.Reason)
 }
 
-func (s *Store) suites(query string, args ...any) ([]PracticeSuite, error) {
-	rows, err := s.db.Query(query, args...)
-	if err != nil {
-		return nil, err
-	}
-	out := []PracticeSuite{}
-	for rows.Next() {
-		var b string
-		if err := rows.Scan(&b); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		var su PracticeSuite
-		if err := json.Unmarshal([]byte(b), &su); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		out = append(out, su)
-	}
-	err = rows.Err()
-	rows.Close()
-	return out, err
-}
-
 // Suites lists a responsibility's suites, newest first, without their case bytes.
 func (s *Store) Suites(responsibilityID string) ([]PracticeSuite, error) {
-	list, err := s.suites(`SELECT data FROM simulation_suites WHERE responsibility_id=? ORDER BY rowid DESC LIMIT 50`, responsibilityID)
+	list, err := queryJSON[PracticeSuite](s.db, `SELECT data FROM simulation_suites WHERE responsibility_id=? ORDER BY rowid DESC LIMIT 50`, responsibilityID)
 	for i := range list {
 		for j := range list[i].Cases {
 			list[i].Cases[j].Files = nil
@@ -373,10 +268,7 @@ func (s *Store) RetireSuite(id, reason string) error {
 	if err != nil {
 		return err
 	}
-	if busy, err := s.practiceBusy(r.ID); err != nil || busy {
-		if err == nil {
-			err = ErrConflict
-		}
+	if err := s.idle("simulation_runs", r.ID); err != nil {
 		return err
 	}
 	tx, err := s.db.Begin()
@@ -425,7 +317,7 @@ func (s *Store) BeginPracticeRun(responsibilityID, revision string) (PracticeRun
 	if su.Status != SuiteApproved || su.Revision != revision {
 		return PracticeRun{}, PracticeSuite{}, ErrDenied
 	}
-	run := PracticeRun{ID: newID("x"), ResponsibilityID: r.ID, SuiteID: su.ID, Revision: revision, Status: "running", Of: len(su.Cases), Findings: []PracticeFinding{}, StartedAt: s.now()}
+	run := PracticeRun{ID: sqlitedb.NewID("x", 16), ResponsibilityID: r.ID, SuiteID: su.ID, Revision: revision, Status: "running", Of: len(su.Cases), Findings: []PracticeFinding{}, StartedAt: s.now()}
 	b, err := json.Marshal(run)
 	if err != nil {
 		return run, su, err
@@ -464,17 +356,7 @@ func (s *Store) savePracticeRun(run PracticeRun) error {
 }
 
 func (s *Store) practiceRunRow(id string) (PracticeRun, error) {
-	var b string
-	err := s.db.QueryRow(`SELECT data FROM simulation_runs WHERE id=?`, id).Scan(&b)
-	if err == sql.ErrNoRows {
-		return PracticeRun{}, ErrNotFound
-	}
-	if err != nil {
-		return PracticeRun{}, err
-	}
-	var run PracticeRun
-	err = json.Unmarshal([]byte(b), &run)
-	return run, err
+	return getJSON[PracticeRun](s.db, `SELECT data FROM simulation_runs WHERE id=?`, id)
 }
 
 // PracticeProgress records which case is running, for the page's progress strip.
@@ -547,27 +429,7 @@ func (s *Store) RecordPracticeCase(runID string, f PracticeFinding, files []Prac
 }
 
 func (s *Store) practiceFindings(runID string) ([]PracticeFinding, error) {
-	rows, err := s.db.Query(`SELECT data FROM simulation_findings WHERE run_id=? ORDER BY position`, runID)
-	if err != nil {
-		return nil, err
-	}
-	out := []PracticeFinding{}
-	for rows.Next() {
-		var b string
-		if err := rows.Scan(&b); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		var f PracticeFinding
-		if err := json.Unmarshal([]byte(b), &f); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		out = append(out, f)
-	}
-	err = rows.Err()
-	rows.Close()
-	return out, err
+	return queryJSON[PracticeFinding](s.db, `SELECT data FROM simulation_findings WHERE run_id=? ORDER BY position`, runID)
 }
 
 // PracticeRunGet returns a run with every finding recorded so far.
@@ -582,7 +444,7 @@ func (s *Store) PracticeRunGet(id string) (PracticeRun, error) {
 
 // PracticeHistory lists a responsibility's runs, newest first, without findings.
 func (s *Store) PracticeHistory(responsibilityID string) ([]PracticeRun, error) {
-	return s.practiceRuns(`SELECT data FROM simulation_runs WHERE responsibility_id=? ORDER BY rowid DESC LIMIT 100`, responsibilityID)
+	return queryJSON[PracticeRun](s.db, `SELECT data FROM simulation_runs WHERE responsibility_id=? ORDER BY rowid DESC LIMIT 100`, responsibilityID)
 }
 
 // FinishPracticeRun ends a run. With status "" the findings decide; any other
@@ -662,28 +524,16 @@ func (s *Store) FinishPracticeRun(runID, status, note string) (PracticeRun, erro
 
 // CancelPracticeRun records the cancellation durably before the runner stops.
 func (s *Store) CancelPracticeRun(runID string) (PracticeRun, error) {
-	run, err := s.FinishPracticeRun(runID, "cancelled", "The owner cancelled the run.")
-	return run, err
+	return s.FinishPracticeRun(runID, "cancelled", "The owner cancelled the run.")
 }
 
 // PracticeFiles lists a run's evidence files without their bytes.
 func (s *Store) PracticeFiles(runID string) ([]PracticeFile, error) {
-	rows, err := s.db.Query(`SELECT case_id,role,name,sha256,LENGTH(body) FROM simulation_files WHERE run_id=? ORDER BY case_id,role,name`, runID)
-	if err != nil {
-		return nil, err
-	}
-	out := []PracticeFile{}
-	for rows.Next() {
+	return sqlitedb.QueryAll(s.db, func(row sqlitedb.Scanner) (PracticeFile, error) {
 		var f PracticeFile
-		if err := rows.Scan(&f.CaseID, &f.Role, &f.Name, &f.SHA256, &f.Size); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		out = append(out, f)
-	}
-	err = rows.Err()
-	rows.Close()
-	return out, err
+		err := row.Scan(&f.CaseID, &f.Role, &f.Name, &f.SHA256, &f.Size)
+		return f, err
+	}, `SELECT case_id,role,name,sha256,LENGTH(body) FROM simulation_files WHERE run_id=? ORDER BY case_id,role,name`, runID)
 }
 
 // PracticeFileBody returns one evidence file with its bytes.
@@ -707,10 +557,7 @@ func (s *Store) AuthorizePractice(id, revision, action string) (PracticeResponsi
 	if err != nil {
 		return r, err
 	}
-	if busy, err := s.practiceBusy(id); err != nil || busy {
-		if err == nil {
-			err = ErrConflict
-		}
+	if err := s.idle("simulation_runs", id); err != nil {
 		return r, err
 	}
 	switch action {
@@ -788,7 +635,7 @@ func (s *Store) HoldUnattended(worker, skill, request, key string) (PracticeHold
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return h, err
 	}
-	h := PracticeHold{ID: newID("h"), WorkerID: worker, Skill: skill, Request: request, Status: HoldWaiting, CreatedAt: s.now()}
+	h := PracticeHold{ID: sqlitedb.NewID("h", 16), WorkerID: worker, Skill: skill, Request: request, Status: HoldWaiting, CreatedAt: s.now()}
 	if len(h.Request) > 4000 {
 		h.Request = h.Request[:4000]
 	}
@@ -801,13 +648,17 @@ func (s *Store) HoldUnattended(worker, skill, request, key string) (PracticeHold
 }
 
 func (s *Store) holdByKey(worker, key string) (PracticeHold, error) {
+	return scanHold(s.db.QueryRow(`SELECT status,data FROM simulation_holds WHERE worker_id=? AND request_key=?`, worker, key))
+}
+
+// scanHold reads a hold's (status, data) row; the status column is its current state.
+func scanHold(row sqlitedb.Scanner) (PracticeHold, error) {
 	var b, status string
-	err := s.db.QueryRow(`SELECT status,data FROM simulation_holds WHERE worker_id=? AND request_key=?`, worker, key).Scan(&status, &b)
-	if err != nil {
+	if err := row.Scan(&status, &b); err != nil {
 		return PracticeHold{}, err
 	}
 	var h PracticeHold
-	err = json.Unmarshal([]byte(b), &h)
+	err := json.Unmarshal([]byte(b), &h)
 	h.Status = status
 	return h, err
 }
@@ -865,26 +716,5 @@ func (s *Store) SettleHold(id, status string) (PracticeHold, error) {
 
 // Holds lists the unattended starts waiting for a person ("" for every worker).
 func (s *Store) Holds(worker string) ([]PracticeHold, error) {
-	rows, err := s.db.Query(`SELECT status,data FROM simulation_holds WHERE (?='' OR worker_id=?) ORDER BY rowid`, worker, worker)
-	if err != nil {
-		return nil, err
-	}
-	out := []PracticeHold{}
-	for rows.Next() {
-		var b, status string
-		if err := rows.Scan(&status, &b); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		var h PracticeHold
-		if err := json.Unmarshal([]byte(b), &h); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		h.Status = status
-		out = append(out, h)
-	}
-	err = rows.Err()
-	rows.Close()
-	return out, err
+	return sqlitedb.QueryAll(s.db, scanHold, `SELECT status,data FROM simulation_holds WHERE (?='' OR worker_id=?) ORDER BY rowid`, worker, worker)
 }

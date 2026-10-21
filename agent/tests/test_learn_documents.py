@@ -138,7 +138,7 @@ class ValuesFromDocuments(unittest.TestCase):
 
     def test_no_model_fills_nothing(self):
         with mock.patch.object(binding.llm_client, "available", return_value=False):
-            self.assertEqual(binding.fill({"name": "x"}, [{"name": "a"}], "context"), ({}, {}))
+            self.assertEqual(binding.fill({"name": "x"}, [{"name": "a"}], "context"), ({}, {}, None))
 
 
 class RunFilledFromTheDocument(TeachingBase):
@@ -166,7 +166,7 @@ class RunFilledFromTheDocument(TeachingBase):
 
         names = {p["label"]: p["name"] for p in skill["params"]}
         read = ({names["Customer"]: "Wood Corner", names["Customer Reference"]: "WC-PO-118"},
-                {names["Customer"]: "PO.pdf, Bill To", names["Customer Reference"]: "PO.pdf, 'PO Number'"})
+                {names["Customer"]: "PO.pdf, Bill To", names["Customer Reference"]: "PO.pdf, 'PO Number'"}, None)
 
         with mock.patch.object(binding, "available", return_value=True), \
                 mock.patch.object(binding, "fill", return_value=read) as fill:
@@ -188,7 +188,7 @@ class RunFilledFromTheDocument(TeachingBase):
         self.asked.clear()
 
         with mock.patch.object(binding, "available", return_value=True), \
-                mock.patch.object(binding, "fill", return_value=({names["Customer"]: "Wood Corner"}, {})):
+                mock.patch.object(binding, "fill", return_value=({names["Customer"]: "Wood Corner"}, {}, None)):
             skill_task.perform(f"/skill {skill['name']}\nsee ~/work/PO.pdf")
 
         self.assertTrue(self.asked, "the missing PO number was not asked for")
@@ -203,7 +203,7 @@ class RunFilledFromTheDocument(TeachingBase):
         self.asked.clear()
 
         with mock.patch.object(binding, "available", return_value=True), \
-                mock.patch.object(binding, "fill", return_value=({names["Customer"]: "Wood Corner"}, {})), \
+                mock.patch.object(binding, "fill", return_value=({names["Customer"]: "Wood Corner"}, {}, None)), \
                 mock.patch.object(skill_task, "_learning_by_model", return_value=True), \
                 mock.patch.object(skill_task, "_by_model") as by_model:
             skill_task.perform(f"/skill {skill['name']}\nsee ~/work/PO.pdf")

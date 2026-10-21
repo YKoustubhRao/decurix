@@ -15,6 +15,25 @@ class Frame:
         self.rgb = rgb
 
 
+class PixelScreen:
+    """core, as a replay of a coordinate click sees it: one window's pixels, no elements, and a log of what was done."""
+
+    def __init__(self, frame, title, size):
+        self.frame, self.title, self.size = frame, title, size
+        self.acted = []
+
+    def observe(self, remember=True):
+        return {"elements": [], "windows": [{"title": self.title}], "active_title": self.title,
+                "size": list(self.size), "frame": self.frame}
+
+    def active_group(self, observation):
+        return "g"
+
+    def act(self, kind, **kwargs):
+        self.acted.append((kind, kwargs))
+        return {"status": "done", "text": "ok", "observation": self.observe()}
+
+
 def _noise(seed):
     state = seed
     while True:

@@ -502,7 +502,7 @@ class WorkflowRunner:
             record = state["steps"][s["id"]]
             if record["status"] == "completed":
                 if planned:
-                    self._recheck(state, s, record, context)
+                    self._recheck(s, record, context)
                     if record["status"] == "completed":
                         completed.add(s["id"])
                         continue
@@ -575,7 +575,7 @@ class WorkflowRunner:
             state["status"] = "completed"
         return self._save(state), None
 
-    def _recheck(self, state, step, record, context):
+    def _recheck(self, step, record, context):
         """A planned run's completed stage whose files a later stage changed: checked again, reopened if they fail."""
         files = _file_checks(step)
         kept = [item for item in record["evidence"] if item.get("drafts")]
@@ -742,11 +742,8 @@ class WorkflowRunner:
             if self.verifier and not self.verifier(step, result or {}, context):
                 raise ValueError("independent verifier rejected output")
             record.update(status="completed", evidence=evidence)
-            record.pop("continued", None)
-            record.pop("sent_back", None)
-            record.pop("settled", None)
-            record.pop("mechanics", None)
-            record.pop("error", None)
+            for key in ("continued", "sent_back", "settled", "mechanics", "error"):
+                record.pop(key, None)
             state["status"] = "pending"
         except Exception as exc:
             record["error"] = str(exc)

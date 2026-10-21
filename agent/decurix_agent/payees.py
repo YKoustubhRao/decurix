@@ -25,6 +25,7 @@ from pathlib import Path
 
 from decurix_agent import attachments, config
 from decurix_agent.logging_utils import log
+from decurix_agent.stage_facts import _number as _money
 
 RECORD_KINDS = {".xlsx", ".xlsm", ".csv", ".tsv"}
 MESSAGE_KINDS = {".eml", ".msg", ".txt"}
@@ -62,11 +63,16 @@ def _cell_text(value):
     return "" if value is None else str(value)
 
 
-def _tables(path):
-    """[(header, [row, ...])] of a workbook's sheets or a CSV, every cell as text."""
+def _tables(path, report=False):
+    """[(header, [row, ...])] of a workbook's sheets or a CSV, every cell as text; [] when it cannot be read."""
 
     from decurix_agent import sources
-    rows = sources._rows(path)
+    try:
+        rows = sources._rows(path)
+    except Exception as exc:  # noqa: BLE001 - a file that cannot be read gives nothing
+        if report:
+            log(f"payees: could not read {path}: {exc}")
+        return []
     tables, current = [], []
     for row in rows + [None]:
         if row is None:
@@ -88,12 +94,7 @@ def record_identifiers(path):
     """{identifier: {row text}} of a record input (a master): every account-like id in its id columns, with its row."""
 
     out = {}
-    try:
-        tables = _tables(path)
-    except Exception as exc:  # noqa: BLE001 - a file that cannot be read gives nothing
-        log(f"payees: could not read {path}: {exc}")
-        return out
-    for header, rows in tables:
+    for header, rows in _tables(path, report=True):
         id_cols = [i for i, h in enumerate(header) if ID_COLUMN.search(h or "")]
         if not id_cols:
             continue
@@ -133,12 +134,7 @@ def inputs(request, made=(), roots=None):
     folder" - each a master (workbook, CSV) or a message (an email, a chat or a note).
     """
 
-    from decurix_agent import produced
-    made_paths = {str(Path(str(m)).resolve()).lower() for m in made}
-    began = produced.since()
-    candidates = [Path(p) for p in attachments.files(request or "")]
-    for root in roots if roots is not None else named_folders(request, _default_roots()):
-        candidates += list(produced._walk(root))
+    candidates, made_paths, began = _candidates(request, made, roots)
     records, messages, seen = [], [], set()
     for path in candidates:
         try:
@@ -158,16 +154,34 @@ def inputs(request, made=(), roots=None):
     return records, messages
 
 
+def _candidates(request, made, roots):
+    """(the request's attachments and the files under its folders, the made paths as keys, when the task began)."""
+
+    from decurix_agent import produced
+    made_paths = {str(Path(str(m)).resolve()).lower() for m in made}
+    began = produced.since()
+    candidates = [Path(p) for p in attachments.files(request or "")]
+    for root in roots if roots is not None else named_folders(request, _default_roots()):
+        candidates += list(produced._walk(root))
+    return candidates, made_paths, began
+
+
+def _message_identifiers(messages):
+    """{identifier: subject of the first message whose body holds it}."""
+
+    in_messages = {}
+    for message in messages:
+        subject, *_rest, body = _message(message)
+        for ident in _identifiers(body):
+            in_messages.setdefault(ident, subject)
+    return in_messages
+
+
 def _payment_rows(path):
     """[(payee, identifier, where)] for the rows of a produced payment file that pay to an identifier."""
 
     out = []
-    try:
-        tables = _tables(path)
-    except Exception as exc:  # noqa: BLE001
-        log(f"payees: could not read {path}: {exc}")
-        return out
-    for header, rows in tables:
+    for header, rows in _tables(path, report=True):
         id_cols = [i for i, h in enumerate(header) if ID_COLUMN.search(h or "")]
         if not id_cols or not any(AMOUNT_COLUMN.search(h or "") for h in header):
             continue
@@ -236,11 +250,7 @@ def _payment_findings(request, made, found=None):
     if not on_record:
         return [], []
     given = bool(_MESSAGE_DETAILS.get(_request_key(request)))
-    in_messages = {}
-    for message in messages:
-        subject, *_rest, body = _message(message)
-        for ident in _identifiers(body):
-            in_messages.setdefault(ident, subject)
+    in_messages = _message_identifiers(messages)
     def recorded_for(payee):
         """The identifiers the records hold for a payee, and the record file they are in."""
         found = [(ident, name) for ident, places in on_record.items() for name, row in places
@@ -298,11 +308,7 @@ def _suspicious(found):
     records, messages = found
     domains = {}  # party name (lower) -> domains on record
     for record in records:
-        try:
-            tables = _tables(record)
-        except Exception:  # noqa: BLE001
-            continue
-        for header, rows in tables:
+        for header, rows in _tables(record):
             mail_cols = [i for i, h in enumerate(header) if re.search(r"e-?mail", h or "", re.I)]
             name_col = next((i for i, h in enumerate(header) if PAYEE_COLUMN.search(h or "")), 0)
             for row in rows:
@@ -344,11 +350,7 @@ def payments_summary(request, made, found=None):
     for record in records:
         for ident, texts in record_identifiers(record).items():
             on_record.setdefault(ident, (Path(record).name, texts))
-    in_messages = {}
-    for message in messages:
-        subject, *_rest, body = _message(message)
-        for ident in _identifiers(body):
-            in_messages.setdefault(ident, subject)
+    in_messages = _message_identifiers(messages)
     grouped = {}
     for payee, ident, _ in rows:
         if ident in on_record and (not payee or any(payee.lower() in t.lower() for t in on_record[ident][1])):
@@ -414,22 +416,10 @@ def _doc_text(path):
         return ""
 
 
-def _money(text):
-    try:
-        return float(str(text).replace(",", ""))
-    except ValueError:
-        return None
-
-
 def bill_documents(request, made=(), roots=None):
     """The bills among the inputs (documents the task did not make): pdf, docx, workbook or text, as paths."""
 
-    from decurix_agent import produced
-    made_paths = {str(Path(str(m)).resolve()).lower() for m in made}
-    began = produced.since()
-    candidates = [Path(p) for p in attachments.files(request or "")]
-    for root in roots if roots is not None else named_folders(request, _default_roots()):
-        candidates += list(produced._walk(root))
+    candidates, made_paths, began = _candidates(request, made, roots)
     out = []
     for path in candidates:
         try:
@@ -460,11 +450,7 @@ def bill_evidence(request, made, bills=None):
         return ""
     lines = []
     for path in files:
-        try:
-            tables = _tables(path)
-        except Exception:  # noqa: BLE001
-            continue
-        for header, rows in tables:
+        for header, rows in _tables(path):
             inv = next((i for i, h in enumerate(header) if _INVOICE_COLUMN.search(h or "")), None)
             pay = next((i for i, h in enumerate(header) if _PAYABLE_COLUMN.search(h or "")), None)
             if inv is None or pay is None:
@@ -598,11 +584,7 @@ def known_addresses(request, made=(), found=None, documents=None, pages=None):
     records, messages = found if found is not None else inputs(request, made)
     known = {a: ("your request", "") for a in _addresses(request)}
     for record in records:
-        try:
-            tables = _tables(record)
-        except Exception:  # noqa: BLE001
-            continue
-        for header, rows in tables:
+        for header, rows in _tables(record):
             name_col = next((i for i, h in enumerate(header) if PAYEE_COLUMN.search(h or "")), 0)
             for row in rows:
                 party = row[name_col].strip() if name_col < len(row) else ""
@@ -651,6 +633,16 @@ def _sender_side(path):
             return set()
 
 
+def _parties(known):
+    """{party: [(address, file)]} of the addresses known_addresses found on a party's row."""
+
+    parties = {}
+    for address, (where, party, *_rest) in known.items():
+        if party:
+            parties.setdefault(party, []).append((address, where))
+    return parties
+
+
 def unknown_recipients(request, drafts, made=(), known=None):
     """
     One plain sentence for each email draft recipient (To, Cc) that is in no input - with the address the records hold
@@ -663,10 +655,7 @@ def unknown_recipients(request, drafts, made=(), known=None):
     known = known if known is not None else known_addresses(request, made)
     if not known:
         return []
-    parties = {}  # party -> [(address, file)]
-    for address, (where, party, *_rest) in known.items():
-        if party:
-            parties.setdefault(party, []).append((address, where))
+    parties = _parties(known)
     out = []
     for draft in drafts:
         subject = str(draft.get("subject") or "")
@@ -704,10 +693,7 @@ def unknown_addresses_in_files(request, made, known=None):
     known = known if known is not None else known_addresses(request, made)
     if not known:
         return []
-    parties = {}
-    for address, (where, party, *_rest) in known.items():
-        if party:
-            parties.setdefault(party, []).append((address, where))
+    parties = _parties(known)
     out = []
     for path in files:
         try:
@@ -764,12 +750,7 @@ def party_address(name, records=None, request=""):
         raise PartyError("give the party's name as the records write it")
     exact, partial = {}, {}
     for path in files:
-        try:
-            tables = _tables(path)
-        except Exception as exc:  # noqa: BLE001
-            log(f"payees: could not read {path}: {exc}")
-            continue
-        for header, rows in tables:
+        for header, rows in _tables(path, report=True):
             name_col = next((i for i, h in enumerate(header) if PAYEE_COLUMN.search(h or "")), 0)
             for row in rows:
                 who = row[name_col].strip() if name_col < len(row) else ""

@@ -1,6 +1,5 @@
 import json
 import os
-from pathlib import Path
 
 from decurix_agent import config
 
@@ -44,9 +43,7 @@ STAGE_DESCRIPTIONS = {
     STAGE_AUTONOMOUS: "Operates autonomously with continuous learning and core system safety gates.",
 }
 
-MODE_FILE = config.DECURIX_DIR / "computer" / "worker_mode.json"
-STATE_DIR = MODE_FILE.parent
-STATE_FILE = MODE_FILE
+STATE_FILE = config.DECURIX_DIR / "computer" / "worker_mode.json"
 
 
 def get_stage():
@@ -79,18 +76,6 @@ def set_stage(stage):
     tmp.write_text(json.dumps({"stage": stage}, indent=2), encoding="utf-8")
     tmp.replace(STATE_FILE)
     return stage
-
-
-def is_observation_mode():
-    return get_stage() == STAGE_OBSERVATION
-
-
-def is_supervised_mode():
-    return get_stage() == STAGE_SUPERVISED
-
-
-def is_autonomous_mode():
-    return get_stage() == STAGE_AUTONOMOUS
 
 
 def stage_summary():

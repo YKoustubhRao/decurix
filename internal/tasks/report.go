@@ -147,26 +147,14 @@ func filterSummaries(summaries []Summary, filter Filter) []Summary {
 func (s *Store) summaries(since time.Time) ([]Summary, error) {
 	sinceNS := sqlitedb.ToNS(since)
 
-	rows, err := s.db.Query(
-		`SELECT `+taskColumns+` FROM tasks t LEFT JOIN workers w ON w.id = t.worker_id
-		 WHERE t.created_ns >= ? ORDER BY t.created_ns DESC`, sinceNS,
-	)
+	summaries, err := sqlitedb.QueryAll(s.db, func(r sqlitedb.Scanner) (Summary, error) {
+		task, err := scanTask(r)
+		return Summary{Task: task, SteppedIn: []string{}, examples: map[string]string{}}, err
+	}, `SELECT `+taskColumns+` FROM tasks t LEFT JOIN workers w ON w.id = t.worker_id
+		 WHERE t.created_ns >= ? ORDER BY t.created_ns DESC`, sinceNS)
 	if err != nil {
 		return nil, fmt.Errorf("tasks: listing: %w", err)
 	}
-
-	var summaries []Summary
-
-	for rows.Next() {
-		task, err := scanTask(rows)
-		if err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("tasks: listing: %w", err)
-		}
-
-		summaries = append(summaries, Summary{Task: task, SteppedIn: []string{}, examples: map[string]string{}})
-	}
-	rows.Close()
 
 	index := make(map[string]int, len(summaries))
 	for i := range summaries {
@@ -223,33 +211,16 @@ func (s *Store) summaries(since time.Time) ([]Summary, error) {
 		summary.Executions++
 		summary.Model = execution.Model
 
-		switch {
-		case !execution.EndedAt.IsZero():
-			summary.Duration += execution.EndedAt.Sub(execution.StartedAt)
-		case execution.Status == StatusRunning || execution.Status == StatusWaiting:
-			summary.Duration += now.Sub(execution.StartedAt)
-		}
+		summary.Duration += execution.Duration(now)
 
 		if execution.CostUSD != nil {
-			total := *execution.CostUSD
-			if summary.CostUSD != nil {
-				total += *summary.CostUSD
-			}
-			summary.CostUSD = &total
+			addTo(&summary.CostUSD, *execution.CostUSD)
 		}
-
-		if execution.InputTokens != nil || execution.OutputTokens != nil {
-			var total int64
-			if summary.Tokens != nil {
-				total = *summary.Tokens
-			}
-			if execution.InputTokens != nil {
-				total += *execution.InputTokens
-			}
-			if execution.OutputTokens != nil {
-				total += *execution.OutputTokens
-			}
-			summary.Tokens = &total
+		if execution.InputTokens != nil {
+			addTo(&summary.Tokens, *execution.InputTokens)
+		}
+		if execution.OutputTokens != nil {
+			addTo(&summary.Tokens, *execution.OutputTokens)
 		}
 
 		switch execution.Status {
@@ -295,8 +266,7 @@ func (s *Store) summaries(since time.Time) ([]Summary, error) {
 			summary.examples[ReasonWrong] = summary.VerdictNote
 		}
 
-		live := summary.Status == StatusQueued || summary.Status == StatusRunning || summary.Status == StatusWaiting
-		summary.Settled = !live || len(summary.SteppedIn) > 0
+		summary.Settled = !Live(summary.Status) || len(summary.SteppedIn) > 0
 		summary.Autonomous = summary.Status == StatusDone && summary.Executions == 1 &&
 			summary.Interventions == 0 && summary.Verdict != VerdictWrong
 	}
@@ -497,21 +467,9 @@ func reportFromSummaries(since time.Time, summaries []Summary) Report {
 	}
 
 	report.Totals.finish()
-
-	for _, g := range engines {
-		g.finish()
-		report.ByEngine = append(report.ByEngine, *g)
-	}
-
-	for _, g := range workers {
-		g.finish()
-		report.ByWorker = append(report.ByWorker, *g)
-	}
-
-	for _, g := range types {
-		g.finish()
-		report.ByType = append(report.ByType, *g)
-	}
+	report.ByEngine = finished(engines)
+	report.ByWorker = finished(workers)
+	report.ByType = finished(types)
 
 	sort.Slice(report.ByEngine, func(i, j int) bool { return betterRate(report.ByEngine[i], report.ByEngine[j]) })
 	sort.Slice(report.ByWorker, func(i, j int) bool { return betterRate(report.ByWorker[i], report.ByWorker[j]) })
@@ -559,6 +517,25 @@ func reportFromSummaries(since time.Time, summaries []Summary) Report {
 	return report
 }
 
+// finished finishes every group and returns them, unordered.
+func finished(groups map[string]*Group) []Group {
+	var out []Group
+	for _, g := range groups {
+		g.finish()
+		out = append(out, *g)
+	}
+
+	return out
+}
+
+// addTo adds v to the running total at *total, starting it when there is none.
+func addTo[T int64 | float64](total **T, v T) {
+	if *total != nil {
+		v += **total
+	}
+	*total = &v
+}
+
 func newGroup(key, label string) Group {
 	return Group{Key: key, Label: label, reasons: map[string]int{}, models: map[string]bool{}}
 }
@@ -571,19 +548,11 @@ func (g *Group) add(summary Summary) {
 	}
 
 	if summary.CostUSD != nil {
-		total := *summary.CostUSD
-		if g.CostUSD != nil {
-			total += *g.CostUSD
-		}
-		g.CostUSD = &total
+		addTo(&g.CostUSD, *summary.CostUSD)
 	}
 
 	if summary.Tokens != nil {
-		total := *summary.Tokens
-		if g.Tokens != nil {
-			total += *g.Tokens
-		}
-		g.Tokens = &total
+		addTo(&g.Tokens, *summary.Tokens)
 		g.TokenTasks++
 	}
 

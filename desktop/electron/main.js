@@ -181,18 +181,30 @@ function lastLogLine() {
   } catch { return ''; }
 }
 
-function checkDashboard() {
+// getText resolves with a GET's status and the first limit characters of its
+// body, or null when there is no answer.
+function getText(url, timeout, limit) {
   return new Promise((resolve) => {
-    const req = http.get(`${dashboard}/favicon.svg`, { timeout: 2000 }, (res) => {
+    const req = http.get(url, { timeout }, (res) => {
       let body = '';
       res.setEncoding('utf8');
-      res.on('data', (chunk) => { body = (body + chunk).slice(0, 20000); });
-      res.on('end', () => resolve(res.statusCode === 200 && body.includes(marker) ? 'ready' : 'occupied'));
-      res.on('error', () => resolve('absent'));
+      res.on('data', (chunk) => { body = (body + chunk).slice(0, limit); });
+      res.on('end', () => resolve({ status: res.statusCode, body }));
+      res.on('error', () => resolve(null));
     });
     req.on('timeout', () => req.destroy());
-    req.on('error', () => resolve('absent'));
+    req.on('error', () => resolve(null));
   });
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function checkDashboard() {
+  const res = await getText(`${dashboard}/favicon.svg`, 2000, 20000);
+  if (!res) return 'absent';
+  return res.status === 200 && res.body.includes(marker) ? 'ready' : 'occupied';
 }
 
 async function waitForDashboard(stopped) {
@@ -200,7 +212,7 @@ async function waitForDashboard(stopped) {
     const state = await checkDashboard();
     if (state === 'ready') return;
     if (state === 'occupied') throw new Error('Port 8080 is in use. Close the other server, then retry.');
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await sleep(1000);
   }
   if (!stopped()) throw new Error(`Decurix did not start. Check ${logFile()}`);
 }
@@ -436,7 +448,7 @@ async function dockerReady() {
     update('Starting Docker Desktop…');
     spawn('open', ['-ga', 'Docker'], { stdio: 'ignore' }).once('error', () => {});
     for (let attempt = 0; attempt < 60 && answer !== 0 && !closing; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      await sleep(2000);
       answer = await ask();
     }
   }
@@ -637,7 +649,7 @@ async function linuxReady() {
   }
   for (let attempt = 0; attempt < 60 && !closing; attempt += 1) {
     if (await ask() === 0) return;
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await sleep(1000);
   }
   throw new Error(`Docker did not start in Decurix's Linux. Its log is /var/log/dockerd.log there (wsl -d ${DISTRO}).`);
 }
@@ -680,11 +692,9 @@ const localModels = createLocalModels({
 for (const [channel, action] of [
   ['local-model-status', () => localModels.status()],
   ['local-model-hosting', value => localModels.setEnabled(value)],
-  ['local-model-prepare', () => localModels.prepare()],
 ]) {
   ipcMain.handle(channel, (event, value) => {
-    if (!windows || !window || event.sender !== window.webContents || !event.senderFrame ||
-        event.senderFrame !== event.sender.mainFrame || !isDashboardURL(event.senderFrame.url)) {
+    if (!windows || !fromDashboard(event)) {
       throw new Error('Local hosting is only available from the Windows desktop dashboard.');
     }
     return action(value);
@@ -828,18 +838,10 @@ function reportLanAddress() {
 const KEEP_AWAKE_EVERY_MS = 30000;
 let keepingAwake = null;
 
-function askKeepAwake() {
-  return new Promise((resolve) => {
-    const req = http.get(`${dashboard}/api/keep-awake?holder=script`, { timeout: 5000 }, (res) => {
-      let body = '';
-      res.setEncoding('utf8');
-      res.on('data', (chunk) => { body = (body + chunk).slice(0, 8192); });
-      res.on('end', () => { try { const state = JSON.parse(body); resolve(state.enabled !== false && state.wanted === true); } catch { resolve(false); } });
-      res.on('error', () => resolve(false));
-    });
-    req.on('timeout', () => req.destroy());
-    req.on('error', () => resolve(false));
-  });
+async function askKeepAwake() {
+  const res = await getText(`${dashboard}/api/keep-awake?holder=script`, 5000, 8192);
+  if (!res) return false;
+  try { const state = JSON.parse(res.body); return state.enabled !== false && state.wanted === true; } catch { return false; }
 }
 
 function releaseAwake() {
@@ -892,6 +894,13 @@ function isDashboardURL(url) {
   try { return new URL(url).origin === dashboardOrigin; } catch { return false; }
 }
 
+// fromDashboard: whether an IPC message comes from this window's main frame,
+// showing the dashboard - not a remote page, a child frame or another window.
+function fromDashboard(event) {
+  return !!window && event.sender === window.webContents && !!event.senderFrame &&
+    event.senderFrame === event.sender.mainFrame && isDashboardURL(event.senderFrame.url);
+}
+
 // The backend runs in Docker, so the app opens the host's native chooser and
 // translates its results to the read-only mounts the backend can actually copy.
 function hostFolderPath(folder) {
@@ -912,9 +921,7 @@ function hostFolderPath(folder) {
 
 let pickingHostFolders = false;
 ipcMain.handle('pick-host-folders', async (event) => {
-  // Reject remote pages, child frames and windows other than the dashboard.
-  if (!window || event.sender !== window.webContents || !event.senderFrame ||
-      event.senderFrame !== event.sender.mainFrame || !isDashboardURL(event.senderFrame.url)) {
+  if (!fromDashboard(event)) {
     throw new Error('Folder selection is only available from the desktop dashboard.');
   }
   if (pickingHostFolders) return { busy: true };
@@ -933,9 +940,7 @@ ipcMain.handle('pick-host-folders', async (event) => {
 
 // Only the dashboard's main frame may change the caption button palette.
 ipcMain.on('window-titlebar-theme', (event, palette) => {
-  if (!windows || !window || window.isDestroyed() || event.sender !== window.webContents ||
-      !event.senderFrame || event.senderFrame !== event.sender.mainFrame ||
-      !isDashboardURL(event.senderFrame.url)) return;
+  if (!windows || !window || window.isDestroyed() || !fromDashboard(event)) return;
   if (!palette || !/^#[0-9a-f]{6}$/i.test(palette.color) ||
       !/^#[0-9a-f]{6}$/i.test(palette.symbolColor)) return;
   window.setTitleBarOverlay({ color: palette.color, symbolColor: palette.symbolColor });

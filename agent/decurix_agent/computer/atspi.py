@@ -771,27 +771,5 @@ def sheet_cell_text(element, row, column):
     own handle row/column plus an offset), or None when it cannot be read. A sheet answers for any cell, shown or not.
     """
 
-    Atspi = _lib()
-    handle = element.get("handle") or {}
-    try:
-        node = Atspi.get_desktop(0)
-        for index in handle["indices"]:
-            node = node.get_child_at_index(index)
-            if node is None:
-                return None
-        cell = Atspi.Table.get_accessible_at(node, row, column)
-        if cell is None:
-            return None
-        return _text(Atspi, cell, PARAGRAPH_TEXT_LIMIT).strip()
-    except Exception:
-        return None
-
-
-def set_text(element, text):
-    """
-    Replace a field's contents through the widget itself. Not done over
-    AT-SPI - the caller types into the field - so this is always False here;
-    it is what a native Windows worker's UI Automation can do (win.py).
-    """
-
-    return False
+    cell = resolve(dict(element, handle=dict(element.get("handle") or {}, sheet_cell=True, row=row, column=column)))
+    return None if cell is None else _text(_lib(), cell, PARAGRAPH_TEXT_LIMIT).strip()

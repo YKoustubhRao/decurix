@@ -3,8 +3,6 @@
 package qualification
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"path"
@@ -143,8 +141,7 @@ type Run struct {
 // Fingerprint includes every executable, environment, scope and suite input.
 func Fingerprint(d Definition) string {
 	b, _ := json.Marshal(d)
-	h := sha256.Sum256(b)
-	return hex.EncodeToString(h[:])
+	return SHA256Hex(b)
 }
 
 // FileName permits only flat regular artifacts, never paths or reserved programs.
@@ -207,7 +204,7 @@ func ValidateCase(c Case) error {
 				return ErrInvalid
 			}
 			for _, cell := range check.Cells {
-				if cell.Sheet == "" || !regexp.MustCompile(`^[A-Z]{1,3}[1-9][0-9]{0,6}$`).MatchString(cell.Cell) {
+				if cell.Sheet == "" || !cellPattern.MatchString(cell.Cell) {
 					return ErrInvalid
 				}
 				if cell.Formula != nil && *cell.Formula && cell.FormulaText == "" {

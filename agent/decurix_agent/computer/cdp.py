@@ -448,7 +448,7 @@ _METRICS = """JSON.stringify({
 
 
 # A page's inner frames are part of what a person sees, and a look at the page
-# reads them too (see _frames). The two scripts below name fields from the
+# reads them too (see _inner_frames). The two scripts below name fields from the
 # page's own layout, so they go through every frame document the page may read
 # (the same site's), each at its place in the page: `each(document, ox, oy)`
 # is given a document and where its top-left corner is in the top document.
@@ -658,7 +658,20 @@ _NAMEABLE_FIELDS = {"textbox", "combobox", "spinbutton", "searchbox", "listbox",
 MAX_FRAMES = 12
 
 
-def _frames(page):
+def _loader(tree):
+    """Which load of a page a frame tree is of: it changes when the tab goes to another document."""
+
+    return ((tree or {}).get("frame") or {}).get("loaderId") or ""
+
+
+def _frame_tree(page):
+    try:
+        return page.call("Page.getFrameTree").get("frameTree") or {}
+    except ComputerError:
+        return {}
+
+
+def _inner_frames(page, tree):
     """
     The page's inner frames a person can see, outermost first: [{"id", "owner"
     (the frame element's backend node id), "box" (where its content is drawn
@@ -676,28 +689,6 @@ def _frames(page):
     out, with whatever is inside it.
     """
 
-    try:
-        tree = page.call("Page.getFrameTree").get("frameTree") or {}
-    except ComputerError:
-        return []
-
-    return _inner_frames(page, tree)
-
-
-def _loader(tree):
-    """Which load of a page a frame tree is of: it changes when the tab goes to another document."""
-
-    return ((tree or {}).get("frame") or {}).get("loaderId") or ""
-
-
-def _frame_tree(page):
-    try:
-        return page.call("Page.getFrameTree").get("frameTree") or {}
-    except ComputerError:
-        return {}
-
-
-def _inner_frames(page, tree):
     frames = []
     queue = list(tree.get("childFrames") or [])
 
@@ -817,18 +808,13 @@ def observe():
         frames = _inner_frames(page, tree)
         _splice_frames(page, nodes, frames)
         snapshot = page.call("DOMSnapshot.captureSnapshot", {"computedStyles": ["opacity"]})
-        try:
-            columns = json.loads(page.evaluate(_COLUMN_NAMES) or "[]")
-        except (ComputerError, ValueError):
-            columns = []  # a name from a column is help, never a reason to fail a look
-        try:
-            labels = json.loads(page.evaluate(_GROUP_LABELS) or "[]")
-        except (ComputerError, ValueError):
-            labels = []
-        try:
-            rows = json.loads(page.evaluate(_ROW_NUMBERS) or "[]")
-        except (ComputerError, ValueError):
-            rows = []
+        named = []
+        for script in (_COLUMN_NAMES, _GROUP_LABELS, _ROW_NUMBERS):
+            try:
+                named.append(json.loads(page.evaluate(script) or "[]"))
+            except (ComputerError, ValueError):
+                named.append([])  # a name from a column is help, never a reason to fail a look
+        columns, labels, rows = named
     finally:
         page.close()
 
@@ -1038,8 +1024,6 @@ def observe():
 
                 value = (node.get("value") or {}).get("value", "")
                 norm = el.normalize_role(lower)
-                if norm == "text":
-                    norm = "text"
 
                 found.append({
                     "role": norm,
@@ -1424,30 +1408,6 @@ def focused(known_elements=()):
             page.close()
 
 
-def chosen_option(element):
-    """The label of the option a <select> shows as chosen right now, or None when it cannot be asked."""
-
-    page = None
-
-    try:
-        page = _page_for(element)
-        object_id = _object(page, element["handle"]["backend_id"])
-        return page.call("Runtime.callFunctionOn", {
-            "objectId": object_id,
-            "returnByValue": True,
-            "functionDeclaration": """function() {
-                if (!this.options) { return null; }
-                const o = this.options[this.selectedIndex];
-                return o ? (o.label || o.text || '').trim() : '';
-            }""",
-        }).get("result", {}).get("value")
-    except (ComputerError, KeyError, TypeError, ValueError, OSError):
-        return None
-    finally:
-        if page is not None:
-            page.close()
-
-
 # ============================================================
 # Acting
 # ============================================================
@@ -1562,18 +1522,25 @@ def _object(page, backend_id):
     return resolved["object"]["objectId"]
 
 
-def press_in_app(element):
-    """Press a named control in a viewer of an app running elsewhere (hostgui.html's decurixPress); raises with why not."""
+def _call_in_app(element, declaration, arguments, timeout):
+    """What a function of a viewer of an app running elsewhere answers, called on `element` ("" for nothing)."""
 
     page = _page_for(element)
     try:
-        answer = page.call("Runtime.callFunctionOn", {
-            "objectId": _object(page, element["handle"]["backend_id"]), "returnByValue": True, "awaitPromise": True,
-            "functionDeclaration": "function() { return window.decurixPress ? window.decurixPress(this) "
-                                   ": 'ERR this viewer cannot press through the app (an older page)'; }",
-        }, timeout=20).get("result", {}).get("value") or ""
+        params = {"objectId": _object(page, element["handle"]["backend_id"]), "returnByValue": True,
+                  "awaitPromise": True, "functionDeclaration": declaration}
+        if arguments is not None:
+            params["arguments"] = arguments
+        return page.call("Runtime.callFunctionOn", params, timeout=timeout).get("result", {}).get("value") or ""
     finally:
         page.close()
+
+
+def press_in_app(element):
+    """Press a named control in a viewer of an app running elsewhere (hostgui.html's decurixPress); raises with why not."""
+
+    answer = _call_in_app(element, "function() { return window.decurixPress ? window.decurixPress(this) "
+                                   ": 'ERR this viewer cannot press through the app (an older page)'; }", None, 20)
     if not answer or answer.startswith("ERR"):
         raise ComputerError(f"{el.describe(element)}: {answer[3:].strip() or 'no answer'}")
     return answer
@@ -1585,16 +1552,9 @@ def choose_in_app(element, option):
     accessibility selects it). Returns the entry's name; raises with the app's reason (what it offers) when none was.
     """
 
-    page = _page_for(element)
-    try:
-        answer = page.call("Runtime.callFunctionOn", {
-            "objectId": _object(page, element["handle"]["backend_id"]), "returnByValue": True, "awaitPromise": True,
-            "arguments": [{"value": option}],
-            "functionDeclaration": "function(text) { return window.decurixChoose ? window.decurixChoose(this, text) "
+    answer = _call_in_app(element, "function(text) { return window.decurixChoose ? window.decurixChoose(this, text) "
                                    ": 'ERR this viewer cannot choose from a list (an older page: open the app again)'; }",
-        }, timeout=30).get("result", {}).get("value") or ""
-    finally:
-        page.close()
+                          [{"value": option}], 30)
     if answer.startswith("ERR"):
         raise ComputerError(f"{el.describe(element)}: {answer[3:].strip()}")
     return answer
@@ -1607,16 +1567,9 @@ def set_in_app(element, text, append=False):
     the app's reason when it could not be set that way - the caller then types the text.
     """
 
-    page = _page_for(element)
-    try:
-        answer = page.call("Runtime.callFunctionOn", {
-            "objectId": _object(page, element["handle"]["backend_id"]), "returnByValue": True, "awaitPromise": True,
-            "arguments": [{"value": text}, {"value": bool(append)}],
-            "functionDeclaration": "function(text, add) { return window.decurixSetValue ? window.decurixSetValue(this, "
+    answer = _call_in_app(element, "function(text, add) { return window.decurixSetValue ? window.decurixSetValue(this, "
                                    "text, add) : 'ERR this viewer cannot set a value (an older page)'; }",
-        }, timeout=20).get("result", {}).get("value") or ""
-    finally:
-        page.close()
+                          [{"value": text}, {"value": bool(append)}], 20)
     if not answer.startswith("SET"):
         raise ComputerError(f"{el.describe(element)}: {answer[3:].strip() or 'no answer'}")
     return answer[4:]
@@ -1655,7 +1608,7 @@ def _type_line(page, object_id, line):
     # A viewer of an app running elsewhere (a host app, a phone app) passes each key on to that app and its stand-in
     # field does not change: found live (2026-10-15), every line typed into real Excel was inserted a second time here
     # ("TotalTotal"), corrupting the sheet. Its keys arrived; nothing is inserted after them.
-    if any(v in ((getattr(page, "target", None) or {}).get("url") or "") for v in ("/host-gui/view", "/phone-app/view")):
+    if any(v in ((getattr(page, "target", None) or {}).get("url") or "") for v in RELAYED_VIEWER_PATHS):
         return
     after = _field_value(page, object_id)
     if after is not None and line not in after and after == (before or ""):

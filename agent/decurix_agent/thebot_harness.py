@@ -8,7 +8,7 @@ import urllib.request
 from decurix_agent import app_skills, attachments, config, guidance, playbooks, progress, state, usage
 from decurix_agent.computer import approval
 from decurix_agent.identity import get_identity_context
-from decurix_agent.logging_utils import log
+from decurix_agent.logging_utils import log, log_banner
 from decurix_agent.memory_context import get_memory_context
 from decurix_agent.messaging import (
     ask_for_query,
@@ -683,7 +683,6 @@ def _handle_job(job, error, resuming=False):
         # The person has just called the task off: what the engine asks next
         # is not put to them. Found live: told `stop`, the engine stopped -
         # and then asked whether its stopping counted as the task done.
-        from decurix_agent import guidance
         called_off = guidance.refused()
         if called_off:
             write_final_reply(f"Stopped, as you said (\"{called_off}\"). {answer or ''}".strip())
@@ -732,26 +731,23 @@ def wait_for_backend():
     a query for a human.
     """
 
-    if config.HOSTED_BRAIN:
-        # A hosted brain: soul reasons through the control plane's proxy,
-        # and Ollama only embeds (best-effort - soul runs without memory
-        # rather than not at all), so neither the local server nor its chat
-        # model is waited for, and nothing is loaded into it.
+    # A hosted brain: soul reasons through the control plane's proxy,
+    # and Ollama only embeds (best-effort - soul runs without memory
+    # rather than not at all), so neither the local server nor its chat
+    # model is waited for, and nothing is loaded into it.
+    if not config.HOSTED_BRAIN:
         wait_for_http_ok(
-            config.THEBOT_URL.rstrip("/") + "/api/health",
-            f"TheBot soul at {config.THEBOT_URL}",
+            config.OLLAMA_URL.rstrip("/") + "/api/tags",
+            f"Ollama at {config.OLLAMA_URL}",
         )
-        return
-
-    wait_for_http_ok(
-        config.OLLAMA_URL.rstrip("/") + "/api/tags",
-        f"Ollama at {config.OLLAMA_URL}",
-    )
 
     wait_for_http_ok(
         config.THEBOT_URL.rstrip("/") + "/api/health",
         f"TheBot soul at {config.THEBOT_URL}",
     )
+
+    if config.HOSTED_BRAIN:
+        return
 
     # Reachable is not loaded. A cold model takes minutes on a small host,
     # longer than soul's own per-call budgets, so a job dispatched into it
@@ -791,14 +787,9 @@ def perform_task(task, task_file):
     global _written_pause
     _written_pause = None
 
-    state.current_task = task
-    state.current_task_file = task_file
-    state.waiting_for_query = False
+    state.begin(task, task_file)
 
-    log("========================================")
-    log("STARTING TASK (TheBot harness)")
-    log(task)
-    log("========================================")
+    log_banner("STARTING TASK (TheBot harness)", task)
 
     # soul reports each job's token counts with the job (_count). The local
     # model costs nothing per call; a hosted one's spend is on the provider's
@@ -827,10 +818,7 @@ def continue_after_query(query_response):
     if getattr(state, "last_query_kind", "") != "approval":
         playbooks.answered()
 
-    log("========================================")
-    log("RECEIVED HUMAN REPLY TO QUERY (TheBot harness)")
-    log(query_response)
-    log("========================================")
+    log_banner("RECEIVED HUMAN REPLY TO QUERY (TheBot harness)", query_response)
 
     global _written_pause
     written, _written_pause = _written_pause, None

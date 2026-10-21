@@ -4,7 +4,7 @@ import re
 from decurix_agent import config, progress, state
 from decurix_agent.commands import dangerous_reason, run_command
 from decurix_agent.computer import approval
-from decurix_agent.logging_utils import log
+from decurix_agent.logging_utils import log, log_banner
 from decurix_agent.messaging import (
     ask_for_query,
     backend_failure_note,
@@ -159,6 +159,13 @@ def overwrite_target(task, command):
     return None
 
 
+def _exchange(history, said, answer):
+    """Append one model turn and the reply it gets to the transcript."""
+
+    history.append({"role": "assistant", "content": said})
+    history.append({"role": "user", "content": answer})
+
+
 def refuse_overwrite(history, response_command, target, nudges):
     """Answers a command that would overwrite target instead of running it.
     Returns False once it has been refused MAX_OVERWRITE_NUDGES times and a
@@ -180,8 +187,7 @@ It has not been run. Reply with what to do.
     log(f"Refused a command that would overwrite {target} in an append task.")
     progress.emit(f"Not run - it would replace the contents of {target}: {response_command}")
 
-    history.append({"role": "assistant", "content": command_only(response_command)})
-    history.append({"role": "user", "content": OVERWRITE_NUDGE.format(path=target)})
+    _exchange(history, command_only(response_command), OVERWRITE_NUDGE.format(path=target))
 
     return True
 
@@ -394,6 +400,46 @@ def failure_nudge(result):
     return nudge
 
 
+def _pushback_query(history, response, value, last_result, success_nudged, failure_nudges):
+    """
+    Answer a HELP that follows a command instead of sending it on: once after
+    a success (SUCCESS_QUERY_NUDGE), up to MAX_FAILURE_NUDGES times after a
+    failure. Approvals and choices are left alone. Returns the updated
+    (success_nudged, failure_nudges), or None when the HELP goes to a person.
+    """
+
+    if last_result is None or HUMAN_ONLY_RE.search(value or ""):
+        return None
+
+    if last_result["exit_code"] == 0 and not success_nudged:
+
+        log(
+            "Agent had a query right after a command succeeded - "
+            "showing it the output again."
+        )
+
+        output = (last_result["output"] or "").strip()[:MAX_COMMAND_OUTPUT_CHARS]
+        _exchange(history, response, SUCCESS_QUERY_NUDGE.format(output=output or "(no output)"))
+
+        return True, failure_nudges
+
+    if last_result["exit_code"] != 0 and failure_nudges < MAX_FAILURE_NUDGES:
+
+        failure_nudges += 1
+
+        log(
+            "Agent had a query right after a command failed - "
+            "asking it to try another way first "
+            f"({failure_nudges}/{MAX_FAILURE_NUDGES})."
+        )
+
+        _exchange(history, response, failure_nudge(last_result))
+
+        return success_nudged, failure_nudges
+
+    return None
+
+
 def command_only(command):
     """
     The transcript's record of a COMMAND turn: the command, and nothing
@@ -457,6 +503,71 @@ Do not run it again. If that answers the task, reply now with DONE:
 followed by the answer. Only send a COMMAND if it is a DIFFERENT command
 you still genuinely need.
 """.strip()
+
+
+# What a person is told when the agent keeps re-running a command that fails
+# (_repeated), in perform_task and after a reply (continue_after_query).
+STUCK_NOTE = """
+The agent kept retrying the same command, which keeps failing with exit
+code {code}:
+
+$ {command}
+
+{output}
+
+It is not going to get past this on its own.
+""".strip()
+
+STUCK_AFTER_REPLY_NOTE = """
+After your reply the agent kept retrying the same command, which keeps
+failing with exit code {code}:
+
+$ {command}
+
+{output}
+""".strip()
+
+
+def _repeated(history, command, last_result, repeats, stuck):
+    """
+    Answer a COMMAND identical to the one just run. The first time, show the
+    agent its output again and return True (the loop goes on). After that it
+    is not going to finish on its own: end the task with what the command
+    produced, or ask a person with `stuck` when it failed, and return False.
+    """
+
+    if repeats == 1:
+
+        log(
+            "Agent repeated a command it has already run - "
+            "showing it the output again."
+        )
+
+        _exchange(history, command_only(command), repeated_command_nudge(command, last_result))
+
+        return True
+
+    # Told once and still repeating: it is not going to
+    # finish on its own. A command that already succeeded has
+    # answered the question, whatever the agent does with it.
+    log(
+        "Agent is stuck repeating a command - ending the "
+        "task with what that command produced."
+    )
+
+    if last_result["exit_code"] == 0:
+        write_final_reply(
+            final_answer_from_command(command, last_result)
+        )
+        return False
+
+    ask_for_query(stuck.format(
+        code=last_result["exit_code"],
+        command=command,
+        output=(last_result["output"] or "").strip()[:1000] or "(no output)",
+    ))
+
+    return False
 
 
 def final_answer_from_command(command, result):
@@ -714,12 +825,24 @@ def resume_approved_dangerous_command(history, reply):
 
     log("Human approved the held command - running it now.")
 
+    return _run(history, command)
+
+
+def _run(history, command, gated=False):
+    """
+    Run a command and put its result in front of the model. Returns
+    (command, result); result is None when `gated` and the approval gate
+    stopped it (pause_for_screen_approval has then paused the task).
+    """
+
     progress.emit(f"$ {command}")
     result = run_command(command)
     progress.emit(describe_result(result))
 
-    history.append({"role": "assistant", "content": f"COMMAND:\n{command}"})
-    history.append({"role": "user", "content": format_command_result(result)})
+    if gated and pause_for_screen_approval(command, result):
+        return command, None
+
+    _exchange(history, command_only(command), format_command_result(result))
 
     return command, result
 
@@ -744,29 +867,17 @@ def resume_approved_screen_action(history):
 
     log("Human approved the on-screen action - running it now.")
 
-    progress.emit(f"$ {command}")
-    result = run_command(command)
-    progress.emit(describe_result(result))
-
-    history.append({"role": "assistant", "content": f"COMMAND:\n{command}"})
-    history.append({"role": "user", "content": format_command_result(result)})
-
-    return command, result
+    return _run(history, command)
 
 
 def perform_task(task, task_file):
     global _pending_gui_command, _pending_dangerous_command
 
-    state.current_task = task
-    state.current_task_file = task_file
-    state.waiting_for_query = False
+    state.begin(task, task_file)
     _pending_gui_command = None
     _pending_dangerous_command = None
 
-    log("========================================")
-    log("STARTING TASK")
-    log(task)
-    log("========================================")
+    log_banner("STARTING TASK", task)
 
     history = []
 
@@ -874,13 +985,7 @@ def perform_task(task, task_file):
                     else ""
                 )
 
-                history.append({"role": "assistant", "content": f"DONE: {value}"})
-                history.append(
-                    {
-                        "role": "user",
-                        "content": UNGROUNDED_DONE_NUDGE.format(what=what, proposed=proposed),
-                    }
-                )
+                _exchange(history, f"DONE: {value}", UNGROUNDED_DONE_NUDGE.format(what=what, proposed=proposed))
 
                 continue
 
@@ -903,87 +1008,18 @@ def perform_task(task, task_file):
                 # Only the HELP itself is kept: an answer the model guessed
                 # beside its command would be read back as if it had
                 # happened (see command_only).
-                history.append(
-                    {
-                        "role": "assistant",
-                        "content": f"HELP: {value}" if proposed_command else response,
-                    }
-                )
-
-                history.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            UNRUN_COMMAND_NUDGE.format(command=proposed_command)
-                            if proposed_command
-                            else PREMATURE_QUERY_NUDGE
-                        ),
-                    }
+                _exchange(
+                    history,
+                    f"HELP: {value}" if proposed_command else response,
+                    UNRUN_COMMAND_NUDGE.format(command=proposed_command) if proposed_command else PREMATURE_QUERY_NUDGE,
                 )
 
                 continue
 
-            if (
-                last_result is not None
-                and last_result["exit_code"] == 0
-                and not success_nudged
-                and not HUMAN_ONLY_RE.search(value or "")
-            ):
+            pushed = _pushback_query(history, response, value, last_result, success_nudged, failure_nudges)
 
-                success_nudged = True
-
-                log(
-                    "Agent had a query right after a command succeeded - "
-                    "showing it the output again."
-                )
-
-                history.append(
-                    {
-                        "role": "assistant",
-                        "content": response,
-                    }
-                )
-
-                history.append(
-                    {
-                        "role": "user",
-                        "content": SUCCESS_QUERY_NUDGE.format(
-                            output=(
-                                (last_result["output"] or "").strip()[
-                                    :MAX_COMMAND_OUTPUT_CHARS
-                                ]
-                                or "(no output)"
-                            )
-                        ),
-                    }
-                )
-
-                continue
-
-            if (
-                last_result is not None
-                and last_result["exit_code"] != 0
-                and failure_nudges < MAX_FAILURE_NUDGES
-                and not HUMAN_ONLY_RE.search(value or "")
-            ):
-
-                failure_nudges += 1
-
-                log(
-                    "Agent had a query right after a command failed - "
-                    "asking it to try another way first "
-                    f"({failure_nudges}/{MAX_FAILURE_NUDGES})."
-                )
-
-                history.append({"role": "assistant", "content": response})
-
-                history.append(
-                    {
-                        "role": "user",
-                        "content": failure_nudge(last_result),
-                    }
-                )
-
+            if pushed:
+                success_nudged, failure_nudges = pushed
                 continue
 
             ask_for_query(value)
@@ -1004,58 +1040,8 @@ def perform_task(task, task_file):
 
                 command_repeats += 1
 
-                if command_repeats == 1:
-
-                    log(
-                        "Agent repeated a command it has already run - "
-                        "showing it the output again."
-                    )
-
-                    history.append(
-                        {
-                            "role": "assistant",
-                            "content": command_only(command),
-                        }
-                    )
-
-                    history.append(
-                        {
-                            "role": "user",
-                            "content": repeated_command_nudge(
-                                command,
-                                last_result,
-                            ),
-                        }
-                    )
-
+                if _repeated(history, command, last_result, command_repeats, STUCK_NOTE):
                     continue
-
-                # Told once and still repeating: it is not going to
-                # finish on its own. A command that already succeeded has
-                # answered the question, whatever the agent does with it.
-                log(
-                    "Agent is stuck repeating a command - ending the "
-                    "task with what that command produced."
-                )
-
-                if last_result["exit_code"] == 0:
-                    write_final_reply(
-                        final_answer_from_command(command, last_result)
-                    )
-                    return
-
-                ask_for_query(
-                    f"""
-The agent kept retrying the same command, which keeps failing with exit
-code {last_result['exit_code']}:
-
-$ {command}
-
-{(last_result['output'] or '').strip()[:1000] or '(no output)'}
-
-It is not going to get past this on its own.
-""".strip()
-                )
 
                 return
 
@@ -1075,40 +1061,17 @@ It is not going to get past this on its own.
 
                 continue
 
-            progress.emit(f"$ {command}")
-
             commands_run += 1
             invalid_in_a_row = 0
             command_repeats = 0
 
-            result = run_command(
-                command
-            )
+            last_command, last_result = _run(history, command, gated=True)
 
-            last_command = command
-            last_result = result
-
-            if result.get("exit_code") == 0 and WRITES_RE.search(command):
-                changed = True
-
-            progress.emit(describe_result(result))
-
-            if pause_for_screen_approval(command, result):
+            if last_result is None:
                 return
 
-            history.append(
-                {
-                    "role": "assistant",
-                    "content": command_only(command),
-                }
-            )
-
-            history.append(
-                {
-                    "role": "user",
-                    "content": format_command_result(result),
-                }
-            )
+            if last_result.get("exit_code") == 0 and WRITES_RE.search(command):
+                changed = True
 
             continue
 
@@ -1130,19 +1093,7 @@ It is not going to get past this on its own.
 
                 return
 
-            history.append(
-                {
-                    "role": "assistant",
-                    "content": response,
-                }
-            )
-
-            history.append(
-                {
-                    "role": "user",
-                    "content": invalid_format_nudge(response),
-                }
-            )
+            _exchange(history, response, invalid_format_nudge(response))
 
             continue
 
@@ -1157,31 +1108,6 @@ It is most likely repeating an approach that cannot work.
 Please look at the steps above and tell it what to do differently.
 """.strip()
     )
-
-
-# ============================================================
-# Query response detection
-# ============================================================
-
-def is_query_response(filename, content):
-    """
-    A request received while waiting for a query to be answered is
-    treated as the human's response to the current blocked task.
-    """
-
-    if not state.waiting_for_query:
-        return False
-
-    lower_name = filename.lower()
-
-    # Ignore our own generated result/query files.
-    if lower_name.startswith("query_"):
-        return False
-
-    if lower_name.startswith("result_"):
-        return False
-
-    return True
 
 
 def continue_after_query(query_response):
@@ -1204,10 +1130,7 @@ def continue_after_query(query_response):
 
     state.waiting_for_query = False
 
-    log("========================================")
-    log("RECEIVED HUMAN REPLY TO QUERY")
-    log(query_response)
-    log("========================================")
+    log_banner("RECEIVED HUMAN REPLY TO QUERY", query_response)
 
     # Continue the same task with the human's
     # response appended as context.
@@ -1305,58 +1228,10 @@ def continue_after_query(query_response):
 
         if action == "query":
 
-            if (
-                last_result is not None
-                and last_result["exit_code"] == 0
-                and not success_nudged
-                and not HUMAN_ONLY_RE.search(value or "")
-            ):
+            pushed = _pushback_query(history, response, value, last_result, success_nudged, failure_nudges)
 
-                success_nudged = True
-
-                log(
-                    "Agent had a query right after a command succeeded - "
-                    "showing it the output again."
-                )
-
-                history.append({"role": "assistant", "content": response})
-
-                history.append(
-                    {
-                        "role": "user",
-                        "content": SUCCESS_QUERY_NUDGE.format(
-                            output=(
-                                (last_result["output"] or "").strip()[
-                                    :MAX_COMMAND_OUTPUT_CHARS
-                                ]
-                                or "(no output)"
-                            )
-                        ),
-                    }
-                )
-
-                continue
-
-            if (
-                last_result is not None
-                and last_result["exit_code"] != 0
-                and failure_nudges < MAX_FAILURE_NUDGES
-                and not HUMAN_ONLY_RE.search(value or "")
-            ):
-
-                failure_nudges += 1
-
-                log(
-                    "Agent had a query right after a command failed - "
-                    "asking it to try another way first "
-                    f"({failure_nudges}/{MAX_FAILURE_NUDGES})."
-                )
-
-                history.append({"role": "assistant", "content": response})
-                history.append(
-                    {"role": "user", "content": failure_nudge(last_result)}
-                )
-
+            if pushed:
+                success_nudged, failure_nudges = pushed
                 continue
 
             ask_for_query(value)
@@ -1368,53 +1243,8 @@ def continue_after_query(query_response):
 
                 command_repeats += 1
 
-                if command_repeats == 1:
-
-                    log(
-                        "Agent repeated a command it has already run - "
-                        "showing it the output again."
-                    )
-
-                    history.append(
-                        {
-                            "role": "assistant",
-                            "content": command_only(value),
-                        }
-                    )
-
-                    history.append(
-                        {
-                            "role": "user",
-                            "content": repeated_command_nudge(
-                                value,
-                                last_result,
-                            ),
-                        }
-                    )
-
+                if _repeated(history, value, last_result, command_repeats, STUCK_AFTER_REPLY_NOTE):
                     continue
-
-                log(
-                    "Agent is stuck repeating a command - ending the "
-                    "task with what that command produced."
-                )
-
-                if last_result["exit_code"] == 0:
-                    write_final_reply(
-                        final_answer_from_command(value, last_result)
-                    )
-                    return
-
-                ask_for_query(
-                    f"""
-After your reply the agent kept retrying the same command, which keeps
-failing with exit code {last_result['exit_code']}:
-
-$ {value}
-
-{(last_result['output'] or '').strip()[:1000] or '(no output)'}
-""".strip()
-                )
 
                 return
 
@@ -1434,34 +1264,13 @@ $ {value}
 
                 continue
 
-            progress.emit(f"$ {value}")
-
             invalid_in_a_row = 0
             command_repeats = 0
 
-            result = run_command(value)
+            last_command, last_result = _run(history, value, gated=True)
 
-            last_command = value
-            last_result = result
-
-            progress.emit(describe_result(result))
-
-            if pause_for_screen_approval(value, result):
+            if last_result is None:
                 return
-
-            history.append(
-                {
-                    "role": "assistant",
-                    "content": command_only(value),
-                }
-            )
-
-            history.append(
-                {
-                    "role": "user",
-                    "content": format_command_result(result),
-                }
-            )
 
             continue
 
@@ -1481,19 +1290,7 @@ $ {value}
 
             return
 
-        history.append(
-            {
-                "role": "assistant",
-                "content": response,
-            }
-        )
-
-        history.append(
-            {
-                "role": "user",
-                "content": invalid_format_nudge(response),
-            }
-        )
+        _exchange(history, response, invalid_format_nudge(response))
 
     ask_for_query(
         f"The agent ran {max_steps} more steps after your reply without "

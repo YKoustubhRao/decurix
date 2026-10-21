@@ -5,7 +5,6 @@ repeat, and a total that counts it with no word of it is not done. The live CSVs
 them (skipped when they are not on this machine).
 """
 
-import os
 import tempfile
 import unittest
 from pathlib import Path

@@ -15,6 +15,11 @@ import (
 	"thebot/internal/workspace"
 )
 
+// Run executes one job with no host context and no resume. See Execute.
+func (s *Scheduler) Run(ctx context.Context, prompt string, sessionHistory []llm.Message, onLog func(string)) (*Job, error) {
+	return s.Execute(ctx, Request{Prompt: prompt, History: sessionHistory}, onLog)
+}
+
 // mockProvider is a real, deterministic fake - no network, no real model -
 // so scheduler behavior (the failure-reasoning loop especially) can be
 // tested without depending on a live Ollama server or being at the mercy

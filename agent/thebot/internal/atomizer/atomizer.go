@@ -357,19 +357,6 @@ var noOpStepRe = regexp.MustCompile(`(?i)^\s*(` +
 	`|repeat (steps?|this)\b[\s\S]*` +
 	`)\s*\.?\s*$`)
 
-// dropNoOpSteps removes steps that cannot map to any real capability.
-// A plan that becomes empty is not a task at all.
-func dropNoOpSteps(steps []string) []string {
-	out := steps[:0:0]
-	for _, s := range steps {
-		if noOpStepRe.MatchString(s) {
-			continue
-		}
-		out = append(out, s)
-	}
-	return out
-}
-
 // actionVerbRe counts the distinct things a prompt asks for. Two or more
 // means it needs a real plan, not a single skill.
 var (

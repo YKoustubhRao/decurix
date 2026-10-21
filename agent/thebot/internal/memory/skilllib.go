@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -184,7 +185,7 @@ func (s *SkillLibrary) Match(ctx context.Context, request string, topK int) ([]A
 		scored = append(scored, sk)
 	}
 
-	sortByScoreDescSkills(scored)
+	sort.SliceStable(scored, func(i, j int) bool { return scored[i].Score > scored[j].Score })
 	if len(scored) > topK {
 		scored = scored[:topK]
 	}
@@ -210,14 +211,6 @@ func (s *SkillLibrary) triggerEmbedding(ctx context.Context, sk AcquiredSkill) [
 	s.cache[sk.Slug] = vec
 	s.mu.Unlock()
 	return vec
-}
-
-func sortByScoreDescSkills(skills []AcquiredSkill) {
-	for i := 1; i < len(skills); i++ {
-		for j := i; j > 0 && skills[j].Score > skills[j-1].Score; j-- {
-			skills[j], skills[j-1] = skills[j-1], skills[j]
-		}
-	}
 }
 
 func (s *SkillLibrary) pendingPath(slug string) string {

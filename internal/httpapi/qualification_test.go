@@ -14,19 +14,14 @@ import (
 	"testing"
 
 	"github.com/YKoustubhRao/decurix/internal/qualification"
-	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 	"github.com/YKoustubhRao/decurix/internal/tasks"
 )
 
 func qualificationServer(t *testing.T) *Server {
 	t.Helper()
 	s := chatServer(t)
-	db, err := sqlitedb.OpenMemory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	s.Qualification, err = qualification.NewStore(db)
+	var err error
+	s.Qualification, err = qualification.NewStore(testDB(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +196,7 @@ func TestReadinessOwnerKeyExcludedFromBackupAndHostFileReads(t *testing.T) {
 		t.Fatal("owner key entered backup")
 	}
 	w := httptest.NewRecorder()
-	s.hostFileAsked(w, httptest.NewRequest("GET", "/api/host-files/read?desktop=worker&path=C:/data/qualification-owner.token", nil))
+	s.hostFileAsked(w, httptest.NewRequest("GET", "/api/host-files/read?desktop=worker&path=C:/data/qualification-owner.token", nil), http.MethodGet)
 	if w.Code != 403 {
 		t.Fatal("agent can read owner key")
 	}

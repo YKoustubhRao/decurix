@@ -17,8 +17,15 @@ import (
 func postForm(t *testing.T, handler http.HandlerFunc, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 
+	return postAs(t, handler, path, "application/x-www-form-urlencoded", body)
+}
+
+// postAs POSTs body, of contentType, to handler.
+func postAs(t *testing.T, handler http.HandlerFunc, path, contentType, body string) *httptest.ResponseRecorder {
+	t.Helper()
+
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Content-Type", contentType)
 
 	rec := httptest.NewRecorder()
 	handler(rec, req)

@@ -10,7 +10,6 @@ import (
 
 	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/memory"
-	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
 
 func TestJSONErrorMapsCallerMistakesToTheirStatus(t *testing.T) {
@@ -38,11 +37,7 @@ func TestJSONErrorMapsCallerMistakesToTheirStatus(t *testing.T) {
 }
 
 func TestMemoryHandlerAnswersBadInputWith400(t *testing.T) {
-	db, err := sqlitedb.OpenMemory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	db := testDB(t)
 
 	store, err := memory.NewStore(db)
 	if err != nil {

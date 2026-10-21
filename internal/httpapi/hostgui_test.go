@@ -26,6 +26,11 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/wsconn"
 )
 
+// hostGUIToken is the launch token for one app on one session, as a launcher would carry it.
+func (s *Server) hostGUIToken(id, target, args string) string {
+	return winhost.Token(s.hostGUISecretKey(), id, target, args)
+}
+
 // hostGUIServer returns a Server whose host helper is a bash loop speaking bridge.ps1's line protocol, plus the file
 // it appends every received line to.
 func hostGUIServer(t *testing.T, launchReply string) (*Server, string) {

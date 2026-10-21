@@ -69,13 +69,13 @@ class FormulaValues(unittest.TestCase):
         self.assertEqual(openpyxl.load_workbook(self.path)["Data"]["D4"].value, "=SUM(D2:D3)")
 
     def test_a_result_is_written_as_its_kind(self):
-        self.assertEqual(office._result_xml(' r="A1" t="n"', "<f>1</f><v>0</v>", "OVER", openpyxl),
+        self.assertEqual(office._result_xml(' r="A1" t="n"', "<f>1</f><v>0</v>", "OVER"),
                          '<c r="A1" t="str"><f>1</f><v>OVER</v></c>')
-        self.assertEqual(office._result_xml(' r="A1"', "<f>1/0</f>", "#DIV/0!", openpyxl), '<c r="A1" t="e"><f>1/0</f><v>#DIV/0!</v></c>')
+        self.assertEqual(office._result_xml(' r="A1"', "<f>1/0</f>", "#DIV/0!"), '<c r="A1" t="e"><f>1/0</f><v>#DIV/0!</v></c>')
         # A calculation that came to empty text is stored as an empty text result, not left with none.
-        self.assertEqual(office._result_xml(' r="A1"', "<f>1</f><v>3</v>", None, openpyxl),
+        self.assertEqual(office._result_xml(' r="A1"', "<f>1</f><v>3</v>", None),
                          '<c r="A1" t="str"><f>1</f><v></v></c>')
-        self.assertEqual(office._result_xml(' r="A1"', "<f>A&lt;B</f>", 2.5, openpyxl), '<c r="A1"><f>A&lt;B</f><v>2.5</v></c>')
+        self.assertEqual(office._result_xml(' r="A1"', "<f>A&lt;B</f>", 2.5), '<c r="A1"><f>A&lt;B</f><v>2.5</v></c>')
 
     def calculated(self):
         book = openpyxl.Workbook()

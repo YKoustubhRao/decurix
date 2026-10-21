@@ -108,11 +108,7 @@ func TestHostBridgeExecHandlerValidation(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterLocalRoutes(mux)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/host-bridge/exec", strings.NewReader(`{"cmd": ""}`))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-
-	mux.ServeHTTP(rec, req)
+	rec := postJSON(t, mux.ServeHTTP, "/api/host-bridge/exec", `{"cmd": ""}`)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 Bad Request for empty cmd, got %d", rec.Code)
@@ -124,11 +120,7 @@ func TestHostBridgeOpenHandlerValidation(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterLocalRoutes(mux)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/host-bridge/open", strings.NewReader(`{"target": ""}`))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-
-	mux.ServeHTTP(rec, req)
+	rec := postJSON(t, mux.ServeHTTP, "/api/host-bridge/open", `{"target": ""}`)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 Bad Request for empty target, got %d", rec.Code)
