@@ -304,6 +304,52 @@ func (s *Store) AppendAgentReply(desktopID, taskID, kind, content string) Entry 
 	return s.appendAgentReplyLocked(desktopID, taskID, kind, content)
 }
 
+// AppendAgentNote records an agent reply that does not end the turn: the desktop is still working (a planned run
+// answering a message it took mid-run). The entry is added; running, the turn's start and its live steps stay as they
+// are. Found live (round 5 P1, 2026-10-21): the receipt of a mid-run change closed the turn, and the chat and the card
+// read "finished" for seconds while four stages were reopened and a fifth still ran.
+func (s *Store) AppendAgentNote(desktopID, taskID, kind, content string) Entry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	current := s.threadFor(desktopID)
+	if !current.running {
+		return s.appendAgentReplyLocked(desktopID, taskID, kind, content)
+	}
+
+	switch kind {
+	case KindEntry, KindApproval, KindQuery, KindError:
+	default:
+		kind = KindEntry
+	}
+
+	entry := Entry{
+		ID:        s.nextID(),
+		DesktopID: desktopID,
+		Role:      RoleAgent,
+		Kind:      kind,
+		Content:   content,
+		TaskID:    taskID,
+		CreatedAt: time.Now().UTC(),
+	}
+
+	var dropped []Entry
+
+	current.entries, dropped = appendCapped(current.entries, entry, maxEntries)
+
+	s.persist(desktopID, current, func(tx *sql.Tx) error {
+		if err := insertEntry(tx, entry); err != nil {
+			return err
+		}
+
+		return deleteEntries(tx, dropped)
+	})
+
+	current.touch()
+
+	return entry
+}
+
 // EndTurn closes the running turn, if there is one, with `why` as an error
 // reply, and reports whether there was. For work the desktop can no longer
 // report on: stopping, restarting or deleting a desktop throws away what its

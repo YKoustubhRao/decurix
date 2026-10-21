@@ -369,3 +369,169 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-5.md](gotchas/part-5.md): Typing that changes nothing was not typed
 - [part-5.md](gotchas/part-5.md): A repeat run needs a restarted worker
 - [part-5.md](gotchas/part-5.md): Where a "wrong" run is not a wrong report
+- [part-5.md](gotchas/part-5.md): A workbook a script wrote has no formula results
+- [part-5.md](gotchas/part-5.md): An app named next to the file asked for is its format
+- [part-5.md](gotchas/part-5.md): Rows of a spreadsheet go in with one command
+- [part-5.md](gotchas/part-5.md): The shell eats a formula's doubled quotes
+- [part-5.md](gotchas/part-5.md): A formula built from the request's words is not a guess
+- [part-5.md](gotchas/part-5.md): Keys never land in a window an earlier task left
+- [part-5.md](gotchas/part-5.md): A task is told when most of its time is gone
+- [part-5.md](gotchas/part-5.md): A gui command chain is checked command by command
+- [part-5.md](gotchas/part-5.md): Any quote inside a gui type's text is caught
+- [part-5.md](gotchas/part-5.md): Rows into a host app's sheet are typed as a person types them
+- [part-5.md](gotchas/part-5.md): Text typed into a host app's cell being edited is not lost
+- [part-5.md](gotchas/part-5.md): Keys with no window in front go to the desktop
+- [part-5.md](gotchas/part-5.md): A Total row is formulas, not typed numbers
+- [part-5.md](gotchas/part-5.md): The saved file decides a file deliverable, not the screen
+- [part-5.md](gotchas/part-5.md): A block aimed at a cell by its coordinate takes the block path
+- [part-5.md](gotchas/part-5.md): Formula syntax is structure, and the person is asked in plain words
+- [part-5.md](gotchas/part-5.md): An app just opened gets a moment before keys are refused
+- [part-5.md](gotchas/part-5.md): A file's facts are checked in code: size, page breaks, the file itself
+- [part-5.md](gotchas/part-5.md): A desk job is never the coding harness's
+- [part-5.md](gotchas/part-5.md): gui type refuses a backslash sequence it has no key for
+- [part-5.md](gotchas/part-5.md): Rows into a host app's sheet start at a named cell, row by row
+- [part-5.md](gotchas/part-5.md): The shell expands $A inside double quotes
+- [part-5.md](gotchas/part-5.md): A long request is planned, not cut off at the job limit
+- [part-5.md](gotchas/part-5.md): A message sent mid-task waited for the whole task, then ran on its own
+- [part-5.md](gotchas/part-5.md): Artifact paths with a folder were refused on a Windows host
+- [part-5.md](gotchas/part-5.md): A reply on another task must not carry the running task's tokens
+- [part-5.md](gotchas/part-5.md): A borrowed test base must have its cleanups run
+- [part-5.md](gotchas/part-5.md): A folder of files goes as one .zip
+- [part-5.md](gotchas/part-5.md): One set of code-decided file checks for every route
+- [part-5.md](gotchas/part-5.md): A path is typed as written: precision over recall
+- [part-5.md](gotchas/part-5.md): A block typed through the viewer was killed one row short
+- [part-5.md](gotchas/part-5.md): A column filled down a table must reach its end, and a total must cover it
+- [part-5.md](gotchas/part-5.md): Typed numbers among formulas, and a Total split over two rows
+- [part-5.md](gotchas/part-5.md): A shared folder is mounted outside $HOME and linked
+- [part-5.md](gotchas/part-5.md): A shared folder is the person's to give, at their own screen
+- [part-5.md](gotchas/part-5.md): A path under the shared folder is read where it is
+- [part-5.md](gotchas/part-5.md): A service's name in a file name or in data is not a send
+- [part-5.md](gotchas/part-5.md): A person's answer leads the stage it answers, and costs it no attempt
+- [part-5.md](gotchas/part-5.md): A host hop is named, removed when it ends, and swept at start
+- [part-5.md](gotchas/part-5.md): The judge is told that ~/PC is the person's folder
+- [part-5.md](gotchas/part-5.md): Another app in place of the one named is not the one named
+- [part-5.md](gotchas/part-5.md): A requested app is never skipped silently, and "not checked" is not "no"
+- [part-5.md](gotchas/part-5.md): office read reports a workbook's filters, fills and conditional formats
+- [part-5.md](gotchas/part-5.md): A closing balance "per" a source is checked against the source
+- [part-5.md](gotchas/part-5.md): On a shared-folder desktop, tools make the content and the named app finishes it
+- [part-5.md](gotchas/part-5.md): Host apps are kept ready only for desktops that are running
+- [part-5.md](gotchas/part-5.md): "Ask me" is the chat; a draft never tells one party another's business; a question names its value
+- [part-5.md](gotchas/part-5.md): Work a decision changes waits for it, and is re-checked if it did not
+- [part-5.md](gotchas/part-5.md): A stop is answered, and a final report that met a restart is sent again
+- [part-5.md](gotchas/part-5.md): The person's files are sources: noted and copied at the start, put back if changed
+- [part-5.md](gotchas/part-5.md): A secret the request spells out never reaches the chat, and is not refused as a guess
+- [part-5.md](gotchas/part-5.md): A new request sent mid-run is asked about, never taken for an answer
+- [part-5.md](gotchas/part-5.md): A plan never narrows what a deliverable covers
+- [part-5.md](gotchas/part-5.md): The unread-document rule is about real sources, and only for values traced nowhere
+- [part-5.md](gotchas/part-5.md): What an operator turn costs is mostly the fixed prefix, so cache it rather than cut it
+- [part-5.md](gotchas/part-5.md): A label made of seen parts is traced, and a refusal is about the text, not the item
+- [part-5.md](gotchas/part-5.md): An ordering rule is applied by script on each line's own attribute
+- [part-5.md](gotchas/part-5.md): A retry is told the stage is not finished, and a stage out of room carries on
+- [part-5.md](gotchas/part-5.md): An old screen listing is shortened in what is re-sent, once, when a new listing arrives
+- [part-5.md](gotchas/part-5.md): "Use your judgement" answers the question with what it proposed
+- [part-5.md](gotchas/part-5.md): Enter in a form's line field submits the whole form
+- [part-5.md](gotchas/part-5.md): A question the request already answers goes back to the stage
+- [part-5.md](gotchas/part-5.md): A decision stage asks a question, even when its subject is approving a payment
+- [part-5.md](gotchas/part-5.md): A payment run paid a vendor to the account in a lookalike email, and bills at their taxable value
+- [part-5.md](gotchas/part-5.md): A long run's report was refused for its size, and the person never heard the end
+- [part-5.md](gotchas/part-5.md): An approval stage approved as proposed failed for changing no file
+- [part-5.md](gotchas/part-5.md): Every stage carried every earlier stage's prompt and reply
+- [part-5.md](gotchas/part-5.md): Payee inputs came from every folder in the work folder
+- [part-5.md](gotchas/part-5.md): A number field is set whole, never stepped by accident, and a form lists what it holds before it is saved
+- [part-5.md](gotchas/part-5.md): An entry stage was answered about one order, finished that one and was ticked done
+- [part-5.md](gotchas/part-5.md): The model made up bank accounts and email addresses that look right
+- [part-5.md](gotchas/part-5.md): An allocation made before the decision fed the portal after it
+- [part-5.md](gotchas/part-5.md): A priced list's stated total is checked, and a stage rechecks before telling the person something is wrong
+- [part-5.md](gotchas/part-5.md): Never save a record to see how an application behaves
+- [part-5.md](gotchas/part-5.md): A held order's lines were put down as backorders, and the requisition bought them
+- [part-5.md](gotchas/part-5.md): The memo stage was refused for the deck
+- [part-5.md](gotchas/part-5.md): A removed bill left the register, its tax stayed in the return
+- [part-5.md](gotchas/part-5.md): Reminders to "every customer with anything over 30 days" went to one customer twice, one with nothing overdue, and four not at all
+- [part-5.md](gotchas/part-5.md): Recipients typed again and again, logs typed apart from the drafts, re-check drafts beside the first
+- [part-5.md](gotchas/part-5.md): A planned output in the person's shared folder is that folder, not a copy in the work folder
+- [part-5.md](gotchas/part-5.md): A re-check for one change dropped an unrelated finding
+- [part-5.md](gotchas/part-5.md): A run closes the documents it opened in the person's apps, and never theirs
+- [part-5.md](gotchas/part-5.md): P4's report warned about P3's email
+- [part-5.md](gotchas/part-5.md): A retry that fixed one of two workbooks was failed as "unchanged", and the run ended
+- [part-5.md](gotchas/part-5.md): One stage spent 750,000 tokens reading a Word template with zip scripts and re-viewing ID pictures
+- [part-5.md](gotchas/part-5.md): "Use your judgement" decided refunds the request kept for the person
+- [part-5.md](gotchas/part-5.md): Stage 1's retry was judged against stage 3's deck
+- [part-5.md](gotchas/part-5.md): office read says when a table repeats rows, and a total that counts them silently is not done
+- [part-5.md](gotchas/part-5.md): A stage that obeyed the person's answer could not pass its check
+- [part-5.md](gotchas/part-5.md): Every stage is told the request's own inputs, and is sent back when it asks for a column of one
+- [part-5.md](gotchas/part-5.md): An onboarding report warned about other tasks' emails
+- [part-5.md](gotchas/part-5.md): A stopped run reports on its own task, and nothing new starts until it has
+- [part-5.md](gotchas/part-5.md): A Word template is filled with office update, never Find & Replace on the screen
+- [part-5.md](gotchas/part-5.md): A stage asked the person to close a stuck dialog
+- [part-5.md](gotchas/part-5.md): A phrase list cannot know every way of saying "my own means"
+- [part-5.md](gotchas/part-5.md): An app named as a file's format or offered as a choice is not where the work must be done
+- [part-5.md](gotchas/part-5.md): A binding answer lost to the stage's own title
+- [part-5.md](gotchas/part-5.md): "I could not open Word here (it may not be one of this desktop's apps)" on a desktop with Word (Host)
+- [part-5.md](gotchas/part-5.md): A filler value is never entered as if it were real
+- [part-5.md](gotchas/part-5.md): The cross-check compares each place's own figure, as what it stands for
+- [part-5.md](gotchas/part-5.md): Stopping a host app left it running on the person's computer
+- [part-5.md](gotchas/part-5.md): A rounded or unit-scaled figure is the same figure as the precise one
+- [part-5.md](gotchas/part-5.md): A figure that is calculated with is never rounded first, and a difference is said with its meaning
+- [part-5.md](gotchas/part-5.md): A stage asked leave to use the portal the request gives
+- [part-5.md](gotchas/part-5.md): "Use your judgement and carry on" to a stuck stage looped
+- [part-5.md](gotchas/part-5.md): A flipped sign is a real difference; an unknown sign matches either
+- [part-5.md](gotchas/part-5.md): "A reply for every email that needs one" is no count, and a stage's drafts are all its attempts'
+- [part-5.md](gotchas/part-5.md): Layered send-backs of a stage's question: one order, a total cap, and what only the person gives is never sent back
+- [part-5.md](gotchas/part-5.md): The tracker said "assess" for refunds the drafts approved; a data question was kept "for your approval"
+- [part-5.md](gotchas/part-5.md): The "original once" backup is for the person's files, never the task's own output
+- [part-5.md](gotchas/part-5.md): A name or a code is not a figure
+- [part-5.md](gotchas/part-5.md): A record with no reference is found by what the message gives; a row "to be looked up" is not done
+- [part-5.md](gotchas/part-5.md): Work left as an instruction, a reference carried over, and 3.7M tokens for 19 drafts
+- [part-5.md](gotchas/part-5.md): A percentage is one fact however it is written; the cross-check's cases live in one corpus
+- [part-5.md](gotchas/part-5.md): "Approved as proposed ... don't change anything" reopened every finished stage
+- [part-5.md](gotchas/part-5.md): A workbook of several analyses is several stages; a line's rate is its own row's, decided in code
+- [part-5.md](gotchas/part-5.md): A workbook built across stages keeps each completed stage's sheets
+- [part-5.md](gotchas/part-5.md): A refund of Rs 1,800 for 60 lanyards at Rs 35, and a "no refund requested" row filed as Refund
+- [part-5.md](gotchas/part-5.md): A credit decision reopened the stage that priced the orders, and its re-check failed it for a later stage's sheet
+- [part-5.md](gotchas/part-5.md): A working check refuses only what no combination of the recorded factors gives
+- [part-5.md](gotchas/part-5.md): Kept Office apps of paused workers held the person's files
+- [part-5.md](gotchas/part-5.md): An amount the item's own message states is read, not computed: it needs no working
+- [part-5.md](gotchas/part-5.md): Code checks that flagged correct work shipped, and only a live round found them
+- [part-5.md](gotchas/part-5.md): A figure about a specific record comes from that record
+- [part-5.md](gotchas/part-5.md): A stated amount is compared with the one working row its full key ties it to, or holds as one order's sum
+- [part-5.md](gotchas/part-5.md): A named app binds to its deliverable, never to the whole request
+- [part-5.md](gotchas/part-5.md): The replay gate read no bill and the soul's per-request decisions had no corpus
+- [part-5.md](gotchas/part-5.md): An answered decision stage was refused for not asking, and a file name reopened the stage before it
+- [part-5.md](gotchas/part-5.md): A stage could not pass: the judge read a rule nobody stated, the code held it to the opposite
+- [part-5.md](gotchas/part-5.md): Dates and ranks were taken for customers: a sheet held three tables
+- [part-5.md](gotchas/part-5.md): New code checks refused correct live work seven times in one day
+- [part-5.md](gotchas/part-5.md): Check only what is certain: formulas are their own arithmetic, every quantity is tried, a record's own document is its evidence, a product code is no record
+- [part-5.md](gotchas/part-5.md): CM did not hold: "so later allocation can apply" marked an extraction stage for redo, and its re-check refused it on something else
+- [part-5.md](gotchas/part-5.md): A record entered in a system is done only with that system's own evidence, gathered by the tools
+- [part-5.md](gotchas/part-5.md): Word saved a stale, then a blank, copy over the memo the tools made
+- [part-5.md](gotchas/part-5.md): A false refusal made the worker change a right answer to a wrong one
+- [part-5.md](gotchas/part-5.md): The judge argued the request's rule over the person's decision, twice
+- [part-5.md](gotchas/part-5.md): A scarce item is served by the time each line was asked for, recorded from its own message
+- [part-5.md](gotchas/part-5.md): "Every" under a condition is every record the condition takes
+- [part-5.md](gotchas/part-5.md): CD came back through a paraphrase: the classifier's restatement, not the person's words, decided "change"
+- [part-5.md](gotchas/part-5.md): The repeated-rows check is its own blocking check, says "silent" only for the repeat's own words, and reads group totals and lakh/crore
+- [part-5.md](gotchas/part-5.md): A right product was refused twice by the blocking sums fact: "60 x Rs 35 = Rs 2,100 ... comes to 6,035"
+- [part-5.md](gotchas/part-5.md): A refusal that demands the opposite of a code rule the files pass is dropped, in code
+- [part-5.md](gotchas/part-5.md): A record already saved in this task is never saved again as new
+- [part-5.md](gotchas/part-5.md): A record's form is never saved holding another record's values from the source table
+- [part-5.md](gotchas/part-5.md): Identical amounts were "figures that do not agree": the deck's "Figures in Rs lakh" scaled a full rupee amount
+- [part-5.md](gotchas/part-5.md): office never writes a float's rounding error
+- [part-5.md](gotchas/part-5.md): A record entered counts where the system showed it during the stage; a shared reference never identifies one; an unread list is asked for, not called missing
+- [part-5.md](gotchas/part-5.md): allocation_order earned blocking; record prices stopped flagging a chat order priced from the list
+- [part-5.md](gotchas/part-5.md): A stage that reported "Done." was parked as "could not be finished", and "try again" was asked back
+- [part-5.md](gotchas/part-5.md): A summary figure is checked against the rows its own workbook counts
+- [part-5.md](gotchas/part-5.md): The newly blocking allocation check took "Serve order within SKU" for the item and compared different products
+- [part-5.md](gotchas/part-5.md): A stage asked the person about something it had not looked at yet
+- [part-5.md](gotchas/part-5.md): What a draft states about its recipient is checked against that record's own row
+- [part-5.md](gotchas/part-5.md): A cancelled bill stayed a full row, and a working note hid the real rate problem
+- [part-5.md](gotchas/part-5.md): The chat said "finished" while the planned run worked on: a mid-run receipt closed the turn
+- [part-5.md](gotchas/part-5.md): Code decided correct work was wrong: business rules and word lists in the harness are gone
+- [part-5.md](gotchas/part-5.md): A figure that includes rows an input repeats is loud, never a failure, and no word switches it off
+- [part-5.md](gotchas/part-5.md): Six phrase lists for a stage's question became one reading with evidence
+- [part-5.md](gotchas/part-5.md): Provenance: a value typed or drafted that no source and no recorded work holds
+- [part-5.md](gotchas/part-5.md): Own arithmetic is a file's own formulas, never the office read text of a sheet
+- [part-5.md](gotchas/part-5.md): Another file of the shared folder changing during a task is not the task's: only the sources the request gives are guarded
+- [part-5.md](gotchas/part-5.md): Three workbooks handed in no longer opened: every Office file the work hands in must open with a strict reader
+- [part-5.md](gotchas/part-5.md): Correct work was refused by checks that guessed: derived figures, dates, FY27, phones with a prefix, intentional blanks, a form the request said to fill
+- [part-5.md](gotchas/part-5.md): An approval read as an exclusion, a question cut at 300 characters, a partial answer assumed: who is in or out is the model's structured reading, and a wrong blocking finding is the person's to overrule
+- [part-5.md](gotchas/part-5.md): "Figures that do not agree" that all agreed: sign words split equal counts, and a cross-check note turned a done run into "Not everything is done"

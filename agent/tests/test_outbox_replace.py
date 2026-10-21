@@ -63,6 +63,24 @@ class ADraftAgainReplacesTheTasksEarlierOne(unittest.TestCase):
         # What the task made, as the final check reads it: one letter each.
         self.assertEqual([d["body"] for d in outbox.drafted()], ["v1", "v2 with the corrected total"])
 
+    def test_a_stage_run_again_replaces_its_earlier_draft_to_the_same_recipient(self):
+        # Round 5 P1 (2026-10-20), Finding BC: a re-check drafted a second reminder to one customer, another subject.
+        attempt = {"n": 1}
+        with mock.patch.object(outbox, "_stage", lambda: ("run1:s2-reminders", attempt["n"])):
+            outbox.draft(["accounts@coromandelclin.example.in"], "Overdue invoices - Coromandel Clinics", "v1")
+            outbox.draft(["accounts@konkanreso.example.in"], "Overdue invoices - Konkan Resorts", "v1")
+            attempt["n"] = 2
+            said = outbox.draft(["accounts@coromandelclin.example.in"], "Payment reminder", "v2")
+        self.assertIn("replaces the earlier draft mail_1", said)
+        self.assertEqual(self.cp.live(), ["mail_2", "mail_3"])
+        # Within one attempt, two letters to one address stay two (separate subjects).
+        with mock.patch.object(outbox, "_stage", lambda: ("run1:s2-reminders", 2)):
+            said = outbox.draft(["accounts@konkanreso.example.in"], "Statement of account", "v1")
+        self.assertIn("replaces the earlier draft mail_2", said)  # an earlier attempt's letter to it
+        with mock.patch.object(outbox, "_stage", lambda: ("run1:s2-reminders", 2)):
+            said = outbox.draft(["accounts@konkanreso.example.in"], "Another matter", "v1")
+        self.assertNotIn("replaces", said)
+
     def test_separate_letters_with_other_files_are_not_taken_for_one(self):
         a, b = Path(self.tmp.name) / "INV-1.pdf", Path(self.tmp.name) / "INV-2.pdf"
         a.write_bytes(b"%PDF-1")

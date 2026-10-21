@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YKoustubhRao/decurix/internal/qualification"
 	"github.com/docker/docker/api/types/container"
 )
 
@@ -425,6 +426,10 @@ func (m *Manager) CopyHostPaths(ctx context.Context, desktopID string, paths []H
 			writeErr = fmt.Errorf("stat host path %q: %w", src, err)
 			break
 		}
+		if privateReadinessFile(src) {
+			writeErr = fmt.Errorf("readiness owner keys cannot be copied into a desktop")
+			break
+		}
 
 		destVM, err := ResolveVMDestPath(src, p.Dest, fi.IsDir())
 		if err != nil {
@@ -445,6 +450,9 @@ func (m *Manager) CopyHostPaths(ctx context.Context, desktopID string, paths []H
 			err := filepath.Walk(src, func(walkPath string, info os.FileInfo, walkErr error) error {
 				if walkErr != nil {
 					return walkErr
+				}
+				if privateReadinessFile(walkPath) {
+					return nil
 				}
 				relFromSrc, err := filepath.Rel(src, walkPath)
 				if err != nil {
@@ -568,4 +576,13 @@ func (m *Manager) CopyHostPaths(ctx context.Context, desktopID string, paths []H
 	}
 
 	return nil
+}
+
+// privateReadinessFile withholds an owner key even through a file symlink.
+func privateReadinessFile(name string) bool {
+	if strings.EqualFold(filepath.Base(name), qualification.OwnerKeyFile) {
+		return true
+	}
+	resolved, err := filepath.EvalSymlinks(name)
+	return err == nil && strings.EqualFold(filepath.Base(resolved), qualification.OwnerKeyFile)
 }

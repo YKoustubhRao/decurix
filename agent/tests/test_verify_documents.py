@@ -38,7 +38,7 @@ class CheckSeesTheDocument(unittest.TestCase):
         self.assertIn("Gemini Furniture", sent)
         self.assertIn("the values must come from these", sent)
         # The rule is in the check's own instructions, not left to inference.
-        self.assertIn("not in it", self.sent[-1][0]["content"])
+        self.assertIn("the values entered or reported must be the document's", self.sent[-1][0]["content"])
 
     def test_an_unreadable_document_is_left_out_not_guessed(self):
         with mock.patch("decurix_agent.tools.office.read_document", side_effect=OSError("gone")):

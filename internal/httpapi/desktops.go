@@ -241,6 +241,20 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// One folder of the person's computer the worker may read and write, chosen now and fixed for the desktop's life
+	// (desktop.ParseSharedFolder says which are refused, in words the person can act on).
+	if strings.TrimSpace(r.FormValue("shared_folder")) != "" && isGated(r) {
+		// A folder of the person's own computer is theirs to give, at their own screen: never to whoever holds the
+		// access code of the phone/tunnel listener (the same rule as every route that reaches the host).
+		jsonStatusError(w, http.StatusForbidden, "a shared folder can only be chosen on this computer, not through the phone or tunnel address")
+		return
+	}
+	sharedFolder, sharedErr := desktop.ParseSharedFolder(r.FormValue("shared_folder"))
+	if sharedErr != nil {
+		jsonStatusError(w, http.StatusBadRequest, sharedErr.Error())
+		return
+	}
+
 	if r.Context().Err() != nil {
 		log.Printf("createDesktop: client canceled before creation for %s", name)
 		return
@@ -284,6 +298,7 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			return nil
 		},
+		sharedFolder,
 	)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || r.Context().Err() != nil {
@@ -318,6 +333,8 @@ func (s *Server) desktopStatusHandler(w http.ResponseWriter, r *http.Request) {
 			"ready":    prov.Ready,
 			"url":      prov.URL,
 			"error":    prov.Error,
+			// Requested host apps it will not have, and why (never a silent skip).
+			"missing_apps": prov.MissingApps,
 		})
 		return
 	}
@@ -335,14 +352,15 @@ func (s *Server) desktopStatusHandler(w http.ResponseWriter, r *http.Request) {
 
 	isReady := d.Status == "running"
 	jsonResponse(w, map[string]any{
-		"id":       d.ID,
-		"name":     d.Name,
-		"status":   d.Status,
-		"stage":    "ready",
-		"message":  "Desktop is running",
-		"progress": 100,
-		"ready":    isReady,
-		"url":      d.URL,
+		"id":           d.ID,
+		"name":         d.Name,
+		"status":       d.Status,
+		"stage":        "ready",
+		"message":      "Desktop is running",
+		"progress":     100,
+		"ready":        isReady,
+		"url":          d.URL,
+		"missing_apps": d.MissingApps,
 	})
 }
 
@@ -368,6 +386,8 @@ func (s *Server) startDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err)
 		return
 	}
+	// Its host apps are kept ready again, in the background, now that it runs.
+	go s.syncHostApps(context.Background())
 
 	jsonResponse(w, map[string]string{
 		"status": "started",
@@ -394,6 +414,8 @@ func (s *Server) stopDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.closeOpenTasks(id, "The desktop was stopped before this task finished.")
+	// Its host apps go too: kept ready for nobody, each with its bridge. Remembered for its next start (hostgui.go).
+	s.releaseHostApps(desktop.SanitizeID(id))
 
 	jsonResponse(w, map[string]string{
 		"status": "stopped",

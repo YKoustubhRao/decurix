@@ -33,7 +33,11 @@ var hostGUIID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
 // hostGUI returns the manager for apps running on a private desktop of the host, creating it on first use.
 func (s *Server) hostGUI() *winhost.Manager {
-	s.hostGUIOnce.Do(func() { s.hostGUIMgr = winhost.NewManager(hostGUIStarter) })
+	s.hostGUIOnce.Do(func() {
+		s.hostGUIMgr = winhost.NewManager(hostGUIStarter)
+		s.hostGUIMgr.OnGiveUp = s.hostAppGaveUp
+		s.hostGUIMgr.Reap = reapHostProcesses
+	})
 	return s.hostGUIMgr
 }
 
@@ -186,15 +190,121 @@ func (s *Server) startHostGUIAppAhead(desktopID, id, target, args string) {
 	if !hostGUIID.MatchString(id) || !hostGUISupported() {
 		return
 	}
+	// Copied to a desktop that is being made or is running: kept now (an app given up on is tried again).
 	s.hostGUI().Keep(desktopID, id, target, args)
+	if s.Desktops != nil {
+		s.Desktops.ClearAppUnavailable(desktopID, keptAppSlug(desktopID, id))
+	}
 
 	s.keptHostAppsMu.Lock()
 	defer s.keptHostAppsMu.Unlock()
 	if s.keptHostApps == nil {
 		s.keptHostApps = make(map[string]keptHostApp)
 	}
+	if s.keptHostAppsLive == nil {
+		s.keptHostAppsLive = make(map[string]bool)
+	}
 	s.keptHostApps[id] = keptHostApp{Desktop: desktopID, ID: id, Target: target, Args: args}
+	s.keptHostAppsLive[desktopID] = true
 	s.saveKeptHostAppsLocked()
+}
+
+// hostAppSyncInterval is how often the apps kept ready are matched to the desktops that are running: a desktop stopped
+// by idle-stop, or one whose container ended on its own, lets its apps go within this long.
+var hostAppSyncInterval = time.Minute
+
+// syncHostApps keeps ready only the apps of desktops that are running (a paused desktop does not count: its apps
+// are ended and kept again when it resumes). A desktop that stopped has its apps ended - on a private desktop of the host, each with its bridge, they
+// cost memory nobody can use - and the set is remembered, so the desktop's next start keeps them again. Found live
+// (2026-10-20): with one worker running, 15-18 bridges ran for stopped workers' apps, one relaunched every two minutes.
+func (s *Server) syncHostApps(ctx context.Context) {
+	if !hostGUISupported() && s.hostAppDesktops == nil {
+		return
+	}
+	list := s.hostAppDesktops
+	if list == nil {
+		if s.Desktops == nil {
+			return
+		}
+		list = s.Desktops.List
+	}
+	desktops, err := list(ctx)
+	if err != nil {
+		log.Printf("host apps: could not see which desktops are running: %v", err)
+		return
+	}
+	running := map[string]bool{}
+	for _, d := range desktops {
+		// A paused desktop's apps are ended too and kept again when it resumes: an idle worker must not keep Office
+		// open on the person's computer, holding their files (found live 2026-10-20: nine kept Office apps of paused
+		// workers, one still holding a document of a run stopped hours before).
+		if d.Status == "running" {
+			running[d.ID] = true
+		}
+	}
+
+	s.keptHostAppsMu.Lock()
+	if s.keptHostAppsLive == nil {
+		s.keptHostAppsLive = make(map[string]bool)
+	}
+	var keep []keptHostApp
+	var release []string
+	byDesktop := map[string][]keptHostApp{}
+	for _, app := range s.keptHostApps {
+		byDesktop[app.Desktop] = append(byDesktop[app.Desktop], app)
+	}
+	for desktopID, apps := range byDesktop {
+		switch {
+		case running[desktopID] && !s.keptHostAppsLive[desktopID]:
+			keep = append(keep, apps...)
+			s.keptHostAppsLive[desktopID] = true
+		case !running[desktopID] && s.keptHostAppsLive[desktopID]:
+			release = append(release, desktopID)
+			delete(s.keptHostAppsLive, desktopID)
+		}
+	}
+	s.keptHostAppsMu.Unlock()
+
+	for _, desktopID := range release {
+		log.Printf("host apps: %s is not running - ending the apps kept ready for it until it starts again", desktopID)
+		s.hostGUI().ForgetDesktop(desktopID)
+	}
+	for _, app := range keep {
+		if s.Desktops != nil {
+			s.Desktops.ClearAppUnavailable(app.Desktop, keptAppSlug(app.Desktop, app.ID))
+		}
+		s.hostGUI().Keep(app.Desktop, app.ID, app.Target, app.Args)
+	}
+}
+
+// releaseHostApps ends the apps kept ready for a desktop that was stopped, remembering them for its next start.
+func (s *Server) releaseHostApps(desktopID string) {
+	s.keptHostAppsMu.Lock()
+	had := s.keptHostAppsLive[desktopID]
+	delete(s.keptHostAppsLive, desktopID)
+	s.keptHostAppsMu.Unlock()
+	if had && (hostGUISupported() || s.hostAppDesktops != nil) {
+		s.hostGUI().ForgetDesktop(desktopID)
+	}
+}
+
+// keptAppSlug is the launcher slug in a kept app's session id (desktop.packContext.sessionID: "<desktop>-<slug>").
+func keptAppSlug(desktopID, id string) string {
+	return strings.TrimPrefix(id, desktopID+"-")
+}
+
+// hostAppGaveUp is winhost's OnGiveUp: an app the host cannot keep running is recorded as unavailable on its desktop,
+// with the reason, where the card and the desktop's agent see it.
+func (s *Server) hostAppGaveUp(desktopID, id, reason string) {
+	if s.Desktops == nil {
+		return
+	}
+	slug := keptAppSlug(desktopID, id)
+	words := strings.Fields(strings.ReplaceAll(slug, "-", " "))
+	for i, w := range words {
+		words[i] = strings.ToUpper(w[:1]) + w[1:]
+	}
+	s.Desktops.MarkAppUnavailable(desktopID, slug, strings.Join(words, " "), reason)
 }
 
 // forgetHostApps ends the apps kept ready for a VM that is being deleted: nobody can open them any more, and an app on a
@@ -205,6 +315,7 @@ func (s *Server) forgetHostApps(desktopID string) {
 	}
 	s.keptHostAppsMu.Lock()
 	defer s.keptHostAppsMu.Unlock()
+	delete(s.keptHostAppsLive, desktopID)
 	changed := false
 	for id, app := range s.keptHostApps {
 		if app.Desktop == desktopID {
@@ -270,7 +381,6 @@ func (s *Server) RestoreHostApps(ctx context.Context) {
 	}
 
 	s.keptHostAppsMu.Lock()
-	defer s.keptHostAppsMu.Unlock()
 	if s.keptHostApps == nil {
 		s.keptHostApps = make(map[string]keptHostApp)
 	}
@@ -279,9 +389,27 @@ func (s *Server) RestoreHostApps(ctx context.Context) {
 			continue
 		}
 		s.keptHostApps[app.ID] = app
-		s.hostGUI().Keep(app.Desktop, app.ID, app.Target, app.Args)
 	}
 	s.saveKeptHostAppsLocked() // drops the apps of VMs deleted while the control plane was down
+	s.keptHostAppsMu.Unlock()
+
+	// Kept ready only for the desktops that are running, now and from here on.
+	s.syncHostApps(ctx)
+	go s.watchHostApps(ctx)
+}
+
+// watchHostApps runs syncHostApps every hostAppSyncInterval until ctx ends.
+func (s *Server) watchHostApps(ctx context.Context) {
+	t := time.NewTicker(hostAppSyncInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			s.syncHostApps(ctx)
+		}
+	}
 }
 
 // hostShellCmd builds a command that runs a shell script on the host with stdin left open for the caller: directly when
@@ -290,8 +418,8 @@ func hostShellCmd(ctx context.Context, script string) *exec.Cmd {
 	if _, err := exec.LookPath("powershell.exe"); err != nil {
 		if _, err := os.Stat("/var/run/docker.sock"); err == nil {
 			if dockerBin := findDockerBinary(); dockerBin != "" {
-				return exec.CommandContext(ctx, dockerBin, "run", "-i", "--rm", "--privileged", "--pid=host", "alpine",
-					"nsenter", "-t", "1", "-m", "-u", "-n", "-i", "bash", "-c", script)
+				// Named and removed when its session ends (desktop.HopCommand): a killed docker client left it running.
+				return desktop.HopCommand(ctx, dockerBin, "bridge", true, script)
 			}
 		}
 	}

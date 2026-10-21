@@ -15,6 +15,18 @@ type Usage struct {
 	PromptTokens   int
 	ResponseTokens int
 	Calls          int
+	// CachedTokens is the part of PromptTokens read from the provider's prompt cache.
+	CachedTokens int
+}
+
+// Cached is the prompt tokens so far that the provider read from its cache.
+func (u *Usage) Cached() int {
+	if u == nil {
+		return 0
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.CachedTokens
 }
 
 // Snapshot returns the totals so far.
@@ -31,6 +43,7 @@ func (u *Usage) add(r Result) {
 	u.mu.Lock()
 	u.PromptTokens += r.PromptTokens
 	u.ResponseTokens += r.ResponseTokens
+	u.CachedTokens += r.CachedTokens
 	u.Calls++
 	u.mu.Unlock()
 }

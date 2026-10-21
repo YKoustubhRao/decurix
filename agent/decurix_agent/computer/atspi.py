@@ -765,6 +765,28 @@ def text_now(element):
     return _text(Atspi, node, PARAGRAPH_TEXT_LIMIT)
 
 
+def sheet_cell_text(element, row, column):
+    """
+    What a cell of the sheet a sheet-cell element belongs to shows right now, by its table indices (the element's
+    own handle row/column plus an offset), or None when it cannot be read. A sheet answers for any cell, shown or not.
+    """
+
+    Atspi = _lib()
+    handle = element.get("handle") or {}
+    try:
+        node = Atspi.get_desktop(0)
+        for index in handle["indices"]:
+            node = node.get_child_at_index(index)
+            if node is None:
+                return None
+        cell = Atspi.Table.get_accessible_at(node, row, column)
+        if cell is None:
+            return None
+        return _text(Atspi, cell, PARAGRAPH_TEXT_LIMIT).strip()
+    except Exception:
+        return None
+
+
 def set_text(element, text):
     """
     Replace a field's contents through the widget itself. Not done over

@@ -37,7 +37,8 @@ var engineLabels = map[string]string{
 	"web": "Web app (no model)",
 	// A request done by a script the desktop wrote for itself from work it
 	// had done by hand (agent tool_task.py, playbooks.py): no engine turn.
-	"tool": "Own tool",
+	"tool":           "Own tool",
+	"qualified-tool": "Qualified local tool",
 }
 
 // EngineLabel is the human-readable name of an engine.
@@ -96,7 +97,7 @@ type Filter struct {
 // engine made. A demonstration was done by a person while it was recorded,
 // and a lesson is a person being asked about one: neither is counted.
 func CountsForAutonomy(taskType string) bool {
-	return taskType != TypeDemonstration && taskType != TypeTeaching
+	return taskType != TypeDemonstration && taskType != TypeTeaching && taskType != TypePractice
 }
 
 // ReportAndList computes the autonomy report and filtered task list in a single

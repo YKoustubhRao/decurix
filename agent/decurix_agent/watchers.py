@@ -3,12 +3,12 @@ import threading
 import time
 import traceback
 
-from decurix_agent import (ask_task, attachments, config, guidance, lessons, playbooks, procedures, progress, record_task, replay_task,
+from decurix_agent import (ask_task, attachments, config, guidance, lessons, long_task, playbooks, procedures, progress, record_task, replay_task,
                            skill_task, state, task_context, tool_task, usage, workflow_task)
 from decurix_agent.computer import approval
 from decurix_agent.harness import continue_after_query, perform_task
 from decurix_agent.logging_utils import log
-from decurix_agent.messaging import REPLY_MARK, send_query, write_final_reply
+from decurix_agent.messaging import REPLY_MARK, resend_unsent_loop, send_query, write_final_reply
 
 
 def _run_handler(target, args):
@@ -184,6 +184,13 @@ def _report_interrupted():
     if record is None:
         return
 
+    # A long request's planned run is on disk, stage by stage: it carries on (long_task.py).
+    try:
+        if long_task.resume_interrupted(record):
+            return
+    except Exception as exc:
+        log(f"Could not resume the long request of task {record['task_id']}: {exc}")
+
     log(f"Task {record['task_id']} was interrupted by a restart; reporting it.")
     task_context.start(record["task_id"], request=record.get("request"))
     state.current_task = record.get("request") or None
@@ -329,6 +336,20 @@ def _pass():
             # would strand the complete request for the life of this process.
             continue
 
+        # A message that arrives while a long request is carried - an answer, a change to the task, stop, a
+        # question about progress, or something else - is read for which it is (long_task.py), off this thread:
+        # reading it may ask the model. Found in round 5's spec: "Bill NS-0457 was cancelled, leave it out of
+        # everything", sent ten minutes into a month-end close, would have waited for the whole close to end and
+        # then run as a task of its own.
+        if long_task.holding():
+            # A stopped run's report is being put together: this waits for it, untouched, and is read on a later pass
+            # as the new request it is (long_task.stop).
+            continue
+        if long_task.takes(path.name) and state.backend_ready:
+            state.processed_commands.add(path.name)
+            threading.Thread(target=long_task.take_message, args=(content, path), daemon=True).start()
+            continue
+
         # A task queued before a question was asked is not its answer.
         # Only messages marked as replies at receipt may resume that task.
         if state.waiting_for_query and not is_reply_file(path.name):
@@ -370,102 +391,7 @@ def _pass():
         # If the agent is waiting on a query answer,
         # this new command is the reply.
         if state.waiting_for_query:
-
-            # A reply belongs to the paused task. A desktop whose
-            # task started before the control plane sent IDs takes
-            # the one its reply carries.
-            if not state.current_task_id:
-                task_context.start(task_context.task_id_from_filename(path.name))
-
-            if workflow_task.query_control(content):
-                _mark_handled(path)
-                threading.Thread(target=workflow_task.perform_control, args=(content,), daemon=True).start()
-                continue
-
-            # If what it is waiting on is an on-screen action the
-            # approval gate stopped, this reply is what settles it:
-            # a yes becomes a one-shot grant for exactly that action,
-            # anything else withdraws it. Done here, before the
-            # harness sees the reply, so whichever engine repeats
-            # the action finds the grant already in place.
-            outcome = None
-            try:
-                outcome = approval.resolve_reply(content)
-                if outcome:
-                    log(f"On-screen approval {outcome} by the human's reply.")
-            except OSError as exc:
-                log(f"Could not settle the on-screen approval: {exc}")
-
-            _mark_handled(path)
-
-            # What a search failed to find binds its field until a person
-            # has spoken (core: "Nothing else in its place"). They have.
-            try:
-                from decurix_agent.computer import core as _core
-                _core.forget_failed_search()
-            except Exception as exc:
-                log(f"Could not clear the failed search: {exc}")
-
-            # A paused replay, or a taught skill's question, takes its
-            # own reply; it is still a reply either way, which is all
-            # tasks.Plan mirrors.
-            # What the person just told the worker is kept for later
-            # tasks (lessons.py) - except the answers of a lesson being
-            # taught, which the skill itself keeps, question by question.
-            teaching = (state.paused_skill or {}).get("mode") == "learn"
-            if not teaching:
-                # A replay's or a skill run's own question (a value, a
-                # stuck step); "is it done?" is not one of those.
-                mechanical = (state.paused_replay is not None
-                              or (state.paused_skill or {}).get("mode") == "run")
-                try:
-                    lessons.note(state.last_query_text, content, kind=state.last_query_kind, outcome=outcome,
-                                 task=state.current_task or "", skill=skill_task.guided_skill_title(),
-                                 mechanical=mechanical)
-                except Exception as exc:
-                    log(f"Could not keep what the person said: {exc}")
-
-            if state.paused_replay is not None or state.paused_skill is not None:
-                # A paused replay or taught skill reads "stop" itself: a lesson
-                # keeps its draft and says how to carry on, a run records that
-                # it was stopped and where. Inside a /workflow stage the stop
-                # also ends the workflow, before that report is written, so the
-                # report is shown rather than taken for the stage's result and
-                # the next stage started.
-                if guidance.STOP_ONLY.match(content or "") and workflow_task.has_active():
-                    workflow_task.cancel_active()
-                if state.paused_replay is not None:
-                    target, args = replay_task.resume, (content, outcome)
-                else:
-                    target, args = skill_task.resume, (content, outcome)
-            else:
-                guidance.note_reply(content, outcome)
-                # An answer to a question a taught task's engine asked
-                # (not a yes or no to an approval) is kept on the skill.
-                if outcome is None:
-                    try:
-                        skill_task.learn_answer(content)
-                    except Exception as exc:
-                        log(f"Could not keep the answer on the skill: {exc}")
-                target, args = continue_after_query, (content,)
-                # A reply that only calls the task off ends it here: the
-                # engine is not handed it. Found live: told `stop` at a
-                # question about which record to use, the engine took it
-                # as an answer, ran twelve more commands and saved the
-                # record with the entry the person had just been asked
-                # about. (The engine's own paused job is dropped when the
-                # next request starts.)
-                if guidance.STOP_ONLY.match(content or ""):
-                    target, args = _called_off, (content,)
-
-            thread = threading.Thread(
-                target=_run_handler if workflow_task.has_active() else target,
-                args=(target, args) if workflow_task.has_active() else args,
-                daemon=True,
-            )
-
-            thread.start()
-
+            answer_waiting(path, content)
             continue
 
         # Do not start another task while one
@@ -502,91 +428,237 @@ def _pass():
 
             state.current_task = content
 
-        # A reply that finds nothing waiting for it answers a question
-        # an earlier life of this agent asked: the desktop restarted in
-        # between. Run as a request it was handed to the engine as a
-        # task of its own ("keep" put to TheBot as a chat message). The
-        # slot claimed above keeps anything else from starting while
-        # this is said, outside the lock.
-        if is_reply_file(path.name):
+        _start_request(path, content)
+
+
+def answer_waiting(path, content, already_marked=False):
+    """
+    A request that arrived while the agent waits on a question: its reply.
+    Also called by a long request (long_task.py) for a message it read as the
+    answer to the question its whole run waits on - with the answer alone,
+    `already_marked` when it has renamed the file itself.
+    """
+
+    # A reply belongs to the paused task. A desktop whose
+    # task started before the control plane sent IDs takes
+    # the one its reply carries.
+    if not state.current_task_id:
+        task_context.start(task_context.task_id_from_filename(path.name))
+
+    if workflow_task.query_control(content):
+        if not already_marked:
             _mark_handled(path)
-            _answer_stale_reply(path, content)
-            continue
+        threading.Thread(target=workflow_task.perform_control, args=(content,), daemon=True).start()
+        return
 
-        # A bare "stop" with nothing running or waiting has nothing to stop. Found live (2026-10-15): sent after the
-        # desktop restarted under an open question, it went to TheBot as a task, the engine answered "Stopped.", and
-        # the final check asked the person what to do about a task that could not be finished.
-        if guidance.STOP_ONLY.match(content or "") and not workflow_task.has_active():
-            task_id = task_context.task_id_from_filename(path.name)
-            task_context.start(task_id, request=content)
-            _mark_handled(path)
-            write_final_reply("Nothing is running or waiting on you, so there is nothing to stop.")
-            continue
+    # If what it is waiting on is an on-screen action the
+    # approval gate stopped, this reply is what settles it:
+    # a yes becomes a one-shot grant for exactly that action,
+    # anything else withdraws it. Done here, before the
+    # harness sees the reply, so whichever engine repeats
+    # the action finds the grant already in place.
+    outcome = None
+    try:
+        outcome = approval.resolve_reply(content)
+        if outcome:
+            log(f"On-screen approval {outcome} by the human's reply.")
+    except OSError as exc:
+        log(f"Could not settle the on-screen approval: {exc}")
 
-        # Reports from here on belong to this request's task record,
-        # and so does what the engine uses.
-        task_id = task_context.task_id_from_filename(path.name)
-        task_context.start(task_id, request=content)
-        task_context.mark_active(task_id, content)
-        attachments.keep_originals(content, task_id)
-        usage.reset()
-        playbooks.begin()
-
+    if not already_marked:
         _mark_handled(path)
 
-        # A new task: nothing an earlier one was approved for, or was
-        # stopped on, carries over into it.
+    # What a search failed to find binds its field until a person
+    # has spoken (core: "Nothing else in its place"). They have.
+    try:
+        from decurix_agent.computer import core as _core
+        _core.forget_failed_search()
+    except Exception as exc:
+        log(f"Could not clear the failed search: {exc}")
+
+    # A paused replay, or a taught skill's question, takes its
+    # own reply; it is still a reply either way, which is all
+    # tasks.Plan mirrors.
+    # What the person just told the worker is kept for later
+    # tasks (lessons.py) - except the answers of a lesson being
+    # taught, which the skill itself keeps, question by question.
+    teaching = (state.paused_skill or {}).get("mode") == "learn"
+    if not teaching:
+        # A replay's or a skill run's own question (a value, a
+        # stuck step); "is it done?" is not one of those.
+        mechanical = (state.paused_replay is not None
+                      or (state.paused_skill or {}).get("mode") == "run")
         try:
-            approval.reset()
-        except OSError as exc:
-            log(f"Could not clear on-screen approvals: {exc}")
-        guidance.end()
+            lessons.note(state.last_query_text, content, kind=state.last_query_kind, outcome=outcome,
+                         task=state.current_task or "", skill=skill_task.guided_skill_title(),
+                         mechanical=mechanical)
+        except Exception as exc:
+            log(f"Could not keep what the person said: {exc}")
 
-        # "/replay <recording>" runs a recording, "/record <task>"
-        # records a person doing it, "/learn <recording>" teaches a
-        # skill from one and "/skill <name>" runs it; none of them
-        # goes to an engine.
-        if workflow_task.handles(content):
-            target = workflow_task.perform
-        elif replay_task.parse(content):
-            target = replay_task.perform
-        elif record_task.parse(content) is not None:
-            target = record_task.perform
-        elif skill_task.handles(content):
-            target = skill_task.perform
-        elif skill_task.mimics(content):
-            # A task a person recorded, asked for again with other
-            # values (`google "x"` after a ticket for `google "y"`),
-            # is done the way they showed - their steps, with only
-            # what differs changed - not worked out again by an
-            # engine (computer/mimic.py).
-            target = skill_task.perform_mimic
-        elif state.backend_ready and tool_task.handles(content):
-            # A kind of request this desktop has done by hand, written a
-            # script for, proven it and used it: the script does it, and
-            # the engine only when it cannot (tool_task.py).
-            target = tool_task.perform
-        elif not _asks_a_web_app(content) and state.backend_ready and skill_task.may_be_taught(content):
-            # Not the recorded ticket's words, but maybe its task said
-            # another way: with a hosted model, the model reads the
-            # request against what was taught here, and the engine
-            # gets it when it is none of those (request_reading.py).
-            target = skill_task.perform_mimic
-        elif _asks_a_web_app(content):
-            # `chatgpt "where is x"`, `google x`, `search youtube for x`:
-            # the request is the whole plan - open the service with the
-            # question, read its answer off the page (ask_task.py).
-            target = ask_task.perform
+    if state.paused_replay is not None or state.paused_skill is not None:
+        # A paused replay or taught skill reads "stop" itself: a lesson
+        # keeps its draft and says how to carry on, a run records that
+        # it was stopped and where. Inside a /workflow stage the stop
+        # also ends the workflow, before that report is written, so the
+        # report is shown rather than taken for the stage's result and
+        # the next stage started.
+        if guidance.STOP_ONLY.match(content or "") and workflow_task.has_active():
+            workflow_task.cancel_active()
+        if state.paused_replay is not None:
+            target, args = replay_task.resume, (content, outcome)
         else:
-            target = perform_task if not state.backend_ready else _perform_following_procedure
+            target, args = skill_task.resume, (content, outcome)
+    else:
+        guidance.note_reply(content, outcome)
+        # An answer to a question a taught task's engine asked
+        # (not a yes or no to an approval) is kept on the skill.
+        if outcome is None:
+            try:
+                skill_task.learn_answer(content)
+            except Exception as exc:
+                log(f"Could not keep the answer on the skill: {exc}")
+        target, args = continue_after_query, (content,)
+        # A reply that only calls the task off ends it here: the
+        # engine is not handed it. Found live: told `stop` at a
+        # question about which record to use, the engine took it
+        # as an answer, ran twelve more commands and saved the
+        # record with the entry the person had just been asked
+        # about. (The engine's own paused job is dropped when the
+        # next request starts.)
+        if guidance.STOP_ONLY.match(content or ""):
+            target, args = _called_off, (content,)
 
-        thread = threading.Thread(
-            target=target,
-            args=(content, path),
-            daemon=True,
-        )
+    thread = threading.Thread(
+        target=_run_handler if workflow_task.has_active() else target,
+        args=(target, args) if workflow_task.has_active() else args,
+        daemon=True,
+    )
 
-        thread.start()
+    thread.start()
+
+
+def _perform_long(content, task_file):
+    """
+    A request that names several deliverables: planned in stages and carried
+    to the end (long_task.py) - or, when the plan comes back as one stage,
+    done as any other request.
+    """
+
+    if not long_task.perform(content, task_file):
+        _perform_following_procedure(content, task_file)
+
+
+def _start_request(path, content):
+    """A new request, with the agent's slot already claimed for it: say which task it is, and hand it to its handler."""
+
+    # A reply that finds nothing waiting for it answers a question
+    # an earlier life of this agent asked: the desktop restarted in
+    # between. Run as a request it was handed to the engine as a
+    # task of its own ("keep" put to TheBot as a chat message). The
+    # slot claimed above keeps anything else from starting while
+    # this is said, outside the lock.
+    if is_reply_file(path.name):
+        _mark_handled(path)
+        _answer_stale_reply(path, content)
+        return
+
+    # A bare "stop" with nothing running or waiting has nothing to stop. Found live (2026-10-15): sent after the
+    # desktop restarted under an open question, it went to TheBot as a task, the engine answered "Stopped.", and
+    # the final check asked the person what to do about a task that could not be finished.
+    if guidance.STOP_ONLY.match(content or "") and not workflow_task.has_active():
+        task_id = task_context.task_id_from_filename(path.name)
+        task_context.start(task_id, request=content)
+        _mark_handled(path)
+        write_final_reply("Nothing is running or waiting on you, so there is nothing to stop.")
+        return
+
+    # Reports from here on belong to this request's task record,
+    # and so does what the engine uses.
+    task_id = task_context.task_id_from_filename(path.name)
+    # A .zip a person attached (a folder of files, past the control plane's ten-file cap) is unpacked, and the request
+    # names the files it holds: from here on it is a request that brought those files.
+    content, unpacked = attachments.expand_archives(content)
+    task_context.start(task_id, request=content)
+    task_context.mark_active(task_id, content)
+    for note in unpacked:
+        progress.emit(note)
+    attachments.keep_originals(content, task_id)
+    # The secrets the request spells out are remembered (as hashes) before anything can echo them (privacy.py).
+    try:
+        from decurix_agent.computer import privacy
+        privacy.remember_secrets(attachments.text(content))
+    except Exception as exc:
+        log(f"Could not note the request's secrets: {exc}")
+    # On a desktop with a shared folder, the person's files are noted (and copied) before anything can touch them:
+    # a source the task changes is put back and reported (source_guard.py).
+    try:
+        from decurix_agent import source_guard
+        source_guard.take(content, task_id, notify=progress.emit)
+    except Exception as exc:
+        log(f"Could not note the shared folder's files before the task: {exc}")
+    usage.reset()
+    playbooks.begin()
+
+    _mark_handled(path)
+
+    # A new task: nothing an earlier one was approved for, or was
+    # stopped on, carries over into it.
+    try:
+        approval.reset()
+    except OSError as exc:
+        log(f"Could not clear on-screen approvals: {exc}")
+    guidance.end()
+
+    # "/replay <recording>" runs a recording, "/record <task>"
+    # records a person doing it, "/learn <recording>" teaches a
+    # skill from one and "/skill <name>" runs it; none of them
+    # goes to an engine.
+    if workflow_task.handles(content):
+        target = workflow_task.perform
+    elif replay_task.parse(content):
+        target = replay_task.perform
+    elif record_task.parse(content) is not None:
+        target = record_task.perform
+    elif skill_task.handles(content):
+        target = skill_task.perform
+    elif skill_task.mimics(content):
+        # A task a person recorded, asked for again with other
+        # values (`google "x"` after a ticket for `google "y"`),
+        # is done the way they showed - their steps, with only
+        # what differs changed - not worked out again by an
+        # engine (computer/mimic.py).
+        target = skill_task.perform_mimic
+    elif state.backend_ready and long_task.looks_long(content):
+        # Several deliverables in one request: a plan of stages, each its own
+        # job, carried to the end (long_task.py). Decided in code; a short
+        # request never gets here.
+        target = _perform_long
+    elif state.backend_ready and tool_task.handles(content):
+        # A kind of request this desktop has done by hand, written a
+        # script for, proven it and used it: the script does it, and
+        # the engine only when it cannot (tool_task.py).
+        target = tool_task.perform
+    elif not _asks_a_web_app(content) and state.backend_ready and skill_task.may_be_taught(content):
+        # Not the recorded ticket's words, but maybe its task said
+        # another way: with a hosted model, the model reads the
+        # request against what was taught here, and the engine
+        # gets it when it is none of those (request_reading.py).
+        target = skill_task.perform_mimic
+    elif _asks_a_web_app(content):
+        # `chatgpt "where is x"`, `google x`, `search youtube for x`:
+        # the request is the whole plan - open the service with the
+        # question, read its answer off the page (ask_task.py).
+        target = ask_task.perform
+    else:
+        target = perform_task if not state.backend_ready else _perform_following_procedure
+
+    thread = threading.Thread(
+        target=target,
+        args=(content, path),
+        daemon=True,
+    )
+
+    thread.start()
 
 
 def command_watcher():
@@ -602,6 +674,10 @@ def command_watcher():
     )
 
     _report_interrupted()
+
+    # A task's outcome the control plane could not be told (it was restarting) is sent again, now and every little
+    # while, so no chat is left saying "running" over a task that ended (messaging.resend_unsent).
+    threading.Thread(target=resend_unsent_loop, daemon=True, name="resend-unsent").start()
 
     while True:
 

@@ -41,6 +41,16 @@ def _desktop_apps():
         return []
 
 
+def _missing_apps():
+    """One sentence per app the person asked this desktop to have and it does not (the control plane's record)."""
+
+    try:
+        from decurix_agent.computer import launchers
+        return [launchers.missing_sentence(app) for app in launchers.missing()][:MAX_APPS]
+    except Exception:
+        return []
+
+
 def get_identity_context(engine=""):
     """
     Describe this desktop to its own agent, one fact per line.
@@ -80,6 +90,13 @@ def get_identity_context(engine=""):
     apps = _desktop_apps()
     if apps:
         facts.append("- Apps on your desktop (open one with `gui open \"NAME\"`): " + "; ".join(apps))
+    gone = _missing_apps()
+    if gone:
+        facts.append(
+            "- Apps the person asked this desktop to have that it does NOT have: " + " ".join(gone)
+            + " If a request needs one of these, say it isn't on this desktop (yet); do not do the work in another "
+            "app in its place unless the person says so."
+        )
 
     if config.DESKTOP_SPECIALIZATION:
         facts.append(

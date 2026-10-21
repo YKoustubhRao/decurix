@@ -114,7 +114,13 @@ func (s *Server) taskPageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.Web.RenderTask(w, webui.TaskPageData{Task: detail}); err != nil {
+	data := webui.TaskPageData{Task: detail}
+	if s.Qualification != nil {
+		if run, err := s.Qualification.ForTask(id); err == nil {
+			data.ReadinessURL = "/readiness/" + run.Definition.WorkerID + "?evaluation=" + run.ID
+		}
+	}
+	if err := s.Web.RenderTask(w, data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
@@ -218,6 +224,12 @@ func (s *Server) taskVerdictHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if task.Verdict == tasks.VerdictWrong && s.Qualification != nil {
+		if err := s.Qualification.WrongTask(task.ID); err != nil {
+			jsonError(w, err)
+			return
+		}
+	}
 	s.Chat.SetVerdict(task.WorkerID, task.ID, task.Verdict)
 
 	jsonResponse(w, task)

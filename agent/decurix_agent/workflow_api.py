@@ -39,6 +39,7 @@ def summary(saved):
         "failed": "The workflow stopped. Completed files are preserved. Only stages marked safe to retry offer a retry action.",
         "awaiting_backend": "The reasoning service is unavailable. Your work is saved; continue when it is connected.",
         "awaiting_approval": "Review the proposed stage below before approving it.",
+        "awaiting_answer": "Every stage that does not need your answer is done. Answer the question in chat to continue.",
         "completed": "All required artifact checks passed. Those checks cover the workflow's stated criteria.",
         "cancelled": "No further stages will start. Changes already made are preserved.",
         "pending": "Your checkpoint is saved. Continue to run the next stage.",

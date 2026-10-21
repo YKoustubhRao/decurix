@@ -1,7 +1,7 @@
 import threading
 from http.server import ThreadingHTTPServer
 
-from decurix_agent import config, harness
+from decurix_agent import config, harness, shared
 from decurix_agent.computer import demonstration, recording
 from decurix_agent.http_api import Handler
 from decurix_agent.logging_utils import log
@@ -55,6 +55,13 @@ def main():
         f"Harness: "
         f"{config.AGENT_HARNESS}"
     )
+
+    # The one folder of the person's computer this worker may use, when it has one: ~/PC leads to its mount.
+    if shared.folder() or shared.link_path().is_symlink():
+        outcome = shared.ensure_link()
+        log(f"Shared folder {shared.folder() or '(none)'}: {outcome or 'nothing to do'}")
+        # And the work folder's PC: a planned run's outputs in the person's folder are checked through it.
+        log(f"Work-folder link to the shared folder: {shared.ensure_work_link() or 'nothing to do'}")
 
     log(
         f"Ollama: "
