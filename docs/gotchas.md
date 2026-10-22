@@ -543,3 +543,43 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-5.md](gotchas/part-5.md): A refused stage asked only try again / skip / stop: it now asks the person to settle the disputed points, and that answer binds the check
 - [part-5.md](gotchas/part-5.md): A follow-up's checks read every file of the desktop, and its new drafts sat beside the old ones: whole request kept, continues the reported task
 - [part-5.md](gotchas/part-5.md): An outbox email with no attachments went out with an empty body: bytes taken before the body was written
+- [part-5.md](gotchas/part-5.md): A zoomed browser put every page control in the wrong place: the page origin now converts CSS pixels by devicePixelRatio
+- [part-5.md](gotchas/part-5.md): Files to save from a web app went to the web skill, which saves nothing: a web request that involves this machine's files is the operator's
+- [part-5.md](gotchas/part-5.md): A click that downloaded said only that a link was focused: gui now names the file that arrived and says when it is the same file again
+- [part-5.md](gotchas/part-5.md): Two files saved under different names were the same file, and the check was shown only their names: identical files are evidence now
+- [part-5.md](gotchas/part-5.md): The final check asked the same 'cannot confirm' question nine times: three rounds a task, then NOT confirmed
+- [part-5.md](gotchas/part-5.md): find over the shared folder's link printed the link and nothing in it: a find from ~/PC now starts inside it, and the contract says so
+- [part-5.md](gotchas/part-5.md): The office command printed the agent's own log lines ahead of its error: they go to decurix-office.log, as gui's do
+- [part-5.md](gotchas/part-5.md): The safety copies of the person's files looked like the person's files: snapshots keep numbered names
+- [part-5.md](gotchas/part-5.md): What office read read was invisible to the final check: it is noted as evidence, and the check can look in files the report names
+- [part-5.md](gotchas/part-5.md): 'Never save a source' kept the engine from updating the very workbook it was asked to update: a file the request asks to change is the result
+- [part-5.md](gotchas/part-5.md): The first office update of a person's file failed 'Operation not permitted': copies into the shared folder no longer copy the mode
+- [part-5.md](gotchas/part-5.md): A month copied from the one above read last month's wrong row, and the check passed it: a block's references are compared with its sibling blocks'
+- [part-5.md](gotchas/part-5.md): The engine typed a client's password into a real site it remembered, not the one it was taught on: a secret to a site nobody named needs a yes
+- [part-5.md](gotchas/part-5.md): A replay whose first page was not open stopped at step 1: it opens the page the recording began on
+- [part-5.md](gotchas/part-5.md): Filing a return and offsetting a liability passed the approval gate unasked: file ... with EVC/DSC, e-file, submit return, offset liability now stop
+- [part-5.md](gotchas/part-5.md): A message the request asked the worker to send was refused word by word as untraced: send/tell/ask/inform/notify/remind/message are authoring too
+- [part-5.md](gotchas/part-5.md): A password with $2026 in it reached the form as 026: a $ before a digit or special parameter goes to stdin too
+- [part-5.md](gotchas/part-5.md): The worker's report printed a client's portal password: a value typed into a secret field is remembered as a secret, and password: x is withheld
+- [part-5.md](gotchas/part-5.md): Files four folders down the shared folder were invisible: walked eight levels, nearest first
+- [part-5.md](gotchas/part-5.md): 'I could not finish this' came back nine times: the per-task question limit covers it too
+- [part-5.md](gotchas/part-5.md): Values read from a workbook the request did not name by file were called invented: a file the work read is one of its sources
+- [part-5.md](gotchas/part-5.md): office read wrote dates as datetime.datetime(2026, 7, 4, 0, 0): written as 2026-07-04
+- [part-5.md](gotchas/part-5.md): Files read by a python script were not known as read: soul notes the files (and folders' files) every command names
+- [part-5.md](gotchas/part-5.md): Sent back to use stdin, the model retyped "Lift$2026" until the nudges ran out: a gui type's double-quoted text with $ runs single-quoted
+- [part-5.md](gotchas/part-5.md): Values printed on invoices a script had read were refused as never read: before refusing, the operator reads the files the work named
+- [part-5.md](gotchas/part-5.md): An ordinary task that ran out of steps asked the person to start a new run: it carries on by itself, three times a task
+- [part-5.md](gotchas/part-5.md): Re-saving an existing return was refused as a second record: whether a form makes a new record is the page it is on now
+- [part-5.md](gotchas/part-5.md): The person's answer to 'where does 900 come from?' never settled it: a reply that does not say no makes the asked values theirs
+- [part-5.md](gotchas/part-5.md): An application's own option KGS-KILOGRAMS for a source's KGS was refused as never read: a CODE-Description option traces by its code or description
+- [part-5.md](gotchas/part-5.md): A password typed while recording was paused left no manual step, and the learned skill logged in with no password: typing while paused is a private step
+- [part-5.md](gotchas/part-5.md): Totals a script summed and printed were refused at the final check as held by no source: what the work's commands print is its recorded working
+- [part-5.md](gotchas/part-5.md): A run for another client typed the teaching client's own values: an example value is this run's only when this run's text holds it
+- [part-5.md](gotchas/part-5.md): A taught Return after a drop-down choice put the drop-down back to "Select": gui select closes the native list before setting the value
+- [part-5.md](gotchas/part-5.md): An approved chain ran whole again and undid its own first steps: after an on-screen approval only the stopped action and what follows run
+- [part-5.md](gotchas/part-5.md): Rows put into a workbook with openpyxl's insert_rows left every formula below reading the old rows: compared with the copy kept before the task
+- [part-5.md](gotchas/part-5.md): A six-part request ran as one job and ran out of turns twice: filing on a portal is entering records there
+- [part-5.md](gotchas/part-5.md): "No OTP has come yet" kept "has" as a secret, and every "has" after it read [withheld]: a word straight after a secret's name is one only with a digit or a mark
+- [part-5.md](gotchas/part-5.md): A plan made a new workbook in the work folder instead of updating the client's own: the planner is shown the shared folder
+- [part-5.md](gotchas/part-5.md): A workbook the request names by what it is was neither guarded nor checked: is_source now means what the guard guards
+- [part-5.md](gotchas/part-5.md): With no way to put rows into a workbook the worker used openpyxl's insert_rows: office update now has insert_rows, and soul sends such a script back once

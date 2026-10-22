@@ -154,6 +154,8 @@ func TestADollarTheShellWouldExpandIsCaught(t *testing.T) {
 	for _, bad := range []string{
 		`gui type D2 "=IFERROR(VLOOKUP(B2,Prices!$A$2:$C$13,3,FALSE),0)"`,
 		`gui type e9 =SUM($B2:$B9)`,
+		// "$5" is the fifth positional parameter, empty: the app got "Total: " (and "Lift$2026" became "Lift026").
+		`gui type e9 "Total: $5"`,
 	} {
 		if n := quotesNudge(bad); !strings.Contains(n, "$ before a letter") {
 			t.Errorf("not caught: %s", bad)
@@ -162,7 +164,7 @@ func TestADollarTheShellWouldExpandIsCaught(t *testing.T) {
 	for _, ok := range []string{
 		`gui type e9 '=SUM($B$2:$B$9)'`,
 		"gui type D2 - <<'EOF'\n=SUM($B$2:$B$9)\nEOF",
-		`gui type e9 "Total: $5"`,
+		`gui type e9 "Total: 5 $"`,
 		`gui type e9 "=SUM(\$B2:\$B9)"`,
 	} {
 		if n := quotesNudge(ok); n != "" {

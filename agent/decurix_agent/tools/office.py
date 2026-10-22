@@ -687,9 +687,9 @@ def read_workbook(path, sheet=None, cells=None, max_rows=DEFAULT_ROWS):
                 v = c.value
                 if isinstance(v, str) and v.startswith("="):
                     cached = ws_v[c.coordinate].value
-                    shown.append(f"{c.coordinate}={v} -> {cached!r}")
+                    shown.append(f"{c.coordinate}={v} -> {_cell_shown(cached)}")
                 else:
-                    shown.append(f"{c.coordinate}={v!r}")
+                    shown.append(f"{c.coordinate}={_cell_shown(v)}")
             if shown:
                 out.append("  ".join(shown))
 
@@ -880,6 +880,21 @@ def nothing_highlighted(path):
         if not facts["checked_all"]:
             return None
     return True
+
+
+def _cell_shown(value):
+    """A cell's value as office read writes it: text and numbers as Python writes them ('Total', 1240.0), a date as a
+    date (2026-07-04, with its time when it has one). Found live (GST suite T9, 2026-10-21): dates came out as
+    datetime.datetime(2026, 7, 4, 0, 0), which the check that a typed date was read did not know as a date - the
+    invoice dates typed into a portal were refused as guesses."""
+
+    import datetime as _dt
+
+    if isinstance(value, _dt.datetime):
+        return value.date().isoformat() if value.time() == _dt.time(0, 0) else value.isoformat(sep=" ")
+    if isinstance(value, (_dt.date, _dt.time)):
+        return value.isoformat()
+    return repr(value)
 
 
 def _workbook_objects(p):
@@ -1228,7 +1243,7 @@ def _cell_value(v):
 # Workbooks: updating in place (charts survive)
 # ------------------------------------------------------------------
 
-def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_sheets=None):
+def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_sheets=None, insert_rows=None):
     """
     Change cells of an existing workbook without touching anything else.
 
@@ -1237,6 +1252,10 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_s
     `replace_refs`: [{"from": "Data!$B$2:$B$13", "to": "Data!$B$2:$B$14"}] -
     rewritten wherever charts, tables and defined names refer to them, so a
     chart takes in a month that was appended.
+    `insert_rows`: [{"sheet": "Data", "before": 54, "count": 12}] - empty rows
+    put in above row 54, every reference below them moved with them (as a
+    spreadsheet app's Insert rows); done before the edits, which address the
+    rows as they are after it.
 
     Writes `output_path` (default: the file itself, after keeping the
     original as <name>.orig.xlsx the first time). Excel and LibreOffice
@@ -1258,6 +1277,8 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_s
 
     sheet_files = _sheet_files(entries)
     changed = []
+
+    inserted = [_insert_rows(entries, sheet_files, spec) for spec in insert_rows or []]
 
     by_sheet = {}
     for e in edits or []:
@@ -1333,7 +1354,8 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_s
     _write_zip(dst, order, entries)
     stored = _store_results(dst)
 
-    msg = f"Updated {dst}: " + (f"added sheet(s) {', '.join(added)}; " if added else "") + f"{len(changed)} cell(s)"
+    msg = (f"Updated {dst}: " + (f"added sheet(s) {', '.join(added)}; " if added else "")
+           + "".join(f"{words}; " for words in inserted) + f"{len(changed)} cell(s)")
     if changed:
         msg += " (" + ", ".join(changed[:20]) + (" ..." if len(changed) > 20 else "") + ")"
     if replace_refs:
@@ -1349,7 +1371,8 @@ def _keep_original(src, suffix=None):
 
     backup = src.with_name(src.stem + ".orig" + (suffix or src.suffix))
     if not backup.exists() and not _task_made(src):
-        shutil.copy2(src, backup)
+        from decurix_agent import shared
+        shared.copy_file(src, backup)
 
 
 def _zip_parts(p):
@@ -1374,6 +1397,277 @@ def _other_sheet_quoting(ref):
     if sheet.startswith("'") and sheet.endswith("'") and len(sheet) > 1:
         return sheet[1:-1] + "!" + rest
     return f"'{sheet}'!" + rest
+
+
+# ------------------------------------------------------------------
+# Workbooks: putting rows in, references following them (as a spreadsheet app's "Insert rows")
+#
+# Found live (GST suite T10, 2026-10-22): with no way to put rows into a workbook, the worker used openpyxl's
+# insert_rows, which moves cells but not the references that point at them - the month above the new rows went on
+# reading rows the new month had taken, and its closing credit came out wrong. Here every reference to a row at or below
+# the insertion moves with it: formulas on every sheet, conditional formats and validations, merged cells, defined
+# names, chart ranges, tables, pivot sources, comments and pictures anchored there.
+# ------------------------------------------------------------------
+
+MAX_SHEET_ROWS = 1048576
+MAX_INSERTED_ROWS = 10000
+
+# A cell or range reference of a formula, or a whole-row range ("5:10"), with the sheet it names, if any.
+_REF_TOKEN = re.compile(
+    r"(?<![\w.$'!:])"
+    r"(?P<sheet>(?:'(?:[^']|'')+'|[A-Za-z_À-￿][\w.À-￿]*)!)?"
+    r"(?:(?P<c1>\$?[A-Z]{1,3})(?P<r1>\$?\d{1,7})(?::(?P<c2>\$?[A-Z]{1,3})(?P<r2>\$?\d{1,7}))?"
+    r"|(?P<w1>\$?\d{1,7}):(?P<w2>\$?\d{1,7}))"
+    r"(?![\w(!])")
+# Attributes that hold references to the sheet they are on.
+_REF_ATTR = re.compile(r'(\s(?:ref|sqref|topLeftCell|activeCell)=")([^"]*)(")')
+# A formula element of a sheet, a conditional format or a validation: <f ...>...</f>, <formula>, <formula1/2>.
+_FORMULA_EL = re.compile(r"(<(f|formula[12]?)\b[^>]*>)(.*?)(</\2>)", re.S)
+
+
+def _unquote_sheet(name):
+    return name[1:-1].replace("''", "'") if len(name) > 1 and name.startswith("'") and name.endswith("'") else name
+
+
+def _shift_refs(text, sheet, own, before, count):
+    """(text, how many references moved): each reference in `text` to a row of `sheet` at or below `before` moved down
+    `count` rows. `own`: `text` is on that sheet, so a reference with no sheet name is to it. Text in quotes is left."""
+
+    moved = 0
+
+    def row(value):
+        nonlocal moved
+        n = int(value.lstrip("$"))
+        if n >= before:
+            n += count
+            moved += 1
+        return ("$" if value.startswith("$") else "") + str(n)
+
+    def fix(m):
+        named = m.group("sheet")
+        target = _unquote_sheet(named[:-1]) if named else None
+        if not ((target is None and own) or (target is not None and target.casefold() == sheet.casefold())):
+            return m.group(0)
+        if m.group("w1"):
+            return (named or "") + row(m.group("w1")) + ":" + row(m.group("w2"))
+        out = (named or "") + m.group("c1") + row(m.group("r1"))
+        if m.group("c2"):
+            out += ":" + m.group("c2") + row(m.group("r2"))
+        return out
+
+    parts = re.split(r'("(?:[^"]|"")*")', text)
+    shifted = "".join(part if i % 2 else _REF_TOKEN.sub(fix, part) for i, part in enumerate(parts))
+    return shifted, moved
+
+
+def _shift_formulas(xml, sheet, own, before, count):
+    """(xml, references moved) for every formula element of a part's XML (escaped as XML text)."""
+
+    total = 0
+
+    def fix(m):
+        nonlocal total
+        text, moved = _shift_refs(_unescape(m.group(3)), sheet, own, before, count)
+        total += moved
+        return m.group(1) + _escape(text) + m.group(4)
+
+    return _FORMULA_EL.sub(fix, xml), total
+
+
+def _shift_ref_attrs(xml, sheet, before, count):
+    """(xml, references moved) for the ref/sqref/topLeftCell/activeCell attributes of a part on `sheet`."""
+
+    total = 0
+
+    def fix(m):
+        nonlocal total
+        text, moved = _shift_refs(m.group(2), sheet, True, before, count)
+        total += moved
+        return m.group(1) + text + m.group(3)
+
+    return _REF_ATTR.sub(fix, xml), total
+
+
+def _expand_shared(xml):
+    """A sheet's shared formulas written out cell by cell (each follower's own formula, as the app works it out from the
+    first): a row put in among them would otherwise change what every follower reads."""
+
+    if 't="shared"' not in xml:
+        return xml
+    from openpyxl.formula.translate import Translator
+    cell_re = re.compile(r'<c\b[^>]*?\br="([A-Z]+\d+)"[^>]*?(?:/>|>.*?</c>)', re.S)
+    f_re = re.compile(r'<f\b([^>]*)(?:/>|>(.*?)</f>)', re.S)
+    masters = {}
+    for cell in cell_re.finditer(xml):
+        f = f_re.search(cell.group(0))
+        if f and 't="shared"' in f.group(1) and f.group(2):
+            si = re.search(r'\bsi="(\d+)"', f.group(1))
+            if si:
+                masters[si.group(1)] = (cell.group(1), _unescape(f.group(2)))
+
+    def fix(cell):
+        body = cell.group(0)
+        f = f_re.search(body)
+        if not f or 't="shared"' not in f.group(1):
+            return body
+        si = re.search(r'\bsi="(\d+)"', f.group(1))
+        if not si or si.group(1) not in masters:
+            raise OfficeError(f"{cell.group(1)} holds a shared formula whose first cell cannot be found - nothing was written")
+        origin, text = masters[si.group(1)]
+        own = text if origin == cell.group(1) else Translator("=" + text, origin=origin).translate_formula(cell.group(1))[1:]
+        return body[:f.start()] + f"<f>{_escape(own)}</f>" + body[f.end():]
+
+    return cell_re.sub(fix, xml)
+
+
+def _move_rows(xml, before, count):
+    """A sheet's rows at or below `before` (and their cells) numbered `count` lower."""
+
+    start, end = xml.find("<sheetData"), xml.find("</sheetData>")
+    if start < 0 or end < 0:
+        return xml
+
+    def row(m):
+        n = int(m.group(2))
+        return m.group(1) + str(n + count if n >= before else n) + m.group(3)
+
+    def cell(m):
+        n = int(m.group(3))
+        return m.group(1) + m.group(2) + str(n + count if n >= before else n) + m.group(4)
+
+    body = xml[start:end]
+    body = re.sub(r'(<row\b[^>]*?\br=")(\d+)(")', row, body)
+    body = re.sub(r'(<c\b[^>]*?\br=")([A-Z]+)(\d+)(")', cell, body)
+    return xml[:start] + body + xml[end:]
+
+
+def _sheet_related(entries, part):
+    """The parts a sheet's relationships point at (tables, comments, drawings, legacy drawings), by kind."""
+
+    import posixpath
+    rels = posixpath.join(posixpath.dirname(part), "_rels", posixpath.basename(part) + ".rels")
+    out = {}
+    if rels not in entries:
+        return out
+    for rel in re.findall(r"<Relationship\b[^>]*/>", entries[rels].decode("utf-8")):
+        target = re.search(r'\bTarget="([^"]+)"', rel)
+        kind = re.search(r'\bType="[^"]*/([^"/]+)"', rel)
+        if not target or not kind or 'TargetMode="External"' in rel:
+            continue
+        path = posixpath.normpath(posixpath.join(posixpath.dirname(part), target.group(1)))
+        if path in entries:
+            out.setdefault(kind.group(1), []).append(path)
+    return out
+
+
+def _insert_rows(entries, sheet_files, spec):
+    """Put `count` empty rows into a sheet before row `before`; returns what was done, as words."""
+
+    if not isinstance(spec, dict) or set(spec) - {"sheet", "before", "count"}:
+        raise OfficeError('each of insert_rows is {"sheet": "Data", "before": 54, "count": 12} - nothing was written')
+    sheet = spec.get("sheet") or next(iter(sheet_files))
+    if sheet not in sheet_files:
+        raise OfficeError(f"no sheet {sheet!r}; the sheets are {list(sheet_files)} - nothing was written")
+    try:
+        before, count = int(spec.get("before")), int(spec["count"] if "count" in spec else 1)
+    except (TypeError, ValueError):
+        raise OfficeError("insert_rows needs \"before\" (the row number the new rows go above) and \"count\" - nothing was written")
+    if before < 1 or not 1 <= count <= MAX_INSERTED_ROWS:
+        raise OfficeError(f"insert_rows: before must be a row number and count 1 to {MAX_INSERTED_ROWS} - nothing was written")
+
+    part = sheet_files[sheet]
+    xml = _expand_shared(entries[part].decode("utf-8"))
+    for f in re.finditer(r'<f\b[^>]*\bt="array"[^>]*\bref="[A-Z]+(\d+)(?::[A-Z]+(\d+))?"', xml):
+        first, last = int(f.group(1)), int(f.group(2) or f.group(1))
+        if first < before <= last:
+            raise OfficeError(f"{sheet} has an array formula over rows {first}-{last}; rows cannot go in the middle of it "
+                              "- nothing was written")
+    last_row = max([int(n) for n in re.findall(r'<row\b[^>]*?\br="(\d+)"', xml)] + [0])
+    if last_row >= before and last_row + count > MAX_SHEET_ROWS:
+        raise OfficeError(f"{sheet} would run past row {MAX_SHEET_ROWS} - nothing was written")
+
+    moved = 0
+    xml, n = _shift_formulas(xml, sheet, True, before, count)
+    moved += n
+    xml, n = _shift_ref_attrs(xml, sheet, before, count)
+    moved += n
+    xml = re.sub(r'(<brk\b[^>]*?\bid=")(\d+)(")',
+                 lambda m: m.group(1) + str(int(m.group(2)) + count if int(m.group(2)) >= before else int(m.group(2))) + m.group(3),
+                 xml) if "<rowBreaks" in xml else xml
+    entries[part] = _move_rows(xml, before, count).encode("utf-8")
+
+    for other, other_part in sheet_files.items():
+        if other_part == part:
+            continue
+        text = entries[other_part].decode("utf-8")
+        if "!" not in text:
+            continue
+        text = _expand_shared(text)
+        text, n = _shift_formulas(text, sheet, False, before, count)
+        if n:
+            moved += n
+            entries[other_part] = text.encode("utf-8")
+
+    workbook = entries["xl/workbook.xml"].decode("utf-8")
+
+    def name(m):
+        nonlocal moved
+        text, n = _shift_refs(_unescape(m.group(2)), sheet, False, before, count)
+        moved += n
+        return m.group(1) + _escape(text) + m.group(3)
+    entries["xl/workbook.xml"] = re.sub(r"(<definedName\b[^>]*>)(.*?)(</definedName>)", name, workbook, flags=re.S).encode("utf-8")
+
+    for path in list(entries):
+        if re.match(r"xl/charts/chart\w*\.xml$", path):
+            text = entries[path].decode("utf-8")
+
+            def chart_ref(m):
+                nonlocal moved
+                shifted, n = _shift_refs(_unescape(m.group(2)), sheet, False, before, count)
+                moved += n
+                return m.group(1) + _escape(shifted) + m.group(3)
+            entries[path] = re.sub(r"(<(?:\w+:)?f>)(.*?)(</(?:\w+:)?f>)", chart_ref, text, flags=re.S).encode("utf-8")
+        elif re.match(r"xl/pivotCache/pivotCacheDefinition\d+\.xml$", path):
+            text = entries[path].decode("utf-8")
+
+            def source(m):
+                nonlocal moved
+                tag = m.group(0)
+                where = re.search(r'\bsheet="([^"]*)"', tag)
+                if not where or _unescape(where.group(1)).casefold() != sheet.casefold():
+                    return tag
+                shifted, n = _shift_ref_attrs(tag, sheet, before, count)
+                moved += n
+                return shifted
+            entries[path] = re.sub(r"<worksheetSource\b[^>]*/>", source, text).encode("utf-8")
+
+    related = _sheet_related(entries, part)
+    for path in related.get("table", []) + related.get("comments", []):
+        text, n = _shift_ref_attrs(entries[path].decode("utf-8"), sheet, before, count)
+        moved += n
+        entries[path] = text.encode("utf-8")
+    for path in related.get("drawing", []):
+        # Anchors count rows from 0: row index before-1 is the first row that moves.
+        text = re.sub(r"(<xdr:row>)(\d+)(</xdr:row>)",
+                      lambda m: m.group(1) + str(int(m.group(2)) + count if int(m.group(2)) >= before - 1 else int(m.group(2)))
+                      + m.group(3), entries[path].decode("utf-8"))
+        entries[path] = text.encode("utf-8")
+    for path in related.get("vmlDrawing", []):
+        text = entries[path].decode("utf-8", "replace")
+        text = re.sub(r"(<x:Row>)(\d+)(</x:Row>)",
+                      lambda m: m.group(1) + str(int(m.group(2)) + count if int(m.group(2)) >= before - 1 else int(m.group(2)))
+                      + m.group(3), text)
+
+        def anchor(m):
+            values = [v.strip() for v in m.group(2).split(",")]
+            if len(values) == 8:
+                for i in (2, 6):
+                    if values[i].isdigit() and int(values[i]) >= before - 1:
+                        values[i] = str(int(values[i]) + count)
+            return m.group(1) + ", ".join(values) + m.group(3)
+        entries[path] = re.sub(r"(<x:Anchor>)(.*?)(</x:Anchor>)", anchor, text, flags=re.S).encode("utf-8")
+
+    return f"put {count} empty row(s) into {sheet} above row {before} ({moved} reference(s) moved with them)"
 
 
 def _sheet_files(entries):
@@ -1850,6 +2144,181 @@ def coverage_gaps(path):
         out.extend(_column_gaps(ws.title, grid, shown, total_rows, ws.max_row, ws.max_column))
         out.extend(_total_gaps(ws.title, grid, total_rows))
     return out
+
+
+# A single cell a formula reads: an optional sheet ('My sheet'! or Sheet1!), a column and a row - not one end of a range
+# (A1:B9), not a function's name (LOG10(), and not inside a quoted string (removed first).
+_FORMULA_REF = re.compile(r"(?<![\w:$.])(?:(?:'((?:[^']|'')+)'|([A-Za-z_][\w.]*))!)?\$?([A-Z]{1,3})\$?(\d{1,7})(?![\w(:!])")
+_FORMULA_STRING = re.compile(r'"(?:[^"]|"")*"')
+PATTERN_MIN_BLOCKS = 3
+
+
+def _row_label(grid, row):
+    """The first text of a row (its label: "Closing credit carried forward", "TOTAL"), lower case, or ""."""
+
+    for column in range(1, 5):
+        value = grid.get((row, column))
+        if isinstance(value, str) and value.strip() and not value.startswith("="):
+            return " ".join(value.lower().split())[:80]
+    return ""
+
+
+def reference_pattern_breaks(path):
+    """
+    Rows of a sheet laid out as repeated blocks (a month per block) whose formula reads a differently labelled row than
+    the same row of the other blocks does, as sentences. Found live (GST suite T4, 2026-10-21): a September block copied
+    from August's took its "Opening credit balance (previous month's closing)" from August's "Output tax paid from credit"
+    - one row off - while the five earlier blocks took it from "Closing credit carried forward"; the figures looked
+    plausible and the check passed them. Decided from labels and references only (no subject knowledge); evidence for
+    the judge, never a verdict: a block can be meant to work differently. Only single-cell references are compared (a
+    range's coverage is coverage_gaps'), and only rows that appear in at least PATTERN_MIN_BLOCKS blocks.
+    """
+
+    books = _formula_books(path, with_values=False)
+    if books is None:
+        return []
+    grids = {ws.title: grid for ws, grid in _table_grids(books[0])}
+    out = []
+    for sheet, grid in grids.items():
+        groups = {}
+        for (row, column), value in grid.items():
+            if not (isinstance(value, str) and value.startswith("=")):
+                continue
+            label = _row_label(grid, row)
+            if not label:
+                continue
+            reads = []
+            for m in _FORMULA_REF.finditer(_FORMULA_STRING.sub('""', value)):
+                other = (m.group(1) or m.group(2) or "").replace("''", "'") or sheet
+                target_row = int(m.group(4))
+                if other == sheet and target_row == row:
+                    reads.append((other, m.group(3), "(its own row)"))
+                    continue
+                target = grids.get(other)
+                reads.append((other, m.group(3), _row_label(target, target_row) if target is not None else "?"))
+            if reads:
+                groups.setdefault((column, label), []).append((row, value, tuple(reads)))
+        for (column, label), cells in groups.items():
+            if len(cells) < PATTERN_MIN_BLOCKS:
+                continue
+            counts = {}
+            for _, _, reads in cells:
+                counts[reads] = counts.get(reads, 0) + 1
+            usual, seen = max(counts.items(), key=lambda kv: kv[1])
+            if seen < 2 or seen * 5 < len(cells) * 3:  # no pattern at least 60% of the blocks follow
+                continue
+            for row, value, reads in cells:
+                if reads == usual:
+                    continue
+                differs = [(got, want) for got, want in zip(reads, usual) if got != want] or [(reads[0], usual[0])]
+                got, want = differs[0]
+                cell = f"{sheet}!{_col_letter(column)}{row}"
+                where = f" of {got[0]}" if got[0] != sheet else ""
+                out.append(f"{cell} (row \"{label}\") is {value}: it reads the row \"{got[2]}\"{where}, but the same row "
+                           f"in {seen} other blocks reads the row \"{want[2]}\" - if this block was copied from another, "
+                           "a reference may be a row off.")
+    return out[:12]
+
+
+# Any cell reference of a formula, range ends included: an optional sheet, the column, "$" before the row, the row.
+_ANY_REF = re.compile(r"(?<![\w.$])(?:('(?:[^']|'')+'|[A-Za-z_][\w.]*)!)?\$?[A-Z]{1,3}(\$?)(\d{1,7})(?![\w(!])")
+
+
+def _row_refs(formula):
+    """[(sheet or None, row, row is absolute)] for every cell reference of a formula; the end of a range "Sheet!A1:B2"
+    belongs to the start's sheet. Text in quotes is not a reference."""
+
+    text = _FORMULA_STRING.sub('""', formula)
+    out, last_sheet, last_end = [], None, -1
+    for m in _ANY_REF.finditer(text):
+        sheet = m.group(1)
+        if sheet:
+            sheet = sheet.strip("'").replace("''", "'")
+        elif m.start() == last_end + 1 and text[last_end:m.start()] == ":":
+            sheet = last_sheet
+        out.append((sheet, int(m.group(3)), bool(m.group(2))))
+        last_sheet, last_end = sheet, m.end()
+    return out
+
+
+def moved_formula_breaks(before, after):
+    """
+    Formulas of a workbook (`after`) that changed cells this task and are, word for word, a formula that sat elsewhere
+    in the same column before it (`before`, the copy kept when the task began), and that still read rows of the stretch
+    they moved with - as sentences. Rows put in (or taken out) by a tool that moves cells but not the references that
+    point at them leave exactly this: found live (GST suite T10, 2026-10-22), openpyxl's insert_rows put a September
+    block above August's, and August's block, now 17 rows lower, went on reading the rows September had taken, its
+    opening and closing credit with them. A real insert, and a copy-and-paste, move such a reference; a formula that
+    only reads rows above the change rightly keeps its words, and an absolute row ($72) is left out (a copy keeps it).
+    Decided from the files alone; evidence for the judge.
+    """
+
+    old_books, new_books = _formula_books(before, with_values=False), _formula_books(after, with_values=False)
+    if old_books is None or new_books is None:
+        return []
+    old_wb, new_wb = old_books[0], new_books[0]
+    out = []
+    olds, moved = {}, {}  # per sheet: its formulas before; where rows moved ({sheet: (first moved row, shift)})
+    for ws in new_wb.worksheets:
+        if ws.title not in old_wb.sheetnames:
+            continue
+        old = olds[ws.title] = {(c.row, c.column): c.value for row in old_wb[ws.title].iter_rows() for c in row
+                                if isinstance(c.value, str) and c.value.startswith("=")}
+        rows_of = {}
+        for (r, column), formula in old.items():
+            rows_of.setdefault((column, formula), []).append(r)
+        by_shift = {}
+        for row in ws.iter_rows():
+            for c in row:
+                formula = c.value
+                if not (isinstance(formula, str) and formula.startswith("=")) or old.get((c.row, c.column)) == formula:
+                    continue
+                was = rows_of.get((c.column, formula)) or []
+                if len(was) == 1 and was[0] != c.row:
+                    by_shift.setdefault(c.row - was[0], []).append((c.row, c.column, was[0], formula))
+        for shift, cells in sorted(by_shift.items()):
+            start = min(was for _, _, was, _ in cells)  # the moved stretch begins at or above its first formula
+            if ws.title not in moved or start < moved[ws.title][0]:
+                moved[ws.title] = (start, shift)
+            stale = [cell for cell in cells
+                     if any(sheet in (None, ws.title) and not absolute and r >= start for sheet, r, absolute in _row_refs(cell[3]))]
+            if not stale:
+                continue
+            r, column, was, formula = stale[0]
+            letter = _col_letter(column)
+            out.append(f"{ws.title}: {len(stale)} formula(s) are {abs(shift)} rows {'lower' if shift > 0 else 'higher'} than "
+                       "before this task and written word for word as they were there, so they still read the rows they "
+                       f"read there - e.g. {letter}{r} {formula[:80]} was at {letter}{was}. Rows were added or removed "
+                       "without moving the references that point at them: the figures of that part of the sheet now come "
+                       "from the wrong rows.")
+    # A formula the task did not touch (same cell, same words, above any stretch of its own sheet that moved) that reads
+    # rows of a sheet at or below where its rows moved: found live (GST suite T10, second run), 12 rows put into SALES
+    # at row 54 left COMPUTATION's untouched "=SALES!I54" - August's sales total - reading a September row.
+    for ws in new_wb.worksheets:
+        old = olds.get(ws.title)
+        if old is None:
+            continue
+        own = moved.get(ws.title, (None, 0))[0]
+        stale = []
+        for row in ws.iter_rows():
+            for c in row:
+                formula = c.value
+                if (not isinstance(formula, str) or old.get((c.row, c.column)) != formula
+                        or (own is not None and c.row >= own)):
+                    continue
+                for sheet, r, _ in _row_refs(formula):
+                    target = sheet or ws.title
+                    if target in moved and r >= moved[target][0]:
+                        stale.append((c.row, c.column, formula, target))
+                        break
+        if stale:
+            r, column, formula, target = stale[0]
+            start, shift = moved[target]
+            out.append(f"{ws.title}: {len(stale)} formula(s) this task did not change read rows of {target} from row "
+                       f"{start} down, where its rows moved {abs(shift)} {'down' if shift > 0 else 'up'} - e.g. "
+                       f"{_col_letter(column)}{r} {formula[:80]} now reads what moved into that row. Rows were added "
+                       "or removed without moving the references that point at them.")
+    return out[:12]
 
 
 def _table_grids(formulas):
@@ -2778,9 +3247,14 @@ USAGE = """office - documents, spreadsheets and email drafts, from the shell
                                         {"edits": [{"sheet": "Data", "cell": "B14", "value": 1250.5}],
                                          "replace_refs": [{"from": "Data!$B$2:$B$13", "to": "Data!$B$2:$B$14"}],
                                          "add_sheets": [{"name": "Exceptions", "rows": [[...]], "cells": {...}}],
+                                         "insert_rows": [{"sheet": "Data", "before": 54, "count": 12}],
                                          "output_path": "optional.xlsx"}
                                         a value is a number, text, null (empties the cell) or "=FORMULA";
-                                        replace_refs extends what charts, tables and names read.
+                                        replace_refs extends what charts, tables and names read;
+                                        insert_rows puts empty rows in above a row, every formula, name, chart
+                                        and format that reads the rows below moving with them (a script's
+                                        insert_rows does not: formulas below then read the wrong rows) - done
+                                        first, so edits address the rows as they are after it.
                                         To add a column (its header in row 1, a value per row), rename one (its
                                         header cell), append rows (cells below the last) or add sheets, use office
                                         update - never edit an Office file's XML with a script: a file that no longer
@@ -2914,7 +3388,45 @@ def _email(argv):
         raise OfficeError(f"not drafted: {exc}") from exc
 
 
+READ_NOTE_CHARS = 1200
+
+
+def _note_read(path, text):
+    """
+    What `office read` read, kept with the task's evidence for the final check beside what was read off the screen.
+    Found live (GST suite T3, 2026-10-21): asked whether a portal's credit ledger agreed with a workbook's closing
+    credit, the check saw the portal on the screen and nothing of the workbook the worker had read, and asked the person
+    three times. Never raises.
+    """
+
+    try:
+        from decurix_agent.computer import evidence
+        text = (text or "").strip()
+        if text:
+            cut = text[:READ_NOTE_CHARS] + (" ..." if len(text) > READ_NOTE_CHARS else "")
+            evidence.note(f"{evidence.FILE_READ_LEAD}{path}: {cut}")
+            evidence.note_file_read(str(_path(path)))
+    except Exception:  # noqa: BLE001 - evidence that cannot be kept decides nothing
+        pass
+
+
 def main(argv=None):
+    """The `office` command. Its output is what an engine reads as the command's result, so the agent's own log lines
+    (the helpers it calls log as they go) go to a file meanwhile, as the gui command's do. Found live (GST suite T4,
+    2026-10-21): "tool_made: could not release ..." was the first line of a failed `office update`'s output, ahead of
+    the real error; the engine took the person's workbook for locked and worked in a copy instead."""
+
+    from decurix_agent import logging_utils
+
+    before = logging_utils._log_path
+    logging_utils.log_to_file(logging_utils.log_file("decurix-office.log"))
+    try:
+        return _main(argv)
+    finally:
+        logging_utils._log_path = before
+
+
+def _main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if not argv or argv[0] in ("-h", "--help", "help"):
         print(USAGE)
@@ -2931,6 +3443,7 @@ def main(argv=None):
         if cmd == "read":
             r = read_document(argv[0], pages=argv[1] if len(argv) > 1 else None)
             print(r["text"])
+            _note_read(argv[0], r["text"])
             # How pictures reach the engine depends on its model (TheBot's
             # operator sets DECURIX_OFFICE_IMAGES): "attach" - a model that
             # reads images is shown each [page image: ...] itself; "ocr" - a
@@ -2954,9 +3467,9 @@ def main(argv=None):
                 _only(spec, {"replace", "output_path"})
                 print(update_document(argv[0], spec.get("replace"), spec.get("output_path")))
             else:
-                _only(spec, {"edits", "replace_refs", "output_path", "add_sheets"})
+                _only(spec, {"edits", "replace_refs", "output_path", "add_sheets", "insert_rows"})
                 print(update_workbook(argv[0], spec.get("edits"), spec.get("replace_refs"), spec.get("output_path"),
-                                      spec.get("add_sheets")))
+                                      spec.get("add_sheets"), spec.get("insert_rows")))
         elif cmd == "create":
             if len(argv) < 2:
                 raise OfficeError("usage: office create BOOK.xlsx|DOC.docx|DOC.pdf|DECK.pptx SPEC (JSON, or - to read it from stdin)")

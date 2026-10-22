@@ -164,7 +164,8 @@ def restore(local):
         return False
     before_write(p)
     try:
-        shutil.copy2(kept, p)
+        from decurix_agent import shared
+        shared.copy_file(kept, p)
         return True
     except OSError as exc:
         log(f"tool_made: could not put back {p}: {exc}")

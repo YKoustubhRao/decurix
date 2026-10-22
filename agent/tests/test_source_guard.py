@@ -143,6 +143,13 @@ class Guard(SharedBase):
         self.assertFalse(source_guard.is_source(self.mount / "receivables_review.xlsx", TASK, LIVE))
         self.assertFalse(source_guard.is_source(Path("/home/headless/work/receivables.xlsx"), TASK, LIVE))
 
+    def test_a_file_of_the_folder_the_request_does_not_give_is_the_works_when_changed(self):
+        # GST suite T10 (2026-10-22): "bring the computation workbook up to date" names the client's workbook by what it
+        # is; it was neither guarded nor checked, and the final check could not see what the work had written in it.
+        self.assertFalse(source_guard.is_source(self.mount / "notes" / "other.docx", TASK, LIVE))
+        self.touch("notes/other.docx", b"changed by the work")
+        self.assertEqual(source_guard.changed(TASK, LIVE), [])
+
     def test_a_file_too_large_to_copy_is_still_watched_and_the_person_is_told(self):
         with mock.patch.object(source_guard, "COPY_MAX", 4):
             notes = []

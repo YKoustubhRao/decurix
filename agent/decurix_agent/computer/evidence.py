@@ -1,4 +1,5 @@
 import json
+import os
 import time
 from pathlib import Path
 
@@ -243,7 +244,7 @@ def note_look(shown, observation=None):
 
 def _prune():
     cutoff = time.time() - NOTES_KEEP_SECONDS
-    for path in NOTES_DIR.glob("*.jsonl"):
+    for path in list(NOTES_DIR.glob("*.jsonl")) + list(NOTES_DIR.glob("*.files")) + list(NOTES_DIR.glob("*.outputs")):
         try:
             if path.stat().st_mtime < cutoff:
                 path.unlink()
@@ -324,4 +325,45 @@ def observed(task_id=None):
         after = f" -> {change[:MAX_CHANGE]}{'…' if len(change) > MAX_CHANGE else ''}" if change else ""
         lines.append(f"action: {summary} ({event.get('outcome') or 'done'}){after}")
 
-    return lines + ["read off the screen: " + text for text in _notes(task_id, MAX_OBSERVED)]
+    return lines + [(text if text.startswith(FILE_READ_LEAD) else "read off the screen: " + text)
+                    for text in _notes(task_id, MAX_OBSERVED)]
+
+
+# How a note of what a tool read from a file begins (office read; tools/office.py), so it is not called a screen read.
+FILE_READ_LEAD = "read from the file "
+
+
+def note_file_read(path):
+    """Keep the path of a file a tool read for the current task (office read). Never raises."""
+
+    task_id = task_context.current()
+    if not task_id or not path:
+        return
+    try:
+        NOTES_DIR.mkdir(parents=True, exist_ok=True)
+        with open(NOTES_DIR / f"{task_id}.files", "a", encoding="utf-8") as f:
+            f.write(str(path).replace("\n", " ") + "\n")
+    except OSError as exc:
+        log(f"evidence: could not keep a file read: {exc}")
+
+
+def files_read(task_id=None):
+    """The files the tools read during a task that are still there, oldest first. Found live (GST suite T9, 2026-10-21):
+    the invoice numbers and amounts typed into a portal were read from the client's workbook in the person's folder,
+    which the request did not name by file, and the check that a typed fact has a source called them invented."""
+
+    task_id = task_id or task_context.current()
+    if not task_id:
+        return []
+    try:
+        lines = (NOTES_DIR / f"{task_id}.files").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in dict.fromkeys(x.strip() for x in lines if x.strip()):
+        try:
+            if os.path.isfile(line):
+                out.append(line)
+        except OSError:
+            continue
+    return out[-60:]

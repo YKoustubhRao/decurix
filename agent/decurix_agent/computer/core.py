@@ -1071,6 +1071,74 @@ def _shared_save_note(since, wait=SAVE_SETTLE_SECONDS):
             "cloud location), or the file may be open in another program.")
 
 
+DOWNLOAD_WAIT_SECONDS = 6
+PARTIAL_DOWNLOAD = (".crdownload", ".part", ".download")
+
+
+def _downloads_dir():
+    return Path(os.path.expanduser("~")) / "Downloads"
+
+
+def _downloads_snapshot():
+    """{name: (size, mtime)} of the files in the browser's download folder, or {} when there is none."""
+
+    try:
+        return {e.name: (e.stat().st_size, e.stat().st_mtime) for e in os.scandir(_downloads_dir()) if e.is_file()}
+    except OSError:
+        return {}
+
+
+def _same_bytes(a, b):
+    import hashlib
+
+    try:
+        if os.path.getsize(a) != os.path.getsize(b):
+            return False
+        return hashlib.sha256(Path(a).read_bytes()).digest() == hashlib.sha256(Path(b).read_bytes()).digest()
+    except OSError:
+        return False
+
+
+def _downloads_note(before, wait=DOWNLOAD_WAIT_SECONDS):
+    """
+    What an action downloaded: the file that arrived in the download folder, its size, and - when the browser named it
+    "x (1).pdf" because "x.pdf" was already there - whether it is the same file again. Found live (GST suite T1,
+    2026-10-21): a click on a chat attachment's Download link said only that the link was focused; the engine went
+    looking in the browser's download history and a file manager, had clicked the first attachment twice without
+    knowing, and saved the second copy of invoice 197 under invoice 198's name.
+    """
+
+    # The screen has already settled: nothing new within a second means nothing was downloaded; a file still being
+    # written is waited for up to `wait`.
+    start = time.time()
+    while True:
+        now = _downloads_snapshot()
+        new = [n for n, v in now.items() if before.get(n) != v]
+        partial = [n for n in new if n.endswith(PARTIAL_DOWNLOAD)]
+        waited = time.time() - start
+        if (new and not partial) or (not new and waited >= 1) or waited >= wait:
+            break
+        time.sleep(0.5)
+    done = sorted(n for n in new if not n.endswith(PARTIAL_DOWNLOAD))
+    if not done:
+        return "\nStill downloading: " + ", ".join(partial[:3]) + "." if partial else ""
+    lines = []
+    folder = _downloads_dir()
+    for name in done[:4]:
+        path = folder / name
+        line = f"{path} ({now[name][0]:,} bytes)"
+        m = re.match(r"^(.*) \((\d+)\)(\.[^.]*)?$", name)
+        if m:
+            first = folder / (m.group(1) + (m.group(3) or ""))
+            if first.exists():
+                same = _same_bytes(path, first)
+                line += (f" - the browser added \"({m.group(2)})\" because {first.name} was already there"
+                         + ("; it is byte for byte the same file, so this downloaded that one again" if same else
+                            "; its content differs from that file"))
+        lines.append(line)
+    return "\nDownloaded: " + "; ".join(lines) + "."
+
+
 def _shared_lock_files():
     """Office's owner files (~$name) in the shared folder: the files an app of the person's computer has open."""
 
@@ -1203,7 +1271,13 @@ def already_entered(events):
             current.append(str(event["text"]))
         if event.get("kind") == "select" and event.get("option"):
             current.append(str(event["option"]))
-        if _NEW_RECORD_PAGE.search(change) or _NEW_RECORD_PAGE.search(str(event.get("target") or "")):
+        moved = re.search(r"page is now (\S+)", change)
+        if moved:
+            # Whether the form is a new record's is the page it is on now, not one visited earlier (GST suite T9,
+            # 2026-10-21: after an "add invoice" page, the re-save of an existing return elsewhere was refused as a
+            # second record).
+            new_page = bool(_NEW_RECORD_PAGE.search("page is now " + moved.group(1).rstrip(";,")))
+        elif _NEW_RECORD_PAGE.search(change) or _NEW_RECORD_PAGE.search(str(event.get("target") or "")):
             new_page = True
         if event.get("kind") in ("click", "key") and _SAVED_ANSWER.search(change) and current:
             number = _RECORD_NO.search(change)
@@ -2605,6 +2679,9 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     if kind == "type" and field is None and point is None:
         field = next((e for e in before["elements"] if "focused" in e.get("states", [])), None)
     kept, withheld = privacy.withhold_text(field, text) if kind == "type" else (None, None)
+    if withheld and text:
+        # What went into a password or code field is a secret from here on: kept out of every reply and step too.
+        privacy.remember_value(text)
     described = approval.describe_action(kind, element, text, keys, point, withheld=withheld)
 
     entry = {
@@ -2636,6 +2713,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
 
     _refuse_number_arrows(kind, point)
     _refuse_unsafe_save(kind, element, keys, before)
+    downloads_before = _downloads_snapshot() if kind in ("click", "double_click", "key") else None
     acted_at = time.time()
     if check_form and kind == "click" and element is not None and element.get("source") == "cdp":
         held = _form_check(element, checked=check_form == "checked")
@@ -2911,6 +2989,8 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
 
     if _relayed_page(before) and _saves(kind, element, keys):
         note += _shared_save_note(acted_at)
+    if downloads_before is not None:
+        note += _downloads_note(downloads_before)
 
     return {
         "status": "done",

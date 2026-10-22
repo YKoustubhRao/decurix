@@ -27,6 +27,7 @@ import json
 import re
 
 from decurix_agent import config, task_context
+from decurix_agent.logging_utils import log
 
 _current = None
 
@@ -162,6 +163,68 @@ def _kept():
     if not isinstance(kept, dict) or not kept.get("task_id") or kept.get("task_id") != task_context.current():
         return None
     return kept
+
+
+def taught_values_check(skill, given):
+    """
+    What to say instead of replaying `skill` with `given`, or "" to go ahead: a value the engine passed that is the
+    person's own from when they taught it (the parameter's example), that the harness did not hand this run, and that
+    nothing the task has been given or has read holds - the request, the files read, what its commands printed, the
+    pages the tools read. Found live (GST suite T5, 2026-10-22): asked for another client's return "the way I showed
+    you", the engine passed every figure of the teaching client's return and never opened this client's workbook; the
+    replay typed them faithfully. Said once for a value in a task: the same value passed again (the person may have
+    given it) goes ahead, and the final check still traces what the work states.
+    """
+
+    task = task_context.current()
+    if not task or not given:
+        return ""
+    handed_values = run_values(skill=skill.get("name"))
+    params = {p.get("name"): p for p in skill.get("params") or [] if p.get("varies", True) and not p.get("list")}
+    suspects = {}
+    for name, value in given.items():
+        param = params.get(name)
+        if param is None or str(handed_values.get(name, "")).strip() == str(value).strip():
+            continue
+        from decurix_agent import binding
+        if binding.is_example(value, param.get("example")):
+            suspects[name] = str(value)
+    if not suspects:
+        return ""
+
+    from decurix_agent import long_task
+    from decurix_agent.computer import evidence
+    try:
+        sources = long_task.work_sources(task_context.current_request())
+    except Exception as exc:  # noqa: BLE001 - a check that cannot be made stops nothing
+        log(f"guidance: could not gather this task's sources: {exc}")
+        return ""
+    unheld = {name: value for name, value in suspects.items() if sources.unsourced(value)}
+    if not unheld:
+        return ""
+
+    told_path = evidence.NOTES_DIR / f"{task}.examples"
+    try:
+        told = set(json.loads(told_path.read_text(encoding="utf-8")))
+    except (OSError, ValueError, TypeError):
+        told = set()
+    keys = {f"{skill.get('name')}|{name}|{value}" for name, value in unheld.items()}
+    if keys <= told:
+        return ""
+    try:
+        told_path.parent.mkdir(parents=True, exist_ok=True)
+        told_path.write_text(json.dumps(sorted(told | keys)), encoding="utf-8")
+    except OSError:
+        pass
+
+    same = ", ".join(f"{name}={value}" for name, value in suspects.items())
+    return (f"Not replayed: {', '.join(f'{n}={v}' for n, v in unheld.items())} "
+            f"{'is' if len(unheld) == 1 else 'are'} what the person typed when they TAUGHT this, from their own example "
+            "document - nothing this task has read holds it. This run's values come from this run's own source (the "
+            "document, workbook or page this request is about): read it first (office read PATH, or gui observe), work "
+            "out any total with a command, then pass what it says. "
+            + (f"Every value you passed that equals the taught example is suspect: {same}. " if len(suspects) > len(unheld) else "")
+            + "If no source of this task holds a value, ask the person (HELP) instead of using the example.")
 
 
 def persons_words():

@@ -52,6 +52,16 @@ class TheSaveGuard(unittest.TestCase):
                                                               typed("Khan"), typed("arif.khan95@example.com")]
         self.assertIsNone(core.already_entered(events))
 
+    def test_a_new_record_page_visited_earlier_does_not_make_an_existing_one_new(self):
+        # GST suite T9 (2026-10-21): after a portal's "add invoice" page, saving an existing return on another page
+        # (the same login and period typed again) was refused as a second record.
+        login = [opened("http://h:8703/login"), typed("udupiagro"), typed("September")]
+        add = [opened("http://h:8703/gstr1/b2b/add?period=092026"), typed("451")]
+        ret = [opened("http://h:8703/gstr3b?period=092026"), typed("275650")]
+        save = {"kind": "click", "outcome": "done", "change": "page is now http://h:8703/gstr3b?period=092026&msg=saved"}
+        events = login + ret + [save] + add + login + ret
+        self.assertIsNone(core.already_entered(events))
+
     def test_an_edit_form_is_never_refused(self):
         edit = [opened("http://h:8701/people/EMP-2043/edit"), typed("Rohit"), typed("Kulkarni"),
                 typed("rohit.kulkarni@example.com")]

@@ -310,3 +310,22 @@ func TestTriageSendsAPlannedStageToTheOperator(t *testing.T) {
 		t.Errorf("a question that mentions a stage was taken for a planned stage")
 	}
 }
+
+// Attachments in a web app to be kept in a folder of this machine are the
+// operator's: the web skill only reads a page (GST suite T1, 2026-10-21).
+func TestTriageSendsFilesFromAWebAppToKeepToTheOperator(t *testing.T) {
+	p := "Rohan (Kavya Constructions) has sent his September invoices on ClientChat (http://host.docker.internal:8703/chat). Save them into his September folder under GST Returns on my PC, the way the earlier months are kept."
+	if got := Triage(p); got.Kind != RouteOperate {
+		t.Fatalf("Triage = %s (%s), want operate", got.Kind, got.Reason)
+	}
+	whole := "Do Kavya Constructions' September GST from start to finish: get Rohan's September invoices from ClientChat (http://host.docker.internal:8703/chat) into his folder, bring the computation workbook up to date, file GSTR-1 and GSTR-3B on the GST portal, note both ARNs in the workbook, and send Rohan a message on ClientChat. Everything is in GST Returns on my PC."
+	if got := Triage(whole); got.Kind != RouteOperate {
+		t.Fatalf("the whole month: Triage = %s (%s), want operate", got.Kind, got.Reason)
+	}
+	// Reading a page is still the web skill's, and research is still research.
+	for _, q := range []string{"what does https://go.dev/doc/devel/release say about go 1.22?", "look up the latest Go release and save a note in my work folder"} {
+		if got := Triage(q); got.Kind == RouteOperate && got.Reason == "work with a web page and this machine's files - the operator does both" {
+			t.Fatalf("%q was taken by the keep-on-machine rule", q)
+		}
+	}
+}

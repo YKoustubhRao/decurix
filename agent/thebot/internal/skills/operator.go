@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -162,7 +163,7 @@ Figures and rules:
 - When your work arrives at a figure that an input also states (a closing balance, a total, a count), compare the two before you report; if they differ the work is not done: find the difference, or ask.
 
 Documents and files:
-- A source file (one the request gives you to read or work from) is opened, never saved: when the result goes into a new file, save under the new name (Save As) before changing anything in the app, or work in a copy; when you close an app holding a source with changes, choose not to save.
+- A source file (one the request gives you to read or work from) is opened, never saved: when the result goes into a new file, save under the new name (Save As) before changing anything in the app, or work in a copy; when you close an app holding a source with changes, choose not to save. A file the request asks you to change itself (add to it, update it, fill it in, correct it) is not a source but the result: change that file where it is, keeping its name, its format and everything you were not asked to change - a changed copy elsewhere leaves it undone.
 - A file attached to the request (~/work/inbox/...) is the person's original: save results where the request says (~/work for "my work folder") under a new name, never over it. A file office read cannot open is broken.
 - A workbook a script saved (openpyxl) holds its formulas with no results, and whatever reads the file sees blanks: run office calculate <file.xlsx> after saving it (office create and office update store results themselves). office read says "Formulas without stored results" when a file has that fault.
 - In a workbook a person keeps using, a total or subtotal of cells is a formula over those cells, never the number typed in, unless the person asked for values: typed, it goes stale the day a row changes.
@@ -509,10 +510,12 @@ type operatorState struct {
 	// SharedSaveNudged is set once a DONE for a file made with tools in the shared folder and opened in the named app,
 	// but never saved from it, has been pushed back.
 	SharedSaveNudged bool
-	QuoteNudges      int // gui type commands sent back because the shell would drop their quotes
-	LastCommand      string
-	LastResult       *shellResult
-	Commands         []string
+	// RowShiftNudged is set once a script putting rows into a workbook with openpyxl was sent back (rowShiftNudge).
+	RowShiftNudged bool
+	QuoteNudges    int // gui type commands sent back because the shell would drop their quotes
+	LastCommand    string
+	LastResult     *shellResult
+	Commands       []string
 	// Worked is the commands that exited 0: what was actually done, as
 	// against what was tried (unperformedScreenNudge reads it).
 	Worked []string
@@ -542,6 +545,10 @@ type operatorState struct {
 	Seen           string
 	ShownPages     bool
 	UntracedNudges int
+	// SourcesRead are the files the work's commands named that the operator itself read for the trace (readNamedSources).
+	SourcesRead map[string]bool `json:",omitempty"`
+	// AskedUntraced are the values a question to the person named as untraced; their reply decides them (resume).
+	AskedUntraced []string `json:",omitempty"`
 }
 
 // outputChars is OutputChars, or the local default for a checkpoint written
@@ -659,7 +666,7 @@ func (o *OperatorSkill) resume(rc RunContext, subtask Subtask, st *operatorState
 		if rc.IsApproved(pending) {
 			rc.Logf("operator", "approved - running it now")
 			if blocked := o.execute(rc, st, pending); blocked != "" {
-				st.Pending = pending
+				st.Pending = pausedRest(pending, blocked)
 				return st, blocked
 			}
 			return st, ""
@@ -681,12 +688,25 @@ func (o *OperatorSkill) resume(rc RunContext, subtask Subtask, st *operatorState
 		}
 		st.ScreenConfirmed = false
 	}
+	if len(st.AskedUntraced) > 0 {
+		// The person was shown these values and asked where they come from. A reply that does not say no makes them
+		// the person's: found live (GST suite T7, 2026-10-21), "use your judgement" did not hold the values, and the
+		// same question came back every 16 seconds until the run was given up. A no leaves them untraced.
+		if !refusalReplyRe.MatchString(reply) {
+			st.noteSeen(strings.Join(st.AskedUntraced, "\n"))
+		}
+		st.AskedUntraced = nil
+		st.UntracedNudges = 0
+	}
 	if reply != "" {
 		st.noteSeen(reply)
 		st.Messages = append(st.Messages, llm.Message{Role: "user", Content: "The human replied: " + reply + "\n\nContinue the task."})
 	}
 	return st, ""
 }
+
+// refusalReplyRe is a reply that turns down what it was asked about.
+var refusalReplyRe = regexp.MustCompile(`(?i)^\W*(?:no|nope|don'?t|do not|never|wrong|stop|not that|none of)\b`)
 
 // declinedAdvice is what the model is told after a person refused a command: a refusal is about that command, never
 // about the task. When the reason the gate gave does not describe what the command did (it only read or wrote
@@ -714,7 +734,20 @@ var screenConfirmRe = regexp.MustCompile(`(?i)^\s*(done|yes|y|yep|yeah|ok|okay|c
 func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string) string {
 	rc.Logf("operator", "$ %s", command)
 	started := time.Now()
-	res := runShell(rc.Ctx, rc.Dir(), command, o.commandTimeout(), st.guiEnv()...)
+	run := command
+	if literal := literalTyping(run); literal != run {
+		rc.Logf("operator", "a gui type's text holds $ the shell would expand - typed as written")
+		run = literal
+	}
+	if sharedFolderHost() != "" {
+		if inside := intoSharedLink(command); inside != command {
+			rc.Logf("operator", "find from the shared folder's link looks inside it: $ %s", inside)
+			run = inside
+		}
+	}
+	res := runShell(rc.Ctx, rc.Dir(), run, o.commandTimeout(), st.guiEnv()...)
+	noteFilesRead(run)
+	noteCommandOutput(run, res.Output)
 	if reason := screenApprovalReason(res); reason != "" {
 		rc.Logf("operator", "approval needed on screen - %s", reason)
 		return reason
@@ -949,6 +982,102 @@ func screenApprovalReason(r shellResult) string {
 		return "on screen it would " + line
 	}
 	return ""
+}
+
+// rowShiftRe is a script putting rows into, or taking them out of, a workbook with openpyxl.
+var rowShiftRe = regexp.MustCompile(`\.(?:insert|delete)_rows\s*\(`)
+
+// rowShiftNudge is what to say instead of running a command that puts rows into a workbook (or takes them out) with
+// openpyxl, which moves the cells but not the formulas, names and charts that read them; "" for any other command.
+// Found live (GST suite T10, 2026-10-22): twice, rows put in this way left the month above reading the rows the new
+// month took, and its closing credit came out wrong. Said once: a script that rewrites every reference itself may
+// then run.
+func rowShiftNudge(command string) string {
+	if !rowShiftRe.MatchString(command) || !strings.Contains(command, "openpyxl") {
+		return ""
+	}
+	return "Not run: openpyxl's insert_rows/delete_rows move the cells but not the formulas, defined names, charts and " +
+		"formats that read them - every formula below the change (on this sheet and on others) would then read the " +
+		"wrong rows. Put rows in with office update instead, which moves every reference with them:\n" +
+		"COMMAND:\noffice update BOOK.xlsx '{\"insert_rows\": [{\"sheet\": \"SALES\", \"before\": 54, \"count\": 12}]}'\n" +
+		"then fill them with office update's edits (they address the rows as they are after it). Or, when the new rows " +
+		"belong at the end of the sheet, write them below the last row, where nothing reads them yet."
+}
+
+// approvalRefRe is the element ref an on-screen approval names: `click button "FILE WITH EVC" (e9174) in ...`.
+var approvalRefRe = regexp.MustCompile(`\((e[0-9]+)\)`)
+
+// andChain splits a command made only of simple commands joined by && (quotes kept whole) into them; nil when it holds
+// any other separator, a here-document or a line break - a shape whose rest cannot be cut off safely.
+func andChain(command string) []string {
+	var parts []string
+	var cur strings.Builder
+	quote, escaped := rune(0), false
+	runes := []rune(command)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		switch {
+		case escaped:
+			escaped = false
+		case r == '\\' && quote != '\'':
+			escaped = true
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			}
+		case r == '"' || r == '\'':
+			quote = r
+		case r == '&' && i+1 < len(runes) && runes[i+1] == '&':
+			parts = append(parts, strings.TrimSpace(cur.String()))
+			cur.Reset()
+			i++
+			continue
+		case r == ';' || r == '|' || r == '&' || r == '\n' || r == '<' || r == '`' || (r == '$' && i+1 < len(runes) && runes[i+1] == '('):
+			return nil
+		}
+		cur.WriteRune(r)
+	}
+	if quote != 0 {
+		return nil
+	}
+	parts = append(parts, strings.TrimSpace(cur.String()))
+	for _, p := range parts {
+		if p == "" {
+			return nil
+		}
+	}
+	return parts
+}
+
+// pausedRest is what is left to run of command when the on-screen approval gate stopped one of its gui actions
+// (reason names it by its ref): that action and what follows it. What ran before it already happened; run again after
+// the yes it undoes itself. Found live (GST suite T10, 2026-10-22): `gui click <declaration checkbox> && gui select
+// <signatory> && gui click <FILE WITH EVC>` stopped at the filing click; the approved chain ran whole, unticked the
+// declaration, and the approved click was refused by the portal - three approvals for one filing. The whole command
+// when the stopped action cannot be told for certain.
+func pausedRest(command, reason string) string {
+	m := approvalRefRe.FindStringSubmatch(reason)
+	parts := andChain(command)
+	if m == nil || len(parts) < 2 {
+		return command
+	}
+	found := -1
+	for i, part := range parts {
+		words := strings.Fields(part)
+		if len(words) < 2 || words[0] != "gui" {
+			return command
+		}
+		if slices.Contains(words, m[1]) {
+			if found >= 0 {
+				return command // the same element twice: which one stopped is not certain
+			}
+			found = i
+		}
+	}
+	if found <= 0 {
+		return command
+	}
+	return strings.Join(parts[found:], " && ")
 }
 
 func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) (Result, error) {
@@ -1216,7 +1345,18 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: nudge})
 				continue
 			}
-			if nudge, untraced := groundingCheck(st, value); nudge != "" {
+			if nudge := rowShiftNudge(value); nudge != "" && !st.RowShiftNudged {
+				st.RowShiftNudged = true
+				rc.Logf("operator", "a script would put rows into a workbook with openpyxl - sent back to office update's insert_rows")
+				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: nudge})
+				continue
+			}
+			nudge, untraced := groundingCheck(st, value)
+			if nudge != "" && o.readNamedSources(rc, st) {
+				// The values may be in files the work read some other way (a script): read, they decide.
+				nudge, untraced = groundingCheck(st, value)
+			}
+			if nudge != "" {
 				if st.UntracedNudges < maxUntracedNudges {
 					st.UntracedNudges++
 					rc.Logf("operator", "would have typed values it never read - sent back to find them (%s)", truncateText(nudge, 300))
@@ -1226,6 +1366,7 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				// Sent back twice and still typing what it cannot trace: a
 				// person knows where the values are, a guess does not.
 				question := untracedQuestion(untraced, nudge)
+				st.AskedUntraced = untraced
 				st.Messages = append(st.Messages, reply)
 				return ask(question)
 			}
@@ -1237,7 +1378,7 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				return o.pause(subtask, st, concern.Reason), nil
 			}
 			if blocked := o.execute(rc, st, value); blocked != "" {
-				st.Pending = value
+				st.Pending = pausedRest(value, blocked)
 				return o.pause(subtask, st, blocked), nil
 			}
 
