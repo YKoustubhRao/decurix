@@ -254,14 +254,17 @@ def _clean(params, answer, texts=()):
                 log(f"binding: {name} = {written!r} is the taught example and this run's documents do not hold it - left out")
                 continue
             if not words_held(written, texts):
-                # A name, code or reference the documents do not have is a guess. Found live (GST suite T7,
-                # 2026-10-22): no document was read, and the client's portal username came back as "srilakshmielev",
-                # made up from its name; the real one, in the client master, is "srilakshmilift".
-                log(f"binding: {name} = {written!r} is in none of this run's documents - left out")
-                continue
+                # Said, never dropped (independent review, 2026-10-22): a value worked out from the documents is
+                # written otherwise than they write it (28-Sep-2026 from 28/09/2026, "Private Limited" from "Pvt Ltd")
+                # and is right. Found live (GST suite T7, 2026-10-22) the other way: a portal username made up from the
+                # client's name, "srilakshmielev" - so the person and the check see that it is not the documents' own.
+                log(f"binding: {name} = {written!r} is not written so in this run's documents - kept, and said")
+                note = "not written so in this run's documents - worked out, or a guess: check it"
+                old = why.get(name) if isinstance(why, dict) else None
+                evidence[name] = (f"{str(old)[:150]} ({note})" if old else note)[:200]
             values[name] = written
 
-        if isinstance(why, dict) and why.get(name):
+        if isinstance(why, dict) and why.get(name) and name not in evidence:
             evidence[name] = str(why[name])[:200]
 
     return values, evidence

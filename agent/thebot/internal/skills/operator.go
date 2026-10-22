@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"thebot/internal/atomizer"
 	"thebot/internal/llm"
@@ -88,7 +89,7 @@ HELP:
 - DONE when the task is finished, or when you can already answer it (a greeting, a fact you were given). Base it on output you actually saw - never report work you did not verify.
 - COMMAND when you need to look at or change something. You get the exit code and output back. If it fails, read the error and try something different; never resend a command that just failed.
 - HELP only when no command can unblock you: the human has to choose, give you a secret, or do something outside this machine. Not knowing yet is not being blocked - run a command and find out.
-- Before a payment, sending a message as the human, publishing, or deleting something that cannot be recovered, reply HELP saying exactly what you would do.
+- Before a payment, sending a message as the human, publishing, or deleting something that cannot be recovered: when it is a click in an app or a web page, do not ask first - do the work up to that click and make it with gui, which stops such a click itself and asks the human with the details in front of them. For anything else (a shell command, a script), reply HELP saying exactly what you would do.
 - Commands run in %s with no terminal attached: never open editors or pagers, and pass -y to installers.
 - For anything in a window (a web page in the browser, LibreOffice, a text editor) use the gui command: gui observe lists the screen's elements with refs like e12, then gui click e12, gui type e12 "text", gui key ctrl+s, gui select e12 "option", gui open <url|file|app>, gui scroll down 5 (or up; 5 is wheel notches, about 100 pixels each - over the part of the page to move, gui scroll x,y down 5). Every gui action prints what changed. gui read e12 prints the whole text of a field or document with line numbers - gui observe shows only its first 60 characters - so read a text before you change it and again after, and report a change as made only when gui read shows it: a change asked for everywhere is done when none is left, so use the app's own replace-all or bulk operation, not one edit at a time. gui type on a field that holds several lines is refused, because it would replace the whole document; change part of it through the app, or with --append where the cursor is. gui recordings <words> finds a recorded demonstration of a task, and gui replay <id> runs it again. gui skills <words> finds a task this desktop was taught: gui skill <name> says what it needs and gui do <name> --param name=value does it with no model - prefer it to working the task out yourself, but only in the app or site it works in (gui skill says where): the same kind of work in another system is done there with gui. A value gui skill calls a list takes every item of the document in one run, in the document's order, separated by \"; \" (--param product=\"Desk; Chair\" --param quantity=\"3; 1\") - never only the first item. gui ask chatgpt "QUESTION" (or google, duckduckgo, wikipedia, youtube) puts one question to that service in the browser and prints its answer - run it once per question. gui guide NAME prints the checked guide to an app this desktop has one for (how it is worked here, its dialogs, how to save; gui guide alone lists them) - when one is in your context, follow it. To learn how an app or a kind of work goes (where a setting is, which menu or keys do something, what a field means) run lookup "APP how to ..." - it reads the web without touching the screen; do that before asking the person how the app works. What it prints is the internet's: never a value to type into a record. An app this desktop has no guide for: once your work in it is right, write down what you found out for the next task - gui guide --learn NAME --applies-to "the words that name the app" --description "one line" with the guide on stdin (a heredoc): how the app is worked here (where things are, the keys and dialogs, what to check before saving, what went wrong and what fixed it), never this task's values. It is kept only if this task is checked done.
 - To read a document (PDF, scan, Word, Excel, PowerPoint, email, picture) run office read <file> [pages]; never guess at a file's contents.
@@ -510,12 +511,10 @@ type operatorState struct {
 	// SharedSaveNudged is set once a DONE for a file made with tools in the shared folder and opened in the named app,
 	// but never saved from it, has been pushed back.
 	SharedSaveNudged bool
-	// RowShiftNudged is set once a script putting rows into a workbook with openpyxl was sent back (rowShiftNudge).
-	RowShiftNudged bool
-	QuoteNudges    int // gui type commands sent back because the shell would drop their quotes
-	LastCommand    string
-	LastResult     *shellResult
-	Commands       []string
+	QuoteNudges      int // gui type commands sent back because the shell would drop their quotes
+	LastCommand      string
+	LastResult       *shellResult
+	Commands         []string
 	// Worked is the commands that exited 0: what was actually done, as
 	// against what was tried (unperformedScreenNudge reads it).
 	Worked []string
@@ -561,28 +560,34 @@ type operatorState struct {
 	JudgedAt        int    `json:",omitempty"`
 	AwaitingJudge   string `json:",omitempty"`
 	PendingReason   string `json:",omitempty"`
-	JudgementAsked  bool   `json:",omitempty"`
+	// DoneRounds and ApprovalRounds count the rounds of each kind (each has its own cap, so approvals never use up the
+	// final DONE's review); SentBackRound is the round whose review points were sent back to the operator; PersonAsks
+	// counts the questions the review put to the person; LastIssues is the latest review's points (knowledge.go).
+	DoneRounds     int      `json:",omitempty"`
+	ApprovalRounds int      `json:",omitempty"`
+	SentBackRound  int      `json:",omitempty"`
+	PersonAsks     int      `json:",omitempty"`
+	LastIssues     []string `json:",omitempty"`
 	// LastJudgements is the last list read, shown with an approval asked before any more work was done.
 	LastJudgements []string `json:",omitempty"`
-	// FetchedNudged and MismatchNudged are set once a DONE over gathered documents never read, or over a result its
-	// report says does not match a source, was sent back (inputs_read.go).
-	FetchedNudged  bool `json:",omitempty"`
-	MismatchNudged bool `json:",omitempty"`
-	// SelfApprovalNudges counts questions asking the person to approve what the gate asks about itself (inputs_read.go).
-	SelfApprovalNudges int `json:",omitempty"`
+	// LastAsked is the last question or approval put to the person; PersonSaid is every reply with what it answered,
+	// kept apart from the transcript so a compaction never loses it (context.go, reviewer.go).
+	LastAsked  string   `json:",omitempty"`
+	PersonSaid []string `json:",omitempty"`
 	// Lookups are the web pages the goal read (knowledge.go): never a source until the person confirms one;
 	// PersonLinks are the links the person gave (the request, their replies), whose pages are sources; AskedSources are
-	// the lookups a question to the person asked them to confirm; UnsureSent is set once unsettled calls were sent back.
+	// the lookups a question to the person asked them to confirm.
 	Lookups      []webLookup `json:",omitempty"`
 	PersonLinks  []string    `json:",omitempty"`
 	AskedSources []int       `json:",omitempty"`
-	UnsureSent   bool        `json:",omitempty"`
 	// JudgementQuestion is set while a question about the calls is with the person: their answer is applied (resume).
 	JudgementQuestion bool `json:",omitempty"`
 	// Settling is set while an approval waits for calls sent back to be settled (lookups and re-reads may run first).
 	Settling bool `json:",omitempty"`
-	// UnknownSiteNudged is set once opening a site nothing given or taught names was sent back (knowledge.go).
-	UnknownSiteNudged bool `json:",omitempty"`
+	// LastReport is the last DONE's report without its JUDGEMENTS list: kept for a DONE that sends the list alone.
+	LastReport string `json:",omitempty"`
+	// ScreenDocs are the document names screens showed: a fact the reviewer weighs (inputs_read.go).
+	ScreenDocs []string `json:",omitempty"`
 }
 
 // outputChars is OutputChars, or the local default for a checkpoint written
@@ -649,6 +654,7 @@ func (o *OperatorSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 
 // pause is the result that waits for a person to approve st.Pending, with the goal kept.
 func (o *OperatorSkill) pause(subtask Subtask, st *operatorState, reason string) Result {
+	st.LastAsked = "approve running: " + st.Pending + " - " + reason
 	res := NeedsApproval(subtask, o.Name(), st.Pending, reason, st)
 	res.Meta["commands"] = st.Commands
 	return res
@@ -696,6 +702,14 @@ func (o *OperatorSkill) start(rc RunContext, subtask Subtask) *operatorState {
 // screen, and st.Pending holds it.
 func (o *OperatorSkill) resume(rc RunContext, subtask Subtask, st *operatorState) (*operatorState, string) {
 	reply := strings.TrimSpace(rc.HumanReply)
+	if reply != "" {
+		// Every word the person says, with what it answered, outlives the transcript (context.go, reviewer.go).
+		said := reply
+		if st.LastAsked != "" {
+			said = "Asked: " + truncateText(st.LastAsked, 600) + "\n  They said: " + reply
+		}
+		st.PersonSaid = append(st.PersonSaid, said)
+	}
 	if st.Pending != "" {
 		pending := st.Pending
 		st.Pending = ""
@@ -740,13 +754,17 @@ func (o *OperatorSkill) resume(rc RunContext, subtask Subtask, st *operatorState
 		// Their answer about the calls the work rests on is applied before anything else, and the calls are weighed
 		// again (knowledge.go). Found live (GST suite T9, 2026-10-22): told "a cancelled invoice still counts in
 		// documents issued", the operator filed the return 16 seconds later with "0 cancelled" still in it.
-		st.JudgementQuestion, st.UnsureSent, st.JudgedAt = false, false, -1
+		st.JudgementQuestion, st.JudgedAt = false, -1
 		st.notePersonLinks(reply)
 		st.noteSeen(reply)
-		st.Messages = append(st.Messages, llm.Message{Role: "user", Content: "The human answered your question about the " +
-			"calls the work rests on: " + reply + "\n\nApply it before anything else: compare each of those calls with what " +
-			"they said, and where your work differs, correct it - re-open and change what you entered or wrote - before " +
-			"any further step. Never carry on over a call they settled otherwise. Then continue the task."})
+		// The question was the harness's, not the model's: it is told what was asked, so it knows what the answer is to.
+		st.Messages = append(st.Messages, llm.Message{Role: "user", Content: "The human answered a question put to them " +
+			"about what the work rests on.\nThe question: " + truncateText(st.LastAsked, 4000) + "\nTheir answer: " + reply +
+			"\n\nApply it before anything else - to ALL the work so far, not only the points listed: a rule they state holds " +
+			"for every record, row and field it covers. Go through what you have entered or written (re-open saved records " +
+			"and sections), and wherever it differs from what they said, correct it before any further step. Never carry on " +
+			"over something they settled otherwise. Where they said to keep it as you did, nothing changes for it. Then " +
+			"continue the task."})
 		return st, ""
 	}
 	if reply != "" {
@@ -801,6 +819,7 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 	noteFilesRead(run)
 	noteCommandOutput(run, res.Output)
 	st.noteLedger(command, res)
+	st.noteScreenDocs(command, res.Output)
 	if reason := screenApprovalReason(res); reason != "" {
 		rc.Logf("operator", "approval needed on screen - %s", reason)
 		return reason
@@ -906,8 +925,8 @@ func (st *operatorState) documentPictures(output string) ([][]byte, []string) {
 			continue
 		}
 		data, err := os.ReadFile(path)
-		if err != nil {
-			continue
+		if err != nil || llm.ImageType(data) == "" {
+			continue // not a picture a model can be shown (office read says what the file holds)
 		}
 		doc := "a scanned document"
 		for _, h := range headers {
@@ -1039,26 +1058,6 @@ func screenApprovalReason(r shellResult) string {
 	return ""
 }
 
-// rowShiftRe is a script putting rows into, or taking them out of, a workbook with openpyxl.
-var rowShiftRe = regexp.MustCompile(`\.(?:insert|delete)_rows\s*\(`)
-
-// rowShiftNudge is what to say instead of running a command that puts rows into a workbook (or takes them out) with
-// openpyxl, which moves the cells but not the formulas, names and charts that read them; "" for any other command.
-// Found live (GST suite T10, 2026-10-22): twice, rows put in this way left the month above reading the rows the new
-// month took, and its closing credit came out wrong. Said once: a script that rewrites every reference itself may
-// then run.
-func rowShiftNudge(command string) string {
-	if !rowShiftRe.MatchString(command) || !strings.Contains(command, "openpyxl") {
-		return ""
-	}
-	return "Not run: openpyxl's insert_rows/delete_rows move the cells but not the formulas, defined names, charts and " +
-		"formats that read them - every formula below the change (on this sheet and on others) would then read the " +
-		"wrong rows. Put rows in with office update instead, which moves every reference with them:\n" +
-		"COMMAND:\noffice update BOOK.xlsx '{\"insert_rows\": [{\"sheet\": \"SALES\", \"before\": 54, \"count\": 12}]}'\n" +
-		"then fill them with office update's edits (they address the rows as they are after it). Or, when the new rows " +
-		"belong at the end of the sheet, write them below the last row, where nothing reads them yet."
-}
-
 // approvalRefRe is the element ref an on-screen approval names: `click button "FILE WITH EVC" (e9174) in ...`.
 var approvalRefRe = regexp.MustCompile(`\((e[0-9]+)\)`)
 
@@ -1155,6 +1154,7 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 	}
 	// ask pauses on question for the person, with the goal kept so their reply carries it on.
 	ask := func(question string) (Result, error) {
+		st.LastAsked = question
 		res, _ := finish(question, false, map[string]any{"needsUserInput": true, "question": question, "failureReasoning": question})
 		res.Checkpoint = st
 		return res, nil
@@ -1194,7 +1194,7 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 		// Told to finish only when no further budget would follow: "do not begin anything new" made a long goal wrap up
 		// half checked (context.go).
 		if left := o.turns(st) - turn; left == closingTurns && o.turns(st) >= 4*closingTurns && !st.BudgetWarned &&
-			!(st.Hosted && st.Continuations < maxContinuations) {
+			!st.mayContinue(windowStart) {
 			st.BudgetWarned = true
 			rc.Logf("operator", "nearly out of turns - told to finish or to ask")
 			appendToLastUser(st, fmt.Sprintf(closingNote, left))
@@ -1235,21 +1235,24 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 			// instead means it is changing course: the approval comes again when it gets there.
 			reason := st.PendingReason
 			st.AwaitingJudge, st.PendingReason, st.Settling = "", "", false
-			if items, listed := judgementList(resp.Text); listed || (action != "command" && action != "help") {
-				nudge, question := o.weighJudgements(rc, st, items, reason)
-				if nudge != "" {
+			// A command (even beside a list: "fix the work first") or a question changes course - the approval comes
+			// again when it gets there. Anything else is its account of what the action rests on.
+			if action != "command" && action != "help" && st.Pending != "" {
+				items, _ := judgementList(resp.Text)
+				w := o.weighJudgements(rc, st, items, resp.Text, reason)
+				if w.nudge != "" {
 					// Sent back to settle what it is not sure of; the approval is asked when it lists them again.
 					st.AwaitingJudge, st.PendingReason, st.Settling = "approval", reason, true
-					st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: nudge})
+					st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: w.nudge})
 					continue
 				}
 				st.JudgedAt, st.LastJudgements = st.CommandsSucceeded, items
 				st.Messages = append(st.Messages, reply)
-				if question != "" {
+				if w.question != "" {
 					st.Pending = "" // done again after their answer, and stopped again for the approval
-					return ask(question)
+					return ask(w.question)
 				}
-				return o.pause(subtask, st, reason+judgementsForApproval(items)), nil
+				return o.pause(subtask, st, reason+st.withoutSecrets(judgementsForApproval(items))+openPointsNote(st, w.open)), nil
 			}
 			st.Pending = ""
 		}
@@ -1258,6 +1261,18 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 		case "done":
 			if value == "" {
 				value = "Done."
+			}
+			// A DONE that is only the JUDGEMENTS list keeps the report it lists them for: found live (GST suite T4,
+			// 2026-10-22), asked for the list, the model sent the list alone, and the report with the month's figures
+			// was lost from the result.
+			if head := judgementsHeadRe.FindStringIndex(value); head != nil && strings.TrimSpace(value[:head[0]]) == "" {
+				if st.LastReport != "" {
+					value = st.LastReport + "\n\n" + value
+				}
+			} else if head != nil {
+				st.LastReport = strings.TrimSpace(value[:head[0]])
+			} else {
+				st.LastReport = value
 			}
 			if st.CommandsRun > 0 && st.CommandsSucceeded == 0 && !st.UngroundedNudged {
 				// Every command so far failed, so nothing on this machine has
@@ -1341,44 +1356,32 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				st.Messages = append(st.Messages, reply)
 				return ask(question)
 			}
-			// What the work gathered is read, and a disagreement it found is settled, before it is reported
-			// (inputs_read.go). Each said once.
-			if unread := unreadFetched(st.Commands); len(unread) > 0 && !st.FetchedNudged {
-				st.FetchedNudged = true
-				rc.Logf("operator", "said done with %d gathered document(s) never read - sending it back", len(unread))
-				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: unreadFetchedNudge(unread)})
-				continue
-			}
-			if mismatchRe.MatchString(value) && !st.MismatchNudged {
-				st.MismatchNudged = true
-				rc.Logf("operator", "said done over a result it says does not match a source - sending it back")
-				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: mismatchNudge})
-				continue
-			}
-			// The judgement calls the result rests on, listed and their backing checked before it is reported
-			// (judgements.go).
-			if st.judgementsDue() {
+			// The judgement calls the result rests on, listed by the work and weighed by the reviewer before it is
+			// reported (judgements.go, reviewer.go).
+			if st.judgementsDue("done") {
 				st.AwaitingJudge = "done"
 				st.JudgementRounds++
+				st.DoneRounds++
 				rc.Logf("operator", "said done - asking it first for the judgement calls the result rests on")
 				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: judgementsDoneNudge})
 				continue
 			}
 			if st.AwaitingJudge == "done" {
 				items, _ := judgementList(value)
-				// What it is not sure of goes back to it once to settle; what stays unsettled, or rests on the web, is
-				// asked (knowledge.go).
-				nudge, question := o.weighJudgements(rc, st, items, "")
-				if nudge != "" {
-					st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: nudge})
+				// What the review raises goes back to it once to settle; what stays unsettled, or rests on the web, is
+				// asked - or, the person asked as often as they may be, carried with the report (knowledge.go).
+				w := o.weighJudgements(rc, st, items, value, "")
+				if w.nudge != "" {
+					st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: w.nudge})
 					continue
 				}
 				st.AwaitingJudge = ""
 				st.JudgedAt, st.LastJudgements = st.CommandsSucceeded, items
-				if question != "" {
+				if w.question != "" {
 					st.Messages = append(st.Messages, reply)
-					return ask(question)
+					return ask(w.question)
 				}
+				value += openPointsNote(st, w.open)
 			}
 			if question := doneAsksThePerson(value); question != "" {
 				// A DONE that only asks the person for what is missing is a
@@ -1407,12 +1410,6 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				st.LookupNudged = true
 				rc.Logf("operator", "asked how the app works without looking it up - pushing back once")
 				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: lookupNudge})
-				continue
-			}
-			if selfApprovalRe.MatchString(value) && st.SelfApprovalNudges < maxSelfApprovalNudges {
-				st.SelfApprovalNudges++
-				rc.Logf("operator", "asked the person to approve an action the gate asks about itself - sent back to run it")
-				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: selfApprovalNudge})
 				continue
 			}
 			if st.CommandsRun == 0 && !st.Nudged {
@@ -1491,18 +1488,6 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: nudge})
 				continue
 			}
-			if nudge := unknownSiteNudge(st, value); nudge != "" && !st.UnknownSiteNudged {
-				st.UnknownSiteNudged = true
-				rc.Logf("operator", "would open a site nothing given or taught names - sent back to use the person's address")
-				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: nudge})
-				continue
-			}
-			if nudge := rowShiftNudge(value); nudge != "" && !st.RowShiftNudged {
-				st.RowShiftNudged = true
-				rc.Logf("operator", "a script would put rows into a workbook with openpyxl - sent back to office update's insert_rows")
-				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: nudge})
-				continue
-			}
 			nudge, untraced := groundingCheck(st, value)
 			if nudge != "" && o.readNamedSources(rc, st) {
 				// The values may be in files the work read some other way (a script): read, they decide.
@@ -1527,23 +1512,23 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 			if concern := safety.AssessCommand(value); concern != nil && !rc.IsApproved(value) {
 				rc.Logf("operator", "approval needed before `%s` - %s", value, concern.Reason)
 				st.Pending = value
-				return o.pause(subtask, st, concern.Reason), nil
+				return o.pause(subtask, st, concern.Reason+st.reviewInProgress()), nil
 			}
 			if blocked := o.execute(rc, st, value); blocked != "" {
 				st.Pending = pausedRest(value, blocked)
-				if st.judgementsDue() {
+				if st.judgementsDue("approval") {
 					// What it rests on comes first, then the person is asked with it (judgements.go).
 					st.AwaitingJudge, st.PendingReason = "approval", blocked
 					st.JudgementRounds++
+					st.ApprovalRounds++
 					rc.Logf("operator", "approval needed - asking it first for the judgement calls the action rests on")
 					st.Messages = append(st.Messages, llm.Message{Role: "user", Content: judgementsApprovalNudge(blocked)})
 					continue
 				}
 				if st.JudgementRounds > 0 && st.JudgedAt == st.CommandsSucceeded {
-					blocked += judgementsForApproval(st.LastJudgements) // nothing done since the list was read
+					blocked += st.withoutSecrets(judgementsForApproval(st.LastJudgements)) // nothing done since the list was read
 				}
-				st.AwaitingJudge, st.PendingReason, st.Settling = "", "", false
-				return o.pause(subtask, st, blocked), nil
+				return o.pause(subtask, st, blocked+st.reviewInProgress()), nil
 			}
 
 		default:
@@ -1749,9 +1734,13 @@ func answerFromCommand(command string, r shellResult, limit int) string {
 	return truncateText(out, limit)
 }
 
+// truncateText is s cut to about n bytes at a whole character, marked as cut.
 func truncateText(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n] + "\n... [truncated]"
 }

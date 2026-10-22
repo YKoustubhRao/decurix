@@ -305,6 +305,20 @@ def walk_files(root, skip=()):
     """Files under root, at most MAX_DEPTH levels and MAX_ENTRIES entries deep, hidden ones and folders named in `skip`
     left out."""
 
+    return (p for p, is_folder in _walk(root, skip) if not is_folder)
+
+
+def walk_folders(root, skip=()):
+    """Folders under root (an empty one too), with walk_files' depth and entry budget, breadth first; hidden ones, links
+    and folders named in `skip` left out."""
+
+    return (p for p, is_folder in _walk(root, skip) if is_folder)
+
+
+def _walk(root, skip=()):
+    """(path, is_folder) for what is under root, breadth first, at most MAX_DEPTH levels and MAX_ENTRIES entries; a
+    link is never followed or listed as a folder."""
+
     from collections import deque
 
     # Breadth first, so the entry budget is spent on the folders nearest the top before the deepest.
@@ -323,10 +337,12 @@ def walk_files(root, skip=()):
                 continue
             try:
                 if child.is_dir(follow_symlinks=False):
-                    if depth < MAX_DEPTH and child.name not in skip:
-                        stack.append((Path(child.path), depth + 1))
+                    if child.name not in skip:
+                        yield Path(child.path), True
+                        if depth < MAX_DEPTH:
+                            stack.append((Path(child.path), depth + 1))
                 elif child.is_file(follow_symlinks=False):
-                    yield Path(child.path)
+                    yield Path(child.path), False
             except OSError:
                 continue
 

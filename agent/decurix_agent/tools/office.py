@@ -18,6 +18,7 @@ to recalculate when opened.
 import json
 import os
 import re
+from collections import Counter
 import shutil
 import subprocess
 import sys
@@ -53,6 +54,12 @@ SCANNED_CHARS_PER_PAGE = 40
 DEFAULT_ROWS = 60
 
 IMAGE_TYPES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+
+def _is_picture(head):
+    """Whether a file's first bytes are a PNG, JPEG, GIF or WebP picture (what the models are shown)."""
+    return (head.startswith(b"\x89PNG\r\n\x1a\n") or head.startswith(b"\xff\xd8\xff")
+            or head[:6] in (b"GIF87a", b"GIF89a") or (head[:4] == b"RIFF" and head[8:12] == b"WEBP"))
 TEXT_TYPES = {".txt", ".md", ".csv", ".tsv", ".json", ".xml", ".html", ".htm", ".log"}
 
 
@@ -115,6 +122,15 @@ def read_document(path, pages=None, as_images=False):
     if ext == ".pdf":
         return _read_pdf(p, pages, as_images)
     if ext in IMAGE_TYPES:
+        with open(p, "rb") as f:
+            head = f.read(400)  # (only the start says what it is: a large picture is not read whole)
+        if not _is_picture(head):
+            # Found live (GST suite T8, 2026-10-22): a ".jpg" that was not a picture went to the model as one and the
+            # task stopped. What the file holds is said instead - often a web page a failed download saved.
+            shown = " ".join(head.decode("utf-8", errors="replace").split())[:200]
+            return {"text": f"{p.name} is named as a picture but is not one (not a PNG, JPEG, GIF or WebP file). It "
+                            f"begins: {shown!r} - if it was downloaded, the download did not bring the picture.",
+                    "images": []}
         return {"text": f"{p.name}: an image, shown below.", "images": [str(p)]}
     if ext in (".xlsx", ".xlsm"):
         return {"text": _data_check_workbook(p) + read_workbook(p), "images": []}
@@ -682,6 +698,115 @@ def sheet_blocks(ws):
         blocks.append((start, end, title[:MAX_BLOCK_TITLE]))
     # A layout is repeated only when its blocks have titles of their own.
     return blocks if len({t.casefold() for _, _, t in blocks}) == len(blocks) else []
+
+
+def _value_kind(v):
+    """What a cell holds, as a layout sees it: a date, a number, text that reads as a date or a number, or text."""
+
+    import datetime
+    if isinstance(v, (datetime.date, datetime.datetime)):
+        return "date"
+    if isinstance(v, bool):
+        return "flag"
+    if isinstance(v, (int, float)):
+        return "number"
+    if isinstance(v, str) and not v.startswith("="):
+        s = v.strip()
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:[ T][\d:]+)?|\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}", s):
+            return "date as text"
+        if re.fullmatch(r"-?[\d,]+(?:\.\d+)?", s):
+            return "number as text"
+        return "text"
+    return None
+
+
+# A cell's kind against its column's: a date written as text, a figure written as text, a code written as a figure.
+_MIXED_KINDS = {("date as text", "date"), ("number as text", "number"), ("number", "number as text")}
+_KIND_NAMES = {"date": "dates", "number": "numbers", "number as text": "numbers written as text"}
+
+
+def block_layout_breaks(path, rows=None):
+    """
+    Where a block of a sheet that repeats one layout (sheet_blocks, a month per block) does not follow it, as sentences:
+    a label every other block has that this one lacks (a header row left out), and a cell whose kind - a date, a number,
+    text - differs from what the same column holds in every other block (a date typed as text, a code typed as a number).
+    `rows`: {sheet: set of row numbers} - only blocks holding one of them are looked at (what the task changed); None
+    looks at the last block of each sheet. Found live (GST suite T2, 2026-10-22): a September block added below August's
+    had no header row, its dates were text and its codes numbers; the report said "laid out like the earlier months".
+    Decided from the sheet alone; evidence for the judge.
+    """
+
+    books = _formula_books(path, with_values=False)
+    if books is None:
+        return []
+    out = []
+    for ws in books[0].worksheets:
+        blocks = _loose_blocks(ws)
+        if len(blocks) < 3:
+            continue
+        if rows is not None and not rows.get(ws.title):
+            continue  # (the task changed nothing on this sheet: its last block is not this task's to answer for)
+        labels = _row_labels(ws)
+        wanted = rows.get(ws.title) if rows is not None else None
+        for i, (a, b, title) in enumerate(blocks):
+            if wanted is not None and not any(a <= r <= b for r in wanted):
+                continue
+            if wanted is None and i != len(blocks) - 1:
+                continue
+            others = [blk for j, blk in enumerate(blocks) if j != i]
+            mine = {labels[r].casefold() for r in range(a, b + 1) if r in labels}
+            # The layout's own rows: a label at the same distance from its block's start in every other block (a header
+            # row) - not a name that happens to come back in several (a regular customer).
+            common = None
+            for oa, ob, _ in others:
+                theirs = {(r - oa, labels[r].casefold()) for r in range(oa, ob + 1) if r in labels}
+                common = theirs if common is None else common & theirs
+            missing = sorted({label for _, label in common or ()} - mine)
+            if missing:
+                out.append(f"{ws.title}: the block {title!r} (rows {a}-{b}) has no row {', '.join(repr(m) for m in missing[:4])}, "
+                           f"which each of the other {len(others)} blocks has - it does not follow their layout.")
+            for column in range(1, ws.max_column + 1):
+                # The column's kind in the other blocks: what at least four in five of its dates and figures are.
+                seen = [k for oa, ob, _ in others for r in range(oa, ob + 1)
+                        if (k := _value_kind(ws.cell(r, column).value)) not in (None, "text", "flag")]
+                if len(seen) < 4:
+                    continue
+                main, n = Counter(seen).most_common(1)[0]
+                if n * 5 < len(seen) * 4:
+                    continue
+                for r in range(a, b + 1):
+                    v = ws.cell(r, column).value
+                    kind = _value_kind(v)
+                    if (kind, main) in _MIXED_KINDS:
+                        out.append(f"{ws.title}!{_col_letter(column)}{r} holds {v!r} as {kind}, where the column holds "
+                                   f"{_KIND_NAMES[main]} in the other blocks.")
+                        break
+    return out[:12]
+
+
+def _loose_blocks(ws):
+    """sheet_blocks without its demand that every block share the marker's layout - so a block that breaks it is still
+    a block, to be told it does."""
+
+    labels = _row_labels(ws)
+    rows_of = {}
+    for r, label in labels.items():
+        rows_of.setdefault(label.casefold(), []).append(r)
+    repeated = {k: v for k, v in rows_of.items() if len(v) >= 3}
+    if not repeated:
+        return []
+    anchor = max(repeated.values(), key=lambda rows: (len(rows), -rows[0]))
+    starts = []
+    for i, at in enumerate(anchor):
+        floor = anchor[i - 1] + 1 if i else 1
+        start = at
+        r = at - 1
+        while r >= floor and labels.get(r) is not None and len(rows_of[labels[r].casefold()]) == 1:
+            start = r
+            r -= 1
+        starts.append((start, labels[start]))
+    return [(s, (starts[i + 1][0] - 1 if i + 1 < len(starts) else ws.max_row), t[:MAX_BLOCK_TITLE])
+            for i, (s, t) in enumerate(starts)]
 
 
 def read_workbook(path, sheet=None, cells=None, max_rows=DEFAULT_ROWS, limit=MAX_TEXT_CHARS):

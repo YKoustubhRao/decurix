@@ -597,3 +597,24 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-5.md](gotchas/part-5.md): Told "a cancelled invoice still counts", the operator filed 16 seconds later with "0 cancelled": the answer to a question about the calls is applied before anything else, and the calls are weighed again
 - [part-5.md](gotchas/part-5.md): The workbook was given the return's ARN two characters off what the portal showed, and the read-back called it verified: a long code a few characters off a code the screens showed is a reference copied wrong
 - [part-5.md](gotchas/part-5.md): Asked to file on "the GST portal", the operator opened the real government site from memory: a web address nothing given or taught names is sent back once
+- [part-5.md](gotchas/part-5.md): A new month's block had no header row, its dates were text and its codes numbers, reported as laid out like the others: a block the task changed is compared with the sheet's other blocks
+- [part-5.md](gotchas/part-5.md): Asked for its judgement calls, the model sent the list alone and the report with the month's figures was lost: a DONE of the list alone keeps the last report
+- [part-5.md](gotchas/part-5.md): The client's chat offered eight files, seven were saved, and the report said all were saved and read: a document a screen offered that no command named is sent back once at DONE
+- [part-5.md](gotchas/part-5.md): The month's folder was there and empty, and the plan saved the invoices in a new folder of its own: the planner's listing shows folders too
+- [part-5.md](gotchas/part-5.md): Each failure answered with a rule of its own, and the rules came to fight the work: one independent reviewer over code-gathered facts replaces the pattern nudges; code blocks only on certainties
+- [part-5.md](gotchas/part-5.md): The reviewer asked the person whether figures the worker had read were ever shown: it is shown the passage each cited quote comes from in the full output
+- [part-5.md](gotchas/part-5.md): The answer to a parked question was held as a new request, and then run as one: only files or the same request resent are code's call; the rest is the model's
+- [part-5.md](gotchas/part-5.md): The person's rules, sent as the answer, were read as a separate request and then as a change, twelve times: the reader sees the whole question; the reviewer knows a gated action is not done by design
+- [part-5.md](gotchas/part-5.md): The same reply, sent again to the question asked again, was read the same wrong way each time: the reader is told it is the same message again
+- [part-5.md](gotchas/part-5.md): The reviewer of a stage asked for the next stage's part, and the stage did it: a stage is reviewed on its own part
+- [part-5.md](gotchas/part-5.md): "'module' object is not iterable" stopped a run after its stage had sent a message: an import shadowed the evidence argument
+- [part-5.md](gotchas/part-5.md): A file named .jpg that was not a picture stopped the task at its first step: pictures are checked by their bytes and a refused one is left out
+- [part-5.md](gotchas/part-5.md): The worker asked in the chat to approve a send, then the gate asked again: the contract no longer tells it to ask before a click the gate stops
+- [part-5.md](gotchas/part-5.md): An independent review of the harness found the review flow could drop what it raised and still report success: per-round send-back, capped questions, then carried with the result
+- [part-5.md](gotchas/part-5.md): A near-twin code is not a copying error: it is evidence for the judge, never a block
+- [part-5.md](gotchas/part-5.md): A cell address without its sheet points at every sheet: changed rows are kept by sheet
+- [part-5.md](gotchas/part-5.md): A reply to "is this your answer?" is about the earlier message: it is the one held, and the reader is told what the person said
+- [part-5.md](gotchas/part-5.md): A by-hand check that can never pass is a deadlock: only visible fields no later step fills, once per step
+- [part-5.md](gotchas/part-5.md): "Kept nothing" must not come from a word list: only no screen action at all is blank; else look in the app first
+- [part-5.md](gotchas/part-5.md): Not word for word is not wrong: derived values are kept, flagged; only the taught example is left out
+- [part-5.md](gotchas/part-5.md): Smaller review findings: repeat fact only after a misreading, salted; layout check on changed sheets; bounded folder walk; tests isolated

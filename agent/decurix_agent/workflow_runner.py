@@ -299,9 +299,7 @@ def artifact_evidence(step, result, context):
         elif fmt == "pdf":
             if not data.startswith(b"%PDF-"):
                 raise ValueError("invalid PDF")
-            # Content checks for PDF require the installed extraction tool.
-            import subprocess
-            text = subprocess.run(["pdftotext", str(p), "-"], capture_output=True, text=True, check=True, timeout=30).stdout
+            text = _pdf_text(p)
         else:
             text = data.decode("utf-8")
             if fmt in {"csv", "tsv"}:
@@ -356,6 +354,15 @@ def artifact_evidence(step, result, context):
                 raise ValueError(f"{check['path']} missing required content: {needle}")
         evidence.append({"path": check["path"], "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)})
     return evidence
+
+
+def _pdf_text(path):
+    """A PDF artifact's text, read with the desktop's pdftotext (poppler); a missing tool fails the check, by name."""
+    import shutil
+    import subprocess
+    if not shutil.which("pdftotext"):
+        raise ValueError("pdftotext is not installed, so the PDF's content cannot be checked")
+    return subprocess.run(["pdftotext", str(path), "-"], capture_output=True, text=True, check=True, timeout=30).stdout
 
 
 def _is_pattern(path):
