@@ -680,7 +680,7 @@ def file_facts(request, made, host_copies=(), root=None, named_in=None, drafts_m
         request_faults=image_findings(named, every, source_images(named, every, **({"root": root} if root else {})))
         + page_break_findings(named, every),
         # Needs the formula results stored too: the figure checked is the value the file holds (sources.py).
-        source_mismatch=_source_mismatch(request, every) if not unstored else [],
+        source_mismatch=(_source_mismatch(request, every) if not unstored else []) + miscopied_codes(every, request),
         disclosures=draft_disclosures(drafts_made, request) if drafts_made else [],
         payee_mismatch=_payee_mismatch(request, every),
         duplicates=identical_files(every),
@@ -711,6 +711,64 @@ def moved_breaks(paths):
         return office.moved_formula_breaks(before, path) if before else []
 
     return _per_file(paths, check, "compare with its copy from before the task")
+
+
+# A reference code: twelve or more letters and digits with both in it (an ARN, a GSTIN, an IBAN, an order reference).
+_LONG_CODE = re.compile(r"(?<![A-Za-z0-9])(?=[A-Za-z0-9]*\d)(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{12,}(?![A-Za-z0-9])")
+
+
+def _shown_codes(request=""):
+    """The long reference codes the task was shown: the request, and what the system's pages showed (the tools' page
+    notes and the screen actions' results) - never what the work itself wrote or printed."""
+
+    texts = [request or ""]
+    try:
+        from decurix_agent import long_task
+        from decurix_agent.computer import evidence
+        # Every screen action's whole result, not the last few as the judge is shown: a long task's first filing,
+        # whose confirmation the code was copied from, is far back by its end (found live, GST suite T9, 2026-10-22).
+        events = evidence._task_events(None)
+        texts += long_task._page_notes() + list(evidence.observed()) + [
+            f"{e.get('summary') or ''} {e.get('change') or ''}" for e in events]
+    except Exception as exc:  # noqa: BLE001 - nothing read is nothing held
+        log(f"produced: could not gather what the screens showed: {exc}")
+    return {c.upper() for t in texts for c in _LONG_CODE.findall(str(t))}
+
+
+def miscopied_codes(paths, request=""):
+    """
+    A sentence for each long reference code a file the work wrote holds that nothing the task was shown holds, while
+    exactly one code it was shown differs from it in one to three characters: a reference copied wrong. Found live
+    (GST suite T9, 2026-10-22): the portal showed the return's ARN as AA2909267663712A and the workbook was given
+    AA2909267663796A; the report read the workbook back and called it verified. Short codes (an invoice number next to
+    its neighbours) are left out: only codes of twelve characters or more, with a single near twin.
+    """
+
+    shown = _shown_codes(request)
+    if not shown:
+        return []
+    from decurix_agent.tools import office
+    out = []
+    for path in dict.fromkeys(str(p) for p in paths or ()):
+        try:
+            if Path(path).suffix.lower() in (".xlsx", ".xlsm") and changed_cells(path):
+                text = changed_rows_text(path)
+            else:
+                text = office.read_document(path).get("text") or ""
+        except Exception as exc:  # noqa: BLE001 - a file that cannot be read decides nothing here
+            log(f"produced: could not read {path} for its codes: {exc}")
+            continue
+        for code in dict.fromkeys(_LONG_CODE.findall(text)):
+            upper = code.upper()
+            if upper in shown:
+                continue
+            twins = [k for k in shown if len(k) == len(upper) and 1 <= sum(a != b for a, b in zip(k, upper)) <= 3]
+            if len(twins) == 1:
+                apart = sum(a != b for a, b in zip(twins[0], upper))
+                out.append(f"{Path(path).name} holds {code}, which no page or document showed - {twins[0]} is what "
+                           f"was shown, {apart} character(s) apart: a reference copied wrong. Correct it from where it "
+                           "was shown.")
+    return out
 
 
 def identical_files(paths):
@@ -1119,6 +1177,90 @@ def lines_with(paths, terms, budget=LOOK_CHARS):
     return "\n".join(parts)
 
 
+MAX_CHANGED_CELLS = 150
+# How much of a workbook the judge's view reads before sampling it to MAX_FILE_CHARS.
+JUDGE_SHEET_ROWS = 5000
+JUDGE_SHEET_CHARS = 400_000
+
+
+def changed_cells(path):
+    """
+    ["c97=", ...]: the cells of a workbook that differ from the copy kept before the task (source_guard.before_copy),
+    as office read writes their addresses - so a long sheet the judge is shown a sample of shows what the task changed.
+    Found live (GST suite T4, 2026-10-22): the report gave a credit carried forward the saved workbook contradicted,
+    and the judge, shown a sample of the sheet without the new month's rows, passed it. [] when there is no copy.
+    """
+
+    if Path(path).suffix.lower() not in (".xlsx", ".xlsm"):
+        return []
+    try:
+        from decurix_agent import source_guard
+        before = source_guard.before_copy(path)
+        if before is None:
+            return []
+        import openpyxl
+        old, new = openpyxl.load_workbook(str(before)), openpyxl.load_workbook(str(path))
+    except Exception as exc:  # noqa: BLE001 - extra focus, never a reason to fail the read
+        log(f"produced: could not compare {path} with its copy from before the task: {exc}")
+        return []
+    out = []
+    for ws in new.worksheets:
+        was = old[ws.title] if ws.title in old.sheetnames else None
+        for row in ws.iter_rows():
+            for c in row:
+                if c.value is not None and (was is None or was[c.coordinate].value != c.value):
+                    out.append(f"{c.coordinate.lower()}=")
+                    if len(out) >= MAX_CHANGED_CELLS:
+                        return out
+    return out
+
+
+MAX_CHANGED_ROWS_CHARS = 5000
+
+
+def changed_rows_text(path):
+    """
+    The rows of a workbook that differ from the copy kept before the task, each as its saved values (no formulas) with
+    the block it belongs to - what the task changed, compact enough to be shown whole beside a long sheet's sample. ""
+    when there is no copy or nothing changed.
+    """
+
+    cells = changed_cells(path)
+    if not cells:
+        return ""
+    try:
+        import openpyxl
+        from decurix_agent.tools import office
+        values = openpyxl.load_workbook(str(path), data_only=True)
+        formulas = openpyxl.load_workbook(str(path))
+    except Exception as exc:  # noqa: BLE001
+        log(f"produced: could not read the changed rows of {path}: {exc}")
+        return ""
+    rows = {}
+    for token in cells:
+        m = re.match(r"([a-z]+)(\d+)=", token)
+        if m:
+            rows.setdefault(int(m.group(2)), None)
+    lines = []
+    for ws in formulas.worksheets:
+        try:
+            blocks = office.sheet_blocks(ws)
+        except Exception:  # noqa: BLE001
+            blocks = []
+        wv = values[ws.title]
+        changed = sorted(r for r in rows if any(ws.cell(r, c).value is not None for c in range(1, ws.max_column + 1)))
+        for r in changed:
+            tag = next((t for a, b, t in blocks if a <= r <= b), "")
+            shown = [f"{wv.cell(r, c).coordinate}={office._cell_shown(wv.cell(r, c).value)}"
+                     for c in range(1, ws.max_column + 1) if wv.cell(r, c).value is not None]
+            if shown:
+                lines.append(f"{ws.title}{(' [' + tag + ']') if tag else ''}  " + "  ".join(shown))
+    text = "\n".join(lines)
+    if len(text) > MAX_CHANGED_ROWS_CHARS:
+        text = text[:MAX_CHANGED_ROWS_CHARS] + "\n[... more changed rows not shown]"
+    return text
+
+
 def text(paths, focus=()):
     """What those files say now, read the way the worker's own tools read them; unreadable ones say so. A long table is
     sampled (sample_table): its header, the rows `focus` (what findings name) points at, its totals, an even sample."""
@@ -1133,13 +1275,19 @@ def text(paths, focus=()):
             parts.append(f"--- {label}\n{_picture(path)}")
             continue
         try:
-            body = (office.read_document(path).get("text") or "").strip()
+            if Path(path).suffix.lower() in (".xlsx", ".xlsm"):
+                # Every row, then sampled below: office read's own view stops at its first rows, and what a task adds
+                # to a sheet is usually at its end (GST suite T4, 2026-10-22: the new month, rows 86-99, was never shown).
+                body = (office._data_check_workbook(Path(path)) + office.read_workbook(
+                    path, max_rows=JUDGE_SHEET_ROWS, limit=JUDGE_SHEET_CHARS)).strip()
+            else:
+                body = (office.read_document(path).get("text") or "").strip()
         except Exception as exc:  # a file the reader cannot open is reported as such, not left out
             log(f"produced: could not read {path}: {exc}")
             parts.append(f"--- {label}\n(could not be read: {str(exc)[:200]})")
             continue
         if len(body) > MAX_FILE_CHARS and Path(path).suffix.lower() in TABLE_KINDS:
-            body = sample_table(body, MAX_FILE_CHARS, tokens)
+            body = sample_table(body, MAX_FILE_CHARS, tokens + changed_cells(path))
         elif len(body) > MAX_FILE_CHARS:
             body = body[:MAX_FILE_CHARS] + f"\n[cut here: {len(body) - MAX_FILE_CHARS} more characters not shown]"
         # The end of a sheet is where a fill that stopped short and a Total row show, and the text above is cut before
@@ -1149,7 +1297,11 @@ def text(paths, focus=()):
         except Exception as exc:  # noqa: BLE001 - extra evidence, never a reason to fail the read
             log(f"produced: no tail of {path}: {exc}")
             tail = ""
-        parts.append(f"--- {label}\n{body or '(empty)'}" + (f"\n{tail}" if tail else ""))
+        changed = changed_rows_text(path) if Path(path).suffix.lower() in (".xlsx", ".xlsm") else ""
+        if changed:
+            # Every row the task changed, with its saved values: what a report about the file is compared with.
+            changed = "\n[What this task changed in it - every row that differs from before the task, as saved now:]\n" + changed
+        parts.append(f"--- {label}\n{body or '(empty)'}" + (f"\n{tail}" if tail else "") + changed)
     return "\n".join(parts)
 
 

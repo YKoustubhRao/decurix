@@ -447,6 +447,22 @@ def mine_checks(expect, reference=None):
     return checks
 
 
+# The roles a field one types a secret into is listed with.
+SECRET_TYPING_ROLES = {"textbox", "password", "password text", "entry", "spinbutton", "combobox", "searchbox"}
+
+
+def _empty_secret_fields():
+    """The secret fields (passwords, codes) on the screen that hold nothing; [] when none, or the screen cannot be read."""
+
+    try:
+        observation = core.observe()
+    except ComputerError:
+        return []
+    return [e for e in observation.get("elements") or []
+            if privacy.secret_field(e) and e.get("role") in SECRET_TYPING_ROLES
+            and not str(e.get("value") or "").strip()]
+
+
 def _open_where_it_began(first):
     """
     A recording that began on a web page begins by being on it: when its first step is on a page no tab is showing,
@@ -1506,6 +1522,17 @@ def run(program, params=None, start=1, report=None, ladder=None):
         opened = _open_where_it_began(steps[0])
         if opened:
             report(opened)
+
+    # Carrying on right after a step done by hand: it was done only if the screen shows it. Found live (GST suite T9,
+    # 2026-10-22): told "use your judgement" at "type the client's portal password", the engine carried on from the
+    # next step with the password field empty; the login failed and it went looking for the portal elsewhere.
+    by_hand = next((s for s in steps if s["n"] == start - 1 and s["kind"] == "manual"), None)
+    if by_hand is not None:
+        empty = _empty_secret_fields()
+        if empty:
+            return finish(NEEDS_HUMAN, by_hand, resume_from=start,
+                          reason=f"{by_hand.get('reason') or 'the private step'} - it has not been done yet: "
+                                 f"{el.describe(empty[0])} on the screen is still empty")
 
     _fit_screen([s for s in steps if s["n"] >= start], report)
     changed_at = _first_change(program, values)
