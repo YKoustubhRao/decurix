@@ -549,6 +549,40 @@ type operatorState struct {
 	SourcesRead map[string]bool `json:",omitempty"`
 	// AskedUntraced are the values a question to the person named as untraced; their reply decides them (resume).
 	AskedUntraced []string `json:",omitempty"`
+	// PrefixLen is how many messages the goal's fixed part holds (system, session history, contract); Ledger is what
+	// every command did; Continuations and Compactions count the extra turn budgets and the shortenings (context.go).
+	PrefixLen     int      `json:",omitempty"`
+	Ledger        []string `json:",omitempty"`
+	Continuations int      `json:",omitempty"`
+	Compactions   int      `json:",omitempty"`
+	// The judgement calls a result rests on (judgements.go): rounds asked, the successes counted when the last one was
+	// read, which one is awaited ("done" or "approval") and, for an approval, the reason the gate gave.
+	JudgementRounds int    `json:",omitempty"`
+	JudgedAt        int    `json:",omitempty"`
+	AwaitingJudge   string `json:",omitempty"`
+	PendingReason   string `json:",omitempty"`
+	JudgementAsked  bool   `json:",omitempty"`
+	// LastJudgements is the last list read, shown with an approval asked before any more work was done.
+	LastJudgements []string `json:",omitempty"`
+	// FetchedNudged and MismatchNudged are set once a DONE over gathered documents never read, or over a result its
+	// report says does not match a source, was sent back (inputs_read.go).
+	FetchedNudged  bool `json:",omitempty"`
+	MismatchNudged bool `json:",omitempty"`
+	// SelfApprovalNudges counts questions asking the person to approve what the gate asks about itself (inputs_read.go).
+	SelfApprovalNudges int `json:",omitempty"`
+	// Lookups are the web pages the goal read (knowledge.go): never a source until the person confirms one;
+	// PersonLinks are the links the person gave (the request, their replies), whose pages are sources; AskedSources are
+	// the lookups a question to the person asked them to confirm; UnsureSent is set once unsettled calls were sent back.
+	Lookups      []webLookup `json:",omitempty"`
+	PersonLinks  []string    `json:",omitempty"`
+	AskedSources []int       `json:",omitempty"`
+	UnsureSent   bool        `json:",omitempty"`
+	// JudgementQuestion is set while a question about the calls is with the person: their answer is applied (resume).
+	JudgementQuestion bool `json:",omitempty"`
+	// Settling is set while an approval waits for calls sent back to be settled (lookups and re-reads may run first).
+	Settling bool `json:",omitempty"`
+	// UnknownSiteNudged is set once opening a site nothing given or taught names was sent back (knowledge.go).
+	UnknownSiteNudged bool `json:",omitempty"`
 }
 
 // outputChars is OutputChars, or the local default for a checkpoint written
@@ -649,7 +683,9 @@ func (o *OperatorSkill) start(rc RunContext, subtask Subtask) *operatorState {
 		st.Screenshot = filepath.Join(os.TempDir(), fmt.Sprintf("thebot-screen-%d.png", time.Now().UnixNano()))
 	}
 	st.Messages = append(messages, llm.Message{Role: "user", Content: fmt.Sprintf(operatorContract, rc.Dir(), vision, findings, subtask.Step)})
+	st.PrefixLen = len(st.Messages)
 	st.Request = subtask.Step
+	st.notePersonLinks(subtask.Step)
 	st.noteSeen(subtask.Step + "\n" + findings)
 	return st
 }
@@ -698,7 +734,23 @@ func (o *OperatorSkill) resume(rc RunContext, subtask Subtask, st *operatorState
 		st.AskedUntraced = nil
 		st.UntracedNudges = 0
 	}
+	// Web pages the person was asked to vouch for: a reply that does not say no makes them sources (knowledge.go).
+	st.settleAskedSources(reply)
+	if st.JudgementQuestion && reply != "" {
+		// Their answer about the calls the work rests on is applied before anything else, and the calls are weighed
+		// again (knowledge.go). Found live (GST suite T9, 2026-10-22): told "a cancelled invoice still counts in
+		// documents issued", the operator filed the return 16 seconds later with "0 cancelled" still in it.
+		st.JudgementQuestion, st.UnsureSent, st.JudgedAt = false, false, -1
+		st.notePersonLinks(reply)
+		st.noteSeen(reply)
+		st.Messages = append(st.Messages, llm.Message{Role: "user", Content: "The human answered your question about the " +
+			"calls the work rests on: " + reply + "\n\nApply it before anything else: compare each of those calls with what " +
+			"they said, and where your work differs, correct it - re-open and change what you entered or wrote - before " +
+			"any further step. Never carry on over a call they settled otherwise. Then continue the task."})
+		return st, ""
+	}
 	if reply != "" {
+		st.notePersonLinks(reply)
 		st.noteSeen(reply)
 		st.Messages = append(st.Messages, llm.Message{Role: "user", Content: "The human replied: " + reply + "\n\nContinue the task."})
 	}
@@ -748,6 +800,7 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 	res := runShell(rc.Ctx, rc.Dir(), run, o.commandTimeout(), st.guiEnv()...)
 	noteFilesRead(run)
 	noteCommandOutput(run, res.Output)
+	st.noteLedger(command, res)
 	if reason := screenApprovalReason(res); reason != "" {
 		rc.Logf("operator", "approval needed on screen - %s", reason)
 		return reason
@@ -772,8 +825,10 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 	st.LastResult = &res
 	// What a page on the internet says is a source of values only for a request that asks for it from the web: a
 	// web page is never where a record's or a document's figures come from (grounding.go).
-	if !isLookup(command) || researchRe.MatchString(st.Request) {
+	if !isLookup(command) || researchRe.MatchString(st.Request) || st.fetchesPersonLink(command) {
 		st.noteSeen(res.Output)
+	} else {
+		st.noteLookup(command, res.Output) // kept apart: a source only once the person confirms it (knowledge.go)
 	}
 	result := formatCommandResult(res, st.outputChars())
 	if res.ExitCode != 0 {
@@ -1106,8 +1161,24 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 	}
 
 	began := time.Now()
-	for turn := 0; turn < o.turns(st); turn++ {
-		turnsUsed = turn + 1
+	windowStart := st.CommandsSucceeded
+	for turn := 0; ; turn++ {
+		if turn >= o.turns(st) {
+			// A spent budget that made progress is not a failing goal: shortened and given another (context.go).
+			if !st.mayContinue(windowStart) {
+				break
+			}
+			st.Continuations++
+			rc.Logf("operator", "turn budget spent while making progress (%d commands worked) - shortening the context and "+
+				"going on (%d of %d)", st.CommandsSucceeded-windowStart, st.Continuations, maxContinuations)
+			o.compact(rc, st, "turn budget")
+			windowStart = st.CommandsSucceeded
+			turn = 0
+		}
+		turnsUsed++
+		if st.Hosted && transcriptChars(st) > contextBudgetChars {
+			o.compact(rc, st, "context size")
+		}
 		if err := rc.Ctx.Err(); err != nil {
 			return finish("Stopped before finishing: "+err.Error(), false, map[string]any{"error": err.Error(), "fatal": true})
 		}
@@ -1120,7 +1191,10 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 			}
 		}
 
-		if left := o.turns(st) - turn; left == closingTurns && o.turns(st) >= 4*closingTurns && !st.BudgetWarned {
+		// Told to finish only when no further budget would follow: "do not begin anything new" made a long goal wrap up
+		// half checked (context.go).
+		if left := o.turns(st) - turn; left == closingTurns && o.turns(st) >= 4*closingTurns && !st.BudgetWarned &&
+			!(st.Hosted && st.Continuations < maxContinuations) {
 			st.BudgetWarned = true
 			rc.Logf("operator", "nearly out of turns - told to finish or to ask")
 			appendToLastUser(st, fmt.Sprintf(closingNote, left))
@@ -1151,6 +1225,33 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 		reply := llm.Message{Role: "assistant", Content: resp.Text}
 		if logReplies {
 			rc.Logf("operator", "model replied: %s", truncateText(strings.Join(strings.Fields(resp.Text), " "), 300))
+		}
+
+		if st.AwaitingJudge == "approval" && st.Settling && action == "command" {
+			// Settling what it was not sure of (a lookup, a re-read) before it lists the calls again: the approval waits.
+		} else if st.AwaitingJudge == "approval" {
+			// The answer to "what does this action rest on": a list (under any marker) puts the action to the person
+			// with it, or a call nothing given backs to the person as a question first. A command or a question
+			// instead means it is changing course: the approval comes again when it gets there.
+			reason := st.PendingReason
+			st.AwaitingJudge, st.PendingReason, st.Settling = "", "", false
+			if items, listed := judgementList(resp.Text); listed || (action != "command" && action != "help") {
+				nudge, question := o.weighJudgements(rc, st, items, reason)
+				if nudge != "" {
+					// Sent back to settle what it is not sure of; the approval is asked when it lists them again.
+					st.AwaitingJudge, st.PendingReason, st.Settling = "approval", reason, true
+					st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: nudge})
+					continue
+				}
+				st.JudgedAt, st.LastJudgements = st.CommandsSucceeded, items
+				st.Messages = append(st.Messages, reply)
+				if question != "" {
+					st.Pending = "" // done again after their answer, and stopped again for the approval
+					return ask(question)
+				}
+				return o.pause(subtask, st, reason+judgementsForApproval(items)), nil
+			}
+			st.Pending = ""
 		}
 
 		switch action {
@@ -1240,6 +1341,45 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				st.Messages = append(st.Messages, reply)
 				return ask(question)
 			}
+			// What the work gathered is read, and a disagreement it found is settled, before it is reported
+			// (inputs_read.go). Each said once.
+			if unread := unreadFetched(st.Commands); len(unread) > 0 && !st.FetchedNudged {
+				st.FetchedNudged = true
+				rc.Logf("operator", "said done with %d gathered document(s) never read - sending it back", len(unread))
+				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: unreadFetchedNudge(unread)})
+				continue
+			}
+			if mismatchRe.MatchString(value) && !st.MismatchNudged {
+				st.MismatchNudged = true
+				rc.Logf("operator", "said done over a result it says does not match a source - sending it back")
+				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: mismatchNudge})
+				continue
+			}
+			// The judgement calls the result rests on, listed and their backing checked before it is reported
+			// (judgements.go).
+			if st.judgementsDue() {
+				st.AwaitingJudge = "done"
+				st.JudgementRounds++
+				rc.Logf("operator", "said done - asking it first for the judgement calls the result rests on")
+				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: judgementsDoneNudge})
+				continue
+			}
+			if st.AwaitingJudge == "done" {
+				items, _ := judgementList(value)
+				// What it is not sure of goes back to it once to settle; what stays unsettled, or rests on the web, is
+				// asked (knowledge.go).
+				nudge, question := o.weighJudgements(rc, st, items, "")
+				if nudge != "" {
+					st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: nudge})
+					continue
+				}
+				st.AwaitingJudge = ""
+				st.JudgedAt, st.LastJudgements = st.CommandsSucceeded, items
+				if question != "" {
+					st.Messages = append(st.Messages, reply)
+					return ask(question)
+				}
+			}
 			if question := doneAsksThePerson(value); question != "" {
 				// A DONE that only asks the person for what is missing is a
 				// question, whatever marker it came under. Found live
@@ -1267,6 +1407,12 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				st.LookupNudged = true
 				rc.Logf("operator", "asked how the app works without looking it up - pushing back once")
 				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: lookupNudge})
+				continue
+			}
+			if selfApprovalRe.MatchString(value) && st.SelfApprovalNudges < maxSelfApprovalNudges {
+				st.SelfApprovalNudges++
+				rc.Logf("operator", "asked the person to approve an action the gate asks about itself - sent back to run it")
+				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: selfApprovalNudge})
 				continue
 			}
 			if st.CommandsRun == 0 && !st.Nudged {
@@ -1345,6 +1491,12 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: nudge})
 				continue
 			}
+			if nudge := unknownSiteNudge(st, value); nudge != "" && !st.UnknownSiteNudged {
+				st.UnknownSiteNudged = true
+				rc.Logf("operator", "would open a site nothing given or taught names - sent back to use the person's address")
+				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: nudge})
+				continue
+			}
 			if nudge := rowShiftNudge(value); nudge != "" && !st.RowShiftNudged {
 				st.RowShiftNudged = true
 				rc.Logf("operator", "a script would put rows into a workbook with openpyxl - sent back to office update's insert_rows")
@@ -1379,6 +1531,18 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 			}
 			if blocked := o.execute(rc, st, value); blocked != "" {
 				st.Pending = pausedRest(value, blocked)
+				if st.judgementsDue() {
+					// What it rests on comes first, then the person is asked with it (judgements.go).
+					st.AwaitingJudge, st.PendingReason = "approval", blocked
+					st.JudgementRounds++
+					rc.Logf("operator", "approval needed - asking it first for the judgement calls the action rests on")
+					st.Messages = append(st.Messages, llm.Message{Role: "user", Content: judgementsApprovalNudge(blocked)})
+					continue
+				}
+				if st.JudgementRounds > 0 && st.JudgedAt == st.CommandsSucceeded {
+					blocked += judgementsForApproval(st.LastJudgements) // nothing done since the list was read
+				}
+				st.AwaitingJudge, st.PendingReason, st.Settling = "", "", false
 				return o.pause(subtask, st, blocked), nil
 			}
 

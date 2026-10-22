@@ -608,7 +608,83 @@ def _openpyxl():
     return openpyxl
 
 
-def read_workbook(path, sheet=None, cells=None, max_rows=DEFAULT_ROWS):
+MAX_BLOCK_TITLE = 40
+
+
+def _row_labels(ws):
+    """{row: the row's first text, stripped} for the rows of a sheet that have one."""
+
+    labels = {}
+    for row in ws.iter_rows(min_row=1, max_row=ws.max_row):
+        for c in row:
+            if isinstance(c.value, str) and c.value.strip() and not c.value.startswith("="):
+                labels[c.row] = " ".join(c.value.split())
+                break
+    return labels
+
+
+def sheet_blocks(ws):
+    """
+    [(first row, last row, title)] when a sheet repeats one layout block after block (a month per block, a client per
+    block): the label that recurs most marks each block, and the block's title is the topmost row above it, within the
+    gap from the block before, whose label occurs nowhere else. [] for a sheet that does not repeat a layout. Found live
+    (GST suite T3, 2026-10-21): "Closing credit carried forward" stood in six blocks of a workbook read as one list of
+    cells, and the worker took August's figure from another month's block. Decided from the sheet's labels alone.
+    """
+
+    labels = _row_labels(ws)
+    rows_of = {}
+    for r, label in labels.items():
+        rows_of.setdefault(label.casefold(), []).append(r)
+    repeated = {k: v for k, v in rows_of.items() if len(v) >= 2}
+    if len(repeated) < 2:
+        return []
+    anchor = max(repeated.values(), key=lambda rows: (len(rows), -rows[0]))
+    # A layout, not a table whose names come again: another label stands at the same distance from the marker in
+    # every block ("Date" two rows below the client's name in each month).
+    by_row = {r: label.casefold() for r, label in labels.items()}
+    shared = None
+    for at in anchor:
+        here = {(r - at, by_row[r]) for r in by_row if at < r <= at + 6 and by_row[r] != by_row[anchor[0]]}
+        shared = here if shared is None else shared & here
+    if not shared:
+        return []
+    # The rows right above each block's marker whose labels occur once: its title rows. Every block has as many; a
+    # block that shows more has the notes of the block before glued on (no blank row between), so the fewest counts.
+    filled = {c.row for row in ws.iter_rows(min_row=1, max_row=ws.max_row) for c in row if c.value not in (None, "")}
+    ups = []  # per block, the title rows above its marker, nearest first (blank rows between are passed over)
+    for i, at in enumerate(anchor):
+        floor = anchor[i - 1] + 1 if i else 1
+        found, r = [], at - 1
+        while r >= floor:
+            if r not in filled:
+                r -= 1
+                continue
+            if labels.get(r) is None or len(rows_of[labels[r].casefold()]) != 1:
+                break
+            found.append(r)
+            r -= 1
+        ups.append(found)
+    above = min(len(u) for u in ups)
+    starts = []
+    for i, at in enumerate(anchor):
+        if above:
+            start = ups[i][above - 1]
+            starts.append((start, labels[start]))
+            continue
+        # No title above the marker: the block's first line of its own below it names it.
+        nxt = anchor[i + 1] if i + 1 < len(anchor) else ws.max_row + 1
+        own = next((labels[r] for r in range(at + 1, nxt) if r in labels and len(rows_of[labels[r].casefold()]) == 1), labels[at])
+        starts.append((at, own))
+    blocks = []
+    for i, (start, title) in enumerate(starts):
+        end = starts[i + 1][0] - 1 if i + 1 < len(starts) else ws.max_row
+        blocks.append((start, end, title[:MAX_BLOCK_TITLE]))
+    # A layout is repeated only when its blocks have titles of their own.
+    return blocks if len({t.casefold() for _, _, t in blocks}) == len(blocks) else []
+
+
+def read_workbook(path, sheet=None, cells=None, max_rows=DEFAULT_ROWS, limit=MAX_TEXT_CHARS):
     """
     A workbook as text: every sheet (or one) with its size, then its cells as
     a grid with their addresses. A formula shows as `=SUM(B2:B9) -> 1200`
@@ -669,6 +745,22 @@ def read_workbook(path, sheet=None, cells=None, max_rows=DEFAULT_ROWS):
         except Exception as exc:  # noqa: BLE001 - the values are still worth reading when this cannot be
             out.append(f"(formatting could not be read: {str(exc)[:120]})")
 
+        try:
+            blocks = sheet_blocks(ws_f)
+        except Exception:  # noqa: BLE001 - the cells are still worth reading when the layout cannot be told
+            blocks = []
+        if blocks:
+            # First, so a reply cut short still says where each block is; each row below carries its block's title.
+            out.append("Blocks (this sheet repeats one layout; each row below is tagged with its block): "
+                       + "; ".join(f"rows {a}-{b} {t!r}" for a, b, t in blocks)
+                       + f". Read one block with its range, e.g. 'A{blocks[-1][0]}:{_col_letter(ws_f.max_column)}{blocks[-1][1]}'.")
+
+        def block_of(r):
+            for a, b, t in blocks:
+                if a <= r <= b:
+                    return t
+            return None
+
         if cells:
             rows = ws_f[cells]
             if not isinstance(rows, tuple) or (rows and not isinstance(rows[0], tuple)):
@@ -681,6 +773,9 @@ def read_workbook(path, sheet=None, cells=None, max_rows=DEFAULT_ROWS):
 
         for row in rows:
             shown = []
+            tag = block_of(row[0].row) if blocks and row else None
+            if tag:
+                shown.append(f"[{tag}]")
             for c in row:
                 if c.value is None:
                     continue
@@ -690,11 +785,11 @@ def read_workbook(path, sheet=None, cells=None, max_rows=DEFAULT_ROWS):
                     shown.append(f"{c.coordinate}={v} -> {_cell_shown(cached)}")
                 else:
                     shown.append(f"{c.coordinate}={_cell_shown(v)}")
-            if shown:
+            if len(shown) > (1 if tag else 0):
                 out.append("  ".join(shown))
 
     out.extend(_workbook_objects(p))
-    return _clip("\n".join(out))
+    return _clip("\n".join(out), limit)
 
 
 # ============================================================

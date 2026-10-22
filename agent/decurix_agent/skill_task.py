@@ -1681,10 +1681,11 @@ def _procedure(run, from_step=None, note="", ran=False):
         # The first attempt never touched the screen, so there is nothing of it to find and correct. Found live:
         # told all the same that its "first attempt already saved its work", the engine took the record an
         # EARLIER task had left open for that work, saw it was another record, and three times over did nothing.
-        lines.append("YOUR FIRST ATTEMPT AT THIS REQUEST DID NOTHING ON THE SCREEN"
+        lines.append("YOUR FIRST ATTEMPT AT THIS REQUEST KEPT NOTHING IN THE APPLICATION (nothing was saved, added or submitted)"
                      + (f" (it reported: {' '.join(run['attempt_report'].split())[:500]})" if run.get("attempt_report") else "")
-                     + ". Nothing of this request has been entered: no record of it exists yet, and whatever is open on "
-                       "the screen now is from before - leave that as it is. Do the task now, from its first step, "
+                     + f". A check of the screen then found: {run['attempt_note']}"
+                     + ". Nothing of this request has been kept: no record of it exists yet, and whatever is open on "
+                       "the screen now was not saved - leave anything of an earlier task as it is. Do the task now, from its first step, "
                        "yourself: one gui command at a time, following the steps below. Where gui do refused to "
                        "replay it, that is not a reason to stop - it means the steps are yours to do.")
     elif run.get("attempt_note"):
@@ -1848,8 +1849,8 @@ def _engine_request(run):
         request += " with " + ", ".join(f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in run["values"].items())
     request += "."
     if run.get("attempt_note") and run.get("attempt_blank"):
-        request += ("\n\nYOUR FIRST ATTEMPT DID NOTHING ON THE SCREEN, so nothing of this request is entered yet. Whatever "
-                    "is open now is from an earlier task: leave it alone. Do this request now from its first step, "
+        request += ("\n\nYOUR FIRST ATTEMPT KEPT NOTHING IN THE APPLICATION (nothing was saved, added or submitted), so "
+                    "nothing of this request is entered yet. Whatever is open now is from an earlier task: leave it alone. Do this request now from its first step, "
                     "with gui commands of your own.")
     elif run.get("attempt_note"):
         # In the request itself, not only in the guidance: found live, with it
@@ -2218,6 +2219,37 @@ def _did_screen_work():
     except (OSError, ValueError):
         return False
     return bool(meta and meta.get("event_count"))
+
+
+# A control whose press keeps, sends or files what was entered: what makes an attempt's work exist in an application.
+COMMIT_CONTROL = re.compile(r"\b(save|submit|add|create|post|file|send|confirm|update|apply|generate|proceed|ok|done|"
+                            r"finish|record|book|insert|upload|verify|approve|accept|continue)\b", re.I)
+
+
+def _committed_on_screen():
+    """
+    Whether the task being worked on kept anything in an application, per its recording: a press of a control that
+    keeps, sends or files (Save, Add, Submit ...) that went through. Enter is not counted (it signs in as often as it
+    saves); a wrong "nothing kept" would let a second attempt enter the request twice. Found live (GST suite T7,
+    2026-10-22): the first attempt's login failed and nothing was entered, but it had touched the screen, so the second
+    was told to open and correct "the record the first attempt made" - there was none, and it gave up three times.
+    """
+
+    task_id = task_context.current()
+    if not task_id:
+        return False
+    try:
+        _, events = recording.load(recording.session_for_task(task_id))
+    except (OSError, ValueError):
+        return False
+    for e in events:
+        if e.get("outcome") not in (None, "done"):
+            continue
+        target = str(e.get("target") or "")
+        if e.get("kind") in ("click", "double-click") and target.startswith(("button", "link", "menuitem")) \
+                and COMMIT_CONTROL.search(target):
+            return True
+    return False
 
 
 def _retry_engine(guided, note):
@@ -2643,7 +2675,7 @@ def _gate(reply, kind, engine):
         note = " ".join(x for x in (verdict.get("seen"), verdict.get("why")) if x)
         if run is not None:
             run["attempt_note"], run["attempt_report"] = note, (reply or "").strip()[:1500]
-            run["attempt_blank"] = not _did_screen_work()
+            run["attempt_blank"] = not _committed_on_screen()
             progress.emit(f"Not done yet: {note} Trying again.")
             _by_model(run)
         else:
@@ -2842,7 +2874,7 @@ def _confirm_reply(paused, reply):
         progress.emit("Trying again." if redo else "Trying again with what you said.")
         if run is not None:
             run["attempt_note"], run["attempts"], run["attempt_report"] = note, 0, claim.strip()[:1500]
-            run["attempt_blank"] = not _did_screen_work()
+            run["attempt_blank"] = not _committed_on_screen()
             return _by_model(run)
         return _retry_engine({"task": paused.get("task") or claim, "attempt": 0}, note)
 
