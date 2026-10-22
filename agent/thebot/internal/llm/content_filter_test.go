@@ -27,7 +27,7 @@ func TestAContentFilteredRequestIsSentAgainWithoutItsPictures(t *testing.T) {
 	defer srv.Close()
 
 	p := &OpenAIProvider{BaseURL: srv.URL, APIKey: "x", Client: srv.Client()}
-	msgs := []Message{{Role: "user", Content: "office read id.png", Images: [][]byte{{1, 2, 3}}, ImageLabels: []string{"id.png"}}}
+	msgs := []Message{{Role: "user", Content: "office read id.png", Images: [][]byte{testPNG}, ImageLabels: []string{"id.png"}}}
 	res, err := p.Chat(context.Background(), "m", msgs, Options{})
 	if err != nil {
 		t.Fatalf("Chat: %v", err)
@@ -37,6 +37,43 @@ func TestAContentFilteredRequestIsSentAgainWithoutItsPictures(t *testing.T) {
 	}
 	if !strings.Contains(bodies[1], "the picture of id.png was left out") {
 		t.Errorf("the retry does not say what was left out: %s", bodies[1])
+	}
+}
+
+// GST suite T8 (2026-10-22): bytes that are not a picture are never sent as one, and a picture the provider still
+// cannot read is left out on a second try - neither ends the task.
+func TestAFileThatIsNotAPictureIsNamedNotSent(t *testing.T) {
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(b))
+		if strings.Contains(string(b), "image_url") {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{
+				"message": "You uploaded an unsupported image. Please make sure your image has of one the following formats"}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []map[string]any{{"message": map[string]string{"content": "ok"}}}})
+	}))
+	defer srv.Close()
+	p := &OpenAIProvider{BaseURL: srv.URL, APIKey: "x", Client: srv.Client()}
+
+	html := []Message{{Role: "user", Content: "office read IMG_1.jpg", Images: [][]byte{[]byte("<!DOCTYPE html><html>")},
+		ImageLabels: []string{"IMG_1.jpg"}}}
+	if res, err := p.Chat(context.Background(), "m", html, Options{}); err != nil || res.Text != "ok" || len(bodies) != 1 {
+		t.Fatalf("res=%v err=%v requests=%d", res, err, len(bodies))
+	}
+	if !strings.Contains(bodies[0], "Picture 1 (IMG_1.jpg) could not be shown") {
+		t.Errorf("the stand-in does not name the file: %s", bodies[0])
+	}
+
+	bodies = nil
+	jpeg := []Message{{Role: "user", Content: "office read IMG_2.jpg", Images: [][]byte{{0xFF, 0xD8, 0xFF, 0x00}}}}
+	if res, err := p.Chat(context.Background(), "m", jpeg, Options{}); err != nil || res.Text != "ok" || len(bodies) != 2 {
+		t.Fatalf("res=%v err=%v requests=%d", res, err, len(bodies))
+	}
+	if !strings.Contains(bodies[0], "data:image/jpeg;base64,") || !strings.Contains(bodies[1], "could not read it as a picture") {
+		t.Errorf("bodies = %q", bodies)
 	}
 }
 

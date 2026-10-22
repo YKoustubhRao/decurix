@@ -154,7 +154,13 @@ func (o *OperatorSkill) compact(rc RunContext, st *operatorState, why string) {
 		}
 		b.WriteString(strings.Join(shown, "\n") + "\n")
 	}
-	if said := personSaid(st.Messages[prefix:cut]); len(said) > 0 {
+	// Everything the person said in the goal, kept apart (resume), so a second compaction does not lose what the first
+	// folded into its note; a goal checkpointed before that was kept reads it from the part being folded.
+	said := st.PersonSaid
+	if len(said) == 0 {
+		said = personSaid(st.Messages[prefix:cut])
+	}
+	if len(said) > 0 {
 		b.WriteString("\nWhat the person said in this goal, word for word (it still holds):\n- " + strings.Join(said, "\n- ") + "\n")
 	}
 	b.WriteString("\nEverything a command showed earlier is still known to the checks. Read a file or a range again " +

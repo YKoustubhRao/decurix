@@ -103,15 +103,44 @@ class Detection(unittest.TestCase):
             book = Path(root) / "GST Returns" / "KAVYA" / "COMPUTATION_KC_2627.xlsx"
             book.parent.mkdir(parents=True)
             book.write_bytes(b"x")
+            (Path(root) / "GST Returns" / "KAVYA" / "06. SEPTEMBER").mkdir()   # an empty month folder is listed too
             with mock.patch.object(shared, "active", return_value=True), \
                     mock.patch.object(shared, "link_path", return_value=Path(root)), \
+                    mock.patch.object(shared, "mount_path", return_value=Path(root)), \
                     mock.patch.object(shared, "walk", return_value=[book]):
                 listing = long_task.shared_folder_listing()
             self.assertIn("~/PC/GST Returns/KAVYA/COMPUTATION_KC_2627.xlsx", listing)
             self.assertIn("updated in place", listing)
+            self.assertIn("~/PC/GST Returns/KAVYA/06. SEPTEMBER/", listing)
         with mock.patch.object(shared, "active", return_value=False):
             self.assertEqual(long_task.shared_folder_listing(), "")
         self.assertIn("OTP", long_task.PLAN_SYSTEM)
+
+    def test_the_shared_folder_listing_stops_at_its_cap(self):
+        # Independent review (2026-10-22): the folders' walk had no entry budget - its `break` left only the inner loop,
+        # and a big shared folder was walked whole before planning.
+        from decurix_agent import shared
+        with tempfile.TemporaryDirectory() as root:
+            for a in range(20):
+                for b in range(20):
+                    (Path(root) / f"client {a:02d}" / f"month {b:02d}").mkdir(parents=True)
+            looked = []
+            real = shared.os.scandir
+
+            def scandir(path):
+                looked.append(path)
+                return real(path)
+            with mock.patch.object(shared, "active", return_value=True), \
+                    mock.patch.object(shared, "link_path", return_value=Path(root)), \
+                    mock.patch.object(shared, "mount_path", return_value=Path(root)), \
+                    mock.patch.object(shared, "walk", return_value=[]), \
+                    mock.patch.object(long_task, "SHARED_LISTING_FILES", 5), \
+                    mock.patch.object(shared.os, "scandir", side_effect=scandir):
+                listing = long_task.shared_folder_listing()
+            folders = [line for line in listing.splitlines() if line.startswith("~/PC/")]
+            self.assertEqual(len(folders), 10)   # 2 x SHARED_LISTING_FILES folders
+            self.assertIn("~/PC/client 00/", listing)
+            self.assertLessEqual(len(looked), 2)   # the top, and at most one folder below it: never the whole tree
 
     def test_three_kinds_with_many_files(self):
         files = "\n".join(f"  /home/headless/work/inbox/f{n}.pdf" for n in range(6))
@@ -683,6 +712,23 @@ class LongRun(LongRunBase):
             others = [s["title"] for s in run_state["spec"]["steps"] if s["id"] != step["id"]]
             head = task.split("Context from the other stages")[0]
             self.assertFalse([t for t in others if f"\"{t}\"" in head])
+
+    def test_a_stage_that_worked_on_the_screen_is_judged_with_the_code_checks_evidence(self):
+        # GST suite T6 (2026-10-22): the screen-evidence module's name replaced the evidence argument, and the check
+        # stopped the run with "'module' object is not iterable".
+        from decurix_agent import skill_task
+        from decurix_agent.computer import evidence as screen_evidence
+        long_task.perform(LONG, None)
+        run_state = self.runner.status(self.run_id())
+        step = run_state["spec"]["steps"][0]
+        seen = []
+        with mock.patch.object(verify, "judge", lambda task, **k: seen.append(task) or {"verdict": "done"}), \
+                mock.patch.object(skill_task, "_did_screen_work", lambda: True), \
+                mock.patch.object(screen_evidence, "live", lambda: None), \
+                mock.patch.object(screen_evidence, "observed", lambda: None), \
+                mock.patch.object(screen_evidence, "live_text", lambda: "Message sent"):
+            long_task._judge(run_state, step, "Sent it.", [], [], evidence=("row 9 is a date written as text",))
+        self.assertIn("row 9 is a date written as text", seen[0])
 
     # Round 5 P4 (2026-10-20), Finding BL: the person's answer, word for word, and the stage it narrowed.
     P4_ANSWER = ("Skip Priya for now - I'll chase her for the ID. Don't onboard her or make her letter yet. Arif is fine - "
@@ -1838,9 +1884,11 @@ class LongRun(LongRunBase):
 
     def test_meant_as_the_answer_is_read_as_the_message_it_was(self):
         run_id = self.parked_run()
-        long_reply = "Use 12% for B-7, and this is a long note. " * 20  # long: taken for a request of its own
+        long_reply = "Use 12% for B-7, and this is a long note. " * 20
+        self.message_verdict = {"kind": "new_request"}  # the model took it for a request of its own
         self.message(long_reply)
         self.assertIn("pending_request", long_task.ledger(run_id))
+        self.assertEqual(long_task.ledger(run_id)["pending_request"]["why"], "it reads as a new piece of work")
         self.message_verdict = {"kind": "answer", "answers": [{"question": "q1", "answer": "12% for B-7"}]}
         self.message("It was my answer to your question.")
         self.assertEqual(long_task.ledger(run_id)["decisions"][0]["answer"], "12% for B-7")
@@ -1854,6 +1902,97 @@ class LongRun(LongRunBase):
                          "it is the request in hand sent again")
         self.assertEqual(long_task.new_request_reason("Release Cafe Bloom this once, hold Harbour Hotels Group.",
                                                       {"request": P2_REQUEST}), "")
+
+    def test_a_long_answer_of_many_rules_is_read_as_the_answer(self):
+        # GST suite T6 (2026-10-22): eight numbered rules sent as the answer were held as "a request of its own".
+        run_id = self.parked_run()
+        rules = "Our rules: " + " ".join(f"({n}) Rule {n}: the register, the summary, the memo and the deck keep "
+                                         f"rate {n} for every bill of that kind, as in the earlier months." for n in range(1, 9))
+        self.assertGreater(len(rules), 700)
+        self.assertEqual(long_task.new_request_reason(rules, {"request": LONG}), "")
+        self.message_verdict = {"kind": "answer", "answers": [{"question": "q1", "answer": "rate 1 for B-7"}]}
+        self.message(rules)
+        self.assertNotIn("pending_request", long_task.ledger(run_id))
+        self.assertEqual(long_task.ledger(run_id)["decisions"][0]["answer"], "rate 1 for B-7")
+
+    def test_the_reader_of_a_reply_sees_what_a_long_question_asks(self):
+        # GST suite T6: the first 800 characters were an approval's preamble; the ask was cut off.
+        question = "Before I go on to click Send: " + "it would act on what is filled in. " * 30 + \
+            "Tell me how each should be treated, or reply \"as you did\" to keep them:\n1. The message wording"
+        self.assertEqual(long_task._question_view(question), question)
+        huge = "x " * 5000 + "Tell me how each should be treated"
+        view = long_task._question_view(huge)
+        self.assertLessEqual(len(view), long_task.QUESTION_VIEW_CHARS + 10)
+        self.assertTrue(view.endswith("Tell me how each should be treated"))
+
+    def test_the_same_reply_sent_again_to_the_same_question_is_told_to_the_reader(self):
+        # GST suite T6: the same rules, sent twelve times to the question asked again, were read as a change each time.
+        run_id = self.parked_run()
+        self.message_verdict = {"kind": "amendment", "amendment": "use the practice rules", "affects": []}
+        self.message("Our rules: invoices decide. Anything else: as you did.")
+        self.assertNotIn("sent this same message just before", self.classified[-1])
+        self.message("Our rules: invoices decide.   Anything else: as you did.")
+        self.assertIn("sent this same message just before; it was read as \"amendment\" and the question was asked "
+                      "again.", self.classified[-1])
+        self.assertNotIn("most likely", self.classified[-1])   # the fact only, never what it means
+        self.assertNotIn("invoices decide", json.dumps(long_task.ledger(run_id)["last_heard"]))
+
+    def test_a_repeated_status_question_is_not_told_and_the_fingerprint_is_salted(self):
+        # Independent review (2026-10-22): the fact fired after any reading but an answer, and an unsalted hash of a
+        # short message (a password) could be found by trying guesses.
+        run_id = self.parked_run()
+        self.message_verdict = {"kind": "status"}
+        self.message("How is it going?")
+        self.message("How is it going?")
+        self.assertNotIn("sent this same message just before", self.classified[-1])
+        data = long_task.ledger(run_id)
+        self.assertEqual(len(data["heard_salt"]), 32)
+        self.assertNotEqual(data["last_heard"]["hash"], long_task._message_hash("How is it going?"))
+        self.assertEqual(data["last_heard"]["hash"], long_task._message_hash("How is it going?", data["heard_salt"]))
+
+    def test_a_reply_that_shows_the_earlier_message_was_a_request_holds_the_earlier_one(self):
+        # Independent review (2026-10-22): asked "is this your answer or a change?", the person's reply was read as a new
+        # request - and the REPLY was held, not the message it was about.
+        run_id = self.parked_run()
+        earlier = "Also prepare Kavya's October GSTR-1 and send it to me, password Northwind#2026 for the portal."
+        self.message_verdict = {"kind": "unclear", "ask": "Is this your answer to my question, or a change to the task?"}
+        self.message(earlier)
+        self.assertIsNotNone(long_task.ledger(run_id)["confirming"].get("file"))
+        self.message_verdict = {"kind": "new_request"}
+        self.message("Neither - that is a separate job.")
+        pending = long_task.ledger(run_id)["pending_request"]
+        self.assertEqual((long_task._held_dir() / pending["file"]).read_text(encoding="utf-8"), earlier)
+        self.assertNotIn("confirming", long_task.ledger(run_id))
+        self.message("Finish that one first, then do the new one.")
+        queued = [p for p in Path(config.COMMAND_DIR).glob("*.txt") if p.read_text(encoding="utf-8") == earlier]
+        self.assertEqual(len(queued), 1)
+        self.assertFalse([p for p in Path(config.COMMAND_DIR).glob("*.txt")
+                          if p.read_text(encoding="utf-8") == "Neither - that is a separate job."])
+
+    def test_a_message_read_once_its_question_is_settled_leaves_no_copy_aside(self):
+        run_id = self.parked_run()
+        self.message_verdict = {"kind": "unclear", "ask": "Is this your answer to my question, or a change to the task?"}
+        self.message("HDFC")
+        held = long_task._held_dir() / long_task.ledger(run_id)["confirming"]["file"]
+        self.assertTrue(held.is_file())
+        self.message_verdict = {"kind": "answer", "answers": [{"question": "q1", "answer": "HDFC"}]}
+        self.message("yes, the answer")
+        self.assertFalse(held.exists())
+
+    def test_a_held_message_the_person_calls_their_answer_is_read_as_one_or_asked_about(self):
+        # Independent review (2026-10-22): read again after "it was my answer", the reader was not told so, and a second
+        # "new_request" reading left the message nowhere.
+        run_id = self.parked_run()
+        long_reply = "Use 12% for B-7, and this is a long note. " * 20
+        self.message_verdict = {"kind": "new_request"}
+        self.message(long_reply)
+        self.message("It was my answer to your question.")
+        self.assertIn("The person said this message is their answer to the open question.", self.classified[-1])
+        data = long_task.ledger(run_id)
+        self.assertNotIn("pending_request", data)               # not held a second time
+        self.assertEqual(data["decisions"], [])
+        self.assertTrue(data["confirming"]["message"].startswith("Use 12% for B-7"))
+        self.assertIn("could not tell what it answers", self.queries()[-1]["reply"])   # asked plainly, never dropped
 
     def test_an_answer_or_change_question_on_its_own_task_is_a_question(self):
         self.parked_run()

@@ -1020,6 +1020,7 @@ def _finish(run, result):
         _supervise(run, note)
         run["attempt_note"], run["attempt_report"], run["attempts"] = note, result["text"].strip()[:1500], 1
         run["attempt_blank"] = False
+        run.pop("attempt_actions", None)  # (the replay's own steps ran to their end: the report above says what)
         progress.emit(f"The steps ran, but I cannot confirm the result ({note[:160]}). Looking into it myself.")
         return _by_model(run)
 
@@ -1678,7 +1679,8 @@ def _procedure(run, from_step=None, note="", ran=False):
                      "screen shows now - the screen is the truth, the recording is the guide.")
 
     if run.get("attempt_note") and run.get("attempt_blank"):
-        # The first attempt never touched the screen, so there is nothing of it to find and correct. Found live:
+        # The first attempt never touched the screen (its recording has no action - said only then, never from a reading
+        # of what it pressed: independent review, 2026-10-22), so there is nothing of it to find and correct. Found live:
         # told all the same that its "first attempt already saved its work", the engine took the record an
         # EARLIER task had left open for that work, saw it was another record, and three times over did nothing.
         lines.append("YOUR FIRST ATTEMPT AT THIS REQUEST KEPT NOTHING IN THE APPLICATION (nothing was saved, added or submitted)"
@@ -1697,12 +1699,17 @@ def _procedure(run, from_step=None, note="", ran=False):
         if run.get("attempt_report"):
             again.append(run["attempt_report"])
         again.append(f"A check of the screen then found: {run['attempt_note']}")
-        again.append("Whatever the first attempt saved, created or sent STILL EXISTS. Do not start again from an "
-                     "empty form and do not create anything a second time - that enters the request twice. Open the "
-                     "record the first attempt made (find it by the name or number in the report above, or by "
-                     "searching for this request's own reference), look at what it holds, and correct only what the "
-                     "check found wrong or could not see. If you cannot find that record, ask (HELP) before making "
-                     "another.")
+        if _actions_note(run):
+            again.append(_actions_note(run))
+        # Whether that kept a record is not known here (GST suite T7: a failed login kept none; a keyboard save keeps
+        # one with no "Save" pressed): the engine looks in the application first (independent review, 2026-10-22).
+        again.append("Whatever the first attempt saved, created or sent STILL EXISTS - but whether it kept a record is "
+                     "not known. FIRST look in the application for this request's record (find it by the name or "
+                     "number in the report above, or by searching for this request's own reference). If it is there, "
+                     "open it, look at what it holds, and correct only what the check found wrong or could not see: do "
+                     "not start again from an empty form and do not create anything a second time - that enters the "
+                     "request twice. Only if the application shows no such record, enter it, once. If you cannot "
+                     "tell, ask (HELP) before making another.")
         again.append(NOT_YOURS_TO_FORCE)
         lines.append("\n".join(again))
 
@@ -1771,9 +1778,9 @@ def _procedure(run, from_step=None, note="", ran=False):
         # Found live (2026-10-14): sent back over one value of a record it had saved, the engine ran the replay from
         # the start - which ends by saving - and a second employee record was made. A second attempt corrects; it
         # never replays the task (gui do refuses it too, for a skill already replayed to its end in this task).
-        how += [look, f"- Do NOT run `gui do {name}` again for this request: the first attempt already did the task, "
-                      "and the replay starts a new record and saves it. Open the record the first attempt made and "
-                      "correct it by hand with gui observe / click / type / select / key."]
+        how += [look, f"- Do NOT run `gui do {name}` again for this request: the first attempt worked in the "
+                      "application, and the replay starts a new record and saves it. Find what the first attempt made "
+                      "and correct it by hand with gui observe / click / type / select / key."]
     corrects = bool(run.get("attempt_note") and not run.get("attempt_blank"))
     how += [] if one_off or corrects else [
         look,
@@ -1855,13 +1862,16 @@ def _engine_request(run):
     elif run.get("attempt_note"):
         # In the request itself, not only in the guidance: found live, with it
         # in the guidance alone the engine still entered the document again.
-        request += ("\n\nTHIS IS A SECOND ATTEMPT - DO NOT ENTER IT AGAIN. Your first attempt already saved its work"
+        request += ("\n\nTHIS IS A SECOND ATTEMPT - DO NOT ENTER IT TWICE. Your first attempt worked in the application"
                     + (f" (it reported: {' '.join(run['attempt_report'].split())[:400]})" if run.get("attempt_report") else "")
-                    + f". A check then found: {run['attempt_note']} Open what the first attempt saved, read what it "
-                      "holds, and correct only what is really wrong there. If it is all correct, change nothing: read "
-                      "its values off the screen and report them. Creating a second record is the one thing you must "
-                      "not do. In your report, call that record what it is - the one this request produced, with its "
-                      "number - never something that \"was already entered\". " + NOT_YOURS_TO_FORCE)
+                    + f". A check then found: {run['attempt_note']} "
+                    + (_actions_note(run) + " " if _actions_note(run) else "")
+                    + "Whether it saved a record is not known: FIRST look in the application for what it saved. If it "
+                      "is there, read what it holds and correct only what is really wrong there; if it is all "
+                      "correct, change nothing: read its values off the screen and report them. Creating a second "
+                      "record is the one thing you must not do - only if the application shows none, enter it once. "
+                      "In your report, call that record what it is - the one this request produced, with its number "
+                      "- never something that \"was already entered\". " + NOT_YOURS_TO_FORCE)
     if run.get("mimic"):
         request += "\n\nThe person asked: " + (run.get("context") or run["mimic"]["text"])
     elif run.get("context"):
@@ -2221,35 +2231,53 @@ def _did_screen_work():
     return bool(meta and meta.get("event_count"))
 
 
-# A control whose press keeps, sends or files what was entered: what makes an attempt's work exist in an application.
-COMMIT_CONTROL = re.compile(r"\b(save|submit|add|create|post|file|send|confirm|update|apply|generate|proceed|ok|done|"
-                            r"finish|record|book|insert|upload|verify|approve|accept|continue)\b", re.I)
+SCREEN_ACTIONS = ("click", "double_click", "right_click", "type", "key", "select", "drag", "scroll", "open", "upload")
+MAX_ATTEMPT_ACTIONS = 30
 
 
-def _committed_on_screen():
+def _attempt_actions():
     """
-    Whether the task being worked on kept anything in an application, per its recording: a press of a control that
-    keeps, sends or files (Save, Add, Submit ...) that went through. Enter is not counted (it signs in as often as it
-    saves); a wrong "nothing kept" would let a second attempt enter the request twice. Found live (GST suite T7,
-    2026-10-22): the first attempt's login failed and nothing was entered, but it had touched the screen, so the second
-    was told to open and correct "the record the first attempt made" - there was none, and it gave up three times.
+    The screen actions the task being worked on took that went through, per its recording, each said as the recording
+    names it ('click button "SAVE"', 'key ctrl+s on textbox "Name"') - never what was typed. [] when it took none.
+    Evidence for a second attempt, never a verdict on whether the first kept anything: found live (GST suite T7,
+    2026-10-22), the first attempt's login failed and the second was told to correct "the record the first attempt
+    made" - there was none; but a word list over click labels ("Save", "Add") could not say either (independent review,
+    2026-10-22): a keyboard save, an upload, a dialog or an icon-only button keeps a record with no such word.
     """
 
     task_id = task_context.current()
     if not task_id:
-        return False
+        return []
     try:
         _, events = recording.load(recording.session_for_task(task_id))
     except (OSError, ValueError):
-        return False
+        return []
+    out = []
     for e in events:
-        if e.get("outcome") not in (None, "done"):
+        if e.get("kind") not in SCREEN_ACTIONS or e.get("outcome") not in (None, "done"):
             continue
-        target = str(e.get("target") or "")
-        if e.get("kind") in ("click", "double-click") and target.startswith(("button", "link", "menuitem")) \
-                and COMMIT_CONTROL.search(target):
-            return True
-    return False
+        said = str(e.get("kind"))
+        if e.get("keys"):
+            said += " " + "+".join(str(k) for k in e["keys"])[:40]
+        target = " ".join(str(e.get("target") or "").split())[:80]
+        out.append(said + (f" on {target}" if e.get("keys") and target else f" {target}" if target else ""))
+    return out[-MAX_ATTEMPT_ACTIONS:]
+
+
+def _attempt_record(run):
+    """Note on `run` what its last attempt did on the screen: blank (nothing at all - nothing of it can exist), or the
+    recorded actions, for the next attempt to look for what they may have kept before entering anything."""
+
+    actions = _attempt_actions()
+    run["attempt_blank"] = not actions
+    run["attempt_actions"] = actions
+
+
+def _actions_note(run):
+    """The first attempt's recorded screen actions, as one line of evidence ("" when there are none)."""
+
+    actions = run.get("attempt_actions") or []
+    return ("What the first attempt did on the screen, as recorded: " + "; ".join(actions) + ".") if actions else ""
 
 
 def _retry_engine(guided, note):
@@ -2675,7 +2703,7 @@ def _gate(reply, kind, engine):
         note = " ".join(x for x in (verdict.get("seen"), verdict.get("why")) if x)
         if run is not None:
             run["attempt_note"], run["attempt_report"] = note, (reply or "").strip()[:1500]
-            run["attempt_blank"] = not _committed_on_screen()
+            _attempt_record(run)
             progress.emit(f"Not done yet: {note} Trying again.")
             _by_model(run)
         else:
@@ -2874,7 +2902,7 @@ def _confirm_reply(paused, reply):
         progress.emit("Trying again." if redo else "Trying again with what you said.")
         if run is not None:
             run["attempt_note"], run["attempts"], run["attempt_report"] = note, 0, claim.strip()[:1500]
-            run["attempt_blank"] = not _committed_on_screen()
+            _attempt_record(run)
             return _by_model(run)
         return _retry_engine({"task": paused.get("task") or claim, "attempt": 0}, note)
 

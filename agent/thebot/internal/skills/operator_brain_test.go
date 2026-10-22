@@ -95,7 +95,7 @@ func TestATextBrainIsGivenTextOnly(t *testing.T) {
 func TestDocumentPagesSurviveLaterScreenshots(t *testing.T) {
 	dir := t.TempDir()
 	page := filepath.Join(dir, "page-1.png")
-	if err := os.WriteFile(page, []byte("invoice-page"), 0o644); err != nil {
+	if err := os.WriteFile(page, []byte(pngHead+"invoice-page"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -114,7 +114,7 @@ func TestDocumentPagesSurviveLaterScreenshots(t *testing.T) {
 	}
 
 	read := chat.calls[1][len(chat.calls[1])-1]
-	if len(read.Images) != 1 || string(read.Images[0]) != "invoice-page" || !strings.Contains(read.Content, "mode attach") {
+	if len(read.Images) != 1 || string(read.Images[0]) != pngHead+"invoice-page" || !strings.Contains(read.Content, "mode attach") {
 		t.Fatalf("document result = %s (%q)", read.Content, read.Images)
 	}
 
@@ -122,7 +122,7 @@ func TestDocumentPagesSurviveLaterScreenshots(t *testing.T) {
 	for _, m := range chat.calls[2] {
 		for _, img := range m.Images {
 			switch string(img) {
-			case "invoice-page":
+			case pngHead + "invoice-page":
 				pages++
 			case "screen":
 				screens++

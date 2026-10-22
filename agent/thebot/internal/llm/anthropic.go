@@ -60,10 +60,20 @@ type anthropicResponse struct {
 	apiError
 }
 
-// Chat calls Anthropic's real Messages API. A leading "system"-role
+// Chat calls Anthropic's Messages API; a picture the provider cannot read never ends the task: the call is made once
+// more with the pictures left out, each named in the text (as openai.go does).
+func (a *AnthropicProvider) Chat(ctx context.Context, model string, messages []Message, opts Options) (Result, error) {
+	res, err := a.chatOnce(ctx, model, messages, opts)
+	if err != nil && hasImages(messages) && ImageRefused(err) {
+		return a.chatOnce(ctx, model, WithoutImages(messages, "the model provider could not read it as a picture"), opts)
+	}
+	return res, err
+}
+
+// chatOnce makes one call to Anthropic's real Messages API. A leading "system"-role
 // message is pulled out into the top-level `system` field - Anthropic's
 // API has no "system" role inside the messages array, unlike Ollama/OpenAI.
-func (a *AnthropicProvider) Chat(ctx context.Context, model string, messages []Message, opts Options) (Result, error) {
+func (a *AnthropicProvider) chatOnce(ctx context.Context, model string, messages []Message, opts Options) (Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, opts.timeout())
 	defer cancel()
 
@@ -78,10 +88,15 @@ func (a *AnthropicProvider) Chat(ctx context.Context, model string, messages []M
 		if len(m.Images) > 0 {
 			blocks := []map[string]any{}
 			for j, img := range base64All(m.Images) {
+				kind := ImageType(m.Images[j])
+				if kind == "" {
+					blocks = append(blocks, map[string]any{"type": "text", "text": notAPicture(j+1, m.ImageLabel(j))})
+					continue
+				}
 				if label := m.ImageLabel(j); label != "" {
 					blocks = append(blocks, map[string]any{"type": "text", "text": "Picture " + strconv.Itoa(j+1) + ": " + label})
 				}
-				blocks = append(blocks, map[string]any{"type": "image", "source": map[string]string{"type": "base64", "media_type": "image/png", "data": img}})
+				blocks = append(blocks, map[string]any{"type": "image", "source": map[string]string{"type": "base64", "media_type": kind, "data": img}})
 			}
 			msg.Content = append(blocks, map[string]any{"type": "text", "text": m.Content})
 		}

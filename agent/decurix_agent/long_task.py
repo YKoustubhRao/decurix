@@ -19,6 +19,7 @@ from the request, and every check is about files, drafts and figures.
 import json
 import os
 import re
+import secrets
 import threading
 import time
 import uuid
@@ -517,6 +518,15 @@ def shared_folder_listing():
             names.append("~/PC/" + os.path.relpath(path, root).replace(os.sep, "/"))
             if len(names) == SHARED_LISTING_FILES:
                 break
+        # Its folders too, an empty one included: found live (GST suite T10, 2026-10-22), the month's folder was there and
+        # empty, the listing (files only) did not show it, and the plan put the invoices in a new folder of its own name.
+        # Bounded like the files' walk (shared.walk_folders: breadth first, an entry budget) and stopped at the cap: a
+        # walk of the whole tree stalled planning on a big shared folder (independent review, 2026-10-22).
+        for path in shared.walk_folders(root):
+            if len(names) >= 2 * SHARED_LISTING_FILES:
+                break
+            if shared.contained(str(path)):
+                names.append("~/PC/" + os.path.relpath(str(path), str(root)).replace(os.sep, "/") + "/")
     except Exception as exc:  # noqa: BLE001 - a listing that cannot be made leaves the plan as before
         log(f"long_task: could not list the shared folder: {exc}")
         return ""
@@ -525,7 +535,9 @@ def shared_folder_listing():
     return ("\n\nThe person's shared folder (~/PC, their own files - \"on my PC\"), as it is now:\n" + "\n".join(sorted(names))
             + "\nA file of theirs that the request asks to update, fill in or bring up to date is that stage's output by "
               "its path above (~/PC/...), updated in place - never a new file of the same kind in the work folder. A "
-              "file the request asks to be saved in one of their folders is named by that folder's path above.")
+              "file the request asks to be saved in one of their folders is named by that folder's path above (a name "
+              "ending in / is a folder) - the folder that is there, following how its neighbours are named, never a "
+              "new one beside it.")
 
 
 def draft_plan(request):
@@ -2530,8 +2542,12 @@ def _judge(state, step, reply, made, drafts, note="", start=None, evidence=()):
     screen_text = ""
     if on_screen:
         try:
-            from decurix_agent.computer import evidence
-            live, observed, screen_text = evidence.live(), evidence.observed(), evidence.live_text()
+            # Not "evidence": that is this function's argument (what code checks saw), which the module's name would
+            # replace - found live (GST suite T6, 2026-10-22): "'module' object is not iterable" stopped a run whose
+            # stage had worked on the screen.
+            from decurix_agent.computer import evidence as screen_evidence
+            live, observed = screen_evidence.live(), screen_evidence.observed()
+            screen_text = screen_evidence.live_text()
         except Exception as exc:
             log(f"long_task: no screen evidence for the check: {exc}")
     # The stage checked here, by its own record - title, what it hands in, its instruction - first and named as such;
@@ -5176,6 +5192,11 @@ person sent a message. Decide what the message is.
 - "status": it only asks how the work is going.
 - "stop": it calls the whole task off.
 - "unrelated": a separate request that has nothing to do with this work.
+- "new_request": a whole new piece of work of its own (its own goal and deliverables), sent while this one is in hand,
+  even about the same client or files - not an answer and not a change to this work.
+- A reply that gives what an open question asks for - the person's rules, figures or choices, however long, however
+  many points, even general ones that also cover other matters - answers that question ("both" when it also changes
+  the work): it is never "unrelated" or "new_request".
 - "unclear": you cannot tell whether it answers a question or changes the task, or which question it answers. Then
   write the one short question to ask the person to find out. Never guess. The person never sees ids (q1, d:...,
   stage ids): name a question by what it is about ("your answer about the quantities").
@@ -5197,7 +5218,7 @@ person sent a message. Decide what the message is.
   change ("approve it without the receipt, but pay only 1,200") keeps it IN: it is not excluded.
 
 Answer with JSON only:
-{"kind": "answer"|"amendment"|"both"|"status"|"stop"|"unrelated"|"unclear",
+{"kind": "answer"|"amendment"|"both"|"status"|"stop"|"unrelated"|"new_request"|"unclear",
  "answers": [{"question": "q1", "answer": "the person's answer in their words", "hands_back": false, "keep": false,
               "excluded": [], "restored": [], "names": [], "undecided": []}],
  "amendment": "the change, one sentence, or empty", "affects": ["stage ids"], "keeps_done": false,
@@ -5206,8 +5227,39 @@ Answer with JSON only:
 
 
 
-def classify(message, run_state, data, ask=None):
-    """What a mid-run message is: {"kind", "answers", "amendment", "affects", "ask"}. Never guesses an answer."""
+QUESTION_VIEW_CHARS = 4000
+
+
+def _message_hash(message, salt=""):
+    """A message's fingerprint (its words), kept in place of its text: a record never keeps what a message said. Salted
+    with the run's own random `salt` (the ledger's "heard_salt"), so a short message - a password - cannot be found
+    from its fingerprint by trying guesses."""
+
+    import hashlib
+    return hashlib.sha256((str(salt or "") + "\x00" + " ".join(str(message or "").split())).encode("utf-8")).hexdigest()[:24]
+
+
+# What an earlier reading of the same message must have been for the reader to be told it came again: one the question
+# was asked again after. A status question sent twice is just asked twice.
+HEARD_AGAIN = ("amendment", "unclear", "new_request")
+
+
+def _question_view(text):
+    """
+    An open question as the reader of a reply is shown it: whole, or its start and its end when very long. Found live
+    (GST suite T6, 2026-10-22): the first 800 characters were an approval's preamble, the ask ("tell me how each should
+    be treated") was cut off, and the person's rules, sent as the answer, read as a separate request.
+    """
+
+    text = str(text or "")
+    if len(text) <= QUESTION_VIEW_CHARS:
+        return text
+    return text[:1500] + "\n...\n" + text[-(QUESTION_VIEW_CHARS - 1500):]
+
+
+def classify(message, run_state, data, ask=None, said_answer=False):
+    """What a mid-run message is: {"kind", "answers", "amendment", "affects", "ask"}. Never guesses an answer.
+    `said_answer`: the person said this message is their answer to the open question (a held message read again)."""
 
     from decurix_agent import guidance
 
@@ -5218,7 +5270,7 @@ def classify(message, run_state, data, ask=None):
     for step in _steps(run_state):
         shown.append(f"- {step['id']} ({run_state['steps'][step['id']]['status']}): {step.get('title', '')}")
     if questions:
-        shown += ["", "Open questions:"] + [f"- {q['id']}: {q['text'][:800]}" for q in questions]
+        shown += ["", "Open questions:"] + [f"- {q['id']}: {_question_view(q['text'])}" for q in questions]
     else:
         shown += ["", "The worker has no open question."]
     pending = undecided_stages(run_state, data)
@@ -5232,6 +5284,15 @@ def classify(message, run_state, data, ask=None):
                       f"message as the reply explains it."]
     # A secret the request gave is withheld from what the model reads of the message: it never needs it to tell an
     # answer from a change, and what it writes back becomes a record.
+    heard = data.get("last_heard") or {}
+    if questions and heard.get("kind") in HEARD_AGAIN and data.get("heard_salt") \
+            and heard.get("hash") == _message_hash(message, data["heard_salt"]):
+        # Found live (GST suite T6, 2026-10-22): the same rules, sent twelve times to the same question asked again, were
+        # read as a change each time. The fact only - what it means is the reader's to weigh (independent review).
+        shown += ["", f"The person sent this same message just before; it was read as \"{heard.get('kind')}\" and the "
+                      "question was asked again."]
+    if said_answer:
+        shown += ["", "The person said this message is their answer to the open question."]
     shown += ["", f"The person's message: \"{privacy_withheld(message or '')[:3000]}\""]
     try:
         found = (ask or _ask_json)(CLASSIFY_SYSTEM, "\n".join(shown), 800)
@@ -5239,7 +5300,7 @@ def classify(message, run_state, data, ask=None):
         log(f"long_task: could not classify the message ({exc}); reading it without a model")
         found = None
     if not isinstance(found, dict) or found.get("kind") not in {"answer", "amendment", "both", "status", "stop",
-                                                                 "unrelated", "unclear"}:
+                                                                 "unrelated", "new_request", "unclear"}:
         if questions:
             # No model to tell an answer from a change: never guess - ask.
             return {"kind": "unclear", "answers": [], "amendment": "", "affects": [],
@@ -5390,7 +5451,6 @@ def _mark(path):
 
 SAME_REQUEST = 0.8
 WHOLE_REQUEST_CHARS = 700
-SHAPED_REQUEST_CHARS = 300
 HELD_DIR = "held-requests"
 
 
@@ -5411,12 +5471,9 @@ def new_request_reason(content, data):
     known = set(_words(attachments.text(data.get("request") or "")))
     if len(words) >= 20 and known and len(words & known) / len(words | known) >= SAME_REQUEST:
         return "it is the request in hand sent again"
-    # Several deliverables in a message of a request's length: a change that names the outputs it touches ("leave it
-    # out of the register, the summary, the deck and the memo") is short, and stays a change.
-    if _shape_score(text) >= MIN_KINDS and len(text) >= SHAPED_REQUEST_CHARS:
-        return "it asks for several things of its own"
-    if len(text) >= WHOLE_REQUEST_CHARS:
-        return "it is a whole request of its own"
+    # Anything else is the model's reading (classify: "new_request"). A length or a count of deliverable words took an
+    # answer for a request: found live (GST suite T6, 2026-10-22), the practice's eight numbered rules, sent as the
+    # answer to the parked question, were held as "it asks for several things of its own" and the run waited forever.
     return ""
 
 
@@ -5497,10 +5554,21 @@ def _ask_about_new_request(run_id, run_state, data, own, why, waiting):
         post_question(question)
 
 
-def _take_new_request(run_id, run_state, data, content, path, own, why, waiting):
-    """Hold a request of its own and ask once what to do with it (never read as an answer or a change)."""
+def _forget_held(name):
+    """Remove a message kept aside while it was asked about, once it is read (the run's own copy; the command file stays)."""
 
-    name = _hold(content, path)
+    if name:
+        try:
+            (_held_dir() / name).unlink(missing_ok=True)
+        except OSError as exc:
+            log(f"long_task: could not remove the held copy {name}: {exc}")
+
+
+def _take_new_request(run_id, run_state, data, content, path, own, why, waiting, held=None):
+    """Hold a request of its own (or take `held`, one already kept aside) and ask once what to do with it (never read
+    as an answer or a change)."""
+
+    name = held or _hold(content, path)
     _mark(path)
     _update(run_id, lambda d: d.__setitem__("pending_request", {"file": name, "own": own, "why": why, "asks": 1,
                                                                  "at": time.time()}))
@@ -5654,8 +5722,14 @@ def _take_message(content, path, about_this=False):
         verdict = {"kind": "answer", "answers": delegated, "amendment": "", "affects": [], "ask": ""}
     else:
         before = _asked()
-        verdict = classify(content, run_state, data)
+        verdict = classify(content, run_state, data, said_answer=about_this)
         _charge(run_id, before)
+    if about_this and verdict["kind"] not in ("answer", "both", "amendment"):
+        # The person said this held message is their answer: read as anything else, it is asked about plainly - never
+        # held again, never dropped (independent review, 2026-10-22).
+        verdict = {"kind": "unclear", "answers": [], "amendment": "", "affects": [],
+                   "ask": "You said your earlier message is your answer to my question, but I could not tell what it "
+                          "answers. Please tell me your answer in a line."}
     # A reply that hands a decision back ("use your judgement") answers a question with what the question proposed -
     # but a decision stage's question stays the person's: it is kept pending, listed for them, nothing promised (round
     # 5 P6, 2026-10-20). Which replies hand back is the model's reading (classify), never a word list.
@@ -5676,10 +5750,27 @@ def _take_message(content, path, about_this=False):
         answer["answer"] = privacy_withheld(answer.get("answer", ""))
     if verdict.get("amendment"):
         verdict["amendment"] = privacy_withheld(verdict["amendment"])
-    if data.get("confirming") and verdict["kind"] != "unclear":
-        _update(run_id, lambda d: d.pop("confirming", None))
     kind = verdict["kind"]
+    confirming = data.get("confirming") or {}
+    if confirming and kind != "unclear":
+        _update(run_id, lambda d: d.pop("confirming", None))
+        if kind != "new_request":
+            _forget_held(confirming.get("file"))
     log(f"long_task: message {path.name} read as {kind}")
+    salt = data.get("heard_salt") or secrets.token_hex(16)
+    heard = {"hash": _message_hash(content, salt), "kind": kind}
+    _update(run_id, lambda d: (d.__setitem__("heard_salt", d.get("heard_salt") or salt), d.__setitem__("last_heard", heard)))
+    if kind == "new_request":
+        # A request of its own is never an answer or a change: held, and the person asked what to do with it. Read with
+        # a reply to "is this your answer?", it is the EARLIER message that is the request, never the reply (independent
+        # review, 2026-10-22) - it was kept aside word for word when it was asked about.
+        earlier = confirming.get("file")
+        if earlier and (_held_dir() / earlier).is_file():
+            first = task_context.task_id_from_filename(earlier) or ""
+            first = first if first != run.get("task_id") else ""
+            return _take_new_request(run_id, run_state, data, None, path, first, "it reads as a new piece of work",
+                                     waiting, held=earlier)
+        return _take_new_request(run_id, run_state, data, content, path, own, "it reads as a new piece of work", waiting)
 
     def say(text):
         """A reply to this message: on its own task when it has one, else as a line of the running plan."""
@@ -5715,8 +5806,18 @@ def _take_message(content, path, about_this=False):
     if kind == "unclear":
         # Nothing is applied: one short question, and the message is read again with the reply.
         verdict["ask"] = no_internal_ids(verdict["ask"], run_state, data)
+        # Kept aside word for word too (the record's copy is cut and has secrets withheld): if the reply shows it was a
+        # request of its own, that is what is held (independent review, 2026-10-22).
+        try:
+            aside = _hold(content, path)
+        except OSError as exc:
+            log(f"long_task: could not keep {path.name} aside: {exc}")
+            aside = None
         _mark(path)
-        _update(run_id, lambda d: d.__setitem__("confirming", {"message": content[:2000], "ask": verdict["ask"]}))
+        if confirming.get("file") and confirming.get("file") != aside:
+            _forget_held(confirming["file"])
+        _update(run_id, lambda d: d.__setitem__("confirming", {"message": content[:2000], "ask": verdict["ask"],
+                                                               "file": aside}))
         if own:
             # A question: asked as one, so the chat waits for the person (it was posted as a plain reply).
             reply_on_task(own, verdict["ask"], kind="query")
