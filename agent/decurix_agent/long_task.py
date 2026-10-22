@@ -47,7 +47,11 @@ DELIVERABLE_KINDS = {
     "email": r"e-?mails?|drafts?|repl(?:y|ies)|reminders?|messages?",
     "document": r"pdfs?|invoices?|payslips?|certificates?",
     "plan": r"plans?|proposals?|requisitions?",
-    "records": r"(?:enter|record|post|create|onboard)\w*\s+(?:\w+\s+){0,4}(?:in|into|on)\s+(?:the\s+)?(?:portal|system|app|application|erp|crm|website)",
+    # Filing or submitting on a portal is entering records in it too, and what is filed has a name of its own ("file
+    # GSTR-1 and GSTR-3B on the GST portal" - GST suite T10, 2026-10-22: a six-part request ran as one job and ran out
+    # of turns twice).
+    "records": r"(?:enter|record|post|create|onboard|file|submit|upload)\w*\s+(?:\S+\s+){0,5}(?:in|into|on|to)\s+(?:the\s+)?"
+               r"(?:[\w-]+\s+){0,2}(?:portal|system|app|application|erp|crm|website)",
 }
 _KIND_RES = {kind: re.compile(rf"\b(?:{words})\b", re.I) for kind, words in DELIVERABLE_KINDS.items()}
 # An enumerated ask: lines of a list, or "1)", "(a)" items.
@@ -131,6 +135,8 @@ Rules:
   reference) as one of its outputs.
 - Output files: the names and folders the request gives, as paths relative to the work folder; otherwise short clear
   names. Never an attached input file's own path. The same file may be named by a later stage that adds to it.
+- A code, password or OTP the person gives when a step needs it ("ask me for the OTP") is not a decision: the stage
+  whose step needs it asks for it then, and no stage is planned for it.
 - A decision the request keeps for the person gets its own early stage with "decision": true: it works out what
   needs deciding, saves the working file the decision rests on, and asks the person in the chat. "Ask me" is never an
   email: a decision stage has drafts 0 and never writes to anyone else about it. "for_approval": true when the request
@@ -489,12 +495,46 @@ def spec_from_plan(plan, files=(), request=""):
     return spec
 
 
+SHARED_LISTING_FILES = 200
+
+
+def shared_folder_listing():
+    """
+    The files of the person's shared folder, for the planner: a request that says "bring the computation workbook up
+    to date - everything is in GST Returns on my PC" names its outputs by what they are, not by path. Found live (GST
+    suite T10, 2026-10-22): told only the request, the planner wrote the workbook as "GST Returns/Rohan/computation.xlsx"
+    in the work folder, and the stages made a new workbook there instead of updating the client's own. Names only, at
+    most SHARED_LISTING_FILES; "" when the desktop has no shared folder.
+    """
+
+    from decurix_agent import shared
+    try:
+        if not shared.active():
+            return ""
+        root = shared.link_path()
+        names = []
+        for path in shared.walk():
+            names.append("~/PC/" + os.path.relpath(path, root).replace(os.sep, "/"))
+            if len(names) == SHARED_LISTING_FILES:
+                break
+    except Exception as exc:  # noqa: BLE001 - a listing that cannot be made leaves the plan as before
+        log(f"long_task: could not list the shared folder: {exc}")
+        return ""
+    if not names:
+        return ""
+    return ("\n\nThe person's shared folder (~/PC, their own files - \"on my PC\"), as it is now:\n" + "\n".join(sorted(names))
+            + "\nA file of theirs that the request asks to update, fill in or bring up to date is that stage's output by "
+              "its path above (~/PC/...), updated in place - never a new file of the same kind in the work folder. A "
+              "file the request asks to be saved in one of their folders is named by that folder's path above.")
+
+
 def draft_plan(request):
     """The model's stage plan for a request, as a runner spec - or None (one stage, or no usable plan)."""
 
     files = attachments.files(request)
     prompt = (f"The work folder is {config.WORK_DIR}.\n\nThe request:\n{attachments.text(request).strip()[:12000]}\n\n"
-              + ("Attached files:\n" + "\n".join(files) if files else "No files are attached."))
+              + ("Attached files:\n" + "\n".join(files) if files else "No files are attached.")
+              + shared_folder_listing())
     try:
         plan = _ask_json(PLAN_SYSTEM, prompt)
         return spec_from_plan(plan, files, request=attachments.text(request))
@@ -3042,21 +3082,54 @@ def _page_notes(task_id=None):
         return []
 
 
+def _command_outputs(task_id=None):
+    """What the work's commands printed during this task (soul's noteCommandOutput): its own recorded working - a total
+    a script summed from the sources and printed is held there, never something the work was given. Found live (GST
+    suite T7, 2026-10-21): B2C and HSN totals summed and printed by a script were refused as held by no source."""
+
+    try:
+        from decurix_agent.computer import evidence
+        task_id = task_id or task_context.current() or ""
+        if not task_id:
+            return []
+        out = []
+        with open(evidence.NOTES_DIR / f"{task_id}.outputs", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    out.append(str(json.loads(line).get("text") or ""))
+                except ValueError:
+                    continue
+        return out
+    except Exception:  # noqa: BLE001 - nothing printed is nothing held
+        return []
+
+
+def _files_read():
+    """The files the tools read during this task (office read): a file the work read is one of its sources, named in the
+    request or not (computer/evidence.files_read)."""
+
+    try:
+        from decurix_agent.computer import evidence
+        return [Path(p) for p in evidence.files_read()]
+    except Exception:  # noqa: BLE001 - nothing listed is nothing added
+        return []
+
+
 def work_sources(request, made=()):
     """
     provenance.gather for a run: the request, its input files, the work folder (inputs and every output the work
     recorded), and the system's pages the tools read. What a value typed or written must trace to.
     """
 
-    inputs = request_input_files(request, made) if request else []
-    return provenance.gather(request, list(inputs) + list(made), roots=[config.WORK_DIR], notes=_page_notes())
+    inputs = (request_input_files(request, made) if request else []) + _files_read()
+    return provenance.gather(request, list(inputs) + list(made), roots=[config.WORK_DIR], notes=_page_notes() + _command_outputs())
 
 
 def given_sources(request, made=()):
     """provenance.gather without the work folder: the request, its input files and messages, the system's pages - what
     the work was given, never what it wrote (independent review, 2026-10-21, #11: the work folder is circular)."""
 
-    inputs = request_input_files(request, made) if request else []
+    inputs = (request_input_files(request, made) if request else []) + _files_read()
     return provenance.gather(request, list(inputs), roots=(), notes=_page_notes())
 
 

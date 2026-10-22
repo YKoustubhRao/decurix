@@ -85,6 +85,34 @@ class Detection(unittest.TestCase):
                      "what is the kernel version?", "/workflow list", "stop"):
             self.assertFalse(long_task.looks_long(text), text)
 
+    def test_filing_on_a_portal_is_entering_records_there(self):
+        # GST suite T10 (2026-10-22): a six-part request ran as one job and ran out of turns twice.
+        text = ("Do Kavya Constructions' September GST from start to finish: get Rohan's September invoices from "
+                "ClientChat into his folder, bring the computation workbook up to date, file GSTR-1 and GSTR-3B on the "
+                "GST portal, note both ARNs in the workbook, and send Rohan a message telling him what he has to pay.")
+        self.assertTrue(long_task.looks_long(text))
+        records = long_task._KIND_RES["records"]
+        self.assertTrue(records.search("upload the scan to the client portal"))
+        self.assertFalse(records.search("file the invoices into the September folder"))
+
+    def test_the_planner_is_shown_the_shared_folder_to_name_a_file_to_update(self):
+        # GST suite T10 (2026-10-22): told only "everything is in GST Returns on my PC", the plan made a new workbook in
+        # the work folder instead of updating the client's own.
+        from decurix_agent import shared
+        with tempfile.TemporaryDirectory() as root:
+            book = Path(root) / "GST Returns" / "KAVYA" / "COMPUTATION_KC_2627.xlsx"
+            book.parent.mkdir(parents=True)
+            book.write_bytes(b"x")
+            with mock.patch.object(shared, "active", return_value=True), \
+                    mock.patch.object(shared, "link_path", return_value=Path(root)), \
+                    mock.patch.object(shared, "walk", return_value=[book]):
+                listing = long_task.shared_folder_listing()
+            self.assertIn("~/PC/GST Returns/KAVYA/COMPUTATION_KC_2627.xlsx", listing)
+            self.assertIn("updated in place", listing)
+        with mock.patch.object(shared, "active", return_value=False):
+            self.assertEqual(long_task.shared_folder_listing(), "")
+        self.assertIn("OTP", long_task.PLAN_SYSTEM)
+
     def test_three_kinds_with_many_files(self):
         files = "\n".join(f"  /home/headless/work/inbox/f{n}.pdf" for n in range(6))
         text = "Build the dispatch plan workbook, the requisition and a reply to each customer.\n\n" \

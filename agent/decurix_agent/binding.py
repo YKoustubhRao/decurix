@@ -247,7 +247,12 @@ def _clean(params, answer, texts=()):
         else:
             if isinstance(value, (list, dict)):
                 continue
-            values[name] = as_written(str(value).strip(), param.get("example"), texts)
+            written = as_written(str(value).strip(), param.get("example"), texts)
+            if is_example(written, param.get("example")) and not held_by(written, texts):
+                # The person's own value from when they taught it, which nothing of this run says.
+                log(f"binding: {name} = {written!r} is the taught example and this run's documents do not hold it - left out")
+                continue
+            values[name] = written
 
         if isinstance(why, dict) and why.get(name):
             evidence[name] = str(why[name])[:200]
@@ -313,6 +318,41 @@ def _scaled(value):
 
 def as_written(value, example, texts):
     return _own_spelling(as_number(value, example), example, texts)
+
+
+def _plain(value):
+    """A value as compared with another: spacing and case gone, and a number as its amount (165,000.00 is 165000)."""
+
+    text = " ".join(str(value or "").split()).casefold()
+    if BARE_NUMBER.match(text):
+        try:
+            return repr(float(text.replace(",", "")))
+        except ValueError:
+            pass
+    return text
+
+
+def is_example(value, example):
+    """Whether `value` is the one typed when the procedure was taught."""
+
+    return example not in (None, "") and _plain(value) == _plain(example)
+
+
+def held_by(value, texts):
+    """
+    Whether the texts of this run say `value`: as written (case and spacing aside), or as a number of the same amount.
+    Found live (GST suite T5, 2026-10-22): asked to prepare another client's return "the way I showed you", the values
+    came back as the teaching client's own - "copied from example", its taxable value and invoice numbers - and were
+    typed into the other client's return. The example says which thing to read, never what it is.
+    """
+
+    plain = _plain(value)
+    if not plain:
+        return False
+    joined = " ".join(" ".join(t.split()) for t in texts if t).casefold()
+    if BARE_NUMBER.match(plain):
+        return any(_plain(n) == plain for n in re.findall(r"\d[\d,]*(?:\.\d+)?", joined))
+    return re.search(r"(?<!\w)" + re.escape(plain) + r"(?!\w)", joined) is not None
 
 
 def _own_spelling(value, example, texts):

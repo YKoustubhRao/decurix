@@ -22,7 +22,7 @@ This file holds only what must be in your head for every change. The detail live
 | Healing ladder, experience | [docs/healing.md](docs/healing.md) |
 | Long requests: planned runs, ledger, amendments, parked questions, cross-check | [docs/long-requests.md](docs/long-requests.md) |
 | Build, run, env vars, `--cli`, releases | [docs/running.md](docs/running.md) |
-| Every lesson learned the hard way (523 entries) | [docs/gotchas.md](docs/gotchas.md): one line each, grep it, then open the named part file |
+| Every lesson learned the hard way (581 entries) | [docs/gotchas.md](docs/gotchas.md): one line each, grep it, then open the named part file |
 
 ## Commands
 

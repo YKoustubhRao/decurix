@@ -824,7 +824,11 @@ def run(argv):
 
         from decurix_agent import guidance
 
-        params = guidance.with_run_values(_params(args.param), skill.get("params"), skill=skill["name"])
+        given = _params(args.param)
+        refused = guidance.taught_values_check(skill, given)
+        if refused:
+            raise ComputerError(refused)
+        params = guidance.with_run_values(given, skill.get("params"), skill=skill["name"])
         return _print_replay(skill_engine.run(skill, params=params, start=args.start, source_files=_params(args.source_file)),
                              command=f"gui do {skill['name']}")
 

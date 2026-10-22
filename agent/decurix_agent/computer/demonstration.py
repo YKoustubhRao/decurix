@@ -692,7 +692,7 @@ class Recorder:
 
     def _read_input(self):
         from Xlib import X
-        from Xlib.ext import ge
+        from Xlib.ext import ge, xinput
 
         root = self.input.screen().root
         drain_until = None
@@ -726,6 +726,8 @@ class Recorder:
                         self.raw.put(raw)
                     elif raw is not None:
                         self._input_while_paused = True
+                        if event.evtype == xinput.RawKeyPress:
+                            self._typed_while_paused = True
 
                 # End: everything the person did before pressing it is already
                 # on this connection, however far behind reading it is. Read it
@@ -1228,6 +1230,7 @@ class Recorder:
         }
         self.latest = None
         self._input_while_paused = False
+        self._typed_while_paused = False
         log(f"Paused: {self._pause['reason']}")
 
     def _resumed(self):
@@ -1253,7 +1256,10 @@ class Recorder:
             log("Resumed (no input from the person while paused, so no private step)")
             return
 
-        if after is not None and pause["frame"] is not None and \
+        # Typing while paused is a private step however little it shows: a password is a few dots, well under
+        # UNCHANGED_SCREEN of the screen. Found live (GST suite, 2026-10-21): the password typed during a pause left
+        # no manual step, so the learned skill logged in with no password and every replay stopped at the login.
+        if not getattr(self, "_typed_while_paused", False) and after is not None and pause["frame"] is not None and \
                 screen.changed_fraction(pause["frame"], after.get("frame")) < UNCHANGED_SCREEN:
             self.latest = after
             self._seen(after)

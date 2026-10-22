@@ -447,6 +447,34 @@ def mine_checks(expect, reference=None):
     return checks
 
 
+def _open_where_it_began(first):
+    """
+    A recording that began on a web page begins by being on it: when its first step is on a page no tab is showing,
+    that page is opened (the same as `gui open URL`), and a sentence says so; "" otherwise. Found live (GST suite T5,
+    2026-10-21): the person had opened the portal before pressing Record, the replay stopped at step 1 ("Username" is
+    not on the screen), and the engine then opened a real site of the same name from its own memory. Only a page of
+    the browser, only for the first step, never for a step recorded on a desktop app.
+    """
+
+    url = first.get("url") or ""
+    shape = url_shape(url)
+    if not shape or first.get("kind") == "open" or (first.get("target") or {}).get("source") not in (None, "cdp"):
+        return ""
+    try:
+        seen = core.observe(remember=False)
+    except Exception:  # noqa: BLE001 - a screen that cannot be looked at decides nothing: the step halts as before
+        return ""
+    if any(url_shape(g.get("url")) == shape for g in seen.get("groups") or []):
+        return ""
+    try:
+        core.open_target(url)
+    except ComputerError as exc:
+        return f"Could not open {url}, where the recording began: {exc}"
+    except Exception:  # noqa: BLE001 - nothing opened: the step halts as before
+        return ""
+    return f"Opened {url}, where the recording began."
+
+
 def url_shape(url):
     """A URL as a replay compares it: origin and path, id-like path segments as '*'."""
 
@@ -1473,6 +1501,11 @@ def run(program, params=None, start=1, report=None, ladder=None):
         first = next(s for s in steps if s["n"] == param["step"])
         return finish(HALTED_BEFORE_EFFECT, first, resume_from=start,
                       reason=f"the value for {param['label']} ({param['name']}) is wrong: {why}")
+
+    if start == 1:
+        opened = _open_where_it_began(steps[0])
+        if opened:
+            report(opened)
 
     _fit_screen([s for s in steps if s["n"] >= start], report)
     changed_at = _first_change(program, values)
