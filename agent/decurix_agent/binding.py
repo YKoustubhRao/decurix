@@ -248,9 +248,16 @@ def _clean(params, answer, texts=()):
             if isinstance(value, (list, dict)):
                 continue
             written = as_written(str(value).strip(), param.get("example"), texts)
-            if is_example(written, param.get("example")) and not held_by(written, texts):
+            if is_example(written, param.get("example")) and not held_by(written, texts) and not (
+                    re.search(r"[^\W\d_]{3,}", written) and words_held(written, texts)):
                 # The person's own value from when they taught it, which nothing of this run says.
                 log(f"binding: {name} = {written!r} is the taught example and this run's documents do not hold it - left out")
+                continue
+            if not words_held(written, texts):
+                # A name, code or reference the documents do not have is a guess. Found live (GST suite T7,
+                # 2026-10-22): no document was read, and the client's portal username came back as "srilakshmielev",
+                # made up from its name; the real one, in the client master, is "srilakshmilift".
+                log(f"binding: {name} = {written!r} is in none of this run's documents - left out")
                 continue
             values[name] = written
 
@@ -336,6 +343,19 @@ def is_example(value, example):
     """Whether `value` is the one typed when the procedure was taught."""
 
     return example not in (None, "") and _plain(value) == _plain(example)
+
+
+def words_held(value, texts):
+    """
+    Whether a value with words in it is this run's own: held whole, or every word of three letters or more is in the
+    texts ("29-Karnataka" when the documents say Karnataka). A figure is always let through - a total may be worked out.
+    """
+
+    words = [w for w in re.findall(r"[^\W\d_]{3,}", str(value or "")) if w]
+    if not words or not any(texts) or held_by(value, texts):
+        return True  # (no texts: nothing to tell a value by)
+    joined = " ".join(" ".join(t.split()) for t in texts if t).casefold()
+    return all(re.search(r"(?<!\w)" + re.escape(w.casefold()) + r"(?!\w)", joined) for w in words)
 
 
 def held_by(value, texts):

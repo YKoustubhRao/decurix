@@ -79,5 +79,18 @@ class TestGuiDoRefusesTheTaughtExampleOnce(unittest.TestCase):
             self.assertEqual(guidance.taught_values_check(self.skill, {"taxable": "165000"}), "")
 
 
+class TestBindingLeavesOutANameNoDocumentHas(unittest.TestCase):
+    """GST suite T7 (2026-10-22): with no document read, a client's portal username came back made up from its name."""
+
+    def test_a_made_up_name_is_left_out_and_the_documents_words_are_kept(self):
+        params = [{"name": "user", "label": "Username", "example": "manipalint"},
+                  {"name": "pos", "label": "POS", "example": "29-Karnataka"},
+                  {"name": "taxable", "label": "Taxable", "example": "165000"}]
+        request = "Prepare Sri Lakshmi Elevators' GSTR-1; their customers are in Karnataka."
+        answer = {"values": {"user": "srilakshmielev", "pos": "29-Karnataka", "taxable": "67909.30"}}
+        values, _ = binding._clean(params, answer, [request])
+        self.assertEqual(values, {"pos": "29-Karnataka", "taxable": "67909.30"})
+
+
 if __name__ == "__main__":
     unittest.main()

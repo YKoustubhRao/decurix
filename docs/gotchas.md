@@ -583,3 +583,17 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-5.md](gotchas/part-5.md): A plan made a new workbook in the work folder instead of updating the client's own: the planner is shown the shared folder
 - [part-5.md](gotchas/part-5.md): A workbook the request names by what it is was neither guarded nor checked: is_source now means what the guard guards
 - [part-5.md](gotchas/part-5.md): With no way to put rows into a workbook the worker used openpyxl's insert_rows: office update now has insert_rows, and soul sends such a script back once
+- [part-5.md](gotchas/part-5.md): A long goal told "you have 8 turns left - do not begin anything new" wrapped up half checked: a goal that makes progress is compacted and given another budget
+- [part-5.md](gotchas/part-5.md): A strong model's misses were judgement calls it never noticed it made: before DONE and before a gated action it lists them, and code checks each quoted backing
+- [part-5.md](gotchas/part-5.md): A sheet of month blocks read as one list of cells let the worker take another month's figure: office read maps a repeated layout and tags each row with its block
+- [part-5.md](gotchas/part-5.md): The check was shown a workbook's first 60 rows, and the new month was rows 86-99: the judge reads whole sheets and every row the task changed
+- [part-5.md](gotchas/part-5.md): A second attempt was told to correct the record its first attempt made, and there was none: an attempt kept something only if a Save/Add/Submit went through
+- [part-5.md](gotchas/part-5.md): The value reading made up a client's portal username from its name: a text value no document of the run holds is left out
+- [part-5.md](gotchas/part-5.md): A cell quoted as backing ("O62='Karnataka'") was taken as unbacked: a short quote is backed when its words stand close together in what was seen
+- [part-5.md](gotchas/part-5.md): Five invoices saved, the phone photo never read, and a mismatch the report itself noted reported as done: gathered documents are read, and a disagreement settled, before DONE
+- [part-5.md](gotchas/part-5.md): Told "use your judgement" at a step done by hand (typing the password), the replay carried on with the field empty: resuming after one, an empty secret field means it was not done
+- [part-5.md](gotchas/part-5.md): The worker asked in the chat to approve clicks the gate then asked about again - 15 questions for one task: such a question is sent back to run the command
+- [part-5.md](gotchas/part-5.md): Calls quoted real words that did not establish them: an independent look says whether each quote settles its call; what it does not goes back to be settled (a source, the web, the person), and a web page counts only once the person vouches for it
+- [part-5.md](gotchas/part-5.md): Told "a cancelled invoice still counts", the operator filed 16 seconds later with "0 cancelled": the answer to a question about the calls is applied before anything else, and the calls are weighed again
+- [part-5.md](gotchas/part-5.md): The workbook was given the return's ARN two characters off what the portal showed, and the read-back called it verified: a long code a few characters off a code the screens showed is a reference copied wrong
+- [part-5.md](gotchas/part-5.md): Asked to file on "the GST portal", the operator opened the real government site from memory: a web address nothing given or taught names is sent back once
