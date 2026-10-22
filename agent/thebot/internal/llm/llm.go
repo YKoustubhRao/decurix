@@ -141,6 +141,16 @@ func ContentFiltered(err error) bool {
 		strings.Contains(msg, "responsibleaipolicyviolation")
 }
 
+// ImageRefused reports whether an error is a provider refusing a picture it cannot read.
+func ImageRefused(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unsupported image") || strings.Contains(msg, "invalid image") ||
+		strings.Contains(msg, "could not process image")
+}
+
 func hasImages(messages []Message) bool {
 	for _, m := range messages {
 		if len(m.Images) > 0 {

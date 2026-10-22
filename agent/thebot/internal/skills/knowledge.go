@@ -1,43 +1,27 @@
 package skills
 
 import (
-	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
-
-	"thebot/internal/llm"
 )
 
 // ============================================================
-// When the model is not sure: settle it from a source, the web or the person
+// When the work is not sure: settle it from a source, the web or the person
 //
-// Found live (GST suite T9, 2026-10-22): a strong model's judgement calls quoted words that were really in the
-// documents - and did not establish the call ("0 cancelled | backed by: the invoice list 451-458"). Code can tell a
-// quote is real, not that it proves the point. The open-source uncertainty tools (LM-Polygraph, UQLM, SelfCheckGPT)
-// mostly read token probabilities, which a hosted reasoning model does not give; their black-box way - a second,
-// independent look at whether the evidence supports the claim - is what this does:
-//
-//   - each call whose quote is real is put, with only its quote and the request, to an independent model call that
-//     answers yes (the words establish it), no, or unsure. "no" and "unsure" are calls the model is not sure of;
-//   - those, and the calls nothing backs, go back to the operator once: settle each - re-read the source and quote the
-//     words that establish it, or look it up on the web (lookup, with its link), or ask the person for the rule or
-//     its documentation;
-//   - what is still not settled goes to the person as one question. A call backed only by a web page the goal looked
-//     up is asked as "is this a source you trust for this?", with its link - a page is never the work's source until
-//     the person says so; their yes makes it one for this goal, and their answer is kept as a lesson (lessons.py).
+// What the work rests on is weighed by one reviewer with the whole picture (reviewer.go); what it raises goes back to
+// the operator once - to settle from what it has, from the web, or by asking - and what stays open goes to the person
+// as one question. This file holds what the person's word decides:
+//   - a web page the goal looked up is never a source of the work until the person vouches for it: a call resting
+//     only on one is asked as "is this a source you trust for this?", with its link; anything but a no makes the page
+//     a source for the goal (settleAskedSources), and their answer is kept as a lesson by the agent (lessons.py);
 //   - a link the person gives (the request, a reply) is theirs: what the work reads there is a source at once.
-//
-// Nothing here knows a domain: the model says what its calls are and what backs them; code checks the quote exists,
-// a separate model call checks it establishes the call, and the person settles the rest.
 // ============================================================
 
 const (
-	maxLookups       = 12
-	maxLookupChars   = 30_000
-	maxPersonLinks   = 50
-	maxSupportItems  = 20
-	supportTimeoutMs = 120_000
+	maxLookups     = 12
+	maxLookupChars = 30_000
+	maxPersonLinks = 50
 )
 
 // webLookup is one web page or search the goal read: the command, the links its output names, and its text.
@@ -89,12 +73,12 @@ func (st *operatorState) fetchesPersonLink(command string) bool {
 }
 
 // settleAskedSources takes the person's reply to "is this a source you trust?": anything but a no makes the pages
-// sources for the rest of the goal.
+// sources for the rest of the goal - unless the reply gives a link of its own (the source to follow instead).
 func (st *operatorState) settleAskedSources(reply string) {
 	if len(st.AskedSources) == 0 {
 		return
 	}
-	if !refusalReplyRe.MatchString(reply) {
+	if !refusalReplyRe.MatchString(reply) && !linkRe.MatchString(reply) {
 		for _, i := range st.AskedSources {
 			if i >= 0 && i < len(st.Lookups) {
 				st.noteSeen(st.Lookups[i].Text)
@@ -124,173 +108,164 @@ func (st *operatorState) lookupBacking(item string) (int, string) {
 	return -1, ""
 }
 
-// openURLRe is a gui open of a web address.
-var openURLRe = regexp.MustCompile(`(?i)\bgui\s+open\s+["']?(https?://[^\s"']+)`)
+// maxReviewQuestions bounds the questions the review puts to the person in one goal; past it, what is still open goes
+// with the result or the approval, never silently dropped.
+const maxReviewQuestions = 3
 
-// hostOf is a web address's host (with its port), lower case.
-func hostOf(link string) string {
-	rest := link[strings.Index(link, "://")+3:]
-	if i := strings.IndexAny(rest, "/?#"); i >= 0 {
-		rest = rest[:i]
-	}
-	return strings.ToLower(rest)
+// weighing is what follows the work's account of what it rests on: a message back to the operator, a question for the
+// person, or neither - with open the points still unsettled once the person has been asked as often as they may be,
+// shown with the result or the approval.
+type weighing struct {
+	nudge, question string
+	open            []string
 }
 
-// unknownSiteNudge is what to say instead of opening a web address nothing the goal was given or taught names, for a
-// request that is not research: the person's systems are reached where they said. "" to go ahead. Found live (GST suite
-// T9, 2026-10-22): asked to file on "the GST portal" (the person's own, taught as a task with its address), the
-// operator opened the real government site from memory, and the gate stopped a password going there.
-func unknownSiteNudge(st *operatorState, command string) string {
-	m := openURLRe.FindStringSubmatch(command)
-	if m == nil || researchRe.MatchString(st.Request) || st.fetchesPersonLink(command) {
-		return ""
-	}
-	host := hostOf(m[1])
-	if host == "" || strings.Contains(strings.ToLower(st.judgementSources()), host) {
-		return ""
-	}
-	return fmt.Sprintf("Not opened: nothing you were given or taught names %s. The person's own systems are reached at "+
-		"the addresses they gave or taught - their request, their lessons, a task they taught (gui skills <words> lists "+
-		"each with where it runs; gui skill NAME shows its address). Use that address; if nothing names one, ask the "+
-		"person (HELP) where their system is. Never sign in to a site from memory.", host)
-}
+// unreviewed is what stands for a review that could not be made.
+const unreviewed = "An independent review of this work could not be made, so nothing beyond the worker's own checks backs it."
 
-// supportSystem is the independent look at whether quoted words establish a call.
-const supportSystem = `You check a worker's reasons, independently of the worker. Each item is a decision the worker made and the words it quotes as what establishes it. For each, say whether the quoted words, read on their own (with the request for context), establish the decision: "yes" - they do; "no" - they say otherwise; "unsure" - they do not settle it (the decision needs something the words do not say). Judge only the quoted words, not whether the decision sounds plausible or usual. Reply with JSON only: {"items": [{"n": 1, "verdict": "yes", "why": "a few words"}]}`
-
-// unsupportedCalls are the items an independent model call does not find established by their own quoted words, each
-// with why. A check that cannot be made decides nothing (none are returned).
-func unsupportedCalls(rc RunContext, request string, items []string) []string {
-	if len(items) == 0 || rc.Provider == nil {
-		return nil
-	}
-	if len(items) > maxSupportItems {
-		items = items[:maxSupportItems]
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "The request: %s\n\nItems:\n", truncateText(request, 3000))
-	for i, item := range items {
-		decision, backing := item, ""
-		if loc := backedByRe.FindStringIndex(item); loc != nil {
-			decision, backing = strings.TrimRight(strings.TrimSpace(item[:loc[0]]), "|"), item[loc[1]:]
-		}
-		var quotes []string
-		for _, m := range judgementQuoteRe.FindAllStringSubmatch(backing, -1) {
-			quotes = append(quotes, `"`+m[1]+`"`)
-		}
-		fmt.Fprintf(&b, "%d. Decision: %s\n   Quoted: %s\n", i+1, strings.TrimSpace(decision), strings.Join(quotes, " and "))
-	}
-	resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, []llm.Message{{Role: "system", Content: supportSystem},
-		{Role: "user", Content: b.String()}}, llm.Options{TimeoutMs: supportTimeoutMs, Temperature: 0})
-	if err != nil {
-		rc.Logf("operator", "could not check what the judgement calls rest on: %v", err)
-		return nil
-	}
-	text := resp.Text
-	if i, j := strings.Index(text, "{"), strings.LastIndex(text, "}"); i >= 0 && j > i {
-		text = text[i : j+1]
-	}
-	var answer struct {
-		Items []struct {
-			N       int    `json:"n"`
-			Verdict string `json:"verdict"`
-			Why     string `json:"why"`
-		} `json:"items"`
-	}
-	if json.Unmarshal([]byte(text), &answer) != nil {
-		return nil
-	}
-	var out []string
-	for _, a := range answer.Items {
-		if a.N < 1 || a.N > len(items) || strings.EqualFold(strings.TrimSpace(a.Verdict), "yes") {
-			continue
-		}
-		why := strings.TrimSpace(a.Why)
-		if why == "" {
-			why = "the words quoted do not settle it"
-		}
-		out = append(out, items[a.N-1]+" [not settled: "+truncateText(why, 160)+"]")
-	}
-	return out
-}
-
-// weighJudgements decides what follows a list of judgement calls: a nudge back to the operator (the calls it is not
-// sure of, once), a question for the person, or neither (go on). action is what the approval is for, "" at a DONE.
-func (o *OperatorSkill) weighJudgements(rc RunContext, st *operatorState, items []string, action string) (nudge, question string) {
-	if len(items) == 0 {
-		return "", ""
-	}
-	missing := unbackedCalls(items, st.judgementSources())
-	isMissing := map[string]bool{}
-	for _, m := range missing {
-		isMissing[m] = true
-	}
-	var backed, web, plain []string
+// weighJudgements decides what follows the work's own account of what it rests on (items, possibly none; said, the
+// reply that gave them). action is what the approval is for, "" at a DONE. The review reasons (reviewer.go); code
+// only adds that a call resting on a web page needs the person's word on the source. Per round, what the review raises
+// goes back to the operator once; what is still open then is asked (up to maxReviewQuestions a goal) or, past that,
+// carried with the result.
+func (o *OperatorSkill) weighJudgements(rc RunContext, st *operatorState, items []string, said, action string) weighing {
+	var web []string
 	var webIdx []int
-	for _, item := range items {
-		if !isMissing[item] {
-			backed = append(backed, item)
-			continue
-		}
+	for _, item := range unbackedCalls(items, st.judgementSources()) {
 		if i, link := st.lookupBacking(item); i >= 0 && !notBackedRe.MatchString(item) {
-			web = append(web, item+map[bool]string{true: " - from " + link, false: ""}[link != ""])
+			if link != "" {
+				item += " - from " + link
+			}
+			web = append(web, item)
 			webIdx = append(webIdx, i)
-			continue
 		}
-		plain = append(plain, item)
 	}
-	unsure := append(plain, unsupportedCalls(rc, st.Request, backed)...)
+	issues, reviewed := o.review(rc, st, said, items, action)
+	var texts []string
+	for _, i := range issues {
+		texts = append(texts, i.text())
+	}
 
-	if len(unsure) > 0 && !st.UnsureSent {
-		st.UnsureSent = true
-		rc.Logf("operator", "%d judgement call(s) not settled by what they quote - sent back to settle them", len(unsure))
-		return settleNudge(unsure), ""
+	if len(issues) > 0 && st.SentBackRound != st.JudgementRounds {
+		st.SentBackRound, st.LastIssues = st.JudgementRounds, texts
+		rc.Logf("operator", "the review raised %d point(s) - sent back to settle them", len(issues))
+		return weighing{nudge: settleNudge(issues)}
 	}
-	if (len(unsure) > 0 || len(web) > 0) && !st.JudgementAsked {
-		st.JudgementAsked, st.JudgementQuestion = true, true
+	st.LastIssues = texts
+	if (len(issues) > 0 || len(web) > 0) && st.PersonAsks < maxReviewQuestions {
+		st.PersonAsks++
+		st.JudgementQuestion = true
 		st.AskedSources = webIdx
-		rc.Logf("operator", "%d call(s) still unsettled, %d resting on the web - asking the person", len(unsure), len(web))
-		return "", knowledgeQuestion(unsure, web, action)
+		rc.Logf("operator", "%d point(s) still open, %d resting on the web - asking the person", len(issues), len(web))
+		return weighing{question: st.withoutSecrets(knowledgeQuestion(issues, web, action))}
 	}
-	return "", ""
+	open := append([]string(nil), texts...)
+	for _, w := range web {
+		open = append(open, "rests on a web page the person has not vouched for: "+w)
+	}
+	if !reviewed {
+		open = append(open, unreviewed)
+	}
+	if len(open) > 0 {
+		rc.Logf("operator", "%d point(s) still open - carried with the result", len(open))
+	}
+	return weighing{open: open}
 }
 
-// settleNudge sends the calls the model is not sure of back to it, once.
-func settleNudge(unsure []string) string {
-	var b strings.Builder
-	b.WriteString("Not settled yet - these calls are not established by what you quoted:\n")
-	for i, c := range unsure {
-		fmt.Fprintf(&b, "%d. %s\n", i+1, truncateText(c, 400))
+// openPointsNote is what stays open, as the result or the approval shows it.
+func openPointsNote(st *operatorState, open []string) string {
+	if len(open) == 0 {
+		return ""
 	}
-	b.WriteString("Settle each before you go on, without guessing: re-read the source and quote the words that establish " +
-		"it; or, if it is a rule or a convention you do not know, look it up (lookup \"...\") and quote the page, with its " +
-		"link - the person will be asked whether to trust that source; or ask the person (HELP) for the rule, or for " +
-		"documentation or a link to follow. If settling one shows your work is wrong, correct the work first. Then reply " +
-		"again with the JUDGEMENTS list.")
+	var b strings.Builder
+	b.WriteString("\n\nStill open after an independent review of the work - please check:")
+	for _, p := range open {
+		b.WriteString("\n- " + truncateText(p, 500))
+	}
+	return st.withoutSecrets(b.String())
+}
+
+// reviewInProgress ends a review round a gate's stop interrupts (a command run while settling what the review raised):
+// the approval then carries the points still open, never asked without them.
+func (st *operatorState) reviewInProgress() string {
+	if st.AwaitingJudge == "" {
+		return ""
+	}
+	open := st.LastIssues
+	st.AwaitingJudge, st.PendingReason, st.Settling = "", "", false
+	return openPointsNote(st, open)
+}
+
+// withoutSecrets is text with every secret the request gave replaced (what the harness writes for the person never
+// carries one; the worker's own words are withheld by the host).
+func (st *operatorState) withoutSecrets(text string) string {
+	for secret := range secretValues(st, "") {
+		if len(secret) >= 3 {
+			text = strings.ReplaceAll(text, secret, secretShown)
+		}
+	}
+	return text
+}
+
+// settleNudge sends what the review raised back to the operator, once.
+func settleNudge(issues []reviewIssue) string {
+	var b strings.Builder
+	b.WriteString("An independent review of the work raised these points:\n")
+	for n, i := range issues {
+		how := map[string]string{
+			"recheck": "settle it from what you have: open the record, document or file and read it",
+			"lookup":  "look it up (lookup \"...\") and quote the page, with its link - the person will be asked whether to trust that source",
+			"person":  "ask the person (HELP) for their rule or choice, or for documentation or a link",
+		}[strings.ToLower(strings.TrimSpace(i.Settle))]
+		if how == "" {
+			how = "settle it from a source, the web or the person"
+		}
+		fmt.Fprintf(&b, "%d. %s\n   -> %s\n", n+1, i.text(), how)
+	}
+	b.WriteString("Weigh each point yourself - the review can be wrong; where what you have shows it is, say so with the " +
+		"words that show it. Keep the work that is right; change only what a source shows to be wrong. Then reply again " +
+		"(DONE with your report and the JUDGEMENTS list, or the JUDGEMENTS list alone before an approval).")
 	return b.String()
 }
 
-// knowledgeQuestion is what the person is asked: web sources to vouch for, and calls nothing settles.
-func knowledgeQuestion(unsure, web []string, action string) string {
+// knowledgeQuestion is what the person is asked, each point as what it is: web sources to vouch for, choices only they
+// settle, knowledge nothing given provides, and points an independent check still questions. Numbered through.
+func knowledgeQuestion(issues []reviewIssue, web []string, action string) string {
+	var choices, knowledge, checks []string
+	for _, i := range issues {
+		switch strings.ToLower(strings.TrimSpace(i.Settle)) {
+		case "recheck":
+			checks = append(checks, i.text())
+		case "lookup":
+			knowledge = append(knowledge, i.text())
+		default:
+			choices = append(choices, i.text())
+		}
+	}
 	var b strings.Builder
 	if action != "" {
 		fmt.Fprintf(&b, "Before I go on to %s:\n", truncateText(strings.TrimPrefix(action, "on screen it would "), 200))
 	} else {
 		b.WriteString("Before I report this as done:\n")
 	}
-	if len(web) > 0 {
-		b.WriteString("These rest on what I looked up on the web. Is each a source you trust for this? Reply yes to keep " +
-			"them, or send me the documentation or link I should follow instead:\n")
-		for i, c := range web {
-			fmt.Fprintf(&b, "%d. %s\n", i+1, truncateText(c, 400))
+	n := 0
+	section := func(head string, points []string) {
+		if len(points) == 0 {
+			return
+		}
+		b.WriteString(head + "\n")
+		for _, p := range points {
+			n++
+			fmt.Fprintf(&b, "%d. %s\n", n, truncateText(p, 400))
 		}
 	}
-	if len(unsure) > 0 {
-		b.WriteString("These are choices I made that nothing you gave me or taught me settles. Tell me how each should be " +
-			"treated, or send me documentation or a link for it, or reply \"as you did\" to keep them:\n")
-		for i, c := range unsure {
-			fmt.Fprintf(&b, "%d. %s\n", i+1, truncateText(c, 400))
-		}
-	}
+	section("These rest on what I looked up on the web. Is each a source you trust for this? Reply yes to keep them, "+
+		"or send me the documentation or link I should follow instead:", web)
+	section("These are choices I made that nothing you gave me or taught me settles. Tell me how each should be "+
+		"treated, or send me documentation or a link for it, or reply \"as you did\" to keep them:", choices)
+	section("These need knowledge that nothing you gave me or taught me provides. Tell me the rule, or send me "+
+		"documentation or a link, or reply \"as you did\" to keep what I did:", knowledge)
+	section("An independent check of the work still questions these after I went back over them. Tell me if any is "+
+		"wrong, or reply \"as you did\" to keep the work as it is:", checks)
 	return strings.TrimSpace(b.String())
 }

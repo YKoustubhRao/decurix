@@ -60,23 +60,23 @@ func TestOnlyACallWhoseQuoteWasSeenIsBacked(t *testing.T) {
 
 func TestARoundIsDueOnlyForRealWorkAndOncePerStretchOfIt(t *testing.T) {
 	st := &operatorState{Hosted: true, CommandsSucceeded: 3}
-	if st.judgementsDue() {
+	if st.judgementsDue("done") {
 		t.Error("a quick question has no judgement calls to list")
 	}
 	st.CommandsSucceeded = 9
-	if !st.judgementsDue() {
+	if !st.judgementsDue("done") {
 		t.Fatal("not due after real work")
 	}
 	st.JudgementRounds, st.JudgedAt = 1, 9
-	if st.judgementsDue() {
+	if st.judgementsDue("done") {
 		t.Error("due again with nothing done since")
 	}
 	st.CommandsSucceeded = 12
-	if !st.judgementsDue() {
+	if !st.judgementsDue("done") {
 		t.Error("not due after more work")
 	}
 	st.Hosted = false
-	if st.judgementsDue() {
+	if st.judgementsDue("done") {
 		t.Error("a local model is left as it was")
 	}
 }
@@ -95,12 +95,16 @@ func TestTheSourcesOfACallIncludeTheLessonsInTheFixedPart(t *testing.T) {
 }
 
 func TestTheQuestionAndTheApprovalSayWhatTheActionRestsOn(t *testing.T) {
-	q := knowledgeQuestion([]string{"Rent kept out of ITC | not backed: earlier months"},
+	q := knowledgeQuestion([]reviewIssue{
+		{What: "Rent kept out of ITC", Why: "earlier months", Settle: "person"},
+		{What: "Ledger figures not shown on any page read", Settle: "recheck"},
+		{What: "How a nil month is shown", Settle: "lookup"}},
 		[]string{"Cancelled bills count in documents issued - from https://example.org/gstr1-help"},
 		`on screen it would click button "FILE WITH EVC" (e1)`)
 	for _, want := range []string{`Before I go on to click button "FILE WITH EVC"`, "Is each a source you trust",
-		"https://example.org/gstr1-help", "nothing you gave me or taught me settles", "1. Rent kept out of ITC",
-		"documentation or a link"} {
+		"1. Cancelled bills count", "https://example.org/gstr1-help", "nothing you gave me or taught me settles",
+		"2. Rent kept out of ITC - earlier months", "need knowledge that nothing you gave me", "3. How a nil month is shown",
+		"documentation or a link", "still questions these after I went back over them", "to keep the work as it is:\n4. Ledger figures"} {
 		if !strings.Contains(q, want) {
 			t.Errorf("question lacks %q:\n%s", want, q)
 		}
@@ -122,18 +126,22 @@ func hostedRun(t *testing.T, replies []string) (Result, *scriptedChat) {
 	return res, chat
 }
 
-func TestADoneIsAskedForItsJudgementCallsAndAnUnbackedOneGoesToThePerson(t *testing.T) {
+func TestADoneIsAskedForItsJudgementCallsAndWhatTheReviewRaisesIsSettledThenAsked(t *testing.T) {
 	work := []string{"COMMAND:\necho register row 455 CANCELLED", "COMMAND:\necho two", "COMMAND:\necho three", "COMMAND:\necho four"}
-	// The independent check of what the backed call's quote establishes answers through the same scripted model.
+	// The reviewer answers through the same scripted model.
 	list := "DONE:\nThe figures are worked out.\n\nJUDGEMENTS:\n- Bill 455 left out | backed by: \"register row 455 CANCELLED\" (register)\n" +
 		"- Rent counted as a purchase credit | not backed: earlier months looked like it"
-	supported := `{"items": [{"n": 1, "verdict": "yes", "why": "the register says so"}]}`
-	res, chat := hostedRun(t, append(work, "DONE:\nThe figures are worked out.", list, supported, list, supported))
+	raised := `{"issues": [{"what": "Rent counted as a purchase credit", "why": "nothing given says rent is a purchase credit", "settle": "person"}]}`
+	res, chat := hostedRun(t, append(work, "DONE:\nThe figures are worked out.", list, raised, list, raised))
 	if !strings.Contains(chat.calls[5][len(chat.calls[5])-1].Content, "JUDGEMENTS:") {
 		t.Fatal("the first DONE was not asked for its judgement calls")
 	}
-	if !strings.Contains(chat.calls[7][len(chat.calls[7])-1].Content, "Not settled yet") {
-		t.Fatal("the unbacked call was not first sent back to be settled")
+	if facts := chat.calls[6][len(chat.calls[6])-1].Content; !strings.Contains(facts, "COMMANDS AND WHAT EACH PRINTED") ||
+		!strings.Contains(facts, "register row 455 CANCELLED") || !strings.Contains(facts, "Rent counted as a purchase credit") {
+		t.Fatalf("the reviewer was not shown the work: %q", facts)
+	}
+	if !strings.Contains(chat.calls[7][len(chat.calls[7])-1].Content, "An independent review of the work raised") {
+		t.Fatal("what the review raised was not first sent back to be settled")
 	}
 	if res.Meta["needsUserInput"] != true || !strings.Contains(res.Output, "1. Rent counted as a purchase credit") ||
 		strings.Contains(res.Output, "Bill 455") {
@@ -145,7 +153,7 @@ func TestADoneWhoseCallsAreAllBackedIsReported(t *testing.T) {
 	work := []string{"COMMAND:\necho register row 455 CANCELLED", "COMMAND:\necho two", "COMMAND:\necho three", "COMMAND:\necho four"}
 	res, _ := hostedRun(t, append(work, "DONE:\nDone.",
 		"DONE:\nDone.\n\nJUDGEMENTS:\n- Bill 455 left out | backed by: \"register row 455 CANCELLED\" (register)",
-		`{"items": [{"n": 1, "verdict": "yes"}]}`))
+		`{"issues": []}`))
 	if !res.Verified || !strings.Contains(res.Output, "JUDGEMENTS:") {
 		t.Fatalf("result = %+v", res)
 	}
@@ -160,7 +168,7 @@ func TestAnApprovalIsAskedWithTheCallsTheActionRestsOn(t *testing.T) {
 		"COMMAND:\necho register row 455 CANCELLED", "COMMAND:\necho two", "COMMAND:\necho three", "COMMAND:\necho four",
 		"COMMAND:\ngui click e35",
 		"JUDGEMENTS:\n- Bill 455 counted as cancelled | backed by: \"register row 455 CANCELLED\" (register)",
-		`{"items": [{"n": 1, "verdict": "yes"}]}`,
+		`{"issues": []}`,
 	})
 	if !strings.Contains(chat.calls[5][len(chat.calls[5])-1].Content, "Before this is put to the person for approval") {
 		t.Fatal("the stopped action was not first asked for what it rests on")
@@ -169,5 +177,15 @@ func TestAnApprovalIsAskedWithTheCallsTheActionRestsOn(t *testing.T) {
 	if res.Meta["needsApproval"] != true || res.Meta["action"] != "gui click e35" ||
 		!strings.Contains(reason, "What this rests on") || !strings.Contains(reason, "Bill 455 counted as cancelled") {
 		t.Fatalf("result = %+v", res.Meta)
+	}
+}
+
+func TestADoneOfTheListAloneKeepsTheReport(t *testing.T) {
+	work := []string{"COMMAND:\necho register row 455 CANCELLED", "COMMAND:\necho two", "COMMAND:\necho three", "COMMAND:\necho four"}
+	res, _ := hostedRun(t, append(work, "DONE:\nClosing credit carried forward: 20,862.14 each.",
+		"DONE:\nJUDGEMENTS:\n- Bill 455 left out | backed by: \"register row 455 CANCELLED\" (register)",
+		`{"issues": []}`))
+	if !res.Verified || !strings.Contains(res.Output, "20,862.14") || !strings.Contains(res.Output, "JUDGEMENTS:") {
+		t.Fatalf("result = %q", res.Output)
 	}
 }

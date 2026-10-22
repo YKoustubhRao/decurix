@@ -74,5 +74,60 @@ class TestSheetBlocks(unittest.TestCase):
         self.assertNotIn("Blocks", office.read_workbook(path))
 
 
+class TestABlockThatDoesNotFollowTheLayout(unittest.TestCase):
+    """GST suite T2 (2026-10-22): a September block without the header row, its dates as text and its codes numbers."""
+
+    def sales(self, ws, top, name, day, rows, header=True, as_text=False):
+        ws.cell(top, 1, name)
+        ws.cell(top + 1, 1, "KAVYA CONSTRUCTIONS")
+        r = top + 2
+        if header:
+            for c, h in enumerate(("Date", "Party", "HSN"), 1):
+                ws.cell(r, c, h)
+            r += 1
+        import datetime
+        for party in rows:
+            ws.cell(r, 1, f"2026-{day}" if as_text else datetime.datetime(2026, int(day[:2]), int(day[3:])))
+            ws.cell(r, 2, party)
+            ws.cell(r, 3, 9954 if as_text else "9954")
+            r += 1
+        ws.cell(r, 2, "TOTAL")
+        return r + 2
+
+    def test_the_new_block_is_told_where_it_breaks_the_layout(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        r = 1
+        for month, day, parties in (("JUNE", "06-04", ["ASHA", "CASH SALE"]), ("JULY", "07-04", ["RAVI", "MEERA", "CASH SALE"]),
+                                    ("AUGUST", "08-04", ["CASH SALE"])):
+            r = self.sales(ws, r, month, day, parties)
+        last = r
+        self.sales(ws, r, "SEPTEMBER", "09-21", ["ANIL", "CASH SALE"], header=False, as_text=True)
+        path = Path(tempfile.mkdtemp()) / "book.xlsx"
+        wb.save(path)
+        found = office.block_layout_breaks(path, rows={"Sheet": {last + 2}})
+        self.assertTrue(any("has no row 'date'" in f for f in found), found)
+        self.assertTrue(any("as date as text, where the column holds dates" in f for f in found), found)
+        self.assertTrue(any("as number, where the column holds numbers written as text" in f for f in found), found)
+        self.assertFalse(any("cash sale" in f for f in found), found)
+        self.assertEqual(office.block_layout_breaks(path, rows={"Sheet": {2}}), [])   # an earlier block that follows it
+
+    def test_a_sheet_the_task_did_not_change_is_not_looked_at(self):
+        # Independent review (2026-10-22): `rows` named only another sheet, and this one's last block was checked
+        # anyway - its old layout break was put to the task that never touched it.
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        r = 1
+        for month, day, parties in (("JUNE", "06-04", ["ASHA"]), ("JULY", "07-04", ["RAVI"]), ("AUGUST", "08-04", ["MEERA"])):
+            r = self.sales(ws, r, month, day, parties)
+        self.sales(ws, r, "SEPTEMBER", "09-21", ["ANIL"], header=False, as_text=True)
+        wb.create_sheet("Notes").append(["changed by the task"])
+        path = Path(tempfile.mkdtemp()) / "book.xlsx"
+        wb.save(path)
+        self.assertTrue(office.block_layout_breaks(path))                               # None: the last block is checked
+        self.assertEqual(office.block_layout_breaks(path, rows={"Notes": {1}}), [])     # another sheet changed only
+        self.assertEqual(office.block_layout_breaks(path, rows={}), [])                 # nothing changed
+
+
 if __name__ == "__main__":
     unittest.main()

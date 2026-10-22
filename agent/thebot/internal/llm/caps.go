@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -190,6 +191,43 @@ func (b *Brain) LearnFromOllama(ctx context.Context, host, model string, visionK
 			wait *= 2
 		}
 	}
+}
+
+// ImageType is a picture's media type read from its first bytes (PNG, JPEG, GIF or WebP - what the hosted models
+// take), or "" when the bytes are none of them. Found live (GST suite T8, 2026-10-22): a file named .jpg that was not
+// a picture went up as one, the provider refused the whole call with HTTP 400, and the task stopped at its first step.
+func ImageType(img []byte) string {
+	switch {
+	case len(img) >= 8 && string(img[:8]) == "\x89PNG\r\n\x1a\n":
+		return "image/png"
+	case len(img) >= 3 && img[0] == 0xFF && img[1] == 0xD8 && img[2] == 0xFF:
+		return "image/jpeg"
+	case len(img) >= 6 && (string(img[:6]) == "GIF87a" || string(img[:6]) == "GIF89a"):
+		return "image/gif"
+	case len(img) >= 12 && string(img[:4]) == "RIFF" && string(img[8:12]) == "WEBP":
+		return "image/webp"
+	}
+	return ""
+}
+
+// onlyPictures is images without what is not a picture (for a provider that cannot put a note in its place).
+func onlyPictures(images [][]byte) [][]byte {
+	var out [][]byte
+	for _, img := range images {
+		if ImageType(img) != "" {
+			out = append(out, img)
+		}
+	}
+	return out
+}
+
+// notAPicture is what stands in a message for bytes that were to be shown as a picture and are not one.
+func notAPicture(n int, label string) string {
+	what := "Picture " + strconv.Itoa(n)
+	if label != "" {
+		what += " (" + label + ")"
+	}
+	return "[" + what + " could not be shown: the file is not a PNG, JPEG, GIF or WebP picture - read it as text to see what it holds]"
 }
 
 // base64All encodes images for a provider's JSON.

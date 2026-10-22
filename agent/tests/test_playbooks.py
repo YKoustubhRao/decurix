@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -37,7 +38,9 @@ class _Store(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.said = []
 
+        # DECURIX_DIR too: the secrets remembered on this machine (privacy.withheld-secrets) are not this test's.
         for p in (patch.object(playbooks, "ROOT", Path(self.tmp.name)),
+                  patch.dict(os.environ, {"DECURIX_DIR": self.tmp.name}),
                   patch("decurix_agent.progress.emit", lambda line, *a, **k: self.said.append(line))):
             p.start()
             self.addCleanup(p.stop)

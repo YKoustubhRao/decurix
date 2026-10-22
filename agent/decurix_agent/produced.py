@@ -538,13 +538,17 @@ class FileFacts:
       pattern_breaks a row of a sheet of repeated blocks whose formula reads a differently labelled row than the same row
                     of the other blocks (evidence: office.reference_pattern_breaks), or formulas that moved with rows put
                     in this task while their references stayed behind (office.moved_formula_breaks)
+      code_notes    a long reference code a file holds that differs in a few characters from one the task was shown
+                    (evidence: sequential references and sibling ids look the same - independent review, 2026-10-22)
     notes() is the evidence: what reads the request or needs judgement. The judge weighs it and the person sees it under
     "Please check"; it never fails the work by itself (harness audit, 2026-10-21).
     """
 
     def __init__(self, unstored=(), typed_totals=(), totals_note=(), missing_files="", file_faults=(), gaps=(), layout=(),
                  source_mismatch=(), disclosures=(), payee_mismatch=(), unknown_recipients=(), draft_facts=(),
-                 request_faults=(), draft_fields=(), gap_notes=(), unchecked=(), duplicates=(), pattern_breaks=()):
+                 request_faults=(), draft_fields=(), gap_notes=(), unchecked=(), duplicates=(), pattern_breaks=(),
+                 code_notes=()):
+        self.code_notes = list(code_notes)
         self.duplicates = list(duplicates)
         self.pattern_breaks = list(pattern_breaks)
         self.unknown_recipients = list(unknown_recipients)
@@ -569,7 +573,7 @@ class FileFacts:
 
         return (list(self.gap_notes) + list(self.unchecked) + list(self.layout) + list(self.typed_totals) + list(self.request_faults)
                 + list(self.disclosures) + list(self.draft_fields) + list(self.duplicates)
-                + list(self.pattern_breaks))
+                + list(self.pattern_breaks) + list(self.code_notes))
 
 
 OFFICE_KINDS = {".xlsx", ".xlsm", ".xltx", ".xltm", ".docx", ".docm", ".dotx", ".pptx", ".pptm", ".potx"}
@@ -680,11 +684,12 @@ def file_facts(request, made, host_copies=(), root=None, named_in=None, drafts_m
         request_faults=image_findings(named, every, source_images(named, every, **({"root": root} if root else {})))
         + page_break_findings(named, every),
         # Needs the formula results stored too: the figure checked is the value the file holds (sources.py).
-        source_mismatch=(_source_mismatch(request, every) if not unstored else []) + miscopied_codes(every, request),
+        source_mismatch=_source_mismatch(request, every) if not unstored else [],
+        code_notes=miscopied_codes(every, request),
         disclosures=draft_disclosures(drafts_made, request) if drafts_made else [],
         payee_mismatch=_payee_mismatch(request, every),
         duplicates=identical_files(every),
-        pattern_breaks=reference_breaks(every) + moved_breaks(every),
+        pattern_breaks=reference_breaks(every) + moved_breaks(every) + layout_breaks(every),
         unknown_recipients=(_unknown_recipients(request, every, drafts_made) if drafts_made else [])
         + _unknown_in_files(request, every),
         **(_draft_facts(request, every, drafts_made) if drafts_made else {}))
@@ -737,24 +742,25 @@ def _shown_codes(request=""):
 
 def miscopied_codes(paths, request=""):
     """
-    A sentence for each long reference code a file the work wrote holds that nothing the task was shown holds, while
-    exactly one code it was shown differs from it in one to three characters: a reference copied wrong. Found live
-    (GST suite T9, 2026-10-22): the portal showed the return's ARN as AA2909267663712A and the workbook was given
-    AA2909267663796A; the report read the workbook back and called it verified. Short codes (an invoice number next to
-    its neighbours) are left out: only codes of twelve characters or more, with a single near twin.
+    Evidence for the judge, never a verdict: a sentence for each long reference code a file the work wrote holds that
+    nothing the task was shown holds, while exactly one code it was shown differs from it in one to three characters.
+    Found live (GST suite T9, 2026-10-22): the portal showed the return's ARN as AA2909267663712A and the workbook was
+    given AA2909267663796A; the report read the workbook back and called it verified. But "a few characters apart" is
+    a judgement, not a certainty (independent review, 2026-10-22): order numbers in a run (SO2026000121..125, read from
+    an input, with ...124 on the screen) and sibling ids (one company's GSTINs of two states) are near twins too - so
+    it is worded as a difference to check, never "copied wrong". Short codes are left out: twelve characters or more.
     """
 
     shown = _shown_codes(request)
     if not shown:
         return []
+    asked = {c.upper() for c in _LONG_CODE.findall(request or "")}
     from decurix_agent.tools import office
     out = []
     for path in dict.fromkeys(str(p) for p in paths or ()):
         try:
-            if Path(path).suffix.lower() in (".xlsx", ".xlsm") and changed_cells(path):
-                text = changed_rows_text(path)
-            else:
-                text = office.read_document(path).get("text") or ""
+            changed = changed_rows_text(path) if Path(path).suffix.lower() in (".xlsx", ".xlsm") else ""
+            text = changed or office.read_document(path).get("text") or ""
         except Exception as exc:  # noqa: BLE001 - a file that cannot be read decides nothing here
             log(f"produced: could not read {path} for its codes: {exc}")
             continue
@@ -765,9 +771,9 @@ def miscopied_codes(paths, request=""):
             twins = [k for k in shown if len(k) == len(upper) and 1 <= sum(a != b for a, b in zip(k, upper)) <= 3]
             if len(twins) == 1:
                 apart = sum(a != b for a, b in zip(twins[0], upper))
-                out.append(f"{Path(path).name} holds {code}, which no page or document showed - {twins[0]} is what "
-                           f"was shown, {apart} character(s) apart: a reference copied wrong. Correct it from where it "
-                           "was shown.")
+                where = "in the request" if twins[0] in asked else "on the screen"
+                out.append(f"{code} in {Path(path).name} differs in {apart} character(s) from {twins[0]} shown {where}; "
+                           "check which is right.")
     return out
 
 
@@ -1092,20 +1098,44 @@ def focus_tokens(findings):
     return out[:60]
 
 
-def sample_table(body, budget, focus=()):
+# A sheet's heading in office read's text ("=== Sheet 'Returns': used range ...") and a cell's address as it writes
+# one ("C97=..."), on a lowered line: a whole address, never the end of a longer one ("ac97=").
+_SHEET_HEADING = re.compile(r"^=== Sheet (['\"])(.*?)\1: used range")
+_CELL_AT = re.compile(r"(?:^|(?<=\s))([a-z]{1,3}\d+)=")
+
+
+def sample_table(body, budget, focus=(), cells=()):
     """
     A long table's text cut to `budget` characters so the judge sees what matters (independent review, 2026-10-21 -
-    not the first N characters): its first lines (the header), every line naming what a finding points at, its total
-    lines, then an even sample of the rest; each gap marked with how many lines it leaves out.
+    not the first N characters): its first lines (the header), every line naming what a finding points at, every row
+    holding one of `cells` ((sheet, address) pairs, matched on that sheet only and by whole address), its total lines,
+    then an even sample of the rest; each gap marked with how many lines it leaves out.
     """
 
     lines = body.splitlines()
     if len(body) <= budget or len(lines) <= HEAD_LINES:
         return body[:budget]
     focus = [str(f).lower() for f in focus or ()]
+    wanted = {}
+    for sheet, ref in cells or ():
+        wanted.setdefault(str(sheet), set()).add(str(ref).lower())
+    sheet_of, current = [], None
+    for line in lines:
+        heading = _SHEET_HEADING.match(line)
+        if heading:
+            current = heading.group(2)
+        sheet_of.append(current)
     keep = set(range(min(HEAD_LINES, len(lines))))
     flat = [line.lower().replace(",", "") for line in lines]
-    keep |= {i for i, line in enumerate(flat) if any(f in line for f in focus)}
+
+    def named(i):
+        """Whether line i names what a finding points at, or holds a changed cell of its own sheet."""
+        if any(f in flat[i] for f in focus):
+            return True
+        refs = wanted.get(sheet_of[i])
+        return bool(refs) and any(ref in refs for ref in _CELL_AT.findall(lines[i].lower()))
+
+    keep |= {i for i in range(len(lines)) if named(i)}
     keep |= {i for i, line in enumerate(flat) if re.search(r"\b(?:grand\s+)?(?:sub)?totals?\b", line)}
     marker = 32  # ("[... N line(s) not shown ...]" between kept lines)
     used = sum(len(lines[i]) + 1 + marker for i in keep)
@@ -1119,7 +1149,7 @@ def sample_table(body, budget, focus=()):
     out, last = [], -1
     # (The header, the named rows and the totals first, then the sample, each in file order, within the budget.)
     first = set(range(min(HEAD_LINES, len(lines)))) | {i for i in keep if i in range(len(lines)) and (
-        any(f in flat[i] for f in focus) or re.search(r"\b(?:grand\s+)?(?:sub)?totals?\b", flat[i]))}
+        named(i) or re.search(r"\b(?:grand\s+)?(?:sub)?totals?\b", flat[i]))}
     chosen, size = set(), 0
     for i in sorted(first) + sorted(keep - first):
         cost = len(lines[i]) + 1 + marker
@@ -1183,36 +1213,91 @@ JUDGE_SHEET_ROWS = 5000
 JUDGE_SHEET_CHARS = 400_000
 
 
-def changed_cells(path):
+_CHANGES = {}
+_CHANGES_KEPT = 32
+
+
+def _stamp(path):
+    """A file's (size, modification time): what tells one saved version of it from another."""
+
+    info = os.stat(path)
+    return info.st_size, info.st_mtime_ns
+
+
+def workbook_changes(path):
     """
-    ["c97=", ...]: the cells of a workbook that differ from the copy kept before the task (source_guard.before_copy),
-    as office read writes their addresses - so a long sheet the judge is shown a sample of shows what the task changed.
-    Found live (GST suite T4, 2026-10-22): the report gave a credit carried forward the saved workbook contradicted,
-    and the judge, shown a sample of the sheet without the new month's rows, passed it. [] when there is no copy.
+    {sheet: {row: [cell addresses]}} of a workbook's cells that differ from the copy kept before the task
+    (source_guard.before_copy); None without a copy or when either cannot be read. Read once per saved version of the
+    two files: the final check asks it of the same workbook several times (changed rows, layout, codes, the judge's view).
     """
 
     if Path(path).suffix.lower() not in (".xlsx", ".xlsm"):
-        return []
+        return None
     try:
         from decurix_agent import source_guard
         before = source_guard.before_copy(path)
         if before is None:
-            return []
+            return None
+        key = (str(path), _stamp(path), str(before), _stamp(before))
+        if key in _CHANGES:
+            return _CHANGES[key]
         import openpyxl
         old, new = openpyxl.load_workbook(str(before)), openpyxl.load_workbook(str(path))
     except Exception as exc:  # noqa: BLE001 - extra focus, never a reason to fail the read
         log(f"produced: could not compare {path} with its copy from before the task: {exc}")
-        return []
-    out = []
+        return None
+    out = {}
     for ws in new.worksheets:
         was = old[ws.title] if ws.title in old.sheetnames else None
         for row in ws.iter_rows():
             for c in row:
                 if c.value is not None and (was is None or was[c.coordinate].value != c.value):
-                    out.append(f"{c.coordinate.lower()}=")
-                    if len(out) >= MAX_CHANGED_CELLS:
-                        return out
+                    out.setdefault(ws.title, {}).setdefault(c.row, []).append(c.coordinate)
+    if len(_CHANGES) >= _CHANGES_KEPT:
+        _CHANGES.clear()
+    _CHANGES[key] = out
     return out
+
+
+def changed_cells(path):
+    """
+    [(sheet, "C97"), ...]: the cells of a workbook that differ from the copy kept before the task, each with its sheet
+    - so a long sheet the judge is shown a sample of shows what the task changed (sample_table's `cells`). Found live
+    (GST suite T4, 2026-10-22): the report gave a credit carried forward the saved workbook contradicted, and the judge,
+    shown a sample of the sheet without the new month's rows, passed it. [] when there is no copy.
+    """
+
+    out = []
+    for sheet, rows in (workbook_changes(path) or {}).items():
+        for r in sorted(rows):
+            for ref in rows[r]:
+                out.append((sheet, ref))
+                if len(out) >= MAX_CHANGED_CELLS:
+                    return out
+    return out
+
+
+def changed_rows_by_sheet(path):
+    """{sheet: {row numbers}} of a workbook's rows that differ from its copy from before the task; None without a copy."""
+
+    changes = workbook_changes(path)
+    if changes is None:
+        return None
+    return {sheet: set(rows) for sheet, rows in changes.items()}
+
+
+def layout_breaks(paths):
+    """A sentence for each block a workbook's task added or changed that does not follow the layout of the sheet's other
+    blocks (office.block_layout_breaks) - evidence for the judge."""
+
+    from decurix_agent.tools import office
+
+    def check(path):
+        if Path(path).suffix.lower() not in (".xlsx", ".xlsm"):
+            return []
+        return office.block_layout_breaks(path, rows=changed_rows_by_sheet(path))
+
+    return _per_file(paths, check, "compare the layout of the blocks of")
 
 
 MAX_CHANGED_ROWS_CHARS = 5000
@@ -1225,8 +1310,10 @@ def changed_rows_text(path):
     when there is no copy or nothing changed.
     """
 
-    cells = changed_cells(path)
-    if not cells:
+    # Each sheet's own changed rows: a row number alone matched the same row of every sheet, and the judge was shown
+    # other sheets' untouched rows as "what this task changed" (independent review, 2026-10-22).
+    by_sheet = changed_rows_by_sheet(path)
+    if not by_sheet:
         return ""
     try:
         import openpyxl
@@ -1236,20 +1323,16 @@ def changed_rows_text(path):
     except Exception as exc:  # noqa: BLE001
         log(f"produced: could not read the changed rows of {path}: {exc}")
         return ""
-    rows = {}
-    for token in cells:
-        m = re.match(r"([a-z]+)(\d+)=", token)
-        if m:
-            rows.setdefault(int(m.group(2)), None)
     lines = []
     for ws in formulas.worksheets:
+        if not by_sheet.get(ws.title):
+            continue
         try:
             blocks = office.sheet_blocks(ws)
         except Exception:  # noqa: BLE001
             blocks = []
         wv = values[ws.title]
-        changed = sorted(r for r in rows if any(ws.cell(r, c).value is not None for c in range(1, ws.max_column + 1)))
-        for r in changed:
+        for r in sorted(by_sheet[ws.title]):
             tag = next((t for a, b, t in blocks if a <= r <= b), "")
             shown = [f"{wv.cell(r, c).coordinate}={office._cell_shown(wv.cell(r, c).value)}"
                      for c in range(1, ws.max_column + 1) if wv.cell(r, c).value is not None]
@@ -1287,7 +1370,7 @@ def text(paths, focus=()):
             parts.append(f"--- {label}\n(could not be read: {str(exc)[:200]})")
             continue
         if len(body) > MAX_FILE_CHARS and Path(path).suffix.lower() in TABLE_KINDS:
-            body = sample_table(body, MAX_FILE_CHARS, tokens + changed_cells(path))
+            body = sample_table(body, MAX_FILE_CHARS, tokens, cells=changed_cells(path))
         elif len(body) > MAX_FILE_CHARS:
             body = body[:MAX_FILE_CHARS] + f"\n[cut here: {len(body) - MAX_FILE_CHARS} more characters not shown]"
         # The end of a sheet is where a fill that stopped short and a Total row show, and the text above is cut before

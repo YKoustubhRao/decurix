@@ -8,6 +8,7 @@ benchmark's oracle run (bench/gui/run.py --engine oracle).
 """
 
 import json
+import os
 import tempfile
 import sys
 import unittest
@@ -16,6 +17,24 @@ from pathlib import Path
 
 from decurix_agent.computer import approval
 from decurix_agent.computer import elements as el
+
+
+_state = {}
+
+
+def setUpModule():
+    """Keep what these tests store (a value typed into a password field is remembered as a secret) out of the real home."""
+
+    _state["tmp"] = tempfile.TemporaryDirectory()
+    _state["env"] = patch.dict(os.environ, {"DECURIX_DIR": _state["tmp"].name})
+    _state["env"].start()
+
+
+def tearDownModule():
+    """Put the environment back and drop what the tests stored."""
+
+    _state["env"].stop()
+    _state["tmp"].cleanup()
 
 
 def element(role, name, **extra):

@@ -79,17 +79,36 @@ class TestGuiDoRefusesTheTaughtExampleOnce(unittest.TestCase):
             self.assertEqual(guidance.taught_values_check(self.skill, {"taxable": "165000"}), "")
 
 
-class TestBindingLeavesOutANameNoDocumentHas(unittest.TestCase):
-    """GST suite T7 (2026-10-22): with no document read, a client's portal username came back made up from its name."""
+class TestBindingSaysANameNoDocumentHas(unittest.TestCase):
+    """GST suite T7 (2026-10-22): with no document read, a client's portal username came back made up from its name.
+    Independent review (2026-10-22): dropping every value the texts do not write word for word dropped correct derived
+    values too (the request is always among the texts) - so it is said, never dropped; only the taught example is."""
 
-    def test_a_made_up_name_is_left_out_and_the_documents_words_are_kept(self):
-        params = [{"name": "user", "label": "Username", "example": "manipalint"},
-                  {"name": "pos", "label": "POS", "example": "29-Karnataka"},
-                  {"name": "taxable", "label": "Taxable", "example": "165000"}]
+    PARAMS = [{"name": "user", "label": "Username", "example": "manipalint"},
+              {"name": "pos", "label": "POS", "example": "29-Karnataka"},
+              {"name": "taxable", "label": "Taxable", "example": "165000"}]
+
+    def test_a_name_no_document_writes_is_kept_and_said(self):
         request = "Prepare Sri Lakshmi Elevators' GSTR-1; their customers are in Karnataka."
-        answer = {"values": {"user": "srilakshmielev", "pos": "29-Karnataka", "taxable": "67909.30"}}
-        values, _ = binding._clean(params, answer, [request])
-        self.assertEqual(values, {"pos": "29-Karnataka", "taxable": "67909.30"})
+        answer = {"values": {"user": "srilakshmielev", "pos": "29-Karnataka", "taxable": "67909.30"},
+                  "evidence": {"user": "made from the client's name"}}
+        values, said = binding._clean(self.PARAMS, answer, [request])
+        self.assertEqual(values, {"user": "srilakshmielev", "pos": "29-Karnataka", "taxable": "67909.30"})
+        self.assertIn("not written so in this run's documents", said["user"])
+        self.assertIn("made from the client's name", said["user"])
+        self.assertNotIn("pos", said)
+
+    def test_values_worked_out_from_the_documents_are_kept(self):
+        params = [{"name": "date", "label": "Invoice date", "example": "01-Aug-2026"},
+                  {"name": "company", "label": "Company", "example": "Acme Private Limited"}]
+        texts = ["Enter the bill.", "Invoice date 28/09/2026\nBill to: Wood Corner Pvt Ltd"]
+        values, _ = binding._clean(params, {"values": {"date": "28-Sep-2026", "company": "Wood Corner Private Limited"}},
+                                   texts)
+        self.assertEqual(values, {"date": "28-Sep-2026", "company": "Wood Corner Private Limited"})
+
+    def test_the_taught_example_is_still_left_out(self):
+        values, _ = binding._clean(self.PARAMS, {"values": {"user": "manipalint"}}, ["Prepare Kavya's GSTR-1."])
+        self.assertEqual(values, {})
 
 
 if __name__ == "__main__":
