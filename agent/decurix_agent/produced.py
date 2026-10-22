@@ -44,6 +44,8 @@ SKIP_DIRS = {"node_modules", "__pycache__", "venv", "site-packages", "target", "
 # A file a request asks for by name ("make contract_changes.docx in my work folder").
 REQUESTED_FILE = re.compile(r"\b[\w-][\w.-]*\.(?:xlsx|xlsm|docx|pptx|pdf|csv|tsv|txt|md|json|xml|html?|eml|ods|odt|odp|svg|png|jpe?g|gif|webp|bmp|tiff?)\b", re.I)
 NAMED_PATH = re.compile(r"(?:~|/|\b[a-z]:[\\/])[\w.~/\\-]*[\w-]\.[a-z0-9]{2,5}\b", re.I)
+# A path written in quotes or backticks, which may hold spaces ("/home/headless/PC/GST Returns/x.xlsx").
+QUOTED_PATH = re.compile(r"[`'\"]((?:~|/|[a-z]:[\\/])[^`'\"\n]*?[\w-]\.[a-z0-9]{2,5})[`'\"]", re.I)
 
 
 def since():
@@ -103,6 +105,30 @@ def files(report="", started=None, root=None, request=""):
             made.append((path.suffix.lower() in DELIVERABLES or path.name.lower() in named, stat.st_mtime, str(path)))
 
     return [path for _, _, path in sorted(made, reverse=True)[:MAX_FILES]]
+
+
+def named_sources(report="", request="", made=()):
+    """
+    Files the report or the request names by path that exist and can be read, other than those in `made`: what the
+    work read, for a judge that asks to look closer. Found live (GST suite T3, 2026-10-21): the report compared a
+    portal's ledger with "Closing credit carried forward" in the workbook it named, read off the wrong month's row; the
+    check could look only in files the task made, so it could neither confirm nor catch it.
+    """
+
+    seen = {str(m) for m in made or ()}
+    out = []
+    text = "\n".join((report or "", attachments.text(request or "")))
+    for raw in QUOTED_PATH.findall(text) + NAMED_PATH.findall(text):
+        path = Path(os.path.expanduser(raw.strip()))
+        if str(path) in seen or path.suffix.lower() not in READABLE:
+            continue
+        try:
+            if path.is_file() and path.stat().st_size > 0:
+                seen.add(str(path))
+                out.append(str(path))
+        except OSError:
+            continue
+    return out[:MAX_FILES]
 
 
 # ============================================================
@@ -508,13 +534,19 @@ class FileFacts:
       unknown_recipients an email draft addressed to an address that is in no input (payees.unknown_recipients)
       draft_facts   a fact an email draft states that no source and no recorded work holds (provenance)
       draft_fields  a draft's fact against its recipient's own row of the request's table (evidence)
+      duplicates    files made under different names that are byte for byte the same (evidence: a copy may be meant)
+      pattern_breaks a row of a sheet of repeated blocks whose formula reads a differently labelled row than the same row
+                    of the other blocks (evidence: office.reference_pattern_breaks), or formulas that moved with rows put
+                    in this task while their references stayed behind (office.moved_formula_breaks)
     notes() is the evidence: what reads the request or needs judgement. The judge weighs it and the person sees it under
     "Please check"; it never fails the work by itself (harness audit, 2026-10-21).
     """
 
     def __init__(self, unstored=(), typed_totals=(), totals_note=(), missing_files="", file_faults=(), gaps=(), layout=(),
                  source_mismatch=(), disclosures=(), payee_mismatch=(), unknown_recipients=(), draft_facts=(),
-                 request_faults=(), draft_fields=(), gap_notes=(), unchecked=()):
+                 request_faults=(), draft_fields=(), gap_notes=(), unchecked=(), duplicates=(), pattern_breaks=()):
+        self.duplicates = list(duplicates)
+        self.pattern_breaks = list(pattern_breaks)
         self.unknown_recipients = list(unknown_recipients)
         self.draft_facts = list(draft_facts)
         self.request_faults = list(request_faults)
@@ -536,7 +568,8 @@ class FileFacts:
         """The evidence among these facts (never a verdict): what reads the request, or needs judgement."""
 
         return (list(self.gap_notes) + list(self.unchecked) + list(self.layout) + list(self.typed_totals) + list(self.request_faults)
-                + list(self.disclosures) + list(self.draft_fields))
+                + list(self.disclosures) + list(self.draft_fields) + list(self.duplicates)
+                + list(self.pattern_breaks))
 
 
 OFFICE_KINDS = {".xlsx", ".xlsm", ".xltx", ".xltm", ".docx", ".docm", ".dotx", ".pptx", ".pptm", ".potx"}
@@ -650,9 +683,62 @@ def file_facts(request, made, host_copies=(), root=None, named_in=None, drafts_m
         source_mismatch=_source_mismatch(request, every) if not unstored else [],
         disclosures=draft_disclosures(drafts_made, request) if drafts_made else [],
         payee_mismatch=_payee_mismatch(request, every),
+        duplicates=identical_files(every),
+        pattern_breaks=reference_breaks(every) + moved_breaks(every),
         unknown_recipients=(_unknown_recipients(request, every, drafts_made) if drafts_made else [])
         + _unknown_in_files(request, every),
         **(_draft_facts(request, every, drafts_made) if drafts_made else {}))
+
+
+def reference_breaks(paths):
+    """A sentence for each row of a workbook among `paths` whose formula reads another row than the same row of the
+    sheet's other blocks (office.reference_pattern_breaks) - evidence for the judge."""
+
+    from decurix_agent.tools import office
+
+    return _per_file(paths, office.reference_pattern_breaks, "compare the blocks of")
+
+
+def moved_breaks(paths):
+    """A sentence for each workbook among `paths` whose formulas moved with rows put in or taken out this task while
+    their references stayed behind (office.moved_formula_breaks, against the copy kept when the task began) - evidence."""
+
+    from decurix_agent import source_guard
+    from decurix_agent.tools import office
+
+    def check(path):
+        before = source_guard.before_copy(path)
+        return office.moved_formula_breaks(before, path) if before else []
+
+    return _per_file(paths, check, "compare with its copy from before the task")
+
+
+def identical_files(paths):
+    """
+    Sentences naming files among `paths` with different names and the same bytes. Found live (GST suite T1,
+    2026-10-21): two invoices downloaded from a chat were saved as 197_....pdf and 198_....pdf, and 198 was a second
+    download of 197; the report said both were "verified PDFs" and the check, shown only their names, could not tell.
+    Evidence for the judge, never a verdict: a copy can be what was asked.
+    """
+
+    import hashlib
+
+    groups = {}
+    for path in dict.fromkeys(str(p) for p in paths or ()):
+        try:
+            if not Path(path).is_file() or Path(path).stat().st_size == 0:
+                continue
+            digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        except OSError:
+            continue
+        groups.setdefault(digest, []).append(path)
+    out = []
+    for same in groups.values():
+        names = sorted({Path(p).name for p in same})
+        if len(names) > 1:
+            out.append(" and ".join(names[:4]) + " are byte for byte the same file - if they should be different "
+                       "documents, one of them is a copy of the other.")
+    return out
 
 
 def _unknown_in_files(request, every):

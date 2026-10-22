@@ -946,6 +946,19 @@ class PauseWithNothingInIt(unittest.TestCase):
         append.assert_called_once()
         self.assertEqual(append.call_args.args[1]["kind"], "manual")
 
+    def test_typing_while_paused_is_a_private_step_however_little_it_shows(self):
+        # GST suite (2026-10-21): a password typed during a pause is a few dots - under 1% of the screen - and no
+        # manual step was recorded, so the learned skill logged in without one.
+        same = bytes([200, 200, 200]) * (64 * 32)
+        rec = self.recorder(same)
+        rec._input_while_paused = rec._typed_while_paused = True
+        after = {"frame": screen.Frame(64, 32, same), "elements": [], "active_title": "Request", "size": [64, 32]}
+        with mock.patch.object(core, "_wait_for_settle"), mock.patch.object(core, "observe", return_value=after), \
+                mock.patch.object(recording, "append", return_value={"i": 7}) as append:
+            rec._resumed()
+        append.assert_called_once()
+        self.assertEqual(append.call_args.args[1]["kind"], "manual")
+
     def test_a_pause_with_no_input_from_the_person_is_no_private_step_however_the_screen_changed(self):
         # Found live (2026-10-14): a one-second pause for a Reason while a page was still loading.
         rec = self.recorder(bytes([200, 200, 200]) * (64 * 32))

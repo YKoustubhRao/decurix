@@ -34,6 +34,18 @@ class ApprovalRules(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIsNotNone(approval.assess("click", element("button", name)))
 
+    def test_filing_with_an_authority_needs_approval(self):
+        # GST suite (2026-10-21): a tax portal's filing and offset buttons passed unasked.
+        for name in ("FILE WITH EVC", "File with DSC", "FILE GSTR-3B WITH EVC", "E-File", "Submit return",
+                     "OFFSET LIABILITY", "Set off liability"):
+            with self.subTest(name=name):
+                self.assertIsNotNone(approval.assess("click", element("button", name)))
+        # The way to the filing page is not the filing (the GST suite's T7 was stopped at its dashboard's FILE RETURNS).
+        for name in ("File", "File Manager", "Files", "Filed returns", "Submit", "Return Dashboard", "Liability ledger",
+                     "FILE RETURNS", "FILE STATEMENT", "PROCEED TO FILE"):
+            with self.subTest(name=name):
+                self.assertIsNone(approval.assess("click", element("button", name)))
+
     def test_ordinary_controls_do_not(self):
         for name in ("Save settings", "Sign in", "Create user", "Sending options", "Posts", "Check out our blog", "Delete user"):
             with self.subTest(name=name):

@@ -63,6 +63,13 @@ CONSEQUENTIAL_CONTROL = re.compile(
     r"|publish|post|post now|tweet|reply all"
     r"|delete (my )?account|close (my )?account|cancel (my )?(subscription|membership|account|order)"
     r"|book now|reserve now|subscribe( now)?"
+    # Filing a return or a declaration with an authority binds the person in law and is not taken back; offsetting a
+    # liability spends their balance (GST suite, 2026-10-21: "FILE WITH EVC", "FILE STATEMENT" and "OFFSET LIABILITY"
+    # on a tax portal passed unasked). "File" alone is a menu and "FILE RETURNS" / "FILE STATEMENT" open the page where
+    # filing is done, so only the step that says how it is signed ("file with EVC", "file GSTR-3B with DSC") and these.
+    r"|file( [\w-]+)? with \w+|file now|e-?file( now)?"
+    r"|submit (the )?(return|declaration|application|claim|filing)s?"
+    r"|(offset|set[- ]off) (the )?liabilit(y|ies)"
     r")\b",
     re.IGNORECASE,
 )
@@ -226,7 +233,68 @@ def assess(kind, element, text=None, keys=None, context=None):
     if kind == "type" and text and "\n" in text and MESSAGING_CONTEXT.search(where):
         return "typing a new line here sends what was typed as a message"
 
+    if kind == "type" and text and element is not None and privacy.secret_field(element):
+        host = _host(context.get("url"))
+        if host and not site_known(host):
+            return (f"this types a password or code into {host}, a site that neither the request nor anything a person "
+                    "taught on this desktop names - make sure it is the right site before a secret goes there")
+
     return None
+
+
+# Where a person's secrets may be typed without asking (GST suite T5, 2026-10-21): a taught task's replay stopped
+# because its portal was not open, and the engine opened the real government site of that name from its own memory and
+# typed the client's username and password from the person's client list into it. A password or code goes, unasked,
+# only to a site the request names or a person used in a recording or a taught skill on this desktop; anywhere else
+# the person says yes first (a phishing page and a remembered address look the same to an engine).
+_KNOWN_CACHE = {"at": 0.0, "text": ""}
+KNOWN_SECONDS = 30
+
+
+def _host(url):
+    import urllib.parse
+
+    try:
+        return (urllib.parse.urlparse(url or "").hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def _taught_text():
+    """The skills and the people's recordings on this desktop, as one lower-case text (cached a little)."""
+
+    now = time.time()
+    if now - _KNOWN_CACHE["at"] < KNOWN_SECONDS:
+        return _KNOWN_CACHE["text"]
+    parts = []
+    roots = [config.DECURIX_DIR / "skills", config.DECURIX_DIR / "recordings"]
+    for root in roots:
+        try:
+            files = list(root.glob("*.json")) + list(root.glob("demo-*/events.jsonl"))
+        except OSError:
+            continue
+        for path in files[:400]:
+            try:
+                with open(path, encoding="utf-8", errors="replace") as handle:
+                    parts.append(handle.read(400_000))
+            except OSError:
+                continue
+    _KNOWN_CACHE.update(at=now, text="\n".join(parts).lower())
+    return _KNOWN_CACHE["text"]
+
+
+def site_known(host):
+    """Whether this host is named by the current request or by what a person taught or recorded on this desktop."""
+
+    host = (host or "").lower()
+    if not host:
+        return True
+    try:
+        from decurix_agent import task_context
+        request = (task_context.current_request() or "").lower()
+    except Exception:  # noqa: BLE001 - no request to read is no request naming it
+        request = ""
+    return host in request or host in _taught_text()
 
 
 # A dialog's plain yes, and what such a dialog asks when the act cannot be

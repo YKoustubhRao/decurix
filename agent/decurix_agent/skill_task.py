@@ -2050,6 +2050,9 @@ def _question_gate(problem, kind, engine):
             or state.paused_skill is not None or state.paused_replay is not None):
         return False
 
+    if _carries_on(problem):
+        return True
+
     guided = guidance.get()
     run = (guided or {}).get("run")
 
@@ -2100,6 +2103,48 @@ def _question_gate(problem, kind, engine):
     # On a thread of its own: the engine is still inside the call that asked.
     threading.Thread(target=_answer_engine, args=(answer,), daemon=True).start()
     return True
+
+
+# An engine that ran out of steps with its work part done carries on by itself, a few times a task, as a planned run's
+# stage does (long_task.OUT_OF_ROOM, MAX_CONTINUATIONS). Found live (GST suite T9, 2026-10-21): a month's return on a
+# portal is longer than one engine budget; the engine stopped after three of eight invoices and asked the person to
+# "start a new run", which would only have sent the whole task again.
+MAX_CARRY_ON = 3
+CARRY_ON = ("Carry on from where you stopped. First look at what is already done - on the screen and in the files - and "
+            "do not do any of it again; then do what is still missing, and report when everything the request asks is "
+            "done.")
+_carried_on = {"task": None, "count": 0}
+
+
+def _carries_on(problem):
+    """True when the engine's question is that it ran out of room, and it was told to carry on (nobody is asked)."""
+
+    from decurix_agent import long_task
+
+    if not long_task.OUT_OF_ROOM.match(problem or "") or long_task.active() or task_context.current_stage()[0]:
+        return False  # (a planned run's stage carries on by its own rules)
+    task = task_context.current() or state.current_task
+    if _carried_on["task"] != task:
+        _carried_on.update(task=task, count=0)
+    if _carried_on["count"] >= MAX_CARRY_ON:
+        return False
+    _carried_on["count"] += 1
+    progress.emit(f"I ran out of steps before finishing - carrying on where I stopped ({_carried_on['count']} of "
+                  f"{MAX_CARRY_ON}).")
+    log(f"Engine ran out of room; carrying on ({_carried_on['count']}/{MAX_CARRY_ON}): {problem[:200]!r}")
+    threading.Thread(target=_carry_on, daemon=True).start()
+    return True
+
+
+def _carry_on():
+    from decurix_agent.harness import continue_after_query
+
+    try:
+        continue_after_query(CARRY_ON)
+    except Exception as exc:
+        log(traceback.format_exc())
+        ask_for_query(f"I ran out of steps and could not carry on by myself ({exc}). Tell me how to go on.",
+                      engine=SKILL_ENGINE)
 
 
 def _answer_engine(answer):
@@ -2531,7 +2576,7 @@ def _gate(reply, kind, engine):
                                            _bill_evidence(state.current_task or "", made),
                                            produced.notes_text(notes + loud)) if x),
             deliverables=produced.asked_files(made, state.current_task or ""),
-            look_up=lambda terms: produced.lines_with(made, terms))
+            look_up=lambda terms: produced.lines_with(list(made) + produced.named_sources(reply, state.current_task or "", made) + [p for p in evidence.files_read() if p not in made], terms))
 
     if not on_screen and verdict["verdict"] == verify.UNSURE and not unread_host:
         # File work the check could not settle goes out as the worker reported it, marked not checked: only a
@@ -2548,9 +2593,16 @@ def _gate(reply, kind, engine):
         guidance.end()
         if run is not None:
             _record_verdict(run, False, why=(reply or "")[:300])
+        report = (reply or "").strip()
+        if _confirm_round() > MAX_CONFIRM_ROUNDS:
+            # Asked and answered this often, and it still cannot: the person is told it is not done, not asked again
+            # (GST suite T7, 2026-10-21: "I could not finish this" came back nine times).
+            write_final_reply("I could not finish this, and I have asked you about it "
+                              f"{MAX_CONFIRM_ROUNDS} times now - it is NOT done.\n\n" + (report[:REPORT_CHARS] or verdict.get("why") or ""),
+                              kind="error", engine=engine, checked=True)
+            return True
         state.paused_skill = {"mode": "confirm", "run": run, "claim": reply, "verdict": verdict, "engine": engine,
                               "task": guided["task"], "blocked": True}
-        report = (reply or "").strip()
         ask_for_query("I could not finish this.\n\n" + (report[:REPORT_CHARS] or verdict.get("why") or "")
                       + "\n\nTell me what to do about it and I will carry on with that, or reply `stop`.", kind="query", engine=engine)
         return True
@@ -2599,10 +2651,44 @@ def _gate(reply, kind, engine):
         return True
 
     guidance.end()
+    if _confirm_round() > MAX_CONFIRM_ROUNDS:
+        if run is not None:
+            _record_verdict(run, False, why="not confirmed after repeated checks")
+        write_final_reply(_given_up_text(reply, verdict, on_screen), kind="error", engine=engine, checked=True)
+        return True
     state.paused_skill = {"mode": "confirm", "run": run, "claim": reply, "verdict": verdict, "engine": engine,
                           "task": guided["task"]}
     ask_for_query(_doubt_text(reply, verdict, on_screen=on_screen), kind="query", engine=engine)
     return True
+
+
+# How many times one task may ask "I cannot confirm this is done" before it stops asking. Found live (GST suite T1,
+# 2026-10-21): the person answered "use your judgement and carry on", which is neither `done` nor `retry`; it went
+# back to the engine as what was wrong, the engine listed the same folder and reported the same thing, and the same
+# question came back nine times in four minutes.
+MAX_CONFIRM_ROUNDS = 3
+_confirm_rounds = {}
+
+
+def _confirm_round():
+    """This task's count of "cannot confirm" questions, this one included."""
+
+    key = task_context.current()
+    if not key:  # no task record to count against (a check run on its own)
+        return 1
+    _confirm_rounds[key] = _confirm_rounds.get(key, 0) + 1
+    if len(_confirm_rounds) > 200:
+        _confirm_rounds.pop(next(iter(_confirm_rounds)))
+    return _confirm_rounds[key]
+
+
+def _given_up_text(reply, verdict, on_screen):
+    """The final report of a task the check could not confirm after MAX_CONFIRM_ROUNDS questions: NOT confirmed."""
+
+    doubt = _doubt_text(reply, verdict, on_screen=on_screen).split("\n\nLook at")[0]
+    return (f"{doubt}\n\nI have asked about this {MAX_CONFIRM_ROUNDS} times and the check still cannot confirm it, so "
+            "I am stopping here and leaving it NOT confirmed. Please look at the result yourself before relying on it; "
+            "tell me what is wrong and I will put it right.")
 
 
 def _bill_evidence(request, made):
