@@ -98,5 +98,18 @@ class AStageDraft(unittest.TestCase):
         self.assertIn('Reporting manager is "Rakesh Menon"', " ".join(fields))
 
 
+class AFigureWorkedOutFromValuesTypedWithIt(unittest.TestCase):
+    """Found live (2026-10-24): the tax of each line of a bill that prints only their total (5,200 at 5% = 260,
+    36,000 at 18% = 6,480) was typed beside its amount and rate, and the final check refused a finished task."""
+
+    def test_one_step_from_another_typed_value_and_a_source_is_held(self):
+        src = provenance.Sources(["Bill 454: Rusk 36,000.00 @ 18%; Rice 5,200.00 @ 5%; IGST 6,740.00"])
+        typed = ["36000", "18%", "6480", "5200", "5%", "260", "9999"]
+        ops = provenance._figures(" ".join(typed))
+        self.assertEqual([v for v in typed if src.unsourced(v, operands=ops)], ["9999"])
+        # Alone, as before, a worked-out figure is not held.
+        self.assertEqual(src.unsourced("260"), ["260"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -14,3 +14,5 @@ desktop/electron/build
 agent/thebot.tar.gz
 agent/thebot-soul
 decurix.exe
+# Brainiac build outputs (its own Go module; nothing in the Decurix images uses it)
+brainiac/bin

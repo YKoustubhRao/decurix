@@ -6,7 +6,7 @@ from pathlib import Path
 from decurix_agent.tools import office
 
 
-# GST suite T9 (2026-10-21): office read wrote dates as datetime.datetime(2026, 7, 4, 0, 0), which nothing reads as a date.
+# Found live (2026-10-21): office read wrote dates as datetime.datetime(2026, 7, 4, 0, 0), which nothing reads as a date.
 class TestADateCellIsReadAsADate(unittest.TestCase):
 
     def test_dates_and_times_are_written_plainly(self):

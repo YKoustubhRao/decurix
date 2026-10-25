@@ -1,0 +1,8 @@
+# The model checker is a tool, not source: download it (README.md).
+tla2tools.jar
+# TLC's working files and the per-property results check.sh writes.
+states/
+out/
+*_TTrace_*.tla
+*_TTrace_*.bin
+*.st

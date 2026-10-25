@@ -237,7 +237,7 @@ def note_look(shown, observation=None):
         except Exception as exc:
             log(f"evidence: could not list the fields of a look: {exc}")
     if (shown and shown.strip()) or held or words:
-        note("a look at the screen then. What every field of the page held (in view or not):\n" + (held or "(none)")
+        note(LOOK_LEAD + ". What every field of the page held (in view or not):\n" + (held or "(none)")
              + "\nThe words the page showed outside its fields, in its order (in view or not):\n" + (words or "(none)")
              + "\nThe part in view, as the tool listed it:\n" + (shown or "").strip()[:MAX_LOOK])
 
@@ -289,6 +289,16 @@ def read(task_id=None):
 
     task_id = task_id or task_context.current()
     return "\n".join(_notes(task_id)) if task_id else ""
+
+
+LOOK_LEAD = "a look at the screen then"
+
+
+def looks(task_id=None):
+    """The task's looks at the screen as noted (note_look), oldest first: what the pages showed, never a file read."""
+
+    task_id = task_id or task_context.current()
+    return [text for text in _notes(task_id) if text.startswith(LOOK_LEAD)] if task_id else []
 
 
 def _notes(task_id, last=None):
@@ -348,7 +358,7 @@ def note_file_read(path):
 
 
 def files_read(task_id=None):
-    """The files the tools read during a task that are still there, oldest first. Found live (GST suite T9, 2026-10-21):
+    """The files the tools read during a task that are still there, oldest first. Found live (2026-10-21):
     the invoice numbers and amounts typed into a portal were read from the client's workbook in the person's folder,
     which the request did not name by file, and the check that a typed fact has a source called them invented."""
 

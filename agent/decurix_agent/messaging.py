@@ -676,6 +676,22 @@ Completed at:
     log("TASK COMPLETED")
     log(final_note)
 
+    # What the sources said that a later task will need, kept in the worker's memory (kept_facts.py) before the report
+    # goes out - for at most kept_facts.WAIT_S: a worker restarted for its next task as soon as it reports would
+    # otherwise lose them.
+    # Not after a demonstration (it ends quietly: the person's own work, and another client's, is taught, not learned
+    # about - found live 2026-10-23, a taught example's figures were kept as facts) nor a command (/learn, /skill).
+    if not interrupted and not quiet and not str(state.current_task or "").lstrip().startswith("/"):
+        try:
+            # (task_context is this module's own import: a local import of it here made it a local name for the whole
+            # function, and every ending that skips this block - a /command, a quiet one - failed further down.)
+            from decurix_agent import kept_facts
+            thread = kept_facts.after_task(task_id or task_context.current(), _task_name())
+            if thread is not None:
+                thread.join(kept_facts.WAIT_S)
+        except Exception as exc:  # noqa: BLE001 - what is kept for later must never cost this report
+            log(f"Could not keep this task's facts: {exc}")
+
     if not quiet:
         path = config.QUERYTEXT_DIR / filename
 

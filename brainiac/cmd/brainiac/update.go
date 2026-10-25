@@ -1,0 +1,252 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"runtime"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"brainiac/internal/api"
+	"brainiac/internal/catalog"
+	"brainiac/internal/census"
+	"brainiac/internal/config"
+	"brainiac/internal/engine"
+	"brainiac/internal/install"
+	"brainiac/internal/selector"
+	"brainiac/internal/store"
+	"brainiac/internal/update"
+)
+
+// runUpdate runs one update cycle by hand: without --apply it says what
+// `serve` would switch to; with --apply it switches (when no server runs).
+func runUpdate(args []string) error {
+	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	home := fs.String("home", "", "Brainiac's home")
+	apply := fs.Bool("apply", false, "install, check and switch now (a running `serve` does this on its own)")
+	asJSON := fs.Bool("json", false, "print the report as JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	st, err := openStore(&common{home: *home})
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load(st.Root)
+	if err != nil {
+		return err
+	}
+	if *apply && serverAnswers(cfg.Listen) {
+		return fmt.Errorf("a Brainiac is serving on %s and updates itself when idle; stop it to switch by hand", cfg.Listen)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	lg := log.New(os.Stderr, "", 0)
+	res, err := update.Run(ctx, updateOptions(st, cfg, lg, *apply, nil))
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		return printJSON(res)
+	}
+	renderUpdate(os.Stdout, res)
+	return nil
+}
+
+// updateOptions wires a cycle to this store, config and (when serving) the
+// running server.
+func updateOptions(st *store.Store, cfg config.Config, lg *log.Logger, apply bool, srv *api.Server) update.Options {
+	o := update.Options{
+		Store:     st,
+		Policy:    selector.Policy{ReserveGB: cfg.ReserveGB, PlannedLoadGB: cfg.PlannedLoadGB, Licenses: cfg.Licenses},
+		Apply:     apply,
+		WorkerDir: workerDir(),
+		Log:       lg.Writer(),
+		Census: func(ctx context.Context) (census.Census, error) {
+			return census.Take(ctx, census.Options{StoreDir: st.Path("models"), OllamaURL: cfg.OllamaURL, Network: true})
+		},
+		Check: canary(st, cfg, lg),
+		Idle:  func() bool { return !machineBusy() },
+	}
+	if srv != nil {
+		o.Idle = func() bool { return srv.IdleFor() >= 10*time.Minute && !machineBusy() }
+		o.MakeRoom = func() { srv.Current().Unload() }
+	}
+	return o
+}
+
+// canary checks a lock's models on a throwaway engine that runs everything
+// here (no remote brain, no web), so the check is of the models alone.
+func canary(st *store.Store, cfg config.Config, lg *log.Logger) func(context.Context, *install.Lock, *catalog.Catalog, []string) error {
+	return func(ctx context.Context, lock *install.Lock, cat *catalog.Catalog, roles []string) error {
+		c := cfg
+		c.Mode, c.Remote, c.Web = config.ModeLocal, nil, config.WebOff
+		eng, err := engine.New(engine.Options{Config: c, Store: st, Lock: lock, Logger: lg, Catalog: cat})
+		if err != nil {
+			return err
+		}
+		defer eng.Close()
+		err = eng.Canary(ctx, roles)
+		var nr *engine.ErrNoRoom
+		var ce *engine.CanaryError
+		switch {
+		case err == nil:
+			return nil
+		case errors.As(err, &nr):
+			return fmt.Errorf("%w: %v", update.ErrNotNow, err)
+		case errors.As(err, &ce):
+			return &update.CheckFailed{Role: ce.Role, Err: ce.Err}
+		}
+		return err
+	}
+}
+
+// updateLoop keeps the served models the best this machine can run: a cycle
+// ten minutes after start, then every interval. A better plan waiting for an
+// idle moment is tried again every 30 minutes; after a switch, new requests
+// go to the new models and the old engine closes when its requests finish.
+func updateLoop(ctx context.Context, st *store.Store, cfg config.Config, srv *api.Server, every time.Duration, lg *log.Logger) {
+	wait := 10 * time.Minute
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		wait = every
+		res, err := update.Run(ctx, updateOptions(st, cfg, lg, true, srv))
+		if err != nil {
+			lg.Printf("update: %v", err)
+			wait = min(every, 6*time.Hour)
+			continue
+		}
+		switch res.Outcome {
+		case update.OutcomeDeferred:
+			wait = min(every, 30*time.Minute)
+		case update.OutcomeFailed:
+			wait = min(every, 6*time.Hour)
+		case update.OutcomeSwitched:
+			cat, err := loadCatalog(st)
+			if err != nil {
+				cat = res.Catalog
+			}
+			eng, err := engine.New(engine.Options{Config: cfg, Store: st, Lock: res.Lock, Logger: lg, Catalog: cat})
+			if err != nil {
+				lg.Printf("update: switched the lock, but the new engine failed (%v); restart serve", err)
+				continue
+			}
+			old := srv.SetEngine(eng)
+			go old.Drain(2 * time.Minute)
+			lg.Printf("update: now serving %s", rolesLine(eng.Status().Roles))
+		}
+	}
+}
+
+func rolesLine(roles map[string]string) string {
+	var parts []string
+	for _, r := range []string{catalog.RoleBrain, catalog.RoleVision, catalog.RoleGround, catalog.RoleOCR, catalog.RoleASR, catalog.RoleEmbed} {
+		if m, ok := roles[r]; ok {
+			parts = append(parts, r+" "+m)
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// machineBusy reports a CPU already working hard for someone else (the
+// one-minute load average above 70% of the cores), when the OS says.
+func machineBusy() bool {
+	data, err := os.ReadFile("/proc/loadavg")
+	if err != nil {
+		return false
+	}
+	f := strings.Fields(string(data))
+	if len(f) == 0 {
+		return false
+	}
+	load, err := strconv.ParseFloat(f[0], 64)
+	return err == nil && load > 0.7*float64(runtime.NumCPU())
+}
+
+// serverAnswers reports a Brainiac already serving at addr.
+func serverAnswers(addr string) bool {
+	c := &http.Client{Timeout: 2 * time.Second}
+	resp, err := c.Get("http://" + addr + "/healthz")
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+func renderUpdate(w io.Writer, res *update.Result) {
+	fmt.Fprintf(w, "Update %s against catalog %s\n", res.MadeAt.Local().Format("2006-01-02 15:04"), res.CatalogVersion)
+	fmt.Fprintf(w, "%s: %s\n", res.Outcome, res.Why)
+	if len(res.Adopted) > 0 {
+		fmt.Fprintln(w, "\nRated above the current picks by public evaluations:")
+		for _, a := range res.Adopted {
+			fmt.Fprintf(w, "  %-28s %s  (%s)\n", a.Model, ratingsLine(a.Roles), a.Why)
+			for _, e := range a.Evidence {
+				fmt.Fprintf(w, "      %s %.1f from %d comparisons", e.Role, e.Quality, len(e.Pairs))
+				if e.Why != "" {
+					fmt.Fprintf(w, " (%s)", e.Why)
+				}
+				fmt.Fprintln(w)
+			}
+		}
+	}
+	if len(res.Changes) > 0 {
+		fmt.Fprintln(w, "\nPlan changes:")
+		for _, ch := range res.Changes {
+			fmt.Fprintf(w, "  %-9s %s (%.0f) -> %s (%.0f)\n", ch.Role, orBrain(ch.From), ch.FromQuality, orBrain(ch.To), ch.ToQuality)
+		}
+	}
+	if len(res.SetAside) > 0 {
+		fmt.Fprintf(w, "\nSet aside for 30 days after failing the check: %s\n", strings.Join(res.SetAside, ", "))
+	}
+	if len(res.Considered) > 0 {
+		fmt.Fprintln(w, "\nRead and not added:")
+		for _, c := range res.Considered {
+			fmt.Fprintf(w, "  %-50s %s\n", c.Repo, c.Why)
+		}
+	}
+	if res.Outcome == update.OutcomeWould {
+		fmt.Fprintln(w, "\nA running `brainiac serve` switches on its own when idle; `brainiac update --apply` switches now.")
+	}
+}
+
+func ratingsLine(roles map[string]float64) string {
+	var parts []string
+	for _, r := range sortedRoles(roles) {
+		parts = append(parts, fmt.Sprintf("%s %.0f", r, roles[r]))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func sortedRoles(m map[string]float64) []string {
+	var out []string
+	for k := range m {
+		out = append(out, k)
+	}
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j] < out[j-1]; j-- {
+			out[j], out[j-1] = out[j-1], out[j]
+		}
+	}
+	return out
+}
+
+func orBrain(m string) string {
+	if m == "" {
+		return "(the brain)"
+	}
+	return m
+}

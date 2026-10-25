@@ -38,7 +38,7 @@ def request_secrets(text):
     """The secrets a request's own words give after their names (a password, a PIN, a key): [text]."""
 
     # Said as one ("password is x", "pin: x", quoted), any word; written straight after the name, only what has a
-    # digit or a mark in it. Found live (GST suite, 2026-10-22): "No OTP has come to the client's phone yet" kept "has"
+    # digit or a mark in it. Found live (2026-10-22): "No OTP has come to the client's phone yet" kept "has"
     # as a secret, and every "has" of every later reply and step read "[withheld]".
     found = [m.group(3).rstrip(".!?") for m in REQUEST_SECRET.finditer(text or "")
              if m.group(1) or m.group(2) or not m.group(3).rstrip(".!?").isalpha()]
@@ -173,7 +173,10 @@ CREDENTIALS = [
     ("JSON web token", re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")),
 ]
 
-CARD_NUMBER = re.compile(r"(?<![\d-])\d(?:[ -]?\d){12,18}(?![\d-])")
+# A card number stands alone: digits glued to letters are a code (an acknowledgement number like "AB1234567890123C"
+# holds 13 digits that may pass the checksum). Found live (2026-10-25): a message to a client quoting two such numbers was
+# withheld whole as "a card number", and the person asked to approve sending it was shown nothing of it.
+CARD_NUMBER = re.compile(r"(?<![\w-])\d(?:[ -]?\d){12,18}(?![\w-])")
 
 # Query parameters whose values are credentials more often than not.
 SECRET_PARAM = re.compile(r"pass|pwd|secret|token|key|auth|session|sig|otp|code|credential", re.IGNORECASE)
@@ -253,7 +256,7 @@ SPOKEN_SECRET = re.compile(
 
 
 # A credential written after its name and a colon or equals sign, unquoted: "- password: Lift$2026", "pwd=x". Found
-# live (GST suite T7, 2026-10-21): a worker's report listed the client's portal password read from the person's client
+# live (2026-10-21): a worker's report listed the client's portal password read from the person's client
 # list. (Not "PIN": in an Indian address "PIN: 576104" is the postal code.)
 LABELLED_SECRET = re.compile(
     r"(?i)\b(?:pass(?:word|code|phrase)|pwd|api[ _-]?key|secret(?: key)?|token)\b\s*[:=]\s*[`\"'“‘]?"

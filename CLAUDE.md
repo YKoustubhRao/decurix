@@ -22,7 +22,10 @@ This file holds only what must be in your head for every change. The detail live
 | Healing ladder, experience | [docs/healing.md](docs/healing.md) |
 | Long requests: planned runs, ledger, amendments, parked questions, cross-check | [docs/long-requests.md](docs/long-requests.md) |
 | Build, run, env vars, `--cli`, releases | [docs/running.md](docs/running.md) |
-| Every lesson learned the hard way (616 entries) | [docs/gotchas.md](docs/gotchas.md): one line each, grep it, then open the named part file |
+| Harness v2: evidence store, lineage, record integrity, accounting, commit-gate verifier, interaction FSM | [docs/harness-v2.md](docs/harness-v2.md) |
+| The learning loop: a task is a case (scope, sources, matrix), a kind of task is a learned method; learning curves | [docs/learning-loop.md](docs/learning-loop.md) |
+| Brainiac: many open models behind one OpenAI-compatible endpoint, chosen per machine (own Go module, imports nothing from Decurix) | [brainiac/README.md](brainiac/README.md), [brainiac/DESIGN.md](brainiac/DESIGN.md) |
+| Every lesson learned the hard way (704 entries) | [docs/gotchas.md](docs/gotchas.md): one line each, grep it, then open the named part file |
 
 ## Commands
 

@@ -6,7 +6,7 @@ from decurix_agent.computer import replay
 
 
 # ============================================================
-# GST suite T9 (2026-10-22): told "use your judgement" at "type the client's
+# Found live (2026-10-22): told "use your judgement" at "type the client's
 # portal password" (a step the recording kept private), the engine carried on
 # from the next step with the password field empty; the login failed.
 # ============================================================

@@ -32,7 +32,7 @@ func TestEachScannedPageIsLabelledWithItsOwnDocument(t *testing.T) {
 // pngHead is the start of a PNG file: page pictures in tests are pictures a model can be shown.
 const pngHead = "\x89PNG\r\n\x1a\n"
 
-// A page "picture" that is not one (a web page saved under .png) is never attached (GST suite T8, 2026-10-22).
+// A page "picture" that is not one (a web page saved under .png) is never attached (2026-10-22).
 func TestAPagePictureThatIsNotAPictureIsNotShown(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "page-1.png")
 	_ = os.WriteFile(p, []byte("<!DOCTYPE html>"), 0o644)

@@ -355,11 +355,18 @@ def at_point(elements, x, y, windows=None, popups=None):
 # Rendering for an engine
 # ============================================================
 
+# A table row's text is its cells: cut at the 80 characters other names get, a summary's row lost its last columns
+# (found live, 2026-10-25: "Sales | 4 | 259,272.00 | 219,722.46 | ..." showed neither tax column, to the worker or
+# the check of its figures).
+ROW_ROLES = ("row",)
+ROW_CHARS = 200
+
+
 def element_line(element, coords=False):
     line = f"{element['ref']} {element['role']}"
 
     if element.get("name"):
-        line += " " + _quote(element["name"])
+        line += " " + _quote(element["name"], ROW_CHARS if element.get("role") in ROW_ROLES else 80)
 
     value = element.get("value")
     if value not in (None, "") and value != element.get("name"):

@@ -5,7 +5,7 @@ import time
 import urllib.error
 import urllib.request
 
-from decurix_agent import app_skills, attachments, config, guidance, playbooks, progress, state, usage
+from decurix_agent import app_skills, attachments, config, guidance, methods, playbooks, progress, state, usage
 from decurix_agent.computer import approval
 from decurix_agent.identity import get_identity_context
 from decurix_agent.logging_utils import log, log_banner
@@ -51,10 +51,11 @@ APPROVAL_MARKER = "NEEDS_APPROVAL:"
 
 POLL_INTERVAL_SECONDS = 2
 
-# soul bounds a job at 25 minutes itself (THEBOT_JOB_TIMEOUT_SECONDS) and
+# soul bounds a job at 2 hours itself (THEBOT_JOB_TIMEOUT_SECONDS) and
 # reports what it finished when that runs out; this is only the backstop
-# for a soul that stopped responding altogether.
-TASK_TIMEOUT_SECONDS = 1800
+# for a soul that stopped responding altogether. A goal working without a
+# question is not stuck: found live (2026-10-23), 25 minutes stopped one mid-work.
+TASK_TIMEOUT_SECONDS = 7500
 
 SAFETY_PREAMBLE = f"""
 Approval rules for this desktop.
@@ -97,6 +98,10 @@ reviews and sends it there, so draft one without asking.
 # request". So the task and the question are kept here, and the reply goes
 # back as the original task with the human's answer in its context.
 _written_pause = None
+
+# The approval soul's own gate put to the person last (the question's words), while it waits for their reply; None
+# when the last thing asked was not an approval. The reply goes back with its one reading (continue_after_query).
+_approval_asked = None
 
 
 # ============================================================
@@ -333,12 +338,77 @@ def _build_context(extra=""):
     if known:
         parts.append(known)
 
+    # How this kind of task was done before, checked (methods.py): the places to read first, and the plan the person
+    # already saw - with it, soul does not put the plan to them again.
+    try:
+        run = guidance.get() or {}
+        method = methods.context(run.get("task") or state.current_task or "") if config.HOSTED_BRAIN else ""
+    except Exception as exc:  # what was learned must never cost the task
+        log(f"TheBot: could not look for a method: {exc}")
+        method = ""
+    if method:
+        parts.append(method)
+
+    # The plan the person was shown earlier in this request, and what they said to it (below).
+    agreed = plan_context()
+    if agreed:
+        parts.append(agreed)
+
     parts.append(SAFETY_PREAMBLE)
 
     if extra:
         parts.append(extra)
 
     return "\n\n".join(parts)
+
+
+# ------------------------------------------------------------
+# The plan the person was shown, carried through the request
+#
+# soul puts its plan of the work to the person once, before its first change (plan.go), and takes their answer in as
+# part of the plan - it never classifies it. A later job of the same request (the final check sending the task back,
+# a second attempt at a taught task) is a new goal to soul, which put the same plan to them again: found live
+# (2026-10-24), "ya same, carry on" to a plan agreed half an hour before, and a second plan question in a taught
+# task's second attempt. Every later job of the request now gets the plan and their answer, word for word, under the
+# marker that tells soul the plan is agreed (long_task.PLAN_AGREED_MARKER). Nothing here reads their answer: it is
+# carried as they wrote it.
+# ------------------------------------------------------------
+
+PLAN_QUESTION = "Before I change anything, this is how I will do it:"
+MAX_PLAN_CHARS = 4000
+_plan = {"task": None, "asked": "", "said": "", "pending": False}
+
+
+def _request_id():
+    from decurix_agent import task_context
+    return task_context.current() or state.current_task_file or ""
+
+
+def note_question(question):
+    """Note a question put to the person: the plan of the work, or anything else (which is not a plan's answer)."""
+
+    if (question or "").startswith(PLAN_QUESTION):
+        _plan.update(task=_request_id(), asked=question.strip()[:MAX_PLAN_CHARS], said="", pending=True)
+    else:
+        _plan["pending"] = False
+
+
+def note_reply(reply):
+    """The person's reply: their answer to the plan when the plan was what they were asked last."""
+
+    if _plan["pending"] and _plan["task"] == _request_id() and (reply or "").strip():
+        _plan.update(said=" ".join(reply.split())[:1500], pending=False)
+
+
+def plan_context():
+    """For a later job of the same request: the plan and the person's answer to it, as agreed - "" when there is none."""
+
+    if not _plan["said"] or _plan["task"] != _request_id():
+        return ""
+    from decurix_agent.long_task import PLAN_AGREED_MARKER
+    return (f"{PLAN_AGREED_MARKER}: earlier in this request the plan of the work was put to the person, and they "
+            f"answered it.\n{_plan['asked']}\nTheir answer: {_plan['said']}\nDo the work that way - their answer "
+            "changes the plan where it says so - and do not put the plan to them again.")
 
 
 # How many taught skills the standing context lists. In name order, never
@@ -397,11 +467,18 @@ def _answer_context(asked, reply):
     triages and plans (see _build_context).
     """
 
-    if approval.is_approval(reply):
+    said = approval.reading(reply, asked)
+    if said["decision"] == "yes":
         return (
             "Earlier in this task you asked the human for approval: "
             f"\"{asked}\". They replied \"{reply}\" - that is approval. "
             "Do the task now, and do not ask for approval for it again."
+        )
+    if said["decision"] == "if":
+        return (
+            f"Earlier in this task you asked the human for approval: \"{asked}\". They replied: \"{reply}\" - an "
+            f"approval only once this holds: {said['condition'] or 'what their reply sets'}. Do that first; the action "
+            "itself waits until it holds, and is put to them again then."
         )
 
     return (
@@ -430,7 +507,7 @@ def _session_id():
     return desktop
 
 
-def _run_thebot(request, reply, extra_context=""):
+def _run_thebot(request, reply, extra_context="", approval_reading=None):
     """
     Submit one request to TheBot's /api/chat and follow the job until it
     finishes.
@@ -460,6 +537,8 @@ def _run_thebot(request, reply, extra_context=""):
                 "reply": reply,
                 # Said yes already, as a kind of task: soul does not ask about the request's own words again.
                 "approved": bool(state.request_preapproved) and not reply,
+                # What the reply to an approval decides ({"decision": yes|if|no|unclear, "condition"}), or None.
+                "approvalReading": approval_reading,
             },
         )
     except (urllib.error.URLError, OSError, ValueError) as exc:
@@ -591,10 +670,6 @@ def _backend_note(reason):
     )
 
 
-APPROVAL_ASKED_RE = re.compile(r"\bneeds? (your )?approval\b|\bplease approve\b|\bapprove (if|this|it|the)\b|"
-                               r"\b(your|for) (approval|permission|go-ahead)\b", re.IGNORECASE)
-
-
 def _escalate(reason):
     """
     Send one reason to the human, rewritten if it is really about the
@@ -605,10 +680,10 @@ def _escalate(reason):
         ask_for_query(_backend_note(reason))
         return
 
-    # A question that asks for a yes to something consequential is an
-    # approval, whichever way the model worded it: the chat and the task
-    # record tell the two apart ("Needs approval" / "Needs your answer").
-    ask_for_query(reason, kind="approval" if APPROVAL_ASKED_RE.search(reason) else "query")
+    # A question is a question: an approval is only what a gate stopped (the "needs_approval" outcome), which names
+    # the one action a yes allows. A word list over the model's question labelled "I need your rule or documentation
+    # for ... approval" an approval, and it was answered "yes" (2026-10-23).
+    ask_for_query(reason, kind="query")
 
 
 def _fail_on_backend(reason):
@@ -637,11 +712,14 @@ def _count(job):
         usage.add(input_tokens=spent.get("promptTokens"), output_tokens=spent.get("responseTokens"))
     try:
         playbooks.note_job(job)
+        methods.note_job(job)
     except Exception as exc:
         log(f"TheBot: could not note this job's commands: {exc}")
 
 
 def _handle_job(job, error, resuming=False):
+    global _approval_asked
+    _approval_asked = None
     if error:
         # _run_thebot's own error return means the request never produced
         # a job to report on at all (soul unreachable, no job id, or the
@@ -672,10 +750,14 @@ def _handle_job(job, error, resuming=False):
     answer = (job.get("finalAnswer") or "").strip()
     question = (job.get("question") or "").strip() or answer
 
+    if outcome in ("needs_approval", "needs_input"):
+        note_question(question)
+
     if outcome == "needs_approval":
         # soul's own safety gate stopped a consequential action, and holds
         # the job paused. The human's reply comes back through
         # continue_after_query and resumes it.
+        _approval_asked = question
         ask_for_query(question, kind="approval")
         return
 
@@ -813,6 +895,7 @@ def continue_after_query(query_response):
         return
 
     state.waiting_for_query = False
+    note_reply(query_response)
 
     # What a person answers steers the rest of the task: its way is not the request's (playbooks.py).
     if getattr(state, "last_query_kind", "") != "approval":
@@ -836,6 +919,13 @@ def continue_after_query(query_response):
     # soul resumes the job it paused for this session, with the reply as
     # the answer - approving the exact command it stopped before, or
     # handing it to the operator that asked. No need to restate the task:
-    # the checkpoint still has it.
-    job, error = _run_thebot(query_response, reply=True)
+    # the checkpoint still has it. A reply to an approval goes with its one
+    # reading (the gate's, when the gate asked): soul acts on that reading,
+    # never on a second one of its own.
+    global _approval_asked
+    asked, _approval_asked = _approval_asked, None
+    said = None
+    if asked is not None:
+        said = approval.last_reading(query_response) or approval.reading(query_response, asked)
+    job, error = _run_thebot(query_response, reply=True, approval_reading=said)
     _handle_job(job, error, resuming=True)

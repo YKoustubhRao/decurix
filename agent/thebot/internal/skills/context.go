@@ -10,7 +10,7 @@ import (
 // ============================================================
 // A long goal's context, kept to what it needs
 //
-// Found live (GST suite, 2026-10-22): a return entered by hand took 412 steps; every turn re-sent the whole transcript
+// Found live (2026-10-22): a return entered by hand took 412 steps; every turn re-sent the whole transcript
 // (5-9M tokens a task), and at 80 turns the goal was told "you have 8 turns left - do not begin anything new, finish"
 // and it did: it generated the summary with a mismatch warning on it and reported. A long goal is not a failing one.
 //
@@ -75,11 +75,36 @@ func transcriptChars(st *operatorState) int {
 
 // noteLedger records what a command did, for a compaction's progress note.
 func (st *operatorState) noteLedger(command string, res shellResult) {
-	line := fmt.Sprintf("$ %s -> %s", truncateText(strings.Join(strings.Fields(command), " "), 300), truncateText(headline(res), 220))
+	line := fmt.Sprintf("$ %s -> %s", truncateText(strings.Join(strings.Fields(command), " "), 300), ledgerOutput(res))
 	st.Ledger = append(st.Ledger, line)
 	if len(st.Ledger) > maxLedger {
 		st.Ledger = st.Ledger[len(st.Ledger)-maxLedger:]
 	}
+}
+
+// maxLedgerLines and maxLedgerOutput bound an output the ledger keeps whole (ledgerOutput).
+const (
+	maxLedgerLines  = 15
+	maxLedgerOutput = 700
+)
+
+// ledgerOutput is what the ledger keeps of a command's output: a short one whole (a listing of files, a few lines of
+// results), else its first line and how many more there were - never the first line alone as if it were all. Found
+// live (2026-10-25): a find that listed six bills was shown to the review by its first line, and the review held that
+// the folder had only that one, twice.
+func ledgerOutput(res shellResult) string {
+	out := strings.TrimSpace(res.Output)
+	lines := strings.Split(out, "\n")
+	if out == "" || len(lines) == 1 {
+		return truncateText(headline(res), 220)
+	}
+	if len(lines) <= maxLedgerLines && len(out) <= maxLedgerOutput {
+		for i := range lines {
+			lines[i] = strings.TrimSpace(lines[i])
+		}
+		return fmt.Sprintf("exit %d · %s", res.ExitCode, strings.Join(lines, " | "))
+	}
+	return fmt.Sprintf("%s (+%d more lines)", truncateText(headline(res), 220), len(lines)-1)
 }
 
 // personSaid is every exchange with the person in messages: the question the model asked (HELP) and what came back,

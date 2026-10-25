@@ -102,10 +102,16 @@ def _describe(param, meaning="", lookup=False):
     return line
 
 
-def fill(skill, params, context):
+def fill(skill, params, context, strict=False):
     """
     ({name: value}, {name: evidence}, rows) for the params the run's context shows;
     ({}, {}, None) when there is no model, nothing to read, or the model fails.
+
+    strict: keep only what this run's request and documents hold (as written, or the same amount) - for a run the
+    model does itself, which reads its sources with its own tools. Found live (2026-10-24): a request that named no
+    document came back with an invoice series made from the client's initials and the month, a count to match and two
+    table rows, none of them anywhere; passed on as the run's values they read as the person's, were typed, and the
+    final check then held the work to them over the person's own "don't invent".
     """
 
     if not params or not available():
@@ -145,8 +151,8 @@ def fill(skill, params, context):
         log(f"binding: could not fill values for {skill.get('name')}: {exc}")
         return ({}, {}, None)
 
-    values, evidence = _clean(params, answer, texts)
-    rows = _rows(skill, params, answer, texts, values, evidence)
+    values, evidence = _clean(params, answer, texts, strict=strict)
+    rows = _rows(skill, params, answer, texts, values, evidence, strict=strict)
     return (values, evidence, rows)
 
 
@@ -225,8 +231,8 @@ def _prompt(skill, params, context):
     ])
 
 
-def _clean(params, answer, texts=()):
-    """Only values of the params asked for, in the shape each takes."""
+def _clean(params, answer, texts=(), strict=False):
+    """Only values of the params asked for, in the shape each takes (strict: only those the texts hold - fill)."""
 
     wanted = {p["name"]: p for p in params}
     values, evidence = {}, {}
@@ -243,11 +249,18 @@ def _clean(params, answer, texts=()):
             items = [str(v).strip() for v in items if str(v).strip()]
             if not items or any(";" in v or "\n" in v for v in items):
                 continue  # an item holding the separator cannot be written as a list value
-            values[name] = "; ".join(as_written(v, param.get("example"), texts) for v in items)
+            written = [as_written(v, param.get("example"), texts) for v in items]
+            if strict and not all(held_by(v, texts) for v in written):
+                log(f"binding: {name} - not every item is in what this run was given; left for the work to read")
+                continue
+            values[name] = "; ".join(written)
         else:
             if isinstance(value, (list, dict)):
                 continue
             written = as_written(str(value).strip(), param.get("example"), texts)
+            if strict and not held_by(written, texts):
+                log(f"binding: {name} = {written!r} is in nothing this run was given; left for the work to read")
+                continue
             if is_example(written, param.get("example")) and not held_by(written, texts) and not (
                     re.search(r"[^\W\d_]{3,}", written) and words_held(written, texts)):
                 # The person's own value from when they taught it, which nothing of this run says.
@@ -256,7 +269,7 @@ def _clean(params, answer, texts=()):
             if not words_held(written, texts):
                 # Said, never dropped (independent review, 2026-10-22): a value worked out from the documents is
                 # written otherwise than they write it (28-Sep-2026 from 28/09/2026, "Private Limited" from "Pvt Ltd")
-                # and is right. Found live (GST suite T7, 2026-10-22) the other way: a portal username made up from the
+                # and is right. Found live (2026-10-22) the other way: a portal username made up from the
                 # client's name, "srilakshmielev" - so the person and the check see that it is not the documents' own.
                 log(f"binding: {name} = {written!r} is not written so in this run's documents - kept, and said")
                 note = "not written so in this run's documents - worked out, or a guess: check it"
@@ -364,7 +377,7 @@ def words_held(value, texts):
 def held_by(value, texts):
     """
     Whether the texts of this run say `value`: as written (case and spacing aside), or as a number of the same amount.
-    Found live (GST suite T5, 2026-10-22): asked to prepare another client's return "the way I showed you", the values
+    Found live (2026-10-22): asked to prepare another client's return "the way I showed you", the values
     came back as the teaching client's own - "copied from example", its taxable value and invoice numbers - and were
     typed into the other client's return. The example says which thing to read, never what it is.
     """
@@ -431,11 +444,13 @@ def _rows_text(skill, params):
             "document's entries under \"rows\", each with the names " + ", ".join(group["rows"][0]) + ".\n")
 
 
-def _rows(skill, params, answer, texts, values, evidence):
+def _rows(skill, params, answer, texts, values, evidence, strict=False):
     """
     Puts the document's rows into `values` under each row's names (the
     demonstration's own for its rows, made after the first row's beyond them)
     and returns {"count", "demo", "fields", "names": [[row names]], "base": {name: first-row name}}, or None.
+    strict (fill): a row value only when the texts hold it, and no rows at all when they hold none of them - their
+    number is then a guess too, and the check would hold the work to it.
     """
 
     from decurix_agent.computer import skills
@@ -448,6 +463,7 @@ def _rows(skill, params, answer, texts, values, evidence):
     first = group["rows"][0]
     by_name = {p["name"]: p for p in skill.get("params") or []}
     names, base = [], {}
+    held = 0
     why = answer.get("evidence") if isinstance(answer.get("evidence"), dict) else {}
     for n, row in enumerate(r for r in rows if isinstance(r, dict)):
         mine = skills.row_names(group, n)
@@ -457,8 +473,15 @@ def _rows(skill, params, answer, texts, values, evidence):
             value = row.get(field)
             if value in (None, "", []) or isinstance(value, (list, dict)):
                 continue
-            values[name] = as_written(str(value).strip(), (by_name.get(field) or {}).get("example"), texts)
+            written = as_written(str(value).strip(), (by_name.get(field) or {}).get("example"), texts)
+            if strict and not held_by(written, texts):
+                continue
+            values[name] = written
             evidence[name] = str(why.get(name) or why.get(field) or f"entry {n + 1} of the document")[:200]
+            held += 1
+    if strict and not held:
+        log(f"binding: {len(names)} row(s) given and nothing this run was given holds any of them; left for the work")
+        return None
     # A row the document does not have is not a value of this run.
     for row in group["rows"][len(names):]:
         for name in row:

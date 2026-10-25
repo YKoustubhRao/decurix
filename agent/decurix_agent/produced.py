@@ -44,7 +44,7 @@ SKIP_DIRS = {"node_modules", "__pycache__", "venv", "site-packages", "target", "
 # A file a request asks for by name ("make contract_changes.docx in my work folder").
 REQUESTED_FILE = re.compile(r"\b[\w-][\w.-]*\.(?:xlsx|xlsm|docx|pptx|pdf|csv|tsv|txt|md|json|xml|html?|eml|ods|odt|odp|svg|png|jpe?g|gif|webp|bmp|tiff?)\b", re.I)
 NAMED_PATH = re.compile(r"(?:~|/|\b[a-z]:[\\/])[\w.~/\\-]*[\w-]\.[a-z0-9]{2,5}\b", re.I)
-# A path written in quotes or backticks, which may hold spaces ("/home/headless/PC/GST Returns/x.xlsx").
+# A path written in quotes or backticks, which may hold spaces ("/home/headless/PC/Tax Returns/x.xlsx").
 QUOTED_PATH = re.compile(r"[`'\"]((?:~|/|[a-z]:[\\/])[^`'\"\n]*?[\w-]\.[a-z0-9]{2,5})[`'\"]", re.I)
 
 
@@ -110,7 +110,7 @@ def files(report="", started=None, root=None, request=""):
 def named_sources(report="", request="", made=()):
     """
     Files the report or the request names by path that exist and can be read, other than those in `made`: what the
-    work read, for a judge that asks to look closer. Found live (GST suite T3, 2026-10-21): the report compared a
+    work read, for a judge that asks to look closer. Found live (2026-10-21): the report compared a
     portal's ledger with "Closing credit carried forward" in the workbook it named, read off the wrong month's row; the
     check could look only in files the task made, so it could neither confirm nor catch it.
     """
@@ -578,6 +578,55 @@ class FileFacts:
 
 OFFICE_KINDS = {".xlsx", ".xlsm", ".xltx", ".xltm", ".docx", ".docm", ".dotx", ".pptx", ".pptm", ".potx"}
 
+# What the first bytes of a file of each kind are (PDF allows a little before its header).
+_KIND_MAGIC = {".pdf": ("a PDF", (b"%PDF",), 1024), ".png": ("a PNG picture", (b"\x89PNG",), 0),
+               ".jpg": ("a JPEG picture", (b"\xff\xd8\xff",), 0), ".jpeg": ("a JPEG picture", (b"\xff\xd8\xff",), 0),
+               ".gif": ("a GIF picture", (b"GIF87a", b"GIF89a"), 0)}
+
+
+# What a file whose bytes are not the kind its name says is to be done with (named_kind_faults): it is not finished
+# work to correct in place - it was never the document. Found live (2026-10-24): told "the saved file is not finished,
+# correct it in the file itself", the worker re-saved a sign-in page three times and never clicked the attachment.
+WRONG_KIND_MARK = " is named as "
+WRONG_KIND_REMEDY = ("A file that is not what its name says was never the document: delete it and get the document "
+                     "again where it is offered - in the browser, from the page or message it is attached to (a link "
+                     "fetched outside the browser can bring back the page that asks to sign in) - then open it to "
+                     "check it is the document before you copy it where it belongs.")
+
+
+def wrong_kind(faults):
+    """The faults among `faults` that are files not of the kind their name says (named_kind_faults)."""
+
+    return [f for f in faults or () if WRONG_KIND_MARK in f and " but holds " in f]
+
+
+def named_kind_faults(paths):
+    """
+    A sentence for each file among `paths` whose name says one kind (a PDF, a picture) and whose bytes are not that
+    kind - decided from the bytes, no model. Found live (2026-10-24): a browser's aborted download left a web page
+    saved as "197_sales_invoice_Anil_Rego.pdf"; the report said both invoices were in the folder.
+    """
+
+    out = []
+    for path in dict.fromkeys(str(p) for p in paths or ()):
+        p = Path(path)
+        kind = _KIND_MAGIC.get(p.suffix.lower())
+        if not kind or not p.is_file():
+            continue
+        name, magics, window = kind
+        try:
+            head = p.read_bytes()[:max(window, 16) + 16]
+        except OSError:
+            continue
+        found = head[:window + 8] if window else head[:8]
+        if any((m in found) if window else head.startswith(m) for m in magics):
+            continue
+        text = head.lstrip()[:64].lower()
+        what = ("nothing (it is empty)" if not head else "a web page" if text.startswith((b"<!doctype", b"<html", b"<"))
+                else "text" if all(32 <= c < 127 or c in (9, 10, 13) for c in head[:32]) else "something else")
+        out.append(f"{p.name} is named as {name} but holds {what} - not {name}: get it again and check what it holds")
+    return out
+
 
 def open_statuses(paths):
     """
@@ -679,7 +728,8 @@ def file_facts(request, made, host_copies=(), root=None, named_in=None, drafts_m
         totals_note=[] if wrong_totals else found_totals,
         missing_files=missing_requested(named, every, root=root,
                                         **({"only": own_outputs} if own_outputs is not None else {})),
-        file_faults=[s for st, s in opened.values() if st == "broken"] + document_findings(named, every),
+        file_faults=[s for st, s in opened.values() if st == "broken"] + document_findings(named, every)
+        + named_kind_faults(every),
         unchecked=[s for st, s in opened.values() if st in ("protected", "unchecked") and s],
         request_faults=image_findings(named, every, source_images(named, every, **({"root": root} if root else {})))
         + page_break_findings(named, every),
@@ -718,7 +768,7 @@ def moved_breaks(paths):
     return _per_file(paths, check, "compare with its copy from before the task")
 
 
-# A reference code: twelve or more letters and digits with both in it (an ARN, a GSTIN, an IBAN, an order reference).
+# A reference code: twelve or more letters and digits with both in it (a filing receipt, a tax id, an IBAN, an order reference).
 _LONG_CODE = re.compile(r"(?<![A-Za-z0-9])(?=[A-Za-z0-9]*\d)(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{12,}(?![A-Za-z0-9])")
 
 
@@ -731,7 +781,7 @@ def _shown_codes(request=""):
         from decurix_agent import long_task
         from decurix_agent.computer import evidence
         # Every screen action's whole result, not the last few as the judge is shown: a long task's first filing,
-        # whose confirmation the code was copied from, is far back by its end (found live, GST suite T9, 2026-10-22).
+        # whose confirmation the code was copied from, is far back by its end (found live, 2026-10-22).
         events = evidence._task_events(None)
         texts += long_task._page_notes() + list(evidence.observed()) + [
             f"{e.get('summary') or ''} {e.get('change') or ''}" for e in events]
@@ -744,10 +794,10 @@ def miscopied_codes(paths, request=""):
     """
     Evidence for the judge, never a verdict: a sentence for each long reference code a file the work wrote holds that
     nothing the task was shown holds, while exactly one code it was shown differs from it in one to three characters.
-    Found live (GST suite T9, 2026-10-22): the portal showed the return's ARN as AA2909267663712A and the workbook was
+    Found live (2026-10-22): the portal showed the filing's receipt code as AA2909267663712A and the workbook was
     given AA2909267663796A; the report read the workbook back and called it verified. But "a few characters apart" is
     a judgement, not a certainty (independent review, 2026-10-22): order numbers in a run (SO2026000121..125, read from
-    an input, with ...124 on the screen) and sibling ids (one company's GSTINs of two states) are near twins too - so
+    an input, with ...124 on the screen) and sibling ids (one company's tax ids in two regions) are near twins too - so
     it is worded as a difference to check, never "copied wrong". Short codes are left out: twelve characters or more.
     """
 
@@ -779,8 +829,8 @@ def miscopied_codes(paths, request=""):
 
 def identical_files(paths):
     """
-    Sentences naming files among `paths` with different names and the same bytes. Found live (GST suite T1,
-    2026-10-21): two invoices downloaded from a chat were saved as 197_....pdf and 198_....pdf, and 198 was a second
+    Sentences naming files among `paths` with different names and the same bytes. Found live
+    (2026-10-21): two invoices downloaded from a chat were saved as 197_....pdf and 198_....pdf, and 198 was a second
     download of 197; the report said both were "verified PDFs" and the check, shown only their names, could not tell.
     Evidence for the judge, never a verdict: a copy can be what was asked.
     """
@@ -970,7 +1020,7 @@ def parties(paths):
     for path in paths or ():
         match = _CHAT_WITH.search(Path(str(path)).name)
         if match:
-            # "Chat with Rohan Kulkarni (Cafe Bloom)": the person and the business are one party - they share one set,
+            # "Chat with <person> (<business>)": the person and the business are one party - they share one set,
             # so writing to either is writing to both.
             inner = re.findall(r"\(([^)]+)\)", match.group(1))
             names = [n.strip() for n in inner + [re.sub(r"\s*\([^)]*\)", "", match.group(1))] if len(n.strip()) >= 3]
@@ -1171,6 +1221,42 @@ LOOK_CHARS = 8000
 LOOK_LINES = 40
 
 
+_CELL_TERM = re.compile(r"^(?:.*!)?\$?([a-z]{1,3})\$?(\d{1,6})(?::\$?([a-z]{1,3})\$?(\d{1,6}))?$")
+
+
+def _col_index(col):
+    """A column's number (a=1, z=26, aa=27)."""
+    n = 0
+    for ch in col:
+        n = n * 26 + ord(ch) - 96
+    return n
+
+
+def _col_name(n):
+    """A column's letters from its number."""
+    out = ""
+    while n:
+        n, rem = divmod(n - 1, 26)
+        out = chr(97 + rem) + out
+    return out
+
+
+def _cells_pattern(term):
+    """A regex for the lines of an office read listing that hold a cell or range term (lower case), or None."""
+    m = _CELL_TERM.match(term.replace(" ", ""))
+    if not m:
+        return None
+    c1, r1 = m.group(1), int(m.group(2))
+    c2, r2 = (m.group(3) or c1), int(m.group(4) or r1)
+    r1, r2 = min(r1, r2), max(r1, r2)
+    a, b = sorted((_col_index(c1), _col_index(c2)))
+    if r2 - r1 > 200 or b - a > 52:
+        return None
+    rows = "|".join(str(r) for r in range(r1, r2 + 1))
+    cols = "|".join(_col_name(n) for n in range(a, b + 1))
+    return re.compile(rf"(?:^\s*(?:{rows})\s*\[|(?<![a-z0-9])(?:{cols})(?:{rows})\s*=)")
+
+
 def lines_with(paths, terms, budget=LOOK_CHARS):
     """The lines of those files that hold any of `terms` (case and spacing ignored), each file's first lines with them
     (a table's header), for a judge that asked to look closer (verify.judge's `look`). "" when none holds one."""
@@ -1180,6 +1266,11 @@ def lines_with(paths, terms, budget=LOOK_CHARS):
     wanted = [" ".join(str(t).lower().split()) for t in terms or () if str(t).strip()]
     if not wanted:
         return ""
+    # A cell or range the judge names ("A79:E81", "Sheet!B12") is found as office read prints its rows - "79 [...]" or
+    # "A79=..." - never as the literal text: found live (2026-10-23), asked to see A79:E81, the look-up
+    # found nothing and the right figures went unseen twice.
+    cells = [_cells_pattern(t) for t in wanted]
+    cells = [c for c in cells if c is not None]
     parts, size = [], 0
     for path in paths or ():
         if Path(path).suffix.lower() in IMAGES:
@@ -1191,7 +1282,8 @@ def lines_with(paths, terms, budget=LOOK_CHARS):
             continue
         flat = [" ".join(line.lower().replace(",", "").split()) for line in lines]
         hits = [i for i, line in enumerate(flat)
-                if any(w in line or w.replace(",", "") in line for w in wanted)][:LOOK_LINES]
+                if any(w in line or w.replace(",", "") in line for w in wanted)
+                or any(c.search(line) for c in cells)][:LOOK_LINES]
         if not hits:
             continue
         head = [i for i in range(min(3, len(lines))) if i not in hits]
@@ -1263,7 +1355,7 @@ def changed_cells(path):
     """
     [(sheet, "C97"), ...]: the cells of a workbook that differ from the copy kept before the task, each with its sheet
     - so a long sheet the judge is shown a sample of shows what the task changed (sample_table's `cells`). Found live
-    (GST suite T4, 2026-10-22): the report gave a credit carried forward the saved workbook contradicted, and the judge,
+    (2026-10-22): the report gave a credit carried forward the saved workbook contradicted, and the judge,
     shown a sample of the sheet without the new month's rows, passed it. [] when there is no copy.
     """
 
@@ -1360,7 +1452,7 @@ def text(paths, focus=()):
         try:
             if Path(path).suffix.lower() in (".xlsx", ".xlsm"):
                 # Every row, then sampled below: office read's own view stops at its first rows, and what a task adds
-                # to a sheet is usually at its end (GST suite T4, 2026-10-22: the new month, rows 86-99, was never shown).
+                # to a sheet is usually at its end (2026-10-22: the new month, rows 86-99, was never shown).
                 body = (office._data_check_workbook(Path(path)) + office.read_workbook(
                     path, max_rows=JUDGE_SHEET_ROWS, limit=JUDGE_SHEET_CHARS)).strip()
             else:

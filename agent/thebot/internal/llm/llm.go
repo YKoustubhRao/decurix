@@ -9,8 +9,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -218,15 +220,47 @@ func postJSON(ctx context.Context, do func(*http.Request) (*http.Response, error
 	if err != nil {
 		return nil, fmt.Errorf("%s: read response: %w", name, err)
 	}
+	// The status decides first: a failure is an HTTPError whatever its body holds (JSON or plain text).
+	if resp.StatusCode != http.StatusOK {
+		msg := strings.TrimSpace(string(respBytes))
+		if json.Unmarshal(respBytes, out) == nil && failure.Error != nil {
+			msg = failure.Error.Message
+		}
+		return nil, &HTTPError{Provider: name, Status: resp.StatusCode, Message: msg}
+	}
 	if err := json.Unmarshal(respBytes, out); err != nil {
 		return nil, fmt.Errorf("%s: parse response: %w (body: %s)", name, err, string(respBytes))
 	}
-	if resp.StatusCode != http.StatusOK {
-		msg := string(respBytes)
-		if failure.Error != nil {
-			msg = failure.Error.Message
-		}
-		return nil, fmt.Errorf("%s returned HTTP %d: %s", name, resp.StatusCode, msg)
-	}
 	return respBytes, nil
+}
+
+// HTTPError is a provider's answer with a status other than 200.
+type HTTPError struct {
+	Provider string
+	Status   int
+	Message  string
+}
+
+// Error is the failure as "<provider> returned HTTP <status>: <message>".
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("%s returned HTTP %d: %s", e.Provider, e.Status, e.Message)
+}
+
+// Transient reports whether a chat call's error is one asking again can cure - decided by its type, never its
+// wording: the call's deadline passed, the network failed, or the provider answered with a temporary failure (408,
+// 429, 5xx). A refusal of the request itself (any other 4xx, a parse error) is not.
+func Transient(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.Status == http.StatusRequestTimeout || httpErr.Status == http.StatusTooManyRequests ||
+			httpErr.Status >= 500
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr)
 }

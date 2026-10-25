@@ -317,12 +317,12 @@ func TestOperatorResumesWithoutTheCommandWhenNotApproved(t *testing.T) {
 // says what it understood - it does not ask them what they meant (round 5, 2026-10-19).
 func TestDeclinedAdviceTellsTheModelNotToAskWhatWasMeant(t *testing.T) {
 	advice := declinedAdvice("git push origin main")
-	for _, want := range []string{"Continue the task without running that command", "publishes commits", "do not ask them to clarify", "say what you understood"} {
+	for _, want := range []string{"continue the task without it", "publishes commits", "do not ask them to clarify", "say what you understood"} {
 		if !strings.Contains(advice, want) {
 			t.Errorf("advice lacks %q: %s", want, advice)
 		}
 	}
-	if got := declinedAdvice("ls ~/work"); !strings.HasSuffix(got, "without running that command.") || strings.Contains(got, "clarify") {
+	if got := declinedAdvice("ls ~/work"); !strings.HasSuffix(got, "continue the task without it.") || strings.Contains(got, "clarify") {
 		t.Errorf("a command that raised no concern got the concern advice: %q", got)
 	}
 }

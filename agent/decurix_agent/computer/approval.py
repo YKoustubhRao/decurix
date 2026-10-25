@@ -64,9 +64,9 @@ CONSEQUENTIAL_CONTROL = re.compile(
     r"|delete (my )?account|close (my )?account|cancel (my )?(subscription|membership|account|order)"
     r"|book now|reserve now|subscribe( now)?"
     # Filing a return or a declaration with an authority binds the person in law and is not taken back; offsetting a
-    # liability spends their balance (GST suite, 2026-10-21: "FILE WITH EVC", "FILE STATEMENT" and "OFFSET LIABILITY"
-    # on a tax portal passed unasked). "File" alone is a menu and "FILE RETURNS" / "FILE STATEMENT" open the page where
-    # filing is done, so only the step that says how it is signed ("file with EVC", "file GSTR-3B with DSC") and these.
+    # liability spends their balance (2026-10-21: a portal's "file with <signature>" and "offset liability" buttons
+    # passed unasked). "File" alone is a menu and "file returns" / "file statement" open the page where filing is done,
+    # so only the step that says how it is signed ("file with <method>", "file <form> with <method>") and these.
     r"|file( [\w-]+)? with \w+|file now|e-?file( now)?"
     r"|submit (the )?(return|declaration|application|claim|filing)s?"
     r"|(offset|set[- ]off) (the )?liabilit(y|ies)"
@@ -114,6 +114,184 @@ def is_approval(reply):
 
     reply = (reply or "").strip()
     return bool(reply) and bool(APPROVAL_RE.match(reply)) and not REFUSAL_RE.search(reply)
+
+
+READ_SYSTEM = """A person was asked to approve one action an AI worker is about to take (below). Read their reply \
+the way a colleague would - in any language, slang, shorthand or emoji - and say what it decides about THAT action, now:
+- "yes": they approve it now, with no condition (remarks that set none are fine: "yes - the client has paid; go ahead").
+- "if": they approve it only once something is checked or done first ("yes, provided you checked X", "ok after you fix \
+Y", "file it if Z"). Only a condition on THIS action counts: what they ask to be done before a later step ("go ahead to \
+payment, and check X before you file") is an instruction for that step, and this action is a "yes". So is one that \
+can only be met after this action - to show or check what it leads to ("go ahead, show me the next screen before you \
+click there"): this action is what brings that about.
+- "no": they do not approve it now (not yet, wait, fix something first, never).
+- "unclear": the reply neither approves nor refuses it - a question back to the worker, or about something else.
+And "wants": what they ask the worker to tell them, show them or do before they decide (a question to answer, a \
+report), in their words - empty when they ask nothing of it.
+Reply with JSON only: {"decision": "yes" | "if" | "no" | "unclear", "condition": "what must hold or be done first, in \
+their words, or empty", "wants": "..."}"""
+
+DECISIONS = ("yes", "if", "no", "unclear")
+
+# The words a reply made of nothing else plainly says yes, or plainly says no, with: such a reply needs no model. Any
+# other word - a condition, a question, another language, an emoji - and the reply is the model's to read.
+_PLAIN_YES = set("yes yep yeah yup y ok okay k sure approved approve i confirm confirmed go ahead for it do proceed "
+                 "continue lgtm sounds good fine allowed granted you can please".split())
+_PLAIN_NO = set("no nope don't dont do not stop cancel abort never deny denied reject rejected wait hold on now yet "
+                "please sorry".split())
+# With no model to ask, a yes that may carry a condition is not taken for a plain one.
+_MAY_CONDITION = re.compile(r"\b(if|provided|unless|once|after|before|when|only|but|first|as long as|so long as)\b", re.I)
+
+
+# The model's readings in this process, by reply text: {text: (when, reading)}.
+_READ = {}
+READING_SECONDS = 10 * 60
+
+
+def _plain(text, words):
+    """Whether every word of text is one of words."""
+
+    tokens = re.findall(r"[a-z']+|[^\sa-z'.,!;:-]", text.lower())
+    return bool(tokens) and all(t in words for t in tokens)
+
+
+def reading(reply, action=""):
+    """
+    What a reply to an approval decides about that one action, read once for every part of the worker that acts on
+    it: {"decision": "yes" | "if" | "no" | "unclear", "condition": what must hold first, or ""}. Only "yes" grants.
+
+    Code decides only a reply that plainly says yes or no (every word of it a plain yes, or a plain no); every other
+    reply is the model's reading. Found live (2026-10-23): "Provided you looked in the client's messages and found
+    nothing saying that record was cancelled, yes - go ahead" was taken for a yes by a word list (it starts with yes
+    and holds no refusal word), the action ran at once, and the condition was never checked; and a person's
+    "haan fine" - a yes in their own words - was a no to every word list. With no model to ask, a reply the lists
+    cannot settle is "unclear": the action waits and is put to the person again - never guessed either way.
+    """
+
+    text = " ".join(str(reply or "").split())
+    if not text:
+        return {"decision": "no", "condition": ""}
+    if _plain(text, _PLAIN_YES) and not REFUSAL_RE.search(text):
+        return {"decision": "yes", "condition": ""}
+    if _plain(text, _PLAIN_NO) and REFUSAL_RE.search(text):
+        return {"decision": "no", "condition": ""}
+    # One reply, one reading: the parts that act on it in turn (a long request, the gate, the engine) reuse it.
+    kept = _READ.get(text)
+    if kept and time.time() - kept[0] < READING_SECONDS:
+        return dict(kept[1])
+    try:
+        from decurix_agent import llm_client
+        if llm_client.available():
+            message, _ = llm_client.chat([{"role": "system", "content": READ_SYSTEM},
+                                          {"role": "user", "content": f"The action (as the question they answered put "
+                                           f"it): {action[:6000]}\n\nTheir reply: {text[:3000]}"}],
+                                         max_tokens=300)
+            found = re.search(r"\{.*\}", message.get("content") or "", re.DOTALL)
+            said = json.loads(found.group(0)) if found else {}
+            decision = str(said.get("decision") or "").strip().lower()
+            if decision in DECISIONS:
+                wants = " ".join(str(said.get("wants") or "").split())[:600]
+                said = {"decision": decision, "condition": " ".join(str(said.get("condition") or "").split())[:600]}
+                if wants:
+                    # What they ask the worker to tell or show them before they decide: it answers that first.
+                    said["wants"] = wants
+                if len(_READ) > 64:
+                    _READ.clear()
+                _READ[text] = (time.time(), said)
+                return dict(said)
+    except Exception:  # noqa: BLE001 - no reading to be had: what the word lists can settle, else unclear
+        pass
+    if is_approval(text) and not _MAY_CONDITION.search(text):
+        return {"decision": "yes", "condition": ""}
+    if REFUSAL_LEAD.match(text):
+        return {"decision": "no", "condition": ""}
+    return {"decision": "unclear", "condition": ""}
+
+
+def read_reply(reply, action=""):
+    """What a reply to an approval decides about that one action: "yes", "if", "no" or "unclear" (reading)."""
+
+    return reading(reply, action)["decision"]
+
+
+def says_yes(reply, action=""):
+    """Whether a reply to an approval grants that action now - the one reading every caller acts on (reading)."""
+
+    return read_reply(reply, action) == "yes"
+
+
+CHOICE_SYSTEM = """An AI worker asked a person a question and offered some choices (below, each with what it means). \
+Read their reply the way a colleague would - in any language, slang, shorthand or emoji - and say:
+- "choice": the name of the one choice the reply makes; "unclear" when it makes none of them, or could be either of two.
+- "instruction": everything else the reply asks the worker to do, use, change or keep in mind, in their words - empty \
+when there is nothing more.
+A reply that makes a choice and adds to it ("retry, but use the second file") makes that choice, with the rest as the \
+instruction. A reply that says something is still wrong, missing or to be done never makes a choice that means all is \
+well - however it starts ("correct except the total", "the rest is done, 2 still pending").
+Reply with JSON only: {"choice": "<name>" | "unclear", "instruction": "..."}"""
+
+# Words that only soften a reply ("retry please", "done, thanks"): left out when a reply is matched to a plain phrase.
+_SOFTENERS = {"please", "pls", "plz", "thanks", "thank", "you", "thx", "ji", "sir", "madam", "bhai", "boss"}
+
+# The model's choices in this process: {(reply, question, choices): (when, result)}.
+_CHOSEN = {}
+
+
+def _bare(text):
+    """A reply as matched to a plain phrase: case, punctuation and softening words aside."""
+
+    words = re.findall(r"[a-z0-9']+", str(text or "").lower())
+    while words and words[-1] in _SOFTENERS:
+        words.pop()
+    while words and words[0] in _SOFTENERS:
+        words.pop(0)
+    return " ".join(words)
+
+
+def read_choice(reply, question, choices, plain=None):
+    """
+    Which of `choices` ({name: what it means}) a reply to `question` makes, and what else it asks:
+    {"choice": a name or "unclear", "instruction": the rest of their words, or ""}.
+
+    The one reading of a reply to a question with set answers ("reply retry, skip or stop", "reply done if it is
+    done"). Code decides only a reply that is, whole, one of a choice's plain phrases (plain: {name: [phrases]}; case,
+    punctuation and please/thanks aside); every other reply is read once by the model, and what it adds to the choice
+    is kept as the instruction - never dropped. With no model, such a reply is "unclear": asked again, never guessed.
+    Found (audit, 2026-10-24): word lists anchored at a reply's first word read "retry but use the second file" as a
+    plain retry, "correct except the total, fix that" as done, "no, use option 2" as stop.
+    """
+
+    text = " ".join(str(reply or "").split())
+    if not text:
+        return {"choice": "unclear", "instruction": ""}
+    bare = _bare(text)
+    for name, phrases in (plain or {}).items():
+        if bare and bare in {_bare(p) for p in phrases}:
+            return {"choice": name, "instruction": ""}
+    key = (text, " ".join(str(question or "").split())[:400], tuple(sorted(choices)))
+    kept = _CHOSEN.get(key)
+    if kept and time.time() - kept[0] < READING_SECONDS:
+        return dict(kept[1])
+    try:
+        from decurix_agent import llm_client
+        if llm_client.available():
+            offered = "\n".join(f"- {name}: {meaning}" for name, meaning in choices.items())
+            message, _ = llm_client.chat([{"role": "system", "content": CHOICE_SYSTEM},
+                                          {"role": "user", "content": f"The question: {str(question or '')[:2000]}\n\n"
+                                           f"The choices:\n{offered}\n\nTheir reply: {text[:3000]}"}],
+                                         max_tokens=400)
+            found = re.search(r"\{.*\}", message.get("content") or "", re.DOTALL)
+            said = json.loads(found.group(0)) if found else {}
+            choice = str(said.get("choice") or "").strip()
+            if choice in choices or choice == "unclear":
+                result = {"choice": choice, "instruction": " ".join(str(said.get("instruction") or "").split())[:1000]}
+                if len(_CHOSEN) > 64:
+                    _CHOSEN.clear()
+                _CHOSEN[key] = (time.time(), result)
+                return dict(result)
+    except Exception:  # noqa: BLE001 - no reading to be had: unclear, asked again
+        pass
+    return {"choice": "unclear", "instruction": ""}
 
 
 # A reply that turns the action down and asks for nothing in its place: "no",
@@ -242,7 +420,7 @@ def assess(kind, element, text=None, keys=None, context=None):
     return None
 
 
-# Where a person's secrets may be typed without asking (GST suite T5, 2026-10-21): a taught task's replay stopped
+# Where a person's secrets may be typed without asking (2026-10-21): a taught task's replay stopped
 # because its portal was not open, and the engine opened the real government site of that name from its own memory and
 # typed the client's username and password from the person's client list into it. A password or code goes, unasked,
 # only to a site the request names or a person used in a recording or a taught skill on this desktop; anywhere else
@@ -442,22 +620,36 @@ def pending():
         return state["pending"]
 
 
-def resolve_reply(reply):
+def resolve_reply(reply, asked=""):
     """
     Settle the pending approval with the human's reply.
 
-    Returns "granted", "declined", or None when nothing was pending.
+    Returns "granted", "declined", or None when nothing was pending. The reading is kept (last_reading) for the
+    engine the reply goes on to, so the gate and the engine never read one reply two ways. asked: the question the
+    person was shown (messaging keeps it); when it is the one about this action, the reply is read against all of it.
+    Found live (2026-10-24): 'yes go. "liability offset successfully" is enough. file sizes irrelevant' answered the
+    points the question listed; read against the bare action it was "if" two times in three and the filing was asked
+    for again - read against the question, "yes" three in three.
     """
 
     with _locked() as state:
         request = state["pending"]
+    if request is None:
+        return None
+    action = request.get("action") or ""
+    shown = " ".join(str(asked or "").split())
+    if not (shown and " ".join(action.split())[:120] in shown):
+        shown = action
+    # Read outside the lock: a model's reading takes seconds, and every gui action waits on this store.
+    said = reading(reply, shown)
 
-        if request is None:
+    with _locked() as state:
+        if state["pending"] is None or state["pending"].get("fingerprint") != request.get("fingerprint"):
             return None
-
         state["pending"] = None
+        state["reading"] = dict(said, reply=" ".join(str(reply or "").split()), at=time.time())
 
-        if not is_approval(reply):
+        if said["decision"] != "yes":
             return "declined"
 
         state["grants"].append({
@@ -467,6 +659,23 @@ def resolve_reply(reply):
         })
 
         return "granted"
+
+
+def last_reading(reply):
+    """The reading resolve_reply made of this very reply (decision and condition), or None."""
+
+    text = " ".join(str(reply or "").split())
+    try:
+        with _locked() as state:
+            kept = state.get("reading")
+    except (OSError, TimeoutError):
+        return None
+    if kept and kept.get("reply") == text and time.time() - kept.get("at", 0) < READING_SECONDS:
+        said = {"decision": kept.get("decision"), "condition": kept.get("condition") or ""}
+        if kept.get("wants"):
+            said["wants"] = kept["wants"]
+        return said
+    return None
 
 
 def has_grant():

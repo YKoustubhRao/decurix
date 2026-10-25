@@ -9,7 +9,7 @@ import (
 // ============================================================
 // The judgement calls a result rests on
 //
-// Found live (GST suite, 2026-10-22): the misses of a strong hosted model were not questions it could not answer but
+// Found live (2026-10-22): the misses of a strong hosted model were not questions it could not answer but
 // decisions it never noticed it made - rent under reverse charge also listed as a purchase credit (counted twice),
 // "0 cancelled" for a month with a cancelled bill, a figure read off another month's block. Each was a judgement call
 // the request, the lesson and the documents did not back, made silently.
@@ -116,7 +116,7 @@ func quoteAt(quote, seen string) (int, bool) {
 	if len(words) < minQuoteWords {
 		// A short quote - a cell and its value ("O62='Karnataka'"), a code and a name - is backed when all its words
 		// stand close together in what was seen: office read writes a cell inside its formula and beside its value, not
-		// as the quote does (found live, GST suite T5, 2026-10-22).
+		// as the quote does (found live, 2026-10-22).
 		return wordsNear(words, seen, nearChars), false
 	}
 	for i := 0; i+minQuoteWords <= len(words); i++ {
@@ -167,7 +167,7 @@ func unbackedCalls(items []string, seen string) []string {
 			continue
 		}
 		// The backing is what follows "backed by:" - a quote earlier in the call ("used it as "my PC" ...") would
-		// otherwise pair its closing mark with the backing's opening one (found live, GST suite T1, 2026-10-22).
+		// otherwise pair its closing mark with the backing's opening one (found live, 2026-10-22).
 		backing := item
 		if loc := backedByRe.FindStringIndex(item); loc != nil {
 			backing = item[loc[1]:]
@@ -204,11 +204,13 @@ func (st *operatorState) judgementsDue(kind string) bool {
 	if !st.Hosted || st.AwaitingJudge != "" || st.CommandsSucceeded < minJudgementCommands {
 		return false
 	}
-	if st.JudgementRounds > 0 && st.CommandsSucceeded <= st.JudgedAt {
-		return false
-	}
 	if kind == "approval" {
-		return st.ApprovalRounds < maxApprovalRounds
+		// An answer of the person's not weighed since is reviewed before any action that cannot be taken back.
+		fresh := st.AnswerUnreviewed || st.JudgementRounds == 0 || st.CommandsSucceeded > st.JudgedAt
+		return fresh && st.ApprovalRounds < maxApprovalRounds
+	}
+	if st.JudgementRounds > 0 && st.CommandsSucceeded <= st.JudgedAt {
+		return false // a report review looks at what changed: with nothing new, it only finds new nits
 	}
 	return st.DoneRounds < maxDoneRounds
 }
