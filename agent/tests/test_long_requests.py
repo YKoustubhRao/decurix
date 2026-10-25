@@ -86,7 +86,7 @@ class Detection(unittest.TestCase):
             self.assertFalse(long_task.looks_long(text), text)
 
     def test_filing_on_a_portal_is_entering_records_there(self):
-        # GST suite T10 (2026-10-22): a six-part request ran as one job and ran out of turns twice.
+        # Found live (2026-10-22): a six-part request ran as one job and ran out of turns twice.
         text = ("Do Kavya Constructions' September GST from start to finish: get Rohan's September invoices from "
                 "ClientChat into his folder, bring the computation workbook up to date, file GSTR-1 and GSTR-3B on the "
                 "GST portal, note both ARNs in the workbook, and send Rohan a message telling him what he has to pay.")
@@ -96,7 +96,7 @@ class Detection(unittest.TestCase):
         self.assertFalse(records.search("file the invoices into the September folder"))
 
     def test_the_planner_is_shown_the_shared_folder_to_name_a_file_to_update(self):
-        # GST suite T10 (2026-10-22): told only "everything is in GST Returns on my PC", the plan made a new workbook in
+        # Found live (2026-10-22): told only "everything is in GST Returns on my PC", the plan made a new workbook in
         # the work folder instead of updating the client's own.
         from decurix_agent import shared
         with tempfile.TemporaryDirectory() as root:
@@ -714,7 +714,7 @@ class LongRun(LongRunBase):
             self.assertFalse([t for t in others if f"\"{t}\"" in head])
 
     def test_a_stage_that_worked_on_the_screen_is_judged_with_the_code_checks_evidence(self):
-        # GST suite T6 (2026-10-22): the screen-evidence module's name replaced the evidence argument, and the check
+        # Found live (2026-10-22): the screen-evidence module's name replaced the evidence argument, and the check
         # stopped the run with "'module' object is not iterable".
         from decurix_agent import skill_task
         from decurix_agent.computer import evidence as screen_evidence
@@ -1904,7 +1904,7 @@ class LongRun(LongRunBase):
                                                       {"request": P2_REQUEST}), "")
 
     def test_a_long_answer_of_many_rules_is_read_as_the_answer(self):
-        # GST suite T6 (2026-10-22): eight numbered rules sent as the answer were held as "a request of its own".
+        # Found live (2026-10-22): eight numbered rules sent as the answer were held as "a request of its own".
         run_id = self.parked_run()
         rules = "Our rules: " + " ".join(f"({n}) Rule {n}: the register, the summary, the memo and the deck keep "
                                          f"rate {n} for every bill of that kind, as in the earlier months." for n in range(1, 9))
@@ -1916,7 +1916,7 @@ class LongRun(LongRunBase):
         self.assertEqual(long_task.ledger(run_id)["decisions"][0]["answer"], "rate 1 for B-7")
 
     def test_the_reader_of_a_reply_sees_what_a_long_question_asks(self):
-        # GST suite T6: the first 800 characters were an approval's preamble; the ask was cut off.
+        # Found live: the first 800 characters were an approval's preamble; the ask was cut off.
         question = "Before I go on to click Send: " + "it would act on what is filled in. " * 30 + \
             "Tell me how each should be treated, or reply \"as you did\" to keep them:\n1. The message wording"
         self.assertEqual(long_task._question_view(question), question)
@@ -1926,7 +1926,7 @@ class LongRun(LongRunBase):
         self.assertTrue(view.endswith("Tell me how each should be treated"))
 
     def test_the_same_reply_sent_again_to_the_same_question_is_told_to_the_reader(self):
-        # GST suite T6: the same rules, sent twelve times to the question asked again, were read as a change each time.
+        # Found live: the same rules, sent twelve times to the question asked again, were read as a change each time.
         run_id = self.parked_run()
         self.message_verdict = {"kind": "amendment", "amendment": "use the practice rules", "affects": []}
         self.message("Our rules: invoices decide. Anything else: as you did.")

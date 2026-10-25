@@ -8,7 +8,7 @@ from decurix_agent.computer import core
 
 
 # ============================================================
-# A click that downloads says what it downloaded (GST suite T1, 2026-10-21):
+# A click that downloads says what it downloaded (2026-10-21):
 # the result only said the link was focused, and a second click on the same
 # attachment went unnoticed until its copy was saved under another name.
 # ============================================================
@@ -52,6 +52,23 @@ class TestWhatAClickDownloaded(unittest.TestCase):
         before = core._downloads_snapshot()
         (self.dir / "big.zip.crdownload").write_bytes(b"x")
         self.assertIn("Still downloading", core._downloads_note(before, wait=0))
+
+    # Found live (2026-10-24): a download from a site without https sat as "Unconfirmed 123.crdownload"; the worker
+    # fetched the address itself and saved a web page under the bill's name.
+    def test_a_download_the_browser_holds_says_how_to_release_it(self):
+        before = core._downloads_snapshot()
+        (self.dir / "Unconfirmed 524817.crdownload").write_bytes(b"x")
+        note = core._downloads_note(before, wait=0)
+        self.assertIn("holding this download until it is confirmed", note)
+        self.assertIn("chrome://downloads", note)
+        self.assertIn("Download insecure file", note)
+
+    def test_a_file_that_is_not_what_its_name_says_is_said_at_once(self):
+        before = core._downloads_snapshot()
+        (self.dir / "bill.pdf").write_bytes(b"<!DOCTYPE html><html>sign in</html>")
+        note = core._downloads_note(before, wait=0)
+        self.assertIn("bill.pdf", note)
+        self.assertIn(" But ", note)
 
     def test_no_download_folder_is_no_note(self):
         with mock.patch.object(core, "_downloads_dir", return_value=self.dir / "missing"):

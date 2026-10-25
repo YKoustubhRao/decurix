@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// GST suite T7 (2026-10-21): Word invoices read by a python script were not known as read, and their figures were
+// Found live (2026-10-21): Word invoices read by a python script were not known as read, and their figures were
 // refused as invented at the portal's Save.
 func TestTheFilesACommandNamesAreNotedAsRead(t *testing.T) {
 	root := t.TempDir()
@@ -47,7 +47,7 @@ func TestTheFilesACommandNamesAreNotedAsRead(t *testing.T) {
 	}
 }
 
-// GST suite T7 (2026-10-21): "Lift$2026" was typed as "Lift026" once the nudges to use stdin ran out.
+// Found live (2026-10-21): "Lift$2026" was typed as "Lift026" once the nudges to use stdin ran out.
 func TestATypedTextWithADollarIsTypedAsWritten(t *testing.T) {
 	cases := map[string]string{
 		`gui type e2334 "Lift$2026"`:                                `gui type e2334 'Lift$2026'`,
@@ -66,7 +66,7 @@ func TestATypedTextWithADollarIsTypedAsWritten(t *testing.T) {
 	}
 }
 
-// GST suite T7 (2026-10-21): values printed on Word invoices a script had read were refused as never read.
+// Found live (2026-10-21): values printed on Word invoices a script had read were refused as never read.
 func TestValuesInAFileTheWorkNamedAreTraced(t *testing.T) {
 	root := t.TempDir()
 	invoice := filepath.Join(root, "786 Kamath Jewellers.docx")
@@ -108,7 +108,7 @@ func TestValuesInAFileTheWorkNamedAreTraced(t *testing.T) {
 	}
 }
 
-// GST suite T7 (2026-10-21): asked where "900" came from, the person's reply did not settle it and the same question
+// Found live (2026-10-21): asked where "900" came from, the person's reply did not settle it and the same question
 // came back every 16 seconds.
 func TestThePersonsAnswerSettlesTheValuesTheyWereAskedAbout(t *testing.T) {
 	o := &OperatorSkill{}
@@ -126,7 +126,7 @@ func TestThePersonsAnswerSettlesTheValuesTheyWereAskedAbout(t *testing.T) {
 	}
 }
 
-// GST suite T7/T9 (2026-10-21): an application's own option ("KGS-KILOGRAMS") for a source's "KGS" was refused.
+// Found live (2026-10-21): an application's own option ("KGS-KILOGRAMS") for a source's "KGS" was refused.
 func TestAnOptionLabelIsTracedByItsCodeOrDescription(t *testing.T) {
 	st := groundingState("Prepare the GSTR-1 from the invoices.")
 	st.noteSeen("Sona masoori rice | 1006 | 500 KGS | 52.00\nPlace of Supply: Karnataka\nwire rope 90 mtr")
@@ -142,7 +142,7 @@ func TestAnOptionLabelIsTracedByItsCodeOrDescription(t *testing.T) {
 	}
 }
 
-// GST suite T7 (2026-10-21): totals a script printed were not the task's recorded working.
+// Found live (2026-10-21): totals a script printed were not the task's recorded working.
 func TestWhatACommandPrintedIsKept(t *testing.T) {
 	root := t.TempDir()
 	taskFile := filepath.Join(root, "task")

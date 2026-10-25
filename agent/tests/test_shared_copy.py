@@ -9,7 +9,7 @@ from decurix_agent.tools import office
 
 
 # ============================================================
-# GST suite T4 (2026-10-21): on the person's shared folder (a Windows drive,
+# Found live (2026-10-21): on the person's shared folder (a Windows drive,
 # every file owned by root) setting a copy's mode is refused, so copy2 failed
 # after writing - and the first `office update` of a person's file failed.
 # ============================================================

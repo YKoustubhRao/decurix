@@ -2,7 +2,7 @@ package skills
 
 import "testing"
 
-// GST suite T10 (2026-10-22): an approved chain ran whole again, unticked the declaration it had ticked, and the
+// Found live (2026-10-22): an approved chain ran whole again, unticked the declaration it had ticked, and the
 // approved filing click was refused - three approvals for one filing.
 func TestPausedRestKeepsOnlyTheStoppedActionAndWhatFollows(t *testing.T) {
 	reason := `on screen it would click button "FILE WITH EVC" (e9174) in "File GSTR-1 | Goods and Services Tax - Chromium": "FILE WITH EVC" sends, pays, buys or publishes something on your behalf`

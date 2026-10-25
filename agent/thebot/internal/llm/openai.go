@@ -82,7 +82,7 @@ func (o *OpenAIProvider) Chat(ctx context.Context, model string, messages []Mess
 	case ContentFiltered(err):
 		return o.chatOnce(ctx, model, WithoutImages(messages, "the model provider's content filter refused it"), opts)
 	case ImageRefused(err):
-		// A picture the provider cannot read (GST suite T8, 2026-10-22) never ends the task: the rest is sent without it.
+		// A picture the provider cannot read (2026-10-22) never ends the task: the rest is sent without it.
 		return o.chatOnce(ctx, model, WithoutImages(messages, "the model provider could not read it as a picture"), opts)
 	}
 	return res, err

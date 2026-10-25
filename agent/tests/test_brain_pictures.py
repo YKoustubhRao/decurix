@@ -51,7 +51,7 @@ class OfficeReadsPicturesTheWayTheModelCan(unittest.TestCase):
         # Resolved, as office names it: Windows' temp folder has a short name too.
         self.picture = os.path.join(os.path.realpath(self.dir.name), "invoice.png")
         with open(self.picture, "wb") as f:
-            # (A PNG's own signature: office tells a file named as a picture that is not one - GST suite T8.)
+            # (A PNG's own signature: office tells a file named as a picture that is not one.)
             f.write(b"\x89PNG\r\n\x1a\n not really")
 
     def tearDown(self):

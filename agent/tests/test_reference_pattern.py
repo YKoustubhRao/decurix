@@ -7,7 +7,7 @@ from decurix_agent.tools import office
 
 
 # ============================================================
-# GST suite T4 (2026-10-21): a month's block copied from the one above took
+# Found live (2026-10-21): a month's block copied from the one above took
 # its opening balance from the row above last month's closing balance.
 # ============================================================
 

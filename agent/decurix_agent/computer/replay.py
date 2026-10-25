@@ -507,8 +507,8 @@ _by_hand_asked = set()
 def _open_where_it_began(first):
     """
     A recording that began on a web page begins by being on it: when its first step is on a page no tab is showing,
-    that page is opened (the same as `gui open URL`), and a sentence says so; "" otherwise. Found live (GST suite T5,
-    2026-10-21): the person had opened the portal before pressing Record, the replay stopped at step 1 ("Username" is
+    that page is opened (the same as `gui open URL`), and a sentence says so; "" otherwise. Found live
+    (2026-10-21): the person had opened the portal before pressing Record, the replay stopped at step 1 ("Username" is
     not on the screen), and the engine then opened a real site of the same name from its own memory. Only a page of
     the browser, only for the first step, never for a step recorded on a desktop app.
     """
@@ -1564,8 +1564,8 @@ def run(program, params=None, start=1, report=None, ladder=None):
         if opened:
             report(opened)
 
-    # Carrying on right after a step done by hand: it was done only if the screen shows it. Found live (GST suite T9,
-    # 2026-10-22): told "use your judgement" at "type the client's portal password", the engine carried on from the
+    # Carrying on right after a step done by hand: it was done only if the screen shows it. Found live
+    # (2026-10-22): told "use your judgement" at "type the client's portal password", the engine carried on from the
     # next step with the password field empty; the login failed and it went looking for the portal elsewhere.
     # It stops once per such step: told again that it is done, the run goes on (a field the app empties after reading it
     # would otherwise stop every resume for ever).

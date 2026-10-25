@@ -111,7 +111,7 @@ def take(request, task_id, notify=None):
             if entry["size"] <= HASH_MAX:
                 entry["sha256"] = _digest(local)
             if entry["size"] <= COPY_MAX and entry["size"] <= budget:
-                # Kept under a number, not the person's name and folders: found live (GST suite T2, 2026-10-21), an
+                # Kept under a number, not the person's name and folders: found live (2026-10-21), an
                 # engine searching the desktop for the client's workbook by name found this copy and worked on it.
                 # The manifest says which file each copy is.
                 kept = f"{len([e for e in files.values() if e.get('copy')]) + 1:05d}{Path(rel).suffix.lower()}"
@@ -358,7 +358,7 @@ def is_source(path, task_id, request):
     if not (data and rel and rel in data["files"]) or may_change(Path(rel).name, request):
         return False
     # The same files the guard puts back (_compare): those the request gives. A file of the folder it does not give,
-    # that the work changed, is the work's - found live (GST suite T10, 2026-10-22): "bring the computation workbook
+    # that the work changed, is the work's - found live (2026-10-22): "bring the computation workbook
     # up to date" names it by what it is, so it was neither guarded nor checked, and the final check, shown none of it,
     # could not see the ARNs the work had written into it and asked three times.
     return rel in given(request) or Path(rel).name.lower() in _names(request)

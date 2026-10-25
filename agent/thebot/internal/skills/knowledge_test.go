@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// GST suite T9 (2026-10-22): calls that quoted real words which did not establish them.
+// Found live (2026-10-22): calls that quoted real words which did not establish them.
 
 func weighRC(chat *scriptedChat) RunContext {
 	return RunContext{Ctx: context.Background(), Provider: chat, Model: "m", OnLog: func(string) {}}
@@ -22,18 +22,18 @@ func TestACallBackedOnlyByAWebPageIsPutToThePersonAsASource(t *testing.T) {
 		t.Fatalf("weighing %+v", w)
 	}
 	// Their yes makes the page a source for the rest of the goal; a no leaves it out.
-	st.settleAskedSources("yes, that is the official help")
+	st.settleAskedSources("yes, that is the official help", true)
 	if !strings.Contains(st.Seen, "Table 13") || len(st.AskedSources) != 0 {
 		t.Error("a vouched page did not become a source")
 	}
 	other := &operatorState{AskedSources: []int{0}, Lookups: st.Lookups}
-	other.settleAskedSources("no, use our rules")
+	other.settleAskedSources("no, use our rules", false)
 	if strings.Contains(other.Seen, "Table 13") {
 		t.Error("a refused page became a source")
 	}
 	// A reply with a link of its own points elsewhere: the looked-up page is not vouched for.
 	elsewhere := &operatorState{AskedSources: []int{0}, Lookups: st.Lookups}
-	elsewhere.settleAskedSources("use https://example.org/our-manual.pdf instead")
+	elsewhere.settleAskedSources("use https://example.org/our-manual.pdf instead", true)
 	if strings.Contains(elsewhere.Seen, "Table 13") {
 		t.Error("a page the person passed over for their own link became a source")
 	}
@@ -42,14 +42,14 @@ func TestACallBackedOnlyByAWebPageIsPutToThePersonAsASource(t *testing.T) {
 // What the review raises is sent back once a round, then asked, and past the questions a goal may ask, carried with the
 // result - never dropped (review of 2026-10-22).
 func TestWhatTheReviewRaisesIsSentBackThenAskedThenCarriedNeverDropped(t *testing.T) {
-	raised := `{"issues": [{"what": "Invoice 458 never read", "why": "the chat offered it", "settle": "recheck"}]}`
+	raised := `{"issues": [{"what": "Invoice 458 never read", "why": "the chat offered it", "settle": "person"}]}`
 	chat := &scriptedChat{replies: []string{raised, raised, raised, raised}}
 	o, rc := &OperatorSkill{}, weighRC(chat)
 	st := &operatorState{Hosted: true, Request: "file it", JudgementRounds: 1}
 	if w := o.weighJudgements(rc, st, nil, "Filed.", ""); w.nudge == "" {
 		t.Fatalf("not sent back first: %+v", w)
 	}
-	if w := o.weighJudgements(rc, st, nil, "Filed.", ""); w.question == "" || !strings.Contains(w.question, "still questions these") {
+	if w := o.weighJudgements(rc, st, nil, "Filed.", ""); w.question == "" || !strings.Contains(w.question, "nothing you gave me or taught me settles") {
 		t.Fatalf("not asked once sent back: %+v", w)
 	}
 	// A later round, the person already asked as often as they may be.
@@ -67,6 +67,21 @@ func TestWhatTheReviewRaisesIsSentBackThenAskedThenCarriedNeverDropped(t *testin
 	// The second review is shown what the first raised.
 	if facts := chat.calls[3][1].Content; !strings.Contains(facts, "POINTS AN EARLIER REVIEW RAISED") {
 		t.Errorf("the second review did not see the first one's points")
+	}
+}
+
+// Found live (2026-10-23): a point the worker could settle by looking and did not is put to the person, as what it
+// is - carried silently, it left a month's work wrong.
+func TestAPointTheWorkerDidNotSettleIsPutToThePerson(t *testing.T) {
+	raised := `{"issues": [{"what": "Invoice 457 (a photo) was never read", "settle": "recheck"}]}`
+	o, rc := &OperatorSkill{}, weighRC(&scriptedChat{replies: []string{raised, raised}})
+	st := &operatorState{Hosted: true, Request: "file it", JudgementRounds: 1}
+	if w := o.weighJudgements(rc, st, nil, "Filed.", ""); w.nudge == "" {
+		t.Fatalf("not sent back first: %+v", w)
+	}
+	w := o.weighJudgements(rc, st, nil, "Filed.", "")
+	if w.question == "" || !strings.Contains(w.question, "still questions these") || !strings.Contains(w.question, "Invoice 457") {
+		t.Fatalf("a point the worker left open was not put to the person: %+v", w)
 	}
 }
 
@@ -111,8 +126,20 @@ func TestTheAnswerAboutTheCallsIsAppliedBeforeAnythingElse(t *testing.T) {
 		!strings.Contains(last, "not only the points listed") || !strings.Contains(last, "The question: Before I report this as done") {
 		t.Errorf("message: %q", last)
 	}
-	if st.JudgementQuestion || !st.judgementsDue("done") {
-		t.Error("the calls are not weighed again after the answer")
+	// Their answer is weighed before any approval; a report review waits for work to follow (it reviews what changed).
+	if st.JudgementQuestion || !st.judgementsDue("approval") {
+		t.Error("the calls are not weighed again before an approval after the answer")
+	}
+	if st.judgementsDue("done") {
+		t.Error("a report review was due with nothing done since the answer")
+	}
+	st.CommandsSucceeded++
+	if !st.judgementsDue("done") {
+		t.Error("a report review was not due once work followed the answer")
+	}
+	// The points put to them, with their answer, are shown to every later review as settled.
+	if facts := st.reviewFacts("done", nil, ""); len(st.AnsweredPoints) != 0 && !strings.Contains(facts, "POINTS ALREADY PUT TO THE PERSON") {
+		t.Error("answered points not shown to the review")
 	}
 	// What they said outlives the transcript, with what it answered.
 	if len(st.PersonSaid) != 1 || !strings.Contains(st.PersonSaid[0], "0 cancelled") || !strings.Contains(st.PersonSaid[0], "still counts") {
@@ -120,5 +147,14 @@ func TestTheAnswerAboutTheCallsIsAppliedBeforeAnythingElse(t *testing.T) {
 	}
 	if !strings.Contains(st.Seen, "still counts in documents issued") {
 		t.Error("the answer is not a source")
+	}
+}
+
+// The agent never answers a question about the run's own work from lessons (skill_task.WORK_CHECKED matches this
+// wording): changing it here means changing it there.
+func TestTheReviewsPointsAreAskedInTheWordsTheAgentKnows(t *testing.T) {
+	q := knowledgeQuestion([]reviewIssue{{What: "Bill 457 was not entered", Settle: "recheck"}}, nil, "")
+	if !strings.Contains(q, "An independent check of the work still questions") {
+		t.Fatalf("question = %s", q)
 	}
 }

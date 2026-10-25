@@ -4,7 +4,7 @@ from unittest import mock
 from decurix_agent import skill_task
 
 
-# GST suite T9 (2026-10-21): an engine that ran out of steps with three of eight invoices saved asked the person to
+# Found live (2026-10-21): an engine that ran out of steps with three of eight invoices saved asked the person to
 # "start a new run". It carries on by itself now, a few times a task, never in a planned run's stage.
 class TestAnEngineThatRanOutOfStepsCarriesOn(unittest.TestCase):
 

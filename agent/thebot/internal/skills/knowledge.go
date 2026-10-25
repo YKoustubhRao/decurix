@@ -72,13 +72,14 @@ func (st *operatorState) fetchesPersonLink(command string) bool {
 	return false
 }
 
-// settleAskedSources takes the person's reply to "is this a source you trust?": anything but a no makes the pages
-// sources for the rest of the goal - unless the reply gives a link of its own (the source to follow instead).
-func (st *operatorState) settleAskedSources(reply string) {
+// settleAskedSources takes the person's reply to "is this a source you trust?": a reply that accepts them (trusted,
+// replies.go) makes the pages sources for the rest of the goal - unless it gives a link of its own (the source to
+// follow instead).
+func (st *operatorState) settleAskedSources(reply string, trusted bool) {
 	if len(st.AskedSources) == 0 {
 		return
 	}
-	if !refusalReplyRe.MatchString(reply) && !linkRe.MatchString(reply) {
+	if trusted && !linkRe.MatchString(reply) {
 		for _, i := range st.AskedSources {
 			if i >= 0 && i < len(st.Lookups) {
 				st.noteSeen(st.Lookups[i].Text)
@@ -110,7 +111,7 @@ func (st *operatorState) lookupBacking(item string) (int, string) {
 
 // maxReviewQuestions bounds the questions the review puts to the person in one goal; past it, what is still open goes
 // with the result or the approval, never silently dropped.
-const maxReviewQuestions = 3
+const maxReviewQuestions = 2
 
 // weighing is what follows the work's account of what it rests on: a message back to the operator, a question for the
 // person, or neither - with open the points still unsettled once the person has been asked as often as they may be,
@@ -140,22 +141,68 @@ func (o *OperatorSkill) weighJudgements(rc RunContext, st *operatorState, items 
 			webIdx = append(webIdx, i)
 		}
 	}
+	// Values only a picture showed are read a second time first (second_read.go): what both reads agree on is traced
+	// before the review looks, and what they do not is a point like the review's.
+	pictured := o.secondRead(rc, st)
 	issues, reviewed := o.review(rc, st, said, items, action)
+	issues = append(issues, pictured...)
+	if action == "" {
+		// Before a report: a document of the work nothing written reflects, and the report never names, is a point -
+		// decided in code, not left to the review to notice (evidence.go).
+		issues = append(issues, st.coverageIssues(said)...)
+		// ... and a plan with steps for the person's OK of which none went through (plan.go).
+		issues = append(issues, st.commitsIssue()...)
+		// ... and a one-word value written into a file that no source holds (evidence.go noteInventedCodes).
+		issues = append(issues, st.inventedCodeIssues(said)...)
+		// The figures the work leaves on a screen it typed into are worked out again from the sources, as before a
+		// commit: a "prepare it, do not file it" task reaches no commit. Found live (2026-10-25): a service line was
+		// folded into a goods line of a summary; the totals tied, nothing warned, and the check passed it.
+		// Every page typed into is worked out, not only the last (verifyReport); one typed into after its last look is
+		// looked at again first (unseenTyping).
+		if typedOnScreen(st) {
+			issues = append(issues, o.verifyReport(rc, st)...)
+			issues = append(issues, st.unseenTyping()...)
+		}
+	}
+	if action != "" {
+		// Before an action that cannot be taken back, two independent checks: the screen's figures worked out again from
+		// the sources by a check that does not see them (evidence.go), and the records the action covers against every
+		// source read, each disagreement needing a source that explains it (case.go). Their findings are points like
+		// the review's.
+		o.lookBeforeCommit(rc, st, action)
+		issues = append(issues, o.verifyCommit(rc, st, action)...)
+		issues = append(issues, o.caseMatrix(rc, st, action)...)
+	}
 	var texts []string
 	for _, i := range issues {
 		texts = append(texts, i.text())
 	}
 
-	if len(issues) > 0 && st.SentBackRound != st.JudgementRounds {
-		st.SentBackRound, st.LastIssues = st.JudgementRounds, texts
+	// Once a round - and again when the work changed something since the last send-back: points found in new work are
+	// the worker's to settle first. Found live (2026-10-25): sent back once early in a round, the worker then keyed a
+	// whole return, with three answers from the person in between; at its report the verifier found six wrong figures
+	// in one row, and they went straight to the person - the worker never saw them.
+	again := st.SentBackRound == st.JudgementRounds && st.changedSinceSentBack() && st.ExtraSendBacks < maxExtraSendBacks
+	if len(issues) > 0 && (st.SentBackRound != st.JudgementRounds || again) {
+		if again {
+			st.ExtraSendBacks++
+		}
+		st.SentBackRound, st.SentBackWorked, st.LastIssues = st.JudgementRounds, len(st.Worked), texts
 		rc.Logf("operator", "the review raised %d point(s) - sent back to settle them", len(issues))
 		return weighing{nudge: settleNudge(issues)}
 	}
 	st.LastIssues = texts
-	if (len(issues) > 0 || len(web) > 0) && st.PersonAsks < maxReviewQuestions {
+	// Before an action the gate stopped, what is still open goes into the approval itself - one question for one
+	// action: asked first as a question and then for the approval, every gated click cost the person two
+	// (2026-10-23). Their no, with what to do instead, comes back like any refusal.
+	// A point the worker could settle by looking ("recheck") and did not is asked too: carried silently with the result
+	// instead, it left a month's work wrong with no word from the person, whose answer (their rules) had settled the same
+	// points the run before (2026-10-23: 32/46 against 45/46). Correctness before fewer questions.
+	if (len(issues) > 0 || len(web) > 0) && action == "" && st.PersonAsks < maxReviewQuestions {
 		st.PersonAsks++
 		st.JudgementQuestion = true
 		st.AskedSources = webIdx
+		st.AskedPoints = append(append([]string(nil), texts...), web...)
 		rc.Logf("operator", "%d point(s) still open, %d resting on the web - asking the person", len(issues), len(web))
 		return weighing{question: st.withoutSecrets(knowledgeQuestion(issues, web, action))}
 	}
@@ -170,6 +217,37 @@ func (o *OperatorSkill) weighJudgements(rc RunContext, st *operatorState, items 
 		rc.Logf("operator", "%d point(s) still open - carried with the result", len(open))
 	}
 	return weighing{open: open}
+}
+
+// maxExtraSendBacks bounds the send-backs a goal makes for points found in work done since the last one (knowledge.go).
+const maxExtraSendBacks = 2
+
+// changedSinceSentBack reports whether a command that changes something (changesSomething) went through since points
+// were last sent back: only reading to settle them is not new work.
+func (st *operatorState) changedSinceSentBack() bool {
+	from := st.SentBackWorked
+	if from > len(st.Worked) {
+		from = len(st.Worked)
+	}
+	for _, c := range st.Worked[from:] {
+		if changesSomething(c) {
+			return true
+		}
+	}
+	return false
+}
+
+// typedOnScreenRe is a gui command that types or chooses on the screen.
+var typedOnScreenRe = regexp.MustCompile(`(^|&&|;|\s)gui\s+(type|select)\b`)
+
+// typedOnScreen reports whether the goal typed or chose anything on the screen (gui type, gui select) that went through.
+func typedOnScreen(st *operatorState) bool {
+	for _, c := range st.Worked {
+		if typedOnScreenRe.MatchString(c) {
+			return true
+		}
+	}
+	return false
 }
 
 // openPointsNote is what stays open, as the result or the approval shows it.
@@ -224,7 +302,7 @@ func settleNudge(issues []reviewIssue) string {
 	}
 	b.WriteString("Weigh each point yourself - the review can be wrong; where what you have shows it is, say so with the " +
 		"words that show it. Keep the work that is right; change only what a source shows to be wrong. Then reply again " +
-		"(DONE with your report and the JUDGEMENTS list, or the JUDGEMENTS list alone before an approval).")
+		"(DONE with your report and the JUDGEMENTS list, or the JUDGEMENTS list alone before an approval)." + wholeReportNote)
 	return b.String()
 }
 

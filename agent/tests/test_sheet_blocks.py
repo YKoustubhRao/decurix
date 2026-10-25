@@ -8,7 +8,7 @@ from decurix_agent.tools import office
 
 
 # ============================================================
-# GST suite T3 (2026-10-21): "Closing credit carried forward" stood in six
+# Found live (2026-10-21): "Closing credit carried forward" stood in six
 # blocks of a workbook read as one list of cells, and the worker took the
 # figure from another month's block. office read now maps a sheet that
 # repeats one layout and tags every row with its block.
@@ -64,6 +64,20 @@ class TestSheetBlocks(unittest.TestCase):
         _, ws = self.book(build)
         self.assertEqual([t for _, _, t in office.sheet_blocks(ws)], ["JULY 2026", "AUGUST 2026"])
 
+    def test_a_long_sheet_of_blocks_shows_its_newest_blocks_whole(self):
+        # Found live (2026-10-24): the first 60 rows ended inside July; August's closing figure was never shown and
+        # the worker reported July's as August's.
+        def build(ws):
+            r = 1
+            for name, closing in (("APRIL", 400), ("MAY", 500), ("JUNE", 600), ("JULY", 700), ("AUGUST", 800)):
+                r = month(ws, r, name, closing) + 1
+        path, _ = self.book(build)
+        text = office.read_workbook(path, max_rows=14)
+        self.assertIn("[AUGUST 2026]  A28='Closing credit carried forward'  B28=800", text)
+        self.assertIn("[JULY 2026]", text)
+        self.assertNotIn("[APRIL 2026]  A", text)
+        self.assertIn("earlier blocks not shown: 'APRIL 2026', 'MAY 2026', 'JUNE 2026'", text)
+
     def test_a_plain_table_is_not_a_layout_of_blocks(self):
         def build(ws):
             ws.append(["Invoice", "Party", "Amount"])
@@ -75,7 +89,7 @@ class TestSheetBlocks(unittest.TestCase):
 
 
 class TestABlockThatDoesNotFollowTheLayout(unittest.TestCase):
-    """GST suite T2 (2026-10-22): a September block without the header row, its dates as text and its codes numbers."""
+    """Found live (2026-10-22): a September block without the header row, its dates as text and its codes numbers."""
 
     def sales(self, ws, top, name, day, rows, header=True, as_text=False):
         ws.cell(top, 1, name)
@@ -112,6 +126,33 @@ class TestABlockThatDoesNotFollowTheLayout(unittest.TestCase):
         self.assertFalse(any("cash sale" in f for f in found), found)
         self.assertEqual(office.block_layout_breaks(path, rows={"Sheet": {2}}), [])   # an earlier block that follows it
 
+    def test_a_row_of_another_period_and_two_values_in_one_cell_are_told(self):
+        # Found live (2026-10-24): August's row copied into September's new block, and two bills at two rates each
+        # entered as one row ("1905/1006") where every earlier row held one code.
+        import datetime
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        r = 1
+        for month, day, parties in (("JUNE", "06-04", ["ASHA", "CASH SALE"]), ("JULY", "07-04", ["RAVI", "MEERA"]),
+                                    ("AUGUST", "08-04", ["CASH SALE", "RAVI"])):
+            r = self.sales(ws, r, month, day, parties)
+        last = r
+        codes = iter(["1006", "2001", "0801", "1905", "0910", "1006"])
+        for row in range(1, last):                                     # the earlier entries' own codes, one per row
+            if ws.cell(row, 3).value == "9954":
+                ws.cell(row, 3, next(codes))
+        self.sales(ws, r, "SEPTEMBER", "09-21", ["ANIL", "PRIYA"])
+        ws.cell(last + 3, 1, datetime.datetime(2026, 8, 4))           # a row of August inside September
+        ws.cell(last + 4, 3, "1905/1006")                              # two codes in one cell
+        path = Path(tempfile.mkdtemp()) / "book.xlsx"
+        wb.save(path)
+        found = office.block_layout_breaks(path, rows={"Sheet": {last + 3}})
+        self.assertTrue(any("is dated 2026-08-04, inside the block of September" in f for f in found), found)
+        self.assertTrue(any("holds '1905/1006' - two values in one cell" in f for f in found), found)
+        # The header "HSN" every block shares, and the blocks that follow the layout, raise nothing.
+        self.assertFalse(any("'HSN'" in f for f in found), found)
+        self.assertEqual(office.block_layout_breaks(path, rows={"Sheet": {2}}), [])
+
     def test_a_sheet_the_task_did_not_change_is_not_looked_at(self):
         # Independent review (2026-10-22): `rows` named only another sheet, and this one's last block was checked
         # anyway - its old layout break was put to the task that never touched it.
@@ -127,6 +168,28 @@ class TestABlockThatDoesNotFollowTheLayout(unittest.TestCase):
         self.assertTrue(office.block_layout_breaks(path))                               # None: the last block is checked
         self.assertEqual(office.block_layout_breaks(path, rows={"Notes": {1}}), [])     # another sheet changed only
         self.assertEqual(office.block_layout_breaks(path, rows={}), [])                 # nothing changed
+
+    def test_the_worker_is_told_as_it_writes_a_block_that_breaks_the_layout(self):
+        # Found live (2026-10-23): the new month's block went in with no header row; the check saw it only after.
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        r = 1
+        for month, day, parties in (("JUNE", "06-04", ["ASHA"]), ("JULY", "07-04", ["RAVI"]), ("AUGUST", "08-04", ["MEERA"])):
+            r = self.sales(ws, r, month, day, parties)
+        top = r
+        path = Path(tempfile.mkdtemp()) / "book.xlsx"
+        wb.save(path)
+        edits = [{"sheet": "Sheet", "cell": f"A{top}", "value": "SEPTEMBER"},
+                 {"sheet": "Sheet", "cell": f"A{top + 1}", "value": "KAVYA CONSTRUCTIONS"},
+                 {"sheet": "Sheet", "cell": f"A{top + 2}", "value": "2026-09-21"},
+                 {"sheet": "Sheet", "cell": f"B{top + 2}", "value": "ANIL"},
+                 {"sheet": "Sheet", "cell": f"B{top + 3}", "value": "TOTAL"}]
+        msg = office.update_workbook(str(path), edits=edits)
+        self.assertIn("Compared with the sheet's other blocks", msg)
+        self.assertIn("has no row 'date'", msg)
+        # A write that keeps the layout says nothing more.
+        msg = office.update_workbook(str(path), edits=[{"sheet": "Sheet", "cell": "B4", "value": "ASHA K"}])
+        self.assertNotIn("Compared with", msg)
 
 
 if __name__ == "__main__":

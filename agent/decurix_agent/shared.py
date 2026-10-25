@@ -24,9 +24,9 @@ ENV_LINK = "DECURIX_SHARED_LINK"  # where ~/PC is, for tests
 
 # How much of a shared folder is looked through for files a task made or was given.
 MAX_ENTRIES = 4000
-# A person's folders run deep: "GST Returns/<client>/2026-27/06. SEPTEMBER/invoice.pdf" is four levels down. At 3, every
+# A person's folders run deep: "Returns/<client>/2026-27/06. SEPTEMBER/invoice.pdf" is four levels down. At 3, every
 # file of a month folder was invisible to the final check (a workbook just made there was "not made") and to the copy of
-# the person's files taken before a task (GST suite T6, 2026-10-21). MAX_ENTRIES is what bounds a big folder.
+# the person's files taken before a task (2026-10-21). MAX_ENTRIES is what bounds a big folder.
 MAX_DEPTH = 8
 
 _WINDOWS = re.compile(r"^[A-Za-z]:(?:/|$)")
@@ -111,8 +111,8 @@ def copy_file(src, dst):
     """
     Copy a file's contents to `dst`, then its times and permission bits where the filesystem allows. shutil.copy2 does
     both and fails on the person's shared folder: every file of a Windows drive mount shows as owned by root, so setting
-    its mode as this desktop's user is refused (EPERM) - after the contents were written. Found live (GST suite T4,
-    2026-10-21): the first `office update` of a person's workbook failed "Operation not permitted" while keeping its
+    its mode as this desktop's user is refused (EPERM) - after the contents were written. Found live
+    (2026-10-21): the first `office update` of a person's workbook failed "Operation not permitted" while keeping its
     .orig backup, the engine worked in a copy instead, and the restore of a person's file would have failed the same way.
     """
 

@@ -130,6 +130,32 @@ class TestKeeping(_Memory):
         (self.dir / "memory-000.txt").write_text("Title: Skill: x\nCategory: skill\n\nTaught by demonstration.\n", encoding="utf-8")
         self.assertEqual(lessons.known(), "")
 
+    def test_a_lesson_naming_this_runs_own_records_is_asked_for_again_as_the_rule(self):
+        # Found live (2026-10-25): "set COMPUTATION A99 ... invoice files 197 and 198 must be included" was kept and
+        # read on the next client's task.
+        answers = iter([
+            {"keep": True, "title": "Dashboard dates and 197/198",
+             "lesson": "Set A99 from the dashboard; invoices 197/198 are the two sales rows."},
+            {"keep": True, "title": "Filing dates from the dashboard",
+             "lesson": "Note each filing with the ARN and the date of filing the portal's dashboard shows, read back."},
+        ])
+        self.says = {}
+        with patch.object(lessons.study, "_call", lambda system, content, max_tokens=0: next(answers)):
+            self.note("Where do the ARNs go?", "dashboard -> A99 = gstr-1 line, each with its arn n date. 197/198 are the "
+                      "2 SALES rows", task="file the September returns")
+        title, text, _ = self.kept[0]
+        self.assertEqual(title, "Lesson: Filing dates from the dashboard")
+        self.assertNotIn("A99", text)
+        self.assertNotIn("197", text)       # nor in the person's words kept beside it
+
+    def test_a_lesson_still_naming_them_is_not_kept_and_an_address_is_no_such_value(self):
+        self.says = {"keep": True, "title": "Rows", "lesson": "Invoices 197 and 198 are the two sales rows."}
+        self.note("Which rows?", "197/198 are the 2 SALES rows", task="file the September returns")
+        self.assertEqual(self.kept, [])
+        self.assertEqual(lessons.case_values("Use only http://host.docker.internal:8703 for the portal.",
+                                             "the portal at http://host.docker.internal:8703"), [])
+        self.assertEqual(lessons.case_values("Rent is 9,000 in B12.", "rent 9,000 goes to B12"), ["9,000", "B12"])
+
 
 class TestAnsweringFromLessons(_Memory):
     """An engine's question in an ordinary task, settled by a lesson kept from an earlier one."""
@@ -191,6 +217,29 @@ class TestAnsweringFromLessons(_Memory):
         with patch.object(state, "paused_skill", {"mode": "confirm"}):
             self.assertFalse(skill_task._question_gate("Is it done?", "query", None))
         self.assertEqual(self.judged, [])
+
+    def test_a_check_of_this_runs_work_is_never_answered_from_lessons(self):
+        # Found live (2026-10-25): the review's "an independent check still questions these" - a bill left out - was
+        # answered from a lesson about which files to ignore, and the report went out a bill short.
+        self.lesson()
+        for question in ("Before I report this as done:\nAn independent check of the work still questions these after "
+                         "I went back over them.\n1. Bill 457 was not entered.",
+                         "I cannot confirm this is done. The screen shows the summary.",
+                         "I do not think this is done. The screen shows the form."):
+            with self.subTest(question=question[:30]):
+                self.assertFalse(skill_task._question_gate(question, "query", None))
+        self.assertEqual((self.told, self.judged), ([], []))
+
+    def test_a_planned_runs_question_takes_its_own_way(self):
+        # Found live (2026-10-25): an answer sent into the engine during a planned run's stage was taken as a new
+        # request, and the request's next stage never ran.
+        self.lesson()
+        with patch.object(skill_task.task_context, "current_stage", lambda: ("stage-1", 1)):
+            self.assertFalse(skill_task._question_gate("Two people are called Priya Shah. Which one?", "query", None))
+        from decurix_agent import long_task
+        with patch.object(long_task, "active", lambda: True):
+            self.assertFalse(skill_task._question_gate("Two people are called Priya Shah. Which one?", "query", None))
+        self.assertEqual((self.told, self.judged), ([], []))
 
     def test_at_most_twice_a_task(self):
         self.lesson()

@@ -7,7 +7,7 @@ from decurix_agent import produced, skill_task, verify
 
 
 # ============================================================
-# GST suite T1 (2026-10-21): invoice 198 was saved as a second download of
+# Found live (2026-10-21): invoice 198 was saved as a second download of
 # 197, and the final check asked "I cannot confirm this is done" nine times.
 # ============================================================
 
@@ -58,7 +58,7 @@ class TestTheCheckStopsAskingTheSameQuestion(unittest.TestCase):
 
 
 class TestWhatOfficeReadIsEvidence(unittest.TestCase):
-    """GST suite T3: the check saw the portal on the screen and nothing of the workbook the worker read."""
+    """Found live: the check saw the portal on the screen and nothing of the workbook the worker read."""
 
     def test_a_file_read_is_in_the_observed_evidence_as_a_file_read(self):
         from decurix_agent.computer import evidence
@@ -72,7 +72,7 @@ class TestWhatOfficeReadIsEvidence(unittest.TestCase):
         self.assertFalse(any(s.startswith("read off the screen: read from the file") for s in seen))
 
 class TestTheCheckCanLookInWhatTheReportRead(unittest.TestCase):
-    """GST suite T3: a figure read off the wrong row of the workbook the report names could not be looked up."""
+    """Found live: a figure read off the wrong row of the workbook the report names could not be looked up."""
 
     def test_a_file_the_report_names_with_spaces_in_its_path_is_found(self):
         folder = Path(tempfile.mkdtemp()) / "GST Returns" / "KAVYA CONSTRUCTIONS"

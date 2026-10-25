@@ -1232,6 +1232,66 @@ def _choose(kind, text):
     return hits.pop() if len(hits) == 1 else None
 
 
+# The teaching questions whose answer is one choice and often comes with more ("same, except for one customer"), and
+# what each choice means - for the one reading of a reply that is more than a choice (_read_choice).
+READ_KINDS = {
+    "variable": {"same": "the value is the same every time the task is done",
+                 "changes": "the value changes from one run of the task to the next"},
+    "optional": {"sometimes": "the step happens only sometimes, or only when something holds",
+                 "always": "the step happens every time"},
+    "start": {"yes": "yes - start from here as it is", "no": "no - do not start from here"},
+    "approval": {"ask": "ask the person before each run of the task",
+                 "go": "go ahead with each run on its own, without asking"},
+}
+# A reply of this many words or fewer that names one choice is that choice, as before; a longer one is read.
+PLAIN_WORDS = 3
+# What can turn a choice into something else: an exception or an addition.
+ADDS = re.compile(r"\b(but|except|unless|apart from|other than|besides|however|also|and then|as well)\b", re.I)
+
+
+def _read_choice(kind, question, text):
+    """
+    (choice or None, what the reply adds) for a teaching question whose answer is one choice. A short reply naming one
+    choice is that choice, as before. A longer one is read once (approval.read_choice): "same, except for one customer
+    it's 5%" and "yes, and check the client name too" made a choice and said more, and the word lists kept only the
+    choice (audit, 2026-10-24). With no model, a longer reply naming one choice and adding nothing is that choice; one
+    that adds an exception is not guessed at - it is asked again.
+    """
+
+    hit = _choose(kind, text)
+    if hit is not None and len(text.split()) <= PLAIN_WORDS:
+        return hit, ""
+    from decurix_agent import llm_client
+    from decurix_agent.computer import approval
+    try:
+        model = llm_client.available()
+    except Exception:  # noqa: BLE001
+        model = False
+    if not model:
+        return (hit, "") if hit is not None and not ADDS.search(text) else (None, "")
+    said = approval.read_choice(text, question.get("text") or "", READ_KINDS[kind])
+    return (said["choice"], said["instruction"]) if said["choice"] in READ_KINDS[kind] else (None, "")
+
+
+def _keep_added(skill, question, added):
+    """
+    What a teaching reply added to its choice ("same, except for one customer it's 5%"), which the choice itself cannot
+    hold: kept as one of the task's rules, in the person's words - every run's model and its check read the rules
+    (skill_task._taught).
+    """
+
+    added = " ".join(str(added or "").split())[:300]
+    if not added:
+        return
+    understanding = skill.get("understanding") or {}
+    rules = understanding.setdefault("rules", [])
+    about = " ".join(str(question.get("text") or "").split())[:160]
+    rule = f"{added} (said when asked: {about})" if about else added
+    if rule not in rules:
+        rules.append(rule)
+    skill["understanding"] = understanding
+
+
 def answer(skill, question, reply):
     """
     Apply a person's reply to a question. Returns {"understood", "note",
@@ -1276,7 +1336,11 @@ def answer(skill, question, reply):
     if kind == "confirm" and not KEEP_NAME.match(text) and not THROW_AWAY.match(text) and rename(skill, text):
         text = "yes"
 
-    choice = _choose(kind, text)
+    added = ""
+    if kind in READ_KINDS:
+        choice, added = _read_choice(kind, question, text)
+    else:
+        choice = _choose(kind, text)
     note = ""
 
     if choice is None:
@@ -1291,6 +1355,9 @@ def answer(skill, question, reply):
 
     decision = _apply(skill, question, choice)
     skill["answers"][qid] = text[:300]
+    if added:
+        _keep_added(skill, question, added)
+        note = (note + " " if note else "") + f"I will also keep this: {added[:200]}"
 
     # Not saved, not thrown away: the question stays open for the next time
     # this skill is taught.

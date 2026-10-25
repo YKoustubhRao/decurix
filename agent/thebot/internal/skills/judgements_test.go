@@ -7,7 +7,7 @@ import (
 	"thebot/internal/llm"
 )
 
-// GST suite (2026-10-22): a strong model's misses were judgement calls it never noticed it made.
+// Found live (2026-10-22): a strong model's misses were judgement calls it never noticed it made.
 
 func TestJudgementListIsReadUnderAnyMarker(t *testing.T) {
 	reply := "DONE: Filed the return.\n\nJUDGEMENTS:\n" +
@@ -39,7 +39,7 @@ func TestOnlyACallWhoseQuoteWasSeenIsBacked(t *testing.T) {
 	if len(got) != 3 || !strings.HasPrefix(got[0], "Rent kept") || !strings.HasPrefix(got[1], "Round-off") || got[2] != "HSN 9987 included" {
 		t.Errorf("unbacked: %q", got)
 	}
-	// A cell quoted as "O62='Karnataka'" is backed by office read's line, where the two stand apart (GST suite T5).
+	// A cell quoted as "O62='Karnataka'" is backed by office read's line, where the two stand apart.
 	line := `[SEPTEMBER]  A62=2026-09-21  K62==IF(O62="Karnataka",ROUND(I62*H62/200,2),0) -> 15254.24`
 	if got := unbackedCalls([]string{`Place of supply Karnataka | backed by: "O62='Karnataka'" (SALES row 62)`}, line); len(got) != 0 {
 		t.Errorf("a cell and its value standing apart were not found: %q", got)
@@ -47,7 +47,7 @@ func TestOnlyACallWhoseQuoteWasSeenIsBacked(t *testing.T) {
 	if got := unbackedCalls([]string{`Place of supply Kerala | backed by: "O62='Kerala'"`}, line); len(got) != 1 {
 		t.Error("a value that is not there was taken as backed")
 	}
-	// A quote earlier in the call does not pair with the backing's (found live, GST suite T1).
+	// A quote earlier in the call does not pair with the backing's (found live).
 	if got := unbackedCalls([]string{`Used it as "my PC" storage | backed by: "the September GSTR-1 from the workbook" (request)`},
 		seen); len(got) != 0 {
 		t.Errorf("a quoted word in the call broke its backing: %q", got)

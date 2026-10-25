@@ -62,6 +62,24 @@ Write the lesson so it stands on its own, without the question: say when it appl
 Reply with JSON only: {"keep": true, "title": "<3-8 words>", "lesson": "<the instruction>", "said": "<the part of the person's answer the lesson comes from, copied word for word, without anything about this run alone>"} or {"keep": false, "why": "<a few words>"}"""
 
 
+# A value of one run a lesson must not carry: a cell reference (A99) or a number of three or more digits (an invoice
+# number, an amount, a row) - counted only when the run's own question, answer or task holds it too. Digits inside a
+# web address or a path are not one (an address the person names is a standing fact).
+CASE_VALUE = re.compile(r"(?<![\w.:-])(?:[A-Z]{1,3}\d{1,5}|\d[\d,]{2,}(?:\.\d+)?)(?![\w:-])")
+ADDRESS = re.compile(r"\S+://\S+|(?<!\w)/[\w./-]+")
+
+REWRITE_NOTE = ("\n\nThis lesson was written: {lesson!r}. It holds values of this run alone ({values}): read on a later "
+                "task they would be taken as still true. Write it again as the rule they illustrate, without them - or "
+                "keep nothing if no rule is left. Same JSON.")
+
+
+def case_values(text, context):
+    """The values of one run (CASE_VALUE) the text holds that the run's context holds too."""
+
+    bare = ADDRESS.sub(" ", text or "")
+    return sorted({v.rstrip(".,") for v in CASE_VALUE.findall(bare) if v.rstrip(".,") in (context or "")})
+
+
 def known(limit=MAX_KNOWN_CHARS):
     """The lessons already in this worker's memory, newest first, as text (up to `limit` characters)."""
 
@@ -105,7 +123,8 @@ def worth_keeping(question, reply, kind="query", outcome=None):
         return False
     # A yes or a no to an approval is one action's, never a standing rule
     # (a standing approval would be the worker switching off its own gate).
-    if (kind == "approval" or outcome) and (approval.is_approval(reply) or approval.is_refusal(reply)):
+    if (kind == "approval" or outcome) and (approval.is_approval(reply) or approval.is_refusal(reply)
+                                            or approval.read_reply(reply) in ("yes", "if")):
         return False
     return True
 
@@ -131,6 +150,22 @@ def distil(question, reply, task="", skill=""):
             if data.get("keep") is not True:
                 log(f"lessons: nothing to keep from {reply[:80]!r} ({_squash(data.get('why'), 120)})")
                 return None
+            # A lesson that names one record of this run (its row, its number, its amount) is asked for once more as
+            # the rule; still naming one, nothing is kept. Found live (2026-10-25): "set A99 from the dashboard ...
+            # invoice files 197 and 198 must be included" was kept and read on the next client's task.
+            context = f"{task}\n{question}\n{reply}"
+            values = case_values(f"{data.get('title', '')} {data.get('lesson', '')}", context)
+            if values:
+                try:
+                    data = study._call(DISTILL_SYSTEM, content + REWRITE_NOTE.format(
+                        lesson=_squash(data.get("lesson"), MAX_LESSON_CHARS), values=", ".join(values)), max_tokens=400)
+                except (llm_client.LLMError, ValueError):
+                    data = {"keep": False}
+                still = case_values(f"{data.get('title', '')} {data.get('lesson', '')}", context)
+                if data.get("keep") is not True or still:
+                    log(f"lessons: nothing to keep from {reply[:80]!r} (it names this run's own values: "
+                        f"{', '.join(still or values)})")
+                    return None
             lesson = _squash(data.get("lesson"), MAX_LESSON_CHARS)
             if not lesson:
                 return None
@@ -144,8 +179,8 @@ def distil(question, reply, task="", skill=""):
             # rule itself; of a long one, the part the model quotes is kept
             # when it really is in the answer, word for word.
             said = reply if len(reply) <= MAX_SAID_WHOLE else _squash(data.get("said"), MAX_SAID_PART)
-            if said and said not in reply:
-                said = ""
+            if said and (said not in reply or case_values(said, context)):
+                said = ""  # (the person's words beside a lesson never bring back this run's values)
             return title, (lesson + (f"\n\nThe person answered: \"{said}\"." if said else "")
                            + (f" (Learned while doing: {_squash(skill or task, 120)})" if skill or task else ""))
 

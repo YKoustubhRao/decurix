@@ -41,8 +41,29 @@ import (
 // the person instead of trying again. Deterministic, like the rest of the
 // operator's guards: the model's judgement is not what decides this.
 
-// maxUntracedNudges bounds the refusals before the person is asked.
+// maxUntracedNudges bounds the refusals before the person is asked, counted since the work last typed what it could
+// trace (noteTracedTyping): a worker that found its values after a refusal starts again. Found live (2026-10-25): two
+// refusals of other values ("5%", a total), each put right, had used a goal-wide budget of two, so the next value - a
+// sum of two bill lines the worker had not printed - went to the person at once, who answered "write that working
+// down, then type it": what the refusal itself says. A worker that keeps guessing never resets it.
 const maxUntracedNudges = 2
+
+// untracedSendBack reports whether values a command could not trace go back to the operator (else to the person),
+// counting the refusal when they do.
+func (st *operatorState) untracedSendBack() bool {
+	if st.UntracedNudges >= maxUntracedNudges {
+		return false
+	}
+	st.UntracedNudges++
+	return true
+}
+
+// noteTracedTyping starts the refusals' count again when a command typing values passed the trace.
+func (st *operatorState) noteTracedTyping(command string) {
+	if len(typedValues(command)) > 0 {
+		st.UntracedNudges = 0
+	}
+}
 
 // maxSeenChars bounds what is kept of the request and command outputs.
 const maxSeenChars = 400_000
@@ -120,7 +141,7 @@ var optionLabelRe = regexp.MustCompile(`^\s*([A-Za-z0-9.]{1,10})\s*-\s*([A-Za-z]
 
 // optionTraced reports whether an option label's code (when it has a letter) or its whole description is in what
 // was read: the source says "KGS" or "Karnataka", the application lists "KGS-KILOGRAMS" and "29-Karnataka". Found live
-// (GST suite T7/T9, 2026-10-21): the unit and state options chosen for invoice lines were refused as never read, and
+// (2026-10-21): the unit and state options chosen for invoice lines were refused as never read, and
 // the person was asked where "KGS-KILOGRAMS" came from, seven times. A name none of whose parts match still is not.
 func optionTraced(v, seen string) bool {
 	m := optionLabelRe.FindStringSubmatch(v)
@@ -279,6 +300,30 @@ func unreadNudge(docs []string) string {
 
 // noteSeen adds text the operator has now seen (the request, a command's
 // output, a person's reply), keeping the most recent maxSeenChars.
+// valueTokenRe is a token that can be a value: a run of letters, digits and . , / - _ holding at least one digit.
+var valueTokenRe = regexp.MustCompile(`[\p{L}\p{N}._/,-]*\p{N}[\p{L}\p{N}._/,-]*`)
+
+// withoutCommandValues is a command's output with every value that already stood in the command itself left out: what
+// a command prints back of what it was given is not a source of it. Found live (2026-10-23): late in a
+// long goal the worker wrote a list of records from memory into a script - two codes invented, record numbers shifted
+// by one - the script printed them back, and that printout made them "seen", so typing them into a form passed as
+// traced. A value the command computed (not written in it) stays: that is the working.
+func withoutCommandValues(output, command string) string {
+	given := map[string]bool{}
+	for _, t := range valueTokenRe.FindAllString(command, -1) {
+		given[strings.Trim(t, ".,/-_")] = true
+	}
+	if len(given) == 0 {
+		return output
+	}
+	return valueTokenRe.ReplaceAllStringFunc(output, func(t string) string {
+		if given[strings.Trim(t, ".,/-_")] {
+			return "·"
+		}
+		return t
+	})
+}
+
 func (st *operatorState) noteSeen(text string) {
 	st.Seen += "\n" + text
 	if len(st.Seen) > maxSeenChars {
@@ -603,7 +648,7 @@ func shellExpands(segment string) bool {
 			quote = '\''
 		case r == '$' && i+1 < len(runes):
 			n := runes[i+1]
-			// A digit and the special parameters expand too: found live (GST suite T7, 2026-10-21), the password
+			// A digit and the special parameters expand too: found live (2026-10-21), the password
 			// "Lift$2026" reached the login form as "Lift026" ($2 is a positional parameter) and the worker reported
 			// the person's credentials as wrong.
 			if unicode.IsLetter(n) || unicode.IsDigit(n) || strings.ContainsRune("_{(@*#?$!-", n) {
@@ -727,11 +772,8 @@ func groundingCheck(st *operatorState, command string) (string, []string) {
 				"steps made) and give it in the format the field accepts - or ask, or leave an optional field empty.", quotedList(maskSecrets(filler, secrets))),
 			maskSecrets(filler, secrets)
 	}
-	if st.ShownPages {
-		// Read from pictures: the words are not text to search. Only an unread source still holds the typing back.
-		if len(unread) == 0 {
-			return "", nil
-		}
+	if st.ShownPages && len(unread) > 0 {
+		// Read from pictures, with a source still unread: the unread source holds the typing back.
 		var waiting []string
 		requestText := normalise(st.Request)
 		for _, v := range values {
@@ -784,7 +826,7 @@ func groundingCheck(st *operatorState, command string) (string, []string) {
 				continue
 			}
 		}
-		if d, ok := canonicalDate(v); ok && dates().holds(d) {
+		if d, ok := canonicalDate(v); ok && (dates().holds(d) || dates().boundsAMonth(d)) {
 			continue
 		}
 		if pathTraced(v, seen) || fileTypeTraced(v, seen) || cellPlaceRe.MatchString(strings.TrimSpace(v)) {
@@ -807,6 +849,13 @@ func groundingCheck(st *operatorState, command string) (string, []string) {
 		}
 		return "", nil
 	}
+	if st.ShownPages && len(unread) == 0 {
+		// Pages came as pictures: a value in no text (their OCR included) may still be read off a picture - typed, but
+		// kept as uncertain, for the commit gate's verifier and the reviewer (evidence.go). Before, once any page had
+		// come as a picture, nothing typed was traced at all (found live, 2026-10-23).
+		st.notePictureOnly(bare)
+		return "", nil
+	}
 	if len(unread) > 0 {
 		// A value traced nowhere, with sources still unread: read them first (a value something read already gives
 		// was never held back for them - the request's sign-in, a date a chat gave).
@@ -826,8 +875,8 @@ func groundingCheck(st *operatorState, command string) (string, []string) {
 
 var (
 	// authoringRe is a request that asks for something to be written: a letter, a reply, a memo, a summary.
-	// (send/tell/ask/inform/notify/remind/message: "send Suresh a message on ClientChat asking him about the
-	// differences" - found live, GST suite T6, 2026-10-21: every wording of it was refused as untraced and the person
+	// (send/tell/ask/inform/notify/remind/message: "send <person> a message on <chat app> asking him about the
+	// differences" - found live, 2026-10-21: every wording of it was refused as untraced and the person
 	// was asked for the exact text.)
 	authoringRe = regexp.MustCompile(`(?i)\b(?:write|draft|compose|reply|respond|prepare|word|send|tell|ask|inform|notify|remind|message)\b[^.\n]{0,80}?\b(?:letters?|e-?mails?|memos?|messages?|notes?|repl(?:y|ies)|responses?|summar(?:y|ies)|reports?|documents?|descriptions?|posts?|articles?|paragraphs?|captions?|announcements?|minutes|notices?|cover letters?)\b`)
 	letterRe    = regexp.MustCompile(`\p{L}`)
@@ -868,7 +917,7 @@ var guiTypeQuotedRe = regexp.MustCompile(`(\bgui\s+(?:type|select)\b[^"\n;&|]*?)
 
 // literalTyping gives a gui type the text it wrote when the shell would expand a $ in it ("Lift$2026" reaches the
 // field as "Lift026": $2 is a positional parameter): the text goes in single quotes instead, where the shell changes
-// nothing. Found live (GST suite T7, 2026-10-21): sent back to use stdin, the model wrote the same command again until
+// nothing. Found live (2026-10-21): sent back to use stdin, the model wrote the same command again until
 // the nudges ran out, and the client's password reached the login form wrong every time. What the model meant is the
 // text it quoted; only the escapes double quotes allow (\" \\ \$ \`) are undone first.
 func literalTyping(command string) string {
@@ -899,8 +948,8 @@ var readableKinds = map[string]bool{".pdf": true, ".docx": true, ".doc": true, "
 	".pptx": true, ".odt": true, ".ods": true, ".md": true, ".html": true, ".htm": true, ".xml": true}
 
 // noteFilesRead adds the files a command names - and the files right inside a folder it names - to the task's list of
-// files the work read (~/.decurix/computer/evidence/<task>.files, the agent's evidence.files_read). Found live (GST suite
-// T7, 2026-10-21): the worker read the Word invoices with a python script, typed their figures into the portal, and the
+// files the work read (~/.decurix/computer/evidence/<task>.files, the agent's evidence.files_read). Found live
+// (2026-10-21): the worker read the Word invoices with a python script, typed their figures into the portal, and the
 // form's check that each typed fact has a source refused them - only files read with office read were known. Whatever
 // read them, a file the work's commands named is one it could have read. Never fails the command.
 func noteFilesRead(command string) {
@@ -961,7 +1010,7 @@ const maxNotedOutput = 6000
 
 // noteCommandOutput keeps what a command printed as the task's recorded working
 // (~/.decurix/computer/evidence/<task>.outputs, one JSON line each; the agent's long_task._page_notes reads it for the
-// check that a typed or written fact has a source). Found live (GST suite T7, 2026-10-21): the B2C and HSN totals a
+// check that a typed or written fact has a source). Found live (2026-10-21): the category totals a
 // script summed from the invoices and printed were refused at the final check as "held by no source" - the agent saw
 // files and screens, never what the work's commands printed. A figure only the model's head holds stays unsourced.
 func noteCommandOutput(command, output string) {
@@ -1017,8 +1066,8 @@ func notedFilesRead() []string {
 }
 
 // readNamedSources reads, with `office read`, the files the work's commands named that the operator has not read for
-// the trace yet, and adds what they say to what was seen. True when it read any. Found live (GST suite T7, 2026-10-21):
-// the HSN codes, units and amounts of Word invoices a script had read were refused as never read, and the worker
+// the trace yet, and adds what they say to what was seen. True when it read any. Found live (2026-10-21):
+// the item codes, units and amounts of Word invoices a script had read were refused as never read, and the worker
 // asked the person where 9987 came from - it is printed on the invoice.
 func (o *OperatorSkill) readNamedSources(rc RunContext, st *operatorState) bool {
 	if st.SourcesRead == nil {
@@ -1075,8 +1124,8 @@ var sharedLinkForms = map[string]bool{sharedLinkPath: true, "~/PC": true, "$HOME
 
 // intoSharedLink makes a find that starts at the shared folder's link start inside it ("PC" -> "PC/"), which is
 // what was meant: the link is how this desktop reaches the folder (shared.ensure_link), and find does not follow a
-// link it is given as a starting point - it printed the link alone and nothing in it. Found live (GST suite T2/T4,
-// 2026-10-21): `find /home/headless/PC -iname '*Kavya*'` found nothing, the engine took the person's folder for empty
+// link it is given as a starting point - it printed the link alone and nothing in it. Found live
+// (2026-10-21): `find /home/headless/PC -iname '*Kavya*'` found nothing, the engine took the person's folder for empty
 // and worked on a stale copy in its own work folder. A find told to follow links (-L, -H) is left as it is.
 func intoSharedLink(command string) string {
 	locs := findRe.FindAllStringSubmatchIndex(command, -1)
@@ -1099,7 +1148,8 @@ func intoSharedLink(command string) string {
 				break
 			}
 			c := command[i]
-			if c == '-' || c == '(' || c == '!' || c == '\\' || c == ';' || c == '|' || c == '&' || c == '>' || c == '<' || c == '\n' {
+			if c == '-' || c == '(' || c == ')' || c == '!' || c == '\\' || c == ';' || c == '|' || c == '&' || c == '>' ||
+				c == '<' || c == '\n' {
 				break
 			}
 			start, end := i, i
@@ -1125,6 +1175,11 @@ func intoSharedLink(command string) string {
 				b.WriteString(command[last:at])
 				b.WriteString("/")
 				last = at
+			}
+			if end <= i {
+				// No word was taken: never loop on the same place. Found live (2026-10-25): "find )" in a script's
+				// text left end at i, and the soul spun for half an hour with the task stopped.
+				break
 			}
 			i = end
 		}
@@ -1325,8 +1380,8 @@ var (
 // nowhere", and went on to close the spreadsheet. What a formula may not
 // carry is a figure nobody has seen: its literal numbers (not cell
 // references) are returned to be traced like any typed number, and a formula
-// holding quoted text has that text traced like any typed text (texts). Found live (2026-10-19): asked for "CGST 9% for
-// a customer in Maharashtra", =IF(TRIM(D2)="maharashtra",E2*9%,0) was refused as a value "never read" - every quoted
+// holding quoted text has that text traced like any typed text (texts). Found live (2026-10-19): asked for "Tax A 9% for
+// a customer in Region X", =IF(TRIM(D2)="region x",E2*9%,0) was refused as a value "never read" - every quoted
 // word made the whole formula a guess - and the worker was pushed off formulas onto typing figures. 0 and 1 are the
 // formula's own structure (no result, one whole), never a figure taken from a document.
 func formulaLiterals(v string) (numbers, texts []string, ok bool) {
@@ -1946,6 +2001,54 @@ func (s *dateSet) holds(v dateValue) bool {
 		return false
 	}
 	return s.days[fmt.Sprintf("%04d-%02d-%02d", y, b, a)] || s.days[fmt.Sprintf("%04d-%02d-%02d", y, a, b)]
+}
+
+// boundsAMonth says whether v is the first or last day of a month some date the document writes falls in: the edges
+// of the period the work is about (a report's from and to), worked out, not invented. Found live (2026-10-25): asked to
+// check a month's entries, the worker could not type 1-11-2026 and 30-11-2026 into a day book's filter and asked the
+// person for "the exact dates".
+func (s *dateSet) boundsAMonth(v dateValue) bool {
+	// Each reading of v: 0 unambiguous, 1 day first, 2 month first. An ambiguous v is set only against the document's
+	// dates read the same way round, so a swapped day and month never traces.
+	type reading struct{ y, m, d, way int }
+	var readings []reading
+	for _, day := range v.days {
+		var r reading
+		if _, err := fmt.Sscanf(day, "%d-%d-%d", &r.y, &r.m, &r.d); err == nil {
+			readings = append(readings, r)
+		}
+	}
+	if v.order != "" {
+		var a, b, y int
+		if _, err := fmt.Sscanf(v.order, "%d/%d/%d", &a, &b, &y); err == nil {
+			readings = append(readings, reading{y, b, a, 1}, reading{y, a, b, 2})
+		}
+	}
+	monthWritten := func(y, m, way int) bool {
+		prefix := fmt.Sprintf("%04d-%02d-", y, m)
+		for seen := range s.days {
+			if strings.HasPrefix(seen, prefix) {
+				return true
+			}
+		}
+		for o := range s.orders {
+			var a, b, oy int
+			if _, err := fmt.Sscanf(o, "%d/%d/%d", &a, &b, &oy); err != nil || oy != y {
+				continue
+			}
+			if (way != 2 && b == m) || (way != 1 && a == m) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, r := range readings {
+		last := time.Date(r.y, time.Month(r.m)+1, 0, 0, 0, 0, 0, time.UTC).Day()
+		if (r.d == 1 || r.d == last) && monthWritten(r.y, r.m, r.way) {
+			return true
+		}
+	}
+	return false
 }
 
 // normalise lowercases and collapses whitespace, so a value matches however

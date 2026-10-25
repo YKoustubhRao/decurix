@@ -139,6 +139,12 @@ class ApprovalSaysWhere(unittest.TestCase):
         self.assertIn("Type a message to Koustubh OG", about)
         self.assertIn("hello hello, test", about)
 
+    def test_a_message_about_to_be_sent_is_shown_whole(self):
+        # Found live (2026-10-25): cut at 80 characters, the person was shown "September GST r..." and refused.
+        message = "Both returns are filed. " + "The figures are in the workbook and match the bills. " * 5 + "Nothing more is due."
+        screen = {"elements": [element("textbox", "Type a message", "e4", value=message), element("button", "Send", "e5")]}
+        self.assertIn("Nothing more is due.", core._what_it_acts_on(screen, screen["elements"][1]))
+
     def test_it_is_in_the_request_text(self):
         text = approval.request_text({"action": "click button Send", "reason": "it sends",
                                       "about": "It would act on what is filled in: x"})

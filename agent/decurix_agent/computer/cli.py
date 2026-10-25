@@ -5,7 +5,7 @@ import sys
 import time
 
 from decurix_agent import logging_utils, progress
-from decurix_agent.computer import approval, core, replay, shown, skill_engine, skills
+from decurix_agent.computer import approval, cdp, core, replay, shown, skill_engine, skills
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 
@@ -209,6 +209,25 @@ def scroll_words(words):
             amount = round(amount / PIXELS_PER_NOTCH)
         amount = min(max(amount, 1), MAX_NOTCHES)
     return words, direction or "down", amount
+
+
+def _refuse_native_dropdown(ref):
+    """A click on a native drop-down (<select>) opens a list drawn outside the page, whose entries no look can read: the
+    engine then clicks them by looking, slowly and by guess. Found live (2026-10-25): 15 such clicks averaged 32 s in
+    one task. It is told to choose by name instead, with the options - nothing is clicked."""
+    state = core._load_state() or {}
+    element = next((e for e in state.get("elements") or [] if e.get("ref") == ref), None)
+    if not element or element.get("role") != "combobox" or element.get("source") != "cdp":
+        return
+    try:
+        options = cdp.native_options(element)
+    except Exception:  # noqa: BLE001 - a look that fails leaves the click as it was
+        return
+    if options is None:
+        return
+    shown = ", ".join(el._quote(o, 40) for o in options[:40]) + (f" (+{len(options) - 40} more)" if len(options) > 40 else "")
+    raise ComputerError(f"Not clicked: {el.describe(element)} is a drop-down list, and an open list's entries cannot be "
+                        f"read from the screen. Choose by name instead: gui select {ref} \"<option>\". Its options: {shown}")
 
 
 def _target(value, args):
@@ -849,6 +868,8 @@ def run(argv):
         target = _one_target(words, args)
         if not target:
             raise ComputerError(f"{command} what? Give a ref like e12 (run gui observe first).")
+        if command == "click" and target.get("ref"):
+            _refuse_native_dropdown(target["ref"])
         # named: a press on a control that has a name is made by its ref, not by where it is (core.act).
         result = core.act(command.replace("-", "_"), named=True,
                           check_form=("checked" if args.checked else True) if command == "click" else False, **target)
