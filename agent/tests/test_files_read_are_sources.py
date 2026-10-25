@@ -8,7 +8,7 @@ from decurix_agent.computer import evidence
 
 
 # ============================================================
-# GST suite T9 (2026-10-21): invoice numbers and amounts read from the
+# Found live (2026-10-21): invoice numbers and amounts read from the
 # client's workbook (in the person's folder, never named by file in the
 # request) were refused as invented when the portal form was saved.
 # ============================================================
@@ -49,7 +49,7 @@ class TestAFileTheWorkReadIsASource(unittest.TestCase):
 
 
 class TestWhatACommandPrintedIsRecordedWorking(unittest.TestCase):
-    """GST suite T7: totals a script summed from the invoices and printed were refused as held by no source."""
+    """Found live: totals a script summed from the invoices and printed were refused as held by no source."""
 
     def test_a_printed_total_is_the_works_own_working_not_a_given_source(self):
         notes = Path(tempfile.mkdtemp())

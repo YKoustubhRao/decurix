@@ -388,6 +388,9 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		// Approved says the person already said yes to this kind of request
 		// (see scheduler.Request.Approved).
 		Approved bool `json:"approved"`
+		// ApprovalReading is the host's one reading of a reply to an approval
+		// (see scheduler.Request.Reading), or null.
+		ApprovalReading *skills.Reading `json:"approvalReading"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Prompt) == "" {
 		writeJSON(w, 400, map[string]any{"error": "prompt is required"})
@@ -404,7 +407,8 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// before it runs - every prior turn is actually handed to the model.
 	history := s.sessions.History(body.SessionID)
 
-	req := scheduler.Request{Prompt: body.Prompt, Context: body.Context, WorkDir: body.WorkDir, History: history, Approved: body.Approved}
+	req := scheduler.Request{Prompt: body.Prompt, Context: body.Context, WorkDir: body.WorkDir, History: history, Approved: body.Approved,
+		Reading: body.ApprovalReading}
 	if paused := s.takePaused(body.SessionID); paused != nil {
 		if body.Reply == nil || *body.Reply {
 			req.Resume = paused

@@ -1,4 +1,4 @@
-"""A file named as a picture that is not one is said to be so, never shown to the model as a picture (GST suite T8)."""
+"""A file named as a picture that is not one is said to be so, never shown to the model as a picture."""
 import tempfile
 import unittest
 from pathlib import Path

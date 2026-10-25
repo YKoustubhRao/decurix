@@ -28,7 +28,7 @@ func TestTheReviewerIsShownTheFactsTheGoalHolds(t *testing.T) {
 }
 
 func TestTheReviewerSeesWhereACitedQuoteStandsInTheFullOutput(t *testing.T) {
-	// GST suite T3: the figures were deep in a screen read's output; the ledger kept only its first words.
+	// Found live: the figures were deep in a screen read's output; the ledger kept only its first words.
 	shown := "gui observe\n" + strings.Repeat("e12 link \"Menu\"\n", 200) +
 		"e3997 row \"Electronic Credit Ledger | 0.00 | 42,933.50 | 42,933.50 | 0.00\"\ne3998 row \"Cash Ledger | 0.00\"\n"
 	got := quotedPassages([]string{

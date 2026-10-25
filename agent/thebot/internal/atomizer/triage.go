@@ -394,11 +394,11 @@ func Triage(prompt string) Route {
 
 	// Work with a web app that also touches this machine's files (a chat's
 	// attachments into a folder, a portal fed from a workbook): the web skill
-	// reads a page's text and does nothing else. Found live (GST suite,
-	// 2026-10-21): "Rohan has sent his invoices on ClientChat (http://...).
+	// reads a page's text and does nothing else. Found live
+	// (2026-10-21): "<client> has sent his invoices on <chat app> (http://...).
 	// Save them into his September folder ... on my PC" went to the web skill,
 	// which read the chat list and answered that it could not; so did "get
-	// Rohan's invoices from ClientChat into his folder, bring the workbook up
+	// <client>'s invoices from <chat app> into his folder, bring the workbook up
 	// to date, file the returns ...". Looking something up stays research.
 	if matched == "web" && !researchRe.MatchString(p) && touchesMachine(p) {
 		return Route{Kind: RouteOperate, TaskType: matched, Reason: "work with a web page and this machine's files - the operator does both"}

@@ -815,10 +815,15 @@ def resume_approved_dangerous_command(history, reply):
     _pending_dangerous_command = None
 
     # A catastrophic command is released only by a clean yes: "yes but not
-    # that one" is a person changing their mind, not permission.
+    # that one" is a person changing their mind, not permission - and "yes,
+    # after you take a backup" is a condition nothing here checks (audit,
+    # 2026-10-24: the word list lacked "after", "if", "once", "when"). The
+    # reply's one reading decides; only a yes with no condition releases it.
+    said = approval.reading(reply, f"run this command, which cannot be undone: {command}") if command else {}
     if (
         not command
-        or not approval.is_approval(reply)
+        or said.get("decision") != "yes"
+        or (said.get("condition") or "").strip()
         or re.search(r"\b(but|except|instead|not|however|though|unless|only|rather)\b", reply or "", re.IGNORECASE)
     ):
         return None, None

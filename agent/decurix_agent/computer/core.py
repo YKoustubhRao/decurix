@@ -494,7 +494,7 @@ def _goto_sheet_cell(element, cell=None):
 # ============================================================
 # A block of cells typed into a spreadsheet's grid in one action
 #
-# Found live (2026-10-19): a five-row order sheet and a GST register's four headers were typed one cell per gui
+# Found live (2026-10-19): a five-row order sheet and a register's four headers were typed one cell per gui
 # command - two commands a cell, about ten seconds each - because a Tab in typed text was refused (rightly, for a
 # form: it carries the rest into the next field). In a sheet's grid a Tab is the next cell and a new line the next
 # row, and every cell can be read back. So text with Tabs or new lines aimed at a sheet's cell is entered row by row
@@ -1102,8 +1102,8 @@ def _same_bytes(a, b):
 def _downloads_note(before, wait=DOWNLOAD_WAIT_SECONDS):
     """
     What an action downloaded: the file that arrived in the download folder, its size, and - when the browser named it
-    "x (1).pdf" because "x.pdf" was already there - whether it is the same file again. Found live (GST suite T1,
-    2026-10-21): a click on a chat attachment's Download link said only that the link was focused; the engine went
+    "x (1).pdf" because "x.pdf" was already there - whether it is the same file again. Found live
+    (2026-10-21): a click on a chat attachment's Download link said only that the link was focused; the engine went
     looking in the browser's download history and a file manager, had clicked the first attachment twice without
     knowing, and saved the second copy of invoice 197 under invoice 198's name.
     """
@@ -1121,6 +1121,17 @@ def _downloads_note(before, wait=DOWNLOAD_WAIT_SECONDS):
         time.sleep(0.5)
     done = sorted(n for n in new if not n.endswith(PARTIAL_DOWNLOAD))
     if not done:
+        # A download the browser holds for a yes ("Unconfirmed 123.crdownload": a file from a site without https) never
+        # arrives by waiting. Found live (2026-10-24): the worker saw the held download, guessed at its address, fetched
+        # it from outside the browser and saved a web page under the bill's name; the next run spent 25 minutes on the
+        # download bubble, whose Keep took about one press in two. The desktop's policy now lets a page that is itself
+        # plain http download (agent/chrome-policies.json); this is for a browser it does not reach. The way that
+        # worked every time, measured: the card's menu on chrome://downloads.
+        held = [n for n in partial if n.lower().startswith("unconfirmed")]
+        if held:
+            return ("\nThe browser is holding this download until it is confirmed (" + ", ".join(held[:3]) + "): open "
+                    "chrome://downloads with gui open, open the menu (three dots) on its card and choose \"Download "
+                    "insecure file\"; it then arrives in " + str(_downloads_dir()) + ".")
         return "\nStill downloading: " + ", ".join(partial[:3]) + "." if partial else ""
     lines = []
     folder = _downloads_dir()
@@ -1136,7 +1147,16 @@ def _downloads_note(before, wait=DOWNLOAD_WAIT_SECONDS):
                          + ("; it is byte for byte the same file, so this downloaded that one again" if same else
                             "; its content differs from that file"))
         lines.append(line)
-    return "\nDownloaded: " + "; ".join(lines) + "."
+    note = "\nDownloaded: " + "; ".join(lines) + "."
+    # A file that is not what its name says (a web page saved as .pdf) is said at once, not first at the final check.
+    try:
+        from decurix_agent import produced
+        faults = produced.named_kind_faults([folder / n for n in done[:4]])
+    except Exception:  # noqa: BLE001 - a note, never a reason for the action to fail
+        faults = []
+    if faults:
+        note += " But " + "; ".join(faults) + "."
+    return note
 
 
 def _shared_lock_files():
@@ -1233,8 +1253,28 @@ def placeholder_fields(fields):
 
 
 # A click that saves a new record, and what the application answers once it has.
-_SAVE_CONTROL = re.compile(r"(?i)\b(?:submit|save|create|add|onboard|post|confirm|place|register|book|finish)\b")
-_SAVED_ANSWER = re.compile(r"(?i)/done/|/saved?\b|/success|\bsaved\b|\bcreated\b|\bsubmitted\b|\badded\b")
+# ("Accept": an accounting application's save, found live 2026-10-26 - its duplicate check had never run.)
+_SAVE_CONTROL = re.compile(r"(?i)\b(?:submit|save|create|add|onboard|post|confirm|place|register|book|finish|accept)\b")
+_SAVED_ANSWER = re.compile(r"(?i)/done/|/saved\b|/success|\bsaved\b|\bcreated\b|\bsubmitted\b|\badded\b")
+# What an application says when it did not save: an answer with one of these is no proof of a save, whatever page it
+# is on. Found live (2026-10-25): a form posted to ".../voucher/save" answered "ledger '<name>' does not exist"; the "/save"
+# in the address was taken for a save, and the bill was then refused as "already saved" when it never was.
+_SAVE_REFUSED = re.compile(r"(?i)\b(?:error|invalid|does not exist|doesn't exist|not found|is required|are required|"
+                           r"failed|could not|cannot|must be|not saved|already exists|try again)\b")
+# A field that holds a record's own number: two records whose numbers differ are two records, whatever else they share.
+_REF_LABEL = re.compile(r"(?i)(?:^|\b)(?:no\.?|number|num|#|ref(?:erence)?|invoice|bill|voucher|document|doc)(?:\b|$)")
+
+
+def _saved(change):
+    """Whether an action's answer shows the record saved: a saved/created answer, and no error beside it."""
+
+    return bool(_SAVED_ANSWER.search(change)) and not _SAVE_REFUSED.search(change)
+
+
+def _record_refs(pairs):
+    """The values typed into a record's own number fields (No., Bill, Invoice, Voucher, Ref) that hold a digit."""
+
+    return {str(v).strip().upper() for label, v in pairs if _REF_LABEL.search(str(label or "")) and re.search(r"\d", str(v))}
 _NEW_RECORD_PAGE = re.compile(r"(?i)page is now \S*/(?:new|create|add)\b|\b(?:new|create|add)\b[^\"]{0,20}(?:record|employee|"
                               r"order|customer|invoice|entry)")
 _RECORD_NO = re.compile(r"\b[A-Z]{2,5}-\d{3,}\b")
@@ -1260,33 +1300,41 @@ def already_entered(events):
     wrong department was entered again, and the portal held him twice.
     """
 
-    saved, current, new_page = [], [], False
+    saved, current, pairs, new_page = [], [], [], False
     for event in events:
         if event.get("outcome") not in (None, "done"):
             continue
         change = str(event.get("change") or "")
         if _FORM_START.search(change) or _FORM_START.search("page is now " + str(event.get("target") or "")):
-            current = []  # (a new record's form opened afresh: what was typed into an abandoned one is not this one's)
+            current, pairs = [], []  # (a new record's form opened afresh: what was typed into an abandoned one is not this one's)
+        label = str((event.get("element") or {}).get("name") or "")
         if event.get("kind") == "type" and event.get("text"):
             current.append(str(event["text"]))
+            pairs.append((label, str(event["text"])))
         if event.get("kind") == "select" and event.get("option"):
             current.append(str(event["option"]))
+            pairs.append((label, str(event["option"])))
         moved = re.search(r"page is now (\S+)", change)
         if moved:
-            # Whether the form is a new record's is the page it is on now, not one visited earlier (GST suite T9,
-            # 2026-10-21: after an "add invoice" page, the re-save of an existing return elsewhere was refused as a
+            # Whether the form is a new record's is the page it is on now, not one visited earlier
+            # (2026-10-21: after an "add invoice" page, the re-save of an existing return elsewhere was refused as a
             # second record).
             new_page = bool(_NEW_RECORD_PAGE.search("page is now " + moved.group(1).rstrip(";,")))
         elif _NEW_RECORD_PAGE.search(change) or _NEW_RECORD_PAGE.search(str(event.get("target") or "")):
             new_page = True
-        if event.get("kind") in ("click", "key") and _SAVED_ANSWER.search(change) and current:
+        if event.get("kind") in ("click", "key") and _saved(change) and current:
             number = _RECORD_NO.search(change)
-            saved.append((_identity(current), number.group(0) if number else ""))
-            current, new_page = [], False
+            saved.append((_identity(current), number.group(0) if number else "", _record_refs(pairs)))
+            current, pairs, new_page = [], [], False
     mine = _identity(current)
     if not mine or not new_page:
         return None
-    for theirs, number in saved:
+    my_refs = _record_refs(pairs)
+    for theirs, number, their_refs in saved:
+        # Two bills to one customer share a name, never their own numbers (found live, 2026-10-25: a month's second bill
+        # for a customer was refused as the first one again).
+        if my_refs and their_refs and not (my_refs & their_refs):
+            continue
         if theirs and theirs[0] == mine[0] and (theirs[1] & mine[1] if mine[0] == "mail" else theirs[1] == mine[1]):
             what = ", ".join(sorted(mine[1])) if mine[0] == "mail" else " ".join(w.title() for w in mine[1])
             return what, number
@@ -1308,7 +1356,7 @@ def _current_form(events):
             current.append((label, str(event["text"])))
         if event.get("kind") == "select" and event.get("option"):
             current.append((label, str(event["option"])))
-        if event.get("kind") in ("click", "key") and _SAVED_ANSWER.search(change) and current:
+        if event.get("kind") in ("click", "key") and _saved(change) and current:
             current = []
     return current
 
@@ -1447,6 +1495,139 @@ def _duplicate_record(element):
             "<the record> - <what is wrong> - <what the person must fix by hand>' and leave it for the person.")
 
 
+# A value that names one record among others: a long code of letters and digits (a tax, registration or account
+# number) or an email.
+_IDENTIFIER = re.compile(r"^(?:(?=[A-Za-z0-9]*\d)(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{10,20}|[^\s@]+@[^\s@]+\.[A-Za-z]{2,})$")
+# A value that is a name (of a person, a firm): what a record of a party has and a document's own number is not.
+_NAME_VALUE = re.compile(r"[A-Za-z][A-Za-z .,'&()-]{2,60}")
+# How many other codes of the same shape one look must show to be a list of such records (a document shows one or two).
+LIST_CODES = 3
+# The identifiers a task was stopped over (unsearched_identifier), by why: each refusal is made once.
+ID_REFUSALS_DIR = STATE_DIR / "id-refusals"
+
+
+def _alike(a, b):
+    """Two codes of one kind: of a length, letters and digits in the same places but for two (a check character)."""
+
+    return len(a) == len(b) and sum(x.isdigit() != y.isdigit() for x, y in zip(a, b)) <= 2
+
+
+def _page_items(look):
+    """
+    What one noted look at the screen (evidence.note_look) showed as the page's own words, never a field's value:
+    [(item, the words around it)] - each of its words outside fields, with the two before and after (a table's row),
+    and each line of its listing that is not a field.
+    """
+
+    out = []
+    words = re.search(r"outside its fields[^\n]*:\n(.*?)\nThe part in view", look, re.S)
+    if words:
+        items = [w.strip() for w in words.group(1).split(" | ")]
+        out += [(w, " | ".join(items[max(0, i - 3):i + 3])) for i, w in enumerate(items) if w]
+    listing = look.split("as the tool listed it:\n", 1)
+    for line in listing[1].splitlines() if len(listing) == 2 else []:
+        parts = line.split()
+        if len(parts) > 1 and parts[1] not in TYPING_ROLES and " value=" not in line:
+            out.append((line, line))
+    return out
+
+
+def unsearched_identifier(events, looks):
+    """
+    For a new record of a party being saved - a new-record form with a name typed and no number of its own (a
+    customer, an employee; not an invoice, which only quotes one): [(identifier, words)] for each identifier typed
+    into it (a code, an email) that the task was not seen to look for in vain. words are the page's words around it
+    when a look this task made showed it already (a record holds it); "" when the task never looked for it - typed it
+    into no other field (a search, a filter) and saw no list of codes like it. [] otherwise. `looks` are the texts of
+    the task's looks at the screen. Found live (2026-10-26): a bill named its customer otherwise than the books did
+    (a trade name, a title); the worker searched the books by the bill's name only, found nothing, and made a second
+    account with the same tax number.
+    """
+
+    pairs, typed, new_page = [], [], False
+    for event in events:
+        if event.get("outcome") not in (None, "done"):
+            continue
+        change = str(event.get("change") or "")
+        if _FORM_START.search(change) or _FORM_START.search("page is now " + str(event.get("target") or "")):
+            pairs = []
+        moved = re.search(r"page is now (\S+)", change)
+        if moved:
+            new_page = bool(_NEW_RECORD_PAGE.search("page is now " + moved.group(1).rstrip(";,")))
+        elif _NEW_RECORD_PAGE.search(change) or _NEW_RECORD_PAGE.search(str(event.get("target") or "")):
+            new_page = True
+        label = str((event.get("element") or {}).get("name") or "")
+        if event.get("kind") == "type" and event.get("text"):
+            pairs.append((label, str(event["text"])))
+            typed.append((label, str(event["text"])))
+        if event.get("kind") == "select" and event.get("option"):
+            pairs.append((label, str(event["option"])))
+        if event.get("kind") in ("click", "key") and _saved(change) and pairs:
+            pairs, new_page = [], False
+    named = any(_NAME_VALUE.fullmatch(v.strip()) and not _IDENTIFIER.match(v.strip()) for _, v in pairs)
+    if not new_page or not named or _record_refs(pairs):
+        return []
+    items = [item for look in looks for item in _page_items(look)]
+    out = []
+    for label, value in dict.fromkeys(pairs):
+        ident = value.strip()
+        if not _IDENTIFIER.match(ident):
+            continue
+        low = ident.lower()
+        shown = next((around for item, around in items if low in item.lower()), "")
+        if shown:
+            out.append((ident, " ".join(shown.split())[:240]))
+            continue
+        if any(low in v.lower() for other, v in typed if other != label):
+            continue  # looked for in a search or a filter, and not seen: not there
+        if "@" in ident:
+            like = {m.lower() for item, _ in items for m in re.findall(r"[^\s@|'\"]+@[^\s@|'\"]+\.[A-Za-z]{2,}", item)}
+        else:
+            like = {w.lower() for item, _ in items for w in re.findall(r"[A-Za-z0-9]+", item)
+                    if _IDENTIFIER.match(w) and _alike(w, ident)}
+        if len(like - {low}) >= LIST_CODES:
+            continue  # a list of such records was looked at, and it is not on it
+        out.append((ident, ""))
+    return out
+
+
+def _unsearched_record(element):
+    """The refusal of a save that makes a new record holding an identifier nobody looked for ("" to go on)."""
+
+    if not _SAVE_CONTROL.search(str(element.get("name") or "")):
+        return ""
+    try:
+        from decurix_agent import task_context
+        from decurix_agent.computer import evidence, recording
+        task_id = task_context.current()
+        if not task_id:
+            return ""
+        _, events = recording.load(recording.session_for_task(task_id))
+        found = unsearched_identifier(events, evidence.looks(task_id))
+    except (FileNotFoundError, OSError, ValueError, ImportError):
+        return ""
+    for ident, words in found:
+        mark = ID_REFUSALS_DIR / f"{task_id}-{'shown' if words else 'unsearched'}-{re.sub(r'[^A-Za-z0-9]', '_', ident)}"
+        if mark.exists():
+            continue  # stopped over once already: the worker has looked, and saves it as it is
+        try:
+            ID_REFUSALS_DIR.mkdir(parents=True, exist_ok=True)
+            mark.write_text("1", encoding="utf-8")
+        except OSError:
+            return ""  # a stop that cannot be kept to once is not made
+        if words:
+            return (f"Not pressed: this makes a new record holding {ident}, and a page you looked at shows {ident} "
+                    f"already: \"{words}\". A record that holds it already is the one to use - a name written otherwise "
+                    "on a document (a title, a trade name, a short form) does not make another one: use that record, and "
+                    "say in the report how you matched it. If those words were the document's own, not a record of the "
+                    "application, or you can say why this is a different one, save again.")
+        return (f"Not pressed: this makes a new record holding {ident}, but you have not looked for {ident} in this "
+                "application. Look it up in the application's own list of such records first (its search or filter, or "
+                "the whole list): a record that already holds it is the one to use, whatever name it has there. If none "
+                "holds it, save again - it is then a new one.")
+    return ""
+
+
 def _unsourced_fields(fields):
     """
     [(label, value)] of a form's fields whose value the tools typed during this task and that states a fact (an
@@ -1475,7 +1656,7 @@ def _form_check(element, checked=False):
 
     import hashlib
 
-    twice = _duplicate_record(element) or _crossed_record(element)
+    twice = _duplicate_record(element) or _crossed_record(element) or _unsearched_record(element)
     if twice:
         return twice  # (never sent, --checked or not)
     found = cdp.submit_form_fields(element, min_fields=1)
@@ -1508,10 +1689,10 @@ def _form_check(element, checked=False):
     except (OSError, ValueError):
         noted = {}
     if checked and noted.get("key") == key and time.time() - float(noted.get("at") or 0) < FORM_CHECK_SECONDS:
-        try:
-            FORM_CHECK_FILE.unlink()
-        except OSError:
-            pass
+        # Kept until the click is let through (act): a click the approval gate then stops is asked for, and the same
+        # --checked click after the person's yes must not list the form again. Found live (2026-10-24): the note was
+        # used up by the click the gate stopped, the approved click listed the form instead of pressing, and the
+        # filing was put to the person five more times.
         return ""
     try:
         FORM_CHECK_FILE.write_text(json.dumps({"key": key, "at": time.time()}), encoding="utf-8")
@@ -2135,8 +2316,8 @@ def _searches(option):
                 if _singular(hw[i + n - 1]) != hw[i + n - 1]:
                     tries.append(" ".join(hw[i:i + n - 1] + [_singular(hw[i + n - 1])]))
     # Then its most distinctive words alone, longest first. A long line holds the system's short name somewhere in
-    # the middle, and a list searches for a piece of text, not for words: found live, "Professional Fees for India
-    # Statutory Audit & GST Compliance Filing Q2" never found "Statutory Audit & GST Compliance" (the "&" breaks
+    # the middle, and a list searches for a piece of text, not for words: found live, "Professional Fees for the
+    # Statutory Audit & Compliance Filing Q2" never found "Statutory Audit & Compliance" (the "&" breaks
     # every run of words), and the engine, offered nothing, clicked an unrelated entry of the open list.
     # A word keeps the punctuation inside it ("T-shirts"): stripped to "Tshirt" it matched nothing (found live).
     bare = lambda w: re.sub(r"^\W+|\W+$", "", w)
@@ -2485,8 +2666,14 @@ def _what_it_acts_on(observation, element):
         value = " ".join((e.get("value") or "").split())
         if not value or privacy.secret_field(e) or privacy.credential_in(value):
             continue
-        shown.append(f"{e['role']} {el._quote(e.get('name') or '', 60)} holds {el._quote(value, 80)}")
+        # A message about to be sent is read whole: cut at 80 characters, the person asked to approve it was shown
+        # the first few words and refused until the worker pasted it into a question (2026-10-25).
+        shown.append(f"{e['role']} {el._quote(e.get('name') or '', 60)} holds {el._quote(value, ACTS_ON_CHARS)}")
     return ("It would act on what is filled in: " + "; ".join(shown[:3])) if shown else ""
+
+
+# How much of a filled field's value an approval quotes (_what_it_acts_on).
+ACTS_ON_CHARS = 600
 
 
 def act(kind, ref=None, role=None, name=None, path=None, point=None,
@@ -2722,6 +2909,11 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
 
     decision = approval.check(kind, element, text=text, keys=keys, point=point, context=context,
                               about=_what_it_acts_on(before, element))
+    if decision.allowed and check_form == "checked":
+        try:
+            FORM_CHECK_FILE.unlink()  # the checked form is sent now (_form_check)
+        except OSError:
+            pass
 
     if not decision.allowed:
         text = approval.request_text(decision.request)
@@ -2930,8 +3122,8 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         note = (f"\n{target} opens a file chooser; none was shown and no file was chosen. "
                 "To attach a file, use the upload action on this same control with the file path(s).")
     if kind == "type" and element is not None and element.get("role") == "combobox" and _offers_nothing(before, after, _same_field(element, after) or element):
-        # Found live entering a bill: the engine typed the bill's whole line ("Professional Fees for India Statutory
-        # Audit & GST Compliance Filing Q2") into an Item field, the list offered only "Create a new Item" and
+        # Found live entering a bill: the engine typed the bill's whole line ("Professional Fees for the Statutory
+        # Audit & Compliance Filing Q2") into an Item field, the list offered only "Create a new Item" and
         # "Advanced Search", and it asked a person - for an item that select, searching parts of the text, finds.
         # The search an engine was told to make with `select`, made for it. Found live on a build that had the
         # hint below: the engine read it, opened the list's own "advanced search" instead, clicked around the

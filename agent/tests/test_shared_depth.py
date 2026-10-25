@@ -5,7 +5,7 @@ from pathlib import Path
 from decurix_agent import shared
 
 
-# GST suite T6 (2026-10-21): a workbook made in "GST Returns/<client>/2026-27/6. SEPTEMBER" was four folders down
+# Found live (2026-10-21): a workbook made in "GST Returns/<client>/2026-27/6. SEPTEMBER" was four folders down
 # and the final check, walking three, said it was not made.
 class TestAPersonsFoldersAreWalkedDeepEnough(unittest.TestCase):
 

@@ -11,7 +11,7 @@ from decurix_agent.computer import recording
 
 
 # ============================================================
-# GST suite T7 (2026-10-22): the first attempt's login failed and nothing was
+# Found live (2026-10-22): the first attempt's login failed and nothing was
 # entered, but it had touched the screen, so the second attempt was told to
 # open and correct the record the first one made - there was none.
 # Independent review (2026-10-22): a word list over click labels then decided

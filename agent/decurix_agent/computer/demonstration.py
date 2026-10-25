@@ -1257,7 +1257,7 @@ class Recorder:
             return
 
         # Typing while paused is a private step however little it shows: a password is a few dots, well under
-        # UNCHANGED_SCREEN of the screen. Found live (GST suite, 2026-10-21): the password typed during a pause left
+        # UNCHANGED_SCREEN of the screen. Found live (2026-10-21): the password typed during a pause left
         # no manual step, so the learned skill logged in with no password and every replay stopped at the login.
         if not getattr(self, "_typed_while_paused", False) and after is not None and pause["frame"] is not None and \
                 screen.changed_fraction(pause["frame"], after.get("frame")) < UNCHANGED_SCREEN:

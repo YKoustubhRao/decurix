@@ -10,7 +10,7 @@ from decurix_agent.computer import evidence
 
 
 # ============================================================
-# GST suite T9 (2026-10-22): the portal showed the return's ARN as
+# Found live (2026-10-22): the portal showed the return's ARN as
 # AA2909267663712A; the workbook was given AA2909267663796A, and the report
 # read the workbook back and called it verified.
 # Independent review (2026-10-22): "a few characters apart" is a judgement -

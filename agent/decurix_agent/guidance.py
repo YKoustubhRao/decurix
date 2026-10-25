@@ -60,9 +60,72 @@ def get():
 # A person's "no" to an approval this task asked for: (task id, their words).
 _refused = None
 
-# A reply that only calls the task off.
-STOP_ONLY = re.compile(r"^\W*(stop|cancel|abort|quit|never ?mind|leave it|forget it)(\s+(it|this|that|the task|now|please))*\W*$",
-                       re.IGNORECASE)
+# A reply that only calls the task off, whatever was asked.
+STOP_ONLY = re.compile(r"^\W*(stop|cancel|abort|quit)(\s+(it|this|that|the task|now|please))*\W*$", re.IGNORECASE)
+# Words that call a task off only when nothing was asked: to an open question ("mark it B2C, or leave it?") they are an
+# ordinary answer. Found (audit, 2026-10-24): "leave it" to an either/or question called the whole task off.
+LETTING_GO = re.compile(r"^\W*(never ?mind|leave it|forget it)(\s+(it|this|that|the task|now|please))*\W*$", re.IGNORECASE)
+
+
+def calls_off(reply, question=""):
+    """
+    Whether a message, whole, only calls the task off. A plain stop always does. "Never mind" and its kind do when no
+    question is open (question: the one open, "" for none); to an open question they are read once against it
+    (approval.read_choice) - an answer unless the reading says they end the task. With no model: an answer.
+    """
+
+    text = str(reply or "")
+    if STOP_ONLY.match(text):
+        return True
+    if not LETTING_GO.match(text):
+        return False
+    if not str(question or "").strip():
+        return True
+    from decurix_agent.computer import approval
+    said = approval.read_choice(text, question, {
+        "stop": "they call the whole task off",
+        "answer": "it answers the question (one of the options it offers, such as leaving that one thing out)",
+    })
+    return said["choice"] == "stop"
+
+
+def open_question():
+    """The question the person was last asked and has not answered yet, "" when none is open."""
+
+    from decurix_agent import state
+    return (getattr(state, "last_query_text", "") or "") if getattr(state, "waiting_for_query", False) else ""
+
+
+# What the person was asked during the task being worked on, and what they answered (note_exchange).
+_exchanges = {"task": None, "said": []}
+MAX_EXCHANGES = 12
+
+
+def note_exchange(asked, reply):
+    """Keep one question of this task with the person's reply, for the final check (said_this_task)."""
+
+    tid = task_context.current()
+    if _exchanges["task"] != tid:
+        _exchanges.update(task=tid, said=[])
+    reply = " ".join(str(reply or "").split())
+    if reply:
+        _exchanges["said"].append((" ".join(str(asked or "").split())[:400], reply[:800]))
+        del _exchanges["said"][:-MAX_EXCHANGES]
+
+
+def said_this_task():
+    """
+    What the person said during this task, for the final check's judge: it decides over the request where they
+    disagree, and what they asked for is part of the work. "" when nothing was said. Found live (2026-10-25): told
+    "every bill must have its rows ... (454 two rows)", the worker reported done three minutes later with one row,
+    and the final check - shown only the request - passed it.
+    """
+
+    if _exchanges["task"] != task_context.current() or not _exchanges["said"]:
+        return ""
+    return ("What the person said during this task - it decides over the request where they disagree, and what they "
+            "asked for is part of the work:\n" + "\n".join(f"- asked: {q} - they answered: {a}"
+                                                            for q, a in _exchanges["said"]))
 
 
 def note_reply(reply, outcome):
@@ -82,18 +145,50 @@ def note_reply(reply, outcome):
     # live: told `stop` at a question, the engine wound up, the final check
     # found the work unfinished - and sent it back to finish what the person
     # had just called off.
-    if (outcome == "declined" and approval.is_refusal(reply)) or STOP_ONLY.match(str(reply or "")):
-        _refused = (task_context.current(), " ".join(str(reply).split())[:300])
+    if (outcome == "declined" and approval.is_refusal(reply)) or calls_off(reply, open_question()):
+        _refused = (task_context.current(), " ".join(str(reply).split())[:300], _screen_actions())
     else:
         _refused = None
 
 
-def refused():
-    """The person's words when they said no to an approval of the task being worked on, else None."""
+def _screen_actions():
+    """
+    How much work the task being worked on has recorded so far: its screen actions and the outputs of its other
+    commands (a workbook corrected is work as much as a click) - None when that cannot be read. Found live
+    (2026-10-23): told "No - fix the workbook first", the worker fixed the workbook, and with only screen actions
+    counted the task was still closed as "Stopped there".
+    """
 
-    if _refused is not None and _refused[0] == task_context.current():
-        return _refused[1]
-    return None
+    try:
+        from decurix_agent.computer import evidence
+        task_id = task_context.current()
+        done = len(evidence._task_events(task_id))
+        try:
+            with open(evidence.NOTES_DIR / f"{task_id}.outputs", encoding="utf-8") as f:
+                done += sum(1 for _ in f)
+        except OSError:
+            pass
+        return done
+    except Exception:  # noqa: BLE001 - unknown: the refusal stands as said
+        return None
+
+
+def refused():
+    """
+    The person's words when they said no to an approval of the task being worked on, else None. A no ends the task
+    only when the work stopped there: found live (2026-10-23), "No - not yet. Open that document
+    ... then redo the table" was taken for calling the task off (no word of a word list said otherwise), the worker
+    went on as told - and the final check closed the task as "Stopped there, as you said". Work done on the screen
+    after the no shows the task went on with what the person said: the no was that action's, not the task's.
+    """
+
+    if _refused is None or _refused[0] != task_context.current():
+        return None
+    words, at = _refused[1], (_refused[2] if len(_refused) > 2 else None)
+    now = _screen_actions()
+    if at is not None and now is not None and now > at:
+        return None
+    return words
 
 
 def clear_refusal():
@@ -170,7 +265,7 @@ def taught_values_check(skill, given):
     What to say instead of replaying `skill` with `given`, or "" to go ahead: a value the engine passed that is the
     person's own from when they taught it (the parameter's example), that the harness did not hand this run, and that
     nothing the task has been given or has read holds - the request, the files read, what its commands printed, the
-    pages the tools read. Found live (GST suite T5, 2026-10-22): asked for another client's return "the way I showed
+    pages the tools read. Found live (2026-10-22): asked for another client's return "the way I showed
     you", the engine passed every figure of the teaching client's return and never opened this client's workbook; the
     replay typed them faithfully. Said once for a value in a task: the same value passed again (the person may have
     given it) goes ahead, and the final check still traces what the work states.

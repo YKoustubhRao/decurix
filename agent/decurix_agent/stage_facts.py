@@ -3,7 +3,7 @@ Facts about a long request's stage result that code decides where it is precise 
 
 - removed_residue: a record the person removed mid-run (an amendment the model read as removing it: "exclude bill
   NS-0457") whose figures are still inside a total. Found live (round 5 P1, 2026-10-20): the bill's row left the
-  purchase register, but the GSTR-3B sheet's eligible ITC stayed the register's eligible CGST plus that bill's 4,533.00
+  purchase register, but the return sheet's eligible credit stayed the register's eligible tax plus that bill's 4,533.00
   - a wrong tax return.
 
 Nothing here knows an application, a tax or a customer: tables, figures and names. Which of these facts may fail a
@@ -210,7 +210,7 @@ def removed_residue(amendments, made, documents):
                     for figure, reference in figures.items():
                         base = round(value - figure, 2)
                         places = [w for w in totals.get(base, []) if w[0] != name or w[1] != column]
-                        # The same column's total first (CGST with CGST), when two columns add up alike.
+                        # The same column's total first (Tax A with Tax A), when two columns add up alike.
                         where = next((w for w in places if w[1].lower() == column.lower()), places[0] if places else None)
                         if where and base > 0:
                             out.append(f"{Path(str(path)).name}: {name} \"{label}\" {column} {_fmt(value)} is "
@@ -276,7 +276,7 @@ def tables_of(paths):
 # An earlier finding a re-check dropped
 # ============================================================
 # Found live (round 5 P1, 2026-10-20): re-run for "leave the cancelled bill out", the stage rebuilt the purchase
-# register and lost an unrelated finding - the wrong-rate bill flagged with its ITC held showed "Included, Eligible",
+# register and lost an unrelated finding - the wrong-rate bill flagged with its credit held showed "Included, Eligible",
 # while the return's note still held it out.
 
 FLAG_WORDS = re.compile(r"\b(?:flag\w*|held|hold|duplicat\w*|mismatch\w*|exception\w*|ineligible|not eligible|excluded|"
@@ -811,7 +811,7 @@ def _stated_against_working(amount, row, refs, work):
     cannot be decided. It holds when it is any result of the one working row the row's full key ties it to, or a sum
     of one order's working rows (any column: pre-tax, tax, with tax). A reference several working rows share (an
     order's PO, a chat's id, a product code) never ties a row on its own: tied to no single row, nothing is decided.
-    Found live (round 5 P2, 2026-10-20): a line's "Decision reason" states its ORDER's total incl GST (50,123.60, for
+    Found live (round 5 P2, 2026-10-20): a line's "Decision reason" states its ORDER's total incl tax (50,123.60, for
     the credit check), and was compared with one line's working (17,980.00).
     """
 
@@ -848,7 +848,7 @@ def working_problems(made, sources=(), messages=()):
     factor combinations (quantity x price, with its tax % and discount %) gives its result; a price no source table it
     names has for its references; an amount a status or action states for an item that its working does not give. A
     working whose numbers cannot be told apart (columns of no known kind) is not decided. [] when nothing is computed.
-    Found live (round 5 P3, 2026-10-20): "194,880.00, but 120 x 1,450.00 is 174,000.00" - right, with 12% GST - and
+    Found live (round 5 P3, 2026-10-20): "194,880.00, but 120 x 1,450.00 is 174,000.00" - right, with 12% tax - and
     "35,280.00, but 100 x 420.00" - right, for the 84 received - refused a correct AP register twice.
     """
 
@@ -996,7 +996,7 @@ def self_contradictions(made):
 # ============================================================
 # A summary figure against the rows its own workbook counts
 # ============================================================
-# Found live (round 5 P1 on pc3, 2026-10-21, series 12): the GSTR-3B sheet gave Eligible ITC CGST/SGST/IGST as 0 while
+# Found live (round 5 P1 on pc3, 2026-10-21, series 12): the return sheet gave its three eligible tax credits as 0 while
 # the same workbook's Purchase Register counted 38,534.40 / 38,534.40 / 14,339.00 over its eligible rows (the duplicate
 # BCP-7781 once, NS-0457 cancelled, SP-2291's credit held) - and the net payable followed the 0.
 
@@ -1013,7 +1013,7 @@ def _label_words(text):
 def summary_vs_detail(made):
     """
     Within one workbook: a summary row in one sheet (its label naming a column of another sheet's table and words its
-    counted rows' statuses carry, e.g. "Eligible ITC | CGST") whose figure differs from that column summed over the rows
+    counted rows' statuses carry, e.g. "Eligible credit | Tax A") whose figure differs from that column summed over the rows
     the workbook itself counts there - not marked duplicate, cancelled, held, kept out or excluded. Both figures named.
     [] when no summary can be tied to one column and its counted rows (nothing is decided then).
     """

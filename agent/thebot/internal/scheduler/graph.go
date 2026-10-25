@@ -37,8 +37,10 @@ type node struct {
 	superseded bool
 	resume     any
 	reply      string
-	started    time.Time
-	duration   time.Duration
+	// reading is the host's reading of reply when it answers an approval (skills.Reading), or nil.
+	reading  *skills.Reading
+	started  time.Time
+	duration time.Duration
 	// seq is the order the step finished in; later steps see earlier
 	// results in this order.
 	seq int
@@ -185,7 +187,12 @@ func (e *execution) fresh() {
 // restore rebuilds a paused job and applies the human's reply to it.
 func (e *execution) restore(cp *Checkpoint) bool {
 	reply := strings.TrimSpace(e.req.Prompt)
+	// The host's one reading of the reply decides when it sent one (a "haan fine" no word list knows, a "yes,
+	// provided ..." that grants nothing yet); the word list only stands in without it.
 	approvedNow := safety.IsApproval(reply)
+	if r := e.req.Reading; r != nil && strings.TrimSpace(r.Decision) != "" {
+		approvedNow = strings.EqualFold(strings.TrimSpace(r.Decision), "yes")
+	}
 
 	e.req.Prompt = cp.Prompt
 	if e.req.Context == "" {
@@ -228,7 +235,7 @@ func (e *execution) restore(cp *Checkpoint) bool {
 			e.approved[cp.Action] = true
 			e.log(fmt.Sprintf("scheduler: approved `%s`", cp.Action))
 		}
-		n.state, n.reply = StepPending, reply
+		n.state, n.reply, n.reading = StepPending, reply, e.req.Reading
 		n.resume = n.result.Checkpoint
 		if !approvedNow && n.resume == nil {
 			// A step with no transcript to continue cannot do its job
@@ -244,7 +251,7 @@ func (e *execution) restore(cp *Checkpoint) bool {
 		if n == nil {
 			break
 		}
-		n.state, n.reply = StepPending, reply
+		n.state, n.reply, n.reading = StepPending, reply, e.req.Reading
 		if n.result.Checkpoint != nil {
 			n.resume = n.result.Checkpoint
 		} else {
@@ -432,7 +439,7 @@ func (e *execution) runContext(n *node) skills.RunContext {
 		// a real error message, and writes back what it had to research.
 		L1: s.L1, SkillLib: s.SkillLib,
 		System: e.system, WorkDir: e.req.WorkDir, Approved: e.isApproved,
-		Resume: n.resume, HumanReply: n.reply,
+		Resume: n.resume, HumanReply: n.reply, HumanReading: n.reading,
 	}
 }
 
@@ -444,7 +451,7 @@ func (e *execution) complete(n *node, res skills.Result) {
 	e.seq++
 	n.result, n.hasResult, n.seq = res, true, e.seq
 	n.duration = time.Since(n.started)
-	n.resume, n.reply = nil, ""
+	n.resume, n.reply, n.reading = nil, "", nil
 	if slug, ok := res.Meta["proposedSkill"].(string); ok && slug != "" {
 		e.proposedSkill = slug
 	}

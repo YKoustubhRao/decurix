@@ -10,7 +10,7 @@ from decurix_agent.tools import office
 
 
 # ============================================================
-# GST suite T10 (2026-10-22): openpyxl's insert_rows put a September block
+# Found live (2026-10-22): openpyxl's insert_rows put a September block
 # above August's; August's formulas moved 17 rows down word for word and went
 # on reading the rows September had taken. Nothing noticed.
 # ============================================================
@@ -74,7 +74,7 @@ class TestFormulasMovedWithoutTheirReferences(unittest.TestCase):
         self.assertEqual(office.moved_formula_breaks(self.before, self.after(insert_above)), [])
 
     def test_an_untouched_formula_reading_rows_another_sheet_moved_is_found(self):
-        # GST suite T10, second run: 12 rows put into SALES at its total row left COMPUTATION's "=SALES!B4" behind.
+        # Found live, a second run: 12 rows put into SALES at its total row left COMPUTATION's "=SALES!B4" behind.
         wb = openpyxl.load_workbook(self.before)
         sales = wb.create_sheet("SALES")
         sales["B2"], sales["B3"], sales["B4"] = 600, 400, "=SUM(B2:B3)"

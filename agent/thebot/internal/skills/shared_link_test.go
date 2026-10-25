@@ -2,7 +2,7 @@ package skills
 
 import "testing"
 
-// GST suite T2/T4 (2026-10-21): find given the shared folder's link printed the link and nothing in it, and the
+// Found live (2026-10-21): find given the shared folder's link printed the link and nothing in it, and the
 // engine took the person's folder for empty.
 func TestAFindFromTheSharedLinkLooksInsideIt(t *testing.T) {
 	cases := map[string]string{

@@ -9,7 +9,7 @@ from decurix_agent import produced, source_guard
 
 
 # ============================================================
-# GST suite T4 (2026-10-22): the report gave a credit carried forward the
+# Found live (2026-10-22): the report gave a credit carried forward the
 # saved workbook contradicted, and the check passed it - it was shown the
 # sheet's first 60 rows, and the new month was rows 86-99.
 # ============================================================

@@ -127,6 +127,9 @@ class Privacy(unittest.TestCase):
         self.assertEqual(privacy.credential_in("key sk-ant-api03-abcdefghijklmnopqrstuv"), "API key")
         self.assertEqual(privacy.credential_in("4111 1111 1111 1111"), "card number")
         self.assertIsNone(privacy.credential_in("order 12345 for Acme"))
+        # Digits glued to letters are a code, never a card (2026-10-25).
+        self.assertIsNone(privacy.credential_in("GSTR-1 ARN: AA2909264042979A. Paid 1,620.00"))
+        self.assertEqual(privacy.credential_in("card 4111-1111-1111-1111, exp 12/29"), "card number")
 
     def test_withheld_text_is_named_never_quoted(self):
         password = field("textbox", "Password")
@@ -947,7 +950,7 @@ class PauseWithNothingInIt(unittest.TestCase):
         self.assertEqual(append.call_args.args[1]["kind"], "manual")
 
     def test_typing_while_paused_is_a_private_step_however_little_it_shows(self):
-        # GST suite (2026-10-21): a password typed during a pause is a few dots - under 1% of the screen - and no
+        # Found live (2026-10-21): a password typed during a pause is a few dots - under 1% of the screen - and no
         # manual step was recorded, so the learned skill logged in without one.
         same = bytes([200, 200, 200]) * (64 * 32)
         rec = self.recorder(same)

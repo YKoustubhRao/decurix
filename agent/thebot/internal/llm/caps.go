@@ -194,7 +194,7 @@ func (b *Brain) LearnFromOllama(ctx context.Context, host, model string, visionK
 }
 
 // ImageType is a picture's media type read from its first bytes (PNG, JPEG, GIF or WebP - what the hosted models
-// take), or "" when the bytes are none of them. Found live (GST suite T8, 2026-10-22): a file named .jpg that was not
+// take), or "" when the bytes are none of them. Found live (2026-10-22): a file named .jpg that was not
 // a picture went up as one, the provider refused the whole call with HTTP 400, and the task stopped at its first step.
 func ImageType(img []byte) string {
 	switch {

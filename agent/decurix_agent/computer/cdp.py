@@ -1959,6 +1959,25 @@ def close_list(element):
         page.close()
 
 
+def native_options(element):
+    """The options of a native drop-down (<select>) as its labels, or None when the element is not one - a list that
+    opens in the page (its entries then become elements of their own) is not."""
+    page = _page_for(element)
+    try:
+        object_id = _object(page, element["handle"]["backend_id"])
+        result = page.call("Runtime.callFunctionOn", {
+            "objectId": object_id,
+            "returnByValue": True,
+            "functionDeclaration": """function() {
+                if (this.tagName !== 'SELECT' || !this.options) { return null; }
+                return Array.from(this.options).map(o => o.label.trim()).filter(Boolean);
+            }""",
+        }).get("result", {}).get("value")
+    finally:
+        page.close()
+    return result if isinstance(result, list) else None
+
+
 def select_option(element, option):
     page = _page_for(element)
 
@@ -1999,7 +2018,7 @@ def select_option(element, option):
                     || allWords();
                 if (!hit) { return {ok: false, options: options.map(o => o.label)}; }
                 // A list a click opened keeps its own highlighted entry: set underneath it, the value is undone by
-                // the Return that closes it - found live (GST suite T5, 2026-10-22), "29-Karnataka" went back to
+                // the Return that closes it - found live (2026-10-22), "29-Karnataka" went back to
                 // "Select" at the taught Return. Losing focus closes the list; focus comes back after.
                 const focused = document.activeElement === this;
                 if (focused) { this.blur(); }

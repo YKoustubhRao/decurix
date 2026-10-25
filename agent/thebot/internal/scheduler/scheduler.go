@@ -140,6 +140,9 @@ type Request struct {
 	// which cannot tell "Purchase Invoice" the document from "purchase" the
 	// act); every consequential command and screen action is still stopped.
 	Approved bool
+	// Reading is the host's one reading of Prompt when it answers a paused approval (skills.Reading), or nil: set, it
+	// decides whether the action was approved, not soul's own word list.
+	Reading *skills.Reading
 }
 
 type Scheduler struct {
@@ -164,9 +167,13 @@ type Scheduler struct {
 	// THEBOT_MAX_PARALLEL_STEPS, else 3.
 	MaxParallel int
 	// JobTimeout bounds a whole job. Zero reads THEBOT_JOB_TIMEOUT_SECONDS,
-	// else 25 minutes - under the Decurix harness's own 30, so a job that
+	// else 2 hours - under the Decurix harness's own backstop, so a job that
 	// runs long is reported by TheBot with what it finished, rather than
-	// abandoned by the harness with nothing.
+	// abandoned by the harness with nothing. A loop is bounded by the turn
+	// budgets and the progress check (skills/context.go), not by the clock:
+	// found live (2026-10-23), a goal that knew enough to work 25 minutes
+	// without asking was stopped mid-work by a 25-minute limit, where one that
+	// asked every few minutes got a fresh 25 with each answer.
 	JobTimeout time.Duration
 	// MaxReplans bounds how many times one job's plan may be rewritten after
 	// a failure. Zero means 1.
@@ -188,7 +195,7 @@ func (s *Scheduler) jobTimeout() time.Duration {
 	if s.JobTimeout > 0 {
 		return s.JobTimeout
 	}
-	return time.Duration(llm.EnvInt("THEBOT_JOB_TIMEOUT_SECONDS", 1500)) * time.Second
+	return time.Duration(llm.EnvInt("THEBOT_JOB_TIMEOUT_SECONDS", 7200)) * time.Second
 }
 
 func (s *Scheduler) maxReplans() int {

@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -40,7 +41,7 @@ func TestAContentFilteredRequestIsSentAgainWithoutItsPictures(t *testing.T) {
 	}
 }
 
-// GST suite T8 (2026-10-22): bytes that are not a picture are never sent as one, and a picture the provider still
+// Found live (2026-10-22): bytes that are not a picture are never sent as one, and a picture the provider still
 // cannot read is left out on a second try - neither ends the task.
 func TestAFileThatIsNotAPictureIsNamedNotSent(t *testing.T) {
 	var bodies []string
@@ -90,5 +91,24 @@ func TestOtherRefusalsAreNotRetried(t *testing.T) {
 	_, err := p.Chat(context.Background(), "m", []Message{{Role: "user", Content: "x", Images: [][]byte{{1}}}}, Options{})
 	if err == nil || calls != 1 {
 		t.Fatalf("err=%v calls=%d, want one failed call", err, calls)
+	}
+}
+
+// A failure's status decides, whatever its body; whether asking again can cure it is decided by the error's type.
+func TestAFailureWhoseBodyIsNotJSONIsTheFailureItIs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "the hosted model could not be reached", http.StatusBadGateway)
+	}))
+	defer srv.Close()
+	p := &OpenAIProvider{BaseURL: srv.URL, APIKey: "x", Client: srv.Client()}
+	_, err := p.Chat(context.Background(), "m", []Message{{Role: "user", Content: "x"}}, Options{})
+	if err == nil || !strings.Contains(err.Error(), "HTTP 502: the hosted model could not be reached") || !Transient(err) {
+		t.Fatalf("err = %v (transient %v)", err, Transient(err))
+	}
+	if Transient(&HTTPError{Provider: "openai", Status: 400, Message: "invalid model"}) {
+		t.Error("a refusal of the request was taken as transient")
+	}
+	if !Transient(&HTTPError{Status: 429}) || !Transient(fmt.Errorf("wrapped: %w", context.DeadlineExceeded)) {
+		t.Error("a rate limit or a deadline was not taken as transient")
 	}
 }

@@ -9,7 +9,7 @@ from decurix_agent.computer import approval
 
 
 # ============================================================
-# GST suite T5 (2026-10-21): the engine opened a real site of the same name
+# Found live (2026-10-21): the engine opened a real site of the same name
 # from its own memory and typed the client's password into it.
 # ============================================================
 
@@ -54,7 +54,7 @@ class TestASecretGoesOnlyWhereThePersonSent(unittest.TestCase):
 
 
 class TestATypedSecretStaysOutOfReplies(unittest.TestCase):
-    """GST suite T7: the report listed the client's portal password."""
+    """Found live: the report listed the client's portal password."""
 
     def test_a_password_spelt_out_after_its_name_is_withheld(self):
         from decurix_agent.computer import privacy

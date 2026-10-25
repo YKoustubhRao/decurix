@@ -312,7 +312,7 @@ func TestTriageSendsAPlannedStageToTheOperator(t *testing.T) {
 }
 
 // Attachments in a web app to be kept in a folder of this machine are the
-// operator's: the web skill only reads a page (GST suite T1, 2026-10-21).
+// operator's: the web skill only reads a page (2026-10-21).
 func TestTriageSendsFilesFromAWebAppToKeepToTheOperator(t *testing.T) {
 	p := "Rohan (Kavya Constructions) has sent his September invoices on ClientChat (http://host.docker.internal:8703/chat). Save them into his September folder under GST Returns on my PC, the way the earlier months are kept."
 	if got := Triage(p); got.Kind != RouteOperate {

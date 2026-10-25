@@ -12,7 +12,7 @@ from decurix_agent.tools import office
 
 
 # ============================================================
-# GST suite T10 (2026-10-22): with no way to put rows into a workbook, the
+# Found live (2026-10-22): with no way to put rows into a workbook, the
 # worker used openpyxl's insert_rows, which moves cells but not references;
 # the month above the new rows read the rows the new month took. office
 # update's insert_rows moves every reference with the rows, as an app does.

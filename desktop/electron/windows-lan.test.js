@@ -2,7 +2,15 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { forwardedIn, forwardScript } = require('./windows-lan');
+const { forwardedIn, forwardScript, ensureLanForward } = require('./windows-lan');
+
+test('an unspecified or loopback address is never forwarded (the rule would forward to itself)', async () => {
+  for (const address of ['0.0.0.0', '127.0.0.1', '127.1.2.3']) {
+    const lines = [];
+    assert.equal(await ensureLanForward('.', address, 8090, (l) => lines.push(l)), false);
+    assert.match(lines.join('\n'), /no usable address/);
+  }
+});
 
 const table = [
   '',

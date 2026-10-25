@@ -49,8 +49,8 @@ DELIVERABLE_KINDS = {
     "document": r"pdfs?|invoices?|payslips?|certificates?",
     "plan": r"plans?|proposals?|requisitions?",
     # Filing or submitting on a portal is entering records in it too, and what is filed has a name of its own ("file
-    # GSTR-1 and GSTR-3B on the GST portal" - GST suite T10, 2026-10-22: a six-part request ran as one job and ran out
-    # of turns twice).
+    # FORM-A and FORM-B on the portal" - found live, 2026-10-22: a six-part request ran as one job and ran out of
+    # turns twice).
     "records": r"(?:enter|record|post|create|onboard|file|submit|upload)\w*\s+(?:\S+\s+){0,5}(?:in|into|on|to)\s+(?:the\s+)?"
                r"(?:[\w-]+\s+){0,2}(?:portal|system|app|application|erp|crm|website)",
 }
@@ -502,8 +502,8 @@ SHARED_LISTING_FILES = 200
 def shared_folder_listing():
     """
     The files of the person's shared folder, for the planner: a request that says "bring the computation workbook up
-    to date - everything is in GST Returns on my PC" names its outputs by what they are, not by path. Found live (GST
-    suite T10, 2026-10-22): told only the request, the planner wrote the workbook as "GST Returns/Rohan/computation.xlsx"
+    to date - everything is in Returns on my PC" names its outputs by what they are, not by path. Found live
+    (2026-10-22): told only the request, the planner wrote the workbook as "Returns/<client>/computation.xlsx"
     in the work folder, and the stages made a new workbook there instead of updating the client's own. Names only, at
     most SHARED_LISTING_FILES; "" when the desktop has no shared folder.
     """
@@ -518,7 +518,7 @@ def shared_folder_listing():
             names.append("~/PC/" + os.path.relpath(path, root).replace(os.sep, "/"))
             if len(names) == SHARED_LISTING_FILES:
                 break
-        # Its folders too, an empty one included: found live (GST suite T10, 2026-10-22), the month's folder was there and
+        # Its folders too, an empty one included: found live (2026-10-22), the month's folder was there and
         # empty, the listing (files only) did not show it, and the plan put the invoices in a new folder of its own name.
         # Bounded like the files' walk (shared.walk_folders: breadth first, an entry budget) and stopped at the cap: a
         # walk of the whole tree stalled planning on a big shared folder (independent review, 2026-10-22).
@@ -1120,7 +1120,15 @@ def stage_prompt(state, step):
         lines += ["", "The request's own input files - sources this stage may read for any value it needs, besides "
                       "earlier stages' outputs:"]
         lines += [f"  {p}" for p in others]
+    # The run's plan is the person's to see with every question it asks (plan_text): a stage does not put a plan of
+    # its own to them (soul's plan.go reads this marker). Found live (2026-10-24): every attempt of a stage was a new
+    # goal, and each put its plan to the person again - ten times for one stage.
+    lines += ["", f"{PLAN_AGREED_MARKER}: the run's plan above is the person's; carry it out."]
     return "\n".join(lines)
+
+
+# soul's planAgreedMarker (plan.go): with it in the request, a stage does not put a plan of its own to the person.
+PLAN_AGREED_MARKER = "THE PLAN OF THIS REQUEST IS AGREED"
 
 
 # A sentence of a request that names a system to work in or read from: a web address (with its login), a mailbox.
@@ -1433,8 +1441,12 @@ def code_problems(made, reply, drafts, request, instruction=None, root=None, out
                         "store the results.")
     if facts.missing_files:
         problems.append(facts.missing_files + ". Make it, with the content asked for, where the stage says.")
-    if facts.file_faults:
-        problems.append("The saved file is not finished: " + "; ".join(facts.file_faults)[:400]
+    wrong = produced.wrong_kind(facts.file_faults)
+    if wrong:
+        problems.append("; ".join(wrong)[:400] + ". " + produced.WRONG_KIND_REMEDY)
+    unfinished = [f for f in facts.file_faults if f not in wrong]
+    if unfinished:
+        problems.append("The saved file is not finished: " + "; ".join(unfinished)[:400]
                         + ". Correct it in the file itself and save it again.")
     if facts.payee_mismatch:
         problems.append(" ".join(facts.payee_mismatch)[:900] + " Bank or payment account details come only from the "
@@ -2118,7 +2130,7 @@ def _sheet_owners(run_id, run_state):
     """
     {(file, sheet): stage id} - a sheet belongs to the stage in whose completion snapshot it first appeared (by when
     each stage completed, whatever its number). Every snapshot keeps all of its file's sheets; only the first holds
-    it as its own. Found live (round 5 P1, 2026-10-20): "Purchase Working" and "GSTR-3B" were reported as the AR
+    it as its own. Found live (round 5 P1, 2026-10-20): "Purchase Working" and "Tax Return" were reported as the AR
     Ageing stage's - the last stage to complete before the Purchase Register stage re-ran.
     """
 
@@ -2543,7 +2555,7 @@ def _judge(state, step, reply, made, drafts, note="", start=None, evidence=()):
     if on_screen:
         try:
             # Not "evidence": that is this function's argument (what code checks saw), which the module's name would
-            # replace - found live (GST suite T6, 2026-10-22): "'module' object is not iterable" stopped a run whose
+            # replace - found live (2026-10-22): "'module' object is not iterable" stopped a run whose
             # stage had worked on the screen.
             from decurix_agent.computer import evidence as screen_evidence
             live, observed = screen_evidence.live(), screen_evidence.observed()
@@ -3100,8 +3112,8 @@ def _page_notes(task_id=None):
 
 def _command_outputs(task_id=None):
     """What the work's commands printed during this task (soul's noteCommandOutput): its own recorded working - a total
-    a script summed from the sources and printed is held there, never something the work was given. Found live (GST
-    suite T7, 2026-10-21): B2C and HSN totals summed and printed by a script were refused as held by no source."""
+    a script summed from the sources and printed is held there, never something the work was given. Found live
+    (2026-10-21): totals summed and printed by a script were refused as held by no source."""
 
     try:
         from decurix_agent.computer import evidence
@@ -3726,8 +3738,13 @@ def invented_typing(typed, request):
         made_up = [repr(v) for v in typed if filler.looks_filler(v) and not filler.in_sources(v, texts)]
         # Provenance: a fact typed (an address, a date, a code, a figure of 100 or more) that no source holds.
         sources = work_sources(request)
+        # A figure worked out in one step from another value typed in this work and a source figure is held: the tax of
+        # a line typed beside its amount and rate (found live, 2026-10-24: 260 and 6,480 - 5,200 at 5% and 36,000 at
+        # 18%, a bill printing only their total - were "held by no source" and a finished task was refused).
+        from decurix_agent.provenance import _figures
+        typed_figures = _figures(" ".join(typed))
         for value in typed:
-            made_up += [repr(s) for s in sources.unsourced(value)]
+            made_up += [repr(s) for s in sources.unsourced(value, operands=typed_figures)]
         made_up = list(dict.fromkeys(made_up))
     except Exception as exc:  # noqa: BLE001
         log(f"long_task: could not check typed values: {exc}")
@@ -3944,6 +3961,36 @@ SKIP_RE = re.compile(r"^\W*(skip|leave (it|that|this)( out)?|drop (it|that)|don'
                      r"not needed|never ?mind|we don'?t need (it|that|this))\b", re.I)
 # How a person says to end the run, answering a stuck stage: never read as "try again".
 STOP_RE = re.compile(r"^\W*(stop|cancel|halt|abort|end it|call it off)\b", re.I)
+
+# What a person's answer to a stuck stage decides, read once (approval.read_choice). The word lists above only open a
+# reply's first words: "stop asking, just use last month's rate" stopped the run and "no need to recheck, the figure is
+# right" gave the stage up (audit, 2026-10-24). Code decides only a reply that is, whole, one of these phrases.
+STUCK_CHOICES = {
+    "retry": "try the stage again",
+    "skip": "leave this stage out and go on with the rest of the run",
+    "stop": "end the whole run now",
+    "answer": "anything else - information, a correction or an instruction for the stage to go on with "
+              "(including a stop or a skip of something later, not of this stage now)",
+}
+STUCK_PLAIN = {
+    "stop": ["stop", "stop it", "stop now", "stop the run", "stop everything", "cancel", "cancel it", "halt", "abort",
+             "end it", "call it off", "halt the whole thing", "stop the whole thing", "cancel the whole thing"],
+    "skip": ["skip", "skip it", "skip that", "skip this", "skip this one", "leave it", "leave it out", "leave that",
+             "leave that out", "leave this out", "drop it", "drop that", "don't bother", "dont bother", "no need",
+             "move on", "forget it", "forget that", "not needed", "never mind", "nevermind", "never mind not needed",
+             "we don't need it", "we don't need that", "skip it and move on"],
+    "retry": ["retry", "retry it", "try again", "try it again", "try that again", "again", "redo it", "redo that",
+              "go again", "one more try", "one more time", "have another go", "give it another try",
+              "give it another go"],
+}
+
+
+def stuck_choice(answer, question=""):
+    """What a person's answer to a stuck stage decides: {"choice": retry|skip|stop|answer|unclear, "instruction"}."""
+
+    from decurix_agent.computer import approval
+    return approval.read_choice(answer, question or "A stage could not be finished. Try it again, skip it, or stop?",
+                                STUCK_CHOICES, STUCK_PLAIN)
 # The marker of the question a stuck stage puts to the person (stuck_question).
 STUCK_MARK = "did not pass its check after"
 # A stage the worker stopped: the check said it could not be done, and the person was asked how to go on.
@@ -4275,7 +4322,7 @@ def _send_back_false_figures(run_id, step_id, question):
     """
     A stage about to tell the person something is wrong, with figures that do not add up (verify.false_sums): sent back
     once to recheck, never shown to the person as fact. Found live (2026-10-20, P2): "SO-5101 ... should total 13129.00
-    ex GST from 40 @ 175.75, 24 @ 149, 30 @ 95 - the person must correct the saved lines" - those come to 13,456.00,
+    ex tax from 40 @ 175.75, 24 @ 149, 30 @ 95 - the person must correct the saved lines" - those come to 13,456.00,
     the record's own total; a person would have "corrected" a correct order.
     """
 
@@ -5247,7 +5294,7 @@ HEARD_AGAIN = ("amendment", "unclear", "new_request")
 def _question_view(text):
     """
     An open question as the reader of a reply is shown it: whole, or its start and its end when very long. Found live
-    (GST suite T6, 2026-10-22): the first 800 characters were an approval's preamble, the ask ("tell me how each should
+    (2026-10-22): the first 800 characters were an approval's preamble, the ask ("tell me how each should
     be treated") was cut off, and the person's rules, sent as the answer, read as a separate request.
     """
 
@@ -5263,9 +5310,10 @@ def classify(message, run_state, data, ask=None, said_answer=False):
 
     from decurix_agent import guidance
 
-    if guidance.STOP_ONLY.match(message or ""):
-        return {"kind": "stop", "answers": [], "amendment": "", "affects": [], "ask": ""}
     questions = _open_questions(data)
+    # "Never mind" / "leave it" to an open question is read against it (guidance.calls_off): often it answers it.
+    if guidance.calls_off(message, "\n".join(q.get("text") or "" for q in questions)[:3000]):
+        return {"kind": "stop", "answers": [], "amendment": "", "affects": [], "ask": ""}
     shown = [f"Request: {attachments.text(data.get('request') or '').strip()[:3000]}", "", "Stages:"]
     for step in _steps(run_state):
         shown.append(f"- {step['id']} ({run_state['steps'][step['id']]['status']}): {step.get('title', '')}")
@@ -5287,7 +5335,7 @@ def classify(message, run_state, data, ask=None, said_answer=False):
     heard = data.get("last_heard") or {}
     if questions and heard.get("kind") in HEARD_AGAIN and data.get("heard_salt") \
             and heard.get("hash") == _message_hash(message, data["heard_salt"]):
-        # Found live (GST suite T6, 2026-10-22): the same rules, sent twelve times to the same question asked again, were
+        # Found live (2026-10-22): the same rules, sent twelve times to the same question asked again, were
         # read as a change each time. The fact only - what it means is the reader's to weigh (independent review).
         shown += ["", f"The person sent this same message just before; it was read as \"{heard.get('kind')}\" and the "
                       "question was asked again."]
@@ -5472,7 +5520,7 @@ def new_request_reason(content, data):
     if len(words) >= 20 and known and len(words & known) / len(words | known) >= SAME_REQUEST:
         return "it is the request in hand sent again"
     # Anything else is the model's reading (classify: "new_request"). A length or a count of deliverable words took an
-    # answer for a request: found live (GST suite T6, 2026-10-22), the practice's eight numbered rules, sent as the
+    # answer for a request: found live (2026-10-22), the practice's eight numbered rules, sent as the
     # answer to the parked question, were held as "it asks for several things of its own" and the run waited forever.
     return ""
 
@@ -5511,22 +5559,39 @@ def _release(name, own):
     return True
 
 
-_AFTER = re.compile(r"\b(finish|first|after|then|later|queue|wait|next|both)\b", re.I)
-_REPLACE = re.compile(r"\b(drop|cancel|abandon|replace|instead|forget|scrap|discard|abort)\b", re.I)
-_MEANT_ANSWER = re.compile(r"\b(answer|meant|reply|question)\b", re.I)
+# What the person chose for a request held while another is in hand, read once (approval.read_choice). Keywords found
+# anywhere read "don't cancel the first one, do this after" as cancel it, and "it's a reply to your question - use 12%
+# instead" as drop the run (audit, 2026-10-24). Code decides only a reply that is, whole, one of these phrases - the
+# options the question offers in its own words, among them.
+HELD_CHOICES = {
+    "after": "finish the request in hand first, then do the new one",
+    "replace": "drop the request in hand and do the new one instead",
+    "answer": "the new message was meant as their answer to the open question",
+}
+HELD_PLAIN = {
+    "after": ["finish that one first", "finish that one first and then do this new one",
+              "finish that one first then do the new one", "finish that one first then do this one", "finish that first",
+              "finish first", "finish it first", "first finish that one", "after", "later", "do it after",
+              "do it later", "do this after", "queue it", "both", "do both", "finish both"],
+    "replace": ["drop that one", "drop that one and do this one instead", "drop that one and do this one", "drop it",
+                "drop that", "drop the old one", "do this one instead", "this one instead", "instead", "replace",
+                "replace it", "cancel that one", "cancel that", "forget that one", "forget the old one", "scrap it"],
+    "answer": ["answer", "my answer", "the answer", "yes the answer", "it is my answer", "it's my answer", "its my answer",
+               "it was my answer", "it was my answer to your question", "it is my answer to your question",
+               "it's my answer to your question", "it was meant as my answer", "meant as my answer", "it's an answer",
+               "it was an answer", "reply", "it's a reply", "it was a reply", "answer to your question"],
+}
+HELD_QUESTION = ("A new message came while a request was in hand. Finish the one in hand first and then do the new one, "
+                 "drop the one in hand and do the new one instead, or was the message meant as the answer to the open "
+                 "question?")
 
 
 def _choice(reply):
     """What the person chose for a held request: "after", "replace", "answer" or "" when it cannot be told."""
 
-    text = " ".join(str(reply or "").split())
-    if _MEANT_ANSWER.search(text) and not _REPLACE.search(text):
-        return "answer"
-    if _REPLACE.search(text) and not re.search(r"\bfinish\b", text, re.I):
-        return "replace"
-    if _AFTER.search(text):
-        return "after"
-    return ""
+    from decurix_agent.computer import approval
+    said = approval.read_choice(reply, HELD_QUESTION, HELD_CHOICES, HELD_PLAIN)
+    return said["choice"] if said["choice"] in HELD_CHOICES else ""
 
 
 def _where_it_stands(run_state, data):
@@ -5679,8 +5744,12 @@ def _take_message(content, path, about_this=False):
     waiting = state.waiting_for_query
     waiting_kind = state.last_query_kind if waiting else ""
 
-    # An approval keeps working exactly as it always has: a yes or a no goes to the gate.
-    if waiting and waiting_kind == "approval" and (approval.is_approval(content) or approval.is_refusal(content)):
+    # A reply that decides the approval (yes, yes once something holds, no) goes to the gate, read once
+    # (approval.reading): "haan fine" is as much a yes as "yes". One that decides nothing - a question back, something
+    # else - is read below as any message is.
+    decides = (waiting and waiting_kind == "approval"
+               and approval.read_reply(content, (approval.pending() or {}).get("action") or state.last_query_text) != "unclear")
+    if decides:
         try:
             _approval_as_decision(run_id, content)
         except Exception as exc:  # noqa: BLE001 - keeping it as a decision is extra; the gate's answer goes on
@@ -5707,11 +5776,18 @@ def _take_message(content, path, about_this=False):
         # own (holding; found live 2026-10-20: "finish that one first?" was asked about a run the person had stopped).
         _defer(path)
         return
-    if _resume_wait == run_id and CARRY_ON.match(content or "") and not guidance.STOP_ONLY.match(content or ""):
-        _mark(path)
-        _carry_on_after_restart(run_id)
-        return
-    if not guidance.STOP_ONLY.match(content or ""):
+    open_text = "\n".join(q.get("text") or "" for q in _open_questions(data))[:3000]
+    if _resume_wait == run_id and not guidance.calls_off(content, RESUME_QUESTION):
+        resumed = resume_choice(content)
+        if resumed["choice"] == "carry_on":
+            _mark(path)
+            _carry_on_after_restart(run_id)
+            if not resumed["instruction"]:
+                return
+            # What they add to it ("continue, but redo stage 2") is never dropped: it is read below as any message to
+            # the run is - a change, an answer - with the run going on (audit, 2026-10-24).
+            content = resumed["instruction"]
+    if not guidance.calls_off(content, open_text):
         if data.get("pending_request") and not about_this:
             return _pending_request_reply(run_id, run_state, data, content, path, own, waiting)
         why = "" if about_this else new_request_reason(content, data)
@@ -5877,11 +5953,13 @@ def _take_message(content, path, about_this=False):
                                          f"{answer['answer']}")
         if question.get("parked"):
             try:
-                if question.get("kind") == "stuck" and STOP_RE.match(answer["answer"]):
-                    # A person's own words for "stop", answering a stuck stage (round 5 P6, 2026-10-20).
+                # A person's own words for "stop" or "skip", answering a stuck stage (round 5 P6, 2026-10-20) - read
+                # once: anything else, however it starts, is what the stage goes on with.
+                said = stuck_choice(answer["answer"], question.get("text")) if question.get("kind") == "stuck" else {}
+                if said.get("choice") == "stop":
                     _mark(path)
                     return stop(answer["answer"])
-                if question.get("kind") == "stuck" and SKIP_RE.match(answer["answer"]):
+                if said.get("choice") == "skip":
                     _runner().give_up(run_id, question["stage"], f"you said to leave it out (\"{answer['answer'][:200]}\")")
                 else:
                     _runner().unpark(run_id, question["stage"], answer["answer"])
@@ -6048,7 +6126,8 @@ def _approval_as_decision(run_id, reply):
         step = steps.get(q["stage"])
         if not step or not step.get("decision") or _decided(run_state, q["stage"]):
             continue
-        said = "approved" if approval.is_approval(reply) else "declined"
+        said = {"yes": "approved", "if": "approved only once a condition holds"}.get(
+            approval.read_reply(reply, q.get("text") or ""), "declined")
         answer = f"You {said}: \"{' '.join(str(reply).split())[:300]}\""
 
         def add(d, q=q, answer=answer):
@@ -6465,6 +6544,25 @@ def resume_interrupted(record):
 # The run a restart interrupted, waiting for the person to say carry on (or stop).
 _resume_wait = None
 CARRY_ON = re.compile(r"^\W*(?:carry on|continue|go on|resume|yes|yep|go ahead|proceed|ok(?:ay)?)\b", re.I)
+RESUME_QUESTION = "Your request was interrupted by a restart. Shall I carry on from its last checked stage, or stop?"
+RESUME_CHOICES = {
+    "carry_on": "carry on with the interrupted run (with anything they add)",
+    "stop": "do not carry on; end the run",
+    "other": "neither - a new request, or something else",
+}
+RESUME_PLAIN = {"carry_on": ["carry on", "continue", "go on", "resume", "yes", "yep", "yeah", "go ahead", "proceed", "ok",
+                             "okay", "ok carry on", "yes carry on", "yes continue", "ok continue", "go on then"]}
+
+
+def resume_choice(content):
+    """
+    What a reply to "carry on after the restart?" decides, read once: {"choice": carry_on|stop|other|unclear,
+    "instruction": what it adds}. Found (audit, 2026-10-24): "ok, but stop after the first stage" carried the whole run
+    on with its instruction dropped.
+    """
+
+    from decurix_agent.computer import approval
+    return approval.read_choice(content, RESUME_QUESTION, RESUME_CHOICES, RESUME_PLAIN)
 
 
 def _carry_on_after_restart(run_id):
