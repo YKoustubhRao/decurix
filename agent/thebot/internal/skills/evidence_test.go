@@ -387,6 +387,7 @@ func TestTheSameScreenAndSourcesAreWorkedOutOnce(t *testing.T) {
 	}
 	chat := &scriptedChat{replies: []string{`{"v1": "29", "v2": "24000", "v3": "2085"}`}}
 	st := &operatorState{Hosted: true, Request: "enter the month", TypedWindows: []string{"Sales | Portal - Chromium"},
+		TypedFigures: map[string]bool{"Sales | Portal - Chromium": true},
 		Listings: []string{screen("34,750")}, Worked: []string{"gui observe"}}
 	if issues := (&OperatorSkill{}).verifyReport(weighRC(chat), st); len(issues) != 1 {
 		t.Fatalf("first check: %+v", issues)
@@ -427,6 +428,11 @@ func TestAWindowTypedInAfterItsLastLookIsLookedAtAgain(t *testing.T) {
 	if len(issues) != 1 || !strings.Contains(issues[0].What, "Rows | Portal") || issues[0].Settle != "recheck" {
 		t.Fatalf("issues = %+v", issues)
 	}
+	// Told once a goal (2026-10-26: a login typed into on the way was raised on every review batch).
+	if issues := st.unseenTyping(); len(issues) != 0 {
+		t.Fatalf("raised twice: %+v", issues)
+	}
+	st.UnseenTold = nil
 	st.ListedAt["Rows | Portal - Chromium"] = 6
 	if issues := st.unseenTyping(); len(issues) != 0 {
 		t.Fatalf("looked at after the typing, still a point: %+v", issues)
@@ -550,5 +556,36 @@ func TestAReportsCheckNeverWorksOutAFormsDefaults(t *testing.T) {
 	st.ListedAt = map[string]int{"Bills | Books - Chromium": 3}
 	if !st.typedSinceLook("Bills | Books - Chromium") || st.typedSinceLook("Summary | Books - Chromium") {
 		t.Error("typedSinceLook")
+	}
+}
+
+// Found live (2026-10-26): a bill's row in a register was written over by the next bill's; the first bill was read,
+// counted as written, and never in the file - no point was raised.
+func TestAValueWrittenOverIsNoLongerWritten(t *testing.T) {
+	st := &operatorState{Hosted: true}
+	st.noteWritten(`office update /w/calc.xlsx - <<'EOF'
+{"edits": [{"sheet": "SALES", "cell": "D25", "value": 453}, {"sheet": "SALES", "cell": "F25", "value": 18000}]}
+EOF`)
+	if !contains(st.Written, "453") || !contains(st.Written, "18000") {
+		t.Fatalf("written = %v", st.Written)
+	}
+	st.noteReplaced("Updated /w/calc.xlsx: 3 cell(s) (SALES!B25, SALES!D25, SALES!F25); replaced 2 filled cell(s): SALES!D25 453 -> 452, SALES!F25 18000 -> 24000. Formulas recalculate when the file is opened.")
+	if contains(st.Written, "453") || contains(st.Written, "18000") {
+		t.Errorf("written over, still written: %v", st.Written)
+	}
+}
+
+// Found live (2026-10-27): a chat window the work typed a message into had another client's "1,620" in a preview;
+// the verifier set it against this task's sources and the approval carried the point.
+func TestAWindowTypedOnlyProseIntoCarriesNoFigureOfTheWork(t *testing.T) {
+	st := &operatorState{Hosted: true, ActiveWindow: "Chat - Alpha - Chromium"}
+	st.noteWindow(`gui type e5 "Hello, the September OTP has been sent. Please reply with it."`, shellResult{Output: `Typed "Hello" into textbox "Type a message" (e5)`})
+	if st.typedFigureIn("Chat - Alpha - Chromium") {
+		t.Fatalf("prose counted as a figure")
+	}
+	st.ActiveWindow = "Voucher - Chromium"
+	st.noteWindow(`gui type e9 "26,500.00"`, shellResult{Output: `Typed "26,500.00" into textbox "Amount" (e9)`})
+	if !st.typedFigureIn("Voucher - Chromium") {
+		t.Fatalf("a typed amount not counted")
 	}
 }

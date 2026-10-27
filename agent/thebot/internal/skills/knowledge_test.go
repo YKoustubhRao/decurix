@@ -75,7 +75,8 @@ func TestWhatTheReviewRaisesIsSentBackThenAskedThenCarriedNeverDropped(t *testin
 func TestAPointTheWorkerDidNotSettleIsPutToThePerson(t *testing.T) {
 	raised := `{"issues": [{"what": "Invoice 457 (a photo) was never read", "settle": "recheck"}]}`
 	o, rc := &OperatorSkill{}, weighRC(&scriptedChat{replies: []string{raised, raised}})
-	st := &operatorState{Hosted: true, Request: "file it", JudgementRounds: 1}
+	// (Since 2026-10-27 such a point is the worker's for maxWorkSendBacks send-backs first - with those spent:)
+	st := &operatorState{Hosted: true, Request: "file it", JudgementRounds: 1, WorkSendBacks: maxWorkSendBacks}
 	if w := o.weighJudgements(rc, st, nil, "Filed.", ""); w.nudge == "" {
 		t.Fatalf("not sent back first: %+v", w)
 	}
@@ -156,5 +157,77 @@ func TestTheReviewsPointsAreAskedInTheWordsTheAgentKnows(t *testing.T) {
 	q := knowledgeQuestion([]reviewIssue{{What: "Bill 457 was not entered", Settle: "recheck"}}, nil, "")
 	if !strings.Contains(q, "An independent check of the work still questions") {
 		t.Fatalf("question = %s", q)
+	}
+}
+
+// Found live (2026-10-26): four bills declared and never saved were put to the person as "choices I made", twice, after
+// they had said "enter them". A point decided in code that is the worker's to do goes back to the worker, bounded, and
+// past the bound is carried open - never asked.
+func TestAPointThatIsTheWorkersToDoIsNeverPutToThePerson(t *testing.T) {
+	none := `{"issues": []}`
+	chat := &scriptedChat{replies: []string{none, none, none, none, none, none}}
+	o, rc := &OperatorSkill{}, weighRC(chat)
+	st := &operatorState{Hosted: true, Request: "enter the bills", JudgementRounds: 1, RecordLedger: sampleLedger}
+	if w := o.weighJudgements(rc, st, nil, "Entered.", ""); w.nudge == "" || w.question != "" {
+		t.Fatalf("not sent back first: %+v", w)
+	}
+	for n := 0; n < maxWorkSendBacks; n++ {
+		w := o.weighJudgements(rc, st, nil, "Entered.", "")
+		if w.question != "" || !strings.Contains(w.nudge, "yours to settle, not the person's") || !strings.Contains(w.nudge, "record 1190 was declared from its document but never saved") {
+			t.Fatalf("send-back %d: %+v", n+1, w)
+		}
+	}
+	w := o.weighJudgements(rc, st, nil, "Entered.", "")
+	if w.question != "" || w.nudge != "" || len(w.open) != 2 || !strings.Contains(strings.Join(w.open, "\n"), "never saved") {
+		t.Fatalf("past the bound the work points were not carried open: %+v", w)
+	}
+	if st.PersonAsks != 0 {
+		t.Errorf("the person was asked %d time(s)", st.PersonAsks)
+	}
+}
+
+func TestAPointThePersonAnsweredIsNotAskedAgain(t *testing.T) {
+	raised := `{"issues": [{"what": "Invoice 458 never read", "why": "the chat offered it", "settle": "person"}]}`
+	chat := &scriptedChat{replies: []string{raised, raised, raised}}
+	o, rc := &OperatorSkill{}, weighRC(chat)
+	st := &operatorState{Hosted: true, Request: "file it", JudgementRounds: 1,
+		AnsweredKeys: map[string]string{pointKey("Invoice 458 never read - the chat offered it"): "Read it and enter it - it is this month's."}}
+	if w := o.weighJudgements(rc, st, nil, "Filed.", ""); w.nudge == "" {
+		t.Fatalf("not sent back first: %+v", w)
+	}
+	w := o.weighJudgements(rc, st, nil, "Filed.", "")
+	if w.question != "" || !strings.Contains(w.nudge, "already answered this point") || !strings.Contains(w.nudge, "Read it and enter it") {
+		t.Fatalf("the answered point was asked again or not sent back with the answer: %+v", w)
+	}
+	if k := pointKey("Invoice 458 NEVER read  - the chat offered it"); k != "invoice 458 never read" {
+		t.Errorf("pointKey = %q", k)
+	}
+}
+
+func TestAnAdvisoryPointGoesNoFurtherThanTheSendBack(t *testing.T) {
+	issues := []reviewIssue{{What: "a", Advisory: true}, {What: "b"}}
+	if got := notAdvisory(issues); len(got) != 1 || got[0].What != "b" {
+		t.Errorf("notAdvisory = %+v", got)
+	}
+}
+
+// Found live (2026-10-27): points the worker settles by looking went to the person, who answered "open it and look".
+func TestAPointSettledByLookingStaysTheWorkersWhileSendBacksRemain(t *testing.T) {
+	raised := `{"issues": [{"what": "The report says the Day Book shows six vouchers, but no look this goal showed it", "why": "nothing on screen", "settle": "recheck"}]}`
+	chat := &scriptedChat{replies: []string{raised, raised, raised, raised, raised, raised}}
+	o, rc := &OperatorSkill{}, weighRC(chat)
+	st := &operatorState{Hosted: true, Request: "enter the bills", JudgementRounds: 1}
+	for n := 0; n < maxWorkSendBacks+1; n++ {
+		w := o.weighJudgements(rc, st, nil, "Entered.", "")
+		if w.question != "" {
+			t.Fatalf("asked at round %d while send-backs remained: %q", n, w.question)
+		}
+		if w.nudge == "" {
+			t.Fatalf("not sent back at round %d: %+v", n, w)
+		}
+	}
+	w := o.weighJudgements(rc, st, nil, "Entered.", "")
+	if w.question == "" || !strings.Contains(w.question, "Day Book") {
+		t.Fatalf("past the bound the point was not put to the person: %+v", w)
 	}
 }

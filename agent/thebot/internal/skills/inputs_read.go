@@ -131,6 +131,13 @@ func (st *operatorState) hasTaught(name string) bool {
 // maxScreenDocs bounds the names kept.
 const maxScreenDocs = 120
 
+// maxDocNameChars and maxDocNameWords bound a link's text taken whole as a document's name (a sentence that ends in a
+// file name is not one).
+const (
+	maxDocNameChars = 120
+	maxDocNameWords = 6
+)
+
 // noteScreenDocs keeps the documents a screen command's output offers: each shown as an element of its own (an
 // attachment, a "Download X" link, a file in a list), never a name mentioned inside a longer text. Found live
 // (2026-10-25): a chat list's link to another client's conversation previewed its last message - that client's
@@ -152,6 +159,17 @@ func (st *operatorState) noteScreenDocs(command, output string) {
 		if full := wholeDocName(role, text); full != "" {
 			keep(full)
 			continue
+		}
+		// An element whose whole text is a document's name with spaces ("1191 Some Customer.docx") offers that document:
+		// the name pattern alone stops at a space and kept "Customer.docx", which no read then matched (found live,
+		// 2026-10-26: two bills entered were reported as never read).
+		if t := strings.TrimSpace(text); wholeNameRoles[role] && docEndRe.MatchString(t) {
+			words := strings.Fields(t)
+			if len(words) > 1 && len(words) <= maxDocNameWords && len(t) <= maxDocNameChars && !docActionWordRe.MatchString(words[0]) &&
+				!strings.ContainsAny(t, "/\\:") && screenDocRe.FindString(t) != "" && plainASCII(t) && looksLikeFileName(words) {
+				keep(t)
+				continue
+			}
 		}
 		for _, name := range screenDocRe.FindAllString(text, -1) {
 			if offersDocument(role, text, name) {
@@ -180,6 +198,32 @@ var docPathRe = regexp.MustCompile(`(?i)(/[^;\n]*?\.` + docExt + `)(?:\s|$|[;,)]
 
 // docEndRe is text that ends with a document's extension.
 var docEndRe = regexp.MustCompile(`(?i)\.` + docExt + `$`)
+
+// wholeNameRoles are the elements whose whole text, when it is a file name, names an offered document (an attachment
+// list shows each as a link, a plain text or a list item).
+var wholeNameRoles = map[string]bool{"link": true, "button": true, "text": true, "listitem": true, "cell": true, "gridcell": true}
+
+// looksLikeFileName is whether words read as a file's name rather than a sentence: no word before the last is a plain
+// lowercase word of three letters or more ("please find attached invoice 455.pdf" is a sentence; "1191 Some
+// Customer.docx" and "Scan 2026-09-28 at 10.15.32 (2).jpg" are names - "at" is short).
+func looksLikeFileName(words []string) bool {
+	for _, w := range words[:len(words)-1] {
+		if len(w) >= 3 && strings.ToLower(w) == w && strings.IndexFunc(w, unicode.IsLetter) >= 0 && strings.Trim(w, "abcdefghijklmnopqrstuvwxyz") == "" {
+			return false
+		}
+	}
+	return true
+}
+
+// plainASCII is whether a text has no character beyond ASCII (a chat line carries an attachment glyph; a file name does not).
+func plainASCII(t string) bool {
+	for _, r := range t {
+		if r > 0x7f {
+			return false
+		}
+	}
+	return true
+}
 
 // wholeDocName is the document a link or button offers, spaces and all - its text after the word that says what it
 // does with it ("Download Scan 12 (2).jpg") - or "" when it is not one. (A text that ends with a name may be a sentence

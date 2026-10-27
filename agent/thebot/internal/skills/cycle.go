@@ -54,6 +54,12 @@ func (st *operatorState) noteRun(command, shown string) string {
 		commands[i] = "$ " + r.Command
 	}
 	if st.CycleNudges >= maxCycleNudges {
+		if st.CycleAsked {
+			// Asked once a goal: found live (2026-10-27), the same "going back and forth" question went to the person
+			// twice in four minutes, their first answer unused. Their answer is given back, and the loop is pushed on.
+			return cycleAfterAnswer(commands, st.PersonSaid)
+		}
+		st.CycleAsked = true
 		st.CycleAsk = cycleQuestion(commands, st.LastIssues)
 		return ""
 	}
@@ -94,6 +100,24 @@ func cycleOf(runs []ranCommand) int {
 		}
 	}
 	return 0
+}
+
+// cycleAfterAnswer is what the model is told when it goes round the same commands again after the person was asked
+// once: their answer, and that it is not asked again.
+func cycleAfterAnswer(commands []string, said []string) string {
+	answer := ""
+	if n := len(said); n > 0 {
+		answer = truncateText(said[n-1], 500)
+	}
+	var b strings.Builder
+	b.WriteString("\n\nYou have gone round these same screens again:\n" + strings.Join(commands, "\n") + "\n")
+	if answer != "" {
+		b.WriteString("The person was asked about this once and answered: " + answer + "\n")
+	}
+	b.WriteString("They are not asked again. Do what they said: write down, from the outputs above, each value you need " +
+		"from these screens, then leave them and go on to the next step of the task. If something on them is wrong, " +
+		"correct it where it is; if you cannot, say so in your report as NOT done.")
+	return b.String()
 }
 
 // cycleQuestion is what the person is asked when the worker went round the same commands again after seeing their

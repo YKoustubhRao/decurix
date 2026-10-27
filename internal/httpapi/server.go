@@ -277,6 +277,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/desktops/chat", s.chatHandler)
 	mux.HandleFunc("/api/desktops/chat/stream", s.chatStreamHandler)
 	mux.HandleFunc("/api/desktops/activity", s.activityHandler)
+	mux.HandleFunc("/api/desktops/tasks", s.desktopTasksHandler)
 	mux.HandleFunc("/api/desktops/chat/clear", s.clearChatHandler)
 	mux.HandleFunc(stepImagePath, s.stepImageHandler)
 	mux.HandleFunc("/api/agent/events", s.agentEventHandler)

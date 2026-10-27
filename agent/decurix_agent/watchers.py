@@ -459,6 +459,7 @@ def answer_waiting(path, content, already_marked=False):
     # the action finds the grant already in place.
     outcome = None
     try:
+        approval.note_reply(content, asked=state.last_query_text)  # (the latest reply: the next gated action's yes when it says so)
         outcome = approval.resolve_reply(content, asked=state.last_query_text if state.last_query_kind == "approval"
                                          else "")
         if outcome:

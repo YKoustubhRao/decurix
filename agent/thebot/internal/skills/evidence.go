@@ -52,8 +52,9 @@ var (
 	// docFileTypeRe is a document read whole: one record (an invoice, a letter, a scan), not a table of records.
 	docFileTypeRe = regexp.MustCompile(`(?i)\.(?:pdf|docx?|odt|rtf|txt|eml|msg|png|jpe?g|tiff?|webp|heic|bmp|gif)$`)
 	officeReadRe  = regexp.MustCompile(`^\s*office\s+read\s`)
-	// loopBodyRe opens a shell loop's body ("do office read ...").
+	// loopBodyRe opens a shell loop's body ("do office read ..."); forListRe is the loop's own list of files.
 	loopBodyRe = regexp.MustCompile(`^\s*do\s+`)
+	forListRe  = regexp.MustCompile(`^\s*for\s+\w+\s+in\s+(.+?)\s*;?\s*$`)
 	// readHeaderRe is the line an office read opens a file's output with: "<name.ext>: ...".
 	readHeaderRe = regexp.MustCompile(`(?m)^([^\n:/\\]{1,200}\.(?:pdf|docx?|odt|rtf|txt|eml|xlsx|xlsm|xls|ods|csv|png|jpe?g|tiff?|webp)):\s`)
 	guiReadRe    = regexp.MustCompile(`^\s*gui\s+read\s`)
@@ -173,7 +174,15 @@ func (st *operatorState) noteChainedReads(segs []shellSegment, output string) {
 	}
 	var reads []read
 	looped := false
+	var listed []string // the files a shell loop names outright: for f in 'A' 'B'; do office read "$f"; done
 	for _, seg := range segs {
+		if m := forListRe.FindStringSubmatch(seg.Text); m != nil {
+			for _, w := range shellWords(m[1]) {
+				if p := unquoteWord(w); p != "" && !strings.ContainsAny(p, "$*?") {
+					listed = append(listed, path.Base(strings.ReplaceAll(p, `\`, "/")))
+				}
+			}
+		}
 		// (In a loop the read is the body's: "do office read "$f"".)
 		text := loopBodyRe.ReplaceAllString(seg.Text, "")
 		if !officeReadRe.MatchString(text) {
@@ -198,10 +207,10 @@ func (st *operatorState) noteChainedReads(segs []shellSegment, output string) {
 			reads = append(reads, read{source, docFileTypeRe.MatchString(source), at})
 		}
 	}
-	// Files read through a loop or a pattern (for f in *.docx; do office read "$f"; done): each is credited by the
-	// header its read printed. Found live (2026-10-25): six bills read that way were "never read" to the record, and
-	// the review sent the worker back to read them again.
-	if looped {
+	// Files read through a loop or a pattern (for f in *.docx; do office read "$f"; done) - or by a script that runs
+	// the reader itself, whose command names no file - are credited by the header each read printed. Found live
+	// (2026-10-25): six bills read in a loop were "never read" to the record; (2026-10-26) five read by a script were.
+	if looped || (len(reads) == 0 && readHeaderRe.MatchString(output)) {
 		for _, m := range readHeaderRe.FindAllStringSubmatchIndex(output, -1) {
 			name := output[m[2]:m[3]]
 			known := false
@@ -211,6 +220,52 @@ func (st *operatorState) noteChainedReads(segs []shellSegment, output string) {
 			if !known {
 				reads = append(reads, read{name, docFileTypeRe.MatchString(name), m[0]})
 			}
+		}
+		// The files the loop names outright are read whatever the output shows of them: the output masks every
+		// value that stood in the command (withoutCommandValues), so a file name holding a number ("1191 X.docx")
+		// reaches here as "· X.docx" and its header matches nothing. Found live (2026-10-26): two of six bills read in
+		// one loop were "never read" to the record. Each is placed where its header stands, digits masked or not;
+		// one that cannot be placed holds the loop's whole output, so nothing it printed is lost to it.
+		for _, name := range listed {
+			known := false
+			for _, r := range reads {
+				known = known || r.source == name
+			}
+			if known {
+				continue
+			}
+			at := -1
+			if re := maskedNameRe(name); re != nil {
+				// (A header read under the masked name - "· Some Customer.docx" - is this file's: it goes, its place is taken.)
+				for i := 0; i < len(reads); i++ {
+					if strings.Contains(reads[i].source, "·") && re.MatchString(reads[i].source+":") {
+						reads = append(reads[:i], reads[i+1:]...)
+						i--
+					}
+				}
+				if m := re.FindStringIndex(output); m != nil {
+					at = m[0]
+					if at > 0 && output[at-1] != '\n' {
+						at = strings.LastIndex(output[:at], "\n") + 1
+					}
+				}
+			}
+			reads = append(reads, read{name, docFileTypeRe.MatchString(name), at})
+		}
+	}
+	var whole []read
+	for i := 0; i < len(reads); i++ {
+		if reads[i].at < 0 {
+			whole = append(whole, reads[i])
+			reads = append(reads[:i], reads[i+1:]...)
+			i--
+		}
+	}
+	for _, r := range whole {
+		if r.doc {
+			st.addUnit("document", r.source, output)
+		} else {
+			st.addLines("row", r.source, output)
 		}
 	}
 	sort.Slice(reads, func(i, j int) bool { return reads[i].at < reads[j].at })
@@ -225,6 +280,43 @@ func (st *operatorState) noteChainedReads(segs []shellSegment, output string) {
 			st.addLines("row", r.source, output[r.at:end])
 		}
 	}
+}
+
+// maskedNameRe matches a file's name at a line's start as a header ("<name>:") or after a loop's own marker, with each
+// run of digits standing either as itself or as the mask the output puts over a command's values ("·"); nil for a
+// name with no letters.
+func maskedNameRe(name string) *regexp.Regexp {
+	if strings.IndexFunc(name, unicode.IsLetter) < 0 {
+		return nil
+	}
+	var b strings.Builder
+	b.WriteString(`(?m)^(?:[^\n]*[:/])?\s*`)
+	for _, part := range splitDigitRuns(name) {
+		if digitRe.MatchString(part) {
+			b.WriteString(`(?:` + regexp.QuoteMeta(part) + `|·)`)
+		} else {
+			b.WriteString(regexp.QuoteMeta(part))
+		}
+	}
+	b.WriteString(`\s*(?::|$)`)
+	re, err := regexp.Compile(b.String())
+	if err != nil {
+		return nil
+	}
+	return re
+}
+
+// splitDigitRuns cuts a text into runs of digits and runs of anything else, in order.
+func splitDigitRuns(s string) []string {
+	var out []string
+	start := 0
+	for i := 1; i <= len(s); i++ {
+		if i == len(s) || (s[i] >= '0' && s[i] <= '9') != (s[start] >= '0' && s[start] <= '9') {
+			out = append(out, s[start:i])
+			start = i
+		}
+	}
+	return out
 }
 
 // screenSourcePrefix opens the source name of the lines read off a window (screenSource).
@@ -351,6 +443,28 @@ func (st *operatorState) noteWritten(command string) {
 		}
 	}
 	st.noteInventedCodes(command)
+}
+
+// replacedRe is what office update prints for a filled cell it wrote over: "SALES!D25 453 -> 452".
+var replacedRe = regexp.MustCompile(`(?m)[A-Za-z0-9_' ]+![A-Z]{1,3}\d+ (.+?) -> (.*?)(?:, |$)`)
+
+// noteReplaced forgets, of the values the work wrote, those an office update says it wrote over: a figure put in a
+// row and then written over by another record's is in the file no more. Found live (2026-10-26): a bill's row was
+// overwritten by the next bill's, and the first bill - read, "written", never in the file - raised no point.
+func (st *operatorState) noteReplaced(output string) {
+	i := strings.Index(output, "replaced ")
+	if i < 0 || !strings.Contains(output[i:], "filled cell") {
+		return
+	}
+	for _, m := range replacedRe.FindAllStringSubmatch(output[i:], -1) {
+		old := strings.Trim(strings.TrimSpace(m[1]), "'\"")
+		for k, v := range st.Written {
+			if v == old || sameValue(v, old) {
+				st.Written = append(st.Written[:k], st.Written[k+1:]...)
+				break
+			}
+		}
+	}
 }
 
 // noteTypedShown keeps, of a command that failed, the typed values its output says went in ("Typed "7350.50" into
@@ -488,6 +602,13 @@ func (st *operatorState) coverageGaps() []string {
 	var gaps []string
 	for _, name := range order {
 		u := docs[name]
+		if pictureDocRe.MatchString(name) || u.Kind == "ocr" {
+			// A picture is never "used" by a value match: a phone photo's OCR digits can coincide with anything
+			// written, and a picture with no text can never match. The report must name it (coverageIssues).
+			// Found live (2026-10-26): a photo bill was downloaded, read and dropped, the report silent, no point.
+			gaps = append(gaps, name+pictureGapNote)
+			continue
+		}
 		used := false
 		for _, v := range st.Written {
 			if u.holds(v) {
@@ -533,10 +654,14 @@ func (st *operatorState) coverageIssues(report string) []reviewIssue {
 		if stem == "" || saysWhyLeftOut(said, base, stem) {
 			continue
 		}
+		if strings.HasSuffix(gap, pictureGapNote) && (strings.Contains(said, base) || strings.Contains(said, stem)) {
+			continue // a picture the report names - with what was entered from it - is accounted for
+		}
 		out = append(out, reviewIssue{
 			What:   gap + ", and the report does not say why it is left out",
 			Why:    "enter what it holds, or say in the report why it is not part of the work",
 			Settle: "recheck",
+			Work:   true,
 		})
 		if len(out) == maxCoverageIssues {
 			break
@@ -544,6 +669,12 @@ func (st *operatorState) coverageIssues(report string) []reviewIssue {
 	}
 	return out
 }
+
+// pictureDocRe is a document that is a picture (a photographed or scanned bill); pictureGapNote is how such a document
+// is listed among the coverage gaps: the report must name it, with what was entered from it or why it is left out.
+var pictureDocRe = regexp.MustCompile(`(?i)\.(?:jpe?g|png|tiff?|webp|heic|gif)$`)
+
+const pictureGapNote = " (a picture that was read: its figures must be entered from it, and the report must name it with what was entered, or say why it is left out)"
 
 // leftOutRe is what a sentence says when it gives a document's reason for not being in the work: it is not part of it,
 // a copy, called off, someone else's.
@@ -902,6 +1033,12 @@ func (o *OperatorSkill) verifyCommit(rc RunContext, st *operatorState, action st
 		return nil
 	}
 	window := actionWindow(action)
+	// A window the work typed only prose into (a message about to be sent): its figures are other people's, not the
+	// work's - nothing to set against the sources. Found live (2026-10-27): other clients' chat previews beside the
+	// message box went into two tasks' send approvals as "disagreements".
+	if window != "" && st.typedIn(window) && !st.typedFigureIn(window) {
+		return nil
+	}
 	var masked string
 	var figures map[string]string
 	for i := len(st.Listings) - 1; i >= 0; i-- {
@@ -1031,6 +1168,12 @@ func (o *OperatorSkill) verifyReport(rc RunContext, st *operatorState) []reviewI
 		if !st.typedIn(window) && !(leaves && st.sameSiteAsTyped(window)) {
 			continue
 		}
+		// A window the work typed only prose into (a chat message, a note) shows none of the work's figures: its
+		// figures are other people's. Found live (2026-10-27): "1,620" in another client's chat preview beside the
+		// message box was set against this task's sources, the point went into the approval, and the person refused.
+		if st.typedIn(window) && !st.typedFigureIn(window) {
+			continue
+		}
 		// A look taken before the window was typed in shows the form as it was (its defaults), not the work: working
 		// its figures out set the sources against a form's "1" - found live (2026-10-25), six points about a bill
 		// number the form showed before the worker typed it. Such a window is looked at again first (unseenTyping).
@@ -1049,7 +1192,17 @@ func (o *OperatorSkill) verifyReport(rc RunContext, st *operatorState) []reviewI
 		if window != "" {
 			heading += fmt.Sprintf(" - the window %q", window)
 		}
-		out = append(out, o.verifyFigures(rc, st, masked, figures, heading, "")...)
+		points := o.verifyFigures(rc, st, masked, figures, heading, "")
+		if !st.typedIn(window) {
+			// The screen the work leaves on the site it typed in, without having typed there: its figures are the
+			// site's own (a chart of accounts' balances, a dashboard's counts), set against this task's sources only
+			// loosely. Found live (2026-10-26): eight "disagreements" between a ledger list's yearly balances and the
+			// month's bills went to the person, who dismissed every one. Such points are the worker's to look at once.
+			for i := range points {
+				points[i].Advisory = true
+			}
+		}
+		out = append(out, points...)
 	}
 	return out
 }
@@ -1109,10 +1262,36 @@ func (st *operatorState) noteWindow(command string, res shellResult) {
 	}
 	if before != "" {
 		st.noteTypedWindow(before)
+		st.noteTypedFigures(before, command)
 	}
 	if st.ActiveWindow != "" && (before == "" || (firstOther >= 0 && lastTyping > firstOther)) {
 		st.noteTypedWindow(st.ActiveWindow)
+		st.noteTypedFigures(st.ActiveWindow, command)
 	}
+}
+
+// noteTypedFigures marks the window when the command typed or chose a figure in it (a number, a percentage) - a
+// message typed in prose puts none of the work's figures on the screen.
+func (st *operatorState) noteTypedFigures(window, command string) {
+	for _, v := range typedValues(command) {
+		if _, ok := canonicalNumber(strings.TrimSuffix(strings.TrimSpace(v), "%")); ok {
+			if st.TypedFigures == nil {
+				st.TypedFigures = map[string]bool{}
+			}
+			st.TypedFigures[window] = true
+			return
+		}
+	}
+}
+
+// typedFigureIn reports whether the work typed or chose a figure in the window.
+func (st *operatorState) typedFigureIn(window string) bool {
+	for w := range st.TypedFigures {
+		if sameWindow(w, window) {
+			return true
+		}
+	}
+	return false
 }
 
 // noteTypedWindow puts a window last among those typed or chosen in, once, and notes when.
@@ -1183,9 +1362,15 @@ func (st *operatorState) unseenTyping() []reviewIssue {
 				listed = at
 			}
 		}
-		if typed == 0 || listed >= typed {
+		if typed == 0 || listed >= typed || st.UnseenTold[w] {
 			continue
 		}
+		// Told once a goal: a login or a dashboard typed into on the way to the work cannot be looked at again without
+		// going back, and was raised on nearly every review batch (2026-10-26); once is the warning, the rest is nagging.
+		if st.UnseenTold == nil {
+			st.UnseenTold = map[string]bool{}
+		}
+		st.UnseenTold[w] = true
 		out = append(out, reviewIssue{
 			What: fmt.Sprintf("What was typed into %q was not looked at after it was typed", w),
 			Why: "open it and look at it (gui observe) before reporting - nothing has seen what it holds now, so " +

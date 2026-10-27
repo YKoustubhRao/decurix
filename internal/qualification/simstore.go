@@ -28,6 +28,11 @@ const (
 	RoleDraft     = "draft"
 )
 
+// practiceRole reports whether role is one an evidence file may carry.
+func practiceRole(role string) bool {
+	return role == RoleInput || role == RoleOutput || role == RoleMockState || role == RoleDraft
+}
+
 // practiceExpiry is how long a clean practice run qualifies a revision (as readiness).
 const practiceExpiry = 30 * 24 * time.Hour
 
@@ -128,11 +133,29 @@ func (s *Store) savePractice(r PracticeResponsibility, actor, action, reason str
 	return tx.Commit()
 }
 
+// MaxPracticeSourceBytes bounds a generator, a mock app and a pinned source.
+const MaxPracticeSourceBytes = 4 << 20
+
 // SaveDraft stores a generated suite for owner review. The store computes every
-// hash itself, so a caller cannot pin bytes it did not hand over.
+// hash itself, so a caller cannot pin bytes it did not hand over, and it runs
+// ValidatePracticeSuite itself, so a draft nobody validated cannot be approved.
 func (s *Store) SaveDraft(su PracticeSuite) (PracticeSuite, error) {
 	if !namePattern.MatchString(su.WorkerID) || (su.Source.Kind != SourceSkill && su.Source.Kind != SourceRecording) || su.Source.Name == "" || su.Generator == "" {
 		return su, ErrInvalid
+	}
+	if su.Source.OutOfScope != "" || (su.Source.WorkKind != WorkOffice && su.Source.WorkKind != WorkWeb) {
+		return su, ErrInvalid
+	}
+	sourceBytes := 0
+	for _, b := range su.Source.Files {
+		sourceBytes += len(b)
+	}
+	if len(su.Generator) > MaxPracticeSourceBytes || len(su.Mock) > MaxPracticeSourceBytes || sourceBytes > MaxPracticeSourceBytes {
+		return su, ErrInvalid
+	}
+	su.Problems = mergeProblems(su.Problems, ValidatePracticeSuite(su.Source, su.Cases))
+	if su.Source.WorkKind == WorkWeb && su.Mock == "" {
+		su.Problems = mergeProblems(su.Problems, []string{"A web source needs a mock app."})
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -164,6 +187,22 @@ func (s *Store) SaveDraft(su PracticeSuite) (PracticeSuite, error) {
 	}
 	_, err = s.db.Exec(`INSERT INTO simulation_suites(id,responsibility_id,status,data) VALUES(?,?,?,?)`, su.ID, su.ResponsibilityID, su.Status, string(b))
 	return su, err
+}
+
+// mergeProblems appends to have every problem in more it does not list yet.
+func mergeProblems(have, more []string) []string {
+	out := append([]string{}, have...)
+	seen := map[string]bool{}
+	for _, p := range out {
+		seen[p] = true
+	}
+	for _, p := range more {
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // sourceFingerprint hashes the source's exported bytes and how it was described.
@@ -401,7 +440,7 @@ func (s *Store) RecordPracticeCase(runID string, f PracticeFinding, files []Prac
 	}
 	for _, file := range files {
 		stored += len(file.Body)
-		if len(file.Body) > MaxFileBytes || file.Name == "" || len(file.Name) > 200 {
+		if len(file.Body) > MaxFileBytes || !FileName(file.Name) || !practiceRole(file.Role) {
 			return ErrInvalid
 		}
 	}
@@ -628,6 +667,9 @@ func (s *Store) PracticeTaskFailed(worker, skill, reason string) error {
 // HoldUnattended records an unattended start waiting for a person, once per
 // worker and request key; a repeat returns the hold already there.
 func (s *Store) HoldUnattended(worker, skill, request, key string) (PracticeHold, error) {
+	if !namePattern.MatchString(worker) || skill == "" || key == "" || len(key) > 4200 {
+		return PracticeHold{}, ErrInvalid
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if h, err := s.holdByKey(worker, key); err == nil {

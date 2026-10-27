@@ -318,8 +318,12 @@ web/templates/     — theme.html (shared design tokens + icon sprite + top bar 
                       hostgui.html (the viewer for one app running on a private host
                       desktop: a canvas drawn from patches pushed over one WebSocket, which
                       also carries the input back), tasks.html (the autonomy dashboard, /tasks), task.html (one
-                      task record with its steps, screenshots, interventions, verdict)
-                      recordings.html (/recordings/<id>: record a demonstration,
+                      task record with its steps, screenshots, interventions, verdict), trace.html
+                      (/tasks/<id>/trace: the same record as a full trace - every step with its
+                      timestamp and kind, questions and answers, the final report - with
+                      /tasks/<id>/trace.txt as the plain-text twin for copy/download; opened
+                      from the task dropdown on each dashboard card, which polls
+                      /api/desktops/tasks), recordings.html (/recordings/<id>: record a demonstration,
                       browse recordings step by step, replay, export, and Teach - which
                       starts a lesson from it and any other demonstrations picked) and
                       skills.html (/skills/<id>: what the desktop was taught - run one

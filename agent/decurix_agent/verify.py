@@ -176,9 +176,12 @@ def not_found_undone(undone):
 
 # A sum written out in a report: "450.00 + 90.00 + 102.60 = 642.60", "$1,200 - 150 = $1,050", "3 x 25.00 = 75.00".
 _AMOUNT = r"(?:[$€£¥]|USD|EUR|GBP|INR|Rs\.?)?\s?-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|(?:[$€£¥]|USD|EUR|GBP|INR|Rs\.?)?\s?-?\d+(?:\.\d+)?"
-_SUM = re.compile(rf"(?<![\w.,/-])((?:{_AMOUNT})(?:\s*[-+×x*@]\s*(?:{_AMOUNT}))+)\s*=\s*({_AMOUNT})(?![\w%/.]|,\d)", re.I)
+# An operator stands on the same line as its terms: a dash that opens the next line is a bullet, not a minus. Found
+# live (2026-10-27): "... 56,994.00\n- 1191 = 55,802.60" (a list of vouchers and their totals) was read as
+# 56,994.00 - 1191 = 55,802.60, "a sum you wrote is wrong", and the worker undid right work.
+_SUM = re.compile(rf"(?<![\w.,/-])((?:{_AMOUNT})(?:[ \t]*[-+×x*@][ \t]*(?:{_AMOUNT}))+)[ \t]*=[ \t]*({_AMOUNT})(?![\w%/.]|,\d)", re.I)
 # One token of a written sum: an amount (with its currency) or an operator; a product's "x", "×", "*" or "@".
-_SUM_TOKEN = re.compile(rf"\s*(?:({_AMOUNT})|([-+×x*@]))", re.I)
+_SUM_TOKEN = re.compile(rf"[ \t]*(?:({_AMOUNT})|([-+×x*@]))", re.I)
 
 
 def _sum_terms(left):

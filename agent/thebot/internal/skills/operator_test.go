@@ -322,7 +322,7 @@ func TestDeclinedAdviceTellsTheModelNotToAskWhatWasMeant(t *testing.T) {
 			t.Errorf("advice lacks %q: %s", want, advice)
 		}
 	}
-	if got := declinedAdvice("ls ~/work"); !strings.HasSuffix(got, "continue the task without it.") || strings.Contains(got, "clarify") {
+	if got := declinedAdvice("ls ~/work"); !strings.HasSuffix(got, "remains undone, and why.") || strings.Contains(got, "clarify") {
 		t.Errorf("a command that raised no concern got the concern advice: %q", got)
 	}
 }
@@ -584,5 +584,21 @@ func TestTaskRulesKeepOwnTroublesOwn(t *testing.T) {
 		if !strings.Contains(taskRules, want) {
 			t.Errorf("taskRules lacks %q", want)
 		}
+	}
+}
+
+func TestACommandACheckStoppedIsNotARepeatWhenSentAgain(t *testing.T) {
+	for _, out := range []string{
+		"gui: Not pressed yet - \"Voucher\" would be sent holding:\n  No.: 1234\nCheck every value ...",
+		"Not pressed: the form does not hold what record X says - No. holds '1'",
+		"gui: not declared - these values stand neither in the source ...",
+		"This click needs the person's OK before it is made: it files the return.",
+	} {
+		if !stoppedBeforeActing(out) {
+			t.Errorf("not seen as stopped: %q", out)
+		}
+	}
+	if stoppedBeforeActing("Clicked button \"Save\" (e5). What changed: ...") {
+		t.Errorf("an action that went through seen as stopped")
 	}
 }

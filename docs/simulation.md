@@ -9,7 +9,7 @@
   - `VerifyPractice`: readiness's four file checks reused through `verifyCheck`, plus `mock_state`, `outbox`, `asked`, `stopped_at_approval` and `absent`. It flags unexpected files, records and drafts, and counts **false success** and **acted past approval**. `PracticeRunPassed` requires every case, in order, with neither of those;
   - `SuiteRevision` / `CasesFingerprint`.
 - `internal/qualification/simstore.go`, with tables as **step 2 of the `qualification` Migrate slice**:
-  - drafts, where the store computes every hash itself;
+  - drafts, where the store computes every hash itself and runs `ValidatePracticeSuite` itself (plus: a web source needs a mock, an out-of-scope or unknown work kind is refused, generator/mock/source bytes are bounded), so a route cannot store an approvable draft it never validated;
   - owner approval, which must echo the generator, mock and cases hashes it saw;
   - suite retirement;
   - one practice run at a time across the control plane;
